@@ -1,0 +1,5 @@
+interface:
+  display_name: "Implement"
+  short_description: "Implement an Oblisk slice from the plan"
+policy:
+  allow_implicit_invocation: false

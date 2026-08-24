@@ -1,0 +1,5 @@
+interface:
+  display_name: "Grill with Docs"
+  short_description: "Stress-test an Oblisk design and record decisions"
+policy:
+  allow_implicit_invocation: false
