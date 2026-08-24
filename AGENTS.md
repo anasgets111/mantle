@@ -2,7 +2,7 @@
 
 Lazy means efficient, not careless. The best code is the code never written.
 
-Before writing code, understand the task and trace the real flow end to end. For Quickshell/QML topics, check the relevant documentation first (use Context7 MCP). Then stop at the first rung that holds:
+Before writing code, understand the task and trace the real flow end to end. For Quickshell/QML or Noctalia topics, check the relevant documentation first (use Context7 MCP). Then stop at the first rung that holds:
 
 1. Does this need to be built at all? (YAGNI)
 2. Does it already exist in this codebase? Reuse the helper, utility, or pattern; do not rewrite it.

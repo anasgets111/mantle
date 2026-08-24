@@ -4,11 +4,39 @@
 
 Build a Wayland shell framework with Rust-owned platform code and Lua-owned
 composition. Renderer generations run as separate processes so reload count does
-not become a memory bound. The default shell uses the same API as user shells.
+not become a memory bound. There is no default shell product; a test fixture in
+this repo exercises the public API, and users write their own `shell.lua`.
 
 This is a clean-start design. It records intended contracts, not progress.
 Noctalia and Quickshell provide comparison points. They do not define
 the Rust or Lua object model.
+
+## Locked decisions (grilling session)
+
+| Topic | Decision |
+| --- | --- |
+| Rendering | femtovg on EGL/GLES3. Blur comes from the compositor via transparent surfaces, not from us. |
+| Scene ownership | Parent-tree graph in Rust. Lua holds weak proxies. Destroying a parent destroys the subtree. Retainable locks keep nodes alive for exit animations. |
+| Reactivity | `bind(signal)` for properties, callbacks for behavior. A diff-time check catches imperative writes to bound properties; log once and drop. |
+| Input | Engine hit-tests retained node rects and delivers semantic events (`on_click`, `on_scroll`, `on_key`). Focus and pointer grabs are engine-owned leases. Popup placement strategies are engine work. |
+| Animation | Engine-clocked tweens: retarget mid-flight, completion callback, Behavior-style declarations (`animate_x = { duration = 200 }`). Springs deferred until a widget needs them. Animated writes go through the same dirty-marking path as bindings. |
+| Text | TextField and TextArea are engine primitives with IME (`wp-text-input-v3`) and clipboard (`data-control`). Documented exception to the product-widgets-in-Lua rule. |
+| Compositors | Adapter seam behind capability signals. Niri and Hyprland first-class, generic Wayland protocols as the floor. Feature detection via `capability:has("feature")`; missing features are unavailable state, not nil. Session actions use logind directly, outside the compositor seam. |
+| Product shape | Quickshell model: no default shell product. A test fixture Lua file lives in this repo and uses only public APIs. All service capabilities ship eventually, one at a time through the full pipeline. |
+| IPC | Supervisor owns built-in verbs over a Unix socket in `$XDG_RUNTIME_DIR`: reload, status, rollback, shutdown. Renderer exposes one generic `on_ipc(msg)` handler for user-defined actions. Messages bounded like everything else entering Lua. D-Bus names deferred to the broker stage. |
+| Tray | Engine owns StatusNotifierItem watcher, host, icon decoding, and menu data. The watcher D-Bus name lives on the durable side so reloads do not drop tray items. Lua receives item objects (icon handle, tooltip, title) and builds its own drawer UI over the exposed menu tree. |
+| Theming | Full pipeline: palette capability with a fixed M3-style role vocabulary, wallpaper-derived palettes, template stamping into other apps' configs with post-hooks. Stamping runs on the durable side, triggered by palette changes. Noctalia's MIT-licensed templates are reference material. Community fetch deferred. |
+| Errors | Supervisor-owned Rust-rendered error banner fed by three sources: rejected candidates, rate-limited callback failures, capability hard-failures. Auto-clears on clean activation. Rejected-reload events also route to the active generation's `on_ipc` so healthy configs can toast. |
+| Testing | Pure-logic units (descriptors, diffs, leases, persist registry), fixture-driven integration tests for the Lua VM and loader, fake renderer processes for supervisor protocol tests, one headless-Wayland boot smoke in CI. No golden-frame screenshot diffs; assert on protocol events and exit codes. |
+
+### State carry-over across generations
+
+- Components declare persistent values by name: `persist("panel.open", signal)`.
+- Values are bounded serializable types only: numbers, strings, bools, flat tables. No handles, functions, or nodes.
+- The supervisor copies declared values from the old VM to the new VM during staging, before the new scene builds.
+- Name mismatches resolve by drop-or-default, never error. Renaming a key is a documented break.
+
+`ponytail:` No schema or migration system. Names are the contract. Add one only when a real config rename forces it.
 
 ## System boundaries
 
@@ -99,6 +127,9 @@ These limits protect availability. They do not sandbox a user-owned process.
 - A component is a Lua function that returns constructor-built descriptors.
 - Components may declare props, children, slots, events, and lifecycle hooks.
 - Lua builds descriptors. Rust owns the retained scene and resource lifetimes.
+- Property writes have one precedence rule: last writer wins per tick. An active
+  animation cancels the binding on that property while it runs; the binding
+  resumes after. Document once, enforce at diff time.
 
 ### Reactivity and retained nodes
 
@@ -162,8 +193,17 @@ The supervisor may own small stores and private bridges. Move a service to a
 broker when it needs a public D-Bus name, durable authority, authenticated IPC,
 or overlap-safe lifetime.
 
+Durable-side owners include: the StatusNotifierItem watcher name, theme
+template stamping and post-hooks, the error banner surface, and any public
+D-Bus names. None of these belong to a generation; reloads must not drop them.
+
 Services publish state. Lua decides how to display it. A widget built from
 existing primitives must not require Rust.
+
+Each capability supports feature detection: `capability:has("feature")` returns
+whether the active adapter provides it (for example Hyprland special
+workspaces). Missing features are unavailable state for widgets to degrade on,
+not nil fields.
 
 ## Lock and authentication
 
@@ -203,6 +243,7 @@ or a gap is allowed. Do not claim physical presentation from an activation ACK.
 | Active renderer crash | Retry bounded times, then use the built-in safe shell. |
 | Capability loss | Publish unavailable state. Keep unrelated UI running. |
 | Lock-theme error | Use the last validated data-only lock scene. |
+| Rejected reload | Supervisor shows the error banner and sends a `reload-rejected` event to the active generation's `on_ipc`. |
 
 ## Invariants
 
@@ -216,6 +257,10 @@ or a gap is allowed. Do not claim physical presentation from an activation ACK.
 - The default shell uses only public framework APIs.
 - A second shell must use a different topology without Rust changes.
 - Every long-lived resource has a traceable owner and cleanup path.
+- The test fixture is the API review: if building it needs engine changes, log
+  them as framework work. No special-case Rust helpers for fixture widgets.
+- Periodically write a small shell from scratch without reading the fixture. If
+  that hurts, fix the API.
 
 ## Dependencies
 
@@ -233,9 +278,20 @@ caller, an ownership decision, and a runnable check.
 | Audio | `pipewire` | One owner thread for PipeWire objects. |
 | Authentication | `pam-client` and `zeroize` | Keep secrets in the lock process. |
 | Diagnostics | `tracing` | Use spans for build, diff, layout, paint, and handoff. |
+| Rendering | `femtovg` on EGL/GLES3 | Slint ships it in production. Revisit vello only after it has glyph caching and 1.0. |
+| Headless CI smoke | wlroots headless or niri headless mode | One boot, one frame, one reload, clean exit. Assert on protocol events, not pixels. |
 
 Do not add `taffy`, `wgpu`, a broker, or an extension ABI to satisfy a list.
 Add each when the next slice needs it.
+
+## IPC protocol
+
+- Unix socket at `$XDG_RUNTIME_DIR/oblisk.sock`, same-user only, bounded messages.
+- Supervisor verbs: `reload`, `status`, `rollback`, `shutdown`. These work even
+  when the active generation is broken.
+- `oblisk msg <verb>` is the CLI. A generic pass-through forwards everything
+  else to the active generation's `on_ipc(msg)` handler.
+- Public D-Bus names wait for the broker stage.
 
 ## Delivery order
 
@@ -248,10 +304,12 @@ Add each when the next slice needs it.
 5. Stable node IDs, keyed cleanup, layout sizing, input routing, text editing,
    and animation scheduling.
 6. MPRIS and notifications, then one service at a time.
-7. A default Lua shell and a second Lua shell fixture.
+7. Tray capability (engine-side SNI watcher/host on the durable side), text
+   editing with IME, and the test fixture shell exercising all of it.
 8. Lock/auth, durable jobs, public IPC, and broker extraction when required.
-9. Themes, assets, canvas, accessibility, compositor adapters, packaging, and
-   long-run reload qualification.
+9. Theming pipeline (palette capability, wallpaper derivation, template
+   stamping), compositor adapters beyond Niri/Hyprland, assets, accessibility,
+   packaging, and long-run reload qualification.
 
 Each step needs a focused test, an owner, bounded inputs and outputs, and a
 manual compositor check when the platform is involved.
