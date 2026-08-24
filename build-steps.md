@@ -9,11 +9,11 @@ required platform check exist.
 - Finish one step before starting the next.
 - Keep each step small enough to compile or to have one explicit manual check.
 - Keep Lua off the platform hot path.
-- Keep Wayland and service ownership in Rust.
+- Keep Wayland and capability ownership in Rust.
 - Keep durable state outside renderer generations.
-- Keep the renderer behind a small trait so CPU and GPU paths can diverge later.
-  femtovg on EGL is the locked GPU target and defines the trait. CPU SHM is its
-  test adapter (llvmpipe/CI), not a second maintained implementation.
+- Keep one renderer paint trait. SHM is its headless test adapter and femtovg on
+  EGL is its production adapter. The headless process fixture has no paint
+  implementation.
 - Keep product widgets in Lua when existing primitives and capabilities suffice.
   TextField/TextArea are the documented engine exception.
 - Add a capability only with a bounded snapshot, validated command path,
@@ -23,44 +23,52 @@ required platform check exist.
 ## Phase 1: disposable renderer
 
 - [ ] 1. Create the Cargo workspace with supervisor and renderer crates (the
-  private protocol lives in the supervisor). Spawn one headless renderer,
-  receive versioned readiness, terminate it, and reap it.
+  private protocol lives in the supervisor). Spawn one headless renderer
+  process fixture, receive versioned readiness, terminate it, and reap it.
 - [ ] 2. Define the length-bounded private control protocol. Test valid frames,
   malformed frames, wrong generations, and oversized frames.
 - [ ] 3. Give the supervisor generation IDs and child records. Reap every child
   on every return path.
-- [ ] 4. Add staging. Keep one active renderer while one candidate starts. New
-  reload requests replace the pending request.
-- [ ] 5. Define the renderer trait and a headless backend. Emit readiness only
-  after `prepare` succeeds. The trait's paint abstraction covers buffer
-  submission only; backend choice per step 6.
+- [ ] 4. Add the private reload transaction. Feed it reload requests, renderer
+  milestones, presentation evidence, process exits, and deadlines. It emits
+  staging, activation, freeze, rollback, and cleanup effects. Keep one active
+  renderer while one candidate starts; a newer request replaces the pending
+  request. Test event traces, wrong epochs, stalled presentation, rollback,
+  and candidate reaping.
+- [ ] 5. Define the renderer prepare/readiness contract without a paint
+  backend. The process fixture reports readiness only after `prepare` succeeds.
 - [ ] 6. Add the SCTK layer-shell backend with CPU SHM paint as the renderer
   trait's test adapter. Perform the null-buffer commit and configure handshake
   before `prepare` succeeds.
 - [ ] 7. Add the femtovg/EGL paint backend as the definition of the renderer
   trait: GL context per surface, glyph atlas via cosmic-text integration,
   damage-driven redraw. Same `prepare`/readiness contract as SHM. The SHM path
-  is the trait's test adapter, exercised in CI via llvmpipe.
+  is the headless test adapter, exercised in CI via llvmpipe.
 - [ ] 8. Add candidate timeout and process-group cleanup. Test a child that
   ignores `SIGTERM`.
-- [ ] 9. Add a file watcher with 250 ms debounce. Test event coalescing and
-  config-path watch-root selection. Open each file before hashing: check the
-  opened fd's inode (`fstat` + hash), never the path twice. Treat rename-based
-  saves as fresh triggers regardless of debounce coalescing.
+- [ ] 9. Add the shared dependency snapshot module and its 250 ms watcher.
+  Resolve the rooted graph, open each file once, check the opened fd's inode
+  (`fstat`) and hash, and return bounded watch roots. Test event coalescing,
+  config-path selection, symlink escape, missing-module parent roots, and
+  rename-based saves. The watcher follows only the last successful snapshot.
 
 ## Phase 2: safe Lua configuration
 
 - [ ] 10. Embed vendored Lua 5.4 in each renderer generation. Expose only the
   approved standard libraries.
-- [ ] 11. Add the rooted `require` loader. Reject traversal, symlink escape,
-  unsupported files, and source over the limit.
-- [ ] 12. Record dependency paths and content hashes. Recheck them before the
-  generation can commit.
+- [ ] 11. Connect the rooted Lua `require` loader to the dependency snapshot
+  module. Reject traversal, symlink escape, unsupported files, and source over
+  the limit.
+- [ ] 12. Send the renderer's bounded dependency snapshot to the supervisor.
+  Re-capture each expected file through the same module before the generation
+  can commit. Compare inode and hash from opened descriptors, never a path-only
+  hash. Replace the watch set only after successful activation.
 - [ ] 13. Define the descriptor core: `node(kind, props)` with `children` as a
   prop, `bind(signal)` sentinel, and `list(keyfn, sig, itemfn)` keyed repeater.
   Reject unknown properties at construction time. Generate sugar constructors
   (panel, row, column, text, icon, button) from the Rust schema; one source of
-  truth. Reserve the `raw` kind name. The scene root declares an API version;
+  truth. Reserve the `raw` kind name. The scene root declares an interface
+  version;
   reject unsupported versions before creating surfaces.
 - [ ] 14. Add a built-in Rust diagnostic scene for invalid configuration.
   Configuration errors must keep the active generation. This diagnostic is also
@@ -74,19 +82,21 @@ required platform check exist.
 
 ## Phase 3: retained scene
 
-- [ ] 16. Add explicit string signals, direct components, and
-  `computed(dependencies, fn)` with explicit dependencies. Refresh only dirty
-  component subtrees. Keep builders side-effect-free during construction.
+- [ ] 16. Add the retained-scene transaction with explicit string signals,
+  builders, and `computed(dependencies, fn)`. Refresh only dirty builder
+  subtrees. Keep builders side-effect-free during construction.
   Resolve computed chains to fixed point per tick with a depth cap of 8;
   exceeding it marks the chain errored and drops the write, it does not disable
   the source signal.
-- [ ] 17. Add the persist registry: components declare persistent values by
+- [ ] 17. Add the persist registry: builders declare persistent values by
   name, supervisor copies them old-VM to new-VM during staging before the new
   scene builds. Bounded serializable types only; drop-or-default on mismatch.
   Copy semantics are last-committed-tick: the supervisor snapshots at quiesce,
   not mid-callback; document that a callback racing reload may lose its write.
-- [ ] 18. Add bounded keyed repeaters. Reorders retain matched nodes. Removed
-  keys unmount child-first. Failed refreshes retain the previous subtree.
+- [ ] 18. Add bounded keyed reconciliation inside the retained-scene
+  transaction. Reorders retain matched nodes. Removed keys unmount child-first.
+  Failed refreshes retain the previous subtree. Use a bounded linear key scan;
+  add an index only after measured list size requires it.
 - [ ] 19. Add intrinsic row and column layout for bounded text and panel nodes.
   Reject oversized descriptor trees before retention or paint.
 - [ ] 20. Add host-font Unicode shaping and path-only PNG/JPEG assets. Bound
@@ -120,20 +130,23 @@ required platform check exist.
 
 ## Phase 5: retained UI engine
 
-- [ ] 29. Assign stable Rust-owned node IDs. Define their lifetime across a
-  same-generation diff and a reload.
-- [ ] 30. Replace positional refresh with transactional keyed reconciliation
-  where keyed children require it. Preserve unchanged nodes and event IDs.
-- [ ] 31. Add lifecycle cleanup for nodes, timers, subscriptions, animations,
-  and capability leases. Test child-before-parent unmount.
+- [ ] 29. Finish stable Rust-owned node IDs inside the retained-scene
+  transaction. Define their lifetime across a same-generation diff and a
+  reload.
+- [ ] 30. Replace positional refresh with the transaction's keyed reconciliation.
+  Preserve unchanged nodes and event IDs. A failed commit leaves the previous
+  scene intact.
+- [ ] 31. Route node, timer, subscription, animation, and node-owned capability
+  lease cleanup through the retained-scene transaction. Test child-before-parent
+  unmount and callback failure.
 - [ ] 32. Add explicit sizing, alignment, clipping, and bounded text measurement.
   Reconsider a layout crate only after a measured need.
-- [ ] 33. Add generic per-node hit testing over retained node rects, focus
-  leases, capture policy, callback-error ordering, and semantic event dispatch
-  to Lua handlers. This refines step 21's root routing into node-targeted
-  events.
+- [ ] 33. Add retained-scene hit testing over node rects, focus leases, capture
+  policy, callback-error ordering, and semantic event dispatch to Lua handlers.
+  Input remains an event producer; node identity and cleanup stay in the scene
+  transaction. This refines step 21's root routing into node-targeted events.
 - [ ] 34. Add bounded text editing, cursor, selection, clipboard via
-  `data-control`, and IME boundaries only after generic input routing has a
+  `data-control`, and IME handoff only after generic input routing has a
   focused test.
 - [ ] 35. Add native animation scheduling: engine-clocked tweens with retarget
   (hover/unhover mid-flight happens on day one) and completion callback.
@@ -141,7 +154,7 @@ required platform check exist.
   diff must not duplicate a live animation or timer. Animated writes go through
   the same dirty-marking path as bindings; last writer wins per tick.
 - [ ] 36. Add a second Lua shell fixture with a different topology and input
-  structure. It must use only the public API.
+  structure. It must use only the public interface.
 - [ ] 37. Add one headless-Wayland boot smoke to CI: start under niri's
   headless mode (fallback: cage on wlroots headless), draw one frame via SHM,
   reload once, exit clean. Run with llvmpipe; do not require GPU in CI. Assert
@@ -149,29 +162,28 @@ required platform check exist.
 
 ## Phase 6: capability slices
 
-- [ ] 38. Define one versioned capability envelope with bounded snapshots,
-  revisions, availability state, and validated commands. Every validated
-  command carries the sender's generation ID; the owner rejects any ID that is
-  not the active generation, before unmapping the dying generation's surfaces.
-  Feature detection (`capability:has("feature")`) lands with the first feature-
-  specific consumer (step 42).
-- [ ] 39. Use MPRIS as the first service fixture. Keep its backend owner off Lua.
-  Test startup, disconnect, stale revision, shutdown, and command rejection for
-  a stale generation ID.
+- [ ] 38. Define one capability authority module with bounded snapshots,
+  revisions, availability state, generation authorization, stale-command
+  rejection, and disconnect revocation. Backend adapters validate only their
+  own command meaning. Feature detection (`capability:has("feature")`) lands
+  with the first feature-specific consumer (step 42).
+- [ ] 39. Use MPRIS as the first capability fixture. Keep its backend adapter
+  off Lua. Test startup, disconnect, stale revision, shutdown, and command
+  rejection for a stale generation ID through the authority module.
 - [ ] 40. Add the notification snapshot bridge. Keep staged renderers feed-gated
   until visible-ID presentation and routing ownership are verified.
 - [ ] 41. Add notification commands and public D-Bus ownership only after the
-  authority boundary has a test.
+  capability authority seam has a test. Do not add a broker to the interface.
 - [ ] 42. Add the compositor adapter seam: Niri and Hyprland adapters behind
   capability signals (monitors, workspaces, keyboard layout), generic Wayland
   protocols as the floor. Two adapters now is what makes the seam real; defer
   only `has()` until a config consumes a compositor-specific feature like
   special workspaces. Session actions use logind directly, outside the seam.
-- [ ] 43. Port services one at a time through the full pipeline: power,
+- [ ] 43. Port capabilities one at a time through the full pipeline: power,
   network, Bluetooth, audio, workspaces, clipboard. Each is its own step-sized
   slice: Rust owner, bounded state, command validation, unavailable state, Lua
-  API, focused test. Workspaces go through the step 42 adapters.
-- [ ] 44. Run a real-session check for each service. Record disconnect, reload,
+  interface, focused test. Workspaces go through the step 42 adapters.
+- [ ] 44. Run a real-session check for each capability. Record disconnect, reload,
   stale-revision, and backend-failure behavior.
 
 ## Phase 7: test fixture shell
@@ -184,9 +196,9 @@ required platform check exist.
   bytes, args a flat table up to 16 entries with string/number/bool values;
   supervisor validates before delivery.
 - [ ] 46. Add a Lua bar and launcher fixture using existing layout, input,
-  process, and capability primitives. It must use only the public API. Treat
-  fixture friction as API bugs, not fixture bugs.
-- [ ] 47. Add notification center, OSD, control center, and widget components
+  process, and capability primitives. It must use only the public interface.
+  Treat fixture friction as interface bugs, not fixture bugs.
+- [ ] 47. Add notification center, OSD, control center, and widget builders
   in Lua. Add Rust only for a missing reusable primitive or capability.
 - [ ] 48. Exercise reload, hotplug, capability loss, persist carry-over, and
   cleanup with the fixture.
@@ -204,7 +216,7 @@ required platform check exist.
 
 ## Phase 8: security and durable facilities
 
-- [ ] 51. Define the lock/auth process boundary and supported compositor matrix.
+- [ ] 51. Define the lock/auth process seam and supported compositor matrix.
   Test with a disposable PAM account. Session-lock + PAM only; greetd and
   Polkit conversations are deferred behind an actual greeter or polkit-agent
   deliverable.
@@ -218,7 +230,7 @@ required platform check exist.
   beyond Niri/Hyprland, packaging, and generated LuaLS definitions as separate
   slices, each with an explicit trigger (e.g. accessibility: first AT-SPI
   consumer).
-- [ ] 55. Run reload-memory, compositor, service-fault, and lock recovery
+- [ ] 55. Run reload-memory, compositor, capability-fault, and lock recovery
   qualification. Remove unused dependencies and stale alternatives.
 
 ## Acceptance gate
@@ -226,7 +238,7 @@ required platform check exist.
 A step needs:
 
 - one owner for every resource and process;
-- byte and count limits at every boundary;
+- byte and count limits at every input and queue seam;
 - deterministic cleanup;
 - one focused runnable test;
 - a manual compositor or real-session check when required.

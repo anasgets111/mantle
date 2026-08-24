@@ -5,7 +5,7 @@
 Build a Wayland shell framework with Rust-owned platform code and Lua-owned
 composition. Renderer generations run as separate processes so reload count does
 not become a memory bound. There is no default shell product; a test fixture in
-this repo exercises the public API, and users write their own `shell.lua`.
+this repo exercises the public interface, and users write their own `shell.lua`.
 
 This is a clean-start design. It records intended contracts, not progress.
 Noctalia and Quickshell provide comparison points. They do not define
@@ -15,19 +15,19 @@ the Rust or Lua object model.
 
 | Topic | Decision |
 | --- | --- |
-| Rendering | femtovg on EGL/GLES3. Blur comes from the compositor via transparent surfaces, not from us. CPU SHM is the renderer trait's test adapter (llvmpipe/CI), not a second maintained implementation. |
-| Scene ownership | Parent-tree graph in Rust. Lua holds weak proxies. Destroying a parent destroys the subtree. Retainable locks keep nodes alive for exit animations. |
-| Reactivity | `bind(signal)` for properties, callbacks for behavior. A diff-time check catches imperative writes to bound properties; log once and drop. |
+| Rendering | femtovg on EGL/GLES3. Blur comes from the compositor via transparent surfaces, not from us. The headless renderer is a process fixture, not a paint adapter. CPU SHM is the renderer trait's test adapter (llvmpipe/CI); EGL is the production adapter. |
+| Scene ownership | A private Rust retained-scene module owns the descriptor-to-commit transaction, parent tree, node IDs, leases, and child-first cleanup. Lua holds weak proxies. Retainable locks keep nodes alive for exit animations. |
+| Reactivity | `bind(signal)` supplies properties and callbacks supply behavior. Signals mark dirty builders; the retained-scene module resolves writes transactionally. A diff-time check catches imperative writes to bound properties; log once and drop. |
 | Input | Engine hit-tests retained node rects and delivers semantic events (`on_click`, `on_scroll`, `on_key`). Focus and pointer grabs are engine-owned leases. Popup placement strategies are engine work. |
 | Animation | Engine-clocked tweens: retarget mid-flight and completion callback. Behavior-style declarations deferred until a fixture demands them. Springs deferred until a widget needs them. Animated writes go through the same dirty-marking path as bindings. |
 | Text | TextField and TextArea are engine primitives with IME (`wp-text-input-v3`) and clipboard (`data-control`). Documented exception to the product-widgets-in-Lua rule. |
 | Compositors | Adapter seam behind capability signals. Niri and Hyprland first-class, generic Wayland protocols as the floor. Feature detection via `capability:has("feature")`; missing features are unavailable state, not nil. Session actions use logind directly, outside the compositor seam. |
-| Product shape | Quickshell model: no default shell product. A test fixture Lua file lives in this repo and uses only public APIs. All service capabilities ship eventually, one at a time through the full pipeline. |
+| Product shape | Quickshell model: no default shell product. A test fixture Lua file lives in this repo and uses only the public interface. All capabilities ship eventually, one at a time through the full pipeline. |
 | IPC | Supervisor owns built-in verbs over a Unix socket in `$XDG_RUNTIME_DIR`: reload, status, reload-last-good, shutdown. Renderer exposes one generic `on_ipc(msg)` handler for user-defined actions. `msg` is a bounded table: verb is a non-empty string up to 64 bytes, args is a flat table up to 16 entries with string/number/bool values. The supervisor validates shape before delivery. Pass-through verbs are default-deny; configs opt in per verb, with the peer PID attached via SO_PEERCRED. D-Bus names deferred to the broker stage. |
-| Tray | Engine owns StatusNotifierItem watcher, host, icon decoding, and menu data. The watcher D-Bus name lives on the durable side so reloads do not drop tray items. Menu trees cross to Lua as revisioned bounded snapshots through the same capability envelope as every other service, never as live handles. Lua receives item objects (icon handle, tooltip, title) and builds its own drawer UI. |
+| Tray | Engine owns StatusNotifierItem watcher, host, icon decoding, and menu data. The watcher D-Bus name lives on the durable side so reloads do not drop tray items. Menu trees cross to Lua as revisioned bounded snapshots through the same capability envelope as every other capability, never as live handles. Lua receives item objects (icon handle, tooltip, title) and builds its own drawer UI. |
 | Theming | Full pipeline: palette capability with a fixed M3-style role vocabulary, wallpaper-derived palettes, template stamping into other apps' configs with post-hooks. Stamping runs on the durable side, triggered by palette changes. Noctalia's MIT-licensed templates are reference material. Community fetch deferred. |
 | Errors | Supervisor-owned Rust-rendered error banner fed by three sources: rejected candidates, rate-limited callback failures, capability hard-failures. Auto-clears on clean activation. Rejected-reload events also route to the active generation's `on_ipc` so healthy configs can toast. |
-| Testing | Pure-logic units (descriptors, diffs, leases, persist registry), fixture-driven integration tests for the Lua VM and loader, fake renderer processes for supervisor protocol tests, one headless-Wayland boot smoke in CI. No golden-frame screenshot diffs; assert on protocol events and exit codes. |
+| Testing | Pure-logic units (reload transitions, dependency snapshots, retained-scene commits, leases, persist registry), fixture-driven integration tests for the Lua VM and loader, fake renderer processes for supervisor protocol tests, one headless-Wayland boot smoke in CI. No golden-frame screenshot diffs; assert on protocol events and exit codes. |
 
 ### State carry-over across generations
 
@@ -38,7 +38,7 @@ the Rust or Lua object model.
 
 `ponytail:` No schema or migration system. Names are the contract. Add one only when a real config rename forces it.
 
-## System boundaries
+## System ownership
 
 - **Engine.** Rust owns Wayland objects, retained nodes, layout, input, paint,
   animation, process cleanup, and capability transport.
@@ -46,8 +46,8 @@ the Rust or Lua object model.
   bounded values and opaque handles. It never receives Wayland, D-Bus,
   PipeWire, authentication, or broker objects.
 - **Capabilities.** Rust adapters publish bounded snapshots and accept
-  validated commands. A failed optional service becomes an error state.
-- **Default shell.** Lua components compose bars, launchers, notifications,
+  validated commands. A failed optional capability becomes an error state.
+- **Default shell.** Lua builders compose bars, launchers, notifications,
   OSDs, control centers, and widgets. Rust does not encode those product
   layouts.
 
@@ -61,7 +61,7 @@ lock request ----------------> lock/auth process
 
 The supervisor owns small durable stores first. Add a broker process only when
 overlapping generations, public authority, or lifetime requirements demand it.
-Do not design a plugin ABI, service registry, or UI toolkit before a concrete
+Do not design a plugin ABI, capability registry, or UI toolkit before a concrete
 caller needs one.
 
 `ponytail:` Keep one active reload and one pending reload. This bounds
@@ -70,9 +70,37 @@ coordination to O(1). Add a queue only if measured editor behavior requires it.
 `ponytail:` Start layout with intrinsic rows and columns. Add flex, grid, or a
 layout crate only after a measured scene needs them.
 
+## Deep module seams
+
+These are private Rust modules with small interfaces. Do not expose their
+internal state machines or adapters to Lua.
+
+- **Reload transaction.** The supervisor feeds reload requests, renderer
+  milestones, presentation evidence, process exits, and deadlines into one
+  state machine. It emits effects for staging, activation, freeze, rollback,
+  and cleanup. The active generation stays authoritative until presentation
+  evidence arrives.
+- **Dependency snapshot.** The loader and watcher use one filesystem module to
+  resolve the rooted graph, open each file once, record inode and hash from that
+  descriptor, and return bounded watch roots. The supervisor watches only the
+  last successful snapshot.
+- **Retained scene.** One transaction owns descriptor validation, dirty refresh,
+  keyed identity, write ordering, node leases, event IDs, and child-first
+  cleanup. Signals, input, timers, and animations submit writes through it.
+- **Capability authority.** One module owns snapshot bounds, revisions,
+  availability, generation authorization, stale-command rejection, and lease
+  revocation. Backend adapters translate state and validate backend commands.
+- **Renderer paint.** The renderer trait has two paint adapters, SHM for
+  headless Wayland tests and EGL for production. The phase-one headless process
+  fixture has no paint implementation.
+
+The deletion test is explicit. Removing the first four modules would scatter
+their invariants across callers. Removing a separate headless paint module
+removes code without removing a requirement, so it does not exist.
+
 ## Supervisor
 
-- Watch the configuration dependency graph with a 250 ms debounce.
+- Feed the last successful dependency snapshot to a 250 ms debounce watcher.
 - Assign generation IDs and own every renderer child handle.
 - Stage one candidate while the active generation remains authoritative.
 - Accept one pending reload. A newer request replaces it.
@@ -80,8 +108,8 @@ layout crate only after a measured scene needs them.
 - Activate a candidate only after its configure barrier and scene checks pass.
 - Keep input, exclusive zones, and public capability routing with the active
   generation only.
-- On failure, terminate the candidate, wait, kill its process group if needed,
-  and reap it.
+- Run the private reload transaction. It owns activation state, presentation
+  evidence, freeze ordering, rollback, deadlines, and renderer cleanup.
 
 ## Renderer
 
@@ -92,21 +120,28 @@ layout crate only after a measured scene needs them.
   supervisor's activation command before mapping them.
 - Use a frame callback per surface as the redraw gate.
 - Reconcile output hotplug through bounded surface specifications.
+- Use SHM for the headless Wayland test adapter and EGL for production paint.
+- The phase-one headless process fixture exercises control and cleanup only; it
+  does not create a second paint adapter.
 - Keep the renderer product-neutral. Product widgets belong in Lua.
-- Exit after handoff. The process boundary reclaims renderer memory and maps.
+- Exit after handoff. The process lifetime reclaims renderer memory and maps.
 
 ## Lua configuration
 
 `shell.lua` returns a declarative scene built with framework constructors.
 
-### Runtime boundary
+### Runtime seam
 
 - Embed vendored PUC Lua 5.4 through `mlua`.
 - Create one VM per renderer generation.
 - Enable only the libraries required by the configuration language.
-- Replace `require` with a rooted loader. Reject traversal, symlink escape,
-  unsupported files, and source over the configured limit.
-- Track every dependency path and content hash before committing a generation.
+- Replace `require` with the rooted dependency snapshot module. Reject
+  traversal, symlink escape, unsupported files, and source over the configured
+  limit.
+- Each capture opens every file once, records its inode and hash from that
+  descriptor, and returns the bounded dependency graph. Verification re-captures
+  expected files through the same module before commit. The watcher consumes
+  watch roots from the last successful snapshot.
 - Enforce limits for source bytes, VM heap, nodes, bindings, timers, and
   callback time.
 - Run Lua on the renderer event-loop thread. Background work returns immutable
@@ -116,21 +151,21 @@ layout crate only after a measured scene needs them.
 
 These limits protect availability. They do not sandbox a user-owned process.
 
-### Scene and components
+### Scene and builders
 
 - Constructors return typed descriptors. Reject unknown properties at
   construction time.
-- The root declares an API version. Reject unsupported versions before creating
+- The root declares an interface version. Reject unsupported versions before creating
   surfaces.
 - Construction has no external side effects. Defer timers, subscriptions,
   processes, and state-changing commands until activation.
-- A component is a plain Lua function that returns constructor-built
-  descriptors. No component protocol, no inheritance machinery; composition is
+- A builder is a plain Lua function that returns constructor-built descriptors.
+  No builder protocol or inheritance machinery; composition is
   function composition. Add memoization or slots only when a real config needs
   them.
 - Lua builds descriptors. Rust owns the retained scene and resource lifetimes.
 
-#### Constructor API (design-it-twice result)
+#### Constructor interface (design-it-twice result)
 
 One core, thin sugar, generated schemas:
 
@@ -148,7 +183,7 @@ icon(name, props), button(fn, props)  -- sugar over node(), defaults included
   fuzzable against the differ.
 - The `raw` kind name is reserved for a future imperative escape hatch
   (animations, focus). Undefined until needed; do not grow god-kind tendrils.
-- Rejected alternative: a component protocol with props/slots/inheritance and
+- Rejected alternative: a builder protocol with props/slots/inheritance and
   plugin node registration. Machinery for configs nobody has written yet; one
   implementation is not a seam.
 - Property writes have one path: sources (bindings, callbacks, animations)
@@ -161,18 +196,22 @@ resumes after. Document once, enforce at diff time.
 - `signal(value)` exposes `get` and `set`.
 - `computed(dependencies, fn)` takes explicit dependencies. Do not infer reads
   through global tracking.
-- A signal write marks only the named component instances dirty.
-- Rust coalesces dirty work per event-loop tick, invokes affected builders, and
-  diffs their descriptors against retained nodes.
+- A signal write marks only the named builder instances dirty.
+- The retained-scene module coalesces dirty work per event-loop tick, invokes
+  affected builders, validates their descriptors, and commits one scene diff.
 - Stable node IDs survive same-generation diffs. A reload mounts a new
   generation and does not reuse old node IDs.
-- Keyed repeaters match by bounded keys. Reorders preserve matched nodes. Removed
-  keys unmount child-first. New keys mount only after validation.
+- Keyed repeaters match by bounded keys inside the same transaction. Reorders
+  preserve matched nodes. Removed keys unmount child-first. New keys mount only
+  after validation.
+- Failed refreshes retain the previous subtree. Binding, callback, and
+  animated writes enter one queue and resolve last-writer-wins per tick.
 - Lifecycle callbacks are protected calls. A failing callback loses its own
   lease and does not poison unrelated nodes.
 
-`ponytail:` Use bounded string keys before adding `slotmap`. Upgrade when keys
-need ownership independent of their immediate list.
+`ponytail:` Use a bounded linear scan for string keys before adding an index.
+This is O(n²) per keyed refresh in the worst case. Upgrade when measured list
+size or key ownership requires it.
 
 ### Timers and processes
 
@@ -209,22 +248,25 @@ system backend -> Rust adapter -> bounded revisioned snapshot -> renderer -> Lua
 Lua action -> validated command -> capability owner
 ```
 
-A capability has a Rust owner, bounded snapshot, revision, availability state,
-and validated command set. Lua receives IDs and values, never backend handles.
+A capability authority has a Rust owner, bounded snapshot, revision,
+availability state, generation authorization, and validated command envelope.
+Lua receives IDs and values, never backend handles. Backend adapters validate
+only backend-specific command meaning.
 
 Start with MPRIS and notifications. Follow with power, network, Bluetooth,
-audio, workspaces, and clipboard. Port one service through ownership, Lua API,
-headless tests, and a real-session test before adding another.
+audio, workspaces, and clipboard. Port one capability through ownership, Lua
+interface, headless tests, and a real-session test before adding another.
 
-The supervisor may own small stores and private bridges. Move a service to a
+The supervisor may own small stores and private bridges. Move a capability to a
 broker when it needs a public D-Bus name, durable authority, authenticated IPC,
-or overlap-safe lifetime.
+or overlap-safe lifetime. Do not make the broker part of the capability
+interface.
 
 Durable-side owners include: the StatusNotifierItem watcher name, theme
 template stamping and post-hooks, the error banner surface, and any public
 D-Bus names. None of these belong to a generation; reloads must not drop them.
 
-Services publish state. Lua decides how to display it. A widget built from
+Capabilities publish state. Lua decides how to display it. A widget built from
 existing primitives must not require Rust.
 
 Each capability supports feature detection: `capability:has("feature")` returns
@@ -246,7 +288,7 @@ Widgets check `has()` once at build time and availability on every snapshot.
 
 ## Reload transaction
 
-1. Debounce and hash the dependency graph.
+1. Ask the dependency snapshot module for a stable graph and watch roots.
 2. Start generation `N+1` without changing `N`.
 3. Validate Lua, descriptors, dependencies, and limits.
 4. Prepare every candidate surface with null buffers and configure handshakes.
@@ -264,6 +306,11 @@ Widgets check `has()` once at build time and availability on every snapshot.
    not stall it).
 9. On failure, unmap `N+1` and restore `N`. On success, terminate and reap `N`.
 
+The supervisor's private reload transaction is the only module that decides
+which generation is authoritative. Its input is bounded events. Its output is
+bounded effects. Renderer protocol, presentation feedback, and process-group
+cleanup are adapters behind that seam.
+
 Wayland does not provide an atomic cross-process surface handoff. Brief overlap
 or a gap is allowed. Do not claim physical presentation from an activation ACK.
 
@@ -272,7 +319,7 @@ or a gap is allowed. Do not claim physical presentation from an activation ACK.
 | Failure | Response |
 | --- | --- |
 | Empty or changing save | Debounce and retry from a stable snapshot. |
-| Syntax, module, API, limit, or readiness error | Reject and reap the candidate. Keep the active generation. |
+| Syntax, module, interface, limit, or readiness error | Reject and reap the candidate. Keep the active generation. |
 | No valid generation | Render a built-in Rust diagnostic. Do not execute user Lua. |
 | Timer, binding, or event callback error | Disable that source and retain unrelated scene state. |
 | Candidate crash during handoff | Roll back to the frozen generation. |
@@ -291,14 +338,16 @@ or a gap is allowed. Do not claim physical presentation from an activation ACK.
   into Lua.
 - No old renderer PID survives a successful handoff.
 - Capability failure does not block unrelated UI.
-- The default shell uses only public framework APIs.
+- The capability authority rejects stale generation IDs before backend command
+  validation.
+- The default shell uses only the public framework interface.
 - A second shell must use a different topology without Rust changes.
 - Every long-lived resource has a traceable owner and cleanup path.
-- The test fixture is the API review: build it early against the constructor
-  API and treat friction as API bugs, not fixture bugs. No special-case Rust
-  helpers for fixture widgets.
+- The test fixture is the interface review: build it early against the
+  constructor interface and treat friction as interface bugs, not fixture bugs.
+  No special-case Rust helpers for fixture widgets.
 - Periodically write a small shell from scratch without reading the fixture. If
-  that hurts, fix the API.
+  that hurts, fix the interface.
 
 ## Dependencies
 
@@ -312,7 +361,7 @@ caller, an ownership decision, and a runnable check.
 | Event loop | `calloop` | Do not add Tokio to the renderer without a measured need. |
 | Lua | `mlua` with vendored Lua 5.4 | One bounded VM per generation. |
 | Text and images | `cosmic-text` and `image` | Bound source bytes, dimensions, and decoded pixels. |
-| D-Bus | `zbus` | Add it with a concrete service owner and test. |
+| D-Bus | `zbus` | Add it with a concrete capability owner and test. |
 | Audio | `pipewire` | One owner thread for PipeWire objects. |
 | Authentication | `pam-client` and `zeroize` | Keep secrets in the lock process. |
 | Diagnostics | `tracing` | Use spans for build, diff, layout, paint, and handoff. |
@@ -334,15 +383,17 @@ Add each when the next slice needs it.
 
 ## Delivery order
 
-1. Supervisor, bounded protocol, one disposable renderer, and cleanup.
-2. Restricted Lua VM, rooted loader, typed descriptors, and diagnostics.
-3. Retained nodes, signals, keyed lists, intrinsic layout, text, input, timers,
-   and direct processes.
+1. Supervisor, private reload transaction, bounded protocol, one disposable
+   renderer process, and cleanup.
+2. Dependency snapshot module, restricted Lua VM, typed descriptors, and
+   diagnostics.
+3. Retained-scene transaction, signals, keyed lists, intrinsic layout, text,
+   input, timers, and direct processes.
 4. Output topology, dynamic buffers, scale, transform, hotplug, and a second
    surface kind.
-5. Stable node IDs, keyed cleanup, layout sizing, input routing, and animation
-   scheduling.
-6. MPRIS and notifications, then one service at a time.
+5. Retained-scene identity, keyed cleanup, layout sizing, input routing, and
+   animation scheduling through one commit path.
+6. MPRIS and notifications, then one capability at a time.
 7. Tray capability (engine-side SNI watcher/host on the durable side), text
    editing with IME and clipboard, popups, and the test fixture shell exercising
    all of it.
@@ -353,7 +404,8 @@ Add each when the next slice needs it.
    packaging, and long-run reload qualification.
 
 Each step needs a focused test, an owner, bounded inputs and outputs, and a
-manual compositor check when the platform is involved.
+manual compositor check when the platform is involved. The first test for each
+deep module runs through its interface, not its internal helpers.
 
 ## Cleanup requirements
 
@@ -361,4 +413,6 @@ manual compositor check when the platform is involved.
 - Escalate termination from `SIGTERM` to `SIGKILL`, then reap.
 - Bound source, frame, queue, snapshot, timer, process, and image memory.
 - Keep caches generation-local unless a durable owner has an explicit limit.
+- Keep reload transitions in the supervisor transaction and backend-specific
+  logic in adapters.
 - Run reload and fault-injection qualification after the implementation exists.
