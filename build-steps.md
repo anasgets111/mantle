@@ -12,7 +12,8 @@ required platform check exist.
 - Keep Wayland and service ownership in Rust.
 - Keep durable state outside renderer generations.
 - Keep the renderer behind a small trait so CPU and GPU paths can diverge later.
-  femtovg on EGL is the locked GPU target; CPU SHM is the bootstrap path.
+  femtovg on EGL is the locked GPU target and defines the trait. CPU SHM is its
+  test adapter (llvmpipe/CI), not a second maintained implementation.
 - Keep product widgets in Lua when existing primitives and capabilities suffice.
   TextField/TextArea are the documented engine exception.
 - Add a capability only with a bounded snapshot, validated command path,
@@ -35,10 +36,10 @@ required platform check exist.
   submission only; backend choice per step 6.
 - [ ] 6. Add the SCTK layer-shell backend with CPU SHM paint. Perform the
   null-buffer commit and configure handshake before `prepare` succeeds.
-- [ ] 7. Add the femtovg/EGL paint backend behind the renderer trait: GL
-  context per surface, glyph atlas via cosmic-text integration, damage-driven
-  redraw. Same `prepare`/readiness contract as SHM. SHM stays as llvmpipe/CI
-  fallback.
+- [ ] 7. Add the femtovg/EGL paint backend as the definition of the renderer
+  trait: GL context per surface, glyph atlas via cosmic-text integration,
+  damage-driven redraw. Same `prepare`/readiness contract as SHM. The SHM path
+  is the trait's test adapter, exercised in CI via llvmpipe.
 - [ ] 8. Add candidate timeout and process-group cleanup. Test a child that
   ignores `SIGTERM`.
 - [ ] 9. Add a file watcher with 250 ms debounce. Test event coalescing and
@@ -52,10 +53,11 @@ required platform check exist.
   unsupported files, and source over the limit.
 - [ ] 12. Record dependency paths and content hashes. Recheck them before the
   generation can commit.
-- [ ] 13. Define typed constructors for a root panel, text, row, and column.
-  Reject unknown properties at construction time. Every property accepts a
-  value or a signal binding from day one; the diff machinery in phase 5
-  consumes them.
+- [ ] 13. Define the descriptor core: `node(kind, props)` with `children` as a
+  prop, `bind(signal)` sentinel, and `list(keyfn, sig, itemfn)` keyed repeater.
+  Reject unknown properties at construction time. Generate sugar constructors
+  (panel, row, column, text, icon, button) from the Rust schema; one source of
+  truth. Reserve the `raw` kind name.
 - [ ] 14. Add a built-in Rust diagnostic scene for invalid configuration.
   Configuration errors must keep the active generation.
 - [ ] 15. Add instruction, heap, source, node, binding, timer, and callback
@@ -140,10 +142,10 @@ required platform check exist.
   protocols as the floor, feature detection for compositor-specific extras
   like special workspaces. Session actions use logind directly, outside the
   seam.
-- [ ] 43. Port power, network, Bluetooth, audio, workspaces, and clipboard one
-  at a time. Each service needs a Rust owner, bounded state, command validation,
-  unavailable state, Lua API, and focused test. Workspaces go through the step
-  42 adapters.
+- [ ] 43. Port services one at a time through the full pipeline: power,
+  network, Bluetooth, audio, workspaces, clipboard. Each is its own step-sized
+  slice: Rust owner, bounded state, command validation, unavailable state, Lua
+  API, focused test. Workspaces go through the step 42 adapters.
 - [ ] 44. Run a real-session check for each service. Record disconnect, reload,
   stale-revision, and backend-failure behavior.
 

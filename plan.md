@@ -23,8 +23,8 @@ the Rust or Lua object model.
 | Text | TextField and TextArea are engine primitives with IME (`wp-text-input-v3`) and clipboard (`data-control`). Documented exception to the product-widgets-in-Lua rule. |
 | Compositors | Adapter seam behind capability signals. Niri and Hyprland first-class, generic Wayland protocols as the floor. Feature detection via `capability:has("feature")`; missing features are unavailable state, not nil. Session actions use logind directly, outside the compositor seam. |
 | Product shape | Quickshell model: no default shell product. A test fixture Lua file lives in this repo and uses only public APIs. All service capabilities ship eventually, one at a time through the full pipeline. |
-| IPC | Supervisor owns built-in verbs over a Unix socket in `$XDG_RUNTIME_DIR`: reload, status, rollback, shutdown. Renderer exposes one generic `on_ipc(msg)` handler for user-defined actions. Messages bounded like everything else entering Lua. D-Bus names deferred to the broker stage. |
-| Tray | Engine owns StatusNotifierItem watcher, host, icon decoding, and menu data. The watcher D-Bus name lives on the durable side so reloads do not drop tray items. Lua receives item objects (icon handle, tooltip, title) and builds its own drawer UI over the exposed menu tree. |
+| IPC | Supervisor owns built-in verbs over a Unix socket in `$XDG_RUNTIME_DIR`: reload, status, rollback, shutdown. Renderer exposes one generic `on_ipc(msg)` handler for user-defined actions. `msg` is a bounded table: verb is a non-empty string up to 64 bytes, args is a flat table up to 16 entries with string/number/bool values. The supervisor validates shape before delivery. D-Bus names deferred to the broker stage. |
+| Tray | Engine owns StatusNotifierItem watcher, host, icon decoding, and menu data. The watcher D-Bus name lives on the durable side so reloads do not drop tray items. Menu trees cross to Lua as revisioned bounded snapshots through the same capability envelope as every other service, never as live handles. Lua receives item objects (icon handle, tooltip, title) and builds its own drawer UI. |
 | Theming | Full pipeline: palette capability with a fixed M3-style role vocabulary, wallpaper-derived palettes, template stamping into other apps' configs with post-hooks. Stamping runs on the durable side, triggered by palette changes. Noctalia's MIT-licensed templates are reference material. Community fetch deferred. |
 | Errors | Supervisor-owned Rust-rendered error banner fed by three sources: rejected candidates, rate-limited callback failures, capability hard-failures. Auto-clears on clean activation. Rejected-reload events also route to the active generation's `on_ipc` so healthy configs can toast. |
 | Testing | Pure-logic units (descriptors, diffs, leases, persist registry), fixture-driven integration tests for the Lua VM and loader, fake renderer processes for supervisor protocol tests, one headless-Wayland boot smoke in CI. No golden-frame screenshot diffs; assert on protocol events and exit codes. |
@@ -124,12 +124,37 @@ These limits protect availability. They do not sandbox a user-owned process.
   surfaces.
 - Construction has no external side effects. Defer timers, subscriptions,
   processes, and state-changing commands until activation.
-- A component is a Lua function that returns constructor-built descriptors.
-- Components may declare props, children, slots, events, and lifecycle hooks.
+- A component is a plain Lua function that returns constructor-built
+  descriptors. No component protocol, no inheritance machinery; composition is
+  function composition. Add memoization or slots only when a real config needs
+  them.
 - Lua builds descriptors. Rust owns the retained scene and resource lifetimes.
-- Property writes have one precedence rule: last writer wins per tick. An active
-  animation cancels the binding on that property while it runs; the binding
-  resumes after. Document once, enforce at diff time.
+
+#### Constructor API (design-it-twice result)
+
+One core, thin sugar, generated schemas:
+
+```lua
+node(kind, props)          -- core: children is a prop; pure data out
+bind(signal)               -- sentinel any prop accepts; Rust subscribes
+list(keyfn, sig, itemfn)   -- keyed repeater as a reserved kind
+panel(props), row(props), column(props), text(str, props),
+icon(name, props), button(fn, props)  -- sugar over node(), defaults included
+```
+
+- Sugar constructors are generated from the Rust schema. One source of truth;
+  no hand-written validation to drift. Positional args capped at one.
+- Descriptors are plain tables (`kind`, `props`): dumpable, snapshot-testable,
+  fuzzable against the differ.
+- The `raw` kind name is reserved for a future imperative escape hatch
+  (animations, focus). Undefined until needed; do not grow god-kind tendrils.
+- Rejected alternative: a component protocol with props/slots/inheritance and
+  plugin node registration. Machinery for configs nobody has written yet; one
+  implementation is not a seam.
+- Property writes have one path: sources (bindings, callbacks, animations)
+enqueue writes, the engine resolves them last-writer-wins per tick. An active
+animation suspends the binding on that property while it runs; the binding
+resumes after. Document once, enforce at diff time.
 
 ### Reactivity and retained nodes
 
@@ -203,7 +228,8 @@ existing primitives must not require Rust.
 Each capability supports feature detection: `capability:has("feature")` returns
 whether the active adapter provides it (for example Hyprland special
 workspaces). Missing features are unavailable state for widgets to degrade on,
-not nil fields.
+not nil fields. `has()` is static per adapter; availability is runtime.
+Widgets check `has()` once at build time and availability on every snapshot.
 
 ## Lock and authentication
 
