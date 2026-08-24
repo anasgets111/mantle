@@ -15,15 +15,15 @@ the Rust or Lua object model.
 
 | Topic | Decision |
 | --- | --- |
-| Rendering | femtovg on EGL/GLES3. Blur comes from the compositor via transparent surfaces, not from us. |
+| Rendering | femtovg on EGL/GLES3. Blur comes from the compositor via transparent surfaces, not from us. CPU SHM is the renderer trait's test adapter (llvmpipe/CI), not a second maintained implementation. |
 | Scene ownership | Parent-tree graph in Rust. Lua holds weak proxies. Destroying a parent destroys the subtree. Retainable locks keep nodes alive for exit animations. |
 | Reactivity | `bind(signal)` for properties, callbacks for behavior. A diff-time check catches imperative writes to bound properties; log once and drop. |
 | Input | Engine hit-tests retained node rects and delivers semantic events (`on_click`, `on_scroll`, `on_key`). Focus and pointer grabs are engine-owned leases. Popup placement strategies are engine work. |
-| Animation | Engine-clocked tweens: retarget mid-flight, completion callback, Behavior-style declarations (`animate_x = { duration = 200 }`). Springs deferred until a widget needs them. Animated writes go through the same dirty-marking path as bindings. |
+| Animation | Engine-clocked tweens: retarget mid-flight and completion callback. Behavior-style declarations deferred until a fixture demands them. Springs deferred until a widget needs them. Animated writes go through the same dirty-marking path as bindings. |
 | Text | TextField and TextArea are engine primitives with IME (`wp-text-input-v3`) and clipboard (`data-control`). Documented exception to the product-widgets-in-Lua rule. |
 | Compositors | Adapter seam behind capability signals. Niri and Hyprland first-class, generic Wayland protocols as the floor. Feature detection via `capability:has("feature")`; missing features are unavailable state, not nil. Session actions use logind directly, outside the compositor seam. |
 | Product shape | Quickshell model: no default shell product. A test fixture Lua file lives in this repo and uses only public APIs. All service capabilities ship eventually, one at a time through the full pipeline. |
-| IPC | Supervisor owns built-in verbs over a Unix socket in `$XDG_RUNTIME_DIR`: reload, status, rollback, shutdown. Renderer exposes one generic `on_ipc(msg)` handler for user-defined actions. `msg` is a bounded table: verb is a non-empty string up to 64 bytes, args is a flat table up to 16 entries with string/number/bool values. The supervisor validates shape before delivery. D-Bus names deferred to the broker stage. |
+| IPC | Supervisor owns built-in verbs over a Unix socket in `$XDG_RUNTIME_DIR`: reload, status, reload-last-good, shutdown. Renderer exposes one generic `on_ipc(msg)` handler for user-defined actions. `msg` is a bounded table: verb is a non-empty string up to 64 bytes, args is a flat table up to 16 entries with string/number/bool values. The supervisor validates shape before delivery. Pass-through verbs are default-deny; configs opt in per verb, with the peer PID attached via SO_PEERCRED. D-Bus names deferred to the broker stage. |
 | Tray | Engine owns StatusNotifierItem watcher, host, icon decoding, and menu data. The watcher D-Bus name lives on the durable side so reloads do not drop tray items. Menu trees cross to Lua as revisioned bounded snapshots through the same capability envelope as every other service, never as live handles. Lua receives item objects (icon handle, tooltip, title) and builds its own drawer UI. |
 | Theming | Full pipeline: palette capability with a fixed M3-style role vocabulary, wallpaper-derived palettes, template stamping into other apps' configs with post-hooks. Stamping runs on the durable side, triggered by palette changes. Noctalia's MIT-licensed templates are reference material. Community fetch deferred. |
 | Errors | Supervisor-owned Rust-rendered error banner fed by three sources: rejected candidates, rate-limited callback failures, capability hard-failures. Auto-clears on clean activation. Rejected-reload events also route to the active generation's `on_ipc` so healthy configs can toast. |
@@ -194,6 +194,8 @@ owner. Lua sees only an opaque handle.
 
 - Removing a node unmounts children before the parent and releases its leases.
 - Reload releases the old generation after the health window or on rollback.
+  Every validated command carries its sender's generation ID; owners reject
+  non-active IDs before a dying generation's surfaces are unmapped.
 - A failing callback disables and releases only its own resource.
 - Renderer exit reclaims generation-local resources.
 - A durable owner revokes generation leases when the private channel closes.
@@ -248,10 +250,18 @@ Widgets check `has()` once at build time and availability on every snapshot.
 2. Start generation `N+1` without changing `N`.
 3. Validate Lua, descriptors, dependencies, and limits.
 4. Prepare every candidate surface with null buffers and configure handshakes.
-5. Freeze `N`'s content commits and disable its input.
-6. Send the nonce-bound activation command to `N+1`.
-7. Wait for the candidate's first frame or presentation feedback.
-8. Grant the candidate's generation lease and run the health window.
+5. Send the nonce-bound activation command to `N+1`. The nonce includes a
+   topology epoch; a renderer ACKs with the epoch it actually mapped. A
+   mismatch restarts staging with the new topology instead of activating stale
+   state.
+6. Wait for the candidate's first frame or presentation feedback. An activation
+   ACK does not prove presentation.
+7. Freeze `N`'s content commits and disable its input only after presentation
+   evidence arrives. Never freeze `N` while the candidate is still unproven; if
+   the candidate stalls, reap it and keep `N` fully live.
+8. Grant the candidate's generation lease and run the health window, armed by a
+   wall-clock deadline independent of frame callbacks (an occluded output must
+   not stall it).
 9. On failure, unmap `N+1` and restore `N`. On success, terminate and reap `N`.
 
 Wayland does not provide an atomic cross-process surface handoff. Brief overlap
@@ -270,6 +280,7 @@ or a gap is allowed. Do not claim physical presentation from an activation ACK.
 | Capability loss | Publish unavailable state. Keep unrelated UI running. |
 | Lock-theme error | Use the last validated data-only lock scene. |
 | Rejected reload | Supervisor shows the error banner and sends a `reload-rejected` event to the active generation's `on_ipc`. |
+| Computed cycle | Depth cap of 8 per tick. Exceeding it marks the chain errored and drops the write; the source signal stays live. |
 
 ## Invariants
 
@@ -283,8 +294,9 @@ or a gap is allowed. Do not claim physical presentation from an activation ACK.
 - The default shell uses only public framework APIs.
 - A second shell must use a different topology without Rust changes.
 - Every long-lived resource has a traceable owner and cleanup path.
-- The test fixture is the API review: if building it needs engine changes, log
-  them as framework work. No special-case Rust helpers for fixture widgets.
+- The test fixture is the API review: build it early against the constructor
+  API and treat friction as API bugs, not fixture bugs. No special-case Rust
+  helpers for fixture widgets.
 - Periodically write a small shell from scratch without reading the fixture. If
   that hurts, fix the API.
 
@@ -313,8 +325,9 @@ Add each when the next slice needs it.
 ## IPC protocol
 
 - Unix socket at `$XDG_RUNTIME_DIR/oblisk.sock`, same-user only, bounded messages.
-- Supervisor verbs: `reload`, `status`, `rollback`, `shutdown`. These work even
-  when the active generation is broken.
+- Supervisor verbs: `reload`, `status`, `reload-last-good`, `shutdown`. These
+  work even when the active generation is broken. `reload-last-good` re-runs the
+  most recent config snapshot that passed validation.
 - `oblisk msg <verb>` is the CLI. A generic pass-through forwards everything
   else to the active generation's `on_ipc(msg)` handler.
 - Public D-Bus names wait for the broker stage.
@@ -327,12 +340,14 @@ Add each when the next slice needs it.
    and direct processes.
 4. Output topology, dynamic buffers, scale, transform, hotplug, and a second
    surface kind.
-5. Stable node IDs, keyed cleanup, layout sizing, input routing, text editing,
-   and animation scheduling.
+5. Stable node IDs, keyed cleanup, layout sizing, input routing, and animation
+   scheduling.
 6. MPRIS and notifications, then one service at a time.
 7. Tray capability (engine-side SNI watcher/host on the durable side), text
-   editing with IME, and the test fixture shell exercising all of it.
-8. Lock/auth, durable jobs, public IPC, and broker extraction when required.
+   editing with IME and clipboard, popups, and the test fixture shell exercising
+   all of it.
+8. Lock/auth (session-lock + PAM), durable jobs, public IPC, and broker
+   extraction when required.
 9. Theming pipeline (palette capability, wallpaper derivation, template
    stamping), compositor adapters beyond Niri/Hyprland, assets, accessibility,
    packaging, and long-run reload qualification.
