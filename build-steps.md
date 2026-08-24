@@ -14,7 +14,7 @@ required platform check exist.
 - Keep one renderer paint trait. SHM is its headless test adapter and femtovg on
   EGL is its production adapter. The headless process fixture has no paint
   implementation.
-- Keep product widgets in Lua when existing primitives and capabilities suffice.
+- Keep product widgets in Lua when existing engine types and capabilities suffice.
   TextField/TextArea are the documented engine exception.
 - Add a capability only with a bounded snapshot, validated command path,
   cleanup owner, and focused runnable check.
@@ -31,10 +31,10 @@ required platform check exist.
   on every return path.
 - [ ] 4. Add the private reload transaction. Feed it reload requests, renderer
   milestones, presentation evidence, process exits, and deadlines. It emits
-  staging, activation, freeze, rollback, and cleanup effects. Keep one active
-  renderer while one candidate starts; a newer request replaces the pending
-  request. Test event traces, wrong epochs, stalled presentation, rollback,
-  and candidate reaping.
+  staging, activation, freeze, rollback, and cleanup effects. Keep one
+  authoritative generation while one candidate starts; a newer request replaces
+  the pending request. Test event traces, wrong epochs, stalled presentation,
+  rollback, and candidate reaping.
 - [ ] 5. Define the renderer prepare/readiness contract without a paint
   backend. The process fixture reports readiness only after `prepare` succeeds.
 - [ ] 6. Add the SCTK layer-shell backend with CPU SHM paint as the renderer
@@ -48,9 +48,11 @@ required platform check exist.
   ignores `SIGTERM`.
 - [ ] 9. Add the shared dependency snapshot module and its 250 ms watcher.
   Resolve the rooted graph, open each file once, check the opened fd's inode
-  (`fstat`) and hash, and return bounded watch roots. Test event coalescing,
-  config-path selection, symlink escape, missing-module parent roots, and
-  rename-based saves. The watcher follows only the last successful snapshot.
+  (`fstat`) and hash, and return bounded watch roots. Before the first
+  successful snapshot, watch the configured entry file, trusted include roots,
+  and parent directories needed for missing modules. After success, follow only
+  the last successful snapshot. Test event coalescing, config-path selection,
+  symlink escape, missing-module parent roots, and rename-based saves.
 
 ## Phase 2: safe Lua configuration
 
@@ -68,12 +70,11 @@ required platform check exist.
   Reject unknown properties at construction time. Generate sugar constructors
   (panel, row, column, text, icon, button) from the Rust schema; one source of
   truth. Reserve the `raw` kind name. The scene root declares an interface
-  version;
-  reject unsupported versions before creating surfaces.
+  version. Reject unsupported versions before creating surfaces.
 - [ ] 14. Add a built-in Rust diagnostic scene for invalid configuration.
-  Configuration errors must keep the active generation. This diagnostic is also
-  the safe shell: on active-renderer crash after bounded retries, the
-  supervisor runs it directly without executing user Lua.
+  Configuration errors must keep the authoritative generation. This diagnostic
+  is also the safe shell: after bounded retries for an authoritative-generation
+  crash, the supervisor runs it directly without executing user Lua.
 - [ ] 15. Add instruction, heap, source, node, binding, timer, and callback
   limits. Test syntax errors, missing modules, limits, and infinite loops.
   Scale node and binding caps by detected output count; count repeater children
@@ -89,7 +90,7 @@ required platform check exist.
   exceeding it marks the chain errored and drops the write, it does not disable
   the source signal.
 - [ ] 17. Add the persist registry: builders declare persistent values by
-  name, supervisor copies them old-VM to new-VM during staging before the new
+  name, supervisor copies them from the old VM to the new VM during staging before the new
   scene builds. Bounded serializable types only; drop-or-default on mismatch.
   Copy semantics are last-committed-tick: the supervisor snapshots at quiesce,
   not mid-callback; document that a callback racing reload may lose its write.
@@ -103,8 +104,8 @@ required platform check exist.
   source bytes, dimensions, decoded pixels, and the generation cache.
 - [ ] 21. Add root-level pointer and keyboard callbacks with bounded
   value-only events routed to the surface root through one bounded FIFO. Focus
-  drops on freeze or seat removal. Gate keyboard input on active, authorized,
-  unfrozen state. Per-node dispatch waits for step 33.
+  drops on freeze or seat removal. Gate keyboard input on the authoritative,
+  authorized, unfrozen generation. Per-node dispatch waits for step 33.
 - [ ] 22. Add native one-shot timers and `process.run`. Bound child count,
   capture bytes, timeout, and cleanup.
 
@@ -116,15 +117,18 @@ required platform check exist.
   transform. Recreate released SHM storage safely on resize.
 - [ ] 25. Reconcile output hotplug. Gate a new output's input and redraw on its
   own configure and first frame.
-- [ ] 26. Add popup surfaces as the second surface kind, deferred from phase 4
-  to here because phase 7's launcher and notification center are their first
-  callers: xdg-popup children of a layer surface, with grab semantics, dismiss
-  rules, placement strategies, and independent configure/input/cleanup/handoff
-  rules. Overlay layer surfaces are a later slice if a fixture needs one.
+- [ ] 26. Define and test the popup-surface interface for the second surface
+  kind. Defer implementation until phase 7, alongside the launcher and
+  notification center callers. Cover xdg-popup children of a layer surface, grab
+  semantics, dismiss rules, placement, and independent configure, input,
+  cleanup, and handoff rules. Overlay layer surfaces remain deferred until a
+  fixture needs one.
 - [ ] 27. Finish per-surface frame scheduling. Test removal while a frame
   callback is pending. Add presentation-feedback handling: activation ACK does
-  not prove presentation; the first frame or presentation feedback arms the
-  health window.
+  not prove presentation; every targeted output must provide a first frame or
+  presentation feedback before the old generation freezes. Untargeted outputs
+  do not block handoff, and the health window uses a wall-clock deadline
+  independent of frame callbacks.
 - [ ] 28. Run a real multi-output compositor check and record the supported
   protocol matrix.
 
@@ -149,7 +153,7 @@ required platform check exist.
   `data-control`, and IME handoff only after generic input routing has a
   focused test.
 - [ ] 35. Add native animation scheduling: engine-clocked tweens with retarget
-  (hover/unhover mid-flight happens on day one) and completion callback.
+  when hover changes mid-flight, and a completion callback.
   Behavior-style declarations are deferred until a fixture demands them. A
   diff must not duplicate a live animation or timer. Animated writes go through
   the same dirty-marking path as bindings; last writer wins per tick.
@@ -164,42 +168,48 @@ required platform check exist.
 
 - [ ] 38. Define one capability authority module with bounded snapshots,
   revisions, availability state, generation authorization, stale-command
-  rejection, and disconnect revocation. Backend adapters validate only their
-  own command meaning. Feature detection (`capability:has("feature")`) lands
-  with the first feature-specific consumer (step 42).
-- [ ] 39. Use MPRIS as the first capability fixture. Keep its backend adapter
-  off Lua. Test startup, disconnect, stale revision, shutdown, and command
-  rejection for a stale generation ID through the authority module.
+  rejection, and disconnect revocation. State-dependent commands carry the
+  sender's generation ID and expected snapshot revision; state-independent
+  commands may omit the revision. Backend adapters validate only their own
+  command meaning. Feature detection (`capability:has("feature")`) lands with
+  the first feature-specific consumer (step 42).
+- [ ] 39. Use MPRIS as the first capability fixture. Keep its first backend
+  adapter renderer-local and off Lua. Test startup, disconnect, stale revision,
+  shutdown, and command rejection for stale generation IDs and revisions
+  through the authority module. Move it to a durable owner only when continuity,
+  public ownership, or overlap-safe lifetime is a real caller.
 - [ ] 40. Add the notification snapshot bridge. Keep staged renderers feed-gated
   until visible-ID presentation and routing ownership are verified.
 - [ ] 41. Add notification commands and public D-Bus ownership only after the
   capability authority seam has a test. Do not add a broker to the interface.
-- [ ] 42. Add the compositor adapter seam: Niri and Hyprland adapters behind
-  capability signals (monitors, workspaces, keyboard layout), generic Wayland
-  protocols as the floor. Two adapters now is what makes the seam real; defer
-  only `has()` until a config consumes a compositor-specific feature like
-  special workspaces. Session actions use logind directly, outside the seam.
-- [ ] 43. Port capabilities one at a time through the full pipeline: power,
-  network, Bluetooth, audio, workspaces, clipboard. Each is its own step-sized
-  slice: Rust owner, bounded state, command validation, unavailable state, Lua
-  interface, focused test. Workspaces go through the step 42 adapters.
+- [ ] 42. Add the compositor adapter seam with Niri and Hyprland adapters behind
+  capability signals for monitors, workspaces, and keyboard layout. Generic
+  Wayland protocols are the floor. Keep `has()` until a config consumes a
+  compositor-specific feature such as special workspaces. Session actions use
+  logind directly, outside the seam.
+- [ ] 43. Port power, network, Bluetooth, audio, workspaces, and clipboard one
+  capability at a time. Each slice needs a Rust owner, bounded state, command
+  validation, unavailable state, Lua interface, and focused test. Workspaces go
+  through the step 42 adapters.
 - [ ] 44. Run a real-session check for each capability. Record disconnect, reload,
   stale-revision, and backend-failure behavior.
 
 ## Phase 7: test fixture shell
 
 - [ ] 45. Add the supervisor IPC socket: built-in verbs (reload, status,
-  reload-last-good, shutdown) plus generic `on_ipc` pass-through to the active
-  generation. Socket at `$XDG_RUNTIME_DIR/oblisk.sock`, same-user only.
+  reload-last-good, shutdown) plus generic `on_ipc` pass-through to the
+  authoritative generation. Socket at `$XDG_RUNTIME_DIR/oblisk.sock`,
+  same-user only.
   Attach the peer PID via SO_PEERCRED; pass-through verbs are default-deny and
   configs opt in per verb. Message shape: verb is a non-empty string up to 64
   bytes, args a flat table up to 16 entries with string/number/bool values;
   supervisor validates before delivery.
-- [ ] 46. Add a Lua bar and launcher fixture using existing layout, input,
-  process, and capability primitives. It must use only the public interface.
+- [ ] 46. Implement popup surfaces, then add a Lua bar and launcher fixture
+  using existing layout, input, process, and capability interfaces. It must use
+  only the public interface.
   Treat fixture friction as interface bugs, not fixture bugs.
 - [ ] 47. Add notification center, OSD, control center, and widget builders
-  in Lua. Add Rust only for a missing reusable primitive or capability.
+  in Lua. Add Rust only for a missing reusable engine type or capability.
 - [ ] 48. Exercise reload, hotplug, capability loss, persist carry-over, and
   cleanup with the fixture.
 - [ ] 49. Add the tray capability: SNI watcher/host in the supervisor process
@@ -220,8 +230,9 @@ required platform check exist.
   Test with a disposable PAM account. Session-lock + PAM only; greetd and
   Polkit conversations are deferred behind an actual greeter or polkit-agent
   deliverable.
-- [ ] 52. Add detached jobs, public IPC, and broker extraction only when a
-  lifetime or authority requirement exists. Test authentication and revocation.
+- [ ] 52. Add detached jobs, public IPC, or broker extraction only when a
+  lifetime or authority requirement exists. Test the ownership and revocation
+  rules for each facility.
 - [ ] 53. Add theming when the first themed widget exists: palette capability
   with fixed role vocabulary, then wallpaper derivation. Template stamping into
   other apps' configs is deferred until a real consumer asks; Noctalia's MIT

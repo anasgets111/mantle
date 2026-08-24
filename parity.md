@@ -40,14 +40,14 @@ process-per-generation design, and theming scope from Noctalia.
 | Outputs | Per-output surface entries, configure size, scale, transform, hotplug, and frame gating | Output add/remove, resize, scale, transform, and first-frame tests | SCTK owns Wayland proxies. |
 | Surface kinds | Panel first, then popups (deferred to phase 7 where the launcher and notification center become their first callers); overlays wait for a fixture that needs one | Second surface topology under the same renderer trait | Keep product layout in Lua. |
 | Notifications | Supervisor-owned bounded snapshot bridge, visible-ID gating, public authority only after routing ownership | Snapshot bounds, staged-feed, presentation, and command tests | No raw D-Bus objects enter Lua. |
-| Capability authority | Bounded snapshots, revisions, availability, generation authorization, stale-command rejection, and disconnect revocation | Stale generation, stale revision, disconnect, unavailable state, and shutdown tests | One authority module. Backend adapters validate backend-specific commands. |
-| MPRIS | Rust-owned capability feed with bounded rows, revisions, unavailable state, and validated commands | Startup, disconnect, stale revision, and shutdown tests | Renderer-local is acceptable until durable commands need another owner. |
+| Capability authority | Bounded snapshots, revisions, availability, generation authorization, stale-command rejection, and disconnect revocation. State-dependent commands carry the expected snapshot revision. | Stale generation, stale revision, disconnect, unavailable state, and shutdown tests | One authority module. Backend adapters validate backend-specific commands. |
+| MPRIS | Renderer-local Rust capability feed for the first slice, with bounded rows, revisions, unavailable state, and validated commands | Startup, disconnect, stale generation, stale revision, and shutdown tests | Move to a durable owner only for continuity, public ownership, or overlap-safe lifetime. |
 | Desktop capabilities | One adapter at a time for tray, audio, power, network, Bluetooth, workspaces, and clipboard; feature detection per capability | Headless contract plus real-session check per capability | Capabilities publish state. Lua chooses the view. |
-| Theming | Palette capability with fixed role vocabulary, wallpaper derivation, durable-side template stamping | Palette signal drives widget bindings; template post-hook test | Stamping never runs inside a renderer generation. |
+| Theming | Palette capability with fixed role vocabulary and wallpaper derivation. Template stamping is deferred until a real consumer exists. | Palette signal drives widget bindings; template post-hook test when stamping has a caller | Stamping runs on the durable side and never inside a renderer generation. |
 | Error surfacing | Supervisor-owned Rust banner plus `reload-rejected` events to `on_ipc` | Rejected-candidate and callback-failure tests | The banner survives when every generation is broken. |
 | IPC | Supervisor socket verbs plus generic `on_ipc` pass-through | Malformed message and dead-generation tests | Built-in verbs work without a valid generation. |
-| Lock and auth | Separate process owns lock protocol, PAM, greetd, and Polkit conversations | Disposable PAM account and compositor recovery check | Secrets never enter Lua or renderer IPC. |
-| Compositor APIs | Optional capability adapters; Niri and Hyprland first-class, generic protocols as floor | Protocol-specific test per compositor | No compatibility layer before a caller exists. |
+| Lock and auth | Separate process owns the session-lock protocol and PAM. Greetd and Polkit conversations remain deferred until a caller exists. | Disposable PAM account and compositor recovery check | Secrets never enter Lua or renderer IPC. |
+| Compositor interfaces | Optional capability adapters; Niri and Hyprland first-class, generic protocols as floor | Protocol-specific test per compositor | No compatibility layer before a caller exists. |
 
 ## Quickshell and Noctalia module comparison
 
@@ -60,44 +60,18 @@ process-per-generation design, and theming scope from Noctalia.
 | Notifications and media (both) | Bounded notification bridge and MPRIS capability feed | Rust owns capability connections and revisions. |
 | Lock and authentication (both) | Separate durable process with data-only Lua theming (N: session-lock + PAM proven at scale) | Authentication owner holds secrets. |
 | Tray (N: full engine, Q: engine module) | Engine watcher/host/menu data on the durable side; Lua builds the drawer | Watcher name outlives generations. |
-| Theming (N only) | Palette capability, wallpaper derivation, template stamping with post-hooks | Stamping runs on the durable side. |
+| Theming (N only) | Palette capability and wallpaper derivation. Template stamping waits for a real consumer. | Stamping runs on the durable side when implemented. |
 | IPC (N: `noctalia msg`, Q: none) | Supervisor verbs plus `on_ipc` pass-through | Built-in verbs survive a broken generation. |
-| Compositor APIs (both) | Optional capability adapters | Each adapter owns its protocol objects. |
+| Compositor interfaces (both) | Optional capability adapters | Each adapter owns its protocol objects. |
 
 Quickshell's public module families are documented in its
 [core](https://github.com/quickshell-mirror/quickshell/blob/master/src/core/module.md),
 [IO](https://github.com/quickshell-mirror/quickshell/blob/master/src/io/module.md),
 [Wayland](https://github.com/quickshell-mirror/quickshell/blob/master/src/wayland/module.md),
 and [module families](https://github.com/quickshell-mirror/quickshell/tree/master/src/services)
-sources. Noctalia's stack, layout, and config reference live in its
+sources. Noctalia documents its stack, layout, and config in
 [CONTRIBUTING.md](https://github.com/noctalia-dev/noctalia/blob/main/CONTRIBUTING.md)
 and [example.toml](https://github.com/noctalia-dev/noctalia/blob/main/example.toml).
-
-## Design constraints
-
-- A candidate must remain unmapped until supervisor activation.
-- Activation ACK grants commit permission. It does not prove presentation.
-- A first frame or presentation feedback arms the health window, on a
-  wall-clock deadline independent of frame callbacks.
-- The active generation freezes only after the candidate's presentation
-  evidence arrives; a stalled candidate is reaped while N stays fully live.
-- Only one control command may wait in the renderer's post-activation slot.
-- Input stays in one bounded FIFO and loses focus during freeze or seat removal.
-- Notification feeds are private and generation-scoped before durable routing
-  exists.
-- Output and surface state drives allocation. Never use a hard-coded diagnostic size
-  after the dynamic surface slice begins.
-- The watcher follows the successful dependency graph, including trusted include
-  roots and parent directories for missing modules.
-- Every optional capability publishes an unavailable state instead of blocking the
-  renderer.
-- The reload transaction is the only module that changes generation authority.
-- The dependency watcher follows only the last successful snapshot.
-- A failed retained-scene commit leaves the previous scene intact.
-- The capability authority rejects stale generation IDs before backend command
-  validation.
-- The headless process fixture has no paint implementation. SHM and EGL are the
-  only paint adapters.
 
 ## Acceptance checks
 
@@ -119,5 +93,4 @@ crates in that order.
 - Update this file when a contract or parity decision changes.
 - Keep implementation detail in `plan.md` and the checklist in `build-steps.md`.
 - Do not add speculative features to this ledger.
-- Use acceptance labels only when the corresponding test and ownership path are
-  recorded.
+- Record a check only when its owner and test path are named.
