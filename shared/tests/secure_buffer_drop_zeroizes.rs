@@ -1,0 +1,69 @@
+//! Proves `SecureBuffer`'s `Drop` backup (ADR-0005) actually zeroizes, without reading
+//! memory after it's freed (which would be undefined behavior). Reading a Vec's own spare
+//! capacity while it's still owned (see the `explicit_zeroize` test in
+//! shared/src/secure_buffer.rs) can't reach this path: `Drop` runs *after* that memory is
+//! handed back to the allocator, so the only well-defined place left to observe it is the
+//! allocator's `dealloc` call itself, at the exact moment it receives the pointer back.
+//!
+//! Same technique `zeroize`'s own test suite uses for this (`zeroize-1.9.0/tests/alloc.rs`):
+//! a `#[global_allocator]` that inspects bytes right as they're deallocated. Unlike that
+//! test, this one keys off the exact pointer being watched for, not merely an allocation
+//! size -- the test binary's own harness (argument parsing, etc.) allocates plenty of
+//! same-sized buffers of its own, and a size-only filter flags those as false positives.
+//!
+//! This has to live in its own integration test binary (`tests/*.rs` files each get a
+//! separate process) since a global allocator applies to the whole binary.
+
+use std::alloc::{GlobalAlloc, Layout, System};
+use std::sync::atomic::{AtomicUsize, Ordering};
+
+use shared::SecureBuffer;
+
+const SECRET: &str = "correct horse battery staple secret text";
+
+/// Address of the one allocation this test cares about, set right before `drop(buf)`.
+/// Zero means "not currently watching anything".
+static WATCHED_PTR: AtomicUsize = AtomicUsize::new(0);
+
+struct ZeroCheckingAllocator;
+
+unsafe impl GlobalAlloc for ZeroCheckingAllocator {
+    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+        unsafe { System.alloc(layout) }
+    }
+
+    unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+        if WATCHED_PTR.swap(0, Ordering::SeqCst) == ptr as usize && !ptr.is_null() {
+            for i in 0..layout.size() {
+                // Safety: `ptr` is valid for `layout.size()` bytes until this call
+                // returns it to the allocator -- this read happens before that handback
+                // completes.
+                let byte = unsafe { core::ptr::read(ptr.add(i)) };
+                assert_eq!(byte, 0, "byte {i} of a dropped SecureBuffer's allocation was not zeroed");
+            }
+        }
+        unsafe { System.dealloc(ptr, layout) }
+    }
+}
+
+#[global_allocator]
+static ALLOCATOR: ZeroCheckingAllocator = ZeroCheckingAllocator;
+
+#[test]
+fn dropping_a_secure_buffer_zeroizes_before_deallocation() {
+    let mut buf = SecureBuffer::new();
+    buf.push_str(SECRET);
+    assert_eq!(buf.len(), SECRET.len());
+
+    let watched = buf.expose_secret().as_ptr() as usize;
+    WATCHED_PTR.store(watched, Ordering::SeqCst);
+    drop(buf);
+
+    // If this is still `watched`, `dealloc` never ran on the pointer we asked it to check
+    // -- the test would otherwise pass by accident (nothing to zeroize is trivially "zeroed").
+    assert_eq!(
+        WATCHED_PTR.load(Ordering::SeqCst),
+        0,
+        "SecureBuffer's backing allocation was never deallocated; this test observed nothing"
+    );
+}

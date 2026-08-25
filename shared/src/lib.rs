@@ -1,5 +1,9 @@
 use serde::{Deserialize, Serialize};
 
+mod secure_buffer;
+pub use secure_buffer::SecureBuffer;
+pub use zeroize::Zeroize;
+
 /// Guarded JSON-RPC 2.0 envelope wrapping a Lua write action.
 /// See docs/oblisk-idl-api-specs.md §7.2.
 #[derive(Debug, Clone, Serialize, Deserialize)]
