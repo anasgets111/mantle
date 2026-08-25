@@ -18,6 +18,10 @@ use wayland_client::protocol::{wl_output, wl_surface};
 use wayland_client::{Connection, Proxy, QueueHandle};
 use wayland_egl::WlEglSurface;
 
+use crate::text::atlas::TextPainter;
+use crate::text::shaping::{ShapeRequest, ShapingHandle};
+use crate::text::snap::LogicalRect;
+
 /// The three static surfaces from ADR-0007 / build-steps.md Phase 3, point 4.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SurfaceRole {
@@ -66,6 +70,8 @@ pub struct App {
     layer_shell: LayerShell,
     egl: egl::EglState,
     gl: Option<glow::Context>,
+    shaping: ShapingHandle,
+    text_painter: Option<TextPainter>,
     surfaces: Vec<TrackedSurface>,
     exit: bool,
 }
@@ -89,6 +95,8 @@ pub fn run() -> Result<(), Box<dyn Error>> {
         layer_shell,
         egl: egl_state,
         gl: None,
+        shaping: ShapingHandle::spawn(),
+        text_painter: None,
         surfaces: Vec::new(),
         exit: false,
     };
@@ -237,12 +245,48 @@ impl App {
         let Some(tracked) = self.surfaces.iter_mut().find(|s| &s.layer == layer) else {
             return;
         };
-        if tracked.bound.is_some() {
-            return;
-        }
 
         let width = width.max(1) as i32;
         let height = height.max(1) as i32;
+
+        if let Some(egl_surface) = tracked.bound.as_ref().map(|b| b.egl_surface) {
+            // Repeat configure (e.g. a resize) on an already-bound surface. The
+            // wl_egl_window/EGL surface were created once and don't need recreating,
+            // but only main_bar has per-frame state (the FemtoVG canvas) that must
+            // track the new size -- the other two surfaces have nothing left to do.
+            if tracked.role != SurfaceRole::MainBar {
+                return;
+            }
+            let role = tracked.role;
+
+            // Another surface's own bind_and_clear may have made a different EGL
+            // surface current on this thread since main_bar's last draw -- the
+            // context is shared across all three surfaces, so it must be
+            // re-established here rather than assumed still current.
+            if let Err(e) = self.egl.instance.make_current(
+                self.egl.display,
+                Some(egl_surface),
+                Some(egl_surface),
+                Some(self.egl.context),
+            ) {
+                log_bind_failure(role, "eglMakeCurrent", e);
+                self.exit = true;
+                return;
+            }
+
+            if !draw_main_bar_proof_text(&self.shaping, &self.egl, &mut self.text_painter, width, height) {
+                self.exit = true;
+                return;
+            }
+
+            if let Err(e) = self.egl.instance.swap_buffers(self.egl.display, egl_surface) {
+                log_bind_failure(role, "eglSwapBuffers", e);
+                self.exit = true;
+                return;
+            }
+
+            return;
+        }
 
         let native_window = match WlEglSurface::new(layer.wl_surface().id(), width, height) {
             Ok(w) => w,
@@ -296,6 +340,24 @@ impl App {
             gl.clear(glow::COLOR_BUFFER_BIT);
         }
 
+        // Phase 4 integration proof, main_bar only: shape+draw one static string to
+        // prove the cosmic-text/FemtoVG pipeline is live end to end. No draw loop or
+        // Lua-driven content -- that's a future scene-graph phase.
+        if tracked.role == SurfaceRole::MainBar {
+            // Free function, not a `&mut self` method: `tracked` is still borrowed from
+            // `self.surfaces` here, so this takes the three disjoint fields it actually
+            // needs directly, rather than the whole `self` a method call would require.
+            // Safe to build/use a FemtoVG `Canvas` here: dispatch is single-threaded, the
+            // `eglMakeCurrent` a few lines above is the only context switch on this
+            // thread, and this branch only ever runs for `main_bar`, so the context
+            // that's current at this point is always the one `text_painter` was built
+            // against -- no other surface's `bind_and_clear` can interleave here.
+            if !draw_main_bar_proof_text(&self.shaping, &self.egl, &mut self.text_painter, width, height) {
+                self.exit = true;
+                return;
+            }
+        }
+
         if let Err(e) = self.egl.instance.swap_buffers(self.egl.display, egl_surface) {
             log_bind_failure(tracked.role, "eglSwapBuffers", e);
             self.exit = true;
@@ -312,6 +374,65 @@ impl App {
             native_window,
         });
     }
+}
+
+/// Phase 4 integration proof: shape a static string off-thread via cosmic-text, then
+/// rasterize+draw it with FemtoVG, snapping its box to physical pixels. A free
+/// function taking each field it needs directly (see the one call site in
+/// `bind_and_clear`) rather than a `&mut self` method, so it doesn't need the whole
+/// `App` borrowed while a `TrackedSurface` from `self.surfaces` is still live there.
+/// Returns `false` on a FemtoVG init failure, so the caller can treat it exactly like
+/// every other EGL/GL bind failure in this file (fatal, not logged-and-ignored).
+fn draw_main_bar_proof_text(
+    shaping: &ShapingHandle,
+    egl: &egl::EglState,
+    text_painter: &mut Option<TextPainter>,
+    width: i32,
+    height: i32,
+) -> bool {
+    const PROOF_TEXT: &str = "Oblisk";
+    const FONT_SIZE: f32 = 14.0;
+
+    let shaped = shaping.shape(ShapeRequest {
+        text: PROOF_TEXT.into(),
+        font_size: FONT_SIZE,
+        line_height: FONT_SIZE * 1.2,
+    });
+
+    if text_painter.is_none() {
+        let font_bytes = shaping.default_font_bytes();
+        let painter = TextPainter::new(
+            |s| egl.instance.get_proc_address(s).map_or(std::ptr::null(), |f| f as *const c_void),
+            width as u32,
+            height as u32,
+            &font_bytes,
+        );
+        match painter {
+            Ok(p) => *text_painter = Some(p),
+            Err(e) => {
+                log_bind_failure(SurfaceRole::MainBar, "FemtoVG init", e);
+                return false;
+            }
+        }
+    }
+
+    if let Some(painter) = text_painter.as_mut() {
+        // The surface can resize after the painter was first built; refresh the
+        // canvas's viewport every frame rather than trusting the size from init.
+        painter.resize(width as u32, height as u32);
+        painter.draw_line(
+            PROOF_TEXT,
+            LogicalRect { x: 8.0, y: 0.0, width: shaped.width, height: shaped.height },
+            FONT_SIZE,
+            1.0,
+        );
+        eprintln!(
+            "[oblisk-renderer] main_bar: shaped \"{PROOF_TEXT}\" to {}x{} (logical), drew+flushed via FemtoVG",
+            shaped.width, shaped.height
+        );
+    }
+
+    true
 }
 
 impl CompositorHandler for App {

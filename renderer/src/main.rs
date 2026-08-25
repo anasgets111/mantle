@@ -1,3 +1,4 @@
+mod text;
 mod wayland;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
