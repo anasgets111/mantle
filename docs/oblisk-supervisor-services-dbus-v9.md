@@ -1,4 +1,4 @@
-# Oblisk Supervisor Services and D-Bus Integration Specification (v9)
+# Oblisk Supervisor Services and D-Bus Integration Specification (v10)
 ## Durable Daemon Services and Multi-Process Security Contracts
 
 This specification defines the persistent system services owned and executed by the long-lived **Oblisk Supervisor** process. These services survive hot-reloads of the ephemeral Renderer process, ensuring that desktop state, notifications, system trays, and security handshakes remain fully persistent without memory leaks or state corruption.
@@ -13,7 +13,8 @@ The Supervisor claims and maintains ownership of the `org.freedesktop.Notificati
 *   **Bus**: Session Bus.
 *   **Object Path**: `/org/freedesktop/Notifications`.
 *   **Interface**: `org.freedesktop.Notifications`.
-*   **Persistence**: Handled entirely inside the Supervisor’s main async loop. The registration is made at boot time and is never released, even if all Renderer processes crash.
+*   **Lazy On-Demand Activation**: To remain a zero-opinion pure framework, the Supervisor does **not** register or claim this D-Bus interface at system boot. The name is registered only when the active Lua Renderer issues a `RegisterCapability(Notifications)` request (typically triggered by calling `require("oblisk.notifications")`). If the active layout does not use notifications, the D-Bus endpoint remains completely untouched, allowing standard system notification daemons (like Dunst or Mako) to run without interference.
+*   **Session Persistence**: Once registered on-demand, the interface remains active and owned by the long-lived Supervisor async loop across Renderer hot-reloads to prevent lost notifications, but is cleanly released if the Supervisor process is shut down.
 
 ### 1.2 The 100-Entry Memory-Bounded Queue
 To prevent memory exhaustion attacks, incoming notifications must pass through strict size limits and a FIFO sliding queue:
@@ -66,9 +67,8 @@ The Supervisor exposes the notification queue to the Renderer as a read-only, re
 To achieve seamless tray handling without exposing Lua to raw D-Bus marshaling, the Supervisor registers the `org.kde.StatusNotifierWatcher` service and handles tray client lifecycles off-thread.
 
 ### 2.1 Watcher Interfaces
-The Supervisor registers:
-*   `org.kde.StatusNotifierWatcher` at `/StatusNotifierWatcher`.
-*   It listens for registering clients calling `RegisterStatusNotifierItem(service_or_path)`.
+*   **Lazy On-Demand Activation**: The Supervisor does **not** register the `org.kde.StatusNotifierWatcher` service at boot. The service and watcher interfaces at `/StatusNotifierWatcher` are registered on-demand only when the active Lua Renderer issues a `RegisterCapability(Tray)` request (triggered by `require("oblisk.tray")`). If the user does not include a system tray widget, Oblisk leaves this D-Bus interface unclaimed.
+*   **Interface Registration**: Once activated, it registers `org.kde.StatusNotifierWatcher` at `/StatusNotifierWatcher` and listens for registering clients calling `RegisterStatusNotifierItem(service_or_path)`.
 
 ### 2.2 Off-Thread Icon Decoding Security
 StatusNotifierItems typically send icons as raw ARGB pixel byte streams. Loading these directly into GLES/Vulkan memory from unvalidated sources is a major security vulnerability.
@@ -98,7 +98,7 @@ The active tray items are serialized and synchronized to Lua as a flat, index-ke
 
 ## 3. Persistent Media Controls (Supervisor-Owned MPRIS)
 
-Unlike the temporary model defined in ADR-0004, the production-grade MPRIS capability is managed by the persistent **Supervisor**. This eliminates D-Bus connection drops and UI stutter during configuration reloads.
+The production-grade MPRIS capability is managed by the persistent **Supervisor**, not a renderer generation, from the first implementation. This eliminates D-Bus connection drops and UI stutter during configuration reloads.
 
 ### 3.1 D-Bus Player Discovery
 The Supervisor listens to `org.freedesktop.DBus` name changes, automatically discovering any service prefix matching `org.mpris.MediaPlayer2.*` (e.g., Spotify, Audacious, MPV, Firefox).
@@ -123,7 +123,7 @@ The Supervisor subscribes to `org.freedesktop.DBus.Properties.PropertiesChanged`
 The user's Polkit configuration must draw a custom visual window while keeping system secrets completely isolated from the Lua configuration heap.
 
 ### 4.1 Security Boundaries and Handoff Mechanics
-1.  **DBus Registration**: The Supervisor registers on the system D-Bus authority as a PolicyKit agent (`org.freedesktop.PolicyKit1.Authority.RegisterAgent`).
+1.  **Lazy On-Demand Activation**: The Supervisor does **not** register as a PolicyKit agent at boot. Registration on the system D-Bus authority (`org.freedesktop.PolicyKit1.Authority.RegisterAgent`) is deferred until the Lua VM explicitly invokes the `polkit:enable_agent()` initialization method. If this method is not called, Oblisk remains completely dormant as a Polkit agent, allowing default system agents (like `polkit-gnome` or `lxqt-policykit`) to handle authentication.
 2.  **Challenge Capture**: When a privileged operation triggers (e.g. installing a package), the Polkit daemon sends an authentication request to the Supervisor.
 3.  **Payload Deserialization**: The Supervisor extracts only the essential, non-sensitive metadata:
     *   `action_id` (e.g., `org.archlinux.pkexec.gparted`).
@@ -177,8 +177,9 @@ end)
 
 To eliminate the need for external launchers (like rofi/wofi) or heavy, performance-degrading filesystem walks inside Lua, the Supervisor natively manages application indexing and searching.
 
-### 5.1 XDG Desktop File Directory Watcher
-*   **Monitored Roots**: The Supervisor registers `inotify` watches on standard application paths:
+### 5.1 Lazy Activation & XDG Directory Watcher
+*   **Lazy Initialization**: To guarantee a zero-idle resource footprint, the application fuzzy-search indexer, local calculations parser, currency cache update cron, and asynchronous web autocomplete debouncers remain **completely unallocated and dormant** in memory on startup. The Supervisor only spins up these background worker threads, allocates the application cache, and registers inotify watchers when the active Lua Renderer registers the launcher capability (typically when `require("oblisk.launcher")` is executed).
+*   **Monitored Roots**: Once activated, the Supervisor registers `inotify` watches on standard application paths:
     *   `/usr/share/applications/`
     *   `/usr/local/share/applications/`
     *   `~/.local/share/applications/`
@@ -259,7 +260,7 @@ When inactivity thresholds are breached or user input is resumed, the Supervisor
 To match the animated wallpaper features of Quickshell layouts, Oblisk integrates a native, GPU-accelerated background layer-shell renderer with custom shader-driven transition effects.
 
 ### 8.1 Wayland Surface and Caching
-*   **Protocol Binding**: The Renderer process maps a dedicated `zwlr_layer_surface_v1` on the `"Background"` layer, anchored to all four monitor edges.
+*   **On-Demand Protocol Binding**: The Renderer process does **not** pre-emptively bind the `zwlr_layer_surface_v1` background layer surface. The surface is mapped on the `"Background"` layer, anchored to all four monitor edges, **only if** the user explicitly declares a `wallpaper` node primitive within their Lua layout tree. If the user omits the `wallpaper` primitive (for instance, if they use external tools like `swww` or `hyprpaper`), Oblisk allocates no background surfaces, avoiding unnecessary GPU allocation and GLES context overhead.
 *   **Asset Guards**: Wallpaper files are verified off-thread against a 32MB file size cap and a maximum resolution of 8192x8192 pixels.
 *   **GPU Caching**: Validated images are decoded and cached directly as static GPU textures to prevent CPU bottlenecks during visual updates.
 
@@ -394,7 +395,7 @@ When a layout change is triggered (via `keyboard:set_layout(index)` or `keyboard
 
 The Supervisor manages system power transitions, session terminations, and DPMS screen standbys. It integrates directly with systemd-logind over D-Bus for standard system state transitions, and executes custom compositor-specific commands via disowned, detached subprocesses.
 
-### 12.1 systemd-logind D-Bus Integration
+### 13.1 systemd-logind D-Bus Integration
 For system-level power actions (shutdown, reboot, suspend), the Supervisor completely bypasses shell process execution. It interacts directly with the D-Bus system bus interface `org.freedesktop.login1.Manager` at path `/org/freedesktop/login1`:
 *   **Shutdown**: Invokes the `PowerOff(interactive: boolean)` method on the interface.
 *   **Reboot**: Invokes the `Reboot(interactive: boolean)` method on the interface.
@@ -402,7 +403,7 @@ For system-level power actions (shutdown, reboot, suspend), the Supervisor compl
 
 This direct integration ensures proper evaluation of systemd inhibitor locks (e.g., preventing accidental suspension while writing file streams), cleanly unmounts filesystems, and manages multi-user desktop session teardowns gracefully without privilege escalation.
 
-### 12.2 Compositor-Specific Commands and Session Detachment
+### 13.2 Compositor-Specific Commands and Session Detachment
 Because commands for logging out and controlling display power management signals (DPMS) vary drastically between Wayland compositors (e.g. Hyprland, Sway, Niri), Lua registers custom commands at startup.
 *   **Registration**: The configuration registers custom command lines (e.g., `hyprctl dispatch exit`, `swaymsg exit`, or `niri msg action quit`) over IPC via `power:configure(cfg)`. These are cached in the Supervisor's long-lived memory state.
 *   **Double-Fork Execution**: When `logout` is executed, the Supervisor runs the registered shell command using a standard double-fork disown pattern. This detaches the executing command from the Renderer and Supervisor process groups. This is a critical safety guarantee: even if the compositor instantly closes the Wayland connection (which tears down the shell and kills the Renderer process), the logout command is already fully detached and executes to completion under `init` (PID 1).
@@ -439,11 +440,11 @@ To prevent persistent state file corruption during abrupt system crashes, power 
 
 ----
 
-## 14. Multi-Display Workspaces Adapter (`oblisk.workspaces`)
+## 15. Multi-Display Workspaces Adapter (`oblisk.workspaces`)
 
 The Supervisor hosts a dedicated off-thread IPC client matching the system's active Wayland compositor. It processes state transitions asynchronously to insulate the Lua Renderer from socket blockage.
 
-### 14.1 Compositor Driver Subscriptions
+### 15.1 Compositor Driver Subscriptions
 *   **Hyprland**: Spawns a non-blocking Unix socket client binding to `/tmp/hypr/$HYPRLAND_INSTANCE_SIGNATURE/.socket2.sock`. It listens for broadcast events:
     *   `workspace>>{name}`: Emitted when layout focus shifts.
     *   `focusedmon>>{mon_name},{ws_id}`: Active workspace changed on output.
@@ -451,7 +452,7 @@ The Supervisor hosts a dedicated off-thread IPC client matching the system's act
     *   `createworkspace>>` / `destroyworkspace>>`: Dynamic workspace creations.
 *   **Niri**: Binds to Niri's JSON-RPC control socket, issuing `subscribe` events and processing stream deltas.
 
-### 14.2 The 3-Tier Multi-Display Workspace Model
+### 15.2 The 3-Tier Multi-Display Workspace Model
 To prevent visual layout bugs across multi-monitor configurations, the Supervisor resolves and exposes three distinct boolean flags for every workspace:
 1.  **`is_visible`**: Is the workspace currently rendering on *any* physical monitor output? Visible workspaces are drawn in active background layouts.
 2.  **`is_active`**: Is the workspace currently selected as the active display slot on its assigned monitor? Both monitors hold an active workspace, even if only one has focus.
@@ -462,11 +463,11 @@ To prevent visual layout bugs across multi-monitor configurations, the Superviso
 ---
 
 
-## 15. Dynamic Monitor Hotplugging and Display Routing (`wl_output`)
+## 16. Dynamic Monitor Hotplugging and Display Routing (`wl_output`)
 
 To maintain stability across display state transitions (monitor connect/disconnect, screen rotation, DPI scaling adjustments), Oblisk integrates native, event-driven Wayland output management.
 
-### 15.1 Wayland Protocol Bindings
+### 16.1 Wayland Protocol Bindings
 *   **Interfaces**: The Renderer process binds the core `wl_output` interface and the Wayland-protocols extension `zxdg_output_v1`.
 *   **Atomic Event Loop**: The Supervisor tracks outputs using physical connector EDIDs (e.g., `"HDMI-A-1"`, `"eDP-1"`). When a compositor event triggers:
     1.  `wl_output::geometry`: Resolves physical position coordinates, screen orientation, and subpixel layouts.
@@ -474,22 +475,22 @@ To maintain stability across display state transitions (monitor connect/disconne
     3.  `zxdg_output_v1::logical_size`: Updates logical screen boundaries.
     4.  The Supervisor builds a reactive table `workspaces.outputs` matching the active outputs and serializes it over IPC.
 
-### 15.2 The Handoff and Surface Teardown Contract
+### 16.2 The Handoff and Surface Teardown Contract
 *   **Graceful Teardown**: When an output is disconnected (emitting `wl_registry::global_remove`), the Renderer intercepts the removal. It tears down the corresponding `zwlr_layer_surface_v1` container and frees associated GLES3 framebuffers in under 5ms, avoiding Wayland protocol validation crashes.
 *   **Dynamic Re-Spawning**: Upon a connection event, the Renderer invokes the Lua root configuration (`shell.lua`). Lua's declarative layout engine evaluates the updated outputs signal, dynamically spawning a status bar container mapped to the new display grid.
 
 ---
 
 
-## 16. Visual Error Boundaries and Rescue Mode UI
+## 17. Visual Error Boundaries and Rescue Mode UI
 
 If the user's Lua configuration contains syntax errors, runtime exceptions (e.g. indexing `nil`), or gets caught in an infinite loop, the shell must never crash or display a blank screen.
 
-### 16.1 Lua VM Execution Guards and Sandboxing
+### 17.1 Lua VM Execution Guards and Sandboxing
 *   **Infinite Loop Interception**: The Renderer sets a hard instruction execution threshold using the Lua C-API `lua_sethook`. If a single layout transition executes more than **1,000,000 instructions**, the hook throws a memory execution panic, halting the infinite loop.
 *   **Error Catching Boundaries**: Every execution of user layout files is wrapped in a pcall (`pcall` or C-equivalent `lua_pcall`). If an error is caught, the Renderer drops the configuration reload, preserves the last-known-good generation active, and flags `rescue.is_rescue` as `true`.
 
-### 16.2 GLES2 Fallback Panel (Rescue Mode)
+### 17.2 GLES2 Fallback Panel (Rescue Mode)
 *   **Bypassing User Layouts**: If the initial config fails validation during cold start, the Renderer bypasses the user's Lua script completely.
 *   **Internal Compiled Panel**: It initializes a minimalist, hardcoded fallback visual panel using FemtoVG compiled directly into the Rust binary.
 *   **Stack-Trace Visualizer**: This panel reads the Supervisor's error log and renders the exact Lua syntax error or backtrace directly on the GPU.
@@ -498,32 +499,32 @@ If the user's Lua configuration contains syntax errors, runtime exceptions (e.g.
 ---
 
 
-## 17. Font, SVG, and Icon Asset Cache Management
+## 18. Font, SVG, and Icon Asset Cache Management
 
 To maintain a fluid 120Hz interface rendering cycle, the Renderer separates visual ticks from blocking filesystem reads.
 
-### 17.1 Size-Bounded Least-Recently-Used (LRU) Caching
+### 18.1 Size-Bounded Least-Recently-Used (LRU) Caching
 *   **Asset Buffers**: The Rust Renderer maintains direct size-bounded memory tables for parsed vector graphics (SVGs) and shaped text blocks:
     *   **SVG Texture Cache**: Capped at 128 items. Decoded vector shapes are scaled and rendered as static GLES3 texture maps on-demand.
     *   **Glyph Atlas Cache**: Glyphs are packed into a 2048x2048 physical GPU texture atlas managed by `cosmic-text`.
 *   **Purging policy**: When the table caps are breached, the least-recently-used assets are evicted, preventing RAM accumulation.
 
-### 17.2 Off-Thread Text Pre-Shaping
+### 18.2 Off-Thread Text Pre-Shaping
 *   **Asynchronous Text Shaping**: When dynamic text (such as clock epochs or active media tracks) is updated, the layout metrics are passed to an off-thread worker.
 *   **The Handshake**: The worker calculates font-families, font fallback trees, and shapes characters into static glyph clusters asynchronously. The results are queued and passed to the primary thread before the next swapchain tick, keeping frame render bounds below 1.5ms.
 
 ---
 
 
-## 18. Single Shell Entry-Point and Functional Module Scoping
+## 19. Single Shell Entry-Point and Functional Module Scoping
 
 To avoid the namespace pollution typical of interpreted engines, Oblisk enforces strict lexical encapsulation and a single entry point file configuration.
 
-### 18.1 The Entry Gating Contract
+### 19.1 The Entry Gating Contract
 *   **Root Gating**: On boot or reload, the Renderer's Lua VM is hardcoded to evaluate exactly one file: **`~/.config/oblisk/shell.lua`**.
 *   **Return Contract**: The root file must return a single declarative visual primitive node (e.g. `panel` or `row`) or a flat associative table mapping monitor EDIDs to visual containers.
 
-### 18.2 Reusable Subcomponents (The Functional Module Contract)
+### 19.2 Reusable Subcomponents (The Functional Module Contract)
 To write modular custom widgets without registering them globally (which pollutes memory and compromises reload safety):
 1.  **Lexical Return**: Custom widgets are written as isolated files returning a standard Lua builder function.
 2.  **Scoped Imports**: Subcomponents are imported inside `shell.lua` using lexical `require` statements.

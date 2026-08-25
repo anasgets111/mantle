@@ -44,6 +44,17 @@ _Avoid_: watch list, file scan
 A named system capability with bounded state and shell commands.
 _Avoid_: service, platform object
 
+**Dormant**:
+A capability no generation has claimed yet: it owns no thread, D-Bus name, or
+system resource until a `require()` triggers registration.
+_Avoid_: unavailable, inactive, disabled
+
+**Unavailable**:
+A claimed capability whose backend cannot currently serve it (missing
+hardware, compositor feature, or dependency). Publishes unavailable state,
+never nil.
+_Avoid_: dormant, disabled, off
+
 **Revision**:
 A version attached to a capability snapshot so commands using stale state can
 be rejected.

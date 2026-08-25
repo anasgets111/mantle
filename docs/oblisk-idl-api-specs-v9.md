@@ -1,5 +1,5 @@
-# Oblisk IDL and API Specification (v9)
-## Strict Rust-Lua Boundary and Interface Contract (v9)
+# Oblisk IDL and API Specification (v10)
+## Strict Rust-Lua Boundary and Interface Contract (v10)
 
 This document defines the strict binary and type boundaries between the Rust platform layers (Supervisor and Renderer) and the Lua configuration environment. To prevent LLM code generation from hallucinating interfaces, this specification serves as the absolute, compiler-validated contract for type marshalling, reactive state signals, command schemas, and lazy registration handshakes.
 
@@ -13,7 +13,7 @@ All data passing across the Rust-Lua boundary (driven by `mlua` hosting PUC Lua 
 
 | Rust Type | Lua Type | Boundary Mapping Rules & Constraints |
 | :--- | :--- | :--- |
-| `f64` | `number` | Double-precision float. NaN and Inf are rejected; mapped to Lua `nil` with a warning. |
+| `f64` | `number` | Double-precision float. NaN and Inf are rejected: the boundary call fails immediately with a Lua error, matching the no-silent-degradation rule above. |
 | `i64` / `u64` | `integer` / `number` | Mapped to Lua integer if within `[-2^53 + 1, 2^53 - 1]`. Out-of-bounds integers are rejected. |
 | `String` | `string` | UTF-8 encoded, byte-length limited string. Null-bytes are rejected. |
 | `bool` | `boolean` | Clean mapping. No type coercion (e.g., non-zero integer is not converted to `true`). |
@@ -186,7 +186,7 @@ Binds to Wayland `ext_idle_notifier_v1` on the Supervisor.
 
 
 
-### 2.14 Application Launcher (`oblisk.launcher`)
+### 2.13 Application Launcher (`oblisk.launcher`)
 
 Monitors XDG desktop applications and processes fuzzy-matching natively in Rust.
 
@@ -216,7 +216,7 @@ Monitors XDG desktop applications and processes fuzzy-matching natively in Rust.
             *   `url`: `string` (The target web destination search URL)
             *   `icon`: `string` (e.g., `"system-search"`)
 
-### 2.16 Persistent User State and Storage Paths (`oblisk.system`)
+### 2.14 Persistent User State and Storage Paths (`oblisk.system`)
 
 Exposes directories conforming to the XDG Base Directory Specification and manages state changes.
 
@@ -227,7 +227,7 @@ Exposes directories conforming to the XDG Base Directory Specification and manag
 *   `system.shm_path`: `string` (The user fast memory-mapped folder, e.g., `/dev/shm/oblisk-1000/`).
 
 
-### 2.17 Workspaces & Output State (`oblisk.workspaces`)
+### 2.15 Workspaces & Output State (`oblisk.workspaces`)
 
 Exposes nested, multi-display workspaces and scratchpads dynamically parsed from the active compositor's control IPC.
 
@@ -248,7 +248,7 @@ Exposes nested, multi-display workspaces and scratchpads dynamically parsed from
 *   `workspaces.active_workspace_id`: `integer` (The ID of the globally focused workspace)
 *   `workspaces.special_active`: `boolean` (True if any special scratchpad workspace is currently displayed)
 
-### 2.18 Rescue Mode & Recovery State (`oblisk.rescue`)
+### 2.16 Rescue Mode & Recovery State (`oblisk.rescue`)
 
 Exposes state flags from the Renderer's internal compilation and sandboxing modules during configuration failures.
 
@@ -257,14 +257,14 @@ Exposes state flags from the Renderer's internal compilation and sandboxing modu
 *   `rescue.config_valid`: `boolean` (True if `shell.lua` validates successfully)
 *   `rescue.reload_count`: `integer` (The number of reloads executed in the current session)
 
-### 2.13 Webcam Usage (`oblisk.webcam`)
+### 2.17 Webcam Usage (`oblisk.webcam`)
 
 Monitors PipeWire video nodes and `/dev/video*` state events.
 
 *   `webcam.active`: `boolean` (True if any video recording node is in `PW_NODE_STATE_RUNNING`)
 *   `webcam.active_clients`: `table` (Array of strings containing names of applications utilizing the camera)
 
-### 2.15 Power & Session Management (`oblisk.power`)
+### 2.18 Power & Session Management (`oblisk.power`)
 
 Provides state indicators and configurations for system power states (shutdown, reboot, suspend) and session actions (logout, DPMS standby).
 
@@ -301,7 +301,7 @@ The payload must strictly validate against the following structural schema:
   "properties": {
     "generation_id": { "type": "integer", "minimum": 1 },
     "expected_revision": { "type": "integer", "minimum": 0 },
-    "capability": { "type": "string", "enum": ["brightness", "audio", "notifications", "mpris", "idle", "polkit", "launcher", "network", "bluetooth", "power", "system"] },
+    "capability": { "type": "string", "enum": ["brightness", "audio", "notifications", "mpris", "idle", "polkit", "launcher", "network", "bluetooth", "power", "system", "clipboard", "keyboard", "workspaces", "rescue"] },
     "action": { "type": "string" },
     "arguments": {
       "type": "array",
@@ -370,7 +370,9 @@ The payload must strictly validate against the following structural schema:
 
 ## 4. The Lazy Capability Activation Handshake
 
-To enforce the **Zero CPU, Zero Memory** resource constraint for unused hardware interfaces, background threads and listeners are initialized purely on-demand.
+To enforce the **Zero CPU, Zero Memory** and **Zero-Opinion Pure Framework** resource and boundary constraints, both background hardware adapters and global system services (such as D-Bus servers, PolicyKit authentication agents, and desktop file indexers) are initialized purely on-demand. 
+
+This on-demand activation guarantees that if a user script does not evaluate a specific module or execute its initialization methods (e.g., `require("oblisk.notifications")` or `polkit:enable_agent()`), the Supervisor does **not** hijack corresponding system or D-Bus endpoints. This keeps the shell completely silent, transparent, and non-intrusive, allowing standard system notification or authentication agents to operate without interference.
 
 ### 4.1 Sequence of Handshake
 
@@ -386,7 +388,7 @@ Renderer (Lua VM)                      Renderer (Rust Engine)                Sup
 
 1.  **Lua Evaluation**: The user's configuration runs. It evaluates `require("oblisk.audio")`.
 2.  **Registration Trigger**: The Renderer's rooted Lua loader intercepts this import. Before returning the proxy object to Lua, the Renderer executes a synchronous `RegisterCapability` handshake to the Supervisor over the private control socket.
-    *   **Payload**: `{"generation_id": N, "register": "audio"}`
+    *   **Payload**: `{"generation_id": N, "capability": "audio"}`
 3.  **Supervisor Activation**: The Supervisor receives the registration. It validates the request against the epoch, checks if the internal PipeWire thread is already active, and starts the capability monitoring thread if it is currently dormant.
 4.  **Initial Snapshot Sync**: The Supervisor immediately pushes the initial state snapshot of the active sink volume and muted status down to the Renderer.
 5.  **Binding Mount**: The Renderer mounts the static signals to the Lua proxy state table and completes the `require` execution.

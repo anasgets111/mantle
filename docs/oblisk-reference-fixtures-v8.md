@@ -1,5 +1,5 @@
-# Oblisk Reference Fixtures (v8)
-## Syntactically Perfect, Production-Grade Declarative Lua Configurations (v8)
+# Oblisk Reference Fixtures (v9)
+## Syntactically Perfect, Production-Grade Declarative Lua Configurations (v9)
 
 This document serves as the fifth and final component of the Oblisk specification suite. It contains complete, production-grade, syntactically flawless Lua configurations that strictly adhere to the schemas, constraint passes, and IPC event structures established in the previous four specification documents.
 
@@ -32,6 +32,26 @@ updates:configure({
     online_interval = 900,  -- 15 minutes
     offline_interval = 300, -- 5 minutes
 })
+
+-- 2.1 Zero-Opinion Event Sound Triggers (Lua-Side Observers)
+-- Because Oblisk is a pure, zero-opinion framework, the Supervisor does not
+-- play sound effects automatically. We subscribe to signals and play sounds in Lua.
+local notifications = require("oblisk.notifications")
+local last_notif_count = 0
+notifications.feed:map(function(feed)
+    -- Play a system sound on new notification arrival
+    if #feed > last_notif_count then
+        audio:play_sound("notification-message")
+    end
+    last_notif_count = #feed
+end)
+
+battery.percent:map(function(p)
+    -- Play warning sound if battery falls to/below 15% on battery power
+    if p <= 15 and not battery.charging:get() then
+        audio:play_sound("battery-caution")
+    end
+end)
 
 -- 3. The Declarative Scene-Graph Roots
 -- Returns a flat layout configuration table parsed by the Rust Renderer.
@@ -261,6 +281,10 @@ All user passwords typed into the `textfield` are stored in secure zeroized memo
 -- =============================================================================
 
 local polkit = require("oblisk.polkit")
+
+-- Explicitly activate the supervisor-side D-Bus PolicyKit authentication agent.
+-- This ensures the system does not register the agent pre-emptively on boot.
+polkit:enable_agent()
 
 -- Returns a centered, modal dialog panel configuration
 return panel {

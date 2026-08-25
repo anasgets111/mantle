@@ -1,5 +1,5 @@
-# Oblisk Hardware Event Pipeline (v4)
-## Zero-Polling Reactive Hardware Adapters and FFT Visualization (v4)
+# Oblisk Hardware Event Pipeline (v5)
+## Zero-Polling Reactive Hardware Adapters and FFT Visualization (v5)
 
 This specification defines the low-level contracts for hardware state tracking, event processing, and audio visualization inside the Oblisk framework. To prevent high-frequency polling patterns and heavy script executions (common in systems like Quickshell), all metrics are natively monitored in Rust using kernel-level event APIs and lazily mapped to Lua as immutable reactive signals.
 
@@ -7,21 +7,16 @@ This specification defines the low-level contracts for hardware state tracking, 
 
 ## 1. Lazy Capability Activation Protocol
 
-To maintain a zero-idle resource footprint, no background threads, udev monitors, PipeWire connections, or D-Bus system bus watchers are spawned on boot. They exist in a **Dormant** state until explicitly requested by the compiled Lua AST during the generation transition.
+To maintain a zero-idle resource footprint and uphold our zero-opinion pure framework boundaries, no background threads, udev monitors, PipeWire connections, or D-Bus system bus watchers are spawned on boot. They exist in a **Dormant** state until explicitly requested by the compiled Lua AST during the generation transition.
+
+This guarantees that unused features do not run inotify watches, claim system D-Bus endpoints, or consume memory, keeping the shell completely silent, transparent, and non-intrusive to external applications and standard system daemons.
 
 ### 1.1 Activation Handshake Flow
 1. **Compilation Phase**: The Candidate Renderer compiles `shell.lua` and traverses the visual node tree.
 2. **Import Detection**: When the Lua script triggers `require("oblisk.audio")` or references a hardware signal (e.g., `brightness.percent`), the Renderer registers a dependency handle.
 3. **Registration Frame**: Before the health window closes, the Renderer writes a `RegisterCapability` control packet over the private Unix socket to the Supervisor:
    ```json
-   {
-     "jsonrpc": "2.0",
-     "method": "RegisterCapability",
-     "params": {
-       "generation_id": 4,
-       "capability": "audio"
-     }
-   }
+   {"generation_id": 4, "capability": "audio"}
    ```
 4. **On-Demand Thread Allocation**: The Supervisor's Capability Authority validates the request against the current generation epoch and spawns the dedicated native OS thread for that system interface.
 
@@ -76,8 +71,8 @@ In modern Linux systems, active video streams are routed through PipeWire.
 * **State Evaluation**:
   1. For each node, it parses the `media.class` property. If the property matches `"Video/Source"`, it is identified as a camera feed.
   2. The thread monitors the node's state variable (`pw_node_info::state`). 
-  3. When the state transitions to `PW_NODE_STATE_RUNNING`, the Supervisor increments `webcam.active_count` and extracts the calling application name from the parent client node (`application.name` or `node.name`).
-  4. When the state transitions to `PW_NODE_STATE_IDLE` or `PW_NODE_STATE_SUSPENDED`, the count is decremented.
+  3. When the state transitions to `PW_NODE_STATE_RUNNING`, the Supervisor increments an internal `active_count` counter (not exposed to Lua) and extracts the calling application name from the parent client node (`application.name` or `node.name`), appending it to `webcam.active_clients`.
+  4. When the state transitions to `PW_NODE_STATE_IDLE` or `PW_NODE_STATE_SUSPENDED`, the counter is decremented; `webcam.active` reflects `active_count > 0`.
 
 ### 3.2 V4L2 Device Monitor (Fallback)
 If PipeWire is unavailable, the Supervisor monitors `/dev/video*` character devices directly.
@@ -177,7 +172,11 @@ When `oblisk.cava` is active, the Supervisor spawns a high-performance audio cap
 
 ## 7. Hardware State Files & Signals Specification
 
-The following schema defines the complete list of system properties, types, and reactive signals exposed to the Lua VM.
+The following schema cross-references the signals sourced by this document's
+kernel- and D-Bus-event pipelines with their Rust and Lua types. It is not
+the full `oblisk.*` schema: `oblisk-idl-api-specs.md` §2 is the authoritative,
+complete signal list (weather, launcher, mpris, idle, system, power,
+notifications, and tray signals are defined there, not here).
 
 ### 7.1 Unified Signals Schema
 
@@ -204,11 +203,11 @@ The following schema defines the complete list of system properties, types, and 
 | `rescue.is_rescue` | `bool` | `boolean` | Lua VM error panics or compilation crash |
 | `rescue.error_log` | `String` | `string` | Backtrace parsed by Rust engine |
 
-| `network.ssid` | `Option<String>` | `string\|nil` | D-Bus NetworkManager state change |
-| `network.signal` | `u8` | `integer` | D-Bus NetworkManager state change |
 | `network.connected` | `bool` | `boolean` | D-Bus NetworkManager state change |
-| `bluetooth.connected` | `bool` | `boolean` | D-Bus BlueZ state change |
-| `bluetooth.devices` | `Vec<String>` | `table (array)` | D-Bus BlueZ connected device metadata |
+| `network.available_networks` | `Vec<AccessPoint>` | `table (array)` | D-Bus NetworkManager scan / `AccessPointAdded` |
+| `bluetooth.enabled` | `bool` | `boolean` | D-Bus BlueZ adapter `Powered` state change |
+| `bluetooth.discovered_devices` | `Vec<Device>` | `table (array)` | D-Bus BlueZ ObjectManager `InterfacesAdded`/`Removed` |
+| `bluetooth.connected_devices` | `Vec<Device>` | `table (array)` | D-Bus BlueZ `Device1`/`Battery1` property changes |
 
 ---
 

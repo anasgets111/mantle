@@ -18,6 +18,9 @@ required platform check exist.
   TextField/TextArea are the documented engine exception.
 - Add a capability only with a bounded snapshot, validated command path,
   cleanup owner, and focused runnable check.
+- Claim singleton system resources (D-Bus names, PolicyKit agent
+  registration, background layer surfaces, indexer threads) lazily, on a
+  generation's first `require()`, never at Supervisor boot.
 - Delete abstractions that have no caller.
 
 ## Phase 1: disposable renderer
@@ -71,12 +74,18 @@ required platform check exist.
   (panel, row, column, text, icon, button) from the Rust schema; one source of
   truth. Reserve the `raw` kind name. The scene root declares an interface
   version. Reject unsupported versions before creating surfaces.
-- [ ] 14. Add a built-in Rust diagnostic scene for invalid configuration.
-  Configuration errors must keep the authoritative generation. This diagnostic
-  is also the safe shell: after bounded retries for an authoritative-generation
-  crash, the supervisor runs it directly without executing user Lua.
+- [ ] 14. Add a built-in Rust diagnostic scene for invalid configuration: a
+  hardcoded panel, compiled into the renderer binary and independent of the
+  Lua VM, that renders the supervisor's error log (syntax error or backtrace)
+  and an interactive reload-config action. Configuration errors must keep the
+  authoritative generation. This diagnostic is also the safe shell: after
+  bounded retries for an authoritative-generation crash, the supervisor runs
+  it directly without executing user Lua.
 - [ ] 15. Add instruction, heap, source, node, binding, timer, and callback
-  limits. Test syntax errors, missing modules, limits, and infinite loops.
+  limits. Cap Lua execution via `lua_sethook` at 1,000,000 instructions per
+  layout transition; wrap every user-layout execution in a protected call so a
+  caught error drops the reload and flags `rescue.is_rescue` instead of
+  crashing. Test syntax errors, missing modules, limits, and infinite loops.
   Scale node and binding caps by detected output count; count repeater children
   against a separate budget from static nodes; name the exceeded limit and its
   current value in the error.
@@ -173,15 +182,22 @@ required platform check exist.
   commands may omit the revision. Backend adapters validate only their own
   command meaning. Feature detection (`capability:has("feature")`) lands with
   the first feature-specific consumer (step 42).
-- [ ] 39. Use MPRIS as the first capability fixture. Keep its first backend
-  adapter renderer-local and off Lua. Test startup, disconnect, stale revision,
-  shutdown, and command rejection for stale generation IDs and revisions
-  through the authority module. Move it to a durable owner only when continuity,
-  public ownership, or overlap-safe lifetime is a real caller.
+- [ ] 39. Use MPRIS as the first capability fixture. Its backend adapter is
+  Supervisor-owned and durable from the first implementation
+  ([ADR 0004](docs/adr/0004-mpris-durable-supervisor-ownership.md)). The
+  Supervisor discovers `org.mpris.MediaPlayer2.*` names and caches normalized
+  player state outside any generation, pushing the cached snapshot immediately
+  on `RegisterCapability`. Test startup, disconnect, stale revision, shutdown,
+  reload-continuity (no reconnect, correct state on first frame), and command
+  rejection for stale generation IDs and revisions through the authority
+  module.
 - [ ] 40. Add the notification snapshot bridge. Keep staged renderers feed-gated
   until visible-ID presentation and routing ownership are verified.
-- [ ] 41. Add notification commands and public D-Bus ownership only after the
-  capability authority seam has a test. Do not add a broker to the interface.
+- [ ] 41. Add notification commands and public D-Bus ownership. Claim
+  `org.freedesktop.Notifications` on the generation's first
+  `require("oblisk.notifications")`, per the lazy-claim rule above, so a shell
+  that skips it leaves dunst/mako running. Land it only after the capability
+  authority seam has a test. Do not add a broker to the interface.
 - [ ] 42. Add the compositor adapter seam with Niri and Hyprland adapters behind
   capability signals for monitors, workspaces, and keyboard layout. Generic
   Wayland protocols are the floor. Keep `has()` until a config consumes a
@@ -213,7 +229,9 @@ required platform check exist.
 - [ ] 48. Exercise reload, hotplug, capability loss, persist carry-over, and
   cleanup with the fixture.
 - [ ] 49. Add the tray capability: SNI watcher/host in the supervisor process
-  (not a generation), icon decoding, menu data objects. Menu trees cross to Lua
+  (not a generation), icon decoding, menu data objects. Claim
+  `org.kde.StatusNotifierWatcher` on the first `require("oblisk.tray")`, per
+  the lazy-claim rule above. Menu trees cross to Lua
   as revisioned snapshots through the capability envelope. Icon decode applies
   the same byte/dimension/pixel bounds as config assets, runs off-thread with a
   hard deadline, and drops to unavailable state on violation; a decompression
@@ -227,9 +245,14 @@ required platform check exist.
 ## Phase 8: security and durable facilities
 
 - [ ] 51. Define the lock/auth process seam and supported compositor matrix.
-  Test with a disposable PAM account. Session-lock + PAM only; greetd and
-  Polkit conversations are deferred behind an actual greeter or polkit-agent
-  deliverable.
+  Test with a disposable PAM account. Session-lock + PAM only, in the
+  separate lock process; greetd is deferred behind an actual greeter
+  deliverable. Polkit is not part of this seam
+  ([ADR 0006](docs/adr/0006-polkit-in-supervisor.md)): it is a
+  Supervisor-owned capability like any other, deferred until a caller lands.
+  When it does, register the agent only on `polkit:enable_agent()`, never at
+  boot, so a default agent (polkit-gnome, lxqt-policykit) keeps running until
+  a config opts in.
 - [ ] 52. Add detached jobs, public IPC, or broker extraction only when a
   lifetime or authority requirement exists. Test the ownership and revocation
   rules for each facility.

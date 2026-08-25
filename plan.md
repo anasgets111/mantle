@@ -11,6 +11,31 @@ This is a clean-start design. It records intended contracts, not progress.
 Noctalia and Quickshell provide comparison points. They do not define
 the Rust or Lua object model.
 
+## Detailed specifications
+
+This file and [parity.md](parity.md) record decisions and required contracts
+at the architecture level. Concrete, compiler-checkable detail lives in the
+specs below and is authoritative wherever it is more specific than this file:
+Rust/Lua type marshalling, the `oblisk.*` signal schema, capability command
+JSON envelopes, D-Bus interfaces and object paths, wire formats, and
+scene-node property tables.
+
+- [oblisk-idl-api-specs-v9.md](docs/oblisk-idl-api-specs-v9.md): Rust-Lua
+  marshalling, the `oblisk.*` signal tree, the command envelope schema, the
+  lazy activation handshake, and the AST node property tables.
+- [oblisk-hardware-event-pipeline-v4.md](docs/oblisk-hardware-event-pipeline-v4.md):
+  zero-polling hardware adapters (keyboard, webcam, updates, input overlay,
+  cava FFT, output hotplug) and their kernel/D-Bus event sources.
+- [oblisk-supervisor-services-dbus-v9.md](docs/oblisk-supervisor-services-dbus-v9.md):
+  durable Supervisor-owned D-Bus services (notifications, tray, MPRIS, Polkit,
+  launcher indexer, clipboard persistence, idle, wallpaper, network,
+  Bluetooth, power, workspaces, rescue mode).
+- [oblisk-layout-engine-geometry.md](docs/oblisk-layout-engine-geometry.md):
+  the one-pass constraint/size/position layout algorithm, keyed
+  reconciliation, fractional scaling, and damage tracking.
+- [oblisk-reference-fixtures-v8.md](docs/oblisk-reference-fixtures-v8.md):
+  worked example `shell.lua` configurations exercising the public interface.
+
 ## Locked decisions
 
 | Topic | Decision |
@@ -19,7 +44,8 @@ the Rust or Lua object model.
 | Reload authority | [ADR 0001](docs/adr/0001-presentation-before-authority.md). Per-output presentation evidence controls the handoff. |
 | Dependency watching | [ADR 0002](docs/adr/0002-shared-dependency-snapshot.md). One snapshot module serves loading and watching. |
 | Capability command guards | [ADR 0003](docs/adr/0003-generation-and-revision-command-guards.md). State-dependent commands carry generation ID and snapshot revision. |
-| MPRIS placement | [ADR 0004](docs/adr/0004-mpris-renderer-local-first-slice.md). Keep the first implementation renderer-local. |
+| Capability activation | [ADR 0005](docs/adr/0005-lazy-capability-claiming.md). Singleton system resources (D-Bus names, PolicyKit agent, background surfaces, indexer threads) claim lazily on first `require()`, never at Supervisor boot. |
+| MPRIS placement | [ADR 0004](docs/adr/0004-mpris-durable-supervisor-ownership.md). Durable Supervisor ownership from the first implementation, so reload does not drop D-Bus player subscriptions. |
 | Scene ownership | A private Rust retained-scene module owns the descriptor-to-commit transaction, parent tree, node IDs, leases, and child-first cleanup. Lua holds weak proxies. Retainable locks keep nodes alive for exit animations. |
 | Reactivity | `bind(signal)` supplies properties and callbacks supply behavior. Signals mark dirty builders; the retained-scene module resolves writes transactionally. A diff-time check catches imperative writes to bound properties; log once and drop. |
 | Input | Engine hit-tests retained node rects and delivers semantic events (`on_click`, `on_scroll`, `on_key`). Focus and pointer grabs are engine-owned leases. Popup placement strategies are engine work. |
@@ -270,24 +296,28 @@ before backend adapters validate command meaning. State-independent commands
 may omit the revision when their contract does not depend on a snapshot.
 Lua receives IDs and values, never backend handles.
 
-Start with MPRIS and notifications. Keep the first MPRIS implementation
-renderer-local; move it to a durable owner only when continuity, public
-ownership, or overlap-safe lifetime is a real caller. Then port power, network,
-Bluetooth, audio, workspaces, and clipboard one capability at a time through
-ownership, Lua interface, headless tests, and a real-session test.
+Start with MPRIS and notifications. MPRIS is durable Supervisor-owned from the
+first implementation ([ADR 0004](docs/adr/0004-mpris-durable-supervisor-ownership.md)).
+The Supervisor discovers `org.mpris.MediaPlayer2.*` names and caches
+normalized player state independent of any renderer generation, so reload
+reconnects nothing and the new generation's first frame carries correct media
+info. Then port power, network, Bluetooth, audio, workspaces, and clipboard
+one capability at a time through ownership, Lua interface, headless tests, and
+a real-session test.
 
 The supervisor may own small stores and private bridges. Move a capability to a
 broker when it needs a public D-Bus name, durable authority, authenticated IPC,
 or overlap-safe lifetime. Do not make the broker part of the capability
 interface.
 
-Notification feeds remain private and generation-scoped until durable routing
-ownership exists.
+Notification and tray D-Bus ownership follow
+[ADR 0005](docs/adr/0005-lazy-capability-claiming.md): claimed only on first
+use, never at boot.
 
-Durable-side owners are the StatusNotifierItem watcher name, the error banner
-surface, and public D-Bus names. Theme stamping joins this list when a real
-consumer requires it. None of these belong to a generation; reloads must not
-drop them.
+Durable-side owners are the StatusNotifierItem watcher name, the MPRIS player
+cache, the error banner surface, and public D-Bus names claimed on first use.
+Theme stamping joins this list when a real consumer requires it. None of
+these belong to a generation; reloads must not drop them.
 
 Capabilities publish state. Lua decides how to display it. A widget built from
 existing engine types must not require Rust.
@@ -300,14 +330,31 @@ Widgets check `has()` once at build time and availability on every snapshot.
 
 ## Lock and authentication
 
-- A separate process owns the compositor session-lock protocol and PAM.
-- Greetd and Polkit conversations stay outside Lua.
-- Lua may style and position a data-only authentication scene. It never reads
+- A separate process owns the compositor session-lock protocol, greetd, and
+  PAM. Lua may style and position a data-only lock scene. It never reads
   passwords or receives authentication callbacks.
-- Passwords never enter snapshots, logs, IPC, or reload state. Use zeroizing
-  buffers.
+- Polkit is not part of that process
+  ([ADR 0006](docs/adr/0006-polkit-in-supervisor.md)): the Supervisor runs the
+  PolicyKit agent as an ordinary capability. Lua receives challenge metadata
+  (`action_id`, `message`, `cookie`) and renders its own dialog; only the
+  password field is a Rust-native `TextField` that keystrokes never reach Lua
+  through.
+- Passwords never enter snapshots, logs, IPC, or reload state, in either
+  surface. Use zeroizing buffers.
 - Do not implement a cosmetic lock fallback. Define the supported compositor
   matrix and test with a disposable PAM account first.
+
+## Input overlay
+
+[ADR 0007](docs/adr/0007-input-overlay-evdev-boundary.md). A global
+key-visualizer for streaming needs input from whatever window has focus, not
+just Oblisk surfaces, so it reads raw `evdev` gated by `input`-group
+membership instead of the engine's normal per-surface input pipeline. It
+claims lazily on `require("oblisk.input_overlay")`, per
+[ADR 0005](docs/adr/0005-lazy-capability-claiming.md), and never opens a
+device node otherwise. Symbols are ephemeral: a bounded, debounced ring
+buffer, never logged or persisted. Treat `input_overlay.keys` as sensitive by
+default.
 
 ## Reload transaction
 
