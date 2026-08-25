@@ -1,0 +1,19 @@
+[package]
+name = "supervisor"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+futures-util = "0.3.34"
+inotify = "0.11.5"
+nix = { version = "0.31.3", features = ["process", "signal"] }
+pipewire = "0.10.1"
+regex = "1.13.1"
+shared = { version = "0.1.0", path = "../shared" }
+smithay-client-toolkit = "0.21.1"
+tokio = { version = "1.53.1", features = ["full"] }
+tokio-stream = "0.1.19"
+udev = "0.9.3"
+wayland-client = "0.31.15"
+wayland-protocols = { version = "0.32.13", features = ["client"] }
+zbus = { version = "5.19.0", features = ["tokio"] }
