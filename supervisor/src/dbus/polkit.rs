@@ -1,0 +1,274 @@
+//! Polkit authentication agent registration handshake (build-steps.md Phase 5, point 1).
+//!
+//! `build-steps.md` names the registration method `org.freedesktop.PolicyKit1.Authority.
+//! RegisterAgent`. That's an approximation, not the real D-Bus method name: verified
+//! against polkit's own source (`polkit_authority_register_authentication_agent_with_options`
+//! in `src/polkit/polkitauthority.c`, and the shipped introspection XML), the real method
+//! is `RegisterAuthenticationAgent`, signature `(subject: (sa{sv}), locale: s,
+//! object_path: s) -> ()`. `RegisterAuthenticationAgentWithOptions` exists too (adds an
+//! `a{sv}` options dict, e.g. for `fallback`), but nothing here needs it yet.
+//!
+//! The client call-out (`RegisterAuthenticationAgent`/`UnregisterAuthenticationAgent`) uses
+//! `zbus_polkit`'s `Authority` proxy and `Subject` type directly rather than hand-deriving
+//! matching zvariant types: see docs/adr/0013-polkit-agent-registration-uses-zbus-polkit-for-the-authority-proxy.md.
+//!
+//! The agent side -- `org.freedesktop.PolicyKit1.AuthenticationAgent`, the interface polkitd
+//! calls back into once we're registered -- has no maintained crate wrapping it, so
+//! `AuthenticationAgent` below is hand-written against the signature verified from the same
+//! polkit source (`src/polkitagent/polkitagentlistener.c`):
+//! `BeginAuthentication(action_id: s, message: s, icon_name: s, details: a{ss}, cookie: s,
+//! identities: a(sa{sv})) -> ()` and `CancelAuthentication(cookie: s) -> ()`.
+
+use std::collections::HashMap;
+
+use tokio::sync::mpsc::UnboundedSender;
+use zbus::interface;
+use zbus::zvariant::{OwnedValue, Value};
+pub use zbus_polkit::policykit1::{AuthorityProxy, Subject};
+
+/// Object path this agent is exported at on our own unique connection name. Any path under
+/// our control is valid (the spec's `object_path` argument is caller-chosen, not fixed) --
+/// this mirrors LXQt's `/org/lxqt/PolicyKit1/AuthenticationAgent` convention rather than
+/// reusing polkitd's own default agent path.
+pub const AGENT_OBJECT_PATH: &str = "/org/oblisk/PolicyKit1/AuthenticationAgent";
+
+/// Builds the `unix-session` `Subject` for the session this process is running in.
+///
+/// ponytail: resolves the session id from `$XDG_SESSION_ID` rather than the general-purpose
+/// route (asking logind's `Manager.GetSessionByPID` for this process's own pid). systemd's
+/// pam_systemd sets `$XDG_SESSION_ID` for every session it opens, which covers every real
+/// graphical login this supervisor runs under; the logind round-trip is the upgrade path if
+/// this ever needs to run somewhere pam_systemd doesn't apply, or once a logind client
+/// exists in this crate for an unrelated reason (it doesn't yet -- ADR-0010 covers Wayland
+/// idle/lock, not logind sessions).
+pub fn current_session_subject() -> Result<Subject, std::env::VarError> {
+    let session_id = std::env::var("XDG_SESSION_ID")?;
+    let mut subject_details = HashMap::new();
+    subject_details.insert(
+        "session-id".to_string(),
+        OwnedValue::try_from(Value::from(session_id)).expect("String -> OwnedValue conversion is infallible"),
+    );
+    Ok(Subject { subject_kind: "unix-session".to_string(), subject_details })
+}
+
+/// One `BeginAuthentication` call as polkitd sent it, parsed off the wire.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BeginAuthenticationCall {
+    pub action_id: String,
+    pub message: String,
+    pub icon_name: String,
+    pub details: HashMap<String, String>,
+    pub cookie: String,
+}
+
+/// `org.freedesktop.PolicyKit1.AuthenticationAgent`, the interface polkitd calls back into
+/// once this process registers via [`register_agent`].
+///
+/// ponytail: `begin_authentication` only forwards the parsed challenge over a channel; it
+/// does not drive a PAM conversation or push the challenge to the Renderer over IPC. Neither
+/// exists yet in this dependency tree (no PAM crate) or codebase (no IPC socket server, no
+/// `textfield` scene node) to hand the challenge to. See
+/// docs/adr/0015-polkit-pam-conversation-and-textfield-wiring-deferred.md for the real flow
+/// this stands in for and what unblocks it.
+pub struct AuthenticationAgent {
+    challenges: UnboundedSender<BeginAuthenticationCall>,
+}
+
+impl AuthenticationAgent {
+    pub fn new(challenges: UnboundedSender<BeginAuthenticationCall>) -> Self {
+        Self { challenges }
+    }
+}
+
+#[interface(name = "org.freedesktop.PolicyKit1.AuthenticationAgent")]
+impl AuthenticationAgent {
+    async fn begin_authentication(
+        &self,
+        action_id: String,
+        message: String,
+        icon_name: String,
+        details: HashMap<String, String>,
+        cookie: String,
+        _identities: Vec<(String, HashMap<String, OwnedValue>)>,
+    ) {
+        // A dropped receiver just means whoever should have consumed this challenge isn't
+        // listening (e.g. mid-shutdown); not a reason to fail the D-Bus call.
+        let _ = self.challenges.send(BeginAuthenticationCall { action_id, message, icon_name, details, cookie });
+    }
+
+    async fn cancel_authentication(&self, _cookie: String) {
+        // ponytail: nothing is tracking in-flight challenges yet to cancel -- see the struct
+        // doc comment. A real implementation cancels the matching PAM conversation.
+    }
+}
+
+/// Registers `agent` as the polkit authentication agent for `subject`/`locale`.
+///
+/// Exports `agent` on `connection`'s object server at `object_path` *before* calling
+/// `RegisterAuthenticationAgent`, so a `BeginAuthentication` callback arriving right after
+/// registration succeeds always finds a live object to dispatch to.
+pub async fn register_agent(
+    connection: &zbus::Connection,
+    agent: AuthenticationAgent,
+    subject: &Subject,
+    locale: &str,
+    object_path: &str,
+) -> zbus::Result<()> {
+    connection.object_server().at(object_path, agent).await?;
+    let authority = AuthorityProxy::new(connection).await?;
+    authority.register_authentication_agent(subject, locale, object_path).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio::net::UnixStream;
+    use tokio::sync::mpsc;
+
+    /// A stand-in for polkitd's own `org.freedesktop.PolicyKit1.Authority` object, exported
+    /// on the peer end of a p2p connection so `register_agent`'s real wire call can be
+    /// exercised without a live system bus (docs/oblisk-tdd-test-harness.md §2.2's mock
+    /// D-Bus seam, adapted to zbus 5.x: that doc's `#[dbus_interface]` is zbus 3.x's macro
+    /// name, renamed to `#[zbus::interface]` by zbus 5.x -- verified against the vendored
+    /// zbus_macros-5.19.0 source, `zbus::interface` is what's re-exported from `zbus::lib.rs`
+    /// today).
+    struct MockAuthority {
+        calls: mpsc::UnboundedSender<(Subject, String, String)>,
+    }
+
+    #[interface(name = "org.freedesktop.PolicyKit1.Authority")]
+    impl MockAuthority {
+        async fn register_authentication_agent(&self, subject: Subject, locale: String, object_path: String) {
+            let _ = self.calls.send((subject, locale, object_path));
+        }
+    }
+
+    /// A connected pair of p2p zbus connections, no bus daemon involved. Mirrors the
+    /// pattern zbus's own `tests/e2e.rs` (`iface_and_proxy_unix_p2p`) uses -- crucially,
+    /// building both ends concurrently via `try_join!`, not one after the other: the SASL
+    /// handshake needs both peers reading and writing at once, so awaiting the server's
+    /// `.build()` to completion before even starting the client's deadlocks.
+    async fn p2p_pair() -> (zbus::Connection, zbus::Connection) {
+        let (a, b) = UnixStream::pair().expect("failed to create a unix socket pair");
+        let guid = zbus::Guid::generate();
+        let server_builder =
+            zbus::connection::Builder::unix_stream(a).server(guid).expect("p2p server builder setup").p2p();
+        let client_builder = zbus::connection::Builder::unix_stream(b).p2p();
+        tokio::try_join!(server_builder.build(), client_builder.build()).expect("p2p handshake")
+    }
+
+    fn test_subject() -> Subject {
+        let mut subject_details = HashMap::new();
+        subject_details.insert("session-id".to_string(), OwnedValue::try_from(Value::from("c1")).unwrap());
+        Subject { subject_kind: "unix-session".to_string(), subject_details }
+    }
+
+    #[tokio::test]
+    async fn register_agent_sends_register_authentication_agent_with_the_right_args() {
+        let (authority_side, agent_side) = p2p_pair().await;
+        let (calls_tx, mut calls_rx) = mpsc::unbounded_channel();
+        authority_side
+            .object_server()
+            .at("/org/freedesktop/PolicyKit1/Authority", MockAuthority { calls: calls_tx })
+            .await
+            .expect("failed to export the mock Authority");
+
+        let (challenges_tx, _challenges_rx) = mpsc::unbounded_channel();
+        let agent = AuthenticationAgent::new(challenges_tx);
+        let subject = test_subject();
+
+        register_agent(&agent_side, agent, &subject, "en_US.UTF-8", AGENT_OBJECT_PATH)
+            .await
+            .expect("registration against the mock Authority should succeed");
+
+        let (received_subject, locale, object_path) =
+            calls_rx.recv().await.expect("mock Authority never received RegisterAuthenticationAgent");
+        assert_eq!(received_subject.subject_kind, "unix-session");
+        assert_eq!(
+            received_subject.subject_details.get("session-id").cloned().and_then(|v| String::try_from(v).ok()),
+            Some("c1".to_string())
+        );
+        assert_eq!(locale, "en_US.UTF-8");
+        assert_eq!(object_path, AGENT_OBJECT_PATH);
+    }
+
+    #[tokio::test]
+    async fn current_session_subject_reads_xdg_session_id() {
+        // SAFETY: this test crate is single-threaded per-test-process for env mutation
+        // purposes here (tokio's multi-thread test runtime still executes this test body on
+        // one task; no other test in this binary reads/writes XDG_SESSION_ID).
+        unsafe { std::env::set_var("XDG_SESSION_ID", "test-session-42") };
+        let subject = current_session_subject().expect("XDG_SESSION_ID was just set");
+        assert_eq!(subject.subject_kind, "unix-session");
+        assert_eq!(
+            subject.subject_details.get("session-id").cloned().and_then(|v| String::try_from(v).ok()),
+            Some("test-session-42".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn begin_authentication_forwards_the_parsed_challenge() {
+        let (agent_side, caller_side) = p2p_pair().await;
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        agent_side
+            .object_server()
+            .at(AGENT_OBJECT_PATH, AuthenticationAgent::new(tx))
+            .await
+            .expect("failed to export AuthenticationAgent");
+
+        let proxy: zbus::Proxy<'_> = zbus::proxy::Builder::new(&caller_side)
+            .destination("org.oblisk.Supervisor")
+            .expect("valid destination bus name")
+            .path(AGENT_OBJECT_PATH)
+            .expect("valid object path")
+            .interface("org.freedesktop.PolicyKit1.AuthenticationAgent")
+            .expect("valid interface name")
+            .build()
+            .await
+            .expect("failed to build a p2p proxy to the agent");
+
+        let details: HashMap<String, String> = HashMap::from([("polkit.gettext_domain".to_string(), "polkit".to_string())]);
+        let identities: Vec<(String, HashMap<String, OwnedValue>)> = Vec::new();
+        proxy
+            .call_method(
+                "BeginAuthentication",
+                &("org.oblisk.test.action", "Authenticate to do the thing", "dialog-password", details, "cookie-123", identities),
+            )
+            .await
+            .expect("BeginAuthentication call should succeed");
+
+        let received = rx.recv().await.expect("BeginAuthentication was never forwarded over the channel");
+        assert_eq!(received.action_id, "org.oblisk.test.action");
+        assert_eq!(received.message, "Authenticate to do the thing");
+        assert_eq!(received.icon_name, "dialog-password");
+        assert_eq!(received.cookie, "cookie-123");
+        assert_eq!(received.details.get("polkit.gettext_domain").map(String::as_str), Some("polkit"));
+    }
+
+    #[tokio::test]
+    async fn cancel_authentication_dispatches_without_error() {
+        let (agent_side, caller_side) = p2p_pair().await;
+        let (tx, _rx) = mpsc::unbounded_channel();
+        agent_side
+            .object_server()
+            .at(AGENT_OBJECT_PATH, AuthenticationAgent::new(tx))
+            .await
+            .expect("failed to export AuthenticationAgent");
+
+        let proxy: zbus::Proxy<'_> = zbus::proxy::Builder::new(&caller_side)
+            .destination("org.oblisk.Supervisor")
+            .expect("valid destination bus name")
+            .path(AGENT_OBJECT_PATH)
+            .expect("valid object path")
+            .interface("org.freedesktop.PolicyKit1.AuthenticationAgent")
+            .expect("valid interface name")
+            .build()
+            .await
+            .expect("failed to build a p2p proxy to the agent");
+
+        proxy
+            .call_method("CancelAuthentication", &("cookie-123",))
+            .await
+            .expect("CancelAuthentication call should succeed");
+    }
+}

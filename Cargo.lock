@@ -1412,6 +1412,7 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror",
+ "zeroize",
 ]
 
 [[package]]
@@ -1522,6 +1523,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "static_assertions"
+version = "1.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a2eb9349b6444b326872e140eb1cf5e7c522154d69e7a0ffb0fb81c06b37543f"
+
+[[package]]
 name = "supervisor"
 version = "0.1.0"
 dependencies = [
@@ -1538,6 +1545,7 @@ dependencies = [
  "wayland-client",
  "wayland-protocols",
  "zbus",
+ "zbus_polkit",
 ]
 
 [[package]]
@@ -1864,6 +1872,7 @@ version = "1.25.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f053576934f05a761a402421fbbe3d425d9366f75f978806a037b3ca481abecc"
 dependencies = [
+ "getrandom",
  "js-sys",
  "serde_core",
  "wasm-bindgen",
@@ -2267,6 +2276,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "zbus_polkit"
+version = "5.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ad23d5c4d198c7e2641b33e6e0d1f866f117408ba66fe80bbe52e289eeb77c52"
+dependencies = [
+ "enumflags2",
+ "serde",
+ "serde_repr",
+ "static_assertions",
+ "zbus",
+]
+
+[[package]]
 name = "zcheapstr"
 version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2280,6 +2302,26 @@ name = "zeno"
 version = "0.3.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6df3dc4292935e51816d896edcd52aa30bc297907c26167fec31e2b0c6a32524"
+
+[[package]]
+name = "zeroize"
+version = "1.9.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e13c156562582aa81c60cb29407084cdb54c4164760106ab78e6c5b0858cf64e"
+dependencies = [
+ "zeroize_derive",
+]
+
+[[package]]
+name = "zeroize_derive"
+version = "1.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3c50655cbb0fe3fc43170059e702f1ce5e19b84cec58dc87b037a09935c2f328"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
+]
 
 [[package]]
 name = "zmij"
