@@ -311,7 +311,7 @@ A fast-reconciling virtual repeater element.
 An IME-aware native input field mapped directly to Rust-owned `wp-text-input-v3`.
 *   `placeholder`: `string`
 *   `mask_character`: `string` (Capped at 1 byte; if specified, hides typed input)
-*   `on_change`: `function` (Lua callback executed on change. Key events are swallowed inside Rust's memory blocks during sensitive lock states)
+*   `on_change`: `function` (Lua callback executed on each committed edit batch from `wp-text-input-v3`, not per keystroke; IME composition is not character-by-character. Key events are swallowed inside Rust's memory blocks during sensitive lock states)
 
 ## 6. Top-Level Window Surface Nodes
 
