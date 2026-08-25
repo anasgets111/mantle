@@ -1,7 +1,6 @@
 ---
 name: implement
 description: "Implement an Oblisk slice from the plan or build steps."
-disable-model-invocation: true
 ---
 
 Implement the requested Oblisk slice against `docs/build-steps.md`, the
