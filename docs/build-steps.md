@@ -355,3 +355,215 @@ cargo run -p renderer -- --validate ~/.config/oblisk/shell.lua
 
 echo "Success: Scaffolding has compiled with 100% type-safety!"
 ```
+
+
+## 4. Continuation Playbook: Phase 9 Onward
+
+Phases 1-8 scaffolded the workspace and built isolated primitives in research-milestone phases.
+None of them are wired together yet. `supervisor` and `renderer` share no transport, no Lua VM
+runs anywhere, and the process-group and PBA-orchestration primitives Phase 7 and Phase 8 already
+built (`process::spawn_group_leader`/`reap_process_group`, `reload::run_pba`) have no caller. The
+phases below close that gap and reach what the original scope never covered: the scene graph, the
+reload watcher, and the D-Bus/hardware backend controllers.
+
+Terminology follows `CONTEXT.md`: loader, watcher, dependency snapshot, retained scene, lease,
+rollback. Read it first if a term here is unfamiliar. Every phase reuses an already-shipped
+primitive where one exists instead of re-deriving it, and every phase lists what it deliberately
+leaves for the next one. Follow the same scope-ceiling discipline as ADR-0015, ADR-0017, ADR-0018,
+and ADR-0019, rather than guessing ahead of a phase's own real caller.
+
+### Phase 9: IPC Control-Socket Transport & Wire Framing
+
+Build the real Unix-socket transport `CandidateLink` (ADR-0019) and the Supervisor's write-path
+dispatch (`oblisk-idl-api-specs.md` § 3.1) both need. The Supervisor binds and listens at
+`$XDG_RUNTIME_DIR/oblisk-shell.sock`, not `/tmp`, which is world-writable and unsuitable for a
+socket that will eventually carry secure textfield submissions (ADR-0005). Frame every message
+with a 4-byte big-endian length prefix ahead of a JSON payload, matching `CommandEnvelope`/
+`StateSnapshot`'s existing shape (`shared/src/lib.rs`, Phase 2). Add the framing reader/writer and
+its `thiserror`-based error enum to `shared`, finally giving that crate's already-declared, unused
+`thiserror` dependency a real job. Use each side's native async `AsyncReadExt`/`AsyncWriteExt`
+directly. Do not convert a `tokio::net::UnixStream` to a blocking `std::net` socket to reuse a
+synchronous reader, and do not busy-poll with a short sleep. `read_exact`/`write_all` on the async
+stream already suspends correctly.
+
+The Supervisor's listener must accept more than one live connection at once. During a generation
+swap, Generation `N` and Candidate `N+1` are both connected simultaneously (`CONTEXT.md`,
+Concurrent Overlapping Lifetimes). Each connection identifies its generation with a handshake
+message before any other traffic, so the Supervisor can address commands and pushes to the right
+generation instead of assuming exactly one peer.
+
+Deliberately deferred: the command-dispatch routing table itself (§ 3.2's ~30 write commands).
+This phase builds transport and connection identity only, not handlers for any specific
+capability. Also deferred: `process.run`'s line-streaming (Phase 15, a different transport
+concern).
+
+### Phase 10: Lua VM Bootstrap & the Loader
+
+Research Milestone. Instantiate `mlua` in `renderer` for the first time and build the loader: the
+Lua evaluation of `shell.lua` into a node tree, reused for both a candidate's first evaluation and
+the authoritative generation's re-evaluation on an in-place reload (`CONTEXT.md`, Loader).
+
+#### Research Task & Goals:
+1. **Type-marshalling boundary** (`oblisk-idl-api-specs.md` § 1.1). The strict, non-coercive
+   Rust-Lua type table. Implement it as the one conversion boundary every value crosses, not ad
+   hoc per call site.
+2. **`Signal` primitive** (§ 1.2). `signal:get()`, `signal:map(fn)`, and `computed(dependencies,
+   fn)`. `computed`'s 5ms-per-evaluation CPU cap needs research against `mlua`'s interrupt/hook
+   API (`Lua::set_interrupt` in recent `mlua` versions) to find a mechanism that can actually
+   abort a runaway Lua closure, not just measure after the fact.
+3. **Node constructors**: `rect`/`row`/`column`/`text`/`icon`/`button`/`list`/`textfield` (§ 5.2)
+   as Lua-callable sugar producing tagged tables carrying a `kind` field. This is the loader's
+   output for Phase 12's retained-scene reconciliation to consume, not the final in-memory node
+   itself.
+4. **Topology extraction**. The loader's evaluation must expose the top-level `surface` nodes'
+   layer/anchor/monitor set as a distinct, cheap-to-diff output, separate from the full node tree.
+   This is what Phase 13's watcher compares across reloads to decide swap vs. in-place, and it
+   must be obtainable without running Phase 12's full retained-scene transaction.
+
+Deliberately deferred: the full retained-scene reconciliation (Phase 12); write-command dispatch
+back through Phase 9's socket (needs a specific capability consumer, not loader work); `textfield`
+`secure_submit` wiring to `SecureBuffer` (Phase 15, needs both the node and the socket).
+
+### Phase 11: Minimal End-to-End Slice
+
+Prove Phase 9 and Phase 10 are wired correctly before building anything on top of either. The
+Supervisor pushes one real `StateSnapshot`, reusing the already-shipped PipeWire mixer output from
+`audio::mixer` and giving it a real destination instead of Phase 6's `eprintln!` ceiling, over the
+real socket. The Renderer's loader evaluates a one-line `shell.lua` reading that value back as a
+`Signal`. The Supervisor is the listener, the Renderer connects as client. Match Phase 9's own
+design here; don't invert it. Acceptance test: a real audio-mixer volume change, made on the
+system, visibly reaches a `Signal:get()` call inside the Renderer process.
+
+### Phase 12: Retained Scene & the One-Pass Layout Engine
+
+Implement `renderer/src/layout/mod.rs` against `oblisk-layout-engine-geometry.md` § 3-5 and
+`CONTEXT.md`'s retained-scene entries. Not a tree rebuilt from scratch each evaluation, but a
+persistent structure the loader's output is reconciled into.
+
+1. **Constraint Pass** (§ 3.1, top-down). Available bounds minus padding/margin, clamped by
+   `Pixels`/`Percent`/`Content`/`Fill`.
+2. **Size Resolution Pass** (§ 3.2, bottom-up). `Content`-sized text measured via `cosmic-text`
+   (Phase 4's shaping pipeline already does this off-thread); `Row`/`Column` intrinsic-size
+   formulas.
+3. **Position & Stretch Resolution Pass** (§ 3.3, top-down). Spare-space distribution by
+   `align_h`/`align_v`, not left-alignment-only.
+4. **Retained-scene transaction** (`CONTEXT.md`). Each reload cycle's batch apply: match fresh
+   nodes to existing retained nodes by index (§ 4, Keyed Reconciliation), write the changes, and
+   tear down removed subtrees child-first so a parent never frees a resource a child still
+   references.
+5. **Lease**. A removed node's GPU resource survives past its removal from the tree until whatever
+   still needs it (a wallpaper crossfade, Phase 16) finishes consuming it. Build the mechanism now
+   even though its only real consumer lands later; retrofitting deferred cleanup onto an
+   already-shipped child-first teardown is more invasive than building it in from the start.
+6. **Overlay input-region bounding boxes** (§ 5). Bounding-box union over `overlay_canvas`'s
+   visible children, projected logical-to-physical with floor/ceiling snapping, pushed via
+   `wl_surface::set_input_region`. Reuse `text/snap.rs`'s existing `snap_to_physical`/
+   `snap_border_to_physical` (Phase 4); the second has no caller yet and was built for exactly
+   this.
+
+Deliberately deferred: `list`'s virtual-repeater fast-reconciliation beyond basic indexed diffing,
+if index-based matching turns out insufficient for reordering without full rebuild. Flag rather
+than solve speculatively.
+
+### Phase 13: Watcher & In-Place Reload
+
+Build the Supervisor-side `inotify` watcher on `~/.config/oblisk/` (`CONTEXT.md`, Watcher).
+`inotify` has been an unused dependency since scaffolding, staged for exactly this. On a debounced
+file-change event, the watcher asks the currently authoritative generation's loader (Phase 10) to
+re-evaluate and report its new surface topology (§ 15.1). Unchanged topology: send `capability:
+"renderer", action: "reset_registrations"` (ADR-0006) and apply the fresh evaluation in place
+(ADR-0001). One Lua evaluation total, no process spawn, no Wayland rebinding. Changed topology:
+hand off to Phase 14's `run_pba` for a full generation swap.
+
+Rollback (`CONTEXT.md`): the pre-reload retained scene stays applied until the new evaluation
+fully succeeds. A failed in-place evaluation surfaces through `oblisk.rescue` (`is_rescue`/
+`error_log`, IDL § 2.10) instead of applying a broken tree or leaving the shell blank.
+
+### Phase 14: Wire the PBA Orchestrator, Per-Output Evidence & Renderer Presentation Feedback
+
+`reload::run_pba` and its `CandidateLink` trait (Phase 8, ADR-0019) are fully built and tested
+against a fake. This phase gives them their first real implementation and their first real caller.
+
+1. **Real `CandidateLink`** over Phase 9's socket. `push_state_snapshot`, `recv_ready_signal`,
+   `send_activate_draw`, `recv_presentation_evidence` as real framed messages, not a fake.
+2. **Per-output evidence** (closes ADR-0019 item 5). `CONTEXT.md`'s `Authoritative generation (per
+   output)` already settles the shape: authority transfers per output as each output's evidence
+   arrives, not all-or-nothing. `recv_presentation_evidence` takes an output identifier; the
+   Supervisor promotes each output independently as its evidence lands. Reaping Generation `N`'s
+   process is still all-or-nothing, a process can't be partially reaped, so it happens once every
+   output Generation `N` owned has individually transferred to `N+1`, matching ADR-0003's
+   per-`(generation, output)` model.
+3. **Renderer-side null-buffer commit and `wp_presentation_feedback`** (§ 15.2-15.3, closes
+   ADR-0019 item 3). Acknowledge `zwlr_layer_surface_v1`'s `configure` without a visible commit,
+   then on `ActivateDraw`, draw the first real frame and attach a presentation-feedback request.
+   Requires `wayland-protocols` (not just `wayland-protocols-wlr`) with its presentation-time
+   client feature enabled. Confirm the exact feature name against the crate's current published
+   API before depending on it.
+4. **Swap's input-deselection and promotion messages** (§ 15.4, closes ADR-0019 item 6). The two
+   remaining wire messages `run_pba` doesn't send today: clearing Generation `N`'s input region
+   per promoted output, and signaling `N+1` to claim focus.
+5. **`main.rs` wiring**. `mod reload;` already exists in `supervisor/src/main.rs` with no caller
+   (Phase 8). Phase 13's watcher becomes that caller here.
+
+### Phase 15: `process.run`, Stream Piping & Secure Input
+
+1. **`process.run`'s Lua binding** (closes ADR-0018 items 1-2). Call the already-built
+   `process::spawn_group_leader` directly; do not reimplement process-group spawning. Pipe
+   stdout/stderr line-buffered and non-blocking into Lua callbacks via
+   `tokio::io::AsyncBufReadExt`, not a dedicated blocking thread with a synchronous `BufReader`.
+2. **`textfield` `secure_submit`** (closes ADR-0015 item 2). Keystrokes from `wp-text-input-v3`
+   append directly into `shared::SecureBuffer` (fully built and tested since Phase 5, zero
+   production callers until now), never through Lua. Cross Phase 9's socket as a distinguished
+   envelope variant, and call `.zeroize()` immediately after the send completes, per ADR-0005 and
+   the `SecureBuffer` module doc comment's own warning not to rely on `Drop` alone.
+3. **Real PAM conversation** (closes ADR-0015 item 1). Replaces
+   `dbus::polkit::AuthenticationAgent::begin_authentication`'s channel-forward. The PAM crate
+   choice is unresearched, ADR-0015 says so explicitly. Spike it first, and write an ADR for the
+   pick before wiring it in; this is exactly the hard-to-reverse, surprising-without-context kind
+   of decision `domain-modeling` reserves an ADR for.
+
+### Phase 16: D-Bus & Hardware Backend Controllers
+
+Notifications (§ 1), Tray (§ 2), MPRIS (§ 3), NetworkManager (§ 4), BlueZ (§ 5), idle capability
+(§ 7), telemetry (§ 11), and power/thermals (§ 13) all follow the pattern already proven twice in
+this codebase, `dbus::polkit` (D-Bus proxy/agent registration) and `audio::mixer` (event-driven
+listener thread), and are TDD-able against real fixtures per `oblisk-tdd-test-harness.md` (p2p
+D-Bus connections, real sysfs roots), no mocks needed. Use `#[zbus::interface]`, not
+`#[dbus_interface]`; ADR-0013 already documents why the latter doesn't exist in the zbus version
+this workspace actually depends on. None of these block each other; sequence them by product
+priority once Phase 11's transport makes any of them worth building. Building a backend before
+that just repeats ADR-0015/0017's `eprintln!`-dead-end pattern a third time.
+
+Two exceptions worth building on their own track instead of folding into the general D-Bus
+pattern above:
+- **Wallpaper transition engine** (§ 8). Needs Phase 12's lease mechanism for its double-buffered
+  crossfade, not a D-Bus controller pattern. Sequence after Phase 12, independent of the rest of
+  this phase.
+- **Active-window tracking** (§ 9). Binds the foreign-toplevel protocol client-side in
+  `renderer/src/wayland/`, not a Supervisor D-Bus backend. Coupled to that module's growth
+  instead.
+
+### Phase 17: XDG Atomic State Manager
+
+`~/.local/state/oblisk/state.json`, written via temp-file-plus-atomic-rename (§ 14.1: write to
+`.tmp`, `sync_all`, `rename`). Pure local file I/O in `supervisor` with no dependency on the
+socket, Lua, or any D-Bus controller. Can be built any time, including in parallel with Phase 9 or
+10, as a low-risk warm-up if one is wanted.
+
+---
+
+## 5. Continuation Testing & Validation Protocols
+
+```bash
+#!/usr/bin/env bash
+set -euo pipefail
+
+# 1. Structural compile check across the now-larger workspace
+cargo check --workspace --release
+
+# 2. Full test suite, including the new transport/loader/layout/watcher seams
+cargo test --workspace
+
+# 3. Dry-run a reference config against the real loader
+cargo run -p renderer -- --validate ~/.config/oblisk/shell.lua
+```
