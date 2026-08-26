@@ -2,6 +2,7 @@ mod audio;
 mod dbus;
 mod process;
 mod reload;
+mod socket;
 
 use std::error::Error;
 
@@ -21,12 +22,17 @@ async fn main() -> Result<(), Box<dyn Error>> {
     // own OS thread, not a tokio task.
     std::thread::spawn(move || audio::mixer::run(audio_tx));
 
-    // ponytail: no core event loop exists yet (build-steps.md Phase 7/8 owns the Unix
-    // socket server, process reaper, and reload orchestrator this process eventually runs
-    // under). Draining both channels to a log line is the ceiling until that IPC layer
-    // exists to push challenges to the Renderer's textfield (ADR-0005/ADR-0009, see
-    // docs/adr/0015-polkit-pam-conversation-and-textfield-wiring-deferred.md) and app
-    // streams to Lua's audio.apps (see docs/adr/0017-audio-apps-lua-ipc-push-deferred.md).
+    let socket_path = shared::control_socket_path()?;
+    let (_registry, mut inbound_commands) = socket::spawn_listener(&socket_path)?;
+
+    // ponytail: no dispatch table exists yet (build-steps.md Phase 9 builds transport and
+    // connection identity only, not handlers for any specific capability -- see
+    // docs/adr/0020-control-socket-transport-without-dispatch-or-pba-wiring.md). Draining all
+    // three channels to a log line is the ceiling until a capability layer exists to push
+    // challenges to the Renderer's textfield (ADR-0005/ADR-0009, see
+    // docs/adr/0015-polkit-pam-conversation-and-textfield-wiring-deferred.md), app streams to
+    // Lua's audio.apps (see docs/adr/0017-audio-apps-lua-ipc-push-deferred.md), and inbound
+    // commands to a real capability handler.
     loop {
         tokio::select! {
             Some(challenge) = challenges.recv() => {
@@ -34,6 +40,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
             }
             Some(apps) = audio_apps.recv() => {
                 eprintln!("audio apps updated: {apps:?}");
+            }
+            Some(command) = inbound_commands.recv() => {
+                eprintln!("inbound command from generation {}: {:?}", command.generation_id, command.envelope);
             }
             else => break,
         }

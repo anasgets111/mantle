@@ -1,0 +1,281 @@
+//! Supervisor-side Unix control-socket listener (build-steps.md Phase 9).
+//!
+//! Binds at `$XDG_RUNTIME_DIR/oblisk-shell.sock`, not `/tmp` -- world-writable and unsuitable
+//! for a socket that will eventually carry secure textfield submissions (ADR-0005). Accepts
+//! more than one live connection at once: during a generation swap, Generation `N` and
+//! Candidate `N+1` are both connected simultaneously (`CONTEXT.md`'s Candidate and
+//! Authoritative generation entries). Every connection sends a `shared::ConnectionHandshake`
+//! as its first frame, before any other traffic; this module registers the connection by
+//! `generation_id` so a later caller can address a specific generation instead of assuming
+//! exactly one peer.
+//!
+//! Deliberately deferred, per build-steps.md Phase 9's own scope and
+//! docs/adr/0020-control-socket-transport-without-dispatch-or-pba-wiring.md: the
+//! command-dispatch routing table (`oblisk-idl-api-specs.md` § 3.2's ~30 write commands).
+//! Inbound frames are decoded as `shared::CommandEnvelope` and forwarded to the caller as-is,
+//! not routed to any capability handler yet.
+
+use std::collections::HashMap;
+use std::io;
+use std::path::Path;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
+
+use shared::framing::{self, FramingError};
+use shared::{CommandEnvelope, ConnectionHandshake};
+use tokio::net::{UnixListener, UnixStream};
+use tokio::sync::mpsc::{self, UnboundedSender};
+
+/// One frame received from a connection, decoded and tagged with the generation that sent it.
+#[derive(Debug)]
+pub struct InboundCommand {
+    pub generation_id: u32,
+    pub envelope: CommandEnvelope,
+}
+
+/// A registry entry paired with a monotonic token identifying *which* connection registered
+/// it. Needed because two connections can legitimately claim the same `generation_id` in
+/// sequence (a reconnect, or -- until real generation-ID assignment exists, see
+/// docs/adr/0020-control-socket-transport-without-dispatch-or-pba-wiring.md item 5 -- simply
+/// two Renderer processes both defaulting to `OBLISK_GENERATION_ID=0`): without the token, the
+/// old connection's cleanup would unregister the new one's live entry out from under it.
+struct Entry {
+    token: u64,
+    tx: UnboundedSender<Vec<u8>>,
+}
+
+/// Live connections, keyed by `generation_id`, so a later caller can push a frame to a
+/// specific generation instead of broadcasting to whichever peer happens to be connected.
+#[derive(Clone, Default)]
+pub struct GenerationRegistry {
+    connections: Arc<Mutex<HashMap<u32, Entry>>>,
+    next_token: Arc<AtomicU64>,
+}
+
+impl GenerationRegistry {
+    /// Queues `payload` for delivery to `generation_id`'s connection. Returns `false` if no
+    /// connection is currently registered for that generation (already disconnected, or
+    /// never connected).
+    ///
+    /// ponytail: no runtime caller yet -- `main.rs` doesn't push anything to a specific
+    /// generation until a later phase gives it a reason to (Phase 11's real `StateSnapshot`
+    /// push, or Phase 14's `CandidateLink` wiring). Exercised directly by this module's tests.
+    #[allow(dead_code)]
+    pub fn send_to(&self, generation_id: u32, payload: Vec<u8>) -> bool {
+        let connections = self.connections.lock().unwrap();
+        match connections.get(&generation_id) {
+            Some(entry) => entry.tx.send(payload).is_ok(),
+            None => false,
+        }
+    }
+
+    /// Registers `tx` for `generation_id`, replacing any prior connection registered under
+    /// the same id, and returns a token that must be passed back to [`Self::unregister`] so
+    /// only the connection that's still current gets removed.
+    fn register(&self, generation_id: u32, tx: UnboundedSender<Vec<u8>>) -> u64 {
+        let token = self.next_token.fetch_add(1, Ordering::Relaxed);
+        self.connections.lock().unwrap().insert(generation_id, Entry { token, tx });
+        token
+    }
+
+    /// Removes `generation_id`'s entry only if it's still the one registered under `token`.
+    /// A connection whose entry was already replaced by a newer one for the same
+    /// `generation_id` no-ops here instead of evicting the newer, live connection.
+    fn unregister(&self, generation_id: u32, token: u64) {
+        let mut connections = self.connections.lock().unwrap();
+        if connections.get(&generation_id).is_some_and(|entry| entry.token == token) {
+            connections.remove(&generation_id);
+        }
+    }
+
+    #[cfg(test)]
+    fn is_registered(&self, generation_id: u32) -> bool {
+        self.connections.lock().unwrap().contains_key(&generation_id)
+    }
+}
+
+/// Binds the listener at `path`, first removing a stale socket file left behind by an
+/// unclean prior shutdown -- `UnixListener::bind` fails with `AddrInUse` on an existing path
+/// otherwise, which would brick every restart after a crash.
+fn bind(path: &Path) -> Result<UnixListener, io::Error> {
+    if path.exists() {
+        std::fs::remove_file(path)?;
+    }
+    UnixListener::bind(path)
+}
+
+/// Binds the control socket at `path` and spawns the accept loop as a background task.
+/// Returns the [`GenerationRegistry`] (to address specific generations later) and a channel
+/// receiving every inbound frame, decoded and tagged with its sender's generation.
+pub fn spawn_listener(path: &Path) -> Result<(GenerationRegistry, mpsc::UnboundedReceiver<InboundCommand>), io::Error> {
+    let listener = bind(path)?;
+    let registry = GenerationRegistry::default();
+    let (inbound_tx, inbound_rx) = mpsc::unbounded_channel();
+
+    let accept_registry = registry.clone();
+    tokio::spawn(async move {
+        loop {
+            match listener.accept().await {
+                Ok((stream, _addr)) => {
+                    let registry = accept_registry.clone();
+                    let inbound_tx = inbound_tx.clone();
+                    tokio::spawn(async move {
+                        if let Err(err) = handle_connection(stream, registry, inbound_tx).await {
+                            eprintln!("control-socket connection ended: {err}");
+                        }
+                    });
+                }
+                // ponytail: no accept-loop restart policy exists yet -- there's no supervisor-
+                // level process-restart primitive in this codebase to recover into. A fatal
+                // accept error just stops the loop; the next phase to touch this should decide
+                // whether that needs to crash the whole Supervisor instead of going silent.
+                Err(err) => {
+                    eprintln!("control-socket accept failed, listener stopped: {err}");
+                    break;
+                }
+            }
+        }
+    });
+
+    Ok((registry, inbound_rx))
+}
+
+/// Reads the connection's handshake, registers it, then loops decoding inbound frames as
+/// `CommandEnvelope` and forwarding them, while a second task drains anything queued for this
+/// generation via [`GenerationRegistry::send_to`] out over the write half.
+async fn handle_connection(stream: UnixStream, registry: GenerationRegistry, inbound_tx: UnboundedSender<InboundCommand>) -> Result<(), FramingError> {
+    let (mut read_half, mut write_half) = stream.into_split();
+
+    let handshake: ConnectionHandshake = framing::read_json_frame(&mut read_half).await?;
+    let generation_id = handshake.generation_id;
+
+    let (outbound_tx, mut outbound_rx) = mpsc::unbounded_channel::<Vec<u8>>();
+    let token = registry.register(generation_id, outbound_tx);
+
+    let writer = tokio::spawn(async move {
+        while let Some(payload) = outbound_rx.recv().await {
+            if framing::write_frame(&mut write_half, &payload).await.is_err() {
+                break;
+            }
+        }
+    });
+
+    loop {
+        match framing::read_json_frame::<_, CommandEnvelope>(&mut read_half).await {
+            Ok(envelope) => {
+                let _ = inbound_tx.send(InboundCommand { generation_id, envelope });
+            }
+            Err(FramingError::Decode(err)) => {
+                // A malformed frame doesn't kill the connection -- only a transport-level
+                // failure (below) does.
+                eprintln!("control-socket frame from generation {generation_id} failed to decode as CommandEnvelope: {err}");
+            }
+            Err(_) => break,
+        }
+    }
+
+    registry.unregister(generation_id, token);
+    writer.abort();
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn bind_removes_a_stale_socket_file_left_by_a_prior_run() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("oblisk-shell.sock");
+
+        let first = UnixListener::bind(&path).unwrap();
+        drop(first); // Simulate an unclean shutdown: the socket file is left on disk.
+        assert!(path.exists());
+
+        let second = bind(&path);
+        assert!(second.is_ok(), "bind must clear a stale socket file, not fail with AddrInUse");
+    }
+
+    #[test]
+    fn unregister_ignores_a_stale_token_from_a_superseded_connection() {
+        let registry = GenerationRegistry::default();
+        let (tx_a, _rx_a) = mpsc::unbounded_channel();
+        let (tx_b, _rx_b) = mpsc::unbounded_channel();
+
+        let token_a = registry.register(5, tx_a);
+        let token_b = registry.register(5, tx_b); // A second connection claims the same generation.
+        assert!(registry.is_registered(5));
+
+        // The first connection's cleanup runs after it's already been superseded: it must not
+        // evict the second, still-live connection's entry.
+        registry.unregister(5, token_a);
+        assert!(registry.is_registered(5), "a stale unregister must not remove the live connection's entry");
+
+        registry.unregister(5, token_b);
+        assert!(!registry.is_registered(5), "unregistering with the current token must remove the entry");
+    }
+
+    async fn wait_until(mut condition: impl FnMut() -> bool) {
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            while !condition() {
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("condition did not become true in time");
+    }
+
+    #[tokio::test]
+    async fn spawn_listener_registers_two_simultaneous_connections_by_generation_id() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("oblisk-shell.sock");
+        let (registry, _inbound) = spawn_listener(&path).unwrap();
+
+        let mut client_a = UnixStream::connect(&path).await.unwrap();
+        framing::write_json_frame(&mut client_a, &ConnectionHandshake { generation_id: 1 }).await.unwrap();
+        let mut client_b = UnixStream::connect(&path).await.unwrap();
+        framing::write_json_frame(&mut client_b, &ConnectionHandshake { generation_id: 2 }).await.unwrap();
+
+        wait_until(|| registry.is_registered(1) && registry.is_registered(2)).await;
+
+        assert!(registry.send_to(1, b"to-one".to_vec()));
+        assert!(registry.send_to(2, b"to-two".to_vec()));
+        assert!(!registry.send_to(99, b"nobody".to_vec()), "no connection is registered for generation 99");
+
+        assert_eq!(framing::read_frame(&mut client_a).await.unwrap(), b"to-one");
+        assert_eq!(framing::read_frame(&mut client_b).await.unwrap(), b"to-two");
+    }
+
+    #[tokio::test]
+    async fn spawn_listener_forwards_a_decoded_command_envelope_tagged_with_its_generation() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("oblisk-shell.sock");
+        let (_registry, mut inbound) = spawn_listener(&path).unwrap();
+
+        let mut client = UnixStream::connect(&path).await.unwrap();
+        framing::write_json_frame(&mut client, &ConnectionHandshake { generation_id: 5 }).await.unwrap();
+
+        let envelope = CommandEnvelope {
+            jsonrpc: "2.0".to_string(),
+            method: "ExecuteCommand".to_string(),
+            params: shared::CommandParams {
+                generation_id: 5,
+                capability: "audio".to_string(),
+                action: "set_volume".to_string(),
+                arguments: vec![serde_json::json!(0.5)],
+                expected_revision: 1,
+            },
+            id: 1,
+        };
+        framing::write_json_frame(&mut client, &envelope).await.unwrap();
+
+        let received = tokio::time::timeout(std::time::Duration::from_secs(2), inbound.recv())
+            .await
+            .expect("inbound command did not arrive in time")
+            .expect("inbound channel closed unexpectedly");
+
+        assert_eq!(received.generation_id, 5);
+        assert_eq!(received.envelope.params.capability, "audio");
+        assert_eq!(received.envelope.params.action, "set_volume");
+    }
+}
