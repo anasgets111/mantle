@@ -1,0 +1,506 @@
+//! PipeWire registry listener for per-app audio streams (build-steps.md Phase 6, point 2).
+//!
+//! `build-steps.md` says to map a stream node's owning process via `sec.pid` or
+//! `node.client-id`. Checked against `pipewire-rs` 0.10.1's own `keys` module and, on a
+//! machine with a running `pipewire`/`pipewire-pulse`, against real `pw-dump` output:
+//! neither name is real, and the closer of the two real keys (`pipewire.sec.pid`, set on
+//! the *Client* object) turns out to be the wrong property for this job -- for any stream
+//! routed through `pipewire-pulse` (i.e. most PulseAudio-API clients), every client's
+//! `pipewire.sec.pid` is `pipewire-pulse`'s own pid, not the application's. The property
+//! that actually carries the owning application's pid is `application.process.id`
+//! (`PW_KEY_APP_PROCESS_ID`), set directly on the stream *node*'s own properties, matching
+//! `/proc/{pid}/comm` for the real app in every case checked. See
+//! docs/adr/0016-pipewire-app-stream-pid-uses-application-process-id-not-sec-pid.md.
+//!
+//! `media.class == "Stream/Output/Audio"` (`PW_KEY_MEDIA_CLASS`) is exactly as `build-steps.md`
+//! names it -- verified against `/usr/include/pipewire-0.3/pipewire/keys.h` and real
+//! `pw-dump` output for playback streams.
+//!
+//! [`on_global`] only checks `media.class` at registry `global` time, then always binds a
+//! matching node rather than also requiring `application.process.id` to be present yet.
+//! Checked live against a running `pipewire`/`pipewire-pulse` (not assumed): a
+//! `pipewire-pulse`-routed stream's `global` event fires before `pipewire-pulse` pushes the
+//! `application.process.id`/`application.name` properties onto the node, so filtering on the
+//! full parse at `global` time missed every such stream. The pid arrives moments later
+//! through the bound node's own `info` event -- that's what [`build_app_stream`] runs against
+//! in [`on_global`]'s node listener.
+//!
+//! `info` fires on *any* change PipeWire tracks for the node, not just a props change --
+//! state transitions (RUNNING <-> IDLE/SUSPENDED, e.g. buffering, XRUNs, cork/uncork) and
+//! params/ports changes all trigger it too. Checked against `pipewire-rs` 0.10.1's `node.rs`
+//! and upstream PipeWire's `protocol-native.c`/`impl-node.c`: `NodeInfoRef::props()` returns
+//! `Some(&DictRef)` on every `info` call, but the C marshaller only fills real entries into
+//! that dict when `change_mask` includes `PW_NODE_CHANGE_MASK_PROPS` -- any other kind of
+//! `info` event carries a non-null but *empty* dict. So [`on_global`]'s node listener checks
+//! `NodeInfoRef::change_mask()` for `NodeChangeMask::PROPS` before running
+//! [`build_app_stream`] against `info.props()`; a non-PROPS `info` event leaves the tracked
+//! entry untouched instead of being misread as the stream disappearing. No separate
+//! node-added vs. node-properties-changed plumbing is needed; both funnel through the same
+//! `info` callback, gated on `change_mask`.
+//!
+//! Re-review question: is the very first `info` call PipeWire delivers after
+//! `registry.bind()` guaranteed to carry `NodeChangeMask::PROPS`? If it weren't, a node whose
+//! properties never changed again after that first call would never make it into `apps` at
+//! all -- [`apply_info_event`] would no-op forever and the stream would silently never
+//! appear. Checked against upstream PipeWire 1.6.8's `src/pipewire/impl-node.c`: every new
+//! client bind to a node global runs through `global_bind` (the node's `pw_global` bind
+//! callback), which unconditionally runs `this->info.change_mask = PW_NODE_CHANGE_MASK_ALL;
+//! pw_node_resource_info(resource, &this->info);` immediately after creating that client's
+//! resource -- before any other event can reach it. So the first `info` a freshly bound
+//! resource ever receives always has every change-mask bit set, PROPS included.
+//! `src/modules/module-protocol-native/protocol-native.c`'s `node_marshal_info` (the wire
+//! marshaller for that event) only substitutes a null dict when `change_mask &
+//! PW_NODE_CHANGE_MASK_PROPS` is unset, so the `ALL` mask carries a real props dict too, not
+//! just the bit. Later `info` calls for that same node id go through a different path --
+//! `emit_info_changed` in `impl-node.c`, which forwards only whichever bits actually changed
+//! (state, params, ports, or props) -- so `change_mask` only needs gating from the second
+//! call on; the first is unconditional by construction, not by luck.
+//!
+//! Confirmed live, not just from source: `pw-mon` attached before starting `paplay` (so the
+//! stream's node didn't exist yet) showed the node's very first `added:` block already
+//! carrying a full `properties:` section -- `application.name = "paplay"`,
+//! `application.process.id = "2673372"`, `node.name = "paplay"`,
+//! `media.class = "Stream/Output/Audio"` -- with no earlier, emptier `info` event for that
+//! node id preceding it. No code change follows from this: [`apply_info_event`]'s
+//! `has_props_change` gate was already correct, it just wasn't documented as covering the
+//! first call too.
+//!
+//! ponytail: the `media.class` filter itself still only runs once, at `global` time. A node
+//! whose `media.class` starts as something else and only later changes to
+//! `Stream/Output/Audio` won't be picked up (we never bound it, so we're not listening to its
+//! `info` events). Real clients set `media.class` once at stream creation and don't mutate it
+//! -- if that ever stops being true, the fix is binding every `ObjectType::Node`
+//! unconditionally and filtering inside the `info` callback instead.
+
+use std::cell::RefCell;
+use std::collections::HashMap;
+use std::fs;
+use std::rc::Rc;
+
+use pipewire as pw;
+use pw::keys;
+use pw::registry::GlobalObject;
+use pw::spa::utils::dict::DictRef;
+use pw::types::ObjectType;
+use tokio::sync::mpsc::UnboundedSender;
+
+/// `media.class` value stream playback nodes carry. Verified against real `pw-dump` output,
+/// not just `build-steps.md`'s text -- see the module doc comment.
+const STREAM_OUTPUT_AUDIO: &str = "Stream/Output/Audio";
+
+/// One playback stream node PipeWire has advertised, filtered to
+/// `media.class == "Stream/Output/Audio"` and resolved to its owning process.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AppStream {
+    /// PipeWire registry id of the stream node -- the key [`AudioApps`] tracks entries by.
+    pub node_id: u32,
+    /// `application.process.id`: the pid PipeWire recorded for the stream's owning process.
+    pub pid: i32,
+    /// `application.name`, if the client set one.
+    pub app_name: Option<String>,
+    /// `/proc/{pid}/comm` for `pid`, if the process still existed when this stream was seen.
+    pub process_name: Option<String>,
+}
+
+/// String key/value lookup PipeWire property dicts implement -- lets the parsing below run
+/// against both a live `DictRef` and, in tests, a plain map built from recorded `pw-dump`
+/// output.
+trait PropsLookup {
+    fn get_prop(&self, key: &str) -> Option<&str>;
+}
+
+impl PropsLookup for DictRef {
+    fn get_prop(&self, key: &str) -> Option<&str> {
+        self.get(key)
+    }
+}
+
+impl PropsLookup for HashMap<String, String> {
+    fn get_prop(&self, key: &str) -> Option<&str> {
+        self.get(key).map(String::as_str)
+    }
+}
+
+/// A stream node's `media.class`/pid/name properties, parsed but not yet resolved to a
+/// process name.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ParsedStream {
+    pid: i32,
+    app_name: Option<String>,
+}
+
+/// Whether `props` is a playback stream node (`media.class == "Stream/Output/Audio"`).
+fn is_stream_output_audio(props: &impl PropsLookup) -> bool {
+    props.get_prop(*keys::MEDIA_CLASS) == Some(STREAM_OUTPUT_AUDIO)
+}
+
+/// Parses `props` into a [`ParsedStream`] if it's a `Stream/Output/Audio` node with a valid
+/// `application.process.id`. `None` for anything else (sinks, sources, non-audio streams, or
+/// a stream missing or mangling the pid -- including a stream node PipeWire hasn't finished
+/// populating yet, see the module doc comment).
+fn parse_stream_props(props: &impl PropsLookup) -> Option<ParsedStream> {
+    if !is_stream_output_audio(props) {
+        return None;
+    }
+    let pid = props.get_prop(*keys::APP_PROCESS_ID)?.parse().ok()?;
+    let app_name = props.get_prop(*keys::APP_NAME).map(str::to_string);
+    Some(ParsedStream { pid, app_name })
+}
+
+/// Reads `/proc/{pid}/comm` for the process name `pid` maps to. `None` if the process has
+/// already exited or `/proc` isn't readable.
+fn resolve_process_name(pid: i32) -> Option<String> {
+    let comm = fs::read_to_string(format!("/proc/{pid}/comm")).ok()?;
+    Some(comm.trim_end().to_string())
+}
+
+/// Parses `props` and resolves the owning process's name in one step -- what both the
+/// registry `global` handler and the bound node's `info` handler call.
+fn build_app_stream(node_id: u32, props: &impl PropsLookup) -> Option<AppStream> {
+    let parsed = parse_stream_props(props)?;
+    let process_name = resolve_process_name(parsed.pid);
+    Some(AppStream { node_id, pid: parsed.pid, app_name: parsed.app_name, process_name })
+}
+
+/// Applies one bound node's `info` event to `apps`. `has_props_change` is whether the event's
+/// `change_mask` included `NodeChangeMask::PROPS` -- PipeWire's wire marshalling only fills in
+/// real entries in the event's props dict when the change is actually a props change; a
+/// state-only transition (RUNNING <-> IDLE/SUSPENDED), or a params- or ports-only info event,
+/// carries an *empty* props dict instead (see the module doc comment). Skipping the
+/// upsert/remove decision on those is what keeps a still-live stream from being dropped just
+/// because PipeWire notified us about something unrelated to its properties. Gating
+/// unconditionally like this doesn't risk a node that never gets tracked: PipeWire's
+/// `global_bind` always sends the *first* `info` call for a freshly bound node with every
+/// change-mask bit set, PROPS included -- see the module doc comment's citation of
+/// `impl-node.c`/`protocol-native.c` and the live `pw-mon` verification.
+fn apply_info_event(apps: &mut AudioApps, node_id: u32, has_props_change: bool, props: Option<&impl PropsLookup>) {
+    if !has_props_change {
+        return;
+    }
+    match props.and_then(|props| build_app_stream(node_id, props)) {
+        Some(app) => apps.upsert(app),
+        None => apps.remove(node_id),
+    }
+}
+
+/// Live per-app audio stream list, keyed by PipeWire node id so add/remove/property-change
+/// events can update it in place.
+#[derive(Debug, Default)]
+pub struct AudioApps {
+    streams: HashMap<u32, AppStream>,
+}
+
+impl AudioApps {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Node-added or node-properties-changed: insert or replace `stream`'s entry.
+    pub fn upsert(&mut self, stream: AppStream) {
+        self.streams.insert(stream.node_id, stream);
+    }
+
+    /// Node removed from the registry, or its properties no longer parse as an audio stream.
+    pub fn remove(&mut self, node_id: u32) {
+        self.streams.remove(&node_id);
+    }
+
+    /// The current streams, sorted by node id for a deterministic snapshot order.
+    pub fn snapshot(&self) -> Vec<AppStream> {
+        let mut apps: Vec<AppStream> = self.streams.values().cloned().collect();
+        apps.sort_by_key(|app| app.node_id);
+        apps
+    }
+}
+
+/// Shared state the registry/node listener closures mutate: the running app list, plus the
+/// bound `Node` proxies (and their listeners) that keep property-change events flowing, plus
+/// where updated snapshots get sent. Held for the thread's whole lifetime -- see the `run`
+/// doc comment for what a graceful shutdown would need that doesn't exist yet.
+struct MixerState {
+    apps: AudioApps,
+    nodes: HashMap<u32, (pw::node::Node, pw::node::NodeListener)>,
+    updates: UnboundedSender<Vec<AppStream>>,
+}
+
+impl MixerState {
+    fn publish(&self) {
+        // A dropped receiver means nothing is draining yet, or the process is mid-shutdown
+        // -- not a reason to stop tracking streams.
+        let _ = self.updates.send(self.apps.snapshot());
+    }
+}
+
+/// Runs the PipeWire registry listener until the process exits, sending an updated snapshot
+/// of [`AppStream`]s over `updates` on every node-added, node-properties-changed, or
+/// node-removed event. Blocks the calling thread -- call from a dedicated
+/// `std::thread::spawn`, never from an async task: `pipewire-rs`'s event loop and the
+/// `Rc`-based listener state here are single-threaded and non-`Send`.
+///
+/// `updates` only reaches a log line in `main()` for now, not Lua -- see
+/// docs/adr/0017-audio-apps-lua-ipc-push-deferred.md for why and what unblocks it.
+///
+/// ponytail: no shutdown path -- `main_loop.run()` returns only when the process exits.
+/// Phase 7/8's reload orchestrator is what would give this a `main_loop.quit()` trigger to
+/// react to; nothing calls for that yet.
+///
+/// Logs and returns if PipeWire can't be reached at all (no `pipewire` daemon running)
+/// rather than panicking: audio tracking is one optional subsystem, not a reason to take the
+/// whole supervisor down.
+pub fn run(updates: UnboundedSender<Vec<AppStream>>) {
+    if let Err(err) = run_inner(updates) {
+        eprintln!("pipewire registry listener stopped: {err}");
+    }
+}
+
+fn run_inner(updates: UnboundedSender<Vec<AppStream>>) -> Result<(), pw::Error> {
+    pw::init();
+
+    let main_loop = pw::main_loop::MainLoopRc::new(None)?;
+    let context = pw::context::ContextRc::new(&main_loop, None)?;
+    let core = context.connect_rc(None)?;
+    let registry = core.get_registry_rc()?;
+
+    let state = Rc::new(RefCell::new(MixerState { apps: AudioApps::new(), nodes: HashMap::new(), updates }));
+
+    // Weak, not a clone of `registry` itself: the listener this builds is a hook stored on
+    // `registry`'s own C object, so a strong `RegistryRc` captured here would keep itself
+    // alive forever (same self-reference `pipewire-rs`'s own `pw-mon` example avoids the
+    // same way for its main-loop signal handlers).
+    let registry_weak = registry.downgrade();
+    let state_for_global = Rc::clone(&state);
+    let state_for_remove = Rc::clone(&state);
+
+    let _registry_listener = registry
+        .add_listener_local()
+        .global(move |obj| {
+            if let Some(registry) = registry_weak.upgrade() {
+                on_global(&state_for_global, &registry, obj);
+            }
+        })
+        .global_remove(move |id| {
+            let mut state = state_for_remove.borrow_mut();
+            state.nodes.remove(&id);
+            state.apps.remove(id);
+            state.publish();
+        })
+        .register();
+
+    main_loop.run();
+    Ok(())
+}
+
+/// Handles one registry `global` event: filters to `Stream/Output/Audio` nodes by their
+/// already-known properties, then binds the node so its `info` event -- gated to only the
+/// calls that actually carry a props change, see the module doc comment -- extracts the pid,
+/// resolves the process name, and keeps the app list current. Doesn't require the full parse
+/// to succeed here: `application.process.id` can still be missing at `global` time (see the
+/// module doc comment) and shows up in a later `info` call instead.
+fn on_global(state: &Rc<RefCell<MixerState>>, registry: &pw::registry::RegistryRc, obj: &GlobalObject<&DictRef>) {
+    if obj.type_ != ObjectType::Node {
+        return;
+    }
+    let is_audio_stream = obj.props.is_some_and(is_stream_output_audio);
+    if !is_audio_stream {
+        return;
+    }
+
+    let node: pw::node::Node = match registry.bind(obj) {
+        Ok(node) => node,
+        Err(_) => return,
+    };
+    let node_id = obj.id;
+    let state_for_info = Rc::clone(state);
+    let listener = node
+        .add_listener_local()
+        .info(move |info| {
+            let mut state_mut = state_for_info.borrow_mut();
+            let has_props_change = info.change_mask().contains(pw::node::NodeChangeMask::PROPS);
+            apply_info_event(&mut state_mut.apps, node_id, has_props_change, info.props());
+            state_mut.publish();
+        })
+        .register();
+
+    state.borrow_mut().nodes.insert(node_id, (node, listener));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A real `Stream/Output/Audio` node's properties, recorded via `pw-dump` from a Zen
+    /// browser playback stream routed through `pipewire-pulse` on a live system -- not
+    /// invented from the spec text.
+    fn zen_browser_stream_props() -> HashMap<String, String> {
+        HashMap::from([
+            ("media.class".to_string(), "Stream/Output/Audio".to_string()),
+            ("application.name".to_string(), "Zen".to_string()),
+            ("application.process.id".to_string(), "1538319".to_string()),
+            ("application.process.binary".to_string(), "zen-bin".to_string()),
+            ("client.id".to_string(), "97".to_string()),
+            ("node.name".to_string(), "Zen".to_string()),
+        ])
+    }
+
+    #[test]
+    fn parse_stream_props_matches_a_real_stream_output_audio_node() {
+        let parsed = parse_stream_props(&zen_browser_stream_props()).expect("should parse as an audio stream");
+        assert_eq!(parsed.pid, 1538319);
+        assert_eq!(parsed.app_name, Some("Zen".to_string()));
+    }
+
+    #[test]
+    fn parse_stream_props_rejects_non_stream_media_class() {
+        let props = HashMap::from([
+            ("media.class".to_string(), "Audio/Sink".to_string()),
+            ("application.process.id".to_string(), "1234".to_string()),
+        ]);
+        assert!(parse_stream_props(&props).is_none());
+    }
+
+    #[test]
+    fn parse_stream_props_rejects_a_stream_missing_the_pid() {
+        let props = HashMap::from([("media.class".to_string(), "Stream/Output/Audio".to_string())]);
+        assert!(parse_stream_props(&props).is_none());
+    }
+
+    #[test]
+    fn parse_stream_props_rejects_an_unparseable_pid() {
+        let props = HashMap::from([
+            ("media.class".to_string(), "Stream/Output/Audio".to_string()),
+            ("application.process.id".to_string(), "not-a-pid".to_string()),
+        ]);
+        assert!(parse_stream_props(&props).is_none());
+    }
+
+    #[test]
+    fn parse_stream_props_allows_a_missing_app_name() {
+        let props = HashMap::from([
+            ("media.class".to_string(), "Stream/Output/Audio".to_string()),
+            ("application.process.id".to_string(), "1234".to_string()),
+        ]);
+        let parsed = parse_stream_props(&props).expect("pid alone is enough to parse");
+        assert_eq!(parsed.app_name, None);
+    }
+
+    #[test]
+    fn resolve_process_name_reads_proc_comm_for_a_real_process() {
+        // Uses this test process's own pid rather than spawning a child: forking a fresh
+        // process just to immediately read back its pid raced, under this sandbox's
+        // parallel test threads, with the pid transiently aliasing another thread in this
+        // same binary -- a sandbox pid-allocator quirk, not a real Linux guarantee, but the
+        // test doesn't need a spawned child to exercise the real /proc/{pid}/comm path.
+        let pid = std::process::id() as i32;
+        let name = resolve_process_name(pid).expect("this process's own /proc entry must be readable");
+        assert!(!name.is_empty());
+        assert!(!name.ends_with('\n'), "trim_end should have stripped comm's trailing newline");
+    }
+
+    #[test]
+    fn resolve_process_name_returns_none_for_a_pid_that_does_not_exist() {
+        assert_eq!(resolve_process_name(i32::MAX), None);
+    }
+
+    #[test]
+    fn build_app_stream_combines_parsing_and_pid_resolution() {
+        let pid = std::process::id();
+        let expected_process_name = resolve_process_name(pid as i32);
+
+        let props = HashMap::from([
+            ("media.class".to_string(), "Stream/Output/Audio".to_string()),
+            ("application.process.id".to_string(), pid.to_string()),
+            ("application.name".to_string(), "Test App".to_string()),
+        ]);
+
+        let app = build_app_stream(42, &props).expect("should build an AppStream");
+        assert_eq!(app.node_id, 42);
+        assert_eq!(app.pid, pid as i32);
+        assert_eq!(app.app_name, Some("Test App".to_string()));
+        assert_eq!(app.process_name, expected_process_name);
+    }
+
+    #[test]
+    fn build_app_stream_rejects_a_non_audio_node() {
+        let props = HashMap::from([("media.class".to_string(), "Video/Source".to_string())]);
+        assert!(build_app_stream(1, &props).is_none());
+    }
+
+    fn sample_stream(node_id: u32) -> AppStream {
+        AppStream { node_id, pid: 100 + node_id as i32, app_name: Some(format!("app-{node_id}")), process_name: None }
+    }
+
+    #[test]
+    fn audio_apps_upsert_then_snapshot_returns_the_stream() {
+        let mut apps = AudioApps::new();
+        apps.upsert(sample_stream(1));
+        assert_eq!(apps.snapshot(), vec![sample_stream(1)]);
+    }
+
+    #[test]
+    fn audio_apps_upsert_replaces_the_existing_entry_for_the_same_node_id() {
+        let mut apps = AudioApps::new();
+        apps.upsert(sample_stream(1));
+        let renamed = AppStream { app_name: Some("renamed".to_string()), ..sample_stream(1) };
+        apps.upsert(renamed.clone());
+        assert_eq!(apps.snapshot(), vec![renamed]);
+    }
+
+    #[test]
+    fn audio_apps_remove_drops_the_entry() {
+        let mut apps = AudioApps::new();
+        apps.upsert(sample_stream(1));
+        apps.remove(1);
+        assert!(apps.snapshot().is_empty());
+    }
+
+    #[test]
+    fn apply_info_event_keeps_a_tracked_stream_through_a_state_only_info_event() {
+        let mut apps = AudioApps::new();
+        // First info event: PipeWire's PROPS-bearing bind-time event, full props. Not just an
+        // assumption -- `global_bind` in upstream `impl-node.c` guarantees this is what the
+        // real first call always looks like, see the module doc comment.
+        apply_info_event(&mut apps, 1, true, Some(&zen_browser_stream_props()));
+        assert_eq!(apps.snapshot().len(), 1, "the initial props-bearing info event should track the stream");
+
+        // Second info event: a state-only transition (e.g. RUNNING -> IDLE). PipeWire doesn't
+        // set the PROPS bit for these, and sends an empty props dict -- not evidence the node
+        // stopped being a Stream/Output/Audio node with a valid pid.
+        let state_only_props: HashMap<String, String> = HashMap::new();
+        apply_info_event(&mut apps, 1, false, Some(&state_only_props));
+
+        assert_eq!(
+            apps.snapshot().len(),
+            1,
+            "a state-only info event (no PROPS change) must not drop an already-tracked stream"
+        );
+    }
+
+    #[test]
+    fn apply_info_event_upserts_on_a_props_bearing_event() {
+        let mut apps = AudioApps::new();
+        apply_info_event(&mut apps, 1, true, Some(&zen_browser_stream_props()));
+        assert_eq!(apps.snapshot(), vec![build_app_stream(1, &zen_browser_stream_props()).unwrap()]);
+    }
+
+    #[test]
+    fn apply_info_event_removes_when_a_props_bearing_event_no_longer_parses() {
+        let mut apps = AudioApps::new();
+        apply_info_event(&mut apps, 1, true, Some(&zen_browser_stream_props()));
+        assert_eq!(apps.snapshot().len(), 1);
+
+        let non_stream_props = HashMap::from([("media.class".to_string(), "Audio/Sink".to_string())]);
+        apply_info_event(&mut apps, 1, true, Some(&non_stream_props));
+
+        assert!(apps.snapshot().is_empty(), "a PROPS-bearing event that no longer parses as a stream should remove it");
+    }
+
+    #[test]
+    fn audio_apps_snapshot_is_sorted_by_node_id() {
+        let mut apps = AudioApps::new();
+        apps.upsert(sample_stream(3));
+        apps.upsert(sample_stream(1));
+        apps.upsert(sample_stream(2));
+        let ids: Vec<u32> = apps.snapshot().iter().map(|app| app.node_id).collect();
+        assert_eq!(ids, vec![1, 2, 3]);
+    }
+}
