@@ -36,11 +36,41 @@ _Avoid_: hot-reload (ambiguous: covers both swap and in-place reload)
 Resetting the Lua VM and re-running the config inside the current generation, without spawning a candidate or rebinding Wayland/EGL. Used for value changes.
 _Avoid_: hot-reload, live patch
 
+**Dependency snapshot**:
+The Supervisor-owned system-state payload (`shared::StateSnapshot`: revision plus JSON payload) pushed to a generation so its loader hydrates signals without live-querying NetworkManager, BlueZ, or PipeWire itself. The same snapshot type hydrates a candidate's first evaluation and an in-place reload's re-evaluation.
+_Avoid_: state snapshot, hydration payload
+
+**Loader**:
+The Lua evaluation of `shell.lua` into a node tree and surface topology, run inside a generation. The same loader logic runs both the authoritative generation's re-evaluation during an in-place reload and a candidate's first evaluation during a generation swap.
+_Avoid_: config parser, AST compiler
+
+**Watcher**:
+The Supervisor-side `inotify` trigger that detects a config edit and dispatches the reload. It asks the authoritative generation's loader to re-evaluate, then either sends `reset_registrations` for an in-place reload or spawns a candidate for a generation swap, depending on whether the re-evaluation reports a topology change. Owns the swap-vs-in-place decision, not the reload's execution.
+_Avoid_: file monitor, reload trigger
+
+**Rollback**:
+The rule that a reload never replaces a working generation's state with a failed one. A failed generation swap leaves the authoritative generation untouched (already built: `reload::run_pba` aborts the candidate on any pre-evidence failure). A failed in-place reload keeps the pre-reload retained scene applied and surfaces the failure through `oblisk.rescue` instead of applying a broken tree.
+_Avoid_: revert, recovery
+
 ## Surfaces
 
 **Wallpaper surface**:
 The third static surface (`Background` layer, non-exclusive, one per monitor), distinct from `main_bar` and `overlay_canvas`. Owns wallpaper texture rendering.
 _Avoid_: background layer (protocol term, not the Oblisk surface)
+
+## Scene
+
+**Retained scene**:
+The persistent Rust-side node tree for one generation, kept alive across reload cycles instead of rebuilt from scratch. The loader's freshly-evaluated tree is reconciled into it, not swapped in wholesale.
+_Avoid_: scene graph, node tree
+
+**Retained-scene transaction**:
+The batch operation that applies one loader evaluation to the retained scene: matches fresh nodes to existing ones by identity, writes the changes, and tears down removed subtrees child-first so a parent never frees a resource a child still holds.
+_Avoid_: reload apply, tree diff
+
+**Lease**:
+A grace period that keeps a removed node's GPU resource alive past its removal from the retained scene, until whatever still needs it (a wallpaper crossfade, an in-flight transition) finishes consuming it. Child-first cleanup runs once the lease expires.
+_Avoid_: keepalive, grace period
 
 ## Ownership
 
