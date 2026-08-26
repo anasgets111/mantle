@@ -1258,6 +1258,7 @@ dependencies = [
  "mlua",
  "shared",
  "smithay-client-toolkit",
+ "tempfile",
  "tokio",
  "ttf-parser",
  "wayland-client",
@@ -1412,6 +1413,7 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror",
+ "tokio",
  "zeroize",
 ]
 
@@ -1540,6 +1542,7 @@ dependencies = [
  "serde_json",
  "shared",
  "smithay-client-toolkit",
+ "tempfile",
  "tokio",
  "tokio-stream",
  "udev",
