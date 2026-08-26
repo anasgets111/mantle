@@ -21,7 +21,7 @@ pub fn control_socket_path() -> io::Result<PathBuf> {
 
 /// Guarded JSON-RPC 2.0 envelope wrapping a Lua write action.
 /// See docs/oblisk-idl-api-specs.md §7.2.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct CommandEnvelope {
     pub jsonrpc: String,
     pub method: String,
@@ -29,7 +29,7 @@ pub struct CommandEnvelope {
     pub id: u64,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct CommandParams {
     pub generation_id: u32,
     pub capability: String,
@@ -40,7 +40,7 @@ pub struct CommandParams {
 
 /// Emitted by the Supervisor on system changes to hydrate active Lua signals.
 /// `revision` is the capability's state-version counter (see ADR-0004).
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct StateSnapshot {
     pub revision: u32,
     pub payload: serde_json::Value,
@@ -53,6 +53,82 @@ pub struct StateSnapshot {
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ConnectionHandshake {
     pub generation_id: u32,
+}
+
+/// Supervisor -> Renderer: re-evaluate `shell.lua` now (build-steps.md Phase 13; CONTEXT.md,
+/// Watcher). `sequence` is echoed back on every response so a superseded round trip (a second
+/// file-change event fires before the first round trip completes) can be told apart from the
+/// current one -- same correlation role `reload::run_pba`'s `nonce: u64` plays for
+/// `ActivateDraw`.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ReevaluateRequest {
+    pub sequence: u64,
+}
+
+/// Renderer -> Supervisor: the outcome of one [`ReevaluateRequest`]. The Renderer classifies
+/// Unchanged-vs-TopologyChanged itself (it already holds both the old and new topology) -- the
+/// Supervisor only needs the verdict to decide which dispatch branch to run (CONTEXT.md's
+/// Watcher entry: "owns the swap-vs-in-place decision, not the reload's execution").
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub enum ReevaluateReport {
+    Unchanged { sequence: u64 },
+    TopologyChanged { sequence: u64 },
+    /// `shell.lua` failed to evaluate (syntax/runtime error, invalid top-level return, or a
+    /// surface whose topology fields don't type-check). The Renderer has already kept its prior
+    /// applied scene untouched and entered rescue state locally -- `error` is for the
+    /// Supervisor's own logging only.
+    Failed { sequence: u64, error: String },
+}
+
+/// Supervisor -> Renderer: apply the pending evaluation from the [`ReevaluateRequest`] carrying
+/// this same `sequence` -- sent only after a [`ReevaluateReport::Unchanged`].
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ApplyPendingReload {
+    pub sequence: u64,
+}
+
+/// Every frame the Supervisor can push to a Renderer connection, adjacently tagged so a single
+/// read loop can dispatch on `kind` without the connection needing a separate channel per
+/// message shape. `content = "data"` (not internally-tagged) because [`ReevaluateReport`] is
+/// itself an enum, which can't merge into an internally-tagged wrapper's flat object.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(tag = "kind", content = "data")]
+pub enum SupervisorFrame {
+    StateSnapshot(StateSnapshot),
+    Reevaluate(ReevaluateRequest),
+    ApplyPendingReload(ApplyPendingReload),
+}
+
+/// Every frame a Renderer connection can send to the Supervisor, same tagging scheme as
+/// [`SupervisorFrame`]. `Command` is § 7.2's existing Lua-write-action envelope; `ReevaluateReport`
+/// is Phase 13's new reload verdict -- both travel Renderer -> Supervisor, so they share one
+/// wire enum instead of two separately-typed read loops.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(tag = "kind", content = "data")]
+pub enum RendererFrame {
+    Command(CommandEnvelope),
+    ReevaluateReport(ReevaluateReport),
+}
+
+/// `~/.config/oblisk/`, resolved via `$XDG_CONFIG_HOME` falling back to `$HOME/.config` (XDG
+/// Base Directory order), hand-rolled rather than a new `dirs`-style dependency -- same
+/// one-function reasoning `control_socket_path` already used for `$XDG_RUNTIME_DIR`. Both
+/// `supervisor` (watches this directory) and `renderer` (reads `shell.lua` from it) resolve it
+/// identically.
+pub fn config_dir() -> io::Result<PathBuf> {
+    if let Some(xdg_config_home) = std::env::var_os("XDG_CONFIG_HOME") {
+        return Ok(PathBuf::from(xdg_config_home).join("oblisk"));
+    }
+    let home = std::env::var_os("HOME")
+        .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "neither XDG_CONFIG_HOME nor HOME is set"))?;
+    Ok(PathBuf::from(home).join(".config").join("oblisk"))
+}
+
+/// `config_dir()` joined with `shell.lua` -- the file Phase 13 makes real (build-steps.md
+/// Phase 13; `renderer/src/lua/mod.rs`'s and `renderer/src/socket.rs`'s doc comments both named
+/// this as their own missing piece).
+pub fn shell_lua_path() -> io::Result<PathBuf> {
+    Ok(config_dir()?.join("shell.lua"))
 }
 
 #[cfg(test)]
@@ -108,5 +184,84 @@ mod tests {
 
         let parsed: ConnectionHandshake = serde_json::from_value(wire).unwrap();
         assert_eq!(parsed, handshake);
+    }
+
+    #[test]
+    fn supervisor_frame_state_snapshot_is_adjacently_tagged() {
+        let frame = SupervisorFrame::StateSnapshot(StateSnapshot { revision: 1, payload: serde_json::json!({"volume": 0.5}) });
+        let wire = serde_json::to_value(&frame).unwrap();
+        assert_eq!(wire, serde_json::json!({ "kind": "StateSnapshot", "data": { "revision": 1, "payload": {"volume": 0.5} } }));
+
+        let parsed: SupervisorFrame = serde_json::from_value(wire).unwrap();
+        assert_eq!(parsed, frame);
+    }
+
+    #[test]
+    fn supervisor_frame_reevaluate_is_adjacently_tagged() {
+        let frame = SupervisorFrame::Reevaluate(ReevaluateRequest { sequence: 7 });
+        let wire = serde_json::to_value(&frame).unwrap();
+        assert_eq!(wire, serde_json::json!({ "kind": "Reevaluate", "data": { "sequence": 7 } }));
+
+        let parsed: SupervisorFrame = serde_json::from_value(wire).unwrap();
+        assert_eq!(parsed, frame);
+    }
+
+    #[test]
+    fn supervisor_frame_apply_pending_reload_is_adjacently_tagged() {
+        let frame = SupervisorFrame::ApplyPendingReload(ApplyPendingReload { sequence: 9 });
+        let wire = serde_json::to_value(&frame).unwrap();
+        assert_eq!(wire, serde_json::json!({ "kind": "ApplyPendingReload", "data": { "sequence": 9 } }));
+
+        let parsed: SupervisorFrame = serde_json::from_value(wire).unwrap();
+        assert_eq!(parsed, frame);
+    }
+
+    #[test]
+    fn renderer_frame_command_is_adjacently_tagged() {
+        let envelope = CommandEnvelope {
+            jsonrpc: "2.0".to_string(),
+            method: "ExecuteCommand".to_string(),
+            params: CommandParams {
+                generation_id: 4,
+                capability: "audio".to_string(),
+                action: "set_volume".to_string(),
+                arguments: vec![serde_json::json!(0.75)],
+                expected_revision: 42,
+            },
+            id: 105,
+        };
+        let frame = RendererFrame::Command(envelope.clone());
+        let wire = serde_json::to_value(&frame).unwrap();
+        assert_eq!(wire["kind"], "Command");
+        assert_eq!(wire["data"]["method"], "ExecuteCommand");
+
+        let parsed: RendererFrame = serde_json::from_value(wire).unwrap();
+        match parsed {
+            RendererFrame::Command(parsed_envelope) => assert_eq!(parsed_envelope.id, envelope.id),
+            other => panic!("expected Command, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn renderer_frame_reevaluate_report_variants_round_trip() {
+        for report in [
+            ReevaluateReport::Unchanged { sequence: 1 },
+            ReevaluateReport::TopologyChanged { sequence: 2 },
+            ReevaluateReport::Failed { sequence: 3, error: "syntax error".to_string() },
+        ] {
+            let frame = RendererFrame::ReevaluateReport(report.clone());
+            let wire = serde_json::to_value(&frame).unwrap();
+            assert_eq!(wire["kind"], "ReevaluateReport");
+
+            let parsed: RendererFrame = serde_json::from_value(wire).unwrap();
+            assert_eq!(parsed, RendererFrame::ReevaluateReport(report));
+        }
+    }
+
+    #[test]
+    fn shell_lua_path_is_config_dir_joined_with_shell_lua() {
+        let path = shell_lua_path().unwrap();
+        assert_eq!(path, config_dir().unwrap().join("shell.lua"));
+        assert!(path.ends_with("oblisk/shell.lua"));
     }
 }

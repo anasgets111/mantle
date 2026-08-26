@@ -249,15 +249,91 @@ pub fn parse_icon_size(properties: &HashMap<String, Value>) -> Result<f32, Layou
     value_as_f32(value).ok_or_else(|| invalid("size", format!("expected a number, got {value:?}")))
 }
 
-pub fn parse_surface_id(properties: &HashMap<String, Value>) -> Result<String, LayoutError> {
-    let value = properties
-        .get("id")
-        .ok_or_else(|| invalid("id", "surface node requires `id`"))?;
-    reject_signal("id", value)?;
+/// Shared shape behind [`parse_surface_id`]/[`parse_layer`]/[`parse_monitor`]: fetch `property`,
+/// reject a `Signal`, require it to be a string. `default` supplies the value when the property
+/// is absent; `None` makes it required, erroring instead (Standards review, docs/adr/0024).
+fn parse_string_property(properties: &HashMap<String, Value>, property: &str, default: Option<&str>) -> Result<String, LayoutError> {
+    let value = match properties.get(property) {
+        Some(value) => value,
+        None => match default {
+            Some(default) => return Ok(default.to_string()),
+            None => return Err(invalid(property, format!("surface node requires `{property}`"))),
+        },
+    };
+    reject_signal(property, value)?;
     match value {
         Value::String(s) => Ok(s.to_string_lossy()),
-        other => Err(invalid("id", format!("expected a string, got {other:?}"))),
+        other => Err(invalid(property, format!("expected a string, got {other:?}"))),
     }
+}
+
+pub fn parse_surface_id(properties: &HashMap<String, Value>) -> Result<String, LayoutError> {
+    parse_string_property(properties, "id", None)
+}
+
+/// § 6.1's `layer` (`"Background"`/`"Bottom"`/`"Top"`/`"Overlay"`). Required, same shape as
+/// [`parse_surface_id`] -- every existing fixture in this repo already sets it. Stored as a raw
+/// string, not a validated enum: Phase 13 only needs it for topology-diff equality (`CONTEXT.md`,
+/// Topology change), not for binding a real `zwlr_layer_surface_v1` yet -- see docs/adr/0024.
+pub fn parse_layer(properties: &HashMap<String, Value>) -> Result<String, LayoutError> {
+    parse_string_property(properties, "layer", None)
+}
+
+/// § 6.1's `anchor` table (`{ top, bottom, left, right }` edge booleans). Same default-to-zero
+/// shape as [`EdgeInsets`], booleans instead of floats.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Anchor {
+    pub top: bool,
+    pub right: bool,
+    pub bottom: bool,
+    pub left: bool,
+}
+
+pub fn parse_anchor(properties: &HashMap<String, Value>) -> Result<Anchor, LayoutError> {
+    let Some(value) = properties.get("anchor") else {
+        return Ok(Anchor::default());
+    };
+    reject_signal("anchor", value)?;
+    let Value::Table(table) = value else {
+        return Err(invalid("anchor", format!("expected a table, got {value:?}")));
+    };
+    let edge = |key: &str| -> Result<bool, LayoutError> {
+        let v: Value = table.get(key).map_err(|e| invalid("anchor", e.to_string()))?;
+        match v {
+            Value::Nil => Ok(false),
+            Value::Boolean(b) => Ok(b),
+            other => Err(invalid("anchor", format!("`{key}` must be a boolean, got {other:?}"))),
+        }
+    };
+    Ok(Anchor { top: edge("top")?, right: edge("right")?, bottom: edge("bottom")?, left: edge("left")? })
+}
+
+/// § 6.1's `monitor` (a specific output EDID, or `"All"`). Absent defaults to `"All"` -- an
+/// unqualified surface targets every monitor, matching the IDL's own documented meaning for that
+/// value rather than treating the property as required.
+pub fn parse_monitor(properties: &HashMap<String, Value>) -> Result<String, LayoutError> {
+    parse_string_property(properties, "monitor", Some("All"))
+}
+
+/// A surface's topology-relevant fields (`CONTEXT.md`, Topology change: "adds, removes, or
+/// changes the layer, anchor, or monitor target of a top-level `surface` node"). Structural
+/// equality on `Vec<SurfaceTopology>` (order-sensitive) is the Renderer's own topology diff --
+/// see `renderer/src/socket.rs`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SurfaceTopology {
+    pub id: String,
+    pub layer: String,
+    pub anchor: Anchor,
+    pub monitor: String,
+}
+
+pub fn surface_topology(properties: &HashMap<String, Value>) -> Result<SurfaceTopology, LayoutError> {
+    Ok(SurfaceTopology {
+        id: parse_surface_id(properties)?,
+        layer: parse_layer(properties)?,
+        anchor: parse_anchor(properties)?,
+        monitor: parse_monitor(properties)?,
+    })
 }
 
 /// A single-node property (`surface.child`), converted from its raw table via
@@ -523,5 +599,79 @@ mod tests {
     fn parse_single_child_absent_is_none() {
         let props = HashMap::new();
         assert!(parse_single_child(&props, "child").unwrap().is_none());
+    }
+
+    #[test]
+    fn layer_is_required() {
+        let props = HashMap::new();
+        assert!(matches!(parse_layer(&props).unwrap_err(), LayoutError::InvalidProperty { .. }));
+    }
+
+    #[test]
+    fn layer_reads_the_string() {
+        let lua = lua();
+        let table: mlua::Table = lua.load(r#"return { kind = "surface", layer = "Top" }"#).eval().unwrap();
+        let props = props_from_table(&table);
+        assert_eq!(parse_layer(&props).unwrap(), "Top");
+    }
+
+    #[test]
+    fn anchor_absent_defaults_all_false() {
+        let props = HashMap::new();
+        assert_eq!(parse_anchor(&props).unwrap(), Anchor::default());
+    }
+
+    #[test]
+    fn anchor_reads_named_edges_defaulting_absent_ones_to_false() {
+        let lua = lua();
+        let table: mlua::Table = lua.load(r#"return { kind = "surface", anchor = { top = true, left = true } }"#).eval().unwrap();
+        let props = props_from_table(&table);
+        assert_eq!(parse_anchor(&props).unwrap(), Anchor { top: true, right: false, bottom: false, left: true });
+    }
+
+    #[test]
+    fn monitor_absent_defaults_to_all() {
+        let props = HashMap::new();
+        assert_eq!(parse_monitor(&props).unwrap(), "All");
+    }
+
+    #[test]
+    fn monitor_reads_the_string() {
+        let lua = lua();
+        let table: mlua::Table = lua.load(r#"return { kind = "surface", monitor = "eDP-1" }"#).eval().unwrap();
+        let props = props_from_table(&table);
+        assert_eq!(parse_monitor(&props).unwrap(), "eDP-1");
+    }
+
+    #[test]
+    fn surface_topology_combines_id_layer_anchor_and_monitor() {
+        let lua = lua();
+        let table: mlua::Table = lua
+            .load(r#"return { kind = "surface", id = "bar", layer = "Top", anchor = { top = true }, monitor = "eDP-1" }"#)
+            .eval()
+            .unwrap();
+        let props = props_from_table(&table);
+        let topology = surface_topology(&props).unwrap();
+        assert_eq!(
+            topology,
+            SurfaceTopology {
+                id: "bar".to_string(),
+                layer: "Top".to_string(),
+                anchor: Anchor { top: true, right: false, bottom: false, left: false },
+                monitor: "eDP-1".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn a_signal_userdata_in_layer_is_rejected() {
+        let lua = lua();
+        crate::lua::signal::register(&lua).unwrap();
+        let signal = crate::lua::signal::Signal::new_live(Value::Boolean(true)).0;
+        let table = lua.create_table().unwrap();
+        table.set("kind", "surface").unwrap();
+        table.set("layer", signal).unwrap();
+        let node = deserialize_lua_table(&table).unwrap();
+        assert!(matches!(parse_layer(&node.properties).unwrap_err(), LayoutError::UnsupportedSignalProperty(p) if p == "layer"));
     }
 }

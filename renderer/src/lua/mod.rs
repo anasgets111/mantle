@@ -3,12 +3,10 @@
 //! candidate's first evaluation and the authoritative generation's re-evaluation on an in-place
 //! reload.
 //!
-//! ponytail: nothing calls [`Loader::evaluate`] outside this module's own tests yet. No real
-//! `shell.lua` file location exists (that's the Watcher's territory, Phase 13), and Phase 11's
-//! acceptance test -- the loader reading back a real pushed `StateSnapshot` as a `Signal` -- is
-//! what gives this its first production caller. Matches `supervisor/src/socket.rs`'s
-//! `GenerationRegistry::send_to`, which shipped in Phase 9 the same way: real, tested, and
-//! unwired until a later phase gives it a reason to run.
+//! [`Loader::evaluate_file`] reads the real `~/.config/oblisk/shell.lua` (`shared::shell_lua_path`)
+//! and is `renderer/src/socket.rs`'s real entry point (build-steps.md Phase 13): both the
+//! Renderer's own startup evaluation and every Supervisor-triggered `Reevaluate` round trip call
+//! it, replacing Phase 11's hardcoded proof-of-wiring literal.
 
 // ponytail: only `signal::Signal::try_new_direct` calls into this module, and that function has
 // no production caller yet either (see its own doc comment) -- exercised by tests only. Matches
@@ -38,6 +36,16 @@ pub enum LoaderError {
     /// non-empty array of `surface` nodes (§ 6.1).
     #[error("shell.lua's top-level return must be a `surface` node or an array of them: {0}")]
     InvalidTopLevelReturn(String),
+    /// [`Loader::evaluate_file`] couldn't read `shell.lua` off disk (missing file, permissions).
+    #[error("failed to read shell.lua: {0}")]
+    Io(#[from] std::io::Error),
+    /// A surface evaluated cleanly and had a valid top-level shape, but one of its topology
+    /// fields (`id`/`layer`/`anchor`/`monitor`, § 6.1) didn't type-check
+    /// (`renderer/src/socket.rs`'s `surfaces_topology`). Distinct from [`Self::InvalidTopLevelReturn`]
+    /// -- that variant's fixed message is about the *shape* of the top-level return, which is
+    /// wrong for a field-level error inside an otherwise-valid surface.
+    #[error("shell.lua's surface topology is invalid: {0}")]
+    InvalidTopology(String),
 }
 
 impl From<nodes::DeserializeError> for LoaderError {
@@ -66,6 +74,20 @@ impl Loader {
     pub fn evaluate(&self, source: &str) -> Result<LoadOutput, LoaderError> {
         let value: Value = self.lua.load(source).eval()?;
         Ok(LoadOutput { surfaces: collect_surfaces(value)? })
+    }
+
+    /// Reads `path` and evaluates it exactly like [`Self::evaluate`] -- the real `shell.lua`
+    /// entry point (build-steps.md Phase 13). See the module doc comment.
+    pub fn evaluate_file(&self, path: &std::path::Path) -> Result<LoadOutput, LoaderError> {
+        let source = std::fs::read_to_string(path)?;
+        self.evaluate(&source)
+    }
+
+    /// Creates a fresh, empty Lua table on this `Loader`'s own VM -- lets a caller build an
+    /// initial value for [`signal::Signal::new_live`] (e.g. `renderer/src/socket.rs`'s `rescue`
+    /// signal) without reaching into a private `Lua` field.
+    pub fn create_table(&self) -> mlua::Result<Table> {
+        self.lua.create_table()
     }
 
     /// Registers `value` as a global Lua name, visible to every later `evaluate` call on this
@@ -170,6 +192,25 @@ mod tests {
         let output = loader.evaluate(r#"return surface { id = "bar", layer = "Top", volume = state.volume, muted = state.muted }"#).unwrap();
         assert_eq!(output.surfaces[0].properties.get("volume").unwrap().as_f64().unwrap(), 0.5);
         assert_eq!(output.surfaces[0].properties.get("muted").unwrap(), &Value::Boolean(false));
+    }
+
+    #[test]
+    fn evaluate_file_reads_and_evaluates_a_real_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("shell.lua");
+        std::fs::write(&path, r#"return surface { id = "bar", layer = "Top" }"#).unwrap();
+
+        let loader = Loader::new().unwrap();
+        let output = loader.evaluate_file(&path).unwrap();
+        assert_eq!(output.surfaces.len(), 1);
+        assert_eq!(output.surfaces[0].kind, "surface");
+    }
+
+    #[test]
+    fn evaluate_file_on_a_missing_path_is_an_io_error() {
+        let loader = Loader::new().unwrap();
+        let err = loader.evaluate_file(std::path::Path::new("/no/such/shell.lua")).unwrap_err();
+        assert!(matches!(err, LoaderError::Io(_)));
     }
 
     #[test]

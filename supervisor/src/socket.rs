@@ -12,8 +12,9 @@
 //! Deliberately deferred, per build-steps.md Phase 9's own scope and
 //! docs/adr/0020-control-socket-transport-without-dispatch-or-pba-wiring.md: the
 //! command-dispatch routing table (`oblisk-idl-api-specs.md` § 3.2's ~30 write commands).
-//! Inbound frames are decoded as `shared::CommandEnvelope` and forwarded to the caller as-is,
-//! not routed to any capability handler yet.
+//! Inbound frames are decoded as `shared::RendererFrame` (Phase 13 widened this from a bare
+//! `shared::CommandEnvelope` to also carry `ReevaluateReport`, see docs/adr/0024) and forwarded
+//! to the caller as-is, not routed to any capability handler yet.
 
 use std::collections::HashMap;
 use std::io;
@@ -22,15 +23,15 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use shared::framing::{self, FramingError};
-use shared::{CommandEnvelope, ConnectionHandshake};
+use shared::{ConnectionHandshake, RendererFrame};
 use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::mpsc::{self, UnboundedSender};
 
 /// One frame received from a connection, decoded and tagged with the generation that sent it.
 #[derive(Debug)]
-pub struct InboundCommand {
+pub struct InboundFrame {
     pub generation_id: u32,
-    pub envelope: CommandEnvelope,
+    pub frame: RendererFrame,
 }
 
 /// A registry entry paired with a monotonic token identifying *which* connection registered
@@ -105,7 +106,7 @@ fn bind(path: &Path) -> Result<UnixListener, io::Error> {
 /// Binds the control socket at `path` and spawns the accept loop as a background task.
 /// Returns the [`GenerationRegistry`] (to address specific generations later) and a channel
 /// receiving every inbound frame, decoded and tagged with its sender's generation.
-pub fn spawn_listener(path: &Path) -> Result<(GenerationRegistry, mpsc::UnboundedReceiver<InboundCommand>), io::Error> {
+pub fn spawn_listener(path: &Path) -> Result<(GenerationRegistry, mpsc::UnboundedReceiver<InboundFrame>), io::Error> {
     let listener = bind(path)?;
     let registry = GenerationRegistry::default();
     let (inbound_tx, inbound_rx) = mpsc::unbounded_channel();
@@ -139,9 +140,9 @@ pub fn spawn_listener(path: &Path) -> Result<(GenerationRegistry, mpsc::Unbounde
 }
 
 /// Reads the connection's handshake, registers it, then loops decoding inbound frames as
-/// `CommandEnvelope` and forwarding them, while a second task drains anything queued for this
+/// `RendererFrame` and forwarding them, while a second task drains anything queued for this
 /// generation via [`GenerationRegistry::send_to`] out over the write half.
-async fn handle_connection(stream: UnixStream, registry: GenerationRegistry, inbound_tx: UnboundedSender<InboundCommand>) -> Result<(), FramingError> {
+async fn handle_connection(stream: UnixStream, registry: GenerationRegistry, inbound_tx: UnboundedSender<InboundFrame>) -> Result<(), FramingError> {
     let (mut read_half, mut write_half) = stream.into_split();
 
     let handshake: ConnectionHandshake = framing::read_json_frame(&mut read_half).await?;
@@ -159,14 +160,14 @@ async fn handle_connection(stream: UnixStream, registry: GenerationRegistry, inb
     });
 
     loop {
-        match framing::read_json_frame::<_, CommandEnvelope>(&mut read_half).await {
-            Ok(envelope) => {
-                let _ = inbound_tx.send(InboundCommand { generation_id, envelope });
+        match framing::read_json_frame::<_, RendererFrame>(&mut read_half).await {
+            Ok(frame) => {
+                let _ = inbound_tx.send(InboundFrame { generation_id, frame });
             }
             Err(FramingError::Decode(err)) => {
                 // A malformed frame doesn't kill the connection -- only a transport-level
                 // failure (below) does.
-                eprintln!("control-socket frame from generation {generation_id} failed to decode as CommandEnvelope: {err}");
+                eprintln!("control-socket frame from generation {generation_id} failed to decode as RendererFrame: {err}");
             }
             Err(_) => break,
         }
@@ -253,7 +254,7 @@ mod tests {
         let mut client = UnixStream::connect(&path).await.unwrap();
         framing::write_json_frame(&mut client, &ConnectionHandshake { generation_id: 5 }).await.unwrap();
 
-        let envelope = CommandEnvelope {
+        let envelope = shared::CommandEnvelope {
             jsonrpc: "2.0".to_string(),
             method: "ExecuteCommand".to_string(),
             params: shared::CommandParams {
@@ -265,7 +266,7 @@ mod tests {
             },
             id: 1,
         };
-        framing::write_json_frame(&mut client, &envelope).await.unwrap();
+        framing::write_json_frame(&mut client, &RendererFrame::Command(envelope)).await.unwrap();
 
         let received = tokio::time::timeout(std::time::Duration::from_secs(2), inbound.recv())
             .await
@@ -273,7 +274,33 @@ mod tests {
             .expect("inbound channel closed unexpectedly");
 
         assert_eq!(received.generation_id, 5);
-        assert_eq!(received.envelope.params.capability, "audio");
-        assert_eq!(received.envelope.params.action, "set_volume");
+        match received.frame {
+            RendererFrame::Command(envelope) => {
+                assert_eq!(envelope.params.capability, "audio");
+                assert_eq!(envelope.params.action, "set_volume");
+            }
+            other => panic!("expected Command, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn spawn_listener_forwards_a_decoded_reevaluate_report_tagged_with_its_generation() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("oblisk-shell.sock");
+        let (_registry, mut inbound) = spawn_listener(&path).unwrap();
+
+        let mut client = UnixStream::connect(&path).await.unwrap();
+        framing::write_json_frame(&mut client, &ConnectionHandshake { generation_id: 5 }).await.unwrap();
+
+        let report = shared::ReevaluateReport::Unchanged { sequence: 3 };
+        framing::write_json_frame(&mut client, &RendererFrame::ReevaluateReport(report.clone())).await.unwrap();
+
+        let received = tokio::time::timeout(std::time::Duration::from_secs(2), inbound.recv())
+            .await
+            .expect("inbound report did not arrive in time")
+            .expect("inbound channel closed unexpectedly");
+
+        assert_eq!(received.generation_id, 5);
+        assert_eq!(received.frame, RendererFrame::ReevaluateReport(report));
     }
 }
