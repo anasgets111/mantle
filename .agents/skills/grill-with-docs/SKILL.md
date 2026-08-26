@@ -1,7 +1,6 @@
 ---
 name: grill-with-docs
 description: Relentless interview for sharpening an Oblisk plan and recording ADRs or glossary terms.
-disable-model-invocation: true
 ---
 
 # Grill with docs

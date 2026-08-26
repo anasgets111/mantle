@@ -1,7 +1,6 @@
 ---
 name: codebase-design
 description: Shared vocabulary for designing deep modules. Enforce Systems Thinking, leverage, locality, and YAGNI.
-disable-model-invocation: true
 ---
 
 # Codebase Design

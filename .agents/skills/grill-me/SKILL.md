@@ -1,7 +1,6 @@
 ---
 name: grill
 description: Relentlessly stress-test an architectural plan or idea. Enforce Systems Thinking and YAGNI.
-disable-model-invocation: true
 ---
 
 # Grill
