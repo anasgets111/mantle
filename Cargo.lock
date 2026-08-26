@@ -1537,6 +1537,7 @@ dependencies = [
  "nix",
  "pipewire",
  "regex",
+ "serde_json",
  "shared",
  "smithay-client-toolkit",
  "tokio",

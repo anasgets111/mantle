@@ -1,6 +1,7 @@
 mod audio;
 mod dbus;
 mod process;
+mod reload;
 
 use std::error::Error;
 

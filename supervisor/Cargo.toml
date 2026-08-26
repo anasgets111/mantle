@@ -20,4 +20,5 @@ zbus = { version = "5.19.0", features = ["tokio"] }
 zbus_polkit = { version = "5.0.0", default-features = false, features = ["tokio"] }
 
 [dev-dependencies]
+serde_json = "1.0.151"
 zbus = { version = "5.19.0", features = ["tokio", "p2p"] }
