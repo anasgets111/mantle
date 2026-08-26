@@ -1259,6 +1259,7 @@ dependencies = [
  "shared",
  "smithay-client-toolkit",
  "tempfile",
+ "thiserror",
  "tokio",
  "ttf-parser",
  "wayland-client",
