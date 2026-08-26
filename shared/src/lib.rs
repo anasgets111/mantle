@@ -87,6 +87,46 @@ pub struct ApplyPendingReload {
     pub sequence: u64,
 }
 
+/// § 15.2 point 3 / build-steps.md Phase 8 step 4 ("Activate Draw"), now sent for real (Phase 14).
+/// Matches `reload::CandidateLink::send_activate_draw`'s existing `nonce: u64` shape -- see
+/// docs/adr/0019 for why this is not `CommandEnvelope` (wrong direction/shape).
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ActivateDraw {
+    pub nonce: u64,
+}
+
+/// § 15.2 points 2-3 ("Null-Buffer Staging"): the Candidate's one-time report that every tracked
+/// Wayland surface has committed its null buffer and is staged, waiting for `ActivateDraw`.
+/// `surfaces` is the exact set `reload::CandidateLink::recv_presentation_evidence` must later see
+/// evidence for -- see docs/adr/0025 item 2 for why this is a surface_id, not a monitor id.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ReadySignal {
+    pub surfaces: Vec<String>,
+}
+
+/// § 15.3 point 4 ("Evidence Verification"), per surface (docs/adr/0019 item 5, ADR-0003).
+/// One message per surface_id that received its `wp_presentation_feedback` `presented` event.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PresentationEvidence {
+    pub nonce: u64,
+    pub surface_id: String,
+}
+
+/// § 15.4 point 1 ("Input Deselection"): tells the superseded generation to stop treating
+/// `surface_id` as authoritative. Real, called, currently-empty effect on the Renderer side --
+/// see docs/adr/0025 item 4 (no real per-surface input-region/focus wiring exists yet).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DeselectInput {
+    pub surface_id: String,
+}
+
+/// § 15.4 point 2 ("Candidate Promotion"): tells the newly-promoted generation it now owns
+/// `surface_id`. Same real-but-currently-inert status as `DeselectInput` -- see docs/adr/0025 item 4.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PromoteGeneration {
+    pub surface_id: String,
+}
+
 /// Every frame the Supervisor can push to a Renderer connection, adjacently tagged so a single
 /// read loop can dispatch on `kind` without the connection needing a separate channel per
 /// message shape. `content = "data"` (not internally-tagged) because [`ReevaluateReport`] is
@@ -97,17 +137,23 @@ pub enum SupervisorFrame {
     StateSnapshot(StateSnapshot),
     Reevaluate(ReevaluateRequest),
     ApplyPendingReload(ApplyPendingReload),
+    ActivateDraw(ActivateDraw),
+    DeselectInput(DeselectInput),
+    PromoteGeneration(PromoteGeneration),
 }
 
 /// Every frame a Renderer connection can send to the Supervisor, same tagging scheme as
 /// [`SupervisorFrame`]. `Command` is § 7.2's existing Lua-write-action envelope; `ReevaluateReport`
-/// is Phase 13's new reload verdict -- both travel Renderer -> Supervisor, so they share one
-/// wire enum instead of two separately-typed read loops.
+/// is Phase 13's new reload verdict; `ReadySignal`/`PresentationEvidence` are Phase 14's PBA
+/// handshake reports -- all travel Renderer -> Supervisor, so they share one wire enum instead of
+/// separately-typed read loops.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "kind", content = "data")]
 pub enum RendererFrame {
     Command(CommandEnvelope),
     ReevaluateReport(ReevaluateReport),
+    ReadySignal(ReadySignal),
+    PresentationEvidence(PresentationEvidence),
 }
 
 /// `~/.config/oblisk/`, resolved via `$XDG_CONFIG_HOME` falling back to `$HOME/.config` (XDG
@@ -256,6 +302,56 @@ mod tests {
             let parsed: RendererFrame = serde_json::from_value(wire).unwrap();
             assert_eq!(parsed, RendererFrame::ReevaluateReport(report));
         }
+    }
+
+    #[test]
+    fn supervisor_frame_activate_draw_is_adjacently_tagged() {
+        let frame = SupervisorFrame::ActivateDraw(ActivateDraw { nonce: 42 });
+        let wire = serde_json::to_value(&frame).unwrap();
+        assert_eq!(wire, serde_json::json!({ "kind": "ActivateDraw", "data": { "nonce": 42 } }));
+
+        let parsed: SupervisorFrame = serde_json::from_value(wire).unwrap();
+        assert_eq!(parsed, frame);
+    }
+
+    #[test]
+    fn supervisor_frame_deselect_input_is_adjacently_tagged() {
+        let frame = SupervisorFrame::DeselectInput(DeselectInput { surface_id: "main_bar".to_string() });
+        let wire = serde_json::to_value(&frame).unwrap();
+        assert_eq!(wire, serde_json::json!({ "kind": "DeselectInput", "data": { "surface_id": "main_bar" } }));
+
+        let parsed: SupervisorFrame = serde_json::from_value(wire).unwrap();
+        assert_eq!(parsed, frame);
+    }
+
+    #[test]
+    fn supervisor_frame_promote_generation_is_adjacently_tagged() {
+        let frame = SupervisorFrame::PromoteGeneration(PromoteGeneration { surface_id: "overlay_canvas".to_string() });
+        let wire = serde_json::to_value(&frame).unwrap();
+        assert_eq!(wire, serde_json::json!({ "kind": "PromoteGeneration", "data": { "surface_id": "overlay_canvas" } }));
+
+        let parsed: SupervisorFrame = serde_json::from_value(wire).unwrap();
+        assert_eq!(parsed, frame);
+    }
+
+    #[test]
+    fn renderer_frame_ready_signal_is_adjacently_tagged() {
+        let frame = RendererFrame::ReadySignal(ReadySignal { surfaces: vec!["main_bar".to_string(), "overlay_canvas".to_string()] });
+        let wire = serde_json::to_value(&frame).unwrap();
+        assert_eq!(wire, serde_json::json!({ "kind": "ReadySignal", "data": { "surfaces": ["main_bar", "overlay_canvas"] } }));
+
+        let parsed: RendererFrame = serde_json::from_value(wire).unwrap();
+        assert_eq!(parsed, frame);
+    }
+
+    #[test]
+    fn renderer_frame_presentation_evidence_is_adjacently_tagged() {
+        let frame = RendererFrame::PresentationEvidence(PresentationEvidence { nonce: 7, surface_id: "wallpaper_layer@DP-1".to_string() });
+        let wire = serde_json::to_value(&frame).unwrap();
+        assert_eq!(wire, serde_json::json!({ "kind": "PresentationEvidence", "data": { "nonce": 7, "surface_id": "wallpaper_layer@DP-1" } }));
+
+        let parsed: RendererFrame = serde_json::from_value(wire).unwrap();
+        assert_eq!(parsed, frame);
     }
 
     #[test]

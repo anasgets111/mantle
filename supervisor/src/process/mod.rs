@@ -3,10 +3,11 @@
 //!
 //! Two primitives only: spawning a child as the leader of its own new process group, and
 //! safely reaping that whole group (`SIGTERM`, grace period, escalate to `SIGKILL`). Neither
-//! `process.run`'s Lua binding, a process registry, nor the Phase 8 Presentation-Before-
-//! Authority reload orchestrator exist yet -- see
+//! `process.run`'s Lua binding nor a process registry exist yet -- see
 //! docs/adr/0018-process-group-primitives-without-process-run-or-a-registry.md for why this
-//! phase stops here.
+//! phase stopped there. The Phase 8 Presentation-Before-Authority reload orchestrator
+//! (`reload::run_pba`) got both primitives' first real callers in Phase 14 --
+//! docs/adr/0025-pba-orchestrator-wired-with-atomic-per-candidate-promotion.md.
 //!
 //! build-steps.md's own Phase 7 snippet spawns via `unsafe { .pre_exec(|| nix::unistd::
 //! setpgid(...)) }`. `tokio::process::Command::process_group(0)` (stable since tokio 1.21,
@@ -76,24 +77,22 @@ fn signal_group_best_effort(pgid: Pid, signal: Signal) -> io::Result<()> {
 /// `SIGTERM` and `SIGKILL` escalation. [`reap_process_group`] takes its grace period as a
 /// parameter rather than hardcoding this, so callers needing a faster reap (tests, an
 /// impatient hot-reload) aren't stuck with it -- this is just the spec's own default.
-#[allow(dead_code)] // ponytail: no process.run/registry/PBA-orchestrator caller yet -- see the module doc comment
+/// `main.rs`'s real reap of a superseded generation after a PBA swap (Phase 14) is this
+/// constant's first production caller.
 pub const DEFAULT_REAP_GRACE: Duration = Duration::from_millis(100);
 
 /// Spawns `cmd` as the leader of a new, independent Unix process group, rather than
 /// inheriting this process's own group. Any process this child forks without calling
 /// `setsid`/`setpgid` itself (e.g. a shell backgrounding a job) inherits that same group --
 /// which is what lets [`reap_process_group`] clean up a whole subtree, not just the direct
-/// child, via a single `killpg`.
-///
-/// ponytail: no `process.run`/registry/PBA-orchestrator caller yet -- see the module doc
-/// comment (docs/adr/0018-process-group-primitives-without-process-run-or-a-registry.md).
-#[allow(dead_code)]
-pub fn spawn_group_leader(cmd: &str, args: &[String]) -> io::Result<Child> {
-    Command::new(cmd).args(args).process_group(0).spawn()
+/// child, via a single `killpg`. `envs` is set on top of this process's own inherited
+/// environment (e.g. `OBLISK_GENERATION_ID`/`OBLISK_PBA_CANDIDATE` -- `reload::run_pba`'s real
+/// caller, `main.rs`, is this parameter's first production use).
+pub fn spawn_group_leader(cmd: &str, args: &[String], envs: &[(String, String)]) -> io::Result<Child> {
+    Command::new(cmd).args(args).envs(envs.iter().map(|(k, v)| (k.as_str(), v.as_str()))).process_group(0).spawn()
 }
 
 /// How [`reap_process_group`] recovered `child`'s process group.
-#[allow(dead_code)] // ponytail: no process.run/registry/PBA-orchestrator caller yet -- see the module doc comment
 #[derive(Debug)]
 pub enum ReapOutcome {
     /// The group exited on its own within the grace period; `SIGKILL` was never sent.
@@ -118,9 +117,9 @@ pub enum ReapOutcome {
 /// unreapable group surfaces as an error instead of hanging this call (and its caller)
 /// forever.
 ///
-/// ponytail: no `process.run`/registry/PBA-orchestrator caller yet -- see the module doc
-/// comment (docs/adr/0018-process-group-primitives-without-process-run-or-a-registry.md).
-#[allow(dead_code)]
+/// `reload::run_pba` (Phase 8) and `main.rs`'s PBA swap wiring (Phase 14) are this function's
+/// real callers: `run_pba` reaps an aborted Candidate on every failure path, and `main.rs`
+/// reaps the superseded generation once a swap's Swap messages have been sent.
 pub async fn reap_process_group(child: &mut Child, grace: Duration) -> io::Result<ReapOutcome> {
     let pid = child.id().ok_or_else(|| io::Error::other("child has no pid; already reaped"))?;
     let pgid = Pid::from_raw(pid as i32);
@@ -178,7 +177,7 @@ mod tests {
 
     #[tokio::test]
     async fn wait_or_classify_reports_still_running_against_a_long_lived_child_within_a_short_grace() {
-        let mut child = spawn_group_leader("sh", &sh_args("sleep 5")).expect("failed to spawn");
+        let mut child = spawn_group_leader("sh", &sh_args("sleep 5"), &[]).expect("failed to spawn");
 
         let race = wait_or_classify(&mut child, Duration::from_millis(20)).await.expect("wait_or_classify failed");
 
@@ -211,7 +210,7 @@ mod tests {
 
     #[tokio::test]
     async fn spawn_group_leader_puts_the_child_in_its_own_process_group() {
-        let mut child = spawn_group_leader("sh", &sh_args("sleep 5")).expect("failed to spawn");
+        let mut child = spawn_group_leader("sh", &sh_args("sleep 5"), &[]).expect("failed to spawn");
         let child_pid = child.id().expect("freshly spawned child has a pid");
 
         let child_pgid = nix::unistd::getpgid(Some(Pid::from_raw(child_pid as i32))).expect("getpgid on the child");
@@ -225,7 +224,7 @@ mod tests {
 
     #[tokio::test]
     async fn reap_process_group_reaps_a_sigterm_compliant_child_without_escalating() {
-        let mut child = spawn_group_leader("sh", &sh_args("sleep 5")).expect("failed to spawn");
+        let mut child = spawn_group_leader("sh", &sh_args("sleep 5"), &[]).expect("failed to spawn");
 
         let outcome = reap_process_group(&mut child, Duration::from_millis(500)).await.expect("reap failed");
 
@@ -234,7 +233,7 @@ mod tests {
 
     #[tokio::test]
     async fn reap_process_group_escalates_a_sigterm_ignoring_child_to_sigkill() {
-        let mut child = spawn_group_leader("sh", &sh_args("trap '' TERM; sleep 5")).expect("failed to spawn");
+        let mut child = spawn_group_leader("sh", &sh_args("trap '' TERM; sleep 5"), &[]).expect("failed to spawn");
         // Give the shell a moment to actually execute `trap '' TERM` before signaling it --
         // without this, a SIGTERM racing the just-forked shell's own startup can land before
         // the trap is installed, hitting the default (terminate) disposition instead and
@@ -252,7 +251,7 @@ mod tests {
 
     #[tokio::test]
     async fn signal_group_best_effort_tolerates_a_process_group_that_no_longer_exists() {
-        let mut child = spawn_group_leader("true", &[]).expect("failed to spawn");
+        let mut child = spawn_group_leader("true", &[], &[]).expect("failed to spawn");
         let pid = child.id().expect("freshly spawned child has a pid");
         let pgid = Pid::from_raw(pid as i32);
         // Reap it directly (bypassing reap_process_group) so the group has zero members left

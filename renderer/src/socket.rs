@@ -44,13 +44,32 @@
 //! comes from the `OBLISK_GENERATION_ID` env var, defaulting to `0`; reconnection if the
 //! connection drops (mirrors `supervisor/src/socket.rs`'s own "no accept-loop restart policy"
 //! ceiling, same reasoning, symmetric on this side).
+//!
+//! Real PBA handshake wiring (build-steps.md Phase 14, § 15.2-15.3, closing docs/adr/0019 items
+//! 1/3/6): [`spawn_client`] gains three channel endpoints bridging this thread to the Wayland/EGL
+//! thread (`crate::wayland`, see `main.rs`'s doc comment for the three channels' roles).
+//! `ready_rx`/`presented_rx` are plain `std::sync::mpsc::Receiver`s -- not directly pollable from
+//! an async task -- so each is bridged into a `tokio::sync::mpsc` channel via its own dedicated
+//! `std::thread` looping `.recv()`-and-forward, this project's established bridging idiom (see
+//! `text::shaping`'s worker thread). `activate_tx` is a `std::sync::mpsc::Sender`, whose `.send()`
+//! is synchronous and non-blocking -- callable directly from async code, no bridging needed.
+//! [`RendererClient::dispatch_loop`] then `tokio::select!`s over the wire read half and both
+//! bridged channels: `SupervisorFrame::ActivateDraw` forwards its nonce to `activate_tx`;
+//! `DeselectInput`/`PromoteGeneration` are real, received, and currently logged only (no real
+//! input-region/focus machinery exists yet to hand them to -- docs/adr/0025 item 4); the ready
+//! and presented channels are written back out as `RendererFrame::ReadySignal`/
+//! `PresentationEvidence`.
 
 use std::path::{Path, PathBuf};
 
 use shared::framing::{self, write_json_frame};
-use shared::{ApplyPendingReload, ConnectionHandshake, ReevaluateReport, ReevaluateRequest, RendererFrame, StateSnapshot, SupervisorFrame};
+use shared::{
+    ActivateDraw, ApplyPendingReload, ConnectionHandshake, DeselectInput, PresentationEvidence, PromoteGeneration, ReadySignal, ReevaluateReport,
+    ReevaluateRequest, RendererFrame, StateSnapshot, SupervisorFrame,
+};
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::UnixStream;
+use tokio::sync::mpsc;
 
 use crate::layout::node::SurfaceTopology;
 use crate::layout::{self, Scene};
@@ -77,9 +96,14 @@ async fn connect_and_handshake(path: &Path, generation_id: u32) -> Result<UnixSt
 
 /// Spawns the dedicated connect-and-hold-open thread. Connection failures (no Supervisor
 /// listening yet, wrong path) are logged, not fatal -- build-steps.md doesn't yet define a
-/// startup-ordering guarantee between the two processes.
-pub fn spawn_client() {
-    std::thread::spawn(|| {
+/// startup-ordering guarantee between the two processes. `ready_rx`/`presented_rx`/`activate_tx`
+/// are the Wayland-thread bridging channels -- see the module doc comment.
+pub fn spawn_client(
+    ready_rx: std::sync::mpsc::Receiver<Vec<String>>,
+    presented_rx: std::sync::mpsc::Receiver<PresentationEvidence>,
+    activate_tx: std::sync::mpsc::Sender<u64>,
+) {
+    std::thread::spawn(move || {
         let runtime = match tokio::runtime::Builder::new_current_thread().enable_io().build() {
             Ok(runtime) => runtime,
             Err(err) => {
@@ -87,8 +111,24 @@ pub fn spawn_client() {
                 return;
             }
         };
-        runtime.block_on(run());
+        runtime.block_on(run(ready_rx, presented_rx, activate_tx));
     });
+}
+
+/// Bridges a blocking `std::sync::mpsc::Receiver` into a `tokio::sync::mpsc` channel via a
+/// dedicated `std::thread` looping `.recv()`-and-forward -- this project's established bridging
+/// idiom (see the module doc comment). Do not try to poll a `std::sync::mpsc::Receiver` from
+/// inside an async task directly; it has no async-aware waker.
+fn bridge_to_tokio<T: Send + 'static>(rx: std::sync::mpsc::Receiver<T>) -> mpsc::UnboundedReceiver<T> {
+    let (tx, bridged_rx) = mpsc::unbounded_channel();
+    std::thread::spawn(move || {
+        while let Ok(value) = rx.recv() {
+            if tx.send(value).is_err() {
+                break;
+            }
+        }
+    });
+    bridged_rx
 }
 
 /// One connection's reload bookkeeping. `applied_topology` is `None` until an evaluation is
@@ -220,39 +260,80 @@ impl RendererClient {
     }
 
     /// Reads `shared::SupervisorFrame`s off `read_half` until the connection ends, dispatching
-    /// each to `apply_state_snapshot`/`handle_reevaluate`/`handle_apply_pending`. A frame that
-    /// fails to decode is a transport-level failure here (this connection has exactly one
-    /// sender, the Supervisor, and a fixed set of message shapes -- a bad frame means the two
-    /// sides have desynced, not a stray bad actor), unlike an `ApplyPendingReload` sequence
-    /// mismatch, which is an expected, recoverable race, not a decode failure.
-    async fn dispatch_loop<R, W>(&mut self, read_half: &mut R, write_half: &mut W)
-    where
+    /// each to `apply_state_snapshot`/`handle_reevaluate`/`handle_apply_pending`/`activate_tx`
+    /// (`ActivateDraw`) -- and, alongside the read half, writes out whatever arrives on the
+    /// bridged `ready_rx`/`presented_rx` channels as `ReadySignal`/`PresentationEvidence`
+    /// frames (build-steps.md Phase 14). A frame that fails to decode is a transport-level
+    /// failure here (this connection has exactly one sender, the Supervisor, and a fixed set of
+    /// message shapes -- a bad frame means the two sides have desynced, not a stray bad actor),
+    /// unlike an `ApplyPendingReload` sequence mismatch, which is an expected, recoverable race,
+    /// not a decode failure.
+    async fn dispatch_loop<R, W>(
+        &mut self,
+        read_half: &mut R,
+        write_half: &mut W,
+        ready_rx: &mut mpsc::UnboundedReceiver<Vec<String>>,
+        presented_rx: &mut mpsc::UnboundedReceiver<PresentationEvidence>,
+        activate_tx: &std::sync::mpsc::Sender<u64>,
+    ) where
         R: AsyncRead + Unpin,
         W: AsyncWrite + Unpin,
     {
         loop {
-            match framing::read_json_frame::<_, SupervisorFrame>(read_half).await {
-                Ok(SupervisorFrame::StateSnapshot(snapshot)) => {
-                    if let Err(err) = self.apply_state_snapshot(snapshot) {
-                        eprintln!("control-socket client: failed to convert a pushed StateSnapshot to a Lua value: {err}");
+            tokio::select! {
+                frame = framing::read_json_frame::<_, SupervisorFrame>(read_half) => match frame {
+                    Ok(SupervisorFrame::StateSnapshot(snapshot)) => {
+                        if let Err(err) = self.apply_state_snapshot(snapshot) {
+                            eprintln!("control-socket client: failed to convert a pushed StateSnapshot to a Lua value: {err}");
+                        }
+                    }
+                    Ok(SupervisorFrame::Reevaluate(request)) => {
+                        self.handle_reevaluate(request, write_half).await;
+                    }
+                    Ok(SupervisorFrame::ApplyPendingReload(apply)) => {
+                        self.handle_apply_pending(apply);
+                    }
+                    Ok(SupervisorFrame::ActivateDraw(ActivateDraw { nonce })) => {
+                        if let Err(err) = activate_tx.send(nonce) {
+                            eprintln!("control-socket client: failed to forward ActivateDraw(nonce={nonce}) to the Wayland thread: {err}");
+                        }
+                    }
+                    Ok(SupervisorFrame::DeselectInput(DeselectInput { surface_id })) => {
+                        // Real, received, currently-inert: no per-surface input-region/focus
+                        // machinery exists yet to hand this to -- docs/adr/0025 item 4.
+                        eprintln!("control-socket client: DeselectInput({surface_id}) received (no real input-region wiring yet)");
+                    }
+                    Ok(SupervisorFrame::PromoteGeneration(PromoteGeneration { surface_id })) => {
+                        eprintln!("control-socket client: PromoteGeneration({surface_id}) received (no real focus wiring yet)");
+                    }
+                    Err(err) => {
+                        eprintln!("control-socket client: connection ended: {err}");
+                        break;
+                    }
+                },
+                Some(surfaces) = ready_rx.recv() => {
+                    if let Err(err) = write_json_frame(write_half, &RendererFrame::ReadySignal(ReadySignal { surfaces })).await {
+                        eprintln!("control-socket client: failed to send a ReadySignal: {err}");
                     }
                 }
-                Ok(SupervisorFrame::Reevaluate(request)) => {
-                    self.handle_reevaluate(request, write_half).await;
-                }
-                Ok(SupervisorFrame::ApplyPendingReload(apply)) => {
-                    self.handle_apply_pending(apply);
-                }
-                Err(err) => {
-                    eprintln!("control-socket client: connection ended: {err}");
-                    break;
+                Some(evidence) = presented_rx.recv() => {
+                    if let Err(err) = write_json_frame(write_half, &RendererFrame::PresentationEvidence(evidence)).await {
+                        eprintln!("control-socket client: failed to send PresentationEvidence: {err}");
+                    }
                 }
             }
         }
     }
 }
 
-async fn run() {
+async fn run(
+    ready_rx: std::sync::mpsc::Receiver<Vec<String>>,
+    presented_rx: std::sync::mpsc::Receiver<PresentationEvidence>,
+    activate_tx: std::sync::mpsc::Sender<u64>,
+) {
+    let mut ready_rx = bridge_to_tokio(ready_rx);
+    let mut presented_rx = bridge_to_tokio(presented_rx);
+
     let path = match shared::control_socket_path() {
         Ok(path) => path,
         Err(err) => {
@@ -302,7 +383,7 @@ async fn run() {
     client.run_startup_evaluation();
 
     let (mut read_half, mut write_half) = stream.into_split();
-    client.dispatch_loop(&mut read_half, &mut write_half).await;
+    client.dispatch_loop(&mut read_half, &mut write_half, &mut ready_rx, &mut presented_rx, &activate_tx).await;
 }
 
 /// Builds the `{ is_rescue, error_log }` table and registers it as the ad-hoc `rescue` global
@@ -613,9 +694,124 @@ mod tests {
         write_json_frame(&mut wire, &SupervisorFrame::Reevaluate(ReevaluateRequest { sequence: 1 })).await.unwrap();
         wire.shutdown().await.unwrap();
 
-        client.dispatch_loop(&mut server_read, &mut server_write).await;
+        // Channel ends this test doesn't exercise -- kept alive (not dropped) so `dispatch_loop`'s
+        // `Some(..) = rx.recv()` branches simply stay pending instead of resolving to `None`.
+        let (_ready_tx, mut ready_rx) = mpsc::unbounded_channel();
+        let (_presented_tx, mut presented_rx) = mpsc::unbounded_channel();
+        let (activate_tx, _activate_rx) = std::sync::mpsc::channel();
+
+        client.dispatch_loop(&mut server_read, &mut server_write, &mut ready_rx, &mut presented_rx, &activate_tx).await;
 
         let frame: RendererFrame = read_json_frame(&mut wire).await.unwrap();
         assert_eq!(frame, RendererFrame::ReevaluateReport(ReevaluateReport::TopologyChanged { sequence: 1 }));
+    }
+
+    #[tokio::test]
+    async fn dispatch_loop_forwards_an_activate_draw_nonce_to_the_wayland_thread() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_shell_lua(dir.path(), r#"return surface { id = "bar", layer = "Top" }"#);
+        let mut client = test_client(&path);
+
+        let (mut wire, server) = tokio::io::duplex(4096);
+        let (mut server_read, mut server_write) = tokio::io::split(server);
+
+        write_json_frame(&mut wire, &SupervisorFrame::ActivateDraw(ActivateDraw { nonce: 42 })).await.unwrap();
+        wire.shutdown().await.unwrap();
+
+        let (_ready_tx, mut ready_rx) = mpsc::unbounded_channel();
+        let (_presented_tx, mut presented_rx) = mpsc::unbounded_channel();
+        let (activate_tx, activate_rx) = std::sync::mpsc::channel();
+
+        client.dispatch_loop(&mut server_read, &mut server_write, &mut ready_rx, &mut presented_rx, &activate_tx).await;
+
+        assert_eq!(activate_rx.try_recv(), Ok(42));
+    }
+
+    #[tokio::test]
+    async fn dispatch_loop_logs_and_continues_on_deselect_input_and_promote_generation() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_shell_lua(dir.path(), r#"return surface { id = "bar", layer = "Top" }"#);
+        let mut client = test_client(&path);
+
+        let (mut wire, server) = tokio::io::duplex(4096);
+        let (mut server_read, mut server_write) = tokio::io::split(server);
+
+        write_json_frame(&mut wire, &SupervisorFrame::DeselectInput(DeselectInput { surface_id: "main_bar".to_string() })).await.unwrap();
+        write_json_frame(&mut wire, &SupervisorFrame::PromoteGeneration(PromoteGeneration { surface_id: "main_bar".to_string() })).await.unwrap();
+        // A third, recognized frame to prove the loop kept running (not stuck/panicked) after
+        // the two inert ones above, then close so dispatch_loop returns. No prior
+        // `applied_topology` is seeded, so this fresh evaluation reports `Unchanged` (see the
+        // module doc comment point 3) -- the report's exact verdict isn't this test's point,
+        // only that a real response arrives at all after the two inert frames.
+        write_json_frame(&mut wire, &SupervisorFrame::Reevaluate(ReevaluateRequest { sequence: 9 })).await.unwrap();
+        wire.shutdown().await.unwrap();
+
+        let (_ready_tx, mut ready_rx) = mpsc::unbounded_channel();
+        let (_presented_tx, mut presented_rx) = mpsc::unbounded_channel();
+        let (activate_tx, _activate_rx) = std::sync::mpsc::channel();
+
+        client.dispatch_loop(&mut server_read, &mut server_write, &mut ready_rx, &mut presented_rx, &activate_tx).await;
+
+        let frame: RendererFrame = read_json_frame(&mut wire).await.unwrap();
+        assert_eq!(frame, RendererFrame::ReevaluateReport(ReevaluateReport::Unchanged { sequence: 9 }));
+    }
+
+    #[tokio::test]
+    async fn dispatch_loop_writes_a_ready_signal_frame_when_the_bridged_ready_channel_fires() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_shell_lua(dir.path(), r#"return surface { id = "bar", layer = "Top" }"#);
+        let mut client = test_client(&path);
+
+        let (mut wire, server) = tokio::io::duplex(4096);
+        let (mut server_read, mut server_write) = tokio::io::split(server);
+
+        let (ready_tx, mut ready_rx) = mpsc::unbounded_channel();
+        let (_presented_tx, mut presented_rx) = mpsc::unbounded_channel();
+        let (activate_tx, _activate_rx) = std::sync::mpsc::channel();
+        ready_tx.send(vec!["main_bar".to_string(), "overlay_canvas".to_string()]).unwrap();
+
+        // Run dispatch_loop concurrently with reading its response -- the read half never
+        // produces anything here, so dispatch_loop would otherwise run forever; a timeout bounds
+        // the test instead of relying on a second frame to end the loop.
+        let dispatch = client.dispatch_loop(&mut server_read, &mut server_write, &mut ready_rx, &mut presented_rx, &activate_tx);
+        let read_response = read_json_frame::<_, RendererFrame>(&mut wire);
+        let frame = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            tokio::select! {
+                _ = dispatch => unreachable!("dispatch_loop must not return on its own in this test"),
+                frame = read_response => frame.unwrap(),
+            }
+        })
+        .await
+        .expect("a ReadySignal frame must arrive before the timeout");
+
+        assert_eq!(frame, RendererFrame::ReadySignal(ReadySignal { surfaces: vec!["main_bar".to_string(), "overlay_canvas".to_string()] }));
+    }
+
+    #[tokio::test]
+    async fn dispatch_loop_writes_a_presentation_evidence_frame_when_the_bridged_presented_channel_fires() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_shell_lua(dir.path(), r#"return surface { id = "bar", layer = "Top" }"#);
+        let mut client = test_client(&path);
+
+        let (mut wire, server) = tokio::io::duplex(4096);
+        let (mut server_read, mut server_write) = tokio::io::split(server);
+
+        let (_ready_tx, mut ready_rx) = mpsc::unbounded_channel();
+        let (presented_tx, mut presented_rx) = mpsc::unbounded_channel();
+        let (activate_tx, _activate_rx) = std::sync::mpsc::channel();
+        presented_tx.send(PresentationEvidence { nonce: 7, surface_id: "wallpaper_layer@DP-1".to_string() }).unwrap();
+
+        let dispatch = client.dispatch_loop(&mut server_read, &mut server_write, &mut ready_rx, &mut presented_rx, &activate_tx);
+        let read_response = read_json_frame::<_, RendererFrame>(&mut wire);
+        let frame = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            tokio::select! {
+                _ = dispatch => unreachable!("dispatch_loop must not return on its own in this test"),
+                frame = read_response => frame.unwrap(),
+            }
+        })
+        .await
+        .expect("a PresentationEvidence frame must arrive before the timeout");
+
+        assert_eq!(frame, RendererFrame::PresentationEvidence(PresentationEvidence { nonce: 7, surface_id: "wallpaper_layer@DP-1".to_string() }));
     }
 }

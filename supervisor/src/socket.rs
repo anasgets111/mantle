@@ -23,7 +23,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use shared::framing::{self, FramingError};
-use shared::{ConnectionHandshake, RendererFrame};
+use shared::{ConnectionHandshake, RendererFrame, SupervisorFrame};
 use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::mpsc::{self, UnboundedSender};
 
@@ -53,13 +53,36 @@ pub struct GenerationRegistry {
     next_token: Arc<AtomicU64>,
 }
 
+/// Why [`GenerationRegistry::send_frame`] failed to deliver a frame.
+#[derive(Debug)]
+pub enum SendFrameError {
+    /// `serde_json::to_vec` failed on the frame itself.
+    Serialize(serde_json::Error),
+    /// No connection is currently registered for the target generation (already disconnected,
+    /// or never connected).
+    NoConnection { generation_id: u32 },
+}
+
+impl std::fmt::Display for SendFrameError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SendFrameError::Serialize(err) => write!(f, "failed to serialize frame: {err}"),
+            SendFrameError::NoConnection { generation_id } => write!(f, "no connection registered for generation {generation_id}"),
+        }
+    }
+}
+
+impl std::error::Error for SendFrameError {}
+
 impl GenerationRegistry {
     /// Queues `payload` for delivery to `generation_id`'s connection. Returns `false` if no
     /// connection is currently registered for that generation (already disconnected, or
     /// never connected).
     ///
     /// `main.rs`'s real caller landed in Phase 11 (docs/adr/0022): every audio `StateSnapshot`
-    /// push goes through here. Phase 14's `CandidateLink` wiring will be a second caller.
+    /// push goes through here. [`Self::send_frame`] (Phase 14) is built on top of this for
+    /// every other caller, so it's the one place raw bytes actually cross into a connection's
+    /// outbound channel.
     pub fn send_to(&self, generation_id: u32, payload: Vec<u8>) -> bool {
         let connections = self.connections.lock().unwrap();
         match connections.get(&generation_id) {
@@ -68,10 +91,25 @@ impl GenerationRegistry {
         }
     }
 
+    /// Encodes and sends `frame` to `generation_id`'s connection. The one place every
+    /// `SupervisorFrame` send goes through now -- previously `main.rs` had its own free
+    /// `push_frame` duplicating this exact encode-and-log-on-failure shape; `SocketCandidateLink`
+    /// (Phase 14) is this method's second real caller, worth consolidating for.
+    pub fn send_frame(&self, generation_id: u32, frame: &SupervisorFrame) -> Result<(), SendFrameError> {
+        let payload = serde_json::to_vec(frame).map_err(SendFrameError::Serialize)?;
+        if self.send_to(generation_id, payload) {
+            Ok(())
+        } else {
+            Err(SendFrameError::NoConnection { generation_id })
+        }
+    }
+
     /// Registers `tx` for `generation_id`, replacing any prior connection registered under
     /// the same id, and returns a token that must be passed back to [`Self::unregister`] so
-    /// only the connection that's still current gets removed.
-    fn register(&self, generation_id: u32, tx: UnboundedSender<Vec<u8>>) -> u64 {
+    /// only the connection that's still current gets removed. `pub(crate)` rather than private:
+    /// `reload_link.rs`'s own tests register a fake connection directly to exercise
+    /// `SocketCandidateLink`'s `send_frame` calls without a real `UnixListener`.
+    pub(crate) fn register(&self, generation_id: u32, tx: UnboundedSender<Vec<u8>>) -> u64 {
         let token = self.next_token.fetch_add(1, Ordering::Relaxed);
         self.connections.lock().unwrap().insert(generation_id, Entry { token, tx });
         token
