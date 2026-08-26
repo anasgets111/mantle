@@ -57,10 +57,8 @@ impl GenerationRegistry {
     /// connection is currently registered for that generation (already disconnected, or
     /// never connected).
     ///
-    /// ponytail: no runtime caller yet -- `main.rs` doesn't push anything to a specific
-    /// generation until a later phase gives it a reason to (Phase 11's real `StateSnapshot`
-    /// push, or Phase 14's `CandidateLink` wiring). Exercised directly by this module's tests.
-    #[allow(dead_code)]
+    /// `main.rs`'s real caller landed in Phase 11 (docs/adr/0022): every audio `StateSnapshot`
+    /// push goes through here. Phase 14's `CandidateLink` wiring will be a second caller.
     pub fn send_to(&self, generation_id: u32, payload: Vec<u8>) -> bool {
         let connections = self.connections.lock().unwrap();
         match connections.get(&generation_id) {

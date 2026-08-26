@@ -12,18 +12,31 @@
 //! `rt`/`net`/`macros` tokio features (present since scaffolding, unused until now) were
 //! staged for.
 //!
-//! Deliberately deferred: reading anything back off the connection (Phase 11, once the
-//! Supervisor has a real `StateSnapshot` to push there's something to consume here); real
-//! generation-ID assignment tied to process spawning (a later phase, once Phase 7/8's spawn
-//! primitives are wired to this transport) -- for now the generation ID comes from the
-//! `OBLISK_GENERATION_ID` env var, defaulting to `0`, matching the "no real caller yet"
-//! pattern already used by `reload.rs` and `dbus/polkit.rs`.
+//! Reads a `shared::StateSnapshot` back off the connection on every push (Phase 11, ADR-0022):
+//! decodes it, feeds its payload into a live [`crate::lua::signal::Signal`] registered on a
+//! [`crate::lua::Loader`], and re-evaluates a proof-of-wiring `shell.lua` literal against it --
+//! this module is the `lua` subtree's first production caller.
+//!
+//! Deliberately deferred: real generation-ID assignment tied to process spawning (a later phase,
+//! once Phase 7/8's spawn primitives are wired to this transport) -- for now the generation ID
+//! comes from the `OBLISK_GENERATION_ID` env var, defaulting to `0`; reconnection if the
+//! connection drops (mirrors `supervisor/src/socket.rs`'s own "no accept-loop restart policy"
+//! ceiling, same reasoning, symmetric on this side).
 
 use std::path::Path;
 
-use shared::ConnectionHandshake;
-use shared::framing::write_json_frame;
+use shared::framing::{self, write_json_frame};
+use shared::{ConnectionHandshake, StateSnapshot};
 use tokio::net::UnixStream;
+
+use crate::lua::{self, Loader};
+use crate::lua::signal::LiveSignalHandle;
+
+/// No real `shell.lua` file exists yet -- Phase 13's Watcher owns that location -- so this
+/// hardcoded literal proves the same `Loader::evaluate` path a real file will later go through.
+/// Re-evaluated fresh on every push, matching every other `Signal`/`computed` recomputation in
+/// this codebase: no caching.
+const PROOF_OF_WIRING_SHELL: &str = r#"return surface { id = "bar", layer = "Top", audio_apps = audio:get() }"#;
 
 fn generation_id_from_env() -> u32 {
     std::env::var("OBLISK_GENERATION_ID").ok().and_then(|value| value.parse().ok()).unwrap_or(0)
@@ -63,7 +76,7 @@ async fn run() {
     };
 
     let generation_id = generation_id_from_env();
-    let _stream = match connect_and_handshake(&path, generation_id).await {
+    let mut stream = match connect_and_handshake(&path, generation_id).await {
         Ok(stream) => stream,
         Err(err) => {
             eprintln!("control-socket client: failed to connect to {}: {err}", path.display());
@@ -71,11 +84,61 @@ async fn run() {
         }
     };
 
-    // ponytail: nothing to read yet -- Phase 11 gives the Supervisor a real StateSnapshot to
-    // push here. Holding the connection open (instead of dropping it right after the
-    // handshake) is this phase's whole point: the Supervisor's listener stays able to address
-    // this generation for as long as the process is alive.
-    std::future::pending::<()>().await;
+    let loader = match Loader::new() {
+        Ok(loader) => loader,
+        Err(err) => {
+            eprintln!("control-socket client: failed to start the Lua loader: {err}");
+            return;
+        }
+    };
+    let (signal, handle) = lua::signal::Signal::new_live(mlua::Value::Nil);
+    if let Err(err) = loader.set_global("audio", signal) {
+        eprintln!("control-socket client: failed to register the audio signal: {err}");
+        return;
+    }
+
+    receive_loop(&mut stream, &loader, &handle, |result| match result {
+        Ok(output) => {
+            for surface in &output.surfaces {
+                eprintln!("shell.lua evaluated with live audio state: surface {:?} properties = {:?}", surface.kind, surface.properties);
+            }
+        }
+        Err(err) => eprintln!("shell.lua evaluation failed: {err}"),
+    })
+    .await;
+}
+
+/// Feeds one received `StateSnapshot` into the live `audio` signal, then re-evaluates
+/// [`PROOF_OF_WIRING_SHELL`] against it -- the seam that proves the `Loader` (Phase 10) and the
+/// live `Signal` (Phase 11) compose correctly.
+fn handle_snapshot(loader: &Loader, handle: &LiveSignalHandle, snapshot: StateSnapshot) -> Result<lua::LoadOutput, lua::LoaderError> {
+    let value = loader.to_lua_value(&snapshot.payload)?;
+    handle.set(value);
+    loader.evaluate(PROOF_OF_WIRING_SHELL)
+}
+
+/// Reads `StateSnapshot` frames off `stream` until it closes or a transport error occurs,
+/// running each one through [`handle_snapshot`] and reporting the result to `on_result`. A
+/// frame that fails to decode as JSON is a transport-level failure here (unlike
+/// `supervisor/src/socket.rs`'s inbound `CommandEnvelope` loop, which tolerates a malformed
+/// frame and keeps reading) -- this connection has exactly one sender (the Supervisor) and one
+/// message shape, so a bad frame means the two sides have desynced, not a stray bad actor. Logs
+/// why the loop ended either way: a clean disconnect and a mid-stream decode failure both stop
+/// the loop, but only one of them is expected, and telling them apart requires the log line.
+async fn receive_loop<S, F>(stream: &mut S, loader: &Loader, handle: &LiveSignalHandle, mut on_result: F)
+where
+    S: tokio::io::AsyncRead + Unpin,
+    F: FnMut(Result<lua::LoadOutput, lua::LoaderError>),
+{
+    loop {
+        match framing::read_json_frame::<_, StateSnapshot>(stream).await {
+            Ok(snapshot) => on_result(handle_snapshot(loader, handle, snapshot)),
+            Err(err) => {
+                eprintln!("control-socket client: connection ended: {err}");
+                break;
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -100,5 +163,48 @@ mod tests {
         assert_eq!(handshake.generation_id, 9);
 
         client.await.unwrap().unwrap();
+    }
+
+    fn sample_snapshot(app_name: &str) -> StateSnapshot {
+        StateSnapshot { revision: 1, payload: serde_json::json!([{ "node_id": 1, "pid": 100, "app_name": app_name, "process_name": null }]) }
+    }
+
+    fn app_name_from_output(output: &lua::LoadOutput) -> String {
+        let audio_apps = output.surfaces[0].properties.get("audio_apps").unwrap();
+        let table = audio_apps.as_table().unwrap();
+        let first_app: mlua::Table = table.get(1).unwrap();
+        first_app.get::<String>("app_name").unwrap()
+    }
+
+    #[test]
+    fn handle_snapshot_produces_a_surface_carrying_the_pushed_payload() {
+        let loader = Loader::new().unwrap();
+        let (signal, handle) = lua::signal::Signal::new_live(mlua::Value::Nil);
+        loader.set_global("audio", signal).unwrap();
+
+        let output = handle_snapshot(&loader, &handle, sample_snapshot("Zen")).unwrap();
+        assert_eq!(app_name_from_output(&output), "Zen");
+    }
+
+    #[tokio::test]
+    async fn receive_loop_updates_the_live_signal_on_every_frame_not_just_the_first() {
+        let loader = Loader::new().unwrap();
+        let (signal, handle) = lua::signal::Signal::new_live(mlua::Value::Nil);
+        loader.set_global("audio", signal).unwrap();
+
+        let (mut client_side, mut server_side) = tokio::io::duplex(4096);
+        let writer = tokio::spawn(async move {
+            shared::framing::write_json_frame(&mut client_side, &sample_snapshot("Zen")).await.unwrap();
+            shared::framing::write_json_frame(&mut client_side, &sample_snapshot("Firefox")).await.unwrap();
+        });
+
+        let mut app_names_seen = Vec::new();
+        receive_loop(&mut server_side, &loader, &handle, |result| {
+            app_names_seen.push(app_name_from_output(&result.unwrap()));
+        })
+        .await;
+
+        writer.await.unwrap();
+        assert_eq!(app_names_seen, vec!["Zen", "Firefox"], "the second frame must overwrite the first, not be ignored");
     }
 }

@@ -82,6 +82,7 @@ use pw::keys;
 use pw::registry::GlobalObject;
 use pw::spa::utils::dict::DictRef;
 use pw::types::ObjectType;
+use serde::Serialize;
 use tokio::sync::mpsc::UnboundedSender;
 
 /// `media.class` value stream playback nodes carry. Verified against real `pw-dump` output,
@@ -90,7 +91,10 @@ const STREAM_OUTPUT_AUDIO: &str = "Stream/Output/Audio";
 
 /// One playback stream node PipeWire has advertised, filtered to
 /// `media.class == "Stream/Output/Audio"` and resolved to its owning process.
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// `Serialize`: this is what `main.rs` puts in a `StateSnapshot`'s `payload` (Phase 11) --
+/// pushed to the Renderer over the control socket as-is, field names unchanged.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct AppStream {
     /// PipeWire registry id of the stream node -- the key [`AudioApps`] tracks entries by.
     pub node_id: u32,
@@ -502,5 +506,20 @@ mod tests {
         apps.upsert(sample_stream(2));
         let ids: Vec<u32> = apps.snapshot().iter().map(|app| app.node_id).collect();
         assert_eq!(ids, vec![1, 2, 3]);
+    }
+
+    #[test]
+    fn app_stream_serializes_with_its_field_names_unchanged() {
+        let stream = AppStream { node_id: 7, pid: 999, app_name: Some("Zen".to_string()), process_name: None };
+        let json = serde_json::to_value(&stream).unwrap();
+        assert_eq!(
+            json,
+            serde_json::json!({
+                "node_id": 7,
+                "pid": 999,
+                "app_name": "Zen",
+                "process_name": null,
+            })
+        );
     }
 }

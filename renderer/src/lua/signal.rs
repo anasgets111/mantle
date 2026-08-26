@@ -16,6 +16,8 @@
 //! doesn't literally pin this calling convention down, and passing already-unwrapped values means
 //! every `computed` body doesn't have to redundantly call `:get()` on each of its own dependencies.
 
+use std::cell::RefCell;
+use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use mlua::{Function, Lua, MultiValue, Table, UserData, UserDataMethods, Value};
@@ -33,8 +35,17 @@ const CHECK_EVERY_N_INSTRUCTIONS: u32 = 1000;
 
 #[derive(Clone)]
 enum SignalKind {
+    // ponytail: only `Signal::try_new_direct` constructs this variant, and that constructor has
+    // no production caller yet either (see its own doc comment) -- exercised by tests only.
+    #[allow(dead_code)]
     Direct(Value),
     Computed { deps: Vec<Signal>, func: Function },
+    /// A value Rust can overwrite after construction (`Signal::new_live`/`LiveSignalHandle`,
+    /// Phase 11). `Rc<RefCell<_>>`, not `Arc<Mutex<_>>`: the `Loader` this lives on stays
+    /// confined to one dedicated OS thread (`renderer/src/socket.rs`'s socket-client thread),
+    /// the same single-threaded-state convention `supervisor/src/audio/mixer.rs`'s
+    /// `Rc<RefCell<MixerState>>` already uses.
+    Live(Rc<RefCell<Value>>),
 }
 
 /// A read-only reactive value. Wraps either a plain value (`Direct`, Rust-pushed) or a Lua
@@ -46,6 +57,13 @@ impl Signal {
     /// Wraps `value` as a `Direct` signal, enforcing the marshalling boundary (`marshal.rs`) on
     /// the types it constrains (`Number`/`Integer`/`String`); every other Lua value shape passes
     /// through untouched, since § 1.1 places no extra constraint on it.
+    ///
+    /// ponytail: no production caller yet -- every live value this phase pushes goes through
+    /// `Signal::new_live` instead (Rust-pushed, not Lua-authored, so the marshalling boundary
+    /// this guards doesn't apply the same way; see `new_live`'s own doc comment). A real
+    /// Lua-constructed `Direct` signal is still a future phase's job. Exercised by this module's
+    /// tests only.
+    #[allow(dead_code)]
     pub fn try_new_direct(value: Value) -> Result<Self, marshal::MarshalError> {
         match &value {
             Value::Number(n) => {
@@ -62,9 +80,20 @@ impl Signal {
         Ok(Signal(SignalKind::Direct(value)))
     }
 
+    /// A signal Rust can push new values into after construction via the paired
+    /// [`LiveSignalHandle`] -- `try_new_direct`'s marshalling checks don't apply here: the value
+    /// arrives already `serde_json`-serialized from a Rust struct (e.g. `AppStream`), which can't
+    /// produce a NaN/Inf/oversized string the way hand-authored Lua can. `try_new_direct` guards
+    /// Lua-authored values crossing into Rust; this is a value Rust itself produced.
+    pub fn new_live(initial: Value) -> (Self, LiveSignalHandle) {
+        let cell = Rc::new(RefCell::new(initial));
+        (Signal(SignalKind::Live(Rc::clone(&cell))), LiveSignalHandle(cell))
+    }
+
     fn get_value(&self, lua: &Lua) -> mlua::Result<Value> {
         match &self.0 {
             SignalKind::Direct(value) => Ok(value.clone()),
+            SignalKind::Live(cell) => Ok(cell.borrow().clone()),
             SignalKind::Computed { deps, func } => {
                 let mut args = Vec::with_capacity(deps.len());
                 for dep in deps {
@@ -73,6 +102,19 @@ impl Signal {
                 call_with_cpu_cap(lua, func, MultiValue::from_vec(args))
             }
         }
+    }
+}
+
+/// The Rust-side handle to a [`Signal::new_live`] signal's storage: lets Rust push a new value in
+/// after construction, e.g. on every received `StateSnapshot` (Phase 11). The paired `Signal`
+/// (Lua-side) always reads whatever was last set here -- no memoization, matching every other
+/// `Signal` kind in this file.
+#[derive(Clone)]
+pub struct LiveSignalHandle(Rc<RefCell<Value>>);
+
+impl LiveSignalHandle {
+    pub fn set(&self, value: Value) {
+        *self.0.borrow_mut() = value;
     }
 }
 
@@ -248,6 +290,21 @@ mod tests {
 
         assert!(result.is_err(), "the outer computed must still abort even though its body read a second Signal");
         assert!(elapsed < Duration::from_secs(1), "the cap must still fire near 5ms, took {elapsed:?}");
+    }
+
+    #[test]
+    fn a_live_signal_reflects_a_value_pushed_after_construction_not_a_frozen_snapshot() {
+        let lua = Lua::new();
+        register(&lua).unwrap();
+        let (signal, handle) = Signal::new_live(Value::Integer(1));
+        lua.globals().set("live", signal).unwrap();
+
+        let first: i64 = lua.load("return live:get()").eval().unwrap();
+        assert_eq!(first, 1, "must read the value passed to new_live before any push");
+
+        handle.set(Value::Integer(42));
+        let second: i64 = lua.load("return live:get()").eval().unwrap();
+        assert_eq!(second, 42, "must reflect the pushed value without re-registering the global");
     }
 
     #[test]

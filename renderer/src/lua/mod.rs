@@ -10,13 +10,18 @@
 //! `GenerationRegistry::send_to`, which shipped in Phase 9 the same way: real, tested, and
 //! unwired until a later phase gives it a reason to run.
 
+// ponytail: only `signal::Signal::try_new_direct` calls into this module, and that function has
+// no production caller yet either (see its own doc comment) -- exercised by tests only. Matches
+// `supervisor/src/socket.rs`'s `GenerationRegistry::send_to` precedent: a real, tested,
+// currently-uncalled piece gets one scoped `#[allow(dead_code)]`, not a blanket one.
+#[allow(dead_code)]
 pub mod marshal;
 pub mod nodes;
 pub mod signal;
 
 pub use nodes::VirtualNode;
 
-use mlua::{Lua, Table, Value};
+use mlua::{Lua, LuaSerdeExt, Table, Value};
 
 /// Owns the Lua VM for one generation. `Loader::evaluate` is stateless across calls beyond that
 /// -- each call is a fresh evaluation of its `source` argument, not an incremental re-run.
@@ -61,6 +66,22 @@ impl Loader {
     pub fn evaluate(&self, source: &str) -> Result<LoadOutput, LoaderError> {
         let value: Value = self.lua.load(source).eval()?;
         Ok(LoadOutput { surfaces: collect_surfaces(value)? })
+    }
+
+    /// Registers `value` as a global Lua name, visible to every later `evaluate` call on this
+    /// `Loader`. The node constructors and `computed` already register their own globals
+    /// internally at [`Loader::new`] time; this is the same mechanism exposed for a caller
+    /// outside this module -- Phase 11 uses it to give a [`signal::Signal`] a name a `shell.lua`
+    /// script can reference.
+    pub fn set_global<T: mlua::IntoLua>(&self, name: &str, value: T) -> mlua::Result<()> {
+        self.lua.globals().set(name, value)
+    }
+
+    /// Converts a JSON value into the equivalent Lua value, on this `Loader`'s own `Lua` state (a
+    /// `Value` is tied to the state that created it). Turns a pushed `StateSnapshot`'s
+    /// `serde_json::Value` payload into something a `LiveSignalHandle::set` call can store.
+    pub fn to_lua_value(&self, json: &serde_json::Value) -> mlua::Result<Value> {
+        self.lua.to_value(json)
     }
 }
 
@@ -123,6 +144,32 @@ mod tests {
         let output = loader.evaluate(r#"return surface { id = "bar", layer = "Top" }"#).unwrap();
         assert_eq!(output.surfaces.len(), 1);
         assert_eq!(output.surfaces[0].kind, "surface");
+    }
+
+    #[test]
+    fn set_global_registers_a_value_a_later_evaluate_can_see() {
+        let loader = Loader::new().unwrap();
+        let (signal, handle) = signal::Signal::new_live(Value::Integer(7));
+        loader.set_global("audio", signal).unwrap();
+
+        let output = loader.evaluate(r#"return surface { id = "bar", layer = "Top", reading = audio:get() }"#).unwrap();
+        assert_eq!(output.surfaces[0].properties.get("reading").unwrap().as_integer().unwrap(), 7);
+
+        handle.set(Value::Integer(9));
+        let output = loader.evaluate(r#"return surface { id = "bar", layer = "Top", reading = audio:get() }"#).unwrap();
+        assert_eq!(output.surfaces[0].properties.get("reading").unwrap().as_integer().unwrap(), 9);
+    }
+
+    #[test]
+    fn to_lua_value_converts_a_json_object_a_script_can_read_fields_from() {
+        let loader = Loader::new().unwrap();
+        let json = serde_json::json!({ "volume": 0.5, "muted": false });
+        let value = loader.to_lua_value(&json).unwrap();
+        loader.set_global("state", value).unwrap();
+
+        let output = loader.evaluate(r#"return surface { id = "bar", layer = "Top", volume = state.volume, muted = state.muted }"#).unwrap();
+        assert_eq!(output.surfaces[0].properties.get("volume").unwrap().as_f64().unwrap(), 0.5);
+        assert_eq!(output.surfaces[0].properties.get("muted").unwrap(), &Value::Boolean(false));
     }
 
     #[test]
