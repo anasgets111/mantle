@@ -397,6 +397,7 @@ fn draw_main_bar_proof_text(
         text: PROOF_TEXT.into(),
         font_size: FONT_SIZE,
         line_height: FONT_SIZE * 1.2,
+        max_width: None,
     });
 
     if text_painter.is_none() {

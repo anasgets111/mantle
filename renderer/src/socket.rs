@@ -29,14 +29,22 @@ use shared::framing::{self, write_json_frame};
 use shared::{ConnectionHandshake, StateSnapshot};
 use tokio::net::UnixStream;
 
+use crate::layout::{self, Scene};
 use crate::lua::{self, Loader};
 use crate::lua::signal::LiveSignalHandle;
+use crate::text::shaping::ShapingHandle;
 
 /// No real `shell.lua` file exists yet -- Phase 13's Watcher owns that location -- so this
 /// hardcoded literal proves the same `Loader::evaluate` path a real file will later go through.
 /// Re-evaluated fresh on every push, matching every other `Signal`/`computed` recomputation in
 /// this codebase: no caching.
 const PROOF_OF_WIRING_SHELL: &str = r#"return surface { id = "bar", layer = "Top", audio_apps = audio:get() }"#;
+
+/// Real per-output pixel dimensions aren't threaded from Wayland into this thread yet (see
+/// docs/adr/0023 item 6) -- `wayland::mod`'s output/surface objects live on the main thread,
+/// this thread only has the socket connection and the Lua loader. Standing in until that wiring
+/// exists, matching `PROOF_OF_WIRING_SHELL`'s own hardcoded-stand-in precedent from Phase 11.
+const PLACEHOLDER_OUTPUT_SIZE: layout::LogicalSize = layout::LogicalSize { width: 1920.0, height: 40.0 };
 
 fn generation_id_from_env() -> u32 {
     std::env::var("OBLISK_GENERATION_ID").ok().and_then(|value| value.parse().ok()).unwrap_or(0)
@@ -97,15 +105,40 @@ async fn run() {
         return;
     }
 
+    let mut scene = Scene::new();
+    let shaping = ShapingHandle::spawn();
+
     receive_loop(&mut stream, &loader, &handle, |result| match result {
-        Ok(output) => {
-            for surface in &output.surfaces {
-                eprintln!("shell.lua evaluated with live audio state: surface {:?} properties = {:?}", surface.kind, surface.properties);
-            }
-        }
+        Ok(output) => apply_to_scene(&mut scene, &shaping, &output),
         Err(err) => eprintln!("shell.lua evaluation failed: {err}"),
     })
     .await;
+}
+
+/// Reconciles one loader evaluation's surfaces into the retained scene and logs the outcome --
+/// `layout`'s first production caller (Phase 12), matching `LoadOutput`'s downstream consumer
+/// named in docs/adr/0022 item 6.
+fn apply_to_scene(scene: &mut Scene, shaping: &ShapingHandle, output: &lua::LoadOutput) {
+    match scene.apply(&output.surfaces, PLACEHOLDER_OUTPUT_SIZE, shaping) {
+        Ok(()) => {
+            for surface in &output.surfaces {
+                let resolved = layout::node::parse_surface_id(&surface.properties).ok().and_then(|id| scene.surface(&id));
+                match resolved {
+                    Some(r) => eprintln!(
+                        "layout resolved: surface {:?} kind={} rect={:?} visible={} children={} properties={}",
+                        surface.kind,
+                        r.kind,
+                        r.rect,
+                        r.visible,
+                        r.children.len(),
+                        r.properties.len()
+                    ),
+                    None => eprintln!("layout resolved but surface {:?} has no resolvable `id`", surface.kind),
+                }
+            }
+        }
+        Err(err) => eprintln!("layout resolution failed: {err}"),
+    }
 }
 
 /// Feeds one received `StateSnapshot` into the live `audio` signal, then re-evaluates
@@ -206,5 +239,28 @@ mod tests {
 
         writer.await.unwrap();
         assert_eq!(app_names_seen, vec!["Zen", "Firefox"], "the second frame must overwrite the first, not be ignored");
+    }
+
+    #[tokio::test]
+    async fn a_received_snapshots_output_reconciles_into_a_resolvable_layout_scene() {
+        let loader = Loader::new().unwrap();
+        let (signal, handle) = lua::signal::Signal::new_live(mlua::Value::Nil);
+        loader.set_global("audio", signal).unwrap();
+
+        let mut scene = Scene::new();
+        let shaping = ShapingHandle::spawn();
+
+        let (mut client_side, mut server_side) = tokio::io::duplex(4096);
+        let writer = tokio::spawn(async move {
+            shared::framing::write_json_frame(&mut client_side, &sample_snapshot("Zen")).await.unwrap();
+        });
+
+        receive_loop(&mut server_side, &loader, &handle, |result| {
+            apply_to_scene(&mut scene, &shaping, &result.unwrap());
+        })
+        .await;
+
+        writer.await.unwrap();
+        assert!(scene.surface("bar").is_some(), "PROOF_OF_WIRING_SHELL's `bar` surface must be resolvable after apply");
     }
 }

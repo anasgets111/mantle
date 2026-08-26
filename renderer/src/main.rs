@@ -1,3 +1,4 @@
+mod layout;
 mod lua;
 mod socket;
 mod text;

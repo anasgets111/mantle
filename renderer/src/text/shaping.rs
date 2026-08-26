@@ -21,6 +21,10 @@ pub struct ShapeRequest {
     pub text: String,
     pub font_size: f32,
     pub line_height: f32,
+    /// Logical-pixel width to wrap at (`oblisk-layout-engine-geometry.md` § 3.2: "wraps text
+    /// bounds when exceeding available width limits"). `None` measures the text unconstrained,
+    /// on one line -- the pre-Phase-12 behavior every existing caller still gets.
+    pub max_width: Option<f32>,
 }
 
 /// The measured result of shaping a request: its tight bounding box in logical pixels.
@@ -99,7 +103,7 @@ impl ShapingHandle {
 fn shape(font_system: &mut FontSystem, request: &ShapeRequest) -> ShapeResult {
     let metrics = Metrics::new(request.font_size, request.line_height);
     let mut buffer = Buffer::new(font_system, metrics);
-    buffer.set_size(None, None);
+    buffer.set_size(request.max_width, None);
     buffer.set_text(&request.text, &Attrs::new(), Shaping::Advanced, None);
     buffer.shape_until_scroll(font_system, false);
 
@@ -141,6 +145,7 @@ mod tests {
             text: "Oblisk".into(),
             font_size: 14.0,
             line_height: 18.0,
+            max_width: None,
         });
         assert!(result.width > 0.0, "expected nonzero width, got {}", result.width);
         assert_eq!(result.height, 18.0);
@@ -153,6 +158,7 @@ mod tests {
             text: String::new(),
             font_size: 14.0,
             line_height: 18.0,
+            max_width: None,
         });
         assert_eq!(result.width, 0.0);
     }
@@ -164,11 +170,13 @@ mod tests {
             text: "O".into(),
             font_size: 14.0,
             line_height: 18.0,
+            max_width: None,
         });
         let long = handle.shape(ShapeRequest {
             text: "Oblisk Shell".into(),
             font_size: 14.0,
             line_height: 18.0,
+            max_width: None,
         });
         assert!(long.width > short.width);
     }
@@ -180,5 +188,30 @@ mod tests {
         assert!(!bytes.is_empty());
         // A real, parseable font file, not just nonempty bytes.
         ttf_parser::Face::parse(&bytes, 0).expect("default font bytes should parse as a font face");
+    }
+
+    #[test]
+    fn a_max_width_narrower_than_the_unconstrained_text_wraps_to_more_lines() {
+        let handle = ShapingHandle::spawn();
+        let unconstrained = handle.shape(ShapeRequest {
+            text: "Oblisk Shell Renderer".into(),
+            font_size: 14.0,
+            line_height: 18.0,
+            max_width: None,
+        });
+        let wrapped = handle.shape(ShapeRequest {
+            text: "Oblisk Shell Renderer".into(),
+            font_size: 14.0,
+            line_height: 18.0,
+            max_width: Some(unconstrained.width / 2.0),
+        });
+        assert!(
+            wrapped.height > unconstrained.height,
+            "wrapping onto more lines must grow the measured height"
+        );
+        assert!(
+            wrapped.width <= unconstrained.width,
+            "a wrapped line can't be wider than the unconstrained text"
+        );
     }
 }
