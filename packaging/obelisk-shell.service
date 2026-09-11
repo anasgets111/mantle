@@ -5,22 +5,22 @@
 # is a service manager's, and this file is it. Start the unit from the compositor rather than
 # spawning the binary directly:
 #
-#     spawn-at-startup "systemctl" "--user" "start" "--no-block" "oblisk-shell.service"
+#     spawn-at-startup "systemctl" "--user" "start" "--no-block" "obelisk-shell.service"
 #
-# Install: put both binaries in ~/.local/lib/oblisk. They have to be siblings, because the
+# Install: put both binaries in ~/.local/lib/obelisk. They have to be siblings, because the
 # Supervisor resolves the Renderer next to itself (`renderer_binary_path` in supervisor/src/main.rs;
 # no install-path configuration exists yet, ADR-0025). Then copy this file to
 # ~/.config/systemd/user/ and run `systemctl --user daemon-reload`. For a dev run against the build
 # tree, point ExecStart at target/debug/supervisor instead.
 
 [Unit]
-Description=Oblisk shell
+Description=Obelisk shell
 PartOf=graphical-session.target
 After=graphical-session.target
 
 [Service]
 Type=simple
-ExecStart=%h/.local/lib/oblisk/supervisor
+ExecStart=%h/.local/lib/obelisk/supervisor
 # `always`, not `on-failure`: a Supervisor killed by a stray SIGTERM exits 0, and the shell should
 # come back from that too. Session end does not go through here at all -- `PartOf=` makes systemd
 # *stop* the unit, and a stop never restarts. Stopping the unit is also what collects a Renderer or
