@@ -1068,7 +1068,8 @@ impl App {
             unsafe {
                 use glow::HasContext;
                 gl.clear_color(0.0, 0.0, 0.0, 0.0);
-                gl.clear(glow::COLOR_BUFFER_BIT);
+                // femtovg's stencil fills and strokes assume the buffer starts at zero.
+                gl.clear(glow::COLOR_BUFFER_BIT | glow::STENCIL_BUFFER_BIT);
             }
         }
 

@@ -63,6 +63,10 @@ pub fn init(wl_display_ptr: *mut c_void) -> Result<EglState, String> {
         8,
         egl::ALPHA_SIZE,
         8,
+        // femtovg fills a concave path and strokes a translucent one through the stencil buffer;
+        // without one a concave fill covers its bounds and a stroke paints its overlaps twice.
+        egl::STENCIL_SIZE,
+        8,
         egl::NONE,
     ];
 

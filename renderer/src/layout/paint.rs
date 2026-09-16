@@ -300,6 +300,10 @@ fn split_fill_and_border(draw: Option<Draw>) -> (Option<Draw>, Option<Draw>) {
 /// deleted the fixed Rust-owned role enum that had kept the two id spaces from overlapping.
 #[cfg(test)]
 pub fn paint_tree(painter: &mut TextPainter, images: &mut ImageCache, root: &ResolvedNode, scale: f32) {
+    // A live frame starts cleared (`wayland::App::paint_surface`); a pbuffer's buffers start undefined.
+    let canvas = painter.canvas_mut();
+    let (width, height) = (canvas.width(), canvas.height());
+    canvas.clear_rect(0, 0, width, height, Color::rgbaf(0.0, 0.0, 0.0, 0.0));
     // No GL context reaches this harness, so a config shader falls back to the dissolve.
     execute(painter, images, &build(root, scale, None), scale, (0.0, 0.0), None);
 }
@@ -1059,6 +1063,8 @@ mod tests {
             egl::BLUE_SIZE,
             8,
             egl::ALPHA_SIZE,
+            8,
+            egl::STENCIL_SIZE,
             8,
             egl::NONE,
         ];
@@ -1873,6 +1879,8 @@ mod tests {
             8,
             egl::ALPHA_SIZE,
             8,
+            egl::STENCIL_SIZE,
+            8,
             egl::NONE,
         ];
         let config = match instance.choose_first_config(display, &attribs) {
@@ -2052,6 +2060,30 @@ mod tests {
 
         assert_eq!(pixel_at(painter.canvas_mut(), 10, 10), (0, 0, 255, 255));
         assert_eq!(pixel_at(painter.canvas_mut(), 27, 27), (0, 255, 0, 255));
+    }
+
+    /// femtovg strokes through the stencil buffer; a context without one paints a translucent
+    /// border's overlapping segments twice, which read as 75% where 50% was asked.
+    #[test]
+    fn a_translucent_rounded_border_paints_its_alpha_once() {
+        let Some(instance) = init_headless_egl(64, 64) else { return };
+        let lua = Lua::new();
+        let shaping = ShapingHandle::spawn();
+        let Some(mut painter) = text_painter(&instance, &shaping, 64, 64) else { return };
+
+        let root = resolved_surface(
+            &lua,
+            r##"return panel { id = "bar", width = 64, height = 64, child = rect {
+                width = 40, height = 40, radius = 8, border_width = 4, border_color = "#FF000080",
+            } }"##,
+            LogicalSize { width: 64.0, height: 64.0 },
+        );
+        paint_tree(&mut painter, &mut ImageCache::new(), &root, 1.0);
+
+        for (x, y) in [(20, 1), (1, 20), (38, 20), (20, 38)] {
+            let alpha = pixel_at(painter.canvas_mut(), x, y).3;
+            assert!((126..=130).contains(&alpha), "({x}, {y}) is painted once, got alpha {alpha}");
+        }
     }
 
     #[test]
