@@ -106,7 +106,7 @@ pub fn parse_keyboard_interactivity(properties: &PropMap) -> Result<KeyboardInte
     }
 }
 
-/// The three exclusion answers mapped to `set_exclusive_zone`: positive reserves space, `0`
+/// The exclusion answers mapped to `set_exclusive_zone`: positive reserves space, `0`
 /// stays inside other reservations, and `-1` ignores them. A wallpaper anchored to all four edges
 /// gets `0` from [`exclusive_zone_for`](crate::wayland), making boolean true/false identical there;
 /// `Ignore` supplies the missing third answer, matching Quickshell's `ExclusionMode`.
@@ -114,6 +114,9 @@ pub fn parse_keyboard_interactivity(properties: &PropMap) -> Result<KeyboardInte
 pub enum Exclusive {
     /// Reserve screen area along the anchored edge, using the compositor-configured size.
     Reserve,
+    /// Reserve this many logical pixels whatever the surface's size: a full-height surface whose
+    /// top strip is a bar, as Quickshell's `exclusiveZone`.
+    Zone(i32),
     /// Reserve nothing and stay inside other surfaces' reservations. The default, protocol `0`.
     Respect,
     /// Reserve nothing and ignore other reservations, covering the output. Protocol `-1`.
@@ -136,9 +139,11 @@ pub fn parse_exclusive(properties: &PropMap) -> Result<Exclusive, LayoutError> {
         Value::Boolean(true) => Ok(Exclusive::Reserve),
         Value::Boolean(false) => Ok(Exclusive::Respect),
         Value::String(s) if checked_string("exclusive", s)? == "Ignore" => Ok(Exclusive::Ignore),
-        other => {
-            Err(invalid("exclusive", format!("expected a boolean or \"Ignore\", got {}", preview_for_error(other))))
-        }
+        Value::Integer(n) if *n > 0 => Ok(Exclusive::Zone(i32::try_from(*n).unwrap_or(i32::MAX))),
+        other => Err(invalid(
+            "exclusive",
+            format!("expected a boolean, a pixel count or \"Ignore\", got {}", preview_for_error(other)),
+        )),
     }
 }
 
@@ -374,7 +379,7 @@ mod tests {
     }
 
     #[test]
-    fn exclusive_reads_both_booleans_and_ignore_and_rejects_anything_else() {
+    fn exclusive_reads_booleans_a_zone_and_ignore_and_rejects_anything_else() {
         let lua = lua();
         let parse = |src: &str| {
             let table: mlua::Table = lua.load(src).eval().unwrap();
@@ -383,14 +388,15 @@ mod tests {
         assert_eq!(parse(r#"return { kind = "panel", exclusive = true }"#).unwrap(), Exclusive::Reserve);
         assert_eq!(parse(r#"return { kind = "panel", exclusive = false }"#).unwrap(), Exclusive::Respect);
         assert_eq!(parse(r#"return { kind = "panel", exclusive = "Ignore" }"#).unwrap(), Exclusive::Ignore);
+        assert_eq!(parse(r#"return { kind = "panel", exclusive = 32 }"#).unwrap(), Exclusive::Zone(32));
 
-        // A number was the original rejection case and stays one. The unknown string is the new
-        // one, and it matters more: `"ignore"` and `"None"` are the shapes a config author actually
-        // reaches for, and silently reading either as `Respect` would be the quiet miss
-        // `NODE_PROPERTIES` exists to prevent one level up.
-        for bad in
-            [r#"return { kind = "panel", exclusive = 32 }"#, r#"return { kind = "panel", exclusive = "ignore" }"#]
-        {
+        // `0` and `-1` are the protocol's own answers, already spelled `false` and `"Ignore"`.
+        for bad in [
+            r#"return { kind = "panel", exclusive = "ignore" }"#,
+            r#"return { kind = "panel", exclusive = 0 }"#,
+            r#"return { kind = "panel", exclusive = -1 }"#,
+            r#"return { kind = "panel", exclusive = 1.5 }"#,
+        ] {
             assert!(
                 matches!(parse(bad).unwrap_err(), LayoutError::InvalidProperty { property, .. } if property == "exclusive"),
                 "{bad} must be refused by name"

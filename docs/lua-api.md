@@ -318,8 +318,9 @@ Panels and locks have per-output instances; windows and popups have one instance
 | `lock` | ext_session_lock_surface_v1 | Output coverage and lifetime are protocol-controlled |
 
 Panel layers are Background/Bottom/Top/Overlay; anchors are edge booleans.
-Monitor is a connector name or `"All"`. Exclusive is false, true, or `"Ignore"` to ignore
-others' reserved space. Keyboard interactivity is None/OnDemand/Exclusive.
+Monitor is a connector name or `"All"`. Exclusive is false, true, a pixel count reserved
+regardless of the surface's size, or `"Ignore"` to ignore others' reserved space. Keyboard
+interactivity is None/OnDemand/Exclusive.
 `child = function(output)` on panels/locks builds per-output content; nil yields an empty instance.
 
 A panel's `width`/`height` are its layer-shell `set_size` request, and omitting one measures it

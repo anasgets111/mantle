@@ -392,6 +392,7 @@ impl App {
         };
         let zone = match spec.exclusive {
             node::Exclusive::Reserve => exclusive_zone_for(spec.topology.anchor, tracked.configured_size),
+            node::Exclusive::Zone(zone) => zone,
             node::Exclusive::Respect => 0,
             // `-1` is the protocol's "ignore every zone" sentinel.
             node::Exclusive::Ignore => -1,
