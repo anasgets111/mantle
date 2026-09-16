@@ -205,10 +205,6 @@ mod tests {
         mlua::Lua::new()
     }
 
-    fn props_from_table(table: &mlua::Table) -> PropMap {
-        deserialize_lua_table(table).unwrap().properties
-    }
-
     #[test]
     fn layer_is_required() {
         let props = PropMap::default();

@@ -456,6 +456,22 @@ fn non_deferred_property<'a>(properties: &'a PropMap, property: &str) -> Option<
     properties.get(property).filter(|value| !matches!(value, Value::UserData(ud) if is_signal(ud)))
 }
 
+/// A test's property map, built the way production builds one: through the deserializer, which is
+/// what matches a key to the `&'static str` a [`PropMap`] holds.
+#[cfg(test)]
+pub(crate) fn props_from_table(table: &mlua::Table) -> PropMap {
+    crate::lua::nodes::deserialize_lua_table(table).unwrap().properties
+}
+
+/// [`props_from_table`] for a table with no `kind`. `rect` accepts every property these parsers
+/// read.
+#[cfg(test)]
+pub(crate) fn rect_props(lua: &mlua::Lua, src: &str) -> PropMap {
+    let table: mlua::Table = lua.load(src).eval().unwrap();
+    table.set("kind", "rect").unwrap();
+    props_from_table(&table)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -464,10 +480,6 @@ mod tests {
 
     fn lua() -> mlua::Lua {
         mlua::Lua::new()
-    }
-
-    fn props_from_table(table: &mlua::Table) -> PropMap {
-        deserialize_lua_table(table).unwrap().properties
     }
 
     #[test]

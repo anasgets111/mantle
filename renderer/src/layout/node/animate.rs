@@ -1422,6 +1422,7 @@ pub fn advance(tweens: &mut Vec<Tween>, properties: &mut PropMap, now: Instant, 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::layout::node::rect_props;
 
     impl AnimationSpec {
         /// The eased pair, for the tests that only care about timing. Panics on the other two
@@ -1441,21 +1442,14 @@ mod tests {
         }
     }
 
-    /// `rect` accepts every property these tests animate.
-    fn props(lua: &Lua, src: &str) -> PropMap {
-        let table: mlua::Table = lua.load(src).eval().unwrap();
-        table.set("kind", "rect").unwrap();
-        crate::lua::nodes::deserialize_lua_table(&table).unwrap().properties
-    }
-
     /// The spec `src` declares for `width`, and the message refusing `src`: between them, what
     /// every parser test below asks.
     fn spec(lua: &Lua, src: &str) -> AnimationSpec {
-        parse_animate("rect", &props(lua, src)).unwrap().remove("width").unwrap()
+        parse_animate("rect", &rect_props(lua, src)).unwrap().remove("width").unwrap()
     }
 
     fn refused(lua: &Lua, src: &str) -> String {
-        parse_animate("rect", &props(lua, src)).unwrap_err().to_string()
+        parse_animate("rect", &rect_props(lua, src)).unwrap_err().to_string()
     }
 
     #[test]
@@ -1553,7 +1547,7 @@ mod tests {
     fn a_four_number_easing_is_a_cubic_bezier() {
         let lua = Lua::new();
         let parsed = |src: &str| {
-            parse_animate("rect", &props(&lua, src)).unwrap().remove("width").expect("width has a spec").eased().1
+            parse_animate("rect", &rect_props(&lua, src)).unwrap().remove("width").expect("width has a spec").eased().1
         };
         let linear = parsed("return { animate = { width = { duration = 1, easing = { 0, 0, 1, 1 } } } }");
         assert_eq!(linear, Easing::Bezier { x1: 0.0, y1: 0.0, x2: 1.0, y2: 1.0 });
@@ -1575,7 +1569,7 @@ mod tests {
         let lua = Lua::new();
         let steps = parse_animate(
             "rect",
-            &props(&lua, "return { animate = { width = { duration = 1, easing = { steps = 4 } } } }"),
+            &rect_props(&lua, "return { animate = { width = { duration = 1, easing = { steps = 4 } } } }"),
         )
         .unwrap()
         .remove("width")
@@ -1610,7 +1604,7 @@ mod tests {
     #[test]
     fn a_bare_number_is_a_duration_with_the_default_easing() {
         let lua = Lua::new();
-        let specs = parse_animate("rect", &props(&lua, "return { animate = { width = 200 } }")).unwrap();
+        let specs = parse_animate("rect", &rect_props(&lua, "return { animate = { width = 200 } }")).unwrap();
         assert_eq!(
             specs["width"],
             AnimationSpec {
@@ -1626,7 +1620,7 @@ mod tests {
         let lua = Lua::new();
         let specs = parse_animate(
             "rect",
-            &props(
+            &rect_props(
                 &lua,
                 r##"return { animate = { background = { duration = 150, easing = "OutCubic", from = "#000000" } } }"##,
             ),
@@ -1641,7 +1635,7 @@ mod tests {
         let lua = Lua::new();
         let err = parse_animate(
             "rect",
-            &props(&lua, r#"return { animate = { width = { duration = 1, easing = "Bouncy" } } }"#),
+            &rect_props(&lua, r#"return { animate = { width = { duration = 1, easing = "Bouncy" } } }"#),
         )
         .unwrap_err();
         let text = err.to_string();
@@ -1651,10 +1645,10 @@ mod tests {
     #[test]
     fn a_property_the_kind_does_not_have_is_refused_by_name() {
         let lua = Lua::new();
-        let err = parse_animate("rect", &props(&lua, "return { animate = { widht = 200 } }")).unwrap_err();
+        let err = parse_animate("rect", &rect_props(&lua, "return { animate = { widht = 200 } }")).unwrap_err();
         assert!(err.to_string().contains("`widht`") && err.to_string().contains("`rect`"), "{err}");
         // A real property whose value is not a tween shape is fine to name; it snaps.
-        assert!(parse_animate("rect", &props(&lua, "return { animate = { visible = 200 } }")).is_ok());
+        assert!(parse_animate("rect", &rect_props(&lua, "return { animate = { visible = 200 } }")).is_ok());
     }
 
     /// ADR-0150: the exit block is checked by the same live pass that checks the rest of
@@ -1667,7 +1661,7 @@ mod tests {
         let lua = Lua::new();
         let spec = parse_animate(
             "rect",
-            &props(
+            &rect_props(
                 &lua,
                 r#"return { animate = { opacity = { duration = 200, easing = "Linear", loops = "Infinite",
                     keyframes = { 1, 0.4, { value = 1, duration = 50, easing = "OutCubic" } } } } }"#,
@@ -1691,7 +1685,7 @@ mod tests {
     fn a_sequence_walks_its_frames_and_wraps_only_when_it_loops() {
         let lua = Lua::new();
         let sequence = |src: &str| {
-            parse_animate("rect", &props(&lua, src)).unwrap().remove("opacity").unwrap().sequence().unwrap()
+            parse_animate("rect", &rect_props(&lua, src)).unwrap().remove("opacity").unwrap().sequence().unwrap()
         };
         // Compared with a tolerance: the wrap is an `f32` remainder, so 250 ms into a 200 ms cycle
         // lands a hair under 50 rather than on it.
@@ -1733,7 +1727,7 @@ mod tests {
         let lua = Lua::new();
         let sequence = parse_animate(
             "rect",
-            &props(
+            &rect_props(
                 &lua,
                 r#"return { animate = { opacity = { duration = 100, loops = 2, keyframes = {
                     0, { value = 0, duration = 100 }, { value = 1, duration = 0 },
@@ -1782,7 +1776,7 @@ mod tests {
         let lua = Lua::new();
         let sequence = parse_animate(
             "rect",
-            &props(
+            &rect_props(
                 &lua,
                 r#"return { animate = { opacity = { duration = 100, easing = "Linear", loops = "Infinite",
                     keyframes = { 0, 1 } } } }"#,
@@ -1822,7 +1816,7 @@ mod tests {
         assert!(text.contains("animate.exit") && text.contains("duration"), "{text}");
 
         // A block naming nothing has nothing to time, so it stays legal and simply never runs.
-        assert!(parse_animate("rect", &props(&lua, "return { animate = { exit = {} } }")).is_ok());
+        assert!(parse_animate("rect", &rect_props(&lua, "return { animate = { exit = {} } }")).is_ok());
     }
 
     /// A departing node eases from what it displays, and from the property's own identity when it
@@ -1830,8 +1824,10 @@ mod tests {
     #[test]
     fn departing_starts_each_target_at_the_displayed_value_or_the_property_identity() {
         let lua = Lua::new();
-        let mut properties =
-            props(&lua, r#"return { width = 40, animate = { exit = { duration = 100, width = 0, opacity = 0 } } }"#);
+        let mut properties = rect_props(
+            &lua,
+            r#"return { width = 40, animate = { exit = { duration = 100, width = 0, opacity = 0 } } }"#,
+        );
         let mut tweens = Vec::new();
         let now = Instant::now();
         assert!(depart("rect", &mut tweens, &mut properties, now, &lua).unwrap());
@@ -1841,7 +1837,7 @@ mod tests {
         assert_eq!(started["opacity"].to, Animatable::Number(0.0));
 
         // Nothing to ease: the caller drops the node instead of holding it for a frame.
-        let mut nothing = props(&lua, "return { width = 40 }");
+        let mut nothing = rect_props(&lua, "return { width = 40 }");
         assert!(!depart("rect", &mut Vec::new(), &mut nothing, now, &lua).unwrap());
     }
 
@@ -1851,7 +1847,7 @@ mod tests {
     #[test]
     fn departing_replaces_every_tween_the_node_was_already_running() {
         let lua = Lua::new();
-        let mut properties = props(
+        let mut properties = rect_props(
             &lua,
             r##"return { width = 40, background = "#ff0000",
                 animate = { background = 5000, exit = { duration = 100, opacity = 0 } } }"##,
@@ -1880,7 +1876,7 @@ mod tests {
     #[test]
     fn an_unset_percent_or_colour_departs_from_nothing_rather_than_from_the_target() {
         let lua = Lua::new();
-        let mut properties = props(
+        let mut properties = rect_props(
             &lua,
             r##"return { animate = { exit = { duration = 100, width = "0%", background = "#3366ff" } } }"##,
         );
@@ -2145,7 +2141,10 @@ mod tests {
         let lua = Lua::new();
         let spec = parse_animate(
             "rect",
-            &props(&lua, "return { animate = { width = { duration = 100, easing = { 0, 1000000, 1, 1000000 } } } }"),
+            &rect_props(
+                &lua,
+                "return { animate = { width = { duration = 100, easing = { 0, 1000000, 1, 1000000 } } } }",
+            ),
         )
         .unwrap()
         .remove("width")
@@ -2179,7 +2178,7 @@ mod tests {
         }];
         let shown: PropMap = PropMap::from_iter([("width", Value::Number(120.0))]);
 
-        let mut properties = props(&lua, source);
+        let mut properties = rect_props(&lua, source);
         let now = started + Duration::from_millis(30);
         let tweens = retarget("rect", Some((&running[..], &shown)), &mut properties, now, &lua).unwrap();
         let Motion::Spring(kept) = tweens[0].spec.motion else { panic!("still a spring") };
@@ -2192,7 +2191,7 @@ mod tests {
             spec: AnimationSpec { motion: Motion::Spring(carried), delay: Duration::from_millis(1000), from: None },
             ..running[0].clone()
         }];
-        let mut properties = props(&lua, source);
+        let mut properties = rect_props(&lua, source);
         let tweens = retarget("rect", Some((&waiting[..], &shown)), &mut properties, now, &lua).unwrap();
         let Motion::Spring(kept) = tweens[0].spec.motion else { panic!("still a spring") };
         assert_eq!(kept.velocity, 40.0, "the handed rate carries");
@@ -2202,7 +2201,7 @@ mod tests {
         // The run it lands in is still the one already going -- nothing here restarts a tween whose
         // target never moved, so `started` and `from` are the running one's.
         let stiffer = "return { width = 300, animate = { width = { spring = { stiffness = 400, damping = 10 } } } }";
-        let mut properties = props(&lua, stiffer);
+        let mut properties = rect_props(&lua, stiffer);
         let tweens = retarget("rect", Some((&running[..], &shown)), &mut properties, now, &lua).unwrap();
         let Motion::Spring(fresh) = tweens[0].spec.motion else { panic!("still a spring") };
         assert_eq!((fresh.stiffness, fresh.velocity), (400.0, 0.0), "an edited constant is a new spring");
@@ -2248,7 +2247,7 @@ mod tests {
         let lua = Lua::new();
         let spec = parse_animate(
             "rect",
-            &props(
+            &rect_props(
                 &lua,
                 r#"return { animate = { width = { duration = 100, delay = 1000,
                     keyframes = { 40, { value = 0, duration = 0 }, 40 } } } }"#,
@@ -2274,7 +2273,7 @@ mod tests {
         let lua = Lua::new();
         let spec = parse_animate(
             "rect",
-            &props(
+            &rect_props(
                 &lua,
                 r#"return { animate = { width = { duration = 100, easing = "Linear",
                     keyframes = { 0, { value = 10, duration = 300 }, { value = 20, duration = 100 },
@@ -2352,7 +2351,7 @@ mod tests {
         let lua = Lua::new();
         let specs = parse_animate(
             "rect",
-            &props(&lua, "return { animate = { opacity = { duration = 100, delay = 40, keyframes = { 0, 1 }, loops = \"Infinite\" } } }"),
+            &rect_props(&lua, "return { animate = { opacity = { duration = 100, delay = 40, keyframes = { 0, 1 }, loops = \"Infinite\" } } }"),
         )
         .unwrap();
         let started = Instant::now();
@@ -2377,13 +2376,13 @@ mod tests {
     fn a_delay_is_a_whole_number_of_milliseconds_within_a_minute() {
         let lua = Lua::new();
         let specs =
-            parse_animate("rect", &props(&lua, "return { animate = { width = { duration = 10, delay = 40 } } }"))
+            parse_animate("rect", &rect_props(&lua, "return { animate = { width = { duration = 10, delay = 40 } } }"))
                 .unwrap();
         assert_eq!(specs["width"].delay, Duration::from_millis(40));
-        let bare = parse_animate("rect", &props(&lua, "return { animate = { width = 10 } }")).unwrap();
+        let bare = parse_animate("rect", &rect_props(&lua, "return { animate = { width = 10 } }")).unwrap();
         assert_eq!(bare["width"].delay, Duration::ZERO, "absent is no delay");
         let zeroed =
-            parse_animate("rect", &props(&lua, "return { animate = { width = { duration = 10, delay = 0 } } }"))
+            parse_animate("rect", &rect_props(&lua, "return { animate = { width = { duration = 10, delay = 0 } } }"))
                 .unwrap();
         assert_eq!(zeroed["width"].delay, Duration::ZERO, "zero is the default written out, not a refusal");
 

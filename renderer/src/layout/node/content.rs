@@ -468,10 +468,6 @@ mod tests {
         mlua::Lua::new()
     }
 
-    fn props_from_table(table: &mlua::Table) -> PropMap {
-        deserialize_lua_table(table).unwrap().properties
-    }
-
     #[test]
     fn text_content_absent_defaults_to_the_empty_string() {
         let props = PropMap::default();

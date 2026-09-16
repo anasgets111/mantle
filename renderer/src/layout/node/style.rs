@@ -442,17 +442,6 @@ mod tests {
         mlua::Lua::new()
     }
 
-    fn props_from_table(table: &mlua::Table) -> PropMap {
-        deserialize_lua_table(table).unwrap().properties
-    }
-
-    /// `rect` accepts every property these parsers read.
-    fn rect_props(lua: &Lua, src: &str) -> PropMap {
-        let table: mlua::Table = lua.load(src).eval().unwrap();
-        table.set("kind", "rect").unwrap();
-        props_from_table(&table)
-    }
-
     #[test]
     fn width_absent_is_content() {
         let props = PropMap::default();

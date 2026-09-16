@@ -381,14 +381,9 @@ pub fn popup_spec(properties: &PropMap) -> Result<PopupSpec, LayoutError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::lua::nodes::deserialize_lua_table;
 
     fn lua() -> mlua::Lua {
         mlua::Lua::new()
-    }
-
-    fn props_from_table(table: &mlua::Table) -> PropMap {
-        deserialize_lua_table(table).unwrap().properties
     }
 
     #[test]
