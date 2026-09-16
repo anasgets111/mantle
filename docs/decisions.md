@@ -5039,8 +5039,9 @@ ponytail: `kind` is still a `String` per node per pass, and a kind is now resolv
 
 Amendment (2026-09-16): built. `accepted_lists` returns the row's own name, so `kind` is a
 `&'static str` on `VirtualNode`, `PreparedNode` and `ResolvedNode`: 18,645 allocations a pass down
-to 16,390, and 8 bytes off every node in the retained tree. No time figure, the box having held no
-measurement floor that day, and a 30% cut bought 1.5% above, so expect under 1%. 23 of the 37 sites
+to 16,390, and 8 bytes off every node in the retained tree. Worth about 1.5% of the pass, twelve
+runs a side on a quiet machine, four of the five fixtures agreeing and the fifth inside the noise --
+a first attempt on a loaded box could not resolve it at all. 23 of the 37 sites
 were `&node.kind`, which compiles as `&&str` and coerces: `cargo check` passes a tree that
 `clippy -D warnings` rejects.
 
