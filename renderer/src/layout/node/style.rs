@@ -120,14 +120,24 @@ pub fn parse_background(properties: &PropMap) -> Result<Option<Rgba>, LayoutErro
     Ok(Some(parse_hex_color("background", &s)?))
 }
 
-/// `rect.radius`, defaulting to 0.
+/// `rect.radius`, defaulting to 0, negated under `corner_shape = "Scoop"`: a quarter circle cut in,
+/// centred on the box's corner point, CSS's `corner-shape` name.
 pub fn parse_radius(properties: &PropMap) -> Result<f32, LayoutError> {
+    let scoop = match properties.get("corner_shape") {
+        None => false,
+        Some(Value::String(s)) if *s == "Round" => false,
+        Some(Value::String(s)) if *s == "Scoop" => true,
+        Some(other) => {
+            let got = preview_for_error(other);
+            return Err(invalid("corner_shape", format!("expected \"Round\" or \"Scoop\", got {got}")));
+        }
+    };
     let Some(value) = properties.get("radius") else {
         return Ok(0.0);
     };
     let n = value_as_f32("radius", value)?
         .ok_or_else(|| invalid("radius", format!("expected a number, got {}", preview_for_error(value))))?;
-    within("radius", n)
+    within("radius", n).map(|n| if scoop { -n } else { n })
 }
 
 /// `scale`, `rotate`, `translate` and `origin` (ADR-0149): a paint-only affine on the

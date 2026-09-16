@@ -210,7 +210,8 @@ fn build_node(
     // here; `clip = "Rounded"` creates a grouped mask below.
     //
     // ponytail: `layout::hit` intersects the same rectangles but knows nothing about the arc, so a
-    // pill's corner is outside its fill yet still takes a click (four pixels on a 34px control).
+    // pill's corner is outside its fill yet still takes a click (four pixels on a 34px control),
+    // and a scoop's cut-out still takes the click and counts as input.
     // Upgrade path: hit testing should share this walk instead of a second copy of the rule.
     let clip = intersect(clip, snap_to_physical(rect, scale));
     // Fully clipped children cannot draw.
@@ -270,10 +271,10 @@ fn build_node(
     }
 }
 
-/// The positive radius of a node whose children use a rounded clip.
+/// The non-zero radius of a node whose children use a rounded clip.
 fn rounded_clip(node: &ResolvedNode) -> Option<f32> {
     match node.paint {
-        Some(PaintStyle::Box { clip: ClipShape::Rounded, radius, .. }) if radius > 0.0 => Some(radius),
+        Some(PaintStyle::Box { clip: ClipShape::Rounded, radius, .. }) if radius != 0.0 => Some(radius),
         _ => None,
     }
 }
@@ -849,8 +850,19 @@ fn box_path(rect: LogicalRect, radius: f32) -> Path {
     let LogicalRect { x, y, width: w, height: h } = rect;
     let mut path = Path::new();
 
-    if radius <= 0.0 || w <= 0.0 || h <= 0.0 {
+    if radius == 0.0 || w <= 0.0 || h <= 0.0 {
         path.rect(x, y, w, h);
+    } else if radius < 0.0 {
+        // Each arc is centred on a corner point and swept inward; `arc` joins them with the
+        // straight edges. Below half the shorter side, so neighbouring arcs never meet and fold.
+        // Wound left, bottom, right, top like the shapes below: the other way, femtovg's
+        // antialiasing inset pushes the edge up to 3px into the scoop.
+        let r = (-radius).min(w.min(h) / 2.0 - HAIR).max(0.0);
+        path.arc(x, y + h, r, -FRAC_PI_2, 0.0, Solidity::Hole);
+        path.arc(x + w, y + h, r, PI, 3.0 * FRAC_PI_2, Solidity::Hole);
+        path.arc(x + w, y, r, FRAC_PI_2, PI, Solidity::Hole);
+        path.arc(x, y, r, 0.0, FRAC_PI_2, Solidity::Hole);
+        path.close();
     } else if radius < w.min(h) / 2.0 {
         path.rounded_rect(x, y, w, h, radius);
     } else if (w - h).abs() <= HAIR {
@@ -2084,6 +2096,37 @@ mod tests {
             let alpha = pixel_at(painter.canvas_mut(), x, y).3;
             assert!((126..=130).contains(&alpha), "({x}, {y}) is painted once, got alpha {alpha}");
         }
+    }
+
+    /// A scoop cuts each corner out along a circle centred on the corner point, and a translucent
+    /// fill covers everything else exactly once: no fold where an arc meets a straight edge.
+    #[test]
+    fn a_scooped_box_cuts_each_corner_in_and_fills_the_rest_once() {
+        let Some(instance) = init_headless_egl(64, 64) else { return };
+        let lua = Lua::new();
+        let shaping = ShapingHandle::spawn();
+        let Some(mut painter) = text_painter(&instance, &shaping, 64, 64) else { return };
+
+        let root = resolved_surface(
+            &lua,
+            r##"return panel { id = "bar", width = 64, height = 64, child = rect {
+                width = 40, height = 40, radius = 12, corner_shape = "Scoop", background = "#FF000080",
+            } }"##,
+            LogicalSize { width: 64.0, height: 64.0 },
+        );
+        paint_tree(&mut painter, &mut ImageCache::new(), &root, 1.0);
+
+        for (x, y) in [(1, 1), (38, 1), (1, 38), (38, 38), (5, 5)] {
+            assert_eq!(pixel_at(painter.canvas_mut(), x, y).3, 0, "({x}, {y}) is inside a scoop");
+        }
+        for (x, y) in [(20, 1), (1, 20), (20, 20), (10, 10), (38, 20)] {
+            let alpha = pixel_at(painter.canvas_mut(), x, y).3;
+            assert!((126..=130).contains(&alpha), "({x}, {y}) is filled once, got alpha {alpha}");
+        }
+        // Row 3's centre crosses the arc at x = sqrt(12^2 - 3.5^2) = 11.5: the edge sits there,
+        // not pushed into the scoop.
+        assert_eq!(pixel_at(painter.canvas_mut(), 10, 3).3, 0, "the pixel before the arc is empty");
+        assert!(pixel_at(painter.canvas_mut(), 12, 3).3 >= 100, "the pixel after the arc is filled");
     }
 
     #[test]

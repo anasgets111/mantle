@@ -2129,6 +2129,9 @@ fn intersect_logical(a: LogicalRect, b: LogicalRect) -> LogicalRect {
 /// card costs about `radius` rectangles rather than its height in them: at `radius.md` that is a
 /// couple of dozen, against the ~600 a scanline-per-row rasterisation would have sent every frame.
 /// Rows sharing an inset merge into one strip, which is most of them near the middle of a band.
+///
+/// A negative radius is a scoop: the circle centres on the corner point, which is a rounded band
+/// mirrored top to bottom and side to side.
 fn push_rounded_rect(rect: PhysicalRect, radius: f32, out: &mut Vec<PhysicalRect>) {
     if rect.x1 <= rect.x0 || rect.y1 <= rect.y0 {
         return;
@@ -2136,7 +2139,7 @@ fn push_rounded_rect(rect: PhysicalRect, radius: f32, out: &mut Vec<PhysicalRect
     let height = rect.y1 - rect.y0;
     let width = rect.x1 - rect.x0;
     // A radius cannot exceed half the box in either axis, the same clamp the painter's arcs use.
-    let r = (radius.round().max(0.0) as i32).min(width / 2).min(height / 2);
+    let r = (radius.abs().round() as i32).min(width / 2).min(height / 2);
     if r <= 0 {
         out.push(rect);
         return;
@@ -2146,13 +2149,13 @@ fn push_rounded_rect(rect: PhysicalRect, radius: f32, out: &mut Vec<PhysicalRect
     if rect.y1 - r > rect.y0 + r {
         out.push(PhysicalRect { x0: rect.x0, y0: rect.y0 + r, x1: rect.x1, y1: rect.y1 - r });
     }
-    // One band walked once, mirrored top and bottom: row `dy` from the band's outer edge sits
-    // `r - sqrt(r^2 - (r - dy)^2)` in from each side.
+    // One band walked once, mirrored top and bottom.
+    let inset_of = |row| if radius < 0.0 { r - inset_at(r, r - 1 - row) } else { inset_at(r, row) };
     let mut row = 0;
     while row < r {
-        let inset = inset_at(r, row);
+        let inset = inset_of(row);
         let mut last = row + 1;
-        while last < r && inset_at(r, last) == inset {
+        while last < r && inset_of(last) == inset {
             last += 1;
         }
         if rect.x0 + inset < rect.x1 - inset {
@@ -5771,6 +5774,21 @@ pub(super) mod tests {
         let mut square = Vec::new();
         push_rounded_rect(PhysicalRect { x0: 0, y0: 0, x1: 10, y1: 10 }, 0.0, &mut square);
         assert_eq!(square, [PhysicalRect { x0: 0, y0: 0, x1: 10, y1: 10 }], "no radius is one rectangle");
+    }
+
+    /// A scoop's region is the box less a quarter disc at each corner point: the corner pixel is
+    /// out, a pixel just outside the disc is in, and the middle of an edge is whole.
+    #[test]
+    fn a_scooped_box_region_leaves_out_a_quarter_disc_at_each_corner() {
+        let mut strips = Vec::new();
+        push_rounded_rect(PhysicalRect { x0: 0, y0: 0, x1: 40, y1: 40 }, -12.0, &mut strips);
+        let covers = |x: i32, y: i32| strips.iter().any(|s| s.x0 <= x && x < s.x1 && s.y0 <= y && y < s.y1);
+        for (x, y) in [(0, 0), (39, 0), (0, 39), (39, 39), (7, 7), (11, 0)] {
+            assert!(!covers(x, y), "({x}, {y}) is inside a scoop");
+        }
+        for (x, y) in [(20, 0), (0, 20), (20, 20), (10, 10), (12, 0)] {
+            assert!(covers(x, y), "({x}, {y}) is outside every scoop");
+        }
     }
 
     /// ADR-0109: a transparent container is walked into; a solid child claims its box; a `button`

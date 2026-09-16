@@ -240,9 +240,10 @@ already running, so the block's `duration` is the whole of the node's remaining 
 run for `visible = false`; `delay(signal, ms)` holds a whole surface open instead.
 
 Boxes, rows, columns, buttons and surface roots also accept `background`, `radius`,
-`border_color`, `border_width` and `clip`.
+`border_color`, `border_width`, `clip` and `corner_shape`.
 Colours use `#RRGGBB` or `#RRGGBBAA`. Borders may specify per-edge colours/widths;
 an edge needs both. `clip = "Box"` is the default; `"Rounded"` clips children with the radius.
+`corner_shape = "Scoop"` bends the radius inward, centred on each corner point.
 See [paint parsing](../renderer/src/layout/node/paint_style.rs).
 
 ### 5.2 Node-specific properties

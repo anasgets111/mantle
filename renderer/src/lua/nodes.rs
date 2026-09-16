@@ -58,7 +58,8 @@ const COMMON_PROPERTIES: &[&str] = &[
 
 /// Box-paint properties beyond [`COMMON_PROPERTIES`]. `node::paint_style`'s first arm paints
 /// `row`, `column`, `button`, `rect`, and all four root roles alike.
-const BOX_PROPERTIES: &[&str] = &["background", "blur", "border_color", "border_width", "clip", "radius"];
+const BOX_PROPERTIES: &[&str] =
+    &["background", "blur", "border_color", "border_width", "clip", "corner_shape", "radius"];
 
 /// Which kinds that arm covers.
 const BOX_KINDS: [&str; 8] = ["rect", "row", "column", "button", "panel", "window", "popup", "lock"];

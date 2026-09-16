@@ -20,6 +20,7 @@ use super::*;
 pub enum PaintStyle {
     /// Box fill/border for containers and all four surface roles. `clip` travels with `radius`
     /// because it changes how the node's shape clips descendants.
+    /// A negative `radius` is a scoop (`node::parse_radius`).
     Box { background: Option<Rgba>, radius: f32, colors: BorderColor, widths: EdgeInsets, clip: ClipShape },
     /// Text before/after `Scene::finish` rewrites it to an ellipsized prefix under `elide` or
     /// wrapped lines joined by `\n`; display-list paint may therefore receive `\n`-joined lines.
