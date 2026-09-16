@@ -33,6 +33,9 @@ const MIN_TEXTURE_BUDGET: usize = 16 << 20;
 /// The `ImageCache` idle-texture budget for this machine's displays (ADR-0182): one screenful of
 /// RGBA per output, floored at [`MIN_TEXTURE_BUDGET`].
 ///
+/// Idle is the operative word: `trim` charges only textures no mapped surface shows, and a
+/// `Fit::Cover` wallpaper is cropped to one screenful, so an output's ceiling is two screenfuls.
+///
 /// A constant cannot be right for an engine other people's shells run on. 16 MB was measured
 /// against one 1920x1200 laptop and one config's 54-file picker, and a single 4K wallpaper is 33 MB
 /// on its own -- so that machine would sit permanently over budget while this one has room to

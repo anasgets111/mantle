@@ -41,11 +41,8 @@ const CACHE_CAPACITY: usize = 128;
 /// are known (ADR-0182). Before any budget, moved-on 1920x1200 wallpapers (12 MB each) survived the
 /// next 128 inserts and closed picker tiles did too.
 ///
-/// [`ImageCache::trim`] compares *total* resident bytes against it and then evicts only unpinned
-/// entries, so it is not an allowance for idle textures on top of what mapped surfaces show, which
-/// is what ADR-0182 and the comments around it claimed. A pinned working set larger than the budget
-/// leaves `trim` evicting every idle entry and still over -- correct, in that it never drops what a
-/// surface is showing, and wasteful, in that the eviction bought nothing.
+/// [`ImageCache::trim`] charges only idle bytes against it, so it is an allowance on top of what
+/// mapped surfaces show and not a total.
 ///
 /// `wayland::output::texture_budget` owns the real figure, because what fits is a property of the
 /// displays and not of this file.
@@ -523,7 +520,9 @@ impl ImageCache {
         }
     }
 
-    /// Evicts idle textures to [`ImageCache::set_texture_budget`], oldest ask first (ADR-0123). `pinned` contains
+    /// Evicts idle textures to [`ImageCache::set_texture_budget`], oldest ask first (ADR-0123). The
+    /// early return over-estimates on purpose -- idle bytes never exceed resident -- so an untouched
+    /// cache skips the walk and [`victims`] measures the idle half. `pinned` contains
     /// `(path, box)` pairs from mapped surfaces' last display lists, collected by `wayland::App`
     /// after paint. Compute it lazily because list walks matter only when evicting. Icons are not
     /// pinned: lists carry theme names, not paths; an icon costs a few KB and one inline reraster.
@@ -536,7 +535,7 @@ impl ImageCache {
             Slot::Ready(_, bytes) => Some((key.clone(), bytes, entry.last_hit)),
             Slot::Pending | Slot::Failed => None,
         });
-        for key in victims(candidates, self.resident_bytes, self.texture_budget, &pinned) {
+        for key in victims(candidates, self.texture_budget, &pinned) {
             self.evict(&key);
         }
     }
@@ -721,12 +720,14 @@ pub fn cache_box(path: &Path, box_px: (u32, u32)) -> (u32, u32) {
     if is_vector(path) { (box_px.0.max(box_px.1), box_px.0.max(box_px.1)) } else { box_px }
 }
 
-/// Evictions from `(key, bytes, last_hit)` to bring `resident` under `budget`: oldest ask first,
-/// skip `pinned` path/box pairs, stop at budget or when unpinned candidates end. Pure so the policy
-/// is testable without an `ImageId`, which femtovg cannot make outside a canvas.
+/// Evictions from `(key, bytes, last_hit)` to bring the *idle* bytes under `budget`: oldest ask
+/// first, skip `pinned` path/box pairs, stop at budget or when unpinned candidates end. Pure so the
+/// policy is testable without an `ImageId`, which femtovg cannot make outside a canvas.
+///
+/// Idle, not total: those are the only bytes eviction returns, so charging a pin against the budget
+/// would evict every idle entry on the way to a figure the pin alone already exceeds.
 fn victims(
     candidates: impl Iterator<Item = (CacheKey, usize, u64)>,
-    resident: usize,
     budget: usize,
     pinned: &[(PathBuf, (u32, u32))],
 ) -> Vec<CacheKey> {
@@ -734,7 +735,7 @@ fn victims(
         .filter(|(key, _, _)| !pinned.iter().any(|(path, box_px)| *path == key.path && *box_px == key.box_px))
         .collect();
     idle.sort_by_key(|(_, _, last_hit)| *last_hit);
-    let mut resident = resident;
+    let mut resident: usize = idle.iter().map(|(_, bytes, _)| *bytes).sum();
     let mut out = Vec::new();
     for (key, bytes, _) in idle {
         if resident <= budget {
@@ -1377,14 +1378,32 @@ mod tests {
             (shown.clone(), 12 * mb, 4),
         ];
         let pinned = vec![(PathBuf::from("/w/shown.jpg"), (1920, 1920))];
-        let out = victims(candidates.clone().into_iter(), 43 * mb, 31 * mb, &pinned);
+        // 31 MB idle against a 19 MB budget: the oldest goes and the rest stay.
+        let out = victims(candidates.clone().into_iter(), 19 * mb, &pinned);
         assert_eq!(out, vec![older.clone()]);
-        // A tighter budget takes the next oldest, then stops at pinned even while over budget:
-        // oversized working sets do not thrash.
-        let out = victims(candidates.clone().into_iter(), 43 * mb, 10 * mb, &pinned);
+        // A tighter budget takes the next oldest, then the tiles, and stops at pinned even while
+        // over budget: oversized working sets do not thrash.
+        let out = victims(candidates.clone().into_iter(), 5 * mb, &pinned);
         assert_eq!(out, vec![older, old, tiles]);
-        // Under budget, nothing moves.
-        assert!(victims(candidates.into_iter(), 43 * mb, 43 * mb, &pinned).is_empty());
+        // Idle already under budget, nothing moves -- and the pinned 12 MB is not charged for.
+        assert!(victims(candidates.into_iter(), 31 * mb, &pinned).is_empty());
+    }
+
+    #[test]
+    fn a_pin_the_size_of_the_whole_budget_still_leaves_room_for_idle_textures() {
+        // A cover wallpaper is one screenful and so is the budget on a 3440x1440 output. If the pin
+        // counted, every icon would go and the cache would still be over, for nothing back.
+        let mb = 1 << 20;
+        let v = FileVersion::default();
+        let budget = 19 * mb;
+        let mut candidates = vec![(key("/w/shown.jpg", 3440, v), budget, 99)];
+        candidates.extend((0..11).map(|n| (key(format!("/i/{n}.png"), 32, v), 4 << 10, n)));
+        let pinned = vec![(PathBuf::from("/w/shown.jpg"), (3440, 3440))];
+
+        assert!(
+            victims(candidates.into_iter(), budget, &pinned).is_empty(),
+            "44 KB of idle icons beside a pin that fills the budget is not a reason to evict any of them"
+        );
     }
 
     #[test]
@@ -1393,7 +1412,7 @@ mod tests {
         let full = key("/w/a.jpg", 1920, v);
         let tile = key("/w/a.jpg", 232, v);
         let pinned = vec![(PathBuf::from("/w/a.jpg"), (1920, 1920))];
-        let out = victims(vec![(full.clone(), 10, 1), (tile.clone(), 10, 2)].into_iter(), 20, 15, &pinned);
+        let out = victims(vec![(full.clone(), 10, 1), (tile.clone(), 10, 2)].into_iter(), 5, &pinned);
         assert_eq!(out, vec![tile]);
     }
 
