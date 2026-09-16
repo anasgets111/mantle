@@ -869,6 +869,8 @@ enum Measure {
         font: Option<std::sync::Arc<str>>,
         wrap: node::Wrap,
         max_lines: Option<usize>,
+        /// The last `(max_width, size)` this node measured; see [`solve`].
+        memo: Option<(Option<f32>, taffy::Size<f32>)>,
     },
     /// `icon`'s `size`, the same number on both axes.
     Square(f32),
@@ -1229,6 +1231,7 @@ fn measure_for(
                 font: font.clone(),
                 wrap: *wrap,
                 max_lines: *max_lines,
+                memo: None,
             })
         }
         "icon" => Some(Measure::Square(node::parse_icon_size(properties)?)),
@@ -1531,9 +1534,12 @@ fn taffy_failed(err: taffy::TaffyError) -> LayoutError {
 ///
 /// The measure callback is the one place this crate is still asked a geometry question, only for
 /// the two kinds whose size is their content: a `text`'s shaped extent and an `icon`'s square.
-/// taffy asks each a handful of times per pass rather than once, over a small set of distinct
-/// `(text, size, wrap width)` tuples, and `ShapingHandle`'s memo is keyed on exactly that tuple, so
-/// every repeat after the first is answered without crossing the channel.
+/// taffy asks each `text` about ten times a pass at one `max_width`, always so for a bar's
+/// non-wrapping labels, so `Measure::Text` answers a repeat from its last `(max_width, size)`.
+/// `ShapingHandle`'s memo answers one only after hashing a `ShapeRequest` that owns a copy of the
+/// string: 10,000 of those are 1.1ms of a 7.4ms pass on a 500-row list. One entry, since a miss
+/// falls back on that memo, and no invalidation, since [`new_solver_tree`] builds the context
+/// fresh each pass. A `NaN` width never equals itself, so it re-measures rather than going stale.
 fn solve(
     tree: &mut taffy::TaffyTree<Measure>,
     root: taffy::NodeId,
@@ -1555,7 +1561,7 @@ fn solve(
                 };
                 match measure {
                     Measure::Square(size) => taffy::Size { width: *size, height: *size },
-                    Measure::Text { content, runs, font_size, font, wrap, max_lines } => {
+                    Measure::Text { content, runs, font_size, font, wrap, max_lines, memo } => {
                         // The wrap boundary: the width this box is already known to have, or the
                         // width on offer when it is not. `MaxContent`/`MinContent` mean taffy is
                         // asking what the string wants rather than offering it a box, and an
@@ -1572,6 +1578,11 @@ fn solve(
                                 taffy::AvailableSpace::MinContent | taffy::AvailableSpace::MaxContent => None,
                             }),
                         };
+                        if let Some((key, size)) = memo
+                            && *key == max_width
+                        {
+                            return *size;
+                        }
                         let line_height = shaping::line_height(*font_size);
                         let shaped = shaping.shape(ShapeRequest {
                             text: content.clone(),
@@ -1582,7 +1593,9 @@ fn solve(
                             font: font.clone(),
                         });
                         let lines = max_lines.map_or(shaped.lines.len(), |cap| shaped.lines.len().min(cap));
-                        taffy::Size { width: shaped.width, height: lines as f32 * line_height }
+                        let size = taffy::Size { width: shaped.width, height: lines as f32 * line_height };
+                        *memo = Some((max_width, size));
+                        size
                     }
                 }
             },
@@ -4192,6 +4205,39 @@ pub(super) mod tests {
         assert_eq!(height, lines.len() as f32 * 12.0 * 1.2, "the box has to be as tall as the lines it holds");
         // Whitespace is where the breaks landed, so the words survive and only the gaps moved.
         assert_eq!(drawn.split_whitespace().collect::<Vec<_>>(), LONG.split_whitespace().collect::<Vec<_>>());
+    }
+
+    /// taffy probes a wrapping text at max-content, where it is one line, before offering it the
+    /// width it will actually get. The one-entry memo in [`solve`] is keyed on that width for this
+    /// reason: blind to it, the node would keep the probe's answer and lay out one line of four.
+    #[test]
+    fn a_wrapping_text_is_measured_at_the_width_it_is_given_not_the_one_it_was_probed_at() {
+        let mut scene = Scene::new();
+        let shaping = ShapingHandle::spawn();
+        let (_lua, surface) = surface_from(&format!(
+            r#"panel {{ id = "bar", width = 200,
+                child = column {{ children = {{ text {{ content = "{LONG}", wrap = "Word" }} }} }} }}"#
+        ));
+        apply_at(&mut scene, &[surface], full(), &shaping, &_lua).unwrap();
+        let laid_out = scene.surface("bar@TEST").unwrap().children[0].children[0].rect.height;
+
+        let line_height = shaping::line_height(12.0);
+        let fresh = |max_width| {
+            shaping
+                .shape(ShapeRequest {
+                    text: LONG.to_string(),
+                    font_size: 12.0,
+                    line_height,
+                    max_width,
+                    runs: Vec::new(),
+                    font: None,
+                })
+                .lines
+                .len()
+        };
+        assert_eq!(fresh(None), 1, "the probe's answer, which the box must not keep");
+        assert!(fresh(Some(200.0)) > 1, "the fixture has to wrap for this to test anything");
+        assert_eq!(laid_out, fresh(Some(200.0)) as f32 * line_height);
     }
 
     /// Paint shapes each wrapped line alone, so a line of an Arabic paragraph that opens on an
