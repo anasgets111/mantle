@@ -14,11 +14,11 @@ feature missing from `dev-config` is not an engine gap.
 - **Removing lines is always welcome.** Redundant, dead or duplicated code goes.
 - **New lines only when nothing else works.** The smallest diff in the right place wins; the smallest diff in
   the wrong place is a second bug.
-- **No walls of text.** Replies, comments, commits, docs. Lead with the answer, bullets over paragraphs, the
-  number over the adjective.
-- **Comments** state the non-obvious decision, never the mechanism. Rationale longer than a line belongs in an
-  ADR or nowhere.
-- **Commit messages** say what changed and why it is not obvious, not a session transcript.
+- **No walls of text.** Replies, comments, commits, docs. Lead with the answer, tables over bullets, bullets
+  over paragraphs, the number over the adjective. `unslop` applies to every one of them.
+- **Comments** state the non-obvious decision, never the mechanism and never what the code used to do.
+  Rationale longer than a line belongs in an ADR or nowhere.
+- **Commit messages** say what changed and why it is not obvious. No before-state, no session transcript.
 
 Before writing code, trace the real flow end to end, then stop at the first rung that holds:
 
