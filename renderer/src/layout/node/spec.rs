@@ -5,7 +5,7 @@ use std::collections::HashSet;
 
 use mlua::Value;
 
-use crate::lua::nodes::{VirtualNode, deserialize_lua_table};
+use crate::lua::nodes::{DeserializeError, VirtualNode, deserialize_lua_table};
 
 use super::*;
 
@@ -83,6 +83,15 @@ pub enum SurfaceFingerprint {
     Lock(String),
 }
 
+/// [`deserialize_lua_table`] with a refused kind kept as itself, so a child of an unsupported kind
+/// still fails the pass as one rather than as a malformed `children` entry.
+fn deserialize_child(table: &mlua::Table, property: &str) -> Result<VirtualNode, LayoutError> {
+    deserialize_lua_table(table).map_err(|e| match e {
+        DeserializeError::UnsupportedKind(kind) => LayoutError::UnsupportedNodeKind(kind),
+        other => invalid(property, other.to_string()),
+    })
+}
+
 /// A single-node property converted with `deserialize_lua_table`.
 pub fn parse_single_child(properties: &PropMap) -> Result<Option<VirtualNode>, LayoutError> {
     let Some(value) = properties.get("child") else {
@@ -91,8 +100,7 @@ pub fn parse_single_child(properties: &PropMap) -> Result<Option<VirtualNode>, L
     let Value::Table(table) = value else {
         return Err(invalid("child", format!("expected a node table, got {}", preview_for_error(value))));
     };
-    let node = deserialize_lua_table(table).map_err(|e| invalid("child", e.to_string()))?;
-    Ok(Some(node))
+    Ok(Some(deserialize_child(table, "child")?))
 }
 
 /// An array-of-nodes `children` property.
@@ -111,7 +119,7 @@ pub fn parse_children(properties: &PropMap) -> Result<Vec<VirtualNode>, LayoutEr
             return Err(invalid("children", format!("more than {MAX_ARRAY_ELEMENTS} children in one node")));
         }
         let entry = entry.map_err(|e| invalid("children", e.to_string()))?;
-        let node = deserialize_lua_table(&entry).map_err(|e| invalid("children", e.to_string()))?;
+        let node = deserialize_child(&entry, "children")?;
         children.push(node);
     }
     Ok(children)
@@ -159,7 +167,7 @@ pub fn parse_list_children(properties: &PropMap) -> Result<Vec<VirtualNode>, Lay
         let Value::Table(built_table) = built else {
             return Err(invalid("itemfn", format!("expected a node table, got {}", preview_for_error(&built))));
         };
-        let mut node = deserialize_lua_table(&built_table).map_err(|e| invalid("itemfn", e.to_string()))?;
+        let mut node = deserialize_child(&built_table, "itemfn")?;
 
         if let Some(key_fn) = key_fn {
             // Moved, not borrowed: a borrow would keep this item rooted for the rest of the loop
@@ -182,7 +190,7 @@ pub fn parse_list_children(properties: &PropMap) -> Result<Vec<VirtualNode>, Lay
             }
             seen_keys.insert(key_text);
             // List identity wins over any `id` the item function supplied.
-            node.properties.insert("id".to_string(), Value::String(key_str));
+            node.properties.insert("id", Value::String(key_str));
         }
 
         children.push(node);
@@ -494,7 +502,7 @@ mod tests {
             .eval()
             .unwrap();
         let mut properties = PropMap::default();
-        properties.insert("children".to_string(), Value::Table(table));
+        properties.insert("children", Value::Table(table));
 
         let err = parse_children(&properties).expect_err("past the cap this must be refused");
         assert!(format!("{err:?}").contains("more than"), "the error has to say what to fix: {err:?}");
@@ -508,7 +516,7 @@ mod tests {
         let table: mlua::Table =
             lua.load(r#"return { rect { width = 1, height = 1 }, rect { width = 2, height = 2 } }"#).eval().unwrap();
         let mut properties = PropMap::default();
-        properties.insert("children".to_string(), Value::Table(table));
+        properties.insert("children", Value::Table(table));
 
         assert_eq!(parse_children(&properties).unwrap().len(), 2);
     }

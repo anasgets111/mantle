@@ -117,7 +117,7 @@ mod tests {
     ) -> layout::ResolvedNode {
         let mut properties = PropMap::default();
         if on_click {
-            properties.insert("on_click".to_string(), Value::Function(lua.create_function(|_, ()| Ok(())).unwrap()));
+            properties.insert("on_click", Value::Function(lua.create_function(|_, ()| Ok(())).unwrap()));
         }
         layout::ResolvedNode {
             displayed_source: None,

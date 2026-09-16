@@ -1,6 +1,7 @@
 //! Node constructors and `VirtualNode`, the loader's shallow table-to-Rust conversion.
 //!
-//! ponytail: shallow by design. `deserialize_lua_table` reads `kind`, copies other keys unchanged,
+//! ponytail: shallow by design. `deserialize_lua_table` reads `kind`, refuses one with no
+//! `NODE_PROPERTIES` row, copies other keys unchanged,
 //! never recurses into `children`/`child` (reconciliation's job), and does not validate shapes such
 //! as `width` being an integer or `"Fill"` (the layout engine is the only typed-property consumer).
 
@@ -117,15 +118,21 @@ const NODE_PROPERTIES: &[(&str, &[&str])] = &[
     ("lock", &["child"]),
 ];
 
-/// Whether `kind` accepts `property`. Unknown kinds accept all properties until their
-/// [`NODE_PROPERTIES`] row is written; rejecting all would be worse than the silence being fixed.
-pub(crate) fn accepts(kind: &str, property: &str) -> bool {
-    let Some((_, own)) = NODE_PROPERTIES.iter().find(|(name, _)| *name == kind) else {
-        return true;
-    };
-    own.contains(&property)
-        || COMMON_PROPERTIES.contains(&property)
-        || (BOX_KINDS.contains(&kind) && BOX_PROPERTIES.contains(&property))
+/// The lists `kind` draws its properties from, or `None` if it is not a node kind.
+fn accepted_lists(kind: &str) -> Option<(&'static [&'static str], bool)> {
+    let (_, own) = NODE_PROPERTIES.iter().find(|(name, _)| *name == kind)?;
+    Some((own, BOX_KINDS.contains(&kind)))
+}
+
+/// The list's own `&'static str` for `property`, which is what a [`PropMap`] keys by.
+fn name_in((own, boxed): (&'static [&'static str], bool), property: &str) -> Option<&'static str> {
+    let found = |list: &'static [&'static str]| list.iter().copied().find(|name| *name == property);
+    found(own).or_else(|| found(COMMON_PROPERTIES)).or_else(|| if boxed { found(BOX_PROPERTIES) } else { None })
+}
+
+/// [`name_in`] for a caller holding only the kind. `animate` validates its entries this way.
+pub(crate) fn accepted_name(kind: &str, property: &str) -> Option<&'static str> {
+    name_in(accepted_lists(kind)?, property)
 }
 
 /// Accepted properties, sorted for errors.
@@ -160,6 +167,9 @@ pub enum DeserializeError {
     /// ([`NODE_PROPERTIES`]).
     #[error("`{kind}` has no property `{property}`; it accepts {accepted}")]
     UnknownProperty { kind: String, property: String, accepted: String },
+    /// A kind with no [`NODE_PROPERTIES`] row, and so no vocabulary to key a map by (ADR-0219).
+    #[error("`{0}` is not a node kind")]
+    UnsupportedKind(String),
 }
 
 /// Registers each [`NODE_KINDS`] entry as a constructor that tags its props table with `kind`.
@@ -185,22 +195,33 @@ pub fn deserialize_lua_table(table: &Table) -> Result<VirtualNode, DeserializeEr
         _ => return Err(DeserializeError::KindNotAString),
     };
 
+    let Some(lists) = accepted_lists(&kind) else {
+        return Err(DeserializeError::UnsupportedKind(kind));
+    };
+
     let mut properties = PropMap::default();
     for pair in table.pairs::<Value, Value>() {
         let (key, value) = pair?;
-        let key = match &key {
-            Value::String(s) if s == "kind" => continue,
-            Value::String(s) => s.to_string_lossy(),
-            other => other.to_string()?,
+        let name = match &key {
+            Value::String(s) => match s.to_str() {
+                Ok(text) if &*text == "kind" => continue,
+                Ok(text) => name_in(lists, &text),
+                Err(_) => None,
+            },
+            _ => None,
         };
-        if !accepts(&kind, &key) {
+        let Some(name) = name else {
             return Err(DeserializeError::UnknownProperty {
                 kind: kind.clone(),
-                property: key,
+                // Lossy: `Value::to_string` refuses the key this arm exists to name.
+                property: match &key {
+                    Value::String(s) => s.to_string_lossy(),
+                    other => other.to_string()?,
+                },
                 accepted: accepted_properties(&kind).join(", "),
             });
-        }
-        properties.insert(key, value);
+        };
+        properties.insert(name, value);
     }
 
     Ok(VirtualNode { kind, properties })
@@ -291,12 +312,33 @@ mod tests {
         assert!(matches!(child, Value::Table(_)), "child stays a raw Lua table, not a converted VirtualNode");
     }
 
+    /// `Value::to_string` refuses a key that is not UTF-8, so the refusal has to name it lossily or
+    /// name nothing at all.
+    #[test]
+    fn a_property_key_that_is_not_utf8_is_refused_by_name() {
+        let lua = lua_with_constructors();
+        let table: Table = lua.load("return rect {}").eval().unwrap();
+        table.set(lua.create_string(b"widt\xffh").unwrap(), 1).unwrap();
+
+        let err = deserialize_lua_table(&table).unwrap_err();
+
+        let DeserializeError::UnknownProperty { property, accepted, .. } = err else {
+            panic!("a key that is not UTF-8 is an unknown property, got: {err}")
+        };
+        assert!(property.contains('\u{fffd}'), "the key must be named lossily, got `{property}`");
+        assert!(accepted.contains("width"), "the accepted list must survive: {accepted}");
+    }
+
     #[test]
     fn every_node_kind_constructs_and_tags_correctly() {
         let lua = lua_with_constructors();
         for kind in NODE_KINDS {
             let table: Table = lua.load(format!("return {kind} {{}}")).eval().unwrap();
             assert_eq!(table.get::<String>("kind").unwrap(), kind);
+            assert!(
+                accepted_lists(kind).is_some(),
+                "`{kind}` has no NODE_PROPERTIES row, so its own tables are refused"
+            );
         }
     }
 

@@ -104,7 +104,11 @@ pub enum LoaderError {
 
 impl From<nodes::DeserializeError> for LoaderError {
     fn from(err: nodes::DeserializeError) -> Self {
-        LoaderError::InvalidTopLevelReturn(err.to_string())
+        match err {
+            // Only a top-level node converts this way, and it never reaches `require_surface`.
+            nodes::DeserializeError::UnsupportedKind(kind) => not_a_surface(&kind),
+            other => LoaderError::InvalidTopLevelReturn(other.to_string()),
+        }
     }
 }
 
@@ -283,10 +287,15 @@ fn collect_surfaces(value: Value) -> Result<Vec<VirtualNode>, LoaderError> {
 fn require_surface(node: &VirtualNode) -> Result<(), LoaderError> {
     match node.kind.as_str() {
         "panel" | "window" | "popup" | "lock" => Ok(()),
-        other => Err(LoaderError::InvalidTopLevelReturn(format!(
-            "top-level node must be `panel`, `window`, `popup` or `lock`, got `{other}`"
-        ))),
+        other => Err(not_a_surface(other)),
     }
+}
+
+/// The catch-all teaches the roster; omitting `lock` reads as "not built yet".
+fn not_a_surface(kind: &str) -> LoaderError {
+    LoaderError::InvalidTopLevelReturn(format!(
+        "top-level node must be `panel`, `window`, `popup` or `lock`, got `{kind}`"
+    ))
 }
 
 #[cfg(test)]
@@ -643,16 +652,19 @@ mod tests {
         assert_eq!(output.surfaces[0].kind, "lock");
     }
 
+    /// Both halves of "not a surface": a node kind that is not a role, and one that is not a node.
     #[test]
     fn a_top_level_return_of_an_unknown_kind_names_all_four_roles_it_could_have_been() {
-        // The catch-all teaches the roster; omitting `lock` reads as "not built yet".
         let loader = test_loader();
-        let err = loader.evaluate(r#"return { kind = "rect" }"#).unwrap_err();
-        let LoaderError::InvalidTopLevelReturn(message) = err else {
-            panic!("a top-level `rect` must be a top-level-return error");
-        };
-        for role in ["panel", "window", "popup", "lock"] {
-            assert!(message.contains(role), "the message must name `{role}`: {message}");
+        for src in [r#"return { kind = "rect" }"#, r#"return { kind = "dialog" }"#, r#"return { { kind = "dialog" } }"#]
+        {
+            let err = loader.evaluate(src).unwrap_err();
+            let LoaderError::InvalidTopLevelReturn(message) = err else {
+                panic!("{src} must be a top-level-return error");
+            };
+            for role in ["panel", "window", "popup", "lock"] {
+                assert!(message.contains(role), "{src}: the message must name `{role}`: {message}");
+            }
         }
     }
 

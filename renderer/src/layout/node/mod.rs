@@ -46,9 +46,10 @@ pub use toplevel::{
     ConstraintAdjustment, PopupAnchor, PopupOffset, PopupSpec, SizeHint, WindowSpec, popup_spec, window_spec,
 };
 
-/// A node's property map. `FxHashMap` for thirty lookups a node against short literal keys, where
-/// SipHash's setup costs more than the comparison (ADR-0218).
-pub type PropMap = rustc_hash::FxHashMap<String, Value>;
+/// A node's property map, keyed by the `&'static str` the config's spelling was matched against
+/// (ADR-0219). `FxHashMap` for thirty lookups a node against short literal keys, where SipHash's
+/// setup costs more than the comparison (ADR-0218).
+pub type PropMap = rustc_hash::FxHashMap<&'static str, Value>;
 
 use mlua::{Lua, Value};
 
@@ -353,11 +354,11 @@ pub fn resolve_properties(properties: PropMap, kind: &str, lua: &Lua) -> Result<
     // `rescue` global's `error_log` for a human to read (ADR-0024), so which one a broken config
     // names must come from the config. `two_failing_properties_always_report_the_same_one` guards
     // it. Taken by value so an unresolved entry moves rather than being copied (ADR-0218).
-    let mut entries: Vec<(String, Value)> = properties.into_iter().collect();
-    entries.sort_unstable_by(|(a, _), (b, _)| a.cmp(b));
+    let mut entries: Vec<(&'static str, Value)> = properties.into_iter().collect();
+    entries.sort_unstable_by_key(|(property, _)| *property);
     let mut resolved = PropMap::with_capacity_and_hasher(entries.len(), Default::default());
     for (property, value) in entries {
-        if is_structural_property(kind, &property) {
+        if is_structural_property(kind, property) {
             resolved.insert(property, value);
             continue;
         }
@@ -373,11 +374,11 @@ pub fn resolve_properties(properties: PropMap, kind: &str, lua: &Lua) -> Result<
         // grepping every one of them. `Scene::apply_admitting` adds the surface.
         let value = signal
             .get_value(lua)
-            .map_err(|e| invalid(&property, format!("Signal getter on a `{kind}` node failed: {e}")))?;
+            .map_err(|e| invalid(property, format!("Signal getter on a `{kind}` node failed: {e}")))?;
         match value {
             Value::UserData(_) => {
                 return Err(invalid(
-                    &property,
+                    property,
                     "a Signal resolved to another Signal -- resolution happens exactly once, not to a fixed point",
                 ));
             }
@@ -600,7 +601,7 @@ mod tests {
             .unwrap();
         let props = props_from_table(&table);
 
-        let unsorted: Vec<&str> = props.keys().map(String::as_str).collect();
+        let unsorted: Vec<&str> = props.keys().copied().collect();
         assert_eq!(unsorted, ["opacity", "background"], "the fixture must not already be in sorted order");
 
         let err = resolve_properties(props, "rect", &lua).unwrap_err();

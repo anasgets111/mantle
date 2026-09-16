@@ -198,9 +198,9 @@ mod tests {
 
     // ---- cursor_under (ADR-0107) ----
 
-    fn with(mut node: ResolvedNode, lua: &mlua::Lua, key: &str, value: Value) -> ResolvedNode {
+    fn with(mut node: ResolvedNode, lua: &mlua::Lua, key: &'static str, value: Value) -> ResolvedNode {
         let _ = lua;
-        node.properties.insert(key.to_string(), value);
+        node.properties.insert(key, value);
         node
     }
 

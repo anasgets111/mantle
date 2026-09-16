@@ -111,10 +111,10 @@ mod tests {
     ) -> ResolvedNode {
         let mut properties = PropMap::default();
         if let Some(hover) = hover {
-            properties.insert("hover".to_string(), hover);
+            properties.insert("hover", hover);
         }
         if let Some(on_hover) = on_hover {
-            properties.insert("on_hover".to_string(), on_hover);
+            properties.insert("on_hover", on_hover);
         }
         ResolvedNode {
             displayed_source: None,

@@ -4967,7 +4967,7 @@ and a sub-rect composite, handling `FLIP_Y` about the target's height rather tha
    a config is trusted code ADR-0021 already bounds with a CPU budget, so collision resistance was
    defending nothing. `accepts` narrows them to the static per-kind lists for every supported kind,
    but admits any key on a kind with no `NODE_PROPERTIES` row, whose map is built before
-   `ensure_supported_kind` refuses it. Maps a config keys by *data* -- `Scene::surfaces`,
+   `ensure_supported_kind` refuses it (closed by ADR-0219). Maps a config keys by *data* -- `Scene::surfaces`,
    `seen_keys`, `retained_by_id`, `parse_animate`'s -- keep SipHash. `rustc-hash` was already in the
    tree through cosmic-text and mlua.
 2. **`resolve_properties` takes the raw map by value.** It copied a map it then dropped: a fresh
@@ -4987,7 +4987,8 @@ and a sub-rect composite, handling `FLIP_Y` about the target's height rather tha
 18% off the pass, 27 to 22 us a row. Both rows are this tree; ADR-0191's 32 us was an older one, and
 its virtualization is still what a large folder needs. `read_seam_cost` stays in its 130-156 ns range.
 
-Rejected: `accepts`'s linear scans, 10 ns a call. And `&element` for `key`, which unlike `itemfn`
+Rejected: `accepts`'s linear scans, 10 ns a call (ADR-0219 hoists them anyway, as a side effect of
+keying by the matched name). And `&element` for `key`, which unlike `itemfn`
 moved rather than cloned, so borrowing roots the item for the rest of the loop -- visible to a `key`
 collecting garbage behind a weak table.
 
@@ -4995,3 +4996,43 @@ ponytail: `deserialize_lua_table` is still the largest phase, half of it a `Stri
 property per node per pass. The upgrade is `&'static str` keys from the lists `accepts` matches
 against; `PropMap` is an alias, so the cost is canonicalising every insert and the unknown-kind hole
 above, not the signatures.
+
+Amendment (ADR-0219): built. `accepts` is gone; the match returns the static, and decision 1's
+accept-everything arm for an unrecognised kind is a refusal.
+
+## 0219. A property key is the vocabulary's own `&'static str`, not a copy of what the config wrote
+
+ADR-0218's `ponytail:`, built. A `String` per property per node per pass went into
+`deserialize_lua_table`: allocated from the Lua key, compared against the accepted-property lists,
+then kept for the life of the node. 160 us of a 2.81 ms pass, most of it the copy and the rest the
+per-property `NODE_PROPERTIES` scan this hoists, which ADR-0218 had priced at 10 ns and rejected on
+its own.
+
+1. **The acceptance check returns the name it matched.** `name_in` hands back the `&'static str`
+   out of `NODE_PROPERTIES`/`COMMON_PROPERTIES`/`BOX_PROPERTIES`, so a map holds the vocabulary's
+   own name and the config's spelling dies with the comparison; `accepted_name` is the same for
+   `animate`, which holds only the kind. Only a refusal copies the spelling, lossily, because a key
+   that is not UTF-8 is one a refusal exists to name, and a non-string key is refused outright
+   rather than run through `__tostring` and accepted under whatever that returns. Hashing is
+   unchanged, a `&str` hashing its bytes, so what goes is the allocation, not ADR-0218's thirty
+   lookups.
+2. **A kind with no `NODE_PROPERTIES` row is refused there.** No row, no vocabulary, so no key to
+   build a map from. That closes ADR-0218 decision 1's hole, where an unknown kind filled a map with
+   config-chosen keys before the pass refused it. A child turns the refusal back into
+   `UnsupportedNodeKind` and a surface into the roster `require_surface` teaches, so both read as
+   they did.
+3. **`Tween` and `animate` carry the same static,** because `retarget` writes the eased value back
+   into the property map.
+
+| rows | ADR-0218 | now |
+|---|---|---|
+| 12 | 0.28 ms | 0.25 ms |
+| 125 | 2.81 ms | 2.65 ms |
+| 500 | 11.8 ms | 10.9 ms |
+| allocations a pass | 24,700 | 18,700 |
+
+A quarter off the allocations against the column beside it, a third against the tree before
+ADR-0218, where the pass is 22% down.
+
+ponytail: `kind` is still a `String` per node per pass, and a kind is now resolved against
+`NODE_PROPERTIES` before anything else, so it could be that row's own name.

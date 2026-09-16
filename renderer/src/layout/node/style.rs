@@ -446,6 +446,13 @@ mod tests {
         deserialize_lua_table(table).unwrap().properties
     }
 
+    /// `rect` accepts every property these parsers read.
+    fn rect_props(lua: &Lua, src: &str) -> PropMap {
+        let table: mlua::Table = lua.load(src).eval().unwrap();
+        table.set("kind", "rect").unwrap();
+        props_from_table(&table)
+    }
+
     #[test]
     fn width_absent_is_content() {
         let props = PropMap::default();
@@ -1013,13 +1020,8 @@ mod tests {
     #[test]
     fn a_transform_parses_its_four_properties_and_maps_a_corner_about_its_origin() {
         let lua = Lua::new();
-        let props: PropMap = lua
-            .load(r#"return { scale = 2, rotate = 90, translate = { x = 10 }, origin = { x = 0, y = 0 } }"#)
-            .eval::<mlua::Table>()
-            .unwrap()
-            .pairs::<String, Value>()
-            .map(|p| p.unwrap())
-            .collect();
+        let props =
+            rect_props(&lua, r#"return { scale = 2, rotate = 90, translate = { x = 10 }, origin = { x = 0, y = 0 } }"#);
         let t = parse_transform(&props).unwrap();
         assert_eq!((t.scale, t.rotate, t.translate, t.origin), ((2.0, 2.0), 90.0, (10.0, 0.0), (0.0, 0.0)));
         // About the top-left corner: (x + 4, y) scales to (x + 8, y), rotates a quarter turn
@@ -1036,11 +1038,7 @@ mod tests {
     #[test]
     fn a_transform_refuses_a_negative_scale_and_an_origin_outside_the_box() {
         let lua = Lua::new();
-        let parse = |src: &str| {
-            let props: PropMap =
-                lua.load(src).eval::<mlua::Table>().unwrap().pairs::<String, Value>().map(|p| p.unwrap()).collect();
-            parse_transform(&props)
-        };
+        let parse = |src: &str| parse_transform(&rect_props(&lua, src));
         assert!(parse("return { scale = -1 }").unwrap_err().to_string().contains("[0, 64]"));
         assert!(parse("return { origin = { x = 2 } }").unwrap_err().to_string().contains("[0, 1]"));
         assert!(parse("return { scale = { y = 3 } }").unwrap().scale == (1.0, 3.0), "an absent axis keeps 1");

@@ -573,12 +573,20 @@ impl Sequence {
     }
 }
 
+/// The name an `animate` entry eases, refused if `kind` does not have it. `animate` itself is not
+/// one: a block cannot ease the block.
+fn animatable_name(kind: &str, property: &str, field: &str) -> Result<&'static str, LayoutError> {
+    crate::lua::nodes::accepted_name(kind, property)
+        .filter(|name| *name != "animate")
+        .ok_or_else(|| invalid(field, format!("`{property}` is not a property of a `{kind}` node")))
+}
+
 /// `animate`'s table, resolved: which properties ease and how. Absent means none. The table
 /// itself may be a signal, resolved like any other property; entries inside it are plain values.
 /// A name `kind` does not accept is refused, so a misspelling fails the pass instead of silently
 /// snapping; what the value is decides whether it can tween ([`Animatable::from_value`]), the way
 /// Qt registers interpolators by type rather than by property.
-pub fn parse_animate(kind: &str, properties: &PropMap) -> Result<BTreeMap<String, AnimationSpec>, LayoutError> {
+pub fn parse_animate(kind: &str, properties: &PropMap) -> Result<BTreeMap<&'static str, AnimationSpec>, LayoutError> {
     let Some(value) = properties.get("animate") else {
         return Ok(BTreeMap::new());
     };
@@ -608,11 +616,8 @@ pub fn parse_animate(kind: &str, properties: &PropMap) -> Result<BTreeMap<String
             parse_exit(kind, &entry)?;
             continue;
         }
-        if property == "animate" || !crate::lua::nodes::accepts(kind, &property) {
-            return Err(invalid("animate", format!("`{property}` is not a property of a `{kind}` node")));
-        }
-        let spec = parse_spec(&property, &entry)?;
-        out.insert(property, spec);
+        let name = animatable_name(kind, &property, "animate")?;
+        out.insert(name, parse_spec(name, &entry)?);
     }
     Ok(out)
 }
@@ -981,7 +986,7 @@ fn parse_sequence(
 }
 
 /// The shared spec and every `(property, target)` pair of one `animate.exit` block.
-type ExitBlock = (AnimationSpec, Vec<(String, Animatable)>);
+type ExitBlock = (AnimationSpec, Vec<(&'static str, Animatable)>);
 
 /// A spec's `easing`: a name, a four-number table read as CSS `cubic-bezier(x1, y1, x2, y2)`, or
 /// `{ steps = n }` (ADR-0151). Absent is `InOutQuad`.
@@ -1047,18 +1052,16 @@ fn parse_exit(kind: &str, block: &Value) -> Result<Option<ExitBlock>, LayoutErro
         let Value::String(key) = key else {
             return Err(invalid("animate.exit", format!("keys are property names, got {}", preview_for_error(&key))));
         };
-        let property = key.to_str().map_err(|e| invalid("animate.exit", e.to_string()))?.to_string();
-        if matches!(property.as_str(), "duration" | "delay" | "easing" | "spring") {
+        let property = key.to_str().map_err(|e| invalid("animate.exit", e.to_string()))?;
+        if matches!(&*property, "duration" | "delay" | "easing" | "spring") {
             continue;
         }
-        if property == "animate" || !crate::lua::nodes::accepts(kind, &property) {
-            return Err(invalid("animate.exit", format!("`{property}` is not a property of a `{kind}` node")));
-        }
-        let field = format!("animate.exit.{property}");
-        let target = Animatable::from_value(&property, Some(&target))?.ok_or_else(|| {
+        let name = animatable_name(kind, &property, "animate.exit")?;
+        let field = format!("animate.exit.{name}");
+        let target = Animatable::from_value(name, Some(&target))?.ok_or_else(|| {
             invalid(&field, format!("must be a value a tween can carry, got {}", preview_for_error(&target)))
         })?;
-        out.push((property, target));
+        out.push((name, target));
     }
     // Last, so an empty block stays legal while one with targets must say how long they take.
     if out.is_empty() {
@@ -1089,9 +1092,8 @@ pub fn depart(
     tweens.clear();
     for (property, target) in targets {
         let from =
-            Animatable::from_value(&property, properties.get(&property))?.unwrap_or_else(|| target.identity(&property));
-        let tween =
-            Tween { property: property.clone(), from, to: target, started: now, spec: spec.clone(), resting: false };
+            Animatable::from_value(property, properties.get(property))?.unwrap_or_else(|| target.identity(property));
+        let tween = Tween { property, from, to: target, started: now, spec: spec.clone(), resting: false };
         properties.insert(property, tween.at(now).to_value(lua).map_err(|e| invalid("animate", e.to_string()))?);
         tweens.push(tween);
     }
@@ -1229,7 +1231,7 @@ impl Animatable {
 /// decision 2), never accumulated frame deltas.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Tween {
-    pub property: String,
+    pub property: &'static str,
     /// Where the motion began, and where it is bound for. Both are ignored under
     /// [`Motion::Sequence`] -- a sequence reads its own frames -- and hold its first and last for
     /// a reader.
@@ -1262,13 +1264,13 @@ impl Tween {
             Motion::Sequence(sequence) if now.saturating_duration_since(self.started) < self.spec.delay => {
                 return sequence.frames[0].value;
             }
-            Motion::Sequence(sequence) => return sequence.at(elapsed, &self.property),
+            Motion::Sequence(sequence) => return sequence.at(elapsed, self.property),
             Motion::Eased { duration, easing } => {
                 easing.apply((elapsed.as_secs_f32() / duration.as_secs_f32()).min(1.0))
             }
             Motion::Spring(spring) => spring.at(elapsed),
         };
-        self.from.lerp(self.to, progress, &self.property)
+        self.from.lerp(self.to, progress, self.property)
     }
 
     pub fn done(&self, now: Instant) -> bool {
@@ -1313,7 +1315,7 @@ pub fn retarget(
             let mut tween = match carried {
                 Some(prior) => Tween { spec, ..prior.clone() },
                 None => Tween {
-                    property: property.clone(),
+                    property,
                     from: sequence.frames[0].value,
                     to: sequence.frames.last().expect("a parsed sequence has frames").value,
                     started: now,
@@ -1332,11 +1334,11 @@ pub fn retarget(
             tweens.push(tween);
             continue;
         }
-        let Some(target) = Animatable::from_value(&property, properties.get(&property))? else {
+        let Some(target) = Animatable::from_value(property, properties.get(property))? else {
             continue;
         };
         let displayed = match shown {
-            Some(shown) => Animatable::from_value(&property, shown.get(&property))?,
+            Some(shown) => Animatable::from_value(property, shown.get(property))?,
             None => None,
         };
         let Some(displayed) = displayed.or(spec.from) else { continue };
@@ -1353,7 +1355,7 @@ pub fn retarget(
                     }
                     (motion, _) => AnimationSpec { motion, ..spec },
                 };
-                Tween { property: property.clone(), from: displayed, to: target, started: now, spec, resting: false }
+                Tween { property, from: displayed, to: target, started: now, spec, resting: false }
             }
             Some(running) if !running.done(now) => {
                 // A spring's `velocity` is the rate the last retarget handed it, not a number the
@@ -1408,8 +1410,8 @@ pub fn advance(tweens: &mut Vec<Tween>, properties: &mut PropMap, now: Instant, 
         if tween.resting {
             continue;
         }
-        // `retarget` wrote the key when it started the tween, so no insert and no key clone.
-        *properties.get_mut(&tween.property).expect("a tween's property is in the map it was started from") =
+        // `retarget` wrote the key when it started the tween, so this never inserts.
+        *properties.get_mut(tween.property).expect("a tween's property is in the map it was started from") =
             tween.at(now).to_value(lua).map_err(|e| invalid("animate", e.to_string()))?;
         tween.resting = matches!(tween.spec.motion, Motion::Sequence(_)) && tween.done(now);
     }
@@ -1439,9 +1441,11 @@ mod tests {
         }
     }
 
+    /// `rect` accepts every property these tests animate.
     fn props(lua: &Lua, src: &str) -> PropMap {
         let table: mlua::Table = lua.load(src).eval().unwrap();
-        table.pairs::<String, Value>().map(|p| p.unwrap()).collect()
+        table.set("kind", "rect").unwrap();
+        crate::lua::nodes::deserialize_lua_table(&table).unwrap().properties
     }
 
     /// The spec `src` declares for `width`, and the message refusing `src`: between them, what
@@ -1831,7 +1835,7 @@ mod tests {
         let mut tweens = Vec::new();
         let now = Instant::now();
         assert!(depart("rect", &mut tweens, &mut properties, now, &lua).unwrap());
-        let started: BTreeMap<&str, &Tween> = tweens.iter().map(|t| (t.property.as_str(), t)).collect();
+        let started: BTreeMap<&str, &Tween> = tweens.iter().map(|t| (t.property, t)).collect();
         assert_eq!(started["width"].from, Animatable::Number(40.0), "the displayed width");
         assert_eq!(started["opacity"].from, Animatable::Number(1.0), "an absent opacity is opaque");
         assert_eq!(started["opacity"].to, Animatable::Number(0.0));
@@ -1854,7 +1858,7 @@ mod tests {
         );
         let now = Instant::now();
         let mut tweens = vec![Tween {
-            property: "background".to_string(),
+            property: "background",
             from: Animatable::Color(Rgba { r: 1.0, g: 0.0, b: 0.0, a: 1.0 }),
             to: Animatable::Color(Rgba { r: 0.0, g: 1.0, b: 0.0, a: 1.0 }),
             started: now,
@@ -1866,7 +1870,7 @@ mod tests {
             resting: false,
         }];
         assert!(depart("rect", &mut tweens, &mut properties, now, &lua).unwrap());
-        let properties: Vec<&str> = tweens.iter().map(|t| t.property.as_str()).collect();
+        let properties: Vec<&str> = tweens.iter().map(|t| t.property).collect();
         assert_eq!(properties, ["opacity"], "the five-second background tween does not outlive the exit");
     }
 
@@ -1882,7 +1886,7 @@ mod tests {
         );
         let mut tweens = Vec::new();
         assert!(depart("rect", &mut tweens, &mut properties, Instant::now(), &lua).unwrap());
-        let started: BTreeMap<&str, &Tween> = tweens.iter().map(|t| (t.property.as_str(), t)).collect();
+        let started: BTreeMap<&str, &Tween> = tweens.iter().map(|t| (t.property, t)).collect();
         assert_eq!(started["width"].from, Animatable::Percent(0.0));
         assert_eq!(started["background"].from, Animatable::Color(Rgba { r: 0.2, g: 0.4, b: 1.0, a: 0.0 }));
     }
@@ -2068,7 +2072,7 @@ mod tests {
         let sprung = spec(&lua, "return { animate = { width = { spring = { stiffness = 200, damping = 10 } } } }");
         let started = Instant::now();
         let running = Tween {
-            property: "width".into(),
+            property: "width",
             from: Animatable::Number(0.0),
             to: Animatable::Number(100.0),
             started,
@@ -2105,7 +2109,7 @@ mod tests {
         let spring = Spring::new(200.0, 10.0, 0.0);
         let started = Instant::now();
         let running = Tween {
-            property: "width".into(),
+            property: "width",
             from: Animatable::Number(0.0),
             to: Animatable::Number(100.0),
             started,
@@ -2148,7 +2152,7 @@ mod tests {
         .unwrap();
         let started = Instant::now();
         let tween = Tween {
-            property: "width".into(),
+            property: "width",
             from: Animatable::Number(0.0),
             to: Animatable::Number(100.0),
             started,
@@ -2166,14 +2170,14 @@ mod tests {
         let started = Instant::now();
         let carried = Spring::new(200.0, 10.0, 40.0);
         let running = [Tween {
-            property: "width".into(),
+            property: "width",
             from: Animatable::Number(0.0),
             to: Animatable::Number(300.0),
             started,
             spec: AnimationSpec { motion: Motion::Spring(carried), delay: Duration::ZERO, from: None },
             resting: false,
         }];
-        let shown: PropMap = PropMap::from_iter([("width".to_string(), Value::Number(120.0))]);
+        let shown: PropMap = PropMap::from_iter([("width", Value::Number(120.0))]);
 
         let mut properties = props(&lua, source);
         let now = started + Duration::from_millis(30);
@@ -2256,8 +2260,7 @@ mod tests {
         let started = Instant::now();
         let Motion::Sequence(ref sequence) = spec.motion else { panic!("a sequence") };
         let first = sequence.frames[0].value;
-        let tween =
-            Tween { property: "width".into(), from: first, to: first, started, spec: spec.clone(), resting: false };
+        let tween = Tween { property: "width", from: first, to: first, started, spec: spec.clone(), resting: false };
         assert_eq!(tween.at(started), Animatable::Number(40.0), "the lead-in holds the first frame");
         assert_eq!(tween.at(started + Duration::from_millis(999)), Animatable::Number(40.0), "for all of it");
         assert_eq!(tween.at(started + Duration::from_millis(1000)), Animatable::Number(0.0), "then the jump lands");
@@ -2318,7 +2321,7 @@ mod tests {
     fn a_delay_holds_the_start_value_then_runs_the_whole_duration() {
         let started = Instant::now();
         let tween = Tween {
-            property: "width".into(),
+            property: "width",
             from: Animatable::Number(0.0),
             to: Animatable::Number(100.0),
             started,
@@ -2354,7 +2357,7 @@ mod tests {
         .unwrap();
         let started = Instant::now();
         let tween = Tween {
-            property: "opacity".into(),
+            property: "opacity",
             from: Animatable::Number(0.0),
             to: Animatable::Number(1.0),
             started,
@@ -2404,7 +2407,7 @@ mod tests {
     fn a_tween_reads_from_at_its_start_and_to_at_its_end() {
         let started = Instant::now();
         let tween = Tween {
-            property: "width".into(),
+            property: "width",
             from: Animatable::Number(40.0),
             to: Animatable::Number(90.0),
             started,

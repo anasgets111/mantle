@@ -696,7 +696,7 @@ mod tests {
         let lua = Lua::new();
         let inner = hit_node(&lua, "button", (5.0, 2.0, 20.0, 20.0), true);
         let mut track = hit_node(&lua, "button", (10.0, 4.0, 40.0, 24.0), false);
-        track.properties.insert("on_drag".to_string(), Value::Function(lua.create_function(|_, ()| Ok(())).unwrap()));
+        track.properties.insert("on_drag", Value::Function(lua.create_function(|_, ()| Ok(())).unwrap()));
         track.children.push(inner);
         let mut root = hit_node(&lua, "panel", (0.0, 0.0, 100.0, 32.0), false);
         root.children.push(track);
@@ -788,7 +788,7 @@ mod tests {
         // `on_click = "quit"` reaches here as a string and must simply not fire.
         let lua = Lua::new();
         let mut button = hit_node(&lua, "button", (0.0, 0.0, 40.0, 24.0), false);
-        button.properties.insert("on_click".to_string(), Value::String(lua.create_string("quit").unwrap()));
+        button.properties.insert("on_click", Value::String(lua.create_string("quit").unwrap()));
         let mut root = hit_node(&lua, "panel", (0.0, 0.0, 100.0, 32.0), false);
         root.children.push(button);
 

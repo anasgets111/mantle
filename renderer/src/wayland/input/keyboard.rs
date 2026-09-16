@@ -890,7 +890,7 @@ mod tests {
     fn textfield(lua: &Lua, secure_submit: Option<Value>) -> layout::ResolvedNode {
         let mut node = hit_node(lua, "textfield", (0.0, 0.0, 40.0, 24.0), false);
         if let Some(value) = secure_submit {
-            node.properties.insert("secure_submit".to_string(), value);
+            node.properties.insert("secure_submit", value);
         }
         // Re-derived rather than hand-written, because `layout::secure_submit` reads the parsed
         // style now and `Scene::apply` is what fills it in production: a fixture that set it by
@@ -979,7 +979,7 @@ mod tests {
     fn plain_textfield(lua: &Lua) -> layout::ResolvedNode {
         let mut node = textfield(lua, None);
         let on_submit = lua.create_function(|_, _text: String| Ok(())).unwrap();
-        node.properties.insert("on_submit".to_string(), Value::Function(on_submit));
+        node.properties.insert("on_submit", Value::Function(on_submit));
         node
     }
 
@@ -1043,7 +1043,7 @@ mod tests {
         let lua = Lua::new();
         let mut field = textfield(&lua, Some(secure_submit_table(&lua, "lock", "authenticate")));
         let on_submit = lua.create_function(|_, _text: String| Ok(())).unwrap();
-        field.properties.insert("on_submit".to_string(), Value::Function(on_submit));
+        field.properties.insert("on_submit", Value::Function(on_submit));
         let root = hit_node(&lua, "panel", (0.0, 0.0, 100.0, 32.0), false);
         assert!(matches!(focused_field(&[&root, &field]), Some(FieldTarget::Masked(_))));
     }
@@ -1435,7 +1435,7 @@ mod tests {
 
     fn autofocus_textfield(lua: &Lua) -> layout::ResolvedNode {
         let mut node = plain_textfield(lua);
-        node.properties.insert("autofocus".to_string(), Value::Boolean(true));
+        node.properties.insert("autofocus", Value::Boolean(true));
         node
     }
 
@@ -1470,9 +1470,9 @@ mod tests {
 
         // Masked, or declaring nothing that could read the keys: not candidates, whatever they say.
         let mut masked = textfield(&lua, Some(secure_submit_table(&lua, "lock", "authenticate")));
-        masked.properties.insert("autofocus".to_string(), Value::Boolean(true));
+        masked.properties.insert("autofocus", Value::Boolean(true));
         let mut mute = textfield(&lua, None);
-        mute.properties.insert("autofocus".to_string(), Value::Boolean(true));
+        mute.properties.insert("autofocus", Value::Boolean(true));
         let none = tree_with(&lua, vec![masked, mute, plain_textfield(&lua)]);
         assert!(autofocus_field_in_scope(&[("launcher@eDP-1", &none)]).is_none());
     }

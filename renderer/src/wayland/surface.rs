@@ -1513,11 +1513,11 @@ mod tests {
         let lua = Lua::new();
         let rect = rect_table(&lua, LogicalRect { x: 40.0, y: 4.0, width: 86.0, height: 24.0 }).unwrap();
         let properties = PropMap::from_iter([
-            ("id".to_string(), Value::String(lua.create_string("menu").unwrap())),
-            ("parent".to_string(), Value::String(lua.create_string("bar").unwrap())),
-            ("anchor_rect".to_string(), Value::Table(rect)),
-            ("width".to_string(), Value::Number(200.0)),
-            ("height".to_string(), Value::Number(120.0)),
+            ("id", Value::String(lua.create_string("menu").unwrap())),
+            ("parent", Value::String(lua.create_string("bar").unwrap())),
+            ("anchor_rect", Value::Table(rect)),
+            ("width", Value::Number(200.0)),
+            ("height", Value::Number(120.0)),
         ]);
         let mut placeholder = popup_spec_fixture();
         placeholder.anchor_rect = LogicalRect { x: 0.0, y: 0.0, width: 1.0, height: 1.0 };
@@ -1536,8 +1536,8 @@ mod tests {
         // applied spec rather than building a surface out of protocol defaults.
         let lua = Lua::new();
         let properties = PropMap::from_iter([
-            ("id".to_string(), Value::String(lua.create_string("bar").unwrap())),
-            ("exclusive".to_string(), Value::Number(32.0)),
+            ("id", Value::String(lua.create_string("bar").unwrap())),
+            ("exclusive", Value::Number(32.0)),
         ]);
         let (role, spec) = resolved_surface_spec(&SurfaceSpec::Panel(panel("bar")), &properties);
         assert_eq!(role, "panel");

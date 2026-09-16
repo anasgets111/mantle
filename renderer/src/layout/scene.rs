@@ -220,7 +220,7 @@ impl ResolvedNode {
         // The dissolve is not tested: all it moves is the alpha the incoming source is drawn at,
         // which is as paint-only as a property gets.
         !self.leaving
-            && self.tweens.iter().all(|tween| tween.resting || node::is_paint_only(&tween.property))
+            && self.tweens.iter().all(|tween| tween.resting || node::is_paint_only(tween.property))
             && self.children.iter().all(ResolvedNode::tick_is_paint_only)
     }
 
@@ -620,7 +620,7 @@ fn build_child_for_output(mut properties: PropMap, kind: &str, output: &str) -> 
     let built = builder.call::<Value>(output).map_err(|e| node::invalid("child", e.to_string()))?;
     match built {
         Value::Table(_) => {
-            properties.insert("child".to_string(), built);
+            properties.insert("child", built);
         }
         // A nil result maps this output empty, like an absent `child`.
         Value::Nil => {
@@ -965,12 +965,12 @@ fn advanced_dissolve(dissolve: Option<Dissolve>, now: Instant) -> Option<Dissolv
 }
 
 fn advance_paint_only_node(node: &mut ResolvedNode, now: Instant, lua: &Lua) -> Result<(), LayoutError> {
-    let restore: Vec<(String, Value)> = node
+    let restore: Vec<(&'static str, Value)> = node
         .tweens
         .iter()
         .filter(|tween| !tween.resting)
-        .filter_map(|tween| node.properties.get_key_value(&tween.property))
-        .map(|(property, value)| (property.clone(), value.clone()))
+        .filter_map(|tween| node.properties.get_key_value(tween.property))
+        .map(|(property, value)| (*property, value.clone()))
         .collect();
     // Nothing is assigned to the node until all three have succeeded, so a refusal leaves its
     // `opacity` and `paint` describing the same frame its properties do.
@@ -2268,7 +2268,7 @@ mod flow_kind_tests {
     fn props(lua: &mlua::Lua, direction: Option<&str>) -> PropMap {
         let mut properties = PropMap::default();
         if let Some(direction) = direction {
-            properties.insert("direction".to_string(), Value::String(lua.create_string(direction).unwrap()));
+            properties.insert("direction", Value::String(lua.create_string(direction).unwrap()));
         }
         properties
     }
@@ -4695,7 +4695,7 @@ pub(super) mod tests {
         {
             let value = lua.create_table().unwrap();
             weak.set(index + 1, value.clone()).unwrap();
-            node.insert("lifetime_probe".to_string(), Value::Table(value));
+            node.insert("lifetime_probe", Value::Table(value));
         }
         let next_id_before = scene.next_id;
         let instances = [SurfaceInstance {
@@ -5573,7 +5573,7 @@ pub(super) mod tests {
     fn solid_paint() -> Option<PaintStyle> {
         let lua = mlua::Lua::new();
         let mut properties = PropMap::default();
-        properties.insert("background".to_string(), Value::String(lua.create_string("#112233").unwrap()));
+        properties.insert("background", Value::String(lua.create_string("#112233").unwrap()));
         node::paint_style("rect", &properties).unwrap()
     }
 
@@ -5627,9 +5627,7 @@ pub(super) mod tests {
         let mut card = region_node(1, "rect", (200.0, 260.0, 620.0, 260.0), solid_paint(), Vec::new());
         card.blur = true;
         let mut catcher = region_node(2, "button", (0.0, 0.0, 1920.0, 1161.0), None, Vec::new());
-        catcher
-            .properties
-            .insert("on_click".to_string(), Value::Function(lua.create_function(|_, ()| Ok(())).unwrap()));
+        catcher.properties.insert("on_click", Value::Function(lua.create_function(|_, ()| Ok(())).unwrap()));
         let root = region_node(3, "panel", (0.0, 0.0, 1920.0, 1161.0), None, vec![catcher, card]);
 
         assert_eq!(
@@ -5791,9 +5789,7 @@ pub(super) mod tests {
         );
 
         let mut catcher = region_node(5, "button", (0.0, 0.0, 120.0, 520.0), None, Vec::new());
-        catcher
-            .properties
-            .insert("on_click".to_string(), Value::Function(lua.create_function(|_, ()| Ok(())).unwrap()));
+        catcher.properties.insert("on_click", Value::Function(lua.create_function(|_, ()| Ok(())).unwrap()));
         let root = region_node(6, "panel", (0.0, 0.0, 120.0, 520.0), None, vec![catcher]);
         assert_eq!(overlay_input_regions(&root, 1.0), [PhysicalRect { x0: 0, y0: 0, x1: 120, y1: 520 }]);
 
@@ -5803,7 +5799,7 @@ pub(super) mod tests {
 
         let label = region_node(9, "rect", (10.0, 10.0, 50.0, 20.0), solid_paint(), Vec::new());
         let mut submit = region_node(10, "button", (0.0, 0.0, 120.0, 40.0), None, vec![label]);
-        submit.properties.insert("submit".to_string(), Value::Boolean(true));
+        submit.properties.insert("submit", Value::Boolean(true));
         let root = region_node(11, "panel", (0.0, 0.0, 120.0, 40.0), None, vec![submit]);
         assert_eq!(
             overlay_input_regions(&root, 1.0),
@@ -6188,15 +6184,18 @@ pub(super) mod tests {
         assert_eq!((root.children[0].rect.width, root.children[0].rect.height), (2560.0, 1440.0));
     }
 
+    /// Refused when the table is read, not when the tree is applied (ADR-0219). That leaves
+    /// `ensure_supported_kind` unreachable from a deserialized tree; it stays because
+    /// `children_of`'s `unreachable!` is what it makes sound.
     #[test]
     fn an_unsupported_top_level_kind_is_still_rejected() {
-        let mut scene = Scene::new();
-        let shaping = ShapingHandle::spawn();
-        let (lua, surface) = surface_from(r#"{ kind = "dialog", id = "s", child = rect {} }"#);
-        assert!(matches!(
-            apply_at(&mut scene, &[surface], full(), &shaping, &lua).unwrap_err(),
-            LayoutError::UnsupportedNodeKind(k) if k == "dialog"
-        ));
+        let lua = mlua::Lua::new();
+        register_node_constructors(&lua).unwrap();
+        let table: mlua::Table = lua.load(r#"{ kind = "dialog", id = "s", child = rect {} }"#).eval().unwrap();
+
+        let err = deserialize_lua_table(&table).unwrap_err();
+
+        assert!(matches!(&err, crate::lua::nodes::DeserializeError::UnsupportedKind(k) if k == "dialog"), "{err}");
     }
 
     /// taffy 0.14 adds a flex container's own margin to its children's minimum cross size when it
