@@ -201,6 +201,10 @@ pub struct App {
     surfaces_drawn: usize,
 }
 
+/// Shortest gap between `malloc_trim` calls: a keystroke burst pays for one arena walk, not one
+/// per turn.
+const TRIM_INTERVAL: std::time::Duration = std::time::Duration::from_secs(30);
+
 /// Renderer main thread: Wayland, EGL, Lua, the retained `Scene`, and live signals (ADR-0039).
 /// `inbound_rx` carries socket-decoded `SupervisorFrame`s; `outbound_tx` carries every frame this
 /// thread sends back, including replies and lock reports. Ends
@@ -347,6 +351,7 @@ pub fn run(
     // Both `None` unless `obelisk --profile`.
     let mut profile = idle_profile::IdleProfile::from_env();
     let mut memory = memory_profile::MemoryProfile::from_env();
+    let mut trimmed = std::time::Instant::now();
 
     loop {
         // `then` leaves the clock unread while the profile is off, as `idle_profile` promises.
@@ -578,6 +583,18 @@ pub fn run(
                 nix::poll::PollTimeout::try_from(millis.min(i32::MAX as u128) as i32)
                     .unwrap_or(nix::poll::PollTimeout::NONE)
             });
+            // Hand glibc's free lists back before sleeping, or they only ratchet up: 1.7 MiB over
+            // 90s here while `in_use` fell. `malloc_trim` is per-process, so
+            // `supervisor::memory::return_free_pages_to_the_kernel` does not reach this one. Not a
+            // timer: an idle loop still never wakes (ADR-0124), this trims on the wake that ends it.
+            if trimmed.elapsed() >= TRIM_INTERVAL {
+                // SAFETY: plain one-integer FFI. `malloc_trim` locks the arenas itself and only
+                // `madvise`s pages the allocator already holds free, never live chunks.
+                unsafe {
+                    libc::malloc_trim(0);
+                }
+                trimmed = std::time::Instant::now();
+            }
             let woke = matches!(nix::poll::poll(&mut fds, timeout), Ok(n) if n > 0);
             let wayland_ready = woke && fds[0].any().unwrap_or(false);
             if let Some(profile) = profile.as_mut() {
