@@ -777,7 +777,7 @@ fn file_texture(
     draw: FileDraw,
 ) -> Option<(ImageId, LogicalRect)> {
     let FileDraw { fit, rect, box_px, alpha: _, tint, load } = draw;
-    let id = images.image(canvas, file, box_px, tint, load)?;
+    let id = images.image(canvas, file, box_px, tint, load, fit)?;
     let (width, height) = canvas.image_size(id).ok()?;
     Some((id, image::fitted_rect(rect, width as f32, height as f32, fit)))
 }

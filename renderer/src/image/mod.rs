@@ -102,6 +102,9 @@ struct CacheKey {
     /// untinted SVGs. It keys bar-white and popup-dim textures separately; otherwise first tint
     /// wins for the process.
     tint: Option<u32>,
+    /// Stored cropped to `box_px`, which only [`Fit::Cover`] rasters are. In the key because a
+    /// `Contain` draw of the same file and box needs the uncropped pixels.
+    cropped: bool,
 }
 
 /// File revision at a stable path (ADR-0031 deferred item): tray updates reuse
@@ -352,14 +355,8 @@ impl Pool {
                         // size is known; `still_wanted` is re-asked there because a worker can now
                         // wait for room, and an entry can be evicted while it does (ADR-0187).
                         let still_wanted = || wanted.lock().is_ok_and(|wanted| wanted.contains(&job.key));
-                        let result = decode(
-                            &job.key.path,
-                            job.key.box_px,
-                            job.tint,
-                            cache_root.as_deref(),
-                            Charge::Waiting(&budget),
-                            &still_wanted,
-                        );
+                        let result =
+                            decode(&job.key, job.tint, cache_root.as_deref(), Charge::Waiting(&budget), &still_wanted);
                         if result_tx.send((job.key, result)).is_err() {
                             return;
                         }
@@ -559,6 +556,7 @@ impl ImageCache {
         box_px: (u32, u32),
         tint: Option<Rgba>,
         load: Load,
+        fit: Fit,
     ) -> Option<ImageId> {
         let vector = is_vector(path);
         let key = CacheKey {
@@ -567,6 +565,8 @@ impl ImageCache {
             version: FileVersion::read(path),
             // Only vectors carry `currentColor`; drop PNG tint instead of splitting unused slots.
             tint: if vector { tint.map(packed_rgb) } else { None },
+            // An SVG rasterizes straight to its box, so there is never overflow to crop.
+            cropped: !vector && fit == Fit::Cover,
         };
         self.tick += 1;
         if let Some(cached) = self.entries.get_mut(&key) {
@@ -581,7 +581,7 @@ impl ImageCache {
                 // Counted against the same ceiling the workers wait on, but never waiting for it:
                 // this is the dispatch thread (ADR-0187). Nothing is queued, so nothing can be
                 // evicted mid-decode and the request is still wanted by definition.
-                let decoded = decode(&key.path, key.box_px, tint, None, Charge::Immediate(&self.pool.budget), &|| true);
+                let decoded = decode(&key, tint, None, Charge::Immediate(&self.pool.budget), &|| true);
                 let slot = upload_or_log(canvas, &key.path, decoded);
                 let id = match slot {
                     Slot::Ready(id, _) => Some(id),
@@ -771,21 +771,47 @@ fn is_vector(path: &Path) -> bool {
 /// Canvas-free load half for pool threads: raster decode/downscale through `thumbnails` when
 /// available, or SVG rasterization at `box_px`'s longest edge.
 fn decode(
-    path: &Path,
-    box_px: (u32, u32),
+    key: &CacheKey,
     tint: Option<Rgba>,
     thumbnails: Option<&Path>,
     charge: Charge<'_>,
     still_wanted: &dyn Fn() -> bool,
 ) -> Result<Decoded, String> {
+    let CacheKey { path, box_px, cropped, .. } = key;
     // An SVG rasterizes to `box_px`, not to whatever the file declares, so it is bounded by the
     // request and never approaches the pool budget. `MAX_SVG_BYTES` is what bounds the parse.
     if is_vector(path) {
         let (pixels, width, height) = rasterize_svg(path, box_px.0.max(box_px.1), tint)?;
         return Ok(Decoded { pixels, width, height, premultiplied: true });
     }
-    let (pixels, width, height) = decode_raster(path, box_px, thumbnails, charge, still_wanted)?;
+    let (pixels, width, height) = decode_raster(path, *box_px, thumbnails, charge, still_wanted)?;
+    // Here rather than inside `decode_raster`, which returns from three places (thumbnail hit,
+    // rescaled thumbnail, full decode) and would need the crop at each.
+    let (pixels, width, height) =
+        if *cropped { crop_to_box(pixels, width, height, *box_px) } else { (pixels, width, height) };
     Ok(Decoded { pixels, width, height, premultiplied: false })
+}
+
+/// Centered crop of RGBA8 `pixels` to `box_px`, for the [`Fit::Cover`] rasters [`stored_size`]
+/// scales to *cover* it. The overflow is texture memory `layout::paint`'s scissor discards every
+/// frame and nothing samples: 3.2 MiB a piece across 56 wallpapers on a 3440x1440 output.
+///
+/// Never larger than what it is given, so a source smaller than its box comes back untouched and
+/// [`fitted_rect`] still letterboxes it. The centering is integer where `fitted_rect`'s is float,
+/// leaving an odd overflow half a physical pixel off.
+fn crop_to_box(pixels: Vec<u8>, width: u32, height: u32, box_px: (u32, u32)) -> (Vec<u8>, u32, u32) {
+    let (kept_width, kept_height) = (box_px.0.min(width), box_px.1.min(height));
+    if (kept_width, kept_height) == (width, height) {
+        return (pixels, width, height);
+    }
+    let (left, top) = ((width - kept_width) / 2, (height - kept_height) / 2);
+    let row_bytes = kept_width as usize * 4;
+    let mut out = Vec::with_capacity(row_bytes * kept_height as usize);
+    for row in 0..kept_height {
+        let start = ((top + row) as usize * width as usize + left as usize) * 4;
+        out.extend_from_slice(&pixels[start..start + row_bytes]);
+    }
+    (out, kept_width, kept_height)
 }
 
 /// Canvas-dependent half of a load: one texture from one decode.
@@ -1205,12 +1231,7 @@ mod tests {
     fn one_file_tinted_two_ways_is_two_cache_slots() {
         // Without tint in the key, the first colour wins for the process: bar and popup share one
         // texture.
-        let a = CacheKey {
-            path: PathBuf::from("/x.svg"),
-            box_px: (18, 18),
-            version: FileVersion::default(),
-            tint: Some(0xffffff),
-        };
+        let a = CacheKey { tint: Some(0xffffff), ..key("/x.svg", 18, FileVersion::default()) };
         let b = CacheKey { tint: Some(0x808080), ..a.clone() };
         assert_ne!(a, b);
     }
@@ -1311,7 +1332,7 @@ mod tests {
         let mut cache = ImageCache::new();
         let first = key("/tmp/0.png", 0, FileVersion::default());
         for n in 0..CACHE_CAPACITY {
-            cache.insert(key(&format!("/tmp/{n}.png"), 0, FileVersion::default()), Slot::Failed);
+            cache.insert(key(format!("/tmp/{n}.png"), 0, FileVersion::default()), Slot::Failed);
         }
 
         // Asked for again, the way a mapped surface asks for what it draws every frame.
@@ -1321,22 +1342,22 @@ mod tests {
 
         // Ten more at the bound, so ten entries have to go.
         for n in CACHE_CAPACITY..(CACHE_CAPACITY + 10) {
-            cache.insert(key(&format!("/tmp/{n}.png"), 0, FileVersion::default()), Slot::Failed);
+            cache.insert(key(format!("/tmp/{n}.png"), 0, FileVersion::default()), Slot::Failed);
         }
         assert_eq!(cache.entries.len(), CACHE_CAPACITY);
-        let newest = key(&format!("/tmp/{}.png", CACHE_CAPACITY + 9), 0, FileVersion::default());
+        let newest = key(format!("/tmp/{}.png", CACHE_CAPACITY + 9), 0, FileVersion::default());
         assert!(cache.entries.contains_key(&newest));
         assert!(cache.entries.contains_key(&first), "the oldest insert survives, because it is still being asked for");
         for n in 1..=10 {
             assert!(
-                !cache.entries.contains_key(&key(&format!("/tmp/{n}.png"), 0, FileVersion::default())),
+                !cache.entries.contains_key(&key(format!("/tmp/{n}.png"), 0, FileVersion::default())),
                 "the ten coldest go instead, /tmp/{n}.png among them"
             );
         }
     }
 
-    fn key(path: &str, px: u32, version: FileVersion) -> CacheKey {
-        CacheKey { path: PathBuf::from(path), box_px: (px, px), version, tint: None }
+    fn key(path: impl Into<PathBuf>, px: u32, version: FileVersion) -> CacheKey {
+        CacheKey { path: path.into(), box_px: (px, px), version, tint: None, cropped: false }
     }
 
     #[test]
@@ -1402,6 +1423,27 @@ mod tests {
         // Larger on one edge only: the larger ratio is still under one.
         assert_eq!(stored_size(300, 10, (100, 100)), (300, 10));
         assert_eq!(stored_size(0, 0, (100, 100)), (0, 0));
+    }
+
+    /// One byte per pixel, so a crop reads back as the pixels it kept.
+    fn gray(width: u32, height: u32) -> Vec<u8> {
+        (0..width * height).flat_map(|i| [i as u8, i as u8, i as u8, 255]).collect()
+    }
+
+    fn crop(width: u32, height: u32, box_px: (u32, u32)) -> ((u32, u32), Vec<u8>) {
+        let (pixels, width, height) = crop_to_box(gray(width, height), width, height, box_px);
+        ((width, height), pixels.iter().step_by(4).copied().collect())
+    }
+
+    #[test]
+    fn a_cover_crop_keeps_the_middle_and_only_the_axis_that_overflows() {
+        // 4x4 into a 2x2 box: the centred 2x2 is rows 1-2, columns 1-2.
+        assert_eq!(crop(4, 4, (2, 2)), ((2, 2), vec![5, 6, 9, 10]));
+        // `stored_size` covers, so one axis overflows unless the ratios agree; the other must come
+        // through whole rather than be squared off to the box.
+        assert_eq!(crop(2, 4, (2, 2)), ((2, 2), vec![2, 3, 4, 5]));
+        // Smaller than its box: untouched, so `fitted_rect` still letterboxes a small file.
+        assert_eq!(crop(2, 2, (8, 8)), ((2, 2), vec![0, 1, 2, 3]));
     }
 
     /// ADR-0187. The rule the old per-decode cap got wrong: what fits is a property of the pool,
@@ -1538,7 +1580,8 @@ mod tests {
         let png = dir.path().join("fixture.png");
         std::fs::write(&png, PIL_2X2_RGBA_PNG).unwrap();
         let cache = ImageCache::new();
-        let key = |n: u32| CacheKey { path: png.clone(), box_px: (n, n), version: FileVersion::read(&png), tint: None };
+        let version = FileVersion::read(&png);
+        let key = |n: u32| key(&png, n, version);
         {
             let mut wanted = cache.pool.wanted.lock().unwrap();
             for n in 0..MAX_INFLIGHT_DECODES as u32 {
@@ -1565,7 +1608,8 @@ mod tests {
         let png = dir.path().join("fixture.png");
         std::fs::write(&png, PIL_2X2_RGBA_PNG).unwrap();
         let mut cache = ImageCache::new();
-        let key = |n: u32| CacheKey { path: png.clone(), box_px: (n, n), version: FileVersion::read(&png), tint: None };
+        let version = FileVersion::read(&png);
+        let key = |n: u32| key(&png, n, version);
 
         // Admitted while there is room, and nothing is owed: the caller got its slot.
         assert!(cache.admit(&key(1)), "the first request has the whole pipeline to itself");
@@ -1596,7 +1640,7 @@ mod tests {
         let png = dir.path().join("fixture.png");
         std::fs::write(&png, PIL_2X2_RGBA_PNG).unwrap();
         let mut cache = ImageCache::new();
-        let key = CacheKey { path: png.clone(), box_px: (8, 8), version: FileVersion::read(&png), tint: None };
+        let key = key(&png, 8, FileVersion::read(&png));
         cache.insert(key.clone(), Slot::Pending);
         cache.pool.wanted.lock().unwrap().insert(key.clone());
 
@@ -1612,7 +1656,7 @@ mod tests {
         let png = dir.path().join("fixture.png");
         std::fs::write(&png, PIL_2X2_RGBA_PNG).unwrap();
         let mut cache = ImageCache::new();
-        let key = CacheKey { path: png.clone(), box_px: (8, 8), version: FileVersion::read(&png), tint: None };
+        let key = key(&png, 8, FileVersion::read(&png));
         cache.insert(key.clone(), Slot::Pending);
         cache.pool.wanted.lock().unwrap().insert(key.clone());
         cache.evict(&key);
@@ -1670,7 +1714,7 @@ mod tests {
         let png = dir.path().join("fixture.png");
         std::fs::write(&png, PIL_2X2_RGBA_PNG).unwrap();
         let mut cache = ImageCache::new();
-        let key = CacheKey { path: png.clone(), box_px: (8, 8), version: FileVersion::read(&png), tint: None };
+        let key = key(&png, 8, FileVersion::read(&png));
         cache.insert(key.clone(), Slot::Pending);
         // A worker skips a job nobody wants, so this stands in for what `image` records when it
         // queues one.
