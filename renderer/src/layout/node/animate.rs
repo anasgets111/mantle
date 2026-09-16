@@ -7,7 +7,7 @@
 //! This module owns the parsing and the arithmetic. Where the tween lives, when one starts and
 //! what a tick relays out are `layout::scene`'s.
 
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
@@ -578,9 +578,9 @@ impl Sequence {
 /// A name `kind` does not accept is refused, so a misspelling fails the pass instead of silently
 /// snapping; what the value is decides whether it can tween ([`Animatable::from_value`]), the way
 /// Qt registers interpolators by type rather than by property.
-pub fn parse_animate(kind: &str, properties: &PropMap) -> Result<HashMap<String, AnimationSpec>, LayoutError> {
+pub fn parse_animate(kind: &str, properties: &PropMap) -> Result<BTreeMap<String, AnimationSpec>, LayoutError> {
     let Some(value) = properties.get("animate") else {
-        return Ok(HashMap::new());
+        return Ok(BTreeMap::new());
     };
     let Value::Table(table) = value else {
         return Err(invalid(
@@ -588,13 +588,20 @@ pub fn parse_animate(kind: &str, properties: &PropMap) -> Result<HashMap<String,
             format!("expected a table of property names to durations, got {}", preview_for_error(value)),
         ));
     };
-    let mut out = HashMap::new();
+    // Sorted in and sorted out: Lua seeds its own string hashes, so two broken entries -- or two
+    // that fail to retarget below -- would otherwise name either one, run to run (ADR-0024).
+    let mut raw = BTreeMap::new();
     for pair in table.pairs::<Value, Value>() {
         let (key, entry) = pair.map_err(|e| invalid("animate", e.to_string()))?;
         let Value::String(key) = key else {
             return Err(invalid("animate", format!("keys are property names, got {}", preview_for_error(&key))));
         };
-        let property = key.to_str().map_err(|e| invalid("animate", e.to_string()))?.to_string();
+        let property = key.to_str().map_err(|e| invalid("animate", e.to_string()))?;
+        raw.insert((*property).to_owned(), entry);
+    }
+
+    let mut out = BTreeMap::new();
+    for (property, entry) in raw {
         // The one key that is not a property name (ADR-0150). Checked here rather than only when
         // the node departs, so a typo in the block is refused while the node is still in the tree.
         if property == "exit" {
@@ -1824,7 +1831,7 @@ mod tests {
         let mut tweens = Vec::new();
         let now = Instant::now();
         assert!(depart("rect", &mut tweens, &mut properties, now, &lua).unwrap());
-        let started: HashMap<&str, &Tween> = tweens.iter().map(|t| (t.property.as_str(), t)).collect();
+        let started: BTreeMap<&str, &Tween> = tweens.iter().map(|t| (t.property.as_str(), t)).collect();
         assert_eq!(started["width"].from, Animatable::Number(40.0), "the displayed width");
         assert_eq!(started["opacity"].from, Animatable::Number(1.0), "an absent opacity is opaque");
         assert_eq!(started["opacity"].to, Animatable::Number(0.0));
@@ -1875,7 +1882,7 @@ mod tests {
         );
         let mut tweens = Vec::new();
         assert!(depart("rect", &mut tweens, &mut properties, Instant::now(), &lua).unwrap());
-        let started: HashMap<&str, &Tween> = tweens.iter().map(|t| (t.property.as_str(), t)).collect();
+        let started: BTreeMap<&str, &Tween> = tweens.iter().map(|t| (t.property.as_str(), t)).collect();
         assert_eq!(started["width"].from, Animatable::Percent(0.0));
         assert_eq!(started["background"].from, Animatable::Color(Rgba { r: 0.2, g: 0.4, b: 1.0, a: 0.0 }));
     }
