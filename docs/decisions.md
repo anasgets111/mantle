@@ -4924,3 +4924,31 @@ Candidate path are deleted, superseding ADR-0019, ADR-0025 and ADR-0156. The rel
 too (ADR-0024): it let the Supervisor choose a swap, so `ReevaluateReport`, `ApplyPendingReload`,
 `RequestReload` and the reload sequence are deleted, and the Renderer evaluates and applies a
 `Reevaluate` in one turn. An edit superseded mid-flight now applies once before the next replaces it.
+
+## 0217. A rounded clip's offscreen target comes from a pool
+
+`draw_clipped` masks a rounded subtree through an offscreen image, and created and deleted that image
+every repaint. Measured on `bar@DP-1`, 3440x42, 620 commands, NVIDIA 615.71.09:
+
+| | per repaint | idle CPU |
+|---|---|---|
+| created per repaint | 8.6 ms | 1.69% of a core |
+| pooled | 0.51 ms | 0.89% |
+| offscreens skipped entirely | 0.43 ms | -- |
+
+Not the allocation: `create_image_empty` is 20 us and `delete_image` 0.6 ms, 8% between them. The
+driver's work lands in `flush`, which is why timing those two calls does not find it. Mesa draws the
+same list in 2.5 ms on the same GPU.
+
+1. **The pool hangs off `TextPainter`**, because the ids belong to its canvas and have to die with it.
+2. **Keyed by exact size, capped at 16, evicting the size asked for longest ago.** A clip tweening its
+   width asks for a new size every frame and reuses none, so uncapped it holds one target per pixel of
+   travel.
+3. **The caller clears what it takes**, which `draw_clipped` already did.
+
+Rejected: skipping the offscreen when the subtree clears the corners. Both the inset test and the
+four-corner-square test matched zero clips of every one built on `dev-config` -- children fill their
+rounded parents, so the mask is real work.
+
+ponytail: exact-size matching leaves a tweening clip paying the old cost. Upgrade path is a size class
+and a sub-rect composite, handling `FLIP_Y` about the target's height rather than the clip's.

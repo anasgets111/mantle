@@ -334,8 +334,9 @@ pub struct Shaders<'a> {
 struct Walk<'a, 'g> {
     images: &'a mut ImageCache,
     scale: f32,
-    /// Offscreen targets held until [`execute`] flushes.
-    scratch: Vec<ImageId>,
+    /// Offscreen targets, with their sizes, held until [`execute`] flushes and returns them to
+    /// `TextPainter`'s pool.
+    scratch: Vec<(ImageId, (usize, usize))>,
     drawn: Vec<DrawnImage>,
     shaders: Option<Shaders<'g>>,
 }
@@ -368,11 +369,9 @@ pub fn execute(
     run(painter, &mut walk, &list.commands, RenderTarget::Screen, frame);
     painter.canvas_mut().reset_scissor();
     painter.canvas_mut().flush();
-    // Delete scratch targets only after flush; femtovg still executes queued calls at flush, as
+    // Recycle scratch targets only after flush; femtovg still executes queued calls at flush, as
     // `release_shadow_images` does for drop-shadow targets.
-    for id in std::mem::take(&mut walk.scratch) {
-        painter.canvas_mut().delete_image(id);
-    }
+    painter.recycle_scratch(std::mem::take(&mut walk.scratch));
     walk.drawn
 }
 
@@ -525,8 +524,11 @@ fn run(painter: &mut TextPainter, walk: &mut Walk<'_, '_>, commands: &[DrawCmd],
 /// straight top edge. Giving the child the pill's radius instead draws a lozenge. Quickshell's
 /// `ClippingRectangle` uses a mask texture and two targets; femtovg's image-painted path needs one.
 ///
-/// ponytail: one image allocated and freed per clipping node per repaint. Upgrade path: a pool
-/// keyed by size next to `ImageCache`, once a config repaints a rounded clip at pointer rate.
+/// The target comes from `TextPainter`'s pool: creating one per clipping node per repaint was 8.6 ms
+/// of an 8.6 ms repaint (ADR-0217).
+///
+/// ponytail: the pool matches on exact size, so a clip tweening its width reuses none. Upgrade path
+/// is a size class and a sub-rect composite, handling `FLIP_Y` about the target's height.
 // ponytail: keep the nine scalar/context arguments; passing `DrawCmd` would require a second match.
 #[allow(clippy::too_many_arguments)]
 fn draw_clipped(
@@ -549,14 +551,20 @@ fn draw_clipped(
     // `PREMULTIPLIED` prevents a second alpha multiplication; `FLIP_Y` maps canvas y=0 to the last
     // GL texture row. Both match femtovg 0.26.0's drop-shadow flags (`src/lib.rs`).
     let flags = ImageFlags::PREMULTIPLIED | ImageFlags::FLIP_Y;
-    let Ok(image) = painter.canvas_mut().create_image_empty(width, height, PixelFormat::Rgba8, flags) else {
-        // Out of texture memory: preserve the subtree unmasked rather than drop it.
-        // Into the parent's target, so it keeps the parent's frame: the clip this could not
-        // allocate is not where these commands are going.
-        run(painter, walk, commands, target, frame);
-        return;
+    let image = match painter.take_scratch((width, height)) {
+        Some(image) => image,
+        None => {
+            let Ok(image) = painter.canvas_mut().create_image_empty(width, height, PixelFormat::Rgba8, flags) else {
+                // Out of texture memory: preserve the subtree unmasked rather than drop it.
+                // Into the parent's target, so it keeps the parent's frame: the clip this could not
+                // allocate is not where these commands are going.
+                run(painter, walk, commands, target, frame);
+                return;
+            };
+            image
+        }
     };
-    walk.scratch.push(image);
+    walk.scratch.push((image, (width, height)));
 
     let canvas = painter.canvas_mut();
     canvas.save();

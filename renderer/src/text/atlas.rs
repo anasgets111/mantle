@@ -12,12 +12,16 @@ use std::ffi::c_void;
 use std::sync::Arc;
 
 use femtovg::renderer::OpenGl;
-use femtovg::{Canvas, Color, FontId, Paint, Path, PositionedGlyph, TextContext};
+use femtovg::{Canvas, Color, FontId, ImageId, Paint, Path, PositionedGlyph, TextContext};
 
 use crate::layout::node::{Rgba, StyleRun, TextAlign, font_runs};
 use crate::text::shaping::{FontFace, Glyph, ShapingHandle};
 
 use super::snap::{LogicalRect, snap_to_physical};
+
+/// Distinct offscreen sizes [`TextPainter`] keeps between paints (ADR-0217): a clip tweening its
+/// width asks for a new one every frame and reuses none.
+const SCRATCH_SIZES: usize = 16;
 
 /// A FemtoVG canvas bound to the calling thread's current EGL/GL context, with every face the
 /// shaping worker can place a glyph in registered and ready to draw with.
@@ -42,6 +46,22 @@ pub struct TextPainter {
     registered: HashMap<(usize, u32), FontId>,
     /// The worker and memo that measured each line, asked again for its glyphs and its faces.
     shaping: ShapingHandle,
+    /// `layout::paint::draw_clipped`'s offscreen targets, kept between paints and keyed by exact
+    /// size, each with the paint that last asked for that size (ADR-0217). Here, not beside
+    /// `ImageCache`, because the ids belong to `canvas` and have to die with it.
+    scratch: HashMap<(usize, usize), (u64, Vec<ImageId>)>,
+    /// What [`TextPainter::recycle_scratch`] ages by. Not a timer: a size goes stale because other
+    /// sizes were asked for since, not because seconds passed.
+    paints: u64,
+}
+
+/// The sizes to delete to bring a scratch pool back to [`SCRATCH_SIZES`]: those asked for longest
+/// ago. Pure so the policy is testable without the GL context `delete_image` needs.
+fn stalest(scratch: &HashMap<(usize, usize), (u64, Vec<ImageId>)>) -> Vec<(usize, usize)> {
+    let mut by_age: Vec<_> = scratch.iter().map(|(size, (asked, _))| (*asked, *size)).collect();
+    by_age.sort_unstable();
+    by_age.truncate(scratch.len().saturating_sub(SCRATCH_SIZES));
+    by_age.into_iter().map(|(_, size)| size).collect()
 }
 
 /// What [`TextPainter::draw_text`] draws, apart from where: one `Draw::Text` command's worth,
@@ -135,13 +155,34 @@ impl TextPainter {
         if faces.is_empty() {
             return Err("TextPainter::new requires at least one loaded font".into());
         }
-        Ok(Self { canvas, faces, generation, text_context, registered, shaping })
+        Ok(Self { canvas, faces, generation, text_context, registered, shaping, scratch: HashMap::new(), paints: 0 })
     }
 
     /// The shaping-worker face-set generation this painter's femtovg registry is built from.
     #[cfg(test)]
     pub fn font_generation(&self) -> u64 {
         self.generation
+    }
+
+    /// An offscreen of exactly `size`, reused from the pool when one is free. The caller clears it:
+    /// a reused target still holds the last paint's pixels.
+    pub fn take_scratch(&mut self, size: (usize, usize)) -> Option<ImageId> {
+        self.scratch.get_mut(&size)?.1.pop()
+    }
+
+    /// Returns one paint's offscreens to the pool and deletes whatever that pushes over capacity.
+    pub fn recycle_scratch(&mut self, used: impl IntoIterator<Item = (ImageId, (usize, usize))>) {
+        self.paints += 1;
+        for (id, size) in used {
+            let entry = self.scratch.entry(size).or_insert((self.paints, Vec::new()));
+            entry.0 = self.paints;
+            entry.1.push(id);
+        }
+        for size in stalest(&self.scratch) {
+            for id in self.scratch.remove(&size).into_iter().flat_map(|(_, free)| free) {
+                self.canvas.delete_image(id);
+            }
+        }
     }
 
     /// Registers any faces the shaping worker has loaded since this painter was built (ADR-0144).
@@ -244,6 +285,19 @@ impl TextPainter {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_clip_tweening_its_width_does_not_keep_every_size_it_passed_through() {
+        // Each frame of the tween is a size nothing will ask for again. Without a cap the pool
+        // holds one target per pixel of travel for the rest of the session.
+        let pool =
+            |sizes: std::ops::Range<usize>| sizes.map(|n| ((n, 40), (n as u64, Vec::new()))).collect::<HashMap<_, _>>();
+        assert!(stalest(&pool(0..SCRATCH_SIZES)).is_empty(), "a pool at capacity deletes nothing");
+
+        let evicted = stalest(&pool(0..SCRATCH_SIZES + 3));
+        assert_eq!(evicted.len(), 3, "only the overflow goes");
+        assert_eq!(evicted, vec![(0, 40), (1, 40), (2, 40)], "asked for longest ago, not largest or newest");
+    }
 
     /// A run bidi splits around other text is underlined piece by piece, never across the text
     /// between the pieces.
