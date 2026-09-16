@@ -133,7 +133,7 @@ mod tests {
     fn style(lua: &Lua, lua_src: &str) -> Result<Option<PaintStyle>, LayoutError> {
         let table: mlua::Table = lua.load(lua_src).eval().unwrap();
         let node = deserialize_lua_table(&table).unwrap();
-        paint_style(&node.kind, &node.properties)
+        paint_style(node.kind, &node.properties)
     }
 
     #[test]

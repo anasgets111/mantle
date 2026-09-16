@@ -133,7 +133,7 @@ pub struct ResolvedNode {
     /// Not addressable from Lua and not the `id` property, which is a reconciliation *hint*
     /// a config writes and this is the answer the engine reached.
     pub id: NodeId,
-    pub kind: String,
+    pub kind: &'static str,
     pub rect: LogicalRect,
     /// This node's own margin, kept because a parent measures its children's footprint after they
     /// are built ([`extent_along`]). The rest of [`LayoutStyle`] is pass-local and is not retained.
@@ -400,11 +400,11 @@ impl Scene {
         let existing = self.surfaces.remove(&key);
         // Check admissibility before resolution runs Lua. Children get the same check in the loop
         // that parses their margin before recursing.
-        ensure_node_admissible(&fresh.kind, 0)?;
+        ensure_node_admissible(fresh.kind, 0)?;
         // Cloned, not moved: one declaration is resolved once per instance of it, one per output.
-        let properties = node::resolve_properties(fresh.properties.clone(), &fresh.kind, lua)?;
-        let mut properties = build_child_for_output(properties, &fresh.kind, &instance.output)?;
-        let tweens = node::retarget(&fresh.kind, existing.as_ref().map(tween_state), &mut properties, now, lua)?;
+        let properties = node::resolve_properties(fresh.properties.clone(), fresh.kind, lua)?;
+        let mut properties = build_child_for_output(properties, fresh.kind, &instance.output)?;
+        let tweens = node::retarget(fresh.kind, existing.as_ref().map(tween_state), &mut properties, now, lua)?;
         // The root has no parent, so its once-per-node parse happens here; children parse in the
         // parent's loop.
         let style = LayoutStyle::parse(&properties)?;
@@ -412,7 +412,7 @@ impl Scene {
         // Taffy trees are per-instance and per-pass; only retained `NodeId`s cross the call, so a
         // failed walk drops the temporary tree without extra rollback state.
         let mut tree = new_solver_tree();
-        let prepared = prepare(self, &mut tree, existing, &fresh.kind, properties, style, tweens, None, lua, now, 0)?;
+        let prepared = prepare(self, &mut tree, existing, fresh.kind, properties, style, tweens, None, lua, now, 0)?;
         let solved = solve_instance(&mut tree, prepared, available, shaping)?;
         publish_geometry(&solved, 0.0, 0.0, lua, false).map_err(|e| node::invalid("geometry", e.to_string()))?;
         self.surfaces.insert(key, solved);
@@ -676,7 +676,7 @@ fn solve_instance(
     shaping: &ShapingHandle,
 ) -> Result<ResolvedNode, LayoutError> {
     let style = prepared.style;
-    let forced = forced_root_size(&prepared.kind, &style, available);
+    let forced = forced_root_size(prepared.kind, &style, available);
     let mut root_style = tree.style(prepared.taffy).map_err(taffy_failed)?.clone();
     root_style.size = taffy::Size {
         width: match forced.0.or_else(|| resolve_non_content(style.width_mode, available.width)) {
@@ -739,9 +739,9 @@ fn prepare_retained(
     node::advance(&mut node.tweens, &mut node.properties, now, lua)?;
     let style = LayoutStyle::parse(&node.properties)?;
     let ResolvedNode { id, kind, properties, children, tweens, displayed_source, dissolve, .. } = node;
-    let paint = node::paint_style(&kind, &properties)?;
-    let measure = measure_for(&kind, paint.as_ref(), &properties)?;
-    let taffy_id = new_solver_node(tree, &kind, &properties, &style, parent_axis, measure)?;
+    let paint = node::paint_style(kind, &properties)?;
+    let measure = measure_for(kind, paint.as_ref(), &properties)?;
+    let taffy_id = new_solver_node(tree, kind, &properties, &style, parent_axis, measure)?;
     let mut node = PreparedNode {
         id,
         kind,
@@ -759,7 +759,7 @@ fn prepare_retained(
     if !node.style.visible {
         return Ok(node);
     }
-    let own_axis = main_axis_of(&node.kind, &node.properties)?;
+    let own_axis = main_axis_of(node.kind, &node.properties)?;
     for child in std::mem::take(&mut node.frozen) {
         if child.leaving {
             if let Some(child) = advance_leaving(child, now, lua)? {
@@ -885,7 +885,7 @@ enum Measure {
 /// declaration order, and what [`finish`] walks again to read the solved geometry back.
 struct PreparedNode {
     id: NodeId,
-    kind: String,
+    kind: &'static str,
     style: LayoutStyle,
     properties: PropMap,
     paint: Option<PaintStyle>,
@@ -976,7 +976,7 @@ fn advance_paint_only_node(node: &mut ResolvedNode, now: Instant, lua: &Lua) -> 
     // `opacity` and `paint` describing the same frame its properties do.
     let advanced = node::advance(&mut node.tweens, &mut node.properties, now, lua)
         .and_then(|()| node::parse_opacity(&node.properties))
-        .and_then(|opacity| Ok((opacity, node::paint_style(&node.kind, &node.properties)?)));
+        .and_then(|opacity| Ok((opacity, node::paint_style(node.kind, &node.properties)?)));
     match advanced {
         Ok((opacity, fresh)) => {
             node.opacity = opacity;
@@ -1005,7 +1005,7 @@ fn advance_leaving(mut node: ResolvedNode, now: Instant, lua: &Lua) -> Result<Op
         return Ok(None);
     }
     let style = LayoutStyle::parse(&node.properties)?;
-    let fresh = node::paint_style(&node.kind, &node.properties)?;
+    let fresh = node::paint_style(node.kind, &node.properties)?;
     node.paint = repainted_keeping_fitted_text(node.paint.take(), fresh);
     node.opacity = style.opacity;
     node.transform = style.transform;
@@ -1257,7 +1257,7 @@ fn prepare(
     scene: &mut Scene,
     tree: &mut taffy::TaffyTree<Measure>,
     retained: Option<ResolvedNode>,
-    kind: &str,
+    kind: &'static str,
     properties: PropMap,
     style: LayoutStyle,
     tweens: Vec<Tween>,
@@ -1302,7 +1302,7 @@ fn prepare(
     // picker of fifty tiles was rebuilt on every push of every capability, the clock's included.
     let mut node = PreparedNode {
         id,
-        kind: kind.to_string(),
+        kind,
         style,
         properties,
         paint,
@@ -1329,13 +1329,13 @@ fn prepare(
         let VirtualNode { kind: child_kind, properties: child_raw } = fresh_child;
         // Every failure below names this child, so the message that reaches a human is the path
         // down to the node rather than a property name and a surface (`LayoutError::in_child`).
-        let here = |err: LayoutError| err.in_child(index, &child_kind);
+        let here = |err: LayoutError| err.in_child(index, child_kind);
 
         // Before this child's own getters run, not after: resolving its property map calls back
         // into Lua, and a child the walk is about to refuse must not execute anything on the way
         // to being refused. `depth + 1` is the level this child would occupy, so the error is the
         // same variant, kind and level the recursive call raises (see `ensure_node_admissible`).
-        ensure_node_admissible(&child_kind, depth + 1)?;
+        ensure_node_admissible(child_kind, depth + 1)?;
 
         let reusable = match candidate {
             Some(candidate) if candidate.kind != child_kind => {
@@ -1349,9 +1349,9 @@ fn prepare(
         // recursive call, because the style the call is handed is built from them and a second
         // read of an impure `margin` could answer differently. Tweens go between the two: the
         // parse must see the displayed value, not the target (ADR-0145).
-        let mut child_properties = node::resolve_properties(child_raw, &child_kind, lua).map_err(here)?;
+        let mut child_properties = node::resolve_properties(child_raw, child_kind, lua).map_err(here)?;
         let child_tweens =
-            node::retarget(&child_kind, reusable.as_ref().map(tween_state), &mut child_properties, now, lua)
+            node::retarget(child_kind, reusable.as_ref().map(tween_state), &mut child_properties, now, lua)
                 .map_err(here)?;
         let child_style = LayoutStyle::parse(&child_properties).map_err(here)?;
         node.children.push(
@@ -1359,7 +1359,7 @@ fn prepare(
                 scene,
                 tree,
                 reusable,
-                &child_kind,
+                child_kind,
                 child_properties,
                 child_style,
                 child_tweens,
@@ -1380,7 +1380,7 @@ fn prepare(
         }
     }
     for mut child in unclaimed {
-        if child.visible && node::depart(&child.kind, &mut child.tweens, &mut child.properties, now, lua)? {
+        if child.visible && node::depart(child.kind, &mut child.tweens, &mut child.properties, now, lua)? {
             child.leaving = true;
             node.leaving.push(child);
         }
@@ -1450,7 +1450,7 @@ fn finish(
     // rather than read off taffy's `scrollable_overflow_rect`, since the two disagree: CSS
     // scrollable overflow is the union of the children's border boxes, while this engine's
     // `spacing`-and-margin footprint is what `Fill` was sized against, which the tests pin.
-    if let Some(axis) = main_axis_of(&kind, &properties)? {
+    if let Some(axis) = main_axis_of(kind, &properties)? {
         let padding = style.padding;
         let (content_main, total_main) = match axis {
             MainAxis::Horizontal => (
@@ -5579,7 +5579,7 @@ pub(super) mod tests {
 
     fn region_node(
         id: u64,
-        kind: &str,
+        kind: &'static str,
         rect: (f32, f32, f32, f32),
         paint: Option<PaintStyle>,
         children: Vec<ResolvedNode>,
@@ -5593,7 +5593,7 @@ pub(super) mod tests {
             transform: node::Transform::default(),
             margin: crate::layout::node::EdgeInsets::default(),
             id: NodeId::test(id),
-            kind: kind.to_string(),
+            kind,
             rect: LogicalRect { x: rect.0, y: rect.1, width: rect.2, height: rect.3 },
             visible: true,
             opacity: 1.0,

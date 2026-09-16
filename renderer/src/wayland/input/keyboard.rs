@@ -895,7 +895,7 @@ mod tests {
         // Re-derived rather than hand-written, because `layout::secure_submit` reads the parsed
         // style now and `Scene::apply` is what fills it in production: a fixture that set it by
         // hand could declare a destination the parser would never have found.
-        node.paint = node::paint_style(&node.kind, &node.properties).unwrap();
+        node.paint = node::paint_style(node.kind, &node.properties).unwrap();
         node
     }
 

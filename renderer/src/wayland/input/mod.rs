@@ -111,7 +111,7 @@ mod tests {
 
     pub(super) fn hit_node(
         lua: &Lua,
-        kind: &str,
+        kind: &'static str,
         (x, y, width, height): (f32, f32, f32, f32),
         on_click: bool,
     ) -> layout::ResolvedNode {
@@ -130,7 +130,7 @@ mod tests {
             // Distinct per node, since `focused_field` now reads an identity off one of these and
             // a shared id would make every hand-built field the same field.
             id: layout::scene::NodeId::test(NEXT_TEST_NODE_ID.fetch_add(1, Ordering::Relaxed)),
-            kind: kind.to_string(),
+            kind,
             paint: node::paint_style(kind, &properties).unwrap(),
             rect: LogicalRect { x, y, width, height },
             visible: true,

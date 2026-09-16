@@ -285,7 +285,7 @@ fn collect_surfaces(value: Value) -> Result<Vec<VirtualNode>, LoaderError> {
 /// compositor sends `locked`; rejecting it would leave the authored lock-screen `child` nowhere
 /// legal to write.
 fn require_surface(node: &VirtualNode) -> Result<(), LoaderError> {
-    match node.kind.as_str() {
+    match node.kind {
         "panel" | "window" | "popup" | "lock" => Ok(()),
         other => Err(not_a_surface(other)),
     }
@@ -637,7 +637,7 @@ mod tests {
                 }"#,
             )
             .unwrap();
-        let kinds: Vec<&str> = output.surfaces.iter().map(|s| s.kind.as_str()).collect();
+        let kinds: Vec<&str> = output.surfaces.iter().map(|s| s.kind).collect();
         assert_eq!(kinds, ["panel", "window", "popup"]);
     }
 

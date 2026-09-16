@@ -483,7 +483,7 @@ impl App {
         // Deepest scrollable under the pointer wins.
         let scrollable = path.iter().enumerate().rev().find_map(|(depth, node)| {
             let signal = layout::scene::scroll_signal(&node.properties)?;
-            let axis = layout::scene::main_axis_of(&node.kind, &node.properties).ok()??;
+            let axis = layout::scene::main_axis_of(node.kind, &node.properties).ok()??;
             Some((depth, signal, axis))
         });
         let wheel = wheel_button(&path);

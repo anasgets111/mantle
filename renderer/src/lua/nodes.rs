@@ -118,14 +118,15 @@ const NODE_PROPERTIES: &[(&str, &[&str])] = &[
     ("lock", &["child"]),
 ];
 
-/// The lists `kind` draws its properties from, or `None` if it is not a node kind.
-fn accepted_lists(kind: &str) -> Option<(&'static [&'static str], bool)> {
-    let (_, own) = NODE_PROPERTIES.iter().find(|(name, _)| *name == kind)?;
-    Some((own, BOX_KINDS.contains(&kind)))
+/// The vocabulary's own `&'static str` for `kind` and the lists it draws its properties from, or
+/// `None` if it is not a node kind.
+fn accepted_lists(kind: &str) -> Option<(&'static str, &'static [&'static str], bool)> {
+    let (name, own) = NODE_PROPERTIES.iter().find(|(name, _)| *name == kind)?;
+    Some((name, own, BOX_KINDS.contains(&kind)))
 }
 
 /// The list's own `&'static str` for `property`, which is what a [`PropMap`] keys by.
-fn name_in((own, boxed): (&'static [&'static str], bool), property: &str) -> Option<&'static str> {
+fn name_in((_, own, boxed): (&'static str, &'static [&'static str], bool), property: &str) -> Option<&'static str> {
     let found = |list: &'static [&'static str]| list.iter().copied().find(|name| *name == property);
     found(own).or_else(|| found(COMMON_PROPERTIES)).or_else(|| if boxed { found(BOX_PROPERTIES) } else { None })
 }
@@ -151,7 +152,7 @@ fn accepted_properties(kind: &str) -> Vec<&'static str> {
 /// node.
 #[derive(Debug, Clone)]
 pub struct VirtualNode {
-    pub kind: String,
+    pub kind: &'static str,
     pub properties: PropMap,
 }
 
@@ -189,15 +190,17 @@ pub fn register_node_constructors(lua: &Lua) -> mlua::Result<()> {
 /// Converts one Lua node table into a [`VirtualNode`]: pulls out `kind`, copies every other
 /// key-value pair into `properties` as-is. Does not recurse into `children`/`child`.
 pub fn deserialize_lua_table(table: &Table) -> Result<VirtualNode, DeserializeError> {
-    let kind = match table.get::<Value>("kind")? {
-        Value::String(s) => s.to_string_lossy(),
+    let lists = match table.get::<Value>("kind")? {
+        // Borrowed for the lookup: the static the row hands back is what the node keeps, so a
+        // supported kind allocates nothing. Only a refusal copies the spelling (ADR-0219).
+        Value::String(s) => match s.to_str().ok().and_then(|text| accepted_lists(&text)) {
+            Some(lists) => lists,
+            None => return Err(DeserializeError::UnsupportedKind(s.to_string_lossy())),
+        },
         Value::Nil => return Err(DeserializeError::MissingKind),
         _ => return Err(DeserializeError::KindNotAString),
     };
-
-    let Some(lists) = accepted_lists(&kind) else {
-        return Err(DeserializeError::UnsupportedKind(kind));
-    };
+    let kind = lists.0;
 
     let mut properties = PropMap::default();
     for pair in table.pairs::<Value, Value>() {
@@ -212,13 +215,13 @@ pub fn deserialize_lua_table(table: &Table) -> Result<VirtualNode, DeserializeEr
         };
         let Some(name) = name else {
             return Err(DeserializeError::UnknownProperty {
-                kind: kind.clone(),
+                kind: kind.to_string(),
                 // Lossy: `Value::to_string` refuses the key this arm exists to name.
                 property: match &key {
                     Value::String(s) => s.to_string_lossy(),
                     other => other.to_string()?,
                 },
-                accepted: accepted_properties(&kind).join(", "),
+                accepted: accepted_properties(kind).join(", "),
             });
         };
         properties.insert(name, value);
@@ -791,7 +794,7 @@ mod meta_stub_tests {
         scene.apply(std::slice::from_ref(&virtual_node), &instances, &shaping, &lua).map_err(|e| format!("{e:?}"))?;
         // A signal defers the evaluation-time spec, so the resolved one is where a bound value is checked.
         let resolved = &scene.surface(&instance_id).ok_or("the probe surface was not retained")?.properties;
-        match virtual_node.kind.as_str() {
+        match virtual_node.kind {
             "panel" => crate::layout::node::panel_spec(resolved).map(drop),
             "window" => crate::layout::node::window_spec(resolved).map(drop),
             "popup" => crate::layout::node::popup_spec(resolved).map(drop),

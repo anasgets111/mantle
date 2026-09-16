@@ -32,7 +32,7 @@ pub(crate) fn surface_specs(output: &LoadOutput) -> Result<Vec<SurfaceSpec>, Loa
     let invalid = |err: layout::node::LayoutError| LoaderError::InvalidTopology(err.to_string());
     let mut specs = Vec::with_capacity(output.surfaces.len());
     for surface in &output.surfaces {
-        specs.push(match surface.kind.as_str() {
+        specs.push(match surface.kind {
             "panel" => SurfaceSpec::Panel(layout::node::panel_spec(&surface.properties).map_err(invalid)?),
             "window" => SurfaceSpec::Window(layout::node::window_spec(&surface.properties).map_err(invalid)?),
             "popup" => SurfaceSpec::Popup(layout::node::popup_spec(&surface.properties).map_err(invalid)?),

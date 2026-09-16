@@ -95,7 +95,7 @@ pub fn cursor_under(path: &[&ResolvedNode], point: LogicalPoint, shaping: &Shapi
                 // that does not parse here is a bug, not a config error; the arrow is the fallback.
                 return Some(name.to_str().ok().and_then(|name| name.parse().ok()).unwrap_or(CursorIcon::Default));
             }
-            match node.kind.as_str() {
+            match node.kind {
                 "text" if matches!(node.properties.get("on_link"), Some(Value::Function(_))) => {
                     let rect = absolute_rect(&path[..=depth])?;
                     let local = LogicalPoint { x: point.x - rect.x, y: point.y - rect.y };
@@ -176,7 +176,11 @@ mod tests {
     use crate::layout::node::{StyleRun, TextAlign};
     use crate::text::shaping::ShapeRequest;
 
-    fn node(kind: &str, (x, y, width, height): (f32, f32, f32, f32), children: Vec<ResolvedNode>) -> ResolvedNode {
+    fn node(
+        kind: &'static str,
+        (x, y, width, height): (f32, f32, f32, f32),
+        children: Vec<ResolvedNode>,
+    ) -> ResolvedNode {
         ResolvedNode {
             displayed_source: None,
             dissolve: None,
@@ -186,7 +190,7 @@ mod tests {
             transform: crate::layout::node::Transform::default(),
             margin: crate::layout::node::EdgeInsets::default(),
             id: crate::layout::scene::NodeId::test(0),
-            kind: kind.to_string(),
+            kind,
             rect: LogicalRect { x, y, width, height },
             visible: true,
             opacity: 1.0,
@@ -423,8 +427,8 @@ mod tests {
         assert_eq!(link_under(&bold_only, LogicalPoint { x: 3.0, y: 3.0 }, &shaping), None);
     }
 
-    fn kinds(path: &[&ResolvedNode]) -> Vec<String> {
-        path.iter().map(|node| node.kind.clone()).collect()
+    fn kinds(path: &[&ResolvedNode]) -> Vec<&'static str> {
+        path.iter().map(|node| node.kind).collect()
     }
 
     #[test]

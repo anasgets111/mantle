@@ -125,7 +125,7 @@ mod tests {
             transform: crate::layout::node::Transform::default(),
             margin: crate::layout::node::EdgeInsets::default(),
             id: crate::layout::scene::NodeId::test(0),
-            kind: "row".to_string(),
+            kind: "row",
             rect: LogicalRect { x: rect.0, y: rect.1, width: rect.2, height: rect.3 },
             visible: true,
             opacity: 1.0,
