@@ -380,7 +380,7 @@ impl PointerHandler for App {
                 // (ADR-0062), since no later Motion may arrive to close a tooltip.
                 PointerEventKind::Leave { .. } => {
                     // End held drag at the last position; no release reaches this surface.
-                    if let Some((_, position)) = self.pointer_at.clone() {
+                    if let Some(&(_, position)) = self.pointer_at.as_ref() {
                         let instance_id = self.surfaces[index].surface_id.clone();
                         self.fire_on_drag(&instance_id, position, "end");
                     }
@@ -560,14 +560,14 @@ impl App {
     /// the pointer starts, or stale tint follows the old row off the viewport. No user crossing
     /// occurred.
     pub(in crate::wayland) fn refresh_hover_after_layout(&mut self) {
-        let Some((surface_id, position)) = self.pointer_at.clone() else {
+        let Some((surface_id, position)) = &self.pointer_at else {
             return;
         };
-        let Some(index) = self.surfaces.iter().position(|tracked| tracked.surface_id == surface_id) else {
+        let Some(index) = self.surfaces.iter().position(|tracked| &tracked.surface_id == surface_id) else {
             return;
         };
-        let tree = self.client.scene().surface(&surface_id);
-        self.sync_hover(index, tree, Some(position), false);
+        let tree = self.client.scene().surface(surface_id);
+        self.sync_hover(index, tree, Some(*position), false);
     }
 
     /// The pointer half of `App::drop_role_object`'s scrub, for the one leave the compositor never
@@ -584,7 +584,7 @@ impl App {
     /// position, drop the armed click, and write every hover off with `on_hover` firing.
     pub(in crate::wayland) fn pointer_left_destroyed_surface(&mut self, index: usize) {
         let surface_id = self.surfaces[index].surface_id.clone();
-        let Some((_, position)) = self.pointer_at.clone().filter(|(at, _)| *at == surface_id) else {
+        let Some(&(_, position)) = self.pointer_at.as_ref().filter(|(at, _)| *at == surface_id) else {
             return;
         };
         self.fire_on_drag(&surface_id, position, "end");
