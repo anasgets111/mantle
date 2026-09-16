@@ -1,5 +1,6 @@
 //! Seat input for `App`: the `wl_seat` capabilities here, pointer input in `pointer`, and keyboard
 //! focus with `secure_submit` typing in `keyboard`.
+
 use super::*;
 mod keyboard;
 mod pointer;
@@ -100,6 +101,7 @@ impl SeatHandler for App {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::layout::node::PropMap;
     use std::sync::atomic::{AtomicU64, Ordering};
 
     /// Hands each hand-built `ResolvedNode` its own id. A `Scene` allocates these in production and
@@ -113,7 +115,7 @@ mod tests {
         (x, y, width, height): (f32, f32, f32, f32),
         on_click: bool,
     ) -> layout::ResolvedNode {
-        let mut properties = HashMap::new();
+        let mut properties = PropMap::default();
         if on_click {
             properties.insert("on_click".to_string(), Value::Function(lua.create_function(|_, ()| Ok(())).unwrap()));
         }

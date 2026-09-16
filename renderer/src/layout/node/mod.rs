@@ -46,7 +46,9 @@ pub use toplevel::{
     ConstraintAdjustment, PopupAnchor, PopupOffset, PopupSpec, SizeHint, WindowSpec, popup_spec, window_spec,
 };
 
-use std::collections::HashMap;
+/// A node's property map. `FxHashMap` for thirty lookups a node against short literal keys, where
+/// SipHash's setup costs more than the comparison (ADR-0218).
+pub type PropMap = rustc_hash::FxHashMap<String, Value>;
 
 use mlua::{Lua, Value};
 
@@ -345,49 +347,43 @@ fn is_structural_property(kind: &str, property: &str) -> bool {
 /// included (`background`, `color`, `radius`), each buying its own ADR-0021 5ms budget, so
 /// four signal-bound paint properties cost four budgets in a pass ADR-0044 decision 2 now runs per
 /// capability push. Upgrade path: [`parse_edge_insets`]'s `ponytail:` whole-pass budget.
-pub fn resolve_properties(
-    properties: &HashMap<String, Value>,
-    kind: &str,
-    lua: &Lua,
-) -> Result<HashMap<String, Value>, LayoutError> {
-    let mut resolved = HashMap::with_capacity(properties.len());
-    // Sorted, and the sort is the point: `properties` is a `HashMap` with per-process randomised
-    // iteration order, so two failing properties on one node used to name whichever the hash seed
-    // reached first, differing across runs. `renderer/src/socket.rs` puts this message in the
-    // `rescue` global's `error_log` for a human to read (ADR-0024), so which property a
-    // broken config names must be a function of the config alone. Do not "optimise" this into a
-    // bare `for (property, value) in properties`.
-    let mut names: Vec<&String> = properties.keys().collect();
-    names.sort_unstable();
-    for property in names {
-        let value = &properties[property];
-        if is_structural_property(kind, property) {
-            resolved.insert(property.clone(), value.clone());
+pub fn resolve_properties(properties: PropMap, kind: &str, lua: &Lua) -> Result<PropMap, LayoutError> {
+    // Sorted, and the sort is the point: unsorted, two failing properties on one node name
+    // whichever bucket the hasher put first. `renderer/src/socket.rs` puts this message in the
+    // `rescue` global's `error_log` for a human to read (ADR-0024), so which one a broken config
+    // names must come from the config. `two_failing_properties_always_report_the_same_one` guards
+    // it. Taken by value so an unresolved entry moves rather than being copied (ADR-0218).
+    let mut entries: Vec<(String, Value)> = properties.into_iter().collect();
+    entries.sort_unstable_by(|(a, _), (b, _)| a.cmp(b));
+    let mut resolved = PropMap::with_capacity_and_hasher(entries.len(), Default::default());
+    for (property, value) in entries {
+        if is_structural_property(kind, &property) {
+            resolved.insert(property, value);
             continue;
         }
-        let Value::UserData(ud) = value else {
-            resolved.insert(property.clone(), value.clone());
+        let Value::UserData(ud) = &value else {
+            resolved.insert(property, value);
             continue;
         };
         let Some(signal) = signal::from_userdata(ud) else {
-            resolved.insert(property.clone(), value.clone());
+            resolved.insert(property, value);
             continue;
         };
         // Name the node kind: a config has many `background`s, and the bare property left a reader
         // grepping every one of them. `Scene::apply_admitting` adds the surface.
         let value = signal
             .get_value(lua)
-            .map_err(|e| invalid(property, format!("Signal getter on a `{kind}` node failed: {e}")))?;
+            .map_err(|e| invalid(&property, format!("Signal getter on a `{kind}` node failed: {e}")))?;
         match value {
             Value::UserData(_) => {
                 return Err(invalid(
-                    property,
+                    &property,
                     "a Signal resolved to another Signal -- resolution happens exactly once, not to a fixed point",
                 ));
             }
             Value::Nil => {}
             value => {
-                resolved.insert(property.clone(), value);
+                resolved.insert(property, value);
             }
         }
     }
@@ -419,7 +415,7 @@ pub fn resolve_properties(
 /// `pair_children_by_id_then_position`'s reconcile identity, matched once per `Scene::apply` to
 /// pair a fresh child against its retained counterpart; a later-changing value would make "the
 /// same node as last time" ambiguous. ADR-0044 decision 1 leaves both out: a gap, not a rejected
-/// case. This only works because [`resolve_properties`] copies the keys
+/// case. This only works because [`resolve_properties`] passes the keys
 /// [`is_structural_property`] names through raw: these six parsers alone read the un-resolved
 /// value, since a resolved signal is indistinguishable from a literal by the time it reaches a map.
 fn reject_signal_in_structural_field(property: &str, value: &Value) -> Result<(), LayoutError> {
@@ -444,7 +440,7 @@ fn reject_signal_in_structural_field(property: &str, value: &Value) -> Result<()
 /// ADR-0046's `rescue` log rather than as an `xdg_positioner` protocol error at first open.
 /// Without this, `anchor_rect = popup_anchor` (ADR-0050 decision 3's spelling) would fail
 /// evaluation: every parser below otherwise rejects a raw `Value::UserData` with a type error.
-fn is_deferred_signal(properties: &HashMap<String, Value>, property: &str) -> bool {
+fn is_deferred_signal(properties: &PropMap, property: &str) -> bool {
     matches!(properties.get(property), Some(Value::UserData(ud)) if is_signal(ud))
 }
 
@@ -455,7 +451,7 @@ fn is_deferred_signal(properties: &HashMap<String, Value>, property: &str) -> bo
 /// not matter: a deferred property missing from the map takes the default either way. Parsers whose
 /// deferred and absent answers differ -- `parse_anchor_rect`, `parse_popup_extent` -- keep both
 /// checks, because for them the distinction is the point.
-fn non_deferred_property<'a>(properties: &'a HashMap<String, Value>, property: &str) -> Option<&'a Value> {
+fn non_deferred_property<'a>(properties: &'a PropMap, property: &str) -> Option<&'a Value> {
     properties.get(property).filter(|value| !matches!(value, Value::UserData(ud) if is_signal(ud)))
 }
 
@@ -469,7 +465,7 @@ mod tests {
         mlua::Lua::new()
     }
 
-    fn props_from_table(table: &mlua::Table) -> HashMap<String, Value> {
+    fn props_from_table(table: &mlua::Table) -> PropMap {
         deserialize_lua_table(table).unwrap().properties
     }
 
@@ -487,7 +483,7 @@ mod tests {
         table.set("font_size", outer).unwrap();
         let node = deserialize_lua_table(&table).unwrap();
         assert!(matches!(
-            resolve_properties(&node.properties, "text", &lua).unwrap_err(),
+            resolve_properties(node.properties, "text", &lua).unwrap_err(),
             LayoutError::InvalidProperty { property, .. } if property == "font_size"
         ));
     }
@@ -499,13 +495,13 @@ mod tests {
     /// signal resolves at startup. Routed through [`resolve_properties`] because that is where the
     /// nil rule now lives: the key is omitted from the resolved map rather than each parser
     /// checking for a `Value::Nil` of its own.
-    fn props_with_nil_signal(lua: &mlua::Lua, kind: &str, property: &str) -> HashMap<String, Value> {
+    fn props_with_nil_signal(lua: &mlua::Lua, kind: &str, property: &str) -> PropMap {
         crate::lua::signal::register(lua, crate::lua::signal::DirtyFlag::new()).unwrap();
         let signal = crate::lua::signal::Signal::new_live(Value::Nil, crate::lua::signal::DirtyFlag::new()).0;
         let table = lua.create_table().unwrap();
         table.set("kind", kind).unwrap();
         table.set(property, signal).unwrap();
-        resolve_properties(&props_from_table(&table), kind, lua).unwrap()
+        resolve_properties(props_from_table(&table), kind, lua).unwrap()
     }
 
     #[test]
@@ -543,7 +539,7 @@ mod tests {
         table.set("id", signal).unwrap();
         let node = deserialize_lua_table(&table).unwrap();
 
-        let resolved = resolve_properties(&node.properties, "rect", &lua).unwrap();
+        let resolved = resolve_properties(node.properties, "rect", &lua).unwrap();
 
         assert!(matches!(resolved.get("id"), Some(Value::UserData(_))), "id must survive the resolve step unresolved");
         assert!(
@@ -563,7 +559,7 @@ mod tests {
         table.set("on_hover", lua.create_function(|_, ()| Ok(())).unwrap()).unwrap();
         let node = deserialize_lua_table(&table).unwrap();
 
-        assert!(matches!(resolve_properties(&node.properties, "rect", &lua).unwrap_err(),
+        assert!(matches!(resolve_properties(node.properties, "rect", &lua).unwrap_err(),
                 LayoutError::InvalidProperty { property, .. } if property == "on_hover"));
     }
 
@@ -578,11 +574,14 @@ mod tests {
         table.set("on_hover", lua.create_function(|_, ()| Ok(())).unwrap()).unwrap();
         let node = deserialize_lua_table(&table).unwrap();
 
-        let resolved = resolve_properties(&node.properties, "rect", &lua).unwrap();
+        let resolved = resolve_properties(node.properties, "rect", &lua).unwrap();
         assert!(matches!(resolved.get("on_hover"), Some(Value::Function(_))), "a Function is not a Signal to resolve");
         assert!(matches!(resolved.get("hover"), Some(Value::UserData(_))), "the slot stays the handle it was");
     }
 
+    /// The sort in [`resolve_properties`] (ADR-0024). The fixture is `opacity` and `background`
+    /// because the map reaches them in that order, so dropping the sort fails this; the first
+    /// assertion is what keeps a hasher change from quietly making the second one vacuous.
     #[test]
     fn two_failing_properties_always_report_the_same_one() {
         let lua = lua();
@@ -593,20 +592,22 @@ mod tests {
                     return {
                         kind = "rect",
                         background = computed({}, function() error("background boom") end),
-                        radius = computed({}, function() error("radius boom") end),
+                        opacity = computed({}, function() error("opacity boom") end),
                     }
                     "#,
             )
             .eval()
             .unwrap();
-        for _ in 0..8 {
-            let props = props_from_table(&table);
-            let err = resolve_properties(&props, "rect", &lua).unwrap_err();
-            assert!(
-                matches!(&err, LayoutError::InvalidProperty { property, .. } if property == "background"),
-                "the same broken config must always name the same property, got: {err}"
-            );
-        }
+        let props = props_from_table(&table);
+
+        let unsorted: Vec<&str> = props.keys().map(String::as_str).collect();
+        assert_eq!(unsorted, ["opacity", "background"], "the fixture must not already be in sorted order");
+
+        let err = resolve_properties(props, "rect", &lua).unwrap_err();
+        assert!(
+            matches!(&err, LayoutError::InvalidProperty { property, .. } if property == "background"),
+            "a broken config must name the property its own text names first, got: {err}"
+        );
     }
 
     #[test]

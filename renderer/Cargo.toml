@@ -64,6 +64,7 @@ wayland-egl = "0.32.11"
 wayland-protocols = { workspace = true, features = ["client", "staging"] }
 md5 = "0.8"
 png.workspace = true
+rustc-hash = "2"
 
 [dev-dependencies]
 tempfile.workspace = true

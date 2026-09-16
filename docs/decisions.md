@@ -4214,6 +4214,9 @@ measurement:
 Not built. The real consumer is the wallpaper picker over a large folder, where rows are reached by
 scrolling rather than search. The table is the reproducible trigger.
 
+Amendment (ADR-0218): re-measured on this tree, the table above does not reproduce; the cost is
+about 22 us a row. The shape and the conclusion stand.
+
 ## 0192. A pass and a tick owe the screen different things, and one flag cannot say which ran
 
 ADR-0178 narrowed a tween repaint to instances named by `Scene::tick`; ADR-0185 added `stale` for
@@ -4952,3 +4955,43 @@ rounded parents, so the mask is real work.
 
 ponytail: exact-size matching leaves a tweening clip paying the old cost. Upgrade path is a size class
 and a sub-rect composite, handling `FLIP_Y` about the target's height rather than the clip's.
+
+## 0218. The property map hashes with FxHash, and a resolve moves the values it was copying
+
+`list_pass_cost`'s 125-row fixture, temporary `Instant` guards over a 3.41 ms pass: 28%
+`deserialize_lua_table`, 14% taffy `solve`, 11% the `itemfn` call, 8% `LayoutStyle::parse`, 6%
+`resolve_properties`. Heaptrack counted 28,300 allocations in it, 40% on three lines.
+
+1. **`PropMap` is `FxHashMap<String, Value>`.** Thirty lookups a node against literal keys of a few
+   bytes, where SipHash's setup costs more than the comparison. Those keys are the config's own, and
+   a config is trusted code ADR-0021 already bounds with a CPU budget, so collision resistance was
+   defending nothing. `accepts` narrows them to the static per-kind lists for every supported kind,
+   but admits any key on a kind with no `NODE_PROPERTIES` row, whose map is built before
+   `ensure_supported_kind` refuses it. Maps a config keys by *data* -- `Scene::surfaces`,
+   `seen_keys`, `retained_by_id`, `parse_animate`'s -- keep SipHash. `rustc-hash` was already in the
+   tree through cosmic-text and mlua.
+2. **`resolve_properties` takes the raw map by value.** It copied a map it then dropped: a fresh
+   `String` per key, and for a string or table `Value`, the `Rc` its first clone allocates. A
+   surface root still clones, being resolved once per output.
+3. **Five smaller ones.** `str::to_owned` over `BorrowedStr::to_string`, which formats into a
+   growing `String`; a duplicate-key `contains` before the `insert` that copied the key; `&element`
+   for `itemfn`, whose value is rooted anyway for the `key` call after it; `with_capacity` on the
+   ids a `Result` collect cannot size; and skipping the leaving/staying `partition` when nothing is
+   leaving.
+
+| rows | 12 | 50 | 125 | 500 | allocations |
+|---|---|---|---|---|---|
+| before | 0.32 ms | 1.33 ms | 3.41 ms | 14.2 ms | 28,300 |
+| after | 0.28 ms | 1.14 ms | 2.81 ms | 11.8 ms | 24,700 |
+
+18% off the pass, 27 to 22 us a row. Both rows are this tree; ADR-0191's 32 us was an older one, and
+its virtualization is still what a large folder needs. `read_seam_cost` stays in its 130-156 ns range.
+
+Rejected: `accepts`'s linear scans, 10 ns a call. And `&element` for `key`, which unlike `itemfn`
+moved rather than cloned, so borrowing roots the item for the rest of the loop -- visible to a `key`
+collecting garbage behind a weak table.
+
+ponytail: `deserialize_lua_table` is still the largest phase, half of it a `String` key allocated per
+property per node per pass. The upgrade is `&'static str` keys from the lists `accepts` matches
+against; `PropMap` is an alias, so the cost is canonicalising every insert and the unknown-kind hole
+above, not the signatures.

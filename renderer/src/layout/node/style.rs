@@ -1,8 +1,6 @@
 //! Box-model and paint-adjacent parsers. `table_number` is shared by `toplevel`'s size hints,
 //! popup offsets, and anchor rectangles.
 
-use std::collections::HashMap;
-
 use cursor_icon::CursorIcon;
 use mlua::Value;
 
@@ -30,7 +28,7 @@ pub(super) fn parse_percent(s: &str) -> Option<f32> {
 /// Numeric sizes use the `[0, 8192]` range (ADR-0021). `properties` is already a
 /// [`resolve_properties`] result, so an absent key covers both omission and a signal resolving to
 /// `nil`.
-pub fn parse_size_mode(properties: &HashMap<String, Value>, property: &str) -> Result<SizeMode, LayoutError> {
+pub fn parse_size_mode(properties: &PropMap, property: &str) -> Result<SizeMode, LayoutError> {
     // Deferred on the evaluation pass: `width`/`height` are live layer-shell `set_size`
     // fields (ADR-0038 decision 2), so `App::apply_spec_change` re-derives them each pass.
     let Some(value) = non_deferred_property(properties, property) else {
@@ -60,7 +58,7 @@ pub fn parse_size_mode(properties: &HashMap<String, Value>, property: &str) -> R
 /// One pixel bound on a `Content`-sized node: `max_width`/`max_height` cap its growth, leaving the
 /// overflow for `scroll`; `min_width`/`min_height` floor it. Percent and `"Fill"` bounds add no
 /// meaning beyond a fixed size.
-pub fn parse_size_bound(properties: &HashMap<String, Value>, property: &str) -> Result<Option<f32>, LayoutError> {
+pub fn parse_size_bound(properties: &PropMap, property: &str) -> Result<Option<f32>, LayoutError> {
     let Some(value) = properties.get(property) else {
         return Ok(None);
     };
@@ -92,7 +90,7 @@ pub(super) fn table_number(property: &str, table: &mlua::Table, key: &str) -> Re
 /// 26.10s and return `Ok(())` with no `Signal`, on the VM's thread (ADR-0039). `LayoutPassBudget`
 /// now holds the hook for the whole pass and refuses it in 2s with `PassBudgetExceeded`. Scalar
 /// shorthand is shared by `margin`/`padding`/`border_width`; only the last keeps a range check.
-pub fn parse_edge_insets(properties: &HashMap<String, Value>, property: &str) -> Result<EdgeInsets, LayoutError> {
+pub fn parse_edge_insets(properties: &PropMap, property: &str) -> Result<EdgeInsets, LayoutError> {
     // Deferred on the evaluation pass: a panel root's `margin` is the live layer-shell anchor
     // offset (`set_margin`, ADR-0038 decision 2), so zero is the absent-key placeholder.
     let Some(value) = non_deferred_property(properties, property) else {
@@ -111,7 +109,7 @@ pub fn parse_edge_insets(properties: &HashMap<String, Value>, property: &str) ->
 
 /// `rect.background`. Absent is `None`, not transparent black: `fill_rect` skips
 /// it, while `#RRGGBBAA` with `AA = 00` remains an explicit transparent fill.
-pub fn parse_background(properties: &HashMap<String, Value>) -> Result<Option<Rgba>, LayoutError> {
+pub fn parse_background(properties: &PropMap) -> Result<Option<Rgba>, LayoutError> {
     let Some(value) = properties.get("background") else {
         return Ok(None);
     };
@@ -123,7 +121,7 @@ pub fn parse_background(properties: &HashMap<String, Value>) -> Result<Option<Rg
 }
 
 /// `rect.radius`, defaulting to 0.
-pub fn parse_radius(properties: &HashMap<String, Value>) -> Result<f32, LayoutError> {
+pub fn parse_radius(properties: &PropMap) -> Result<f32, LayoutError> {
     let Some(value) = properties.get("radius") else {
         return Ok(0.0);
     };
@@ -244,7 +242,7 @@ pub(super) fn within(property: &str, n: f32) -> Result<f32, LayoutError> {
     Ok(n)
 }
 
-pub fn parse_transform(properties: &HashMap<String, Value>) -> Result<Transform, LayoutError> {
+pub fn parse_transform(properties: &PropMap) -> Result<Transform, LayoutError> {
     let mut transform = Transform::default();
     if let Some(value) = properties.get("scale") {
         transform.scale = match value_as_f32("scale", value)? {
@@ -279,7 +277,7 @@ pub enum ClipShape {
 /// `rect.clip` defaults to [`ClipShape::Box`] and is opt-in because rounded clipping
 /// needs an offscreen target and composite, while a square clip is a free GPU scissor. QML's
 /// `Item.clip` likewise ignores `radius`; Quickshell's `ClippingRectangle` spends two targets.
-pub fn parse_clip(properties: &HashMap<String, Value>) -> Result<ClipShape, LayoutError> {
+pub fn parse_clip(properties: &PropMap) -> Result<ClipShape, LayoutError> {
     let Some(value) = properties.get("clip") else {
         return Ok(ClipShape::Box);
     };
@@ -306,7 +304,7 @@ pub struct BorderColor {
     pub left: Option<Rgba>,
 }
 
-pub fn parse_border_color(properties: &HashMap<String, Value>) -> Result<BorderColor, LayoutError> {
+pub fn parse_border_color(properties: &PropMap) -> Result<BorderColor, LayoutError> {
     let Some(value) = properties.get("border_color") else {
         return Ok(BorderColor::default());
     };
@@ -348,7 +346,7 @@ pub fn parse_border_color(properties: &HashMap<String, Value>) -> Result<BorderC
 
 /// `rect.border_width`, adding the range check [`parse_edge_insets`] leaves to its
 /// callers. `margin`/`padding` deliberately do not take it.
-pub fn parse_border_width(properties: &HashMap<String, Value>) -> Result<EdgeInsets, LayoutError> {
+pub fn parse_border_width(properties: &PropMap) -> Result<EdgeInsets, LayoutError> {
     let insets = parse_edge_insets(properties, "border_width")?;
     for n in [insets.top, insets.right, insets.bottom, insets.left] {
         within("border_width", n)?;
@@ -356,7 +354,7 @@ pub fn parse_border_width(properties: &HashMap<String, Value>) -> Result<EdgeIns
     Ok(insets)
 }
 
-pub fn parse_align(properties: &HashMap<String, Value>, property: &str) -> Result<Align, LayoutError> {
+pub fn parse_align(properties: &PropMap, property: &str) -> Result<Align, LayoutError> {
     let Some(value) = properties.get(property) else {
         return Ok(Align::Start);
     };
@@ -374,7 +372,7 @@ pub fn parse_align(properties: &HashMap<String, Value>, property: &str) -> Resul
 
 /// `list.direction`, defaulting to `"Vertical"`; returns the borrowed `row` or `column` kind rather
 /// than adding a third layout arm.
-pub fn parse_list_direction(properties: &HashMap<String, Value>) -> Result<&'static str, LayoutError> {
+pub fn parse_list_direction(properties: &PropMap) -> Result<&'static str, LayoutError> {
     let Some(value) = properties.get("direction") else {
         return Ok("column");
     };
@@ -397,11 +395,11 @@ pub fn parse_list_direction(properties: &HashMap<String, Value>) -> Result<&'sta
 /// deliberately invisible at `#00000000`, and a border-only or image-backed glass box has no
 /// background alpha to read at all. A node that asks and a compositor that cannot is silently
 /// nothing, which is what every other unavailable compositor feature already does here.
-pub fn parse_blur(properties: &HashMap<String, Value>) -> Result<bool, LayoutError> {
+pub fn parse_blur(properties: &PropMap) -> Result<bool, LayoutError> {
     content::parse_bool(properties, "blur", false)
 }
 
-pub fn parse_opacity(properties: &HashMap<String, Value>) -> Result<f32, LayoutError> {
+pub fn parse_opacity(properties: &PropMap) -> Result<f32, LayoutError> {
     let Some(value) = properties.get("opacity") else {
         return Ok(1.0);
     };
@@ -411,14 +409,14 @@ pub fn parse_opacity(properties: &HashMap<String, Value>) -> Result<f32, LayoutE
     within("opacity", n)
 }
 
-pub fn parse_visible(properties: &HashMap<String, Value>) -> Result<bool, LayoutError> {
+pub fn parse_visible(properties: &PropMap) -> Result<bool, LayoutError> {
     content::parse_bool(properties, "visible", true)
 }
 
 /// `cursor`: CSS names such as `"pointer"`, `"text"`, `"grab"`, and resize edges, or `None`
 /// for the default rule (ADR-0107; `layout::hit::cursor_under`). `cursor_icon` and
 /// `wp_cursor_shape_v1` use the same names, so the compositor reads the config string directly.
-pub fn parse_cursor(properties: &HashMap<String, Value>) -> Result<Option<CursorIcon>, LayoutError> {
+pub fn parse_cursor(properties: &PropMap) -> Result<Option<CursorIcon>, LayoutError> {
     let Some(value) = properties.get("cursor") else {
         return Ok(None);
     };
@@ -431,7 +429,7 @@ pub fn parse_cursor(properties: &HashMap<String, Value>) -> Result<Option<Cursor
         .map_err(|_| invalid("cursor", format!("unknown cursor name {name:?}; the names are CSS's, like \"pointer\"")))
 }
 
-pub fn parse_spacing(properties: &HashMap<String, Value>) -> Result<f32, LayoutError> {
+pub fn parse_spacing(properties: &PropMap) -> Result<f32, LayoutError> {
     content::parse_number(properties, "spacing", 0.0)
 }
 
@@ -444,13 +442,13 @@ mod tests {
         mlua::Lua::new()
     }
 
-    fn props_from_table(table: &mlua::Table) -> HashMap<String, Value> {
+    fn props_from_table(table: &mlua::Table) -> PropMap {
         deserialize_lua_table(table).unwrap().properties
     }
 
     #[test]
     fn width_absent_is_content() {
-        let props = HashMap::new();
+        let props = PropMap::default();
         assert_eq!(parse_size_mode(&props, "width").unwrap(), SizeMode::Content);
     }
 
@@ -593,7 +591,7 @@ mod tests {
 
     #[test]
     fn visible_absent_defaults_true() {
-        let props = HashMap::new();
+        let props = PropMap::default();
         assert!(parse_visible(&props).unwrap());
     }
 
@@ -607,7 +605,7 @@ mod tests {
         table.set("kind", "rect").unwrap();
         table.set("visible", signal).unwrap();
         let node = deserialize_lua_table(&table).unwrap();
-        let resolved = resolve_properties(&node.properties, "rect", &lua).unwrap();
+        let resolved = resolve_properties(node.properties, "rect", &lua).unwrap();
         assert!(!parse_visible(&resolved).unwrap(), "must read the signal's current value, not error on the handle");
     }
 
@@ -624,7 +622,7 @@ mod tests {
 
     #[test]
     fn background_absent_is_none() {
-        let props = HashMap::new();
+        let props = PropMap::default();
         assert_eq!(parse_background(&props).unwrap(), None);
     }
 
@@ -749,7 +747,7 @@ mod tests {
 
     #[test]
     fn clip_absent_defaults_to_the_nodes_box() {
-        let props = HashMap::new();
+        let props = PropMap::default();
         assert_eq!(parse_clip(&props).unwrap(), ClipShape::Box);
     }
 
@@ -786,7 +784,7 @@ mod tests {
 
     #[test]
     fn radius_absent_defaults_to_zero() {
-        let props = HashMap::new();
+        let props = PropMap::default();
         assert_eq!(parse_radius(&props).unwrap(), 0.0);
     }
 
@@ -836,7 +834,7 @@ mod tests {
 
     #[test]
     fn border_width_absent_defaults_to_all_zero() {
-        let props = HashMap::new();
+        let props = PropMap::default();
         assert_eq!(parse_border_width(&props).unwrap(), EdgeInsets::default());
     }
 
@@ -924,7 +922,7 @@ mod tests {
 
     #[test]
     fn border_color_absent_is_all_none() {
-        let props = HashMap::new();
+        let props = PropMap::default();
         assert_eq!(parse_border_color(&props).unwrap(), BorderColor::default());
     }
 
@@ -1015,7 +1013,7 @@ mod tests {
     #[test]
     fn a_transform_parses_its_four_properties_and_maps_a_corner_about_its_origin() {
         let lua = Lua::new();
-        let props: HashMap<String, Value> = lua
+        let props: PropMap = lua
             .load(r#"return { scale = 2, rotate = 90, translate = { x = 10 }, origin = { x = 0, y = 0 } }"#)
             .eval::<mlua::Table>()
             .unwrap()
@@ -1039,7 +1037,7 @@ mod tests {
     fn a_transform_refuses_a_negative_scale_and_an_origin_outside_the_box() {
         let lua = Lua::new();
         let parse = |src: &str| {
-            let props: HashMap<String, Value> =
+            let props: PropMap =
                 lua.load(src).eval::<mlua::Table>().unwrap().pairs::<String, Value>().map(|p| p.unwrap()).collect();
             parse_transform(&props)
         };

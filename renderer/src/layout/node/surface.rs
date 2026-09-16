@@ -1,8 +1,6 @@
 //! Layer-shell topology and `PanelSpec`. `get_layer_surface` fixes `layer`, `anchor`,
 //! `monitor`, and `namespace` at creation, so those structural fields reject `Signal`s.
 
-use std::collections::HashMap;
-
 use mlua::Value;
 
 use super::content::parse_string_property;
@@ -20,7 +18,7 @@ pub enum LayerKind {
 
 /// The required layer string (ADR-0038 decision 1). `create_panel` uses it per instance, so a
 /// typo such as `"Toop"` errors instead of silently selecting `Background`.
-pub fn parse_layer(properties: &HashMap<String, Value>) -> Result<LayerKind, LayoutError> {
+pub fn parse_layer(properties: &PropMap) -> Result<LayerKind, LayoutError> {
     match parse_string_property(properties, "layer", None)?.as_str() {
         "Background" => Ok(LayerKind::Background),
         "Bottom" => Ok(LayerKind::Bottom),
@@ -42,7 +40,7 @@ pub struct Anchor {
     pub left: bool,
 }
 
-pub fn parse_anchor(properties: &HashMap<String, Value>) -> Result<Anchor, LayoutError> {
+pub fn parse_anchor(properties: &PropMap) -> Result<Anchor, LayoutError> {
     let Some(value) = properties.get("anchor") else {
         return Ok(Anchor::default());
     };
@@ -63,13 +61,13 @@ pub fn parse_anchor(properties: &HashMap<String, Value>) -> Result<Anchor, Layou
 
 /// A specific output's connector name (e.g. `"DP-1"`, matched against `output.name` by
 /// `expand_instances`), or `"All"`; absent defaults to `"All"`.
-pub fn parse_monitor(properties: &HashMap<String, Value>) -> Result<String, LayoutError> {
+pub fn parse_monitor(properties: &PropMap) -> Result<String, LayoutError> {
     parse_string_property(properties, "monitor", Some("All"))
 }
 
 /// The layer-shell namespace, also used by Hyprland `layerrule` for blur and animations. It
 /// defaults to `"obelisk-{id}"`; `get_layer_surface` fixes it at creation, so an edit rebuilds the surface.
-pub fn parse_namespace(properties: &HashMap<String, Value>, id: &str) -> Result<String, LayoutError> {
+pub fn parse_namespace(properties: &PropMap, id: &str) -> Result<String, LayoutError> {
     let default = format!("obelisk-{id}");
     parse_string_property(properties, "namespace", Some(&default))
 }
@@ -88,7 +86,7 @@ pub enum KeyboardInteractivity {
 /// `keyboard_interactivity`. It is live, not part of [`SurfaceTopology`]:
 /// `zwlr_layer_surface_v1::set_keyboard_interactivity` accepts changes on a mapped surface, so a
 /// `Signal` is a value change (ADR-0044 decision 1).
-pub fn parse_keyboard_interactivity(properties: &HashMap<String, Value>) -> Result<KeyboardInteractivity, LayoutError> {
+pub fn parse_keyboard_interactivity(properties: &PropMap) -> Result<KeyboardInteractivity, LayoutError> {
     // Deferred on the evaluation-time pass ([`is_deferred_signal`]), same split as
     // [`parse_title`]'s: a field valid on a live surface is one only the resolved pass can read.
     let Some(value) = non_deferred_property(properties, "keyboard_interactivity") else {
@@ -126,7 +124,7 @@ pub enum Exclusive {
 /// answer. It defaults to [`Exclusive::Respect`], so an undeclared panel floats over what is behind
 /// it rather than pushing windows aside or covering them. The additive default preserves old
 /// configs; `crate::wayland` computes the zone at configure time from the compositor's chosen size.
-pub fn parse_exclusive(properties: &HashMap<String, Value>) -> Result<Exclusive, LayoutError> {
+pub fn parse_exclusive(properties: &PropMap) -> Result<Exclusive, LayoutError> {
     // `exclusive = hide_bar` is valid config that only this pass cannot read, so
     // `Respect` is the placeholder: a signal is unknown before its getter runs, and the other
     // answers are visible mistakes for a frame -- `Ignore` paints over the bar, `Reserve` shoves
@@ -156,7 +154,7 @@ pub struct SurfaceTopology {
     pub namespace: String,
 }
 
-pub fn surface_topology(properties: &HashMap<String, Value>) -> Result<SurfaceTopology, LayoutError> {
+pub fn surface_topology(properties: &PropMap) -> Result<SurfaceTopology, LayoutError> {
     let id = parse_surface_id(properties)?;
     let namespace = parse_namespace(properties, &id)?;
     Ok(SurfaceTopology {
@@ -187,7 +185,7 @@ pub struct PanelSpec {
     pub height: SizeMode,
 }
 
-pub fn panel_spec(properties: &HashMap<String, Value>) -> Result<PanelSpec, LayoutError> {
+pub fn panel_spec(properties: &PropMap) -> Result<PanelSpec, LayoutError> {
     Ok(PanelSpec {
         topology: surface_topology(properties)?,
         keyboard_interactivity: parse_keyboard_interactivity(properties)?,
@@ -207,13 +205,13 @@ mod tests {
         mlua::Lua::new()
     }
 
-    fn props_from_table(table: &mlua::Table) -> HashMap<String, Value> {
+    fn props_from_table(table: &mlua::Table) -> PropMap {
         deserialize_lua_table(table).unwrap().properties
     }
 
     #[test]
     fn layer_is_required() {
-        let props = HashMap::new();
+        let props = PropMap::default();
         assert!(matches!(parse_layer(&props).unwrap_err(), LayoutError::InvalidProperty { .. }));
     }
 
@@ -245,7 +243,7 @@ mod tests {
 
     #[test]
     fn anchor_absent_defaults_all_false() {
-        let props = HashMap::new();
+        let props = PropMap::default();
         assert_eq!(parse_anchor(&props).unwrap(), Anchor::default());
     }
 
@@ -260,7 +258,7 @@ mod tests {
 
     #[test]
     fn monitor_absent_defaults_to_all() {
-        let props = HashMap::new();
+        let props = PropMap::default();
         assert_eq!(parse_monitor(&props).unwrap(), "All");
     }
 
@@ -316,7 +314,7 @@ mod tests {
         let table: mlua::Table =
             lua.load(r#"return { kind = "panel", id = "bar", layer = "Top", namespace = ns }"#).eval().unwrap();
         let props = props_from_table(&table);
-        let resolved = resolve_properties(&props, "panel", &lua).unwrap();
+        let resolved = resolve_properties(props, "panel", &lua).unwrap();
         assert!(
             matches!(parse_namespace(&resolved, "bar").unwrap_err(), LayoutError::UnsupportedSignalProperty(p) if p == "namespace")
         );
@@ -324,7 +322,7 @@ mod tests {
 
     #[test]
     fn keyboard_interactivity_absent_defaults_to_none() {
-        let props = HashMap::new();
+        let props = PropMap::default();
         assert_eq!(parse_keyboard_interactivity(&props).unwrap(), KeyboardInteractivity::None);
     }
 
@@ -369,13 +367,13 @@ mod tests {
             .eval()
             .unwrap();
         let props = props_from_table(&table);
-        let resolved = resolve_properties(&props, "panel", &lua).unwrap();
+        let resolved = resolve_properties(props, "panel", &lua).unwrap();
         assert_eq!(parse_keyboard_interactivity(&resolved).unwrap(), KeyboardInteractivity::Exclusive);
     }
 
     #[test]
     fn exclusive_absent_reserves_and_covers_nothing() {
-        let props = HashMap::new();
+        let props = PropMap::default();
         assert_eq!(parse_exclusive(&props).unwrap(), Exclusive::Respect);
     }
 
@@ -555,7 +553,7 @@ mod tests {
         table.set("layer", signal).unwrap();
         let node = deserialize_lua_table(&table).unwrap();
 
-        let resolved = resolve_properties(&node.properties, "panel", &lua).unwrap();
+        let resolved = resolve_properties(node.properties, "panel", &lua).unwrap();
 
         assert!(
             matches!(resolved.get("layer"), Some(Value::UserData(_))),

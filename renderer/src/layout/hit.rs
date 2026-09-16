@@ -172,9 +172,9 @@ fn contains(rect: LogicalRect, point: LogicalPoint) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::layout::node::PropMap;
     use crate::layout::node::{StyleRun, TextAlign};
     use crate::text::shaping::ShapeRequest;
-    use std::collections::HashMap;
 
     fn node(kind: &str, (x, y, width, height): (f32, f32, f32, f32), children: Vec<ResolvedNode>) -> ResolvedNode {
         ResolvedNode {
@@ -190,7 +190,7 @@ mod tests {
             rect: LogicalRect { x, y, width, height },
             visible: true,
             opacity: 1.0,
-            properties: HashMap::new(),
+            properties: PropMap::default(),
             paint: None,
             children,
         }

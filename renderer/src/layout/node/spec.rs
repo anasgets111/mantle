@@ -1,7 +1,7 @@
 //! Surface specs, rebuild fingerprints, child-list parsers, and masked `SecureSubmitTarget`.
 //! List generation also owns duplicate-key rejection.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 
 use mlua::Value;
 
@@ -26,7 +26,7 @@ pub struct LockSpec {
 /// `width`, and `height` are inert because configure owns geometry and lock surfaces cover every
 /// output (ADR-0052 decision 2), but silent no-ops are still errors. A `Signal` under a refused key
 /// is refused too; `is_deferred_signal` does not apply to a lock.
-pub fn lock_spec(properties: &HashMap<String, Value>) -> Result<LockSpec, LayoutError> {
+pub fn lock_spec(properties: &PropMap) -> Result<LockSpec, LayoutError> {
     for property in ["visible", "monitor", "anchor", "width", "height"] {
         if properties.contains_key(property) {
             return Err(invalid(
@@ -84,7 +84,7 @@ pub enum SurfaceFingerprint {
 }
 
 /// A single-node property converted with `deserialize_lua_table`.
-pub fn parse_single_child(properties: &HashMap<String, Value>) -> Result<Option<VirtualNode>, LayoutError> {
+pub fn parse_single_child(properties: &PropMap) -> Result<Option<VirtualNode>, LayoutError> {
     let Some(value) = properties.get("child") else {
         return Ok(None);
     };
@@ -96,7 +96,7 @@ pub fn parse_single_child(properties: &HashMap<String, Value>) -> Result<Option<
 }
 
 /// An array-of-nodes `children` property.
-pub fn parse_children(properties: &HashMap<String, Value>) -> Result<Vec<VirtualNode>, LayoutError> {
+pub fn parse_children(properties: &PropMap) -> Result<Vec<VirtualNode>, LayoutError> {
     let Some(value) = properties.get("children") else {
         return Ok(Vec::new());
     };
@@ -127,9 +127,9 @@ pub fn parse_children(properties: &HashMap<String, Value>) -> Result<Vec<Virtual
 /// times and discards 29 fresh nodes on ADR-0044 decision 2's per-poll-turn capability-push
 /// cadence. `list` is a "fast-reconciling virtual repeater"; skipping unchanged items
 /// needs retained-side data, which `children_of` does not provide. That is worth about 19% of the
-/// pass (ADR-0132); the whole of it is a viewport, measured at 32us a row by
+/// pass (ADR-0132); the whole of it is a viewport, measured at 22us a row by
 /// `layout::scene::tests::list_pass_cost` and designed in ADR-0191.
-pub fn parse_list_children(properties: &HashMap<String, Value>) -> Result<Vec<VirtualNode>, LayoutError> {
+pub fn parse_list_children(properties: &PropMap) -> Result<Vec<VirtualNode>, LayoutError> {
     let source_value = properties.get("source").ok_or_else(|| invalid("source", "required for `list`, got nothing"))?;
     let Value::Table(source) = source_value else {
         return Err(invalid("source", format!("expected an array table, got {}", preview_for_error(source_value))));
@@ -155,13 +155,15 @@ pub fn parse_list_children(properties: &HashMap<String, Value>) -> Result<Vec<Vi
         }
         let element = element.map_err(|e| invalid("source", e.to_string()))?;
 
-        let built = itemfn.call::<Value>(element.clone()).map_err(|e| invalid("itemfn", e.to_string()))?;
+        let built = itemfn.call::<Value>(&element).map_err(|e| invalid("itemfn", e.to_string()))?;
         let Value::Table(built_table) = built else {
             return Err(invalid("itemfn", format!("expected a node table, got {}", preview_for_error(&built))));
         };
         let mut node = deserialize_lua_table(&built_table).map_err(|e| invalid("itemfn", e.to_string()))?;
 
         if let Some(key_fn) = key_fn {
+            // Moved, not borrowed: a borrow would keep this item rooted for the rest of the loop
+            // body, which a `key` collecting garbage behind a weak table can see.
             let key_value = key_fn.call::<Value>(element).map_err(|e| invalid("key", e.to_string()))?;
             let Value::String(key_str) = key_value else {
                 return Err(invalid(
@@ -169,15 +171,16 @@ pub fn parse_list_children(properties: &HashMap<String, Value>) -> Result<Vec<Vi
                     format!("expected key(item) to return a string, got {}", preview_for_error(&key_value)),
                 ));
             };
-            let key_text = key_str.to_str().map(|s| s.to_string()).map_err(|_| {
+            let key_text = key_str.to_str().map(|s| (*s).to_owned()).map_err(|_| {
                 invalid(
                     "key",
                     "must be valid UTF-8 -- a key is compared for equality, so it cannot be converted lossily",
                 )
             })?;
-            if !seen_keys.insert(key_text.clone()) {
+            if seen_keys.contains(&key_text) {
                 return Err(invalid("key", format!("duplicate key `{key_text}` among list items")));
             }
+            seen_keys.insert(key_text);
             // List identity wins over any `id` the item function supplied.
             node.properties.insert("id".to_string(), Value::String(key_str));
         }
@@ -201,7 +204,7 @@ pub struct SecureSubmitTarget {
 /// is non-structural, so signal-bound values arrive resolved. `capability`/`action` reject
 /// non-UTF-8 rather than collapsing distinct bytes onto one Supervisor capability name, as
 /// [`parse_node_id`] does.
-pub fn parse_secure_submit(properties: &HashMap<String, Value>) -> Result<Option<SecureSubmitTarget>, LayoutError> {
+pub fn parse_secure_submit(properties: &PropMap) -> Result<Option<SecureSubmitTarget>, LayoutError> {
     let Some(value) = properties.get("secure_submit") else {
         return Ok(None);
     };
@@ -244,7 +247,7 @@ mod tests {
         mlua::Lua::new()
     }
 
-    fn props_from_table(table: &mlua::Table) -> HashMap<String, Value> {
+    fn props_from_table(table: &mlua::Table) -> PropMap {
         deserialize_lua_table(table).unwrap().properties
     }
 
@@ -273,13 +276,13 @@ mod tests {
 
     #[test]
     fn parse_single_child_absent_is_none() {
-        let props = HashMap::new();
+        let props = PropMap::default();
         assert!(parse_single_child(&props).unwrap().is_none());
     }
 
     #[test]
     fn secure_submit_absent_is_none() {
-        let props = HashMap::new();
+        let props = PropMap::default();
         assert_eq!(parse_secure_submit(&props).unwrap(), None);
     }
 
@@ -459,7 +462,7 @@ mod tests {
         crate::lua::signal::register(&lua, crate::lua::signal::DirtyFlag::new()).unwrap();
         let table: mlua::Table =
             lua.load(r#"return { kind = "lock", id = state("i", "screen-lock") }"#).eval().unwrap();
-        let resolved = resolve_properties(&props_from_table(&table), "lock", &lua).unwrap();
+        let resolved = resolve_properties(props_from_table(&table), "lock", &lua).unwrap();
         assert!(matches!(
             lock_spec(&resolved).unwrap_err(),
             LayoutError::UnsupportedSignalProperty(p) if p == "id"
@@ -490,7 +493,7 @@ mod tests {
             )
             .eval()
             .unwrap();
-        let mut properties = HashMap::new();
+        let mut properties = PropMap::default();
         properties.insert("children".to_string(), Value::Table(table));
 
         let err = parse_children(&properties).expect_err("past the cap this must be refused");
@@ -504,7 +507,7 @@ mod tests {
         crate::lua::nodes::register_node_constructors(&lua).unwrap();
         let table: mlua::Table =
             lua.load(r#"return { rect { width = 1, height = 1 }, rect { width = 2, height = 2 } }"#).eval().unwrap();
-        let mut properties = HashMap::new();
+        let mut properties = PropMap::default();
         properties.insert("children".to_string(), Value::Table(table));
 
         assert_eq!(parse_children(&properties).unwrap().len(), 2);

@@ -15,7 +15,7 @@ use std::time::{Duration, Instant};
 use mlua::{Lua, Value};
 
 use super::style::{axis_default, parse_percent, range_of};
-use super::{LayoutError, Rgba, invalid, parse_hex_color, preview_for_error, value_as_f32};
+use super::{LayoutError, PropMap, Rgba, invalid, parse_hex_color, preview_for_error, value_as_f32};
 
 /// The one thing a hex colour has to look like to reach `parse_hex_color` again next pass.
 fn hex_of(color: Rgba) -> String {
@@ -578,10 +578,7 @@ impl Sequence {
 /// A name `kind` does not accept is refused, so a misspelling fails the pass instead of silently
 /// snapping; what the value is decides whether it can tween ([`Animatable::from_value`]), the way
 /// Qt registers interpolators by type rather than by property.
-pub fn parse_animate(
-    kind: &str,
-    properties: &HashMap<String, Value>,
-) -> Result<HashMap<String, AnimationSpec>, LayoutError> {
+pub fn parse_animate(kind: &str, properties: &PropMap) -> Result<HashMap<String, AnimationSpec>, LayoutError> {
     let Some(value) = properties.get("animate") else {
         return Ok(HashMap::new());
     };
@@ -712,7 +709,7 @@ pub struct TransitionSpec {
 ///
 /// Unknown keys are refused rather than ignored, so a typo in a field name is an error the config
 /// sees rather than a setting that silently does nothing.
-pub fn parse_transition(properties: &HashMap<String, Value>) -> Result<Option<TransitionSpec>, LayoutError> {
+pub fn parse_transition(properties: &PropMap) -> Result<Option<TransitionSpec>, LayoutError> {
     let Some(value) = properties.get("transition") else { return Ok(None) };
     let Value::Table(table) = value else {
         return Err(invalid(
@@ -1072,7 +1069,7 @@ fn parse_exit(kind: &str, block: &Value) -> Result<Option<ExitBlock>, LayoutErro
 pub fn depart(
     kind: &str,
     tweens: &mut Vec<Tween>,
-    properties: &mut HashMap<String, Value>,
+    properties: &mut PropMap,
     now: Instant,
     lua: &Lua,
 ) -> Result<bool, LayoutError> {
@@ -1291,8 +1288,8 @@ impl Tween {
 /// node or one that lacked it, starts from the spec's `from` when there is one.
 pub fn retarget(
     kind: &str,
-    retained: Option<(&[Tween], &HashMap<String, Value>)>,
-    properties: &mut HashMap<String, Value>,
+    retained: Option<(&[Tween], &PropMap)>,
+    properties: &mut PropMap,
     now: Instant,
     lua: &Lua,
 ) -> Result<Vec<Tween>, LayoutError> {
@@ -1399,12 +1396,7 @@ pub fn is_paint_only(property: &str) -> bool {
 /// dropping the ones that have arrived. A sequence that has played out is kept instead, resting on
 /// its last frame, because the list alone is what a pass has to tell a finished run from one it
 /// has never started (ADR-0152).
-pub fn advance(
-    tweens: &mut Vec<Tween>,
-    properties: &mut HashMap<String, Value>,
-    now: Instant,
-    lua: &Lua,
-) -> Result<(), LayoutError> {
+pub fn advance(tweens: &mut Vec<Tween>, properties: &mut PropMap, now: Instant, lua: &Lua) -> Result<(), LayoutError> {
     for tween in tweens.iter_mut() {
         if tween.resting {
             continue;
@@ -1440,7 +1432,7 @@ mod tests {
         }
     }
 
-    fn props(lua: &Lua, src: &str) -> HashMap<String, Value> {
+    fn props(lua: &Lua, src: &str) -> PropMap {
         let table: mlua::Table = lua.load(src).eval().unwrap();
         table.pairs::<String, Value>().map(|p| p.unwrap()).collect()
     }
@@ -2174,7 +2166,7 @@ mod tests {
             spec: AnimationSpec { motion: Motion::Spring(carried), delay: Duration::ZERO, from: None },
             resting: false,
         }];
-        let shown: HashMap<String, Value> = HashMap::from([("width".to_string(), Value::Number(120.0))]);
+        let shown: PropMap = PropMap::from_iter([("width".to_string(), Value::Number(120.0))]);
 
         let mut properties = props(&lua, source);
         let now = started + Duration::from_millis(30);

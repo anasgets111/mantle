@@ -3,6 +3,7 @@
 //! `lock`.
 
 use super::*;
+use crate::layout::node::PropMap;
 
 /// A surface bound to shared EGL after its first configure. Field order is load-bearing:
 /// wayland-egl requires `WlEglSurface` to outlive the EGL surface, and Rust drops top to bottom;
@@ -417,7 +418,7 @@ fn starting_visible(resolved: Option<bool>, roster: &SurfaceSpec) -> bool {
 /// hide a reconcile bug. [`App::create_surfaces`] is the caller; later passes parse inline by role.
 fn resolved_surface_spec(
     roster: &SurfaceSpec,
-    properties: &HashMap<String, Value>,
+    properties: &PropMap,
 ) -> (&'static str, Result<SurfaceSpec, layout::node::LayoutError>) {
     match roster {
         SurfaceSpec::Panel(_) => ("panel", node::panel_spec(properties).map(SurfaceSpec::Panel)),
@@ -1511,7 +1512,7 @@ mod tests {
         // for its whole life since the positioner is consumed by `get_popup`.
         let lua = Lua::new();
         let rect = rect_table(&lua, LogicalRect { x: 40.0, y: 4.0, width: 86.0, height: 24.0 }).unwrap();
-        let properties = HashMap::from([
+        let properties = PropMap::from_iter([
             ("id".to_string(), Value::String(lua.create_string("menu").unwrap())),
             ("parent".to_string(), Value::String(lua.create_string("bar").unwrap())),
             ("anchor_rect".to_string(), Value::Table(rect)),
@@ -1534,7 +1535,7 @@ mod tests {
         // Same shape `apply_resolved_state` logs on every later pass: the caller keeps the last
         // applied spec rather than building a surface out of protocol defaults.
         let lua = Lua::new();
-        let properties = HashMap::from([
+        let properties = PropMap::from_iter([
             ("id".to_string(), Value::String(lua.create_string("bar").unwrap())),
             ("exclusive".to_string(), Value::Number(32.0)),
         ]);

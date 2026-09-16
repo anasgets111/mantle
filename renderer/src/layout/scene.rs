@@ -11,7 +11,9 @@ use std::time::Instant;
 use mlua::{Lua, Value};
 
 use crate::layout::instance::SurfaceInstance;
-use crate::layout::node::{self, Align, Dissolve, EdgeInsets, LayoutError, PaintStyle, SizeMode, StyleRun, Tween};
+use crate::layout::node::{
+    self, Align, Dissolve, EdgeInsets, LayoutError, PaintStyle, PropMap, SizeMode, StyleRun, Tween,
+};
 use crate::layout::paint::DrawnImage;
 use crate::lua::nodes::VirtualNode;
 use crate::text::shaping::{self, ShapeRequest, ShapingHandle};
@@ -80,7 +82,7 @@ struct LayoutStyle {
 impl LayoutStyle {
     /// The one parse of one node's geometry for one pass. `properties` must already be a
     /// [`node::resolve_properties`] result: this reads values, it does not resolve signals.
-    fn parse(properties: &HashMap<String, Value>) -> Result<Self, LayoutError> {
+    fn parse(properties: &PropMap) -> Result<Self, LayoutError> {
         // Validated and not kept: the pointer path reads the name back off `properties` when it
         // needs it (`layout::hit::cursor_under`), and a pass is the place a misspelling fails.
         node::parse_cursor(properties)?;
@@ -149,7 +151,7 @@ pub struct ResolvedNode {
     /// [`blur_regions`] turns every one of these in a surface into the one region the compositor
     /// is given; nothing else reads it, and a compositor without the protocol ignores the lot.
     pub blur: bool,
-    pub properties: HashMap<String, Value>,
+    pub properties: PropMap,
     /// This node's paint properties, parsed here rather than by `layout::paint` on every frame
     /// (`node::paint_style`'s module doc comment says why). `None` for a kind that draws nothing.
     pub paint: Option<PaintStyle>,
@@ -399,7 +401,8 @@ impl Scene {
         // Check admissibility before resolution runs Lua. Children get the same check in the loop
         // that parses their margin before recursing.
         ensure_node_admissible(&fresh.kind, 0)?;
-        let properties = node::resolve_properties(&fresh.properties, &fresh.kind, lua)?;
+        // Cloned, not moved: one declaration is resolved once per instance of it, one per output.
+        let properties = node::resolve_properties(fresh.properties.clone(), &fresh.kind, lua)?;
         let mut properties = build_child_for_output(properties, &fresh.kind, &instance.output)?;
         let tweens = node::retarget(&fresh.kind, existing.as_ref().map(tween_state), &mut properties, now, lua)?;
         // The root has no parent, so its once-per-node parse happens here; children parse in the
@@ -586,7 +589,7 @@ fn ensure_node_admissible(kind: &str, depth: u32) -> Result<(), LayoutError> {
 /// `child`; `textfield` is a leaf. Its callbacks and secure-submit fields remain in
 /// `ResolvedNode.properties`; the keyboard path reads the latter from the scene while the secret
 /// buffer stays on `App` (ADR-0005).
-fn children_of(kind: &str, properties: &HashMap<String, Value>) -> Result<Vec<VirtualNode>, LayoutError> {
+fn children_of(kind: &str, properties: &PropMap) -> Result<Vec<VirtualNode>, LayoutError> {
     match kind {
         "panel" | "window" | "popup" | "lock" => Ok(node::parse_single_child(properties)?.into_iter().collect()),
         "rect" | "row" | "column" | "button" => node::parse_children(properties),
@@ -601,11 +604,7 @@ fn children_of(kind: &str, properties: &HashMap<String, Value>) -> Result<Vec<Vi
 /// output name, before the ordinary child walk. Per-pass calls preserve registry-stable state such
 /// as `state("wallpaper_" .. output)`. `window`/`popup` have no output name, so function children
 /// are refused rather than called with `""`.
-fn build_child_for_output(
-    mut properties: HashMap<String, Value>,
-    kind: &str,
-    output: &str,
-) -> Result<HashMap<String, Value>, LayoutError> {
+fn build_child_for_output(mut properties: PropMap, kind: &str, output: &str) -> Result<PropMap, LayoutError> {
     let Some(Value::Function(builder)) = properties.get("child") else {
         return Ok(properties);
     };
@@ -649,7 +648,7 @@ fn resolve_non_content(mode: SizeMode, available: f32) -> Option<f32> {
 }
 
 /// What `node::retarget` reads off a retained node.
-fn tween_state(node: &ResolvedNode) -> (&[Tween], &HashMap<String, Value>) {
+fn tween_state(node: &ResolvedNode) -> (&[Tween], &PropMap) {
     (&node.tweens, &node.properties)
 }
 
@@ -786,8 +785,11 @@ fn pair_children_by_id_then_position(
     fresh_children: &[VirtualNode],
     old_children: Vec<ResolvedNode>,
 ) -> Result<(Vec<Option<ResolvedNode>>, Vec<ResolvedNode>), LayoutError> {
-    let fresh_ids: Vec<Option<String>> =
-        fresh_children.iter().map(|c| node::parse_node_id(&c.properties)).collect::<Result<_, _>>()?;
+    // Not `collect`: a `Result` collect drops the size hint, and a list is as long as its data.
+    let mut fresh_ids: Vec<Option<String>> = Vec::with_capacity(fresh_children.len());
+    for child in fresh_children {
+        fresh_ids.push(node::parse_node_id(&child.properties)?);
+    }
 
     // Decision 1: reject duplicate sibling ids before matching `old_children`.
     let mut seen: HashSet<&str> = HashSet::with_capacity(fresh_ids.len());
@@ -848,7 +850,7 @@ pub(crate) enum MainAxis {
 ///
 /// `pub(crate)` for `wayland::input`'s wheel handler, which has to know whether a node under the
 /// pointer takes a horizontal or a vertical wheel before it writes anything.
-pub(crate) fn main_axis_of(kind: &str, properties: &HashMap<String, Value>) -> Result<Option<MainAxis>, LayoutError> {
+pub(crate) fn main_axis_of(kind: &str, properties: &PropMap) -> Result<Option<MainAxis>, LayoutError> {
     Ok(match flow_kind(kind, properties)? {
         "row" => Some(MainAxis::Horizontal),
         "column" => Some(MainAxis::Vertical),
@@ -885,7 +887,7 @@ struct PreparedNode {
     id: NodeId,
     kind: String,
     style: LayoutStyle,
-    properties: HashMap<String, Value>,
+    properties: PropMap,
     paint: Option<PaintStyle>,
     /// Carried across the pass untouched; see [`ResolvedNode::displayed_source`].
     displayed_source: Option<String>,
@@ -1051,7 +1053,7 @@ fn main_align(align: Align) -> taffy::JustifyContent {
 /// `Fill` shares a flow remainder or takes the whole slot; `None` means stacking or surface root.
 fn taffy_style(
     kind: &str,
-    properties: &HashMap<String, Value>,
+    properties: &PropMap,
     style: &LayoutStyle,
     parent_axis: Option<MainAxis>,
 ) -> Result<taffy::Style, LayoutError> {
@@ -1197,7 +1199,7 @@ fn taffy_style(
 fn new_solver_node(
     tree: &mut taffy::TaffyTree<Measure>,
     kind: &str,
-    properties: &HashMap<String, Value>,
+    properties: &PropMap,
     style: &LayoutStyle,
     parent_axis: Option<MainAxis>,
     measure: Option<Measure>,
@@ -1211,11 +1213,7 @@ fn new_solver_node(
 }
 
 /// What the solver asks a leaf for its size with, for the two kinds whose size is their content.
-fn measure_for(
-    kind: &str,
-    paint: Option<&PaintStyle>,
-    properties: &HashMap<String, Value>,
-) -> Result<Option<Measure>, LayoutError> {
+fn measure_for(kind: &str, paint: Option<&PaintStyle>, properties: &PropMap) -> Result<Option<Measure>, LayoutError> {
     Ok(match flow_kind(kind, properties)? {
         // `node::paint_style` gives every `text` a `PaintStyle::Text` and `flow_kind` cannot route
         // another kind here, so the arm is total, the same shape as `children_of`'s
@@ -1260,7 +1258,7 @@ fn prepare(
     tree: &mut taffy::TaffyTree<Measure>,
     retained: Option<ResolvedNode>,
     kind: &str,
-    properties: HashMap<String, Value>,
+    properties: PropMap,
     style: LayoutStyle,
     tweens: Vec<Tween>,
     parent_axis: Option<MainAxis>,
@@ -1279,8 +1277,13 @@ fn prepare(
     };
     // Already leaving children are not paired again: a re-added id is a new node beside the one
     // still fading (QML makes a fresh delegate too).
+    // Checked first because nothing is usually leaving.
     let (leaving, old_children): (Vec<ResolvedNode>, Vec<ResolvedNode>) =
-        old_children.into_iter().partition(|child| child.leaving);
+        if old_children.iter().any(|child| child.leaving) {
+            old_children.into_iter().partition(|child| child.leaving)
+        } else {
+            (Vec::new(), old_children)
+        };
 
     // Before the children, because a `text`'s measurement reads the `content` and `font_size`
     // parsed here rather than parsing them a second time.
@@ -1322,19 +1325,20 @@ fn prepare(
     let own_axis = main_axis_of(kind, &node.properties)?;
 
     node.children.reserve(fresh_children.len());
-    for (index, (fresh_child, candidate)) in fresh_children.iter().zip(matched_candidates).enumerate() {
+    for (index, (fresh_child, candidate)) in fresh_children.into_iter().zip(matched_candidates).enumerate() {
+        let VirtualNode { kind: child_kind, properties: child_raw } = fresh_child;
         // Every failure below names this child, so the message that reaches a human is the path
         // down to the node rather than a property name and a surface (`LayoutError::in_child`).
-        let here = |err: LayoutError| err.in_child(index, &fresh_child.kind);
+        let here = |err: LayoutError| err.in_child(index, &child_kind);
 
         // Before this child's own getters run, not after: resolving its property map calls back
         // into Lua, and a child the walk is about to refuse must not execute anything on the way
         // to being refused. `depth + 1` is the level this child would occupy, so the error is the
         // same variant, kind and level the recursive call raises (see `ensure_node_admissible`).
-        ensure_node_admissible(&fresh_child.kind, depth + 1)?;
+        ensure_node_admissible(&child_kind, depth + 1)?;
 
         let reusable = match candidate {
-            Some(candidate) if candidate.kind != fresh_child.kind => {
+            Some(candidate) if candidate.kind != child_kind => {
                 unclaimed.push(candidate);
                 None
             }
@@ -1345,10 +1349,9 @@ fn prepare(
         // recursive call, because the style the call is handed is built from them and a second
         // read of an impure `margin` could answer differently. Tweens go between the two: the
         // parse must see the displayed value, not the target (ADR-0145).
-        let mut child_properties =
-            node::resolve_properties(&fresh_child.properties, &fresh_child.kind, lua).map_err(here)?;
+        let mut child_properties = node::resolve_properties(child_raw, &child_kind, lua).map_err(here)?;
         let child_tweens =
-            node::retarget(&fresh_child.kind, reusable.as_ref().map(tween_state), &mut child_properties, now, lua)
+            node::retarget(&child_kind, reusable.as_ref().map(tween_state), &mut child_properties, now, lua)
                 .map_err(here)?;
         let child_style = LayoutStyle::parse(&child_properties).map_err(here)?;
         node.children.push(
@@ -1356,7 +1359,7 @@ fn prepare(
                 scene,
                 tree,
                 reusable,
-                &fresh_child.kind,
+                &child_kind,
                 child_properties,
                 child_style,
                 child_tweens,
@@ -1611,7 +1614,7 @@ fn solve(
 /// and "stacks them" is a `column` or a `row` and nothing else. Routing to the existing arms keeps
 /// a horizontal list identical to a hand-built `row`, rather than a second implementation that
 /// agrees with it until it does not.
-fn flow_kind<'a>(kind: &'a str, properties: &HashMap<String, Value>) -> Result<&'a str, LayoutError> {
+fn flow_kind<'a>(kind: &'a str, properties: &PropMap) -> Result<&'a str, LayoutError> {
     if kind == "list" { node::parse_list_direction(properties) } else { Ok(kind) }
 }
 
@@ -1624,7 +1627,7 @@ fn flow_kind<'a>(kind: &'a str, properties: &HashMap<String, Value>) -> Result<&
 /// so naming the wrong thing gets no scrolling instead of a wheel writing somewhere it should not.
 ///
 /// `pub(crate)` for `wayland::input`'s wheel handler.
-pub(crate) fn scroll_signal(properties: &HashMap<String, Value>) -> Option<crate::lua::signal::Signal> {
+pub(crate) fn scroll_signal(properties: &PropMap) -> Option<crate::lua::signal::Signal> {
     let Some(Value::UserData(ud)) = properties.get("scroll") else {
         return None;
     };
@@ -1639,7 +1642,7 @@ pub(crate) fn scroll_signal(properties: &HashMap<String, Value>) -> Option<crate
 /// their unscrolled positions here, which is what makes `rect` minus the leading padding the
 /// child's place in the content.
 fn reveal_child(
-    properties: &HashMap<String, Value>,
+    properties: &PropMap,
     children: &[ResolvedNode],
     axis: MainAxis,
     padding_start: f32,
@@ -1680,7 +1683,7 @@ fn reveal_child(
 /// A container with nothing to scroll returns 0 rather than erroring, so a `Content`-sized column
 /// (content and viewport the same number by construction) is a no-op, the same answer `Fill` gives
 /// in a `Content` parent for the same reason: no remainder (decision 5).
-fn scroll_offset(properties: &HashMap<String, Value>, content_main: f32, total_main: f32) -> f32 {
+fn scroll_offset(properties: &PropMap, content_main: f32, total_main: f32) -> f32 {
     let Some(signal) = scroll_signal(properties) else {
         return 0.0;
     };
@@ -2262,8 +2265,8 @@ fn takes_input_as_a_box(node: &ResolvedNode, paint_claims: bool) -> bool {
 mod flow_kind_tests {
     use super::*;
 
-    fn props(lua: &mlua::Lua, direction: Option<&str>) -> HashMap<String, Value> {
-        let mut properties = HashMap::new();
+    fn props(lua: &mlua::Lua, direction: Option<&str>) -> PropMap {
+        let mut properties = PropMap::default();
         if let Some(direction) = direction {
             properties.insert("direction".to_string(), Value::String(lua.create_string(direction).unwrap()));
         }
@@ -4829,14 +4832,14 @@ pub(super) mod tests {
     ///
     /// | rows | p50 | note |
     /// |---|---|---|
-    /// | 12 | 0.53 ms | one viewport of a virtualized list |
-    /// | 50 | 1.70 ms | ADR-0132's fifty tiles |
-    /// | 125 | 3.98 ms | 500 wallpapers, four to a row |
-    /// | 500 | 15.1 ms | 2000 wallpapers |
-    /// | 125, no text | 2.77 ms | the text nodes are 30% of the 125-row figure |
+    /// | 12 | 0.28 ms | one viewport of a virtualized list |
+    /// | 50 | 1.14 ms | ADR-0132's fifty tiles |
+    /// | 125 | 2.81 ms | 500 wallpapers, four to a row |
+    /// | 500 | 11.8 ms | 2000 wallpapers |
+    /// | 125, no text | 2.36 ms | the text nodes are 16% of the 125-row figure |
     ///
-    /// Linear in source length at roughly 32us a row, which is what makes this the one place in
-    /// the tree where a config's data size, not its structure, sets the frame time. ADR-0191 is
+    /// Linear in source length at roughly 22us a row: the one place in the tree where a config's
+    /// data size, not its structure, sets the frame time. ADR-0191 is
     /// the design that would cut it to the first row of this table, and why it is not built yet.
     #[test]
     #[ignore]
@@ -5569,7 +5572,7 @@ pub(super) mod tests {
     /// A `rect` with a background, the way the region scan sees one.
     fn solid_paint() -> Option<PaintStyle> {
         let lua = mlua::Lua::new();
-        let mut properties = HashMap::new();
+        let mut properties = PropMap::default();
         properties.insert("background".to_string(), Value::String(lua.create_string("#112233").unwrap()));
         node::paint_style("rect", &properties).unwrap()
     }
@@ -5594,7 +5597,7 @@ pub(super) mod tests {
             rect: LogicalRect { x: rect.0, y: rect.1, width: rect.2, height: rect.3 },
             visible: true,
             opacity: 1.0,
-            properties: HashMap::new(),
+            properties: PropMap::default(),
             paint,
             children,
         }

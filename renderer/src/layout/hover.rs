@@ -88,10 +88,10 @@ fn hover_signal(node: &ResolvedNode) -> Option<Signal> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::layout::node::PropMap;
     use crate::lua::signal::DirtyFlag;
     use crate::text::snap::LogicalRect;
     use mlua::Lua;
-    use std::collections::HashMap;
 
     fn hover_userdata(lua: &Lua) -> (Signal, Value) {
         let (over, _rect) = Signal::new_hover(DirtyFlag::new(), Value::Nil);
@@ -109,7 +109,7 @@ mod tests {
         on_hover: Option<Value>,
         children: Vec<ResolvedNode>,
     ) -> ResolvedNode {
-        let mut properties = HashMap::new();
+        let mut properties = PropMap::default();
         if let Some(hover) = hover {
             properties.insert("hover".to_string(), hover);
         }

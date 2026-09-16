@@ -7,10 +7,7 @@
 //! malformed values. Paint-time work remains arithmetic needing scale or focus; `icon.size` stays
 //! geometry for the scene's measure callback.
 
-use std::collections::HashMap;
 use std::sync::Arc;
-
-use mlua::Value;
 
 use crate::image::{Fit, Load};
 
@@ -73,7 +70,7 @@ pub enum PaintStyle {
 }
 
 /// Parses an already-resolved kind. `Ok(None)` means the kind draws nothing; an error fails apply.
-pub fn paint_style(kind: &str, properties: &HashMap<String, Value>) -> Result<Option<PaintStyle>, LayoutError> {
+pub fn paint_style(kind: &str, properties: &PropMap) -> Result<Option<PaintStyle>, LayoutError> {
     let style = match kind {
         // All containers and surface roles paint as a box.
         "rect" | "row" | "column" | "button" | "panel" | "window" | "popup" | "lock" => PaintStyle::Box {

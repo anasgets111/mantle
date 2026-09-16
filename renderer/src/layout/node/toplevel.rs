@@ -1,8 +1,6 @@
 //! `xdg_toplevel`/`xdg_positioner` specs, including window and popup field parsers. These
 //! describe live `xdg_shell` objects, not layer-shell or session-lock surfaces.
 
-use std::collections::HashMap;
-
 use mlua::Value;
 
 use crate::text::snap::LogicalRect;
@@ -13,7 +11,7 @@ use super::*;
 
 /// The live `title`, defaulting to empty rather than exposing the internal `id`. `set_title` is
 /// valid after mapping, so signals update it in place (ADR-0044 decision 1).
-pub fn parse_title(properties: &HashMap<String, Value>) -> Result<String, LayoutError> {
+pub fn parse_title(properties: &PropMap) -> Result<String, LayoutError> {
     // Deferred on the evaluation pass; `show_window` sends the resolved title.
     if is_deferred_signal(properties, "title") {
         return Ok(String::new());
@@ -24,7 +22,7 @@ pub fn parse_title(properties: &HashMap<String, Value>) -> Result<String, Layout
 /// `app_id`, used by compositor window rules, defaulting to `"obelisk-{id}"`. `set_app_id`
 /// remains valid after mapping (`xdg-shell.xml`), unlike layer-shell `namespace`; `id` is still
 /// structural because it is reconcile identity (ADR-0045 decision 1).
-pub fn parse_app_id(properties: &HashMap<String, Value>, id: &str) -> Result<String, LayoutError> {
+pub fn parse_app_id(properties: &PropMap, id: &str) -> Result<String, LayoutError> {
     let default = format!("obelisk-{id}");
     // Deferred on the evaluation pass; `set_app_id` is a live request.
     if is_deferred_signal(properties, "app_id") {
@@ -43,7 +41,7 @@ pub struct SizeHint {
 
 /// `None` means no request; `Some(0, 0)` sends an unconstrained request. A present hint must name
 /// both axes; use `0` for an unconstrained axis.
-fn parse_size_hint(properties: &HashMap<String, Value>, property: &str) -> Result<Option<SizeHint>, LayoutError> {
+fn parse_size_hint(properties: &PropMap, property: &str) -> Result<Option<SizeHint>, LayoutError> {
     // Deferred on the evaluation pass; `show_window` sends the resolved request.
     let Some(value) = non_deferred_property(properties, property) else {
         return Ok(None);
@@ -106,7 +104,7 @@ pub struct WindowSpec {
     pub max_size: Option<SizeHint>,
 }
 
-pub fn window_spec(properties: &HashMap<String, Value>) -> Result<WindowSpec, LayoutError> {
+pub fn window_spec(properties: &PropMap) -> Result<WindowSpec, LayoutError> {
     let id = parse_surface_id(properties)?;
     let app_id = parse_app_id(properties, &id)?;
     let min_size = parse_size_hint(properties, "min_size")?;
@@ -134,7 +132,7 @@ pub enum PopupAnchor {
 
 /// Parses either anchor field; `property` names errors. Absent defaults to the protocol's
 /// [`PopupAnchor::Center`], unlike constraint adjustments.
-pub fn parse_popup_anchor(properties: &HashMap<String, Value>, property: &str) -> Result<PopupAnchor, LayoutError> {
+pub fn parse_popup_anchor(properties: &PropMap, property: &str) -> Result<PopupAnchor, LayoutError> {
     let Some(value) = non_deferred_property(properties, property) else {
         return Ok(PopupAnchor::Center);
     };
@@ -185,7 +183,7 @@ impl Default for ConstraintAdjustment {
     }
 }
 
-pub fn parse_constraint_adjustment(properties: &HashMap<String, Value>) -> Result<ConstraintAdjustment, LayoutError> {
+pub fn parse_constraint_adjustment(properties: &PropMap) -> Result<ConstraintAdjustment, LayoutError> {
     let Some(value) = non_deferred_property(properties, "constraint_adjustment") else {
         return Ok(ConstraintAdjustment::default());
     };
@@ -232,7 +230,7 @@ pub struct PopupOffset {
     pub y: f32,
 }
 
-pub fn parse_popup_offset(properties: &HashMap<String, Value>) -> Result<PopupOffset, LayoutError> {
+pub fn parse_popup_offset(properties: &PropMap) -> Result<PopupOffset, LayoutError> {
     let Some(value) = non_deferred_property(properties, "offset") else {
         return Ok(PopupOffset::default());
     };
@@ -251,7 +249,7 @@ pub fn parse_popup_offset(properties: &HashMap<String, Value>) -> Result<PopupOf
 /// signal-sized popup against 1x1 until its first configure.
 const DEFERRED_POPUP_EXTENT: f32 = 1.0;
 
-pub fn parse_anchor_rect(properties: &HashMap<String, Value>) -> Result<LogicalRect, LayoutError> {
+pub fn parse_anchor_rect(properties: &PropMap) -> Result<LogicalRect, LayoutError> {
     if is_deferred_signal(properties, "anchor_rect") {
         return Ok(LogicalRect { x: 0.0, y: 0.0, width: DEFERRED_POPUP_EXTENT, height: DEFERRED_POPUP_EXTENT });
     }
@@ -295,7 +293,7 @@ pub fn parse_anchor_rect(properties: &HashMap<String, Value>) -> Result<LogicalR
 /// whatever the resolved tree measures, and `wayland::surface::App::apply_resolved_state` reads it
 /// off the root's box on the pass that opens the popup. A number is still a number, and still has
 /// to be in `(0, 8192]`: `set_size` raises `invalid_input` on a zero or negative size.
-fn parse_popup_extent(properties: &HashMap<String, Value>, property: &str) -> Result<SizeMode, LayoutError> {
+fn parse_popup_extent(properties: &PropMap, property: &str) -> Result<SizeMode, LayoutError> {
     if is_deferred_signal(properties, property) {
         return Ok(SizeMode::Pixels(DEFERRED_POPUP_EXTENT));
     }
@@ -324,7 +322,7 @@ fn parse_popup_extent(properties: &HashMap<String, Value>, property: &str) -> Re
 /// ADR-0040 chose a real `xdg_popup` here over a second `panel`.
 /// Taking the grab needs a real input serial for one poll turn, and the compositor may deny it
 /// (ADR-0049 amendment).
-pub fn parse_grab(properties: &HashMap<String, Value>) -> Result<bool, LayoutError> {
+pub fn parse_grab(properties: &PropMap) -> Result<bool, LayoutError> {
     let Some(value) = non_deferred_property(properties, "grab") else {
         return Ok(true);
     };
@@ -359,7 +357,7 @@ pub struct PopupSpec {
     pub grab: bool,
 }
 
-pub fn popup_spec(properties: &HashMap<String, Value>) -> Result<PopupSpec, LayoutError> {
+pub fn popup_spec(properties: &PropMap) -> Result<PopupSpec, LayoutError> {
     // `parent` is structural: `get_popup` pins this popup to one parent instance
     // (ADR-0051 decision 1).
     let parent = parse_string_property(properties, "parent", None)?;
@@ -389,7 +387,7 @@ mod tests {
         mlua::Lua::new()
     }
 
-    fn props_from_table(table: &mlua::Table) -> HashMap<String, Value> {
+    fn props_from_table(table: &mlua::Table) -> PropMap {
         deserialize_lua_table(table).unwrap().properties
     }
 
@@ -527,7 +525,7 @@ mod tests {
         .0;
         lua.globals().set("t", signal).unwrap();
         let table: mlua::Table = lua.load(r#"return { kind = "window", id = "w", title = t }"#).eval().unwrap();
-        let resolved = resolve_properties(&props_from_table(&table), "window", &lua).unwrap();
+        let resolved = resolve_properties(props_from_table(&table), "window", &lua).unwrap();
         assert_eq!(window_spec(&resolved).unwrap().title, "Now Playing");
     }
 
@@ -542,7 +540,7 @@ mod tests {
         .0;
         lua.globals().set("a", signal).unwrap();
         let table: mlua::Table = lua.load(r#"return { kind = "window", id = "w", app_id = a }"#).eval().unwrap();
-        let resolved = resolve_properties(&props_from_table(&table), "window", &lua).unwrap();
+        let resolved = resolve_properties(props_from_table(&table), "window", &lua).unwrap();
         assert_eq!(window_spec(&resolved).unwrap().app_id, "obelisk.later");
     }
 
@@ -557,7 +555,7 @@ mod tests {
         .0;
         lua.globals().set("i", signal).unwrap();
         let table: mlua::Table = lua.load(r#"return { kind = "window", id = i }"#).eval().unwrap();
-        let resolved = resolve_properties(&props_from_table(&table), "window", &lua).unwrap();
+        let resolved = resolve_properties(props_from_table(&table), "window", &lua).unwrap();
         assert!(matches!(
             window_spec(&resolved).unwrap_err(),
             LayoutError::UnsupportedSignalProperty(p) if p == "id"
@@ -569,7 +567,7 @@ mod tests {
     /// default above it -- a Lua table constructor performs its assignments in order, so
     /// `{ width = 200, width = 0 }` is a table with `width == 0`. That is how a test declares one
     /// bad value without restating the other three good ones.
-    fn popup_props(lua: &mlua::Lua, extra: &str) -> HashMap<String, Value> {
+    fn popup_props(lua: &mlua::Lua, extra: &str) -> PropMap {
         let table: mlua::Table = lua
             .load(format!(
                 r#"return {{ kind = "popup", id = "menu", parent = "bar",
@@ -901,7 +899,7 @@ mod tests {
             )
             .eval()
             .unwrap();
-        let resolved = resolve_properties(&props_from_table(&table), "popup", &lua).unwrap();
+        let resolved = resolve_properties(props_from_table(&table), "popup", &lua).unwrap();
         assert_eq!(
             popup_spec(&resolved).unwrap().anchor_rect,
             LogicalRect { x: 4.0, y: 8.0, width: 16.0, height: 24.0 }
@@ -911,7 +909,7 @@ mod tests {
     /// The same fixture as [`popup_props`] but with every property under test bound to a live
     /// signal instead of a literal, and *not* run through [`resolve_properties`] -- which is
     /// exactly the map `crate::socket`'s `surface_specs` parses.
-    fn unresolved_popup_props(lua: &mlua::Lua, extra: &str) -> HashMap<String, Value> {
+    fn unresolved_popup_props(lua: &mlua::Lua, extra: &str) -> PropMap {
         crate::lua::signal::register(lua, crate::lua::signal::DirtyFlag::new()).unwrap();
         let table: mlua::Table = lua
             .load(format!(

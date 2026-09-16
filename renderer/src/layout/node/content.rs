@@ -3,7 +3,6 @@
 //! [`paint_style`](super::paint_style) runs them once per node per pass. `parse_string_property`
 //! is shared by `surface`/`toplevel`/`popup` parsers.
 
-use std::collections::HashMap;
 use std::ops::Range;
 use std::sync::Arc;
 
@@ -46,7 +45,7 @@ pub fn font_runs(runs: &[StyleRun]) -> Vec<FontRun> {
 /// Absent `content` is empty (ADR-0044 decision 1): before the first `StateSnapshot`, a capability
 /// signal reads `nil`, and `run_startup_evaluation` runs before the poll loop drains one. A typo in
 /// `content` therefore renders an empty node; `obelisk.rescue` covers the important failures.
-pub fn parse_content(properties: &HashMap<String, Value>) -> Result<(String, Vec<StyleRun>), LayoutError> {
+pub fn parse_content(properties: &PropMap) -> Result<(String, Vec<StyleRun>), LayoutError> {
     let Some(value) = properties.get("content") else {
         return Ok((String::new(), Vec::new()));
     };
@@ -135,19 +134,19 @@ fn parse_runs(runs: &mlua::Table) -> Result<(String, Vec<StyleRun>), LayoutError
 
 /// `icon.name` is a theme name or absolute path; `image::icons::resolve` tells them
 /// apart. It defaults to `""` for the same pre-first-push nil rule as `content` (ADR-0044).
-pub fn parse_icon_name(properties: &HashMap<String, Value>) -> Result<String, LayoutError> {
+pub fn parse_icon_name(properties: &PropMap) -> Result<String, LayoutError> {
     parse_optional_string(properties, "name")
 }
 
 /// `textfield.placeholder` is empty by default. `image.source` is an absolute path,
 /// never an icon theme name (ADR-0054 decision 3).
-pub fn parse_placeholder(properties: &HashMap<String, Value>) -> Result<String, LayoutError> {
+pub fn parse_placeholder(properties: &PropMap) -> Result<String, LayoutError> {
     parse_optional_string(properties, "placeholder")
 }
 
 /// `textfield.mask_character` is drawn once per typed character. It defaults to
 /// U+2022 BULLET; `""` draws nothing, and longer strings use their first character.
-pub fn parse_mask_character(properties: &HashMap<String, Value>) -> Result<String, LayoutError> {
+pub fn parse_mask_character(properties: &PropMap) -> Result<String, LayoutError> {
     let declared = parse_optional_string(properties, "mask_character")?;
     if !properties.contains_key("mask_character") {
         return Ok("\u{2022}".to_string());
@@ -155,13 +154,13 @@ pub fn parse_mask_character(properties: &HashMap<String, Value>) -> Result<Strin
     Ok(declared.chars().next().map(String::from).unwrap_or_default())
 }
 
-pub fn parse_image_source(properties: &HashMap<String, Value>) -> Result<String, LayoutError> {
+pub fn parse_image_source(properties: &PropMap) -> Result<String, LayoutError> {
     parse_optional_string(properties, "source")
 }
 
 /// `image.fit` (ADR-0055 decision 3) defaults to `cover`; an unrecognised string errors rather
 /// than silently selecting a fit.
-pub fn parse_fit(properties: &HashMap<String, Value>) -> Result<Fit, LayoutError> {
+pub fn parse_fit(properties: &PropMap) -> Result<Fit, LayoutError> {
     let Some(value) = properties.get("fit") else {
         return Ok(Fit::default());
     };
@@ -174,18 +173,18 @@ pub fn parse_fit(properties: &HashMap<String, Value>) -> Result<Fit, LayoutError
 
 /// `image.async` (ADR-0122): absent/`false` decodes in the frame; `true` uses the pool and draws
 /// nothing until the result lands. A signal resolving to `nil` arrives as an absent key.
-pub fn parse_load(properties: &HashMap<String, Value>) -> Result<Load, LayoutError> {
+pub fn parse_load(properties: &PropMap) -> Result<Load, LayoutError> {
     Ok(if parse_bool(properties, "async", false)? { Load::Background } else { Load::Inline })
 }
 
 /// `image.retain` (ADR-0180): while a new `source` decodes, keep drawing the one this node last
 /// had pixels for instead of nothing. Inert without `async = true`, because an inline decode is
 /// finished by the time the draw asks for it and never leaves a gap to cover.
-pub fn parse_retain(properties: &HashMap<String, Value>) -> Result<bool, LayoutError> {
+pub fn parse_retain(properties: &PropMap) -> Result<bool, LayoutError> {
     parse_bool(properties, "retain", false)
 }
 
-fn parse_optional_string(properties: &HashMap<String, Value>, property: &str) -> Result<String, LayoutError> {
+fn parse_optional_string(properties: &PropMap, property: &str) -> Result<String, LayoutError> {
     let Some(value) = properties.get(property) else {
         return Ok(String::new());
     };
@@ -237,7 +236,7 @@ impl TextAlign {
 /// set is not fixed at parse time, since a family is resolved on first sight. An unresolvable name
 /// draws in the declared chain and says so once on stderr, the same bargain `fonts { ... }` already
 /// makes for a chain entry nothing on the system answers.
-pub fn parse_font_family(properties: &HashMap<String, Value>) -> Result<Option<Arc<str>>, LayoutError> {
+pub fn parse_font_family(properties: &PropMap) -> Result<Option<Arc<str>>, LayoutError> {
     let Some(value) = properties.get("font") else {
         return Ok(None);
     };
@@ -265,7 +264,7 @@ pub enum Elide {
 
 /// `elide`. Only `"End"` is offered: the reference config uses neither head nor middle elision, and
 /// middle elision needs a grapheme budget across runs.
-pub fn parse_elide(properties: &HashMap<String, Value>) -> Result<Elide, LayoutError> {
+pub fn parse_elide(properties: &PropMap) -> Result<Elide, LayoutError> {
     let Some(value) = properties.get("elide") else {
         return Ok(Elide::None);
     };
@@ -294,7 +293,7 @@ pub enum Wrap {
 /// `wrap` defaults to `None`. Before this, a fixed-width `text` measured its full wrapped height
 /// but painted one clipped line; making wrapping default would have drawn into that extra height
 /// everywhere. `None` now measures one line, keeping box and paint consistent.
-pub fn parse_wrap(properties: &HashMap<String, Value>) -> Result<Wrap, LayoutError> {
+pub fn parse_wrap(properties: &PropMap) -> Result<Wrap, LayoutError> {
     let Some(value) = properties.get("wrap") else {
         return Ok(Wrap::None);
     };
@@ -312,7 +311,7 @@ pub fn parse_wrap(properties: &HashMap<String, Value>) -> Result<Wrap, LayoutErr
 /// because `Bound` cannot. Negatives error rather than being clamped, which would hide a sign
 /// mistake in config arithmetic. It is consulted only for [`parse_wrap`] = `Word`, so setting both
 /// unconditionally is safe.
-pub fn parse_max_lines(properties: &HashMap<String, Value>) -> Result<Option<usize>, LayoutError> {
+pub fn parse_max_lines(properties: &PropMap) -> Result<Option<usize>, LayoutError> {
     let Some(value) = properties.get("max_lines") else {
         return Ok(None);
     };
@@ -326,7 +325,7 @@ pub fn parse_max_lines(properties: &HashMap<String, Value>) -> Result<Option<usi
 
 /// `text_align` defaults to `Start` and uses the same string boundary as `fit`, `layer`, `align_h`,
 /// and `on_click`. `Start`/`End` match `align_h`.
-pub fn parse_text_align(properties: &HashMap<String, Value>) -> Result<TextAlign, LayoutError> {
+pub fn parse_text_align(properties: &PropMap) -> Result<TextAlign, LayoutError> {
     let Some(value) = properties.get("text_align") else {
         return Ok(TextAlign::Start);
     };
@@ -343,14 +342,14 @@ pub fn parse_text_align(properties: &HashMap<String, Value>) -> Result<TextAlign
 
 /// The declared `foreground`, or `None` when absent. Icons preserve their file colours unless
 /// a `currentColor` fill uses this value (ADR-0072).
-pub fn parse_optional_foreground(properties: &HashMap<String, Value>) -> Result<Option<Rgba>, LayoutError> {
+pub fn parse_optional_foreground(properties: &PropMap) -> Result<Option<Rgba>, LayoutError> {
     if !properties.contains_key("foreground") {
         return Ok(None);
     }
     parse_foreground(properties).map(Some)
 }
 
-pub fn parse_foreground(properties: &HashMap<String, Value>) -> Result<Rgba, LayoutError> {
+pub fn parse_foreground(properties: &PropMap) -> Result<Rgba, LayoutError> {
     let Some(value) = properties.get("foreground") else {
         return Ok(Rgba { r: 1.0, g: 1.0, b: 1.0, a: 1.0 });
     };
@@ -361,25 +360,21 @@ pub fn parse_foreground(properties: &HashMap<String, Value>) -> Result<Rgba, Lay
     parse_hex_color("foreground", &s)
 }
 
-pub fn parse_font_size(properties: &HashMap<String, Value>) -> Result<f32, LayoutError> {
+pub fn parse_font_size(properties: &PropMap) -> Result<f32, LayoutError> {
     style::within("font_size", parse_number(properties, "font_size", 12.0)?)
 }
 
 /// Absent `size` defaults to 12.0, matching [`parse_font_size`] and ADR-0044's nil rule. A typo
 /// such as `icon { sizee = 24 }` therefore draws a 12.0-sized icon rather than rejecting the tree;
 /// text and icons share the same default visual scale.
-pub fn parse_icon_size(properties: &HashMap<String, Value>) -> Result<f32, LayoutError> {
+pub fn parse_icon_size(properties: &PropMap) -> Result<f32, LayoutError> {
     parse_number(properties, "size", 12.0)
 }
 
 /// Shared boolean parser behind [`parse_load`], [`parse_retain`], `style::parse_blur` and
 /// `style::parse_visible`, the way [`parse_string_property`] is shared by the string ones. An
 /// absent key takes `default`; anything that is not a boolean is an error naming the property.
-pub(super) fn parse_bool(
-    properties: &HashMap<String, Value>,
-    property: &str,
-    default: bool,
-) -> Result<bool, LayoutError> {
+pub(super) fn parse_bool(properties: &PropMap, property: &str, default: bool) -> Result<bool, LayoutError> {
     match properties.get(property) {
         None => Ok(default),
         Some(Value::Boolean(b)) => Ok(*b),
@@ -389,11 +384,7 @@ pub(super) fn parse_bool(
 
 /// Shared number parser behind [`parse_font_size`], [`parse_icon_size`] and `style::parse_spacing`.
 /// Range-checking is the caller's: only `font_size` has a bound its consumer requires.
-pub(super) fn parse_number(
-    properties: &HashMap<String, Value>,
-    property: &str,
-    default: f32,
-) -> Result<f32, LayoutError> {
+pub(super) fn parse_number(properties: &PropMap, property: &str, default: f32) -> Result<f32, LayoutError> {
     let Some(value) = properties.get(property) else {
         return Ok(default);
     };
@@ -405,7 +396,7 @@ pub(super) fn parse_number(
 /// `surface::parse_monitor`: reject a `Signal`, require a string, and use `default` when
 /// absent. `None` makes the property required (Standards review, ADR-0024).
 pub(super) fn parse_string_property(
-    properties: &HashMap<String, Value>,
+    properties: &PropMap,
     property: &str,
     default: Option<&str>,
 ) -> Result<String, LayoutError> {
@@ -427,7 +418,7 @@ pub(super) fn parse_string_property(
 /// for keyed reconciliation (ADR-0045). It is also the surface's *reconcile* identity: the tree
 /// root is found by key lookup rather than [`parse_node_id`]'s per-parent pairing, since a surface
 /// has no parent to scope within (decision 5: the same mechanism restated one level down).
-pub fn parse_surface_id(properties: &HashMap<String, Value>) -> Result<String, LayoutError> {
+pub fn parse_surface_id(properties: &PropMap) -> Result<String, LayoutError> {
     parse_string_property(properties, "id", None)
 }
 
@@ -444,13 +435,13 @@ pub fn parse_surface_id(properties: &HashMap<String, Value>) -> Result<String, L
 /// distinct ids would compare equal and a fresh child could claim the wrong counterpart. Scoping
 /// and duplicate rejection belong to `pair_children_by_id_then_position`, which has visibility
 /// into siblings that this parser does not.
-pub fn parse_node_id(properties: &HashMap<String, Value>) -> Result<Option<String>, LayoutError> {
+pub fn parse_node_id(properties: &PropMap) -> Result<Option<String>, LayoutError> {
     let Some(value) = properties.get("id") else {
         return Ok(None);
     };
     reject_signal_in_structural_field("id", value)?;
     match value {
-        Value::String(s) => s.to_str().map(|s| Some(s.to_string())).map_err(|_| {
+        Value::String(s) => s.to_str().map(|s| Some((*s).to_owned())).map_err(|_| {
             invalid("id", "must be valid UTF-8 -- an id is compared for equality, so it cannot be converted lossily")
         }),
         other => Err(invalid("id", format!("expected a string, got {}", preview_for_error(other)))),
@@ -477,13 +468,13 @@ mod tests {
         mlua::Lua::new()
     }
 
-    fn props_from_table(table: &mlua::Table) -> HashMap<String, Value> {
+    fn props_from_table(table: &mlua::Table) -> PropMap {
         deserialize_lua_table(table).unwrap().properties
     }
 
     #[test]
     fn text_content_absent_defaults_to_the_empty_string() {
-        let props = HashMap::new();
+        let props = PropMap::default();
         assert_eq!(parse_content(&props).unwrap().0, "");
     }
 
@@ -497,7 +488,7 @@ mod tests {
         table.set("kind", "text").unwrap();
         table.set("content", signal).unwrap();
         let node = deserialize_lua_table(&table).unwrap();
-        assert_eq!(parse_content(&resolve_properties(&node.properties, "text", &lua).unwrap()).unwrap().0, "hello");
+        assert_eq!(parse_content(&resolve_properties(node.properties, "text", &lua).unwrap()).unwrap().0, "hello");
     }
 
     #[test]
@@ -507,14 +498,14 @@ mod tests {
 
         let literal_table: mlua::Table = lua.load(r#"return { kind = "text", content = 5 }"#).eval().unwrap();
         let literal_props = props_from_table(&literal_table);
-        let literal_err = parse_content(&resolve_properties(&literal_props, "text", &lua).unwrap()).unwrap_err();
+        let literal_err = parse_content(&resolve_properties(literal_props, "text", &lua).unwrap()).unwrap_err();
 
         let signal = crate::lua::signal::Signal::new_live(Value::Integer(5), crate::lua::signal::DirtyFlag::new()).0;
         let table = lua.create_table().unwrap();
         table.set("kind", "text").unwrap();
         table.set("content", signal).unwrap();
         let node = deserialize_lua_table(&table).unwrap();
-        let signal_err = parse_content(&resolve_properties(&node.properties, "text", &lua).unwrap()).unwrap_err();
+        let signal_err = parse_content(&resolve_properties(node.properties, "text", &lua).unwrap()).unwrap_err();
 
         for err in [&literal_err, &signal_err] {
             assert!(matches!(
@@ -652,7 +643,7 @@ mod tests {
     #[test]
     fn wrap_defaults_to_one_line_and_rejects_a_mode_that_does_not_exist() {
         let lua = lua();
-        assert_eq!(parse_wrap(&HashMap::new()).unwrap(), Wrap::None);
+        assert_eq!(parse_wrap(&PropMap::default()).unwrap(), Wrap::None);
 
         let table: mlua::Table = lua.load(r#"return { kind = "text", wrap = "Word" }"#).eval().unwrap();
         assert_eq!(parse_wrap(&props_from_table(&table)).unwrap(), Wrap::Word);
@@ -669,7 +660,7 @@ mod tests {
     #[test]
     fn max_lines_treats_absent_and_zero_alike_and_refuses_a_negative() {
         let lua = lua();
-        assert_eq!(parse_max_lines(&HashMap::new()).unwrap(), None);
+        assert_eq!(parse_max_lines(&PropMap::default()).unwrap(), None);
 
         let table: mlua::Table = lua.load(r#"return { kind = "text", max_lines = 0 }"#).eval().unwrap();
         assert_eq!(parse_max_lines(&props_from_table(&table)).unwrap(), None);
@@ -689,7 +680,7 @@ mod tests {
 
     #[test]
     fn font_size_absent_defaults_to_twelve() {
-        let props = HashMap::new();
+        let props = PropMap::default();
         assert_eq!(parse_font_size(&props).unwrap(), 12.0);
     }
 
@@ -702,18 +693,18 @@ mod tests {
         table.set("kind", "text").unwrap();
         table.set("font_size", signal).unwrap();
         let node = deserialize_lua_table(&table).unwrap();
-        assert_eq!(parse_font_size(&resolve_properties(&node.properties, "text", &lua).unwrap()).unwrap(), 18.0);
+        assert_eq!(parse_font_size(&resolve_properties(node.properties, "text", &lua).unwrap()).unwrap(), 18.0);
     }
 
     #[test]
     fn icon_size_absent_defaults_to_twelve() {
-        let props = HashMap::new();
+        let props = PropMap::default();
         assert_eq!(parse_icon_size(&props).unwrap(), 12.0);
     }
 
     #[test]
     fn node_id_absent_is_none() {
-        let props = HashMap::new();
+        let props = PropMap::default();
         assert_eq!(parse_node_id(&props).unwrap(), None);
     }
 
@@ -769,7 +760,7 @@ mod tests {
 
     #[test]
     fn foreground_absent_defaults_to_white() {
-        let props = HashMap::new();
+        let props = PropMap::default();
         assert_eq!(parse_foreground(&props).unwrap(), Rgba { r: 1.0, g: 1.0, b: 1.0, a: 1.0 });
     }
 

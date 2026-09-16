@@ -4,9 +4,9 @@
 //! never recurses into `children`/`child` (reconciliation's job), and does not validate shapes such
 //! as `width` being an integer or `"Fill"` (the layout engine is the only typed-property consumer).
 
-use std::collections::HashMap;
-
 use mlua::{Lua, Table, Value};
+
+use crate::layout::node::PropMap;
 
 /// Nine geometric nodes plus four root roles: `panel`, `window`, `popup`, `lock`
 /// (ADR-0040). `lock` joined under ADR-0052 decision 2: declaration location is separate from
@@ -145,7 +145,7 @@ fn accepted_properties(kind: &str) -> Vec<&'static str> {
 #[derive(Debug, Clone)]
 pub struct VirtualNode {
     pub kind: String,
-    pub properties: HashMap<String, Value>,
+    pub properties: PropMap,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -185,7 +185,7 @@ pub fn deserialize_lua_table(table: &Table) -> Result<VirtualNode, DeserializeEr
         _ => return Err(DeserializeError::KindNotAString),
     };
 
-    let mut properties = HashMap::new();
+    let mut properties = PropMap::default();
     for pair in table.pairs::<Value, Value>() {
         let (key, value) = pair?;
         let key = match &key {
