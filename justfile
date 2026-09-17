@@ -20,8 +20,29 @@ release:
 run config="share/starter": build
     target/debug/obelisk -c {{config}}
 
-# Everything a change has to pass before it is done.
-check: fmt-check test lint docs lua types
+# Everything a change has to pass before it is done, on what would be committed.
+check:
+    just staged-only just fmt-check test lint docs lua types
+
+# Runs `command` on the staged tree. With both staged and unstaged edits, the unstaged ones are saved
+# as a patch, reverted, and re-applied on exit. A patch left by a killed run blocks the next.
+# Untracked files stay put.
+[private]
+staged-only +command:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    patch="$(git rev-parse --absolute-git-dir)/unstaged.patch"
+    if [ -e "$patch" ]; then
+        echo "$patch holds unstaged edits from an interrupted check. Restore them: git apply $patch && rm $patch" >&2
+        exit 1
+    fi
+    if ! git diff --cached --quiet && ! git diff --quiet; then
+        git diff --binary >"$patch"
+        trap 'git apply "$patch" && rm "$patch" || echo "unstaged edits not re-applied; they are in $patch" >&2' EXIT
+        git checkout -- .
+        echo "checking the staged tree" >&2
+    fi
+    {{command}}
 
 # Once per clone: git does not version `.git/hooks`.
 hooks:

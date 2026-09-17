@@ -7,8 +7,9 @@
 # - Lua: any `.lua`, `.luarc.json`, `.editorconfig`, or the formatter.
 # - Everything else, this hook and the justfile included: nothing.
 #
-# A stale `lua-meta/obelisk.lua` is regenerated and the commit refused rather than staged: the stub
-# comes from the working tree, so a partial `git add -p` would commit one describing code it lacks.
+# Runs on the staged tree: `just staged-only` sets unstaged edits aside for the run.
+#
+# A stale `lua-meta/obelisk.lua` is regenerated and the commit refused rather than staged.
 #
 # Install with `just hooks`. Skip once with `git commit --no-verify`.
 set -euo pipefail
@@ -30,6 +31,10 @@ $rust || $lua || exit 0
 if ! command -v cargo >/dev/null || ! command -v just >/dev/null; then
     echo "pre-commit: cargo or just missing, skipping the checks" >&2
     exit 0
+fi
+
+if [ -z "${STAGED_ONLY:-}" ]; then
+    STAGED_ONLY=1 exec just staged-only "$0"
 fi
 
 fail() {
