@@ -6,7 +6,7 @@ what exists; [decisions](decisions.md) holds history.
 
 Rust owns platform connections, validation, secret handling, resource lifetimes, input and
 rendering. Lua owns composition, appearance, user preferences and orchestration. A feature absent
-from `dev-config` is not necessarily an engine gap.
+from one config is not necessarily an engine gap.
 
 ## Recommended engine work
 

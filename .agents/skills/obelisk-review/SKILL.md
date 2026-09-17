@@ -33,7 +33,7 @@ Combine `AGENTS.md` with the **Baseline Smells**.
 | Smell | Definition | The Fix |
 | :--- | :--- | :--- |
 | **Avoidable Lines** | Added code the change does not need, or dead code it leaves behind. | Delete it. |
-| **Framework Leak** | Rust code, a test or a comment depending on `dev-config`. | Inline fixture; state the engine reason. |
+| **Framework Leak** | Rust code, a test or a comment depending on a particular config. | Inline fixture; state the engine reason. |
 | **Mysterious Name** | Unclear variable, function, or type name. | Rename it. If you cannot name it, the architecture is flawed. |
 | **Duplicated Code** | Repeated logic shapes across the diff. | Reuse the existing helper, or extract one function. |
 | **Feature Envy** | A function reading another type's data heavily. | Move it onto the type it envies. |

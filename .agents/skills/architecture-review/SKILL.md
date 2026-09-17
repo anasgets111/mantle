@@ -22,7 +22,7 @@ Do not review stable code. Deepening only pays off if the code changes.
 - **Read Context:** Parse `CONTEXT.md` and `docs/decisions.md` for the target area.
 - **Audit for Friction (Spawn Sub-Agent):**
   - Locate **shallow modules** (interface complexity ≈ implementation complexity).
-  - Locate leaked abstractions (e.g., backend types leaking into Lua payloads, or `dev-config` names in engine code).
+  - Locate leaked abstractions (e.g., backend types leaking into Lua payloads, or config-specific names in engine code).
   - Identify pure functions lacking **locality** (extracted for tests, but real bugs hide in the untested callers).
 - **The Deletion Test:** Would deleting this module concentrate complexity, or just move it? If it concentrates, it is shallow. Target it.
 

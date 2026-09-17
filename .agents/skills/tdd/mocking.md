@@ -8,7 +8,7 @@ How this repo does it:
 - **sysfs/procfs and D-Bus:** see `AGENTS.md` § Testing.
 - **Environment:** pass the values in (`config_dir_from` in `shared/src/paths.rs`); `set_var` races every concurrent
   `getenv`.
-- **Lua:** evaluate an inline fixture in a tempdir, never `dev-config`.
+- **Lua:** evaluate an inline fixture in a tempdir, never a user config.
 
 Prefer specific adapter operations (`play`, `pause`) over one generic `dispatch(command)`: the mock then needs
 no routing logic.

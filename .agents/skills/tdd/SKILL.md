@@ -17,7 +17,7 @@ See [tests.md](tests.md) for examples and [mocking.md](mocking.md) for mocking g
 
 ## Seams: where tests go
 
-A **seam** is the module interface where you observe behavior without reaching inside. Tests live at seams, never against internals. In Obelisk, likely seams include the generation swap, the retained-scene transaction, a capability controller and the wire types in `shared`. Framework tests use inline fixtures, never `dev-config`.
+A **seam** is the module interface where you observe behavior without reaching inside. Tests live at seams, never against internals. In Obelisk, likely seams include the generation swap, the retained-scene transaction, a capability controller and the wire types in `shared`. Framework tests use inline fixtures, never a user config.
 
 **Test only at pre-agreed seams.** Before writing any test, write down the seams under test and confirm them with the user. No test is written at an unconfirmed seam. You can't test everything, so agreeing the seams up front is how testing effort lands on the critical paths and complex logic instead of every edge case.
 

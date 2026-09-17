@@ -8,7 +8,7 @@ description: Diagnosis loop for hard Obelisk bugs and performance regressions, i
 Stop guessing. Build a loop, hypothesize, measure, fix.
 
 ## 0. Read and redact
-- Place the bug: framework (Rust) or shell (`dev-config` Lua). A framework bug reproduces without `dev-config`.
+- Place the bug: framework (Rust) or config (Lua). A framework bug reproduces with an inline fixture config.
 - Read `CONTEXT.md` and the ADRs for the area.
 - Redact secrets. Quote only the log lines carrying the signal.
 
@@ -36,7 +36,7 @@ Show the user 3-5 ranked, falsifiable hypotheses: "If X causes it, changing Y tu
 One variable at a time. Tag temporary `eprintln!`/`print()` probes with `[DEBUG]`.
 
 ## 5. Fix
-The minimized repro becomes a permanent test with an inline fixture, never `dev-config`. Watch it fail, fix,
+The minimized repro becomes a permanent test with an inline fixture, never a user config. Watch it fail, fix,
 watch it pass.
 
 ## 6. Cleanup
