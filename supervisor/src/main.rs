@@ -183,9 +183,15 @@ fn main() -> Result<(), Box<dyn Error>> {
         let instances = instance::list(&root);
         let explicit = args.config_dir.is_some();
         let pid = match args.command {
-            cli::Command::Log { .. } => instance::select_log(&instances, args.pid, explicit.then_some(&*config)),
-            _ => instance::select_command(&instances, args.pid, &config, explicit),
-        }?;
+            cli::Command::Log { .. } => {
+                let (pid, note) = instance::select_log(&instances, args.pid, explicit.then_some(&*config))?;
+                if let Some(note) = note {
+                    eprintln!("obelisk: {note}");
+                }
+                pid
+            }
+            _ => instance::select_command(&instances, args.pid, &config, explicit)?,
+        };
         // SAFETY: as above. Replaces an inherited value, which names the shell that spawned us.
         unsafe { std::env::set_var(shared::INSTANCE_DIR_ENV, root.join(pid.to_string())) };
     }

@@ -136,14 +136,29 @@ pub fn select_command(instances: &[Instance], pid: Option<u32>, config: &Path, e
         })
 }
 
-/// The directory `obelisk log` reads; `config` is `-c`.
-pub fn select_log(instances: &[Instance], pid: Option<u32>, config: Option<&Path>) -> Result<u32, String> {
+/// The directory `obelisk log` reads, and a note when it picked one of several live shells; `config`
+/// is `-c`.
+pub fn select_log(
+    instances: &[Instance],
+    pid: Option<u32>,
+    config: Option<&Path>,
+) -> Result<(u32, Option<String>), String> {
     if let Some(pid) = pid {
         return newest(instances.iter().filter(|instance| instance.pid == pid))
+            .map(|pid| (pid, None))
             .ok_or_else(|| format!("no shell with pid {pid}; obelisk list shows the running ones"));
     }
     let logs = || instances.iter().filter(|i| i.has_log && config.is_none_or(|config| i.config == config));
-    newest(logs().filter(|instance| instance.live)).or_else(|| newest(logs())).ok_or_else(|| match config {
+    let live = || logs().filter(|instance| instance.live);
+    if let Some(pid) = newest(live()) {
+        let count = live().count();
+        let on = config.map(|config| format!(" on {}", config.display())).unwrap_or_default();
+        let note = (count > 1).then(|| {
+            format!("{count} shells running{on}; showing pid {pid} (newest). --pid picks one; obelisk list shows them")
+        });
+        return Ok((pid, note));
+    }
+    newest(logs()).map(|pid| (pid, None)).ok_or_else(|| match config {
         Some(config) => format!("no shell log this login on {}", config.display()),
         None => "no shell log this login".to_string(),
     })
@@ -268,10 +283,14 @@ pub(crate) mod tests {
             at(3, "/b", 30, true, true),
             at(4, "/b", 1, true, false),
         ];
-        assert_eq!(select_log(&instances, None, None), Ok(3), "a terminal-started shell has nothing to read");
-        assert_eq!(select_log(&instances, None, Some(a)), Ok(2), "-c narrows");
-        assert_eq!(select_log(&instances[..1], None, None), Ok(1), "nothing live: the last run");
-        assert_eq!(select_log(&instances, Some(1), None), Ok(1), "a kept dead run is readable by pid");
+        assert_eq!(select_log(&instances, None, Some(a)), Ok((2, None)), "-c narrows; a dead run is not counted");
+        assert_eq!(select_log(&instances[..1], None, None), Ok((1, None)), "nothing live: the last run");
+        assert_eq!(select_log(&instances, Some(1), None), Ok((1, None)), "a kept dead run is readable by pid");
+        assert_eq!(
+            select_log(&instances, None, None),
+            Ok((3, Some("2 shells running; showing pid 3 (newest). --pid picks one; obelisk list shows them".into()))),
+            "a terminal-started shell has nothing to read, and is not counted"
+        );
         assert!(select_log(&instances, Some(9), None).is_err());
         assert!(select_log(&instances, None, Some(Path::new("/c"))).is_err());
     }
