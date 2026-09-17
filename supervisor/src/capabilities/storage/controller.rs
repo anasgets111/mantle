@@ -212,6 +212,10 @@ fn sync(stores: &Mutex<Stores>, path: &Path, save: bool, signal_tx: &UnboundedSe
             Ok(disk) => disk,
             Err(err) => return log_parse_error(store, path, err),
         };
+        let fixed = store.error.take().is_some();
+        if fixed {
+            eprintln!("storage: {} is readable again", path.display());
+        }
         if let Some(disk) = disk.filter(|disk| store.on_disk.as_ref() != Some(disk)) {
             let mut values = disk.clone();
             fill_missing(&mut values, &store.defaults);
@@ -221,7 +225,7 @@ fn sync(stores: &Mutex<Stores>, path: &Path, save: bool, signal_tx: &UnboundedSe
                 let _ = signal_tx.send(StorageSignal::Changed);
             }
         }
-        if !(save || store.error.take().is_some() && Some(&store.values) != store.on_disk.as_ref()) {
+        if !(save || fixed && Some(&store.values) != store.on_disk.as_ref()) {
             return;
         }
         watch(watches.as_mut(), path);
@@ -557,5 +561,22 @@ mod tests {
         assert_eq!(controller.snapshot().files[&path], json!({ "wallpaper": "/w/1.jpg" }), "the newer edit wins");
         tokio::time::sleep(SAVE_DEBOUNCE + Duration::from_millis(150)).await;
         assert_eq!(std::fs::read_to_string(&file).unwrap(), fixed, "nothing rewrites a file the shell agrees with");
+    }
+
+    #[test]
+    fn a_file_fixed_before_a_save_reads_it_logs_the_next_break_again() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("state.json");
+        let stores = Mutex::new(Stores::default());
+        stores.lock().unwrap().files.insert(file.to_string_lossy().into_owned(), Store::default());
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let error = || stores.lock().unwrap().files.values().next().unwrap().error.clone();
+
+        std::fs::write(&file, "{oops").unwrap();
+        sync(&stores, &file, false, &tx);
+        assert!(error().is_some());
+        std::fs::write(&file, "{}").unwrap();
+        sync(&stores, &file, true, &tx);
+        assert_eq!(error(), None, "a save that finds the file fixed must re-arm the log for the same breakage");
     }
 }
