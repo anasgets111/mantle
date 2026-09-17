@@ -18,6 +18,7 @@ use serde::Serialize;
 
 use crate::capabilities::truncate_utf8_bytes;
 
+pub mod actions;
 pub mod controller;
 pub mod icon;
 pub mod markup;
