@@ -56,16 +56,19 @@ impl StorageController {
         };
         let key = path.to_string_lossy().into_owned();
 
-        let changed = {
+        let (declared, changed) = {
             let mut guard = self.state.lock().expect("storage state mutex poisoned");
+            let declared = !guard.files.contains_key(&key);
             let stored = guard.files.entry(key).or_insert_with(|| load(&path));
-            fill_missing(stored, defaults)
+            (declared, fill_missing(stored, defaults))
         };
 
         if changed {
             self.schedule_save(path);
         }
-        let _ = self.signal_tx.send(StorageSignal::Changed);
+        if declared || changed {
+            let _ = self.signal_tx.send(StorageSignal::Changed);
+        }
     }
 
     /// `store:set(key, value)` (ADR-0136 decision 2): stores one key, pushes immediately for the
@@ -253,6 +256,22 @@ mod tests {
             json!("latte"),
             "the in-memory copy is newer than the disk one by the time an evaluation re-declares it"
         );
+    }
+
+    #[tokio::test]
+    async fn only_a_first_declaration_or_a_new_default_pushes() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        std::fs::write(&path, r#"{ "theme": "latte" }"#).unwrap();
+        let path = path.to_string_lossy().into_owned();
+        let (controller, mut rx) = controller();
+
+        controller.open(&path, &json!({ "theme": "mocha" }));
+        assert!(rx.try_recv().is_ok(), "a first declaration pushes even when the file already holds every default");
+        controller.open(&path, &json!({ "theme": "mocha" }));
+        assert!(rx.try_recv().is_err(), "re-declaring on each evaluation pushes nothing");
+        controller.open(&path, &json!({ "dnd": true }));
+        assert!(rx.try_recv().is_ok());
     }
 
     #[tokio::test]
