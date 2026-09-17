@@ -91,7 +91,10 @@ pub fn list(root: &Path) -> Vec<Instance> {
             let dir = entry.path();
             Some(Instance {
                 pid: pid.parse().ok()?,
-                started: SystemTime::UNIX_EPOCH + Duration::from_millis(start.parse().ok()?),
+                // A name claiming a future start would outrank every real run, so it is not one.
+                started: SystemTime::UNIX_EPOCH
+                    .checked_add(Duration::from_millis(start.parse().ok()?))
+                    .filter(|started| *started <= SystemTime::now())?,
                 config: PathBuf::from(OsString::from_vec(std::fs::read(dir.join("config")).ok()?)),
                 live: is_live(&dir),
                 has_log: dir.join(LOG).exists(),
@@ -145,9 +148,8 @@ pub fn select_log<'a>(
         let count = live().count();
         let on = config.map(|config| format!(" on {}", config.display())).unwrap_or_default();
         let pid = instance.pid;
-        let note = (count > 1).then(|| {
-            format!("{count} shells running{on}; showing pid {pid} (newest). --pid picks one; obelisk list shows them")
-        });
+        let note = (count > 1)
+            .then(|| format!("{count} shells have a log{on}; showing pid {pid} (newest). --pid picks another"));
         return Ok((instance, note));
     }
     newest(logs()).map(|instance| (instance, None)).ok_or_else(|| match config {
@@ -239,6 +241,25 @@ pub(crate) mod tests {
         assert_eq!(std::fs::read(first.join(LOG)).unwrap(), b"an earlier run");
     }
 
+    #[test]
+    fn list_reads_pid_and_start_from_the_name_and_skips_what_does_not_parse() {
+        let root = tempfile::tempdir().unwrap();
+        for name in ["42-1000", "7", "42-", "-5", "42-abc", "1-18446744073709551615", "9-2000"] {
+            let dir = root.path().join(name);
+            std::fs::create_dir(&dir).unwrap();
+            if name != "9-2000" {
+                std::fs::write(dir.join("config"), "/cfg").unwrap();
+            }
+        }
+
+        let listed: Vec<_> = list(root.path()).into_iter().map(|i| (i.pid, i.started)).collect();
+        assert_eq!(
+            listed,
+            [(42, SystemTime::UNIX_EPOCH + Duration::from_millis(1000))],
+            "a future start would outrank every real run, and a dir without config is not a run"
+        );
+    }
+
     fn at(pid: u32, config: &str, age: u64, live: bool, has_log: bool) -> Instance {
         let started = SystemTime::UNIX_EPOCH + Duration::from_secs(1000 - age);
         Instance { pid, dir: PathBuf::new(), config: config.into(), started, live, has_log }
@@ -284,7 +305,7 @@ pub(crate) mod tests {
         assert_eq!(log_pid(select_log(&instances, Some(1), None)), Ok((1, None)), "a kept dead run is readable by pid");
         assert_eq!(
             log_pid(select_log(&instances, None, None)),
-            Ok((3, Some("2 shells running; showing pid 3 (newest). --pid picks one; obelisk list shows them".into()))),
+            Ok((3, Some("2 shells have a log; showing pid 3 (newest). --pid picks another".into()))),
             "a terminal-started shell has nothing to read, and is not counted"
         );
         assert!(select_log(&instances, Some(9), None).is_err());

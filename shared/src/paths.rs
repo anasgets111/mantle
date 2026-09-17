@@ -70,8 +70,9 @@ pub const EXIT_COMPOSITOR_GONE: i32 = 71;
 /// `$HOME/.config/obelisk`.
 ///
 /// Both binaries agree through the environment: the Supervisor resolves it, `-c` included, and sets
-/// [`CONFIG_DIR_ENV`] on every Renderer it spawns, a replacement included. Passing a path through the handshake would require re-passing it on every
-/// respawn; a missed pass would silently load a different config than the watched one.
+/// [`CONFIG_DIR_ENV`] on every Renderer it spawns, a replacement included. Passing a path through
+/// the handshake would require re-passing it on every respawn; a missed pass would silently load a
+/// different config than the watched one.
 pub fn config_dir() -> io::Result<PathBuf> {
     let var = std::env::var_os;
     config_dir_from(var(CONFIG_DIR_ENV), var("XDG_CONFIG_HOME"), var("HOME"))

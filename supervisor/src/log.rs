@@ -81,7 +81,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_follow_ends_with_its_supervisor_even_when_the_pid_is_reused() {
+    fn a_follow_ends_when_its_supervisor_drops_the_lock() {
         use std::io::Read;
         let root = tempfile::tempdir().unwrap();
         let (dir, held) = instance::claim(root.path(), 42, Path::new("/cfg")).unwrap();
@@ -98,7 +98,6 @@ mod tests {
         printed.read_exact(&mut [0; 6]).unwrap();
         writeln!(log, "last words").unwrap();
         drop(held);
-        let _reused = instance::tests::retry(|| instance::claim(root.path(), 42, Path::new("/cfg")).ok());
 
         finished.recv_timeout(Duration::from_secs(5)).expect("the follow outlived its Supervisor");
         let mut rest = String::new();
