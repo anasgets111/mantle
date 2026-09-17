@@ -6,6 +6,7 @@
 pub mod backend;
 pub mod controller;
 pub mod pacman;
+pub mod reboot;
 
 pub use controller::{UpdatesController, UpdatesSignal};
 
