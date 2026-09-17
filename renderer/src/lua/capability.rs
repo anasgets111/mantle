@@ -224,7 +224,7 @@ impl UserData for Capability {
         // Delegate `get`/`map` so capabilities read like bare `Signal` globals
         // (`rescue`, `screens`).
         methods.add_method("get", |lua, this, ()| this.signal.get_value(lua));
-        methods.add_method("map", |_, this, f: Function| Ok(this.signal.mapped(f)));
+        methods.add_function("map", |lua, (ud, f): (mlua::AnyUserData, Function)| Signal::mapped(lua, ud, f));
         // The one non-rendering push reaction (ADR-0115): once per `StateSnapshot`, outside layout,
         // with new and old payloads, and input-callback powers (`invoke`, `process.run`, state).
         methods.add_method("on_change", |_, this, f: Function| {

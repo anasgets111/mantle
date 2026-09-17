@@ -166,9 +166,9 @@ impl UserData for IdleMember {
             this.announce();
             this.0.state().signal().get_value(lua)
         });
-        methods.add_method("map", |_, this, f: Function| {
-            this.announce();
-            Ok(this.0.state().signal().mapped(f))
+        methods.add_function("map", |lua, (ud, f): (mlua::AnyUserData, Function)| {
+            ud.borrow::<IdleMember>()?.announce();
+            crate::lua::signal::Signal::mapped(lua, ud, f)
         });
         methods.add_method("on_change", |_, this, f: Function| {
             this.announce();

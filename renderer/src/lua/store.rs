@@ -115,7 +115,7 @@ fn build_store(lua: &Lua, file: &str, storage: mlua::AnyUserData) -> mlua::Resul
 
 /// One file key mapped over `obelisk.storage`. `nil` before first push and for absent keys,
 /// matching the property's documented default.
-fn key_signal(lua: &Lua, storage: &Signal, file: &str, key: &str) -> mlua::Result<Signal> {
+fn key_signal(lua: &Lua, storage: &Signal, file: &str, key: &str) -> mlua::Result<mlua::AnyUserData> {
     let file = file.to_string();
     let key = key.to_string();
     let read = lua.create_function(move |_, payload: Value| {
@@ -124,7 +124,7 @@ fn key_signal(lua: &Lua, storage: &Signal, file: &str, key: &str) -> mlua::Resul
         let Value::Table(stored) = files.get::<Value>(file.as_str())? else { return Ok(Value::Nil) };
         stored.get::<Value>(key.as_str())
     })?;
-    Ok(storage.mapped(read))
+    Signal::mapped(lua, lua.create_userdata(storage.clone())?, read)
 }
 
 #[cfg(test)]

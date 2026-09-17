@@ -5053,3 +5053,23 @@ Supersedes ADR-0209, which left ADR-0208 one exception. `just run` already sets
 `$OBELISK_CONFIG_DIR`, and the owner's `~/.config/obelisk` links to `dev-config`, so the baked path
 bought nothing a debug binary needed. With nothing between them, `-c` overwrites
 `$OBELISK_CONFIG_DIR` in the Supervisor and `OBELISK_CONFIG_ARG` goes.
+
+## 0221. A derived signal keeps its function and sources as user values, not Rust fields
+
+A Lua value held from Rust is a collector root, so `M.x = computed(..., function() ... M ... end)`
+rooted `M` and every reload (ADR-0216) leaked the module: 3 MiB to 44 MiB over 602 reloads, and 89
+5ms-budget failures from longer collector steps.
+
+1. `computed`, `map`, `delay` and `pulse` store the function in user value 1 and sources from 2.
+2. `from_userdata` returns a `Derived` handle; a read fetches user values only on a memo miss.
+3. `get` and `map` are userdata functions, because a method's `&Self` has no userdata.
+
+Rejected: clearing the old evaluation's functions after apply. It misses cycles built between
+reloads, breaks signals kept in globals or `state`, and must exempt `persistent_table`'s cached keys.
+
+| 3000 re-resolves, release | before | after |
+|---|---|---|
+| real config, 800 properties | 1105-1144 µs | 1091-1119 µs |
+| 1500 derived signals | 2640 µs | 3089-3146 µs, +130 B a signal |
+
+ponytail: `Delayed`'s held and `Pulse`'s last-seen value stay Rust-held. Upgrade: user values.

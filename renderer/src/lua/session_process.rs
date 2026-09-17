@@ -120,7 +120,7 @@ fn build_handle(lua: &Lua, name: &str, processes: mlua::AnyUserData) -> mlua::Re
 /// One field of one declared program, mapped over `obelisk.processes`. `nil` before the first push
 /// and for a name the Supervisor has not answered for yet, matching the property's documented
 /// default.
-fn field_signal(lua: &Lua, processes: &Signal, name: &str, key: &str) -> mlua::Result<Signal> {
+fn field_signal(lua: &Lua, processes: &Signal, name: &str, key: &str) -> mlua::Result<mlua::AnyUserData> {
     let name = name.to_string();
     let key = key.to_string();
     let read = lua.create_function(move |_, payload: Value| {
@@ -129,5 +129,5 @@ fn field_signal(lua: &Lua, processes: &Signal, name: &str, key: &str) -> mlua::R
         let Value::Table(session) = sessions.get::<Value>(name.as_str())? else { return Ok(Value::Nil) };
         session.get::<Value>(key.as_str())
     })?;
-    Ok(processes.mapped(read))
+    Signal::mapped(lua, lua.create_userdata(processes.clone())?, read)
 }

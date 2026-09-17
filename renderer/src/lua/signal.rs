@@ -93,11 +93,12 @@ enum SignalKind {
     // ponytail: only `try_new_direct` constructs this; no production caller yet, tests only.
     #[allow(dead_code)]
     Direct(Value),
-    Computed {
-        id: MemoKey,
-        deps: Rc<Vec<Signal>>,
-        func: Function,
-    },
+    /// `computed`/`map`. Function and sources are user values, not fields, so a cycle through a
+    /// config table stays collectable (ADR-0221); `Delayed`/`Pulse` keep their source the same way.
+    Computed { id: MemoKey, arity: usize },
+    /// A `Computed`, `Delayed` or `Pulse` read out of its userdata by [`from_userdata`], carrying
+    /// the handle to its user values. Lives only as long as the read that made it.
+    Derived(mlua::AnyUserData),
     /// Rust-overwritable value (`Signal::new_live`/`LiveSignalHandle`). `Rc<RefCell<_>>` because
     /// the Loader stays on one Wayland dispatch thread (ADR-0039).
     Live(Rc<RefCell<Value>>),
@@ -105,11 +106,7 @@ enum SignalKind {
     /// only `hover_handle` can write it and `hover = obelisk.network` gets no writer. `paired_rect`
     /// links the boolean to `hover_rect(name)`'s cell; the rect half has `None` and is not a
     /// trigger.
-    Hover {
-        cell: Rc<RefCell<Value>>,
-        paired_rect: Option<Rc<RefCell<Value>>>,
-        dirty: DirtyFlag,
-    },
+    Hover { cell: Rc<RefCell<Value>>, paired_rect: Option<Rc<RefCell<Value>>>, dirty: DirtyFlag },
     /// Scroll offset in logical pixels (ADR-0069), written by the wheel handler and layout clamp.
     /// Separate from `Hover` so only `scroll_handle` writes it; `scroll = obelisk.network` cannot
     /// overwrite a capability snapshot.
@@ -125,10 +122,7 @@ enum SignalKind {
     /// even with identical storage: accepting `set` on `Live` would let config overwrite a pushed
     /// network SSID. The kind makes read-only capabilities a type-system fact. Carries the shared
     /// dirty flag because `set` has no `RendererClient` in reach.
-    State {
-        cell: Rc<RefCell<Value>>,
-        dirty: DirtyFlag,
-    },
+    State { cell: Rc<RefCell<Value>>, dirty: DirtyFlag },
     /// `geometry(name)` (ADR-0147): the laid-out `{ x, y, width, height }` of the node declaring
     /// `geometry = geometry(name)`, in its surface's logical coordinates, the same space `on_click`
     /// and `hover_rect` report. Written by the layout pass and by a tween tick, never by Lua, and
@@ -141,22 +135,16 @@ enum SignalKind {
     /// value until a read after the due time adopts the new one. A source that returns to the
     /// held value before then cancels the change, which makes this a trailing debounce as well
     /// as a close-hold.
-    Delayed {
-        source: Rc<Signal>,
-        hold: Duration,
-        cell: Rc<RefCell<DelayCell>>,
-    },
+    ///
+    /// ponytail: `held`, like `Pulse`'s `seen`, is still Rust-held (ADR-0221). Upgrade: a user value.
+    Delayed { hold: Duration, cell: Rc<RefCell<DelayCell>> },
     /// `pulse(signal, ms)` (ADR-0153): `true` for `ms` after `source` changes value, `false`
     /// otherwise. The other half of [`SignalKind::Delayed`]'s shape and the same machinery -- that
     /// one answers the old value until a change settles, this one says a change just happened --
     /// and it is what fires a one-shot animation, which a config has no way to call `restart()` on
     /// (ADR-0152). Pull-based: a read compares against the value it last saw, arms the wake, and
     /// falls back to `false` on the read after the window closes.
-    Pulse {
-        source: Rc<Signal>,
-        hold: Duration,
-        cell: Rc<RefCell<PulseCell>>,
-    },
+    Pulse { hold: Duration, cell: Rc<RefCell<PulseCell>> },
 }
 
 struct DelayCell {
@@ -207,7 +195,7 @@ impl SignalKind {
     fn describe(&self) -> &'static str {
         match self {
             SignalKind::Direct(_) => "a direct",
-            SignalKind::Computed { .. } => "a computed",
+            SignalKind::Computed { .. } | SignalKind::Derived(_) => "a computed",
             SignalKind::Live(_) => "a capability",
             SignalKind::Hover { .. } => "a hover",
             SignalKind::Scroll { .. } => "a scroll",
@@ -382,8 +370,8 @@ impl Signal {
     /// Shared by
     /// Lua and Rust so `lua::capability::Capability` makes `obelisk.lock` read like bare
     /// capabilities.
-    pub(crate) fn mapped(&self, func: Function) -> Signal {
-        Signal(SignalKind::Computed { id: next_computed_id(), deps: Rc::new(vec![self.clone()]), func })
+    pub(crate) fn mapped(lua: &Lua, source: mlua::AnyUserData, func: Function) -> mlua::Result<mlua::AnyUserData> {
+        new_derived(lua, SignalKind::Computed { id: next_computed_id(), arity: 1 }, Some(func), vec![source])
     }
 
     /// Reads current value (ADR-0044 decision 1). `layout::node` uses it to resolve signal
@@ -398,47 +386,86 @@ impl Signal {
             | SignalKind::Scroll { cell, .. }
             | SignalKind::State { cell, .. }
             | SignalKind::Geometry(cell) => Ok(cell.borrow().clone()),
-            // Both recurse into their source, so both claim a nesting level for the reason
-            // `Computed` does. Unguarded, a long enough chain exhausted the Rust stack and
-            // aborted `obelisk check` before any cap could answer.
-            SignalKind::Delayed { source, hold, cell } => {
-                let _budget = CpuBudget::enter(lua)?;
-                let fresh = source.get_value(lua)?;
-                Ok(cell.borrow_mut().follow(fresh, *hold, Instant::now(), |due| arm_wake(lua, due)))
-            }
-            SignalKind::Pulse { source, hold, cell } => {
-                let _budget = CpuBudget::enter(lua)?;
-                let fresh = source.get_value(lua)?;
-                Ok(Value::Boolean(cell.borrow_mut().fire(fresh, *hold, Instant::now(), |due| arm_wake(lua, due))))
-            }
-            SignalKind::Computed { id, deps, func } => {
-                // A repeat within this evaluation costs one hash lookup and no Lua. Checked before
-                // `CpuBudget::enter` on purpose: a hit does no work, so it must not spend a nesting
-                // level either, or a wide diamond would hit `MAX_SIGNAL_NESTING_DEPTH` on cache
-                // hits alone.
-                if let Some(hit) = EvaluationMemo::get(lua, *id) {
-                    return Ok(hit);
-                }
-
-                // Enter before dependency resolution, not only `func.call`, so nesting depth also
-                // bounds dependency chains.
-                let budget = CpuBudget::enter(lua)?;
-                // Opened by whichever `Computed` is outermost and dropped when it returns, so the
-                // memo spans exactly one evaluation. It deliberately does not span a
-                // `capability::CapabilityHandle::notify_change` handler: that handler may `:set()`
-                // between its own `:get()` calls and has to observe its own writes.
-                let _memo = EvaluationMemo::enter(lua);
-
-                let mut args = Vec::with_capacity(deps.len());
-                for dep in deps.iter() {
-                    args.push(dep.get_value(lua)?);
-                }
-                let value = func.call::<Value>(MultiValue::from_vec(args))?;
-                budget.check_not_exceeded()?;
-                EvaluationMemo::insert(lua, *id, &value);
-                Ok(value)
-            }
+            SignalKind::Computed { .. } | SignalKind::Delayed { .. } | SignalKind::Pulse { .. } => Err(
+                mlua::Error::runtime("a derived signal was read without the userdata holding its function and sources"),
+            ),
+            SignalKind::Derived(ud) => read_derived(lua, ud),
         }
+    }
+}
+
+/// User value holding a `Computed`'s function; its sources, or a `Delayed`/`Pulse` source, follow.
+const FUNCTION_SLOT: usize = 1;
+const FIRST_SOURCE_SLOT: usize = 2;
+
+/// A derived signal's userdata, with `func` and `sources` as user values rather than Rust fields
+/// (see [`SignalKind::Computed`]).
+fn new_derived(
+    lua: &Lua,
+    kind: SignalKind,
+    func: Option<Function>,
+    sources: Vec<mlua::AnyUserData>,
+) -> mlua::Result<mlua::AnyUserData> {
+    let ud = lua.create_userdata(Signal(kind))?;
+    if let Some(func) = func {
+        ud.set_nth_user_value(FUNCTION_SLOT, func)?;
+    }
+    for (offset, source) in sources.into_iter().enumerate() {
+        ud.set_nth_user_value(FIRST_SOURCE_SLOT + offset, source)?;
+    }
+    Ok(ud)
+}
+
+fn source_at(ud: &mlua::AnyUserData, slot: usize) -> mlua::Result<Signal> {
+    let source: mlua::AnyUserData = ud.nth_user_value(slot)?;
+    from_userdata(&source).ok_or_else(|| mlua::Error::runtime("a derived signal's source is not a signal"))
+}
+
+fn read_derived(lua: &Lua, ud: &mlua::AnyUserData) -> mlua::Result<Value> {
+    let kind = ud.borrow::<Signal>()?.0.clone();
+    match kind {
+        // Both recurse into their source, so both claim a nesting level for the reason
+        // `Computed` does. Unguarded, a long enough chain exhausted the Rust stack and
+        // aborted `obelisk check` before any cap could answer.
+        SignalKind::Delayed { hold, cell } => {
+            let _budget = CpuBudget::enter(lua)?;
+            let fresh = source_at(ud, FIRST_SOURCE_SLOT)?.get_value(lua)?;
+            Ok(cell.borrow_mut().follow(fresh, hold, Instant::now(), |due| arm_wake(lua, due)))
+        }
+        SignalKind::Pulse { hold, cell } => {
+            let _budget = CpuBudget::enter(lua)?;
+            let fresh = source_at(ud, FIRST_SOURCE_SLOT)?.get_value(lua)?;
+            Ok(Value::Boolean(cell.borrow_mut().fire(fresh, hold, Instant::now(), |due| arm_wake(lua, due))))
+        }
+        SignalKind::Computed { id, arity } => {
+            // A repeat within this evaluation costs one hash lookup and no Lua. Checked before
+            // `CpuBudget::enter` on purpose: a hit does no work, so it must not spend a nesting
+            // level either, or a wide diamond would hit `MAX_SIGNAL_NESTING_DEPTH` on cache
+            // hits alone.
+            if let Some(hit) = EvaluationMemo::get(lua, id) {
+                return Ok(hit);
+            }
+
+            // Enter before dependency resolution, not only `func.call`, so nesting depth also
+            // bounds dependency chains.
+            let budget = CpuBudget::enter(lua)?;
+            // Opened by whichever `Computed` is outermost and dropped when it returns, so the
+            // memo spans exactly one evaluation. It deliberately does not span a
+            // `capability::CapabilityHandle::notify_change` handler: that handler may `:set()`
+            // between its own `:get()` calls and has to observe its own writes.
+            let _memo = EvaluationMemo::enter(lua);
+
+            let mut args = Vec::with_capacity(arity);
+            for slot in FIRST_SOURCE_SLOT..FIRST_SOURCE_SLOT + arity {
+                args.push(source_at(ud, slot)?.get_value(lua)?);
+            }
+            let func: Function = ud.nth_user_value(FUNCTION_SLOT)?;
+            let value = func.call::<Value>(MultiValue::from_vec(args))?;
+            budget.check_not_exceeded()?;
+            EvaluationMemo::insert(lua, id, &value);
+            Ok(value)
+        }
+        other => Signal(other).get_value(lua),
     }
 }
 
@@ -561,8 +588,10 @@ impl Default for DirtyFlag {
 
 impl UserData for Signal {
     fn add_methods<M: UserDataMethods<Self>>(methods: &mut M) {
-        methods.add_method("get", |lua, this, ()| this.get_value(lua));
-        methods.add_method("map", |_, this, f: Function| Ok(this.mapped(f)));
+        // Functions, not methods: a derived signal's read needs the userdata its user values hang
+        // off, which a method's `&Self` has lost.
+        methods.add_function("get", |lua, ud: mlua::AnyUserData| read(lua, &ud));
+        methods.add_function("map", |lua, (ud, f): (mlua::AnyUserData, Function)| Signal::mapped(lua, ud, f));
         // ADR-0112: config requests a child, not a pixel offset; the pass owns pixels
         // (ADR-0069 decision 2).
         methods.add_method("reveal", |_, this, index: i64| {
@@ -892,13 +921,17 @@ fn expired_budget(lua: &Lua) -> Option<&'static str> {
 /// `capability::Capability`, and wrapped `IdleMember`; every capability uses one, so live
 /// bindings stay live instead of becoming literals.
 ///
-/// This clone runs for every signal-valued property of every node, on every whole-scene resolve,
-/// which is why `SignalKind::Computed` holds its dependencies behind an `Rc`: owning them outright
-/// would make the clone recursive, copying a vector per link of every `map`/`computed` chain.
-/// Dependencies never change after construction and the Loader stays on one thread (ADR-0039).
+/// This runs for every signal-valued property of every node, on every whole-scene resolve, so a
+/// derived signal comes back as a [`SignalKind::Derived`] handle and its sources are read only when
+/// it is.
 pub fn from_userdata(ud: &mlua::AnyUserData) -> Option<Signal> {
     if let Ok(signal) = ud.borrow::<Signal>() {
-        return Some(signal.clone());
+        return Some(match signal.0 {
+            SignalKind::Computed { .. } | SignalKind::Delayed { .. } | SignalKind::Pulse { .. } => {
+                Signal(SignalKind::Derived(ud.clone()))
+            }
+            _ => signal.clone(),
+        });
     }
     if let Ok(capability) = ud.borrow::<crate::lua::capability::Capability>() {
         return Some(capability.signal());
@@ -906,6 +939,11 @@ pub fn from_userdata(ud: &mlua::AnyUserData) -> Option<Signal> {
     // `IdleMember` wraps a capability beside its three threshold methods (ADR-0141); without this
     // arm `visible = obelisk.idle` is the one unbindable capability.
     Some(ud.borrow::<crate::lua::idle::IdleMember>().ok()?.signal())
+}
+
+/// `signal:get()` on any signal-like userdata.
+pub(crate) fn read(lua: &Lua, ud: &mlua::AnyUserData) -> mlua::Result<Value> {
+    from_userdata(ud).ok_or_else(|| mlua::Error::runtime("not a signal"))?.get_value(lua)
 }
 
 /// [`from_userdata`] without cloning; both must agree on signal types, tested by
@@ -940,45 +978,44 @@ pub fn register(lua: &Lua, dirty: DirtyFlag) -> mlua::Result<()> {
     let scroll_dirty = dirty.clone();
     lua.globals().set(
         "computed",
-        lua.create_function(|_, (deps, func): (Table, Function)| {
+        lua.create_function(|lua, (deps, func): (Table, Function)| {
             let collected = deps
                 .sequence_values::<mlua::AnyUserData>()
                 .map(|dep| {
+                    let dep = dep?;
                     // Name the expected type; `borrow`'s error does not.
-                    from_userdata(&dep?).ok_or_else(|| {
-                        mlua::Error::runtime("computed() dependencies must be Signals or `obelisk` capabilities")
-                    })
+                    if !is_signal(&dep) {
+                        return Err(mlua::Error::runtime(
+                            "computed() dependencies must be Signals or `obelisk` capabilities",
+                        ));
+                    }
+                    Ok(dep)
                 })
                 .collect::<mlua::Result<Vec<_>>>()?;
-            Ok(Signal(SignalKind::Computed { id: next_computed_id(), deps: Rc::new(collected), func }))
+            let kind = SignalKind::Computed { id: next_computed_id(), arity: collected.len() };
+            new_derived(lua, kind, Some(func), collected)
         })?,
     )?;
     lua.globals().set(
         "delay",
-        lua.create_function(|lua, (source, millis): (mlua::AnyUserData, f64)| {
-            let source = from_userdata(&source)
+        lua.create_function(|lua, (source_ud, millis): (mlua::AnyUserData, f64)| {
+            let source = from_userdata(&source_ud)
                 .ok_or_else(|| mlua::Error::runtime("delay() takes a Signal or an `obelisk` capability first"))?;
             let hold = parse_hold("delay() hold", millis)?;
             let held = source.get_value(lua)?;
-            Ok(Signal(SignalKind::Delayed {
-                source: Rc::new(source),
-                hold,
-                cell: Rc::new(RefCell::new(DelayCell { held, pending: None })),
-            }))
+            let cell = Rc::new(RefCell::new(DelayCell { held, pending: None }));
+            new_derived(lua, SignalKind::Delayed { hold, cell }, None, vec![source_ud])
         })?,
     )?;
     lua.globals().set(
         "pulse",
-        lua.create_function(|lua, (source, millis): (mlua::AnyUserData, f64)| {
-            let source = from_userdata(&source)
+        lua.create_function(|lua, (source_ud, millis): (mlua::AnyUserData, f64)| {
+            let source = from_userdata(&source_ud)
                 .ok_or_else(|| mlua::Error::runtime("pulse() takes a Signal or an `obelisk` capability first"))?;
             let hold = parse_hold("pulse() window", millis)?;
             let seen = source.get_value(lua)?;
-            Ok(Signal(SignalKind::Pulse {
-                source: Rc::new(source),
-                hold,
-                cell: Rc::new(RefCell::new(PulseCell { seen, until: None })),
-            }))
+            let cell = Rc::new(RefCell::new(PulseCell { seen, until: None }));
+            new_derived(lua, SignalKind::Pulse { hold, cell }, None, vec![source_ud])
         })?,
     )?;
     lua.globals().set(
@@ -1923,6 +1960,38 @@ mod tests {
                 err.to_string().contains("signal nesting exceeded"),
                 "a 200-link {builder} chain must trip the nesting cap: {err}"
             );
+        }
+    }
+
+    #[test]
+    fn a_derived_signal_stored_in_a_table_its_function_captures_is_collected() {
+        // `M.x = computed(..., function() ... M ... end)` is how a module exports a signal. Held
+        // from Rust, the function rooted `M`, and every reload leaked the whole module.
+        for builder in [
+            "t.x = a:map(function() return t and 1 end)",
+            "t.x = computed({ a }, function() return t and 1 end)",
+            "t.x = delay(a:map(function() return t and 1 end), 1)",
+            "t.x = pulse(a:map(function() return t and 1 end), 1)",
+        ] {
+            let lua = lua_with_signal("a", Value::Integer(1));
+            let collected: bool = lua
+                .load(format!(
+                    r#"
+                    local weak = setmetatable({{}}, {{ __mode = "v" }})
+                    do
+                        local t = {{}}
+                        {builder}
+                        t.x:get()
+                        weak[1] = t
+                    end
+                    collectgarbage()
+                    collectgarbage()
+                    return weak[1] == nil
+                    "#
+                ))
+                .eval()
+                .unwrap();
+            assert!(collected, "`{builder}` must not keep its table alive");
         }
     }
 
