@@ -140,22 +140,15 @@ fn publish_if_changed(
     }
 }
 
-/// `cpu_percent` task. Keeps the previous `/proc/stat` sample across ticks; the first tick after
-/// cold start or resume stores only a sample. The three similar loops stay separate because a
-/// closure returning a future borrowing its own state cannot escape stable Rust's plain `FnMut`.
-async fn run_cpu_task(
-    proc_root: std::path::PathBuf,
-    mut interval_rx: tokio::sync::watch::Receiver<Duration>,
-    state: std::sync::Arc<std::sync::Mutex<SysinfoState>>,
-    signal_tx: tokio::sync::mpsc::UnboundedSender<SysinfoSignal>,
-) {
-    let mut previous: Option<super::cpu::CpuSample> = None;
+/// One metric's poll loop: parked while its interval is zero, otherwise `tick` once per interval.
+/// `previous` is the tick's memory across samples, cleared on going dormant: `/proc/stat` counters
+/// are cumulative since boot, so a delta across a dormant spell is bogus.
+async fn run_ticker<T>(mut interval_rx: tokio::sync::watch::Receiver<Duration>, mut tick: impl FnMut(&mut Option<T>)) {
+    let mut previous = None;
     loop {
         let interval = *interval_rx.borrow_and_update();
         match poll_mode(interval) {
             PollMode::Dormant => {
-                // `/proc/stat` counters are cumulative since boot; discard pre-dormancy samples or
-                // the next delta is bogus.
                 previous = None;
                 if interval_rx.changed().await.is_err() {
                     return; // every SysinfoController that could reconfigure this task is gone
@@ -166,22 +159,7 @@ async fn run_cpu_task(
                 ticker.tick().await; // tokio::time::interval's first tick fires immediately; consume it unused
                 loop {
                     tokio::select! {
-                        _ = ticker.tick() => {
-                            match super::cpu::read_sample(&proc_root) {
-                                Ok(sample) => {
-                                    if let Some(prev) = previous.take() {
-                                        let percent = super::cpu::delta_percent(&prev, &sample);
-                                        publish_if_changed(&state, &signal_tx, |state| {
-                                            let changed = state.cpu_percent != percent;
-                                            state.cpu_percent = percent;
-                                            changed
-                                        });
-                                    }
-                                    previous = Some(sample);
-                                }
-                                Err(err) => eprintln!("sysinfo: failed to read /proc/stat: {err}"),
-                            }
-                        }
+                        _ = ticker.tick() => tick(&mut previous),
                         changed = interval_rx.changed() => {
                             if changed.is_err() {
                                 return;
@@ -195,53 +173,51 @@ async fn run_cpu_task(
     }
 }
 
+/// `cpu_percent` task. The first tick after cold start or resume stores only a sample.
+async fn run_cpu_task(
+    proc_root: std::path::PathBuf,
+    interval_rx: tokio::sync::watch::Receiver<Duration>,
+    state: std::sync::Arc<std::sync::Mutex<SysinfoState>>,
+    signal_tx: tokio::sync::mpsc::UnboundedSender<SysinfoSignal>,
+) {
+    run_ticker(interval_rx, |previous| match super::cpu::read_sample(&proc_root) {
+        Ok(sample) => {
+            if let Some(prev) = previous.take() {
+                let percent = super::cpu::delta_percent(&prev, &sample);
+                publish_if_changed(&state, &signal_tx, |state| {
+                    let changed = state.cpu_percent != percent;
+                    state.cpu_percent = percent;
+                    changed
+                });
+            }
+            *previous = Some(sample);
+        }
+        Err(err) => eprintln!("sysinfo: failed to read /proc/stat: {err}"),
+    })
+    .await
+}
+
 /// `ram_percent`/`swap_percent` task. One `/proc/meminfo` read per tick; `swap_percent` rides
 /// `ram_interval` with no separate interval (ADR-0035).
 async fn run_ram_task(
     proc_root: std::path::PathBuf,
-    mut interval_rx: tokio::sync::watch::Receiver<Duration>,
+    interval_rx: tokio::sync::watch::Receiver<Duration>,
     state: std::sync::Arc<std::sync::Mutex<SysinfoState>>,
     signal_tx: tokio::sync::mpsc::UnboundedSender<SysinfoSignal>,
 ) {
-    loop {
-        let interval = *interval_rx.borrow_and_update();
-        match poll_mode(interval) {
-            PollMode::Dormant => {
-                if interval_rx.changed().await.is_err() {
-                    return;
-                }
-            }
-            PollMode::Ticking(duration) => {
-                let mut ticker = tokio::time::interval(duration);
-                ticker.tick().await;
-                loop {
-                    tokio::select! {
-                        _ = ticker.tick() => {
-                            match super::ram::read_meminfo(&proc_root) {
-                                Ok(info) => {
-                                    let (ram_percent, swap_percent) = super::ram::compute_percentages(&info);
-                                    publish_if_changed(&state, &signal_tx, |state| {
-                                        let changed =
-                                            state.ram_percent != ram_percent || state.swap_percent != swap_percent;
-                                        state.ram_percent = ram_percent;
-                                        state.swap_percent = swap_percent;
-                                        changed
-                                    });
-                                }
-                                Err(err) => eprintln!("sysinfo: failed to read /proc/meminfo: {err}"),
-                            }
-                        }
-                        changed = interval_rx.changed() => {
-                            if changed.is_err() {
-                                return;
-                            }
-                            break;
-                        }
-                    }
-                }
-            }
+    run_ticker(interval_rx, |_: &mut Option<()>| match super::ram::read_meminfo(&proc_root) {
+        Ok(info) => {
+            let (ram_percent, swap_percent) = super::ram::compute_percentages(&info);
+            publish_if_changed(&state, &signal_tx, |state| {
+                let changed = state.ram_percent != ram_percent || state.swap_percent != swap_percent;
+                state.ram_percent = ram_percent;
+                state.swap_percent = swap_percent;
+                changed
+            });
         }
-    }
+        Err(err) => eprintln!("sysinfo: failed to read /proc/meminfo: {err}"),
+    })
+    .await
 }
 
 /// `temp_cores`/`temp_gpu` task. One hwmon pass per tick; `temp_gpu` rides `temp_interval`. Resolve
@@ -250,44 +226,21 @@ async fn run_ram_task(
 async fn run_temp_task(
     core_source: super::temp::CoreTempSource,
     gpu_chip: Option<std::path::PathBuf>,
-    mut interval_rx: tokio::sync::watch::Receiver<Duration>,
+    interval_rx: tokio::sync::watch::Receiver<Duration>,
     state: std::sync::Arc<std::sync::Mutex<SysinfoState>>,
     signal_tx: tokio::sync::mpsc::UnboundedSender<SysinfoSignal>,
 ) {
-    loop {
-        let interval = *interval_rx.borrow_and_update();
-        match poll_mode(interval) {
-            PollMode::Dormant => {
-                if interval_rx.changed().await.is_err() {
-                    return;
-                }
-            }
-            PollMode::Ticking(duration) => {
-                let mut ticker = tokio::time::interval(duration);
-                ticker.tick().await;
-                loop {
-                    tokio::select! {
-                        _ = ticker.tick() => {
-                            let temp_cores = super::temp::read_temp_cores_from(&core_source);
-                            let temp_gpu = super::temp::read_temp_gpu_from(gpu_chip.as_deref());
-                            publish_if_changed(&state, &signal_tx, |state| {
-                                let changed = state.temp_cores != temp_cores || state.temp_gpu != temp_gpu;
-                                state.temp_cores = temp_cores;
-                                state.temp_gpu = temp_gpu;
-                                changed
-                            });
-                        }
-                        changed = interval_rx.changed() => {
-                            if changed.is_err() {
-                                return;
-                            }
-                            break;
-                        }
-                    }
-                }
-            }
-        }
-    }
+    run_ticker(interval_rx, |_: &mut Option<()>| {
+        let temp_cores = super::temp::read_temp_cores_from(&core_source);
+        let temp_gpu = super::temp::read_temp_gpu_from(gpu_chip.as_deref());
+        publish_if_changed(&state, &signal_tx, |state| {
+            let changed = state.temp_cores != temp_cores || state.temp_gpu != temp_gpu;
+            state.temp_cores = temp_cores;
+            state.temp_gpu = temp_gpu;
+            changed
+        });
+    })
+    .await
 }
 
 #[cfg(test)]

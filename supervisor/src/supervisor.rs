@@ -75,10 +75,10 @@ pub(crate) struct Supervisor {
     /// logind half of the same fact (ADR-0138), publishing `loginctl show-session`'s `LockedHint`
     /// whenever the marker changes.
     session_bridge: lock::logind::SessionBridge,
-    /// Capability state-version counters by name (ADR-0004).
-    revisions: HashMap<String, u32>,
+    /// Capability state-version counters (ADR-0004).
+    revisions: HashMap<Capability, u32>,
     /// Last snapshot per capability, replayed to each new generation by [`Supervisor::hydrate`].
-    last_snapshots: HashMap<String, shared::StateSnapshot>,
+    last_snapshots: HashMap<Capability, shared::StateSnapshot>,
     /// Id for the next crash replacement.
     next_generation_id: u32,
     /// Renderer binary for every spawn.

@@ -88,12 +88,7 @@ struct BacklightDevice {
     max: i32,
 }
 
-/// Fallback cadence, matching private `battery::controller::POLL_INTERVAL`.
-///
-/// ponytail: `battery` and `brightness` duplicate the initial-read, udev-watch, poll-fallback
-/// shape, but only two callers have different payload types. Extract a harness at the third
-/// sysfs-watched capability, parameterized by the read closure and state type; move this constant
-/// with it.
+/// Cadence when the udev watch is unavailable.
 const POLL_INTERVAL: Duration = Duration::from_secs(30);
 
 #[derive(Clone)]

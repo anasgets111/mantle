@@ -6,10 +6,10 @@
 //! module. `CONTEXT.md`'s **Compositor link** already scoped that trait to "what keyboard layout
 //! needs today", so the probe belonged elsewhere.
 //!
-//! This owns detection and Hyprland's socket paths, with no adaptor. ADR-0056 decision 1 says
+//! This owns detection and compositor IPC plumbing, with no adaptor. ADR-0056 decision 1 says
 //! `workspaces` gets no trait and `CompositorLink` does not grow one. The two capabilities share
-//! only this probe and, since `workspaces::hyprland` (ADR-0118), the two socket locations; both
-//! moved here unchanged in behaviour.
+//! only this probe, the IPC connections and, since `workspaces::hyprland` (ADR-0118), the two
+//! socket locations.
 
 use std::io::{Read, Write};
 use std::os::unix::net::UnixStream;
@@ -111,6 +111,53 @@ pub fn hyprland_command(socket_path: &Path, command: &str, capability: &str) {
         Ok(reply) => eprintln!("{capability}: Hyprland refused `{command}`: {}", reply.trim()),
         Err(err) => eprintln!("{capability}: Hyprland `{command}` request failed: {err}"),
     }
+}
+
+/// `$NIRI_SOCKET` with its event stream requested, ready for `read_events`. `None` has logged why;
+/// `feature` names what the caller disables for the run.
+pub fn niri_event_stream(capability: &str, feature: &str) -> Option<niri_ipc::socket::Socket> {
+    let mut socket = match niri_ipc::socket::Socket::connect() {
+        Ok(socket) => socket,
+        Err(err) => {
+            eprintln!("{capability}: failed to connect to the niri IPC socket; {feature} disabled for this run: {err}");
+            return None;
+        }
+    };
+    match socket.send(niri_ipc::Request::EventStream) {
+        Ok(Ok(niri_ipc::Response::Handled)) => Some(socket),
+        Ok(Ok(_)) => {
+            eprintln!(
+                "{capability}: unexpected reply to the niri EventStream request; {feature} disabled for this run"
+            );
+            None
+        }
+        Ok(Err(msg)) => {
+            eprintln!("{capability}: niri EventStream request failed: {msg}");
+            None
+        }
+        Err(err) => {
+            eprintln!("{capability}: failed to send the niri EventStream request: {err}");
+            None
+        }
+    }
+}
+
+/// One niri action, fire-and-forget on its own thread. A fresh connection each time: `read_events`
+/// shuts down the event-stream socket's write half.
+pub fn niri_action(action: niri_ipc::Action, capability: &'static str) {
+    std::thread::spawn(move || {
+        let label = format!("{action:?}");
+        let mut socket = match niri_ipc::socket::Socket::connect() {
+            Ok(socket) => socket,
+            Err(err) => {
+                eprintln!("{capability}: failed to connect to the niri IPC socket for {label}: {err}");
+                return;
+            }
+        };
+        if let Err(err) = socket.send(niri_ipc::Request::Action(action)) {
+            eprintln!("{capability}: niri {label} request failed: {err}");
+        }
+    });
 }
 
 fn session_desktop() -> Option<String> {

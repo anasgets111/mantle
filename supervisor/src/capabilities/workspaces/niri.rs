@@ -71,32 +71,7 @@ fn focused_window(windows: &HashMap<u64, niri_ipc::Window>) -> Option<FocusedWin
 /// both parts and re-requesting the stream; no instance has been observed and this code cannot
 /// trigger the case.
 pub fn spawn_reader(mut publisher: StatePublisher) {
-    let mut socket = match niri_ipc::socket::Socket::connect() {
-        Ok(socket) => socket,
-        Err(err) => {
-            eprintln!(
-                "workspaces: failed to connect to the niri IPC socket; workspace reporting disabled for this run: {err}"
-            );
-            return;
-        }
-    };
-    match socket.send(niri_ipc::Request::EventStream) {
-        Ok(Ok(niri_ipc::Response::Handled)) => {}
-        Ok(Ok(_)) => {
-            eprintln!(
-                "workspaces: unexpected reply to the niri EventStream request; workspace reporting disabled for this run"
-            );
-            return;
-        }
-        Ok(Err(msg)) => {
-            eprintln!("workspaces: niri EventStream request failed: {msg}");
-            return;
-        }
-        Err(err) => {
-            eprintln!("workspaces: failed to send the niri EventStream request: {err}");
-            return;
-        }
-    }
+    let Some(socket) = crate::compositor::niri_event_stream("workspaces", "workspace reporting") else { return };
 
     std::thread::spawn(move || {
         use niri_ipc::state::EventStreamStatePart;
@@ -125,25 +100,11 @@ pub fn spawn_reader(mut publisher: StatePublisher) {
     });
 }
 
-/// `workspaces:focus(id)`. Use a fresh connection: `read_events` consumes and shuts down the
-/// event-stream socket's write half. Use `WorkspaceReferenceArg::Id`, not `Index`; `idx` shifts
-/// on reorder and could focus the wrong workspace.
+/// `workspaces:focus(id)`. `WorkspaceReferenceArg::Id`, not `Index`: `idx` shifts on reorder and
+/// could focus the wrong workspace.
 pub fn focus(id: u64) {
-    std::thread::spawn(move || {
-        let mut socket = match niri_ipc::socket::Socket::connect() {
-            Ok(socket) => socket,
-            Err(err) => {
-                eprintln!("workspaces: failed to connect to the niri IPC socket for focus: {err}");
-                return;
-            }
-        };
-        let request = niri_ipc::Request::Action(niri_ipc::Action::FocusWorkspace {
-            reference: niri_ipc::WorkspaceReferenceArg::Id(id),
-        });
-        if let Err(err) = socket.send(request) {
-            eprintln!("workspaces: niri FocusWorkspace({id}) request failed: {err}");
-        }
-    });
+    let reference = niri_ipc::WorkspaceReferenceArg::Id(id);
+    crate::compositor::niri_action(niri_ipc::Action::FocusWorkspace { reference }, "workspaces");
 }
 
 #[cfg(test)]

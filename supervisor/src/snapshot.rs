@@ -8,10 +8,10 @@ use shared::{Capability, SupervisorFrame};
 
 use crate::{send_frame_logged, socket};
 
-/// Bumps and returns `capability`'s state-version counter (ADR-0004; ADR-0029's name-keyed map).
+/// Bumps and returns `capability`'s state-version counter (ADR-0004).
 /// First push is `1`.
-pub(crate) fn bump_revision(revisions: &mut HashMap<String, u32>, capability: Capability) -> u32 {
-    let revision = revisions.entry(capability.to_string()).or_insert(0);
+pub(crate) fn bump_revision(revisions: &mut HashMap<Capability, u32>, capability: Capability) -> u32 {
+    let revision = revisions.entry(capability).or_insert(0);
     *revision += 1;
     *revision
 }
@@ -24,8 +24,8 @@ pub(crate) fn bump_revision(revisions: &mut HashMap<String, u32>, capability: Ca
 pub(crate) fn push_snapshot(
     registry: &socket::GenerationRegistry,
     generation_id: u32,
-    revisions: &mut HashMap<String, u32>,
-    last_snapshots: &mut HashMap<String, shared::StateSnapshot>,
+    revisions: &mut HashMap<Capability, u32>,
+    last_snapshots: &mut HashMap<Capability, shared::StateSnapshot>,
     capability: Capability,
     state: &impl serde::Serialize,
 ) {
@@ -42,7 +42,7 @@ pub(crate) fn push_snapshot(
             });
             send_frame_logged(registry, generation_id, &frame);
             if let SupervisorFrame::StateSnapshot(snapshot) = frame {
-                last_snapshots.insert(capability.to_string(), snapshot);
+                last_snapshots.insert(capability, snapshot);
             }
         }
         Err(err) => eprintln!("failed to serialize {capability} StateSnapshot: {err}"),

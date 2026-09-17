@@ -9,7 +9,9 @@ use std::sync::{Arc, Mutex};
 use serde::Deserialize;
 use tokio::sync::mpsc::UnboundedSender;
 
-use crate::compositor::{CompositorKind, hyprland_command, hyprland_request, hyprland_socket_path};
+use crate::compositor::{
+    CompositorKind, hyprland_command, hyprland_request, hyprland_socket_path, niri_action, niri_event_stream,
+};
 
 use super::controller::{KeyboardSignal, KeyboardState};
 
@@ -34,32 +36,7 @@ impl NiriLink {
     /// The first event carries full initial state, so no startup query is needed. Failed connects
     /// yield `None`.
     pub fn new(state: Arc<Mutex<KeyboardState>>, events: UnboundedSender<KeyboardSignal>) -> Option<Self> {
-        let mut socket = match niri_ipc::socket::Socket::connect() {
-            Ok(socket) => socket,
-            Err(err) => {
-                eprintln!(
-                    "keyboard: failed to connect to the niri IPC socket; layout reporting disabled for this run: {err}"
-                );
-                return None;
-            }
-        };
-        match socket.send(niri_ipc::Request::EventStream) {
-            Ok(Ok(niri_ipc::Response::Handled)) => {}
-            Ok(Ok(_)) => {
-                eprintln!(
-                    "keyboard: unexpected reply to niri EventStream request; layout reporting disabled for this run"
-                );
-                return None;
-            }
-            Ok(Err(msg)) => {
-                eprintln!("keyboard: niri EventStream request failed: {msg}");
-                return None;
-            }
-            Err(err) => {
-                eprintln!("keyboard: failed to send the niri EventStream request: {err}");
-                return None;
-            }
-        }
+        let socket = niri_event_stream("keyboard", "layout reporting")?;
 
         std::thread::spawn(move || {
             let mut read_event = socket.read_events();
@@ -99,8 +76,6 @@ impl CompositorLink for NiriLink {
         CompositorKind::Niri
     }
 
-    /// Opens a fresh connection because `read_events` consumes and shuts down the event socket's
-    /// write half; that connection cannot also send this command.
     fn switch_layout(&self, index: usize) {
         // JSON-RPC supplies an unbounded u64, while niri's wire protocol takes u8. Reject overflow
         // instead of truncating 256 to 0.
@@ -108,21 +83,8 @@ impl CompositorLink for NiriLink {
             eprintln!("keyboard: switch_layout index {index} is out of range for niri (must fit in a u8); ignored");
             return;
         };
-        std::thread::spawn(move || {
-            let mut socket = match niri_ipc::socket::Socket::connect() {
-                Ok(socket) => socket,
-                Err(err) => {
-                    eprintln!("keyboard: failed to connect to the niri IPC socket for switch_layout: {err}");
-                    return;
-                }
-            };
-            let request = niri_ipc::Request::Action(niri_ipc::Action::SwitchLayout {
-                layout: niri_ipc::LayoutSwitchTarget::Index(index),
-            });
-            if let Err(err) = socket.send(request) {
-                eprintln!("keyboard: niri SwitchLayout request failed: {err}");
-            }
-        });
+        let layout = niri_ipc::LayoutSwitchTarget::Index(index);
+        niri_action(niri_ipc::Action::SwitchLayout { layout }, "keyboard");
     }
 }
 

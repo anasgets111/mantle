@@ -746,8 +746,6 @@ mod tests {
 
     /// ADR-0190. The window is time the user has authenticated and is still looking at a lock
     /// screen, so the ceiling is the engine's and not the config's.
-    /// ADR-0190. The window is time the user has authenticated and is still looking at a lock
-    /// screen, so the ceiling is the engine's and not the config's.
     #[test]
     fn the_unlock_animation_is_clamped_to_the_engines_ceiling() {
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
