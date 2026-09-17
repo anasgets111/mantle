@@ -94,7 +94,8 @@ enum SignalKind {
     #[allow(dead_code)]
     Direct(Value),
     /// `computed`/`map`. Function and sources are user values, not fields, so a cycle through a
-    /// config table stays collectable (ADR-0221); `Delayed`/`Pulse` keep their source the same way.
+    /// config table stays collectable (ADR-0221); `Delayed`/`Pulse` keep their source and values the
+    /// same way, leaving only their clocks in Rust.
     Computed { id: MemoKey, arity: usize },
     /// A `Computed`, `Delayed` or `Pulse` read out of its userdata by [`from_userdata`], carrying
     /// the handle to its user values. Lives only as long as the read that made it.
@@ -135,16 +136,14 @@ enum SignalKind {
     /// value until a read after the due time adopts the new one. A source that returns to the
     /// held value before then cancels the change, which makes this a trailing debounce as well
     /// as a close-hold.
-    ///
-    /// ponytail: `held`, like `Pulse`'s `seen`, is still Rust-held (ADR-0221). Upgrade: a user value.
-    Delayed { hold: Duration, cell: Rc<RefCell<DelayCell>> },
+    Delayed { hold: Duration, due: Rc<Cell<Option<Instant>>> },
     /// `pulse(signal, ms)` (ADR-0153): `true` for `ms` after `source` changes value, `false`
     /// otherwise. The other half of [`SignalKind::Delayed`]'s shape and the same machinery -- that
     /// one answers the old value until a change settles, this one says a change just happened --
     /// and it is what fires a one-shot animation, which a config has no way to call `restart()` on
     /// (ADR-0152). Pull-based: a read compares against the value it last saw, arms the wake, and
     /// falls back to `false` on the read after the window closes.
-    Pulse { hold: Duration, cell: Rc<RefCell<PulseCell>> },
+    Pulse { hold: Duration, until: Rc<Cell<Option<Instant>>> },
 }
 
 struct DelayCell {
@@ -397,6 +396,9 @@ impl Signal {
 /// User value holding a `Computed`'s function; its sources, or a `Delayed`/`Pulse` source, follow.
 const FUNCTION_SLOT: usize = 1;
 const FIRST_SOURCE_SLOT: usize = 2;
+/// A `Delayed`'s held value or a `Pulse`'s last-seen one, after the source; then a pending value.
+const HELD_SLOT: usize = FIRST_SOURCE_SLOT + 1;
+const PENDING_SLOT: usize = HELD_SLOT + 1;
 
 /// A derived signal's userdata, with `func` and `sources` as user values rather than Rust fields
 /// (see [`SignalKind::Computed`]).
@@ -427,15 +429,26 @@ fn read_derived(lua: &Lua, ud: &mlua::AnyUserData) -> mlua::Result<Value> {
         // Both recurse into their source, so both claim a nesting level for the reason
         // `Computed` does. Unguarded, a long enough chain exhausted the Rust stack and
         // aborted `obelisk check` before any cap could answer.
-        SignalKind::Delayed { hold, cell } => {
+        SignalKind::Delayed { hold, due } => {
             let _budget = CpuBudget::enter(lua)?;
             let fresh = source_at(ud, FIRST_SOURCE_SLOT)?.get_value(lua)?;
-            Ok(cell.borrow_mut().follow(fresh, hold, Instant::now(), |due| arm_wake(lua, due)))
+            let pending = due.get().map(|at| mlua::Result::Ok((ud.nth_user_value(PENDING_SLOT)?, at))).transpose()?;
+            let mut cell = DelayCell { held: ud.nth_user_value(HELD_SLOT)?, pending };
+            let answer = cell.follow(fresh, hold, Instant::now(), |at| arm_wake(lua, at));
+            let (pending, at) = cell.pending.unzip();
+            due.set(at);
+            ud.set_nth_user_value(HELD_SLOT, cell.held)?;
+            ud.set_nth_user_value(PENDING_SLOT, pending)?;
+            Ok(answer)
         }
-        SignalKind::Pulse { hold, cell } => {
+        SignalKind::Pulse { hold, until } => {
             let _budget = CpuBudget::enter(lua)?;
             let fresh = source_at(ud, FIRST_SOURCE_SLOT)?.get_value(lua)?;
-            Ok(Value::Boolean(cell.borrow_mut().fire(fresh, hold, Instant::now(), |due| arm_wake(lua, due))))
+            let mut cell = PulseCell { seen: ud.nth_user_value(HELD_SLOT)?, until: until.get() };
+            let open = cell.fire(fresh, hold, Instant::now(), |at| arm_wake(lua, at));
+            until.set(cell.until);
+            ud.set_nth_user_value(HELD_SLOT, cell.seen)?;
+            Ok(Value::Boolean(open))
         }
         SignalKind::Computed { id, arity } => {
             // A repeat within this evaluation costs one hash lookup and no Lua. Checked before
@@ -1003,8 +1016,9 @@ pub fn register(lua: &Lua, dirty: DirtyFlag) -> mlua::Result<()> {
                 .ok_or_else(|| mlua::Error::runtime("delay() takes a Signal or an `obelisk` capability first"))?;
             let hold = parse_hold("delay() hold", millis)?;
             let held = source.get_value(lua)?;
-            let cell = Rc::new(RefCell::new(DelayCell { held, pending: None }));
-            new_derived(lua, SignalKind::Delayed { hold, cell }, None, vec![source_ud])
+            let ud = new_derived(lua, SignalKind::Delayed { hold, due: Rc::default() }, None, vec![source_ud])?;
+            ud.set_nth_user_value(HELD_SLOT, held)?;
+            Ok(ud)
         })?,
     )?;
     lua.globals().set(
@@ -1014,8 +1028,9 @@ pub fn register(lua: &Lua, dirty: DirtyFlag) -> mlua::Result<()> {
                 .ok_or_else(|| mlua::Error::runtime("pulse() takes a Signal or an `obelisk` capability first"))?;
             let hold = parse_hold("pulse() window", millis)?;
             let seen = source.get_value(lua)?;
-            let cell = Rc::new(RefCell::new(PulseCell { seen, until: None }));
-            new_derived(lua, SignalKind::Pulse { hold, cell }, None, vec![source_ud])
+            let ud = new_derived(lua, SignalKind::Pulse { hold, until: Rc::default() }, None, vec![source_ud])?;
+            ud.set_nth_user_value(HELD_SLOT, seen)?;
+            Ok(ud)
         })?,
     )?;
     lua.globals().set(
@@ -1972,6 +1987,10 @@ mod tests {
             "t.x = computed({ a }, function() return t and 1 end)",
             "t.x = delay(a:map(function() return t and 1 end), 1)",
             "t.x = pulse(a:map(function() return t and 1 end), 1)",
+            // The held, pending and last-seen values, not only the source.
+            "t.x = delay(a:map(function() return t end), 1)",
+            "t.x = pulse(a:map(function() return t end), 1)",
+            "t.x = delay(a:map(function() return { m = t } end), 1)",
         ] {
             let lua = lua_with_signal("a", Value::Integer(1));
             let collected: bool = lua
