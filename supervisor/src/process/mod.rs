@@ -3,6 +3,7 @@
 //!
 //! Uses `tokio::process::Command::process_group(0)` rather than hand-rolling `setpgid`.
 
+use std::ffi::{OsStr, OsString};
 use std::io;
 use std::process::{ExitStatus, Stdio};
 use std::time::Duration;
@@ -54,8 +55,8 @@ pub const DEFAULT_REAP_GRACE: Duration = Duration::from_millis(100);
 
 /// Spawns `cmd` as a new group leader. Descendants without `setsid`/`setpgid` inherit the group,
 /// letting [`reap_process_group`] clean a subtree with one `killpg`.
-pub fn spawn_group_leader(cmd: &str, args: &[String], envs: &[(String, String)]) -> io::Result<Child> {
-    Command::new(cmd).args(args).envs(envs.iter().map(|(k, v)| (k.as_str(), v.as_str()))).process_group(0).spawn()
+pub fn spawn_group_leader(cmd: impl AsRef<OsStr>, args: &[String], envs: &[(&str, OsString)]) -> io::Result<Child> {
+    Command::new(cmd).args(args).envs(envs.iter().map(|(k, v)| (k, v))).process_group(0).spawn()
 }
 
 /// Spawns `cmd` fully detached: its own session, reparented to init, and never this process's to

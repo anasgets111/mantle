@@ -2,8 +2,9 @@
 //! classification/reporting, and `RestartBrake`. `Supervisor::respawn_renderer` consults the brake.
 //! Respawn stays in its `select!` loop (ADR-0037), where the arm shares loop state.
 
+use std::ffi::OsString;
 use std::io;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 /// ADR-0058 decision 3: three deaths in a minute respawn at once; a fourth waits the cooldown, so a
@@ -28,6 +29,27 @@ pub(crate) const RENDERER_BINARY: &str = "obelisk-renderer";
 pub(crate) fn renderer_binary_path() -> io::Result<PathBuf> {
     let exe = std::env::current_exe()?;
     Ok(exe.with_file_name(RENDERER_BINARY))
+}
+
+/// The Renderer binary and what every generation is told. Passed on each spawn, never set on the
+/// Supervisor, so what the shell launches inherits only the Supervisor's own environment.
+pub(crate) struct Renderer {
+    path: PathBuf,
+    env: Vec<(&'static str, OsString)>,
+}
+
+impl Renderer {
+    pub(crate) fn new(path: PathBuf, instance_dir: &Path, config_dir: &Path, profile: Option<u64>) -> Self {
+        let mut env =
+            vec![(shared::INSTANCE_DIR_ENV, instance_dir.into()), (shared::CONFIG_DIR_ENV, config_dir.into())];
+        env.extend(profile.map(|secs| (shared::PROFILE_ENV, secs.to_string().into())));
+        Self { path, env }
+    }
+
+    pub(crate) fn spawn(&self, generation_id: u32) -> io::Result<tokio::process::Child> {
+        let generation = [(shared::GENERATION_ID_ENV, generation_id.to_string().into())];
+        crate::process::spawn_group_leader(&self.path, &[], &[&self.env[..], &generation].concat())
+    }
 }
 
 /// One generation's identity and process handle while authoritative; replaced wholesale on respawn.
@@ -113,6 +135,14 @@ mod tests {
     use std::os::unix::process::ExitStatusExt;
 
     use super::*;
+
+    #[test]
+    fn a_renderer_is_told_its_instance_config_and_profile_explicitly() {
+        let env = |profile| Renderer::new(PathBuf::new(), Path::new("/instance"), Path::new("/cfg"), profile).env;
+        let told = [(shared::INSTANCE_DIR_ENV, "/instance".into()), (shared::CONFIG_DIR_ENV, "/cfg".into())];
+        assert_eq!(env(None), told);
+        assert_eq!(env(Some(60)), [&told[..], &[(shared::PROFILE_ENV, "60".into())]].concat());
+    }
 
     /// Raw `wait(2)` status for normal exit `code`; keeps `<< 8` in one place.
     fn exited(code: i32) -> std::process::ExitStatus {

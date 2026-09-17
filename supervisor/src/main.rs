@@ -27,7 +27,7 @@ use std::time::Duration;
 
 use capabilities::Capabilities;
 use capabilities::lock::{self, LockController};
-use generation::renderer_binary_path;
+use generation::{Renderer, renderer_binary_path};
 use polkit::PolkitAgent;
 use shared::{Capability, RendererFrame, SupervisorFrame, Zeroize};
 use socket::send_frame_logged;
@@ -165,35 +165,25 @@ fn main() -> Result<(), Box<dyn Error>> {
         }
     };
 
-    // Set before path resolution and in this process, not just in children. `shared::config_dir`
-    // and every Renderer, including replacements, read it.
     // Resolved once, so retargeting a symlink moves nothing under a running shell (ADR-0222).
-    if let Ok(dir) = args.config_dir.clone().map_or_else(shared::config_dir, Ok) {
-        let dir = std::fs::canonicalize(&dir).unwrap_or(dir);
-        // SAFETY: no runtime or thread exists yet; the PAM worker branch above returns.
-        unsafe { std::env::set_var(shared::CONFIG_DIR_ENV, dir) };
-    }
-    if let Some(secs) = args.profile {
-        // SAFETY: as above.
-        unsafe { std::env::set_var(shared::PROFILE_ENV, secs.to_string()) };
-    }
-    if matches!(args.command, cli::Command::SetState(_) | cli::Command::Call { .. } | cli::Command::Log { .. }) {
-        let (root, config) = (shared::runtime_root()?, shared::config_dir()?);
-        let instances = instance::list(&root);
-        let explicit = args.config_dir.is_some();
-        let selected = match args.command {
-            cli::Command::Log { .. } => {
-                let (selected, note) = instance::select_log(&instances, args.pid, explicit.then_some(&*config))?;
-                if let Some(note) = note {
-                    eprintln!("obelisk: {note}");
-                }
-                selected
+    let config_dir = || {
+        let dir = args.config_dir.clone().map_or_else(shared::config_dir, Ok)?;
+        std::io::Result::Ok(std::fs::canonicalize(&dir).unwrap_or(dir))
+    };
+    let (explicit, pid) = (args.config_dir.is_some(), args.pid);
+    let instance_dir = |log: bool| -> Result<PathBuf, Box<dyn Error>> {
+        let (instances, config) = (instance::list(&shared::runtime_root()?), config_dir()?);
+        let selected = if log {
+            let (selected, note) = instance::select_log(&instances, pid, explicit.then_some(&*config))?;
+            if let Some(note) = note {
+                eprintln!("obelisk: {note}");
             }
-            _ => instance::select_command(&instances, args.pid, &config, explicit)?,
+            selected
+        } else {
+            instance::select_command(&instances, pid, &config, explicit)?
         };
-        // SAFETY: as above. Replaces an inherited value, which names the shell that spawned us.
-        unsafe { std::env::set_var(shared::INSTANCE_DIR_ENV, &selected.dir) };
-    }
+        Ok(selected.dir.clone())
+    };
 
     match args.command {
         cli::Command::Help => {
@@ -204,10 +194,10 @@ fn main() -> Result<(), Box<dyn Error>> {
             println!("obelisk {}", env!("CARGO_PKG_VERSION"));
             Ok(())
         }
-        cli::Command::Init { force } => setup::run(&shared::config_dir()?, force),
-        cli::Command::SetState(set) => control_client::send(set),
-        cli::Command::Call { name, arguments } => control_client::call(name, arguments),
-        cli::Command::Log { follow } => log::print(&shared::instance_dir()?, follow, &mut std::io::stdout().lock()),
+        cli::Command::Init { force } => setup::run(&config_dir()?, force),
+        cli::Command::SetState(set) => control_client::send(set, &instance_dir(false)?),
+        cli::Command::Call { name, arguments } => control_client::call(name, arguments, &instance_dir(false)?),
+        cli::Command::Log { follow } => log::print(&instance_dir(true)?, follow, &mut std::io::stdout().lock()),
         cli::Command::List => {
             let mut running: Vec<_> = instance::list(&shared::runtime_root()?).into_iter().filter(|i| i.live).collect();
             if running.is_empty() {
@@ -221,7 +211,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             }
             Ok(())
         }
-        cli::Command::Check => match setup::check(&shared::config_dir()?) {
+        cli::Command::Check => match setup::check(&config_dir()?) {
             Ok(report) => {
                 print!("{report}");
                 Ok(())
@@ -236,24 +226,23 @@ fn main() -> Result<(), Box<dyn Error>> {
             if args.detach {
                 return detach_self(&root);
             }
-            let (dir, _lock) = instance::claim(&root, std::process::id(), &shared::config_dir()?)?;
-            // SAFETY: as above. Every Renderer, respawns included, inherits it.
-            unsafe { std::env::set_var(shared::INSTANCE_DIR_ENV, dir) };
+            let config_dir = config_dir()?;
+            let (dir, _lock) = instance::claim(&root, std::process::id(), &config_dir)?;
             // Every runtime diagnostic from here on, and every Renderer that inherits these
             // descriptors (ADR-0199). Argument parsing has already had its say above, so a
             // detached run still loses a `-c` substitution notice.
-            log::capture()?;
+            log::capture(&dir)?;
             // Exit explicitly: `run_supervisor` has finished its teardown, and dropping the runtime
             // would wait on blocking tasks. Two workers, not one per core (ADR-0124), cover
             // socket/D-Bus/inotify/timer waits; the blocking pool is separate. A twenty-core laptop
             // otherwise used twenty bar-serving threads.
             let runtime = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build()?;
-            runtime.block_on(run_supervisor())?;
+            runtime.block_on(run_supervisor(dir, config_dir, args.profile))?;
             std::process::exit(0);
         }
     }
 }
-async fn run_supervisor() -> Result<(), Box<dyn Error>> {
+async fn run_supervisor(dir: PathBuf, config_dir: PathBuf, profile: Option<u64>) -> Result<(), Box<dyn Error>> {
     let connection = capabilities::with_call_timeout(zbus::connection::Builder::system()).await?;
 
     let (tx, mut agent_requests) = tokio::sync::mpsc::unbounded_channel();
@@ -273,12 +262,13 @@ async fn run_supervisor() -> Result<(), Box<dyn Error>> {
     // separate from `Signals`.
     let (idle_signal_tx, mut idle_signals) = tokio::sync::mpsc::unbounded_channel::<shared::IdleEvent>();
 
+    let _ = capabilities::shm_icons::INSTANCE_DIR.set(dir.clone());
     // Every capability's channel/controller (ADR-0076). `capabilities` owns running capabilities
     // and senders; `signals` is the receiver this loop awaits. An unread capability's idle sender
     // never wakes the loop.
     let (capabilities, mut signals) = Capabilities::new(connection.clone(), sound_tx, idle_signal_tx);
 
-    let socket_path = shared::control_socket_path()?;
+    let socket_path = shared::control_socket_path(&dir);
     let (registry, call_routes, mut inbound_frames, mut connected) = socket::spawn_listener(&socket_path)?;
 
     // Lock (ADR-0042, ADR-0052): the Renderer holds and paints `ext_session_lock_v1`; this side
@@ -293,18 +283,12 @@ async fn run_supervisor() -> Result<(), Box<dyn Error>> {
     let (pam_outcome_tx, mut pam_outcomes) = tokio::sync::mpsc::unbounded_channel::<(u64, shared::PamOutcome)>();
     let (process_done_tx, mut process_done) = tokio::sync::mpsc::unbounded_channel::<(u32, u64)>();
 
-    let config_dir = shared::config_dir()?;
     let mut reload_events = watcher::spawn_watcher(&config_dir, RELOAD_DEBOUNCE)?;
 
     // Generation 0 is boot-spawned by the Supervisor (ADR-0025); without it there is no shell, so
     // failure is fatal.
-    let renderer_path = renderer_binary_path()?;
-    let renderer_path_str = renderer_path.to_string_lossy().into_owned();
-    let boot_child = process::spawn_group_leader(
-        &renderer_path_str,
-        &[],
-        &[(shared::GENERATION_ID_ENV.to_string(), "0".to_string())],
-    )?;
+    let renderer = Renderer::new(renderer_binary_path()?, &dir, &config_dir, profile);
+    let boot_child = renderer.spawn(0)?;
     // Immediately, and before the child can have finished starting: generation 0 belongs to this
     // pid, and the listener refuses any other process claiming it (`socket::GenerationRegistry`).
     if let Some(pid) = boot_child.id() {
@@ -314,7 +298,7 @@ async fn run_supervisor() -> Result<(), Box<dyn Error>> {
     let mut supervisor = Supervisor::new(
         registry,
         boot_child,
-        renderer_path_str,
+        renderer,
         capabilities,
         lock,
         lock::SessionLockedFlag::at(shared::session_locked_flag_path()?),
@@ -327,7 +311,7 @@ async fn run_supervisor() -> Result<(), Box<dyn Error>> {
     // Without handlers, Ctrl-C or SIGTERM kills the Supervisor and leaves a headless orphaned
     // Renderer.
     let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
-    let mut memory_sampler = memory::sampler_from_env();
+    let mut memory_sampler = memory::sampler(profile.map(Duration::from_secs));
 
     loop {
         tokio::select! {

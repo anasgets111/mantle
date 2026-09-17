@@ -14,7 +14,7 @@ use crate::capabilities::lock::{self, LockController};
 use crate::capabilities::polkit::{self, Answer, PolkitController};
 use crate::capabilities::{Capabilities, Signal};
 use crate::generation::{
-    Authoritative, RESTART_COOLDOWN, RESTART_LIMIT, RESTART_WINDOW, RendererDeparture, RestartBrake,
+    Authoritative, RESTART_COOLDOWN, RESTART_LIMIT, RESTART_WINDOW, Renderer, RendererDeparture, RestartBrake,
     classify_departure, departure_report,
 };
 use crate::pam_worker;
@@ -81,8 +81,7 @@ pub(crate) struct Supervisor {
     last_snapshots: HashMap<Capability, shared::StateSnapshot>,
     /// Id for the next crash replacement.
     next_generation_id: u32,
-    /// Renderer binary for every spawn.
-    renderer_path: String,
+    renderer: Renderer,
     restart_brake: RestartBrake,
     pub(crate) respawn_at: Option<std::time::Instant>,
     /// Set only by [`Supervisor::replace_departed_renderer`]; distinguishes shutdown reaping from
@@ -103,7 +102,7 @@ impl Supervisor {
     pub(crate) fn new(
         registry: socket::GenerationRegistry,
         boot_child: tokio::process::Child,
-        renderer_path: String,
+        renderer: Renderer,
         capabilities: Capabilities,
         lock: LockController,
         locked_flag: lock::SessionLockedFlag,
@@ -133,7 +132,7 @@ impl Supervisor {
             revisions: HashMap::new(),
             last_snapshots: HashMap::new(),
             next_generation_id: 1,
-            renderer_path,
+            renderer,
             restart_brake: RestartBrake::default(),
             respawn_at: None,
             renderer_departed: false,
@@ -296,11 +295,7 @@ impl Supervisor {
         let state = self.lock.snapshot();
         let was_locked = state.active || state.requested;
         let replacement_generation_id = self.take_generation_id();
-        match process::spawn_group_leader(
-            &self.renderer_path,
-            &[],
-            &[(shared::GENERATION_ID_ENV.to_string(), replacement_generation_id.to_string())],
-        ) {
+        match self.renderer.spawn(replacement_generation_id) {
             Ok(child) => {
                 if let Some(pid) = child.id() {
                     self.registry.expect_generation(replacement_generation_id, pid);

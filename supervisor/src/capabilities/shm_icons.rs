@@ -1,10 +1,17 @@
 //! PNG spooling shared by tray and notifications.
 
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 
-/// This shell's `{subdir}` under [`shared::instance_dir`] (ADR-0142, ADR-0222).
+/// This Supervisor's instance directory, set once before any capability starts.
+///
+/// ponytail: a process global rather than a parameter through notifications and tray; pass it down
+/// if one process ever hosts two Supervisors.
+pub(crate) static INSTANCE_DIR: OnceLock<PathBuf> = OnceLock::new();
+
+/// This shell's `{subdir}` under [`INSTANCE_DIR`] (ADR-0142, ADR-0222).
 fn icon_dir(subdir: &str) -> std::io::Result<PathBuf> {
-    Ok(shared::instance_dir()?.join(subdir))
+    INSTANCE_DIR.get().map(|dir| dir.join(subdir)).ok_or_else(|| std::io::Error::other("no instance directory"))
 }
 
 /// Best-effort deletion of one spooled PNG.

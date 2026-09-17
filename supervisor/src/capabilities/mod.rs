@@ -66,7 +66,7 @@ pub mod power;
 pub mod privacy;
 pub mod processes;
 pub mod scale;
-mod shm_icons;
+pub(crate) mod shm_icons;
 pub mod storage;
 pub mod sysinfo;
 pub mod system;

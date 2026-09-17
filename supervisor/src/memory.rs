@@ -9,6 +9,7 @@
 use std::collections::HashMap;
 use std::io;
 use std::path::Path;
+use std::time::Duration;
 
 /// Passed in at the one production call site, [`log_sample`], instead of being reached for inside
 /// the readers, so a test can point them at a tempdir of fake files. Every sysfs and procfs reader
@@ -243,8 +244,8 @@ pub(crate) fn sample(proc_root: &Path, renderer: Option<(u32, u32)>) -> io::Resu
 /// Builds the `--profile` steady-state sampler (ADR-0043 amendment), or `None`. `smaps_rollup` is
 /// always externally readable, so an always-on timer adds only a log line. First tick is one
 /// period out because a new Renderer is not steady; `Skip` keeps a late sampler current.
-pub(crate) fn sampler_from_env() -> Option<tokio::time::Interval> {
-    let period = shared::profile_interval()?;
+pub(crate) fn sampler(period: Option<Duration>) -> Option<tokio::time::Interval> {
+    let period = period?;
     let mut interval = tokio::time::interval_at(tokio::time::Instant::now() + period, period);
     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     Some(interval)

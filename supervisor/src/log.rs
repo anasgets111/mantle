@@ -21,13 +21,13 @@ const POLL: Duration = Duration::from_millis(200);
 ///
 /// `/dev/null` is the only destination with nothing to lose; a terminal, redirect or pipe is one
 /// someone chose. Per descriptor, or `obelisk >mine.log 2>/dev/null` leaves `mine.log` empty.
-pub fn capture() -> io::Result<()> {
+pub fn capture(dir: &Path) -> io::Result<()> {
     let discarded: Vec<i32> =
         [libc::STDOUT_FILENO, libc::STDERR_FILENO].into_iter().filter(|fd| goes_to_dev_null(*fd)).collect();
     if discarded.is_empty() {
         return Ok(());
     }
-    let file = File::create(shared::instance_dir()?.join(instance::LOG))?;
+    let file = File::create(dir.join(instance::LOG))?;
     for target in discarded {
         // SAFETY: both arguments are live descriptors. `file`'s comes from the `open` above, and
         // the target is a standard stream this process has not closed.

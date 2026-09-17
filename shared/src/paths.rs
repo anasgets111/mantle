@@ -3,7 +3,7 @@
 
 use std::ffi::OsString;
 use std::io;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 /// `$XDG_RUNTIME_DIR/obelisk`: per-login state, and one directory per running Supervisor (ADR-0222).
@@ -25,8 +25,8 @@ pub fn instance_dir() -> io::Result<PathBuf> {
 
 /// Control socket, shared by the `supervisor` listener and `renderer` client. Not `/tmp`: it is
 /// world-writable and unsuitable for secure textfield submissions (ADR-0005).
-pub fn control_socket_path() -> io::Result<PathBuf> {
-    Ok(instance_dir()?.join("control.sock"))
+pub fn control_socket_path(instance_dir: &Path) -> PathBuf {
+    instance_dir.join("control.sock")
 }
 
 /// The "compositor is locked and nothing of ours holds it" marker (ADR-0060), per login like the
@@ -36,7 +36,7 @@ pub fn session_locked_flag_path() -> io::Result<PathBuf> {
     Ok(runtime_root()?.join("session-locked"))
 }
 
-/// A config directory named by the session. `-c` overwrites it in the Supervisor.
+/// A config directory named by the session. The Supervisor passes every Renderer its resolved one.
 pub const CONFIG_DIR_ENV: &str = "OBELISK_CONFIG_DIR";
 
 /// Generation id stamped on every spawned Renderer.
@@ -48,7 +48,7 @@ pub const GENERATION_ID_ENV: &str = "OBELISK_GENERATION_ID";
 /// Set when `obelisk check` re-execs the Renderer to evaluate a config without a display.
 pub const CHECK_ENV: &str = "OBELISK_CHECK";
 
-/// `obelisk --profile[=SECS]`, set by the Supervisor so every Renderer generation inherits it. One
+/// `obelisk --profile[=SECS]`, passed by the Supervisor to every Renderer generation. One
 /// switch for the idle, heap and PSS/GPU reports, so their lines share a clock.
 pub const PROFILE_ENV: &str = "OBELISK_PROFILE";
 
@@ -69,9 +69,8 @@ pub const EXIT_COMPOSITOR_GONE: i32 = 71;
 /// `~/.config/obelisk/` by precedence: `$OBELISK_CONFIG_DIR`, `$XDG_CONFIG_HOME/obelisk`, then
 /// `$HOME/.config/obelisk`.
 ///
-/// Both binaries call this and agree through the environment. `-c` therefore sets
-/// [`CONFIG_DIR_ENV`] in the Supervisor: every spawned Renderer, including a replacement,
-/// inherits it. Passing a path through the handshake would require re-passing it on every
+/// Both binaries agree through the environment: the Supervisor resolves it, `-c` included, and sets
+/// [`CONFIG_DIR_ENV`] on every Renderer it spawns, a replacement included. Passing a path through the handshake would require re-passing it on every
 /// respawn; a missed pass would silently load a different config than the watched one.
 pub fn config_dir() -> io::Result<PathBuf> {
     let var = std::env::var_os;

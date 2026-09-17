@@ -78,7 +78,7 @@ async fn run(
     mut outbound_rx: mpsc::UnboundedReceiver<RendererFrame>,
     waker: crate::wake::Waker,
 ) {
-    let path = match shared::control_socket_path() {
+    let path = match shared::instance_dir().map(|dir| shared::control_socket_path(&dir)) {
         Ok(path) => path,
         Err(err) => {
             eprintln!("control-socket client: {err}");
