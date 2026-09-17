@@ -1,4 +1,4 @@
-# Obelisk shell
+# Obelisk engine
 
 Current project vocabulary. Implementation contracts live in [docs](docs/lua-api.md); rationale and history live in [decisions](docs/decisions.md).
 

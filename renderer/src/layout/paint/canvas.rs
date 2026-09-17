@@ -1215,7 +1215,7 @@ mod tests {
             &lua,
             r##"return panel { id = "bar", width = 200, height = 50, background = "#0000FFFF", child = rect {
                 width = 40, height = 50, background = "#000000FF", children = {
-                    text { content = "Obelisk Shell Renderer Overflow", font_size = 24, foreground = "#FFFFFFFF" },
+                    text { content = "Obelisk Engine Renderer Overflow", font_size = 24, foreground = "#FFFFFFFF" },
                 } } }"##,
             LogicalSize { width: 200.0, height: 50.0 },
         );

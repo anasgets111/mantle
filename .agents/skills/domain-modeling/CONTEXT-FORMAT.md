@@ -3,7 +3,7 @@
 ## Structure
 
 ```md
-# Obelisk shell
+# Obelisk engine
 
 Shared language for renderer generations, reloads, retained scenes, and capability state.
 

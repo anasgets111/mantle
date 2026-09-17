@@ -880,7 +880,7 @@ mod tests {
         let missing = Some("ZZ No Such Family 9184");
         assert_eq!(handle.shape(req_in("Obelisk", 20.0, missing)).width, handle.shape(req("Obelisk", 20.0)).width);
         let generation = handle.font_generation();
-        handle.shape(req_in("Obelisk Shell", 20.0, missing));
+        handle.shape(req_in("Obelisk Engine", 20.0, missing));
         assert_eq!(handle.font_generation(), generation, "a miss is remembered, not retried");
     }
 
@@ -996,10 +996,10 @@ mod tests {
     #[test]
     fn a_bold_run_measures_wider_than_the_same_text_regular() {
         let handle = ShapingHandle::spawn();
-        let plain = handle.shape_glyphs(req("Obelisk Shell Renderer", 20.0));
+        let plain = handle.shape_glyphs(req("Obelisk Engine Renderer", 20.0));
         let bold = handle.shape_glyphs(ShapeRequest {
             runs: vec![FontRun { range: 0..21, bold: true, italic: false }],
-            ..req("Obelisk Shell Renderer", 20.0)
+            ..req("Obelisk Engine Renderer", 20.0)
         });
         if bold.shaped[0].glyphs[0].face == plain.shaped[0].glyphs[0].face {
             eprintln!("skip: the default chain's family has no bold face installed");
@@ -1198,7 +1198,7 @@ mod tests {
             font: None,
         });
         let long = handle.shape(ShapeRequest {
-            text: "Obelisk Shell".into(),
+            text: "Obelisk Engine".into(),
             font_size: 14.0,
             line_height: 18.0,
             max_width: None,
@@ -1285,7 +1285,7 @@ mod tests {
         let mut font_system = FontSystem::new_with_locale_and_db(detect_locale(), db);
 
         let request = ShapeRequest {
-            text: "Obelisk Shell Renderer".into(),
+            text: "Obelisk Engine Renderer".into(),
             font_size: 24.0,
             line_height: 28.8,
             max_width: None,
@@ -1313,7 +1313,7 @@ mod tests {
     /// yields the entire string N times over. Only the glyph cluster indices delimit a run.
     #[test]
     fn each_wrapped_line_is_its_own_slice_and_not_the_whole_string_again() {
-        const TEXT: &str = "Obelisk Shell Renderer";
+        const TEXT: &str = "Obelisk Engine Renderer";
         let handle = ShapingHandle::spawn();
         let unconstrained = handle.shape(req(TEXT, 14.0));
         assert_eq!(&*unconstrained.lines, [TEXT], "an unwrapped string is one line holding all of it");
@@ -1341,7 +1341,7 @@ mod tests {
     fn the_measured_height_is_the_lines_it_reports() {
         let handle = ShapingHandle::spawn();
         let result = handle.shape(ShapeRequest {
-            text: "Obelisk Shell Renderer".into(),
+            text: "Obelisk Engine Renderer".into(),
             font_size: 14.0,
             line_height: 18.0,
             max_width: Some(40.0),
@@ -1364,7 +1364,7 @@ mod tests {
     fn a_max_width_narrower_than_the_unconstrained_text_wraps_to_more_lines() {
         let handle = ShapingHandle::spawn();
         let unconstrained = handle.shape(ShapeRequest {
-            text: "Obelisk Shell Renderer".into(),
+            text: "Obelisk Engine Renderer".into(),
             font_size: 14.0,
             line_height: 18.0,
             max_width: None,
@@ -1372,7 +1372,7 @@ mod tests {
             font: None,
         });
         let wrapped = handle.shape(ShapeRequest {
-            text: "Obelisk Shell Renderer".into(),
+            text: "Obelisk Engine Renderer".into(),
             font_size: 14.0,
             line_height: 18.0,
             max_width: Some(unconstrained.width / 2.0),
