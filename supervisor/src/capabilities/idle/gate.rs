@@ -44,6 +44,11 @@ impl IdleGate {
         (!self.blocked).then_some(event)
     }
 
+    /// Drops a departed generation's thresholds so release does not replay them.
+    pub(crate) fn forget(&mut self, generation_id: u32) {
+        self.idled.retain(|&(idled_generation, _)| idled_generation != generation_id);
+    }
+
     /// A change in logind's idle-block answer; `None` if unchanged. A block takes back every idle
     /// threshold; release announces those still idle, since a notification never resends `idled`.
     ///
@@ -159,5 +164,16 @@ mod tests {
             gate.set_blocked(false),
             Some(vec![event(1, 30, IdleState::Idled), event(1, 300, IdleState::Idled)])
         );
+    }
+
+    #[test]
+    fn a_forgotten_generation_is_not_announced_on_release() {
+        let mut gate = IdleGate::default();
+        gate.observe(event(1, 30, IdleState::Idled));
+        gate.observe(event(2, 30, IdleState::Idled));
+        gate.set_blocked(true);
+        gate.forget(1);
+
+        assert_eq!(gate.set_blocked(false), Some(vec![event(2, 30, IdleState::Idled)]));
     }
 }

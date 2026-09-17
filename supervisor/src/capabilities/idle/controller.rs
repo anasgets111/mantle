@@ -93,6 +93,7 @@ pub struct IdleController {
     /// The last state [`watch_idle_inhibitors`] published, so `Capabilities::start` returns the
     /// current answer instead of `nil` until the next inhibitor (ADR-0141).
     published: Arc<std::sync::Mutex<PublishedIdle>>,
+    gate: Arc<std::sync::Mutex<IdleGate>>,
 }
 
 impl IdleController {
@@ -123,6 +124,7 @@ impl IdleController {
         let controller = Self {
             notify: notify.clone(),
             published: published.clone(),
+            gate: gate.clone(),
             pending: Arc::new(std::sync::Mutex::new(Vec::new())),
             inhibit: Arc::new(LiveInhibit {
                 system_bus,
@@ -131,7 +133,6 @@ impl IdleController {
         };
 
         let notify_for_task = notify.clone();
-        let gate_for_task = gate.clone();
         let published_for_task = published.clone();
         let controller_for_task = controller.clone();
         tokio::spawn(async move {
@@ -142,7 +143,7 @@ impl IdleController {
                 Ok(Ok(Ok((live, raw_events_rx)))) => {
                     spawn_idle_event_forwarder(
                         live.registry.clone(),
-                        gate_for_task,
+                        gate,
                         published_for_task,
                         raw_events_rx,
                         events_tx,
@@ -258,9 +259,7 @@ impl IdleController {
                 eprintln!(
                     "idle: inhibit(generation {generation_id}, {reason:?}) failed to build the login1 Manager proxy: {err}"
                 );
-                if let Some(count) = state.counts.get_mut(&generation_id) {
-                    *count = count.saturating_sub(1);
-                }
+                apply_release_inhibit(&mut state.counts, generation_id);
                 return;
             }
         };
@@ -273,9 +272,7 @@ impl IdleController {
                 eprintln!(
                     "idle: Inhibit({INHIBIT_WHAT:?}, {INHIBIT_WHO:?}, {reason:?}, {INHIBIT_MODE:?}) failed: {err}"
                 );
-                if let Some(count) = state.counts.get_mut(&generation_id) {
-                    *count = count.saturating_sub(1);
-                }
+                apply_release_inhibit(&mut state.counts, generation_id);
             }
         }
     }
@@ -312,6 +309,9 @@ impl IdleController {
     /// last holder. Uses the same `state` lock as inhibit/release, serializing reload races.
     pub async fn reset_registrations(&self, generation_id: u32) {
         self.reset_thresholds(generation_id);
+        // Not in `reset_thresholds`: an in-place reload keeps the generation id and its listeners,
+        // and the compositor never resends `idled`, so the gate's entries still belong to it.
+        self.gate.lock().unwrap().forget(generation_id);
 
         let mut state = self.inhibit.state.lock().await;
         if cleanup_generation_inhibit(&mut state.counts, generation_id).should_close_fd {
