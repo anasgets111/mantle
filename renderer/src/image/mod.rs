@@ -5,7 +5,7 @@
 //! raster is downscaled to cover its box (ADR-0122), so a 4K wallpaper in a 230px thumbnail is a
 //! 230px texture, not 32MB. Mtime and length (ADR-0031) refresh tray files overwritten in place.
 //! Failures are cached as `Failed`, including unreadable files and `.svgz` (see
-//! [`rasterize_svg`]); a *missing* file retries when its key changes on appearance.
+//! [`svg::rasterize_svg`]); a *missing* file retries when its key changes on appearance.
 //!
 //! Decoding is inline by default, or on a worker pool for `async = true` (ADR-0122). The slot is
 //! `Pending` until [`ImageCache::poll`] finds pixels; [`ImageCache::upload_landed`] uploads them at
@@ -18,14 +18,19 @@
 //! first. `wayland::App` triggers it after each paint using pins from surfaces' last lists.
 //! [`ImageCache::release_evicted`] frees textures at the next paint's start, never mid-frame.
 
+mod budget;
 pub mod icons;
+mod svg;
 pub mod thumbnails;
+
+use budget::{Budget, Charge, Permit};
+use svg::{packed_rgb, rasterize_svg};
 
 use crate::layout::node::Rgba;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Receiver, SyncSender, TryRecvError};
-use std::sync::{Arc, Condvar, Mutex};
+use std::sync::{Arc, Mutex};
 
 use femtovg::renderer::OpenGl;
 use femtovg::rgb::FromSlice;
@@ -82,11 +87,6 @@ const MAX_DECODE_EDGE: u32 = 8_192;
 /// quarters of the budget sat idle. The ceiling is unchanged; where it is enforced is not
 /// (ADR-0187).
 const DECODE_POOL_BYTES: u64 = 256 * 1024 * 1024;
-
-/// Bytes an SVG source may occupy before it is refused unparsed. `usvg` parses the whole document
-/// into a tree with no ceiling of its own, and an icon that is not a few hundred kilobytes is not
-/// an icon.
-const MAX_SVG_BYTES: u64 = 8 * 1024 * 1024;
 
 /// One cache slot. `box_px` is the physical-pixel target: SVGs use their longest edge; rasters
 /// downscale to cover it (see the module docs).
@@ -191,115 +191,6 @@ struct Entry {
 struct Job {
     key: CacheKey,
     tint: Option<Rgba>,
-}
-
-/// The pool's shared ceiling on decoded pixels in flight, in bytes (ADR-0187).
-///
-/// A worker waits here until its decode fits, so four wallpapers arriving together decode in turn
-/// rather than all at once, and one large file decodes alone rather than not at all.
-///
-/// ponytail: a decode is charged twice its output plus an RGBA8 copy, which covers a progressive
-/// JPEG's coefficient planes and the conversion, and `decode_raster` holds the charge until it
-/// returns. A source at the ceiling is charged past the pool and runs alone. Still uncharged: pixels
-/// waiting in the result channel and `landed` for upload, and inline decodes, which never wait.
-/// Upgrade path: hold the permit until `upload_landed` consumes the pixels, so it travels with them.
-#[derive(Default)]
-pub(super) struct Budget {
-    in_flight: Mutex<u64>,
-    room: Condvar,
-}
-
-impl Budget {
-    /// Waits until `bytes` fit, then charges them.
-    ///
-    /// A decode is admitted when nothing else is in flight, whatever its size, so nothing is ever
-    /// too big to run and no set of waiters can deadlock each other. `decode_within_limits` has
-    /// already refused a source whose output alone is past the whole budget, so a larger charge is
-    /// one decode's working copies, run alone.
-    ///
-    /// A poisoned lock hands back an uncharged permit and lets the decode through: a decode pool
-    /// that has stopped accounting is worth less than a shell that has stopped drawing.
-    fn acquire(&self, bytes: u64) -> Permit<'_> {
-        let Ok(mut in_flight) = self.in_flight.lock() else { return Permit { budget: self, bytes: 0 } };
-        loop {
-            if admits(*in_flight, bytes) {
-                *in_flight += bytes;
-                return Permit { budget: self, bytes };
-            }
-            let Ok(waited) = self.room.wait(in_flight) else { return Permit { budget: self, bytes: 0 } };
-            in_flight = waited;
-        }
-    }
-
-    /// Charges `bytes` without waiting for room, for a decode that cannot afford to block: an
-    /// inline load runs on the Wayland dispatch thread, and stalling that to wait on a background
-    /// worker is a frozen shell. It still counts, so the workers see it.
-    fn charge(&self, bytes: u64) -> Permit<'_> {
-        if let Ok(mut in_flight) = self.in_flight.lock() {
-            *in_flight += bytes;
-            return Permit { budget: self, bytes };
-        }
-        Permit { budget: self, bytes: 0 }
-    }
-}
-
-/// Where a decode's pixels are charged, and whether it may wait for room (ADR-0187).
-#[derive(Clone, Copy)]
-pub(super) enum Charge<'a> {
-    /// Not counted. A cached thumbnail is bounded by the slot size the caller asked for rather than
-    /// by the source, so it never approaches the budget and waiting for one would be nothing but
-    /// latency.
-    Free,
-    /// A background worker: waits until its pixels fit, which is what serializes four wallpapers
-    /// arriving together.
-    Waiting(&'a Budget),
-    /// The Wayland dispatch thread: counted, so the workers see it, but never waiting. Blocking
-    /// here stalls Wayland dispatch, Supervisor reads and input -- a frozen shell in exchange for
-    /// an accounting nicety.
-    Immediate(&'a Budget),
-}
-
-impl<'a> Charge<'a> {
-    /// Takes the charge, blocking only where that is safe.
-    fn take(self, bytes: u64) -> Option<Permit<'a>> {
-        match self {
-            Charge::Free => None,
-            Charge::Waiting(budget) => Some(budget.acquire(bytes)),
-            Charge::Immediate(budget) => Some(budget.charge(bytes)),
-        }
-    }
-}
-
-/// Whether `bytes` may start decoding with `in_flight` already charged.
-///
-/// Pure so the rule is testable without threads, which is where the deadlock would be. An empty
-/// budget admits any size. `decode_within_limits` has already refused any output past
-/// [`DECODE_POOL_BYTES`], so a larger charge runs only alone, and no decode waits on waiters that
-/// are all waiting on it.
-fn admits(in_flight: u64, bytes: u64) -> bool {
-    in_flight == 0 || in_flight + bytes <= DECODE_POOL_BYTES
-}
-
-/// Holds a [`Budget`] charge for as long as the pixels it paid for are being produced. RAII because
-/// `decode_raster` has a dozen `?` exits and every one of them has to give the bytes back.
-pub(super) struct Permit<'a> {
-    budget: &'a Budget,
-    bytes: u64,
-}
-
-impl Drop for Permit<'_> {
-    fn drop(&mut self) {
-        if self.bytes == 0 {
-            return;
-        }
-        if let Ok(mut in_flight) = self.budget.in_flight.lock() {
-            *in_flight = in_flight.saturating_sub(self.bytes);
-        }
-        // Outside the lock's scope above only by `notify_all`'s own rules; waking every waiter
-        // rather than one because they want different amounts, and the one this would wake might
-        // be the one that still does not fit.
-        self.budget.room.notify_all();
-    }
 }
 
 /// Shared decode queue and result channel, at most `MAX_DECODE_WORKERS` threads. Spawned with the
@@ -456,7 +347,7 @@ impl ImageCache {
         (self.resident_bytes, ready, pending, failed, self.evicted.len(), self.landed.len())
     }
 
-    /// Frees last frame's evictions. `layout::paint::paint_tree` calls this before walking because
+    /// Frees last frame's evictions. `layout::paint::canvas::paint_tree` calls this before walking because
     /// femtovg resolves `ImageId` at `flush`, not `fill_path`; mid-walk deletion unbinds a texture
     /// a recorded command still names, drawing blank.
     pub fn release_evicted(&mut self, canvas: &mut Canvas<OpenGl>) {
@@ -938,10 +829,6 @@ fn decode_raster(
     Ok((rgba.into_raw(), width, height))
 }
 
-/// Rasterizes with longest edge `box_px`; [`fitted_rect`] handles placement.
-/// ponytail: `resvg` has no default features, so SVG text and gzipped `.svgz` are unsupported. An
-/// absolute `.svgz` path logs once and draws blank. Upgrade: `resvg/svgz` and `resvg/text`; `text`
-/// adds a second `fontdb` that could disagree with `text::shaping`'s declared font chain.
 /// Reads at most `cap` bytes, or `None` if the file has more than that.
 ///
 /// Reads `cap + 1` so "exactly at the limit" and "over it" are distinguishable, and never
@@ -1032,96 +919,6 @@ pub(super) fn decode_within_limits<'a>(
     Ok((::image::DynamicImage::from_decoder(decoder).map_err(|err| err.to_string())?, permit))
 }
 
-fn rasterize_svg(path: &Path, box_px: u32, tint: Option<Rgba>) -> Result<(Vec<u8>, u32, u32), String> {
-    // Read through a limited reader rather than checking `metadata` and then reading: the file can
-    // grow between the two, and the read is what allocates. `usvg` parses whatever it is handed
-    // into a tree with no ceiling of its own (see `MAX_SVG_BYTES`).
-    let data = read_capped(path, MAX_SVG_BYTES)
-        .map_err(|err| format!("{}: {err}", path.display()))?
-        .ok_or_else(|| format!("svg is over the {MAX_SVG_BYTES}-byte limit and was not parsed"))?;
-    let data = match tint {
-        Some(tint) => tinted_svg(&data, tint),
-        None => data,
-    };
-    let tree = resvg::usvg::Tree::from_data(&data, &resvg::usvg::Options::default()).map_err(|err| err.to_string())?;
-    let size = tree.size();
-    let longest = size.width().max(size.height());
-    // Check finiteness as well as sign: `<= 0.0` lets NaN reach `scale` and a zero-sized pixmap,
-    // producing a worse error farther from the cause.
-    if !longest.is_finite() || longest <= 0.0 {
-        return Err(format!("svg declares a {}x{} viewport", size.width(), size.height()));
-    }
-    let scale = box_px as f32 / longest;
-    let width = ((size.width() * scale).round() as u32).max(1);
-    let height = ((size.height() * scale).round() as u32).max(1);
-    let mut pixmap =
-        resvg::tiny_skia::Pixmap::new(width, height).ok_or_else(|| format!("no pixmap for {width}x{height}"))?;
-    resvg::render(&tree, resvg::tiny_skia::Transform::from_scale(scale, scale), &mut pixmap.as_mut());
-    Ok((pixmap.take(), width, height))
-}
-
-/// `0x00RRGGBB` for [`CacheKey`]. Drop alpha: CSS `color` is `#RRGGBB`; draw-call `alpha` owns
-/// icon transparency, not the SVG.
-fn packed_rgb(color: Rgba) -> u32 {
-    let channel = |v: f32| (v.clamp(0.0, 1.0) * 255.0).round() as u32;
-    (channel(color.r) << 16) | (channel(color.g) << 8) | channel(color.b)
-}
-
-/// Replace `currentColor` with `tint`, or leave data untouched without one (ADR-0072). Symbolic
-/// icons use two shapes. Breeze/Adwaita ship `<style id="current-color-scheme">` with
-/// `color:#232629` on each path's class; Plasma rewrites it at load, and so does this, avoiding
-/// near-black icons on dark bars. The other shape has `fill="currentColor"` and no `color`, whose
-/// CSS initial value is black; a root presentation attribute wins, while a defined root `color`
-/// is handled by the first pass. Rewrite bytes, not a parse, because `usvg` resolves
-/// `currentColor` while building with no earlier hook. `from_utf8`, not lossy conversion, lets
-/// `usvg` reject non-UTF-8 input itself.
-fn tinted_svg(data: &[u8], tint: Rgba) -> Vec<u8> {
-    let Ok(text) = std::str::from_utf8(data) else {
-        return data.to_vec();
-    };
-    if !text.contains("currentColor") {
-        return data.to_vec();
-    }
-    let hex = format!("#{:06x}", packed_rgb(tint));
-    let rewritten = rewrite_color_declarations(text, &hex);
-    match rewritten.find("<svg") {
-        Some(at) => {
-            let mut out = String::with_capacity(rewritten.len() + hex.len() + 10);
-            out.push_str(&rewritten[..at + 4]);
-            out.push_str(&format!(" color=\"{hex}\""));
-            out.push_str(&rewritten[at + 4..]);
-            out.into_bytes()
-        }
-        None => rewritten.into_bytes(),
-    }
-}
-
-/// Repoint bare CSS `color:` declarations to `hex`, not `stop-color`, `flood-color`, or
-/// `lighting-color`, whose paints are not `currentColor`; changing them flattens gradients. The
-/// preceding character must not continue an identifier. ponytail: textual matching also rewrites
-/// `color:` inside XML comments or attribute values. Upgrade: parse the `<style>` body with a CSS
-/// pass, a parser this crate does not want.
-fn rewrite_color_declarations(text: &str, hex: &str) -> String {
-    let mut out = String::with_capacity(text.len());
-    let mut rest = text;
-    while let Some(at) = rest.find("color:") {
-        let after = at + "color:".len();
-        let continues_an_identifier =
-            rest[..at].chars().next_back().is_some_and(|c| c == '-' || c == '_' || c.is_alphanumeric());
-        out.push_str(&rest[..after]);
-        if continues_an_identifier {
-            rest = &rest[after..];
-            continue;
-        }
-        // Replace the whole value, so spaced and unspaced declarations behave the same.
-        let value_len = rest[after..].find([';', '}', '"', '\'']).unwrap_or(rest.len() - after);
-        out.push_str(hex);
-        rest = &rest[after + value_len..];
-    }
-    out.push_str(rest);
-    out
-}
-
 /// Image rect inside `box_rect` for its dimensions and [`Fit`]. `Cover` may exceed the box because
 /// `layout::paint`'s scissor crops overflow. femtovg clamps outside a paint extent unless
 /// `REPEAT_X`/`REPEAT_Y` are set; a smaller rect would smear edge pixels, while `Contain` returns
@@ -1183,69 +980,12 @@ mod tests {
     }
 
     #[test]
-    fn a_kde_symbolic_icon_is_recoloured_through_its_own_stylesheet() {
-        // Telegram's Breeze *Light* file bakes its text colour; without toolkit rewriting it is
-        // near-black on a dark bar.
-        let svg = br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 22 22">
-  <defs><style id="current-color-scheme" type="text/css">
-      .ColorScheme-Text { color:#232629; }
-  </style></defs>
-  <path class="ColorScheme-Text" style="fill:currentColor" d="M0 0h1v1h-1z"/>
-</svg>"##;
-        let out = String::from_utf8(tinted_svg(svg, tint())).unwrap();
-        assert!(out.contains("color:#cdd6f4"), "the stylesheet's own declaration is repointed: {out}");
-        assert!(!out.contains("#232629"), "and the shipped colour is gone: {out}");
-    }
-
-    #[test]
-    fn an_icon_that_defines_no_colour_gets_one_on_the_root() {
-        // hicolor and Adwaita ship this shape. CSS's initial `color` is black, so the root
-        // attribute is required for the caller's tint.
-        let svg = br##"<svg xmlns="http://www.w3.org/2000/svg"><path fill="currentColor" d="M0 0h1v1h-1z"/></svg>"##;
-        let out = String::from_utf8(tinted_svg(svg, tint())).unwrap();
-        assert!(out.starts_with(r##"<svg color="#cdd6f4""##), "the root carries the colour: {out}");
-    }
-
-    #[test]
-    fn a_full_colour_icon_is_handed_back_byte_for_byte() {
-        // App icons receive `foreground`; only symbolic icons may change, or a themed Slack logo
-        // would flatten.
-        let svg = br##"<svg xmlns="http://www.w3.org/2000/svg"><path fill="#2eb67d" d="M0 0h1v1h-1z"/></svg>"##;
-        assert_eq!(tinted_svg(svg, tint()), svg.to_vec());
-    }
-
-    #[test]
-    fn a_gradient_stop_is_not_a_colour_declaration() {
-        // `stop-color:` contains `color:`; rewriting it flattens every gradient.
-        let out = rewrite_color_declarations("stop-color:#ff0000;color:#232629;flood-color:#00ff00", "#cdd6f4");
-        assert_eq!(out, "stop-color:#ff0000;color:#cdd6f4;flood-color:#00ff00");
-    }
-
-    #[test]
-    fn a_spaced_declaration_is_replaced_whole_rather_than_prefixed() {
-        // The value runs to its terminator, so `color: #232629 ` is replaced whole; CSS ignores
-        // the internal whitespace and needs no trimming rules.
-        assert_eq!(rewrite_color_declarations("{ color: #232629 }", "#cdd6f4"), "{ color:#cdd6f4}");
-    }
-
-    #[test]
     fn one_file_tinted_two_ways_is_two_cache_slots() {
         // Without tint in the key, the first colour wins for the process: bar and popup share one
         // texture.
         let a = CacheKey { tint: Some(0xffffff), ..key("/x.svg", 18, FileVersion::default()) };
         let b = CacheKey { tint: Some(0x808080), ..a.clone() };
         assert_ne!(a, b);
-    }
-
-    #[test]
-    fn a_tint_packs_to_rgb_and_drops_alpha() {
-        assert_eq!(packed_rgb(Rgba { r: 1.0, g: 0.0, b: 0.0, a: 0.25 }), 0xff0000);
-        assert_eq!(format!("#{:06x}", packed_rgb(Rgba { r: 0.0, g: 0.0, b: 1.0, a: 1.0 })), "#0000ff");
-    }
-
-    /// `#cdd6f4`, so a test asserting on the hex asserts on a value it can read.
-    fn tint() -> Rgba {
-        Rgba { r: 0xcd as f32 / 255.0, g: 0xd6 as f32 / 255.0, b: 0xf4 as f32 / 255.0, a: 1.0 }
     }
 
     #[test]
@@ -1261,32 +1001,12 @@ mod tests {
 
     /// A wallpaper's shape without a wallpaper's art: a 16:9 viewBox filled corner to corner by one
     /// gradient. Enough to tell a rasterizer that works from one that renders an empty pixmap.
-    const GRADIENT_SVG: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1920 1080">
+    pub(super) const GRADIENT_SVG: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1920 1080">
       <defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1">
         <stop offset="0" stop-color="#001020"/><stop offset="1" stop-color="#a0d0ff"/>
       </linearGradient></defs>
       <rect width="1920" height="1080" fill="url(#g)"/>
     </svg>"##;
-
-    #[test]
-    fn an_svg_rasterizes_opaque_to_its_longest_edge_keeping_its_aspect_ratio() {
-        // Exercises resvg (ADR-0055): a tree parsing to nothing renders a transparent pixmap rather
-        // than an error, so "it did not fail" proves nothing on its own. A fixture rather than the
-        // shipped wallpaper, whose art is free to change without breaking an engine test.
-        let dir = tempfile::tempdir().unwrap();
-        let svg = dir.path().join("gradient.svg");
-        std::fs::write(&svg, GRADIENT_SVG).unwrap();
-        let (pixels, width, height) = rasterize_svg(&svg, 128, None).expect("the fixture should parse");
-        // 1920x1080 viewBox, longest edge 128, preserves the aspect ratio.
-        assert_eq!((width, height), (128, 72));
-        assert_eq!(pixels.len(), (width * height * 4) as usize);
-        let opaque = pixels.as_chunks::<4>().0.iter().filter(|px| px[3] > 0).count();
-        assert_eq!(opaque, (width * height) as usize, "the fill covers its whole viewBox");
-        // More than one colour proves the gradient survived rather than flattening to its first stop.
-        let distinct: std::collections::HashSet<[u8; 3]> =
-            pixels.as_chunks::<4>().0.iter().map(|px| [px[0], px[1], px[2]]).collect();
-        assert!(distinct.len() > 16, "expected a gradient, got {} colours", distinct.len());
-    }
 
     /// A 2x2 RGBA PNG encoded by Pillow, byte for byte. An independent encoder distinguishes a
     /// working decoder from a round trip through a broken one.
@@ -1465,57 +1185,6 @@ mod tests {
         assert_eq!(crop(2, 2, (8, 8)), ((2, 2), vec![0, 1, 2, 3]));
     }
 
-    /// ADR-0187. The rule the old per-decode cap got wrong: what fits is a property of the pool,
-    /// not of one worker's quarter of it.
-    #[test]
-    fn the_decode_budget_admits_by_what_is_in_flight_and_never_by_a_fixed_share() {
-        // A 6024x3401 wallpaper decodes to 78 MiB. Alone it fits and always did; under the old
-        // 64 MiB per-decode cap it was refused unread while three quarters of the pool sat idle.
-        let wallpaper = 6024 * 3401 * 4;
-        assert!(admits(0, wallpaper), "a lone wallpaper decode fits the pool it is charged against");
-        assert!(admits(wallpaper, wallpaper), "and so does a second, at 156 MiB of 256");
-        assert!(!admits(wallpaper * 3, wallpaper), "a fourth does not, and waits for one to finish");
-
-        // Nothing in flight admits anything, so no decode is too big to ever run and no set of
-        // waiters can be waiting only on each other.
-        assert!(admits(0, DECODE_POOL_BYTES), "an empty budget admits a decode at the ceiling");
-        assert!(!admits(1, DECODE_POOL_BYTES), "and one byte of company is enough to make it wait");
-    }
-
-    /// ADR-0187. The permit is RAII because `decode_raster` has a dozen `?` exits; a decode that
-    /// fails after charging must still give the bytes back, or the pool shrinks by that much for
-    /// the life of the process.
-    #[test]
-    fn a_permit_returns_its_bytes_and_wakes_a_waiter_however_the_decode_ends() {
-        let budget = std::sync::Arc::new(Budget::default());
-        {
-            let _whole = budget.acquire(DECODE_POOL_BYTES);
-            assert_eq!(*budget.in_flight.lock().unwrap(), DECODE_POOL_BYTES);
-        }
-        assert_eq!(*budget.in_flight.lock().unwrap(), 0, "a dropped permit gives its bytes back");
-
-        // A waiter blocked behind a full budget is released when the permit drops, rather than
-        // waiting for a timeout it does not have.
-        let held = budget.acquire(DECODE_POOL_BYTES);
-        let (tx, rx) = std::sync::mpsc::channel();
-        let waiting = std::sync::Arc::clone(&budget);
-        let joined = std::thread::spawn(move || {
-            let _permit = waiting.acquire(DECODE_POOL_BYTES);
-            let _ = tx.send(());
-        });
-        assert!(
-            rx.recv_timeout(std::time::Duration::from_millis(200)).is_err(),
-            "a decode that does not fit must wait rather than run"
-        );
-        drop(held);
-        assert!(
-            rx.recv_timeout(std::time::Duration::from_secs(5)).is_ok(),
-            "and must be woken by the permit that made room, not by a poll"
-        );
-        joined.join().unwrap();
-        assert_eq!(*budget.in_flight.lock().unwrap(), 0);
-    }
-
     /// ADR-0187, the case that started it: a real wallpaper of 6024x3401 decodes to 78 MiB of RGBA
     /// from 400 KB on disk. That is comfortably inside the 256 MiB pool and past a 64 MiB quarter
     /// of it, so the per-decode cap refused it unread, permanently, while the pool sat idle.
@@ -1578,16 +1247,6 @@ mod tests {
             decode_within_limits(&ordinary, MAX_DECODE_EDGE, Charge::Free, &|| true).is_ok(),
             "an ordinary file must still decode"
         );
-    }
-
-    #[test]
-    fn an_oversized_svg_is_refused_before_it_is_parsed() {
-        let dir = tempfile::tempdir().unwrap();
-        let bloated = dir.path().join("huge.svg");
-        // One byte over, so the refusal is the size check and not a parse failure.
-        std::fs::write(&bloated, vec![b' '; MAX_SVG_BYTES as usize + 1]).unwrap();
-        let err = rasterize_svg(&bloated, 24, None).expect_err("an oversized svg must be refused");
-        assert!(err.contains("over the"), "the refusal should say why: {err}");
     }
 
     #[test]
