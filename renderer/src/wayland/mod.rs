@@ -57,6 +57,7 @@ mod lock;
 mod memory_profile;
 mod output;
 mod surface;
+mod turn;
 mod xdg_shell;
 
 use input::{ArmedClick, ArmedSerial, FocusedField, FocusedTextField};
@@ -464,11 +465,11 @@ pub fn run(
             app.forget_painted_lists_drawing(&landed);
         }
         // What protocol state this turn owes; `surface_state_for_turn` carries the reasoning.
-        let state = surface::surface_state_for_turn(passed, !ticked.is_empty(), app.input_serial.is_some());
+        let state = turn::surface_state_for_turn(passed, !ticked.is_empty(), app.input_serial.is_some());
         match state.scope {
-            surface::StateScope::Everything => app.apply_resolved_surface_state(),
-            surface::StateScope::Ticked => app.apply_resolved_surface_state_for(&ticked),
-            surface::StateScope::Nothing => {}
+            turn::StateScope::Everything => app.apply_resolved_surface_state(),
+            turn::StateScope::Ticked => app.apply_resolved_surface_state_for(&ticked),
+            turn::StateScope::Nothing => {}
         }
         if state.popup_latch {
             app.apply_popup_visibility_for_armed_input();
@@ -479,16 +480,16 @@ pub fn run(
         }
         phases.mark_surface_state();
         // Which surfaces this turn owes the screen; `repaint_for_turn` carries the reasoning.
-        match surface::repaint_for_turn(surface::TurnChanges {
+        match turn::repaint_for_turn(turn::TurnChanges {
             passed,
             ticked: !ticked.is_empty(),
             stale: app.has_stale_surfaces(),
             typed,
             landed: !landed.is_empty(),
         }) {
-            surface::Repaint::Narrowed => app.repaint_surfaces_with_instance_ids(&ticked),
-            surface::Repaint::Everything => app.repaint_mapped_surfaces(),
-            surface::Repaint::Nothing => {}
+            turn::Repaint::Narrowed => app.repaint_surfaces_with_instance_ids(&ticked),
+            turn::Repaint::Everything => app.repaint_mapped_surfaces(),
+            turn::Repaint::Nothing => {}
         }
         phases.mark_repaint();
         // Skip focus maintenance on a truly idle turn (ADR-0124). It clones the focused tree to
