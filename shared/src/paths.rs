@@ -13,7 +13,7 @@ pub fn runtime_root() -> io::Result<PathBuf> {
     Ok(PathBuf::from(runtime_dir).join("obelisk"))
 }
 
-/// The Supervisor's `runtime_root()/<pid>`, handed to its Renderers through the environment.
+/// The Supervisor's `runtime_root()/<pid>-<start ms>`, handed to its Renderers through the environment.
 pub const INSTANCE_DIR_ENV: &str = "OBELISK_INSTANCE_DIR";
 
 /// This shell's socket, log and icon spools (ADR-0222).

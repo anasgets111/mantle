@@ -204,8 +204,8 @@ See [capability wiring](../supervisor/src/capabilities/mod.rs).
 | :--- | :--- |
 | Config | CLI `-c`, then shared config-path resolver |
 | Declared JSON stores | Absolute path and filename chosen by `persistent_table` |
-| Control socket, log, `instance.lock`, `config` | `$XDG_RUNTIME_DIR/obelisk/<supervisor pid>/` |
-| Spooled images | `$XDG_RUNTIME_DIR/obelisk/<supervisor pid>/<kind>/` |
+| Control socket, log, `instance.lock`, `config` | `$XDG_RUNTIME_DIR/obelisk/<supervisor pid>-<start ms>/` |
+| Spooled images | `$XDG_RUNTIME_DIR/obelisk/<supervisor pid>-<start ms>/<kind>/` |
 | Session-lock marker | `$XDG_RUNTIME_DIR/obelisk/session-locked` |
 
 Declared files push immediately and write 1 second after the last edit via temporary file and rename.

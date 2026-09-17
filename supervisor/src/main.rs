@@ -138,10 +138,9 @@ fn detach_self(root: &std::path::Path) -> Result<(), Box<dyn Error>> {
     // async-signal-safe and touches no Rust state.
     unsafe { command.pre_exec(|| if libc::setsid() == -1 { Err(std::io::Error::last_os_error()) } else { Ok(()) }) };
     let mut child = command.spawn()?;
-    let dir = root.join(child.id().to_string());
     let deadline = std::time::Instant::now() + Duration::from_secs(5);
     // The log too: it lands after the lock, and until then `obelisk log` would pick another shell.
-    while !(instance::is_live(&dir) && dir.join(instance::LOG).exists()) {
+    while !instance::list(root).iter().any(|i| i.pid == child.id() && i.live && i.has_log) {
         let exited = child.try_wait()?;
         if exited.is_some() || std::time::Instant::now() > deadline {
             let why = exited.map_or("still starting after 5s".to_string(), |status| status.to_string());
@@ -182,18 +181,18 @@ fn main() -> Result<(), Box<dyn Error>> {
         let (root, config) = (shared::runtime_root()?, shared::config_dir()?);
         let instances = instance::list(&root);
         let explicit = args.config_dir.is_some();
-        let pid = match args.command {
+        let selected = match args.command {
             cli::Command::Log { .. } => {
-                let (pid, note) = instance::select_log(&instances, args.pid, explicit.then_some(&*config))?;
+                let (selected, note) = instance::select_log(&instances, args.pid, explicit.then_some(&*config))?;
                 if let Some(note) = note {
                     eprintln!("obelisk: {note}");
                 }
-                pid
+                selected
             }
             _ => instance::select_command(&instances, args.pid, &config, explicit)?,
         };
         // SAFETY: as above. Replaces an inherited value, which names the shell that spawned us.
-        unsafe { std::env::set_var(shared::INSTANCE_DIR_ENV, root.join(pid.to_string())) };
+        unsafe { std::env::set_var(shared::INSTANCE_DIR_ENV, &selected.dir) };
     }
 
     match args.command {
@@ -237,10 +236,9 @@ fn main() -> Result<(), Box<dyn Error>> {
             if args.detach {
                 return detach_self(&root);
             }
-            let pid = std::process::id();
-            let _instance = instance::claim(&root, pid, &shared::config_dir()?)?;
+            let (dir, _lock) = instance::claim(&root, std::process::id(), &shared::config_dir()?)?;
             // SAFETY: as above. Every Renderer, respawns included, inherits it.
-            unsafe { std::env::set_var(shared::INSTANCE_DIR_ENV, root.join(pid.to_string())) };
+            unsafe { std::env::set_var(shared::INSTANCE_DIR_ENV, dir) };
             // Every runtime diagnostic from here on, and every Renderer that inherits these
             // descriptors (ADR-0199). Argument parsing has already had its say above, so a
             // detached run still loses a `-c` substitution notice.

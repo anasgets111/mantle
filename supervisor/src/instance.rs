@@ -1,4 +1,4 @@
-//! One `$XDG_RUNTIME_DIR/obelisk/<pid>/` per Supervisor, and how clients pick one (ADR-0222).
+//! One `$XDG_RUNTIME_DIR/obelisk/<pid>-<start ms>/` per Supervisor, and how clients pick one (ADR-0222).
 
 use std::ffi::OsString;
 use std::fs::{DirBuilder, File};
@@ -15,6 +15,7 @@ pub const LOG: &str = "shell.log";
 /// A Supervisor's directory as `list` read it.
 pub struct Instance {
     pub pid: u32,
+    pub dir: PathBuf,
     pub config: PathBuf,
     pub started: SystemTime,
     pub live: bool,
@@ -36,19 +37,14 @@ fn whole_file(kind: libc::c_int) -> libc::flock {
     }
 }
 
-/// Takes the lock, or reports that someone else holds it. `file` must be open for writing.
-fn take_lock(file: &File) -> io::Result<bool> {
+/// Takes the lock. `file` must be open for writing.
+fn take_lock(file: &File) -> io::Result<()> {
     let lock = whole_file(libc::F_WRLCK);
     // SAFETY: a live descriptor and a fully initialized `flock`. `F_OFD_SETLK` never blocks.
-    if unsafe { libc::fcntl(file.as_raw_fd(), libc::F_OFD_SETLK, &lock) } == 0 {
-        return Ok(true);
+    if unsafe { libc::fcntl(file.as_raw_fd(), libc::F_OFD_SETLK, &lock) } == -1 {
+        return Err(io::Error::last_os_error());
     }
-    let err = io::Error::last_os_error();
-    // Only contention means someone else has it; anything else is reported, not read as busy.
-    match err.raw_os_error() {
-        Some(libc::EACCES | libc::EAGAIN) => Ok(false),
-        _ => Err(err),
-    }
+    Ok(())
 }
 
 /// Whether anyone holds the lock on `file`. A query: it takes nothing.
@@ -62,67 +58,62 @@ pub fn is_locked(file: &File) -> io::Result<bool> {
     Ok(lock.l_type != libc::F_UNLCK as libc::c_short)
 }
 
-/// Whether a Supervisor still holds `dir`.
+/// Whether a Supervisor still holds `dir`. Only listing reads it, so an unreadable lock may pass for
+/// a dead run.
 pub fn is_live(dir: &Path) -> bool {
     File::open(dir.join(LOCK)).and_then(|file| is_locked(&file)).unwrap_or(false)
 }
 
-/// Creates `root/<pid>/` for this Supervisor and holds its lock for as long as the file lives.
+/// Creates `root/<pid>-<start ms>/` for this Supervisor and holds its lock for as long as the file
+/// lives. The start time makes a reused pid a new directory, so nothing is ever cleared.
 ///
 /// ponytail: stopped runs stay until logout clears the tmpfs; prune by age if that ever pressures it.
-pub fn claim(root: &Path, pid: u32, config: &Path) -> io::Result<File> {
+pub fn claim(root: &Path, pid: u32, config: &Path) -> io::Result<(PathBuf, File)> {
     DirBuilder::new().recursive(true).mode(0o700).create(root)?;
-    let dir = root.join(pid.to_string());
-    // A live holder of our own pid is a Supervisor in another pid namespace sharing this login.
-    if is_live(&dir) {
-        return Err(io::Error::new(
-            io::ErrorKind::AlreadyExists,
-            format!("{} is held by a running shell", dir.display()),
-        ));
-    }
-    if let Err(err) = std::fs::remove_dir_all(&dir)
-        && err.kind() != io::ErrorKind::NotFound
-    {
-        return Err(err);
-    }
+    let start = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap_or_default().as_millis();
+    let dir = root.join(format!("{pid}-{start}"));
     DirBuilder::new().mode(0o700).create(&dir)?;
     // Before the lock, so a live instance always has a readable `config`.
     std::fs::write(dir.join("config"), config.as_os_str().as_bytes())?;
     let lock = File::create(dir.join(LOCK))?;
-    if !take_lock(&lock)? {
-        return Err(io::Error::new(io::ErrorKind::AlreadyExists, format!("{} is already held", dir.display())));
-    }
-    Ok(lock)
+    take_lock(&lock)?;
+    Ok((dir, lock))
 }
 
-/// Every numbered directory under `root` that has a `config`.
+/// Every `<pid>-<start ms>` directory under `root` that has a `config`.
 pub fn list(root: &Path) -> Vec<Instance> {
     let Ok(entries) = std::fs::read_dir(root) else { return Vec::new() };
     entries
         .flatten()
         .filter_map(|entry| {
-            let pid = entry.file_name().to_str()?.parse().ok()?;
+            let name = entry.file_name();
+            let (pid, start) = name.to_str()?.split_once('-')?;
             let dir = entry.path();
-            let config = dir.join("config");
             Some(Instance {
-                pid,
-                started: std::fs::metadata(&config).and_then(|meta| meta.modified()).ok()?,
-                config: PathBuf::from(OsString::from_vec(std::fs::read(config).ok()?)),
+                pid: pid.parse().ok()?,
+                started: SystemTime::UNIX_EPOCH + Duration::from_millis(start.parse().ok()?),
+                config: PathBuf::from(OsString::from_vec(std::fs::read(dir.join("config")).ok()?)),
                 live: is_live(&dir),
                 has_log: dir.join(LOG).exists(),
+                dir,
             })
         })
         .collect()
 }
 
 /// Pids wrap, so start time orders instances.
-fn newest<'a>(instances: impl Iterator<Item = &'a Instance>) -> Option<u32> {
-    instances.max_by_key(|instance| instance.started).map(|instance| instance.pid)
+fn newest<'a>(instances: impl Iterator<Item = &'a Instance>) -> Option<&'a Instance> {
+    instances.max_by_key(|instance| instance.started)
 }
 
 /// The Supervisor `set`, `toggle` and `call` reach. `explicit` is `-c`, never an inherited
 /// `$OBELISK_CONFIG_DIR`.
-pub fn select_command(instances: &[Instance], pid: Option<u32>, config: &Path, explicit: bool) -> Result<u32, String> {
+pub fn select_command<'a>(
+    instances: &'a [Instance],
+    pid: Option<u32>,
+    config: &Path,
+    explicit: bool,
+) -> Result<&'a Instance, String> {
     let live = || instances.iter().filter(|instance| instance.live);
     if let Some(pid) = pid {
         return newest(live().filter(|instance| instance.pid == pid))
@@ -136,29 +127,30 @@ pub fn select_command(instances: &[Instance], pid: Option<u32>, config: &Path, e
         })
 }
 
-/// The directory `obelisk log` reads, and a note when it picked one of several live shells; `config`
-/// is `-c`.
-pub fn select_log(
-    instances: &[Instance],
+/// The shell `obelisk log` reads, and a note when it picked one of several live shells; `config` is
+/// `-c`.
+pub fn select_log<'a>(
+    instances: &'a [Instance],
     pid: Option<u32>,
     config: Option<&Path>,
-) -> Result<(u32, Option<String>), String> {
+) -> Result<(&'a Instance, Option<String>), String> {
     if let Some(pid) = pid {
         return newest(instances.iter().filter(|instance| instance.pid == pid))
-            .map(|pid| (pid, None))
+            .map(|instance| (instance, None))
             .ok_or_else(|| format!("no shell with pid {pid}; obelisk list shows the running ones"));
     }
     let logs = || instances.iter().filter(|i| i.has_log && config.is_none_or(|config| i.config == config));
     let live = || logs().filter(|instance| instance.live);
-    if let Some(pid) = newest(live()) {
+    if let Some(instance) = newest(live()) {
         let count = live().count();
         let on = config.map(|config| format!(" on {}", config.display())).unwrap_or_default();
+        let pid = instance.pid;
         let note = (count > 1).then(|| {
             format!("{count} shells running{on}; showing pid {pid} (newest). --pid picks one; obelisk list shows them")
         });
-        return Ok((pid, note));
+        return Ok((instance, note));
     }
-    newest(logs()).map(|pid| (pid, None)).ok_or_else(|| match config {
+    newest(logs()).map(|instance| (instance, None)).ok_or_else(|| match config {
         Some(config) => format!("no shell log this login on {}", config.display()),
         None => "no shell log this login".to_string(),
     })
@@ -191,12 +183,12 @@ pub(crate) mod tests {
         let reader = File::open(&path).unwrap();
 
         assert!(!is_locked(&reader).unwrap(), "an unlocked file has no holder");
-        assert!(take_lock(&shell).unwrap(), "a free lock is takeable");
+        take_lock(&shell).expect("a free lock is takeable");
         assert!(is_locked(&reader).unwrap(), "a held lock reads as live, through a read-only descriptor");
 
         // Probing must leave the lock where it found it.
         let second = OpenOptions::new().write(true).open(&path).unwrap();
-        assert!(!take_lock(&second).unwrap(), "a second taker loses");
+        assert!(take_lock(&second).is_err(), "a second taker loses");
         drop(second);
 
         // What a crash does, since the kernel closes the descriptors either way.
@@ -217,25 +209,14 @@ pub(crate) mod tests {
             .expect("the lock was never released")
     }
 
-    /// An unlocked `root/<name>/config` naming `config`, started `age` ago.
-    fn leftover(root: &Path, name: &str, config: &str, age: u64) -> PathBuf {
-        let dir = root.join(name);
-        std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join("config"), config).unwrap();
-        let started = SystemTime::now() - Duration::from_secs(age);
-        File::options().write(true).open(dir.join("config")).unwrap().set_modified(started).unwrap();
-        dir
-    }
-
     #[test]
     fn claim_creates_a_private_dir_holding_config_and_a_held_lock() {
         use std::os::unix::fs::PermissionsExt;
         let root = tempfile::tempdir().unwrap();
         let root = root.path().join("obelisk");
 
-        let _held = claim(&root, 42, Path::new("/cfg")).unwrap();
+        let (dir, _held) = claim(&root, 42, Path::new("/cfg")).unwrap();
 
-        let dir = root.join("42");
         for private in [&root, &dir] {
             assert_eq!(std::fs::metadata(private).unwrap().permissions().mode() & 0o777, 0o700);
         }
@@ -244,29 +225,40 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn claim_clears_a_dead_leftover_under_its_own_pid_and_refuses_a_live_one() {
+    fn a_reused_pid_gets_its_own_dir_and_never_touches_the_first_even_with_an_unreadable_lock() {
+        use std::os::unix::fs::PermissionsExt;
         let root = tempfile::tempdir().unwrap();
-        let stale = leftover(root.path(), "42", "/old", 60);
-        std::fs::write(stale.join(LOG), "an earlier run").unwrap();
+        let (first, _held) = claim(root.path(), 42, Path::new("/old")).unwrap();
+        std::fs::write(first.join(LOG), "an earlier run").unwrap();
+        std::fs::set_permissions(first.join(LOCK), std::fs::Permissions::from_mode(0o000)).unwrap();
+        // The directory name has millisecond resolution.
+        std::thread::sleep(Duration::from_millis(2));
 
-        let held = claim(root.path(), 42, Path::new("/new")).unwrap();
-        assert!(!stale.join(LOG).exists(), "a reused pid starts from an empty directory");
-        assert!(claim(root.path(), 42, Path::new("/new")).is_err(), "another pid namespace's live shell stays");
-        drop(held);
+        let (second, _also_held) = claim(root.path(), 42, Path::new("/new")).unwrap();
+        assert_ne!(first, second);
+        assert_eq!(std::fs::read(first.join(LOG)).unwrap(), b"an earlier run");
     }
 
     fn at(pid: u32, config: &str, age: u64, live: bool, has_log: bool) -> Instance {
         let started = SystemTime::UNIX_EPOCH + Duration::from_secs(1000 - age);
-        Instance { pid, config: config.into(), started, live, has_log }
+        Instance { pid, dir: PathBuf::new(), config: config.into(), started, live, has_log }
+    }
+
+    fn pid(selected: Result<&Instance, String>) -> Result<u32, String> {
+        selected.map(|instance| instance.pid)
+    }
+
+    fn log_pid(selected: Result<(&Instance, Option<String>), String>) -> Result<(u32, Option<String>), String> {
+        selected.map(|(instance, note)| (instance.pid, note))
     }
 
     #[test]
     fn commands_reach_the_newest_live_on_this_config_and_fall_back_only_without_dash_c() {
         let a = Path::new("/a");
         let running = [at(900, "/a", 50, true, true), at(100, "/a", 5, true, true), at(7, "/b", 1, true, true)];
-        assert_eq!(select_command(&running, None, a, false), Ok(100), "newest, not highest pid");
-        assert_eq!(select_command(&running, Some(900), a, true), Ok(900));
-        assert_eq!(select_command(&running, None, Path::new("/c"), false), Ok(7), "any live without -c");
+        assert_eq!(pid(select_command(&running, None, a, false)), Ok(100), "newest, not highest pid");
+        assert_eq!(pid(select_command(&running, Some(900), a, true)), Ok(900));
+        assert_eq!(pid(select_command(&running, None, Path::new("/c"), false)), Ok(7), "any live without -c");
         assert!(select_command(&running, None, Path::new("/c"), true).is_err(), "-c names the one it wants");
 
         let dead = [at(5, "/a", 5, false, true)];
@@ -283,11 +275,15 @@ pub(crate) mod tests {
             at(3, "/b", 30, true, true),
             at(4, "/b", 1, true, false),
         ];
-        assert_eq!(select_log(&instances, None, Some(a)), Ok((2, None)), "-c narrows; a dead run is not counted");
-        assert_eq!(select_log(&instances[..1], None, None), Ok((1, None)), "nothing live: the last run");
-        assert_eq!(select_log(&instances, Some(1), None), Ok((1, None)), "a kept dead run is readable by pid");
         assert_eq!(
-            select_log(&instances, None, None),
+            log_pid(select_log(&instances, None, Some(a))),
+            Ok((2, None)),
+            "-c narrows; a dead run is not counted"
+        );
+        assert_eq!(log_pid(select_log(&instances[..1], None, None)), Ok((1, None)), "nothing live: the last run");
+        assert_eq!(log_pid(select_log(&instances, Some(1), None)), Ok((1, None)), "a kept dead run is readable by pid");
+        assert_eq!(
+            log_pid(select_log(&instances, None, None)),
             Ok((3, Some("2 shells running; showing pid 3 (newest). --pid picks one; obelisk list shows them".into()))),
             "a terminal-started shell has nothing to read, and is not counted"
         );

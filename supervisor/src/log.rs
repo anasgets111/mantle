@@ -47,7 +47,6 @@ pub fn print(dir: &Path, follow: bool, out: &mut impl Write) -> Result<(), Box<d
     let mut file = File::open(&path).map_err(|err| {
         format!("no log at {}: {err}. A shell with a terminal or a redirect writes there instead", path.display())
     })?;
-    // Opened once: a reused pid's new lock must not extend this follow.
     let lock = File::open(dir.join(instance::LOCK))
         .map_err(|err| format!("{} has no lock, so its shell died starting: {err}", dir.display()))?;
     // Said once, before any of it is printed: without this a dead run's bytes are indistinguishable
@@ -85,19 +84,15 @@ mod tests {
     fn a_follow_ends_with_its_supervisor_even_when_the_pid_is_reused() {
         use std::io::Read;
         let root = tempfile::tempdir().unwrap();
-        let dir = root.path().join("42");
-        let held = instance::claim(root.path(), 42, Path::new("/cfg")).unwrap();
+        let (dir, held) = instance::claim(root.path(), 42, Path::new("/cfg")).unwrap();
         let mut log = File::create(dir.join(instance::LOG)).unwrap();
         writeln!(log, "first").unwrap();
 
         let (mut printed, out) = io::pipe().unwrap();
         let (done, finished) = std::sync::mpsc::channel();
-        std::thread::spawn({
-            let dir = dir.clone();
-            move || {
-                print(&dir, true, &mut { out }).unwrap();
-                done.send(()).unwrap();
-            }
+        std::thread::spawn(move || {
+            print(&dir, true, &mut { out }).unwrap();
+            done.send(()).unwrap();
         });
         // Printed only after the follower opened the lock.
         printed.read_exact(&mut [0; 6]).unwrap();
