@@ -10,7 +10,7 @@ use tokio::sync::mpsc::UnboundedSender;
 use super::controller::{UpdatesSignal, UpdatesState};
 
 /// Marker file for [`UpdatesState::reboot_required`], written by a pacman hook.
-pub(super) const REBOOT_MARKER: &str = "/run/obelisk-shell-reboot-required";
+pub(super) const REBOOT_MARKER: &str = "/run/obelisk-reboot-required";
 
 /// Mirrors `marker`'s existence into [`UpdatesState::reboot_required`] until the controller drops.
 /// `marker` is a parameter so a test can point it at a tempdir.

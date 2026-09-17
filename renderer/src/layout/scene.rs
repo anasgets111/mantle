@@ -5639,7 +5639,7 @@ pub(super) mod tests {
     /// Its height has to be the wrapped body's, whatever the margin.
     #[test]
     fn a_containers_own_margin_does_not_widen_what_its_children_are_measured_at() {
-        let long = "have a look at this: https://github.com/anasgets111/obelisk-shell/pull/12 and tell me what you think about it all";
+        let long = "have a look at this: https://github.com/anasgets111/obelisk-engine/pull/12 and tell me what you think about it all";
         let heights = |margin: u32| {
             let src = format!(
                 r#"panel {{ id = "bar", child = column {{ width = "Fill", height = "Fill", children = {{

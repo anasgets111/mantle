@@ -61,7 +61,7 @@ pub struct UpdatesState {
     /// [`UpdatesState::install_exit_code`], this means the install was never answered and the
     /// failure is Supervisor's.
     pub install_error: Option<String>,
-    /// Whether `/run/obelisk-shell-reboot-required` exists. A pacman hook writes it, so a
+    /// Whether `/run/obelisk-reboot-required` exists. A pacman hook writes it, so a
     /// terminal upgrade raises it too, and `/run` being tmpfs means a boot clears it. Nothing in
     /// Obelisk writes or clears it.
     pub reboot_required: bool,
