@@ -46,7 +46,7 @@ pub struct TextPainter {
     registered: HashMap<(usize, u32), FontId>,
     /// The worker and memo that measured each line, asked again for its glyphs and its faces.
     shaping: ShapingHandle,
-    /// `layout::paint::draw_clipped`'s offscreen targets, kept between paints and keyed by exact
+    /// `layout::paint::canvas::draw_clipped`'s offscreen targets, kept between paints and keyed by exact
     /// size, each with the paint that last asked for that size (ADR-0217). Here, not beside
     /// `ImageCache`, because the ids belong to `canvas` and have to die with it.
     scratch: HashMap<(usize, usize), (u64, Vec<ImageId>)>,
