@@ -91,21 +91,23 @@ impl NetworkController {
     /// Binds and reads each profile at `paths`. Unreadable profiles are logged under `context` and
     /// skipped.
     async fn read_profiles(&self, paths: Vec<OwnedObjectPath>, context: &str) -> Vec<SavedProfile> {
-        let mut profiles = Vec::new();
-        for path in paths {
+        let reads = paths.into_iter().map(|path| async move {
             let connection = match bind::<SettingsConnectionProxy>(&self.connection, path.clone()).await {
                 Ok(connection) => connection,
                 Err(err) => {
                     eprintln!("network: {context} failed to bind connection {path}: {err}");
-                    continue;
+                    return None;
                 }
             };
             match connection.get_settings().await {
-                Ok(settings) => profiles.push(SavedProfile { path, connection, settings }),
-                Err(err) => eprintln!("network: {context} failed to read settings for {path}: {err}"),
+                Ok(settings) => Some(SavedProfile { path, connection, settings }),
+                Err(err) => {
+                    eprintln!("network: {context} failed to read settings for {path}: {err}");
+                    None
+                }
             }
-        }
-        profiles
+        });
+        futures_util::future::join_all(reads).await.into_iter().flatten().collect()
     }
 
     /// Replaces the saved-SSID cache with one fresh `ListConnections` walk.

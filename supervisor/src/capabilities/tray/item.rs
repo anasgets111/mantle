@@ -76,17 +76,44 @@ pub(super) async fn fetch_tray_item_base(
     unique_name: &OwnedUniqueName,
     object_path: &OwnedObjectPath,
 ) -> TrayItem {
+    let (
+        id_prop,
+        title,
+        status,
+        item_is_menu,
+        tooltip,
+        theme_path,
+        icon_name,
+        icon_pixmap,
+        attention_icon_name,
+        attention_icon_pixmap,
+        overlay_icon_name,
+        overlay_icon_pixmap,
+    ) = futures_util::join!(
+        item.id(),
+        item.title(),
+        item.status(),
+        item.item_is_menu(),
+        item.tool_tip(),
+        item.icon_theme_path(),
+        item.icon_name(),
+        item.icon_pixmap(),
+        item.attention_icon_name(),
+        item.attention_icon_pixmap(),
+        item.overlay_icon_name(),
+        item.overlay_icon_pixmap(),
+    );
     // Every string below is whatever application owns this item; cap each on the way in
     // (`MAX_TRAY_TEXT_BYTES`) rather than trusting SNI, which bounds none of them.
-    let id_prop = capped(item.id().await.unwrap_or_default());
-    let title = capped(item.title().await.unwrap_or_default());
-    let status = capped(item.status().await.unwrap_or_default());
-    let item_is_menu = item.item_is_menu().await.unwrap_or(false);
-    let tooltip = item.tool_tip().await.ok();
+    let id_prop = capped(id_prop.unwrap_or_default());
+    let title = capped(title.unwrap_or_default());
+    let status = capped(status.unwrap_or_default());
+    let item_is_menu = item_is_menu.unwrap_or(false);
+    let tooltip = tooltip.ok();
     // Read once for all three icon variants; the directory belongs to the item (ADR-0074). Not
     // capped with the rest: a path cut short names a *different* directory rather than none, so
     // `theme_path_file` bounds it at `PATH_MAX` where it is used instead.
-    let theme_path = item.icon_theme_path().await.unwrap_or_default();
+    let theme_path = theme_path.unwrap_or_default();
 
     let id = item_id(unique_name.as_str(), object_path.as_str());
     let stem = icon_filename_stem(&id);
@@ -94,23 +121,18 @@ pub(super) async fn fetch_tray_item_base(
     let tooltip_flat =
         tooltip.and_then(|(_, _, tt_title, tt_text)| flatten_tooltip(&capped(tt_title), &capped(tt_text)));
 
-    let (icon_name, icon_path) = resolve_variant(
-        item.icon_name().await.unwrap_or_default(),
-        item.icon_pixmap().await.unwrap_or_default(),
-        &theme_path,
-        &stem,
-        "",
-    );
+    let (icon_name, icon_path) =
+        resolve_variant(icon_name.unwrap_or_default(), icon_pixmap.unwrap_or_default(), &theme_path, &stem, "");
     let (attention_icon_name, attention_icon_path) = resolve_variant(
-        item.attention_icon_name().await.unwrap_or_default(),
-        item.attention_icon_pixmap().await.unwrap_or_default(),
+        attention_icon_name.unwrap_or_default(),
+        attention_icon_pixmap.unwrap_or_default(),
         &theme_path,
         &stem,
         "-attention",
     );
     let (overlay_icon_name, overlay_icon_path) = resolve_variant(
-        item.overlay_icon_name().await.unwrap_or_default(),
-        item.overlay_icon_pixmap().await.unwrap_or_default(),
+        overlay_icon_name.unwrap_or_default(),
+        overlay_icon_pixmap.unwrap_or_default(),
         &theme_path,
         &stem,
         "-overlay",
