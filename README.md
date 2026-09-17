@@ -1,19 +1,16 @@
 # Obelisk
 
-A Wayland desktop shell you write in Lua. You declare the bars, popups, launcher and lock screen as
-a tree of nodes; Rust owns the platform connections, input, layout and painting.
+A Wayland shell engine: you build the desktop shell in Lua, and Rust runs it. A config declares
+the bars, popups, launcher and lock screen as a tree of nodes; the engine owns the platform
+connections, input, layout and painting. Obelisk ships no shell of its own, only
+[`share/starter`](share/starter), a minimal example config.
 
 Status: pre-release. Nothing is published, and the Lua API changes without notice.
 
+A shell built on it:
 
 
 https://github.com/user-attachments/assets/770bd04b-bc43-43b9-a388-eccda8d9528f
-
-
-
-https://github.com/user-attachments/assets/038ee763-d7b6-4df9-9f79-2f131d4f0dcd
-
-
 
 
 ## Why processes

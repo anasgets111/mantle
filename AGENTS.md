@@ -1,13 +1,10 @@
 # Obelisk
 
-Two layers, in priority order:
+A Wayland shell engine, not a shell: the Rust workspace (`renderer`, `supervisor`, `shared`) runs shells
+that Lua configs declare. It ships none of its own; `share/starter` is a minimal example config.
 
-1. **Framework.** The Rust workspace (`renderer`, `supervisor`, `shared`): a generic Wayland shell engine
-   scripted in Lua. `share/starter` is its shipped example config.
-2. **Personal shell.** `dev-config/obelisk`, the owner's daily shell built on the framework.
-
-Rust code, tests and comments never depend on or cite `dev-config`. Engine tests use inline fixtures. A
-feature missing from `dev-config` is not an engine gap.
+Rust code, tests and comments never depend on or cite a particular config. Engine tests use inline fixtures.
+A feature one config lacks is not an engine gap.
 
 ## Ponytail: lazy senior dev mode
 
