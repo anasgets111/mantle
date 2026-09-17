@@ -74,7 +74,8 @@ OPTIONS:
                          return, sending its output to `obelisk log`
         --force          init only: overwrite files that already exist
     -f, --follow         log only: keep printing until the shell exits
-        --pid <PID>      set, toggle, call and log: the shell `list` shows
+        --pid <PID>      set, toggle, call and log: the shell `list` shows,
+                         not with -c
         --profile[=SECS] run only: log idle, heap and PSS/GPU reports every
                          SECS seconds, 60 by default
     -V, --version
@@ -258,6 +259,9 @@ pub fn parse<I: IntoIterator<Item = String>>(argv: I) -> Result<Args, String> {
     if config_dir.is_some() && command == Command::List {
         return Err("`list` shows every config's shells".to_string());
     }
+    if pid.is_some() && config_dir.is_some() {
+        return Err("--pid names one shell; drop -c".to_string());
+    }
     Ok(Args { command, config_dir, detach, profile, pid })
 }
 
@@ -435,6 +439,8 @@ mod tests {
             &["list", "--pid", "5"],
             &["init", "--pid", "5"],
             &["list", "-c", "/"],
+            &["log", "-c", "/", "--pid", "5"],
+            &["call", "rec.toggle", "--pid", "5", "-c", "/"],
             &["log", "--pid", "x"],
         ] {
             assert!(parse_args(refused).is_err(), "{refused:?}");
