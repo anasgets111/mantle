@@ -65,7 +65,7 @@ USAGE:
     obelisk call <NAME> [ARGS]   run the config's action(NAME) and print what
                                  it returned
     obelisk log [-f]             print the shell's stdout and stderr
-    obelisk list                 show running shells: PID UPTIME CONFIG
+    obelisk list                 show running shells: PID UPTIME DIR CONFIG
 
 OPTIONS:
     -c, --config <DIR>   the config directory, holding shell.lua. Overrides

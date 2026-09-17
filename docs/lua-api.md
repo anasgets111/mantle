@@ -353,7 +353,7 @@ See [wire format and dispatch limits](services.md#13-control-socket-and-wire-for
 | :--- | :--- |
 | `obelisk -d` | Starts the shell in its own session, prints its pid once it runs; output goes to `obelisk log` |
 | `obelisk log [-f]` | Prints the newest running shell's stdout and stderr, else the last run's; `-f` follows until that shell exits |
-| `obelisk list` | Running shells, oldest first: PID, UPTIME, CONFIG; exit 1 when none |
+| `obelisk list` | Running shells, oldest first: PID, UPTIME, DIR, CONFIG; exit 1 when none |
 | `obelisk init -c <dir> [--force]` | Writes `.luarc.json` and a starter `shell.lua`; copies the embedded stubs when no package installed them; `--force` overwrites the two config files |
 | `obelisk check -c <dir>` | Evaluates config/surface declarations without Wayland, GPU or subprocess execution |
 | `obelisk set <name> <value>` | Writes declared named state; parses JSON, otherwise uses a string |

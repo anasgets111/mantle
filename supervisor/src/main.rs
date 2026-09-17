@@ -204,10 +204,11 @@ fn main() -> Result<(), Box<dyn Error>> {
                 return Err("no shell is running".into());
             }
             running.sort_by_key(|running| running.started);
-            println!("PID     UPTIME  CONFIG");
+            println!("PID     UPTIME  DIR                    CONFIG");
             for running in running {
                 let uptime = instance::format_uptime(running.started.elapsed().unwrap_or_default());
-                println!("{:<7} {uptime:<7} {}", running.pid, running.config.display());
+                let dir = running.dir.file_name().unwrap_or_default().to_string_lossy();
+                println!("{:<7} {uptime:<7} {dir:<22} {}", running.pid, running.config.display());
             }
             Ok(())
         }
