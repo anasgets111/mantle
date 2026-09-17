@@ -98,7 +98,7 @@ Current project vocabulary. Implementation contracts live in [docs](docs/lua-api
 
 **IDL**: The typed contract the engine exposes to Lua: capability payload fields, action names and node properties. The editor stubs carry it: capability payloads and actions generated from the Rust types, node properties hand-written. _Avoid_: schema, API surface, wire format
 
-**Capability registry**: The Supervisor's collection of capability controllers and their state/event channels. _Avoid_: capability manager, service registry, plugin table
+**Capabilities**: The Supervisor's collection of capability controllers and their state/event channels (`Capabilities`). _Avoid_: capability registry (a `GenerationRegistry` tracks Renderer connections), capability manager, plugin table
 
 **Supervisor state**: The durable session state needed to supervise generations, capabilities, authentication and reloads. _Avoid_: session, context, app state, world
 

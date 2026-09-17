@@ -106,14 +106,14 @@ Missing Bluetooth hardware/service degrades to an inert controller.
 ### 5.3 Codec coverage
 
 Codecs come from PipeWire, not BlueZ. `obelisk.audio`'s `bluetooth` lists each BlueZ device's
-codec profiles by MAC, and `audio:set_bluetooth_profile(device, index)` switches one. See
+codec profiles by MAC, and the `set_bluetooth_profile(device, index)` action switches one. See
 [audio dispatch](../supervisor/src/capabilities/audio/mod.rs).
 
 ## 6. PipeWire and privacy
 
 Native PipeWire callbacks publish sinks, sources, default routing and stream volume/mute.
 Commands set defaults and control output/input volume and mute.
-Playback streams publish per-app volume and mute, targeting stream node IDs.
+Playback and recording streams publish per-app volume and mute, targeting stream node IDs.
 
 Input audio streams report microphone users (excluding monitor capture); output video streams report
 screencast users. Camera detection combines video-device watching, process-fd inspection and
@@ -197,7 +197,7 @@ See [session processes](../supervisor/src/capabilities/processes/controller.rs).
 | `files` | Config-requested directory listings followed through inotify |
 | `processes` | Programs declared with `session_process`, owned across Renderer replacements |
 
-See [capability registry](../supervisor/src/capabilities/mod.rs).
+See [capability wiring](../supervisor/src/capabilities/mod.rs).
 
 ## 12. Paths and persistence
 
@@ -236,7 +236,7 @@ Frames from a non-authoritative generation, or naming another generation, are dr
 `CallResult`: the generation a call went to may answer it after a respawn. Nothing checks
 `expected_revision`, so it is not an authorization guarantee.
 See [wire types](../shared/src/lib.rs), [socket](../supervisor/src/socket/mod.rs) and
-[dispatch](../supervisor/src/supervisor.rs).
+[the generation filter](../supervisor/src/main.rs).
 
 ## 14. Reload lifecycle
 

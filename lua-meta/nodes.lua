@@ -7,7 +7,7 @@
 --
 -- `renderer/src/lua/nodes.rs`'s `meta_stub_tests` matches constructors and each kind's `---@field`
 -- names against `accepted_properties`; a property added to the engine but omitted here fails the
--- build. `just types` runs the language server over `dev-config` against these declarations, so a
+-- build. `just types` runs the language server over `share/starter` against these declarations, so a
 -- wrong type here surfaces as a diagnostic on working config code (ADR-0081).
 --
 -- Constructor `---@param props`/`---@return Node` lines stay bare: the type is the sentence, and
@@ -17,15 +17,10 @@
 -- resolves it once per pass (`node::resolve_properties`), then applies the property's normal rules;
 -- `radius = someSignal` is as ordinary as `radius = 8`.
 --
--- Unions once named `Signal` only on common properties to avoid clutter. That made 21 engine-valid
--- bindings fail under `lua-language-server --check`, because `lua-meta` is what the language server
--- reads.
---
--- Replacing those unions with `Signal` was worse: `---@class` accepts any table-shaped union
--- member, so `string|Signal` on `text.content` admitted every IDL payload table, including a
--- notification's `body` span array, which reached the engine and froze the shell on its last good
--- scene. `Bound` is `userdata`, which rejects tables and matches the runtime signal; see
--- `signals.lua`'s [`Signal`].
+-- `Bound` is `userdata`, not the `Signal` class: `---@class` accepts any table-shaped union
+-- member, so `string|Signal` on `text.content` would admit every IDL payload table, including a
+-- notification's `body` span array, reaching the engine as literal content. `userdata` rejects
+-- tables and matches the runtime signal; see `signals.lua`'s [`Signal`].
 --
 -- Structural exceptions are `id`, `hover`, `scroll`, and a panel's `layer`/`anchor`/`monitor`/
 -- `namespace`: `resolve_properties` passes them raw because identities do not resolve. `hover` and
@@ -44,7 +39,7 @@
 ---@alias Axes { x?: number, y?: number } An `{ x, y }` pair; an absent axis takes the property's default.
 ---@alias EasingName "Linear"|"InQuad"|"OutQuad"|"InOutQuad"|"InCubic"|"OutCubic"|"InOutCubic"|"InQuart"|"OutQuart"|"InOutQuart"|"InQuint"|"OutQuint"|"InOutQuint"|"InSine"|"OutSine"|"InOutSine"|"InExpo"|"OutExpo"|"InOutExpo"|"InCirc"|"OutCirc"|"InOutCirc"|"InBack"|"OutBack"|"InOutBack"|"InElastic"|"OutElastic"|"InOutElastic"|"InBounce"|"OutBounce"|"InOutBounce" QML's `Easing.Type` names without the prefix. `Back`, `Elastic` and `Bounce` overshoot and are clamped to the property's range.
 ---@alias Easing EasingName|[number, number, number, number]|{ steps: integer } A name, CSS `cubic-bezier(x1, y1, x2, y2)` as four numbers with `x1` and `x2` within `[0, 1]`, or `{ steps = n }` for `n` jumps that land on the target only at the end (ADR-0151).
----@alias Keyframe number|string|Edges|Axes|{ value: number|string|Edges|Axes, duration?: number, easing?: Easing } One stop in a `keyframes` list: a bare value taking the entry's timing, or a table naming its own. A `duration` of `0` is a jump rather than a stop (QML's `PropertyAction`), and a frame repeating the value before it is a hold (its `PauseAnimation`).
+---@alias Keyframe number|string|Edges|Axes|{ value: number|string|Edges|Axes, duration?: number, easing?: Easing } One stop in a `keyframes` list: a bare value taking the entry's timing, or a table naming its own. A `duration` of `0` is a jump rather than a stop, and a frame repeating the value before it is a hold.
 ---@alias Spring { stiffness: number, damping: number } A mass on a spring, in place of a duration and an easing (ADR-0154). `stiffness` is the pull toward the target, within `(0, 100000]`; `damping` is the drag on the way, within `(0, 10000]`, and `2 * math.sqrt(stiffness)` is where it stops overshooting. Both are required and there is no `mass`: it divides out of the two. A spring carries its speed through a change of target, which no easing can do.
 ---@alias Animation number|{ duration: number, delay?: number, easing?: Easing, from?: number|string|Edges, spring?: Spring, keyframes?: Keyframe[], loops?: integer|"Infinite" } A duration in milliseconds, `[1, 60000]`, with `InOutQuad` when no easing is named. `delay` is how long the property holds still first, `[0, 60000]` ms and zero by default, which is CSS's `transition-delay` (ADR-0153); on a sequence it offsets the whole run, not each cycle. `spring` replaces `duration` and `easing` rather than joining them; a `duration`, `easing`, `loops` or `keyframes` beside one is refused, and so is `loops` without `keyframes`. `from` is where a node that has never displayed the property starts: its entry animation, absent meaning the first value is taken as it is (ADR-0146). `keyframes` walks the property through at least two values instead of easing it to the one a pass resolved, `loops` times or forever (ADR-0152); at least one segment must last, since a list of nothing but jumps takes no time to walk; the entry's own presence is what starts and stops it, so bind `animate` itself to gate one. A sequence starts on its own first frame, so `from` has nothing to say beside one and naming both is refused.
 ---@alias Animations table<string, Animation> Which of this node's properties ease between values, and how. Any property the node has may be named; what its value is decides whether it tweens: a number, a `"NN%"` size, a hex colour or an edge table of numbers eases against a value of the same shape, and anything else (`"Fill"`, a boolean, a table of colours, a shape change) snaps.
@@ -67,7 +62,7 @@
 ---@field rotate? number|Bound Degrees clockwise about `origin`, paint-only.
 ---@field translate? Axes|Bound `{ x, y }` logical pixels the painted node is shifted by, after `scale` and `rotate`. Paint-only.
 ---@field origin? Axes|Bound Where `scale` and `rotate` pivot, as fractions of the node's box; default `{ x = 0.5, y = 0.5 }`, its centre.
----@field animate? Animations|Bound QML's `Behavior on x`: when a pass resolves a new value for a named property, the node eases from what it shows to the new value over the duration instead of snapping, and keeps easing between passes without running any Lua (ADR-0145). Only a node that already exists animates; a first value is taken as it is. Naming a property no tween carries is refused. The key `exit` is an `Exit` block rather than a duration: it is what the node eases to on its way out, kept painted but out of the layout until the tweens finish (ADR-0150).
+---@field animate? Animations|Bound When a pass resolves a new value for a named property, the node eases from what it shows to the new value over the duration instead of snapping, and keeps easing between passes without running any Lua (ADR-0145). Only a node that already exists animates; a first value is taken as it is. Naming a property no tween carries is refused. The key `exit` is an `Exit` block rather than a duration: it is what the node eases to on its way out, kept painted but out of the layout until the tweens finish (ADR-0150).
 ---@field id? string Reconciliation hint, unique among siblings. Not addressable from Lua and has no effect on layout or paint (ADR-0045).
 ---@field hover? Bound The signal `hover(name)` returned. Marks this node's box as that slot's region.
 ---@field geometry? Bound The signal `geometry(name)` returned. The layout pass writes this node's absolute rect into it (ADR-0147).
@@ -120,7 +115,7 @@
 ---@field wrap? "None"|"Word"|Bound `"Word"` breaks an over-wide run onto further lines, at a word boundary where there is one and mid-word for a word wider than the box. Default `"None"`, one line however long. A `Content`-sized box has no width to break against, so wrapping needs an explicit `width`, a `"Fill"`, or a stretched cross axis.
 ---@field max_lines? number|Bound How many lines `wrap = "Word"` may use. `0` and absent both mean no limit, so an expander is `max_lines = expanded:map(function(e) return e and 0 or 2 end)`. Ignored without `wrap`, since an unwrapped run has one line to begin with.
 ---@field text_align? "Start"|"Center"|"End"|Bound Where the glyph run sits inside this node's own box, which is a different question from `align_h`. Only visible when the box is wider than the text. Default `"Start"`.
----@field on_link? fun(href: string) A click on a run carrying an `href` (ADR-0106). Wins over any `button` above this node, so a link inside a clickable card opens the page and does not also fire the card; a click on the plain words falls through to the card as before.
+---@field on_link? fun(href: string) A click on a run carrying an `href` (ADR-0106). Wins over any `button` above this node, so a link inside a clickable card opens the page and does not also fire the card; a click on the plain words falls through to the card.
 
 ---@class IconProps: NodeBase
 ---@field name? string|Bound A theme name, or an absolute path used as that path. Resolved in the renderer (ADR-0054).
@@ -188,7 +183,7 @@
 ---@field on_change? fun(text: string) The whole text after each edit, not the delta. Per keystroke, since there is no input method to batch composition.
 ---@field on_submit? fun(text: string) Enter. Takes the whole text and leaves the field focused and empty, so a reply box takes the next message without another click. Never fires on a `secure_submit` field, whose Enter goes to the capability.
 ---@field autofocus? boolean|Bound A plain field that takes the keyboard the moment its surface does, with no press, and takes it empty: a search box that must be typable the instant a launcher opens. Every arm calls `on_change("")`, which is the config's "the field just opened" moment -- reset a selection or scroll a list to the top in it. Armed on the keyboard entering the surface and again whenever the tree changes under a focus already held, so a field that appears inside an open panel is covered too. Never while another plain field on the surface is typing, never over a `secure_submit` field, and never to re-take a field a press elsewhere just stopped -- that press was the answer. Two on one surface: the first in document order wins (ADR-0112).
----@field on_navigate? fun(key: "up"|"down"|"page_up"|"page_down"|"tab"|"backtab") An arrow, paging or Tab key while a plain field is typing. The keys a single-line field has no edit for, handed to the config by name so a list drawn under the field can move its selection; the text and caret stay put and `on_change` does not fire. Fires on key repeat too, so a held Down keeps moving. Without it these keys do nothing, as before (ADR-0112).
+---@field on_navigate? fun(key: "up"|"down"|"page_up"|"page_down"|"tab"|"backtab") An arrow, paging or Tab key while a plain field is typing. The keys a single-line field has no edit for, handed to the config by name so a list drawn under the field can move its selection; the text and caret stay put and `on_change` does not fire. Fires on key repeat too, so a held Down keeps moving. Without it these keys do nothing (ADR-0112).
 ---@field on_cancel? fun(cleared: boolean) Escape, on a plain field. The buffer is cleared (`on_change("")` fires first if there was text), the field gives up the keyboard, and then this runs -- so it is safe to remove the field or drop the surface's `keyboard_interactivity` in here. `cleared` is whether that Escape had text to clear, which is the two-stage Escape a launcher wants: clear on the first press, close on the second. Do not rebuild it from `on_change`, which also fires `""` when `autofocus` arms the field on every open (ADR-0112) and so cannot tell an opened field from a cleared one. Without it Escape clears and *keeps* the focus, since a config that cannot be told the field let go must not have it let go silently (ADR-0092, ADR-0102).
 ---@field font_size? number|Bound Default `12`. Applies to the placeholder and to the masked content alike.
 ---@field foreground? Color|Bound Default opaque white.

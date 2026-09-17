@@ -99,13 +99,14 @@ obelisk.applications:invoke("launch", app_id)
 ```
 
 Arguments follow the action name. There is no `capability:action(...)` sugar and no synchronous
-result from `invoke`; observe capability state for outcomes. Unknown actions and malformed
-arguments are logged and dropped by dispatch.
+result from `invoke`; observe capability state for outcomes. An argument that cannot become JSON raises at the call;
+unknown actions and wrong argument types or counts are logged and dropped by dispatch.
 
 ### 3.2 Action arguments
 
 Hover or complete a command name in `invoke` for its positional signature, generated into
-[`lua-meta/obelisk.lua`](../lua-meta/obelisk.lua). Read-only capabilities have no `invoke`.
+[`lua-meta/obelisk.lua`](../lua-meta/obelisk.lua). The stubs give read-only capabilities no `invoke`; at
+runtime only `obelisk.idle` lacks it.
 Targets are snapshot IDs. Volumes use 0–1, percentages 0–100, indices are zero-based, and an
 `integer` argument refuses `5.0`.
 
@@ -119,7 +120,7 @@ Targets are snapshot IDs. Volumes use 0–1, percentages 0–100, indices are ze
 | `timer(ms, callback)` | Runs `callback` once, `ms` from now, `[1, 86400000]`; returns a handle with `cancel()`. One evaluation only; the handle is not what keeps it armed |
 | `persistent_table { path, name, defaults }` | Absolute directory and filename; defaults fill missing keys |
 | `store.key` / `store:set(key, value)` | Live key signal / write; nil deletes a key; `set` is reserved |
-| `process.run(cmd, args, out_cb, exit_cb)` | Spawns a process group; streams lines to `out_cb(line, stream)`; calls `exit_cb(code)`; returns `{ kill() }` |
+| `process.run(cmd, args, out_cb, exit_cb)` | Spawns a process group; streams lines to `out_cb(line, stream)`; calls `exit_cb(code)`, `code` nil when a signal killed it; returns `{ kill() }` |
 | `process.detach(cmd, args)` | Spawns a program in its own session that survives reloads and outlives the shell; no handle, output or exit code |
 | `action(name, handler)` | Declares what `obelisk call <name>` runs; a string return prints bare, nil prints nothing, anything else prints as JSON. One evaluation only |
 | `session_process { name, stop_signal? }` | Declares a program whose lifetime is the session's; returns a handle with `running`/`pid`/`started_at`/`exit_code`/`start_error` signals and `start`/`signal`/`stop` methods |
@@ -178,9 +179,9 @@ Sizes and maximum sizes accept 0–8192 logical pixels. See
 [geometry parsing](../renderer/src/layout/node/style.rs).
 
 `animate` may name any property the node has; a name the node does not accept is refused. What
-the value is decides whether it tweens, the way Qt registers interpolators by type: a number, a
-`"NN%"` size, a `#` colour and an edge table of numbers each ease against a value of the same
-shape, and anything else (`"Fill"`, a boolean, a table of colours, a change of shape) snaps.
+the value is decides whether it tweens: a number, a `"NN%"` size, a `#` colour and an edge table of
+numbers each ease against a value of the same shape, and anything else (`"Fill"`, a boolean, a
+table of colours, a change of shape) snaps.
 Durations are `[1, 60000]` ms and an entry may hold the property still for a `delay` of
 `[0, 60000]` ms first, which is CSS's `transition-delay` (ADR-0153); the delay is added to the
 tween's life rather than taken out of it, and on a sequence it offsets the whole run once, not
@@ -210,8 +211,7 @@ An entry naming `keyframes` walks the property through that list instead of easi
 a pass resolved (ADR-0152): at least two values, the first where it starts and each later one a
 segment eased into over the entry's `duration` and `easing`, or over its own when the frame is
 written `{ value = <v>, duration = ms, easing = <easing> }`. A segment of `duration = 0` is a jump,
-and one between two equal values is a hold, which together are QML's `PropertyAction` and
-`PauseAnimation`; at least one segment must last, since a list of nothing but jumps takes no time
+and one between two equal values is a hold; at least one segment must last, since a list of nothing but jumps takes no time
 to walk and repeating it forever would ask for a frame every frame while showing one still value.
 `loops` is a whole count within `[1, 10000]` or `"Infinite"`, `1` when absent, and is refused
 without a `keyframes` list to count. A sequence takes the property over for as long as it runs and reads nothing resolved for
@@ -240,10 +240,10 @@ already running, so the block's `duration` is the whole of the node's remaining 
 run for `visible = false`; `delay(signal, ms)` holds a whole surface open instead.
 
 Boxes, rows, columns, buttons and surface roots also accept `background`, `radius`,
-`border_color`, `border_width`, `clip` and `corner_shape`.
+`border_color`, `border_width`, `blur`, `clip` and `corner_shape`.
 Colours use `#RRGGBB` or `#RRGGBBAA`. Borders may specify per-edge colours/widths;
 an edge needs both. `clip = "Box"` is the default; `"Rounded"` clips children with the radius.
-`corner_shape = "Scoop"` bends the radius inward, centred on each corner point.
+`corner_shape` is `"Round"` (default) or `"Scoop"`, which bends the radius inward, centred on each corner point.
 See [paint parsing](../renderer/src/layout/node/paint_style.rs).
 
 ### 5.2 Node-specific properties
@@ -296,8 +296,8 @@ A button with `submit = true` submits the scope's armed `secure_submit` field.
 See [input handling](../renderer/src/wayland/input/mod.rs).
 
 Ordinary text fields expose their full draft through `on_change(text)` and `on_submit(text)`.
-Submit empties the draft; losing focus preserves it. Escape clears it, and `on_cancel` also drops
-focus. Navigation callbacks receive up/down/page_up/page_down/tab/backtab.
+Submit empties the draft; losing focus preserves it. Escape clears it; `on_cancel(cleared)` also drops
+focus, with `cleared` saying whether that Escape removed text. Navigation callbacks receive up/down/page_up/page_down/tab/backtab.
 
 `secure_submit = { capability, action }` selects the native secret path.
 `mask_character` alone does not make a field secure.
@@ -319,7 +319,7 @@ Panels and locks have per-output instances; windows and popups have one instance
 | `lock` | ext_session_lock_surface_v1 | Output coverage and lifetime are protocol-controlled |
 
 Panel layers are Background/Bottom/Top/Overlay; anchors are edge booleans.
-Monitor is a connector name or `"All"`. Exclusive is false, true, a pixel count reserved
+Monitor is a connector name or `"All"`. Exclusive is false, true, a positive integer pixel count reserved
 regardless of the surface's size, or `"Ignore"` to ignore others' reserved space. Keyboard
 interactivity is None/OnDemand/Exclusive.
 `child = function(output)` on panels/locks builds per-output content; nil yields an empty instance.

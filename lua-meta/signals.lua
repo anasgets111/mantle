@@ -4,21 +4,18 @@
 -- HAND-WRITTEN, like `globals.lua`: `lua::tests::the_stubs_declare_every_engine_global` checks
 -- names; types drift from `renderer/src/lua/signal.rs` only as a `just types` diagnostic.
 --
--- These stubs serve lua-language-server only; the engine never loads this directory. They stay
--- outside `dev-config/obelisk/` because `supervisor/src/watcher.rs` reloads on any config-tree
--- `.lua`
--- save, so a stub there would restyle the bar on every edit.
+-- These stubs serve lua-language-server only; the engine never loads this directory. They live
+-- outside the config tree because `supervisor/src/watcher.rs` reloads on any config-tree `.lua`
+-- save, so a stub there would trigger a reload on every edit.
 
 ---@class Signal<T>: userdata
 ---Read-only reactive `T`, resolved at layout time on every pass; a node property holding its handle
 ---follows the value (ADR-0044 decision 1).
 ---
----The following three details were measured against `lua-language-server` 3.19.1.
----
 ---`: userdata` makes node properties reject payload tables. `---@class` accepts any table-shaped
----value, so `string|Signal` let `text.content` receive any IDL table, including a notification's
----`body` span array, which froze the shell on its last good scene. Built-in `userdata` rejects
----tables and matches runtime signals, as `components/icon_button.lua`'s `is_signal` tests.
+---value, so `string|Signal` would let `text.content` receive any IDL table, including a
+---notification's `body` span array, reaching the engine as literal content. Built-in `userdata`
+---rejects tables and matches runtime signals, as a `type(value) == "userdata"` check tests.
 ---Properties use [`Bound`], not this class, so `string|Signal` remains permissive even with
 ---`: userdata`.
 ---
@@ -78,9 +75,8 @@ function persistent_table(spec) end
 
 ---A signal recomputed from several side-effect-free dependencies; CPU time is capped at 5ms across
 ---the graph (ADR-0021).
----ponytail: `fn` parameters are untyped. Typing each dependency needs an overload per arity, while
----`dev-config` uses one to three and nothing prevents four. Prefer typed `map` for one source; use
----this for two or more.
+---ponytail: `fn` parameters are untyped: typing each dependency needs an overload per arity, and
+---arity is unbounded. Prefer typed `map` for one source; use this for two or more.
 ---@param dependencies Bound[] In the order `fn` receives them. A dense array, and re-reading any one of them re-runs `fn`.
 ---@param fn fun(...): any Receives one argument per dependency, in order.
 ---@return Signal<any> # Read-only, like `map`. `:set()` refuses it: the dependencies are the writers.
@@ -125,7 +121,6 @@ function pulse(source, ms) end
 ---layout pass and tween ticks write it; Lua cannot. A pass that changes it earns one follow-up
 ---pass, so a binding on it settles right after the node it measures; a tick's write earns none, and
 ---a binding fed by its own measurement stops after that one pass. Zero until the first layout.
----This is QML's `item.height` for a reveal that slides a card by its own height.
 ---@param name string The slot. Naming it on a node's `geometry` makes that node the one measured; two calls with one name are one signal.
 ---@return Signal<Rect> # The node's absolute rect in its surface's logical coordinates.
 function geometry(name) end

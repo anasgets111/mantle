@@ -18,16 +18,12 @@ https://github.com/user-attachments/assets/038ee763-d7b6-4df9-9f79-2f131d4f0dcd
 
 ## Why processes
 
-A shell reloads on every config save, and the reloaded UI has to release what the old one held.
-Most shells use a garbage collector for that. Obelisk uses the kernel.
+The Supervisor holds the platform connections and the Renderer holds Lua and Wayland surfaces, so a
+config that crashes the Renderer leaves the Supervisor and its connections running. A config save reloads in place, keeping Lua
+state and rebuilding only the surfaces that changed.
 
-A **generation** is one Renderer process and its Lua state. An edit that changes the surface
-topology starts a second Renderer, waits for it to prove it has painted, transfers authority per
-output, then retires the first. The retired process exits, and its memory, textures and font
-atlases go back to the kernel whether or not anything tracked them.
-
-An edit that leaves the topology alone skips all of that and re-evaluates in place, keeping Lua
-state and reconciling the retained scene.
+A **generation** is one Renderer process and its Lua state. A new one starts only when the
+Supervisor respawns a Renderer that exited, behind a brake that stops a crash loop.
 
 ## Requirements
 
@@ -46,7 +42,7 @@ Lua 5.4 is vendored, so no system Lua is needed.
 ```sh
 just build                              # both binaries into target/debug
 just check                              # fmt, tests, clippy, doc links, Lua parse and types
-just install PREFIX=/usr DESTDIR="$pkgdir"
+just prefix=/usr destdir="$pkgdir" install   # a package installs packaging/pam.d/obelisk itself
 
 obelisk init     # writes shell.lua, plus a .luarc.json pointing the LSP at the stubs
 obelisk          # run it
@@ -54,8 +50,7 @@ obelisk check    # evaluate the config and exit, taking no surface
 ```
 
 The config is a directory, not a file: `require` resolves inside it, and any `.lua` file changing
-triggers a reload. `-c DIR` beats `$OBELISK_CONFIG_DIR`, which beats `$XDG_CONFIG_HOME/obelisk`. A debug build
-tries this repo's `dev-config/obelisk` right after `-c`.
+triggers a reload. `-c DIR` beats `$OBELISK_CONFIG_DIR`, which beats `$XDG_CONFIG_HOME/obelisk`.
 
 ## A config
 
@@ -92,12 +87,13 @@ notifications, polkit, power, privacy, processes, storage, sysinfo, system, tray
 
 ## Keybinds
 
-`set` and `toggle` write a running config's named state from outside, which is how a compositor
-keybind reaches it. VALUE is read as JSON, and anything that is not JSON is taken as a string.
+`set` and `toggle` write a running config's named state from outside, and `call` runs one of its
+`action`s, which is how a compositor keybind reaches it. VALUE is read as JSON, and anything that is not JSON is taken as a string.
 
 ```sh
 obelisk toggle launcher_open     # flips state("launcher_open", false)
-obelisk toggle modal launcher    # sets state("modal", ""), or clears it if already "launcher"
+obelisk toggle modal launcher    # sets state("modal") to "launcher", or back to its initial value
+obelisk call launcher.open       # runs action("launcher.open", fn) and prints what it returned
 ```
 
 ## Docs
