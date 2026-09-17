@@ -1,7 +1,7 @@
 use super::state::SessionLock;
 
-/// The one lock fact outliving Supervisor (ADR-0060): a file in `$XDG_RUNTIME_DIR` exists exactly
-/// while the compositor is locked. After restart `LockState::default()` would make `active` false
+/// The one lock fact outliving Supervisor (ADR-0060): `$XDG_RUNTIME_DIR/obelisk/session-locked`
+/// exists exactly while the compositor is locked. After restart `LockState::default()` would make `active` false
 /// and paint behind an invisible fallback (ADR-0058, 0059). A file suffices for this boolean and
 /// survives `SIGKILL`; runtime dir bounds staleness to the last session.
 pub struct SessionLockedFlag {
@@ -60,7 +60,7 @@ mod tests {
         // locked. The marker is driven off LockOutcome, not active, so RendererLost (not a
         // Reported) cannot reach it.
         let dir = tempfile::tempdir().unwrap();
-        let flag = SessionLockedFlag::at(dir.path().join("obelisk-session-locked"));
+        let flag = SessionLockedFlag::at(dir.path().join("session-locked"));
         flag.apply(compositor_lock_change(&shared::LockOutcome::Locked));
 
         let mut state = LockState::default();
@@ -74,7 +74,7 @@ mod tests {
     #[test]
     fn the_marker_survives_the_process_that_wrote_it_and_reads_false_when_absent() {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("obelisk-session-locked");
+        let path = dir.path().join("session-locked");
         assert!(!SessionLockedFlag::at(path.clone()).is_set(), "a fresh login has no marker");
 
         SessionLockedFlag::at(path.clone()).apply(SessionLock::Taken);
@@ -90,7 +90,7 @@ mod tests {
         // Both directions repeat in ordinary use. Removing a file that isn't there must not be
         // treated as a failure to clear.
         let dir = tempfile::tempdir().unwrap();
-        let flag = SessionLockedFlag::at(dir.path().join("obelisk-session-locked"));
+        let flag = SessionLockedFlag::at(dir.path().join("session-locked"));
         flag.apply(SessionLock::Released);
         assert!(!flag.is_set());
         flag.apply(SessionLock::Taken);
@@ -104,7 +104,7 @@ mod tests {
     #[test]
     fn an_unchanged_verdict_touches_nothing_in_either_direction() {
         let dir = tempfile::tempdir().unwrap();
-        let flag = SessionLockedFlag::at(dir.path().join("obelisk-session-locked"));
+        let flag = SessionLockedFlag::at(dir.path().join("session-locked"));
         flag.apply(SessionLock::Unchanged);
         assert!(!flag.is_set());
         flag.apply(SessionLock::Taken);

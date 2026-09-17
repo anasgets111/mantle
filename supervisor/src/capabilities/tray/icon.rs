@@ -6,8 +6,7 @@ use crate::capabilities::shm_icons;
 
 use super::MAX_PIXMAP_DIMENSION;
 
-/// `$XDG_RUNTIME_DIR/obelisk` subdirectory for tray pixmaps, shared by writes, per-item deletion,
-/// and startup sweep.
+/// Instance-dir subdirectory for tray pixmaps, shared by writes and per-item deletion.
 pub(super) const SPOOL_SUBDIR: &str = "tray";
 
 #[derive(Debug, Clone, PartialEq)]
@@ -108,7 +107,7 @@ fn encode_argb32_to_png(width: u32, height: u32, argb: &[u8]) -> Result<Vec<u8>,
     Ok(buffer)
 }
 
-/// Writes a validated pixmap to `$XDG_RUNTIME_DIR/obelisk/tray/{filename_stem}.png`
+/// Writes a validated pixmap to `tray/{filename_stem}.png` in the instance dir
 /// ([`shm_icons::write_png`]), creating the tree and overwriting the same path (no cache-busting,
 /// ADR-0031). Base, attention, and overlay stems differ so their files do not collide (ADR-0074).
 /// An item id as a flat filename stem: [`super::registration::item_id`] ends in an object path and

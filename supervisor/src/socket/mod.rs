@@ -1,6 +1,6 @@
 //! Supervisor-side Unix control-socket listener.
 //!
-//! Binds at `$XDG_RUNTIME_DIR/obelisk-shell.sock`, not world-writable `/tmp`, because it carries
+//! Binds at `shared::control_socket_path`, not world-writable `/tmp`, because it carries
 //! secure textfield submissions (ADR-0005). Connections register by `generation_id`.
 //!
 //! Command-dispatch routing remains deferred (ADR-0020), including the ~30 write commands.
@@ -591,7 +591,7 @@ mod tests {
     #[tokio::test]
     async fn bind_removes_a_stale_socket_file_left_by_a_prior_run() {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("obelisk-shell.sock");
+        let path = dir.path().join("control.sock");
 
         let first = UnixListener::bind(&path).unwrap();
         drop(first); // Simulate an unclean shutdown: the socket file is left on disk.
@@ -640,7 +640,7 @@ mod tests {
     #[tokio::test]
     async fn spawn_listener_registers_two_simultaneous_connections_by_generation_id() {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("obelisk-shell.sock");
+        let path = dir.path().join("control.sock");
         let (registry, _routes, _inbound, _connected) = spawn_listener(&path).unwrap();
         expect_this_process(&registry, &[1, 2]);
 
@@ -662,7 +662,7 @@ mod tests {
     #[tokio::test]
     async fn spawn_listener_reports_a_generation_id_on_the_connected_channel_once_registered() {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("obelisk-shell.sock");
+        let path = dir.path().join("control.sock");
         let (registry, _routes, _inbound, mut connected) = spawn_listener(&path).unwrap();
         expect_this_process(&registry, &[7]);
 
@@ -675,7 +675,7 @@ mod tests {
     #[tokio::test]
     async fn spawn_listener_forwards_a_decoded_command_envelope_tagged_with_its_generation() {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("obelisk-shell.sock");
+        let path = dir.path().join("control.sock");
         let (registry, _routes, mut inbound, _connected) = spawn_listener(&path).unwrap();
         expect_this_process(&registry, &[5]);
 
@@ -714,7 +714,7 @@ mod tests {
     #[tokio::test]
     async fn spawn_listener_forwards_a_decoded_frame_tagged_with_its_generation() {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("obelisk-shell.sock");
+        let path = dir.path().join("control.sock");
         let (registry, _routes, mut inbound, _connected) = spawn_listener(&path).unwrap();
         expect_this_process(&registry, &[5]);
 
@@ -737,7 +737,7 @@ mod tests {
     #[tokio::test]
     async fn an_unknown_capability_start_is_dropped_without_closing_the_connection() {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("obelisk-shell.sock");
+        let path = dir.path().join("control.sock");
         let (registry, _routes, mut inbound, _connected) = spawn_listener(&path).unwrap();
         expect_this_process(&registry, &[5]);
 

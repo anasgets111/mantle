@@ -351,8 +351,9 @@ See [wire format and dispatch limits](services.md#13-control-socket-and-wire-for
 
 | Command | Behavior |
 | :--- | :--- |
-| `obelisk -d` | Starts the shell in its own session and returns; output goes to `obelisk log` |
-| `obelisk log [-f]` | Prints this run's stdout and stderr; `-f` follows until the shell exits |
+| `obelisk -d` | Starts the shell in its own session, prints its pid once it runs; output goes to `obelisk log` |
+| `obelisk log [-f]` | Prints the newest running shell's stdout and stderr, else the last run's; `-f` follows until that shell exits |
+| `obelisk list` | Running shells, oldest first: PID, UPTIME, CONFIG; exit 1 when none |
 | `obelisk init -c <dir> [--force]` | Writes `.luarc.json` and a starter `shell.lua`; copies the embedded stubs when no package installed them; `--force` overwrites the two config files |
 | `obelisk check -c <dir>` | Evaluates config/surface declarations without Wayland, GPU or subprocess execution |
 | `obelisk set <name> <value>` | Writes declared named state; parses JSON, otherwise uses a string |
@@ -360,5 +361,8 @@ See [wire format and dispatch limits](services.md#13-control-socket-and-wire-for
 | `obelisk toggle <name> <value>` | Sets declared state to the value, or back to its declared initial when it already holds it; one keybind for a modal whose state names the one showing |
 | `obelisk call <name> [args...]` | Runs the config's `action(name)` with JSON-or-string arguments, prints its return; non-zero exit on failure |
 
+`set`, `toggle`, `call` and `log` take `--pid <pid>`, matched exactly. Without it, `set`, `toggle` and `call` reach the
+newest shell on the resolved config, else, without `-c`, the newest shell; `log` reads the newest running shell with a
+log, else the newest dead run (ADR-0222).
 `check` does not validate live service behavior or rendered layout.
 See [CLI](../supervisor/src/cli.rs) and [check implementation](../renderer/src/check.rs).

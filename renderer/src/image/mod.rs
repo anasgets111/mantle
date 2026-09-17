@@ -105,7 +105,7 @@ struct CacheKey {
 }
 
 /// File revision at a stable path (ADR-0031 deferred item): tray updates reuse
-/// `$XDG_RUNTIME_DIR/obelisk/tray/{name}.png`, with no revision suffix. Use mtime and length, not a
+/// `tray/{name}.png` in the instance dir, with no revision suffix. Use mtime and length, not a
 /// content hash: tmpfs mtime is nanosecond-precise, length is free, and hashing reads the file to
 /// decide whether to read it. Unstatable files use the default, so *missing* files retry.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]

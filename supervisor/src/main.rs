@@ -6,6 +6,7 @@ mod cli;
 mod compositor;
 mod control_client;
 mod generation;
+mod instance;
 mod log;
 mod memory;
 mod pam_worker;
@@ -118,15 +119,14 @@ pub(crate) fn parse_action<A: serde::de::DeserializeOwned>(params: &shared::Comm
         .ok()
 }
 
-/// Enters the PAM worker's tokio-free path (ADR-0028) before any D-Bus, runtime, or audio-thread
-/// setup. The worker must not construct a tokio runtime.
-/// `obelisk -d`: re-exec in a new session and return, so the terminal gets its prompt back.
+/// `obelisk -d`: re-exec in a new session and return once it holds its instance, so the terminal
+/// gets its prompt back and `obelisk log -f` finds it.
 ///
 /// One `setsid`, not [`process::spawn_detached`]'s double fork: that orphans a grandchild while the
-/// Supervisor lives on, whereas this parent exits at once. `/dev/null` is the point rather than
-/// tidiness -- it is what makes `log::capture` claim the shared log, so a detached shell is the one
+/// Supervisor lives on, whereas this child is the Supervisor. `/dev/null` is the point rather than
+/// tidiness -- it is what makes `log::capture` write a log, so a detached shell is the one
 /// `obelisk log` can read (ADR-0199).
-fn detach_self() -> Result<(), Box<dyn Error>> {
+fn detach_self(root: &std::path::Path) -> Result<(), Box<dyn Error>> {
     use std::os::unix::process::CommandExt;
     let mut command = std::process::Command::new(std::env::current_exe()?);
     command
@@ -137,7 +137,19 @@ fn detach_self() -> Result<(), Box<dyn Error>> {
     // SAFETY: runs in the forked child where only this thread exists; `setsid` is
     // async-signal-safe and touches no Rust state.
     unsafe { command.pre_exec(|| if libc::setsid() == -1 { Err(std::io::Error::last_os_error()) } else { Ok(()) }) };
-    command.spawn()?;
+    let mut child = command.spawn()?;
+    let dir = root.join(child.id().to_string());
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    // The log too: it lands after the lock, and until then `obelisk log` would pick another shell.
+    while !(instance::is_live(&dir) && dir.join(instance::LOG).exists()) {
+        let exited = child.try_wait()?;
+        if exited.is_some() || std::time::Instant::now() > deadline {
+            let why = exited.map_or("still starting after 5s".to_string(), |status| status.to_string());
+            return Err(format!("the detached shell did not start ({why}); run `obelisk` without -d to see why").into());
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    println!("{}", child.id());
     Ok(())
 }
 
@@ -156,13 +168,26 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     // Set before path resolution and in this process, not just in children. `shared::config_dir`
     // and every Renderer, including replacements, read it.
-    if let Some(dir) = &args.config_dir {
+    // Resolved once, so retargeting a symlink moves nothing under a running shell (ADR-0222).
+    if let Ok(dir) = args.config_dir.clone().map_or_else(shared::config_dir, Ok) {
+        let dir = std::fs::canonicalize(&dir).unwrap_or(dir);
         // SAFETY: no runtime or thread exists yet; the PAM worker branch above returns.
         unsafe { std::env::set_var(shared::CONFIG_DIR_ENV, dir) };
     }
     if let Some(secs) = args.profile {
         // SAFETY: as above.
         unsafe { std::env::set_var(shared::PROFILE_ENV, secs.to_string()) };
+    }
+    if matches!(args.command, cli::Command::SetState(_) | cli::Command::Call { .. } | cli::Command::Log { .. }) {
+        let (root, config) = (shared::runtime_root()?, shared::config_dir()?);
+        let instances = instance::list(&root);
+        let explicit = args.config_dir.is_some();
+        let pid = match args.command {
+            cli::Command::Log { .. } => instance::select_log(&instances, args.pid, explicit.then_some(&*config)),
+            _ => instance::select_command(&instances, args.pid, &config, explicit),
+        }?;
+        // SAFETY: as above. Replaces an inherited value, which names the shell that spawned us.
+        unsafe { std::env::set_var(shared::INSTANCE_DIR_ENV, root.join(pid.to_string())) };
     }
 
     match args.command {
@@ -177,7 +202,20 @@ fn main() -> Result<(), Box<dyn Error>> {
         cli::Command::Init { force } => setup::run(&shared::config_dir()?, force),
         cli::Command::SetState(set) => control_client::send(set),
         cli::Command::Call { name, arguments } => control_client::call(name, arguments),
-        cli::Command::Log { follow } => log::print(follow),
+        cli::Command::Log { follow } => log::print(&shared::instance_dir()?, follow, &mut std::io::stdout().lock()),
+        cli::Command::List => {
+            let mut running: Vec<_> = instance::list(&shared::runtime_root()?).into_iter().filter(|i| i.live).collect();
+            if running.is_empty() {
+                return Err("no shell is running".into());
+            }
+            running.sort_by_key(|running| running.started);
+            println!("PID     UPTIME  CONFIG");
+            for running in running {
+                let uptime = instance::format_uptime(running.started.elapsed().unwrap_or_default());
+                println!("{:<7} {uptime:<7} {}", running.pid, running.config.display());
+            }
+            Ok(())
+        }
         cli::Command::Check => match setup::check(&shared::config_dir()?) {
             Ok(report) => {
                 print!("{report}");
@@ -189,9 +227,14 @@ fn main() -> Result<(), Box<dyn Error>> {
             }
         },
         cli::Command::Run => {
+            let root = shared::runtime_root()?;
             if args.detach {
-                return detach_self();
+                return detach_self(&root);
             }
+            let pid = std::process::id();
+            let _instance = instance::claim(&root, pid, &shared::config_dir()?)?;
+            // SAFETY: as above. Every Renderer, respawns included, inherits it.
+            unsafe { std::env::set_var(shared::INSTANCE_DIR_ENV, root.join(pid.to_string())) };
             // Every runtime diagnostic from here on, and every Renderer that inherits these
             // descriptors (ADR-0199). Argument parsing has already had its say above, so a
             // detached run still loses a `-c` substitution notice.

@@ -1,5 +1,5 @@
 //! Renderer-side Unix control-socket client and `SupervisorFrame` handling. Connects to
-//! `$XDG_RUNTIME_DIR/obelisk-shell.sock`; the Supervisor listens (`supervisor/src/socket/mod.rs`) and
+//! `shared::control_socket_path`; the Supervisor listens (`supervisor/src/socket/mod.rs`) and
 //! sends `shared::ConnectionHandshake` first. Two threads/channels (ADR-0039): [`pump`] does framed
 //! I/O, while the Wayland thread owns Lua and the GL-context paint pass because `mlua::Lua` is
 //! `!Send`. `StateSnapshot` hydrates a capability signal and dirties the scene (ADR-0044 decision
@@ -181,7 +181,7 @@ mod tests {
     #[tokio::test]
     async fn connect_and_handshake_sends_a_handshake_the_listener_can_decode() {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("obelisk-shell.sock");
+        let path = dir.path().join("control.sock");
         let listener = UnixListener::bind(&path).unwrap();
 
         let client = tokio::spawn({

@@ -26,11 +26,13 @@ pub enum Command {
         name: String,
         arguments: Vec<serde_json::Value>,
     },
-    /// `log [-f]` prints what this run wrote to stdout and stderr, which a shell with no terminal
+    /// `log [-f]` prints what a run wrote to stdout and stderr, which a shell with no terminal
     /// parks in a file (ADR-0199).
     Log {
         follow: bool,
     },
+    /// `list` prints the running Supervisors (ADR-0222).
+    List,
     Version,
     Help,
 }
@@ -44,6 +46,8 @@ pub struct Args {
     pub detach: bool,
     /// `--profile[=SECS]`: seconds between profile reports.
     pub profile: Option<u64>,
+    /// `--pid`: the Supervisor `set`, `toggle`, `call` and `log` address.
+    pub pid: Option<u32>,
 }
 
 pub const HELP: &str = "\
@@ -60,7 +64,8 @@ USAGE:
                                 initial when it already is VALUE
     obelisk call <NAME> [ARGS]   run the config's action(NAME) and print what
                                  it returned
-    obelisk log [-f]             print this run's stdout and stderr
+    obelisk log [-f]             print the shell's stdout and stderr
+    obelisk list                 show running shells: PID UPTIME CONFIG
 
 OPTIONS:
     -c, --config <DIR>   the config directory, holding shell.lua. Overrides
@@ -69,6 +74,7 @@ OPTIONS:
                          return, sending its output to `obelisk log`
         --force          init only: overwrite files that already exist
     -f, --follow         log only: keep printing until the shell exits
+        --pid <PID>      set, toggle, call and log: the shell `list` shows
         --profile[=SECS] run only: log idle, heap and PSS/GPU reports every
                          SECS seconds, 60 by default
     -V, --version
@@ -85,11 +91,11 @@ becomes \"launcher\", or \"\" again when it already was. VALUE is read as JSON
 quoting `notifications` is optional.
 
 `log` is for a shell the compositor started, whose output would otherwise go to
-/dev/null: when it does, stdout and stderr go to $XDG_RUNTIME_DIR/obelisk-shell.log
-instead, truncated each run, and `-f` keeps reading until the shell exits. A
+/dev/null: when it does, stdout and stderr go to its runtime directory
+instead, and `-f` keeps reading until that shell exits. A
 terminal, a redirect or a pipe is left alone and there is no file to read.
-`-d` starts a shell that way deliberately, so `obelisk -d` then `obelisk log -f`
-runs one from a terminal without tying the terminal up.
+`-d` starts a shell that way deliberately and prints its pid, so `obelisk -d`
+then `obelisk log -f` runs one from a terminal without tying the terminal up.
 
 `call` is for what a keybind wants the shell to *do* rather than look like:
 the config declares `action(\"rec.toggle\", function() ... end)` and the bind is
@@ -124,7 +130,8 @@ fn is_option(arg: &str) -> bool {
     matches!(
         arg,
         "-c" | "--config" | "-d" | "--detach" | "--force" | "-f" | "--follow" | "-V" | "--version" | "-h" | "--help"
-    ) || arg.starts_with("--config=")
+    ) || arg == "--pid"
+        || arg.starts_with("--config=")
         || arg.starts_with("--profile")
 }
 
@@ -136,17 +143,19 @@ pub fn parse<I: IntoIterator<Item = String>>(argv: I) -> Result<Args, String> {
     let mut follow = false;
     let mut detach = false;
     let mut profile = None;
+    let mut pid = None;
     let mut positional = Vec::new();
 
     while let Some(arg) = args.next() {
         match arg.as_str() {
-            "init" | "check" | "set" | "toggle" | "call" | "log" if command.is_none() => {
+            "init" | "check" | "set" | "toggle" | "call" | "log" | "list" if command.is_none() => {
                 command = Some(match arg.as_str() {
                     "init" => "init",
                     "check" => "check",
                     "set" => "set",
                     "call" => "call",
                     "log" => "log",
+                    "list" => "list",
                     _ => "toggle",
                 });
             }
@@ -170,15 +179,18 @@ pub fn parse<I: IntoIterator<Item = String>>(argv: I) -> Result<Args, String> {
             "--force" => force = true,
             "-f" | "--follow" => follow = true,
             "--profile" => profile = Some(60),
+            "--pid" => pid = Some(pid_from(args.next().as_deref().unwrap_or_default())?),
             "-V" | "--version" => {
-                return Ok(Args { command: Command::Version, config_dir, detach, profile });
+                return Ok(Args { command: Command::Version, config_dir, detach, profile, pid });
             }
             "-h" | "--help" => {
-                return Ok(Args { command: Command::Help, config_dir, detach, profile });
+                return Ok(Args { command: Command::Help, config_dir, detach, profile, pid });
             }
             other => {
                 if let Some(value) = other.strip_prefix("--config=") {
                     config_dir = Some(config_dir_from(value)?);
+                } else if let Some(value) = other.strip_prefix("--pid=") {
+                    pid = Some(pid_from(value)?);
                 } else if let Some(value) = other.strip_prefix("--profile=") {
                     let secs = value.parse::<u64>().ok().filter(|secs| *secs > 0);
                     profile =
@@ -225,6 +237,7 @@ pub fn parse<I: IntoIterator<Item = String>>(argv: I) -> Result<Args, String> {
             Command::Call { name, arguments }
         }
         Some("log") => Command::Log { follow },
+        Some("list") => Command::List,
         _ => Command::Run,
     };
     if force && !matches!(command, Command::Init { .. }) {
@@ -239,7 +252,17 @@ pub fn parse<I: IntoIterator<Item = String>>(argv: I) -> Result<Args, String> {
     if profile.is_some() && !matches!(command, Command::Run) {
         return Err("--profile is only meaningful when starting the shell".to_string());
     }
-    Ok(Args { command, config_dir, detach, profile })
+    if pid.is_some() && !matches!(command, Command::SetState(_) | Command::Call { .. } | Command::Log { .. }) {
+        return Err("--pid is only meaningful with `set`, `toggle`, `call` and `log`".to_string());
+    }
+    if config_dir.is_some() && command == Command::List {
+        return Err("`list` shows every config's shells".to_string());
+    }
+    Ok(Args { command, config_dir, detach, profile, pid })
+}
+
+fn pid_from(raw: &str) -> Result<u32, String> {
+    raw.parse().map_err(|_| format!("--pid takes a process id, got {raw:?}"))
 }
 
 #[cfg(test)]
@@ -286,7 +309,7 @@ mod tests {
     fn no_arguments_runs_the_shell_against_the_default_config() {
         assert_eq!(
             parse_args(&[]).unwrap(),
-            Args { command: Command::Run, config_dir: None, detach: false, profile: None }
+            Args { command: Command::Run, config_dir: None, detach: false, profile: None, pid: None }
         );
     }
 
@@ -395,6 +418,27 @@ mod tests {
         assert!(parse_args(&["-f"]).is_err(), "--follow has nothing to follow without `log`");
         assert!(parse_args(&["log", "-d"]).is_err(), "--detach has nothing to detach without a run");
         assert!(parse_args(&["-d"]).unwrap().detach, "a bare run takes it");
+    }
+
+    #[test]
+    fn pid_parses_for_client_commands_and_is_refused_elsewhere() {
+        let parsed = parse_args(&["toggle", "open", "--pid", "5"]).unwrap();
+        assert_eq!(parsed.pid, Some(5));
+        assert!(matches!(
+            parsed.command,
+            Command::SetState(shared::SetState { write: shared::StateWrite::Toggle, .. })
+        ));
+        assert_eq!(parse_args(&["log", "--pid=7"]).unwrap().pid, Some(7));
+        assert_eq!(parse_args(&["list"]).unwrap().command, Command::List);
+        for refused in [
+            &["-d", "--pid", "5"][..],
+            &["list", "--pid", "5"],
+            &["init", "--pid", "5"],
+            &["list", "-c", "/"],
+            &["log", "--pid", "x"],
+        ] {
+            assert!(parse_args(refused).is_err(), "{refused:?}");
+        }
     }
 
     #[test]

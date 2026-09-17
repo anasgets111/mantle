@@ -6,31 +6,34 @@ use std::io;
 use std::path::PathBuf;
 use std::time::Duration;
 
-/// Control socket under `$XDG_RUNTIME_DIR`, shared by the `supervisor` listener and `renderer`
-/// client. Not `/tmp`: it is world-writable and unsuitable for secure textfield submissions
-/// (ADR-0005).
+/// `$XDG_RUNTIME_DIR/obelisk`: per-login state, and one directory per running Supervisor (ADR-0222).
+pub fn runtime_root() -> io::Result<PathBuf> {
+    let runtime_dir = std::env::var_os("XDG_RUNTIME_DIR")
+        .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "XDG_RUNTIME_DIR is not set"))?;
+    Ok(PathBuf::from(runtime_dir).join("obelisk"))
+}
+
+/// The Supervisor's `runtime_root()/<pid>`, handed to its Renderers through the environment.
+pub const INSTANCE_DIR_ENV: &str = "OBELISK_INSTANCE_DIR";
+
+/// This shell's socket, log and icon spools (ADR-0222).
+pub fn instance_dir() -> io::Result<PathBuf> {
+    std::env::var_os(INSTANCE_DIR_ENV)
+        .map(PathBuf::from)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "OBELISK_INSTANCE_DIR is not set"))
+}
+
+/// Control socket, shared by the `supervisor` listener and `renderer` client. Not `/tmp`: it is
+/// world-writable and unsuitable for secure textfield submissions (ADR-0005).
 pub fn control_socket_path() -> io::Result<PathBuf> {
-    let runtime_dir = std::env::var_os("XDG_RUNTIME_DIR")
-        .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "XDG_RUNTIME_DIR is not set"))?;
-    Ok(PathBuf::from(runtime_dir).join("obelisk-shell.sock"))
+    Ok(instance_dir()?.join("control.sock"))
 }
 
-/// The "compositor is locked and nothing of ours holds it" marker (ADR-0060), beside the control
-/// socket as per-login runtime state under `$XDG_RUNTIME_DIR`. Only `supervisor` reads or writes
-/// it; the Renderer holds the protocol object but never the decision (ADR-0042).
+/// The "compositor is locked and nothing of ours holds it" marker (ADR-0060), per login like the
+/// compositor lock. Only `supervisor` reads or writes it; the Renderer holds the protocol object but
+/// never the decision (ADR-0042).
 pub fn session_locked_flag_path() -> io::Result<PathBuf> {
-    let runtime_dir = std::env::var_os("XDG_RUNTIME_DIR")
-        .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "XDG_RUNTIME_DIR is not set"))?;
-    Ok(PathBuf::from(runtime_dir).join("obelisk-session-locked"))
-}
-
-/// Where `Command::Run` parks stdout and stderr when no terminal is reading them, and where
-/// `obelisk log` reads them back (ADR-0199). Beside the control socket, and per-login like it: the
-/// only run worth reading is the current one.
-pub fn log_path() -> io::Result<PathBuf> {
-    let runtime_dir = std::env::var_os("XDG_RUNTIME_DIR")
-        .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "XDG_RUNTIME_DIR is not set"))?;
-    Ok(PathBuf::from(runtime_dir).join("obelisk-shell.log"))
+    Ok(runtime_root()?.join("session-locked"))
 }
 
 /// A config directory named by the session. `-c` overwrites it in the Supervisor.

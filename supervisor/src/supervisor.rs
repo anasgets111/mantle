@@ -70,7 +70,7 @@ pub(crate) struct Supervisor {
     /// Polkit counterpart to `pam_outcome_tx`, tagged by challenge cookie.
     polkit_outcome_tx: tokio::sync::mpsc::UnboundedSender<(String, shared::PamOutcome)>,
 
-    /// Persistent `$XDG_RUNTIME_DIR` locked marker (ADR-0060).
+    /// Persistent `$XDG_RUNTIME_DIR/obelisk/session-locked` marker (ADR-0060).
     locked_flag: lock::SessionLockedFlag,
     /// logind half of the same fact (ADR-0138), publishing `loginctl show-session`'s `LockedHint`
     /// whenever the marker changes.

@@ -34,10 +34,6 @@ impl TrayController {
     /// Exports [`WATCHER_OBJECT_PATH`] before claiming the name, so a call routed to the new owner
     /// finds the object. Awaits no app (ADR-0031 amendment).
     pub async fn new(connection: zbus::Connection, events: UnboundedSender<TraySignal>) -> Self {
-        // Sweep before spooling; leftovers belong to a previous run and otherwise survive
-        // (ADR-0074).
-        crate::capabilities::shm_icons::sweep(super::icon::SPOOL_SUBDIR);
-
         let registry: ItemRegistry = Arc::new(Mutex::new(HashMap::new()));
         let host_registered = Arc::new(Mutex::new(false));
         let watcher = StatusNotifierWatcher {

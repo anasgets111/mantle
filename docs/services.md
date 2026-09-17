@@ -29,7 +29,6 @@ The Supervisor claims `org.freedesktop.Notifications` on the session bus.
 | DND | Gates sound only; critical urgency bypasses DND and automatic expiry. `set_quiet` gates sound the same way for a config's own rules |
 | Sounds | Ogg Vorbis or 16-bit WAV, configured per urgency; a trusted client sound-file overrides it, sound-name picks a freedesktop theme sound in its place, suppress-sound or `set_app_muted` silences it |
 
-Spooled files live under `$XDG_RUNTIME_DIR/obelisk/notifications/`.
 The [notification types and limits](../supervisor/src/capabilities/notifications/mod.rs)
 and [markup validator](../supervisor/src/capabilities/notifications/markup.rs) define the exact fields.
 
@@ -52,7 +51,7 @@ The Supervisor hosts `org.kde.StatusNotifierWatcher` and reads each item's own o
 | :--- | :--- |
 | Icon selection | Item-local theme path, then theme name, then validated pixmap fallback |
 | Pixmap validation | Positive square size, at most 128×128, exactly width × height × 4 ARGB bytes |
-| Spooling | PNG under `$XDG_RUNTIME_DIR/obelisk/tray/`; Lua receives names or paths |
+| Spooling | PNG under the instance directory's `tray/`; Lua receives names or paths |
 | Activation | `activate(id, x, y)`; menu-only items do not receive Activate; secondary activation and scroll are also supported |
 | Menus | Recursive DBusMenu data; `menu_will_show` refreshes lazy content; `activate_menu_item` selects an item |
 
@@ -205,8 +204,9 @@ See [capability wiring](../supervisor/src/capabilities/mod.rs).
 | :--- | :--- |
 | Config | CLI `-c`, then shared config-path resolver |
 | Declared JSON stores | Absolute path and filename chosen by `persistent_table` |
-| Control socket / lock marker | `$XDG_RUNTIME_DIR` |
-| Spooled images | `$XDG_RUNTIME_DIR/obelisk/<kind>/`; runtime fallback uses `/run/user/<uid>` |
+| Control socket, log, `instance.lock`, `config` | `$XDG_RUNTIME_DIR/obelisk/<supervisor pid>/` |
+| Spooled images | `$XDG_RUNTIME_DIR/obelisk/<supervisor pid>/<kind>/` |
+| Session-lock marker | `$XDG_RUNTIME_DIR/obelisk/session-locked` |
 
 Declared files push immediately and write 1 second after the last edit via temporary file and rename.
 Pending saves do not flush at shutdown. See [storage](../supervisor/src/capabilities/storage/controller.rs).

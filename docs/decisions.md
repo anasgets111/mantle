@@ -1356,6 +1356,8 @@ Nested niri verified recovery across Supervisor SIGKILL. File errors are logged;
 unlocked. An externally unlocked session can leave a stale marker and cause one extra prompt; the
 protocol cannot query lock state. Clean Supervisor shutdown must not clear the marker.
 
+Amended by ADR-0222: the marker is `$XDG_RUNTIME_DIR/obelisk/session-locked`.
+
 ## 0061. Desktop entries are an enumerated capability, not a lookup call
 
 Amends ADR-0054 decision 5.
@@ -1570,6 +1572,8 @@ parser rather than Activate's numeric coordinates.
 5. Resolve item-local IconThemePath before theme names; reject path separators in icon names.
 
 Deferred: unused legacy attention movies, X11 WindowId and category sorting.
+
+Amended by ADR-0222: no startup sweep; each Supervisor spools into its own instance directory.
 
 ## 0075. Compositor detection is session-level, and `workspaces`' seam is a file
 
@@ -2485,6 +2489,8 @@ ownership; precreated symlinks could redirect sweeping or PNG writes.
 
 Reject extra shared-directory hardening and mtime sweeping when a private directory solves ownership.
 This is a cross-user, not same-UID, threat.
+
+Amended by ADR-0222: the spool is per instance directory, with no `/run/user/<uid>` fallback.
 
 ## 0143. Removed scene nodes need no lease without a holder
 
@@ -4521,6 +4527,8 @@ finished run at read time. Not copied: there are no log levels here to filter by
 Amendment (2026-09-15): both binaries replace std's `eprintln!`/`eprint!` with `shared`'s, which drop
 a failed write. A full tmpfs no longer aborts the shell; only a dependency's own write still can.
 
+Amended by ADR-0222: no log lock or truncation; one log per instance directory.
+
 ## 0200. The active route index is re-read from `info`, because PipeWire never pushes one that appears late
 
 `obelisk` starts from `spawn-at-startup`, before the ALSA card has settled. `bind_device` bound
@@ -5073,3 +5081,33 @@ reloads, breaks signals kept in globals or `state`, and must exempt `persistent_
 | 1500 derived signals | 2640 µs | 3089-3146 µs, +130 B a signal |
 
 ponytail: `Delayed`'s held and `Pulse`'s last-seen value stay Rust-held. Upgrade: user values.
+
+## 0222. Runtime state lives in one directory per Supervisor process
+
+A second shell replaced the first's control socket, deleted it on exit, swept its tray icons and
+shared its log and lock marker.
+
+1. `$XDG_RUNTIME_DIR/obelisk/<supervisor pid>/` holds `control.sock`, `shell.log`, `instance.lock`,
+   `config` and the icon spools; `$OBELISK_INSTANCE_DIR` hands it to Renderers.
+2. Per-login facts stay shared: `obelisk/session-locked` (amends ADR-0060's path), the reboot marker,
+   `persistent_table` files, thumbnails, stubs.
+3. Live = an OFD write lock on `instance.lock`, probed with `F_OFD_GETLK`: flock and OFD locks do not
+   see each other, and a flock probe must take what it tests. `O_CLOEXEC` keeps children off it.
+   Start time is `config`'s mtime; pids wrap.
+4. Startup clears a dead dir under its own pid and refuses a live one (another pid namespace). Other
+   dead dirs stay until logout: a run's log and spools are kilobytes to a few MiB of tmpfs.
+5. Instances are Supervisors. Renderers are never listed or addressed.
+6. `set`/`toggle`/`call`: `--pid`, else the newest live on the resolved config, else without `-c`
+   the newest live. `log`: `--pid` (a kept dead run too), else the newest live with a log, else the
+   newest dead run; `-c` narrows. An inherited `$OBELISK_CONFIG_DIR` or `$OBELISK_INSTANCE_DIR` never
+   counts.
+7. `log -f` picks once and opens `instance.lock` once, so it ends with that Supervisor even when a
+   new one reuses the pid.
+8. Amends ADR-0199: no log lock, truncation or re-open handling. A Renderer respawn appends; a
+   lingering Renderer no longer extends a follow.
+9. `-d` waits up to 5 s until the child holds its lock and has its log, then prints its pid.
+
+Rejected: per-config hashed dirs refusing a second shell on one config; oldest-first commands;
+Quickshell's `by-id`/`by-pid` symlinks, ids, `--newest` and JSON; flock.
+
+ponytail: a running shell does not notice the marker a killed lock holder left. Upgrade: watch it.
