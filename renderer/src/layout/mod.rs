@@ -13,6 +13,7 @@ pub mod image_shader;
 pub mod instance;
 pub mod node;
 pub mod paint;
+pub mod region;
 pub mod scene;
 pub mod secure_submit;
 
@@ -22,6 +23,7 @@ pub mod secure_submit;
 // `overlay_input_regions` for input regions, `blur_regions` for the compositor's blur region.
 #[allow(unused_imports)]
 pub use node::{Align, EdgeInsets, LayoutError, SizeMode};
+pub use region::{blur_regions, overlay_input_regions};
 #[allow(unused_imports)]
 pub use scene::NodeId;
-pub use scene::{LogicalSize, ResolvedNode, Scene, blur_regions, overlay_input_regions};
+pub use scene::{LogicalSize, ResolvedNode, Scene};

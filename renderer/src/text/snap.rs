@@ -43,7 +43,7 @@ impl PhysicalRect {
 /// `as i32` saturates rather than wrapping, so composed transforms or an oversized compositor
 /// configure can land `x0` on `i32::MIN` and `x1` on `i32::MAX`. `x1 - x0` then overflows, and
 /// release builds set `overflow-checks`, so the Renderer aborts. Region walks push those
-/// differences straight into `wl_region::add` (`wayland::surface`) and `scene::push_rounded_rect`
+/// differences straight into `wl_region::add` (`wayland::surface`) and `region::push_rounded_rect`
 /// without an intervening clip.
 const COORD_LIMIT: f32 = 1_048_576.0;
 

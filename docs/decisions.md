@@ -1605,7 +1605,7 @@ payload enum hand-written and exhaustively dispatched. Do not reorganize unrelat
 files.
 
 Amendment, ADR-0207: a Renderer file may split by concern where its tests move with the code;
-`layout/scene.rs` stays whole.
+the `layout/scene.rs` pass stays whole.
 ## 0077. The layout math is taffy's, not this crate's
 
 Supersedes ADR-0023's hand-written arrangement, one-pass and descendant-positioning choices, but not
@@ -4760,9 +4760,9 @@ and cursor, and keyboard focus with the `secure_submit` buffer.
    code). `wayland/input.rs` becomes `input/mod.rs` for the seat, `pointer.rs` and `keyboard.rs`.
 2. Split commits move code only, plus imports and the visibility the extra depth forces. An item
    that was `pub(super)` one level up becomes `pub(in crate::wayland)`, keeping the reach it had.
-3. `layout/scene.rs` stays one file. 171 of its tests reach it through `apply_at`, the whole
-   prepare, solve and finish pass, so splitting the code would leave about 3,900 test lines in
-   `scene/mod.rs` beside none of the code they test.
+3. The pass in `layout/scene.rs` stays one file: 160 of its 164 tests reach it through `apply_at`,
+   the whole prepare, solve and finish pass. The region scan moved to `layout/region.rs` because
+   its 13 tests call it directly and moved with it.
 
 Rejected: splitting by size alone. A file whose tests drive only the whole pipeline gains file names
 and loses the one place its tests and its code meet.
