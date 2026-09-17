@@ -16,9 +16,9 @@ build:
 release:
     cargo build --workspace --release
 
-# The dev shell against `dev-config/obelisk`, on the binaries just built.
-run: build
-    OBELISK_CONFIG_DIR=dev-config/obelisk target/debug/obelisk
+# The just-built shell on `config`, which keeps a dev run off `~/.config/obelisk`.
+run config="share/starter": build
+    target/debug/obelisk -c {{config}}
 
 # Everything a change has to pass before it is done.
 check: fmt-check test lint docs lua types
@@ -53,9 +53,8 @@ docs:
         echo "$crate: $count unresolved doc links (baseline $baseline)"
     done
 
-# `lua` proves a file parses. This proves `dev-config` and `share/starter` agree with `lua-meta`,
-# through the engine and `.luarc.json` the author's editor uses. It is why `nodes.lua` spells
-# `|Signal` on all 21 unions that take one (ADR-0081).
+# `lua` proves a file parses. This proves `share/starter` agrees with `lua-meta`, through the
+# engine the author's editor uses (ADR-0081).
 #
 # `lua-meta` is also checked alone, because a library's own diagnostics are suppressed. That hid
 # `---@return Signal Read-only, like `map``, where the comma made `like` a second return type.
@@ -95,16 +94,13 @@ types:
             sed -E '/^[[:space:]]*$/d; /^[[:space:]]*Initializing/d; /^[[:space:]]*[>=]+[[:space:]]*[0-9]+\/[0-9]+/d; /^[[:space:]]*Diagnosis complet/d' >&2
         exit 1
     }
-    # No `--configpath`: `dev-config/obelisk` has its own, carrying the `runtime.path` its
-    # `require`s need.
-    check dev-config/obelisk
     check share/starter --configpath "$log/starter.luarc.json"
     # No library, which is the point: these files declare everything they reference.
     printf '{"runtime.version":"Lua 5.4","workspace.checkThirdParty":false}\n' >"$log/meta.luarc.json"
     check lua-meta --configpath "$log/meta.luarc.json"
-    echo "lua-meta type-checks, and dev-config and the starter type-check against it"
+    echo "lua-meta type-checks, and the starter type-checks against it"
 
-lua_dirs := "dev-config lua-meta share"
+lua_dirs := "lua-meta share"
 
 # The formatter is here, not beside `cargo fmt`, so `lua_dirs` is written once and a Lua-only
 # commit is gated by `just lua types` alone (`.githooks/pre-commit`). `tools/luafmt.py` says why

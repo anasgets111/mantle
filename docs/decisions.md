@@ -4789,6 +4789,8 @@ Debug order: `-c`, `dev-config/obelisk`, `$OBELISK_CONFIG_DIR`, `$XDG_CONFIG_HOM
 sharing `$OBELISK_CONFIG_DIR` could not tell it from the session's variable. This is ADR-0208's one
 exception, and release builds never see the path.
 
+Superseded by ADR-0220.
+
 ## 0210. A missing lua-language-server fails the gate instead of skipping it
 
 `just types` and `tools/luafmt.py` exit non-zero with an install hint when no lua-language-server is
@@ -5045,3 +5047,9 @@ a first attempt on a loaded box could not resolve it at all. 23 of the 37 sites
 were `&node.kind`, which compiles as `&&str` and coerces: `cargo check` passes a tree that
 `clippy -D warnings` rejects.
 
+## 0220. No build boots `dev-config` on its own, and `-c` shares `$OBELISK_CONFIG_DIR`
+
+Supersedes ADR-0209, which left ADR-0208 one exception. `just run` already sets
+`$OBELISK_CONFIG_DIR`, and the owner's `~/.config/obelisk` links to `dev-config`, so the baked path
+bought nothing a debug binary needed. With nothing between them, `-c` overwrites
+`$OBELISK_CONFIG_DIR` in the Supervisor and `OBELISK_CONFIG_ARG` goes.

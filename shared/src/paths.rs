@@ -1,6 +1,5 @@
 //! XDG paths shared by `supervisor` and `renderer`, so both resolve the control socket, session
-//! lock flag and config directory identically. In debug builds `config_dir` prefers the tracked
-//! `dev-config/obelisk/` over every configured directory but `-c`.
+//! lock flag and config directory identically.
 
 use std::ffi::OsString;
 use std::io;
@@ -34,15 +33,7 @@ pub fn log_path() -> io::Result<PathBuf> {
     Ok(PathBuf::from(runtime_dir).join("obelisk-shell.log"))
 }
 
-/// The tracked dev config, baked in so it resolves from any working directory. The workspace root
-/// is one level above this crate's `CARGO_MANIFEST_DIR`.
-#[cfg(debug_assertions)]
-const DEV_CONFIG_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../dev-config/obelisk");
-
-/// `obelisk -c <dir>`, apart from [`CONFIG_DIR_ENV`] because only `-c` beats the debug dev config.
-pub const CONFIG_ARG_ENV: &str = "OBELISK_CONFIG_ARG";
-
-/// A config directory named by the session, below `-c` and the debug dev config.
+/// A config directory named by the session. `-c` overwrites it in the Supervisor.
 pub const CONFIG_DIR_ENV: &str = "OBELISK_CONFIG_DIR";
 
 /// Generation id stamped on every spawned Renderer.
@@ -72,21 +63,16 @@ pub fn profile_interval() -> Option<Duration> {
 /// for a gone Supervisor.
 pub const EXIT_COMPOSITOR_GONE: i32 = 71;
 
-/// `~/.config/obelisk/` by precedence: `-c` ([`CONFIG_ARG_ENV`]), the dev config in debug builds,
-/// `$OBELISK_CONFIG_DIR`, `$XDG_CONFIG_HOME/obelisk`, then `$HOME/.config/obelisk`.
+/// `~/.config/obelisk/` by precedence: `$OBELISK_CONFIG_DIR`, `$XDG_CONFIG_HOME/obelisk`, then
+/// `$HOME/.config/obelisk`.
 ///
 /// Both binaries call this and agree through the environment. `-c` therefore sets
-/// [`CONFIG_ARG_ENV`] in the Supervisor: every spawned Renderer, including a replacement,
+/// [`CONFIG_DIR_ENV`] in the Supervisor: every spawned Renderer, including a replacement,
 /// inherits it. Passing a path through the handshake would require re-passing it on every
 /// respawn; a missed pass would silently load a different config than the watched one.
 pub fn config_dir() -> io::Result<PathBuf> {
-    // A debug binary run away from its build tree may have a nonexistent DEV_CONFIG_DIR.
-    #[cfg(debug_assertions)]
-    let dev = std::fs::metadata(DEV_CONFIG_DIR).is_ok().then(|| DEV_CONFIG_DIR.into());
-    #[cfg(not(debug_assertions))]
-    let dev = None;
     let var = std::env::var_os;
-    config_dir_from(var(CONFIG_ARG_ENV), dev, var(CONFIG_DIR_ENV), var("XDG_CONFIG_HOME"), var("HOME"))
+    config_dir_from(var(CONFIG_DIR_ENV), var("XDG_CONFIG_HOME"), var("HOME"))
 }
 
 /// [`config_dir`]'s precedence with its lookups passed as parameters.
@@ -94,14 +80,12 @@ pub fn config_dir() -> io::Result<PathBuf> {
 /// Tests pass values instead of calling `set_var`: `setenv` rewrites process-wide `environ` and
 /// races every concurrent `getenv`, regardless of which variable each call names.
 fn config_dir_from(
-    arg: Option<OsString>,
-    dev: Option<OsString>,
     explicit: Option<OsString>,
     xdg_config_home: Option<OsString>,
     home: Option<OsString>,
 ) -> io::Result<PathBuf> {
-    // These name the config directory itself; `$XDG_CONFIG_HOME` names its parent.
-    if let Some(dir) = arg.or(dev).or(explicit) {
+    // It names the config directory itself; `$XDG_CONFIG_HOME` names its parent.
+    if let Some(dir) = explicit {
         return Ok(PathBuf::from(dir));
     }
 
@@ -132,21 +116,11 @@ mod tests {
         assert!(path.ends_with("shell.lua"));
     }
 
-    /// `-c` must beat the dev config, so a debug build can still run a second config.
+    /// The named directory is the config itself, not a parent to join with `obelisk`.
     #[test]
-    fn the_config_argument_wins_over_the_dev_config() {
-        let resolved = config_dir_from(Some("/tmp/arg".into()), Some("/tmp/dev".into()), None, None, None).unwrap();
-        // `-c` is the config directory itself, not a parent to join with `obelisk`.
-        assert_eq!(resolved, PathBuf::from("/tmp/arg"));
-    }
-
-    /// A debug build boots the tracked config even when the session names another.
-    #[test]
-    fn the_dev_config_wins_over_the_session_environment() {
-        let resolved =
-            config_dir_from(None, Some("/tmp/dev".into()), Some("/tmp/env".into()), Some("/tmp/xdg".into()), None)
-                .unwrap();
-        assert_eq!(resolved, PathBuf::from("/tmp/dev"));
+    fn the_named_directory_wins_over_xdg_config_home() {
+        let resolved = config_dir_from(Some("/tmp/env".into()), Some("/tmp/xdg".into()), None).unwrap();
+        assert_eq!(resolved, PathBuf::from("/tmp/env"));
     }
 
     /// The last rung, which old `set_var` tests could not reach without unsetting the developer's
@@ -154,7 +128,7 @@ mod tests {
     #[test]
     fn home_is_the_last_resort_and_is_joined_with_dot_config() {
         assert_eq!(
-            config_dir_from(None, None, None, None, Some("/home/someone".into())).unwrap(),
+            config_dir_from(None, None, Some("/home/someone".into())).unwrap(),
             PathBuf::from("/home/someone/.config/obelisk")
         );
     }
@@ -162,6 +136,6 @@ mod tests {
     /// No variables means an error rather than a guess.
     #[test]
     fn no_variable_at_all_is_an_error() {
-        assert_eq!(config_dir_from(None, None, None, None, None).unwrap_err().kind(), io::ErrorKind::NotFound);
+        assert_eq!(config_dir_from(None, None, None).unwrap_err().kind(), io::ErrorKind::NotFound);
     }
 }
