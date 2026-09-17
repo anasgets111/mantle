@@ -18,6 +18,7 @@ use zbus::zvariant::ObjectPath;
 mod connect;
 mod controller;
 mod devices;
+mod intent;
 mod profiles;
 mod proxies;
 mod scan;
