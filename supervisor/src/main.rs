@@ -459,7 +459,7 @@ mod tests {
     #[test]
     fn a_command_decodes_positionally_into_its_typed_variant_or_says_why_not() {
         use capabilities::{
-            audio::AudioAction, files::FilesAction, lock::LockAction, network::NetworkAction,
+            audio::AudioAction, files::FilesAction, lock::controller::LockAction, network::NetworkAction,
             notifications::NotificationsAction, processes::ProcessesAction, storage::StorageAction, tray::TrayAction,
             updates::UpdatesAction,
         };

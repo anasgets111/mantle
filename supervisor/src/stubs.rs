@@ -60,8 +60,8 @@ fn capability_schemas() -> Vec<(&'static str, Schema, Option<Schema>)> {
         ),
         (
             "lock",
-            schema_for!(crate::capabilities::lock::LockState),
-            Some(schema_for!(crate::capabilities::lock::LockAction)),
+            schema_for!(crate::capabilities::lock::state::LockState),
+            Some(schema_for!(crate::capabilities::lock::controller::LockAction)),
         ),
         (
             "mpris",

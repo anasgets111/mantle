@@ -80,7 +80,7 @@ for the Supervisor's lifetime. These links lead to the actual serialized state d
 | `processes` | [Declared session processes](../supervisor/src/capabilities/processes/controller.rs) |
 | `privacy` | [Camera, microphone and screencast users](../supervisor/src/capabilities/privacy/controller.rs) |
 | `idle` | [Inhibition and external holders](../supervisor/src/capabilities/idle/state.rs) |
-| `lock` | [Lock/authentication state](../supervisor/src/capabilities/lock/mod.rs) |
+| `lock` | [Lock/authentication state](../supervisor/src/capabilities/lock/state.rs) |
 | `polkit` | [Authentication challenge](../supervisor/src/capabilities/polkit.rs) |
 | `updates` | [Checks, packages and install progress](../supervisor/src/capabilities/updates/controller.rs) |
 
@@ -194,7 +194,7 @@ and reaching the target only at the end (ADR-0151). A tween runs
 between the engine's own passes on compositor frame callbacks and reads no Lua. A property
 nothing displayed yet, on a new node or one that lacked it, is taken as it is unless the entry
 names a `from`, which is where it starts. A property `animate` stops naming snaps. See
-[tweens](../renderer/src/layout/node/animate.rs).
+[tweens](../renderer/src/layout/node/animate/mod.rs).
 
 An entry naming `spring` is a mass on a spring instead of a curve of progress (ADR-0154):
 `{ spring = { stiffness = 220, damping = 26 } }`, both required, `stiffness` within
