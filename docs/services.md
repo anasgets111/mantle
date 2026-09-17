@@ -235,7 +235,7 @@ Inbound frames are tagged with the connection's generation ID.
 Frames from a non-authoritative generation, or naming another generation, are dropped, except a
 `CallResult`: the generation a call went to may answer it after a respawn. Nothing checks
 `expected_revision`, so it is not an authorization guarantee.
-See [wire types](../shared/src/lib.rs), [socket](../supervisor/src/socket.rs) and
+See [wire types](../shared/src/lib.rs), [socket](../supervisor/src/socket/mod.rs) and
 [dispatch](../supervisor/src/supervisor.rs).
 
 ## 14. Reload lifecycle

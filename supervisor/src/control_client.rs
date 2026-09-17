@@ -4,7 +4,7 @@
 //! `set` and `toggle` disconnect immediately; `call` waits, because the whole point of a call is
 //! its answer.
 //!
-//! Separate from `socket.rs`, the listener: this is the only external connector, running from a
+//! Separate from `socket/mod.rs`, the listener: this is the only external connector, running from a
 //! compositor keybind's `spawn` with no runtime, config directory, or D-Bus.
 
 use std::error::Error;
