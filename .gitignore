@@ -3,3 +3,4 @@
 # built with (`--target-dir target-native` for a `-C target-cpu=native` measurement) keeps from
 # invalidating the ordinary one. Scratch by definition: nothing here is ever an input.
 /target-*
+/dev-config
