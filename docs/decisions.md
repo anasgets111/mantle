@@ -2401,6 +2401,8 @@ color is the upgrade path, not hiding search prompts.
 Reject machine-written TOML, which loses comments, and a broad FileView clone without a caller.
 Protocol/runtime files and interoperable thumbnail locations remain framework-owned.
 
+Amended by ADR-0223: stores are watched, and a change on disk wins whole.
+
 ## 0137. Privacy reports every capture; telling a video from a song stays in Lua
 
 1. Add microphone and screencast user lists beside cameras; share one user type.
@@ -5111,3 +5113,21 @@ Rejected: per-config hashed dirs refusing a second shell on one config; oldest-f
 Quickshell's `by-id`/`by-pid` symlinks, ids, `--newest` and JSON; flock.
 
 ponytail: a running shell does not notice the marker a killed lock holder left. Upgrade: watch it.
+
+## 0223. A `persistent_table` file is watched, and a change on disk wins whole
+
+Amends ADR-0136 decision 2: a hand edit or another shell's save went unseen, and the next save
+reverted it.
+
+1. Watch the parent directory for `CLOSE_WRITE | MOVED_TO`, filtered by name: in-place writes, `sed -i`,
+   vim's backup rename and our own rename all end in one of them.
+2. Content other than what this shell last read or wrote is someone else's edit: memory becomes that
+   file plus defaults, and unsaved writes are dropped. Pushed only when it differs, so our own save
+   echoes nothing.
+3. An unparseable or unreadable file keeps the last values, logs once and is never saved over. Once it
+   parses, rule 2 applies, so the fix wins over writes made meanwhile.
+4. Deletes and `MOVED_FROM` are ignored; a file missing at save is written from memory.
+
+ponytail: two shells on one file drop each other's writes still inside the save debounce. Upgrade:
+merge per key against the last disk copy.
+No debounce on events, so a truncate-then-write can log one transient parse error.

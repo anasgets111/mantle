@@ -209,6 +209,7 @@ See [capability wiring](../supervisor/src/capabilities/mod.rs).
 | Session-lock marker | `$XDG_RUNTIME_DIR/obelisk/session-locked` |
 
 Declared files push immediately and write 1 second after the last edit via temporary file and rename.
+Another writer's change replaces memory whole and pushes; an unparseable file is logged and never saved over.
 Pending saves do not flush at shutdown. See [storage](../supervisor/src/capabilities/storage/controller.rs).
 
 ## 13. Control socket and wire format

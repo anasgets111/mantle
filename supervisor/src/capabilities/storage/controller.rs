@@ -6,6 +6,9 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use futures_util::StreamExt;
+use inotify::{Inotify, WatchMask, Watches};
+use serde_json::{Map, Value};
 use tokio::sync::mpsc::UnboundedSender;
 use tokio::task::JoinHandle;
 
@@ -19,7 +22,7 @@ const SAVE_DEBOUNCE: Duration = Duration::from_millis(1000);
 pub struct StorageState {
     /// One entry per declared `persistent_table`, keyed by the absolute `path` joined from `path`
     /// and `name`. Absent until declared, so unopened files read as `nil`, not an empty table.
-    pub files: BTreeMap<String, serde_json::Value>,
+    pub files: BTreeMap<String, Value>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -27,8 +30,25 @@ pub enum StorageSignal {
     Changed,
 }
 
+/// Behind one lock, so a sync sees memory and the last disk copy together.
+#[derive(Default)]
+struct Stores {
+    files: HashMap<String, Store>,
+    watches: Option<Watches>,
+}
+
+#[derive(Default)]
+struct Store {
+    values: Map<String, Value>,
+    defaults: Value,
+    /// The file as this shell last read or wrote it; any other content is someone else's write.
+    on_disk: Option<Map<String, Value>>,
+    /// The parse error last logged, so a file left broken logs once.
+    error: Option<String>,
+}
+
 pub struct StorageController {
-    state: Arc<Mutex<StorageState>>,
+    stores: Arc<Mutex<Stores>>,
     /// One pending save per file, replaced by its next write. Files debounce independently; one
     /// file written every second cannot starve another's save.
     saves: Mutex<HashMap<PathBuf, JoinHandle<()>>>,
@@ -36,12 +56,48 @@ pub struct StorageController {
 }
 
 impl StorageController {
+    /// Watches declared files for other writers, other shells included (ADR-0223).
     pub fn new(signal_tx: UnboundedSender<StorageSignal>) -> Self {
-        Self { state: Arc::new(Mutex::new(StorageState::default())), saves: Mutex::new(HashMap::new()), signal_tx }
+        let stores = Arc::new(Mutex::new(Stores::default()));
+        match Inotify::init().and_then(|inotify| Ok((inotify.watches(), inotify.into_event_stream(vec![0u8; 4096])?))) {
+            Ok((watches, mut events)) => {
+                stores.lock().expect("storage state mutex poisoned").watches = Some(watches);
+                let (stores, signal_tx) = (Arc::clone(&stores), signal_tx.clone());
+                tokio::spawn(async move {
+                    while let Some(event) = events.next().await {
+                        let event = match event {
+                            Ok(event) => event,
+                            Err(err) => {
+                                eprintln!("storage: reading the store watch failed: {err}");
+                                // A failure that repeats must not spin.
+                                tokio::time::sleep(Duration::from_secs(1)).await;
+                                continue;
+                            }
+                        };
+                        let guard = stores.lock().expect("storage state mutex poisoned");
+                        // A nameless event is a queue overflow, which may have hidden any store's write.
+                        let named = guard
+                            .files
+                            .keys()
+                            .map(PathBuf::from)
+                            .filter(|path| event.name.is_none() || path.file_name() == event.name.as_deref());
+                        for path in named.collect::<Vec<_>>() {
+                            let (stores, signal_tx) = (Arc::clone(&stores), signal_tx.clone());
+                            tokio::task::spawn_blocking(move || sync(&stores, &path, false, &signal_tx));
+                        }
+                    }
+                });
+            }
+            Err(err) => eprintln!("storage: cannot watch stores, so other writers go unseen: {err}"),
+        }
+        Self { stores, saves: Mutex::new(HashMap::new()), signal_tx }
     }
 
     pub fn snapshot(&self) -> StorageState {
-        self.state.lock().expect("storage state mutex poisoned").clone()
+        let guard = self.stores.lock().expect("storage state mutex poisoned");
+        StorageState {
+            files: guard.files.iter().map(|(key, store)| (key.clone(), store.values.clone().into())).collect(),
+        }
     }
 
     /// `persistent_table { path, name, defaults }`, re-sent each evaluation (ADR-0136 decision 1).
@@ -49,7 +105,7 @@ impl StorageController {
     ///
     /// `defaults` fills missing keys without overwriting stored ones, so adding a default is a new
     /// key, not a reset. A changed merge schedules a save, creating the file on first run.
-    pub fn open(&self, path: &str, defaults: &serde_json::Value) {
+    pub fn open(&self, path: &str, defaults: &Value) {
         let Some(path) = absolute_path(path) else {
             eprintln!("storage: refused to open {path:?}; a store's path must be absolute");
             return;
@@ -57,10 +113,20 @@ impl StorageController {
         let key = path.to_string_lossy().into_owned();
 
         let (declared, changed) = {
-            let mut guard = self.state.lock().expect("storage state mutex poisoned");
-            let declared = !guard.files.contains_key(&key);
-            let stored = guard.files.entry(key).or_insert_with(|| load(&path));
-            (declared, fill_missing(stored, defaults))
+            let mut guard = self.stores.lock().expect("storage state mutex poisoned");
+            let Stores { files, watches } = &mut *guard;
+            let declared = !files.contains_key(&key);
+            let store = files.entry(key).or_default();
+            if declared {
+                watch(watches.as_mut(), &path);
+                store.on_disk = load(&path).unwrap_or_else(|err| {
+                    log_parse_error(store, &path, err);
+                    None
+                });
+                store.values = store.on_disk.clone().unwrap_or_default();
+            }
+            store.defaults = defaults.clone();
+            (declared, fill_missing(&mut store.values, defaults))
         };
 
         if changed {
@@ -79,9 +145,8 @@ impl StorageController {
     /// A write that changes nothing publishes nothing, sparing a whole-store snapshot and the
     /// renderer it would dirty; configs need no equality guard of their own around each write.
     ///
-    /// The save stays unconditional: rewriting is the only repair for the missing, unreadable or
-    /// malformed file [`load`] represented as empty.
-    pub fn set(&self, path: &str, key: &str, value: serde_json::Value) {
+    /// The save stays unconditional: rewriting is the only repair for a deleted file.
+    pub fn set(&self, path: &str, key: &str, value: Value) {
         let Some(path) = absolute_path(path) else {
             eprintln!("storage: refused a write to {path:?}; a store's path must be absolute");
             return;
@@ -92,20 +157,16 @@ impl StorageController {
         }
 
         let changed = {
-            let mut guard = self.state.lock().expect("storage state mutex poisoned");
-            let Some(stored) = guard.files.get_mut(&*path.to_string_lossy()) else {
+            let mut guard = self.stores.lock().expect("storage state mutex poisoned");
+            let Some(store) = guard.files.get_mut(&*path.to_string_lossy()) else {
                 eprintln!("storage: refused a write to {}; no persistent_table declared it", path.display());
                 return;
             };
-            let Some(map) = stored.as_object_mut() else {
-                eprintln!("storage: refused a write to {}; the file does not hold an object", path.display());
-                return;
-            };
             match value {
-                serde_json::Value::Null => map.remove(key).is_some(),
-                value if map.get(key) == Some(&value) => false,
+                Value::Null => store.values.remove(key).is_some(),
+                value if store.values.get(key) == Some(&value) => false,
                 value => {
-                    map.insert(key.to_string(), value);
+                    store.values.insert(key.to_string(), value);
                     true
                 }
             }
@@ -122,26 +183,73 @@ impl StorageController {
     /// ponytail: a save still in the window at session end is lost. Upgrade with a Supervisor
     /// shutdown flush shared by controllers.
     fn schedule_save(&self, path: PathBuf) {
-        let state = Arc::clone(&self.state);
-        let key = path.to_string_lossy().into_owned();
-        let target = path.clone();
+        let (stores, signal_tx, target) = (Arc::clone(&self.stores), self.signal_tx.clone(), path.clone());
         let handle = tokio::spawn(async move {
             tokio::time::sleep(SAVE_DEBOUNCE).await;
-            let Some(contents) = state.lock().expect("storage state mutex poisoned").files.get(&key).cloned() else {
-                return;
-            };
-            // Off the Supervisor loop: directory creation, write, and rename are three syscalls,
-            // potentially on a spun-down disk or NFS mount.
-            let _ = tokio::task::spawn_blocking(move || {
-                if let Err(err) = save(&target, &contents) {
-                    eprintln!("storage: could not save {}: {err}", target.display());
-                }
-            })
-            .await;
+            // Off the Supervisor loop: a read, directory creation, write, and rename, potentially on
+            // a spun-down disk or NFS mount.
+            let _ = tokio::task::spawn_blocking(move || sync(&stores, &target, true, &signal_tx)).await;
         });
         if let Some(previous) = self.saves.lock().expect("storage saves mutex poisoned").insert(path, handle) {
             previous.abort();
         }
+    }
+}
+
+/// Takes `path`'s disk copy whole when someone else changed it, dropping unsaved writes, pushes a
+/// difference, and writes when `save` asks or a just-fixed file lacks defaults (ADR-0223).
+fn sync(stores: &Mutex<Stores>, path: &Path, save: bool, signal_tx: &UnboundedSender<StorageSignal>) {
+    // Read to rename in turn, so a watch and a save cannot land out of order.
+    static SERIAL: Mutex<()> = Mutex::new(());
+    let _serial = SERIAL.lock().expect("storage sync mutex poisoned");
+    let key = path.to_string_lossy();
+    let disk = load(path);
+    let contents = {
+        let mut guard = stores.lock().expect("storage state mutex poisoned");
+        let Stores { files, watches } = &mut *guard;
+        let Some(store) = files.get_mut(&*key) else { return };
+        let disk = match disk {
+            Ok(disk) => disk,
+            Err(err) => return log_parse_error(store, path, err),
+        };
+        if let Some(disk) = disk.filter(|disk| store.on_disk.as_ref() != Some(disk)) {
+            let mut values = disk.clone();
+            fill_missing(&mut values, &store.defaults);
+            store.on_disk = Some(disk);
+            if store.values != values {
+                store.values = values;
+                let _ = signal_tx.send(StorageSignal::Changed);
+            }
+        }
+        if !(save || store.error.take().is_some() && Some(&store.values) != store.on_disk.as_ref()) {
+            return;
+        }
+        watch(watches.as_mut(), path);
+        store.values.clone()
+    };
+    if let Err(err) = write(path, &contents) {
+        return eprintln!("storage: could not save {}: {err}", path.display());
+    }
+    if let Some(store) = stores.lock().expect("storage state mutex poisoned").files.get_mut(&*key) {
+        store.on_disk = Some(contents);
+    }
+}
+
+/// Creates `path`'s directory and watches it for writes that land on a name, again at each save in
+/// case the directory was recreated. Our temporary's name never matches a declared file.
+fn watch(watches: Option<&mut Watches>, path: &Path) {
+    let Some(dir) = path.parent() else { return };
+    let mask = WatchMask::CLOSE_WRITE | WatchMask::MOVED_TO;
+    let watched = std::fs::create_dir_all(dir).and_then(|()| watches.map_or(Ok(()), |w| w.add(dir, mask).map(drop)));
+    if let Err(err) = watched {
+        eprintln!("storage: cannot watch {}: {err}", dir.display());
+    }
+}
+
+fn log_parse_error(store: &mut Store, path: &Path, err: String) {
+    if store.error.as_ref() != Some(&err) {
+        eprintln!("storage: {} keeps its last values and is not saved over until it parses: {err}", path.display());
+        store.error = Some(err);
     }
 }
 
@@ -153,25 +261,22 @@ fn absolute_path(path: &str) -> Option<PathBuf> {
     path.is_absolute().then_some(path)
 }
 
-/// All failures become an empty object: missing is normal on first run, and unreadable/malformed
-/// data must not stop the shell. [`StorageController::open`] then merges defaults, and the next
-/// save rewrites the file as the only repair a config can request.
-fn load(path: &Path) -> serde_json::Value {
-    let Ok(contents) = std::fs::read_to_string(path) else {
-        return serde_json::Value::Object(serde_json::Map::new());
-    };
-    match serde_json::from_str::<serde_json::Value>(&contents) {
-        Ok(value @ serde_json::Value::Object(_)) => value,
-        _ => serde_json::Value::Object(serde_json::Map::new()),
+/// `None` when missing, normal on first run; an error for anything a save would destroy.
+fn load(path: &Path) -> Result<Option<Map<String, Value>>, String> {
+    match std::fs::read_to_string(path) {
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(err) => Err(err.to_string()),
+        Ok(contents) => match serde_json::from_str(&contents).map_err(|err| err.to_string())? {
+            Value::Object(map) => Ok(Some(map)),
+            _ => Err("not a JSON object".to_string()),
+        },
     }
 }
 
 /// Copies missing top-level keys from `defaults` into `stored` and reports whether it changed.
 /// Values, including tables, replace as one key; nested tables do not merge.
-fn fill_missing(stored: &mut serde_json::Value, defaults: &serde_json::Value) -> bool {
-    let (Some(stored), Some(defaults)) = (stored.as_object_mut(), defaults.as_object()) else {
-        return false;
-    };
+fn fill_missing(stored: &mut Map<String, Value>, defaults: &Value) -> bool {
+    let Some(defaults) = defaults.as_object() else { return false };
     let mut changed = false;
     for (key, value) in defaults {
         if !stored.contains_key(key) {
@@ -183,13 +288,8 @@ fn fill_missing(stored: &mut serde_json::Value, defaults: &serde_json::Value) ->
 }
 
 /// Writes pretty JSON to a same-directory temporary file, then renames atomically within one
-/// filesystem. A crash cannot leave a half-written file; a truncated file would load empty next
-/// boot.
-fn save(path: &Path, contents: &serde_json::Value) -> std::io::Result<()> {
-    let Some(dir) = path.parent() else {
-        return Err(std::io::Error::other(format!("{} has no parent directory", path.display())));
-    };
-    std::fs::create_dir_all(dir)?;
+/// filesystem. A crash cannot leave a half-written file.
+fn write(path: &Path, contents: &Map<String, Value>) -> std::io::Result<()> {
     let mut serialized = serde_json::to_vec_pretty(contents).map_err(std::io::Error::other)?;
     serialized.push(b'\n');
 
@@ -310,7 +410,13 @@ mod tests {
                 .unwrap();
         assert_eq!(written["fit"], json!("cover"));
 
-        controller.set(&path, "fit", json!("fill"));
+        // After our own rename in the watch queue, so exactly one push proves that one pushed nothing.
+        std::fs::write(&path, r#"{"fit":"fill"}"#).unwrap();
+        pushed(&mut rx).await;
+        assert_eq!(controller.snapshot().files[&path]["fit"], json!("fill"));
+        assert!(rx.try_recv().is_err(), "the watch saw our rename and found nothing new");
+
+        controller.set(&path, "fit", json!("contain"));
         assert!(rx.try_recv().is_ok(), "a real edit still pushes");
     }
 
@@ -385,5 +491,71 @@ mod tests {
         second.open(&path, &json!({ "theme": "mocha" }));
 
         assert_eq!(second.snapshot().files[&path]["theme"], json!("latte"), "the round trip is the contract");
+    }
+
+    /// Waits for a push, or fails after the inotify round trip should long have landed.
+    async fn pushed(rx: &mut tokio::sync::mpsc::UnboundedReceiver<StorageSignal>) {
+        tokio::time::timeout(Duration::from_secs(5), rx.recv()).await.expect("no push arrived");
+    }
+
+    #[tokio::test]
+    async fn a_second_shell_writing_after_the_first_saved_keeps_both_keys() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("state.json");
+        let path = file.to_string_lossy().into_owned();
+        let ((first, _a), (second, mut b)) = (controller(), controller());
+        first.open(&path, &json!({}));
+        second.open(&path, &json!({}));
+        while b.try_recv().is_ok() {}
+
+        first.set(&path, "wallpaper", json!("/w/1.jpg"));
+        pushed(&mut b).await;
+        second.set(&path, "theme", json!("latte"));
+        tokio::time::sleep(SAVE_DEBOUNCE + Duration::from_millis(300)).await;
+
+        let written: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
+        assert_eq!(written, json!({ "wallpaper": "/w/1.jpg", "theme": "latte" }));
+    }
+
+    #[tokio::test]
+    async fn an_external_write_is_pushed_whether_renamed_or_in_place() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("state.json");
+        let path = file.to_string_lossy().into_owned();
+        std::fs::write(&file, r#"{"theme":"mocha"}"#).unwrap();
+        let (controller, mut rx) = controller();
+        controller.open(&path, &json!({ "dnd": false }));
+        pushed(&mut rx).await;
+
+        let renamed = dir.path().join("sedXYZ");
+        std::fs::write(&renamed, r#"{"theme":"latte"}"#).unwrap();
+        std::fs::rename(&renamed, &file).unwrap();
+        pushed(&mut rx).await;
+        assert_eq!(controller.snapshot().files[&path], json!({ "theme": "latte", "dnd": false }), "defaults stay");
+
+        std::fs::write(&file, r#"{"theme":"frappe"}"#).unwrap();
+        pushed(&mut rx).await;
+        assert_eq!(controller.snapshot().files[&path]["theme"], json!("frappe"));
+    }
+
+    #[tokio::test]
+    async fn a_fixed_malformed_file_wins_whole_over_writes_made_while_it_was_broken() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("state.json");
+        std::fs::write(&file, "{oops").unwrap();
+        let path = file.to_string_lossy().into_owned();
+        let (controller, mut rx) = controller();
+        controller.open(&path, &json!({}));
+        controller.set(&path, "theme", json!("latte"));
+        tokio::time::sleep(SAVE_DEBOUNCE + Duration::from_millis(150)).await;
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "{oops", "a hand edit gone wrong is the owner's to fix");
+        while rx.try_recv().is_ok() {}
+
+        let fixed = r#"{"wallpaper":"/w/1.jpg"}"#;
+        std::fs::write(&file, fixed).unwrap();
+        pushed(&mut rx).await;
+        assert_eq!(controller.snapshot().files[&path], json!({ "wallpaper": "/w/1.jpg" }), "the newer edit wins");
+        tokio::time::sleep(SAVE_DEBOUNCE + Duration::from_millis(150)).await;
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), fixed, "nothing rewrites a file the shell agrees with");
     }
 }
