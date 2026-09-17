@@ -231,7 +231,7 @@ fn check_lua_authored(value: &Value) -> Result<(), marshal::MarshalError> {
             marshal::check_integer(*i)?;
         }
         Value::String(s) => {
-            marshal::check_string(&s.to_string_lossy())?;
+            marshal::check_string(&String::from_utf8_lossy(&s.as_bytes()))?;
         }
         _ => {}
     }

@@ -9,7 +9,7 @@
 //! a border keeps the width the config asked for.
 
 /// A rectangle in logical (fractional, DPI-independent) pixel coordinates.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct LogicalRect {
     pub x: f32,
     pub y: f32,
@@ -24,6 +24,17 @@ pub struct PhysicalRect {
     pub y0: i32,
     pub x1: i32,
     pub y1: i32,
+}
+
+impl PhysicalRect {
+    pub fn intersect(self, other: Self) -> Self {
+        Self {
+            x0: self.x0.max(other.x0),
+            y0: self.y0.max(other.y0),
+            x1: self.x1.min(other.x1),
+            y1: self.y1.min(other.y1),
+        }
+    }
 }
 
 /// The coordinate ceiling a snapped edge saturates to, well inside `i32` so that a caller may

@@ -19,6 +19,11 @@ pub(super) struct BoundSurface {
 pub(super) fn log_bind_failure(surface_id: &str, stage: &str, err: impl std::fmt::Display) {
     eprintln!("[obelisk-renderer] {surface_id}: {stage} failed: {err}");
 }
+fn log_invalid_re_resolve(surface_id: &str, role: &str, err: impl std::fmt::Display) {
+    eprintln!(
+        "[obelisk-renderer] {surface_id}: re-resolved {role} properties are invalid, keeping the last applied ones: {err}"
+    );
+}
 /// The `visible` state. Three states are required because showing commits without a buffer and
 /// waits for configure before drawing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -491,10 +496,7 @@ impl App {
             let spec = match tree.as_ref().map(|tree| resolved_surface_spec(roster, &tree.properties)) {
                 Some((_, Ok(fresh))) => fresh,
                 Some((role, Err(err))) => {
-                    eprintln!(
-                        "[obelisk-renderer] {}: re-resolved {role} properties are invalid, keeping the last applied ones: {err}",
-                        instance.instance_id
-                    );
+                    log_invalid_re_resolve(&instance.instance_id, role, err);
                     roster.clone()
                 }
                 None => roster.clone(),
@@ -700,16 +702,12 @@ impl App {
                 self.client.set_measured_axes(&surface_id, axes, ceiling);
                 self.apply_spec_change(index, fresh, visible);
             }
-            Some(Err(err)) => eprintln!(
-                "[obelisk-renderer] {surface_id}: re-resolved panel properties are invalid, keeping the last applied ones: {err}"
-            ),
+            Some(Err(err)) => log_invalid_re_resolve(&surface_id, "panel", err),
             None => {}
         }
         match window {
             Some(Ok(fresh)) => self.apply_window_change(index, fresh),
-            Some(Err(err)) => eprintln!(
-                "[obelisk-renderer] {surface_id}: re-resolved window properties are invalid, keeping the last applied ones: {err}"
-            ),
+            Some(Err(err)) => log_invalid_re_resolve(&surface_id, "window", err),
             None => {}
         }
         match popup {
@@ -723,9 +721,7 @@ impl App {
                     *requested = size;
                 }
             }
-            Some(Err(err)) => eprintln!(
-                "[obelisk-renderer] {surface_id}: re-resolved popup properties are invalid, keeping the last applied ones: {err}"
-            ),
+            Some(Err(err)) => log_invalid_re_resolve(&surface_id, "popup", err),
             None => {}
         }
         // Locks have no config-settable protocol field: only `ack_configure` exists and size
@@ -748,20 +744,23 @@ impl App {
         let Some(surface) = self.surfaces[index].role.wl_surface().cloned() else {
             return;
         };
-        let region = match Region::new(&self.compositor_state) {
-            Ok(region) => region,
-            Err(e) => {
-                // `CompositorState::bind` already proved the compositor exists; keep the shell up
-                // if region creation nevertheless fails.
-                log_bind_failure(&self.surfaces[index].surface_id.clone(), "wl_compositor::create_region", e);
-                return;
-            }
+        let Some(region) = self.region_of(index, &regions) else {
+            return;
         };
-        for rect in regions {
-            region.add(rect.x0, rect.y0, rect.x1 - rect.x0, rect.y1 - rect.y0);
-        }
         surface.set_input_region(Some(region.wl_region()));
         // `set_input_region` copies the contents, so dropping the region here is sufficient.
+    }
+
+    fn region_of(&self, index: usize, rects: &[crate::text::snap::PhysicalRect]) -> Option<Region> {
+        // `CompositorState::bind` already proved the compositor exists; keep the shell up if region
+        // creation nevertheless fails.
+        let region = Region::new(&self.compositor_state)
+            .inspect_err(|e| log_bind_failure(&self.surfaces[index].surface_id, "wl_compositor::create_region", e))
+            .ok()?;
+        for rect in rects {
+            region.add(rect.x0, rect.y0, rect.x1 - rect.x0, rect.y1 - rect.y0);
+        }
+        Some(region)
     }
 
     /// Hand the compositor the region behind this surface it should blur (`blur`,
@@ -804,16 +803,9 @@ impl App {
             };
             self.surfaces[index].blur_effect = Some(effect);
         }
-        let region = match Region::new(&self.compositor_state) {
-            Ok(region) => region,
-            Err(e) => {
-                log_bind_failure(&self.surfaces[index].surface_id.clone(), "wl_compositor::create_region", e);
-                return;
-            }
+        let Some(region) = self.region_of(index, &regions) else {
+            return;
         };
-        for rect in &regions {
-            region.add(rect.x0, rect.y0, rect.x1 - rect.x0, rect.y1 - rect.y0);
-        }
         if let Some(effect) = self.surfaces[index].blur_effect.as_ref() {
             // A null region would remove the effect; an empty one keeps the object and blurs
             // nothing, which is what a surface whose glass is currently hidden wants.
@@ -849,30 +841,24 @@ impl App {
 
     /// Apply `visible` as create/destroy for every role (ADR-0049 decision 1, ADR-0088).
     fn apply_visibility(&mut self, index: usize, visible: bool) {
-        match &self.surfaces[index].role {
-            TrackedRole::Panel { .. } => match visibility_action(self.surfaces[index].map_state, visible) {
-                // `QueueHandle` is a cheap refcounted handle; clone it across `&mut self`.
-                VisibilityAction::Show => {
-                    let qh = self.queue_handle.clone();
-                    self.show_panel(&qh, index);
-                }
-                VisibilityAction::Hide => self.drop_role_object(index),
-                VisibilityAction::Nothing => {}
-            },
-            TrackedRole::Window { .. } => match visibility_action(self.surfaces[index].map_state, visible) {
-                VisibilityAction::Show => {
-                    let qh = self.queue_handle.clone();
-                    self.show_window(&qh, index);
-                }
-                VisibilityAction::Hide => self.drop_role_object(index),
-                VisibilityAction::Nothing => {}
-            },
+        let show = match &self.surfaces[index].role {
+            TrackedRole::Panel { .. } => Self::show_panel,
+            TrackedRole::Window { .. } => Self::show_window,
             // Popup visibility also reads ADR-0051's latch: dismissal leaves it `Unmapped` while
             // `visible` remains true.
-            TrackedRole::Popup { .. } => self.apply_popup_visibility(index, visible),
+            TrackedRole::Popup { .. } => return self.apply_popup_visibility(index, visible),
             // `lock_spec` rejects `visible`; the compositor owns lock-surface lifetime from
             // `locked` through `unlock_and_destroy` (ADR-0042, ADR-0052 decision 2).
-            TrackedRole::Lock { .. } => {}
+            TrackedRole::Lock { .. } => return,
+        };
+        match visibility_action(self.surfaces[index].map_state, visible) {
+            // `QueueHandle` is a cheap refcounted handle; clone it across `&mut self`.
+            VisibilityAction::Show => {
+                let qh = self.queue_handle.clone();
+                show(self, &qh, index);
+            }
+            VisibilityAction::Hide => self.drop_role_object(index),
+            VisibilityAction::Nothing => {}
         }
     }
 
@@ -1386,7 +1372,7 @@ mod tests {
         let mut spec = popup_spec_fixture();
         spec.width = node::SizeMode::Content;
         spec.height = node::SizeMode::Content;
-        let nothing = LogicalRect { x: 0.0, y: 0.0, width: 0.0, height: 0.0 };
+        let nothing = LogicalRect::default();
         assert_eq!(popup_requested_size(&spec, nothing), (0.0, 0.0));
     }
 
@@ -1426,7 +1412,7 @@ mod tests {
         let mut spec = popup_spec_fixture();
         spec.width = node::SizeMode::Content;
         spec.height = node::SizeMode::Content;
-        let nothing = LogicalRect { x: 0.0, y: 0.0, width: 0.0, height: 0.0 };
+        let nothing = LogicalRect::default();
         assert!(!Placement::of(&spec, nothing).is_measured());
         assert!(Placement::of(&spec, LogicalRect { x: 0.0, y: 0.0, width: 169.0, height: 36.0 }).is_measured());
 

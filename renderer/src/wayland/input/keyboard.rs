@@ -496,8 +496,7 @@ impl App {
     ///
     /// Reuses `xdg_shell`'s [`App::shown_popups_under`], the same walk `hide_popup` destroys by, so
     /// "shown under this surface" has one definition. Ids rather than trees: the per-keystroke
-    /// caller ([`App::prune_secure_focus`]) needs only the ids, and `Scene::surface` rebuilds an
-    /// owned tree per call.
+    /// caller ([`App::prune_secure_focus`]) needs only the ids.
     pub(in crate::wayland) fn keyboard_focus_scope(&self) -> Vec<String> {
         let Some(focused) = self.keyboard_focus.as_deref() else {
             return Vec::new();
@@ -525,11 +524,14 @@ impl App {
         (scope, root_live)
     }
 
+    fn scoped_trees<'a>(&'a self, scope: &'a [String]) -> Vec<(&'a str, &'a layout::ResolvedNode)> {
+        scope.iter().filter_map(|id| self.client.scene().surface(id).map(|tree| (id.as_str(), tree))).collect()
+    }
+
     /// Ask [`focus_on_enter`] over scoped trees; called both on `enter` and when trees change under
     /// an existing focus.
     fn field_the_scope_declares(&self, scope: &[String], current: Option<FocusedField>) -> Option<FocusedField> {
-        let trees: Vec<(&str, &layout::ResolvedNode)> =
-            scope.iter().filter_map(|id| self.client.scene().surface(id).map(|tree| (id.as_str(), tree))).collect();
+        let trees = self.scoped_trees(scope);
         focus_on_enter(&trees, current.as_ref())
     }
 
@@ -562,8 +564,7 @@ impl App {
     /// when the user returns manually; automatic handoff must not append to a forgotten search.
     /// Fire `on_change("")` on every arm so launchers reset selection/scroll and state clears.
     fn arm_autofocus_field(&mut self, scope: &[String]) {
-        let trees: Vec<(&str, &layout::ResolvedNode)> =
-            scope.iter().filter_map(|id| self.client.scene().surface(id).map(|tree| (id.as_str(), tree))).collect();
+        let trees = self.scoped_trees(scope);
         let Some((surface_id, FieldTarget::Plain { id, on_change, on_submit, on_cancel, on_navigate })) =
             autofocus_field_in_scope(&trees)
         else {
@@ -606,8 +607,7 @@ impl App {
             if field.typing {
                 return;
             }
-            let trees: Vec<(&str, &layout::ResolvedNode)> =
-                scope.iter().filter_map(|id| self.client.scene().surface(id).map(|tree| (id.as_str(), tree))).collect();
+            let trees = self.scoped_trees(scope);
             let same_field = matches!(
                 autofocus_field_in_scope(&trees),
                 Some((_, FieldTarget::Plain { id, .. })) if id == field.id

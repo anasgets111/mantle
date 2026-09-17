@@ -149,11 +149,6 @@ impl DisplayList {
 /// Identity clip before any scissor is pushed.
 const UNCLIPPED: PhysicalRect = PhysicalRect { x0: i32::MIN, y0: i32::MIN, x1: i32::MAX, y1: i32::MAX };
 
-/// Overlap of two snapped boxes. Empty (`x1 <= x0` or `y1 <= y0`) skips the whole subtree.
-fn intersect(a: PhysicalRect, b: PhysicalRect) -> PhysicalRect {
-    PhysicalRect { x0: a.x0.max(b.x0), y0: a.y0.max(b.y0), x1: a.x1.min(b.x1), y1: a.y1.min(b.y1) }
-}
-
 fn is_empty(clip: PhysicalRect) -> bool {
     clip.x1 <= clip.x0 || clip.y1 <= clip.y0
 }
@@ -213,7 +208,7 @@ fn build_node(
     // pill's corner is outside its fill yet still takes a click (four pixels on a 34px control),
     // and a scoop's cut-out still takes the click and counts as input.
     // Upgrade path: hit testing should share this walk instead of a second copy of the rule.
-    let clip = intersect(clip, snap_to_physical(rect, scale));
+    let clip = clip.intersect(snap_to_physical(rect, scale));
     // Fully clipped children cannot draw.
     if is_empty(clip) {
         return;
@@ -1038,84 +1033,7 @@ mod tests {
     /// bound them to this thread; only `instance` is read again, for `get_proc_address` in
     /// [`text_painter`]. Binds a pbuffer surface current before returning.
     fn init_headless_egl(width: i32, height: i32) -> Option<egl::Instance<egl::Static>> {
-        let instance = egl::Instance::new(egl::Static);
-
-        // SAFETY: `eglGetPlatformDisplay` with `EGL_PLATFORM_SURFACELESS_MESA` takes no native
-        // handle -- `EGL_DEFAULT_DISPLAY` is the null sentinel the extension defines -- and the
-        // attribute list is a `EGL_NONE`-terminated slice, which is the contract for this call.
-        let display = match unsafe {
-            instance.get_platform_display(PLATFORM_SURFACELESS_MESA, egl::DEFAULT_DISPLAY, &[egl::ATTRIB_NONE])
-        } {
-            Ok(d) => d,
-            Err(e) => {
-                eprintln!("EGL init failed, skip: eglGetPlatformDisplay(SURFACELESS_MESA): {e}");
-                return None;
-            }
-        };
-
-        if let Err(e) = instance.initialize(display) {
-            eprintln!("EGL init failed, skip: eglInitialize: {e}");
-            return None;
-        }
-
-        if let Err(e) = instance.bind_api(egl::OPENGL_ES_API) {
-            eprintln!("EGL init failed, skip: eglBindAPI(OPENGL_ES_API): {e}");
-            return None;
-        }
-
-        let attribs = [
-            egl::SURFACE_TYPE,
-            egl::PBUFFER_BIT,
-            egl::RENDERABLE_TYPE,
-            egl::OPENGL_ES3_BIT,
-            egl::RED_SIZE,
-            8,
-            egl::GREEN_SIZE,
-            8,
-            egl::BLUE_SIZE,
-            8,
-            egl::ALPHA_SIZE,
-            8,
-            egl::STENCIL_SIZE,
-            8,
-            egl::NONE,
-        ];
-        let config = match instance.choose_first_config(display, &attribs) {
-            Ok(Some(c)) => c,
-            Ok(None) => {
-                eprintln!("EGL init failed, skip: no EGL config satisfies PBUFFER+GLES3+8-bit-RGBA");
-                return None;
-            }
-            Err(e) => {
-                eprintln!("EGL init failed, skip: eglChooseConfig: {e}");
-                return None;
-            }
-        };
-
-        let pbuffer_attribs = [egl::WIDTH, width, egl::HEIGHT, height, egl::NONE];
-        let surface = match instance.create_pbuffer_surface(display, config, &pbuffer_attribs) {
-            Ok(s) => s,
-            Err(e) => {
-                eprintln!("EGL init failed, skip: eglCreatePbufferSurface: {e}");
-                return None;
-            }
-        };
-
-        let context_attribs = [egl::CONTEXT_CLIENT_VERSION, 3, egl::NONE];
-        let context = match instance.create_context(display, config, None, &context_attribs) {
-            Ok(c) => c,
-            Err(e) => {
-                eprintln!("EGL init failed, skip: eglCreateContext: {e}");
-                return None;
-            }
-        };
-
-        if let Err(e) = instance.make_current(display, Some(surface), Some(surface), Some(context)) {
-            eprintln!("EGL init failed, skip: eglMakeCurrent: {e}");
-            return None;
-        }
-
-        Some(instance)
+        init_headless_egl_two_surfaces(width, height).map(|(instance, ..)| instance)
     }
 
     /// Builds a `TextPainter` against `instance`'s already-current context, from the same
@@ -1848,9 +1766,8 @@ mod tests {
         (px.r, px.g, px.b, px.a)
     }
 
-    /// A second, self-contained EGL harness returning the pieces [`init_headless_egl`] hides, so
-    /// one context can be made current against two different draw surfaces. Only
-    /// [`one_canvas_draws_correctly_across_two_surfaces_sharing_one_context`] needs this.
+    /// The EGL harness returning the pieces [`init_headless_egl`] hides, so one context can be made
+    /// current against two different draw surfaces.
     #[allow(clippy::type_complexity)]
     fn init_headless_egl_two_surfaces(
         width: i32,

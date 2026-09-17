@@ -2050,10 +2050,6 @@ fn transformed_bounds(matrix: node::Affine, rect: LogicalRect) -> LogicalRect {
     LogicalRect { x: x0, y: y0, width: x1 - x0, height: y1 - y0 }
 }
 
-fn intersect_physical(a: PhysicalRect, b: PhysicalRect) -> PhysicalRect {
-    PhysicalRect { x0: a.x0.max(b.x0), y0: a.y0.max(b.y0), x1: a.x1.min(b.x1), y1: a.y1.min(b.y1) }
-}
-
 #[allow(clippy::too_many_arguments)]
 fn collect_blur_regions(
     node: &ResolvedNode,
@@ -2102,7 +2098,7 @@ fn collect_blur_regions(
         );
         let visible = snap_to_physical(transformed_bounds(matrix, clip), scale);
         for strip in rounded {
-            let cut = intersect_physical(strip, visible);
+            let cut = strip.intersect(visible);
             if cut.x1 > cut.x0 && cut.y1 > cut.y0 {
                 out.push(cut);
             }

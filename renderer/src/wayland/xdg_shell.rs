@@ -230,10 +230,7 @@ impl App {
                 // The declaration's own numbers, which for a `Content` axis is zero until the first
                 // resolve measures one. Nothing opens before then; `apply_resolved_state` writes
                 // the real pair on every pass.
-                requested: super::surface::popup_requested_size(
-                    spec,
-                    LogicalRect { x: 0.0, y: 0.0, width: 0.0, height: 0.0 },
-                ),
+                requested: super::surface::popup_requested_size(spec, LogicalRect::default()),
                 // Nothing is open, so no positioner has been given anything yet.
                 positioned: None,
                 spec: spec.clone(),
@@ -288,10 +285,7 @@ impl App {
         // used to be the whole of the already-open case, which is why a popup kept the size it
         // opened at for as long as it stayed open.
         let moved = (visible && popup.is_some())
-            .then(|| Placement {
-                size: *requested,
-                ..Placement::of(spec, LogicalRect { x: 0.0, y: 0.0, width: 0.0, height: 0.0 })
-            })
+            .then(|| Placement { size: *requested, ..Placement::of(spec, LogicalRect::default()) })
             .filter(|placement| placement.is_measured() && Some(*placement) != *positioned);
         let action = popup_visibility_action(visible, popup.is_some(), *dismissed_at, self.pointer_input_count);
         if !visible && let TrackedRole::Popup { dismissed_at, refusal_logged, .. } = &mut self.surfaces[index].role {
@@ -376,7 +370,7 @@ impl App {
             return;
         };
         let spec = spec.clone();
-        let placement = Placement::of(&spec, LogicalRect { x: 0.0, y: 0.0, width: 0.0, height: 0.0 });
+        let placement = Placement::of(&spec, LogicalRect::default());
         // `requested` is what `apply_resolved_state` measured; `Placement::of` above cannot know
         // it, so take the measured pair and keep the placement fields it did read.
         let placement = Placement { size: *requested, ..placement };
