@@ -2,7 +2,7 @@
 //! bytes to `$XDG_RUNTIME_DIR/obelisk/{subdir}/...`; the error type and directory/write mechanics
 //! are identical, while subdirectory and pixel encoding stay local.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// `$XDG_RUNTIME_DIR/obelisk/{subdir}` (ADR-0142; previously `/dev/shm/obelisk-$UID` under ADR-0031).
 ///
@@ -26,12 +26,22 @@ fn spool_dir(runtime: Option<&std::ffi::OsStr>, subdir: &str) -> PathBuf {
 /// Best-effort deletion of one spooled PNG.
 ///
 /// Checks that `path` is one this module wrote before deleting it. The path traveled through a
-/// `TrayItem` and back, so the prefix check is a trust boundary. Failure is silent during teardown.
+/// snapshot and back, so the check is a trust boundary.
 pub fn remove_png(subdir: &str, path: &str) {
-    if !std::path::Path::new(path).starts_with(icon_dir(subdir)) {
+    if !is_within(path, &icon_dir(subdir)) {
         return;
     }
-    let _ = std::fs::remove_file(path);
+    if let Err(err) = std::fs::remove_file(path) {
+        eprintln!("{subdir}: failed to delete spooled icon {path:?}: {err}");
+    }
+}
+
+/// Canonicalizes both sides, so neither `..` nor a symlink escapes `root`.
+fn is_within(path: &str, root: &Path) -> bool {
+    match (Path::new(path).canonicalize(), root.canonicalize()) {
+        (Ok(path), Ok(root)) => path.starts_with(root),
+        _ => false,
+    }
 }
 
 /// Removes files a previous run left in `subdir`.
@@ -86,5 +96,39 @@ mod tests {
     fn a_path_outside_the_spool_is_not_deleted() {
         remove_png("tray", "/etc/passwd");
         assert!(std::path::Path::new("/etc/passwd").exists(), "remove_png must refuse a path it did not write");
+    }
+
+    #[test]
+    fn a_real_file_under_the_spool_is_within_it() {
+        let spool_root = tempfile::tempdir().unwrap();
+        let file = spool_root.path().join("notif-1.png");
+        std::fs::write(&file, b"fake png bytes").unwrap();
+
+        assert!(is_within(file.to_str().unwrap(), spool_root.path()));
+    }
+
+    #[test]
+    fn a_nonexistent_or_dot_dot_path_is_not_within_the_spool() {
+        let spool_root = tempfile::tempdir().unwrap();
+        let elsewhere = tempfile::tempdir().unwrap();
+        let external_file = elsewhere.path().join("theme-icon.png");
+        std::fs::write(&external_file, b"a real, externally-owned icon").unwrap();
+        let dot_dot = spool_root.path().join("..").join(elsewhere.path().file_name().unwrap()).join("theme-icon.png");
+
+        assert!(!is_within(spool_root.path().join("never-written.png").to_str().unwrap(), spool_root.path()));
+        assert!(!is_within(dot_dot.to_str().unwrap(), spool_root.path()));
+    }
+
+    #[test]
+    fn a_symlink_escaping_the_spool_is_not_within_it() {
+        let spool_root = tempfile::tempdir().unwrap();
+        let elsewhere = tempfile::tempdir().unwrap();
+        let external_file = elsewhere.path().join("real.png");
+        std::fs::write(&external_file, b"x").unwrap();
+
+        let symlink_path = spool_root.path().join("escape.png");
+        std::os::unix::fs::symlink(&external_file, &symlink_path).unwrap();
+
+        assert!(!is_within(symlink_path.to_str().unwrap(), spool_root.path()));
     }
 }

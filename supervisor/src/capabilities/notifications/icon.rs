@@ -159,37 +159,14 @@ pub(super) fn encode_image_data_to_png(image: &RawImageData) -> Result<Vec<u8>, 
     Ok(buffer)
 }
 
-/// Our icon spool root, `$XDG_RUNTIME_DIR/obelisk/notifications` (ADR-0033's `$UID` fix from
-/// ADR-0031); [`delete_icon_file`] may delete only here (finding 1).
-fn notifications_icon_dir() -> PathBuf {
-    shm_icons::icon_dir("notifications")
-}
-
 pub(super) fn write_icon_png(id: u32, png_bytes: &[u8]) -> std::io::Result<String> {
     shm_icons::write_png("notifications", &format!("notif-{id}.png"), png_bytes)
 }
 
-/// Whether `path` canonicalizes to a real file under canonicalized `spool_root`.
-///
-/// Finding 1: `Notification.image_path` may be our SHM copy or an externally-owned
-/// `image-path`/`app_icon` (for example under `/usr/share/icons`); deletion must distinguish them.
-fn path_is_within_spool_root(path: &str, spool_root: &Path) -> bool {
-    let Ok(spool_root) = spool_root.canonicalize() else { return false };
-    match Path::new(path).canonicalize() {
-        Ok(canonical) => canonical.starts_with(&spool_root),
-        Err(_) => false,
-    }
-}
-
-/// Deletes only under our SHM spool root, never a client-supplied external icon (finding 1).
-/// Outside it, forget the reference without touching the file.
+/// `Notification.image_path` may be our spooled copy or a client's own `image-path`/`app_icon`
+/// (for example under `/usr/share/icons`); only the first is ours to delete (finding 1).
 pub(super) fn delete_icon_file(path: &str) {
-    if !path_is_within_spool_root(path, &notifications_icon_dir()) {
-        return;
-    }
-    if let Err(err) = std::fs::remove_file(path) {
-        eprintln!("notifications: failed to delete spooled icon {path:?}: {err}");
-    }
+    shm_icons::remove_png("notifications", path);
 }
 
 /// Attached-picture precedence: `image-data`/`image_data` > `image-path`/`image_path` >
@@ -338,46 +315,6 @@ mod tests {
     #[test]
     fn strip_file_uri_is_a_no_op_without_the_scheme() {
         assert_eq!(strip_file_uri("/usr/share/icons/x.png"), "/usr/share/icons/x.png");
-    }
-
-    #[test]
-    fn path_is_within_spool_root_accepts_a_real_file_under_the_spool_root() {
-        let spool_root = tempfile::tempdir().unwrap();
-        let file = spool_root.path().join("notif-1.png");
-        std::fs::write(&file, b"fake png bytes").unwrap();
-
-        assert!(path_is_within_spool_root(file.to_str().unwrap(), spool_root.path()));
-    }
-
-    #[test]
-    fn path_is_within_spool_root_rejects_a_file_outside_the_spool_root() {
-        // An external resolved theme icon is exactly what delete_icon_file must never touch.
-        let spool_root = tempfile::tempdir().unwrap();
-        let elsewhere = tempfile::tempdir().unwrap();
-        let external_file = elsewhere.path().join("theme-icon.png");
-        std::fs::write(&external_file, b"a real, externally-owned icon").unwrap();
-
-        assert!(!path_is_within_spool_root(external_file.to_str().unwrap(), spool_root.path()));
-    }
-
-    #[test]
-    fn path_is_within_spool_root_rejects_a_nonexistent_path() {
-        let spool_root = tempfile::tempdir().unwrap();
-        let missing = spool_root.path().join("never-written.png");
-        assert!(!path_is_within_spool_root(missing.to_str().unwrap(), spool_root.path()));
-    }
-
-    #[test]
-    fn path_is_within_spool_root_rejects_a_symlink_escaping_the_spool_root() {
-        let spool_root = tempfile::tempdir().unwrap();
-        let elsewhere = tempfile::tempdir().unwrap();
-        let external_file = elsewhere.path().join("real.png");
-        std::fs::write(&external_file, b"x").unwrap();
-
-        let symlink_path = spool_root.path().join("escape.png");
-        std::os::unix::fs::symlink(&external_file, &symlink_path).unwrap();
-
-        assert!(!path_is_within_spool_root(symlink_path.to_str().unwrap(), spool_root.path()));
     }
 
     fn valid_rgba_image(width: i32, height: i32) -> RawImageData {
