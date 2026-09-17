@@ -39,7 +39,7 @@ pub(super) fn access_point_is_secure(flags: u32, wpa_flags: u32, rsn_flags: u32)
 /// association. Dense apartment RF reaches 20 SSIDs easily.
 ///
 /// `saved` sorts next, so a saved network weaker than 20 neighbours still makes the
-/// list. `NetworkPanel.qml` has no cap. ponytail: more than 20 saved networks in range still
+/// list. ponytail: more than 20 saved networks in range still
 /// truncate by strength. Upgrade path: exempt saved rows from the cap.
 ///
 /// Merge `active` rather than carrying the winner's flag. NetworkManager once exposed two AP

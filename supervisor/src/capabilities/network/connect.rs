@@ -73,8 +73,7 @@ impl NetworkController {
 
     /// Decides whether a stashed `network:connect` can complete or needs a password.
     ///
-    /// A saved profile or open AP connects on click with no typed secret, matching
-    /// `NetworkPanel.qml`'s bare `connectToSsid(ssid, "")` for known/unsecured rows. Only a secured
+    /// A saved profile or open AP connects on click with no typed secret. Only a secured
     /// network without a profile sets [`NetworkState::password_ssid`](super::NetworkState::password_ssid) and waits for
     /// `secure_submit(network, connect)`.
     ///
@@ -82,7 +81,7 @@ impl NetworkController {
     /// nothing consumes.
     ///
     /// Hidden networks take the password branch because no in-range AP reports their security.
-    /// QML's `showPasswordInput` also defaults to `true` (`?? true`); guessing wrong costs one
+    /// Guessing wrong costs one
     /// keystroke on an open network, versus an unjoinable secured one.
     ///
     /// The SSID is looked up again in `activate_intent`, an extra `ListConnections` walk of a few

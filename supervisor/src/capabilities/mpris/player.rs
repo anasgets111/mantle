@@ -88,8 +88,7 @@ pub(super) fn ordered_players(registry: &PlayerRegistry) -> Vec<PlayerState> {
 /// Cross-process-comparable `CLOCK_MONOTONIC` microseconds, matching the IDL's timestamp field;
 /// opaque `std::time::Instant` would not. Known gap (ADR-0036): `system.time` is
 /// 1Hz, too coarse for this resolution.
-/// How long after a `PlaybackStatus` change to read `Position` again; Quickshell uses the same
-/// 100ms for the same players.
+/// How long after a `PlaybackStatus` change to read `Position` again.
 const POSITION_RECHECK_DELAY: std::time::Duration = std::time::Duration::from_millis(100);
 
 pub(super) fn monotonic_micros() -> i64 {
@@ -327,12 +326,10 @@ fn spawn_player_forwarder(
         let mut metadata = player.receive_metadata_changed().await;
         let Ok(mut seeked) = player.receive_seeked().await else { return };
 
-        // Several players update `Position` at an indeterminate time *after* `PlaybackStatus`,
-        // so the read taken while handling that signal answers with whatever the player held
-        // mid-transition -- for Firefox, sometimes zero. Quickshell's `MprisPlayer` re-requests
-        // the property immediately and again 100ms later for exactly this (`player.cpp`'s
-        // `onPlaybackStatusUpdated`); one late re-read is the same remedy. Anything the player
-        // does tell us in the meantime still arrives on its own signal.
+        // Several players update `Position` at an indeterminate time *after* `PlaybackStatus`, so
+        // the read taken while handling that signal answers with whatever the player held
+        // mid-transition -- for Firefox, sometimes zero. One late re-read fixes it. Anything the
+        // player does tell us in the meantime still arrives on its own signal.
         let mut recheck_at: Option<tokio::time::Instant> = None;
 
         loop {

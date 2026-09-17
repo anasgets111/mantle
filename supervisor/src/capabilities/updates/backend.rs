@@ -58,7 +58,7 @@ pub trait Backend: Send + Sync + 'static {
 }
 
 /// Package manager supported on this machine, or `None`. Mirrors `command -v pacman` without a
-/// subprocess and gates `Services/MainService.qml`/`UpdateService.ready`; if the list grows, a
+/// subprocess; if the list grows, a
 /// machine with two managers installed must put first the one that owns `/`.
 pub fn detect() -> Option<Box<dyn Backend>> {
     if on_path("pacman") {

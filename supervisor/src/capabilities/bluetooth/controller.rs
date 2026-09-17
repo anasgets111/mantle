@@ -367,7 +367,7 @@ impl BluetoothController {
     }
 
     /// Connects `mac`, retrying a refused `Connect` every [`CONNECT_RETRY_INTERVAL`] until `window`
-    /// has passed. Sets `Trusted` first, as `BluetoothService.qml` does, so the device can reconnect
+    /// has passed. Sets `Trusted` first so the device can reconnect
     /// on its own later without the agent authorizing each service. One guard spans the retries,
     /// so the row keeps spinning between them. ponytail: retries every error, as GNOME does, so a
     /// device that walked out of range spins for the whole window. Upgrade path: retry only

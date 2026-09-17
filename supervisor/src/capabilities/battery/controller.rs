@@ -93,8 +93,7 @@ pub enum BatterySignal {
 }
 
 /// UPower's `DisplayDevice`, the composite of every battery. `power::controller` reads
-/// `EnergyRate` from it, and Quickshell's `services/upower/core.cpp` binds through
-/// `GetDisplayDevice()`.
+/// `EnergyRate` from it.
 ///
 /// Its documented path is fixed, so this proxies it directly instead of calling
 /// `GetDisplayDevice()`.
@@ -149,7 +148,7 @@ fn seconds(reported: i64) -> Option<u32> {
 /// same rule as `power::controller::read_state`: a live-looking stale number is worse than zero.
 ///
 /// `IsPresent` alone is true for non-battery display devices, so `Type` and `IsPresent` are checked
-/// together, as Quickshell's `isLaptopBattery` does.
+/// together.
 async fn read_state(device: &DisplayDeviceProxy<'static>) -> BatteryState {
     let is_battery = device.device_type().await.is_ok_and(|kind| kind == UPOWER_TYPE_BATTERY);
     let present = is_battery && device.is_present().await.unwrap_or(false);
@@ -171,13 +170,13 @@ async fn read_state(device: &DisplayDeviceProxy<'static>) -> BatteryState {
 /// `power::controller` does, keeping them consistent instead of patching one property.
 ///
 /// One `org.freedesktop.DBus.Properties` subscription covers the object. It batches a percentage
-/// move and state flip into one message, matching Quickshell's `DBusPropertyGroup` shape.
+/// move and state flip into one message.
 ///
 /// **No timer, per ADR-0080.** The replaced sysfs reader missed capacity changes the kernel did not
 /// announce: on this machine a plug event arrived, then `capacity` fell 69 to 65 with zero
 /// `power_supply` uevents. UPower already polls and emits refreshes for other clients.
-/// UPower also emitted a spurious mains `Percentage` of 0 for one push, emptying the pill. Match
-/// `BatteryService.qml`'s `_ingestPercentage`: after a nonzero reading, retain a mains zero while
+/// UPower also emitted a spurious mains `Percentage` of 0 for one push, emptying the pill. After a
+/// nonzero reading, retain a mains zero while
 /// not draining. A real on-battery zero is indistinguishable from the glitch and passes through.
 fn hold_through_glitch(previous: BatteryState, current: BatteryState) -> BatteryState {
     let draining = matches!(current.state, BatteryStatus::Discharging | BatteryStatus::Empty);

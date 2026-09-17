@@ -935,7 +935,7 @@ fn advance_paint_only(node: &mut ResolvedNode, now: Instant, lua: &Lua) -> Resul
         return Ok(());
     }
     // Outside the tween gate below, and before it: a dissolve is the only motion on a node that
-    // has no `animate` block at all, which is every `image` the reference config declares one on.
+    // has no `animate` block at all, which is every `image` that declares one.
     // It also writes nothing into the property map, so it needs none of the save-and-restore that
     // makes advancing a tween all-or-nothing.
     node.dissolve = advanced_dissolve(node.dissolve.take(), now);
@@ -1277,7 +1277,7 @@ fn prepare(
         None => (scene.alloc_id(), None, None, Vec::new()),
     };
     // Already leaving children are not paired again: a re-added id is a new node beside the one
-    // still fading (QML makes a fresh delegate too).
+    // still fading.
     // Checked first because nothing is usually leaving.
     let (leaving, old_children): (Vec<ResolvedNode>, Vec<ResolvedNode>) =
         if old_children.iter().any(|child| child.leaving) {
@@ -2580,8 +2580,8 @@ pub(super) mod tests {
     }
 
     /// A leaving node is out of the reconciliation, so putting its `id` back builds a second node
-    /// beside it rather than pulling the first back out of its exit -- QML makes a fresh delegate
-    /// too. The one still fading keeps its own identity until its tweens end.
+    /// beside it rather than pulling the first back out of its exit.
+    /// The one still fading keeps its own identity until its tweens end.
     #[test]
     fn re_adding_a_leaving_id_builds_a_new_node_beside_it() {
         let mut scene = Scene::new();

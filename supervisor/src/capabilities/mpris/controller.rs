@@ -101,8 +101,7 @@ impl MprisController {
     /// That read is the one place `resolve_position`'s protection does not reach, and Firefox
     /// answers `Position` with `0` for seconds after any seek, so "forward five seconds" from
     /// 5:40 became `SetPosition(5s)` -- a jump to the start of the track rather than a step.
-    /// Handing the offset to the player removes both the round trip and the invented origin, and
-    /// is what `MediaService.qml`'s `seekBy` does.
+    /// Handing the offset to the player removes both the round trip and the invented origin.
     ///
     /// No clamping: the player owns its own endpoints, and MPRIS lets a `Seek` past the end move
     /// to the next track. Clamping here would need a length we may not have (ADR-0036) and would

@@ -86,8 +86,8 @@ const MAX_APP_NAME_BYTES: usize = 64;
 const MAX_SUMMARY_BYTES: usize = 128;
 const MAX_BODY_BYTES: usize = 512;
 
-/// Action caps (ADR-0090): unprivileged session-bus input is drawn by config. Eight exceeds the
-/// reference config's busiest card (three); labels are capped tighter than summaries.
+/// Action caps (ADR-0090): unprivileged session-bus input is drawn by config. Eight is well past a
+/// typical card's three; labels are capped tighter than summaries.
 const MAX_ACTIONS: usize = 8;
 const MAX_ACTION_LABEL_BYTES: usize = 64;
 

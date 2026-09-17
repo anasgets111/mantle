@@ -238,7 +238,7 @@ fn build_node(
                 build_node(child, x, y, scale, clip, opacity, focus, out);
             }
         }
-        // Rounded order matches QML: fill, masked subtree, border. A child reaching the arc would
+        // Rounded order: fill, masked subtree, border. A child reaching the arc would
         // cover a border painted first.
         Some(radius) => {
             let (fill, border) = split_fill_and_border(draw);

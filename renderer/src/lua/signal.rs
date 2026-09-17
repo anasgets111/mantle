@@ -133,15 +133,14 @@ enum SignalKind {
     /// `geometry = geometry(name)`, in its surface's logical coordinates, the same space `on_click`
     /// and `hover_rect` report. Written by the layout pass and by a tween tick, never by Lua, and
     /// written quietly: a read sees the last layout, and a binding on it settles one pass later
-    /// rather than dirtying the scene it was measured in. QML's `item.height` for a `y: -height`
-    /// reveal.
+    /// rather than dirtying the scene it was measured in.
     Geometry(Rc<RefCell<Value>>),
     /// `delay(signal, ms)` (ADR-0146): follows `source` once it has held a new value for `hold`.
     /// Pull-based like everything else here: a read notes the pending value and its due time,
     /// arms the poll loop's one timeout through [`WakeDeadline`], and keeps answering the held
     /// value until a read after the due time adopts the new one. A source that returns to the
     /// held value before then cancels the change, which makes this a trailing debounce as well
-    /// as QML's close-hold `Timer`.
+    /// as a close-hold.
     Delayed {
         source: Rc<Signal>,
         hold: Duration,

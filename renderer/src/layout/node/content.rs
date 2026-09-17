@@ -262,8 +262,7 @@ pub enum Elide {
     End,
 }
 
-/// `elide`. Only `"End"` is offered: the reference config uses neither head nor middle elision, and
-/// middle elision needs a grapheme budget across runs.
+/// `elide`. Only `"End"` is offered: middle elision needs a grapheme budget across runs.
 pub fn parse_elide(properties: &PropMap) -> Result<Elide, LayoutError> {
     let Some(value) = properties.get("elide") else {
         return Ok(Elide::None);
@@ -644,7 +643,7 @@ mod tests {
         let table: mlua::Table = lua.load(r#"return { kind = "text", wrap = "Word" }"#).eval().unwrap();
         assert_eq!(parse_wrap(&props_from_table(&table)).unwrap(), Wrap::Word);
 
-        // "WordWrap" is the plausible typo, and QML spells this mode `Text.WordWrap`.
+        // "WordWrap" is the plausible typo.
         let table: mlua::Table = lua.load(r#"return { kind = "text", wrap = "WordWrap" }"#).eval().unwrap();
         let err = parse_wrap(&props_from_table(&table)).unwrap_err();
         assert!(format!("{err}").contains("Word"), "the error should name the modes that do exist, got {err}");

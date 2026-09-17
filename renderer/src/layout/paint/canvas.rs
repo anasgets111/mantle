@@ -250,8 +250,8 @@ fn run(painter: &mut TextPainter, walk: &mut Walk<'_, '_>, commands: &[DrawCmd],
 /// Draws `commands` into an offscreen image, then fills the node's rounded path with that image.
 /// femtovg 0.26's `intersect_rounded_scissor` carries one rounded rectangle; on an 80x32 pill at
 /// radius 16 with a 30px child it re-rounded the child and leaked the ground 8% through the pill's
-/// straight top edge. Giving the child the pill's radius instead draws a lozenge. Quickshell's
-/// `ClippingRectangle` uses a mask texture and two targets; femtovg's image-painted path needs one.
+/// straight top edge. Giving the child the pill's radius instead draws a lozenge. A mask
+/// texture would take two targets; femtovg's image-painted path needs one.
 ///
 /// The target comes from `TextPainter`'s pool: creating one per clipping node per repaint was 8.6 ms
 /// of an 8.6 ms repaint (ADR-0217).
@@ -1556,7 +1556,7 @@ mod tests {
         assert!((126..=129).contains(&r) && (126..=129).contains(&b), "blended to ({r}, _, {b}, _), expected ~128");
     }
 
-    /// The border paints over the clipped subtree, the way QML's `ClippingRectangle` does. A fill
+    /// The border paints over the clipped subtree. A fill
     /// reaching the arc otherwise covers the border exactly where the arc is, which is the half of
     /// a pill's outline most worth seeing.
     #[test]

@@ -35,9 +35,8 @@ impl From<zbus::Error> for ConnectError {
     }
 }
 
-/// Maps the Wi-Fi device's `StateChanged` reason for a failed join to display text, following
-/// `NetworkService.qml`'s `_connectErrorText`. The active connection's reason is no use here: it is
-/// `DEVICE_DISCONNECTED` for every device failure.
+/// Maps the Wi-Fi device's `StateChanged` reason for a failed join to display text. The active
+/// connection's reason is no use here: it is `DEVICE_DISCONNECTED` for every device failure.
 ///
 /// Other reasons are wired, modem, or dependency failures. A Wi-Fi row cannot act on them, so they
 /// collapse to "connection failed".

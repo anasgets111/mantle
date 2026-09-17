@@ -119,8 +119,8 @@ impl StorageController {
 
     /// Replaces this file's pending save with one [`SAVE_DEBOUNCE`] away.
     ///
-    /// ponytail: a save still in the window at session end is lost. The mirror's `saveTimer` has
-    /// the same one-second hole. Upgrade with a Supervisor shutdown flush shared by controllers.
+    /// ponytail: a save still in the window at session end is lost. Upgrade with a Supervisor
+    /// shutdown flush shared by controllers.
     fn schedule_save(&self, path: PathBuf) {
         let state = Arc::clone(&self.state);
         let key = path.to_string_lossy().into_owned();

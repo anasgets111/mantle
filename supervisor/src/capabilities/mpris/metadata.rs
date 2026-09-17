@@ -34,8 +34,8 @@ fn value_as_i64(value: &Value<'_>) -> Option<i64> {
     }
 }
 
-/// `mpris:trackid` is an object path (`o`) on checked players (Zen, mpv-mpris), but Quickshell's
-/// `player.cpp:266-274` accepts a bare string for type-wrong players, so accept that too.
+/// `mpris:trackid` is an object path (`o`) on checked players (Zen, mpv-mpris). A bare string
+/// from a type-wrong player is accepted too.
 fn value_as_trackid(value: &Value<'_>) -> Option<String> {
     match value {
         Value::ObjectPath(path) => Some(path.as_str().to_string()),

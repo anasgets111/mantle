@@ -325,7 +325,7 @@ pub fn codec_from_name(name: &str) -> Option<String> {
 /// The codec a BlueZ profile description names, e.g. `"AAC"` from
 /// `"High Fidelity Playback (A2DP Sink, codec AAC)"`, or `None` for a profile without one, such as
 /// `Off`. The fallback for a name [`codec_from_name`] cannot read; it matches only an English
-/// description, as `BluetoothService.qml`'s `pactl` parse did.
+/// description.
 pub fn codec_of(description: &str) -> Option<String> {
     let rest = &description[description.find("codec ")? + "codec ".len()..];
     let codec = rest.split([')', ',']).next()?.trim();

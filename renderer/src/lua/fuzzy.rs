@@ -1,12 +1,11 @@
 //! `fuzzy(haystack, needle)`: fzf's score for one candidate, or `nil` when the needle's characters
 //! do not appear in order (ADR-0201).
 //!
-//! Ported from `Services/Utils/Fzf.qml` in the Quickshell config this shell mirrors, itself a
-//! JavaScript port of fzf: BSD-3-Clause, copyright 2021 Ajit. Constants are unchanged, so fzf's
-//! thresholds read across.
+//! Ported from Ajit's JavaScript port of fzf: BSD-3-Clause, copyright 2021 Ajit. Constants are
+//! unchanged, so fzf's thresholds read across.
 //!
 //! The scorer only: iterate, sort, tiebreak and cap stay in the config. No backtrack
-//! pass, since the mirror computes no match positions either; `start` is returned for its tiebreak.
+//! pass, so no match positions; `start` is returned for a tiebreak.
 
 use mlua::Lua;
 
@@ -230,7 +229,7 @@ fn score_multi_byte_match(
 /// The non-ASCII path, greedy rather than the DP: one pass taking the earliest occurrence of each
 /// needle character, with the boundary and consecutive bonuses but no search for a better path.
 ///
-/// ponytail: this is the mirror's own `fuzzyMatchUnicode` and carries its ceiling. Scores are not
+/// ponytail: the port's own `fuzzyMatchUnicode`, ceiling included. Scores are not
 /// comparable with the DP's, so a list mixing ASCII and non-ASCII names orders the two groups by
 /// slightly different rules. Widening `fuzzy_match_v2` to `char` fixes it at the cost of an index
 /// map; nothing in this config has non-ASCII application names to make that pay.
@@ -385,7 +384,7 @@ mod tests {
     /// The greedy path matches, rejects, and folds case on multi-byte input. It is not asserted to
     /// rank like the DP: it scores a boundary above a consecutive run, and every caseless character
     /// counts as a boundary, so `文器` outscores `文件` in one CJK name. That is the ceiling named
-    /// on `fuzzy_match_unicode`, carried over from the mirror, not a defect of this port.
+    /// on `fuzzy_match_unicode`, carried over from the JavaScript port.
     #[test]
     fn a_non_ascii_haystack_takes_the_greedy_path_rather_than_failing() {
         assert!(scored("Дисковая утилита", "ду") > 0);
@@ -395,7 +394,7 @@ mod tests {
         assert!(score("Дисковая утилита", "ди").is_some());
     }
 
-    /// `start` is the mirror's first tiebreaker, so it has to be the first matched position.
+    /// `start` is a config's first tiebreaker, so it has to be the first matched position.
     #[test]
     fn start_is_where_the_match_begins() {
         assert_eq!(score("a Firefox", "fire").map(|(_, start)| start), Some(2));

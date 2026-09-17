@@ -177,8 +177,8 @@ pub enum LockAction {
 /// A ceiling and not a preference: this window is time the user has authenticated and is still
 /// looking at a lock screen, and a config that asked for ten seconds of it -- by typo, or by
 /// deriving the number from something that went wrong -- would be indistinguishable from a shell
-/// that has hung. Quickshell's own out-animation is two 147ms stages, so 600ms is comfortably past
-/// anything that reads as an animation rather than a fault.
+/// that has hung. 600ms is comfortably past anything that reads as an animation rather than a
+/// fault.
 pub const MAX_UNLOCK_ANIMATION: Duration = Duration::from_millis(600);
 
 /// `obelisk.lock` action dispatch (ADR-0037).

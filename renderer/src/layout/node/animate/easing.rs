@@ -1,4 +1,4 @@
-//! The progress curves an eased tween runs along: QML's named ones, CSS `cubic-bezier` and `steps`
+//! The progress curves an eased tween runs along: named ones, CSS `cubic-bezier` and `steps`
 //! (ADR-0145, ADR-0151).
 
 /// QML's `Easing.Type` names, spelled the same so a
@@ -10,7 +10,7 @@ pub enum Easing {
     Linear,
     InQuad,
     OutQuad,
-    /// The default: the one the reference config wrote most often, and the one that reads as
+    /// The default: the one that reads as
     /// motion rather than a snap when nobody chose.
     #[default]
     InOutQuad,
@@ -91,8 +91,8 @@ impl Easing {
         ("InOutBounce", Easing::InOutBounce),
     ];
 
-    /// Back's overshoot constant and Elastic's period, Penner's originals, the numbers QML and
-    /// every CSS easing cheat sheet use. Named so the arms below read as the shape and not the
+    /// Back's overshoot constant and Elastic's period, Penner's originals, the numbers
+    /// every CSS easing cheat sheet uses. Named so the arms below read as the shape and not the
     /// arithmetic. Each family's `InOut` uses a wider constant than its `In` and `Out` do, which
     /// is why those two arms are written out rather than reflected.
     const BACK: f32 = 1.70158;

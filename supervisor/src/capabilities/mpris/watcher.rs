@@ -2,8 +2,7 @@
 //! `dbus/mpris/mod.rs`.
 //!
 //! Players never register; scan `ListNames` once, then watch `NameOwnerChanged` for arrivals and
-//! departures under the same prefix (ADR-0036, independently validated by Quickshell's
-//! `MprisWatcher`).
+//! departures under the same prefix (ADR-0036).
 
 use futures_util::StreamExt;
 use tokio::sync::mpsc::UnboundedSender;

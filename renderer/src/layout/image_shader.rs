@@ -2,11 +2,9 @@
 //! (ADR-0184), which is what makes a wipe, a disc or a pixelate a config's to write rather than a
 //! name this engine has to ship.
 //!
-//! The reference Quickshell config keeps its six `wp_*.frag` files in the *user's* config
-//! directory. Quickshell ships `ShaderEffect`; the shaders are the user's. So a `Wipe` arm in a
-//! Rust match would be the mistake ADR-0055 already ruled on for the wallpaper itself, one layer
-//! down. This module is that ruling applied to effects: the engine owns compiling, binding and
-//! restoring, and owns nothing about what the pixels do.
+//! A `Wipe` arm in a Rust match would be the mistake ADR-0055 already ruled on for the wallpaper
+//! itself, one layer down. This module is that ruling applied to effects: the engine owns
+//! compiling, binding and restoring, and owns nothing about what the pixels do.
 //!
 //! # What the engine draws around the shader
 //!

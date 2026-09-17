@@ -1,8 +1,7 @@
-//! `animate`: per-property tweens on a retained node, the engine's answer to QML's `Behavior on x {
-//! NumberAnimation { ... } }` (ADR-0145). A node names the properties it wants eased and how long;
-//! when a pass resolves a different target for one of them, the node's [`Tween`] carries the
-//! displayed value from where it was to where it is going, and `layout::scene::Scene::tick`
-//! advances it between passes without running any Lua.
+//! `animate`: per-property tweens on a retained node (ADR-0145). A node names the properties it
+//! wants eased and how long; when a pass resolves a different target for one of them, the node's
+//! [`Tween`] carries the displayed value from where it was to where it is going, and
+//! `layout::scene::Scene::tick` advances it between passes without running any Lua.
 //!
 //! This module owns the parsing and the arithmetic. Where the tween lives, when one starts and
 //! what a tick relays out are `layout::scene`'s.
@@ -284,8 +283,7 @@ pub struct Keyframe {
     pub easing: Easing,
 }
 
-/// A property walking a list of values, some number of times (ADR-0152), which is QML's
-/// `SequentialAnimation on <property>`.
+/// A property walking a list of values, some number of times (ADR-0152).
 #[derive(Debug, Clone, PartialEq)]
 pub struct Sequence {
     /// At least two: the value it starts on, then one per segment. Shared rather than owned
@@ -311,8 +309,7 @@ impl Sequence {
 
     /// The value `elapsed` into the run: the segment holding that instant, eased. A segment of no
     /// duration is a jump rather than a stop, so it is stepped over and its value shows only as
-    /// the start of whatever follows -- which is what QML's `PropertyAction` does between two
-    /// `PauseAnimation`s.
+    /// the start of whatever follows.
     fn at(&self, elapsed: Duration, property: &str) -> Animatable {
         let last = self.frames.last().expect("a parsed sequence has frames").value;
         if let Some(loops) = self.loops
@@ -706,7 +703,7 @@ fn parse_sequence(
                 let value: Value = table.get("value").map_err(|e| invalid(&at, e.to_string()))?;
                 let own: Value = table.get("duration").map_err(|e| invalid(&at, e.to_string()))?;
                 // Absent takes the entry's. Zero is allowed where the entry's own is not: a
-                // segment that takes no time is the jump QML writes as `PropertyAction`.
+                // segment that takes no time is a jump.
                 let own = parse_millis(&at, "duration", &own, 0)?.unwrap_or(duration);
                 let named: Value = table.get("easing").map_err(|e| invalid(&at, e.to_string()))?;
                 let named = if named.is_nil() { easing } else { parse_easing(&at, &named)? };
@@ -810,7 +807,7 @@ fn parse_easing(field: &str, value: &Value) -> Result<Easing, LayoutError> {
 
 /// `animate.exit`'s block, resolved: `{ duration, easing, <property> = <target>, ... }`, one spec
 /// for every named target. The targets are what the node eases to once the tree no longer holds
-/// it (ADR-0150), the way QML's `ViewTransition` on `remove` runs after the model row is gone.
+/// it (ADR-0150).
 /// A block naming no target is a no-op and needs no duration, so it resolves to `None`.
 fn parse_exit(kind: &str, block: &Value) -> Result<Option<ExitBlock>, LayoutError> {
     let Value::Table(exit) = block else {
@@ -1059,8 +1056,7 @@ impl Tween {
 /// Reconciles a node's tweens against the targets a pass just resolved, and writes the displayed
 /// value of each into `properties` for the parsers to read. `retained` is the node this one was
 /// matched to, as the tweens it carried and the properties it last displayed; `None` is a new
-/// node, which takes its targets as they are (QML's `Behavior` does not animate a first value
-/// either).
+/// node, which takes its targets as they are.
 ///
 /// A target that differs from the retained target starts a tween from the value on screen: the
 /// one the retained map holds, which is what the last pass or tick painted, whether that was a
@@ -1428,8 +1424,7 @@ mod tests {
     }
 
     /// A frame of no duration is a jump, not a stop: it is stepped over, and its value shows as
-    /// the start of whatever follows. That is QML's `PropertyAction` between two `PauseAnimation`s,
-    /// which is how the reference config flashes a battery that was just plugged in.
+    /// the start of whatever follows.
     #[test]
     fn a_frame_with_no_duration_jumps_and_the_frame_after_it_holds() {
         let lua = Lua::new();

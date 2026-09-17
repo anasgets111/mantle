@@ -170,7 +170,7 @@ fn username_for(uid: u32) -> Result<String, String> {
 
 /// systemd starts polkit's helper as root for each connection. It runs PAM and invokes
 /// `AuthenticationAgentResponse3`, which polkitd accepts only from uid 0, so [`run_worker`] cannot.
-/// It reads our uid and pid from the socket. Quickshell's agent reaches it through libpolkit-agent.
+/// It reads our uid and pid from the socket.
 const POLKIT_HELPER_SOCKET: &str = "/run/polkit/agent-helper.socket";
 
 /// [`run_authentication`]'s polkit sibling (ADR-0114): same report and `Drop` backstop, but the

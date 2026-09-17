@@ -24,7 +24,7 @@ enum RegistrationTarget {
 /// valid bus name, so the registration was rejected and Slack had no tray icon at all while every
 /// other item worked.
 ///
-/// Split at the first `/`, as Quickshell's `status_notifier/item.cpp` does: what precedes it is the
+/// Split at the first `/`: what precedes it is the
 /// connection, what follows is the object path, and a `service` with no `/` keeps
 /// [`DEFAULT_ITEM_OBJECT_PATH`]. A leading `/` is still the whole string as a path, because there is
 /// no name in front of it to take.

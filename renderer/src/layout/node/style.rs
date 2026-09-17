@@ -142,7 +142,7 @@ pub fn parse_radius(properties: &PropMap) -> Result<f32, LayoutError> {
 
 /// `scale`, `rotate`, `translate` and `origin` (ADR-0149): a paint-only affine on the
 /// node and its subtree, applied after layout about `origin` (fractions of the node's own box).
-/// CSS's `transform` rather than QML's separate `scale`, `rotation` and `Translate`: one matrix,
+/// CSS's `transform` rather than separate properties: one matrix,
 /// one origin, nothing for the solver to see. Every field tweens (numbers and `{ x, y }` tables).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Transform {
@@ -285,8 +285,7 @@ pub enum ClipShape {
 }
 
 /// `rect.clip` defaults to [`ClipShape::Box`] and is opt-in because rounded clipping
-/// needs an offscreen target and composite, while a square clip is a free GPU scissor. QML's
-/// `Item.clip` likewise ignores `radius`; Quickshell's `ClippingRectangle` spends two targets.
+/// needs an offscreen target and composite, while a square clip is a free GPU scissor.
 pub fn parse_clip(properties: &PropMap) -> Result<ClipShape, LayoutError> {
     let Some(value) = properties.get("clip") else {
         return Ok(ClipShape::Box);
@@ -399,7 +398,7 @@ pub fn parse_list_direction(properties: &PropMap) -> Result<&'static str, Layout
 /// `opacity` belongs to every kind, including non-painting lists, and is inherited by
 /// multiplication on `ResolvedNode`. It does not replace `visible`: a fully transparent node still
 /// lays out, occupies space, and hit-tests. Values outside `[0, 1]` error rather than clamp
-/// (ADR-0068), matching the reference config's use of this property in 32 files.
+/// (ADR-0068).
 /// `blur`: ask the compositor to blur the desktop behind this node's box (ADR-0195). Opt-in per
 /// node and never inferred, because "translucent" is not "wants blur": a control may be
 /// deliberately invisible at `#00000000`, and a border-only or image-backed glass box has no

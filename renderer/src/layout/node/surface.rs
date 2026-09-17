@@ -109,13 +109,13 @@ pub fn parse_keyboard_interactivity(properties: &PropMap) -> Result<KeyboardInte
 /// The exclusion answers mapped to `set_exclusive_zone`: positive reserves space, `0`
 /// stays inside other reservations, and `-1` ignores them. A wallpaper anchored to all four edges
 /// gets `0` from [`exclusive_zone_for`](crate::wayland), making boolean true/false identical there;
-/// `Ignore` supplies the missing third answer, matching Quickshell's `ExclusionMode`.
+/// `Ignore` supplies the missing third answer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Exclusive {
     /// Reserve screen area along the anchored edge, using the compositor-configured size.
     Reserve,
     /// Reserve this many logical pixels whatever the surface's size: a full-height surface whose
-    /// top strip is a bar, as Quickshell's `exclusiveZone`.
+    /// top strip is a bar.
     Zone(i32),
     /// Reserve nothing and stay inside other surfaces' reservations. The default, protocol `0`.
     Respect,
