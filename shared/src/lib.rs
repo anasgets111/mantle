@@ -129,7 +129,7 @@ pub struct CommandParams {
 }
 
 /// Supervisor update on system changes that hydrates active Lua signals. `apply_state_snapshot`
-/// (`renderer/src/socket.rs`) routes by `capability` (ADR-0029); `revision` is that capability's
+/// (`renderer/src/socket/client.rs`) routes by `capability` (ADR-0029); `revision` is that capability's
 /// state-version counter (ADR-0004).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct StateSnapshot {
@@ -264,7 +264,7 @@ pub struct ProcessExited {
 /// [`CommandParams::arguments`], whose `Vec<serde_json::Value>` would leave a plaintext copy
 /// `.zeroize()` cannot reach. The Renderer zeroizes the source in `secure_submit_frame`
 /// (`renderer/src/wayland/mod.rs`) and this copy after `pump` writes it
-/// (`renderer/src/socket.rs`). Because the frame crosses an unbounded, unwrapped channel,
+/// (`renderer/src/socket/mod.rs`). Because the frame crosses an unbounded, unwrapped channel,
 /// `Zeroize`/`ZeroizeOnDrop` also scrub failed sends and buffered frames when `outbound_rx` drops.
 #[derive(Clone, Serialize, Deserialize, PartialEq, Eq, Zeroize, ZeroizeOnDrop)]
 pub struct SecureSubmit {

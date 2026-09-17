@@ -68,5 +68,5 @@ rustc-hash = "2"
 
 [dev-dependencies]
 tempfile.workspace = true
-# `time` is test-only (`socket.rs` timeouts).
+# `time` is test-only (`socket/mod.rs` timeouts).
 tokio = { workspace = true, features = ["time"] }

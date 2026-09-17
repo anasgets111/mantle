@@ -293,7 +293,7 @@ impl Signal {
 
     /// Rust-pushed signal via [`LiveSignalHandle`]. Values are serde-serialized Rust data, so Lua
     /// marshalling checks cannot find NaN/Inf/oversized strings. Every live signal shares one
-    /// generation dirty flag, whose clone `renderer/src/socket.rs`'s `RendererClient` drains.
+    /// generation dirty flag, whose clone `renderer/src/socket/client.rs`'s `RendererClient` drains.
     pub fn new_live(initial: Value, dirty: DirtyFlag) -> (Self, LiveSignalHandle) {
         let cell = Rc::new(RefCell::new(initial));
         (Signal(SignalKind::Live(Rc::clone(&cell))), LiveSignalHandle(cell, dirty))

@@ -1,6 +1,6 @@
 //! Lua VM bootstrap and loader (`CONTEXT.md`, Loader): evaluates `shell.lua` into top-level `panel`
 //! nodes and topology for a generation's first evaluation and every re-evaluation. `Loader::evaluate_file` reads `~/.config/obelisk/shell.lua`
-//! (`shared::shell_lua_path`) and is the `renderer/src/socket.rs` entry point on startup and every
+//! (`shared::shell_lua_path`) and is the `renderer/src/socket/client.rs` entry point on startup and every
 //! Supervisor-triggered `Reevaluate`.
 pub mod action;
 pub mod capability;
