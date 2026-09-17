@@ -136,7 +136,7 @@ fn descend<'a>(
     path: &mut Vec<&'a ResolvedNode>,
 ) -> bool {
     // A leaving node is painted and nothing more (ADR-0150).
-    if !node.visible || node.leaving {
+    if !node.in_flow() {
         return false;
     }
     let x = origin_x + node.rect.x;
