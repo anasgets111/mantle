@@ -178,21 +178,24 @@ async fn run_privacy_task(
                 }
             }
         }
-        publish(&proc_root, &state, &opener_pids, &pipewire);
-        if events.send(PrivacySignal::Changed).is_err() {
+        if publish(&proc_root, &state, &opener_pids, &pipewire) && events.send(PrivacySignal::Changed).is_err() {
             break;
         }
     }
 }
 
-/// Rebuilds all three lists into `state` every time. The PipeWire lists are cheap walks, and one
-/// write prevents a config observing one list a push behind.
-fn publish(proc_root: &Path, state: &Arc<Mutex<PrivacyState>>, opener_pids: &[u32], pipewire: &PrivacySources) {
-    *state.lock().unwrap() = PrivacyState {
+/// Rebuilds all three lists every time and returns whether `state` changed. The PipeWire lists are
+/// cheap walks, and one write prevents a config observing one list a push behind.
+fn publish(proc_root: &Path, state: &Arc<Mutex<PrivacyState>>, opener_pids: &[u32], pipewire: &PrivacySources) -> bool {
+    let next = PrivacyState {
         camera_users: name_camera_users(proc_root, opener_pids, &pipewire.cameras),
         microphone_users: name_capture_users(proc_root, &pipewire.microphones),
         screencast_users: name_capture_users(proc_root, &pipewire.screencasts),
     };
+    let mut state = state.lock().unwrap();
+    let changed = *state != next;
+    *state = next;
+    changed
 }
 
 /// Inotify stream for `/dev/videoN`, or `None` when no device exists or setup failed. Failure costs

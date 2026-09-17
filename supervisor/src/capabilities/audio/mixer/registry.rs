@@ -251,28 +251,32 @@ fn on_node_global(state: &Rc<RefCell<MixerState>>, registry: &pw::registry::Regi
         .info(move |info| {
             let mut state_mut = state_for_info.borrow_mut();
             let has_props_change = info.change_mask().contains(pw::node::NodeChangeMask::PROPS);
-            if matches!(kind, NodeKind::Audio | NodeKind::Microphone) {
-                apply_info_event(
+            if matches!(kind, NodeKind::Audio | NodeKind::Microphone)
+                && apply_info_event(
                     std::path::Path::new("/proc"),
                     &mut state_mut.apps,
                     node_id,
                     has_props_change,
                     info.props(),
-                );
+                )
+            {
                 state_mut.publish_audio();
             }
             let apps = match kind {
                 NodeKind::Audio => return,
                 NodeKind::Video => {
-                    apply_video_info_event(&mut state_mut.video_sources, node_id, has_props_change, info.props());
-                    return state_mut.publish_privacy();
+                    if apply_video_info_event(&mut state_mut.video_sources, node_id, has_props_change, info.props()) {
+                        state_mut.publish_privacy();
+                    }
+                    return;
                 }
                 NodeKind::Microphone => &mut state_mut.microphones,
                 NodeKind::Screencast => &mut state_mut.screencasts,
             };
             let running = matches!(info.state(), pw::node::NodeState::Running);
-            apply_capture_info_event(apps, node_id, kind, has_props_change, info.props(), running);
-            state_mut.publish_privacy();
+            if apply_capture_info_event(apps, node_id, kind, has_props_change, info.props(), running) {
+                state_mut.publish_privacy();
+            }
         })
         // Per-app streams carry the same channelVolumes/mute pod, parser, and cube-root conversion
         // as master sinks (verified live).
@@ -291,8 +295,9 @@ fn on_node_global(state: &Rc<RefCell<MixerState>>, registry: &pw::registry::Regi
                 return;
             };
             let mut state_mut = state_for_param.borrow_mut();
-            state_mut.app_props.insert(node_id, raw);
-            state_mut.publish_audio();
+            if state_mut.app_props.insert(node_id, raw.clone()) != Some(raw) {
+                state_mut.publish_audio();
+            }
         })
         .register();
 
@@ -343,10 +348,12 @@ fn bind_device_node(
             };
             let mut state_mut = state_for_param.borrow_mut();
             let entry = state_mut.device_entries_mut(kind).get_mut(&node_id);
-            let changed = entry.is_some_and(|entry| entry.props.replace(raw.clone()) != Some(raw));
+            if !entry.is_some_and(|entry| entry.props.replace(raw.clone()) != Some(raw)) {
+                return;
+            }
             state_mut.publish_audio();
             drop(state_mut);
-            if changed && kind == DefaultDevice::Sink {
+            if kind == DefaultDevice::Sink {
                 cap_default_sink(&state_for_param);
             }
         })

@@ -125,20 +125,23 @@ fn resolve_process_name(proc_root: &Path, pid: i32) -> Option<String> {
 
 /// Applies a bound node's `info`. Gate upsert/remove on `NodeChangeMask::PROPS`: state-only events
 /// carry empty props and must not drop a live stream. `global_bind`'s first `info` has PROPS.
+/// Returns whether `apps` changed, as do the video and capture variants.
 pub(super) fn apply_info_event(
     proc_root: &Path,
     apps: &mut BTreeMap<u32, AppStream>,
     node_id: u32,
     has_props_change: bool,
     props: Option<&impl PropsLookup>,
-) {
+) -> bool {
     if !has_props_change {
-        return;
+        return false;
     }
-    match props.and_then(|props| parse_stream_props(proc_root, node_id, props)) {
+    let parsed = props.and_then(|props| parse_stream_props(proc_root, node_id, props));
+    let previous = match parsed.clone() {
         Some(app) => apps.insert(node_id, app),
         None => apps.remove(&node_id),
     };
+    previous != parsed
 }
 
 /// `Video/Source` data for `obelisk.privacy` name enrichment (ADR-0034): `pid` matches a
@@ -168,14 +171,16 @@ pub(super) fn apply_video_info_event(
     node_id: u32,
     has_props_change: bool,
     props: Option<&impl PropsLookup>,
-) {
+) -> bool {
     if !has_props_change {
-        return;
+        return false;
     }
-    match props.and_then(|props| parse_video_source_props(node_id, props)) {
+    let parsed = props.and_then(|props| parse_video_source_props(node_id, props));
+    let previous = match parsed.clone() {
         Some(source) => sources.insert(node_id, source),
         None => sources.remove(&node_id),
     };
+    previous != parsed
 }
 
 /// One microphone or screen-capture stream (ADR-0137); the list it is in supplies the kind.
@@ -223,7 +228,8 @@ pub(super) fn apply_capture_info_event(
     has_props_change: bool,
     props: Option<&impl PropsLookup>,
     running: bool,
-) {
+) -> bool {
+    let previous = apps.get(&node_id).cloned();
     if has_props_change {
         match props.and_then(|props| parse_capture_props(node_id, kind, props)) {
             Some(app) => apps.insert(node_id, app),
@@ -234,6 +240,7 @@ pub(super) fn apply_capture_info_event(
     if let Some(app) = apps.get_mut(&node_id) {
         app.running = running;
     }
+    apps.get(&node_id) != previous.as_ref()
 }
 
 /// Running entries only. Idle streams stay tracked so a later `Running` needs no re-parse.
@@ -327,7 +334,7 @@ mod tests {
         assert!(running(&apps).is_empty(), "an idle stream is not capture");
 
         let empty: HashMap<String, String> = HashMap::new();
-        apply_capture_info_event(&mut apps, 1, NodeKind::Microphone, false, Some(&empty), true);
+        assert!(apply_capture_info_event(&mut apps, 1, NodeKind::Microphone, false, Some(&empty), true));
         assert_eq!(running(&apps).len(), 1, "the same node going Running must publish without a re-parse");
     }
 
@@ -344,9 +351,10 @@ mod tests {
             true,
         );
         let empty: HashMap<String, String> = HashMap::new();
-        apply_capture_info_event(&mut apps, 1, NodeKind::Microphone, false, Some(&empty), true);
+        let changed = apply_capture_info_event(&mut apps, 1, NodeKind::Microphone, false, Some(&empty), true);
 
         assert_eq!(running(&apps).len(), 1);
+        assert!(!changed, "an unchanged capture must not republish privacy");
     }
 
     /// cava reads the sink monitor; PipeWire's `stream.capture.sink` property beats a name list.
