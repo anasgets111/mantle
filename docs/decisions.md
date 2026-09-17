@@ -5084,6 +5084,9 @@ reloads, breaks signals kept in globals or `state`, and must exempt `persistent_
 
 ponytail: `Delayed`'s held and `Pulse`'s last-seen value stay Rust-held. Upgrade: user values.
 
+Amended by ADR-0224: built. Those values and `Delayed`'s pending one are user values; only the clocks
+stay in Rust.
+
 ## 0222. Runtime state lives in one directory per Supervisor process
 
 A second shell replaced the first's control socket, deleted it on exit, swept its tray icons and
@@ -5114,6 +5117,14 @@ Quickshell's `by-id`/`by-pid` symlinks, ids, `--newest` and JSON; flock.
 
 ponytail: a running shell does not notice the marker a killed lock holder left. Upgrade: watch it.
 
+Amended by ADR-0226: `log` names the live shell it picked, and `--pid` with `-c` is refused.
+
+Amended by ADR-0227: decisions 1, 3 and 4. The directory is `<pid>-<start ms>`, start time comes from
+the name, and nothing is ever cleared.
+
+Amended by ADR-0228: decision 6's "an inherited `$OBELISK_CONFIG_DIR` never counts" holds at the
+spawn too: what the shell launches inherits neither variable.
+
 ## 0223. A `persistent_table` file is watched, and a change on disk wins whole
 
 Amends ADR-0136 decision 2: a hand edit or another shell's save went unseen, and the next save
@@ -5131,3 +5142,104 @@ reverted it.
 ponytail: two shells on one file drop each other's writes still inside the save debounce. Upgrade:
 merge per key against the last disk copy.
 No debounce on events, so a truncate-then-write can log one transient parse error.
+
+Amended by ADR-0225: the latch clears on any read that loads, so the same breakage logs again.
+
+## 0224. A `delay`'s held and pending values and a `pulse`'s last-seen value are user values too
+
+ADR-0221's `ponytail:`, built. `DelayCell.held`, `DelayCell.pending` and `PulseCell.seen` were Lua
+values held from Rust, so each was a collector root: a held or pending table reaching its module
+leaked that module on every reload (ADR-0216).
+
+1. They live in user-value slots `HELD_SLOT`/`PENDING_SLOT` after `FIRST_SOURCE_SLOT`. Only the
+   clocks stay Rust-held, as `Rc<Cell<Option<Instant>>>`, because an `Instant` roots nothing.
+2. `read_derived` loads the slots into a `DelayCell`/`PulseCell`, runs the existing `follow`/`fire`
+   and writes them back, so the hold, debounce and window logic is untouched.
+
+The leak regression test gained three shapes: `delay` and `pulse` over a `map` returning the module,
+and `delay` returning a fresh `{ m = t }`, which is the one that exercises `PENDING_SLOT`. Each fails
+without the fix.
+
+| Renderer PSS, `--profile=20` | fresh | 200 reloads | 400 reloads |
+|---|---|---|---|
+| owner's config | 68.0 MiB | 75.4 MiB | 75.0 MiB |
+
+The first rise is warm-up and reloads are flat; ADR-0221 measured 3 MiB to 44 MiB over 602 reloads
+before its fix.
+
+ponytail: the per-read cost of the extra slot reads and writes is unmeasured, and no bench covers
+`delay` or `pulse`.
+
+## 0225. A store's parse-error latch clears on any read that loads, and the recovery is logged
+
+Amends ADR-0223 rule 3's "logs once". In `sync`, `save || store.error.take().is_some()`
+short-circuited, so a repaired file first seen by a save left the latch set and the next identical
+breakage logged nothing. The latch now clears whenever `load` returns `Ok`, `Ok(None)` for a deleted
+file included -- readable is the condition, not parses -- and logs `storage: <path> is readable again`
+once. Confirmed by a test that breaks, reads, fixes, saves and asserts the latch is clear.
+
+## 0226. `obelisk log` says which live shell it picked, and `--pid` refuses `-c`
+
+Amends ADR-0222 decision 6, which left two silent outcomes: `log` with several live shells printed
+one of them with nothing saying which, and `obelisk log --pid 300 -c /b` printed pid 300's log with
+exit 0, ignoring the `-c`.
+
+1. `select_log` returns the chosen instance plus an optional note, and `main` prints the note to
+   stderr, so `log -f | grep` stays clean. Only live runs with a log are counted; the dead-run
+   fallback has nothing to choose between and stays silent.
+2. `set`/`toggle`/`call` stay silent. A keybind has nowhere to show a note.
+3. `--pid` with `-c` is refused at parse time, exit 2, as `list -c` already was: `--pid` names one
+   shell, so a `-c` beside it can only be ignored or contradict it.
+
+Rejected: keeping the silent win, which is what Quickshell does; and a note from
+`set`/`toggle`/`call`, whose stderr a keybind swallows.
+
+## 0227. A runtime directory is named `<pid>-<start ms>`, so `claim` never deletes
+
+Amends ADR-0222 decisions 1, 3 and 4. `claim` cleared a dead directory under its own pid, and
+decision 3's lenient `is_live` read a live shell whose `instance.lock` could not be opened as dead:
+a second `claim` succeeded and `remove_dir_all` took the running shell's log with it.
+
+1. The directory is `runtime_root()/<pid>-<start ms>`, unique per run, which removes the reason to
+   clear anything. `claim` creates it non-recursively, so the impossible collision is an
+   `AlreadyExists` and never a delete. It went 24 lines to 11, and the commit is net -11.
+2. `list` reads pid and start from the name instead of `config`'s mtime, and `take_lock` reports
+   contention as an error rather than `Ok(false)`.
+3. `is_live` stays lenient, because only listing reads it now.
+4. `list` also ignores a name claiming a future start. `checked_add` alone does not help:
+   `u64::MAX` ms is inside `SystemTime`'s range, so `1-18446744073709551615` parsed to a start about
+   584 million years out and outranked every real run in `list`, `log`, `set`, `toggle` and `call`.
+   Same-user mischief or a stale artifact, not an external trust boundary.
+5. `list` gained a DIR column, because the pid alone no longer locates the directory.
+   `docs/lua-api.md` and `cli::HELP` list the columns.
+
+Rejected: keeping `<pid>` and only tightening `claim`'s error handling, which fixes the delete and
+keeps the check that caused it; Quickshell's `by-id`/`by-pid` symlinks and opaque ids, already
+rejected by ADR-0222.
+
+ponytail: two Supervisors sharing a pid within one millisecond, from separate pid namespaces, now
+fail with a bare `AlreadyExists` instead of a named refusal. Dead runs still stay until logout.
+
+## 0228. Every Renderer is told its instance dir, config and profile, rather than inheriting them
+
+All four `unsafe { std::env::set_var }` are gone.
+
+1. `claim` returns its directory, in-process callers take it as a parameter, and
+   `shared::control_socket_path` takes it instead of resolving it.
+2. `generation::Renderer { path, env }` passes `OBELISK_INSTANCE_DIR`, `OBELISK_CONFIG_DIR`,
+   `OBELISK_PROFILE` (only when set) and the generation id to the boot spawn and every respawn
+   alike. `spawn_group_leader` takes `OsString` values, so a non-UTF-8 config path survives.
+3. Deliberate consequence: processes the shell launches no longer inherit the shell's config or
+   instance directory, so ADR-0222 decision 6's "an inherited `$OBELISK_CONFIG_DIR` never counts" is
+   true at the spawn and not only in the selector. A shell's own children are clients like any other,
+   and a script wanting its own shell passes `-c obelisk.config_dir` or `--pid $PPID`. A
+   user-exported `OBELISK_CONFIG_DIR` for the login still reaches children, on purpose.
+
+Rejected: Quickshell's startup environment snapshot, where a Supervisor started from another shell's
+terminal passes the outer shell's values on; and unsetting the variables in each spawn helper, which
+every new spawn path would have to remember.
+
+ponytail: `capabilities::shm_icons` reads a `OnceLock<PathBuf>` set once in `run_supervisor` instead
+of taking the directory as a parameter, because threading it down would touch `Capabilities::new`,
+nine notification delete sites and the tray code. An unset global fails closed: no delete, an
+`io::Error`.
