@@ -303,6 +303,20 @@ mod tests {
         assert!(matches!(err, DeserializeError::MissingKind));
     }
 
+    /// Refused when the table is read, not when the tree is applied (ADR-0219). That leaves
+    /// `layout::scene::ensure_supported_kind` unreachable from a deserialized tree; it stays because
+    /// `children_of`'s `unreachable!` is what it makes sound.
+    #[test]
+    fn an_unsupported_top_level_kind_is_still_rejected() {
+        let lua = mlua::Lua::new();
+        register_node_constructors(&lua).unwrap();
+        let table: mlua::Table = lua.load(r#"{ kind = "dialog", id = "s", child = rect {} }"#).eval().unwrap();
+
+        let err = deserialize_lua_table(&table).unwrap_err();
+
+        assert!(matches!(&err, DeserializeError::UnsupportedKind(k) if k == "dialog"), "{err}");
+    }
+
     #[test]
     fn deserialize_lua_table_leaves_a_nested_child_table_unconverted() {
         let lua = lua_with_constructors();
