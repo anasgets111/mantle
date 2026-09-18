@@ -307,14 +307,16 @@ pub(crate) async fn wait_and_report_exit(
     id: u64,
     mut child: Child,
 ) {
-    match child.wait().await {
-        Ok(status) => send_frame_logged(
-            &registry,
-            generation_id,
-            &SupervisorFrame::ProcessExited(ProcessExited { id, code: status.code() }),
-        ),
-        Err(err) => eprintln!("failed to wait on exited process {id} (generation {generation_id}): {err}"),
-    }
+    let code = match child.wait().await {
+        Ok(status) => status.code(),
+        Err(err) => {
+            eprintln!("failed to wait on exited process {id} (generation {generation_id}): {err}");
+            // `None` for the same reason as `KillOutcome::ReapFailed`: `id`'s `exit_cb` is waiting
+            // and no other path will answer it.
+            None
+        }
+    };
+    send_frame_logged(&registry, generation_id, &SupervisorFrame::ProcessExited(ProcessExited { id, code }));
 }
 
 /// Applies the SIGTERM/SIGKILL group reap to every process spawned by a departed generation's Lua,
