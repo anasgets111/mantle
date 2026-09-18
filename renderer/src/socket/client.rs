@@ -184,7 +184,7 @@ impl RendererClient {
                 self.rescue_handle.set(mlua::Value::Table(table));
                 self.rescue_state = (is_rescue, error_log.to_string());
             }
-            Err(err) => warn!("control-socket client: failed to build rescue state: {err}"),
+            Err(err) => warn!("failed to build rescue state: {err}"),
         }
     }
 
@@ -252,7 +252,7 @@ impl RendererClient {
                 Some(specs)
             }
             Err(err) => {
-                error!("control-socket client: startup shell.lua evaluation failed: {err}");
+                error!("startup shell.lua evaluation failed: {err}");
                 // Whatever it registered before raising goes with it. `discard` after the clear
                 // because that arms the next evaluation; nothing is running one now.
                 self.clear_change_handlers();
@@ -301,7 +301,7 @@ impl RendererClient {
                 true
             }
             Err(err) => {
-                warn!("control-socket client: failed to convert the screen list to a Lua value: {err}");
+                warn!("failed to convert the screen list to a Lua value: {err}");
                 false
             }
         }
@@ -386,7 +386,7 @@ impl RendererClient {
                 true
             }
             Err(err) => {
-                error!("control-socket client: startup shell.lua evaluated but failed to apply to the scene: {err}");
+                error!("startup shell.lua evaluated but failed to apply to the scene: {err}");
                 self.set_rescue_state(true, &err.to_string());
                 false
             }
@@ -434,7 +434,7 @@ impl RendererClient {
         match frame {
             SupervisorFrame::StateSnapshot(snapshot) => {
                 if let Err(err) = self.apply_state_snapshot(snapshot) {
-                    warn!("control-socket client: failed to convert a pushed StateSnapshot to a Lua value: {err}");
+                    warn!("failed to convert a pushed StateSnapshot to a Lua value: {err}");
                 }
             }
             SupervisorFrame::Reevaluate => {
@@ -459,10 +459,7 @@ impl RendererClient {
             // keybind mistake can be reported; the write dirties the scene.
             SupervisorFrame::SetState(set) => {
                 if let Err(why) = lua::signal::write_state(self.lua(), &set) {
-                    warn!(
-                        "control-socket client: `obelisk` asked to write state {:?} and was refused: {why}",
-                        set.name
-                    );
+                    warn!("`obelisk` asked to write state {:?} and was refused: {why}", set.name);
                 }
             }
             // ADR-0197: `obelisk call`. Runs outside layout, like an `on_change` handler, and
@@ -471,12 +468,12 @@ impl RendererClient {
                 let outcome = lua::action::dispatch(self.lua(), &call.name, &call.arguments);
                 let result = shared::CallResult { id: call.id, outcome };
                 if let Err(err) = self.commands.frames().send(RendererFrame::CallResult(result)) {
-                    error!("control-socket client: failed to answer `obelisk call {}`: {err}", call.name);
+                    error!("failed to answer `obelisk call {}`: {err}", call.name);
                 }
             }
             // The Supervisor routes these to control clients; one arriving here is a wire fault.
             SupervisorFrame::CallResult(result) => {
-                error!("control-socket client: ignoring a CallResult for id {}; nothing here calls", result.id);
+                error!("ignoring a CallResult for id {}; nothing here calls", result.id);
             }
         }
         FrameOutcome::Handled
@@ -497,7 +494,7 @@ impl RendererClient {
                 // because that arms the next evaluation; nothing is running one now.
                 self.clear_change_handlers();
                 lua::timer::discard(self.loader.lua());
-                error!("control-socket client: shell.lua re-evaluation failed: {err}");
+                error!("shell.lua re-evaluation failed: {err}");
                 self.set_rescue_state(true, &err.to_string());
                 false
             }
@@ -527,7 +524,7 @@ impl RendererClient {
             }
             Err(err) => {
                 lua::timer::discard(self.loader.lua());
-                warn!("control-socket client: the re-evaluated config failed to apply: {err}");
+                warn!("the re-evaluated config failed to apply: {err}");
                 false
             }
         }
@@ -569,7 +566,7 @@ impl RendererClient {
             // Rollback keeps the prior scene. Do not set rescue: that is for `shell.lua`
             // evaluation, not a rejected capability push. ponytail: logging forever, nothing
             // user-visible. Upgrade: rescue-adjacent channel for rejected pushed values.
-            warn!("control-socket client: dirty-scene re-resolve failed, keeping the prior scene: {err}");
+            warn!("dirty-scene re-resolve failed, keeping the prior scene: {err}");
             return false;
         }
         start_secure_submit_capabilities(&self.scene, &self.instances, &self.commands);

@@ -70,11 +70,11 @@ impl ConversationAdapter for PasswordConversation {
     }
 
     fn error_msg(&self, message: impl AsRef<std::ffi::OsStr>) {
-        warn!("pam worker: {}", message.as_ref().to_string_lossy());
+        warn!("{}", message.as_ref().to_string_lossy());
     }
 
     fn info_msg(&self, message: impl AsRef<std::ffi::OsStr>) {
-        info!("pam worker: {}", message.as_ref().to_string_lossy());
+        info!("{}", message.as_ref().to_string_lossy());
     }
 }
 

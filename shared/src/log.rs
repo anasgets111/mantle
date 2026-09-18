@@ -166,7 +166,10 @@ pub fn colourise(line: &str) -> String {
 
 /// The subsystem a module belongs to: the capability under `capabilities::`, else whatever sits
 /// directly under the crate root.
-fn subsystem(module: &str) -> &str {
+///
+/// Public for the guard in `shared/tests` that holds messages to it, so the rule and the name it is
+/// checked against cannot drift apart.
+pub fn subsystem(module: &str) -> &str {
     match module.split_once("capabilities::") {
         Some((_, rest)) => rest.split("::").next().unwrap_or(rest),
         None => {

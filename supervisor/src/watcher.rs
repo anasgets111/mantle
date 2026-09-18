@@ -66,7 +66,7 @@ fn walk(
     let entries = match std::fs::read_dir(dir) {
         Ok(entries) => entries,
         Err(err) => {
-            warn!("config watcher: cannot list {}: {err}; changes inside it will not reload", dir.display());
+            warn!("cannot list {}: {err}; changes inside it will not reload", dir.display());
             return Ok(());
         }
     };
@@ -78,7 +78,7 @@ fn walk(
             continue;
         }
         if let Err(err) = walk(watches, wd_to_dir, visited, &path) {
-            warn!("config watcher: cannot watch {}: {err}; changes inside it will not reload", path.display());
+            warn!("cannot watch {}: {err}; changes inside it will not reload", path.display());
         }
     }
     Ok(())
@@ -199,7 +199,7 @@ pub fn spawn_watcher(dir: &Path, debounce: Duration) -> io::Result<mpsc::Unbound
                             }
                         }
                         Some(Err(err)) => {
-                            warn!("config watcher: inotify read failed: {err}");
+                            warn!("inotify read failed: {err}");
                         }
                         None => break, // the inotify fd closed: nothing left to watch.
                     }

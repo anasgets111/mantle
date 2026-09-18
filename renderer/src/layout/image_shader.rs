@@ -289,7 +289,7 @@ impl ShaderStage {
             // SAFETY: caller's contract.
             Ok(source) => unsafe { self.build(gl, path, &source) },
             Err(err) => {
-                error!("shader: {}: {err}", path.display());
+                error!("{}: {err}", path.display());
                 None
             }
         };
@@ -325,7 +325,7 @@ impl ShaderStage {
             gl.detach_shader(program, fragment);
             gl.delete_shader(fragment);
             if !gl.get_program_link_status(program) {
-                error!("shader: {}: {}", path.display(), gl.get_program_info_log(program));
+                error!("{}: {}", path.display(), gl.get_program_info_log(program));
                 gl.delete_program(program);
                 return None;
             }
@@ -339,7 +339,7 @@ impl ShaderStage {
                 }
                 if uniform.utype != glow::FLOAT {
                     error!(
-                        "shader: {}: `{}` is not a `float`, and `params` carries numbers only",
+                        "{}: `{}` is not a `float`, and `params` carries numbers only",
                         path.display(),
                         uniform.name
                     );
@@ -533,7 +533,7 @@ unsafe fn compile(gl: &glow::Context, kind: u32, source: &str, path: &Path) -> O
             return Some(shader);
         }
         // `#line 1` ends the prelude, so a reported line number is the config's own.
-        error!("shader: {}: {}", path.display(), gl.get_shader_info_log(shader));
+        error!("{}: {}", path.display(), gl.get_shader_info_log(shader));
         gl.delete_shader(shader);
         None
     }
