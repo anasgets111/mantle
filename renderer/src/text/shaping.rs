@@ -244,6 +244,9 @@ impl ShapingHandle {
         // paint asks once a frame and must not pay a channel round trip to hear "nothing changed".
         let generation = Arc::new(AtomicU64::new(0));
         let handle_generation = Arc::clone(&generation);
+        // Shared with the worker so it can drop this side's half of the family memo with its own.
+        let ensured: Arc<Mutex<HashSet<Arc<str>>>> = Arc::new(Mutex::new(HashSet::new()));
+        let worker_ensured = Arc::clone(&ensured);
         thread::Builder::new()
             .name("obelisk-text-shaping".into())
             .spawn(move || {
@@ -251,12 +254,12 @@ impl ShapingHandle {
                 while let Ok(request) = rx.recv() {
                     match request {
                         Request::Shape(req, glyphs, reply) => {
-                            let family = fonts.family_for(req.font.as_ref(), &generation);
+                            let family = fonts.family_for(req.font.as_ref(), &generation, &worker_ensured);
                             // A dropped receiver just means the result is discarded.
                             let _ = reply.send(shape(&mut fonts.font_system, &family, &req, glyphs));
                         }
                         Request::EnsureFamily(asked, reply) => {
-                            fonts.family_for(Some(&asked), &generation);
+                            fonts.family_for(Some(&asked), &generation, &worker_ensured);
                             let _ = reply.send(());
                         }
                         Request::FontChainData(reply) => {
@@ -276,12 +279,7 @@ impl ShapingHandle {
                 }
             })
             .expect("failed to spawn obelisk-text-shaping thread");
-        Self {
-            requests: tx,
-            cache: Arc::new(Mutex::new(HashMap::new())),
-            generation: handle_generation,
-            ensured: Arc::new(Mutex::new(HashSet::new())),
-        }
+        Self { requests: tx, cache: Arc::new(Mutex::new(HashMap::new())), generation: handle_generation, ensured }
     }
 
     /// Measures `request`, from [`SHAPE_CACHE_CAPACITY`]'s memo when asked before and from the
@@ -547,11 +545,23 @@ impl WorkerFonts {
     ///
     /// A family nothing on the system answers resolves to the declared chain's own primary. That is
     /// what makes a typo draw the text in the wrong face rather than not at all.
-    fn family_for(&mut self, asked: Option<&Arc<str>>, generation: &AtomicU64) -> String {
+    fn family_for(
+        &mut self,
+        asked: Option<&Arc<str>>,
+        generation: &AtomicU64,
+        ensured: &Mutex<HashSet<Arc<str>>>,
+    ) -> String {
         let Some(asked) = asked else {
             return self.primary_family.clone();
         };
         if !self.families.contains_key(asked) {
+            // Config-supplied names, resolved and mistyped alike, fill this; `set_chain` is its
+            // only other reset and production calls that once. Cleared with `ensure_family`'s
+            // half, which would otherwise skip a family the worker has forgotten.
+            if self.families.len() >= SHAPE_CACHE_CAPACITY {
+                self.families.clear();
+                ensured.lock().unwrap_or_else(PoisonError::into_inner).clear();
+            }
             let hit = fonts::load_family(self.font_system.db_mut(), asked, &mut self.loaded_paths);
             self.families.insert(Arc::clone(asked), hit);
             self.chain_data = font_chain_data(self.font_system.db_mut());
@@ -1130,6 +1140,24 @@ mod tests {
         assert_eq!(handle.cached_len(), SHAPE_CACHE_CAPACITY, "the cap is where it clears, not before");
         handle.shape(req("one too many", 13.0));
         assert_eq!(handle.cached_len(), 1, "the map is dropped whole, keeping only the request that overflowed it");
+    }
+
+    #[test]
+    fn the_family_memo_clears_at_its_cap_and_takes_the_handle_side_with_it() {
+        let mut fonts = WorkerFonts::new(fonts::DEFAULT_CHAIN);
+        let generation = AtomicU64::new(0);
+        let ensured: Mutex<HashSet<Arc<str>>> = Mutex::new(HashSet::new());
+        for i in 0..SHAPE_CACHE_CAPACITY {
+            let filler: Arc<str> = Arc::from(format!("never-installed-{i}").as_str());
+            ensured.lock().unwrap().insert(Arc::clone(&filler));
+            fonts.families.insert(filler, None);
+        }
+
+        let asked: Arc<str> = Arc::from("sans-serif");
+        fonts.family_for(Some(&asked), &generation, &ensured);
+
+        assert_eq!(fonts.families.len(), 1, "the memo is dropped whole, keeping only the family that overflowed it");
+        assert!(ensured.lock().unwrap().is_empty(), "`ensure_family` must not skip a family the worker forgot");
     }
 
     #[test]
