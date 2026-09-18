@@ -49,3 +49,39 @@ where
         .expect("failed to install the client's interfaces");
     tokio::try_join!(server_builder.build(), client_builder.build()).expect("p2p handshake")
 }
+
+#[cfg(test)]
+mod tests {
+    /// `#[zbus::interface]` copies an item's doc comment into the introspection XML as an XML
+    /// comment, where a double hyphen is forbidden, so the house em-dash breaks every conforming
+    /// client. A file exporting an interface therefore spells the dash some other way, which is
+    /// one rule for a whole file rather than a judgement about which items reach the XML.
+    #[test]
+    fn no_doc_comment_beside_an_interface_can_close_the_xml_comment_around_it() {
+        let mut paths = vec![std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src")];
+        let mut offences = Vec::new();
+        while let Some(path) = paths.pop() {
+            if path.is_dir() {
+                let entries = std::fs::read_dir(&path).expect("readable source directory");
+                paths.extend(entries.map(|entry| entry.expect("readable source entry").path()));
+                continue;
+            }
+            let source = std::fs::read_to_string(&path).expect("readable source");
+            // Only at the start of a line: the attribute also appears inside this test's own strings.
+            let lines: Vec<&str> = source.lines().map(str::trim_start).collect();
+            if !lines.iter().any(|line| line.starts_with("#[zbus::interface") || line.starts_with("#[interface")) {
+                continue;
+            }
+            for (offset, line) in lines.iter().enumerate() {
+                if line.starts_with("///") && line.contains("--") {
+                    offences.push(format!("{}:{}: {line}", path.display(), offset + 1));
+                }
+            }
+        }
+        assert!(
+            offences.is_empty(),
+            "a file exporting a D-Bus interface cannot use `--` in a doc comment:\n{}",
+            offences.join("\n")
+        );
+    }
+}

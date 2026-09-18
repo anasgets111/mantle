@@ -373,7 +373,7 @@ impl NotificationsController {
         self.expiry_hold.send_replace(until);
     }
 
-    /// Full re-derivation of `notifications.feed`/`notifications.dnd` from current state --
+    /// Full re-derivation of `notifications.feed`/`notifications.dnd` from current state:
     /// synchronous, no D-Bus round trip needed.
     pub fn build_state(&self) -> NotificationsState {
         let state = self.state.lock().unwrap();
@@ -556,7 +556,7 @@ impl NotificationsController {
 
     /// `CloseNotification(id)` removes the entry (if present) and emits `NotificationClosed(id,
     /// reason=ClosedByMethod)`. A `dismiss()` write command emits the same signal with
-    /// `reason=Dismissed` instead -- distinct wire callers of the same removal primitive
+    /// `reason=Dismissed` instead: distinct wire callers of the same removal primitive
     /// ([`remove_by_id`]).
     #[zbus(name = "CloseNotification")]
     async fn close_notification(&self, id: u32) {
@@ -585,7 +585,7 @@ impl NotificationsController {
 
     /// `reason` is [`CloseReason`] as its raw wire `u32` (the signal's D-Bus signature is fixed by
     /// the base spec): 1 = expired, 2 = dismissed via `dismiss()`, 3 = `CloseNotification`,
-    /// 4 = FIFO eviction -- a base-spec "undefined/reserved" value repurposed for Obelisk's hard
+    /// 4 = FIFO eviction, a base-spec "undefined/reserved" value repurposed for Obelisk's hard
     /// 100-cap (ADR-0033).
     #[zbus(signal, name = "NotificationClosed")]
     async fn notification_closed(

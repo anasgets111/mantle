@@ -361,7 +361,7 @@ mod tests {
     }
 
     /// Adoption has no registration argument to read, so it guessed the spec default and stopped
-    /// there -- which is no path at all for a Chromium application, and cost Slack its icon on
+    /// there, which is no path at all for a Chromium application, and cost Slack its icon on
     /// every restart of the shell (ADR-0171).
     ///
     /// Stubs through `p2p_pair_serving` for the same reason as
