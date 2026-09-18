@@ -6,7 +6,7 @@
 //! panic reaches the file directly because no thread of ours sits in between.
 
 use std::fs::File;
-use std::io::{self, Write};
+use std::io::{self, Read, Write};
 use std::os::fd::AsRawFd;
 use std::path::Path;
 use std::time::Duration;
@@ -40,9 +40,12 @@ pub fn capture(dir: &Path) -> io::Result<()> {
 
 /// `obelisk log [--follow]`: `dir`'s log, until its Supervisor exits.
 ///
+/// `colour` paints what the file deliberately does not hold (ADR-0229): the shell wrote these bytes
+/// to a file, so it left them plain, and the terminal they are finally shown on is this process's.
+///
 /// Boxed, not `io::Result`: `main` prints errors with `Debug`, where an `io::Error` shows as its
 /// struct rather than a sentence.
-pub fn print(dir: &Path, follow: bool, out: &mut impl Write) -> Result<(), Box<dyn std::error::Error>> {
+pub fn print(dir: &Path, follow: bool, colour: bool, out: &mut impl Write) -> Result<(), Box<dyn std::error::Error>> {
     let path = dir.join(instance::LOG);
     let mut file = File::open(&path).map_err(|err| {
         format!("no log at {}: {err}. A shell with a terminal or a redirect writes there instead", path.display())
@@ -55,10 +58,19 @@ pub fn print(dir: &Path, follow: bool, out: &mut impl Write) -> Result<(), Box<d
         eprintln!("obelisk: no shell is writing {}; this is the last run's output", path.display());
     }
     let mut writer_left = false;
+    let mut pending = Vec::new();
     loop {
-        io::copy(&mut file, out)?;
+        // Plain output stays a byte-for-byte copy, so `obelisk log | grep` is what it always was.
+        if colour {
+            paint(&mut file, out, &mut pending)?;
+        } else {
+            io::copy(&mut file, out)?;
+        }
         out.flush()?;
         if !follow || writer_left {
+            // A final line the writer never terminated still has to be shown.
+            out.write_all(&pending)?;
+            out.flush()?;
             return Ok(());
         }
         // Read now, acted on after one more pass above, so a last line written between the copy
@@ -68,6 +80,20 @@ pub fn print(dir: &Path, follow: bool, out: &mut impl Write) -> Result<(), Box<d
             std::thread::sleep(POLL);
         }
     }
+}
+
+/// Copies whole lines, painting each. `pending` holds a line split across two reads, which
+/// `--follow` produces whenever it catches the writer mid-line.
+fn paint(from: &mut impl Read, to: &mut impl Write, pending: &mut Vec<u8>) -> io::Result<()> {
+    from.read_to_end(pending)?;
+    while let Some(end) = pending.iter().position(|byte| *byte == b'\n') {
+        let line: Vec<u8> = pending.drain(..=end).collect();
+        match std::str::from_utf8(&line) {
+            Ok(text) => to.write_all(shared::log::colourise(text).as_bytes())?,
+            Err(_) => to.write_all(&line)?,
+        }
+    }
+    Ok(())
 }
 
 /// Whether `fd` goes to `/dev/null`, as `/proc/self/fd` spells it. Only a confirmed match counts:
@@ -91,7 +117,7 @@ mod tests {
         let (mut printed, out) = io::pipe().unwrap();
         let (done, finished) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
-            print(&dir, true, &mut { out }).unwrap();
+            print(&dir, true, false, &mut { out }).unwrap();
             done.send(()).unwrap();
         });
         // Printed only after the follower opened the lock.

@@ -200,7 +200,10 @@ fn main() -> Result<(), Box<dyn Error>> {
         cli::Command::Init { force } => setup::run(&config_dir()?, force),
         cli::Command::SetState(set) => control_client::send(set, &instance_dir(false)?),
         cli::Command::Call { name, arguments } => control_client::call(name, arguments, &instance_dir(false)?),
-        cli::Command::Log { follow } => log::print(&instance_dir(true)?, follow, &mut std::io::stdout().lock()),
+        cli::Command::Log { follow } => {
+            let colour = std::io::IsTerminal::is_terminal(&std::io::stdout());
+            log::print(&instance_dir(true)?, follow, colour, &mut std::io::stdout().lock())
+        }
         cli::Command::List => {
             let mut running: Vec<_> = instance::list(&shared::runtime_root()?).into_iter().filter(|i| i.live).collect();
             if running.is_empty() {

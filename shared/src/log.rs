@@ -126,23 +126,42 @@ fn write_to(level: Level, target: &str, args: Arguments<'_>) {
     if config.threshold(target).is_none_or(|threshold| level > threshold) {
         return;
     }
+    let line = format_line(config.tag, level, target, args);
     // One `write_all` of the whole line: two processes share this descriptor, and a line assembled
     // in several writes is a line the other one can cut in half.
-    let _ = std::io::stderr().write_all(format_line(config, level, target, args).as_bytes());
+    let _ = std::io::stderr().write_all(if config.colour { colourise(&line) } else { line }.as_bytes());
 }
 
 /// Split from [`write_to`] so the format is testable without owning the process-wide [`CONFIG`].
-fn format_line(config: &Config, level: Level, target: &str, args: Arguments<'_>) -> String {
-    let [dim, reset, cyan] = if config.colour { ["\x1b[2m", "\x1b[0m", "\x1b[36m"] } else { [""; 3] };
-    let level_colour = if config.colour { level.colour() } else { "" };
-
+///
+/// Always plain. Colour is added afterwards by [`colourise`], which is also how `obelisk log`
+/// reaches it: the file holds these bytes, and whoever prints them to a terminal paints them.
+fn format_line(tag: &str, level: Level, target: &str, args: Arguments<'_>) -> String {
     let mut line = String::with_capacity(96);
-    let _ = write!(line, "{dim}{}{reset} {level_colour}{}{reset} {cyan}", clock(), level.name());
-    if !config.tag.is_empty() {
-        let _ = write!(line, "{}/", config.tag);
+    let _ = write!(line, "{} {} ", clock(), level.name());
+    if !tag.is_empty() {
+        let _ = write!(line, "{tag}/");
     }
-    let _ = writeln!(line, "{target}{reset}: {args}");
+    let _ = writeln!(line, "{target}: {args}");
     line
+}
+
+/// Paints one line of [`format_line`]'s output: dim clock, the level in its own colour, cyan
+/// subsystem.
+///
+/// Parses the line back rather than taking the parts, because the other caller is `obelisk log`
+/// reading a finished file. Anything that does not match the shape is returned untouched, which
+/// covers a pre-`init` line and the second and later lines of a multi-line message.
+pub fn colourise(line: &str) -> String {
+    let Some((clock, rest)) = line.split_once(' ') else { return line.to_string() };
+    // Taken by width, not to the next space: every `Level::name` is padded to five.
+    let (Some(name), Some(rest)) = (rest.get(..5), rest.get(5..)) else { return line.to_string() };
+    let Some(level) = [Level::Error, Level::Warn, Level::Info, Level::Debug].into_iter().find(|l| l.name() == name)
+    else {
+        return line.to_string();
+    };
+    let Some((target, message)) = rest.trim_start_matches(' ').split_once(": ") else { return line.to_string() };
+    format!("\x1b[2m{clock}\x1b[0m {}{name}\x1b[0m \x1b[36m{target}\x1b[0m: {message}", level.colour())
 }
 
 /// The subsystem a module belongs to: the capability under `capabilities::`, else whatever sits
@@ -222,7 +241,7 @@ mod tests {
 
     #[test]
     fn a_line_written_somewhere_that_is_not_a_terminal_carries_no_escape_sequence() {
-        let line = format_line(&config("", ""), Level::Warn, "tray", format_args!("RequestName failed"));
+        let line = format_line("", Level::Warn, "tray", format_args!("RequestName failed"));
 
         assert!(!line.contains('\x1b'), "the log file has to stay greppable: {line:?}");
         assert!(line.ends_with(" WARN  tray: RequestName failed\n"), "{line:?}");
@@ -230,9 +249,25 @@ mod tests {
 
     #[test]
     fn a_tagged_process_names_itself_before_the_subsystem_so_one_log_can_hold_both() {
-        let line = format_line(&config("renderer", ""), Level::Info, "image", format_args!("decoded"));
+        let line = format_line("renderer", Level::Info, "image", format_args!("decoded"));
 
         assert!(line.ends_with(" INFO  renderer/image: decoded\n"), "{line:?}");
+    }
+
+    #[test]
+    fn painting_a_line_keeps_every_word_of_it_and_leaves_anything_else_alone() {
+        let plain = format_line("renderer", Level::Warn, "wayland", format_args!("bind failed: {}", 7));
+        let painted = colourise(&plain);
+
+        assert!(painted.contains("WARN "), "the level survives, since the paint is what parses it back");
+        assert!(painted.ends_with("renderer/wayland\x1b[0m: bind failed: 7\n"), "{painted:?}");
+        assert!(painted.starts_with("\x1b[2m"), "the clock is dimmed: {painted:?}");
+
+        // `obelisk log` paints a whole file, which holds pre-`init` lines and the tail of multi-line
+        // messages. Neither has the shape, and mangling them would be worse than leaving them grey.
+        for pass_through in ["tray: something before init\n", "    at src/main.rs:1\n", "\n"] {
+            assert_eq!(colourise(pass_through), pass_through, "an unshaped line is not touched");
+        }
     }
 
     #[test]
