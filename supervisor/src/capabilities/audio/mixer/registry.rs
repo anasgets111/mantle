@@ -13,6 +13,7 @@ use pw::spa::pod::deserialize::PodDeserializer;
 use pw::spa::utils::dict::DictRef;
 use pw::types::ObjectType;
 use tokio::sync::mpsc::UnboundedSender;
+use tokio::sync::watch;
 
 use crate::capabilities::audio::master;
 
@@ -39,7 +40,7 @@ use super::write::{apply_command, cap_default_sink};
 /// returns because this subsystem is optional.
 pub fn run(
     updates: UnboundedSender<AudioState>,
-    privacy_updates: UnboundedSender<PrivacySources>,
+    privacy_updates: watch::Sender<PrivacySources>,
     commands: AudioCommandReceiver,
 ) {
     if let Err(err) = run_inner(updates, privacy_updates, commands) {
@@ -58,7 +59,7 @@ pub fn command_channel() -> (AudioCommandSender, AudioCommandReceiver) {
 
 fn run_inner(
     updates: UnboundedSender<AudioState>,
-    privacy_updates: UnboundedSender<PrivacySources>,
+    privacy_updates: watch::Sender<PrivacySources>,
     commands: AudioCommandReceiver,
 ) -> Result<(), pw::Error> {
     pw::init();

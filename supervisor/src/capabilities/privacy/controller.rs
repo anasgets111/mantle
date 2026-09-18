@@ -5,7 +5,8 @@ use std::sync::{Arc, Mutex};
 
 use futures_util::StreamExt;
 use inotify::{Inotify, WatchMask};
-use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
+use tokio::sync::mpsc::UnboundedSender;
+use tokio::sync::watch;
 
 use crate::capabilities::audio::mixer::{CaptureApp, PrivacySources, VideoSourceApp};
 
@@ -115,7 +116,7 @@ impl PrivacyController {
     pub fn new(
         proc_root: PathBuf,
         video4linux_root: &Path,
-        sources: UnboundedReceiver<PrivacySources>,
+        sources: watch::Receiver<PrivacySources>,
         events: UnboundedSender<PrivacySignal>,
     ) -> Self {
         let state = Arc::new(Mutex::new(PrivacyState::default()));
@@ -140,11 +141,13 @@ async fn run_privacy_task(
     proc_root: PathBuf,
     devices: Vec<PathBuf>,
     state: Arc<Mutex<PrivacyState>>,
-    mut sources: UnboundedReceiver<PrivacySources>,
+    mut sources: watch::Receiver<PrivacySources>,
     events: UnboundedSender<PrivacySignal>,
 ) {
     let mut inotify_stream = watch_video_devices(&devices);
-    let mut pipewire = PrivacySources::default();
+    // Whatever the mixer last published, not an empty seed: this capability starts on first config
+    // read, which can be long after the mixer hydrated.
+    let mut pipewire = sources.borrow_and_update().clone();
 
     // Scan once: a camera may already be open at startup. The other lists await PipeWire.
     let mut opener_pids = scan_camera_pids(&proc_root, &devices);
@@ -170,12 +173,12 @@ async fn run_privacy_task(
                     }
                 }
             }
-            update = sources.recv() => {
-                match update {
-                    // Name camera users and rebuild the other lists from the same pid set.
-                    Some(update) => pipewire = update,
-                    None => break, // the mixer thread is gone -- no more updates coming.
+            changed = sources.changed() => {
+                // Name camera users and rebuild the other lists from the same pid set.
+                if changed.is_err() {
+                    break; // the mixer thread is gone -- no more updates coming.
                 }
+                pipewire = sources.borrow_and_update().clone();
             }
         }
         if publish(&proc_root, &state, &opener_pids, &pipewire) && events.send(PrivacySignal::Changed).is_err() {
@@ -389,7 +392,7 @@ mod tests {
     #[tokio::test]
     async fn no_video_devices_still_sends_one_signal_so_the_empty_state_gets_announced() {
         let video4linux_root = tempfile::tempdir().unwrap(); // empty -- no videoN entries.
-        let (_privacy_tx, sources) = tokio::sync::mpsc::unbounded_channel();
+        let (_privacy_tx, sources) = watch::channel(PrivacySources::default());
         let (events_tx, mut events_rx) = tokio::sync::mpsc::unbounded_channel();
 
         let controller = PrivacyController::new(PathBuf::from("/proc"), video4linux_root.path(), sources, events_tx);
@@ -407,7 +410,7 @@ mod tests {
     #[tokio::test]
     async fn a_machine_with_no_camera_still_reports_a_microphone() {
         let video4linux_root = tempfile::tempdir().unwrap(); // empty -- no videoN entries.
-        let (privacy_tx, sources) = tokio::sync::mpsc::unbounded_channel();
+        let (privacy_tx, sources) = watch::channel(PrivacySources::default());
         let (events_tx, mut events_rx) = tokio::sync::mpsc::unbounded_channel();
 
         let controller = PrivacyController::new(PathBuf::from("/proc"), video4linux_root.path(), sources, events_tx);

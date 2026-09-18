@@ -18,6 +18,7 @@ use std::path::{Path, PathBuf};
 
 use shared::{Capability, CommandEnvelope};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
+use tokio::sync::watch;
 
 use crate::snapshot::push_snapshot;
 use crate::{log_unstarted, socket};
@@ -332,10 +333,12 @@ pub struct Capabilities {
     /// Shared Supervisor system bus (ADR-0034); session-bus capabilities open their own.
     connection: zbus::Connection,
     sound_tx: std::sync::mpsc::SyncSender<PathBuf>,
-    /// Mixer privacy channel (ADR-0034, ADR-0137). `audio` or `privacy` may start the mixer first;
-    /// mixer owns the sender and privacy the receiver.
-    privacy_tx: Option<UnboundedSender<PrivacySources>>,
-    privacy_sources: Option<UnboundedReceiver<PrivacySources>>,
+    /// Mixer privacy channel (ADR-0034, ADR-0137). `audio` or `privacy` may start the mixer first
+    /// and it publishes either way, so a queue here would retain every snapshot for a config that
+    /// draws volume and no privacy indicator. A watch keeps only the latest, which is all
+    /// `run_privacy_task` ever reads.
+    privacy_tx: Option<watch::Sender<PrivacySources>>,
+    privacy_sources: watch::Receiver<PrivacySources>,
 }
 
 impl Capabilities {
@@ -347,7 +350,7 @@ impl Capabilities {
         idle_tx: UnboundedSender<shared::IdleEvent>,
     ) -> (Self, Signals) {
         let (senders, signals) = Senders::channels();
-        let (privacy_tx, privacy_sources) = unbounded_channel();
+        let (privacy_tx, privacy_sources) = watch::channel(PrivacySources::default());
 
         let capabilities = Self {
             network: None,
@@ -375,7 +378,7 @@ impl Capabilities {
             connection,
             sound_tx,
             privacy_tx: Some(privacy_tx),
-            privacy_sources: Some(privacy_sources),
+            privacy_sources,
         };
         (capabilities, signals)
     }
@@ -553,14 +556,12 @@ impl Capabilities {
             Capability::Privacy => {
                 if self.privacy.is_none() {
                     self.ensure_mixer_thread();
-                    if let Some(privacy_sources) = self.privacy_sources.take() {
-                        self.privacy = Some(PrivacyController::new(
-                            PathBuf::from("/proc"),
-                            &PathBuf::from("/sys/class/video4linux"),
-                            privacy_sources,
-                            self.senders.privacy.clone(),
-                        ));
-                    }
+                    self.privacy = Some(PrivacyController::new(
+                        PathBuf::from("/proc"),
+                        &PathBuf::from("/sys/class/video4linux"),
+                        self.privacy_sources.clone(),
+                        self.senders.privacy.clone(),
+                    ));
                 }
             }
             // Separate from sysinfo's scheduler, dormant until Lua sets an interval; construction

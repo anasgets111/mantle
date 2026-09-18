@@ -7,6 +7,7 @@ use std::rc::Rc;
 use pipewire as pw;
 use serde::Serialize;
 use tokio::sync::mpsc::UnboundedSender;
+use tokio::sync::watch;
 
 use super::devices::{AudioDevice, BluetoothCodecs, BluezCard, DeviceEntry, bluetooth_codecs, device_list};
 use super::streams::{AppStream, CaptureApp, VideoSourceApp, running};
@@ -92,7 +93,7 @@ pub(super) struct MixerState {
     pub(super) screencasts: BTreeMap<u32, CaptureApp>,
     pub(super) nodes: HashMap<u32, (pw::node::Node, pw::node::NodeListener)>,
     pub(super) updates: UnboundedSender<AudioState>,
-    pub(super) privacy_updates: UnboundedSender<PrivacySources>,
+    pub(super) privacy_updates: watch::Sender<PrivacySources>,
     /// `Audio/Sink` id -> tracked sink data; its `param` listener replaces stream `info`.
     pub(super) sinks: HashMap<u32, DeviceEntry>,
     /// Bound sink proxies/listeners, separate from `sinks` so state stays plain test data.
@@ -122,7 +123,7 @@ pub(super) struct MixerState {
 
 impl MixerState {
     /// Empty maps, not yet hydrated.
-    pub(super) fn new(updates: UnboundedSender<AudioState>, privacy_updates: UnboundedSender<PrivacySources>) -> Self {
+    pub(super) fn new(updates: UnboundedSender<AudioState>, privacy_updates: watch::Sender<PrivacySources>) -> Self {
         Self {
             hydrated: false,
             apps: BTreeMap::new(),
@@ -343,17 +344,14 @@ mod tests {
     ///
     /// Hydrated, because every test below asserts on what a publish carries. The gate itself is
     /// pinned by `a_state_that_has_not_hydrated_publishes_nothing`.
-    fn mixer_state(
-        updates: UnboundedSender<AudioState>,
-        privacy_updates: UnboundedSender<PrivacySources>,
-    ) -> MixerState {
+    fn mixer_state(updates: UnboundedSender<AudioState>, privacy_updates: watch::Sender<PrivacySources>) -> MixerState {
         MixerState { hydrated: true, ..MixerState::new(updates, privacy_updates) }
     }
 
     #[test]
     fn a_state_that_has_not_hydrated_publishes_nothing() {
         let (updates, mut rx) = tokio::sync::mpsc::unbounded_channel();
-        let (privacy_updates, mut privacy_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (privacy_updates, privacy_rx) = watch::channel(PrivacySources::default());
         let mut state = mixer_state(updates, privacy_updates);
         state.hydrated = false;
         // A bound sink with no `Props` yet: exactly the shape the first `global` burst leaves.
@@ -364,19 +362,19 @@ mod tests {
         state.publish_privacy();
 
         assert!(rx.try_recv().is_err(), "an unhydrated state must not publish its unknown master volume");
-        assert!(privacy_rx.try_recv().is_err(), "an unhydrated state must not publish its empty privacy lists");
+        assert!(!privacy_rx.has_changed().unwrap(), "an unhydrated state must not publish its empty privacy lists");
 
         state.hydrated = true;
         state.publish_audio();
         state.publish_privacy();
         assert!(rx.try_recv().is_ok(), "opening the gate must publish audio on the next call");
-        assert!(privacy_rx.try_recv().is_ok(), "opening the gate must publish privacy on the next call");
+        assert!(privacy_rx.has_changed().unwrap(), "opening the gate must publish privacy on the next call");
     }
 
     #[test]
     fn publish_audio_combines_master_volume_and_app_snapshot() {
         let (updates, mut rx) = tokio::sync::mpsc::unbounded_channel();
-        let (privacy_updates, _privacy_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (privacy_updates, _privacy_rx) = watch::channel(PrivacySources::default());
         let mut state = mixer_state(updates, privacy_updates);
         state.sinks =
             HashMap::from([(59, sink_at("alsa_output.pci-...analog-stereo", None, Some(props_at(0.3, false))))]);
@@ -394,7 +392,7 @@ mod tests {
     #[test]
     fn publish_audio_reports_no_master_volume_with_no_sink_tracked() {
         let (updates, mut rx) = tokio::sync::mpsc::unbounded_channel();
-        let (privacy_updates, _privacy_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (privacy_updates, _privacy_rx) = watch::channel(PrivacySources::default());
         let state = mixer_state(updates, privacy_updates);
 
         state.publish_audio();
@@ -410,7 +408,7 @@ mod tests {
     #[test]
     fn publish_audio_lists_only_the_bluetooth_profiles_that_offer_a_codec_now() {
         let (updates, mut rx) = tokio::sync::mpsc::unbounded_channel();
-        let (privacy_updates, _privacy_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (privacy_updates, _privacy_rx) = watch::channel(PrivacySources::default());
         let mut state = mixer_state(updates, privacy_updates);
         let profile = |index: i32, name: &str, description: &str, available: bool| {
             let profile =
@@ -445,11 +443,29 @@ mod tests {
         assert_eq!(card.active, Some(2));
     }
 
+    /// A config drawing volume but not privacy starts the mixer and never reads this channel.
+    #[test]
+    fn privacy_publishes_nobody_reads_keep_only_the_latest() {
+        let (updates, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let (privacy_updates, privacy_rx) = watch::channel(PrivacySources::default());
+        let mut state = mixer_state(updates, privacy_updates);
+
+        for node_id in 1..=3 {
+            state.microphones =
+                BTreeMap::from([(node_id, CaptureApp { node_id, pid: None, app_name: None, running: true })]);
+            state.publish_privacy();
+        }
+
+        let held = privacy_rx.borrow();
+        assert_eq!(held.microphones.len(), 1, "a late reader must find one snapshot, not three");
+        assert_eq!(held.microphones[0].node_id, 3, "and it must be the newest");
+    }
+
     #[test]
     fn publish_audio_overlays_a_streams_own_props_reading_onto_its_entry() {
         // Identity arrives in `info`, volume in `param`; this is their join point.
         let (updates, mut rx) = tokio::sync::mpsc::unbounded_channel();
-        let (privacy_updates, _privacy_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (privacy_updates, _privacy_rx) = watch::channel(PrivacySources::default());
         let mut state = mixer_state(updates, privacy_updates);
         state.apps.insert(1, sample_stream(1));
         state.app_props = HashMap::from([(1, props_at(0.42, true))]);
@@ -464,7 +480,7 @@ mod tests {
     #[test]
     fn publish_audio_leaves_a_stream_whose_props_have_not_arrived_without_a_volume() {
         let (updates, mut rx) = tokio::sync::mpsc::unbounded_channel();
-        let (privacy_updates, _privacy_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (privacy_updates, _privacy_rx) = watch::channel(PrivacySources::default());
         let mut state = mixer_state(updates, privacy_updates);
         state.apps.insert(1, sample_stream(1));
         state.app_props = HashMap::from([(99, props_at(0.42, true))]);
@@ -479,7 +495,7 @@ mod tests {
     #[test]
     fn publish_audio_reports_sinks_and_sources_with_their_own_active_flags() {
         let (updates, mut rx) = tokio::sync::mpsc::unbounded_channel();
-        let (privacy_updates, _privacy_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (privacy_updates, _privacy_rx) = watch::channel(PrivacySources::default());
         let mut state = mixer_state(updates, privacy_updates);
         state.sinks = HashMap::from([
             (59, sink_at("alsa_output.analog", Some("Built-in Audio Analog Stereo"), None)),
