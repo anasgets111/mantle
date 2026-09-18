@@ -30,6 +30,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     unsafe {
         libc::mallopt(libc::M_MMAP_THRESHOLD, 1 << 20);
     }
+    // Tagged, because these lines land in the Supervisor's log through inherited descriptors
+    // (ADR-0199) and are the minority there.
+    shared::log::init("renderer");
     // `obelisk check` re-execs this binary because the Supervisor has no `mlua`, before any Wayland
     // connection because checking needs none.
     if std::env::var_os(shared::CHECK_ENV).is_some() {

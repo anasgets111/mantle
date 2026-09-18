@@ -236,6 +236,9 @@ fn main() -> Result<(), Box<dyn Error>> {
             // descriptors (ADR-0199). Argument parsing has already had its say above, so a
             // detached run still loses a `-c` substitution notice.
             log::capture(&dir)?;
+            // After `capture`, never before: the colour rule asks whether stderr is a terminal, and
+            // before this line it still is one. Untagged, because the Supervisor is most of the log.
+            shared::log::init("");
             // Exit explicitly: `run_supervisor` has finished its teardown, and dropping the runtime
             // would wait on blocking tasks. Two workers, not one per core (ADR-0124), cover
             // socket/D-Bus/inotify/timer waits; the blocking pool is separate. A twenty-core laptop

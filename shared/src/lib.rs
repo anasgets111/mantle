@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 use zeroize::ZeroizeOnDrop;
 
 pub mod framing;
+pub mod log;
 mod paths;
 mod secure_buffer;
 pub use paths::{
@@ -29,6 +30,33 @@ macro_rules! eprint {
     ($($arg:tt)*) => {{
         let _ = std::io::Write::write_fmt(&mut std::io::stderr(), format_args!($($arg)*));
     }};
+}
+
+/// One diagnostic at that level, named by the module it was written in (ADR-0199, amended).
+///
+/// Imported by path (`use shared::warn;`) rather than through `#[macro_use]`, which both crate roots
+/// apply only `cfg(not(test))`, leaving library code under test unable to name these.
+#[macro_export]
+macro_rules! error {
+    ($($arg:tt)*) => { $crate::log::emit($crate::log::Level::Error, module_path!(), format_args!($($arg)*)) };
+}
+
+/// See [`error!`].
+#[macro_export]
+macro_rules! warn {
+    ($($arg:tt)*) => { $crate::log::emit($crate::log::Level::Warn, module_path!(), format_args!($($arg)*)) };
+}
+
+/// See [`error!`].
+#[macro_export]
+macro_rules! info {
+    ($($arg:tt)*) => { $crate::log::emit($crate::log::Level::Info, module_path!(), format_args!($($arg)*)) };
+}
+
+/// See [`error!`].
+#[macro_export]
+macro_rules! debug {
+    ($($arg:tt)*) => { $crate::log::emit($crate::log::Level::Debug, module_path!(), format_args!($($arg)*)) };
 }
 
 /// The snapshot-hydrated capability roster (ADR-0037; CONTEXT.md). Each [`Capability::as_str`]
