@@ -63,23 +63,35 @@ impl SeatHandler for App {
         }
     }
 
+    /// ponytail: `App` holds one pointer and one keyboard, not a map per seat, so `new_capability`
+    /// is first-seat-wins. Ceiling: one seat. Upgrade by keying `pointer`, `keyboard` and
+    /// `keyboard_focus` on the `wl_seat`.
+    ///
+    /// Removal is not on that ceiling: it answers only for the seat that owns the object, because
+    /// nothing gives input back. A second seat losing a capability, or departing and reaching here
+    /// through [`Self::remove_seat`], would otherwise take the working seat's pointer and keyboard
+    /// with it, and `new_capability`'s guards refuse a replacement the live seat never re-announces.
     fn remove_capability(
         &mut self,
         _conn: &Connection,
         _qh: &QueueHandle<Self>,
-        _seat: wl_seat::WlSeat,
+        seat: wl_seat::WlSeat,
         capability: Capability,
     ) {
         match capability {
-            Capability::Pointer => {
+            Capability::Pointer if self.pointer_seat().as_ref() == Some(&seat) => {
                 // No pointer means no release; clear the press like `leave` (ADR-0050 decision 2).
                 self.armed = None;
                 self.cursor_shown = None;
+                // A held drag has no other end: `fire_on_drag(.., "move")` asks for no button, so
+                // a replacement pointer's first Motion would keep dragging.
+                self.drag = None;
+                self.pointer_at = None;
                 // `ThemedPointer::drop` releases `wl_pointer` (`since="3"`), shape device, and
                 // cursor surface (src/seat/pointer/mod.rs:567).
                 self.pointer = None;
             }
-            Capability::Keyboard => {
+            Capability::Keyboard if self.keyboard_seat().as_ref() == Some(&seat) => {
                 // No keyboard means no leave; clear stale focus and its half-typed secret
                 // (ADR-0050 decision 4).
                 self.keyboard_focus = None;
@@ -95,7 +107,23 @@ impl SeatHandler for App {
         }
     }
 
-    fn remove_seat(&mut self, _conn: &Connection, _qh: &QueueHandle<Self>, _seat: wl_seat::WlSeat) {}
+    /// SCTK's `remove_global` calls this and never [`Self::remove_capability`], so a kept
+    /// `ThemedPointer` or `wl_keyboard` would make `new_capability`'s `is_none` guards refuse the
+    /// replacement seat's, leaving input dead and a focused field holding a half-typed secret.
+    fn remove_seat(&mut self, conn: &Connection, qh: &QueueHandle<Self>, seat: wl_seat::WlSeat) {
+        self.remove_capability(conn, qh, seat.clone(), Capability::Pointer);
+        self.remove_capability(conn, qh, seat, Capability::Keyboard);
+    }
+}
+
+impl App {
+    fn pointer_seat(&self) -> Option<wl_seat::WlSeat> {
+        Some(self.pointer.as_ref()?.pointer().data::<PointerData<()>>()?.seat().clone())
+    }
+
+    fn keyboard_seat(&self) -> Option<wl_seat::WlSeat> {
+        Some(self.keyboard.as_ref()?.data::<KeyboardData<App, ()>>()?.seat().clone())
+    }
 }
 
 #[cfg(test)]

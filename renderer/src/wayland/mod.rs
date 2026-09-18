@@ -11,9 +11,12 @@ use smithay_client_toolkit::background_effect::{BackgroundEffectHandler, Backgro
 use smithay_client_toolkit::compositor::{CompositorHandler, CompositorState, FrameCallbackData, Region};
 use smithay_client_toolkit::output::{OutputHandler, OutputState};
 use smithay_client_toolkit::registry::{ProvidesRegistryState, RegistryState};
-use smithay_client_toolkit::seat::keyboard::{KeyEvent, KeyboardHandler, Keysym, Modifiers, RawModifiers};
+use smithay_client_toolkit::seat::keyboard::{
+    KeyEvent, KeyboardData, KeyboardHandler, Keysym, Modifiers, RawModifiers,
+};
 use smithay_client_toolkit::seat::pointer::{
-    BTN_LEFT, BTN_MIDDLE, BTN_RIGHT, PointerEvent, PointerEventKind, PointerHandler, ThemeSpec, ThemedPointer,
+    BTN_LEFT, BTN_MIDDLE, BTN_RIGHT, PointerData, PointerEvent, PointerEventKind, PointerHandler, ThemeSpec,
+    ThemedPointer,
 };
 use smithay_client_toolkit::seat::{Capability, SeatHandler, SeatState};
 use smithay_client_toolkit::session_lock::{
