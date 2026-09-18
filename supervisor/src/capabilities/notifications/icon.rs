@@ -1,10 +1,11 @@
 //! Path-trust validator for `<img src>`, `image-path`, action-icon paths, and registered sound
-//! files; decodes and spools image-data hints, and safely deletes spooled icons. Split from
-//! `dbus::notifications`; see `dbus/notifications/mod.rs`.
+//! files; validates, encodes and spools the decoded image-data hints, and safely deletes spooled
+//! icons. `Hints` in the parent module is what decodes them off the wire.
 
 use std::path::{Path, PathBuf};
 
-use zbus::zvariant::Value;
+use serde::Deserialize;
+use zbus::zvariant::Type;
 
 use crate::capabilities::shm_icons;
 
@@ -60,10 +61,9 @@ pub(super) fn sanitize_body(raw_body: &str, trusted_roots: &[PathBuf]) -> Vec<No
 }
 
 // Freedesktop `image-data`/`icon_data` is `(iiibiiay)`, unlike tray's square-only ARGB32
-// `IconPixmap`; decode the unwrapped `zvariant::Value::Structure` by hand, using the same
-// technique `dbus::tray::parse_menu_node` uses for a `Value::Structure`.
+// `IconPixmap`. Deriving the decode keeps `data` one byte per byte; see `Hints`.
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Type)]
 pub(super) struct RawImageData {
     width: i32,
     height: i32,
@@ -72,62 +72,6 @@ pub(super) struct RawImageData {
     bits_per_sample: i32,
     channels: i32,
     data: Vec<u8>,
-}
-
-fn value_as_i32(value: &Value<'_>) -> Option<i32> {
-    match value {
-        Value::I32(i) => Some(*i),
-        _ => None,
-    }
-}
-
-pub(super) fn value_as_bool(value: &Value<'_>) -> Option<bool> {
-    match value {
-        Value::Bool(b) => Some(*b),
-        _ => None,
-    }
-}
-
-pub(super) fn value_as_u8(value: &Value<'_>) -> Option<u8> {
-    match value {
-        Value::U8(b) => Some(*b),
-        _ => None,
-    }
-}
-
-pub(super) fn value_as_str<'a>(value: &'a Value<'_>) -> Option<&'a str> {
-    match value {
-        Value::Str(s) => Some(s.as_str()),
-        _ => None,
-    }
-}
-
-fn value_as_bytes(value: &Value<'_>) -> Option<Vec<u8>> {
-    match value {
-        Value::Array(array) => {
-            Some(array.iter().filter_map(|v| if let Value::U8(b) = v { Some(*b) } else { None }).collect())
-        }
-        _ => None,
-    }
-}
-
-/// Decodes an `image-data`/`icon_data` `(iiibiiay)` structure. Malformed or non-7-field values
-/// yield no image, not a panic.
-pub(super) fn decode_raw_image_data(value: &Value<'_>) -> Option<RawImageData> {
-    let Value::Structure(structure) = value else { return None };
-    let fields = structure.fields();
-    if fields.len() != 7 {
-        return None;
-    }
-    Some(RawImageData {
-        width: value_as_i32(&fields[0])?,
-        height: value_as_i32(&fields[1])?,
-        rowstride: value_as_i32(&fields[2])?,
-        has_alpha: value_as_bool(&fields[3])?,
-        bits_per_sample: value_as_i32(&fields[4])?,
-        channels: value_as_i32(&fields[5])?,
-        data: value_as_bytes(&fields[6])?,
-    })
 }
 
 /// Validates image-data bounds and the "ARGB icon rejection": positive dimensions up to
@@ -395,49 +339,6 @@ mod tests {
         let mut buf = vec![0u8; reader.output_buffer_size().unwrap()];
         let info = reader.next_frame(&mut buf).expect("valid PNG frame");
         assert_eq!(&buf[..info.buffer_size()], &[0x11, 0x22, 0x33, 0x44]);
-    }
-
-    fn structure_value(fields: Vec<Value<'static>>) -> Value<'static> {
-        let mut builder = zbus::zvariant::StructureBuilder::new();
-        for field in fields {
-            builder = builder.append_field(field);
-        }
-        Value::Structure(builder.build().expect("well-formed test structure"))
-    }
-
-    #[test]
-    fn decode_raw_image_data_parses_a_well_formed_structure() {
-        let data = vec![1u8, 2, 3, 4, 5, 6, 7, 8];
-        let mut array = zbus::zvariant::Array::new(&zbus::zvariant::Signature::U8);
-        for byte in &data {
-            array.append(Value::U8(*byte)).unwrap();
-        }
-        let value = structure_value(vec![
-            Value::I32(2),
-            Value::I32(1),
-            Value::I32(8),
-            Value::Bool(true),
-            Value::I32(8),
-            Value::I32(4),
-            Value::Array(array),
-        ]);
-
-        let decoded = decode_raw_image_data(&value).expect("must decode a well-formed image-data structure");
-        assert_eq!(
-            decoded,
-            RawImageData { width: 2, height: 1, rowstride: 8, has_alpha: true, bits_per_sample: 8, channels: 4, data }
-        );
-    }
-
-    #[test]
-    fn decode_raw_image_data_rejects_a_non_structure_value() {
-        assert_eq!(decode_raw_image_data(&Value::I32(1)), None);
-    }
-
-    #[test]
-    fn decode_raw_image_data_rejects_a_wrong_field_count() {
-        let value = structure_value(vec![Value::I32(1), Value::I32(1)]);
-        assert_eq!(decode_raw_image_data(&value), None);
     }
 
     fn tiny_image() -> RawImageData {

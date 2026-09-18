@@ -11,14 +11,12 @@ use tokio::sync::watch;
 // Use tokio's clock: deadlines move with `tokio::time::pause`, so countdowns test without sleeping.
 use tokio::time::Instant;
 use zbus::fdo::RequestNameFlags;
-use zbus::zvariant::Value;
 
 use super::actions::{declares_action, parse_actions};
 use super::icon::{
-    ImageInput, RawImageData, decode_raw_image_data, default_trusted_icon_roots, delete_icon_file,
-    encode_image_data_to_png, image_data_is_valid, resolve_app_icon, resolve_image_input, sanitize_body,
-    split_image_path_hint, strip_file_uri, validate_trusted_path, value_as_bool, value_as_str, value_as_u8,
-    write_icon_png,
+    ImageInput, RawImageData, default_trusted_icon_roots, delete_icon_file, encode_image_data_to_png,
+    image_data_is_valid, resolve_app_icon, resolve_image_input, sanitize_body, split_image_path_hint, strip_file_uri,
+    validate_trusted_path, write_icon_png,
 };
 use super::queue::{
     Expiry, QueueCleanup, expire_entry, feed_view, next_incarnation, remove_by_id, replace_or_push, resolve_expiry,
@@ -26,7 +24,7 @@ use super::queue::{
 };
 use super::sound::{SoundSender, default_trusted_sound_roots, resolve_sound_name};
 use super::{
-    MAX_APP_NAME_BYTES, MAX_SUMMARY_BYTES, NOTIFICATIONS_BUS_NAME, NOTIFICATIONS_CAPABILITIES,
+    Hints, MAX_APP_NAME_BYTES, MAX_SUMMARY_BYTES, NOTIFICATIONS_BUS_NAME, NOTIFICATIONS_CAPABILITIES,
     NOTIFICATIONS_OBJECT_PATH, Notification, NotificationsSignal, NotificationsState, Urgency, desktop_entry_from_hint,
     reply_placeholder_from_hint, urgency_from_hint_byte,
 };
@@ -447,37 +445,33 @@ impl NotificationsController {
         summary: String,
         body: String,
         actions: Vec<String>,
-        hints: HashMap<String, Value<'_>>,
+        hints: Hints,
         expire_timeout: i32,
     ) -> u32 {
         let app_name = truncate_utf8_bytes(&app_name, MAX_APP_NAME_BYTES);
         let summary = truncate_utf8_bytes(&summary, MAX_SUMMARY_BYTES);
         let body_spans = sanitize_body(&body, &self.trusted_roots);
-        let urgency = urgency_from_hint_byte(hints.get("urgency").and_then(value_as_u8));
-        let action_icons = hints.get("action-icons").and_then(value_as_bool).unwrap_or(false);
-        let parsed_actions = parse_actions(&actions, action_icons);
-        let resident = hints.get("resident").and_then(value_as_bool).unwrap_or(false);
-        let transient = hints.get("transient").and_then(value_as_bool).unwrap_or(false);
-        let desktop_entry = desktop_entry_from_hint(hints.get("desktop-entry").and_then(value_as_str));
-        let reply_placeholder =
-            reply_placeholder_from_hint(hints.get("x-kde-reply-placeholder-text").and_then(value_as_str));
+        let urgency = urgency_from_hint_byte(hints.urgency);
+        let parsed_actions = parse_actions(&actions, hints.action_icons.unwrap_or(false));
+        let resident = hints.resident.unwrap_or(false);
+        let transient = hints.transient.unwrap_or(false);
+        let desktop_entry = desktop_entry_from_hint(hints.desktop_entry.as_deref());
+        let reply_placeholder = reply_placeholder_from_hint(hints.reply_placeholder.as_deref());
 
-        let image_data = hints.get("image-data").or_else(|| hints.get("image_data")).and_then(decode_raw_image_data);
-        let image_path_hint =
-            hints.get("image-path").or_else(|| hints.get("image_path")).and_then(value_as_str).map(str::to_string);
-        let (image_path, image_name) = split_image_path_hint(image_path_hint);
+        let image_data = hints.image_data.or(hints.image_data_deprecated);
+        let (image_path, image_name) = split_image_path_hint(hints.image_path.or(hints.image_path_deprecated));
         // The positional argument wins where a sender set both: it says "this application's icon"
         // and nothing else, where the hint is a fallback from a field that meant a picture.
         let app_icon = (!app_icon.is_empty()).then_some(app_icon).or(image_name);
-        let icon_data = hints.get("icon_data").and_then(decode_raw_image_data);
+        let icon_data = hints.icon_data;
         let app_muted = {
             let state = self.state.lock().unwrap();
             state.muted_apps.contains(&app_name)
                 || desktop_entry.as_ref().is_some_and(|entry| state.muted_apps.contains(entry))
         };
-        let suppress_sound = app_muted || hints.get("suppress-sound").and_then(value_as_bool).unwrap_or(false);
-        let sound_file = hints.get("sound-file").and_then(value_as_str).map(str::to_string);
-        let sound_name = hints.get("sound-name").and_then(value_as_str).map(str::to_string);
+        let suppress_sound = app_muted || hints.suppress_sound.unwrap_or(false);
+        let sound_file = hints.sound_file;
+        let sound_name = hints.sound_name;
 
         let (id, incarnation) = {
             let mut state = self.state.lock().unwrap();
@@ -721,8 +715,7 @@ mod tests {
         controller.set_sound(Urgency::Normal, "/usr/share/sounds/freedesktop/stereo/message.oga");
         controller.set_app_muted("vesktop".into(), true);
         let notify = move |app_name: &str, desktop_entry: Option<&'static str>| {
-            let hints =
-                desktop_entry.map(|entry| ("desktop-entry".to_string(), Value::from(entry))).into_iter().collect();
+            let hints = Hints { desktop_entry: desktop_entry.map(str::to_string), ..Hints::default() };
             controller.notify(app_name.into(), 0, String::new(), "s".into(), String::new(), vec![], hints, -1)
         };
 
