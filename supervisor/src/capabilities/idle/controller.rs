@@ -15,7 +15,7 @@ use super::inhibit::{
 };
 use super::notify::{
     ListenerId, NotifyState, cleanup_generation_thresholds, connect_wayland_idle, register_threshold_entry,
-    spawn_idle_event_forwarder,
+    spawn_idle_event_forwarder, take_unused_listeners,
 };
 use super::state::{IdleState, foreign_idle_inhibitors};
 
@@ -94,6 +94,9 @@ pub struct IdleController {
     /// current answer instead of `nil` until the next inhibitor (ADR-0141).
     published: Arc<std::sync::Mutex<PublishedIdle>>,
     gate: Arc<std::sync::Mutex<IdleGate>>,
+    /// Also held here, not just handed to the forwarder: reaping the last listener has to answer
+    /// for the compositor itself, and no raw event will arrive to let the forwarder do it.
+    state_tx: UnboundedSender<IdleState>,
 }
 
 impl IdleController {
@@ -125,6 +128,7 @@ impl IdleController {
             notify: notify.clone(),
             published: published.clone(),
             gate: gate.clone(),
+            state_tx: state_tx.clone(),
             pending: Arc::new(std::sync::Mutex::new(Vec::new())),
             inhibit: Arc::new(LiveInhibit {
                 system_bus,
@@ -299,8 +303,7 @@ impl IdleController {
         self.pending.lock().unwrap().retain(|&(queued_generation, _)| queued_generation != generation_id);
         let notify = self.notify.read().unwrap();
         if let NotifyState::Live(live) = &*notify {
-            let mut registry = live.registry.lock().unwrap();
-            cleanup_generation_thresholds(&mut registry.fanout, generation_id);
+            cleanup_generation_thresholds(&mut live.registry.lock().unwrap().fanout, generation_id);
         }
     }
 
@@ -309,8 +312,26 @@ impl IdleController {
     /// last holder. Uses the same `state` lock as inhibit/release, serializing reload races.
     pub async fn reset_registrations(&self, generation_id: u32) {
         self.reset_thresholds(generation_id);
-        // Not in `reset_thresholds`: an in-place reload keeps the generation id and its listeners,
-        // and the compositor never resends `idled`, so the gate's entries still belong to it.
+        // Destroying listeners is reap-only: see `take_unused_listeners`.
+        let mut listening = true;
+        if let NotifyState::Live(live) = &*self.notify.read().unwrap() {
+            let mut registry = live.registry.lock().unwrap();
+            let registry = &mut *registry;
+            for listener in take_unused_listeners(&mut registry.fanout, &mut registry.listeners) {
+                listener.destroy();
+            }
+            listening = !registry.listeners.is_empty();
+        }
+        // With none left, no raw event can arrive and the forwarder's sweep never runs, so a
+        // `true` published before the reap would stand for the session. Nothing is watching, which
+        // is not the same evidence as an inhibitor, but it is the answer that does not strand a
+        // config reporting the compositor as holding the session awake.
+        if !listening && let Some(next) = self.published.lock().unwrap().set_wayland_inhibited(Some(false)) {
+            let _ = self.state_tx.send(next);
+        }
+        // Also not in `reset_thresholds`: an in-place reload keeps the generation id and its
+        // listeners, and the compositor never resends `idled`, so the gate's entries still belong
+        // to it.
         self.gate.lock().unwrap().forget(generation_id);
 
         let mut state = self.inhibit.state.lock().await;
@@ -378,5 +399,24 @@ async fn watch_idle_inhibitors(
         if state_tx.send(next_state).is_err() {
             return;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The contract `reset_registrations` leans on when it reaps the last listener: `None` latches
+    /// the previous answer, so only an explicit one clears a `true` nothing will contradict.
+    #[test]
+    fn no_evidence_keeps_the_last_compositor_answer_and_only_an_explicit_one_replaces_it() {
+        let mut published = PublishedIdle::default();
+        published.set_wayland_inhibited(Some(true));
+
+        published.set_wayland_inhibited(None);
+        assert!(published.merged().inhibited, "no evidence must leave the held answer standing");
+
+        published.set_wayland_inhibited(Some(false));
+        assert!(!published.merged().inhibited, "a reap with no listeners left must be able to clear it");
     }
 }

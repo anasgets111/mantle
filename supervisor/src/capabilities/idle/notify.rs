@@ -71,6 +71,31 @@ pub fn cleanup_generation_thresholds(fanout: &mut HashMap<Duration, Vec<u32>>, g
     }
 }
 
+/// Forgets the durations nothing is registered at any more and hands their listeners back for the
+/// caller to destroy at the Wayland boundary.
+///
+/// Reap-only. A listener recreated past its timeout fires `idled` at once on the wlroots family,
+/// so doing this on an in-place reload re-runs `on_idle` on an already-dimmed screen -- ADR-0159's
+/// reverted `rearm_listeners`.
+pub(crate) fn take_unused_listeners<T>(
+    fanout: &mut HashMap<Duration, Vec<u32>>,
+    listeners: &mut HashMap<ListenerId, T>,
+) -> Vec<T> {
+    let mut taken = Vec::new();
+    fanout.retain(|&duration, entries| {
+        if !entries.is_empty() {
+            return true;
+        }
+        taken.extend(
+            [true, false]
+                .into_iter()
+                .filter_map(|respects_inhibitors| listeners.remove(&ListenerId { duration, respects_inhibitors })),
+        );
+        false
+    });
+    taken
+}
+
 /// Dispatch target for the separate Wayland connection (ADR-0010, survives Renderer crash/reload).
 /// Holds only the raw-event channel; fan-out state and bound `Send` proxies stay on the async side
 /// via [`IdleController`] (ADR-0032).
@@ -266,6 +291,16 @@ pub(crate) fn spawn_idle_event_forwarder(
                 }
             }
 
+            {
+                // A destroyed listener never sends the `Resumed` that clears its duration, so a
+                // seat idle at reap time would latch here for the rest of the run.
+                let live = registry.lock().unwrap();
+                let still_listening = |duration: &Duration, respects_inhibitors| {
+                    live.listeners.contains_key(&ListenerId { duration: *duration, respects_inhibitors })
+                };
+                input_idle.retain(|duration| still_listening(duration, false));
+                gated_idle.retain(|duration| still_listening(duration, true));
+            }
             let answer = wayland_inhibited(&input_idle, &gated_idle);
             // Held across the send, not just the settle. `state_tx` is unbounded, so this never
             // blocks. Releasing first let the other writer settle and send between our two steps,
@@ -432,6 +467,31 @@ mod tests {
             fanout.get(&Duration::from_secs(60)),
             Some(&vec![]),
             "generation 1's only entry at 60s must be dropped"
+        );
+    }
+
+    #[test]
+    fn reaping_the_last_generation_at_a_duration_takes_its_listener_pair() {
+        let mut fanout = HashMap::new();
+        register_threshold_entry(&mut fanout, 1, 60);
+        register_threshold_entry(&mut fanout, 2, 30);
+        let mut listeners: HashMap<ListenerId, u8> = [30u64, 60]
+            .into_iter()
+            .flat_map(|sec| {
+                [true, false].map(|respects_inhibitors| {
+                    (ListenerId { duration: Duration::from_secs(sec), respects_inhibitors }, 0)
+                })
+            })
+            .collect();
+
+        cleanup_generation_thresholds(&mut fanout, 1);
+        let taken = take_unused_listeners(&mut fanout, &mut listeners);
+
+        assert_eq!(taken.len(), 2, "both listeners of the emptied 60s duration are handed back for destruction");
+        assert_eq!(
+            listeners.keys().map(|id| id.duration).collect::<HashSet<_>>(),
+            HashSet::from([Duration::from_secs(30)]),
+            "the 30s pair generation 2 still wants must stay"
         );
     }
 

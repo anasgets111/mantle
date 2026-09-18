@@ -22,7 +22,8 @@
 //! tenth reload of a screen-dimming config dims ten times. That drop also sends
 //! `forget_thresholds`, so the Supervisor's fan-out entries go with the callbacks they fed
 //! (ADR-0158). What remains is the new tree's registrations, sent behind it on the same socket.
-//! The listener itself stays, and re-registering the duration is a no-op there.
+//! The listener itself stays: a reload re-registers the same durations, and one recreated past
+//! its timeout would fire `idled` at once (ADR-0159). Only reaping the generation destroys it.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
