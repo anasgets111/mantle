@@ -588,9 +588,9 @@ pub fn run(
                     .unwrap_or(nix::poll::PollTimeout::NONE)
             });
             // Hand glibc's free lists back before sleeping, or they only ratchet up: 1.7 MiB over
-            // 90s here while `in_use` fell. `malloc_trim` is per-process, so
-            // `supervisor::memory::return_free_pages_to_the_kernel` does not reach this one. Not a
-            // timer: an idle loop still never wakes (ADR-0124), this trims on the wake that ends it.
+            // 90s here while `in_use` fell. `malloc_trim` is per-process, so no other process can
+            // do it for this one. Not a timer: an idle loop still never wakes (ADR-0124), this
+            // trims on the wake that ends it.
             if trimmed.elapsed() >= TRIM_INTERVAL {
                 // SAFETY: plain one-integer FFI. `malloc_trim` locks the arenas itself and only
                 // `madvise`s pages the allocator already holds free, never live chunks.

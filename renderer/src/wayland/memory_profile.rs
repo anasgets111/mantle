@@ -5,9 +5,8 @@
 //! That shape needs per-subsystem counters read at the same instant, which is what this prints.
 //!
 //! `mallinfo2`'s in-use/free split is the load-bearing pair: growing `in_use` is a live leak,
-//! while a growing `free` under a flat `in_use` is glibc holding freed chunks that a
-//! `supervisor::memory::return_free_pages_to_the_kernel`-style trim could hand back. Nothing else
-//! here distinguishes those two, and they have opposite fixes.
+//! while a growing `free` under a flat `in_use` is glibc holding freed chunks that a `malloc_trim`
+//! could hand back. Nothing else here distinguishes those two, and they have opposite fixes.
 //!
 //! Off reads no counters, since `MemoryProfile` is an `Option` and the report interval gates the
 //! collecting closure.

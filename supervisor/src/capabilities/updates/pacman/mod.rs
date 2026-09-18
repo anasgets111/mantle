@@ -29,11 +29,7 @@ impl Backend for PacmanBackend {
     }
 
     fn check(&self) -> Result<Vec<UpdateCandidate>, String> {
-        let candidates = check_against_a_throwaway_copy(&self.conf_path, &self.db_root);
-        // After dropping `alpm`, return its sync-database pages before the arena sits idle for the
-        // session. It is the Supervisor's largest allocation (the memory helper measures this).
-        crate::memory::return_free_pages_to_the_kernel();
-        candidates
+        check_in_a_child(&self.conf_path, &self.db_root)
     }
 
     /// Root upgrade against real `/etc/pacman.conf` and `/var/lib/pacman`. `pkexec` triggers
@@ -48,6 +44,54 @@ impl Backend for PacmanBackend {
     fn parse_install_step(&self, line: &str) -> Option<InstallStep> {
         install::parse_install_step(line)
     }
+}
+
+/// Env names carrying the check into a re-exec of this binary.
+const CHECK_WORKER: &str = "OBELISK_PACMAN_CHECK";
+const CHECK_CONF: &str = "OBELISK_PACMAN_CONF";
+const CHECK_DB_ROOT: &str = "OBELISK_PACMAN_DB_ROOT";
+
+/// Runs the check in a child that then exits, because process exit is the only thing that returns
+/// the memory. One sync costs ~55 MiB of glibc arena and `malloc_trim` gives back none of it: the
+/// bytes are freed, but libalpm leaves at least one live chunk on every arena page, so nothing can
+/// be unmapped. In-process the *first* check raised the Supervisor's floor for the rest of the
+/// session.
+///
+/// `Backend::check` already runs inside `spawn_blocking`, so this waits on the child rather than
+/// reaching for `tokio::process`.
+fn check_in_a_child(conf_path: &Path, db_root: &Path) -> Result<Vec<UpdateCandidate>, String> {
+    let output = std::process::Command::new(crate::pam_worker::SELF_EXE)
+        .env(CHECK_WORKER, "1")
+        .env(CHECK_CONF, conf_path)
+        .env(CHECK_DB_ROOT, db_root)
+        .output()
+        .map_err(|err| format!("failed to spawn the update check: {err}"))?;
+
+    if !output.status.success() {
+        // The worker prints its own diagnosis; without one, name the status so a crash is not a
+        // silent "no updates".
+        let detail = String::from_utf8_lossy(&output.stderr);
+        let detail = detail.trim();
+        return Err(if detail.is_empty() {
+            format!("the update check exited with {}", output.status)
+        } else {
+            detail.to_string()
+        });
+    }
+
+    serde_json::from_slice::<Result<Vec<UpdateCandidate>, String>>(&output.stdout)
+        .map_err(|err| format!("the update check returned no readable result: {err}"))?
+}
+
+/// Child branch of [`check_in_a_child`], entered from `main` before anything else starts. Writes
+/// one JSON `Result` and returns; the exit that follows is what reclaims the arena.
+pub(crate) fn run_check_worker() -> Result<(), Box<dyn std::error::Error>> {
+    let conf_path = PathBuf::from(std::env::var_os(CHECK_CONF).ok_or("missing the pacman conf path")?);
+    let db_root = PathBuf::from(std::env::var_os(CHECK_DB_ROOT).ok_or("missing the pacman db root")?);
+
+    let result = check_against_a_throwaway_copy(&conf_path, &db_root);
+    serde_json::to_writer(std::io::stdout().lock(), &result)?;
+    Ok(())
 }
 
 /// Uses a fresh tempdir with one symlink to `db_root/local`, then syncs and checks there, never in

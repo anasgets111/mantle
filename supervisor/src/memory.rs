@@ -3,8 +3,6 @@
 //! for supervisor plus the live renderer (item 1, against the 50 MiB-per-monitor budget), renderer
 //! USS (item 2), and GPU residency, never folded into PSS because real drivers omit it from
 //! `smaps`.
-//!
-//! [`return_free_pages_to_the_kernel`] only returns allocator pages, never shell state.
 
 use std::collections::HashMap;
 use std::io;
@@ -75,24 +73,6 @@ pub(crate) fn parse_rollup(text: &str) -> Option<Rollup> {
         }
     }
     Some(Rollup { pss: pss?, uss: private_clean + private_dirty })
-}
-
-/// Hands glibc's already-free pages back to the kernel across every arena.
-///
-/// Freeing does not shrink the process: glibc keeps chunks on free lists, and a `spawn_blocking`
-/// arena is not trimmed on its own. `libalpm`'s update check parses the sync database and leaves
-/// tens of MiB of dead allocations. Before this existed, memory was 31 MiB before the check, 84
-/// MiB on completion, and still 84 MiB minutes later, consuming ADR-0043's 50 MiB-per-monitor
-/// budget after the work ended.
-///
-/// Use for a job of that scale, never in a loop: it walks every arena's free lists and locks each
-/// arena, so it belongs at the blocking job's end, not on a timer.
-pub(crate) fn return_free_pages_to_the_kernel() {
-    // SAFETY: plain one-integer FFI. `malloc_trim` locks arenas itself, is thread-safe, and only
-    // `madvise`s pages the allocator already holds free.
-    unsafe {
-        libc::malloc_trim(0);
-    }
 }
 
 /// `smaps_rollup` values are `<number> kB`, the kernel's long-standing name for KiB. Unlike DRM
