@@ -341,7 +341,12 @@ async fn run_supervisor(dir: PathBuf, config_dir: PathBuf, profile: Option<u64>)
                 }
             }
             Some(_) = memory::tick_sampler(&mut memory_sampler) => {
-                memory::log_sample("steady state", supervisor.authoritative.generation_id, &supervisor.authoritative.child);
+                memory::log_sample(
+                    "steady state",
+                    supervisor.authoritative.generation_id,
+                    &supervisor.authoritative.child,
+                    supervisor.snapshot_sizes(),
+                );
             }
             Some(request) = agent_requests.recv() => supervisor.handle_polkit_request(request),
             Some((cookie, outcome)) = polkit_outcomes.recv() => supervisor.record_polkit_outcome(cookie, outcome),

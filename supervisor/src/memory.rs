@@ -1,8 +1,9 @@
 //! Memory measurement harness (ADR-0043 decision 1): `/proc/[pid]/smaps_rollup` supplies PSS/USS;
 //! `/proc/[pid]/fdinfo/*` supplies DRM residency. It reports, never evicts shell state: total PSS
-//! for supervisor plus the live renderer (item 1, against the 50 MiB-per-monitor budget), renderer
-//! USS (item 2), and GPU residency, never folded into PSS because real drivers omit it from
-//! `smaps`.
+//! for supervisor plus the live renderer (item 1, against the 50 MiB-per-monitor budget), both
+//! processes' USS, since PSS shifts when the other process maps or unmaps a shared page and
+//! only USS is that process alone (item 2), and GPU residency, never folded into PSS because
+//! real drivers omit it from `smaps`.
 
 use std::collections::HashMap;
 use std::io;
@@ -51,7 +52,48 @@ pub(crate) struct ProcessMemory {
 #[derive(Debug)]
 pub(crate) struct Sample {
     pub(crate) supervisor: ProcessMemory,
+    pub(crate) malloc: Malloc,
+    /// Every `last_snapshots` payload, serialized bytes, largest first. The map is keyed by the
+    /// closed [`Capability`](shared::Capability) roster, so only the values can grow, and this is
+    /// the only place that growth is visible.
+    pub(crate) snapshots: Vec<(&'static str, usize)>,
     pub(crate) renderer: Option<(u32, ProcessMemory)>,
+}
+
+/// glibc's totals for this process from `mallinfo2`, in bytes. `smaps` says how much the
+/// Supervisor holds; only the in-use/free split says whether it is live, for the reason
+/// `renderer/src/wayland/memory_profile.rs` gives about the Renderer. Read here rather than shared
+/// with that copy, which would put `libc` in `shared` for twelve lines of FFI.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct Malloc {
+    /// `arena`: bytes taken from the kernel via `brk`, across every per-thread arena.
+    pub(crate) arena: u64,
+    /// `hblkhd`: bytes in `mmap`ed blocks, which allocations past `M_MMAP_THRESHOLD` take instead.
+    pub(crate) mmapped: u64,
+    /// `uordblks`: bytes handed out and not yet freed.
+    pub(crate) in_use: u64,
+    /// `fordblks`: bytes on glibc's free lists, still charged to the process until a trim.
+    pub(crate) free: u64,
+}
+
+impl Malloc {
+    #[cfg(target_env = "gnu")]
+    fn now() -> Self {
+        // SAFETY: plain FFI returning a POD struct by value. `mallinfo2` takes no arguments, locks
+        // the arenas itself, and only reads counters.
+        let info = unsafe { libc::mallinfo2() };
+        Self {
+            arena: info.arena as u64,
+            mmapped: info.hblkhd as u64,
+            in_use: info.uordblks as u64,
+            free: info.fordblks as u64,
+        }
+    }
+
+    #[cfg(not(target_env = "gnu"))]
+    fn now() -> Self {
+        Self::default()
+    }
 }
 
 /// Parses `smaps_rollup` into PSS and USS. Missing `Pss:` yields `None`: a truncated rollup is not
@@ -162,10 +204,21 @@ pub(crate) fn report_line(label: &str, sample: &Sample) -> String {
     let total_pss: u64 =
         sample.supervisor.rollup.pss + sample.renderer.iter().map(|(_, memory)| memory.rollup.pss).sum::<u64>();
     let mut line = format!(
-        "[obelisk-memory] {label}: total pss {:.1} MiB; supervisor pss {:.1} MiB",
+        "[obelisk-memory] {label}: total pss {:.1} MiB; supervisor pss {:.1} MiB uss {:.1} MiB \
+         (malloc in_use {:.1} free {:.1} arena {:.1} mmap {:.1} MiB)",
         mib(total_pss),
-        mib(sample.supervisor.rollup.pss)
+        mib(sample.supervisor.rollup.pss),
+        mib(sample.supervisor.rollup.uss),
+        mib_from_bytes(sample.malloc.in_use),
+        mib_from_bytes(sample.malloc.free),
+        mib_from_bytes(sample.malloc.arena),
+        mib_from_bytes(sample.malloc.mmapped),
     );
+    if !sample.snapshots.is_empty() {
+        let sizes: Vec<String> =
+            sample.snapshots.iter().map(|(capability, bytes)| format!("{capability}={bytes}")).collect();
+        line.push_str(&format!("; snapshots {}", sizes.join(" ")));
+    }
     if let Some((generation_id, memory)) = &sample.renderer {
         line.push_str(&format!(
             "; generation {generation_id} pss {:.1} MiB uss {:.1} MiB gpu {:.1} MiB ({:.1} MiB shared, {} drm client(s))",
@@ -181,6 +234,11 @@ pub(crate) fn report_line(label: &str, sample: &Sample) -> String {
 
 fn mib(kib: u64) -> f64 {
     kib as f64 / 1024.0
+}
+
+/// `mallinfo2` counts bytes where `smaps` counts KiB.
+fn mib_from_bytes(bytes: u64) -> f64 {
+    bytes as f64 / (1024.0 * 1024.0)
 }
 
 /// Reads `smaps_rollup` and readable `fdinfo` under `<proc_root>/<who>` (`who` is a pid or
@@ -209,7 +267,11 @@ fn read_gpu(process_dir: &Path) -> Gpu {
 
 /// Reads `<proc_root>/self`, then the renderer's `(generation_id, pid)`. A pid that already exited
 /// is logged and skipped; only the supervisor read is fatal.
-pub(crate) fn sample(proc_root: &Path, renderer: Option<(u32, u32)>) -> io::Result<Sample> {
+pub(crate) fn sample(
+    proc_root: &Path,
+    renderer: Option<(u32, u32)>,
+    snapshots: Vec<(&'static str, usize)>,
+) -> io::Result<Sample> {
     let supervisor = read_process_memory(proc_root, "self")?;
     let renderer = renderer.and_then(|(generation_id, pid)| match read_process_memory(proc_root, &pid.to_string()) {
         Ok(memory) => Some((generation_id, memory)),
@@ -218,7 +280,7 @@ pub(crate) fn sample(proc_root: &Path, renderer: Option<(u32, u32)>) -> io::Resu
             None
         }
     });
-    Ok(Sample { supervisor, renderer })
+    Ok(Sample { supervisor, malloc: Malloc::now(), snapshots, renderer })
 }
 
 /// Builds the `--profile` steady-state sampler (ADR-0043 amendment), or `None`. `smaps_rollup` is
@@ -234,8 +296,13 @@ pub(crate) fn sampler(period: Option<Duration>) -> Option<tokio::time::Interval>
 /// Reads and logs one sample across the Supervisor and the authoritative Renderer (ADR-0043
 /// decision 1), from `main.rs`'s steady-state timer. A reaped `Child` with `id() == None` is left
 /// out, not reported as zero.
-pub(crate) fn log_sample(label: &str, generation_id: u32, child: &tokio::process::Child) {
-    match sample(Path::new(PROC_ROOT), child.id().map(|pid| (generation_id, pid))) {
+pub(crate) fn log_sample(
+    label: &str,
+    generation_id: u32,
+    child: &tokio::process::Child,
+    snapshots: Vec<(&'static str, usize)>,
+) {
+    match sample(Path::new(PROC_ROOT), child.id().map(|pid| (generation_id, pid)), snapshots) {
         Ok(sample) => eprintln!("{}", report_line(label, &sample)),
         Err(err) => eprintln!("[obelisk-memory] {label} sample failed: {err}"),
     }
@@ -511,6 +578,13 @@ drm-engine-video-enhance:\t0 ns\n";
                 rollup: Rollup { pss: 8192, uss: 0 },
                 gpu: Gpu { resident: 0, shared: 0, clients: 0 },
             },
+            malloc: Malloc {
+                arena: 6 * 1024 * 1024,
+                mmapped: 1024 * 1024,
+                in_use: 4 * 1024 * 1024,
+                free: 2 * 1024 * 1024,
+            },
+            snapshots: vec![("notifications", 4096), ("audio", 512)],
             renderer: Some((
                 0,
                 ProcessMemory {
@@ -522,7 +596,9 @@ drm-engine-video-enhance:\t0 ns\n";
 
         assert_eq!(
             report_line("periodic", &sample),
-            "[obelisk-memory] periodic: total pss 58.0 MiB; supervisor pss 8.0 MiB; \
+            "[obelisk-memory] periodic: total pss 58.0 MiB; supervisor pss 8.0 MiB uss 0.0 MiB \
+             (malloc in_use 4.0 free 2.0 arena 6.0 mmap 1.0 MiB); \
+             snapshots notifications=4096 audio=512; \
              generation 0 pss 50.0 MiB uss 40.0 MiB gpu 20.0 MiB (3.0 MiB shared, 1 drm client(s))"
         );
     }
@@ -535,6 +611,8 @@ drm-engine-video-enhance:\t0 ns\n";
                 rollup: Rollup { pss: 1024, uss: 999_999 },
                 gpu: Gpu { resident: 999_999, shared: 999_999, clients: 1 },
             },
+            malloc: Malloc::default(),
+            snapshots: Vec::new(),
             renderer: Some((
                 0,
                 ProcessMemory {

@@ -234,6 +234,20 @@ impl Supervisor {
         send_frame_logged(&self.registry, self.authoritative.generation_id, &SupervisorFrame::Reevaluate);
     }
 
+    /// Every `last_snapshots` payload for `--profile`, serialized bytes, largest first. All of
+    /// them, because which capability's published state grows with traffic is the question, not
+    /// the premise. Serializing to measure is the work `push_snapshot` already does per change,
+    /// and this runs once per report.
+    pub(crate) fn snapshot_sizes(&self) -> Vec<(&'static str, usize)> {
+        let mut sizes: Vec<(&'static str, usize)> = self
+            .last_snapshots
+            .iter()
+            .map(|(capability, snapshot)| (capability.as_str(), snapshot.payload.to_string().len()))
+            .collect();
+        sizes.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(b.0)));
+        sizes
+    }
+
     /// Replays snapshots to a newly registered authoritative generation, then gives it an owed
     /// lock.
     pub(crate) fn hydrate(&mut self, generation_id: u32) {
