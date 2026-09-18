@@ -114,6 +114,20 @@ impl FilesController {
         let _ = self.events.send(FilesSignal::Changed);
     }
 
+    /// Drops every watch, for a generation that is gone: nothing else does, and its replacement
+    /// hydrates from this payload before it asks for the folders it wants.
+    pub fn forget_watches(&self) {
+        let watches = std::mem::take(&mut *self.watches.lock().expect("files watches mutex poisoned"));
+        if watches.is_empty() {
+            return;
+        }
+        for watch in watches.into_values() {
+            watch.task.abort();
+        }
+        self.state.lock().expect("files state mutex poisoned").folders.clear();
+        let _ = self.events.send(FilesSignal::Changed);
+    }
+
     /// Stops following `path` and removes it from the payload; an unwatched path is a no-op.
     pub fn unwatch(&self, path: &str) {
         let key = folder_key(path);
@@ -338,6 +352,26 @@ mod tests {
 
         controller.unwatch(&key);
         assert!(controller.snapshot().folders.is_empty());
+    }
+
+    #[tokio::test]
+    async fn forgetting_the_watches_drops_every_folder_and_pushes_only_when_there_was_one() {
+        let dir = tempfile::tempdir().unwrap();
+        touch(dir.path(), "one.jpg");
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let controller = FilesController::new(tx);
+        let key = dir.path().to_string_lossy().into_owned();
+
+        controller.watch(&key, vec![]);
+        rx.recv().await.unwrap();
+        rx.recv().await.unwrap();
+
+        controller.forget_watches();
+        assert!(controller.snapshot().folders.is_empty(), "the replacement generation must not inherit the folder");
+        rx.recv().await.unwrap();
+
+        controller.forget_watches();
+        assert!(rx.try_recv().is_err(), "with nothing watched there is nothing to tell anyone about");
     }
 
     #[tokio::test]

@@ -425,13 +425,17 @@ impl Capabilities {
     /// Drops what a departed generation asked for. Its replacement starts with fresh state (named
     /// state survives only an in-place reload), so nothing would send the Bluetooth discovery stop
     /// or the Wi-Fi prompt cancel the old one owed, and discovery ran for the rest of the session.
-    /// Queued behind that generation's own requests, so none runs after it.
+    /// Its folder watches likewise kept a task and a kernel watch. The worker sends are queued
+    /// behind that generation's own requests, so none runs after it.
     pub fn forget_departed_requests(&self) {
         if let Some(bluetooth) = &self.bluetooth {
             let _ = bluetooth.send(Box::new(|bluetooth| bluetooth.set_discovery(false)));
         }
         if let Some(network) = &self.network {
             let _ = network.send(Box::new(|network| network.cancel_connect()));
+        }
+        if let Some(files) = &self.files {
+            files.forget_watches();
         }
     }
 
