@@ -59,8 +59,8 @@ pub struct Census {
     pub image_ready: u64,
     pub image_pending: u64,
     pub image_failed: u64,
-    /// Evicted ids awaiting `release_evicted`, and decodes awaiting upload. Both are drained
-    /// every turn in a healthy loop, so a nonzero reading that persists is itself the finding.
+    /// Textures released and textures uploaded since start. Totals, not queue depths: the paint
+    /// drains both queues before a report samples them, so the depths only ever read zero.
     pub image_evicted: u64,
     pub image_landed: u64,
     /// Memoized measurements, against `SHAPE_CACHE_CAPACITY`.

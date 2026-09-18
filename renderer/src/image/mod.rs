@@ -267,6 +267,11 @@ pub struct ImageCache {
     entries: HashMap<CacheKey, Entry>,
     /// Evicted since [`ImageCache::release_evicted`], not yet freed.
     evicted: Vec<ImageId>,
+    /// Textures released and textures uploaded over the cache's life, for
+    /// `wayland::memory_profile`. Counted rather than read off `evicted`/`landed`, which the paint
+    /// drains before the report samples them and so always read zero.
+    evicted_total: usize,
+    landed_total: usize,
     /// Bytes across `Ready` slots, maintained by [`ImageCache::insert`] and [`ImageCache::evict`].
     resident_bytes: usize,
     /// Lamport clock incremented per [`ImageCache::image`], avoiding `Instant` and frame state.
@@ -325,6 +330,8 @@ impl ImageCache {
         ImageCache {
             entries: HashMap::new(),
             evicted: Vec::new(),
+            evicted_total: 0,
+            landed_total: 0,
             resident_bytes: 0,
             deferred: false,
             workers_gone: false,
@@ -336,9 +343,10 @@ impl ImageCache {
         }
     }
 
-    /// Resident bytes and slot counts for `wayland::memory_profile`. Counts slots rather than
-    /// reading `resident_bytes` alone: bytes flat against a rising `pending` is a decode queue
-    /// backing up, which the byte total cannot show.
+    /// Resident bytes, slot counts and lifetime churn for `wayland::memory_profile`. Counts slots
+    /// rather than reading `resident_bytes` alone: bytes flat against a rising `pending` is a
+    /// decode queue backing up, which the byte total cannot show. The last two are totals since
+    /// start, so a step in the bytes can be read against how many textures moved to reach it.
     pub fn census(&self) -> (usize, usize, usize, usize, usize, usize) {
         let mut ready = 0;
         let mut pending = 0;
@@ -350,7 +358,7 @@ impl ImageCache {
                 Slot::Failed => failed += 1,
             }
         }
-        (self.resident_bytes, ready, pending, failed, self.evicted.len(), self.landed.len())
+        (self.resident_bytes, ready, pending, failed, self.evicted_total, self.landed_total)
     }
 
     /// Frees last frame's evictions. `layout::paint::canvas::paint_tree` calls this before walking because
@@ -412,6 +420,7 @@ impl ImageCache {
             let slot = upload_or_log(canvas, &key.path, result);
             if let Slot::Ready(_, bytes) = slot {
                 self.resident_bytes += bytes;
+                self.landed_total += 1;
             }
             if let Some(entry) = self.entries.get_mut(&key) {
                 entry.slot = slot;
@@ -591,6 +600,7 @@ impl ImageCache {
             match &entry.slot {
                 Slot::Ready(id, bytes) => {
                     self.evicted.push(*id);
+                    self.evicted_total += 1;
                     self.resident_bytes -= *bytes;
                 }
                 // Its decode is still queued or running; stop it being spent on a slot that has
