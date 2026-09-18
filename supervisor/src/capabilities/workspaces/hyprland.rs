@@ -40,6 +40,7 @@ use serde::Deserialize;
 
 use super::controller::{FocusedWindow, SpecialWorkspace, StatePublisher, WorkspaceRow};
 use crate::compositor::{hyprland_command, hyprland_request, hyprland_signature, hyprland_socket_path};
+use shared::{error, info, warn};
 
 /// One `j/workspaces` entry. Hyprland's `windows` count identifies empty workspaces without a
 /// client scan.
@@ -174,7 +175,7 @@ fn focused_window(json: &str) -> Option<FocusedWindow> {
     let value: serde_json::Value = match serde_json::from_str(json) {
         Ok(value) => value,
         Err(err) => {
-            eprintln!("workspaces: Hyprland's activewindow reply is not JSON; treating as no focused window: {err}");
+            warn!("Hyprland's activewindow reply is not JSON; treating as no focused window: {err}");
             return None;
         }
     };
@@ -189,9 +190,7 @@ fn focused_window(json: &str) -> Option<FocusedWindow> {
             is_fullscreen: Some(client.fullscreen),
         }),
         Err(err) => {
-            eprintln!(
-                "workspaces: Hyprland's activewindow reply has an unexpected shape; treating as no focused window: {err}"
-            );
+            warn!("Hyprland's activewindow reply has an unexpected shape; treating as no focused window: {err}");
             None
         }
     }
@@ -233,14 +232,14 @@ fn read_state(socket_path: &Path) -> Option<State> {
         let reply = match hyprland_request(socket_path, &format!("j/{name}")) {
             Ok(reply) => reply,
             Err(err) => {
-                eprintln!("workspaces: Hyprland `{name}` request failed; skipping this update: {err}");
+                warn!("Hyprland `{name}` request failed; skipping this update: {err}");
                 return None;
             }
         };
         match serde_json::from_str(&reply) {
             Ok(parsed) => Some(parsed),
             Err(err) => {
-                eprintln!("workspaces: Hyprland `{name}` reply did not parse; skipping this update: {err}");
+                warn!("Hyprland `{name}` reply did not parse; skipping this update: {err}");
                 None
             }
         }
@@ -252,7 +251,7 @@ fn read_state(socket_path: &Path) -> Option<State> {
     let active = match hyprland_request(socket_path, "j/activewindow") {
         Ok(reply) => reply,
         Err(err) => {
-            eprintln!("workspaces: Hyprland `activewindow` request failed; skipping this update: {err}");
+            warn!("Hyprland `activewindow` request failed; skipping this update: {err}");
             return None;
         }
     };
@@ -268,9 +267,7 @@ fn read_state(socket_path: &Path) -> Option<State> {
 /// listener.
 pub fn spawn_reader(mut publisher: StatePublisher) {
     let Some(signature) = hyprland_signature() else {
-        eprintln!(
-            "workspaces: HYPRLAND_INSTANCE_SIGNATURE is unset or empty; workspace reporting disabled for this run"
-        );
+        info!("HYPRLAND_INSTANCE_SIGNATURE is unset or empty; workspace reporting disabled for this run");
         return;
     };
     let events_path = hyprland_socket_path(&signature, ".socket2.sock");
@@ -278,8 +275,8 @@ pub fn spawn_reader(mut publisher: StatePublisher) {
     let stream = match UnixStream::connect(&events_path) {
         Ok(stream) => stream,
         Err(err) => {
-            eprintln!(
-                "workspaces: failed to connect to Hyprland's event socket at {}; workspace reporting disabled for this run: {err}",
+            error!(
+                "failed to connect to Hyprland's event socket at {}; workspace reporting disabled for this run: {err}",
                 events_path.display()
             );
             return;
@@ -294,7 +291,7 @@ pub fn spawn_reader(mut publisher: StatePublisher) {
         }
         for line in BufReader::new(stream).lines() {
             let Ok(line) = line else {
-                eprintln!("workspaces: Hyprland event socket read failed; workspaces will no longer update");
+                error!("Hyprland event socket read failed; workspaces will no longer update");
                 return;
             };
             if !is_trigger(&line) {
@@ -306,7 +303,7 @@ pub fn spawn_reader(mut publisher: StatePublisher) {
                 return;
             }
         }
-        eprintln!("workspaces: Hyprland event socket closed; workspaces will no longer update");
+        error!("Hyprland event socket closed; workspaces will no longer update");
     });
 }
 
@@ -314,7 +311,7 @@ pub fn spawn_reader(mut publisher: StatePublisher) {
 /// with the command.
 fn dispatch(what: String) {
     let Some(signature) = hyprland_signature() else {
-        eprintln!("workspaces: `dispatch {what}` requested but HYPRLAND_INSTANCE_SIGNATURE is unset; ignored");
+        warn!("`dispatch {what}` requested but HYPRLAND_INSTANCE_SIGNATURE is unset; ignored");
         return;
     };
     std::thread::spawn(move || {

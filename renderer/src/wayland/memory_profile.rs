@@ -13,6 +13,8 @@
 
 use std::time::{Duration, Instant};
 
+use shared::info;
+
 /// glibc's arena totals from `mallinfo2`, in bytes.
 #[derive(Clone, Copy, Default, PartialEq, Eq, Debug)]
 pub struct Malloc {
@@ -99,7 +101,7 @@ impl MemoryProfile {
     /// `Some` only under `--profile`.
     pub fn from_env() -> Option<Self> {
         let interval = shared::profile_interval()?;
-        eprintln!("[obelisk-renderer] memory profile on, reporting every {}s", interval.as_secs());
+        info!("memory profile on, reporting every {}s", interval.as_secs());
         let now = Instant::now();
         Some(Self { interval, started: now, window_started: now, previous: None, first: None })
     }
@@ -113,11 +115,8 @@ impl MemoryProfile {
         let (census, surfaces) = collect();
         let malloc = Malloc::now();
         let census = Census { malloc, ..census };
-        eprintln!(
-            "[obelisk-renderer] {}",
-            render(self.started.elapsed(), &census, self.previous.as_ref(), self.first.as_ref())
-        );
-        eprintln!("[obelisk-renderer] {}", render_surfaces(self.started.elapsed(), &surfaces));
+        info!("{}", render(self.started.elapsed(), &census, self.previous.as_ref(), self.first.as_ref()));
+        info!("{}", render_surfaces(self.started.elapsed(), &surfaces));
         self.first.get_or_insert(census);
         self.previous = Some(census);
         self.window_started = Instant::now();

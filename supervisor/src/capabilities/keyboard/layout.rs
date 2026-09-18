@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use serde::Deserialize;
+use shared::{error, warn};
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::compositor::{
@@ -45,7 +46,7 @@ impl NiriLink {
                 let event = match read_event() {
                     Ok(event) => event,
                     Err(err) => {
-                        eprintln!("keyboard: niri event stream ended; layout will no longer update: {err}");
+                        error!("niri event stream ended; layout will no longer update: {err}");
                         return;
                     }
                 };
@@ -80,7 +81,7 @@ impl CompositorLink for NiriLink {
         // JSON-RPC supplies an unbounded u64, while niri's wire protocol takes u8. Reject overflow
         // instead of truncating 256 to 0.
         let Ok(index) = u8::try_from(index) else {
-            eprintln!("keyboard: switch_layout index {index} is out of range for niri (must fit in a u8); ignored");
+            warn!("switch_layout index {index} is out of range for niri (must fit in a u8); ignored");
             return;
         };
         let layout = niri_ipc::LayoutSwitchTarget::Index(index);
@@ -138,12 +139,12 @@ fn publish(socket_path: &Path, state: &Arc<Mutex<KeyboardState>>, events: &Unbou
     let reply = match hyprland_request(socket_path, "j/devices") {
         Ok(reply) => reply,
         Err(err) => {
-            eprintln!("keyboard: Hyprland `devices` request failed; layout not updated this round: {err}");
+            warn!("Hyprland `devices` request failed; layout not updated this round: {err}");
             return true;
         }
     };
     let Some(keyboard) = parse_hyprland_devices(&reply) else {
-        eprintln!("keyboard: Hyprland `devices` reply held no usable keyboard entry; layout not updated this round");
+        warn!("Hyprland `devices` reply held no usable keyboard entry; layout not updated this round");
         return true;
     };
     apply_hyprland_layout(state, &keyboard);
@@ -164,8 +165,8 @@ impl HyprlandLink {
         std::thread::spawn(move || {
             let stream = UnixStream::connect(&events_path)
                 .inspect_err(|err| {
-                    eprintln!(
-                        "keyboard: failed to connect to Hyprland's event socket at {}; layout will not update after the first read: {err}",
+                    warn!(
+                        "failed to connect to Hyprland's event socket at {}; layout will not update after the first read: {err}",
                         events_path.display()
                     )
                 })
@@ -178,14 +179,14 @@ impl HyprlandLink {
             let Some(stream) = stream else { return };
             for line in BufReader::new(stream).lines() {
                 let Ok(line) = line else {
-                    eprintln!("keyboard: Hyprland event socket read failed; layout will no longer update");
+                    error!("Hyprland event socket read failed; layout will no longer update");
                     return;
                 };
                 if line.starts_with("activelayout>>") && !publish(&reader_path, &state, &events) {
                     return;
                 }
             }
-            eprintln!("keyboard: Hyprland event socket closed; layout will no longer update");
+            error!("Hyprland event socket closed; layout will no longer update");
         });
         Self { command_path }
     }

@@ -16,7 +16,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use shared::{Capability, CommandEnvelope};
+use shared::{Capability, CommandEnvelope, error, warn};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 use tokio::sync::watch;
 
@@ -169,10 +169,7 @@ fn queue<C: 'static>(worker: &Option<Worker<C>>, envelope: &CommandEnvelope, dis
     let Some(worker) = worker else { return log_unstarted(envelope) };
     let command = envelope.clone();
     if worker.send(Box::new(move |controller| dispatch(controller, &command))).is_err() {
-        eprintln!(
-            "{}: its backend failed to start; {} was dropped",
-            envelope.params.capability, envelope.params.action
-        );
+        warn!("{}: its backend failed to start; {} was dropped", envelope.params.capability, envelope.params.action);
     }
 }
 
@@ -410,7 +407,7 @@ impl Capabilities {
                 let network = network.clone();
                 tokio::spawn(async move { network.connect(pending, secret).await });
             }
-            None => eprintln!(
+            None => warn!(
                 "generation {generation_id}'s secure_submit(network, connect) arrived with no intent for the network the prompt names; dropping"
             ),
         };
@@ -419,7 +416,7 @@ impl Capabilities {
             None => false,
         };
         if !sent {
-            eprintln!(
+            warn!(
                 "generation {generation_id}'s secure_submit(network, connect) arrived with no network backend; dropping"
             );
         }
@@ -454,9 +451,7 @@ impl Capabilities {
                         NetworkController::new(connection, events)
                             .await
                             .map_err(|err| {
-                                eprintln!(
-                                    "network: NetworkManager is unreachable; disabled until the next start: {err}"
-                                )
+                                warn!("network: NetworkManager is unreachable; disabled until the next start: {err}")
                             })
                             .ok()
                     };
@@ -486,7 +481,7 @@ impl Capabilities {
                     self.tray = Some(match with_call_timeout(zbus::connection::Builder::session()).await {
                         Ok(bus) => TrayController::new(bus, self.senders.tray.clone()).await,
                         Err(err) => {
-                            eprintln!(
+                            error!(
                                 "tray: failed to connect to the session bus; tray host disabled for this run: {err}"
                             );
                             TrayController::inert(self.senders.tray.clone())
@@ -505,7 +500,7 @@ impl Capabilities {
                                 .await
                         }
                         Err(err) => {
-                            eprintln!(
+                            error!(
                                 "notifications: failed to connect to the session bus; notifications server disabled for this run: {err}"
                             );
                             NotificationsController::inert(self.senders.notifications.clone(), self.sound_tx.clone())
@@ -520,7 +515,7 @@ impl Capabilities {
                     self.mpris = Some(match with_call_timeout(zbus::connection::Builder::session()).await {
                         Ok(bus) => MprisController::new(bus, self.senders.mpris.clone()),
                         Err(err) => {
-                            eprintln!(
+                            error!(
                                 "mpris: failed to connect to the session bus; player discovery disabled for this run: {err}"
                             );
                             MprisController::inert()
@@ -818,7 +813,7 @@ impl Capabilities {
             Capability::Polkit => {}
             // Read-only: no action enum; a named command is malformed Renderer input.
             Capability::Battery | Capability::Privacy | Capability::System => {
-                eprintln!(
+                warn!(
                     "{capability}: read-only capability received a command from generation {}; dropping",
                     envelope.params.generation_id
                 )

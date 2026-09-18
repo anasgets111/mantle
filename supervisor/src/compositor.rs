@@ -15,6 +15,8 @@ use std::io::{Read, Write};
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 
+use shared::{error, warn};
+
 /// A compositor implemented here, narrower than "a compositor that exists". Other sessions yield
 /// [`detect_compositor`]'s `None`; dependent capabilities degrade rather than guess (ADR-0056
 /// decision 1).
@@ -108,8 +110,8 @@ pub fn hyprland_request(socket_path: &Path, command: &str) -> std::io::Result<St
 pub fn hyprland_command(socket_path: &Path, command: &str, capability: &str) {
     match hyprland_request(socket_path, command) {
         Ok(reply) if reply.trim() == "ok" => {}
-        Ok(reply) => eprintln!("{capability}: Hyprland refused `{command}`: {}", reply.trim()),
-        Err(err) => eprintln!("{capability}: Hyprland `{command}` request failed: {err}"),
+        Ok(reply) => warn!("{capability}: Hyprland refused `{command}`: {}", reply.trim()),
+        Err(err) => warn!("{capability}: Hyprland `{command}` request failed: {err}"),
     }
 }
 
@@ -119,24 +121,22 @@ pub fn niri_event_stream(capability: &str, feature: &str) -> Option<niri_ipc::so
     let mut socket = match niri_ipc::socket::Socket::connect() {
         Ok(socket) => socket,
         Err(err) => {
-            eprintln!("{capability}: failed to connect to the niri IPC socket; {feature} disabled for this run: {err}");
+            error!("{capability}: failed to connect to the niri IPC socket; {feature} disabled for this run: {err}");
             return None;
         }
     };
     match socket.send(niri_ipc::Request::EventStream) {
         Ok(Ok(niri_ipc::Response::Handled)) => Some(socket),
         Ok(Ok(_)) => {
-            eprintln!(
-                "{capability}: unexpected reply to the niri EventStream request; {feature} disabled for this run"
-            );
+            error!("{capability}: unexpected reply to the niri EventStream request; {feature} disabled for this run");
             None
         }
         Ok(Err(msg)) => {
-            eprintln!("{capability}: niri EventStream request failed: {msg}");
+            error!("{capability}: niri EventStream request failed: {msg}");
             None
         }
         Err(err) => {
-            eprintln!("{capability}: failed to send the niri EventStream request: {err}");
+            error!("{capability}: failed to send the niri EventStream request: {err}");
             None
         }
     }
@@ -150,12 +150,12 @@ pub fn niri_action(action: niri_ipc::Action, capability: &'static str) {
         let mut socket = match niri_ipc::socket::Socket::connect() {
             Ok(socket) => socket,
             Err(err) => {
-                eprintln!("{capability}: failed to connect to the niri IPC socket for {label}: {err}");
+                warn!("{capability}: failed to connect to the niri IPC socket for {label}: {err}");
                 return;
             }
         };
         if let Err(err) = socket.send(niri_ipc::Request::Action(action)) {
-            eprintln!("{capability}: niri {label} request failed: {err}");
+            warn!("{capability}: niri {label} request failed: {err}");
         }
     });
 }

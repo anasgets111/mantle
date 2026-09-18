@@ -9,6 +9,8 @@ use tokio::sync::mpsc::UnboundedSender;
 use tokio::task::JoinHandle;
 use zbus::zvariant::OwnedObjectPath;
 
+use shared::{info, warn};
+
 use super::BluetoothSignal;
 use super::proxies::{Adapter1Proxy, Battery1Proxy, Device1Proxy};
 use crate::capabilities::bind;
@@ -49,11 +51,11 @@ async fn adopt_adapter(
     let proxy = match bind::<Adapter1Proxy>(connection, path.clone()).await {
         Ok(proxy) => proxy,
         Err(err) => {
-            eprintln!("bluetooth: failed to bind adapter {path}: {err}");
+            warn!("failed to bind adapter {path}: {err}");
             return;
         }
     };
-    eprintln!("bluetooth: using adapter {path}");
+    info!("using adapter {path}");
     let forwarder = spawn_adapter_signal_forwarder(proxy.clone(), events.clone()).abort_handle();
     *slot.lock().unwrap() = Some(BoundAdapter { path, proxy, forwarder });
     let _ = events.send(BluetoothSignal::AdapterChanged);
@@ -71,7 +73,7 @@ fn release_adapter(slot: &AdapterSlot, path: &OwnedObjectPath, events: &Unbounde
     };
     if let Some(adapter) = released {
         adapter.forwarder.abort();
-        eprintln!("bluetooth: adapter {path} was removed");
+        info!("adapter {path} was removed");
         let _ = events.send(BluetoothSignal::AdapterChanged);
     }
 }
@@ -88,14 +90,14 @@ async fn register_device(
     let device = match bind::<Device1Proxy>(connection, path.clone()).await {
         Ok(device) => device,
         Err(err) => {
-            eprintln!("bluetooth: failed to bind device {path}: {err}");
+            warn!("failed to bind device {path}: {err}");
             return;
         }
     };
     let mac = match device.address().await {
         Ok(mac) => mac,
         Err(err) => {
-            eprintln!("bluetooth: failed to read Address for device {path}: {err}");
+            warn!("failed to read Address for device {path}: {err}");
             return;
         }
     };
@@ -103,7 +105,7 @@ async fn register_device(
         match bind::<Battery1Proxy>(connection, path.clone()).await {
             Ok(battery) => Some(battery),
             Err(err) => {
-                eprintln!("bluetooth: failed to bind Battery1 for device {path} ({mac}): {err}");
+                warn!("failed to bind Battery1 for device {path} ({mac}): {err}");
                 None
             }
         }

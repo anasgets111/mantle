@@ -1,6 +1,8 @@
 //! Pointer input: `on_click` (ADR-0050), `on_drag` and `on_wheel` (ADR-0116), links, hover and the
 //! cursor.
 
+use shared::warn;
+
 use super::keyboard::{FieldTarget, focused_field};
 use super::*;
 
@@ -361,7 +363,7 @@ impl PointerHandler for App {
                             // Links take `href`, not the paragraph rect; a link is not a button.
                             (Some(href), Some(handler)) => {
                                 if let Err(e) = handler.call::<()>(href) {
-                                    eprintln!("[obelisk-renderer] {instance_id}: on_link raised, ignoring it: {e}");
+                                    warn!("{instance_id}: on_link raised, ignoring it: {e}");
                                 }
                             }
                             (_, handler) => {
@@ -454,7 +456,7 @@ impl App {
             self.drag = None;
         }
         if let Err((what, e)) = call_on_drag(self.client.lua(), &handler, rect, position, phase) {
-            eprintln!("[obelisk-renderer] {instance_id}: {what}: {e}");
+            warn!("{instance_id}: {what}: {e}");
         }
     }
 
@@ -499,10 +501,10 @@ impl App {
             match rect_table(self.client.lua(), rect) {
                 Ok(rect) => {
                     if let Err(e) = on_wheel.call::<()>((rect, steps)) {
-                        eprintln!("[obelisk-renderer] {surface_id}: on_wheel raised, ignoring it: {e}");
+                        warn!("{surface_id}: on_wheel raised, ignoring it: {e}");
                     }
                 }
-                Err(e) => eprintln!("[obelisk-renderer] {surface_id}: could not build on_wheel's rect argument: {e}"),
+                Err(e) => warn!("{surface_id}: could not build on_wheel's rect argument: {e}"),
             }
             return;
         }
@@ -549,7 +551,7 @@ impl App {
             Ok(()) => self.cursor_shown = Some(shape),
             // Remember failure as shown; a missing themed cursor is reported once, not per pixel.
             Err(err) => {
-                eprintln!("[obelisk-renderer] could not set the cursor to {}: {err}", shape.name());
+                warn!("could not set the cursor to {}: {err}", shape.name());
                 self.cursor_shown = Some(shape);
             }
         }
@@ -629,7 +631,7 @@ impl App {
                 && let Some(on_hover) = &write.on_hover
                 && let Err(err) = on_hover.call::<()>(write.hovered)
             {
-                eprintln!("[obelisk-renderer] {}: on_hover handler raised: {err}", self.surfaces[index].surface_id);
+                warn!("{}: on_hover handler raised: {err}", self.surfaces[index].surface_id);
             }
             // Rects are edge-only, not merely an optimization: mlua table equality is identity, so
             // a fresh equal table would undo decision 4 on every motion.
@@ -640,10 +642,7 @@ impl App {
                 match rect_table(lua, rect) {
                     Ok(table) => rect_handle.set(mlua::Value::Table(table)),
                     // The boolean landed; keep the last tooltip position on table-build failure.
-                    Err(err) => eprintln!(
-                        "[obelisk-renderer] {}: could not build a hover rect: {err}",
-                        self.surfaces[index].surface_id
-                    ),
+                    Err(err) => warn!("{}: could not build a hover rect: {err}", self.surfaces[index].surface_id),
                 }
             }
         }
@@ -654,7 +653,7 @@ impl App {
     fn fire_on_click(&mut self, instance_id: &str, rect: LogicalRect, button: &str, on_click: &Function) {
         // `signal:set()` marks its own dirty flag (ADR-0044 decision 5); this call need not.
         if let Err((what, e)) = call_on_click(self.client.lua(), on_click, rect, button) {
-            eprintln!("[obelisk-renderer] {instance_id}: {what}: {e}");
+            warn!("{instance_id}: {what}: {e}");
         }
     }
 }

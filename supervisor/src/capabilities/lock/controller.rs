@@ -2,6 +2,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use shared::{error, warn};
 use tokio::sync::mpsc::UnboundedSender;
 
 use super::state::{LockEvent, LockState, accepts_outcome, apply, may_authenticate, releases};
@@ -39,7 +40,7 @@ impl LockController {
         {
             let mut state = self.state.lock().unwrap();
             if state.active {
-                eprintln!("lock: a lock is already held; dropping a lock() that cannot change anything");
+                warn!("a lock is already held; dropping a lock() that cannot change anything");
                 return;
             }
             apply(&mut state, LockEvent::LockRequested);
@@ -103,7 +104,7 @@ impl LockController {
             let release = match state.lock() {
                 Ok(state) => releases(&state, acquisition),
                 Err(_) => {
-                    eprintln!("lock: the lock state is poisoned; refusing to release a lock it cannot identify");
+                    error!("the lock state is poisoned; refusing to release a lock it cannot identify");
                     false
                 }
             };
@@ -111,7 +112,7 @@ impl LockController {
                 return;
             }
             if commands_tx.send(shared::SetSessionLock { locked: false }).is_err() {
-                eprintln!("lock: the command channel is closed; the unlock after its animation was dropped");
+                warn!("the command channel is closed; the unlock after its animation was dropped");
             }
         });
     }
@@ -150,7 +151,7 @@ impl LockController {
     /// A closed channel means `main.rs`'s loop is gone; log and drop.
     fn send(&self, command: shared::SetSessionLock) {
         if self.commands_tx.send(command).is_err() {
-            eprintln!("lock: the command channel is closed; dropping {command:?}");
+            warn!("the command channel is closed; dropping {command:?}");
         }
     }
 }

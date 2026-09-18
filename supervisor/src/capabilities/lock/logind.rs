@@ -17,6 +17,7 @@
 //! config asks.
 
 use futures_util::StreamExt;
+use shared::{error, info, warn};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 
 #[zbus::proxy(
@@ -67,8 +68,8 @@ impl SessionBridge {
     /// returns. `()` on `lock_requests` means logind requested a lock; `main.rs` decides.
     pub async fn new(connection: zbus::Connection, lock_requests: UnboundedSender<()>) -> Self {
         let Some(path) = resolve_session_path(&connection).await else {
-            eprintln!(
-                "lock: could not resolve this process's logind session; `loginctl lock-session` will not reach the \
+            error!(
+                "could not resolve this process's logind session; `loginctl lock-session` will not reach the \
                  shell and LockedHint will not be published"
             );
             return Self { hints: None };
@@ -77,14 +78,12 @@ impl SessionBridge {
             Ok(builder) => match builder.build().await {
                 Ok(session) => session,
                 Err(err) => {
-                    eprintln!(
-                        "lock: failed to bind the logind session at {path}; lock-session will not reach us: {err}"
-                    );
+                    error!("failed to bind the logind session at {path}; lock-session will not reach us: {err}");
                     return Self { hints: None };
                 }
             },
             Err(err) => {
-                eprintln!("lock: logind handed back an unusable session path {path}: {err}");
+                error!("logind handed back an unusable session path {path}: {err}");
                 return Self { hints: None };
             }
         };
@@ -110,9 +109,7 @@ async fn forward_lock_signals(session: Login1SessionProxy<'static>, lock_request
         (Ok(locks), Ok(unlocks)) => (locks, unlocks),
         (locks, unlocks) => {
             let err = locks.err().or(unlocks.err());
-            eprintln!(
-                "lock: failed to subscribe to logind's Lock/Unlock signals; lock-session will not reach us: {err:?}"
-            );
+            error!("failed to subscribe to logind's Lock/Unlock signals; lock-session will not reach us: {err:?}");
             return;
         }
     };
@@ -132,8 +129,8 @@ async fn forward_lock_signals(session: Login1SessionProxy<'static>, lock_request
                 if signal.is_none() {
                     break;
                 }
-                eprintln!(
-                    "lock: logind asked for an unlock; refusing. Only a successful password authentication lifts a \
+                info!(
+                    "logind asked for an unlock; refusing. Only a successful password authentication lifts a \
                      lock here (ADR-0042), so the way back in is the prompt or a VT switch"
                 );
             }
@@ -146,7 +143,7 @@ async fn forward_lock_signals(session: Login1SessionProxy<'static>, lock_request
 async fn publish_locked_hints(session: Login1SessionProxy<'static>, mut hints: UnboundedReceiver<bool>) {
     while let Some(locked) = hints.recv().await {
         if let Err(err) = session.set_locked_hint(locked).await {
-            eprintln!("lock: failed to publish LockedHint={locked} to logind: {err}");
+            warn!("failed to publish LockedHint={locked} to logind: {err}");
         }
     }
 }

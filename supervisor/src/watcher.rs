@@ -23,6 +23,7 @@ use std::time::Duration;
 
 use futures_util::StreamExt;
 use inotify::{EventMask, Inotify, WatchDescriptor, WatchMask, Watches};
+use shared::warn;
 use tokio::sync::mpsc;
 
 /// Handled inotify kinds: create, modify, atomic-save rename in/out (including delete-via-rename),
@@ -61,7 +62,7 @@ fn walk(
     let entries = match std::fs::read_dir(dir) {
         Ok(entries) => entries,
         Err(err) => {
-            eprintln!("config watcher: cannot list {}: {err}; changes inside it will not reload", dir.display());
+            warn!("config watcher: cannot list {}: {err}; changes inside it will not reload", dir.display());
             return Ok(());
         }
     };
@@ -73,7 +74,7 @@ fn walk(
             continue;
         }
         if let Err(err) = walk(watches, wd_to_dir, visited, &path) {
-            eprintln!("config watcher: cannot watch {}: {err}; changes inside it will not reload", path.display());
+            warn!("config watcher: cannot watch {}: {err}; changes inside it will not reload", path.display());
         }
     }
     Ok(())
@@ -182,7 +183,7 @@ pub fn spawn_watcher(dir: &Path, debounce: Duration) -> io::Result<mpsc::Unbound
                             }
                         }
                         Some(Err(err)) => {
-                            eprintln!("config watcher: inotify read failed: {err}");
+                            warn!("config watcher: inotify read failed: {err}");
                         }
                         None => break, // the inotify fd closed: nothing left to watch.
                     }

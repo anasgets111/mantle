@@ -6,7 +6,7 @@ use std::ffi::c_void;
 
 use khronos_egl::Surface as EglSurface;
 use mlua::{Function, Lua, Table, Value};
-use shared::{LockOutcome, LockReport, RendererFrame, SecureSubmit, SupervisorFrame, Zeroize};
+use shared::{LockOutcome, LockReport, RendererFrame, SecureSubmit, SupervisorFrame, Zeroize, error, warn};
 use smithay_client_toolkit::background_effect::{BackgroundEffectHandler, BackgroundEffectState};
 use smithay_client_toolkit::compositor::{CompositorHandler, CompositorState, FrameCallbackData, Region};
 use smithay_client_toolkit::output::{OutputHandler, OutputState};
@@ -217,7 +217,7 @@ const TRIM_INTERVAL: std::time::Duration = std::time::Duration::from_secs(30);
 /// whose EGL surfaces and `wl_surface`s talk to the compositor that just left, which is how a log
 /// out became a `khronos-egl` `unwrap()` panic and exit code 101.
 fn exit_because_the_compositor_is_gone(what_failed: &str, err: &dyn std::fmt::Display) -> ! {
-    eprintln!("[obelisk-renderer] {what_failed} failed ({err}); there is no compositor to talk to, so exiting");
+    error!("{what_failed} failed ({err}); there is no compositor to talk to, so exiting");
     std::process::exit(shared::EXIT_COMPOSITOR_GONE);
 }
 
@@ -332,8 +332,8 @@ pub fn run(
         if panel.topology.monitor != "All" && !outputs.iter().any(|output| output.name == panel.topology.monitor) {
             // `expand_instances` returns nothing for a miss; log against the real startup output
             // list so an unplugged monitor is explained once.
-            eprintln!(
-                "[obelisk-renderer] surface {:?} targets monitor {:?}, which is not connected; no surface created for it",
+            warn!(
+                "surface {:?} targets monitor {:?}, which is not connected; no surface created for it",
                 panel.topology.id, panel.topology.monitor
             );
         }
@@ -343,8 +343,8 @@ pub fn run(
     // logical sizes and are never painted. Evaluation/apply already log and
     // set rescue; this adds the consequence.
     if !app.client.apply_instances() {
-        eprintln!(
-            "[obelisk-renderer] no scene was applied at startup; surfaces still bind, and paint nothing until a reload or a push produces one"
+        warn!(
+            "no scene was applied at startup; surfaces still bind, and paint nothing until a reload or a push produces one"
         );
     }
 
@@ -396,11 +396,11 @@ pub fn run(
                     // flush is below this drain. Otherwise `session_lock = Some` could outlive an
                     // unsent request. `std::process::exit` skips SCTK's destructor.
                     if let Err(err) = event_queue.flush() {
-                        eprintln!(
-                            "[obelisk-renderer] the last flush before exiting failed ({err}); a session lock requested in this same turn may never have reached the compositor"
+                        warn!(
+                            "the last flush before exiting failed ({err}); a session lock requested in this same turn may never have reached the compositor"
                         );
                     }
-                    eprintln!("[obelisk-renderer] {}", supervisor_gone_report(app.session_lock.is_some()));
+                    error!("{}", supervisor_gone_report(app.session_lock.is_some()));
                     std::process::exit(EXIT_SUPERVISOR_GONE);
                 }
             };
@@ -416,8 +416,8 @@ pub fn run(
                     // this thread owns its inputs. Do not return on a failed round-trip: that would
                     // strand the session locked; trying the unlock costs at most one failed flush.
                     if !locked && let Err(err) = event_queue.roundtrip(&mut app) {
-                        eprintln!(
-                            "[obelisk-renderer] the round trip before an unlock failed ({err}); attempting the unlock anyway rather than exiting with the session locked"
+                        warn!(
+                            "the round trip before an unlock failed ({err}); attempting the unlock anyway rather than exiting with the session locked"
                         );
                     }
                     app.set_session_lock(&qh, locked);

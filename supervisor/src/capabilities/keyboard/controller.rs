@@ -5,6 +5,7 @@ use std::os::unix::fs::FileExt;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
+use shared::{error, info, warn};
 use tokio::io::Interest;
 use tokio::io::unix::AsyncFd;
 use tokio::sync::mpsc::UnboundedSender;
@@ -91,30 +92,28 @@ impl KeyboardController {
         let backlight = find_backlight(leds_root);
         match &backlight {
             Some(led) => watch_backlight(led.clone(), Arc::clone(&state), events_tx.clone()),
-            None => eprintln!(
-                "keyboard: no usable *::kbd_backlight LED under {leds_root:?}; backlight reporting disabled for this run"
-            ),
+            None => {
+                info!("no usable *::kbd_backlight LED under {leds_root:?}; backlight reporting disabled for this run")
+            }
         }
         resolve_locks(leds_root, &state, events_tx.clone()).await;
         let layout: Option<Box<dyn CompositorLink>> = match detect_compositor() {
             Some(CompositorKind::Hyprland) => match hyprland_signature() {
                 Some(signature) => Some(Box::new(HyprlandLink::new(signature, Arc::clone(&state), events_tx.clone()))),
                 None => {
-                    eprintln!(
-                        "keyboard: HYPRLAND_INSTANCE_SIGNATURE is unset or empty; layout reporting disabled for this run"
-                    );
+                    info!("HYPRLAND_INSTANCE_SIGNATURE is unset or empty; layout reporting disabled for this run");
                     None
                 }
             },
             Some(CompositorKind::Niri) => NiriLink::new(Arc::clone(&state), events_tx.clone())
                 .map(|link| Box::new(link) as Box<dyn CompositorLink>),
             None => {
-                eprintln!("keyboard: {}; layout reporting disabled for this run", unsupported_session_report());
+                info!("{}; layout reporting disabled for this run", unsupported_session_report());
                 None
             }
         };
         if let Some(link) = &layout {
-            eprintln!("keyboard: detected {:?} for layout tracking", link.kind());
+            info!("detected {:?} for layout tracking", link.kind());
         }
         Self { state, backlight: Arc::new(backlight), layout: Arc::new(layout), system_bus, events: events_tx }
     }
@@ -122,7 +121,7 @@ impl KeyboardController {
     /// `keyboard:set_backlight(pct)`. Logs and returns without keyboard-backlight hardware.
     pub async fn set_backlight(&self, pct: u64) {
         let Some(led) = self.backlight.as_ref() else {
-            eprintln!("keyboard: set_backlight called but this machine has no keyboard backlight; ignored");
+            warn!("set_backlight called but this machine has no keyboard backlight; ignored");
             return;
         };
         let name = led.dir.file_name().unwrap_or_default().to_string_lossy();
@@ -130,7 +129,7 @@ impl KeyboardController {
         let result =
             async { Login1SessionProxy::new(&self.system_bus).await?.set_brightness("leds", &name, raw).await }.await;
         if let Err(err) = result {
-            eprintln!("keyboard: SetBrightness(leds, {name}, {raw}) failed: {err}");
+            warn!("SetBrightness(leds, {name}, {raw}) failed: {err}");
         }
         // `brightness_hw_changed` reports only hardware changes, so read this write back.
         self.state.lock().unwrap().backlight_pct = read_backlight_pct(led);
@@ -142,7 +141,7 @@ impl KeyboardController {
     pub fn switch_layout(&self, index: usize) {
         match self.layout.as_ref() {
             Some(link) => link.switch_layout(index),
-            None => eprintln!("keyboard: switch_layout called but no supported compositor was detected; ignored"),
+            None => warn!("switch_layout called but no supported compositor was detected; ignored"),
         }
     }
 
@@ -171,10 +170,7 @@ fn watch_backlight(led: LedBacklight, state: Arc<Mutex<KeyboardState>>, events: 
     let watch = match watch {
         Ok(watch) => watch,
         Err(err) => {
-            eprintln!(
-                "keyboard: cannot watch {:?}/brightness_hw_changed; hotkey changes will not show: {err}",
-                led.dir
-            );
+            error!("cannot watch {:?}/brightness_hw_changed; hotkey changes will not show: {err}", led.dir);
             return;
         }
     };
@@ -183,7 +179,7 @@ fn watch_backlight(led: LedBacklight, state: Arc<Mutex<KeyboardState>>, events: 
             match watch.ready(Interest::PRIORITY).await {
                 Ok(mut guard) => guard.clear_ready(),
                 Err(err) => {
-                    eprintln!("keyboard: backlight watch failed; hotkey changes will no longer show: {err}");
+                    error!("backlight watch failed; hotkey changes will no longer show: {err}");
                     break;
                 }
             }
@@ -219,9 +215,9 @@ async fn resolve_locks(leds_root: &Path, state: &Arc<Mutex<KeyboardState>>, even
                 guard.num_lock = led_state.contains(evdev::LedCode::LED_NUML);
                 guard.scroll_lock = led_state.contains(evdev::LedCode::LED_SCROLLL);
             }
-            Err(err) => eprintln!(
-                "keyboard: failed to read initial evdev LED state; will pick up from the first EV_LED event: {err}"
-            ),
+            Err(err) => {
+                warn!("failed to read initial evdev LED state; will pick up from the first EV_LED event: {err}")
+            }
         }
         match device.into_event_stream() {
             Ok(mut stream) => {
@@ -231,9 +227,7 @@ async fn resolve_locks(leds_root: &Path, state: &Arc<Mutex<KeyboardState>>, even
                         let event = match stream.next_event().await {
                             Ok(event) => event,
                             Err(err) => {
-                                eprintln!(
-                                    "keyboard: evdev event stream ended; lock-state will no longer update: {err}"
-                                );
+                                error!("evdev event stream ended; lock-state will no longer update: {err}");
                                 break;
                             }
                         };
@@ -259,35 +253,35 @@ async fn resolve_locks(leds_root: &Path, state: &Arc<Mutex<KeyboardState>>, even
             Err(err) => {
                 // An un-streamable device still counts as evdev unavailable; use sysfs rather than
                 // leaving lock state at `false` forever.
-                eprintln!(
-                    "keyboard: failed to open an EV_LED event stream; falling back to a one-time sysfs LED read for lock state: {err}"
+                warn!(
+                    "failed to open an EV_LED event stream; falling back to a one-time sysfs LED read for lock state: {err}"
                 );
             }
         }
     } else {
-        eprintln!(
-            "keyboard: no accessible evdev device with LED_CAPSL capability; falling back to a one-time sysfs LED read for lock state"
+        warn!(
+            "no accessible evdev device with LED_CAPSL capability; falling back to a one-time sysfs LED read for lock state"
         );
     }
 
     let Some(leds) = resolve_lock_leds(leds_root) else {
-        eprintln!(
-            "keyboard: no lock-state source available (neither evdev nor sysfs LED nodes); caps/num/scroll_lock will stay false"
+        info!(
+            "no lock-state source available (neither evdev nor sysfs LED nodes); caps/num/scroll_lock will stay false"
         );
         return;
     };
     let mut guard = state.lock().unwrap();
     match read_led_on(&leds.caps) {
         Ok(on) => guard.caps_lock = on,
-        Err(err) => eprintln!("keyboard: failed to read the sysfs capslock LED; caps_lock will stay false: {err}"),
+        Err(err) => warn!("failed to read the sysfs capslock LED; caps_lock will stay false: {err}"),
     }
     match read_led_on(&leds.num) {
         Ok(on) => guard.num_lock = on,
-        Err(err) => eprintln!("keyboard: failed to read the sysfs numlock LED; num_lock will stay false: {err}"),
+        Err(err) => warn!("failed to read the sysfs numlock LED; num_lock will stay false: {err}"),
     }
     match read_led_on(&leds.scroll) {
         Ok(on) => guard.scroll_lock = on,
-        Err(err) => eprintln!("keyboard: failed to read the sysfs scrolllock LED; scroll_lock will stay false: {err}"),
+        Err(err) => warn!("failed to read the sysfs scrolllock LED; scroll_lock will stay false: {err}"),
     }
 }
 

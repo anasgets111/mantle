@@ -8,7 +8,7 @@
 
 use std::collections::HashMap;
 
-use shared::{Capability, SupervisorFrame};
+use shared::{Capability, SupervisorFrame, error, info, warn};
 
 use crate::capabilities::lock::{self, LockController};
 use crate::capabilities::polkit::{self, Answer, PolkitController};
@@ -114,7 +114,7 @@ impl Supervisor {
         // Read before boot registration; reading later would race it.
         let relock_when_connected = locked_flag.is_set().then_some(RelockReason::SupervisorRestarted);
         if relock_when_connected.is_some() {
-            eprintln!(
+            info!(
                 "the session was locked when the last Supervisor stopped and the compositor has not unlocked it, so the boot Renderer will be asked \
                  to take that lock over (ADR-0060)"
             );
@@ -195,7 +195,7 @@ impl Supervisor {
                 tokio::spawn(pam_worker::run_polkit_helper(uid, cookie, shared::Zeroizing::new(secret), outcome_tx));
             }
             None => {
-                eprintln!(
+                warn!(
                     "generation {generation_id}'s secure_submit(polkit, authenticate) arrived with no challenge on screen, or with an attempt already in flight; dropping"
                 );
                 shared::Zeroize::zeroize(&mut secret);
@@ -208,7 +208,7 @@ impl Supervisor {
     pub(crate) fn record_polkit_outcome(&mut self, cookie: String, outcome: shared::PamOutcome) {
         match self.polkit.record_outcome(&cookie, outcome) {
             Answer::Stale => {
-                eprintln!("polkit: dropping an outcome for {cookie:?}, which is no longer the challenge on screen")
+                warn!("polkit: dropping an outcome for {cookie:?}, which is no longer the challenge on screen")
             }
             Answer::Failed => self.push_polkit_state(),
             Answer::Succeeded { reply } => {
@@ -262,7 +262,7 @@ impl Supervisor {
         // tree cannot reach PAM (ADR-0052 decision 3).
         if let Some(reason) = self.relock_when_connected.take() {
             self.relock_in_flight = Some(reason);
-            eprintln!(
+            info!(
                 "asking generation {generation_id} to take the session lock over, because {} (ADR-0058 decision 4, ADR-0060)",
                 reason.because()
             );
@@ -278,18 +278,18 @@ impl Supervisor {
         let departure = match status {
             Ok(status) => classify_departure(status),
             Err(err) => {
-                eprintln!("failed to wait on generation {}'s renderer: {err}", self.authoritative.generation_id);
+                warn!("failed to wait on generation {}'s renderer: {err}", self.authoritative.generation_id);
                 RendererDeparture::Failed { code: -1 }
             }
         };
         let was_locked = self.lock.snapshot().active;
-        eprintln!("{}", departure_report(departure, self.authoritative.generation_id, was_locked));
+        warn!("{}", departure_report(departure, self.authoritative.generation_id, was_locked));
         self.renderer_departed = true;
 
         // Before the brake: the session ended under the whole shell, so every replacement would
         // find the same missing compositor. Stop the way a SIGTERM does, because it means the same thing.
         if matches!(departure, RendererDeparture::Failed { code } if code == shared::EXIT_COMPOSITOR_GONE) {
-            eprintln!("the compositor is gone, so there is nothing to respawn into; shutting down");
+            error!("the compositor is gone, so there is nothing to respawn into; shutting down");
             return true;
         }
         self.respawn_renderer().await
@@ -298,7 +298,7 @@ impl Supervisor {
     /// Spawns the replacement unless the brake defers it to `respawn_at` (ADR-0058 decision 3); `true` stops the loop.
     pub(crate) async fn respawn_renderer(&mut self) -> bool {
         if !self.restart_brake.allow(std::time::Instant::now()) {
-            eprintln!(
+            warn!(
                 "{RESTART_LIMIT} renderers died within {RESTART_WINDOW:?}; respawning in {RESTART_COOLDOWN:?} (ADR-0058 decision 3)"
             );
             self.respawn_at = Some(std::time::Instant::now() + RESTART_COOLDOWN);
@@ -319,7 +319,7 @@ impl Supervisor {
                 self.registry.forget_generation(departed);
                 self.authoritative = Authoritative { generation_id: replacement_generation_id, child };
                 self.renderer_departed = false;
-                eprintln!("spawned generation {replacement_generation_id} to replace it");
+                info!("spawned generation {replacement_generation_id} to replace it");
                 self.capabilities.forget_departed_requests();
                 // Without this the dead id kept its idle fan-out entry
                 // (a failed push per idle transition, and any inhibit it held) and its `process.run`
@@ -334,14 +334,14 @@ impl Supervisor {
                     // lets `lock()` proceed, then waits for a connection to send it.
                     self.lock.record(lock::LockEvent::RendererLost);
                     self.relock_when_connected = Some(RelockReason::RendererReplaced);
-                    eprintln!(
+                    info!(
                         "the session is still locked, so generation {replacement_generation_id} will be asked to retake the lock once it connects"
                     );
                 }
                 false
             }
             Err(err) => {
-                eprintln!("could not spawn a replacement renderer: {err}");
+                error!("could not spawn a replacement renderer: {err}");
                 true
             }
         }
@@ -352,7 +352,7 @@ impl Supervisor {
     /// idle timer may change locks. `loginctl lock-session` (ADR-0138) arrives as logind's `Lock`
     /// signal, uses the same lock path and already-locked guard as `lock:invoke("lock")`.
     pub(crate) fn lock_requested_by_logind(&mut self) {
-        eprintln!("lock: logind asked for a lock (loginctl lock-session)");
+        info!("lock: logind asked for a lock (loginctl lock-session)");
         self.lock.lock();
         self.push_lock_state();
     }
@@ -362,10 +362,10 @@ impl Supervisor {
         // Every answer, not only the refusals below. A wrong password logged nothing at all, so a
         // lock screen that would not open read the same in the log whether PAM said no or the
         // attempt never arrived.
-        eprintln!("lock: pam answered {outcome:?} for acquisition {acquisition}");
+        info!("lock: pam answered {outcome:?} for acquisition {acquisition}");
         if !self.lock.record_authentication(acquisition, outcome) {
             // No push: refusal changed no state; `push_lock_state` would bump the revision anyway.
-            eprintln!(
+            warn!(
                 "lock: dropping a pam outcome for acquisition {acquisition}, which is no longer the lock on the glass"
             );
         } else {
@@ -385,14 +385,14 @@ impl Supervisor {
             let who = who.subject();
             match &report.outcome {
                 shared::LockOutcome::Locked => {
-                    eprintln!("{who} took the session lock over; the lock screen is back on the glass")
+                    info!("{who} took the session lock over; the lock screen is back on the glass")
                 }
                 // Only the compositor's fallback is onscreen, not `lock_stays_authenticatable`.
-                shared::LockOutcome::Refused(reason) => eprintln!(
+                shared::LockOutcome::Refused(reason) => error!(
                     "{who} could not take the session lock over: {reason}. The session stays locked with no lock screen on it, \
                      so the way back in is a VT switch (ADR-0058 decision 4, ADR-0060)"
                 ),
-                other => eprintln!("{who}'s lock re-acquisition ended as {other:?} rather than a lock"),
+                other => warn!("{who}'s lock re-acquisition ended as {other:?} rather than a lock"),
             }
         }
         // Derive from the outcome before recording; the marker stays "locked" through RendererLost,
@@ -443,7 +443,7 @@ impl Supervisor {
             && let Err(err) =
                 process::reap_process_group(&mut self.authoritative.child, process::DEFAULT_REAP_GRACE).await
         {
-            eprintln!(
+            warn!(
                 "failed to reap authoritative generation {}'s renderer on shutdown: {err}",
                 self.authoritative.generation_id
             );

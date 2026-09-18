@@ -7,6 +7,7 @@ use std::time::Duration;
 
 use futures_util::StreamExt;
 use inotify::{EventMask, Inotify, WatchMask};
+use shared::warn;
 use tokio::sync::mpsc::UnboundedSender;
 use tokio::task::JoinHandle;
 
@@ -248,7 +249,7 @@ async fn follow_folder(
     }) {
         Ok(stream) => stream,
         Err(err) => {
-            eprintln!("files: cannot watch {}: {err}; its listing will not follow changes", dir.display());
+            warn!("cannot watch {}: {err}; its listing will not follow changes", dir.display());
             return;
         }
     };
@@ -266,7 +267,7 @@ async fn follow_folder(
                         }
                         deadline = Some(tokio::time::Instant::now() + RELIST_DEBOUNCE);
                     }
-                    Some(Err(err)) => eprintln!("files: inotify read on {} failed: {err}", dir.display()),
+                    Some(Err(err)) => warn!("inotify read on {} failed: {err}", dir.display()),
                     None => return,
                 }
             }

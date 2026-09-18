@@ -16,7 +16,7 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use mlua::{Function, Lua, UserData, UserDataMethods};
-use shared::{CommandEnvelope, CommandParams, ProcessStream, RendererFrame};
+use shared::{CommandEnvelope, CommandParams, ProcessStream, RendererFrame, error, warn};
 use tokio::sync::mpsc::UnboundedSender;
 
 /// One `process.run` callback pair, retained until matching `SupervisorFrame::ProcessExited`.
@@ -75,7 +75,7 @@ impl ProcessRegistry {
         let generation_id = self.0.borrow().generation_id;
         let envelope = process_command(generation_id, action, arguments, id);
         if self.0.borrow().outbound_tx.send(RendererFrame::Command(envelope)).is_err() {
-            eprintln!("process.{action}(id={id}): failed to queue request, the control-socket writer is gone");
+            error!("process.{action}(id={id}): failed to queue request, the control-socket writer is gone");
         }
     }
 
@@ -104,7 +104,7 @@ impl ProcessRegistry {
         let out_cb = self.0.borrow().pending.get(&id).map(|p| p.out_cb.clone());
         let Some(out_cb) = out_cb else { return };
         if let Err(err) = out_cb.call::<()>((line, stream_name(stream))) {
-            eprintln!("process.run(id={id}): out_cb raised an error: {err}");
+            warn!("process.run(id={id}): out_cb raised an error: {err}");
         }
     }
 
@@ -114,7 +114,7 @@ impl ProcessRegistry {
         let exit_cb = self.0.borrow_mut().pending.remove(&id).map(|p| p.exit_cb);
         let Some(exit_cb) = exit_cb else { return };
         if let Err(err) = exit_cb.call::<()>(code) {
-            eprintln!("process.run(id={id}): exit_cb raised an error: {err}");
+            warn!("process.run(id={id}): exit_cb raised an error: {err}");
         }
     }
 }

@@ -5,6 +5,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use shared::{error, info, warn};
 use tokio::sync::mpsc::UnboundedSender;
 use zbus::zvariant::OwnedObjectPath;
 
@@ -52,7 +53,7 @@ impl BluetoothController {
         let object_manager = match bind_object_manager(&connection).await {
             Ok(object_manager) => Some(object_manager),
             Err(err) => {
-                eprintln!("bluetooth: failed to bind org.bluez's ObjectManager (bluetoothd not running?): {err}");
+                error!("failed to bind org.bluez's ObjectManager (bluetoothd not running?): {err}");
                 None
             }
         };
@@ -65,7 +66,7 @@ impl BluetoothController {
             Some(object_manager) => match subscribe_object_manager(object_manager).await {
                 Ok(streams) => Some(streams),
                 Err(err) => {
-                    eprintln!("bluetooth: failed to subscribe to ObjectManager signals: {err}");
+                    error!("failed to subscribe to ObjectManager signals: {err}");
                     None
                 }
             },
@@ -80,12 +81,12 @@ impl BluetoothController {
                         track_interfaces(&connection, &devices, &adapter, path, has, &events).await;
                     }
                 }
-                Err(err) => eprintln!("bluetooth: GetManagedObjects failed: {err}"),
+                Err(err) => error!("GetManagedObjects failed: {err}"),
             }
         }
 
         if adapter.lock().unwrap().is_none() {
-            eprintln!("bluetooth: no adapter found; bluetooth stays unavailable until BlueZ adds one");
+            info!("no adapter found; bluetooth stays unavailable until BlueZ adds one");
         }
         if let Some((added, removed)) = object_manager_streams {
             spawn_object_manager_forwarder(
@@ -276,11 +277,11 @@ impl BluetoothController {
     /// observes the real change; `main.rs` then rebuilds and pushes state.
     pub async fn set_enabled(&self, enabled: bool) {
         let Some(adapter) = self.adapter() else {
-            eprintln!("bluetooth: set_enabled({enabled}) failed: {}", BluetoothActionError::NoAdapter);
+            warn!("set_enabled({enabled}) failed: {}", BluetoothActionError::NoAdapter);
             return;
         };
         if let Err(err) = adapter.set_powered(enabled).await {
-            eprintln!("bluetooth: failed to set Powered={enabled}: {err}");
+            warn!("failed to set Powered={enabled}: {err}");
         }
     }
 
@@ -288,11 +289,11 @@ impl BluetoothController {
     /// observes the change, including BlueZ's own switch-off at `DiscoverableTimeout`.
     pub async fn set_discoverable(&self, on: bool) {
         let Some(adapter) = self.adapter() else {
-            eprintln!("bluetooth: set_discoverable({on}) failed: {}", BluetoothActionError::NoAdapter);
+            warn!("set_discoverable({on}) failed: {}", BluetoothActionError::NoAdapter);
             return;
         };
         if let Err(err) = adapter.set_discoverable(on).await {
-            eprintln!("bluetooth: failed to set Discoverable={on}: {err}");
+            warn!("failed to set Discoverable={on}: {err}");
         }
     }
 
@@ -339,7 +340,7 @@ impl BluetoothController {
             ("StopDiscovery", adapter.stop_discovery().await)
         };
         if let Err(err) = result {
-            eprintln!("bluetooth: {call} failed: {err}");
+            warn!("{call} failed: {err}");
         }
     }
 
@@ -348,14 +349,14 @@ impl BluetoothController {
     /// for the call; see [`discovery_due`](Self::discovery_due).
     pub async fn pair(&self, mac: &str) {
         let Some((_, device)) = self.resolve_device(mac) else {
-            eprintln!("bluetooth: pair({mac:?}) failed: {}", BluetoothActionError::UnknownDevice);
+            warn!("pair({mac:?}) failed: {}", BluetoothActionError::UnknownDevice);
             return;
         };
         let busy = self.mark_busy(mac, DeviceAction::Pairing);
         self.reconcile_discovery().await;
         match device.pair().await {
             Ok(()) => self.connect_within(mac, CONNECT_RETRY_WINDOW).await,
-            Err(err) => eprintln!("bluetooth: pair({mac:?}) failed: {err}"),
+            Err(err) => warn!("pair({mac:?}) failed: {err}"),
         }
         drop(busy);
         self.reconcile_discovery().await;
@@ -374,20 +375,20 @@ impl BluetoothController {
     /// `org.bluez.Error.Failed`.
     async fn connect_within(&self, mac: &str, window: Duration) {
         let Some((_, device)) = self.resolve_device(mac) else {
-            eprintln!("bluetooth: connect({mac:?}) failed: {}", BluetoothActionError::UnknownDevice);
+            warn!("connect({mac:?}) failed: {}", BluetoothActionError::UnknownDevice);
             return;
         };
         let _busy = self.mark_busy(mac, DeviceAction::Connecting);
         if let Err(err) = device.set_trusted(true).await {
-            eprintln!("bluetooth: failed to set Trusted on {mac:?}: {err}");
+            warn!("failed to set Trusted on {mac:?}: {err}");
         }
         let deadline = tokio::time::Instant::now() + window;
         while let Err(err) = device.connect().await {
             if tokio::time::Instant::now() >= deadline {
-                eprintln!("bluetooth: connect({mac:?}) failed: {err}");
+                warn!("connect({mac:?}) failed: {err}");
                 return;
             }
-            eprintln!("bluetooth: connect({mac:?}) refused, retrying: {err}");
+            warn!("connect({mac:?}) refused, retrying: {err}");
             tokio::time::sleep(CONNECT_RETRY_INTERVAL).await;
         }
     }
@@ -395,12 +396,12 @@ impl BluetoothController {
     /// `bluetooth:disconnect(mac)`.
     pub async fn disconnect(&self, mac: &str) {
         let Some((_, device)) = self.resolve_device(mac) else {
-            eprintln!("bluetooth: disconnect({mac:?}) failed: {}", BluetoothActionError::UnknownDevice);
+            warn!("disconnect({mac:?}) failed: {}", BluetoothActionError::UnknownDevice);
             return;
         };
         let _busy = self.mark_busy(mac, DeviceAction::Disconnecting);
         if let Err(err) = device.disconnect().await {
-            eprintln!("bluetooth: disconnect({mac:?}) failed: {err}");
+            warn!("disconnect({mac:?}) failed: {err}");
         }
     }
 
@@ -408,15 +409,15 @@ impl BluetoothController {
     /// paired credentials from disk.
     pub async fn forget(&self, mac: &str) {
         let Some(adapter) = self.adapter() else {
-            eprintln!("bluetooth: forget({mac:?}) failed: {}", BluetoothActionError::NoAdapter);
+            warn!("forget({mac:?}) failed: {}", BluetoothActionError::NoAdapter);
             return;
         };
         let Some((path, _)) = self.resolve_device(mac) else {
-            eprintln!("bluetooth: forget({mac:?}) failed: {}", BluetoothActionError::UnknownDevice);
+            warn!("forget({mac:?}) failed: {}", BluetoothActionError::UnknownDevice);
             return;
         };
         if let Err(err) = adapter.remove_device(&path).await {
-            eprintln!("bluetooth: RemoveDevice({mac:?}) failed: {err}");
+            warn!("RemoveDevice({mac:?}) failed: {err}");
         }
     }
 }

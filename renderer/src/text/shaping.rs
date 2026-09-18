@@ -17,6 +17,7 @@ use std::sync::{Arc, Mutex, PoisonError, mpsc};
 use std::thread;
 
 use cosmic_text::{Attrs, Buffer, Family, FontSystem, LineIter, Metrics, Shaping, Style, Weight};
+use shared::warn;
 
 use super::fonts::{self, ResolvedFonts};
 
@@ -174,7 +175,7 @@ enum Request {
     /// paint in the declared chain.
     EnsureFamily(Arc<str>, mpsc::Sender<()>),
     // Test-only (`#[cfg(test)]`, not `#[allow(dead_code)]`): nothing outside a test binary sends
-    // this. `fonts::resolve_chain`'s own `eprintln!` is the production diagnostic.
+    // this. `fonts::resolve_chain`'s own logging is the production diagnostic.
     #[cfg(test)]
     ResolvedPrimaryFamily(mpsc::Sender<String>),
 }
@@ -712,7 +713,7 @@ fn font_chain_data(db: &mut fontdb::Database) -> Vec<FontFace> {
         // already makes for every font it renders.
         match unsafe { db.make_shared_face_data(id) } {
             Some((bytes, index)) => data.push(FontFace { data: FontData(bytes), index, id }),
-            None => eprintln!("font chain: face {id:?} could not be mapped, skipped"),
+            None => warn!("font chain: face {id:?} could not be mapped, skipped"),
         }
     }
     data

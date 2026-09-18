@@ -1,6 +1,8 @@
 //! Seat input for `App`: the `wl_seat` capabilities here, pointer input in `pointer`, and keyboard
 //! focus with `secure_submit` typing in `keyboard`.
 
+use shared::error;
+
 use super::*;
 mod keyboard;
 mod pointer;
@@ -43,9 +45,7 @@ impl SeatHandler for App {
                     Ok(pointer) => self.pointer = Some(pointer),
                     // Nonfatal: painting, reload, and keyboard input remain; only `on_click` stops.
                     Err(e) => {
-                        eprintln!(
-                            "[obelisk-renderer] wl_seat::get_pointer failed; no button's on_click will ever fire: {e}"
-                        )
+                        error!("wl_seat::get_pointer failed; no button's on_click will ever fire: {e}")
                     }
                 }
             }
@@ -55,9 +55,7 @@ impl SeatHandler for App {
                 Ok(keyboard) => self.keyboard = Some(keyboard),
                 // Nonfatal, but `enter`/`leave` stop tracking focus and stale textfield focus may
                 // outlive the user.
-                Err(e) => eprintln!(
-                    "[obelisk-renderer] wl_seat::get_keyboard failed; keyboard focus will never be tracked: {e}"
-                ),
+                Err(e) => error!("wl_seat::get_keyboard failed; keyboard focus will never be tracked: {e}"),
             },
             _ => {}
         }

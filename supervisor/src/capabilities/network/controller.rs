@@ -4,6 +4,7 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 
+use shared::warn;
 use tokio::sync::mpsc::UnboundedSender;
 use zbus::zvariant::OwnedObjectPath;
 
@@ -179,7 +180,7 @@ impl NetworkController {
             match ethernet.device.state().await {
                 Ok(DEVICE_STATE_ACTIVATED) => return Some(ethernet),
                 Ok(_) => {}
-                Err(err) => eprintln!("network: failed to read state for ethernet device {}: {err}", ethernet.path),
+                Err(err) => warn!("failed to read state for ethernet device {}: {err}", ethernet.path),
             }
         }
         None
@@ -199,14 +200,14 @@ impl NetworkController {
     /// have setters. Toggle it with `Enable(bool)`, not a direct property write.
     pub async fn set_networking_enabled(&self, enabled: bool) {
         if let Err(err) = self.nm.enable(enabled).await {
-            eprintln!("network: failed to set networking_enabled={enabled}: {err}");
+            warn!("failed to set networking_enabled={enabled}: {err}");
         }
     }
 
     /// `WirelessEnabled` is read-write.
     pub async fn set_wifi_enabled(&self, enabled: bool) {
         if let Err(err) = self.nm.set_wireless_enabled(enabled).await {
-            eprintln!("network: failed to set wifi_enabled={enabled}: {err}");
+            warn!("failed to set wifi_enabled={enabled}: {err}");
         }
     }
 
@@ -217,7 +218,7 @@ impl NetworkController {
             if enabled {
                 self.activate_autoconnect_profile(&ethernet.device, &ethernet.path).await;
             } else if let Err(err) = ethernet.device.disconnect().await {
-                eprintln!("network: failed to disconnect ethernet device {}: {err}", ethernet.path);
+                warn!("failed to disconnect ethernet device {}: {err}", ethernet.path);
             }
         }
     }
@@ -226,11 +227,11 @@ impl NetworkController {
     /// autoconnect there until the user joins again, so the radio does not rejoin behind the click.
     pub async fn disconnect_wifi(&self) {
         let Some(wifi) = self.wifi() else {
-            eprintln!("network: disconnect_wifi() requested but no Wi-Fi device is present");
+            warn!("disconnect_wifi() requested but no Wi-Fi device is present");
             return;
         };
         if let Err(err) = wifi.device.disconnect().await {
-            eprintln!("network: failed to disconnect the Wi-Fi device: {err}");
+            warn!("failed to disconnect the Wi-Fi device: {err}");
         }
     }
 }

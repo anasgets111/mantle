@@ -28,6 +28,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use nix::errno::Errno;
 use nix::sys::signal::{Signal, kill};
 use nix::unistd::Pid;
+use shared::{error, warn};
 use tokio::process::Child;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 use tokio::task::JoinHandle;
@@ -145,11 +146,11 @@ impl ProcessesController {
     pub fn start(&self, name: &str, cmd: &str, args: &[String]) {
         let mut guard = self.entries.lock().expect("processes entries mutex poisoned");
         let Some(entry) = guard.get_mut(name) else {
-            eprintln!("processes: refused to start {name:?}; no session_process declared that name");
+            warn!("refused to start {name:?}; no session_process declared that name");
             return;
         };
         if entry.public.running {
-            eprintln!("processes: {name:?} is already running as pid {:?}; ignoring start", entry.public.pid);
+            warn!("{name:?} is already running as pid {:?}; ignoring start", entry.public.pid);
             return;
         }
 
@@ -173,7 +174,7 @@ impl ProcessesController {
             Err(err) => {
                 // The config is waiting on `running`; a reason it cannot read is a hang.
                 entry.public.start_error = format!("{cmd}: {err}");
-                eprintln!("processes: {name:?} failed to start {cmd:?}: {err}");
+                warn!("{name:?} failed to start {cmd:?}: {err}");
             }
         }
         drop(guard);
@@ -214,7 +215,7 @@ impl ProcessesController {
             // above covers the ordinary case where it is still selecting.
             drop(live.requests);
             if let Err(err) = live.task.await {
-                eprintln!("processes: {name:?}'s supervising task did not finish cleanly on shutdown: {err}");
+                warn!("{name:?}'s supervising task did not finish cleanly on shutdown: {err}");
             }
         }
     }
@@ -229,7 +230,7 @@ async fn supervise(
     signal_tx: UnboundedSender<ProcessesSignal>,
 ) {
     let Some(raw_pid) = child.id() else {
-        eprintln!("processes: {name:?} spawned without a pid; nothing to supervise");
+        error!("{name:?} spawned without a pid; nothing to supervise");
         return;
     };
     let pid = Pid::from_raw(raw_pid as i32);
@@ -242,7 +243,7 @@ async fn supervise(
                 Some(Request::Signal(signal)) => {
                     // The process, not the group: a pause belongs to the program that was named.
                     if let Err(err) = kill_best_effort(pid, signal) {
-                        eprintln!("processes: {name:?} could not be sent {signal}: {err}");
+                        warn!("{name:?} could not be sent {signal}: {err}");
                     }
                 }
                 // `None` means the controller is gone and nothing can ask again; leaving the
@@ -257,7 +258,7 @@ async fn supervise(
     let exit_code = match status {
         Ok(status) => status.code(),
         Err(err) => {
-            eprintln!("processes: {name:?} could not be waited on: {err}");
+            warn!("{name:?} could not be waited on: {err}");
             None
         }
     };
@@ -285,14 +286,14 @@ async fn stop_group(
     stop_signal: Signal,
 ) -> io::Result<std::process::ExitStatus> {
     if let Err(err) = crate::process::signal_group_best_effort(pgid, stop_signal) {
-        eprintln!("processes: {name:?} could not be sent {stop_signal}: {err}");
+        warn!("{name:?} could not be sent {stop_signal}: {err}");
     }
     if let Ok(status) = tokio::time::timeout(STOP_GRACE, child.wait()).await {
         return status;
     }
-    eprintln!("processes: {name:?} ignored {stop_signal} for {STOP_GRACE:?}; escalating to SIGKILL");
+    warn!("{name:?} ignored {stop_signal} for {STOP_GRACE:?}; escalating to SIGKILL");
     if let Err(err) = crate::process::signal_group_best_effort(pgid, Signal::SIGKILL) {
-        eprintln!("processes: {name:?} could not be sent SIGKILL: {err}");
+        warn!("{name:?} could not be sent SIGKILL: {err}");
     }
     // Bounded like the SIGTERM wait: uninterruptible I/O can defer even SIGKILL.
     match tokio::time::timeout(STOP_GRACE, child.wait()).await {

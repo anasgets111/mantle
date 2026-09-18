@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 
 use futures_util::StreamExt;
-use shared::Zeroize;
+use shared::{Zeroize, info, warn};
 use zbus::zvariant::OwnedObjectPath;
 
 use super::devices::WifiDevice;
@@ -105,11 +105,11 @@ impl NetworkController {
         if !saved && secure {
             // Log the fork: saved-profile and security facts come from different sources, so a
             // missing prompt otherwise leaves three plausible causes.
-            eprintln!("network: connect {:?}: saved={saved} secure={secure}, asking for a password", pending.ssid);
+            info!("connect {:?}: saved={saved} secure={secure}, asking for a password", pending.ssid);
             self.request_password(&pending);
             return;
         }
-        eprintln!("network: connect {:?}: saved={saved} secure={secure}, connecting directly", pending.ssid);
+        info!("connect {:?}: saved={saved} secure={secure}, connecting directly", pending.ssid);
         // Only this click's intent: another connect may have replaced it while the lookup was on the
         // wire, and that one resolves itself.
         let taken = self.pending_connect.lock().unwrap().take_if(|current| *current == pending);
@@ -154,7 +154,7 @@ impl NetworkController {
             state.password_ssid = None;
             state.connect_error = None;
         }
-        eprintln!("network: the pending connect was cancelled; the password prompt is down");
+        info!("the pending connect was cancelled; the password prompt is down");
         let _ = self.events.send(NetworkSignal::Changed);
     }
 
@@ -172,7 +172,7 @@ impl NetworkController {
             attempt.id += 1;
             attempt.joined.take()
         };
-        eprintln!("network: the join in flight was aborted");
+        info!("the join in flight was aborted");
         let _ = self.events.send(NetworkSignal::Changed);
         if let Some(in_flight) = in_flight {
             let controller = self.clone();
@@ -193,7 +193,7 @@ impl NetworkController {
             None => self.nm.deactivate_connection(&in_flight.active).await,
         };
         if let Err(err) = result {
-            eprintln!("network: failed to stop the aborted join {}: {err}", in_flight.active);
+            warn!("failed to stop the aborted join {}: {err}", in_flight.active);
         }
     }
 
@@ -212,7 +212,7 @@ impl NetworkController {
             Err(err) => Err(err),
         };
         if let Err(err) = result {
-            eprintln!("network: failed to save the accepted key for {profile}: {err}");
+            warn!("failed to save the accepted key for {profile}: {err}");
         }
     }
 
@@ -234,7 +234,7 @@ impl NetworkController {
             Ok(in_flight) if self.accept(attempt, &in_flight) => self.watch_activation(attempt, in_flight, pending),
             Ok(in_flight) => self.stop(&in_flight).await,
             Err(err) => {
-                eprintln!("network: connect(ssid={:?}) failed: {err}", pending.ssid);
+                warn!("connect(ssid={:?}) failed: {err}", pending.ssid);
                 self.finish_connect(attempt, &pending, Some(err.to_string()), false);
             }
         }
@@ -325,7 +325,7 @@ impl NetworkController {
         let proxy = match bind::<ActiveConnectionProxy>(&self.connection, active.clone()).await {
             Ok(proxy) => proxy,
             Err(err) => {
-                eprintln!("network: failed to bind the active connection {active}: {err}");
+                warn!("failed to bind the active connection {active}: {err}");
                 return Err(None);
             }
         };
@@ -335,7 +335,7 @@ impl NetworkController {
             match tokio::try_join!(proxy.receive_active_state_changed(), wifi.device.receive_device_state_changed()) {
                 Ok(streams) => streams,
                 Err(err) => {
-                    eprintln!("network: failed to subscribe to StateChanged for {active}: {err}");
+                    warn!("failed to subscribe to StateChanged for {active}: {err}");
                     return Err(None);
                 }
             };

@@ -8,6 +8,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use serde::Serialize;
+use shared::{info, warn};
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::compositor::{CompositorKind, detect_compositor, unsupported_session_report};
@@ -260,7 +261,7 @@ impl WorkspacesController {
                 }
             }
             None => {
-                eprintln!("workspaces: {}; workspace reporting disabled for this run", unsupported_session_report())
+                info!("{}; workspace reporting disabled for this run", unsupported_session_report())
             }
         }
         Self { state, compositor }
@@ -275,7 +276,7 @@ impl WorkspacesController {
         match self.compositor {
             Some(CompositorKind::Niri) => niri::focus(id),
             Some(CompositorKind::Hyprland) => hyprland::focus(id),
-            None => eprintln!("workspaces: focus({id}) called but this session has no workspace implementor; ignored"),
+            None => warn!("focus({id}) called but this session has no workspace implementor; ignored"),
         }
     }
 
@@ -285,8 +286,8 @@ impl WorkspacesController {
         match self.compositor {
             Some(CompositorKind::Hyprland) => hyprland::toggle_special(name),
             Some(CompositorKind::Niri) | None => {
-                eprintln!(
-                    "workspaces: toggle_special({name:?}) called but this session's compositor has no special workspaces; ignored"
+                warn!(
+                    "toggle_special({name:?}) called but this session's compositor has no special workspaces; ignored"
                 )
             }
         }

@@ -12,6 +12,7 @@ use std::rc::Rc;
 use std::time::Duration;
 
 use nonstick::{ConversationAdapter, Transaction};
+use shared::{info, warn};
 use tokio::sync::mpsc::UnboundedSender;
 
 /// PAM service-stack directory. A constant lets [`pam_service_in`] tests use a temporary directory.
@@ -69,11 +70,11 @@ impl ConversationAdapter for PasswordConversation {
     }
 
     fn error_msg(&self, message: impl AsRef<std::ffi::OsStr>) {
-        eprintln!("pam worker: {}", message.as_ref().to_string_lossy());
+        warn!("pam worker: {}", message.as_ref().to_string_lossy());
     }
 
     fn info_msg(&self, message: impl AsRef<std::ffi::OsStr>) {
-        eprintln!("pam worker: {}", message.as_ref().to_string_lossy());
+        info!("pam worker: {}", message.as_ref().to_string_lossy());
     }
 }
 
@@ -229,7 +230,7 @@ async fn drive_helper(
         } else if line == "FAILURE" {
             return Ok(shared::PamOutcome::AuthFailed);
         } else {
-            eprintln!("polkit helper: {line}");
+            info!("polkit helper: {line}");
         }
     }
     Err(std::io::Error::other("the helper closed without a verdict"))
@@ -276,7 +277,7 @@ impl<T> ReportOnDrop<T> {
             && tx.send((tag, outcome)).is_err()
         {
             // A closed channel means `main.rs`'s loop is gone, which `LockController::send` permits.
-            eprintln!("{label}: the outcome channel is closed; dropping an authentication result");
+            warn!("{label}: the outcome channel is closed; dropping an authentication result");
         }
     }
 }
@@ -341,7 +342,7 @@ async fn exchange_over(
 
     let reaped = crate::process::reap_process_group(&mut child, crate::process::DEFAULT_REAP_GRACE).await;
     if let Err(err) = &reaped {
-        eprintln!("failed to reap pam worker: {err}");
+        warn!("failed to reap pam worker: {err}");
     }
 
     // A worker that answered needs no post-mortem. One that did not leaves the lock screen saying

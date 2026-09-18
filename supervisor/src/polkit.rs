@@ -12,6 +12,7 @@
 
 use std::collections::HashMap;
 
+use shared::{error, info};
 use tokio::sync::mpsc::UnboundedSender;
 use tokio::sync::oneshot;
 use zbus::interface;
@@ -148,9 +149,7 @@ impl PolkitAgent {
         match current_session_subject() {
             Ok(subject) => self.register_for(connection, subject),
             Err(err) => {
-                eprintln!(
-                    "polkit: $XDG_SESSION_ID names no session to register an agent for; agent disabled for this run: {err}"
-                );
+                error!("$XDG_SESSION_ID names no session to register an agent for; agent disabled for this run: {err}");
                 // Do not retry: `$XDG_SESSION_ID` will not appear mid-run.
                 self.agent = None;
             }
@@ -167,9 +166,9 @@ impl PolkitAgent {
         let connection = connection.clone();
         tokio::spawn(async move {
             match register_agent(&connection, agent, &subject, "en_US.UTF-8", AGENT_OBJECT_PATH).await {
-                Ok(()) => eprintln!("polkit: registered as this session's authentication agent"),
-                Err(err) => eprintln!(
-                    "polkit: RegisterAuthenticationAgent failed, so another agent answers this session; disabled for this run: {err}"
+                Ok(()) => info!("registered as this session's authentication agent"),
+                Err(err) => info!(
+                    "RegisterAuthenticationAgent failed, so another agent answers this session; disabled for this run: {err}"
                 ),
             }
         });

@@ -3,6 +3,7 @@
 
 use std::sync::{Arc, Mutex};
 
+use shared::warn;
 use tokio::sync::mpsc::UnboundedSender;
 
 use super::registration::resolve_registration;
@@ -29,7 +30,7 @@ impl StatusNotifierWatcher {
         // registration is otherwise invisible to the shell. A Vesktop registration vanished this
         // way for a whole debugging session.
         let resolved = resolve_registration(&self.connection, &service, sender.as_deref()).await.map_err(|err| {
-            eprintln!("tray: RegisterStatusNotifierItem({service:?}) could not be resolved: {err}");
+            warn!("RegisterStatusNotifierItem({service:?}) could not be resolved: {err}");
             zbus::fdo::Error::Failed(format!("RegisterStatusNotifierItem({service:?}) could not be resolved: {err}"))
         })?;
         // KDE's watcher answers `RegisterStatusNotifierItem` by storing `service + path` and
@@ -41,7 +42,7 @@ impl StatusNotifierWatcher {
         let (connection, registry, events) = (self.connection.clone(), self.registry.clone(), self.events.clone());
         tokio::spawn(async move {
             if let Err(err) = register_item(&connection, &registry, &events, resolved).await {
-                eprintln!("tray: RegisterStatusNotifierItem({service:?}) failed: {err}");
+                warn!("RegisterStatusNotifierItem({service:?}) failed: {err}");
                 return;
             }
             if let Ok(emitter) = zbus::object_server::SignalEmitter::new(&connection, WATCHER_OBJECT_PATH) {

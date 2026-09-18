@@ -7,6 +7,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use futures_util::StreamExt;
+use shared::warn;
 use tokio::sync::mpsc::UnboundedSender;
 use tokio::task::JoinHandle;
 use zbus::names::{BusName, OwnedUniqueName};
@@ -86,7 +87,7 @@ pub(super) async fn register_item(
             match bind_dbusmenu(connection, &destination, path).await {
                 Ok(menu) => Some(menu),
                 Err(err) => {
-                    eprintln!("tray: failed to bind DBusMenu for {unique_name} at {path}: {err}");
+                    warn!("failed to bind DBusMenu for {unique_name} at {path}: {err}");
                     None
                 }
             }
@@ -96,7 +97,7 @@ pub(super) async fn register_item(
     if let Some(menu) = &menu {
         match fetch_menu_via(menu).await {
             Ok(items) => tray_item.menu = Some(items),
-            Err(err) => eprintln!("tray: GetLayout failed for {unique_name}: {err}"),
+            Err(err) => warn!("GetLayout failed for {unique_name}: {err}"),
         }
     }
 
@@ -111,7 +112,7 @@ pub(super) async fn register_item(
             Ok(false) => return Err(format!("{unique_name} disconnected during registration")),
             Ok(true) => {}
             Err(err) => {
-                eprintln!("tray: pre-insert liveness check for {unique_name} failed (proceeding anyway): {err}")
+                warn!("pre-insert liveness check for {unique_name} failed (proceeding anyway): {err}")
             }
         }
     }
@@ -223,7 +224,7 @@ fn spawn_menu_signal_forwarder(
                         break;
                     }
                 }
-                Err(err) => eprintln!("tray: GetLayout (LayoutUpdated refresh) failed: {err}"),
+                Err(err) => warn!("GetLayout (LayoutUpdated refresh) failed: {err}"),
             }
         }
     })

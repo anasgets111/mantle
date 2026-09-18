@@ -1,3 +1,5 @@
+use shared::warn;
+
 use super::state::SessionLock;
 
 /// The one lock fact outliving Supervisor (ADR-0060): `$XDG_RUNTIME_DIR/obelisk/session-locked`
@@ -28,8 +30,8 @@ impl SessionLockedFlag {
         match change {
             SessionLock::Taken => {
                 if let Err(err) = std::fs::File::create(&self.path) {
-                    eprintln!(
-                        "lock: could not write {} ; a Supervisor restart will not know the session is locked: {err}",
+                    warn!(
+                        "could not write {} ; a Supervisor restart will not know the session is locked: {err}",
                         self.path.display()
                     );
                 }
@@ -38,8 +40,8 @@ impl SessionLockedFlag {
                 if let Err(err) = std::fs::remove_file(&self.path)
                     && err.kind() != std::io::ErrorKind::NotFound
                 {
-                    eprintln!(
-                        "lock: could not remove {} ; the next Supervisor start will lock the screen: {err}",
+                    warn!(
+                        "could not remove {} ; the next Supervisor start will lock the screen: {err}",
                         self.path.display()
                     );
                 }

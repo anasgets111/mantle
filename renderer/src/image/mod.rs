@@ -35,6 +35,7 @@ use std::sync::{Arc, Mutex};
 use femtovg::renderer::OpenGl;
 use femtovg::rgb::FromSlice;
 use femtovg::{Canvas, ErrorKind, ImageFlags, ImageId, ImageSource};
+use shared::{error, warn};
 
 use crate::text::snap::LogicalRect;
 
@@ -283,6 +284,10 @@ pub struct ImageCache {
     /// what makes one flag enough for every surface: `image` is only ever called from a paint, and
     /// paints are serialized on the dispatch thread.
     deferred: bool,
+    /// Whether the pool's closed result channel has been reported. `poll` runs every turn and the
+    /// channel never reopens, so without this one dead pool writes a line per turn into a log that
+    /// does not rotate (ADR-0199).
+    workers_gone: bool,
     /// Paths whose queued decode was cancelled by an eviction, drained by [`ImageCache::poll`].
     ///
     /// A `Pending` entry evicted for capacity or budget takes its job out of the pool's `wanted`
@@ -322,6 +327,7 @@ impl ImageCache {
             evicted: Vec::new(),
             resident_bytes: 0,
             deferred: false,
+            workers_gone: false,
             cancelled: Vec::new(),
             tick: 0,
             texture_budget: STARTING_TEXTURE_BUDGET,
@@ -375,7 +381,9 @@ impl ImageCache {
                 }
                 Err(TryRecvError::Empty) => break,
                 Err(TryRecvError::Disconnected) => {
-                    eprintln!("[obelisk-renderer] image: every decode worker is gone; background images will not load");
+                    if !std::mem::replace(&mut self.workers_gone, true) {
+                        error!("every decode worker is gone; background images will not load");
+                    }
                     break;
                 }
             }
@@ -498,7 +506,7 @@ impl ImageCache {
                         self.deferred = true;
                     }
                     Err(std::sync::mpsc::TrySendError::Disconnected(_)) => {
-                        eprintln!("[obelisk-renderer] image: {}: no decode worker left to take it", key.path.display());
+                        warn!("{}: no decode worker left to take it", key.path.display());
                         self.unwant(&key);
                         self.insert(key, Slot::Failed);
                     }
@@ -648,7 +656,7 @@ fn upload_or_log(canvas: &mut Canvas<OpenGl>, path: &Path, decoded: Result<Decod
     match result {
         Ok((id, bytes)) => Slot::Ready(id, bytes),
         Err(err) => {
-            eprintln!("[obelisk-renderer] image: {}: {err}", path.display());
+            warn!("{}: {err}", path.display());
             Slot::Failed
         }
     }
@@ -809,7 +817,7 @@ fn decode_raster(
         let thumb = decoded.thumbnail(slot.px, slot.px).into_rgba8();
         let (thumb_width, thumb_height) = thumb.dimensions();
         if let Err(err) = slot.write(thumb.as_raw(), thumb_width, thumb_height) {
-            eprintln!("[obelisk-renderer] image: {}: thumbnail not written: {err}", path.display());
+            warn!("{}: thumbnail not written: {err}", path.display());
         }
         // Both axes, because `stored_size` fills the box while `thumbnail` fits inside it: a wide
         // source thumbnails to 128x72 and stores at 228x128, and rescaling from that would be an

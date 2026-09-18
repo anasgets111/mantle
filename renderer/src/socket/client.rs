@@ -6,7 +6,8 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 use shared::{
-    IdleEvent, ProcessExited, ProcessOutputLine, RendererFrame, SetSessionLock, StateSnapshot, SupervisorFrame,
+    IdleEvent, ProcessExited, ProcessOutputLine, RendererFrame, SetSessionLock, StateSnapshot, SupervisorFrame, error,
+    info, warn,
 };
 use tokio::sync::mpsc;
 
@@ -183,7 +184,7 @@ impl RendererClient {
                 self.rescue_handle.set(mlua::Value::Table(table));
                 self.rescue_state = (is_rescue, error_log.to_string());
             }
-            Err(err) => eprintln!("control-socket client: failed to build rescue state: {err}"),
+            Err(err) => warn!("control-socket client: failed to build rescue state: {err}"),
         }
     }
 
@@ -251,7 +252,7 @@ impl RendererClient {
                 Some(specs)
             }
             Err(err) => {
-                eprintln!("control-socket client: startup shell.lua evaluation failed: {err}");
+                error!("control-socket client: startup shell.lua evaluation failed: {err}");
                 // Whatever it registered before raising goes with it. `discard` after the clear
                 // because that arms the next evaluation; nothing is running one now.
                 self.clear_change_handlers();
@@ -300,7 +301,7 @@ impl RendererClient {
                 true
             }
             Err(err) => {
-                eprintln!("control-socket client: failed to convert the screen list to a Lua value: {err}");
+                warn!("control-socket client: failed to convert the screen list to a Lua value: {err}");
                 false
             }
         }
@@ -385,7 +386,7 @@ impl RendererClient {
                 true
             }
             Err(err) => {
-                eprintln!("control-socket client: startup shell.lua evaluated but failed to apply to the scene: {err}");
+                error!("control-socket client: startup shell.lua evaluated but failed to apply to the scene: {err}");
                 self.set_rescue_state(true, &err.to_string());
                 false
             }
@@ -433,7 +434,7 @@ impl RendererClient {
         match frame {
             SupervisorFrame::StateSnapshot(snapshot) => {
                 if let Err(err) = self.apply_state_snapshot(snapshot) {
-                    eprintln!("control-socket client: failed to convert a pushed StateSnapshot to a Lua value: {err}");
+                    warn!("control-socket client: failed to convert a pushed StateSnapshot to a Lua value: {err}");
                 }
             }
             SupervisorFrame::Reevaluate => {
@@ -458,7 +459,7 @@ impl RendererClient {
             // keybind mistake can be reported; the write dirties the scene.
             SupervisorFrame::SetState(set) => {
                 if let Err(why) = lua::signal::write_state(self.lua(), &set) {
-                    eprintln!(
+                    warn!(
                         "control-socket client: `obelisk` asked to write state {:?} and was refused: {why}",
                         set.name
                     );
@@ -470,12 +471,12 @@ impl RendererClient {
                 let outcome = lua::action::dispatch(self.lua(), &call.name, &call.arguments);
                 let result = shared::CallResult { id: call.id, outcome };
                 if let Err(err) = self.commands.frames().send(RendererFrame::CallResult(result)) {
-                    eprintln!("control-socket client: failed to answer `obelisk call {}`: {err}", call.name);
+                    error!("control-socket client: failed to answer `obelisk call {}`: {err}", call.name);
                 }
             }
             // The Supervisor routes these to control clients; one arriving here is a wire fault.
             SupervisorFrame::CallResult(result) => {
-                eprintln!("control-socket client: ignoring a CallResult for id {}; nothing here calls", result.id);
+                error!("control-socket client: ignoring a CallResult for id {}; nothing here calls", result.id);
             }
         }
         FrameOutcome::Handled
@@ -496,7 +497,7 @@ impl RendererClient {
                 // because that arms the next evaluation; nothing is running one now.
                 self.clear_change_handlers();
                 lua::timer::discard(self.loader.lua());
-                eprintln!("control-socket client: shell.lua re-evaluation failed: {err}");
+                error!("control-socket client: shell.lua re-evaluation failed: {err}");
                 self.set_rescue_state(true, &err.to_string());
                 false
             }
@@ -526,7 +527,7 @@ impl RendererClient {
             }
             Err(err) => {
                 lua::timer::discard(self.loader.lua());
-                eprintln!("control-socket client: the re-evaluated config failed to apply: {err}");
+                warn!("control-socket client: the re-evaluated config failed to apply: {err}");
                 false
             }
         }
@@ -568,7 +569,7 @@ impl RendererClient {
             // Rollback keeps the prior scene. Do not set rescue: that is for `shell.lua`
             // evaluation, not a rejected capability push. ponytail: logging forever, nothing
             // user-visible. Upgrade: rescue-adjacent channel for rejected pushed values.
-            eprintln!("control-socket client: dirty-scene re-resolve failed, keeping the prior scene: {err}");
+            warn!("control-socket client: dirty-scene re-resolve failed, keeping the prior scene: {err}");
             return false;
         }
         start_secure_submit_capabilities(&self.scene, &self.instances, &self.commands);
@@ -647,7 +648,7 @@ fn dump_layout_if_asked(scene: &Scene) {
     }
     let mut out = format!("layout dump: {wanted}\n");
     walk(surface, 0, &mut out);
-    eprint!("{out}");
+    info!("{out}");
 }
 
 /// Starts capabilities named by applied `textfield` `secure_submit`s (ADR-0070 decision 5), so a
@@ -675,7 +676,7 @@ fn log_applied_surfaces(scene: &Scene, instances: &[SurfaceInstance]) {
     dump_layout_if_asked(scene);
     for instance in instances {
         match scene.surface(&instance.instance_id) {
-            Some(r) => eprintln!(
+            Some(r) => info!(
                 "layout resolved: surface {:?} on {:?} kind={} rect={:?} visible={} children={} properties={}",
                 instance.instance_id,
                 instance.output,
@@ -686,7 +687,7 @@ fn log_applied_surfaces(scene: &Scene, instances: &[SurfaceInstance]) {
                 r.properties.len()
             ),
             None => {
-                eprintln!("layout resolved but surface {:?} is absent from the applied scene", instance.instance_id)
+                warn!("layout resolved but surface {:?} is absent from the applied scene", instance.instance_id)
             }
         }
     }

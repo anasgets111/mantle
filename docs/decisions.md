@@ -4531,6 +4531,8 @@ a failed write. A full tmpfs no longer aborts the shell; only a dependency's own
 
 Amended by ADR-0222: no log lock or truncation; one log per instance directory.
 
+Amended by ADR-0229: there are levels now, and every line carries a clock and a subsystem.
+
 ## 0200. The active route index is re-read from `info`, because PipeWire never pushes one that appears late
 
 `obelisk` starts from `spawn-at-startup`, before the ALSA card has settled. `bind_device` bound
@@ -5243,3 +5245,30 @@ ponytail: `capabilities::shm_icons` reads a `OnceLock<PathBuf>` set once in `run
 of taking the directory as a parameter, because threading it down would touch `Capabilities::new`,
 nine notification delete sites and the tray code. An unset global fails closed: no delete, an
 `io::Error`.
+
+## 0229. Diagnostics are stamped and levelled where they are written, not where they land
+
+ADR-0199 said "there are no log levels here to filter by". There are now, because there was no clock
+either: only `--profile`'s periodic `t=NNNs`, so nothing could be placed closer than the 120 seconds
+between two reports, or against `journalctl` at all.
+
+1. **The existing macro is the funnel.** `shared`'s `eprintln!` already shadows std's in both
+   binaries, and a `macro_rules!` body expands in the caller's context, so `module_path!()` names the
+   module that had the thought. `error!`/`warn!`/`info!`/`debug!` join it, and the clock, subsystem,
+   colour and filter all follow from that without a call site spelling any of them. Imported by path:
+   `#[macro_use]` is `cfg(not(test))` in both crate roots, so its names fail under test.
+2. **`OBELISK_LOG`**: a bare level sets the default, `name=level` moves one subsystem, `off` silences
+   it. An env var, not a flag, so it reaches the Renderer without `--profile`'s plumbing (ADR-0228
+   decision 2). An unparseable item is named, since a typo otherwise reads as a subsystem gone quiet.
+3. **Colour only on a terminal, asked after `capture`.** Not ADR-0199's rejected `is_terminal`: that
+   one chose which descriptor to take over, where a redirect answers wrongly. This one decides escape
+   codes alone, by which point stderr already points where it is going.
+4. A diagnostic that beats `init` prints unstamped rather than not at all.
+
+Rejected: stamping at the sink. ADR-0199 refused that thread for teeing already, and it would stamp
+only detached runs and block every `eprintln!` in the shell if it ever stopped draining. Also the
+`log` facade, already in the lock: adopting it means replacing the macro that is already the funnel,
+at every call site, to gain an indirection.
+
+ponytail: femtovg's and wayland-sys's own `log` records stay invisible. A shim into `emit` would
+surface them, and needs its own default-off filter or it buries everything above it.

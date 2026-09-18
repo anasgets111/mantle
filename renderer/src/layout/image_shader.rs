@@ -32,6 +32,7 @@ use std::path::{Path, PathBuf};
 use femtovg::renderer::OpenGl;
 use femtovg::{Canvas, ImageId};
 use glow::HasContext;
+use shared::error;
 
 use crate::layout::node;
 use crate::text::snap::{LogicalRect, PhysicalRect};
@@ -288,7 +289,7 @@ impl ShaderStage {
             // SAFETY: caller's contract.
             Ok(source) => unsafe { self.build(gl, path, &source) },
             Err(err) => {
-                eprintln!("[obelisk-renderer] shader: {}: {err}", path.display());
+                error!("shader: {}: {err}", path.display());
                 None
             }
         };
@@ -324,7 +325,7 @@ impl ShaderStage {
             gl.detach_shader(program, fragment);
             gl.delete_shader(fragment);
             if !gl.get_program_link_status(program) {
-                eprintln!("[obelisk-renderer] shader: {}: {}", path.display(), gl.get_program_info_log(program));
+                error!("shader: {}: {}", path.display(), gl.get_program_info_log(program));
                 gl.delete_program(program);
                 return None;
             }
@@ -337,8 +338,8 @@ impl ShaderStage {
                     continue;
                 }
                 if uniform.utype != glow::FLOAT {
-                    eprintln!(
-                        "[obelisk-renderer] shader: {}: `{}` is not a `float`, and `params` carries numbers only",
+                    error!(
+                        "shader: {}: `{}` is not a `float`, and `params` carries numbers only",
                         path.display(),
                         uniform.name
                     );
@@ -532,7 +533,7 @@ unsafe fn compile(gl: &glow::Context, kind: u32, source: &str, path: &Path) -> O
             return Some(shader);
         }
         // `#line 1` ends the prelude, so a reported line number is the config's own.
-        eprintln!("[obelisk-renderer] shader: {}: {}", path.display(), gl.get_shader_info_log(shader));
+        error!("shader: {}: {}", path.display(), gl.get_shader_info_log(shader));
         gl.delete_shader(shader);
         None
     }

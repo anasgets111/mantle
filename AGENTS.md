@@ -42,6 +42,13 @@ Before writing code, trace the real flow end to end, then stop at the first rung
 - **New Lua globals or signals** go in `lua-meta/globals.lua`/`signals.lua` in the same commit.
 - **`just check` is the gate**, `just types` included. It needs `lua-language-server`.
 
+## Logging
+
+- **Every runtime diagnostic is `error!`/`warn!`/`info!`/`debug!`** from `shared`, imported by path
+  (`use shared::warn;`). The clock, level and subsystem come from the macro; never write the
+  subsystem into the message. `eprintln!` is for CLI output that runs before `shared::log::init`.
+- **`OBELISK_LOG`** takes `debug`, `warn,tray=debug`, `network=off` (ADR-0229).
+
 ## Testing
 
 - **Never hardcode `/sys` or `/proc`.** Readers take `sys_root`/`proc_root`; tests point them at a tempdir.

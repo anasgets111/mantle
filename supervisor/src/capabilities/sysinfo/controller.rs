@@ -3,6 +3,8 @@
 
 use std::time::Duration;
 
+use shared::{debug, warn};
+
 /// `obelisk.sysinfo`'s five Lua-visible fields, with field names unchanged from the `StateSnapshot`
 /// JSON keys.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
@@ -103,7 +105,7 @@ impl SysinfoController {
             if let Some(sec) = seconds
                 && sender.send(Duration::from_secs(sec)).is_err()
             {
-                eprintln!("sysinfo: {name} task is gone, {name}_interval update dropped");
+                warn!("{name} task is gone, {name}_interval update dropped");
             }
         };
         send(cfg.cpu_interval, &self.cpu_interval, "cpu");
@@ -192,7 +194,7 @@ async fn run_cpu_task(
             }
             *previous = Some(sample);
         }
-        Err(err) => eprintln!("sysinfo: failed to read /proc/stat: {err}"),
+        Err(err) => debug!("failed to read /proc/stat: {err}"),
     })
     .await
 }
@@ -215,7 +217,7 @@ async fn run_ram_task(
                 changed
             });
         }
-        Err(err) => eprintln!("sysinfo: failed to read /proc/meminfo: {err}"),
+        Err(err) => debug!("failed to read /proc/meminfo: {err}"),
     })
     .await
 }

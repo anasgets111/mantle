@@ -11,6 +11,8 @@ pub mod controller;
 pub mod entry;
 pub mod scan;
 
+use shared::warn;
+
 pub use controller::{ApplicationsController, ApplicationsSignal, LaunchError, OpenUrlError};
 pub use scan::application_dirs;
 
@@ -43,7 +45,7 @@ pub fn dispatch(controller: &ApplicationsController, envelope: &shared::CommandE
                     }
                     LaunchError::Spawn(message) => format!("spawning {id:?} failed: {message}"),
                 };
-                eprintln!("applications:launch: {reason}");
+                warn!("launch: {reason}");
             }
         }
         ApplicationsAction::OpenUrl { url } => {
@@ -52,7 +54,7 @@ pub fn dispatch(controller: &ApplicationsController, envelope: &shared::CommandE
                     OpenUrlError::Refused(why) => format!("refused {url:?}: {why}"),
                     OpenUrlError::Spawn(message) => format!("spawning xdg-open for {url:?} failed: {message}"),
                 };
-                eprintln!("applications:open_url: {reason}");
+                warn!("open_url: {reason}");
             }
         }
     }

@@ -5,6 +5,7 @@ use std::sync::{Arc, Mutex};
 
 use futures_util::StreamExt;
 use inotify::{Inotify, WatchMask};
+use shared::{info, warn};
 use tokio::sync::mpsc::UnboundedSender;
 use tokio::sync::watch;
 
@@ -163,7 +164,7 @@ async fn run_privacy_task(
                     // Only a device open/close can change who holds it; this arm pays for the scan.
                     DeviceEvent::Opened => opener_pids = scan_camera_pids(&proc_root, &devices),
                     DeviceEvent::Failed(err) => {
-                        eprintln!("privacy: inotify read failed: {err}");
+                        warn!("inotify read failed: {err}");
                         continue;
                     }
                     // All watched device fds closed; drop the watch but keep the task.
@@ -205,27 +206,25 @@ fn publish(proc_root: &Path, state: &Arc<Mutex<PrivacyState>>, opener_pids: &[u3
 /// only `camera_users` and is logged.
 fn watch_video_devices(devices: &[PathBuf]) -> Option<inotify::EventStream<Vec<u8>>> {
     if devices.is_empty() {
-        eprintln!("privacy: no /dev/videoN devices found; camera_users will stay empty");
+        info!("no /dev/videoN devices found; camera_users will stay empty");
         return None;
     }
     let inotify = match Inotify::init() {
         Ok(inotify) => inotify,
         Err(err) => {
-            eprintln!("privacy: failed to initialize inotify; camera detection disabled for this run: {err}");
+            warn!("failed to initialize inotify; camera detection disabled for this run: {err}");
             return None;
         }
     };
     for device in devices {
         if let Err(err) = inotify.watches().add(device, WatchMask::OPEN | WatchMask::CLOSE) {
-            eprintln!("privacy: failed to watch {}; camera opens on it won't be detected: {err}", device.display());
+            warn!("failed to watch {}; camera opens on it won't be detected: {err}", device.display());
         }
     }
     match inotify.into_event_stream(vec![0u8; 4096]) {
         Ok(stream) => Some(stream),
         Err(err) => {
-            eprintln!(
-                "privacy: failed to start the inotify event stream; camera detection disabled for this run: {err}"
-            );
+            warn!("failed to start the inotify event stream; camera detection disabled for this run: {err}");
             None
         }
     }

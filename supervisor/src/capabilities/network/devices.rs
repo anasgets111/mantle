@@ -11,6 +11,7 @@ use super::proxies::{
 };
 use super::{NetworkController, NetworkSignal};
 use crate::capabilities::bind;
+use shared::{error, info, warn};
 
 /// One resolved Wi-Fi device: its path for `AddAndActivateConnection2`, plus the `Device` and
 /// `Device.Wireless` proxies. Association state and APs use those two interfaces on one object.
@@ -52,25 +53,25 @@ pub(super) async fn resolve_devices(
         let device = match bind::<DeviceProxy>(connection, path.clone()).await {
             Ok(device) => device,
             Err(err) => {
-                eprintln!("network: failed to bind device {path}: {err}");
+                warn!("failed to bind device {path}: {err}");
                 continue;
             }
         };
         let device_type = match device.device_type().await {
             Ok(device_type) => device_type,
             Err(err) => {
-                eprintln!("network: failed to read device_type for {path}: {err}");
+                warn!("failed to read device_type for {path}: {err}");
                 continue;
             }
         };
         match device_type {
             DEVICE_TYPE_ETHERNET => match bind::<WiredProxy>(connection, path.clone()).await {
                 Ok(wired) => ethernet.push(EthernetDevice { path, device, wired }),
-                Err(err) => eprintln!("network: failed to bind wired device {path}: {err}"),
+                Err(err) => warn!("failed to bind wired device {path}: {err}"),
             },
             DEVICE_TYPE_WIFI if wifi.is_none() => match bind::<WirelessProxy>(connection, path.clone()).await {
                 Ok(wireless) => wifi = Some(WifiDevice { device_path: path, device, wireless }),
-                Err(err) => eprintln!("network: failed to bind wireless device {path}: {err}"),
+                Err(err) => warn!("failed to bind wireless device {path}: {err}"),
             },
             _ => {}
         }
@@ -92,7 +93,7 @@ pub(super) fn watch_devices(
                 .push(spawn_wifi_forwarder(connection.clone(), wifi.wireless.clone(), events.clone()).abort_handle());
             watchers.push(spawn_device_state_forwarder(wifi.device.clone(), events.clone()).abort_handle());
         }
-        None => eprintln!("network: no Wi-Fi device found; scan and access-point events wait for one to appear"),
+        None => info!("no Wi-Fi device found; scan and access-point events wait for one to appear"),
     }
     for device in ethernet {
         watchers.push(spawn_device_state_forwarder(device.device.clone(), events.clone()).abort_handle());
@@ -120,7 +121,7 @@ fn spawn_wifi_forwarder(
         let mut ap_set_changed = match ap_set {
             Ok((added, removed)) => stream::select(added.map(drop), removed.map(drop)),
             Err(err) => {
-                eprintln!("network: failed to subscribe to AccessPointAdded/AccessPointRemoved: {err}");
+                warn!("failed to subscribe to AccessPointAdded/AccessPointRemoved: {err}");
                 return;
             }
         };
@@ -172,7 +173,7 @@ fn strength_forwarder(
         let access_point = match bind::<AccessPointProxy>(&connection, path.clone()).await {
             Ok(access_point) => access_point,
             Err(err) => {
-                eprintln!("network: failed to bind the associated access point {path}: {err}");
+                warn!("failed to bind the associated access point {path}: {err}");
                 return;
             }
         };
@@ -223,7 +224,7 @@ pub(super) fn forward<A, B>(
     let (added, removed) = match subscribed {
         Ok(streams) => streams,
         Err(err) => {
-            return eprintln!("network: failed to subscribe for {signal:?}; those changes need a restart: {err}");
+            return error!("failed to subscribe for {signal:?}; those changes need a restart: {err}");
         }
     };
     let mut changes = stream::select(added.map(drop), removed.map(drop));
@@ -238,7 +239,7 @@ impl NetworkController {
         let (wifi, ethernet) = match resolve_devices(&self.connection, &self.nm).await {
             Ok(found) => found,
             Err(err) => {
-                eprintln!("network: failed to rescan devices: {err}");
+                warn!("failed to rescan devices: {err}");
                 return;
             }
         };
@@ -250,7 +251,7 @@ impl NetworkController {
         if unchanged {
             return;
         }
-        eprintln!("network: device set changed: wifi={} ethernet={}", wifi.is_some(), ethernet.len());
+        info!("device set changed: wifi={} ethernet={}", wifi.is_some(), ethernet.len());
         let watchers = watch_devices(&self.connection, wifi.as_ref(), &ethernet, &self.events);
         let previous = std::mem::replace(&mut *self.devices.lock().unwrap(), Devices { wifi, ethernet, watchers });
         for watcher in previous.watchers {

@@ -10,6 +10,8 @@ use std::io;
 use std::path::Path;
 use std::time::Duration;
 
+use shared::{info, warn};
+
 /// Passed in at the one production call site, [`log_sample`], instead of being reached for inside
 /// the readers, so a test can point them at a tempdir of fake files. Every sysfs and procfs reader
 /// in `capabilities` takes its root the same way.
@@ -204,7 +206,7 @@ pub(crate) fn report_line(label: &str, sample: &Sample) -> String {
     let total_pss: u64 =
         sample.supervisor.rollup.pss + sample.renderer.iter().map(|(_, memory)| memory.rollup.pss).sum::<u64>();
     let mut line = format!(
-        "[obelisk-memory] {label}: total pss {:.1} MiB; supervisor pss {:.1} MiB uss {:.1} MiB \
+        "{label}: total pss {:.1} MiB; supervisor pss {:.1} MiB uss {:.1} MiB \
          (malloc in_use {:.1} free {:.1} arena {:.1} mmap {:.1} MiB)",
         mib(total_pss),
         mib(sample.supervisor.rollup.pss),
@@ -276,7 +278,7 @@ pub(crate) fn sample(
     let renderer = renderer.and_then(|(generation_id, pid)| match read_process_memory(proc_root, &pid.to_string()) {
         Ok(memory) => Some((generation_id, memory)),
         Err(err) => {
-            eprintln!("[obelisk-memory] generation {generation_id} (pid {pid}) could not be sampled, skipping: {err}");
+            warn!("generation {generation_id} (pid {pid}) could not be sampled, skipping: {err}");
             None
         }
     });
@@ -303,8 +305,8 @@ pub(crate) fn log_sample(
     snapshots: Vec<(&'static str, usize)>,
 ) {
     match sample(Path::new(PROC_ROOT), child.id().map(|pid| (generation_id, pid)), snapshots) {
-        Ok(sample) => eprintln!("{}", report_line(label, &sample)),
-        Err(err) => eprintln!("[obelisk-memory] {label} sample failed: {err}"),
+        Ok(sample) => info!("{}", report_line(label, &sample)),
+        Err(err) => warn!("{label} sample failed: {err}"),
     }
 }
 
@@ -596,7 +598,7 @@ drm-engine-video-enhance:\t0 ns\n";
 
         assert_eq!(
             report_line("periodic", &sample),
-            "[obelisk-memory] periodic: total pss 58.0 MiB; supervisor pss 8.0 MiB uss 0.0 MiB \
+            "periodic: total pss 58.0 MiB; supervisor pss 8.0 MiB uss 0.0 MiB \
              (malloc in_use 4.0 free 2.0 arena 6.0 mmap 1.0 MiB); \
              snapshots notifications=4096 audio=512; \
              generation 0 pss 50.0 MiB uss 40.0 MiB gpu 20.0 MiB (3.0 MiB shared, 1 drm client(s))"
@@ -621,6 +623,6 @@ drm-engine-video-enhance:\t0 ns\n";
                 },
             )),
         };
-        assert!(report_line("check", &sample).starts_with("[obelisk-memory] check: total pss 2.0 MiB;"));
+        assert!(report_line("check", &sample).starts_with("check: total pss 2.0 MiB;"));
     }
 }

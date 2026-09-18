@@ -17,7 +17,7 @@ use std::collections::HashSet;
 use std::rc::Rc;
 
 use mlua::{Function, Lua, LuaSerdeExt, MultiValue, UserData, UserDataMethods, Value};
-use shared::{CommandEnvelope, CommandParams, RendererFrame};
+use shared::{CommandEnvelope, CommandParams, RendererFrame, error, warn};
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::lua::signal::{CpuBudget, DirtyFlag, LiveSignalHandle, Signal};
@@ -75,14 +75,14 @@ impl CommandSender {
                 warned.clear();
             }
             if warned.insert(capability.to_string()) {
-                eprintln!("obelisk.{capability}: not a capability, so nothing starts");
+                warn!("obelisk.{capability}: not a capability, so nothing starts");
             }
             return;
         };
         self.started.borrow_mut().insert(capability.to_string());
         let frame = RendererFrame::StartCapability { capability: known };
         if self.outbound_tx.send(frame).is_err() {
-            eprintln!("obelisk.{known}: failed to queue the start request, the control-socket writer is gone");
+            error!("obelisk.{known}: failed to queue the start request, the control-socket writer is gone");
         }
     }
 
@@ -118,7 +118,7 @@ impl CommandSender {
             id,
         };
         if self.outbound_tx.send(RendererFrame::Command(envelope)).is_err() {
-            eprintln!(
+            error!(
                 "obelisk.{capability}:invoke(\"{action}\"): failed to queue the command, the control-socket writer is gone"
             );
         }
@@ -225,7 +225,7 @@ impl CapabilityHandle {
                 budget.check_not_exceeded()
             });
             if let Err(err) = outcome {
-                eprintln!("obelisk.{}:on_change handler raised, ignoring it: {err}", self.name);
+                warn!("obelisk.{}:on_change handler raised, ignoring it: {err}", self.name);
             }
         }
     }

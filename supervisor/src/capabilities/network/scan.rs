@@ -3,6 +3,7 @@
 
 use std::collections::{HashMap, HashSet};
 
+use shared::warn;
 use zbus::zvariant::OwnedObjectPath;
 
 use super::proxies::{AP_FLAGS_PRIVACY, AccessPointProxy};
@@ -127,11 +128,11 @@ impl NetworkController {
     /// Dispatches `RequestScan({})`. Missing Wi-Fi hardware is logged, not fatal.
     pub async fn scan(&self) {
         let Some(wifi) = self.wifi() else {
-            eprintln!("network: scan() requested but no Wi-Fi device is present");
+            warn!("scan() requested but no Wi-Fi device is present");
             return;
         };
         if let Err(err) = wifi.wireless.request_scan(HashMap::new()).await {
-            eprintln!("network: RequestScan failed: {err}");
+            warn!("RequestScan failed: {err}");
             // A refused scan never moves `LastScan`, so `mark_scanning`'s flag would hold until NM
             // scans on its own, minutes later on a joined radio and never on a powered-down one.
             let _ = self.events.send(NetworkSignal::ScanCompleted);
@@ -148,7 +149,7 @@ impl NetworkController {
         let ap_paths = match wifi.wireless.get_access_points().await {
             Ok(paths) => paths,
             Err(err) => {
-                eprintln!("network: failed to list access points: {err}");
+                warn!("failed to list access points: {err}");
                 return Vec::new();
             }
         };
@@ -177,7 +178,7 @@ impl NetworkController {
         for path in missing {
             match bind::<AccessPointProxy>(&self.connection, path.clone()).await {
                 Ok(proxy) => bound.push((path, proxy)),
-                Err(err) => eprintln!("network: failed to bind access point {path}: {err}"),
+                Err(err) => warn!("failed to bind access point {path}: {err}"),
             }
         }
 

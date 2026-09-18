@@ -5,6 +5,7 @@ use std::sync::{Arc, Mutex};
 
 use futures_util::StreamExt;
 use inotify::{Inotify, WatchMask};
+use shared::warn;
 use tokio::sync::mpsc::UnboundedSender;
 
 use super::controller::{UpdatesSignal, UpdatesState};
@@ -24,7 +25,7 @@ pub(super) async fn run_reboot_marker_task(
     events: UnboundedSender<UpdatesSignal>,
 ) {
     let (Some(dir), Some(name)) = (marker.parent(), marker.file_name()) else {
-        eprintln!("updates: {} is not a file path; the reboot badge stays off", marker.display());
+        warn!("{} is not a file path; the reboot badge stays off", marker.display());
         return;
     };
     publish_reboot_required(&marker, &state, &events);
@@ -37,7 +38,7 @@ pub(super) async fn run_reboot_marker_task(
         Ok(stream) => stream,
         Err(err) => {
             // The first stat stands, so a badge raised before login survives; later changes do not.
-            eprintln!("updates: cannot watch {} for the reboot marker: {err}", dir.display());
+            warn!("cannot watch {} for the reboot marker: {err}", dir.display());
             return;
         }
     };
@@ -45,7 +46,7 @@ pub(super) async fn run_reboot_marker_task(
         match event {
             Ok(event) if event.name.as_deref() == Some(name) => publish_reboot_required(&marker, &state, &events),
             Ok(_) => {}
-            Err(err) => eprintln!("updates: inotify read on {} failed: {err}", dir.display()),
+            Err(err) => warn!("inotify read on {} failed: {err}", dir.display()),
         }
     }
 }

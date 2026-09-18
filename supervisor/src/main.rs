@@ -29,7 +29,7 @@ use capabilities::Capabilities;
 use capabilities::lock::{self, LockController};
 use generation::{Renderer, renderer_binary_path};
 use polkit::PolkitAgent;
-use shared::{Capability, RendererFrame, SupervisorFrame, Zeroize};
+use shared::{Capability, RendererFrame, SupervisorFrame, Zeroize, info, warn};
 use socket::send_frame_logged;
 use supervisor::Supervisor;
 
@@ -323,11 +323,11 @@ async fn run_supervisor(dir: PathBuf, config_dir: PathBuf, profile: Option<u64>)
     loop {
         tokio::select! {
             _ = tokio::signal::ctrl_c() => {
-                eprintln!("SIGINT received, shutting down");
+                info!("SIGINT received, shutting down");
                 break;
             }
             _ = sigterm.recv() => {
-                eprintln!("SIGTERM received, shutting down");
+                info!("SIGTERM received, shutting down");
                 break;
             }
             // ADR-0058 decision 1: dead and healthy-idle Renderers both send no frames; without
@@ -373,7 +373,7 @@ async fn run_supervisor(dir: PathBuf, config_dir: PathBuf, profile: Option<u64>)
                 // No Renderer is live during a cooldown, so only control clients and call answers dispatch.
                 let live = supervisor.respawn_at.map_or(supervisor.authoritative.generation_id, |_| shared::CONTROL_CLIENT_GENERATION);
                 if !frame_may_dispatch(&inbound.frame, inbound.generation_id, live) {
-                    eprintln!(
+                    warn!(
                         "dropping a frame from stale generation {} (authoritative is {})",
                         inbound.generation_id, supervisor.authoritative.generation_id
                     );
@@ -387,7 +387,7 @@ async fn run_supervisor(dir: PathBuf, config_dir: PathBuf, profile: Option<u64>)
                     "process" => supervisor.dispatch_process_command(&envelope).await,
                     name => match Capability::from_name(name) {
                         Some(capability) => supervisor.dispatch_capability_command(capability, &envelope),
-                        None => eprintln!("inbound command from generation {}: {:?}", inbound.generation_id, envelope),
+                        None => warn!("inbound command from generation {}: {:?}", inbound.generation_id, envelope),
                     },
                 },
                 RendererFrame::StartCapability { capability } => {
@@ -420,7 +420,7 @@ async fn run_supervisor(dir: PathBuf, config_dir: PathBuf, profile: Option<u64>)
                 // round when a Renderer was replaced mid-call.
                 RendererFrame::CallResult(result) => {
                     if let Err(why) = call_routes.answer(inbound.generation_id, &result) {
-                        eprintln!("control-socket: dropped an `obelisk call` answer: {why}");
+                        warn!("control-socket: dropped an `obelisk call` answer: {why}");
                     }
                 }
                 RendererFrame::SecureSubmit(mut submit) if submit.capability == Capability::Polkit && submit.action == "authenticate" => {
@@ -446,7 +446,7 @@ async fn run_supervisor(dir: PathBuf, config_dir: PathBuf, profile: Option<u64>)
                     if let Some(acquisition) = supervisor.lock.try_begin_authentication() {
                         // Pairs with `record_pam_outcome`'s answer. Without both, a worker that
                         // never reports is indistinguishable from a submit that never arrived.
-                        eprintln!("lock: starting pam for acquisition {acquisition}");
+                        info!("lock: starting pam for acquisition {acquisition}");
                         supervisor.push_lock_state();
                         // `mem::take` gives plaintext to `run_authentication`, which zeroizes on
                         // panic and shutdown cancellation too. Spawn instead of await: Enter is
@@ -461,7 +461,7 @@ async fn run_supervisor(dir: PathBuf, config_dir: PathBuf, profile: Option<u64>)
                             outcome_tx,
                         ));
                     } else {
-                        eprintln!(
+                        warn!(
                             "generation {}'s secure_submit(lock, authenticate) arrived with no lock held, or with an attempt already in flight; dropping",
                             submit.generation_id
                         );
@@ -473,7 +473,7 @@ async fn run_supervisor(dir: PathBuf, config_dir: PathBuf, profile: Option<u64>)
                     // textfield/IPC half), none implemented yet. The length is deliberately absent:
                     // a misaddressed password reaches this arm, and its length is the one thing
                     // about it worth an attacker's time.
-                    eprintln!(
+                    warn!(
                         "generation {}'s secure_submit received: capability={:?} action={:?}",
                         submit.generation_id,
                         submit.capability,

@@ -4,6 +4,7 @@
 
 use super::*;
 use crate::wayland::surface::TrackedRole;
+use shared::{info, warn};
 
 /// One connected output, the source for the `screens` signal and `monitor` matching
 /// (ADR-0041 decision 2).
@@ -108,7 +109,7 @@ impl App {
                 continue;
             }
             let Some(info) = self.output_state.info(&output) else {
-                eprintln!("[obelisk-renderer] output {index} advertised no info yet; no surface created on it");
+                warn!("output {index} advertised no info yet; no surface created on it");
                 continue;
             };
             let facts = OutputFacts {
@@ -123,8 +124,8 @@ impl App {
             };
             match screen_entry(index, &facts) {
                 Some(screen) => screens.push(screen),
-                None => eprintln!(
-                    "[obelisk-renderer] output {:?} reports neither a logical size nor a current mode; no surface created on it",
+                None => warn!(
+                    "output {:?} reports neither a logical size nor a current mode; no surface created on it",
                     info.name.as_deref().unwrap_or("<unnamed>")
                 ),
             }
@@ -146,10 +147,7 @@ impl App {
             // Seed from the initial output burst; `startup_complete` gates the rest.
             return;
         }
-        eprintln!(
-            "[obelisk-renderer] outputs changed: {:?}",
-            screens.iter().map(|s| s.name.as_str()).collect::<Vec<_>>()
-        );
+        info!("outputs changed: {:?}", screens.iter().map(|s| s.name.as_str()).collect::<Vec<_>>());
 
         let specs = self.client.applied_surface_specs();
         let fresh = expand_instances(&specs, &geometries_from(&screens));
@@ -189,9 +187,7 @@ impl App {
                 && rebuilt.iter().any(|id| id == spec.declared_id())
         });
         if renames_lock && self.session_lock.is_some() {
-            eprintln!(
-                "[obelisk-renderer] this reload renames the lock surface; refused while locked, save again after unlock"
-            );
+            warn!("this reload renames the lock surface; refused while locked, save again after unlock");
             crate::lua::timer::discard(self.client.lua());
             return;
         }

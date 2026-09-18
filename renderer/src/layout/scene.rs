@@ -9,6 +9,7 @@ use std::ops::Range;
 use std::time::Instant;
 
 use mlua::{Lua, Value};
+use shared::warn;
 
 use crate::layout::instance::SurfaceInstance;
 use crate::layout::node::{
@@ -474,7 +475,7 @@ impl Scene {
         let budget = match crate::lua::signal::LayoutPassBudget::enter(lua) {
             Ok(budget) => budget,
             Err(err) => {
-                eprintln!("[obelisk-renderer] tick: no pass budget, skipping the frame: {err}");
+                warn!("tick: no pass budget, skipping the frame: {err}");
                 return Vec::new();
             }
         };
@@ -490,7 +491,7 @@ impl Scene {
                 let advanced = advance_paint_only(retained, now, lua)
                     .and_then(|()| if budget.exceeded() { Err(LayoutError::PassBudgetExceeded) } else { Ok(()) });
                 if let Err(err) = advanced {
-                    eprintln!("[obelisk-renderer] {key}: advancing a paint-only tween failed, stopping it: {err}");
+                    warn!("{key}: advancing a paint-only tween failed, stopping it: {err}");
                     strip_tweens(retained);
                 }
                 continue;
@@ -503,12 +504,12 @@ impl Scene {
                 Ok(tree) => {
                     // Quiet: a tick never schedules a pass (ADR-0131).
                     if let Err(err) = publish_geometry(&tree, 0.0, 0.0, lua, true) {
-                        eprintln!("[obelisk-renderer] {key}: writing a geometry signal failed: {err}");
+                        warn!("{key}: writing a geometry signal failed: {err}");
                     }
                     *retained = tree;
                 }
                 Err(err) => {
-                    eprintln!("[obelisk-renderer] {key}: relaying out a tween failed, snapping it: {err}");
+                    warn!("{key}: relaying out a tween failed, snapping it: {err}");
                     strip_tweens(retained);
                 }
             }

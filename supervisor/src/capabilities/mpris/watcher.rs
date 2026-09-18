@@ -5,6 +5,7 @@
 //! departures under the same prefix (ADR-0036).
 
 use futures_util::StreamExt;
+use shared::{error, warn};
 use tokio::sync::mpsc::UnboundedSender;
 
 use super::MprisSignal;
@@ -43,7 +44,7 @@ async fn discover_existing(
     let names = match dbus_proxy.list_names().await {
         Ok(names) => names,
         Err(err) => {
-            eprintln!("mpris: ListNames failed; starting with no discovered players: {err}");
+            warn!("ListNames failed; starting with no discovered players: {err}");
             return;
         }
     };
@@ -70,14 +71,14 @@ pub(super) async fn spawn_discovery(
     let dbus_proxy = match zbus::fdo::DBusProxy::new(&connection).await {
         Ok(proxy) => proxy,
         Err(err) => {
-            eprintln!("mpris: failed to bind org.freedesktop.DBus; player discovery disabled for this run: {err}");
+            error!("failed to bind org.freedesktop.DBus; player discovery disabled for this run: {err}");
             return;
         }
     };
     let mut stream = match dbus_proxy.receive_name_owner_changed().await {
         Ok(stream) => stream,
         Err(err) => {
-            eprintln!("mpris: failed to subscribe to NameOwnerChanged; player discovery disabled for this run: {err}");
+            error!("failed to subscribe to NameOwnerChanged; player discovery disabled for this run: {err}");
             return;
         }
     };

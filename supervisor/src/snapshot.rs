@@ -4,7 +4,7 @@
 
 use std::collections::HashMap;
 
-use shared::{Capability, SupervisorFrame};
+use shared::{Capability, SupervisorFrame, warn};
 
 use crate::{send_frame_logged, socket};
 
@@ -45,6 +45,6 @@ pub(crate) fn push_snapshot(
                 last_snapshots.insert(capability, snapshot);
             }
         }
-        Err(err) => eprintln!("failed to serialize {capability} StateSnapshot: {err}"),
+        Err(err) => warn!("failed to serialize {capability} StateSnapshot: {err}"),
     }
 }

@@ -4,6 +4,7 @@
 //! builds and pushes it because the bus callback, `secure_submit` frame, and PAM answer all land
 //! in that loop.
 
+use shared::warn;
 use tokio::sync::oneshot;
 
 use crate::polkit::{AgentError, BeginAuthenticationCall, first_unix_user_uid};
@@ -74,12 +75,12 @@ impl PolkitController {
     /// (ADR-0028 left a picker for later). Returns whether the request became state.
     pub fn begin(&mut self, call: BeginAuthenticationCall, reply: oneshot::Sender<Result<(), AgentError>>) -> bool {
         let Some(uid) = first_unix_user_uid(&call.identities) else {
-            eprintln!("polkit: challenge {:?} carried no unix-user identity; cancelling it", call.cookie);
+            warn!("challenge {:?} carried no unix-user identity; cancelling it", call.cookie);
             let _ = reply.send(Err(AgentError::Cancelled));
             return false;
         };
         if self.pending.is_some() {
-            eprintln!("polkit: challenge {:?} arrived while another is on screen; cancelling it", call.cookie);
+            warn!("challenge {:?} arrived while another is on screen; cancelling it", call.cookie);
             let _ = reply.send(Err(AgentError::Cancelled));
             return false;
         }

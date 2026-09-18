@@ -5,6 +5,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use serde::Serialize;
+use shared::warn;
 use tokio::sync::mpsc::UnboundedSender;
 
 use super::metadata::clamp_seek_target;
@@ -26,7 +27,7 @@ pub enum MprisSignal {
     Changed,
 }
 
-/// Every command here fails the same one way, and only into an `eprintln!`. An enum with `Display`
+/// Every command here fails the same one way, and only into a `warn!`. An enum with `Display`
 /// and `Error` impls bought nothing a constant does not: nothing matches on it and nothing returns
 /// it.
 const UNKNOWN_PLAYER: &str = "no MPRIS player with that id is currently tracked";
@@ -73,7 +74,7 @@ impl MprisController {
 
     pub async fn control(&self, id: &str, cmd: PlayerCommand) {
         let Some(player) = self.find_player(id) else {
-            eprintln!("mpris: send_command({id:?}, {cmd:?}) failed: {}", UNKNOWN_PLAYER);
+            warn!("send_command({id:?}, {cmd:?}) failed: {}", UNKNOWN_PLAYER);
             return;
         };
         let result = match cmd {
@@ -84,7 +85,7 @@ impl MprisController {
             PlayerCommand::Previous => player.previous().await,
         };
         if let Err(err) = result {
-            eprintln!("mpris: send_command({id:?}, {cmd:?}) failed: {err}");
+            warn!("send_command({id:?}, {cmd:?}) failed: {err}");
         }
     }
 
@@ -108,11 +109,11 @@ impl MprisController {
     /// silently differ from what every other MPRIS client does.
     pub async fn seek_relative(&self, id: &str, off: i64) {
         let Some(player) = self.find_player(id) else {
-            eprintln!("mpris: seek_relative({id:?}, {off}) failed: {}", UNKNOWN_PLAYER);
+            warn!("seek_relative({id:?}, {off}) failed: {}", UNKNOWN_PLAYER);
             return;
         };
         if let Err(err) = player.seek(off).await {
-            eprintln!("mpris: seek_relative({id:?}, {off}) failed: {err}");
+            warn!("seek_relative({id:?}, {off}) failed: {err}");
         }
     }
 
@@ -127,11 +128,11 @@ impl MprisController {
         target: i64,
     ) -> zbus::Result<()> {
         let Some(position) = self.live_position(id).await.filter(|position| *position >= 0) else {
-            eprintln!("mpris: seek to {target} for {id:?} needs a position to convert against and has none");
+            warn!("seek to {target} for {id:?} needs a position to convert against and has none");
             return Ok(());
         };
         let Some(offset) = target.checked_sub(position) else {
-            eprintln!("mpris: seek to {target} for {id:?} does not fit an i64 offset from {position}");
+            warn!("seek to {target} for {id:?} does not fit an i64 offset from {position}");
             return Ok(());
         };
         player.seek(offset).await
@@ -143,7 +144,7 @@ impl MprisController {
         match player.position().await {
             Ok(position) => Some(position),
             Err(err) => {
-                eprintln!("mpris: live Position read failed for {id:?}, falling back to the cached value: {err}");
+                warn!("live Position read failed for {id:?}, falling back to the cached value: {err}");
                 self.cached_position(id)
             }
         }
@@ -151,7 +152,7 @@ impl MprisController {
 
     async fn seek_to(&self, id: &str, target_us: i64) {
         let Some(context) = self.find_seek_context(id) else {
-            eprintln!("mpris: seek to {target_us} for {id:?} failed: {}", UNKNOWN_PLAYER);
+            warn!("seek to {target_us} for {id:?} failed: {}", UNKNOWN_PLAYER);
             return;
         };
         let target = clamp_seek_target(target_us, context.length);
@@ -159,8 +160,8 @@ impl MprisController {
             Some(trackid) => match zbus::zvariant::ObjectPath::try_from(trackid.as_str()) {
                 Ok(path) => context.player.set_position(path, target).await,
                 Err(err) => {
-                    eprintln!(
-                        "mpris: cached trackid {trackid:?} for {} isn't a valid object path, falling back to relative Seek: {err}",
+                    warn!(
+                        "cached trackid {trackid:?} for {} isn't a valid object path, falling back to relative Seek: {err}",
                         context.bus_name
                     );
                     self.seek_by_difference(id, &context.player, target).await
@@ -171,7 +172,7 @@ impl MprisController {
             None => self.seek_by_difference(id, &context.player, target).await,
         };
         if let Err(err) = result {
-            eprintln!("mpris: seek to {target} for {id:?} failed: {err}");
+            warn!("seek to {target} for {id:?} failed: {err}");
         }
     }
 

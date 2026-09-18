@@ -11,6 +11,7 @@ pub mod master;
 pub mod mixer;
 
 use mixer::{AudioCommand, AudioCommandSender};
+use shared::warn;
 
 #[derive(Debug, serde::Deserialize)]
 #[cfg_attr(test, derive(schemars::JsonSchema))]
@@ -64,6 +65,6 @@ pub fn dispatch(commands: &AudioCommandSender, envelope: &shared::CommandEnvelop
         AudioAction::SetBluetoothProfile { device, index } => AudioCommand::SetBluetoothProfile { device, index },
     };
     if commands.send(command).is_err() {
-        eprintln!("audio: the PipeWire command channel is closed; {} was dropped", envelope.params.action);
+        warn!("the PipeWire command channel is closed; {} was dropped", envelope.params.action);
     }
 }

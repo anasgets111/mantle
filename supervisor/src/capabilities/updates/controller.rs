@@ -4,6 +4,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use shared::{debug, warn};
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::sync::mpsc::UnboundedSender;
 use tokio::sync::watch;
@@ -155,7 +156,7 @@ impl UpdatesController {
             }
         }
         if self.interval_tx.send(Duration::from_secs(configure.interval_secs)).is_err() {
-            eprintln!("updates: configure called but the check task is gone; ignored");
+            warn!("configure called but the check task is gone; ignored");
         }
     }
 
@@ -163,17 +164,15 @@ impl UpdatesController {
     /// second request while checking; the in-flight answer is the requested answer.
     pub fn check_now(&self) {
         if self.backend.is_none() {
-            eprintln!("updates: check() called on a machine with no package manager this Supervisor speaks; ignored");
+            warn!("check() called on a machine with no package manager this Supervisor speaks; ignored");
             return;
         }
         if self.state.lock().unwrap().checking {
-            eprintln!("updates: check() called while a check is already running; ignored");
+            warn!("check() called while a check is already running; ignored");
             return;
         }
         if self.check_now_tx.try_send(()).is_err() {
-            eprintln!(
-                "updates: check() could not be queued (one is already pending, or the check task is gone); ignored"
-            );
+            warn!("check() could not be queued (one is already pending, or the check task is gone); ignored");
         }
     }
 
@@ -182,14 +181,14 @@ impl UpdatesController {
     /// calls cannot both observe `installing == false` and launch upgrades.
     pub async fn install(&self) {
         let Some(backend) = self.backend.clone() else {
-            eprintln!("updates: install() called on a machine with no package manager this Supervisor speaks; ignored");
+            warn!("install() called on a machine with no package manager this Supervisor speaks; ignored");
             return;
         };
         {
             let mut guard = self.state.lock().unwrap();
             if guard.installing {
                 drop(guard);
-                eprintln!("updates: install() called while an install is already running; ignored");
+                warn!("install() called while an install is already running; ignored");
                 return;
             }
             guard.installing = true;
@@ -358,7 +357,7 @@ async fn run_install_with_child(
         tokio::spawn(async move {
             let mut lines = BufReader::new(stderr).lines();
             while let Ok(Some(line)) = lines.next_line().await {
-                eprintln!("updates: install stderr: {line}");
+                debug!("install stderr: {line}");
                 push_log_line(&mut state.lock().unwrap().install_log, line);
                 let _ = events.send(UpdatesSignal::Changed);
             }

@@ -6,6 +6,7 @@ use std::sync::{Arc, Mutex};
 
 use futures_util::{Stream, StreamExt};
 use serde::Serialize;
+use shared::{error, info, warn};
 use tokio::sync::mpsc::UnboundedSender;
 use zbus::zvariant::OwnedValue;
 
@@ -121,11 +122,11 @@ impl PowerController {
     /// write and external switches.
     pub async fn set_profile(&self, profile: &str) {
         let Some(proxy) = connect_power_profiles(&self.system_bus).await else {
-            eprintln!("power: set_profile({profile}) called but no power-profiles-daemon is reachable; ignored");
+            warn!("set_profile({profile}) called but no power-profiles-daemon is reachable; ignored");
             return;
         };
         if let Err(err) = proxy.set_active_profile(profile).await {
-            eprintln!("power: setting ActiveProfile to {profile} failed: {err}");
+            warn!("setting ActiveProfile to {profile} failed: {err}");
         }
     }
 }
@@ -149,7 +150,7 @@ async fn connect_power_profiles(system_bus: &zbus::Connection) -> Option<PowerPr
                     return Some(proxy);
                 }
             }
-            Err(err) => eprintln!("power: failed to build a proxy for {service}: {err}"),
+            Err(err) => warn!("failed to build a proxy for {service}: {err}"),
         }
     }
     None
@@ -198,27 +199,23 @@ async fn run_power_task(
     let upower = match UPowerProxy::new(&system_bus).await {
         Ok(proxy) => Some(proxy),
         Err(err) => {
-            eprintln!("power: no UPower manager reachable ({err}); on_battery will not be reported this run");
+            info!("no UPower manager reachable ({err}); on_battery will not be reported this run");
             None
         }
     };
     let device = match DisplayDeviceProxy::new(&system_bus).await {
         Ok(proxy) => Some(proxy),
         Err(err) => {
-            eprintln!("power: no UPower DisplayDevice reachable ({err}); energy_rate will not be reported this run");
+            info!("no UPower DisplayDevice reachable ({err}); energy_rate will not be reported this run");
             None
         }
     };
     let profiles = connect_power_profiles(&system_bus).await;
     if profiles.is_none() {
-        eprintln!(
-            "power: no power-profiles-daemon reachable; active_profile and profiles will not be reported this run"
-        );
+        info!("no power-profiles-daemon reachable; active_profile and profiles will not be reported this run");
     }
     if upower.is_none() && device.is_none() && profiles.is_none() {
-        eprintln!(
-            "power: nothing on this host can answer any of obelisk.power's fields; power reporting disabled for this run"
-        );
+        info!("nothing on this host can answer any of obelisk.power's fields; power reporting disabled for this run");
         return;
     }
 
@@ -257,7 +254,7 @@ async fn run_power_task(
         }
         // All streams ended; parking would leak the proxies and their connection references.
         if on_battery_changed.is_none() && energy_rate_changed.is_none() && active_profile_changed.is_none() {
-            eprintln!("power: every property stream ended; power will no longer update this run");
+            error!("every property stream ended; power will no longer update this run");
             return;
         }
 

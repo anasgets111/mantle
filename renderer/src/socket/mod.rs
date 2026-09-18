@@ -17,7 +17,7 @@ pub use client::{FrameOutcome, RendererClient};
 use std::path::Path;
 
 use shared::framing::{self, write_json_frame};
-use shared::{ConnectionHandshake, RendererFrame, SupervisorFrame, Zeroize};
+use shared::{ConnectionHandshake, RendererFrame, SupervisorFrame, Zeroize, error, warn};
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::UnixStream;
 use tokio::sync::mpsc;
@@ -64,7 +64,7 @@ pub fn spawn_client(
         let runtime = match tokio::runtime::Builder::new_current_thread().enable_io().build() {
             Ok(runtime) => runtime,
             Err(err) => {
-                eprintln!("control-socket client: failed to start runtime: {err}");
+                error!("control-socket client: failed to start runtime: {err}");
                 return;
             }
         };
@@ -81,7 +81,7 @@ async fn run(
     let path = match shared::instance_dir().map(|dir| shared::control_socket_path(&dir)) {
         Ok(path) => path,
         Err(err) => {
-            eprintln!("control-socket client: {err}");
+            error!("control-socket client: {err}");
             return;
         }
     };
@@ -89,7 +89,7 @@ async fn run(
     let stream = match connect_and_handshake(&path, generation_id).await {
         Ok(stream) => stream,
         Err(err) => {
-            eprintln!("control-socket client: failed to connect to {}: {err}", path.display());
+            error!("control-socket client: failed to connect to {}: {err}", path.display());
             return;
         }
     };
@@ -122,7 +122,7 @@ async fn pump<R, W>(
                     // if the `select!` below drops this future, the frame was not delivered and
                     // nothing half-arrives -- which is why the backpressure is safe to take here.
                     if let Err(err) = inbound_tx.send(frame).await {
-                        eprintln!("control-socket client: the Wayland thread is gone; stopping the socket loop: {err}");
+                        warn!("control-socket client: the Wayland thread is gone; stopping the socket loop: {err}");
                         break;
                     }
                     if let Some(waker) = waker {
@@ -130,7 +130,7 @@ async fn pump<R, W>(
                     }
                 }
                 Err(err) => {
-                    eprintln!("control-socket client: connection ended: {err}");
+                    error!("control-socket client: connection ended: {err}");
                     break;
                 }
             }
@@ -139,7 +139,7 @@ async fn pump<R, W>(
     let writer = async {
         while let Some(mut frame) = outbound_rx.recv().await {
             if let Err(err) = write_json_frame(write_half, &frame).await {
-                eprintln!("control-socket client: failed to send a {} frame: {err}", frame_label(&frame));
+                warn!("control-socket client: failed to send a {} frame: {err}", frame_label(&frame));
             }
             // Scrub immediately after write, not at `Drop` (ADR-0005/ADR-0027). The serialized
             // copy is `write_json_frame`'s to scrub and it does; this is the frame's own bytes.

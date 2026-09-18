@@ -7,6 +7,7 @@ use std::sync::{Arc, Mutex};
 
 use futures_util::StreamExt;
 use serde::Serialize;
+use shared::{info, warn};
 use tokio::task::JoinHandle;
 
 use super::MprisSignal;
@@ -144,7 +145,7 @@ fn resolve_position(
         Ok(0) if same_track && matches!(last, Some((position, _)) if position > 0) => last.unwrap_or((-1, 0)),
         Ok(position) => (position, monotonic_micros()),
         Err(err) => {
-            eprintln!("mpris: Position read failed for {bus_name}; keeping the last known reading this round: {err}");
+            warn!("Position read failed for {bus_name}; keeping the last known reading this round: {err}");
             // Only the track the reading belongs to. Publishing the previous track's offset under
             // the new one's metadata is worse than admitting we do not know: a 30-second track
             // would inherit a 5:40 position and every bar would draw it past its own end.
@@ -162,9 +163,7 @@ async fn resync(
     let play_state = match player.playback_status().await {
         Ok(status) => status,
         Err(err) => {
-            eprintln!(
-                "mpris: PlaybackStatus read failed for {bus_name}; keeping the last known value this round: {err}"
-            );
+            warn!("PlaybackStatus read failed for {bus_name}; keeping the last known value this round: {err}");
             previous.as_ref().map(|p| p.state.play_state.clone()).unwrap_or_default()
         }
     };
@@ -177,9 +176,7 @@ async fn resync(
     // A full Metadata read failure keeps metadata-derived fields instead of resetting them and
     // causing a spurious track change.
     let Ok(metadata) = player.metadata().await else {
-        eprintln!(
-            "mpris: Metadata read failed for {bus_name}; keeping the last known title/artist/art/length/trackid this round"
-        );
+        warn!("Metadata read failed for {bus_name}; keeping the last known title/artist/art/length/trackid this round");
         // Keeping the previous track's fields is by definition the same-track case.
         let (position, position_updated_at) = resolve_position(raw_position, previous.as_ref(), true, bus_name);
         let state = PlayerState {
@@ -256,24 +253,24 @@ pub(super) async fn register_player(
     let player = match bind_player(connection, &bus_name).await {
         Ok(player) => player,
         Err(err) => {
-            eprintln!("mpris: failed to bind Player for {bus_name}: {err}");
+            warn!("failed to bind Player for {bus_name}: {err}");
             return;
         }
     };
     let root = match bind_root(connection, &bus_name).await {
         Ok(root) => root,
         Err(err) => {
-            eprintln!("mpris: failed to bind MediaPlayer2 for {bus_name}: {err}");
+            warn!("failed to bind MediaPlayer2 for {bus_name}: {err}");
             return;
         }
     };
     match player.can_control().await {
         Ok(true) => {}
         Ok(false) => {
-            eprintln!("mpris: {bus_name} reports CanControl=false; not tracking it");
+            info!("{bus_name} reports CanControl=false; not tracking it");
             return;
         }
-        Err(err) => eprintln!("mpris: CanControl read failed for {bus_name} (tracking anyway): {err}"),
+        Err(err) => warn!("CanControl read failed for {bus_name} (tracking anyway): {err}"),
     }
 
     let Resynced { state, identity, trackid } = resync(&bus_name, &player, &root, None).await;

@@ -3,6 +3,8 @@
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
+use shared::warn;
+
 /// This Supervisor's instance directory, set once before any capability starts.
 ///
 /// ponytail: a process global rather than a parameter through notifications and tray; pass it down
@@ -23,7 +25,7 @@ pub fn remove_png(subdir: &str, path: &str) {
         return;
     }
     if let Err(err) = std::fs::remove_file(path) {
-        eprintln!("{subdir}: failed to delete spooled icon {path:?}: {err}");
+        warn!("{subdir}: failed to delete spooled icon {path:?}: {err}");
     }
 }
 

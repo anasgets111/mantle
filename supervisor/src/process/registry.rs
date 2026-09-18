@@ -4,7 +4,7 @@
 use std::collections::HashMap;
 use std::io;
 
-use shared::{ProcessExited, ProcessOutputLine, ProcessStream, SupervisorFrame};
+use shared::{ProcessExited, ProcessOutputLine, ProcessStream, SupervisorFrame, warn};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt};
 use tokio::process::{Child, ChildStderr, ChildStdout};
 
@@ -54,10 +54,7 @@ pub(crate) async fn dispatch(
                 }
             },
             None => {
-                eprintln!(
-                    "malformed process.run command from generation {generation_id}: {:?}",
-                    envelope.params.arguments
-                );
+                warn!("malformed process.run command from generation {generation_id}: {:?}", envelope.params.arguments);
                 // Lua's ProcessHandle already awaits `id`'s exit_cb; this prevents a callback pair
                 // leak when no process spawned.
                 send_frame_logged(
@@ -73,10 +70,10 @@ pub(crate) async fn dispatch(
         "detach" => match process_run_args(&envelope.params.arguments) {
             Some((cmd, args)) => {
                 if let Err(err) = crate::process::spawn_detached(&cmd, &args) {
-                    eprintln!("process.detach: spawning {cmd:?} failed: {err}");
+                    warn!("process.detach: spawning {cmd:?} failed: {err}");
                 }
             }
-            None => eprintln!(
+            None => warn!(
                 "malformed process.detach command from generation {generation_id}: {:?}",
                 envelope.params.arguments
             ),
@@ -96,7 +93,7 @@ pub(crate) async fn dispatch(
             }
             KillOutcome::NotRegistered => {}
         },
-        _ => eprintln!("process: unknown action {:?} from generation {generation_id}", envelope.params.action),
+        _ => warn!("unknown action {:?} from generation {generation_id}", envelope.params.action),
     }
 }
 
@@ -117,7 +114,7 @@ pub(crate) fn spawn_and_register_process(
             Some((stdout, stderr))
         }
         Err(err) => {
-            eprintln!("process.run({cmd:?}, {args:?}) failed to spawn: {err}");
+            warn!("process.run({cmd:?}, {args:?}) failed to spawn: {err}");
             None
         }
     }
@@ -200,7 +197,7 @@ impl<R: tokio::io::AsyncRead + Unpin> BoundedLines<R> {
     async fn discard_to_newline(&mut self) -> io::Result<()> {
         if !self.warned {
             self.warned = true;
-            eprintln!(
+            warn!(
                 "{}: a line exceeded {MAX_LINE_BYTES} bytes and was truncated; further truncations \
                  on this stream are not reported",
                 self.label
@@ -263,7 +260,7 @@ fn report_process_output_line(
         }
         Ok(None) => true,
         Err(err) => {
-            eprintln!("process {id} (generation {generation_id}): failed to read {stream:?}: {err}");
+            warn!("process {id} (generation {generation_id}): failed to read {stream:?}: {err}");
             true
         }
     }
@@ -291,7 +288,7 @@ pub(crate) async fn kill_registered_process(processes: &mut LiveProcesses, gener
             KillOutcome::Reaped(status.code())
         }
         Err(err) => {
-            eprintln!("failed to reap process {id} (generation {generation_id}) on kill: {err}");
+            warn!("failed to reap process {id} (generation {generation_id}) on kill: {err}");
             KillOutcome::ReapFailed
         }
     }
@@ -310,7 +307,7 @@ pub(crate) async fn wait_and_report_exit(
     let code = match child.wait().await {
         Ok(status) => status.code(),
         Err(err) => {
-            eprintln!("failed to wait on exited process {id} (generation {generation_id}): {err}");
+            warn!("failed to wait on exited process {id} (generation {generation_id}): {err}");
             // `None` for the same reason as `KillOutcome::ReapFailed`: `id`'s `exit_cb` is waiting
             // and no other path will answer it.
             None
@@ -328,7 +325,7 @@ pub(crate) async fn reap_generations_processes(processes: &mut LiveProcesses, ge
         if let Some(mut child) = processes.remove(&key)
             && let Err(err) = super::reap_process_group(&mut child, super::DEFAULT_REAP_GRACE).await
         {
-            eprintln!("failed to reap process {key:?} belonging to departed generation {generation_id}: {err}");
+            warn!("failed to reap process {key:?} belonging to departed generation {generation_id}: {err}");
         }
     }
 }
@@ -342,7 +339,7 @@ pub(crate) async fn reap_all_processes(processes: &mut LiveProcesses) {
         if let Some(mut child) = processes.remove(&key)
             && let Err(err) = super::reap_process_group(&mut child, super::DEFAULT_REAP_GRACE).await
         {
-            eprintln!("failed to reap process {key:?} on shutdown: {err}");
+            warn!("failed to reap process {key:?} on shutdown: {err}");
         }
     }
 }

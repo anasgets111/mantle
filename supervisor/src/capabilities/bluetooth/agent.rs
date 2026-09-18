@@ -3,6 +3,7 @@
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use shared::{error, warn};
 use tokio::sync::mpsc::UnboundedSender;
 use tokio::sync::oneshot;
 use zbus::zvariant::{ObjectPath, OwnedObjectPath};
@@ -134,9 +135,7 @@ impl BluetoothAgent {
             _ => (self.invited)(&mac),
         };
         if !allowed {
-            eprintln!(
-                "bluetooth: refused a {kind:?} request from {mac}: not invited, or a service request from an unpaired device"
-            );
+            warn!("refused a {kind:?} request from {mac}: not invited, or a service request from an unpaired device");
             return false;
         }
         let name = match proxy {
@@ -215,29 +214,29 @@ pub(super) async fn register_agent_best_effort(
 ) {
     let agent = BluetoothAgent { prompts, devices, invited, events };
     if let Err(err) = connection.object_server().at(AGENT_OBJECT_PATH, agent).await {
-        eprintln!("bluetooth: failed to export the Agent1 object at {AGENT_OBJECT_PATH}: {err}");
+        error!("failed to export the Agent1 object at {AGENT_OBJECT_PATH}: {err}");
         return;
     }
     let agent_manager = match bind_agent_manager(connection).await {
         Ok(proxy) => proxy,
         Err(err) => {
-            eprintln!("bluetooth: failed to bind org.bluez.AgentManager1 (bluetoothd not running?): {err}");
+            error!("failed to bind org.bluez.AgentManager1 (bluetoothd not running?): {err}");
             return;
         }
     };
     let path = match ObjectPath::try_from(AGENT_OBJECT_PATH) {
         Ok(path) => path,
         Err(err) => {
-            eprintln!("bluetooth: {AGENT_OBJECT_PATH} is not a valid object path: {err}");
+            error!("{AGENT_OBJECT_PATH} is not a valid object path: {err}");
             return;
         }
     };
     if let Err(err) = agent_manager.register_agent(&path, "DisplayYesNo").await {
-        eprintln!("bluetooth: RegisterAgent failed: {err}");
+        error!("RegisterAgent failed: {err}");
         return;
     }
     if let Err(err) = agent_manager.request_default_agent(&path).await {
-        eprintln!("bluetooth: RequestDefaultAgent failed: {err}");
+        warn!("RequestDefaultAgent failed: {err}");
     }
 }
 

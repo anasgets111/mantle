@@ -12,6 +12,7 @@ use pw::spa::pod::Value;
 use pw::spa::pod::deserialize::PodDeserializer;
 use pw::spa::utils::dict::DictRef;
 use pw::types::ObjectType;
+use shared::{error, warn};
 use tokio::sync::mpsc::UnboundedSender;
 use tokio::sync::watch;
 
@@ -44,7 +45,7 @@ pub fn run(
     commands: AudioCommandReceiver,
 ) {
     if let Err(err) = run_inner(updates, privacy_updates, commands) {
-        eprintln!("pipewire registry listener stopped: {err}");
+        error!("pipewire registry listener stopped: {err}");
     }
 }
 
@@ -100,7 +101,7 @@ fn run_inner(
             Some(Ok(seq)) => barrier.set(Some(seq.seq())),
             other => {
                 if let Some(Err(err)) = other {
-                    eprintln!("audio: core.sync failed ({err}); publishing without waiting for PipeWire to settle");
+                    warn!("core.sync failed ({err}); publishing without waiting for PipeWire to settle");
                 }
                 let mut state = state.borrow_mut();
                 state.hydrated = true;
@@ -183,7 +184,7 @@ fn run_inner(
             }
             let mut state = state_for_error.borrow_mut();
             if !state.hydrated {
-                eprintln!("audio: PipeWire core error before the first snapshot ({message}); publishing what arrived");
+                warn!("PipeWire core error before the first snapshot ({message}); publishing what arrived");
                 state.hydrated = true;
                 state.publish_audio();
                 state.publish_privacy();
@@ -327,7 +328,7 @@ fn bind_device_node(
     let node: pw::node::Node = match registry.bind(obj) {
         Ok(node) => node,
         Err(err) => {
-            eprintln!("audio: failed to bind {kind:?} node {node_id}: {err}");
+            warn!("failed to bind {kind:?} node {node_id}: {err}");
             return;
         }
     };
@@ -465,7 +466,7 @@ fn bind_device(state: &Rc<RefCell<MixerState>>, registry: &pw::registry::Registr
     let device: pw::device::Device = match registry.bind(obj) {
         Ok(device) => device,
         Err(err) => {
-            eprintln!("audio: failed to bind ALSA device {device_id}: {err}");
+            warn!("failed to bind ALSA device {device_id}: {err}");
             return;
         }
     };
@@ -527,14 +528,14 @@ fn bind_bluez_device(
 ) {
     let Some(mac) = obj.props.and_then(|props| props.get_prop(*keys::DEVICE_NAME)).and_then(master::mac_from_card_name)
     else {
-        eprintln!("audio: Bluetooth device {} names no address; its codecs are not tracked", obj.id);
+        warn!("Bluetooth device {} names no address; its codecs are not tracked", obj.id);
         return;
     };
     let device_id = obj.id;
     let device: pw::device::Device = match registry.bind(obj) {
         Ok(device) => device,
         Err(err) => {
-            eprintln!("audio: failed to bind Bluetooth device {device_id} ({mac}): {err}");
+            warn!("failed to bind Bluetooth device {device_id} ({mac}): {err}");
             return;
         }
     };

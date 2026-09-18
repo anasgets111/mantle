@@ -13,6 +13,7 @@
 use std::time::{Duration, Instant};
 
 use mlua::{Function, Lua, UserData, UserDataMethods};
+use shared::warn;
 
 use super::signal::CpuBudget;
 
@@ -160,7 +161,7 @@ pub fn dispatch_due(lua: &Lua, now: Instant) {
             budget.check_not_exceeded()
         });
         if let Err(err) = outcome {
-            eprintln!("timer callback raised, ignoring it: {err}");
+            warn!("timer callback raised, ignoring it: {err}");
         }
     }
     if let Some(mut registry) = lua.app_data_mut::<TimerRegistry>() {

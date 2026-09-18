@@ -5,6 +5,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
+use shared::{debug, error, info, warn};
 use tokio::sync::mpsc::UnboundedSender;
 use wayland_client::Proxy;
 
@@ -154,26 +155,26 @@ impl IdleController {
                         state_tx,
                     );
                     *notify_for_task.write().unwrap() = NotifyState::Live(live);
-                    eprintln!(
-                        "idle: dedicated Wayland connection for ext_idle_notifier_v1 established; notify live for this run"
+                    info!(
+                        "dedicated Wayland connection for ext_idle_notifier_v1 established; notify live for this run"
                     );
                     // Swap first: otherwise `register_threshold` sees inert and requeues the
                     // replay.
                     controller_for_task.replay_pending_registrations();
                 }
                 Ok(Ok(Err(err))) => {
-                    eprintln!(
-                        "idle: dedicated Wayland connection for ext_idle_notifier_v1 unavailable; notify disabled for this run: {err}"
+                    error!(
+                        "dedicated Wayland connection for ext_idle_notifier_v1 unavailable; notify disabled for this run: {err}"
                     );
                 }
                 Ok(Err(join_err)) => {
-                    eprintln!(
-                        "idle: the dedicated Wayland connection setup task panicked; notify disabled for this run: {join_err}"
+                    error!(
+                        "the dedicated Wayland connection setup task panicked; notify disabled for this run: {join_err}"
                     );
                 }
                 Err(_) => {
-                    eprintln!(
-                        "idle: dedicated Wayland connection setup for ext_idle_notifier_v1 did not complete within {IDLE_NOTIFY_SETUP_TIMEOUT:?} (possible compositor stall); notify disabled for this run"
+                    error!(
+                        "dedicated Wayland connection setup for ext_idle_notifier_v1 did not complete within {IDLE_NOTIFY_SETUP_TIMEOUT:?} (possible compositor stall); notify disabled for this run"
                     );
                 }
             }
@@ -195,7 +196,7 @@ impl IdleController {
         if queued.is_empty() {
             return;
         }
-        eprintln!("idle: notify is live; registering {} threshold(s) that arrived before it was", queued.len());
+        info!("notify is live; registering {} threshold(s) that arrived before it was", queued.len());
         for (generation_id, sec) in queued {
             self.register_threshold(generation_id, sec);
         }
@@ -210,7 +211,7 @@ impl IdleController {
             // Inert means degraded or still setting up. Queue entries in either case; a failed
             // setup leaves a small `(u32, u64)` queue rather than dropping every boot registration.
             self.pending.lock().unwrap().push((generation_id, sec));
-            eprintln!("idle: register_threshold(generation {generation_id}, {sec}s) queued: notify is not live yet");
+            debug!("register_threshold(generation {generation_id}, {sec}s) queued: notify is not live yet");
             return;
         };
 
@@ -238,7 +239,7 @@ impl IdleController {
             }
 
             if let Err(err) = live.connection.flush() {
-                eprintln!("idle: failed to flush the get_idle_notification request for {sec}s: {err}");
+                warn!("failed to flush the get_idle_notification request for {sec}s: {err}");
             }
         }
     }
@@ -260,8 +261,8 @@ impl IdleController {
         let proxy = match Login1ManagerProxy::new(&self.inhibit.system_bus).await {
             Ok(proxy) => proxy,
             Err(err) => {
-                eprintln!(
-                    "idle: inhibit(generation {generation_id}, {reason:?}) failed to build the login1 Manager proxy: {err}"
+                warn!(
+                    "inhibit(generation {generation_id}, {reason:?}) failed to build the login1 Manager proxy: {err}"
                 );
                 apply_release_inhibit(&mut state.counts, generation_id);
                 return;
@@ -273,9 +274,7 @@ impl IdleController {
                 state.fd = Some(fd);
             }
             Err(err) => {
-                eprintln!(
-                    "idle: Inhibit({INHIBIT_WHAT:?}, {INHIBIT_WHO:?}, {reason:?}, {INHIBIT_MODE:?}) failed: {err}"
-                );
+                warn!("Inhibit({INHIBIT_WHAT:?}, {INHIBIT_WHO:?}, {reason:?}, {INHIBIT_MODE:?}) failed: {err}");
                 apply_release_inhibit(&mut state.counts, generation_id);
             }
         }
@@ -358,7 +357,7 @@ async fn watch_idle_inhibitors(
     let proxy = match Login1ManagerProxy::new(&system_bus).await {
         Ok(proxy) => proxy,
         Err(err) => {
-            eprintln!("idle: cannot reach logind to watch idle inhibitors; nothing will hold off idle actions: {err}");
+            error!("cannot reach logind to watch idle inhibitors; nothing will hold off idle actions: {err}");
             return;
         }
     };
@@ -373,11 +372,9 @@ async fn watch_idle_inhibitors(
         // Firefox still holds one), so publish state on every change but gate on transitions.
         if let Some(owed) = gate.lock().unwrap().set_blocked(blocked) {
             if blocked {
-                eprintln!(
-                    "idle: logind reports an idle inhibitor ({what}); threshold events are held until it is released"
-                );
+                info!("logind reports an idle inhibitor ({what}); threshold events are held until it is released");
             } else {
-                eprintln!("idle: no idle inhibitor is held any more; threshold events resume");
+                info!("no idle inhibitor is held any more; threshold events resume");
             }
             for event in owed {
                 if events_tx.send(event).is_err() {

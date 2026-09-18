@@ -9,6 +9,8 @@
 
 use std::collections::HashMap;
 
+use shared::error;
+
 use super::controller::{FocusedWindow, StatePublisher, WorkspaceRow};
 
 /// niri workspaces reduced to the common input. Clone `name` and `output` per event; a session has
@@ -83,7 +85,7 @@ pub fn spawn_reader(mut publisher: StatePublisher) {
             let event = match read_event() {
                 Ok(event) => event,
                 Err(err) => {
-                    eprintln!("workspaces: niri event stream ended; workspaces will no longer update: {err}");
+                    error!("niri event stream ended; workspaces will no longer update: {err}");
                     return;
                 }
             };

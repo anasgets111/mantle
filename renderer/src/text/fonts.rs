@@ -12,6 +12,7 @@ use std::path::PathBuf;
 use std::process::Command;
 
 use fontdb::{Database, Family, Query};
+use shared::{info, warn};
 
 /// Generic CSS family names fontconfig always resolves by substitution -- there is no literal
 /// "sans-serif" family to compare a match against, so the miss check (does the resolved family
@@ -45,7 +46,7 @@ pub struct ResolvedFonts {
 /// not silently substituted -- see `fc_match`'s doc comment for how a "hit" is told apart from
 /// fontconfig's own substitution, which never fails on its own.
 ///
-/// Runs once at process startup, so an `eprintln!` per chain entry costs nothing and is how a
+/// Runs once at process startup, so logging per chain entry costs nothing and is how a
 /// user diagnoses "why is my bar drawing in the wrong font" without reaching for a debugger.
 pub fn resolve_chain(chain: &[&str]) -> ResolvedFonts {
     let mut db = Database::new();
@@ -78,10 +79,10 @@ fn load_chain(db: &mut Database, chain: &[&str], loaded_paths: &mut HashSet<Path
 
     for &name in chain {
         let Some((path, resolved_family)) = fc_match(name) else {
-            eprintln!("font chain: {name:?} -> no installed match, skipped");
+            warn!("font chain: {name:?} -> no installed match, skipped");
             continue;
         };
-        eprintln!("font chain: {name:?} -> {path:?} ({resolved_family:?})");
+        info!("font chain: {name:?} -> {path:?} ({resolved_family:?})");
 
         // Two chain entries can resolve to the same file (e.g. a generic alias and the literal
         // family name it happens to expand to) -- load it once.
@@ -91,7 +92,7 @@ fn load_chain(db: &mut Database, chain: &[&str], loaded_paths: &mut HashSet<Path
                     loaded_paths.insert(path);
                 }
                 Err(e) => {
-                    eprintln!("font chain: {name:?} resolved to {path:?}, which failed to load: {e}");
+                    warn!("font chain: {name:?} resolved to {path:?}, which failed to load: {e}");
                     continue;
                 }
             }
@@ -129,10 +130,10 @@ fn load_variants(db: &mut Database, name: &str, resolved_family: &str, loaded_pa
         }
         match db.load_font_file(&path) {
             Ok(()) => {
-                eprintln!("font chain: {name:?} {variant} -> {path:?}");
+                info!("font chain: {name:?} {variant} -> {path:?}");
                 loaded_paths.insert(path);
             }
-            Err(e) => eprintln!("font chain: {name:?} {variant} resolved to {path:?}, which failed to load: {e}"),
+            Err(e) => warn!("font chain: {name:?} {variant} resolved to {path:?}, which failed to load: {e}"),
         }
     }
 }
@@ -145,7 +146,7 @@ fn load_variants(db: &mut Database, name: &str, resolved_family: &str, loaded_pa
 /// because it's the last resort, not the common case -- if this line shows up in a real user's
 /// logs, the fix is diagnosing why `fc-match` isn't reachable, not tuning this fallback.
 fn system_fallback(chain: &[&str]) -> ResolvedFonts {
-    eprintln!(
+    warn!(
         "font chain: none of {chain:?} resolved via fc-match (fontconfig not installed, or \
          fc-match missing from $PATH) -- falling back to a full system font scan, which is \
          the slow, memory-heavy path ADR-0043 decision 2 exists to avoid"

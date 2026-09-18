@@ -6,6 +6,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use shared::info;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 use tokio::task::JoinHandle;
 use wayland_client::globals::{GlobalListContents, registry_queue_init};
@@ -313,8 +314,8 @@ pub(crate) fn spawn_idle_event_forwarder(
                 // compositor's own answer. The payload's `inhibited` is merged with logind's, and
                 // would claim the compositor was withholding when only logind was.
                 if let Some(held) = answer {
-                    eprintln!(
-                        "idle: the compositor {} idle notifications; a surface idle inhibitor is the usual reason",
+                    info!(
+                        "the compositor {} idle notifications; a surface idle inhibitor is the usual reason",
                         if held { "is holding off" } else { "is sending" }
                     );
                 }

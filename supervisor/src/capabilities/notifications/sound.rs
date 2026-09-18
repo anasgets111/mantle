@@ -4,6 +4,7 @@
 use std::path::{Path, PathBuf};
 
 use pipewire as pw;
+use shared::warn;
 
 use super::icon::validate_trusted_path;
 
@@ -106,7 +107,7 @@ fn max_samples(channels: u32, sample_rate: u32) -> Result<usize, Box<dyn std::er
 pub fn run_sound_player(requests: std::sync::mpsc::Receiver<PathBuf>) {
     while let Ok(path) = requests.recv() {
         if let Err(err) = play_one(&path) {
-            eprintln!("notifications: failed to play sound {path:?}: {err}");
+            warn!("failed to play sound {path:?}: {err}");
         }
     }
 }

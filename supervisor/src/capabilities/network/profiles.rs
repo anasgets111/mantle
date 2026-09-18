@@ -8,6 +8,7 @@ use zbus::zvariant::{OwnedObjectPath, OwnedValue, Value};
 use super::proxies::{DeviceProxy, SettingsConnectionProxy};
 use super::{NetworkController, root_object_path};
 use crate::capabilities::bind;
+use shared::warn;
 
 /// Whether `get_settings()` permits autoconnect. Missing means NetworkManager's default `true`
 /// (ADR-0029: only explicit `false` disqualifies a profile).
@@ -79,7 +80,7 @@ impl NetworkController {
         let paths = match self.settings.list_connections().await {
             Ok(paths) => paths,
             Err(err) => {
-                eprintln!("network: {context} failed to list connections: {err}");
+                warn!("{context} failed to list connections: {err}");
                 return Vec::new();
             }
         };
@@ -95,14 +96,14 @@ impl NetworkController {
             let connection = match bind::<SettingsConnectionProxy>(&self.connection, path.clone()).await {
                 Ok(connection) => connection,
                 Err(err) => {
-                    eprintln!("network: {context} failed to bind connection {path}: {err}");
+                    warn!("{context} failed to bind connection {path}: {err}");
                     return None;
                 }
             };
             match connection.get_settings().await {
                 Ok(settings) => Some(SavedProfile { path, connection, settings }),
                 Err(err) => {
-                    eprintln!("network: {context} failed to read settings for {path}: {err}");
+                    warn!("{context} failed to read settings for {path}: {err}");
                     None
                 }
             }
@@ -125,7 +126,7 @@ impl NetworkController {
     pub async fn forget(&self, ssid: &str) {
         for profile in self.saved_profiles_for_ssid(ssid, "forget").await {
             if let Err(err) = profile.connection.delete().await {
-                eprintln!("network: forget({ssid:?}) failed to delete profile {}: {err}", profile.path);
+                warn!("forget({ssid:?}) failed to delete profile {}: {err}", profile.path);
             }
         }
     }
@@ -134,7 +135,7 @@ impl NetworkController {
         let profile = match self.find_autoconnect_profile(device).await {
             Ok(profile) => profile,
             Err(err) => {
-                eprintln!("network: failed to inspect connections for ethernet device {device_path}: {err}");
+                warn!("failed to inspect connections for ethernet device {device_path}: {err}");
                 return;
             }
         };
@@ -143,7 +144,7 @@ impl NetworkController {
             return;
         };
         if let Err(err) = self.nm.activate_connection(&conn_path, device_path, &root_object_path()).await {
-            eprintln!("network: failed to activate ethernet profile {conn_path} on {device_path}: {err}");
+            warn!("failed to activate ethernet profile {conn_path} on {device_path}: {err}");
         }
     }
 

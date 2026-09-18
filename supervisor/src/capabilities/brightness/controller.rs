@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use shared::{info, warn};
 use tokio::io::unix::AsyncFd;
 use tokio::sync::mpsc::UnboundedSender;
 use udev::MonitorSocket;
@@ -118,8 +119,8 @@ impl BrightnessController {
             Some(device) => {
                 tokio::spawn(run_brightness_task(device.dir.clone(), device.max, Arc::clone(&state), events));
             }
-            None => eprintln!(
-                "brightness: no usable backlight device found under {backlight_root:?}; brightness reporting disabled for this run"
+            None => info!(
+                "no usable backlight device found under {backlight_root:?}; brightness reporting disabled for this run"
             ),
         }
         Self { state, device: Arc::new(device), system_bus }
@@ -132,13 +133,13 @@ impl BrightnessController {
     /// `brightness:set(pct)`. Logs and returns when this machine has no backlight device.
     pub async fn set(&self, pct: u64) {
         let Some(device) = self.device.as_ref() else {
-            eprintln!("brightness: set called but no backlight device was found; ignored");
+            warn!("set called but no backlight device was found; ignored");
             return;
         };
         let proxy = match Login1SessionProxy::new(&self.system_bus).await {
             Ok(proxy) => proxy,
             Err(err) => {
-                eprintln!("brightness: failed to build the login1 Session proxy: {err}");
+                warn!("failed to build the login1 Session proxy: {err}");
                 return;
             }
         };
@@ -146,7 +147,7 @@ impl BrightnessController {
         // logind refuses SetBrightness from a non-active session (for example a background VT).
         // Log that error; do not retry it.
         if let Err(err) = proxy.set_brightness("backlight", &device.name, raw).await {
-            eprintln!("brightness: SetBrightness(backlight, {}, {raw}) failed: {err}", device.name);
+            warn!("SetBrightness(backlight, {}, {raw}) failed: {err}", device.name);
         }
         // State changes arrive through the udev watch/poll loop, not an optimistic local update.
     }
@@ -170,9 +171,7 @@ async fn run_brightness_task(
     match build_backlight_watch() {
         Ok(watch) => run_brightness_watch_loop(watch, device_dir, max, initial, state, events).await,
         Err(err) => {
-            eprintln!(
-                "brightness: failed to set up the udev backlight watch ({err}); falling back to a {POLL_INTERVAL:?} poll"
-            );
+            warn!("failed to set up the udev backlight watch ({err}); falling back to a {POLL_INTERVAL:?} poll");
             run_brightness_poll_loop(device_dir, max, initial, state, events).await;
         }
     }
@@ -201,8 +200,8 @@ async fn run_brightness_watch_loop(
         let mut guard = match watch.readable_mut().await {
             Ok(guard) => guard,
             Err(err) => {
-                eprintln!(
-                    "brightness: the udev backlight watch's fd errored ({err}); falling back to a {POLL_INTERVAL:?} poll for the rest of this run"
+                warn!(
+                    "the udev backlight watch's fd errored ({err}); falling back to a {POLL_INTERVAL:?} poll for the rest of this run"
                 );
                 return run_brightness_poll_loop(device_dir, max, previous, state, events).await;
             }

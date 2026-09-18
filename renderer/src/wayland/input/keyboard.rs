@@ -2,6 +2,8 @@
 //! `secure_submit` keystrokes, which become a `SecureSubmit` frame without a Lua value holding
 //! plaintext (ADR-0005/0027).
 
+use shared::{error, info, warn};
+
 use super::*;
 use crate::layout::secure_submit::{sole_secure_submit_in_scope, typable_secure_submit_targets};
 
@@ -148,18 +150,18 @@ fn submit_frame_for(
     let empty = buffer.is_empty();
     let Some(target) = target.filter(|_| !empty) else {
         match target {
-            None => eprintln!(
+            None => warn!(
                 "secure submit dropped: no field is focused to send it to, so a password typed here reaches nothing"
             ),
             Some(target) => {
-                eprintln!("secure submit to {}/{} dropped: the field is empty", target.capability, target.action)
+                warn!("secure submit to {}/{} dropped: the field is empty", target.capability, target.action)
             }
         }
         buffer.zeroize();
         return None;
     };
     let Some(capability) = shared::Capability::from_name(&target.capability) else {
-        eprintln!("secure submit to {}/{} dropped: no such capability", target.capability, target.action);
+        warn!("secure submit to {}/{} dropped: no such capability", target.capability, target.action);
         buffer.zeroize();
         return None;
     };
@@ -330,14 +332,14 @@ impl KeyboardHandler for App {
         // A scope with exactly one `secure_submit` becomes typable without a click.
         let next = self.field_the_scope_declares(&scope, self.focused_secure_submit.clone());
         match (&self.keyboard_focus, &next) {
-            (None, _) => eprintln!("[obelisk-renderer] keyboard focus entered an untracked surface; not tracking it"),
-            (Some(id), Some(field)) => eprintln!(
-                "[obelisk-renderer] keyboard focus entered {id} and takes {}'s `secure_submit` field ({}/{})",
+            (None, _) => info!("keyboard focus entered an untracked surface; not tracking it"),
+            (Some(id), Some(field)) => info!(
+                "keyboard focus entered {id} and takes {}'s `secure_submit` field ({}/{})",
                 field.surface_id, field.target.capability, field.target.action
             ),
             // Report the searched popup scope so "no field" distinguishes out-of-reach from hidden.
-            (Some(id), None) => eprintln!(
-                "[obelisk-renderer] keyboard focus entered {id}, and neither it nor its shown popups {:?} declare a sole `secure_submit` field",
+            (Some(id), None) => info!(
+                "keyboard focus entered {id}, and neither it nor its shown popups {:?} declare a sole `secure_submit` field",
                 &scope[1..]
             ),
         }
@@ -370,7 +372,7 @@ impl KeyboardHandler for App {
         // keyboard, not the reply. It stops keys/caret until focus returns.
         self.field_input_changed |= self.focused_text_field.is_some();
         self.armed = None;
-        eprintln!("[obelisk-renderer] keyboard focus left {left}");
+        info!("keyboard focus left {left}");
     }
 
     // There is no key-handler property, and ADR-0050 adds none: `secure_submit` (ADR-0005) sends
@@ -447,13 +449,13 @@ fn deliver_plain_edit(surface_id: &str, edit: PlainEdit, text: String, callbacks
         && let Some(on_submit) = on_submit
         && let Err(e) = on_submit.call::<()>(text.clone())
     {
-        eprintln!("[obelisk-renderer] {surface_id}: on_submit raised, ignoring it: {e}");
+        warn!("{surface_id}: on_submit raised, ignoring it: {e}");
     }
     if edit.changed
         && let Some(on_change) = on_change
         && let Err(e) = on_change.call::<()>(if edit.submitted { String::new() } else { text })
     {
-        eprintln!("[obelisk-renderer] {surface_id}: on_change raised, ignoring it: {e}");
+        warn!("{surface_id}: on_change raised, ignoring it: {e}");
     }
     // `edit.changed` is the one thing a config cannot work out for itself: the autofocus arm fires
     // `on_change("")` too, so counting empty changes cannot tell a cleared field from an opened one.
@@ -461,7 +463,7 @@ fn deliver_plain_edit(surface_id: &str, edit: PlainEdit, text: String, callbacks
         && let Some(on_cancel) = on_cancel
         && let Err(e) = on_cancel.call::<()>(edit.changed)
     {
-        eprintln!("[obelisk-renderer] {surface_id}: on_cancel raised, ignoring it: {e}");
+        warn!("{surface_id}: on_cancel raised, ignoring it: {e}");
     }
 }
 
@@ -553,8 +555,8 @@ impl App {
         if !self.surface_is_live(&field.surface_id) {
             return;
         }
-        eprintln!(
-            "[obelisk-renderer] {}'s `secure_submit` field ({}/{}) became typable under the keyboard focus already held",
+        info!(
+            "{}'s `secure_submit` field ({}/{}) became typable under the keyboard focus already held",
             field.surface_id, field.target.capability, field.target.action
         );
         self.focus_secure_submit(Some(field));
@@ -577,7 +579,7 @@ impl App {
             return;
         }
         let opened = on_change.clone();
-        eprintln!("[obelisk-renderer] {surface_id}'s `autofocus` textfield takes the keyboard");
+        info!("{surface_id}'s `autofocus` textfield takes the keyboard");
         self.focus_text_field(Some(FocusedTextField {
             surface_id: surface_id.clone(),
             id,
@@ -591,7 +593,7 @@ impl App {
         if let Some(on_change) = opened
             && let Err(e) = on_change.call::<()>(String::new())
         {
-            eprintln!("[obelisk-renderer] {surface_id}: on_change raised, ignoring it: {e}");
+            warn!("{surface_id}: on_change raised, ignoring it: {e}");
         }
     }
 
@@ -628,8 +630,8 @@ impl App {
         if focus_is_still_armed(field, &self.keyboard_focus_scope(), self.surface_is_live(&field.surface_id)) {
             return;
         }
-        eprintln!(
-            "[obelisk-renderer] the focused secure_submit field is no longer the one receiving keys; dropping it and scrubbing its buffer"
+        warn!(
+            "the focused secure_submit field is no longer the one receiving keys; dropping it and scrubbing its buffer"
         );
         self.focus_secure_submit(None);
     }
@@ -657,9 +659,7 @@ impl App {
     pub(in crate::wayland) fn drop_secure_focus_if_its_surface_is_gone(&mut self) {
         let gone = self.focused_secure_submit.as_ref().is_some_and(|field| !self.surface_is_live(&field.surface_id));
         if gone {
-            eprintln!(
-                "[obelisk-renderer] the surface holding the focused secure_submit field is gone; dropping it and scrubbing its buffer"
-            );
+            warn!("the surface holding the focused secure_submit field is gone; dropping it and scrubbing its buffer");
             self.focus_secure_submit(None);
         }
     }
@@ -679,8 +679,8 @@ impl App {
             if matches!(action, KeyAction::Submit)
                 && !self.focused_text_field.as_ref().is_some_and(|field| self.text_field_takes_keys(field))
             {
-                eprintln!(
-                    "[obelisk-renderer] submit pressed while no secure field holds focus; nothing was typed into one and nothing was sent"
+                warn!(
+                    "submit pressed while no secure field holds focus; nothing was typed into one and nothing was sent"
                 );
             }
             return;
@@ -748,7 +748,7 @@ impl App {
         if self.surface_is_live(&field.surface_id) && node_exists {
             return;
         }
-        eprintln!("[obelisk-renderer] the focused textfield is gone; dropping what was typed");
+        warn!("the focused textfield is gone; dropping what was typed");
         self.focus_text_field(None);
     }
 
@@ -797,7 +797,7 @@ impl App {
             if let Some(on_navigate) = on_navigate
                 && let Err(e) = on_navigate.call::<()>(key)
             {
-                eprintln!("[obelisk-renderer] {surface_id}: on_navigate raised, ignoring it: {e}");
+                warn!("{surface_id}: on_navigate raised, ignoring it: {e}");
             }
             return;
         }
@@ -825,22 +825,21 @@ impl App {
         let target = self.focused_secure_submit.as_ref().map(|field| &field.target);
         let Some(frame) = submit_frame_for(self.generation_id, target, &mut self.secure_buffer) else {
             match addressed {
-                None => eprintln!(
-                    "[obelisk-renderer] secure_submit dropped: no focused textfield named a capability and action to address it to, so nothing was sent"
+                None => warn!(
+                    "secure_submit dropped: no focused textfield named a capability and action to address it to, so nothing was sent"
                 ),
-                Some(target) if nothing_typed => eprintln!(
-                    "[obelisk-renderer] secure_submit to {}/{} dropped: nothing had been typed",
-                    target.capability, target.action
-                ),
-                Some(target) => eprintln!(
-                    "[obelisk-renderer] secure_submit to {}/{} dropped for no recorded reason; this is a bug",
+                Some(target) if nothing_typed => {
+                    warn!("secure_submit to {}/{} dropped: nothing had been typed", target.capability, target.action)
+                }
+                Some(target) => error!(
+                    "secure_submit to {}/{} dropped for no recorded reason; this is a bug",
                     target.capability, target.action
                 ),
             }
             return;
         };
         if let Err(e) = self.outbound_tx.send(frame) {
-            eprintln!("[obelisk-renderer] failed to queue SecureSubmit for the socket thread: {e}");
+            error!("failed to queue SecureSubmit for the socket thread: {e}");
         }
     }
 }

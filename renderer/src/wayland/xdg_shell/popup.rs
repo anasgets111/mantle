@@ -1,6 +1,8 @@
 //! `popup` (`xdg_popup`): positioners, reposition, nested teardown and the ADR-0049/0051 dismissal
 //! latch.
 
+use shared::{error, info, warn};
+
 use super::*;
 use crate::wayland::surface::MapState;
 use crate::wayland::surface::Placement;
@@ -219,9 +221,7 @@ impl App {
     fn show_popup(&mut self, qh: &QueueHandle<App>, index: usize) {
         let surface_id = self.surfaces[index].surface_id.clone();
         let Some(xdg_shell) = self.xdg_shell.as_ref() else {
-            eprintln!(
-                "[obelisk-renderer] {surface_id}: this compositor advertises no xdg_wm_base, so no popup can be created for it"
-            );
+            error!("{surface_id}: this compositor advertises no xdg_wm_base, so no popup can be created for it");
             return;
         };
         let TrackedRole::Popup { spec, requested, .. } = &self.surfaces[index].role else {
@@ -237,8 +237,8 @@ impl App {
         // let the next pass open it, rather than inventing one the surface would then cut.
         if !placement.is_measured() {
             if self.refusal_is_new(index, PopupRefusal::Unmeasured) {
-                eprintln!(
-                    "[obelisk-renderer] {surface_id}: sized {:?}, so it is not opened yet. An omitted `width`/`height` \
+                warn!(
+                    "{surface_id}: sized {:?}, so it is not opened yet. An omitted `width`/`height` \
                      is measured off the resolved tree, and this one has measured nothing on that axis. \
                      Logged once until it opens or `visible` resolves false.",
                     placement.size
@@ -251,8 +251,8 @@ impl App {
         let grab = if spec.grab {
             let Some(armed) = self.input_serial.clone() else {
                 if self.refusal_is_new(index, PopupRefusal::Unarmed) {
-                    eprintln!(
-                        "[obelisk-renderer] {surface_id}: `grab = true` and no input event armed a serial this turn, so it is not opened. \
+                    warn!(
+                        "{surface_id}: `grab = true` and no input event armed a serial this turn, so it is not opened. \
                          A popup may only be opened in response to real user input; open it from an `on_click`, or declare `grab = false`. \
                          Logged once until it opens or `visible` resolves false."
                     );
@@ -261,9 +261,7 @@ impl App {
             };
             let Some(seat) = self.seat_state.seats().next() else {
                 if self.refusal_is_new(index, PopupRefusal::Seatless) {
-                    eprintln!(
-                        "[obelisk-renderer] {surface_id}: `grab = true` and this compositor advertises no seat, so it is not opened"
-                    );
+                    warn!("{surface_id}: `grab = true` and this compositor advertises no seat, so it is not opened");
                 }
                 return;
             };
@@ -281,8 +279,8 @@ impl App {
         );
         let Some(parent) = parent_index.and_then(|parent| self.surfaces[parent].role.as_popup_parent()) else {
             if self.refusal_is_new(index, PopupRefusal::HiddenParent) {
-                eprintln!(
-                    "[obelisk-renderer] {surface_id}: its `parent` {:?} names no surface that is currently shown, so it is not opened",
+                warn!(
+                    "{surface_id}: its `parent` {:?} names no surface that is currently shown, so it is not opened",
                     spec.parent
                 );
             }
@@ -332,8 +330,8 @@ impl App {
         if let TrackedRole::Popup { positioned, .. } = &mut self.surfaces[index].role {
             *positioned = Some(placement);
         }
-        eprintln!(
-            "[obelisk-renderer] {surface_id} creating: visible = true, anchored to {parent_id}, grab {}",
+        info!(
+            "{surface_id} creating: visible = true, anchored to {parent_id}, grab {}",
             if grab.is_some() { "taken" } else { "not requested" }
         );
     }
@@ -359,8 +357,8 @@ impl App {
         let version = popup.xdg_popup().version();
         if version < REPOSITION_SINCE {
             if self.refusal_is_new(index, PopupRefusal::Unrepositionable) {
-                eprintln!(
-                    "[obelisk-renderer] {surface_id}: this compositor bound xdg_popup v{version}, and `reposition` needs \
+                warn!(
+                    "{surface_id}: this compositor bound xdg_popup v{version}, and `reposition` needs \
                      v{REPOSITION_SINCE}, so it keeps the size and place it opened at until it closes. \
                      Logged once until it opens again or `visible` resolves false."
                 );
@@ -388,8 +386,8 @@ impl App {
         };
         // Rare enough to say every time: a popup only repositions when its content or its anchor
         // actually moved, and if that starts happening on every pass this line is the evidence.
-        eprintln!(
-            "[obelisk-renderer] {surface_id} repositioned to {:?} from {:?} (token {token})",
+        info!(
+            "{surface_id} repositioned to {:?} from {:?} (token {token})",
             placement.size,
             was.map(|placement| placement.size)
         );
@@ -481,7 +479,7 @@ impl PopupHandler for App {
             return;
         };
         let surface_id = self.surfaces[index].surface_id.clone();
-        eprintln!("[obelisk-renderer] {surface_id}: dismissed by the compositor");
+        info!("{surface_id}: dismissed by the compositor");
         self.hide_popup(index);
         self.latch_popup(index);
 
@@ -496,7 +494,7 @@ impl PopupHandler for App {
             return;
         };
         if let Err(e) = on_dismiss.call::<()>(()) {
-            eprintln!("[obelisk-renderer] {surface_id}: on_dismiss raised, ignoring it: {e}");
+            warn!("{surface_id}: on_dismiss raised, ignoring it: {e}");
         }
     }
 }

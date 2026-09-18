@@ -2,6 +2,8 @@
 //! decisions, rescue messages, surfaces, and callbacks. Shared bind/paint/(un)map logic is in
 //! `surface`.
 
+use shared::{error, info, warn};
+
 use super::*;
 use crate::layout::secure_submit::tree_can_authenticate;
 use crate::wayland::surface::MapState;
@@ -97,10 +99,7 @@ impl App {
     /// it.
     pub(super) fn create_lock(&mut self, instance: &SurfaceInstance, outputs: &HashMap<String, wl_output::WlOutput>) {
         let Some(output) = outputs.get(&instance.output) else {
-            eprintln!(
-                "[obelisk-renderer] instance {:?} names an output that has since gone; skipping",
-                instance.instance_id
-            );
+            warn!("instance {:?} names an output that has since gone; skipping", instance.instance_id);
             return;
         };
         self.surfaces.push(TrackedSurface::new(
@@ -133,10 +132,7 @@ impl App {
                 *surface = Some(lock_surface);
             }
             self.surfaces[index].map_state = MapState::AwaitingConfigure;
-            eprintln!(
-                "[obelisk-renderer] {}: lock surface created, awaiting its configure",
-                self.surfaces[index].surface_id
-            );
+            info!("{}: lock surface created, awaiting its configure", self.surfaces[index].surface_id);
         }
     }
 
@@ -176,9 +172,7 @@ impl App {
                     // hotplug retires and replaces instance ids.
                     self.client.set_session_locked(true);
                     self.ensure_lock_surfaces(qh);
-                    eprintln!(
-                        "[obelisk-renderer] session lock requested; waiting for the compositor's `locked` or `finished`"
-                    );
+                    info!("session lock requested; waiting for the compositor's `locked` or `finished`");
                 }
                 // Preserve `GlobalError`'s own missing-global diagnosis.
                 Err(err) => {
@@ -213,8 +207,8 @@ impl App {
         self.client.set_session_locked(false);
         let outcome = release_outcome(was_locked);
         match &outcome {
-            LockOutcome::Unlocked => eprintln!("[obelisk-renderer] the session lock was released"),
-            _ => eprintln!("[obelisk-renderer] {LOCK_NEVER_GRANTED}"),
+            LockOutcome::Unlocked => info!("the session lock was released"),
+            _ => warn!("{LOCK_NEVER_GRANTED}"),
         }
         self.report_lock(outcome);
     }
@@ -225,7 +219,7 @@ impl App {
     /// `RendererClient::reevaluate`
     /// clears rescue.
     fn refuse_lock(&mut self, reason: &str) {
-        eprintln!("[obelisk-renderer] the session lock was refused: {reason}");
+        error!("the session lock was refused: {reason}");
         self.client.set_rescue_state(true, reason);
         self.report_lock(LockOutcome::Refused(reason.to_string()));
     }
@@ -234,7 +228,7 @@ impl App {
     /// `active` only from these reports.
     fn report_lock(&mut self, outcome: LockOutcome) {
         if let Err(e) = self.outbound_tx.send(RendererFrame::LockReport(LockReport { outcome })) {
-            eprintln!("[obelisk-renderer] failed to queue a LockReport for the socket thread: {e}");
+            error!("failed to queue a LockReport for the socket thread: {e}");
         }
     }
 }
@@ -256,7 +250,7 @@ impl SessionLockHandler for App {
             .iter()
             .filter(|tracked| matches!(tracked.role, TrackedRole::Lock { surface: Some(_), .. }))
             .count();
-        eprintln!("[obelisk-renderer] the session is locked; {surfaces} lock surface(s) up");
+        info!("the session is locked; {surfaces} lock surface(s) up");
         self.report_lock(LockOutcome::Locked);
     }
 
@@ -288,7 +282,7 @@ impl SessionLockHandler for App {
             LockOutcome::Finished => LOCK_TORN_DOWN,
             _ => LOCK_DENIED,
         };
-        eprintln!("[obelisk-renderer] the session lock ended: {reason}");
+        error!("the session lock ended: {reason}");
         self.client.set_rescue_state(true, reason);
         self.report_lock(outcome);
     }

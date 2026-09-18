@@ -5,6 +5,7 @@ use std::sync::{Arc, Mutex};
 
 use futures_util::StreamExt;
 use serde::Serialize;
+use shared::{error, info};
 use tokio::sync::mpsc::UnboundedSender;
 
 /// `battery.state`, one of UPower's seven `Device.State` values.
@@ -205,7 +206,7 @@ async fn run_battery_task(
         {
             Ok(proxy) => proxy,
             Err(err) => {
-                eprintln!("battery: no UPower DisplayDevice reachable ({err}); battery will not be reported this run");
+                info!("no UPower DisplayDevice reachable ({err}); battery will not be reported this run");
                 return;
             }
         };
@@ -219,17 +220,17 @@ async fn run_battery_task(
         Ok(builder) => match builder.build().await {
             Ok(proxy) => proxy,
             Err(err) => {
-                eprintln!("battery: cannot watch the UPower DisplayDevice for changes ({err}); giving up on it");
+                error!("cannot watch the UPower DisplayDevice for changes ({err}); giving up on it");
                 return;
             }
         },
         Err(err) => {
-            eprintln!("battery: cannot address the UPower DisplayDevice ({err}); giving up on it");
+            error!("cannot address the UPower DisplayDevice ({err}); giving up on it");
             return;
         }
     };
     let Ok(mut changed) = properties.receive_properties_changed().await else {
-        eprintln!("battery: cannot subscribe to the UPower DisplayDevice's properties; giving up on it");
+        error!("cannot subscribe to the UPower DisplayDevice's properties; giving up on it");
         return;
     };
 

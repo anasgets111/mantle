@@ -30,6 +30,7 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use mlua::{Function, UserData, UserDataMethods};
+use shared::warn;
 
 use crate::lua::capability::Capability;
 
@@ -111,7 +112,7 @@ impl IdleRegistry {
                     shared::IdleState::Idled => "on_idle",
                     shared::IdleState::Resumed => "on_resume",
                 };
-                eprintln!("obelisk.idle:register_threshold({threshold_sec}): {which} raised an error: {err}");
+                warn!("obelisk.idle:register_threshold({threshold_sec}): {which} raised an error: {err}");
             }
         }
     }

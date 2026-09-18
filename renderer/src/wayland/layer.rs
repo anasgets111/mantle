@@ -2,6 +2,8 @@
 //! exclusive zones, creation, updates, and callbacks. Shared bind/paint/(un)map logic is in
 //! `surface`.
 
+use shared::{info, warn};
+
 use super::*;
 use crate::wayland::surface::MapState;
 use crate::wayland::surface::TrackedRole;
@@ -251,10 +253,7 @@ impl App {
         measured: layout::LogicalSize,
     ) {
         let Some(output) = outputs.get(&instance.output) else {
-            eprintln!(
-                "[obelisk-renderer] instance {:?} names an output that has since gone; skipping",
-                instance.instance_id
-            );
+            warn!("instance {:?} names an output that has since gone; skipping", instance.instance_id);
             return;
         };
         // Before the first configure, and before `set_instance_size` has replaced it, `available`
@@ -278,8 +277,8 @@ impl App {
         // refused, on the pass that shows it.
         let deferred = !visible;
         if !deferred && let Some(axis) = ambiguous_zero_axis(size, spec.topology.anchor) {
-            eprintln!(
-                "[obelisk-renderer] surface {:?} leaves its {axis} to the compositor without anchoring both {axis} edges, \
+            warn!(
+                "surface {:?} leaves its {axis} to the compositor without anchoring both {axis} edges, \
                  which layer-shell rejects as a protocol error; no surface created. Give it an explicit {axis}, or anchor both edges.",
                 instance.instance_id
             );
@@ -335,7 +334,7 @@ impl App {
         };
         if layer.is_some() {
             self.surfaces[index].map_state = map_state_for_kept_layer(self.surfaces[index].configured_size);
-            eprintln!("[obelisk-renderer] {} mapping: visible = true", self.surfaces[index].surface_id);
+            info!("{} mapping: visible = true", self.surfaces[index].surface_id);
             return;
         }
         // `measured` is this pass's: [`App::apply_resolved_state`] writes it from the solved root
@@ -343,8 +342,8 @@ impl App {
         // tree that is about to be painted actually takes.
         let size = layer_size_for(spec, *output_size, *measured);
         if let Some(axis) = ambiguous_zero_axis(size, spec.topology.anchor) {
-            eprintln!(
-                "[obelisk-renderer] surface {:?} resolved to a {axis} of 0 without anchoring both {axis} edges, \
+            warn!(
+                "surface {:?} resolved to a {axis} of 0 without anchoring both {axis} edges, \
                  which layer-shell rejects as a protocol error; it stays hidden. Give it an explicit {axis}, or anchor both edges.",
                 self.surfaces[index].surface_id
             );
@@ -378,7 +377,7 @@ impl App {
             *requested = size;
         }
         self.surfaces[index].map_state = MapState::AwaitingConfigure;
-        eprintln!("[obelisk-renderer] {} created: visible = true", self.surfaces[index].surface_id);
+        info!("{} created: visible = true", self.surfaces[index].surface_id);
     }
 
     /// Stages `Reserve`'s configured-size zone, explicit `0` for `Respect`, or `-1` for `Ignore`.
@@ -441,7 +440,7 @@ impl App {
             // Log every change: it takes the keyboard from whatever the user was typing in, and a
             // dead password prompt otherwise cannot distinguish a missing request from compositor
             // inaction.
-            eprintln!("[obelisk-renderer] {}: keyboard_interactivity -> {mode:?}", self.surfaces[index].surface_id);
+            info!("{}: keyboard_interactivity -> {mode:?}", self.surfaces[index].surface_id);
             layer.set_keyboard_interactivity(keyboard_interactivity_for(mode));
         }
         let mut sent = None;
@@ -449,8 +448,8 @@ impl App {
             // Signals can turn a fixed height into `Fill`; `set_size(_, 0)` on a singly anchored
             // axis kills the connection, so repeat [`ambiguous_zero_axis`].
             if let Some(axis) = ambiguous_zero_axis(size, fresh.topology.anchor) {
-                eprintln!(
-                    "[obelisk-renderer] surface {:?} resolved to a {axis} of 0 without anchoring both {axis} edges, \
+                warn!(
+                    "surface {:?} resolved to a {axis} of 0 without anchoring both {axis} edges, \
                      which layer-shell rejects as a protocol error; keeping its previous size. Give it an explicit {axis}, or anchor both edges.",
                     self.surfaces[index].surface_id
                 );

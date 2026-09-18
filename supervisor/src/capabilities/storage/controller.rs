@@ -9,6 +9,7 @@ use std::time::Duration;
 use futures_util::StreamExt;
 use inotify::{Inotify, WatchMask, Watches};
 use serde_json::{Map, Value};
+use shared::{info, warn};
 use tokio::sync::mpsc::UnboundedSender;
 use tokio::task::JoinHandle;
 
@@ -68,7 +69,7 @@ impl StorageController {
                         let event = match event {
                             Ok(event) => event,
                             Err(err) => {
-                                eprintln!("storage: reading the store watch failed: {err}");
+                                warn!("reading the store watch failed: {err}");
                                 // A failure that repeats must not spin.
                                 tokio::time::sleep(Duration::from_secs(1)).await;
                                 continue;
@@ -88,7 +89,7 @@ impl StorageController {
                     }
                 });
             }
-            Err(err) => eprintln!("storage: cannot watch stores, so other writers go unseen: {err}"),
+            Err(err) => warn!("cannot watch stores, so other writers go unseen: {err}"),
         }
         Self { stores, saves: Mutex::new(HashMap::new()), signal_tx }
     }
@@ -107,7 +108,7 @@ impl StorageController {
     /// key, not a reset. A changed merge schedules a save, creating the file on first run.
     pub fn open(&self, path: &str, defaults: &Value) {
         let Some(path) = absolute_path(path) else {
-            eprintln!("storage: refused to open {path:?}; a store's path must be absolute");
+            warn!("refused to open {path:?}; a store's path must be absolute");
             return;
         };
         let key = path.to_string_lossy().into_owned();
@@ -148,18 +149,18 @@ impl StorageController {
     /// The save stays unconditional: rewriting is the only repair for a deleted file.
     pub fn set(&self, path: &str, key: &str, value: Value) {
         let Some(path) = absolute_path(path) else {
-            eprintln!("storage: refused a write to {path:?}; a store's path must be absolute");
+            warn!("refused a write to {path:?}; a store's path must be absolute");
             return;
         };
         if key.is_empty() {
-            eprintln!("storage: refused a write to {}; a key cannot be empty", path.display());
+            warn!("refused a write to {}; a key cannot be empty", path.display());
             return;
         }
 
         let changed = {
             let mut guard = self.stores.lock().expect("storage state mutex poisoned");
             let Some(store) = guard.files.get_mut(&*path.to_string_lossy()) else {
-                eprintln!("storage: refused a write to {}; no persistent_table declared it", path.display());
+                warn!("refused a write to {}; no persistent_table declared it", path.display());
                 return;
             };
             match value {
@@ -214,7 +215,7 @@ fn sync(stores: &Mutex<Stores>, path: &Path, save: bool, signal_tx: &UnboundedSe
         };
         let fixed = store.error.take().is_some();
         if fixed {
-            eprintln!("storage: {} is readable again", path.display());
+            info!("{} is readable again", path.display());
         }
         if let Some(disk) = disk.filter(|disk| store.on_disk.as_ref() != Some(disk)) {
             let mut values = disk.clone();
@@ -232,7 +233,7 @@ fn sync(stores: &Mutex<Stores>, path: &Path, save: bool, signal_tx: &UnboundedSe
         store.values.clone()
     };
     if let Err(err) = write(path, &contents) {
-        return eprintln!("storage: could not save {}: {err}", path.display());
+        return warn!("could not save {}: {err}", path.display());
     }
     if let Some(store) = stores.lock().expect("storage state mutex poisoned").files.get_mut(&*key) {
         store.on_disk = Some(contents);
@@ -246,13 +247,13 @@ fn watch(watches: Option<&mut Watches>, path: &Path) {
     let mask = WatchMask::CLOSE_WRITE | WatchMask::MOVED_TO;
     let watched = std::fs::create_dir_all(dir).and_then(|()| watches.map_or(Ok(()), |w| w.add(dir, mask).map(drop)));
     if let Err(err) = watched {
-        eprintln!("storage: cannot watch {}: {err}", dir.display());
+        warn!("cannot watch {}: {err}", dir.display());
     }
 }
 
 fn log_parse_error(store: &mut Store, path: &Path, err: String) {
     if store.error.as_ref() != Some(&err) {
-        eprintln!("storage: {} keeps its last values and is not saved over until it parses: {err}", path.display());
+        warn!("{} keeps its last values and is not saved over until it parses: {err}", path.display());
         store.error = Some(err);
     }
 }
