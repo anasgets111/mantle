@@ -12,6 +12,10 @@
 //!
 //! A `path -> hash` map (ADR-0047 decision 3) rejects byte-identical saves, which editors often
 //! truncate/rewrite; debounce only collapses one burst. Deleted files always count.
+//!
+//! A checkout that takes the whole config directory away kills every watch at once, and the tree
+//! that comes back has new inodes with no surviving watch to announce them. An emptied `wd_to_dir`
+//! therefore re-adds the root on a timer.
 
 use std::collections::hash_map::DefaultHasher;
 use std::collections::{HashMap, HashSet};
@@ -111,6 +115,9 @@ fn hash_file(path: &Path) -> Option<u64> {
     Some(hasher.finish())
 }
 
+/// How often to re-add the root once the config tree has vanished; see the module comment.
+const REWATCH_RETRY: Duration = Duration::from_secs(1);
+
 /// Watches `dir`'s tree for `.lua` changes, debounced by `debounce`, and emits one `()` per settled
 /// burst. See the module comment for irrelevant events.
 pub fn spawn_watcher(dir: &Path, debounce: Duration) -> io::Result<mpsc::UnboundedReceiver<()>> {
@@ -119,6 +126,7 @@ pub fn spawn_watcher(dir: &Path, debounce: Duration) -> io::Result<mpsc::Unbound
     let mut wd_to_dir = HashMap::new();
     watch_tree(&mut watches, &mut wd_to_dir, dir)?;
     let mut stream = inotify.into_event_stream(vec![0u8; 4096])?;
+    let root = dir.to_path_buf();
 
     let (tx, rx) = mpsc::unbounded_channel();
     tokio::spawn(async move {
@@ -128,6 +136,8 @@ pub fn spawn_watcher(dir: &Path, debounce: Duration) -> io::Result<mpsc::Unbound
         // Absolute deadline, not a relative sleep re-armed by irrelevant events, which could delay
         // the trigger forever under unrelated activity.
         let mut deadline: Option<tokio::time::Instant> = None;
+        // Armed when the last watch dies with the config tree.
+        let mut rewatch_at: Option<tokio::time::Instant> = None;
         loop {
             tokio::select! {
                 event = stream.next() => {
@@ -136,6 +146,12 @@ pub fn spawn_watcher(dir: &Path, debounce: Duration) -> io::Result<mpsc::Unbound
                             if event.mask.contains(EventMask::IGNORED) {
                                 // Kernel dropped this watch; remove it from `wd_to_dir`.
                                 wd_to_dir.remove(&event.wd);
+                                if wd_to_dir.is_empty() {
+                                    // The root went too, so no event can report its return and
+                                    // every hashed path is about an inode that no longer exists.
+                                    hashes.clear();
+                                    rewatch_at = Some(tokio::time::Instant::now() + REWATCH_RETRY);
+                                }
                                 continue;
                             }
 
@@ -192,6 +208,19 @@ pub fn spawn_watcher(dir: &Path, debounce: Duration) -> io::Result<mpsc::Unbound
                     deadline = None;
                     if tx.send(()).is_err() {
                         break; // receiver dropped: nobody's listening any more.
+                    }
+                }
+                _ = tokio::time::sleep_until(rewatch_at.unwrap_or_else(tokio::time::Instant::now)), if rewatch_at.is_some() => {
+                    // ponytail: retries until the directory returns, one syscall a second. Ceiling:
+                    // a config directory deleted for good retries forever. Upgrade: give up after a
+                    // bounded number of tries and say so.
+                    match watch_tree(&mut watches, &mut wd_to_dir, &root) {
+                        Ok(()) => {
+                            rewatch_at = None;
+                            // Whatever happened while nothing was watching counts as a change.
+                            deadline = Some(tokio::time::Instant::now() + debounce);
+                        }
+                        Err(_) => rewatch_at = Some(tokio::time::Instant::now() + REWATCH_RETRY),
                     }
                 }
             }
@@ -431,6 +460,28 @@ mod tests {
         std::fs::write(&path, "return { id = 2 }").unwrap();
 
         assert!(recv_within(&mut rx, WAIT).await.is_some(), "a genuinely changed rewrite must still fire a trigger");
+    }
+
+    /// A checkout can take the config root away and bring it back with new inodes; every watch
+    /// dies at once, so only the re-add timer can see the return.
+    #[tokio::test]
+    async fn the_config_root_deleted_and_recreated_still_reloads() {
+        let outer = tempfile::tempdir().unwrap();
+        let root = outer.path().join("obelisk");
+        std::fs::create_dir(&root).unwrap();
+        std::fs::write(root.join("shell.lua"), "return {}").unwrap();
+
+        let mut rx = spawn_watcher(&root, SHORT_DEBOUNCE).unwrap();
+        std::fs::remove_dir_all(&root).unwrap();
+        assert!(recv_within(&mut rx, WAIT).await.is_some(), "the delete itself fires first");
+
+        std::fs::create_dir(&root).unwrap();
+        std::fs::write(root.join("shell.lua"), "return {}").unwrap();
+
+        assert!(
+            recv_within(&mut rx, REWATCH_RETRY + WAIT).await.is_some(),
+            "a config root that vanished and came back has to reload"
+        );
     }
 
     #[tokio::test]
