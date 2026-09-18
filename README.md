@@ -26,23 +26,21 @@ distro package yet.
 
 Lua 5.4 is vendored, so no system Lua is needed. `just check` also needs `lua-language-server`.
 
-## Install
+## Build and install
 
-```sh
-just prefix="$HOME/.local" install           # needs ~/.local/bin on $PATH
-just prefix=/usr destdir="$pkgdir" install   # a package installs packaging/pam.d/obelisk itself
-```
-
-Then let the compositor start it: `spawn-at-startup "obelisk"` in niri, `exec-once = obelisk` in
-Hyprland, `exec obelisk` in sway.
-
-To work on the engine instead of installing it:
+There is no packaging recipe: `just swap` is both the install and the release dev loop.
 
 ```sh
 just build   # obelisk and obelisk-renderer into target/debug
 just run     # that pair on share/starter, leaving ~/.config/obelisk alone
 just check   # fmt, tests, clippy, doc links, Lua parse and types
+just swap    # release, into $CARGO_HOME/bin, replacing and restarting a running shell
 ```
+
+A package installs `packaging/pam.d/obelisk` itself.
+
+To have the compositor start it instead: `spawn-at-startup "obelisk"` in niri,
+`exec-once = obelisk` in Hyprland, `exec obelisk` in sway.
 
 ## Commands
 

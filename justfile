@@ -153,36 +153,27 @@ fmt:
 clean:
     cargo clean
 
-# Install layout, for a real install only. `just run` is the dev path and reads `target/debug` and
-# the repo's own `lua-meta`, so nothing here is on it.
-#
-# `prefix` is where it goes, `destdir` stages it for a package:
-# `just --no-deps prefix=/usr destdir="$pkgdir" install`. Overrides are case-sensitive and go
-# before the recipe name; both are errors, not silent defaults.
-#
-# Everything under `$PREFIX` and nothing else. `packaging/pam.d/obelisk` goes to /etc and the
-# licence to `share/licenses`, so a package installs those two itself.
-#
-# The Renderer sits in `lib/obelisk`, off `$PATH`, and `bin/obelisk` is a symlink into it:
-# `current_exe` reads symlink-resolved `/proc/self/exe`, so the Supervisor still finds its sibling.
-# One command on `$PATH`, and the pair cannot drift apart.
-#
-# No service unit. The compositor starts it: `spawn-at-startup "obelisk"` in niri,
-# `exec-once = obelisk` in Hyprland, `exec obelisk` in sway.
-prefix := "/usr/local"
-destdir := ""
-# `assert` because `just prefix= uninstall` would otherwise `rm -rf /lib/obelisk /share/obelisk`.
-root := assert(prefix != "", "prefix must not be empty") + destdir + prefix
+# Where `cargo install` put the shell that is actually running.
+cargo_bin := env("CARGO_HOME", home_directory() / ".cargo") / "bin"
 
-[doc('Install under `prefix`, staged into `destdir`.')]
-install: release
-    install -Dm755 target/release/obelisk          "{{root}}/lib/obelisk/obelisk"
-    install -Dm755 target/release/obelisk-renderer "{{root}}/lib/obelisk/obelisk-renderer"
-    install -dm755                                 "{{root}}/bin"
-    ln -sfn ../lib/obelisk/obelisk                 "{{root}}/bin/obelisk"
-    install -Dm644 -t "{{root}}/share/obelisk/lua-meta" lua-meta/*.lua
-    install -Dm644 share/starter/shell.lua         "{{root}}/share/obelisk/starter/shell.lua"
-
-[doc('Remove what `install` put under `prefix`.')]
-uninstall:
-    rm -rf "{{root}}/lib/obelisk" "{{root}}/share/obelisk" "{{root}}/bin/obelisk"
+# The edit-build-swap-restart loop for the compositor-interaction bugs no unit test reaches, and the
+# only path that exercises a release build. `args` passes through to the new shell, as in
+# `just swap --profile=120`.
+#
+# Kills by the `exe` symlink, never by name: `pkill -x obelisk-renderer` never matches (17 chars
+# against pgrep's 15-char `comm` limit), and any `pkill -f` pattern holding "obelisk" also matches
+# the calling shell and takes the terminal down with it.
+[doc('Rebuild, swap both binaries under `cargo_bin`, and restart the shell detached.')]
+swap args="": release
+    #!/usr/bin/env bash
+    set -euo pipefail
+    for d in /proc/[0-9]*; do
+        case "$(readlink "$d/exe" 2>/dev/null)" in
+            {{cargo_bin}}/obelisk|{{cargo_bin}}/obelisk-renderer) kill "${d#/proc/}" || true;;
+        esac
+    done
+    # Copying over a running binary is ETXTBSY, so let both of those actually go first.
+    sleep 2
+    install -Dm755 target/release/obelisk          "{{cargo_bin}}/obelisk"
+    install -Dm755 target/release/obelisk-renderer "{{cargo_bin}}/obelisk-renderer"
+    "{{cargo_bin}}/obelisk" -d {{args}}

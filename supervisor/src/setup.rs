@@ -35,7 +35,7 @@ pub fn packaged_stub_dir() -> Option<PathBuf> {
 /// The layout probe itself, taking the directory rather than reading `current_exe`, so the tests
 /// below exercise this resolver instead of restating it.
 ///
-/// Try `just install`'s `$PREFIX/lib/obelisk` (two levels up), then flat `$PREFIX/bin` (one up).
+/// Try a package's `$PREFIX/lib/obelisk` (two levels up), then flat `$PREFIX/bin` (one up).
 /// Check rather than assume; a wrong path silently falls back to embedded stubs.
 fn packaged_stub_dir_from(exe_dir: &Path) -> Option<PathBuf> {
     ["../..", ".."]
@@ -201,7 +201,7 @@ mod tests {
     #[test]
     fn both_installed_layouts_resolve_to_the_packaged_stub_directory() {
         let root = tempfile::tempdir().unwrap();
-        for (exe_rel, label) in [("lib/obelisk/obelisk", "just install"), ("bin/obelisk", "flat prefix")] {
+        for (exe_rel, label) in [("lib/obelisk/obelisk", "packaged prefix"), ("bin/obelisk", "flat prefix")] {
             let prefix = root.path().join(label.replace(' ', "-"));
             let exe = prefix.join(exe_rel);
             std::fs::create_dir_all(exe.parent().unwrap()).unwrap();

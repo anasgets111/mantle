@@ -5,7 +5,7 @@ behavior and reload lifetimes; [roadmap](roadmap.md) owns gaps and proposed work
 [CONTEXT](../CONTEXT.md) owns terminology; [decisions](decisions.md) owns history.
 
 Exact capability fields and action names come from Rust types through
-[generated editor stubs](../supervisor/src/stubs.rs), installed by `just install` or, without it, `obelisk init`.
+[generated editor stubs](../supervisor/src/stubs.rs), installed by a package or, without one, `obelisk init`.
 Keep schema inventories there rather than maintaining a second copy in Markdown.
 
 ## 1. Values and signals
