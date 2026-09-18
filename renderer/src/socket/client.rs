@@ -410,9 +410,12 @@ impl RendererClient {
         self.scene.note_drawn_images(instance_id, drawn, now);
     }
 
-    /// Drops a departed instance's retained tree, whenever its surface is destroyed.
+    /// Drops a departed instance's retained tree and its `(surface, output)` pair, whenever its
+    /// surface is destroyed. Both, because an instance left here reconciles as unchanged, so
+    /// nothing rebuilds its surface and the scene re-grows a tree with no `wl_surface` behind it.
     pub fn forget_surface(&mut self, instance_id: &str) {
         self.scene.forget(instance_id);
+        self.instances.retain(|instance| instance.instance_id != instance_id);
     }
 
     /// This generation's `Lua` builds the `button` `on_click` argument (ADR-0050 decision 3):
@@ -1726,6 +1729,21 @@ mod tests {
         assert!(matches!(specs.as_slice(), [SurfaceSpec::Panel(_), SurfaceSpec::Window(_), SurfaceSpec::Popup(_)]));
         assert_eq!(specs.iter().map(SurfaceSpec::declared_id).collect::<Vec<_>>(), ["bar", "settings", "menu"]);
         assert_eq!(rescue_state(&client.loader), (false, String::new()));
+    }
+
+    #[test]
+    fn a_destroyed_surface_leaves_the_reconcile_set_with_its_tree() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_shell_lua(dir.path(), r#"return panel { id = "bar", layer = "Top" }"#);
+        let (mut client, _outbound_rx) = test_client(&path);
+        client.set_instances(instances_for(&["bar", "menu"]));
+
+        client.forget_surface("bar@TEST");
+
+        assert_eq!(
+            client.instances().iter().map(|instance| instance.instance_id.as_str()).collect::<Vec<_>>(),
+            ["menu@TEST"]
+        );
     }
 
     #[test]
