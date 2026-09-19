@@ -28,8 +28,10 @@ Lua 5.4 is vendored, so no system Lua is needed. `just check` also needs `lua-la
 
 ## Build and install
 
-On Arch, [`mantle-git`](https://aur.archlinux.org/packages/mantle-git) builds from `main` and
-installs `/etc/pam.d/mantle` with it.
+> [!NOTE]
+> On Arch, [`mantle-git`](https://aur.archlinux.org/packages/mantle-git) builds from `main` and
+> installs `/etc/pam.d/mantle` with it. It tracks the branch, so a rebuild is whatever `main` is
+> that day.
 
 From source there is no packaging recipe: `just swap` is the install path.
 
