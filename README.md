@@ -1,13 +1,11 @@
 # Mantle
 
-A Wayland shell engine. You build the desktop shell in Lua, and Rust runs it. A config declares
-the bars, popups, launcher and lock screen as a tree of nodes; the engine owns the platform
-connections, input, layout and painting. A config that crashes does not take the session with it,
-and saving one reloads it in place without losing its state.
+A Wayland shell engine. Lua configs declare bars, popups, launchers, and lock screens as node
+trees. Rust handles platform connections, input, layout, and rendering. Config crashes do not
+kill the Wayland session. File changes reload in place and preserve signal state.
 
-Mantle ships no shell of its own. [`share/starter`](share/starter) is a minimal example config;
-[anasgets111/dotfiles](https://github.com/anasgets111/dotfiles) is the reference one, a full shell
-built on the engine:
+Mantle ships no built-in shell. [`share/starter`](share/starter) provides a minimal config.
+[anasgets111/dotfiles](https://github.com/anasgets111/dotfiles) is the reference full shell:
 
 https://github.com/user-attachments/assets/038ee763-d7b6-4df9-9f79-2f131d4f0dcd
 
@@ -15,57 +13,50 @@ Status: pre-release. The Lua API changes without notice.
 
 ## Requirements
 
-| What | Needs |
+| Feature | Requirement |
 | :--- | :--- |
 | Compositor | Wayland with `wlr-layer-shell-v1` and `ext-session-lock-v1` |
-| Blur | `ext-background-effect-v1`, ignored where absent |
+| Blur | `ext-background-effect-v1`, ignored when absent |
 | Workspaces, keyboard layout | niri or Hyprland |
-| Updates capability | pacman, through libalpm |
-| Linked at build | PipeWire, PAM, udev, EGL, xkbcommon, libwayland-client, libwayland-egl |
+| Updates capability | pacman, via libalpm |
+| Build dependencies | PipeWire, PAM, udev, EGL, xkbcommon, libwayland-client, libwayland-egl |
 
-Lua 5.4 is vendored, so no system Lua is needed. `just check` also needs `lua-language-server`.
+Lua 5.4 is vendored. `just check` requires `lua-language-server`.
 
 ## Build and install
 
 > [!NOTE]
-> On Arch, [`mantle-git`](https://aur.archlinux.org/packages/mantle-git) builds from `main` and
-> installs `/etc/pam.d/mantle` with it. It tracks the branch, so a rebuild is whatever `main` is
-> that day.
+> On Arch, [`mantle-git`](https://aur.archlinux.org/packages/mantle-git) builds from `main` and installs `/etc/pam.d/mantle`.
 
-From source there is no packaging recipe: `just swap` is the install path.
+Build from source with `just`:
 
 ```sh
 just build   # mantle and mantle-renderer into target/debug
-just run     # that pair on share/starter, leaving ~/.config/mantle alone
+just run     # run against share/starter, leaving ~/.config/mantle untouched
 just check   # fmt, tests, clippy, doc links, Lua parse and types
-just swap    # release, into $CARGO_HOME/bin, replacing and restarting a running shell
+just swap    # release build into $CARGO_HOME/bin, then restart running shell
 ```
 
-To have the compositor start it instead: `spawn-at-startup "mantle"` in niri,
-`exec-once = mantle` in Hyprland, `exec mantle` in sway.
+Autostart: `spawn-at-startup "mantle"` in niri, `exec-once = mantle` in Hyprland, `exec mantle` in sway.
 
 ## Commands
 
-| Command | Does |
+| Command | Action |
 | :--- | :--- |
-| `mantle` | run the config |
-| `mantle init` | write `shell.lua`, plus a `.luarc.json` pointing the LSP at the stubs |
-| `mantle check` | evaluate the config and exit, taking no surface |
-| `mantle list` | show the running shells: PID, uptime, runtime directory, config |
-| `mantle log -f` | print what a running shell wrote to stdout and stderr |
-| `mantle set NAME VALUE` | write a running config's `state(NAME)` signal |
-| `mantle toggle NAME [VALUE]` | flip it when it holds a boolean, or swap VALUE with its initial |
-| `mantle call NAME [ARGS]` | run the config's `action(NAME, fn)` and print what it returned |
+| `mantle` | Run the config |
+| `mantle init` | Write `shell.lua` and `.luarc.json` pointing the LSP at stubs |
+| `mantle check` | Evaluate the config and exit without creating surfaces |
+| `mantle list` | List running shells by PID, uptime, runtime directory, and config |
+| `mantle log -f` | Stream shell stdout and stderr |
+| `mantle set NAME VALUE` | Update a running config's `state(NAME)` signal |
+| `mantle toggle NAME [VALUE]` | Toggle a boolean signal, or alternate between VALUE and initial state |
+| `mantle call NAME [ARGS]` | Run a registered `action(NAME, fn)` and print the result |
 
-The last three are how a compositor keybind reaches a running shell: bind
-`mantle toggle launcher_open` against `state("launcher_open", false)`, or `mantle call
-launcher.open` against `action("launcher.open", fn)`. VALUE and ARGS are read as JSON, and
-anything that is not JSON is taken as a string. `mantle -h` has the rest.
+Compositor keybinds reach a running shell via `toggle` and `call`: bind `mantle toggle launcher_open` against `state("launcher_open", false)` or `mantle call launcher.open` against `action("launcher.open", fn)`. Arguments parse as JSON, falling back to strings. `mantle -h` lists all options.
 
-The config is a directory, not a file: `require` resolves inside it, and any `.lua` file changing
-triggers a reload. `-c DIR` beats `$MANTLE_CONFIG_DIR`, which beats `$XDG_CONFIG_HOME/mantle`.
+Configs are directories. `require` resolves relative to the config root, and editing any `.lua` file triggers a reload. Precedence: `-c DIR` > `$MANTLE_CONFIG_DIR` > `$XDG_CONFIG_HOME/mantle`.
 
-## A config
+## Example config
 
 ```lua
 return {
@@ -86,14 +77,12 @@ return {
 }
 ```
 
-Surfaces are `panel`, `window`, `popup`, `lock`. Nodes are `row`, `column`, `text`, `image`,
-`icon`, `button`, `textfield`, `rect`, `list`. Anything that changes over time is a
-signal, so the `:map` above re-resolves that clock without re-running the config.
+Surfaces: `panel`, `window`, `popup`, `lock`. Nodes: `row`, `column`, `text`, `image`, `icon`, `button`, `textfield`, `rect`, `list`.
+Dynamic state uses signals. The `:map` call updates clock text directly without re-evaluating the config tree.
 
 ## Capabilities
 
-`mantle.<name>` exposes platform state as a signal and takes actions. A backend starts on first use
-and stays for the session.
+`mantle.<name>` exposes platform state as signals and accepts actions. Backends start on first use and persist for the session.
 
 | Hardware | Desktop | System |
 | :--- | :--- | :--- |
@@ -106,23 +95,21 @@ and stays for the session.
 | storage | tray | updates |
 | | workspaces | |
 
-## Why processes
+## Process architecture
 
-The Supervisor holds the platform connections and the Renderer holds Lua and Wayland surfaces, so a
-config that crashes the Renderer leaves the Supervisor and its connections running.
+The Supervisor maintains platform connections. The Renderer executes Lua and manages Wayland surfaces. A Renderer crash does not drop platform connections or terminate the Supervisor.
 
-A **generation** is one Renderer process and its Lua state. A new one starts only when the
-Supervisor respawns a Renderer that exited, behind a brake that stops a crash loop.
+A generation is one Renderer process and its Lua runtime. If the Renderer exits, the Supervisor respawns it with rate-limiting to prevent crash loops.
 
 ## Docs
 
-| Doc | Holds |
+| Doc | Contents |
 | :--- | :--- |
-| [Lua API](docs/lua-api.md) | what a config can declare and call |
-| [Services](docs/services.md) | capability payloads, actions and their backends |
-| [Decisions](docs/decisions.md) | why it is built this way, including what was rejected |
-| [Roadmap](docs/roadmap.md) | what is next, what is waiting on a decision, and what it will never do |
-| [CONTEXT.md](CONTEXT.md) | the vocabulary all four use |
+| [Lua API](docs/lua-api.md) | Node and surface properties, signal combinators, global functions |
+| [Services](docs/services.md) | Capability state payloads, actions, and platform backends |
+| [Decisions](docs/decisions.md) | Architecture decisions, alternatives considered, and rejected designs |
+| [Roadmap](docs/roadmap.md) | Upcoming milestones, open design questions, and non-goals |
+| [CONTEXT.md](CONTEXT.md) | Core domain terminology and concepts |
 
 ## License
 
