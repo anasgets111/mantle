@@ -41,7 +41,7 @@ Wanted, but each needs a consumer or a decision first.
 | Process control | `run`, `detach` (ADR-0188) and `session_process` (ADR-0175) cover start, stream and signal. Does anything need to write a child's stdin, or set its cwd and env? |
 | Move transitions | A sibling closing a gap does not animate. Needs the solver's old and new rects for every sibling, so add it against a demonstrated consumer |
 | Fonts and localization | `text.font` is per-node over the global chain (ADR-0144). No translation API, and `Name`/`GenericName`/`Keywords` are read unlocalized (ADR-0112) |
-| Wayland and input extras | No shortcut inhibition, per-surface idle inhibition, touch gestures or cross-app drag and drop. Pick the protocol and a consumer; logind inhibition already works |
+| Wayland and input extras | No shortcut inhibition, per-surface idle inhibition, touch gestures or cross-app drag and drop. Pick the protocol and a consumer; logind and screensaver inhibition already work |
 | Capture | No screen or window image. Build it for previews when something asks; external recorders do not need renderer capture |
 | Native I/O | No HTTP, sockets or arbitrary watched file contents; JSON storage and folder watching exist. Subprocess helpers first, native only for a measured latency or volume need |
 | KDE Connect | No device or plugin model. A Supervisor capability or a helper streaming state, but not unrestricted D-Bus for parity |
