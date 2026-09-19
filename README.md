@@ -9,7 +9,7 @@ Mantle ships no shell of its own. [`share/starter`](share/starter) is a minimal 
 [anasgets111/dotfiles](https://github.com/anasgets111/dotfiles) is the reference one, a full shell
 built on the engine:
 
-https://github.com/user-attachments/assets/770bd04b-bc43-43b9-a388-eccda8d9528f
+https://github.com/user-attachments/assets/038ee763-d7b6-4df9-9f79-2f131d4f0dcd
 
 Status: pre-release. Nothing is published, the Lua API changes without notice, and there is no
 distro package yet.
