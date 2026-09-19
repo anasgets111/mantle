@@ -5,8 +5,8 @@
 //! The key is path plus physical-pixel box: a vector made for 12px would blur at 24px, while a
 //! raster is downscaled to cover its box (ADR-0122), so a 4K wallpaper in a 230px thumbnail is a
 //! 230px texture, not 32MB. Mtime and length (ADR-0031) refresh tray files overwritten in place.
-//! Failures are cached as `Failed`, including unreadable files and `.svgz` (see
-//! [`svg::rasterize_svg`]); a *missing* file retries when its key changes on appearance.
+//! Failures are cached as `Failed`, unreadable files included; a *missing* file retries when its
+//! key changes on appearance.
 //!
 //! Decoding is inline by default, or on a worker pool for `async = true` (ADR-0122). The slot is
 //! `Pending` until [`ImageCache::poll`] finds pixels; [`ImageCache::upload_landed`] uploads them at
@@ -758,9 +758,9 @@ fn frame_cap(width: u32, height: u32, budget: usize) -> usize {
 }
 
 /// By extension, not sniffing: `freedesktop-icons` returns `.svg`/`.png`, and `shm_icons.rs` writes
-/// `.png`.
+/// `.png`. `rasterize_svg` inflates a gzipped `.svgz` itself (ADR-0234).
 fn is_vector(path: &Path) -> bool {
-    path.extension().is_some_and(|ext| ext.eq_ignore_ascii_case("svg"))
+    path.extension().is_some_and(|ext| ext.eq_ignore_ascii_case("svg") || ext.eq_ignore_ascii_case("svgz"))
 }
 
 /// Canvas-free load half for pool threads: raster decode/downscale through `thumbnails` when
@@ -1007,15 +1007,20 @@ fn decode_raster(
     Ok((rgba.into_raw(), width, height))
 }
 
-/// Reads at most `cap` bytes, or `None` if the file has more than that.
+/// Reads at most `cap` bytes of `path`, or `None` if the file has more than that.
+fn read_capped(path: &Path, cap: u64) -> std::io::Result<Option<Vec<u8>>> {
+    refuse_irregular(path)?;
+    take_capped(std::fs::File::open(path)?, cap)
+}
+
+/// Reads at most `cap` bytes of `source`, or `None` past that.
 ///
 /// Reads `cap + 1` so "exactly at the limit" and "over it" are distinguishable, and never
-/// allocates more than that however large the file turns out to be.
-fn read_capped(path: &Path, cap: u64) -> std::io::Result<Option<Vec<u8>>> {
+/// allocates more than that however much the source turns out to hold.
+fn take_capped(source: impl std::io::Read, cap: u64) -> std::io::Result<Option<Vec<u8>>> {
     use std::io::Read;
-    refuse_irregular(path)?;
     let mut data = Vec::new();
-    std::fs::File::open(path)?.take(cap + 1).read_to_end(&mut data)?;
+    source.take(cap + 1).read_to_end(&mut data)?;
     Ok((data.len() as u64 <= cap).then_some(data))
 }
 
@@ -1170,11 +1175,9 @@ mod tests {
     fn only_svg_is_rasterized_by_size() {
         assert!(is_vector(Path::new("/usr/share/icons/Adwaita/symbolic/x.svg")));
         assert!(is_vector(Path::new("/tmp/X.SVG")));
+        assert!(is_vector(Path::new("/tmp/gzipped.svgz")));
         assert!(!is_vector(Path::new("/run/user/1000/mantle/tray/telegram.png")));
         assert!(!is_vector(Path::new("/tmp/no-extension")));
-        // `.svgz` is unsupported (see `rasterize_svg`'s ponytail): vector treatment would feed gzip
-        // bytes to XML, so it takes the raster path and fails there.
-        assert!(!is_vector(Path::new("/tmp/gzipped.svgz")));
     }
 
     /// A wallpaper's shape without a wallpaper's art: a 16:9 viewBox filled corner to corner by one

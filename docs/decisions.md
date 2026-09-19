@@ -5381,3 +5381,23 @@ feature. Turning that on decodes one frame, which is where a still image would h
 
 No `play`, `pause` or loop count on the node. A GIF plays and loops; nothing has asked to stop one,
 and the frame index is a function of elapsed time with no state a config could set.
+
+## 0234. `.svgz` inflates under the engine's own cap; SVG `<text>` stays off
+
+`resvg` was declared with no features at all, so a gzipped `.svgz` drew blank. Turning `svgz` on
+adds no crate: flate2 is already compiled here for `png`.
+
+1. **`rasterize_svg` inflates, not `usvg`.** `usvg::decompress_svgz` is a `read_to_end` with no
+   ceiling, and deflate reaches 1032:1, so `MAX_SVG_BYTES` bounded only the file on disk: a few
+   kilobytes could ask for 8GB on the dispatch thread. The gzip magic is inflated through the same
+   capped read `read_capped` uses, so one number bounds the plaintext either way. It also puts
+   plaintext in front of `tinted_svg`, which rewrites bytes rather than a parse (ADR-0072).
+2. **`text` is not worth what it links.** It pulls a second fontdb (0.24 against cosmic-text's
+   0.23) and a second harfrust, five crates in all. The version split also means the shaping
+   worker's `Database` cannot be handed to `usvg` at any price, so the only shape left is a second
+   database the config never declared families for.
+3. **And it would bring a staleness bug.** `CacheKey` is path, box, mtime, tint and cropped. An SVG
+   rasterized while `family_for` had resolved N families keeps those glyphs for the life of the
+   process, so text support means a font generation in the key and a way to publish the face set
+   from the shaping thread to the decode pool. Icon themes ship paths; an asset that wants text
+   converts it to paths and keeps the font its author chose.

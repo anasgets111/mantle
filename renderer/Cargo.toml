@@ -36,6 +36,9 @@ femtovg = { version = "0.27.0", default-features = false, features = ["swash"] }
 fontdb = { version = "0.23.0", default-features = false, features = ["std", "fs", "memmap"] }
 # A wrapped line's own direction, for `layout::scene`'s direction mark (ADR-0211).
 unicode-bidi = "0.3.18"
+# Inflating `.svgz` under a cap of our own, because `usvg::decompress_svgz` reads to the end
+# (ADR-0234). Already compiled for `png`, so declaring it adds no crate.
+flate2 = { version = "1.1", default-features = false, features = ["rust_backend"] }
 freedesktop-icons = "0.4.0"
 glow = "0.18.0"
 # femtovg declares `image` with `default-features = false` and turns no format on, so its own
@@ -51,7 +54,9 @@ mlua = { version = "0.12.0", features = ["lua54", "vendored", "serde"] }
 # "resource" is `getrusage`, read only by the env-gated `wayland::idle_profile` (ADR-0132) to
 # split the poll loop's CPU between this thread and the rest of the process.
 nix = { workspace = true, features = ["poll", "resource", "time"] }
-resvg = { version = "0.48.1", default-features = false }
+# `svgz` adds no crate: flate2 is already here through `png`. Not `text`, which would link a second
+# fontdb (0.24 against cosmic-text's 0.23) and a second harfrust just for `<text>` (ADR-0234).
+resvg = { version = "0.48.1", default-features = false, features = ["svgz"] }
 serde_json.workspace = true
 shared.workspace = true
 # No `calloop`: the event loop is our own poll (`wake.rs`). 154 to 150.

@@ -1511,6 +1511,7 @@ dependencies = [
  "cosmic-text",
  "cursor-icon",
  "femtovg",
+ "flate2",
  "fontdb",
  "freedesktop-icons",
  "glow",
@@ -2270,6 +2271,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "977d0a4abdef933f424a99fe09f95576e089b90aebc6f016a3bc813762493e91"
 dependencies = [
  "data-url",
+ "flate2",
  "imagesize",
  "kurbo",
  "log",

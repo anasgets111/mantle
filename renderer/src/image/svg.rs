@@ -2,7 +2,7 @@
 
 use std::path::Path;
 
-use super::read_capped;
+use super::{read_capped, take_capped};
 use crate::layout::node::Rgba;
 
 /// Bytes an SVG source may occupy before it is refused unparsed. `usvg` parses the whole document
@@ -11,9 +11,8 @@ use crate::layout::node::Rgba;
 const MAX_SVG_BYTES: u64 = 8 * 1024 * 1024;
 
 /// Rasterizes with longest edge `box_px`; [`fitted_rect`](super::fitted_rect) handles placement.
-/// ponytail: `resvg` has no default features, so SVG text and gzipped `.svgz` are unsupported. An
-/// absolute `.svgz` path logs once and draws blank. Upgrade: `resvg/svgz` and `resvg/text`; `text`
-/// adds a second `fontdb` that could disagree with `text::shaping`'s declared font chain.
+/// ponytail: `resvg/text` is off, so `<text>` draws nothing (ADR-0234). Upgrade: convert it to
+/// paths in the asset, or link a second fontdb and key the image cache on the font generation.
 pub(super) fn rasterize_svg(path: &Path, box_px: u32, tint: Option<Rgba>) -> Result<(Vec<u8>, u32, u32), String> {
     // Read through a limited reader rather than checking `metadata` and then reading: the file can
     // grow between the two, and the read is what allocates. `usvg` parses whatever it is handed
@@ -21,6 +20,15 @@ pub(super) fn rasterize_svg(path: &Path, box_px: u32, tint: Option<Rgba>) -> Res
     let data = read_capped(path, MAX_SVG_BYTES)
         .map_err(|err| format!("{}: {err}", path.display()))?
         .ok_or_else(|| format!("svg is over the {MAX_SVG_BYTES}-byte limit and was not parsed"))?;
+    // gzip magic. Inflated here rather than by `usvg::decompress_svgz`, whose `read_to_end` has no
+    // ceiling: deflate reaches 1032:1, so a file that passed the cap above can still ask for 8GB.
+    // Also what puts plaintext in front of `tinted_svg`, which rewrites bytes.
+    let data = match data.starts_with(&[0x1f, 0x8b]) {
+        true => take_capped(flate2::read::GzDecoder::new(&data[..]), MAX_SVG_BYTES)
+            .map_err(|err| format!("{}: {err}", path.display()))?
+            .ok_or_else(|| format!("svgz inflates past the {MAX_SVG_BYTES}-byte limit and was not parsed"))?,
+        false => data,
+    };
     let data = match tint {
         Some(tint) => tinted_svg(&data, tint),
         None => data,
@@ -182,6 +190,35 @@ mod tests {
         let distinct: std::collections::HashSet<[u8; 3]> =
             pixels.as_chunks::<4>().0.iter().map(|px| [px[0], px[1], px[2]]).collect();
         assert!(distinct.len() > 16, "expected a gradient, got {} colours", distinct.len());
+    }
+
+    #[test]
+    fn a_gzipped_svgz_rasterizes_to_the_same_pixels_as_its_plaintext() {
+        let dir = tempfile::tempdir().unwrap();
+        let plain = dir.path().join("gradient.svg");
+        let zipped = dir.path().join("gradient.svgz");
+        std::fs::write(&plain, GRADIENT_SVG).unwrap();
+        std::fs::write(&zipped, gzip(GRADIENT_SVG.as_bytes())).unwrap();
+        assert_eq!(rasterize_svg(&zipped, 64, None).unwrap(), rasterize_svg(&plain, 64, None).unwrap());
+    }
+
+    #[test]
+    fn an_svgz_that_inflates_past_the_limit_is_refused_rather_than_allocated_for() {
+        // Deflate reaches 1032:1, so the read cap alone bounds only the file on disk: this one is
+        // a few kilobytes and asks for 8MB+1. `usvg::decompress_svgz` would hand over all of it.
+        let dir = tempfile::tempdir().unwrap();
+        let bomb = dir.path().join("bomb.svgz");
+        std::fs::write(&bomb, gzip(&vec![b' '; MAX_SVG_BYTES as usize + 1])).unwrap();
+        assert!(std::fs::metadata(&bomb).unwrap().len() < MAX_SVG_BYTES, "the compressed file passes the read cap");
+        let err = rasterize_svg(&bomb, 24, None).expect_err("an inflating svgz must be refused");
+        assert!(err.contains("inflates past"), "the refusal should say why: {err}");
+    }
+
+    fn gzip(data: &[u8]) -> Vec<u8> {
+        use std::io::Write;
+        let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        encoder.write_all(data).unwrap();
+        encoder.finish().unwrap()
     }
 
     #[test]
