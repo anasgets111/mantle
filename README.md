@@ -28,7 +28,10 @@ Lua 5.4 is vendored, so no system Lua is needed. `just check` also needs `lua-la
 
 ## Build and install
 
-There is no packaging recipe: `just swap` is both the install and the release dev loop.
+On Arch, [`mantle-git`](https://aur.archlinux.org/packages/mantle-git) builds from `main` and
+installs `/etc/pam.d/mantle` with it.
+
+From source there is no packaging recipe: `just swap` is the install path.
 
 ```sh
 just build   # mantle and mantle-renderer into target/debug
@@ -36,8 +39,6 @@ just run     # that pair on share/starter, leaving ~/.config/mantle alone
 just check   # fmt, tests, clippy, doc links, Lua parse and types
 just swap    # release, into $CARGO_HOME/bin, replacing and restarting a running shell
 ```
-
-A package installs `packaging/pam.d/mantle` itself.
 
 To have the compositor start it instead: `spawn-at-startup "mantle"` in niri,
 `exec-once = mantle` in Hyprland, `exec mantle` in sway.
