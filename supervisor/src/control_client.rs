@@ -1,4 +1,4 @@
-//! Client half of `obelisk set`, `obelisk toggle` (ADR-0112) and `obelisk call` (ADR-0197):
+//! Client half of `mantle set`, `mantle toggle` (ADR-0112) and `mantle call` (ADR-0197):
 //! connect to the running Supervisor and send a handshake and one frame.
 //!
 //! `set` and `toggle` disconnect immediately; `call` waits, because the whole point of a call is
@@ -19,7 +19,7 @@ use shared::{
 use tokio::io::AsyncWriteExt;
 use tokio::net::UnixStream;
 
-/// How long `obelisk call` waits for an answer.
+/// How long `mantle call` waits for an answer.
 ///
 /// Generous against the work a handler can actually do: config Lua runs under a 5ms CPU cap, so a
 /// reply that has not arrived by now means the shell is wedged or the Renderer was replaced mid-call,
@@ -36,7 +36,7 @@ pub fn send(set: SetState, instance_dir: &Path) -> Result<(), Box<dyn Error>> {
     runtime.block_on(async {
         let mut stream = UnixStream::connect(&path)
             .await
-            .map_err(|err| format!("cannot reach the shell at {}: {err} (is obelisk running?)", path.display()))?;
+            .map_err(|err| format!("cannot reach the shell at {}: {err} (is mantle running?)", path.display()))?;
         write_json_frame(&mut stream, &ConnectionHandshake { generation_id: CONTROL_CLIENT_GENERATION }).await?;
         write_json_frame(&mut stream, &RendererFrame::SetState(set)).await?;
         stream.shutdown().await?;
@@ -44,7 +44,7 @@ pub fn send(set: SetState, instance_dir: &Path) -> Result<(), Box<dyn Error>> {
     })
 }
 
-/// Sends one `obelisk call` and prints what the config returned.
+/// Sends one `mantle call` and prints what the config returned.
 ///
 /// The `id` sent is zero and is overwritten by the Supervisor, which owns the pending table; a
 /// client-chosen id would let one peer collect another's answer.
@@ -54,7 +54,7 @@ pub fn call(name: String, arguments: Vec<serde_json::Value>, instance_dir: &Path
     runtime.block_on(async {
         let mut stream = UnixStream::connect(&path)
             .await
-            .map_err(|err| format!("cannot reach the shell at {}: {err} (is obelisk running?)", path.display()))?;
+            .map_err(|err| format!("cannot reach the shell at {}: {err} (is mantle running?)", path.display()))?;
         write_json_frame(&mut stream, &ConnectionHandshake { generation_id: CONTROL_CLIENT_GENERATION }).await?;
         write_json_frame(&mut stream, &RendererFrame::Call(Call { id: 0, name: name.clone(), arguments })).await?;
 

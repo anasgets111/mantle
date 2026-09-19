@@ -225,7 +225,7 @@ impl Pool {
             let wanted = Arc::clone(&wanted);
             let budget = Arc::clone(&budget);
             std::thread::Builder::new()
-                .name(format!("obelisk-image-decode-{index}"))
+                .name(format!("mantle-image-decode-{index}"))
                 .spawn(move || {
                     loop {
                         // Hold the lock only to take a job; workers drain while another decodes.
@@ -255,7 +255,7 @@ impl Pool {
                         }
                     }
                 })
-                .expect("failed to spawn an obelisk-image-decode thread");
+                .expect("failed to spawn a mantle-image-decode thread");
         }
         Pool { jobs, results, wanted, budget }
     }
@@ -1010,7 +1010,7 @@ mod tests {
     fn only_svg_is_rasterized_by_size() {
         assert!(is_vector(Path::new("/usr/share/icons/Adwaita/symbolic/x.svg")));
         assert!(is_vector(Path::new("/tmp/X.SVG")));
-        assert!(!is_vector(Path::new("/run/user/1000/obelisk/tray/telegram.png")));
+        assert!(!is_vector(Path::new("/run/user/1000/mantle/tray/telegram.png")));
         assert!(!is_vector(Path::new("/tmp/no-extension")));
         // `.svgz` is unsupported (see `rasterize_svg`'s ponytail): vector treatment would feed gzip
         // bytes to XML, so it takes the raster path and fails there.
@@ -1447,7 +1447,7 @@ mod tests {
 
     #[test]
     fn a_missing_file_and_a_real_one_read_different_versions() {
-        assert_eq!(FileVersion::read(Path::new("/nonexistent/obelisk-x.png")), FileVersion::default());
+        assert_eq!(FileVersion::read(Path::new("/nonexistent/mantle-x.png")), FileVersion::default());
         // Any file with bytes in it; the rule is about read versus missing, not about the contents.
         let dir = tempfile::tempdir().unwrap();
         let present = dir.path().join("present.svg");

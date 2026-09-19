@@ -32,7 +32,7 @@ Wanted, but each needs a consumer or a decision first.
 | Area | Open question |
 | :--- | :--- |
 | Multi-prompt PAM | One password is supplied before the transaction and replayed for every masked prompt, and an echo-on prompt is a hard error (`pam_worker.rs`). Fingerprint, 2FA and an expired password fail on the lock screen today, so this stands on its own merits |
-| Greeter | greetd keeps PAM and root, so Obelisk would be a client on its JSON socket, launched under cage or sway. Needs the multi-prompt contract above and a session-launch command |
+| Greeter | greetd keeps PAM and root, so Mantle would be a client on its JSON socket, launched under cage or sway. Needs the multi-prompt contract above and a session-launch command |
 | Drawing | No config-facing paths, gradients or shadows, and clipping is limited to a box's own corner shape. Add the smallest set a real component needs; SVG already covers static artwork |
 | Large lists | Every item is constructed: 0.25 ms at 12 rows, 10.9 ms at 500 (ADR-0219). Virtualization would have to *require* `key`, which a config can be told but not made to supply (ADR-0191) |
 | Window and output actions | Screens are read-only and no window actions exist (ADR-0119). Pick the actions, then settle niri/Hyprland differences and revert behaviour |
@@ -59,7 +59,7 @@ Wanted, but each needs a consumer or a decision first.
 | A wallpaper service or fixed wallpaper surfaces | A background `panel`, `image` with `async`/`retain`/`transition`, watched folders and persisted preferences |
 | Rust sliders, calendars, launchers or settings panels | Lua components over existing nodes |
 | A framework-owned settings schema | `persistent_table` with config-declared files |
-| Dedicated IPC commands per panel | `obelisk set` and `obelisk toggle` |
+| Dedicated IPC commands per panel | `mantle set` and `mantle toggle` |
 | A loader to defer surface creation | Wayland objects are created when shown. The 5 ms cap guards one outermost signal resolve, not a whole config evaluation (ADR-0157) |
 | Shaders over an arbitrary subtree, or as a persistent filter | `image.transition` between two endpoints (ADR-0184), the engine's own cross-dissolve being one of those shaders (ADR-0186). Two endpoints and a progress number keep a stable contract; an arbitrary subtree does not |
 | Being the display manager: PAM as root, session opening, seat management | greetd already does it, and a PAM stack with no root can only run the `auth` chain anyway. See Greeter above |

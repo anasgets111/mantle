@@ -1,4 +1,4 @@
-//! Audio devices for `obelisk.audio`: sink and source names, icons and hardware routes, and the
+//! Audio devices for `mantle.audio`: sink and source names, icons and hardware routes, and the
 //! codec profiles of BlueZ cards.
 
 use std::collections::HashMap;
@@ -34,14 +34,14 @@ pub struct AudioDevice {
     pub form_factor: Option<String>,
 }
 
-/// One BlueZ audio device's codec choices, joined to `obelisk.bluetooth` by MAC.
+/// One BlueZ audio device's codec choices, joined to `mantle.bluetooth` by MAC.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[cfg_attr(test, derive(schemars::JsonSchema))]
 pub struct BluetoothCodecs {
     /// PipeWire device registry id, the first argument of
     /// `:invoke("set_bluetooth_profile", device, index)`.
     pub device: u32,
-    /// MAC address from WirePlumber's `bluez_card.` name, spelled as `obelisk.bluetooth` spells it.
+    /// MAC address from WirePlumber's `bluez_card.` name, spelled as `mantle.bluetooth` spells it.
     pub mac: String,
     /// Available profiles that name a codec, in profile index order.
     pub codecs: Vec<CodecProfile>,

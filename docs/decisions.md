@@ -5272,3 +5272,20 @@ at every call site, to gain an indirection.
 
 ponytail: femtovg's and wayland-sys's own `log` records stay invisible. A shim into `emit` would
 surface them, and needs its own default-off filter or it buries everything above it.
+
+## 0230. The engine is Mantle, and this file keeps saying Obelisk
+
+Obelisk shared `/usr/bin/obelisk` with an unrelated AUR package, and the first release was about to
+make the name permanent: one user, no tags, nothing packaged yet. Renamed to Mantle -- the layer
+everything else rests on, and the mantle a shell takes up -- while that was still free.
+
+1. **Every entry above this one keeps the old name.** An ADR records what was decided when it was
+   decided; rewriting 111 mentions would make the record say something that was never true.
+2. **Everything else moved**, public surface included: `MANTLE_*`, the `mantle_*` shader entry
+   points config shaders define, the layer-shell namespaces, `/etc/pam.d/mantle`, `~/.config/mantle`.
+3. **No migration.** An install from before this finds none of those paths and fails at PAM rather
+   than at startup. Moving them is the one user's job.
+
+Rejected: keeping `obelisk` with `conflicts=('obelisk' 'obelisk-bin')`. It works today and costs
+nothing, but a file conflict is not negotiable in `extra`, so it trades a free rename now for a
+breaking one later.

@@ -127,7 +127,7 @@ pub struct App {
     /// non-blocking, so dispatch callbacks can use it.
     outbound_tx: tokio::sync::mpsc::UnboundedSender<RendererFrame>,
     /// This Renderer's generation id, stamped into every `SecureSubmit`; read in `main` from
-    /// `OBELISK_GENERATION_ID`.
+    /// `MANTLE_GENERATION_ID`.
     generation_id: u32,
     /// Clone for paths that create surfaces or request frame callbacks through `&mut self`.
     queue_handle: QueueHandle<App>,
@@ -352,7 +352,7 @@ pub fn run(
     // Output events can now reconcile against an evaluated scene.
     app.startup_complete = true;
 
-    // Both `None` unless `obelisk --profile`.
+    // Both `None` unless `mantle --profile`.
     let mut profile = idle_profile::IdleProfile::from_env();
     let mut memory = memory_profile::MemoryProfile::from_env();
     let mut trimmed = std::time::Instant::now();

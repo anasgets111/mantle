@@ -1,4 +1,4 @@
-//! `obelisk.idle`: idle-notify thresholds and the logind inhibit pair (ADR-0032).
+//! `mantle.idle`: idle-notify thresholds and the logind inhibit pair (ADR-0032).
 //!
 //! **A roster capability with three extra methods.** Until ADR-0141 it exposed only methods: a
 //! threshold crossing was treated as an event with no idle state. That missed whether anything
@@ -6,10 +6,10 @@
 //! (ADR-0139's gate). A config could otherwise draw "nothing is holding this awake" while every
 //! threshold event was inhibited, with no way to represent the truth.
 //!
-//! `obelisk.idle` is now a `Capability`'s read half (`get`, `map`, `on_change`, hydrated by
+//! `mantle.idle` is now a `Capability`'s read half (`get`, `map`, `on_change`, hydrated by
 //! `StateSnapshot`) wrapped in userdata that adds the three callbacks that cannot cross the wire.
 //! No `invoke`: `register` needs those callbacks, and `forget_thresholds` is the reload path's.
-//! The wrapper sits directly on `obelisk`, outside `__index`, so every method sends
+//! The wrapper sits directly on `mantle`, outside `__index`, so every method sends
 //! `start_capability` by hand; its read never passes through the index.
 //!
 //! The Supervisor creates one Wayland listener per duration and fans events out
@@ -45,7 +45,7 @@ struct Threshold {
 #[derive(Clone)]
 pub struct IdleRegistry {
     inner: Rc<RefCell<Inner>>,
-    /// Wrapped `obelisk.idle` read half, hydrated by `StateSnapshot` like other capabilities.
+    /// Wrapped `mantle.idle` read half, hydrated by `StateSnapshot` like other capabilities.
     state: Capability,
 }
 
@@ -112,7 +112,7 @@ impl IdleRegistry {
                     shared::IdleState::Idled => "on_idle",
                     shared::IdleState::Resumed => "on_resume",
                 };
-                warn!("obelisk.idle:register_threshold({threshold_sec}): {which} raised an error: {err}");
+                warn!("mantle.idle:register_threshold({threshold_sec}): {which} raised an error: {err}");
             }
         }
     }
@@ -134,13 +134,13 @@ impl IdleRegistry {
         self.state.commands().send("idle", "forget_thresholds", Vec::new(), 0);
     }
 
-    /// The `obelisk.idle` member.
+    /// The `mantle.idle` member.
     pub fn member(&self) -> IdleMember {
         IdleMember(self.clone())
     }
 }
 
-/// `obelisk.idle` userdata. Userdata preserves capability-style `obelisk.idle:x()` calls without
+/// `mantle.idle` userdata. Userdata preserves capability-style `mantle.idle:x()` calls without
 /// each closure accepting and ignoring Lua's table argument.
 pub struct IdleMember(IdleRegistry);
 
@@ -152,8 +152,8 @@ impl IdleMember {
 }
 
 impl IdleMember {
-    /// Announces the read that `obelisk`'s `__index` would have announced. Because this member is
-    /// set directly, a config that only `:map`s `obelisk.idle` would otherwise read `nil` forever
+    /// Announces the read that `mantle`'s `__index` would have announced. Because this member is
+    /// set directly, a config that only `:map`s `mantle.idle` would otherwise read `nil` forever
     /// from a capability the Supervisor never started.
     fn announce(&self) {
         let state = self.0.state();
@@ -163,7 +163,7 @@ impl IdleMember {
 
 impl UserData for IdleMember {
     fn add_methods<M: UserDataMethods<Self>>(methods: &mut M) {
-        // Delegate the read half so `obelisk.idle` reads like `obelisk.privacy` (ADR-0141).
+        // Delegate the read half so `mantle.idle` reads like `mantle.privacy` (ADR-0141).
         methods.add_method("get", |lua, this, ()| {
             this.announce();
             this.0.state().signal().get_value(lua)
@@ -204,7 +204,7 @@ mod tests {
         let lua = Lua::new();
         let (tx, rx) = mpsc::unbounded_channel();
         let commands = crate::lua::capability::CommandSender::new(generation_id, tx);
-        // Tests exercise the method half; drop the `obelisk.idle` roster handle (ADR-0141).
+        // Tests exercise the method half; drop the `mantle.idle` roster handle (ADR-0141).
         let (state, _handle) = Capability::new("idle", crate::lua::signal::DirtyFlag::new(), commands.clone());
         let registry = IdleRegistry::new(state);
         lua.globals().set("idle", registry.member()).unwrap();

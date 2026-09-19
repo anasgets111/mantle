@@ -1,4 +1,4 @@
-//! [`WorkspacesController`]: `obelisk.workspaces` state owner, write action, and compositor-neutral
+//! [`WorkspacesController`]: `mantle.workspaces` state owner, write action, and compositor-neutral
 //! reduction. See `workspaces/mod.rs`.
 //!
 //! [`derive_state`] knows no compositor type. It consumes [`WorkspaceRow`]s and a
@@ -15,7 +15,7 @@ use crate::compositor::{CompositorKind, detect_compositor, unsupported_session_r
 
 use super::{hyprland, niri};
 
-/// `obelisk.workspaces` payload. Field names are JSON keys; absent `active_client` is
+/// `mantle.workspaces` payload. Field names are JSON keys; absent `active_client` is
 /// omitted, not `null` (`nil` when unfocused).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 #[cfg_attr(test, derive(schemars::JsonSchema))]
@@ -58,7 +58,7 @@ pub struct SpecialWorkspace {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[cfg_attr(test, derive(schemars::JsonSchema))]
 pub struct OutputWorkspaces {
-    /// Connector name, e.g. `"eDP-1"`; matches `obelisk.screens.name` and a surface's `monitor`.
+    /// Connector name, e.g. `"eDP-1"`; matches `mantle.screens.name` and a surface's `monitor`.
     pub name: String,
     /// [`WorkspaceEntry::id`] visible on this output; every output has one.
     pub active_workspace: u64,

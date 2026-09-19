@@ -1,5 +1,5 @@
 //! Lua VM bootstrap and loader (`CONTEXT.md`, Loader): evaluates `shell.lua` into top-level `panel`
-//! nodes and topology for a generation's first evaluation and every re-evaluation. `Loader::evaluate_file` reads `~/.config/obelisk/shell.lua`
+//! nodes and topology for a generation's first evaluation and every re-evaluation. `Loader::evaluate_file` reads `~/.config/mantle/shell.lua`
 //! (`shared::shell_lua_path`) and is the `renderer/src/socket/client.rs` entry point on startup and every
 //! Supervisor-triggered `Reevaluate`.
 pub mod action;
@@ -64,7 +64,7 @@ fn restrict_os(lua: &Lua) -> mlua::Result<()> {
 /// `package.loadlib` raise, so stale `cpath` loads nothing.
 ///
 /// `package.path` has no escape syntax: non-UTF-8 paths substitute lossily, `;` splits an entry,
-/// and `?` is replaced along with the real marker. No startup check for `$XDG_CONFIG_HOME/obelisk`.
+/// and `?` is replaced along with the real marker. No startup check for `$XDG_CONFIG_HOME/mantle`.
 fn point_package_path_at(lua: &Lua, config_dir: &std::path::Path) -> mlua::Result<()> {
     let dir = config_dir.display();
     lua.globals().get::<Table>("package")?.set("path", format!("{dir}/?.lua;{dir}/?/init.lua"))
@@ -74,7 +74,7 @@ fn point_package_path_at(lua: &Lua, config_dir: &std::path::Path) -> mlua::Resul
 /// incremental.
 pub struct Loader {
     lua: Lua,
-    /// `obelisk.idle` thresholds, cleared before every evaluation. `Option` covers `Loader::new`
+    /// `mantle.idle` thresholds, cleared before every evaluation. `Option` covers `Loader::new`
     /// running before `lua::namespace::build` creates the registry (`None` in tests); `RefCell`
     /// permits the one post-construction registration.
     idle: RefCell<Option<idle::IdleRegistry>>,
@@ -190,7 +190,7 @@ impl Loader {
         process::register(&self.lua, registry)
     }
 
-    /// Gives the loader the `obelisk.idle` registry from `lua::namespace::build`, so
+    /// Gives the loader the `mantle.idle` registry from `lua::namespace::build`, so
     /// [`Self::evaluate_file`] clears thresholds before re-running `shell.lua`. The member is a
     /// namespace field; `process` is a global.
     pub(crate) fn register_idle(&self, registry: idle::IdleRegistry) {
@@ -472,7 +472,7 @@ mod tests {
         let loader = test_loader();
         let err = loader
             .evaluate(
-                r#"return { panel { id = "bar", layer = "Top" }, "/home/me/.config/obelisk/modules/global/lock.lua" }"#,
+                r#"return { panel { id = "bar", layer = "Top" }, "/home/me/.config/mantle/modules/global/lock.lua" }"#,
             )
             .unwrap_err();
 
@@ -517,7 +517,7 @@ mod tests {
 
     /// Every engine global, and every member of the engine-owned `os`/`process`/`json`, has a
     /// `lua-meta` stub, and no stub names what the VM lacks. Enumerated at runtime, so any
-    /// registration style counts. `obelisk`'s members are `obelisk.lua`'s generator's to check.
+    /// registration style counts. `mantle`'s members are `mantle.lua`'s generator's to check.
     #[test]
     fn the_stubs_declare_every_engine_global() {
         const MEMBER_TABLES: [&str; 3] = ["os", "process", "json"];

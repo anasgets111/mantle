@@ -60,7 +60,7 @@ macro_rules! debug {
 }
 
 /// The snapshot-hydrated capability roster (ADR-0037; CONTEXT.md). Each [`Capability::as_str`]
-/// name is both the Lua `obelisk.<name>` member and command `capability` field, so
+/// name is both the Lua `mantle.<name>` member and command `capability` field, so
 /// one spelling reaches one capability. Reading a name starts its Supervisor controller
 /// (ADR-0070); it remains `nil` until the first `StateSnapshot`, so an unread name costs nothing.
 /// `idle` is event-shaped, not snapshot state (ADR-0032), so the Supervisor's `Startable` covers
@@ -90,7 +90,7 @@ macro_rules! roster {
                 }
             }
 
-            /// The `obelisk.<name>` line for generated stubs (`supervisor/src/stubs.rs`). Kept here,
+            /// The `mantle.<name>` line for generated stubs (`supervisor/src/stubs.rs`). Kept here,
             /// not in the Renderer, so a new variant must provide one.
             pub const fn blurb(self) -> &'static str {
                 match self {
@@ -173,14 +173,14 @@ pub struct ConnectionHandshake {
     pub generation_id: u32,
 }
 
-/// Control clients (`obelisk set`, `obelisk toggle`) use this `generation_id` in
+/// Control clients (`mantle set`, `mantle toggle`) use this `generation_id` in
 /// [`ConnectionHandshake`] (ADR-0112). It is not a generation: the Supervisor registers no
 /// outbound channel or snapshot replay for a one-frame peer that hangs up. `u32::MAX` because
 /// generations count up from zero and a real one will never reach it.
 pub const CONTROL_CLIENT_GENERATION: u32 = u32::MAX;
 
 /// External write to a config `state(name, initial)` signal (ADR-0112), such as
-/// `obelisk set launcher_open true`. A control client sends it as [`RendererFrame`], the
+/// `mantle set launcher_open true`. A control client sends it as [`RendererFrame`], the
 /// Supervisor forwards it as [`SupervisorFrame`] to the authoritative generation, and that
 /// generation applies the same marshal checks as `signal:set()`, refusing undeclared names. This
 /// is the compositor keybind's only write path into a running config.
@@ -199,13 +199,13 @@ pub enum StateWrite {
     /// Flip a boolean. Refused on any other value, since a keybind cannot know the current one
     /// and "toggle" means nothing else.
     Toggle,
-    /// `obelisk toggle <name> <value>`: store this value, unless the state already holds it, in
+    /// `mantle toggle <name> <value>`: store this value, unless the state already holds it, in
     /// which case restore the initial the config declared. One keybind opens and closes a modal
     /// whose state is the name of the one showing (`state("modal", "")`).
     ToggleTo(serde_json::Value),
 }
 
-/// `obelisk call <name> [json...]`: one call into a config-exported `action(name, fn)` (ADR-0197).
+/// `mantle call <name> [json...]`: one call into a config-exported `action(name, fn)` (ADR-0197).
 ///
 /// `name` is opaque and never split. `"rec.toggle"` is one key; the dot groups for a reader the way
 /// a Lua module path does, and nothing here parses it, so an action may contain any character its
@@ -362,7 +362,7 @@ pub enum SupervisorFrame {
     SetSessionLock(SetSessionLock),
     /// A control client's `state` write, forwarded to the authoritative generation (ADR-0112).
     SetState(SetState),
-    /// A control client's `obelisk call`, forwarded to the authoritative generation (ADR-0197).
+    /// A control client's `mantle call`, forwarded to the authoritative generation (ADR-0197).
     Call(Call),
     /// That call's answer, routed back to the waiting control client (ADR-0197).
     CallResult(CallResult),
@@ -376,17 +376,17 @@ pub enum RendererFrame {
     Command(CommandEnvelope),
     SecureSubmit(SecureSubmit),
     LockReport(LockReport),
-    /// Control-client frame, not a Renderer frame: `obelisk set`/`obelisk toggle` uses
+    /// Control-client frame, not a Renderer frame: `mantle set`/`mantle toggle` uses
     /// [`CONTROL_CLIENT_GENERATION`] (ADR-0112). It stays in this enum because the listener has one
     /// decoder for every peer; a separate peer type would duplicate it.
     SetState(SetState),
-    /// Control-client frame like [`Self::SetState`]: `obelisk call` (ADR-0197). Its `id` is zero on
+    /// Control-client frame like [`Self::SetState`]: `mantle call` (ADR-0197). Its `id` is zero on
     /// the way in; the Supervisor assigns the real one when it forwards.
     Call(Call),
     /// A generation answering a forwarded [`Call`] (ADR-0197).
     CallResult(CallResult),
     /// Idempotently starts `capability`'s controller when this generation first reads
-    /// `obelisk.<capability>` (ADR-0070 decision 1) or a scene's `secure_submit` names it (decision
+    /// `mantle.<capability>` (ADR-0070 decision 1) or a scene's `secure_submit` names it (decision
     /// 5). No generation ID is needed because the socket identifies the sender. A repeat is a no-op
     /// (decision 3); an unknown name fails decode.
     StartCapability {

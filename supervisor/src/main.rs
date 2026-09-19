@@ -43,7 +43,7 @@ fn is_live_inbound_generation(generation_id: u32, authoritative_generation_id: u
     generation_id == authoritative_generation_id || generation_id == shared::CONTROL_CLIENT_GENERATION
 }
 
-/// [`is_live_inbound_generation`] with `CallResult`'s exemption. An `obelisk call` dispatched before
+/// [`is_live_inbound_generation`] with `CallResult`'s exemption. An `mantle call` dispatched before
 /// a respawn is answered by the generation it was asked, which by then may be the replaced one, and
 /// that answer is correct. `CallRoutes::answer` applies the stricter test this cannot: it refuses
 /// any generation other than the one the call went to. Dropping the frame here instead would strand
@@ -54,12 +54,12 @@ fn frame_may_dispatch(frame: &RendererFrame, generation_id: u32, authoritative_g
 }
 
 /// Logs a command for a controller never built (ADR-0070). A config cannot reach this: reading
-/// `obelisk.<name>` sends the start before its `invoke` on the same socket. This is a buggy Renderer
+/// `mantle.<name>` sends the start before its `invoke` on the same socket. This is a buggy Renderer
 /// or hand-written frame, so name the capability instead of staying silent.
 pub(crate) fn log_unstarted(envelope: &shared::CommandEnvelope) {
     let params = &envelope.params;
     eprintln!(
-        "generation {}'s obelisk.{}:invoke({:?}) arrived before anything started {}; dropping",
+        "generation {}'s mantle.{}:invoke({:?}) arrived before anything started {}; dropping",
         params.generation_id, params.capability, params.action, params.capability
     );
 }
@@ -119,13 +119,13 @@ pub(crate) fn parse_action<A: serde::de::DeserializeOwned>(params: &shared::Comm
         .ok()
 }
 
-/// `obelisk -d`: re-exec in a new session and return once it holds its instance, so the terminal
-/// gets its prompt back and `obelisk log -f` finds it.
+/// `mantle -d`: re-exec in a new session and return once it holds its instance, so the terminal
+/// gets its prompt back and `mantle log -f` finds it.
 ///
 /// One `setsid`, not [`process::spawn_detached`]'s double fork: that orphans a grandchild while the
 /// Supervisor lives on, whereas this child is the Supervisor. `/dev/null` is the point rather than
 /// tidiness -- it is what makes `log::capture` write a log, so a detached shell is the one
-/// `obelisk log` can read (ADR-0199).
+/// `mantle log` can read (ADR-0199).
 fn detach_self(root: &std::path::Path) -> Result<(), Box<dyn Error>> {
     use std::os::unix::process::CommandExt;
     let mut command = std::process::Command::new(std::env::current_exe()?);
@@ -139,12 +139,12 @@ fn detach_self(root: &std::path::Path) -> Result<(), Box<dyn Error>> {
     unsafe { command.pre_exec(|| if libc::setsid() == -1 { Err(std::io::Error::last_os_error()) } else { Ok(()) }) };
     let mut child = command.spawn()?;
     let deadline = std::time::Instant::now() + Duration::from_secs(5);
-    // The log too: it lands after the lock, and until then `obelisk log` would pick another shell.
+    // The log too: it lands after the lock, and until then `mantle log` would pick another shell.
     while !instance::list(root).iter().any(|i| i.pid == child.id() && i.live && i.has_log) {
         let exited = child.try_wait()?;
         if exited.is_some() || std::time::Instant::now() > deadline {
             let why = exited.map_or("still starting after 5s".to_string(), |status| status.to_string());
-            return Err(format!("the detached shell did not start ({why}); run `obelisk` without -d to see why").into());
+            return Err(format!("the detached shell did not start ({why}); run `mantle` without -d to see why").into());
         }
         std::thread::sleep(Duration::from_millis(10));
     }
@@ -153,17 +153,17 @@ fn detach_self(root: &std::path::Path) -> Result<(), Box<dyn Error>> {
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
-    if std::env::var_os("OBELISK_PAM_WORKER").is_some() {
+    if std::env::var_os("MANTLE_PAM_WORKER").is_some() {
         return pam_worker::run_worker();
     }
-    if std::env::var_os("OBELISK_PACMAN_CHECK").is_some() {
+    if std::env::var_os("MANTLE_PACMAN_CHECK").is_some() {
         return capabilities::updates::pacman::run_check_worker();
     }
 
     let args = match cli::parse(std::env::args()) {
         Ok(args) => args,
         Err(message) => {
-            eprintln!("obelisk: {message}\n\n{}", cli::HELP);
+            eprintln!("mantle: {message}\n\n{}", cli::HELP);
             std::process::exit(2);
         }
     };
@@ -179,7 +179,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         let selected = if log {
             let (selected, note) = instance::select_log(&instances, pid, explicit.then_some(&*config))?;
             if let Some(note) = note {
-                eprintln!("obelisk: {note}");
+                eprintln!("mantle: {note}");
             }
             selected
         } else {
@@ -194,7 +194,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             Ok(())
         }
         cli::Command::Version => {
-            println!("obelisk {}", env!("CARGO_PKG_VERSION"));
+            println!("mantle {}", env!("CARGO_PKG_VERSION"));
             Ok(())
         }
         cli::Command::Init { force } => setup::run(&config_dir()?, force),
@@ -267,7 +267,7 @@ async fn run_supervisor(dir: PathBuf, config_dir: PathBuf, profile: Option<u64>)
 
     // Idle (ADR-0032): notify uses its own Wayland connection so idle authority survives Renderer
     // crash/reload (ADR-0010); inhibit uses the shared one. It starts on the first
-    // `obelisk.idle` method call (ADR-0070), off the roster, so methods send start rather than
+    // `mantle.idle` method call (ADR-0070), off the roster, so methods send start rather than
     // `__index` (`renderer/src/lua/idle.rs`). Events are not snapshots, so this receiver stays
     // separate from `Signals`.
     let (idle_signal_tx, mut idle_signals) = tokio::sync::mpsc::unbounded_channel::<shared::IdleEvent>();
@@ -394,7 +394,7 @@ async fn run_supervisor(dir: PathBuf, config_dir: PathBuf, profile: Option<u64>)
                     },
                 },
                 RendererFrame::StartCapability { capability } => {
-                    // ADR-0070: config read `obelisk.<capability>` or named it in `secure_submit`.
+                    // ADR-0070: config read `mantle.<capability>` or named it in `secure_submit`.
                     // Re-entrant because decision 3 makes each generation resend every name; each
                     // arm is a no-op after controller creation.
                     match capability {
@@ -404,14 +404,14 @@ async fn run_supervisor(dir: PathBuf, config_dir: PathBuf, profile: Option<u64>)
                         capability => supervisor.capabilities.start(capability).await,
                     }
                 }
-                // ADR-0112: send `obelisk set`/`toggle` to the onscreen generation. The Renderer
+                // ADR-0112: send `mantle set`/`toggle` to the onscreen generation. The Renderer
                 // applies or refuses it by name; only this process knows that generation.
                 RendererFrame::SetState(set) => send_frame_logged(
                     &supervisor.registry,
                     supervisor.authoritative.generation_id,
                     &SupervisorFrame::SetState(set),
                 ),
-                // ADR-0197: `obelisk call`, to the same generation `SetState` goes to. The id was
+                // ADR-0197: `mantle call`, to the same generation `SetState` goes to. The id was
                 // stamped by the connection that is holding its socket open for the answer.
                 RendererFrame::Call(call) => {
                     let generation_id = supervisor.authoritative.generation_id;
@@ -423,7 +423,7 @@ async fn run_supervisor(dir: PathBuf, config_dir: PathBuf, profile: Option<u64>)
                 // round when a Renderer was replaced mid-call.
                 RendererFrame::CallResult(result) => {
                     if let Err(why) = call_routes.answer(inbound.generation_id, &result) {
-                        warn!("control-socket: dropped an `obelisk call` answer: {why}");
+                        warn!("control-socket: dropped an `mantle call` answer: {why}");
                     }
                 }
                 RendererFrame::SecureSubmit(mut submit) if submit.capability == Capability::Polkit && submit.action == "authenticate" => {

@@ -47,7 +47,7 @@ const CLAIM_POLL_INTERVAL: Duration = Duration::from_millis(5);
 
 /// Connections handled at once, across Renderers and control clients.
 ///
-/// One Renderer is live and `obelisk set` is one short-lived client at a time, so
+/// One Renderer is live and `mantle set` is one short-lived client at a time, so
 /// the working set is single digits. This is sized to leave that room untouched while refusing the
 /// unbounded accept loop that preceded it: past this, `accept` still runs -- the listener must not
 /// wedge -- but the new connection is closed immediately.
@@ -79,7 +79,7 @@ pub struct InboundFrame {
 }
 
 /// Registry entry plus monotonic token identifying its connection. Two connections may claim one
-/// `generation_id` in sequence (reconnect or duplicate `OBELISK_GENERATION_ID=0`, ADR-0020); the
+/// `generation_id` in sequence (reconnect or duplicate `MANTLE_GENERATION_ID=0`, ADR-0020); the
 /// token stops old cleanup from unregistering the newer entry.
 struct Entry {
     token: u64,
@@ -398,7 +398,7 @@ async fn handle_connection(
                     if let RendererFrame::Call(call) = &mut frame {
                         let Some(id) = routes.open(reply_tx.clone()) else {
                             warn!(
-                                "control-socket: refusing `obelisk call {}`; {MAX_PENDING_CALLS} calls are already \
+                                "control-socket: refusing `mantle call {}`; {MAX_PENDING_CALLS} calls are already \
                                  waiting",
                                 call.name
                             );
@@ -449,7 +449,7 @@ async fn handle_connection(
 ///
 /// Two rules, both about a peer describing itself rather than being described:
 ///
-/// 1. A control client (`obelisk set`/`obelisk toggle`, ADR-0112) is any process of this user and is
+/// 1. A control client (`mantle set`/`mantle toggle`, ADR-0112) is any process of this user and is
 ///    never a Renderer. It sends exactly one frame kind, so it may send exactly that one. Without
 ///    this it could submit a `SecureSubmit` to PAM or drive `Command`s as though it were the shell.
 /// 2. A frame that names a generation must name its own. The pid check at handshake stops a peer
@@ -512,7 +512,7 @@ mod tests {
 
     #[test]
     fn a_control_client_may_send_only_the_frame_the_cli_actually_sends() {
-        // Otherwise `obelisk set`'s socket is also a way to submit to PAM or drive capability
+        // Otherwise `mantle set`'s socket is also a way to submit to PAM or drive capability
         // commands as though it were the shell.
         let set_state = RendererFrame::SetState(shared::SetState {
             name: "launcher_open".to_string(),

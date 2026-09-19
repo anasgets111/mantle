@@ -1,4 +1,4 @@
-//! `obelisk init`: writes `.luarc.json` pointing lua-language-server at stubs, and a starter
+//! `mantle init`: writes `.luarc.json` pointing lua-language-server at stubs, and a starter
 //! `shell.lua` only when absent. It never writes the config.
 
 use std::io;
@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 const EMBEDDED_STUBS: &[(&str, &str)] = &[
     ("globals.lua", include_str!("../../lua-meta/globals.lua")),
     ("nodes.lua", include_str!("../../lua-meta/nodes.lua")),
-    ("obelisk.lua", include_str!("../../lua-meta/obelisk.lua")),
+    ("mantle.lua", include_str!("../../lua-meta/mantle.lua")),
     ("signals.lua", include_str!("../../lua-meta/signals.lua")),
     ("surfaces.lua", include_str!("../../lua-meta/surfaces.lua")),
 ];
@@ -26,8 +26,8 @@ fn stale_stubs(dir: &Path) -> impl Iterator<Item = &'static (&'static str, &'sta
 }
 
 /// Where an installed copy of the stubs lives, resolved from the running binary the same way
-/// `renderer_binary_path` resolves its sibling: `$PREFIX/lib/obelisk/obelisk` implies
-/// `$PREFIX/share/obelisk/lua-meta`. `None` is the normal answer for `cargo install` and `target/`.
+/// `renderer_binary_path` resolves its sibling: `$PREFIX/lib/mantle/mantle` implies
+/// `$PREFIX/share/mantle/lua-meta`. `None` is the normal answer for `cargo install` and `target/`.
 pub fn packaged_stub_dir() -> Option<PathBuf> {
     packaged_stub_dir_from(std::env::current_exe().ok()?.parent()?)
 }
@@ -35,25 +35,25 @@ pub fn packaged_stub_dir() -> Option<PathBuf> {
 /// The layout probe itself, taking the directory rather than reading `current_exe`, so the tests
 /// below exercise this resolver instead of restating it.
 ///
-/// Try a package's `$PREFIX/lib/obelisk` (two levels up), then flat `$PREFIX/bin` (one up).
+/// Try a package's `$PREFIX/lib/mantle` (two levels up), then flat `$PREFIX/bin` (one up).
 /// Check rather than assume; a wrong path silently falls back to embedded stubs.
 fn packaged_stub_dir_from(exe_dir: &Path) -> Option<PathBuf> {
     ["../..", ".."]
         .iter()
-        .map(|up| exe_dir.join(up).join("share").join("obelisk").join("lua-meta"))
+        .map(|up| exe_dir.join(up).join("share").join("mantle").join("lua-meta"))
         .find(|dir| dir.is_dir())
         .and_then(|dir| dir.canonicalize().ok())
 }
 
-/// Embedded-stub destination without a package: `$XDG_DATA_HOME/obelisk/lua-meta`, then
+/// Embedded-stub destination without a package: `$XDG_DATA_HOME/mantle/lua-meta`, then
 /// `$HOME/.local/share`. It stays outside the config directory; see its call site.
 fn user_stub_dir() -> io::Result<PathBuf> {
     if let Some(data_home) = std::env::var_os("XDG_DATA_HOME") {
-        return Ok(PathBuf::from(data_home).join("obelisk").join("lua-meta"));
+        return Ok(PathBuf::from(data_home).join("mantle").join("lua-meta"));
     }
     let home = std::env::var_os("HOME")
         .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "neither XDG_DATA_HOME nor HOME is set"))?;
-    Ok(PathBuf::from(home).join(".local").join("share").join("obelisk").join("lua-meta"))
+    Ok(PathBuf::from(home).join(".local").join("share").join("mantle").join("lua-meta"))
 }
 
 /// Writes `path` unless present; `force` overwrites. Reports the result.
@@ -113,7 +113,7 @@ fn luarc_json(stub_dir: &Path) -> String {
     )
 }
 
-/// `obelisk check`: evaluates the config and reports its declarations.
+/// `mantle check`: evaluates the config and reports its declarations.
 ///
 /// Re-execs the Renderer because the Supervisor has no `mlua` or loader; only real evaluation
 /// catches `require` and property errors. Check and boot share this path.
@@ -141,7 +141,7 @@ pub fn run(config_dir: &Path, force: bool) -> Result<(), Box<dyn std::error::Err
 /// use a `tempdir` to avoid `set_var`. Resolve lazily so packaged installs need neither env var.
 fn run_into(config_dir: &Path, force: bool, user_stubs: Option<&Path>) -> Result<(), Box<dyn std::error::Error>> {
     std::fs::create_dir_all(config_dir)?;
-    println!("obelisk init: {}", config_dir.display());
+    println!("mantle init: {}", config_dir.display());
 
     // Prefer packaged stubs: the package upgrades them, while a copied schema for another engine
     // is worse than none.
@@ -153,7 +153,7 @@ fn run_into(config_dir: &Path, force: bool, user_stubs: Option<&Path>) -> Result
                 println!("  stubs   {} (packaged)", dir.display());
             } else {
                 println!(
-                    "  stubs   {} (packaged, {} differ from this obelisk -- the install is inconsistent)",
+                    "  stubs   {} (packaged, {} differ from this mantle -- the install is inconsistent)",
                     dir.display(),
                     stale.join(", ")
                 );
@@ -161,7 +161,7 @@ fn run_into(config_dir: &Path, force: bool, user_stubs: Option<&Path>) -> Result
             dir
         }
         None => {
-            // Keep `$XDG_DATA_HOME/obelisk/lua-meta` outside config: `watcher.rs` reloads every
+            // Keep `$XDG_DATA_HOME/mantle/lua-meta` outside config: `watcher.rs` reloads every
             // `.lua` below config, so stubs there would restyle a running bar on each refresh.
             let dir = match user_stubs {
                 Some(dir) => dir.to_path_buf(),
@@ -201,12 +201,12 @@ mod tests {
     #[test]
     fn both_installed_layouts_resolve_to_the_packaged_stub_directory() {
         let root = tempfile::tempdir().unwrap();
-        for (exe_rel, label) in [("lib/obelisk/obelisk", "packaged prefix"), ("bin/obelisk", "flat prefix")] {
+        for (exe_rel, label) in [("lib/mantle/mantle", "packaged prefix"), ("bin/mantle", "flat prefix")] {
             let prefix = root.path().join(label.replace(' ', "-"));
             let exe = prefix.join(exe_rel);
             std::fs::create_dir_all(exe.parent().unwrap()).unwrap();
             std::fs::write(&exe, b"").unwrap();
-            let stubs = prefix.join("share/obelisk/lua-meta");
+            let stubs = prefix.join("share/mantle/lua-meta");
             std::fs::create_dir_all(&stubs).unwrap();
 
             let found = packaged_stub_dir_from(exe.parent().unwrap());
@@ -219,7 +219,7 @@ mod tests {
     fn stubs_that_differ_at_the_same_version_are_refreshed() {
         let data = tempfile::tempdir().unwrap();
         let config = tempfile::tempdir().unwrap();
-        let stubs = data.path().join("obelisk/lua-meta");
+        let stubs = data.path().join("mantle/lua-meta");
         run_into(config.path(), false, Some(&stubs)).unwrap();
 
         let nodes_lua = stubs.join("nodes.lua");
@@ -235,7 +235,7 @@ mod tests {
     #[test]
     fn a_prefix_without_stubs_resolves_to_nothing() {
         let root = tempfile::tempdir().unwrap();
-        let exe_dir = root.path().join("lib/obelisk");
+        let exe_dir = root.path().join("lib/mantle");
         std::fs::create_dir_all(&exe_dir).unwrap();
         let found = packaged_stub_dir_from(&exe_dir);
         assert_eq!(found, None);
@@ -244,7 +244,7 @@ mod tests {
     #[test]
     fn init_writes_a_luarc_and_a_shell_lua_and_keeps_an_existing_one() {
         let dir = tempfile::tempdir().unwrap();
-        let config = dir.path().join("obelisk");
+        let config = dir.path().join("mantle");
         std::fs::create_dir_all(&config).unwrap();
         std::fs::write(config.join("shell.lua"), "-- mine\n").unwrap();
 
@@ -277,6 +277,6 @@ mod tests {
             serde_json::from_str(&std::fs::read_to_string(dir.path().join(".luarc.json")).unwrap()).unwrap();
         let library = luarc["workspace.library"][0].as_str().unwrap();
         assert!(Path::new(library).is_absolute(), "workspace.library must be absolute, got {library}");
-        assert!(Path::new(library).join("obelisk.lua").is_file(), "the stub directory must actually hold the stubs");
+        assert!(Path::new(library).join("mantle.lua").is_file(), "the stub directory must actually hold the stubs");
     }
 }

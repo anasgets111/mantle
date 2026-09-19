@@ -1,8 +1,8 @@
-# Recipes for building, running and gating Obelisk. `just` alone runs `check`.
+# Recipes for building, running and gating Mantle. `just` alone runs `check`.
 #
 # `run` depends on `build` because the Supervisor finds the Renderer as a filesystem sibling
 # (`supervisor/src/generation.rs`), not as a Cargo dependency. `cargo run -p supervisor` rebuilds
-# half the stack, launches whatever `target/debug/obelisk-renderer` happens to be, and reports the
+# half the stack, launches whatever `target/debug/mantle-renderer` happens to be, and reports the
 # mismatch as a config error in `shell.lua`, the last place the fault is.
 #
 # `just --list` shows only the last comment line, hence `[doc(...)]` on the multi-line blocks.
@@ -16,9 +16,9 @@ build:
 release:
     cargo build --workspace --release
 
-# The just-built shell on `config`, which keeps a dev run off `~/.config/obelisk`.
+# The just-built shell on `config`, which keeps a dev run off `~/.config/mantle`.
 run config="share/starter": build
-    target/debug/obelisk -c {{config}}
+    target/debug/mantle -c {{config}}
 
 # Everything a change has to pass before it is done, on what would be committed.
 check:
@@ -97,7 +97,7 @@ types:
     fi
     log=$(mktemp -d)
     trap 'rm -rf "$log"' EXIT
-    # `share/starter` ships no `.luarc.json`: `obelisk init` writes one pointing at the *installed*
+    # `share/starter` ships no `.luarc.json`: `mantle init` writes one pointing at the *installed*
     # stubs (`setup.rs`'s `luarc_json`), which would overwrite a checked-in copy. Absolute library
     # path, because a relative one resolves against the workspace being checked.
     printf '{"runtime.version":"Lua 5.4","workspace.library":["%s/lua-meta"],"workspace.checkThirdParty":false}\n' "$PWD" >"$log/starter.luarc.json"
@@ -134,10 +134,10 @@ lua:
     echo "all lua parses"
     python3 tools/luafmt.py --check {{lua_dirs}}
 
-# Regenerate `lua-meta/obelisk.lua` from the supervisor's payload types, then show what moved.
+# Regenerate `lua-meta/mantle.lua` from the supervisor's payload types, then show what moved.
 stubs:
     UPDATE_STUBS=1 cargo test -p supervisor stubs
-    @git diff --stat -- lua-meta/obelisk.lua
+    @git diff --stat -- lua-meta/mantle.lua
 
 # Separate from `lint` because a diff and a warning fail differently, and folding them buries the
 # diff. 71266cb and c83e79e landed four unformatted files with `just check` green on both.
@@ -160,20 +160,20 @@ cargo_bin := env("CARGO_HOME", home_directory() / ".cargo") / "bin"
 # only path that exercises a release build. `args` passes through to the new shell, as in
 # `just swap --profile=120`.
 #
-# Kills by the `exe` symlink, never by name: `pkill -x obelisk-renderer` never matches (17 chars
-# against pgrep's 15-char `comm` limit), and any `pkill -f` pattern holding "obelisk" also matches
-# the calling shell and takes the terminal down with it.
+# Kills by the `exe` symlink, never by name: any `pkill -f` pattern holding "mantle" also matches
+# the calling shell and takes the terminal down with it, and `pkill -x` cannot tell the `cargo_bin`
+# copy from a `target/release` one.
 [doc('Rebuild, swap both binaries under `cargo_bin`, and restart the shell detached.')]
 swap args="": release
     #!/usr/bin/env bash
     set -euo pipefail
     for d in /proc/[0-9]*; do
         case "$(readlink "$d/exe" 2>/dev/null)" in
-            {{cargo_bin}}/obelisk|{{cargo_bin}}/obelisk-renderer) kill "${d#/proc/}" || true;;
+            {{cargo_bin}}/mantle|{{cargo_bin}}/mantle-renderer) kill "${d#/proc/}" || true;;
         esac
     done
     # Copying over a running binary is ETXTBSY, so let both of those actually go first.
     sleep 2
-    install -Dm755 target/release/obelisk          "{{cargo_bin}}/obelisk"
-    install -Dm755 target/release/obelisk-renderer "{{cargo_bin}}/obelisk-renderer"
-    "{{cargo_bin}}/obelisk" -d {{args}}
+    install -Dm755 target/release/mantle          "{{cargo_bin}}/mantle"
+    install -Dm755 target/release/mantle-renderer "{{cargo_bin}}/mantle-renderer"
+    "{{cargo_bin}}/mantle" -d {{args}}

@@ -1,4 +1,4 @@
-//! [`SystemController`] feeds `obelisk.system.time` from one wall-clock-aligned task, refreshed
+//! [`SystemController`] feeds `mantle.system.time` from one wall-clock-aligned task, refreshed
 //! every second.
 //!
 //! `system.time` has no interval argument, so it ticks unconditionally from construction to
@@ -10,7 +10,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use tokio::sync::mpsc::UnboundedSender;
 
-/// `obelisk.system`'s Lua-visible fields, with their `StateSnapshot` JSON keys unchanged.
+/// `mantle.system`'s Lua-visible fields, with their `StateSnapshot` JSON keys unchanged.
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
 #[cfg_attr(test, derive(schemars::JsonSchema))]
 pub struct SystemState {

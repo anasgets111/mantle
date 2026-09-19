@@ -1,4 +1,4 @@
-//! [`MprisController`]: `obelisk.mpris`'s write dispatcher and state owner. Split from
+//! [`MprisController`]: `mantle.mpris`'s write dispatcher and state owner. Split from
 //! `dbus::mpris`; see `dbus/mpris/mod.rs`.
 
 use std::collections::HashMap;

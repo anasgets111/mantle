@@ -27,7 +27,7 @@ pub enum CompositorKind {
 }
 
 impl CompositorKind {
-    /// Lowercase payload name (`obelisk.workspaces.compositor`, ADR-0119), so config can choose
+    /// Lowercase payload name (`mantle.workspaces.compositor`, ADR-0119), so config can choose
     /// display policy without detecting the compositor again.
     pub fn name(self) -> &'static str {
         match self {

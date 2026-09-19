@@ -9,7 +9,7 @@ use std::fmt::{Arguments, Write as _};
 use std::io::{IsTerminal, Write as _};
 use std::sync::OnceLock;
 
-/// Names the level a line was written at. `OBELISK_LOG` spells these, plus `off`.
+/// Names the level a line was written at. `MANTLE_LOG` spells these, plus `off`.
 ///
 /// Ordered least to most frequent, so a threshold admits everything at or below it.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
@@ -41,7 +41,7 @@ impl Level {
     }
 }
 
-/// One `OBELISK_LOG` level name. The outer `None` is "not a level at all", the inner one is `off`.
+/// One `MANTLE_LOG` level name. The outer `None` is "not a level at all", the inner one is `off`.
 fn threshold(text: &str) -> Option<Option<Level>> {
     Some(match text.trim() {
         "off" => None,
@@ -76,7 +76,7 @@ static CONFIG: OnceLock<Config> = OnceLock::new();
 /// Called before anything else in `main`. A diagnostic that beats it still prints, unstamped; see
 /// [`write_to`].
 pub fn init(tag: &'static str) {
-    let raw = std::env::var("OBELISK_LOG").unwrap_or_default();
+    let raw = std::env::var("MANTLE_LOG").unwrap_or_default();
     let (mut default, mut overrides, mut rejected) = (Some(Level::Info), Vec::new(), Vec::new());
     for item in raw.split(',').map(str::trim).filter(|item| !item.is_empty()) {
         match item.split_once('=') {
@@ -97,9 +97,9 @@ pub fn init(tag: &'static str) {
     let _ = CONFIG.set(Config { tag, colour, default, overrides });
 
     if !rejected.is_empty() {
-        // Named rather than dropped: a typo in `OBELISK_LOG` otherwise looks like a subsystem that
+        // Named rather than dropped: a typo in `MANTLE_LOG` otherwise looks like a subsystem that
         // has gone quiet.
-        write_to(Level::Warn, "log", format_args!("OBELISK_LOG: ignoring {}", rejected.join(", ")));
+        write_to(Level::Warn, "log", format_args!("MANTLE_LOG: ignoring {}", rejected.join(", ")));
     }
 
     std::panic::set_hook(Box::new(|panic| {
@@ -134,7 +134,7 @@ fn write_to(level: Level, target: &str, args: Arguments<'_>) {
 
 /// Split from [`write_to`] so the format is testable without owning the process-wide [`CONFIG`].
 ///
-/// Always plain. Colour is added afterwards by [`colourise`], which is also how `obelisk log`
+/// Always plain. Colour is added afterwards by [`colourise`], which is also how `mantle log`
 /// reaches it: the file holds these bytes, and whoever prints them to a terminal paints them.
 fn format_line(tag: &str, level: Level, target: &str, args: Arguments<'_>) -> String {
     let mut line = String::with_capacity(96);
@@ -149,7 +149,7 @@ fn format_line(tag: &str, level: Level, target: &str, args: Arguments<'_>) -> St
 /// Paints one line of [`format_line`]'s output: dim clock, the level in its own colour, cyan
 /// subsystem.
 ///
-/// Parses the line back rather than taking the parts, because the other caller is `obelisk log`
+/// Parses the line back rather than taking the parts, because the other caller is `mantle log`
 /// reading a finished file. Anything that does not match the shape is returned untouched, which
 /// covers a pre-`init` line and the second and later lines of a multi-line message.
 pub fn colourise(line: &str) -> String {
@@ -266,7 +266,7 @@ mod tests {
         assert!(painted.ends_with("renderer/wayland\x1b[0m: bind failed: 7\n"), "{painted:?}");
         assert!(painted.starts_with("\x1b[2m"), "the clock is dimmed: {painted:?}");
 
-        // `obelisk log` paints a whole file, which holds pre-`init` lines and the tail of multi-line
+        // `mantle log` paints a whole file, which holds pre-`init` lines and the tail of multi-line
         // messages. Neither has the shape, and mangling them would be worse than leaving them grey.
         for pass_through in ["tray: something before init\n", "    at src/main.rs:1\n", "\n"] {
             assert_eq!(colourise(pass_through), pass_through, "an unshaped line is not touched");

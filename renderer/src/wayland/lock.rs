@@ -28,8 +28,8 @@ const LOCK_NEVER_GRANTED: &str = "the session lock was given up before the compo
 /// client holds the session; the wire cannot say more.
 const LOCK_DENIED: &str = "the compositor denied the session lock; another lock client most likely holds it already (`ext_session_lock_v1::finished` arrived in place \
      of `locked`)";
-/// `obelisk.rescue` after the compositor tears down a live lock. ADR-0052 decision 4 uses rescue,
-/// not `obelisk.lock.error`, because no lock screen remains to display it.
+/// `mantle.rescue` after the compositor tears down a live lock. ADR-0052 decision 4 uses rescue,
+/// not `mantle.lock.error`, because no lock screen remains to display it.
 const LOCK_TORN_DOWN: &str = "the compositor ended the session lock through its own mechanism; the session is unlocked and the lock screen is gone \
      (`ext_session_lock_v1::finished` after `locked`)";
 /// Exit code for a gone Supervisor socket (ADR-0059 decision 1), for journals or `$status`; it is
@@ -214,7 +214,7 @@ impl App {
     }
 
     /// Logs, rescues, and reports a refused lock (ADR-0052 decision 4). Refusal leaves the normal
-    /// scene visible, so `rescue` can display the message; wrong passwords reach `obelisk.lock`
+    /// scene visible, so `rescue` can display the message; wrong passwords reach `mantle.lock`
     /// while lock surfaces are mapped and everything else is hidden. A later successful
     /// `RendererClient::reevaluate`
     /// clears rescue.

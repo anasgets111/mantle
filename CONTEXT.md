@@ -1,4 +1,4 @@
-# Obelisk engine
+# Mantle engine
 
 Current project vocabulary. Implementation contracts live in [docs](docs/lua-api.md); rationale and history live in [decisions](docs/decisions.md).
 
@@ -104,7 +104,7 @@ Current project vocabulary. Implementation contracts live in [docs](docs/lua-api
 
 **Capability start**: The first request that starts a capability's backend. Started backends remain for the Supervisor's lifetime. _Avoid_: activation, subscription, enabling a capability
 
-**Obelisk namespace**: The Lua table exposing capabilities, output state, rescue state, version and config location. _Avoid_: globals, the state tree
+**Mantle namespace**: The Lua table exposing capabilities, output state, rescue state, version and config location. _Avoid_: globals, the state tree
 
 **Secure submit**: A field's direct delivery of its native secret buffer to a named capability action without exposing the secret to Lua. _Avoid_: secure handle, password callback
 

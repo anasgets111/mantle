@@ -1,4 +1,4 @@
-//! Reports where the Renderer's heap sits under `obelisk --profile`. `smaps` already
+//! Reports where the Renderer's heap sits under `mantle --profile`. `smaps` already
 //! says how much a generation holds (`supervisor/src/memory.rs`, ADR-0043); it cannot say which
 //! subsystem holds it. A 16h session measured 120.8 MB RSS against 84.8 MB fresh, 48 MB of it in
 //! glibc's `[heap]` against `image`'s 16 MB `TEXTURE_BUDGET`, with no drift while idle.

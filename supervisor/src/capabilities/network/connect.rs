@@ -1,4 +1,4 @@
-//! `network:connect` for `obelisk.network`: the pending intent and password prompt, and the join NM
+//! `network:connect` for `mantle.network`: the pending intent and password prompt, and the join NM
 //! accepts and its verdict. `intent.rs` shapes an intent into NetworkManager's dict.
 use std::collections::HashMap;
 

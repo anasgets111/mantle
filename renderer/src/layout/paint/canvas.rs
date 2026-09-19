@@ -931,7 +931,7 @@ mod tests {
         let root = resolved_surface(
             &lua,
             r##"return panel { id = "bar", width = 120, height = 40, child = rect { width = "Fill", height = "Fill", background = "#000000FF", children = {
-                text { content = "Obelisk", font_size = 24, foreground = "#00FF00FF" },
+                text { content = "Mantle", font_size = 24, foreground = "#00FF00FF" },
             } } }"##,
             LogicalSize { width: 120.0, height: 40.0 },
         );
@@ -1179,7 +1179,7 @@ mod tests {
                 &format!(
                     r##"return panel {{ id = "bar", width = 240, height = 40, background = "#000000FF", child = text {{
                         font = "{family}", font_size = 24, foreground = "#FFFFFFFF",
-                        content = {{ {{ text = "Obelisk", bold = {bold} }} }} }} }}"##
+                        content = {{ {{ text = "Mantle", bold = {bold} }} }} }} }}"##
                 ),
                 LogicalSize { width: 240.0, height: 40.0 },
             );
@@ -1215,7 +1215,7 @@ mod tests {
             &lua,
             r##"return panel { id = "bar", width = 200, height = 50, background = "#0000FFFF", child = rect {
                 width = 40, height = 50, background = "#000000FF", children = {
-                    text { content = "Obelisk Engine Renderer Overflow", font_size = 24, foreground = "#FFFFFFFF" },
+                    text { content = "Mantle Engine Renderer Overflow", font_size = 24, foreground = "#FFFFFFFF" },
                 } } }"##,
             LogicalSize { width: 200.0, height: 50.0 },
         );

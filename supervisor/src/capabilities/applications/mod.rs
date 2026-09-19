@@ -1,4 +1,4 @@
-//! `obelisk.applications`: installed `.desktop` entries (ADR-0061). A top-level capability using
+//! `mantle.applications`: installed `.desktop` entries (ADR-0061). A top-level capability using
 //! plain filesystem reads, with no D-Bus proxy or hardware thread.
 //!
 //! ADR-0054 decision 5 called for this when a window needed an icon it did not report. The
@@ -28,7 +28,7 @@ pub enum ApplicationsAction {
     OpenUrl { url: String },
 }
 
-/// `obelisk.applications` action dispatch (ADR-0037). `refresh` calls `spawn_blocking`; `launch`
+/// `mantle.applications` action dispatch (ADR-0037). `refresh` calls `spawn_blocking`; `launch`
 /// and `open_url` spawn detached children without waiting.
 pub fn dispatch(controller: &ApplicationsController, envelope: &shared::CommandEnvelope) {
     let Some(action) = crate::parse_action::<ApplicationsAction>(&envelope.params) else { return };

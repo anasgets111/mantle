@@ -104,12 +104,12 @@ enum SignalKind {
     /// the Loader stays on one Wayland dispatch thread (ADR-0039).
     Live(Rc<RefCell<Value>>),
     /// Engine-written, config-read boolean from `hover(name)` (ADR-0062), separate from `Live` so
-    /// only `hover_handle` can write it and `hover = obelisk.network` gets no writer. `paired_rect`
+    /// only `hover_handle` can write it and `hover = mantle.network` gets no writer. `paired_rect`
     /// links the boolean to `hover_rect(name)`'s cell; the rect half has `None` and is not a
     /// trigger.
     Hover { cell: Rc<RefCell<Value>>, paired_rect: Option<Rc<RefCell<Value>>>, dirty: DirtyFlag },
     /// Scroll offset in logical pixels (ADR-0069), written by the wheel handler and layout clamp.
-    /// Separate from `Hover` so only `scroll_handle` writes it; `scroll = obelisk.network` cannot
+    /// Separate from `Hover` so only `scroll_handle` writes it; `scroll = mantle.network` cannot
     /// overwrite a capability snapshot.
     Scroll {
         cell: Rc<RefCell<Value>>,
@@ -367,7 +367,7 @@ impl Signal {
 
     /// `map(f)` as a one-dependency `Computed`, recomputed on every read (ADR-0044 decision 3).
     /// Shared by
-    /// Lua and Rust so `lua::capability::Capability` makes `obelisk.lock` read like bare
+    /// Lua and Rust so `lua::capability::Capability` makes `mantle.lock` read like bare
     /// capabilities.
     pub(crate) fn mapped(lua: &Lua, source: mlua::AnyUserData, func: Function) -> mlua::Result<mlua::AnyUserData> {
         new_derived(lua, SignalKind::Computed { id: next_computed_id(), arity: 1 }, Some(func), vec![source])
@@ -428,7 +428,7 @@ fn read_derived(lua: &Lua, ud: &mlua::AnyUserData) -> mlua::Result<Value> {
     match kind {
         // Both recurse into their source, so both claim a nesting level for the reason
         // `Computed` does. Unguarded, a long enough chain exhausted the Rust stack and
-        // aborted `obelisk check` before any cap could answer.
+        // aborted `mantle check` before any cap could answer.
         SignalKind::Delayed { hold, due } => {
             let _budget = CpuBudget::enter(lua)?;
             let fresh = source_at(ud, FIRST_SOURCE_SLOT)?.get_value(lua)?;
@@ -643,7 +643,7 @@ impl UserData for Signal {
     }
 }
 
-/// Applies an `obelisk set`/`toggle` to named `state` (ADR-0112), using `set`'s marshalling and
+/// Applies an `mantle set`/`toggle` to named `state` (ADR-0112), using `set`'s marshalling and
 /// dirty checks. Refuses missing state or non-boolean toggle values, the two keybind/config
 /// mismatches.
 pub fn write_state(lua: &Lua, set: &shared::SetState) -> Result<(), String> {
@@ -950,7 +950,7 @@ pub fn from_userdata(ud: &mlua::AnyUserData) -> Option<Signal> {
         return Some(capability.signal());
     }
     // `IdleMember` wraps a capability beside its three threshold methods (ADR-0141); without this
-    // arm `visible = obelisk.idle` is the one unbindable capability.
+    // arm `visible = mantle.idle` is the one unbindable capability.
     Some(ud.borrow::<crate::lua::idle::IdleMember>().ok()?.signal())
 }
 
@@ -999,7 +999,7 @@ pub fn register(lua: &Lua, dirty: DirtyFlag) -> mlua::Result<()> {
                     // Name the expected type; `borrow`'s error does not.
                     if !is_signal(&dep) {
                         return Err(mlua::Error::runtime(
-                            "computed() dependencies must be Signals or `obelisk` capabilities",
+                            "computed() dependencies must be Signals or `mantle` capabilities",
                         ));
                     }
                     Ok(dep)
@@ -1013,7 +1013,7 @@ pub fn register(lua: &Lua, dirty: DirtyFlag) -> mlua::Result<()> {
         "delay",
         lua.create_function(|lua, (source_ud, millis): (mlua::AnyUserData, f64)| {
             let source = from_userdata(&source_ud)
-                .ok_or_else(|| mlua::Error::runtime("delay() takes a Signal or an `obelisk` capability first"))?;
+                .ok_or_else(|| mlua::Error::runtime("delay() takes a Signal or an `mantle` capability first"))?;
             let hold = parse_hold("delay() hold", millis)?;
             let held = source.get_value(lua)?;
             let ud = new_derived(lua, SignalKind::Delayed { hold, due: Rc::default() }, None, vec![source_ud])?;
@@ -1025,7 +1025,7 @@ pub fn register(lua: &Lua, dirty: DirtyFlag) -> mlua::Result<()> {
         "pulse",
         lua.create_function(|lua, (source_ud, millis): (mlua::AnyUserData, f64)| {
             let source = from_userdata(&source_ud)
-                .ok_or_else(|| mlua::Error::runtime("pulse() takes a Signal or an `obelisk` capability first"))?;
+                .ok_or_else(|| mlua::Error::runtime("pulse() takes a Signal or an `mantle` capability first"))?;
             let hold = parse_hold("pulse() window", millis)?;
             let seen = source.get_value(lua)?;
             let ud = new_derived(lua, SignalKind::Pulse { hold, until: Rc::default() }, None, vec![source_ud])?;
@@ -1505,7 +1505,7 @@ mod tests {
 
     #[test]
     fn the_engine_writes_a_hover_signal_through_its_handle_and_only_a_hover_signal() {
-        // Decision 2's other half: only hover has a writer, so `hover = obelisk.network` cannot let
+        // Decision 2's other half: only hover has a writer, so `hover = mantle.network` cannot let
         // pointer input overwrite a capability snapshot.
         let dirty = DirtyFlag::new();
         let (hovered, hovered_rect) = Signal::new_hover(dirty.clone(), Value::Nil);
@@ -1966,7 +1966,7 @@ mod tests {
     #[test]
     fn a_long_delay_or_pulse_chain_is_rejected_by_the_nesting_cap_not_a_stack_overflow() {
         // A delay or pulse chain nests `get_value` the way a map chain does. Unguarded, 10,000
-        // links ended `obelisk check` in `fatal runtime error: stack overflow`: SIGABRT, which no
+        // links ended `mantle check` in `fatal runtime error: stack overflow`: SIGABRT, which no
         // config author can read.
         for builder in ["delay", "pulse"] {
             let lua = lua_with_signal("a", Value::Integer(1));
@@ -2123,7 +2123,7 @@ mod tests {
         // that body installed. One made while nothing is budgeted -- at the top level of
         // `shell.lua`, before any getter runs -- inherited no hook, because installing one does not
         // retrofit threads that already exist. Resuming it later from inside a budget then spun
-        // with nothing to stop it, and `obelisk call` made that reachable from outside the process.
+        // with nothing to stop it, and `mantle call` made that reachable from outside the process.
         let lua = lua_with_signal("a", Value::Integer(1));
         lua.load(
             r#"
@@ -2190,7 +2190,7 @@ mod tests {
         assert_eq!(result, 2_000_001_000_000);
     }
 
-    /// Resolver must see through `Capability`, or live `obelisk.<name>` becomes a literal.
+    /// Resolver must see through `Capability`, or live `mantle.<name>` becomes a literal.
     #[test]
     fn from_userdata_sees_through_a_capability_to_its_read_signal() {
         use crate::lua::capability::{Capability, CommandSender};
@@ -2241,7 +2241,7 @@ mod tests {
         lua.globals().set("handle", lua.create_any_userdata(7u32).unwrap()).unwrap();
         let err = lua.load("return computed({handle}, function(n) return n end)").exec().unwrap_err().to_string();
         assert!(
-            err.contains("must be Signals or `obelisk` capabilities"),
+            err.contains("must be Signals or `mantle` capabilities"),
             "the error must say what was expected: {err}"
         );
     }

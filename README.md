@@ -1,11 +1,11 @@
-# Obelisk
+# Mantle
 
 A Wayland shell engine. You build the desktop shell in Lua, and Rust runs it. A config declares
 the bars, popups, launcher and lock screen as a tree of nodes; the engine owns the platform
 connections, input, layout and painting. A config that crashes does not take the session with it,
 and saving one reloads it in place without losing its state.
 
-Obelisk ships no shell of its own. [`share/starter`](share/starter) is a minimal example config;
+Mantle ships no shell of its own. [`share/starter`](share/starter) is a minimal example config;
 [anasgets111/dotfiles](https://github.com/anasgets111/dotfiles) is the reference one, a full shell
 built on the engine:
 
@@ -31,37 +31,37 @@ Lua 5.4 is vendored, so no system Lua is needed. `just check` also needs `lua-la
 There is no packaging recipe: `just swap` is both the install and the release dev loop.
 
 ```sh
-just build   # obelisk and obelisk-renderer into target/debug
-just run     # that pair on share/starter, leaving ~/.config/obelisk alone
+just build   # mantle and mantle-renderer into target/debug
+just run     # that pair on share/starter, leaving ~/.config/mantle alone
 just check   # fmt, tests, clippy, doc links, Lua parse and types
 just swap    # release, into $CARGO_HOME/bin, replacing and restarting a running shell
 ```
 
-A package installs `packaging/pam.d/obelisk` itself.
+A package installs `packaging/pam.d/mantle` itself.
 
-To have the compositor start it instead: `spawn-at-startup "obelisk"` in niri,
-`exec-once = obelisk` in Hyprland, `exec obelisk` in sway.
+To have the compositor start it instead: `spawn-at-startup "mantle"` in niri,
+`exec-once = mantle` in Hyprland, `exec mantle` in sway.
 
 ## Commands
 
 | Command | Does |
 | :--- | :--- |
-| `obelisk` | run the config |
-| `obelisk init` | write `shell.lua`, plus a `.luarc.json` pointing the LSP at the stubs |
-| `obelisk check` | evaluate the config and exit, taking no surface |
-| `obelisk list` | show the running shells: PID, uptime, runtime directory, config |
-| `obelisk log -f` | print what a running shell wrote to stdout and stderr |
-| `obelisk set NAME VALUE` | write a running config's `state(NAME)` signal |
-| `obelisk toggle NAME [VALUE]` | flip it when it holds a boolean, or swap VALUE with its initial |
-| `obelisk call NAME [ARGS]` | run the config's `action(NAME, fn)` and print what it returned |
+| `mantle` | run the config |
+| `mantle init` | write `shell.lua`, plus a `.luarc.json` pointing the LSP at the stubs |
+| `mantle check` | evaluate the config and exit, taking no surface |
+| `mantle list` | show the running shells: PID, uptime, runtime directory, config |
+| `mantle log -f` | print what a running shell wrote to stdout and stderr |
+| `mantle set NAME VALUE` | write a running config's `state(NAME)` signal |
+| `mantle toggle NAME [VALUE]` | flip it when it holds a boolean, or swap VALUE with its initial |
+| `mantle call NAME [ARGS]` | run the config's `action(NAME, fn)` and print what it returned |
 
 The last three are how a compositor keybind reaches a running shell: bind
-`obelisk toggle launcher_open` against `state("launcher_open", false)`, or `obelisk call
+`mantle toggle launcher_open` against `state("launcher_open", false)`, or `mantle call
 launcher.open` against `action("launcher.open", fn)`. VALUE and ARGS are read as JSON, and
-anything that is not JSON is taken as a string. `obelisk -h` has the rest.
+anything that is not JSON is taken as a string. `mantle -h` has the rest.
 
 The config is a directory, not a file: `require` resolves inside it, and any `.lua` file changing
-triggers a reload. `-c DIR` beats `$OBELISK_CONFIG_DIR`, which beats `$XDG_CONFIG_HOME/obelisk`.
+triggers a reload. `-c DIR` beats `$MANTLE_CONFIG_DIR`, which beats `$XDG_CONFIG_HOME/mantle`.
 
 ## A config
 
@@ -75,7 +75,7 @@ return {
         height = 34,
         background = "#1e1e2e80",
         child = text {
-            content = obelisk.system:map(function(s)
+            content = mantle.system:map(function(s)
                 return os.date("%H:%M", s and s.time)
             end),
             foreground = "#cdd6f4ff",
@@ -90,7 +90,7 @@ signal, so the `:map` above re-resolves that clock without re-running the config
 
 ## Capabilities
 
-`obelisk.<name>` exposes platform state as a signal and takes actions. A backend starts on first use
+`mantle.<name>` exposes platform state as a signal and takes actions. A backend starts on first use
 and stays for the session.
 
 | Hardware | Desktop | System |

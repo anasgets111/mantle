@@ -1,4 +1,4 @@
-//! [`KeyboardController`] owns `obelisk.keyboard` state and write actions. Backlight, lock state,
+//! [`KeyboardController`] owns `mantle.keyboard` state and write actions. Backlight, lock state,
 //! and layout share one `Arc<Mutex<KeyboardState>>` and signal channel (ADR-0034).
 
 use std::os::unix::fs::FileExt;
@@ -18,7 +18,7 @@ use super::super::scale::{percent_from_raw, raw_from_percent};
 use super::layout::{CompositorLink, HyprlandLink, NiriLink};
 use super::locks::{find_led, read_led_on, resolve_lock_leds};
 
-/// `obelisk.keyboard`'s combined payload. `backlight_pct` is `-1` without keyboard-backlight
+/// `mantle.keyboard`'s combined payload. `backlight_pct` is `-1` without keyboard-backlight
 /// hardware. Lock booleans have no sentinel: they default and remain `false` if neither evdev nor
 /// sysfs resolves. `active_layout` is the non-nullable empty-string sentinel; index and count are
 /// `0` by default (ADR-0034).

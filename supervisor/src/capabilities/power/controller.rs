@@ -1,4 +1,4 @@
-//! [`PowerController`] owns `obelisk.power` and its write action.
+//! [`PowerController`] owns `mantle.power` and its write action.
 //! See `power/mod.rs` for why the payload has four optional fields.
 
 use std::collections::HashMap;
@@ -10,7 +10,7 @@ use shared::{error, info, warn};
 use tokio::sync::mpsc::UnboundedSender;
 use zbus::zvariant::OwnedValue;
 
-/// `obelisk.power`'s full payload. Optional fields are omitted from JSON, so unavailable
+/// `mantle.power`'s full payload. Optional fields are omitted from JSON, so unavailable
 /// host data reads as Lua `nil`; see `power/mod.rs` for the four-field split.
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]
 #[cfg_attr(test, derive(schemars::JsonSchema))]
@@ -24,7 +24,7 @@ pub struct PowerState {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub profiles: Option<Vec<String>>,
     /// Running on battery rather than mains, from UPower; `nil` without UPower. This is the mains
-    /// question; charge direction is `obelisk.battery.state`.
+    /// question; charge direction is `mantle.battery.state`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub on_battery: Option<bool>,
     /// UPower's `EnergyRate` in watts, unchanged. It is positive in both directions, so
@@ -51,8 +51,8 @@ trait UPower {
 }
 
 /// The composite `DisplayDevice`, not `battery_BAT0`: UPower sums every battery there. `EnergyRate`
-/// is a positive watt magnitude while charging or discharging; `obelisk.power` wants no direction,
-/// so configs needing it read `obelisk.battery.state`.
+/// is a positive watt magnitude while charging or discharging; `mantle.power` wants no direction,
+/// so configs needing it read `mantle.battery.state`.
 #[zbus::proxy(
     interface = "org.freedesktop.UPower.Device",
     default_service = "org.freedesktop.UPower",
@@ -189,7 +189,7 @@ async fn next_change<S: Stream + Unpin>(stream: &mut Option<S>) -> Option<S::Ite
 /// Reads once, pushes, then follows all three property streams. Every wake re-reads the payload
 /// instead of patching one field.
 ///
-/// With neither service, no signal is sent, `obelisk.power` stays `nil` (ADR-0037), and the task
+/// With neither service, no signal is sent, `mantle.power` stays `nil` (ADR-0037), and the task
 /// exits instead of parking on a dead stream.
 async fn run_power_task(
     system_bus: zbus::Connection,
@@ -215,7 +215,7 @@ async fn run_power_task(
         info!("no power-profiles-daemon reachable; active_profile and profiles will not be reported this run");
     }
     if upower.is_none() && device.is_none() && profiles.is_none() {
-        info!("nothing on this host can answer any of obelisk.power's fields; power reporting disabled for this run");
+        info!("nothing on this host can answer any of mantle.power's fields; power reporting disabled for this run");
         return;
     }
 

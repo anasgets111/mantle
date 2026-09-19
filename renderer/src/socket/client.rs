@@ -87,20 +87,20 @@ pub struct RendererClient {
     /// stands would trade a memory bug for a correctness one.
     commands: CommandSender,
     rescue_handle: LiveSignalHandle,
-    /// Renderer-sourced `obelisk.screens` handle (ADR-0041 decision 2), not in `capabilities`.
+    /// Renderer-sourced `mantle.screens` handle (ADR-0041 decision 2), not in `capabilities`.
     screens_handle: LiveSignalHandle,
     /// `screens_handle`'s JSON mirror for [`Self::set_screens`] change detection.
     screens_payload: serde_json::Value,
     /// `rescue_handle`'s mirror for [`Self::set_rescue_state`] no-op detection.
     rescue_state: (bool, String),
     process_registry: ProcessRegistry,
-    /// Renderer-sourced `obelisk.idle` threshold callbacks (ADR-0032).
+    /// Renderer-sourced `mantle.idle` threshold callbacks (ADR-0032).
     idle_registry: crate::lua::idle::IdleRegistry,
     /// Scene-dirty flag (ADR-0044 decision 2), cloned into every handed-out `LiveSignalHandle`.
     dirty: DirtyFlag,
     state: ReloadState,
-    /// `obelisk` table for lazy members. Above `loader` for drop order.
-    obelisk: mlua::Table,
+    /// `mantle` table for lazy members. Above `loader` for drop order.
+    mantle: mlua::Table,
     /// Last, load-bearing; see the struct docs.
     loader: Loader,
 }
@@ -131,11 +131,11 @@ impl RendererClient {
         // Capability commands all use this write path.
         let commands = CommandSender::new(generation_id, outbound_tx);
         let client = Self::new(loader, shell_lua_path, shaping, commands, process_registry, dirty)
-            .map_err(|err| format!("failed to build the `obelisk` namespace: {err}"))?;
+            .map_err(|err| format!("failed to build the `mantle` namespace: {err}"))?;
         Ok(client)
     }
 
-    /// [`lua::namespace::build`] owns the `obelisk` namespace; construction is separate from frame
+    /// [`lua::namespace::build`] owns the `mantle` namespace; construction is separate from frame
     /// handling. [`Self::capability_handle`] lazily handles unrostered names from snapshots.
     fn new(
         loader: Loader,
@@ -165,7 +165,7 @@ impl RendererClient {
             idle_registry: namespace.idle,
             dirty,
             state: ReloadState { applied_specs: Vec::new(), applied_output: None, pending: None },
-            obelisk: namespace.table,
+            mantle: namespace.table,
             loader,
         })
     }
@@ -192,7 +192,7 @@ impl RendererClient {
     /// the lazy `capabilities` registration.
     fn apply_state_snapshot(&self, snapshot: StateSnapshot) -> mlua::Result<()> {
         let value = self.loader.to_lua_value(&snapshot.payload)?;
-        // Revision stamped into later `obelisk.<name>:invoke(...)`; advisory because dispatch does
+        // Revision stamped into later `mantle.<name>:invoke(...)`; advisory because dispatch does
         // not enforce it.
         let handle = self.capability_handle(&snapshot.capability)?;
         let previous = handle.hydrate(value, snapshot.revision);
@@ -209,7 +209,7 @@ impl RendererClient {
     ///
     /// Run again when an evaluation *fails*, because clearing first is not enough: `shell.lua` may
     /// register several before it raises, and those belong to a config that was rejected. Half a
-    /// config answering `obelisk call` is worse than none, and the scene still on screen is the
+    /// config answering `mantle call` is worse than none, and the scene still on screen is the
     /// previous evaluation's, whose registrations this already dropped.
     fn clear_change_handlers(&self) {
         for handle in self.capabilities.borrow().values() {
@@ -219,7 +219,7 @@ impl RendererClient {
         lua::timer::begin_evaluation(self.loader.lua());
     }
 
-    /// Returns a handle, lazily adding `obelisk.<capability>` as `nil`, revision `0` (ADR-0029).
+    /// Returns a handle, lazily adding `mantle.<capability>` as `nil`, revision `0` (ADR-0029).
     /// Debug builds reject off-roster pushes first. **Refuses held names**: `Table::set` is silent,
     /// and an off-roster `rescue` push would replace the config-failure signal (ADR-0052 decision
     /// 1's bug).
@@ -227,13 +227,13 @@ impl RendererClient {
         if let Some(handle) = self.capabilities.borrow().get(capability) {
             return Ok(handle.clone());
         }
-        if self.obelisk.contains_key(capability)? {
+        if self.mantle.contains_key(capability)? {
             return Err(mlua::Error::runtime(format!(
-                "a StateSnapshot named the unrostered capability {capability:?}, and `obelisk.{capability}` is already something else; refusing to replace it"
+                "a StateSnapshot named the unrostered capability {capability:?}, and `mantle.{capability}` is already something else; refusing to replace it"
             )));
         }
         let (member, handle) = Capability::new(capability, self.dirty.clone(), self.commands.clone());
-        self.obelisk.set(capability, member)?;
+        self.mantle.set(capability, member)?;
         self.capabilities.borrow_mut().insert(capability.to_string(), handle.clone());
         Ok(handle)
     }
@@ -455,20 +455,20 @@ impl RendererClient {
             SupervisorFrame::IdleEvent(IdleEvent { generation_id: _, threshold_sec, state }) => {
                 self.idle_registry.dispatch_event(threshold_sec, state);
             }
-            // ADR-0112: `obelisk set`/`obelisk toggle`. Refuse by name to stderr, the only place a
+            // ADR-0112: `mantle set`/`mantle toggle`. Refuse by name to stderr, the only place a
             // keybind mistake can be reported; the write dirties the scene.
             SupervisorFrame::SetState(set) => {
                 if let Err(why) = lua::signal::write_state(self.lua(), &set) {
-                    warn!("`obelisk` asked to write state {:?} and was refused: {why}", set.name);
+                    warn!("`mantle` asked to write state {:?} and was refused: {why}", set.name);
                 }
             }
-            // ADR-0197: `obelisk call`. Runs outside layout, like an `on_change` handler, and
+            // ADR-0197: `mantle call`. Runs outside layout, like an `on_change` handler, and
             // always answers -- a caller is holding its socket open for this.
             SupervisorFrame::Call(call) => {
                 let outcome = lua::action::dispatch(self.lua(), &call.name, &call.arguments);
                 let result = shared::CallResult { id: call.id, outcome };
                 if let Err(err) = self.commands.frames().send(RendererFrame::CallResult(result)) {
-                    error!("failed to answer `obelisk call {}`: {err}", call.name);
+                    error!("failed to answer `mantle call {}`: {err}", call.name);
                 }
             }
             // The Supervisor routes these to control clients; one arriving here is a wire fault.
@@ -622,12 +622,12 @@ impl RendererClient {
     }
 }
 
-/// `OBELISK_DUMP_LAYOUT=<instance id>` (e.g. `bar@eDP-1`) prints each visible node's kind,
+/// `MANTLE_DUMP_LAYOUT=<instance id>` (e.g. `bar@eDP-1`) prints each visible node's kind,
 /// rect, and text after every pass. Off unless asked. It answers which node has the wrong geometry
 /// in a live session, including layouts the test harness did not build (a card at a live output's
 /// scale with the Supervisor's current feed).
 fn dump_layout_if_asked(scene: &Scene) {
-    let Ok(wanted) = std::env::var("OBELISK_DUMP_LAYOUT") else { return };
+    let Ok(wanted) = std::env::var("MANTLE_DUMP_LAYOUT") else { return };
     let Some(surface) = scene.surface(&wanted) else { return };
     fn walk(node: &crate::layout::ResolvedNode, depth: usize, out: &mut String) {
         if !node.visible {
@@ -712,7 +712,7 @@ mod tests {
     /// Reads `rescue:get()` by probe script; `LiveSignalHandle` exposes only `set`, so this is the
     /// only way to observe `set_rescue_state`'s stored value.
     fn rescue_state(loader: &Loader) -> (bool, String) {
-        let setup = "is_rescue, error_log = obelisk.rescue:get().is_rescue, obelisk.rescue:get().error_log";
+        let setup = "is_rescue, error_log = mantle.rescue:get().is_rescue, mantle.rescue:get().error_log";
         (probe(loader, setup, "is_rescue"), probe(loader, setup, "error_log"))
     }
 
@@ -875,7 +875,7 @@ mod tests {
             .collect()
     }
 
-    /// Next queued non-start frame, or a panic naming what was missing. Reading `obelisk.lock`
+    /// Next queued non-start frame, or a panic naming what was missing. Reading `mantle.lock`
     /// queues a start (ADR-0070 decision 1), so tests would otherwise step over it; the dedicated
     /// `a_capability_read_asks_the_supervisor_to_start_it` test accounts for starts.
     fn queued_frame(outbound_rx: &mut mpsc::UnboundedReceiver<RendererFrame>) -> RendererFrame {
@@ -904,7 +904,7 @@ mod tests {
         let missing = std::path::PathBuf::from("/no/such/shell.lua");
         let (client, mut outbound_rx) = test_client(&missing);
 
-        client.loader.lua().load("local _ = obelisk.audio").exec().unwrap();
+        client.loader.lua().load("local _ = mantle.audio").exec().unwrap();
 
         assert_eq!(queued_starts(&mut outbound_rx), vec!["audio".to_string()]);
     }
@@ -915,38 +915,38 @@ mod tests {
         let missing = std::path::PathBuf::from("/no/such/shell.lua");
         let (client, mut outbound_rx) = test_client(&missing);
 
-        client.loader.lua().load("local _ = obelisk.version.major").exec().unwrap();
+        client.loader.lua().load("local _ = mantle.version.major").exec().unwrap();
 
         assert!(queued_starts(&mut outbound_rx).is_empty(), "`version` is off the roster and has nothing behind it");
     }
 
     /// `__index` fires once per name because it moves the member onto the table. A `computed` in a
-    /// `list` `itemfn` reads `obelisk.audio` once per row per layout pass; starting per read would
+    /// `list` `itemfn` reads `mantle.audio` once per row per layout pass; starting per read would
     /// be a frame per row per frame.
     #[test]
     fn re_reading_a_capability_queues_no_second_start() {
         let missing = std::path::PathBuf::from("/no/such/shell.lua");
         let (client, mut outbound_rx) = test_client(&missing);
 
-        client.loader.lua().load("for _ = 1, 50 do local _ = obelisk.audio end").exec().unwrap();
+        client.loader.lua().load("for _ = 1, 50 do local _ = mantle.audio end").exec().unwrap();
 
         assert_eq!(queued_starts(&mut outbound_rx), vec!["audio".to_string()]);
     }
 
     /// A typo stays ordinary nil so the config line gets named. Any other metamethod result would
-    /// make `obelisk.audioo:get()` fail inside the engine.
+    /// make `mantle.audioo:get()` fail inside the engine.
     #[test]
     fn a_name_no_capability_owns_reads_nil_and_starts_nothing() {
         let missing = std::path::PathBuf::from("/no/such/shell.lua");
         let (client, mut outbound_rx) = test_client(&missing);
 
-        let is_nil: bool = client.loader.lua().load("return obelisk.audioo == nil").eval().unwrap();
+        let is_nil: bool = client.loader.lua().load("return mantle.audioo == nil").eval().unwrap();
 
         assert!(is_nil);
         assert!(queued_starts(&mut outbound_rx).is_empty());
     }
 
-    /// ADR-0070 decision 5: polkit has no roster entry or `obelisk.polkit`, so only a
+    /// ADR-0070 decision 5: polkit has no roster entry or `mantle.polkit`, so only a
     /// `secure_submit`
     /// naming it can request the authentication agent.
     #[test]
@@ -975,7 +975,7 @@ mod tests {
         let path = write_shell_lua(
             dir.path(),
             r#"
-            return panel { id = "prompt", layer = "Top", child = row { children = computed({obelisk.network}, function(ssid)
+            return panel { id = "prompt", layer = "Top", child = row { children = computed({mantle.network}, function(ssid)
                 if ssid then
                     return { textfield { secure_submit = { capability = "polkit", action = "authenticate" } } }
                 end
@@ -1021,7 +1021,7 @@ mod tests {
         };
         client.apply_state_snapshot(snapshot).unwrap();
 
-        assert_eq!(probe::<String>(&client.loader, "app_name = obelisk.audio:get().app_name", "app_name"), "Zen");
+        assert_eq!(probe::<String>(&client.loader, "app_name = mantle.audio:get().app_name", "app_name"), "Zen");
     }
 
     #[test]
@@ -1038,7 +1038,7 @@ mod tests {
         };
         client.apply_state_snapshot(snapshot).unwrap();
 
-        assert_eq!(probe::<i64>(&client.loader, "active = obelisk.workspace:get().active", "active"), 2);
+        assert_eq!(probe::<i64>(&client.loader, "active = mantle.workspace:get().active", "active"), 2);
     }
 
     #[test]
@@ -1239,7 +1239,7 @@ mod tests {
                 id = "notification_area", layer = "Top", anchor = { top = true, right = true },
                 width = 200, height = 60,
                 -- nil until the first push, as at real boot.
-                visible = obelisk.notifications:map(function(n) return n ~= nil and #n.feed > 0 end),
+                visible = mantle.notifications:map(function(n) return n ~= nil and #n.feed > 0 end),
                 child = rect { width = 200, height = 60, background = "#111111ff" },
             } }
             "##,
@@ -1276,17 +1276,17 @@ mod tests {
     }
 
     #[test]
-    fn every_rostered_capability_is_on_the_obelisk_table_and_reads_nil_before_its_first_snapshot() {
-        // ADR-0037: every rostered capability is `obelisk.<name>`, a live signal reading nil at
+    fn every_rostered_capability_is_on_the_mantle_table_and_reads_nil_before_its_first_snapshot() {
+        // ADR-0037: every rostered capability is `mantle.<name>`, a live signal reading nil at
         // boot, never an index-into-nil rescue error.
         let missing = std::path::PathBuf::from("/no/such/shell.lua");
         let (client, _outbound_rx) = test_client(&missing);
 
         for capability in shared::Capability::ALL.iter().map(|c| c.as_str()) {
-            let setup = format!("is_nil = obelisk.{capability}:get() == nil");
+            let setup = format!("is_nil = mantle.{capability}:get() == nil");
             assert!(
                 probe::<bool>(&client.loader, &setup, "is_nil"),
-                "obelisk.{capability} should read nil before its first snapshot"
+                "mantle.{capability} should read nil before its first snapshot"
             );
         }
     }
@@ -1306,13 +1306,13 @@ mod tests {
             let setup = format!("is_nil = {capability} == nil");
             assert!(
                 probe::<bool>(&client.loader, &setup, "is_nil"),
-                "{capability} is still a bare global; it belongs on obelisk.{capability}"
+                "{capability} is still a bare global; it belongs on mantle.{capability}"
             );
         }
     }
 
     #[test]
-    fn an_unrostered_push_refuses_to_replace_a_name_the_obelisk_table_already_holds() {
+    fn an_unrostered_push_refuses_to_replace_a_name_the_mantle_table_already_holds() {
         // `rescue` reports config failures; replacing it with an empty capability hides the shell's
         // breakage, as in ADR-0052 decision 1's `lock` bug.
         let missing = std::path::PathBuf::from("/no/such/shell.lua");
@@ -1323,18 +1323,18 @@ mod tests {
         assert!(err.contains("already something else"), "the refusal must say why: {err}");
 
         // Real `rescue` still reads its own table, not an empty capability.
-        assert!(probe::<bool>(&client.loader, "intact = obelisk.rescue:get().is_rescue == false", "intact"));
+        assert!(probe::<bool>(&client.loader, "intact = mantle.rescue:get().is_rescue == false", "intact"));
     }
 
     #[test]
     fn rescue_and_screens_moved_onto_the_same_table_as_the_roster() {
-        // `rescue` and `screens` both live under `obelisk.*`, like capabilities.
+        // `rescue` and `screens` both live under `mantle.*`, like capabilities.
         let missing = std::path::PathBuf::from("/no/such/shell.lua");
         let (client, _outbound_rx) = test_client(&missing);
 
         let setup = r#"
-            rescued = obelisk.rescue:get().is_rescue
-            screen_count = #obelisk.screens:get()
+            rescued = mantle.rescue:get().is_rescue
+            screen_count = #mantle.screens:get()
             bare_rescue_gone = rescue == nil
             bare_screens_gone = screens == nil
         "#;
@@ -1345,13 +1345,13 @@ mod tests {
     }
 
     #[test]
-    fn obelisk_version_is_three_integers_a_config_can_compare() {
-        // Shape matters: configs compare `obelisk.version.major > 0` or `minor >= 2`, so all three
+    fn mantle_version_is_three_integers_a_config_can_compare() {
+        // Shape matters: configs compare `mantle.version.major > 0` or `minor >= 2`, so all three
         // fields must be numeric.
         let missing = std::path::PathBuf::from("/no/such/shell.lua");
         let (client, _outbound_rx) = test_client(&missing);
 
-        let setup = "major, minor, patch = obelisk.version.major, obelisk.version.minor, obelisk.version.patch";
+        let setup = "major, minor, patch = mantle.version.major, mantle.version.minor, mantle.version.patch";
         // Read through Lua against Cargo's string, not a second builder call: assert what config
         // sees. This also reaches `lua::namespace::version_parts`'s `expect`, so it needs no
         // narrower test.
@@ -1360,12 +1360,12 @@ mod tests {
     }
 
     #[test]
-    fn obelisk_config_dir_is_the_directory_shell_lua_was_loaded_from() {
+    fn mantle_config_dir_is_the_directory_shell_lua_was_loaded_from() {
         // Derive from the loaded path, not a fresh resolution, so explicit `shell.lua` cannot
         // report an unread directory.
-        let (client, _outbound_rx) = test_client(std::path::Path::new("/opt/obelisk-config/shell.lua"));
-        let dir = probe::<String>(&client.loader, "dir = obelisk.config_dir", "dir");
-        assert_eq!(dir, "/opt/obelisk-config");
+        let (client, _outbound_rx) = test_client(std::path::Path::new("/opt/mantle-config/shell.lua"));
+        let dir = probe::<String>(&client.loader, "dir = mantle.config_dir", "dir");
+        assert_eq!(dir, "/opt/mantle-config");
     }
 
     /// `RendererClient::new` seeds after `Loader::new` registers the root-role constructors. A
@@ -1374,7 +1374,7 @@ mod tests {
     /// config rather than the seed. Assert after a full generation, because that registration
     /// order is the contract.
     #[test]
-    fn a_full_generation_keeps_lock_as_the_node_constructor_and_puts_the_capability_on_obelisk() {
+    fn a_full_generation_keeps_lock_as_the_node_constructor_and_puts_the_capability_on_mantle() {
         let dir = tempfile::tempdir().unwrap();
         let path = write_shell_lua(
             dir.path(),
@@ -1382,7 +1382,7 @@ mod tests {
                 panel { id = "bar", layer = "Top" },
                 lock {
                     id = "screen",
-                    child = text { content = obelisk.lock:map(function(s) return (s and s.error) or "" end) },
+                    child = text { content = mantle.lock:map(function(s) return (s and s.error) or "" end) },
                 },
             }"##,
         );
@@ -1400,8 +1400,8 @@ mod tests {
         // The root `lock { ... }` still produced a root-role surface.
         let setup = r#"
             lock_kind = lock { id = "screen" }.kind
-            capability_type = type(obelisk.lock)
-            attempts = obelisk.lock:get().attempts
+            capability_type = type(mantle.lock)
+            attempts = mantle.lock:get().attempts
         "#;
         assert_eq!(
             probe::<String>(&client.loader, setup, "lock_kind"),
@@ -1413,7 +1413,7 @@ mod tests {
         assert_eq!(
             probe::<i64>(&client.loader, setup, "attempts"),
             2,
-            "the `lock` StateSnapshot must reach `obelisk.lock`, not a bare global nothing registered"
+            "the `lock` StateSnapshot must reach `mantle.lock`, not a bare global nothing registered"
         );
     }
 
@@ -1656,7 +1656,7 @@ mod tests {
         let missing = std::path::PathBuf::from("/no/such/shell.lua");
         let (client, mut outbound_rx) = test_client(&missing);
 
-        client.loader.lua().load(r#"obelisk.lock:invoke("lock")"#).exec().unwrap();
+        client.loader.lua().load(r#"mantle.lock:invoke("lock")"#).exec().unwrap();
 
         let RendererFrame::Command(envelope) = queued_frame(&mut outbound_rx) else {
             panic!("a capability write must be queued as RendererFrame::Command");
@@ -1686,7 +1686,7 @@ mod tests {
             .unwrap();
 
         assert!(
-            !probe::<bool>(&client.loader, "scanning = obelisk.network:get().scanning", "scanning"),
+            !probe::<bool>(&client.loader, "scanning = mantle.network:get().scanning", "scanning"),
             "the second push must update the same registered global, not fail or create a second one"
         );
     }
@@ -1915,7 +1915,7 @@ mod tests {
 
         write_shell_lua(
             dir.path(),
-            r#"return window { id = "settings", title = "Obelisk settings", app_id = "obelisk.settings" }"#,
+            r#"return window { id = "settings", title = "Mantle settings", app_id = "mantle.settings" }"#,
         );
         assert!(client.reevaluate());
         assert_eq!(
@@ -2308,7 +2308,7 @@ mod tests {
     fn re_resolve_if_dirty_applies_a_pushed_value_without_reading_shell_lua_again() {
         let dir = tempfile::tempdir().unwrap();
         let path =
-            write_shell_lua(dir.path(), r#"return panel { id = "bar", layer = "Top", visible = obelisk.workspace }"#);
+            write_shell_lua(dir.path(), r#"return panel { id = "bar", layer = "Top", visible = mantle.workspace }"#);
         let (mut client, _outbound_rx) = test_client(&path);
         client
             .apply_state_snapshot(StateSnapshot {
@@ -2347,7 +2347,7 @@ mod tests {
     fn re_resolve_if_dirty_clears_the_flag_and_a_second_call_does_no_work() {
         let dir = tempfile::tempdir().unwrap();
         let path =
-            write_shell_lua(dir.path(), r#"return panel { id = "bar", layer = "Top", visible = obelisk.workspace }"#);
+            write_shell_lua(dir.path(), r#"return panel { id = "bar", layer = "Top", visible = mantle.workspace }"#);
         let (mut client, _outbound_rx) = test_client(&path);
         client
             .apply_state_snapshot(StateSnapshot {
@@ -2412,7 +2412,7 @@ mod tests {
     fn a_push_that_makes_a_property_invalid_keeps_the_prior_scene_and_does_not_enter_rescue() {
         let dir = tempfile::tempdir().unwrap();
         let path =
-            write_shell_lua(dir.path(), r#"return panel { id = "bar", layer = "Top", visible = obelisk.workspace }"#);
+            write_shell_lua(dir.path(), r#"return panel { id = "bar", layer = "Top", visible = mantle.workspace }"#);
         let (mut client, _outbound_rx) = test_client(&path);
         client
             .apply_state_snapshot(StateSnapshot {
@@ -2455,7 +2455,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = write_shell_lua(
             dir.path(),
-            r#"return panel { id = "bar", layer = "Top", visible = obelisk.audio, child = rect { width = obelisk.network, height = 10, children = obelisk.tray } }"#,
+            r#"return panel { id = "bar", layer = "Top", visible = mantle.audio, child = rect { width = mantle.network, height = 10, children = mantle.tray } }"#,
         );
         let (mut client, _outbound_rx) = test_client(&path);
 
@@ -2476,12 +2476,12 @@ mod tests {
 
     #[test]
     fn a_text_node_bound_to_a_bare_rostered_signal_applies_at_startup_with_no_push_at_all() {
-        // ADR-0044 example: `text { content = obelisk.mpris.title }` applies at boot with `title`
+        // ADR-0044 example: `text { content = mantle.mpris.title }` applies at boot with `title`
         // still nil, like `visible`/`children` above.
         let dir = tempfile::tempdir().unwrap();
         let path = write_shell_lua(
             dir.path(),
-            r#"return panel { id = "bar", layer = "Top", child = text { content = obelisk.audio } }"#,
+            r#"return panel { id = "bar", layer = "Top", child = text { content = mantle.audio } }"#,
         );
         let (mut client, _outbound_rx) = test_client(&path);
 
@@ -2533,7 +2533,7 @@ mod tests {
         let path = write_shell_lua(
             dir.path(),
             r#"
-            return panel { id = "bar", layer = "Top", child = row { children = computed({obelisk.audio}, function(n)
+            return panel { id = "bar", layer = "Top", child = row { children = computed({mantle.audio}, function(n)
                 if n == 3 then
                     return { rect { width = 1, height = 1 }, rect { width = 1, height = 1 }, rect { width = 1, height = 1 } }
                 end
@@ -2608,7 +2608,7 @@ mod tests {
             dir.path(),
             r#"
             local panels = {}
-            for _, screen in ipairs(obelisk.screens:get()) do
+            for _, screen in ipairs(mantle.screens:get()) do
                 panels[#panels + 1] = panel { id = "bar@" .. screen.name, layer = "Top", monitor = screen.name }
             end
             return panels
@@ -2629,7 +2629,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = write_shell_lua(
             dir.path(),
-            r#"return panel { id = "bar", layer = "Top", child = text { content = "screens: " .. #obelisk.screens:get() } }"#,
+            r#"return panel { id = "bar", layer = "Top", child = text { content = "screens: " .. #mantle.screens:get() } }"#,
         );
         let (mut client, _outbound_rx) = test_client(&path);
 
@@ -2660,7 +2660,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = write_shell_lua(
             dir.path(),
-            r#"return panel { id = "bar", layer = "Top", child = text { content = computed({obelisk.screens}, function(list) return "n=" .. #list end) } }"#,
+            r#"return panel { id = "bar", layer = "Top", child = text { content = computed({mantle.screens}, function(list) return "n=" .. #list end) } }"#,
         );
         let (mut client, _outbound_rx) = test_client(&path);
         client.set_screens(screens_json(&["eDP-1"]));

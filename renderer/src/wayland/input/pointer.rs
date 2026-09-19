@@ -617,7 +617,7 @@ impl App {
         let writes = layout::hover::hover_writes(tree, point);
         let lua = self.client.lua();
         for write in writes {
-            // Non-hover signals stay untouched, so `hover = obelisk.network` cannot overwrite a
+            // Non-hover signals stay untouched, so `hover = mantle.network` cannot overwrite a
             // capability snapshot (ADR-0062 decision 2).
             let Some(handle) = write.signal.hover_handle() else {
                 continue;

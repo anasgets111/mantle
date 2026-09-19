@@ -1,4 +1,4 @@
-# Obelisk
+# Mantle
 
 A Wayland shell engine, not a shell: the Rust workspace (`renderer`, `supervisor`, `shared`) runs shells
 that Lua configs declare. It ships none of its own; `share/starter` is a minimal example config.
@@ -36,7 +36,7 @@ Before writing code, trace the real flow end to end, then stop at the first rung
 ## Lua stubs
 
 - **Capability payloads and actions** come from the Rust `*State`/`*Action` types; doc comments become the
-  descriptions. Run `just stubs` and commit `lua-meta/obelisk.lua`. Never hand-edit it.
+  descriptions. Run `just stubs` and commit `lua-meta/mantle.lua`. Never hand-edit it.
 - **Node and surface properties** are hand-written (ADR-0081). Edit `lua-meta/nodes.lua`/`surfaces.lua` in
   the same commit as `accepted_properties`.
 - **New Lua globals or signals** go in `lua-meta/globals.lua`/`signals.lua` in the same commit.
@@ -47,7 +47,7 @@ Before writing code, trace the real flow end to end, then stop at the first rung
 - **Every runtime diagnostic is `error!`/`warn!`/`info!`/`debug!`** from `shared`, imported by path
   (`use shared::warn;`). The clock, level and subsystem come from the macro; never write the
   subsystem into the message. `eprintln!` is for CLI output that runs before `shared::log::init`.
-- **`OBELISK_LOG`** takes `debug`, `warn,tray=debug`, `network=off` (ADR-0229).
+- **`MANTLE_LOG`** takes `debug`, `warn,tray=debug`, `network=off` (ADR-0229).
 
 ## Testing
 

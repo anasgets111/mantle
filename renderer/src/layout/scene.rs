@@ -3803,7 +3803,7 @@ pub(super) mod tests {
     fn text_content_size_comes_from_a_real_shaping_round_trip() {
         let mut scene = Scene::new();
         let shaping = ShapingHandle::spawn();
-        let (_lua, surface) = surface_from(r#"panel { id = "bar", child = text { content = "Obelisk" } }"#);
+        let (_lua, surface) = surface_from(r#"panel { id = "bar", child = text { content = "Mantle" } }"#);
         apply_at(&mut scene, &[surface], full(), &shaping, &_lua).unwrap();
         let text = &scene.surface("bar@TEST").unwrap().children[0];
         assert!(text.rect.width > 0.0);
@@ -5640,7 +5640,7 @@ pub(super) mod tests {
     /// Its height has to be the wrapped body's, whatever the margin.
     #[test]
     fn a_containers_own_margin_does_not_widen_what_its_children_are_measured_at() {
-        let long = "have a look at this: https://github.com/anasgets111/obelisk-engine/pull/12 and tell me what you think about it all";
+        let long = "have a look at this: https://github.com/anasgets111/mantle/pull/12 and tell me what you think about it all";
         let heights = |margin: u32| {
             let src = format!(
                 r#"panel {{ id = "bar", child = column {{ width = "Fill", height = "Fill", children = {{

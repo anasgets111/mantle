@@ -1,4 +1,4 @@
-//! [`UpdatesController`]: `obelisk.updates` write-action dispatcher and state owner (ADR-0034).
+//! [`UpdatesController`]: `mantle.updates` write-action dispatcher and state owner (ADR-0034).
 
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -13,7 +13,7 @@ use super::backend::{Backend, UpdateCandidate};
 use super::reboot::{REBOOT_MARKER, run_reboot_marker_task};
 use crate::process;
 
-/// `obelisk.updates` payload. `check_error`/`install_error` are `None` when clear. While
+/// `mantle.updates` payload. `check_error`/`install_error` are `None` when clear. While
 /// `installing`, `install_total_steps == 0` means the manager has not printed the transaction size.
 #[derive(Debug, Clone, Default, PartialEq, serde::Serialize)]
 #[cfg_attr(test, derive(schemars::JsonSchema))]
@@ -62,9 +62,9 @@ pub struct UpdatesState {
     /// [`UpdatesState::install_exit_code`], this means the install was never answered and the
     /// failure is Supervisor's.
     pub install_error: Option<String>,
-    /// Whether `/run/obelisk-reboot-required` exists. A pacman hook writes it, so a
+    /// Whether `/run/mantle-reboot-required` exists. A pacman hook writes it, so a
     /// terminal upgrade raises it too, and `/run` being tmpfs means a boot clears it. Nothing in
-    /// Obelisk writes or clears it.
+    /// Mantle writes or clears it.
     pub reboot_required: bool,
 }
 

@@ -1,4 +1,4 @@
-//! [`ApplicationsController`]: `obelisk.applications`'s state owner and two write actions
+//! [`ApplicationsController`]: `mantle.applications`'s state owner and two write actions
 //! (ADR-0061).
 
 use std::collections::BTreeMap;
@@ -10,7 +10,7 @@ use tokio::sync::mpsc::UnboundedSender;
 
 use super::scan::{AppSummary, LaunchTarget, scan};
 
-/// `obelisk.applications`'s payload (ADR-0061 decision 2).
+/// `mantle.applications`'s payload (ADR-0061 decision 2).
 ///
 /// `by_app_id` repeats summaries instead of indexing `entries`: Lua arrays start at one while the
 /// serialized JSON array starts at zero. Repeating three small fields for a few hundred entries

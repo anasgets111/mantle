@@ -1,4 +1,4 @@
-//! `obelisk check`: evaluate config, report declared surfaces, and exit through the Renderer's Lua
+//! `mantle check`: evaluate config, report declared surfaces, and exit through the Renderer's Lua
 //! loader. The Supervisor has no `mlua` runtime, so it re-execs this binary with
 //! `shared::CHECK_ENV` and forwards the exit code.
 //!
@@ -28,7 +28,7 @@ pub fn run(config_dir: &Path) -> Result<String, String> {
     let shell_lua = config_dir.join("shell.lua");
     if !shell_lua.is_file() {
         return Err(format!(
-            "{}: no shell.lua. `obelisk init -c {}` writes one.",
+            "{}: no shell.lua. `mantle init -c {}` writes one.",
             shell_lua.display(),
             config_dir.display()
         ));
@@ -37,8 +37,8 @@ pub fn run(config_dir: &Path) -> Result<String, String> {
     let dirty = DirtyFlag::new();
     let loader = Loader::new(dirty.clone(), config_dir).map_err(|err| format!("{}: {err}", shell_lua.display()))?;
 
-    // Register `obelisk` and `process.run`: configs reach for both during evaluation, and a bare
-    // `Loader` dies on the first `obelisk.` access. Capabilities read `nil`, as at real boot before
+    // Register `mantle` and `process.run`: configs reach for both during evaluation, and a bare
+    // `Loader` dies on the first `mantle.` access. Capabilities read `nil`, as at real boot before
     // the first snapshot.
     //
     // Frames go into an undrained channel: without a Supervisor, `process.run` has nowhere to run.
@@ -60,7 +60,7 @@ pub fn run(config_dir: &Path) -> Result<String, String> {
 
 #[cfg(test)]
 mod tests {
-    /// A config split across `require`d files, so `obelisk check` resolves modules as a real boot does.
+    /// A config split across `require`d files, so `mantle check` resolves modules as a real boot does.
     #[test]
     fn a_config_that_evaluates_reports_each_surface_it_declares() {
         let dir = tempfile::tempdir().unwrap();
@@ -77,7 +77,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let err = super::run(dir.path()).unwrap_err();
         assert!(err.contains("no shell.lua"), "{err}");
-        assert!(err.contains("obelisk init"), "an error a new user hits should name the way out: {err}");
+        assert!(err.contains("mantle init"), "an error a new user hits should name the way out: {err}");
     }
 
     #[test]

@@ -2,7 +2,7 @@ use shared::warn;
 
 use super::state::SessionLock;
 
-/// The one lock fact outliving Supervisor (ADR-0060): `$XDG_RUNTIME_DIR/obelisk/session-locked`
+/// The one lock fact outliving Supervisor (ADR-0060): `$XDG_RUNTIME_DIR/mantle/session-locked`
 /// exists exactly while the compositor is locked. After restart `LockState::default()` would make `active` false
 /// and paint behind an invisible fallback (ADR-0058, 0059). A file suffices for this boolean and
 /// survives `SIGKILL`; runtime dir bounds staleness to the last session.

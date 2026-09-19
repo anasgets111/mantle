@@ -23,8 +23,8 @@ use crate::lua::signal::{Signal, from_userdata};
 #[derive(Default)]
 struct SessionRegistry(HashMap<String, Table>);
 
-/// Registers `session_process`. `obelisk.processes` is resolved at call time: registration runs in
-/// `Loader::new`, before `lua::namespace::build` creates `obelisk`.
+/// Registers `session_process`. `mantle.processes` is resolved at call time: registration runs in
+/// `Loader::new`, before `lua::namespace::build` creates `mantle`.
 pub fn register(lua: &Lua) -> mlua::Result<()> {
     lua.globals().set(
         "session_process",
@@ -62,13 +62,13 @@ pub fn register(lua: &Lua) -> mlua::Result<()> {
     )
 }
 
-/// `obelisk.processes` through namespace `__index`, so the read starts the capability
+/// `mantle.processes` through namespace `__index`, so the read starts the capability
 /// (ADR-0070 decision 1).
 fn processes_capability(lua: &Lua) -> mlua::Result<mlua::AnyUserData> {
-    let obelisk: Table = lua.globals().get("obelisk").map_err(|_| {
-        mlua::Error::runtime("session_process: the `obelisk` namespace is not built yet on this Lua state")
+    let mantle: Table = lua.globals().get("mantle").map_err(|_| {
+        mlua::Error::runtime("session_process: the `mantle` namespace is not built yet on this Lua state")
     })?;
-    obelisk.get("processes")
+    mantle.get("processes")
 }
 
 /// Config table: real `start`/`signal`/`stop` fields; `__index` answers other keys with signals.
@@ -102,7 +102,7 @@ fn build_handle(lua: &Lua, name: &str, processes: mlua::AnyUserData) -> mlua::Re
 
     let metatable = lua.create_table()?;
     let signal = from_userdata(&processes)
-        .ok_or_else(|| mlua::Error::runtime("session_process: obelisk.processes is not a signal"))?;
+        .ok_or_else(|| mlua::Error::runtime("session_process: mantle.processes is not a signal"))?;
     let program = name.to_string();
     metatable.set(
         "__index",
@@ -117,7 +117,7 @@ fn build_handle(lua: &Lua, name: &str, processes: mlua::AnyUserData) -> mlua::Re
     Ok(handle)
 }
 
-/// One field of one declared program, mapped over `obelisk.processes`. `nil` before the first push
+/// One field of one declared program, mapped over `mantle.processes`. `nil` before the first push
 /// and for a name the Supervisor has not answered for yet, matching the property's documented
 /// default.
 fn field_signal(lua: &Lua, processes: &Signal, name: &str, key: &str) -> mlua::Result<mlua::AnyUserData> {

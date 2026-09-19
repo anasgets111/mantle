@@ -1,4 +1,4 @@
-//! `action(name, fn)`: the config's answer to `obelisk call <name>` (ADR-0197).
+//! `action(name, fn)`: the config's answer to `mantle call <name>` (ADR-0197).
 //!
 //! The outward direction of [`capability`](super::capability), and the only way anything outside
 //! this process runs config code with an effect. A keybind writes a `state` when it wants the shell
@@ -22,7 +22,7 @@ use super::signal::CpuBudget;
 /// Most an action may answer with. Far below `framing::MAX_FRAME_LEN`, which a larger answer would
 /// breach on the way out -- and a frame that cannot be written takes the Renderer's socket with it,
 /// so one config's oversized return would cost the whole connection rather than its own call. A
-/// megabyte is already past what `obelisk call` can usefully print.
+/// megabyte is already past what `mantle call` can usefully print.
 const MAX_ANSWER_BYTES: usize = 1024 * 1024;
 
 /// Every `action(name, fn)` this evaluation declared. In `app_data` beside the other registries, so
@@ -35,7 +35,7 @@ pub fn register(lua: &Lua) -> mlua::Result<()> {
         "action",
         lua.create_function(|lua, (name, handler): (String, Function)| {
             if name.is_empty() {
-                return Err(mlua::Error::runtime("action() needs a name; `obelisk call` has nothing to ask for"));
+                return Err(mlua::Error::runtime("action() needs a name; `mantle call` has nothing to ask for"));
             }
             if lua.app_data_ref::<ActionRegistry>().is_none() {
                 lua.set_app_data(ActionRegistry::default());
@@ -220,7 +220,7 @@ mod tests {
         let lua = lua();
         // `shell.lua` may declare several actions and then fail. Clearing before evaluation cannot
         // reach these, so the caller clears again on failure; without it a rejected config keeps
-        // answering `obelisk call`.
+        // answering `mantle call`.
         assert!(lua.load(r#"action("half", function() return 1 end) error("bad")"#).exec().is_err());
         assert_eq!(dispatch(&lua, "half", &[]), shared::CallOutcome::Returned(serde_json::json!(1)));
         clear(&lua);

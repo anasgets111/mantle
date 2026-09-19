@@ -1,4 +1,4 @@
-//! `obelisk.keyboard` combines LED backlight, lock state, and compositor layout (ADR-0034) in
+//! `mantle.keyboard` combines LED backlight, lock state, and compositor layout (ADR-0034) in
 //! one `Arc<Mutex<KeyboardState>>` and signal channel.
 
 pub mod controller;

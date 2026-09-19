@@ -1,7 +1,7 @@
-//! `obelisk.power` reports profiles and battery charge/discharge rate
+//! `mantle.power` reports profiles and battery charge/discharge rate
 //! from two D-Bus services (ADR-0053 amendment).
 //!
-//! `obelisk.power` combines unrelated facts: power-profiles-daemon supplies
+//! `mantle.power` combines unrelated facts: power-profiles-daemon supplies
 //! `active_profile`/`profiles`, UPower supplies `on_battery`/`energy_rate`. Either half may be
 //! absent, so fields are optional and never fabricated: no `"balanced"` without the profile daemon
 //! or `0` without UPower. It has no absence sentinel; ADR-0037's nil-until-hydrated contract covers

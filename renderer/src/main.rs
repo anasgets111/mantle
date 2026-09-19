@@ -33,7 +33,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Tagged, because these lines land in the Supervisor's log through inherited descriptors
     // (ADR-0199) and are the minority there.
     shared::log::init("renderer");
-    // `obelisk check` re-execs this binary because the Supervisor has no `mlua`, before any Wayland
+    // `mantle check` re-execs this binary because the Supervisor has no `mlua`, before any Wayland
     // connection because checking needs none.
     if std::env::var_os(shared::CHECK_ENV).is_some() {
         let config_dir = shared::config_dir()?;
@@ -53,11 +53,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // reaper; this would map a bar that never updates or exits. Refuse with one visible line.
     //
     // Check the env var before connecting. `process::spawn_group_leader` sets
-    // `OBELISK_GENERATION_ID` on every Renderer, at boot and on respawn.
+    // `MANTLE_GENERATION_ID` on every Renderer, at boot and on respawn.
     if std::env::var_os(shared::GENERATION_ID_ENV).is_none() {
         eprintln!(
-            "obelisk-renderer is not a command. The Supervisor starts it, one process per renderer \
-             generation, and reaps it.\n\nRun `obelisk` instead. `obelisk --help` lists what it takes."
+            "mantle-renderer is not a command. The Supervisor starts it, one process per renderer \
+             generation, and reaps it.\n\nRun `mantle` instead. `mantle --help` lists what it takes."
         );
         std::process::exit(2);
     }

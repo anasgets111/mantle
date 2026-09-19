@@ -1,4 +1,4 @@
-//! One `$XDG_RUNTIME_DIR/obelisk/<pid>-<start ms>/` per Supervisor, and how clients pick one (ADR-0222).
+//! One `$XDG_RUNTIME_DIR/mantle/<pid>-<start ms>/` per Supervisor, and how clients pick one (ADR-0222).
 
 use std::ffi::OsString;
 use std::fs::{DirBuilder, File};
@@ -110,7 +110,7 @@ fn newest<'a>(instances: impl Iterator<Item = &'a Instance>) -> Option<&'a Insta
 }
 
 /// The Supervisor `set`, `toggle` and `call` reach. `explicit` is `-c`, never an inherited
-/// `$OBELISK_CONFIG_DIR`.
+/// `$MANTLE_CONFIG_DIR`.
 pub fn select_command<'a>(
     instances: &'a [Instance],
     pid: Option<u32>,
@@ -120,7 +120,7 @@ pub fn select_command<'a>(
     let live = || instances.iter().filter(|instance| instance.live);
     if let Some(pid) = pid {
         return newest(live().filter(|instance| instance.pid == pid))
-            .ok_or_else(|| format!("no running shell with pid {pid}; obelisk list shows them"));
+            .ok_or_else(|| format!("no running shell with pid {pid}; mantle list shows them"));
     }
     newest(live().filter(|instance| instance.config == config))
         .or_else(|| if explicit { None } else { newest(live()) })
@@ -130,7 +130,7 @@ pub fn select_command<'a>(
         })
 }
 
-/// The shell `obelisk log` reads, and a note when it picked one of several live shells; `config` is
+/// The shell `mantle log` reads, and a note when it picked one of several live shells; `config` is
 /// `-c`.
 pub fn select_log<'a>(
     instances: &'a [Instance],
@@ -140,7 +140,7 @@ pub fn select_log<'a>(
     if let Some(pid) = pid {
         return newest(instances.iter().filter(|instance| instance.pid == pid))
             .map(|instance| (instance, None))
-            .ok_or_else(|| format!("no shell with pid {pid}; obelisk list shows the running ones"));
+            .ok_or_else(|| format!("no shell with pid {pid}; mantle list shows the running ones"));
     }
     let logs = || instances.iter().filter(|i| i.has_log && config.is_none_or(|config| i.config == config));
     let live = || logs().filter(|instance| instance.live);
@@ -158,7 +158,7 @@ pub fn select_log<'a>(
     })
 }
 
-/// `obelisk list`'s UPTIME: two units at most.
+/// `mantle list`'s UPTIME: two units at most.
 pub fn format_uptime(elapsed: Duration) -> String {
     let secs = elapsed.as_secs();
     match secs {
@@ -215,7 +215,7 @@ pub(crate) mod tests {
     fn claim_creates_a_private_dir_holding_config_and_a_held_lock() {
         use std::os::unix::fs::PermissionsExt;
         let root = tempfile::tempdir().unwrap();
-        let root = root.path().join("obelisk");
+        let root = root.path().join("mantle");
 
         let (dir, _held) = claim(&root, 42, Path::new("/cfg")).unwrap();
 

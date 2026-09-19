@@ -1,6 +1,6 @@
 ---
 name: implement
-description: "Implement an Obelisk slice."
+description: "Implement a Mantle slice."
 ---
 
 Implement the request against `docs/lua-api.md`, the relevant `docs/decisions.md` entries and the `CONTEXT.md`
@@ -13,4 +13,4 @@ terms. `docs/roadmap.md` lists what is not built.
 - `cargo check` while working, focused `cargo test`, then `just check` before done (fmt, tests, clippy,
   doc-link baselines, Lua types).
 - Crossing a Wayland or capability seam: verify on the live session (`diagnosing-bugs` step 1).
-- Review with `/obelisk-review`. Commit only when asked.
+- Review with `/mantle-review`. Commit only when asked.

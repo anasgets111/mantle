@@ -1,7 +1,7 @@
-//! `obelisk.updates` capability: package update checking and installation (ADR-0034).
+//! `mantle.updates` capability: package update checking and installation (ADR-0034).
 //!
 //! Separates scheduling from the backend abstraction (ADR-0134): `backend.rs` defines the trait and
-//! `pacman/` implements it for Arch. The scheduler is independent of `obelisk.sysinfo` (ADR-0034).
+//! `pacman/` implements it for Arch. The scheduler is independent of `mantle.sysinfo` (ADR-0034).
 
 pub mod backend;
 pub mod controller;
@@ -22,7 +22,7 @@ pub enum UpdatesAction {
     Install,
 }
 
-/// `obelisk.updates` dispatch (ADR-0037): `check`/`configure` send scheduler requests synchronously
+/// `mantle.updates` dispatch (ADR-0037): `check`/`configure` send scheduler requests synchronously
 /// (ADR-0034); `install` spawns the package-manager child.
 pub fn dispatch(controller: &UpdatesController, envelope: &shared::CommandEnvelope) {
     let Some(action) = crate::parse_action::<UpdatesAction>(&envelope.params) else { return };

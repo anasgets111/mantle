@@ -75,9 +75,9 @@ function json.decode(text) end
 
 process = {}
 
----Declares what `obelisk call <name>` runs (ADR-0197).
+---Declares what `mantle call <name>` runs (ADR-0197).
 ---
----The outward twin of `obelisk.<cap>:invoke(...)`: a keybind writes a `state` when it wants the
+---The outward twin of `mantle.<cap>:invoke(...)`: a keybind writes a `state` when it wants the
 ---shell to look different and calls an action when it wants it to *do* something, because rendering
 ---may not have side effects and a `state` write reaches no config code.
 ---
@@ -130,11 +130,11 @@ function process.detach(cmd, args) end
 
 ---@class SessionProcessHandle
 ---One program declared with [`session_process`]. Every field is a signal over this program's entry
----in `obelisk.processes`, and the three methods are the only ways to move it: there is no handle to
+---in `mantle.processes`, and the three methods are the only ways to move it: there is no handle to
 ---hold, because holding one is exactly what a config cannot do across a reload.
 ---@field running Signal<boolean?> `nil` until the first push. Whether it is up now. The other fields describe the current run while this is true and the finished one while it is false.
 ---@field pid Signal<integer?> Its process id, which is also its process group. `nil` until the first `start`, and kept after an exit.
----@field started_at Signal<integer?> Unix seconds when the current or last run began. Subtract it from `obelisk.system`'s clock for elapsed time; nothing here needs a second timer.
+---@field started_at Signal<integer?> Unix seconds when the current or last run began. Subtract it from `mantle.system`'s clock for elapsed time; nothing here needs a second timer.
 ---@field exit_code Signal<integer?> How the last finished run ended. `nil` while running, before the first run, and when a signal ended it rather than an exit.
 ---@field start_error Signal<string?> `nil` until the first push. Why the last `start` produced no process -- usually a command that is not on `PATH`. Empty when it spawned. Without reading this, a config waiting on `running` waits forever.
 local SessionProcessHandle = {}
@@ -164,7 +164,7 @@ function SessionProcessHandle:stop() end
 ---reaps the child's process group. Right for a helper
 ---that answers a question and exits, wrong for anything the user would notice stopping -- a
 ---recorder mid-file, a stream a widget is reading. This declares the second kind. The Supervisor
----holds it, does not restart on a config edit, and answers for it in `obelisk.processes`.
+---holds it, does not restart on a config edit, and answers for it in `mantle.processes`.
 ---
 ---What is given up in exchange is output: stdio is inherited rather than piped, because a program
 ---that outlives the generation that started it has no callback left to deliver a line to. A config
@@ -173,7 +173,7 @@ function SessionProcessHandle:stop() end
 ---Re-declaring a name returns the same handle and keeps a running program running, so this call
 ---belongs at a module's top level. Only `stop_signal` is re-read, which is what lets that be
 ---edited without stopping anything.
----@param spec { name: string, stop_signal?: "TERM"|"INT"|"HUP"|"QUIT"|"USR1"|"USR2"|"KILL"|"STOP"|"CONT" } `name` keys the program in `obelisk.processes`; `stop_signal` is how it wants to be asked to finish, `"TERM"` by default. A program that writes a file it has to close on the way out says so here.
+---@param spec { name: string, stop_signal?: "TERM"|"INT"|"HUP"|"QUIT"|"USR1"|"USR2"|"KILL"|"STOP"|"CONT" } `name` keys the program in `mantle.processes`; `stop_signal` is how it wants to be asked to finish, `"TERM"` by default. A program that writes a file it has to close on the way out says so here.
 ---@return SessionProcessHandle # The same handle for every declaration of one name.
 function session_process(spec) end
 

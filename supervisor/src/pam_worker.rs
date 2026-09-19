@@ -1,6 +1,6 @@
 //! Real PAM conversation, closing ADR-0015. ADR-0028's halves share `shared::PamOutcome` over
 //! `shared::framing` and [`pam_service`]. Blocking `nonstick` FFI runs in a re-exec'd worker, not
-//! the async Supervisor. [`run_worker`] handles `OBELISK_PAM_WORKER=1`, reads one stdin password,
+//! the async Supervisor. [`run_worker`] handles `MANTLE_PAM_WORKER=1`, reads one stdin password,
 //! runs one transaction, and writes one outcome frame. [`run_authentication`] re-execs via
 //! [`crate::process::spawn_group_leader_stdio_piped`], exchanges piped stdin/stdout, and reports
 //! to `main.rs`, the only unlock authority (ADR-0052). [`run_polkit_helper`] uses polkit's root
@@ -18,20 +18,20 @@ use tokio::sync::mpsc::UnboundedSender;
 /// PAM service-stack directory. A constant lets [`pam_service_in`] tests use a temporary directory.
 const PAM_CONFIG_DIR: &str = "/etc/pam.d";
 
-/// Service name for Obelisk's installed stack (`packaging/pam.d/obelisk`).
-const OBELISK_SERVICE: &str = "obelisk";
+/// Service name for Mantle's installed stack (`packaging/pam.d/mantle`).
+const MANTLE_SERVICE: &str = "mantle";
 
-/// [`run_conversation`] fallback when `packaging/pam.d/obelisk` is absent. This system lacks
+/// [`run_conversation`] fallback when `packaging/pam.d/mantle` is absent. This system lacks
 /// `/etc/pam.d/polkit-1`, so `"login"` is the disclosed fallback (ADR-0028).
 const FALLBACK_SERVICE: &str = "login";
 
-/// Uses Obelisk's stack when installed, otherwise the console-login stack. Probing avoids PAM's
-/// `/etc/pam.d/other` fallback, `pam_deny` on stock Arch: hardcoding `obelisk` would turn a missing
+/// Uses Mantle's stack when installed, otherwise the console-login stack. Probing avoids PAM's
+/// `/etc/pam.d/other` fallback, `pam_deny` on stock Arch: hardcoding `mantle` would turn a missing
 /// package file into a lock screen rejecting every correct password, while failing closed locks
 /// out the user. `stat` runs once per authentication, deliberately uncached so installing the file
 /// takes effect without restarting the locked shell.
 fn pam_service_in(pam_config_dir: &std::path::Path) -> &'static str {
-    if pam_config_dir.join(OBELISK_SERVICE).exists() { OBELISK_SERVICE } else { FALLBACK_SERVICE }
+    if pam_config_dir.join(MANTLE_SERVICE).exists() { MANTLE_SERVICE } else { FALLBACK_SERVICE }
 }
 
 fn pam_service() -> &'static str {
@@ -130,12 +130,12 @@ fn read_password(mut reader: impl std::io::Read) -> std::io::Result<shared::Zero
     Ok(shared::Zeroizing::new(password))
 }
 
-/// ADR-0028 worker path for `OBELISK_PAM_WORKER=1`. `main.rs` enters it before D-Bus/runtime/audio
+/// ADR-0028 worker path for `MANTLE_PAM_WORKER=1`. `main.rs` enters it before D-Bus/runtime/audio
 /// setup. Read stdin until the spawn side closes it, run PAM, zeroize, and write one outcome frame.
 /// `run_conversation` is blocking; only `write_json_frame` needs an executor because
 /// `shared::framing` uses `tokio::io::AsyncWrite`, so `new_current_thread()` is sufficient.
 pub fn run_worker() -> Result<(), Box<dyn std::error::Error>> {
-    let username = std::env::var("OBELISK_PAM_USERNAME")?;
+    let username = std::env::var("MANTLE_PAM_USERNAME")?;
 
     let password = read_password(std::io::stdin().lock())?;
 
@@ -313,8 +313,8 @@ async fn spawn_worker_and_exchange(username: &str, secret: &[u8]) -> std::io::Re
         SELF_EXE,
         &[],
         &[
-            ("OBELISK_PAM_WORKER".to_string(), "1".to_string()),
-            ("OBELISK_PAM_USERNAME".to_string(), username.to_string()),
+            ("MANTLE_PAM_WORKER".to_string(), "1".to_string()),
+            ("MANTLE_PAM_USERNAME".to_string(), username.to_string()),
         ],
     )?;
     exchange_over(child, secret, PAM_EXCHANGE_TIMEOUT).await
@@ -438,7 +438,7 @@ mod tests {
     /// running shell in, and spawning through the link has to work anyway.
     #[test]
     fn self_exe_probe_child() {
-        if std::env::var_os("OBELISK_SELF_EXE_CHILD").is_none() {
+        if std::env::var_os("MANTLE_SELF_EXE_CHILD").is_none() {
             return;
         }
         std::io::Read::read_to_end(&mut std::io::stdin(), &mut Vec::new()).expect("stdin closes after the unlink");
@@ -471,7 +471,7 @@ mod tests {
 
         let child = tokio::process::Command::new(&stand_in)
             .args(["--exact", "pam_worker::tests::self_exe_probe_child", "--nocapture"])
-            .env("OBELISK_SELF_EXE_CHILD", "1")
+            .env("MANTLE_SELF_EXE_CHILD", "1")
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
@@ -499,7 +499,7 @@ mod tests {
         let child = crate::process::spawn_group_leader_stdio_piped(
             SELF_EXE,
             &["--exact".to_string(), "a_name_no_test_here_has".to_string()],
-            &[("OBELISK_SELF_EXE_PROBE".to_string(), "1".to_string())],
+            &[("MANTLE_SELF_EXE_PROBE".to_string(), "1".to_string())],
         );
         let child = child.expect("spawning /proc/self/exe must work for a live process");
         let done = tokio::time::timeout(std::time::Duration::from_secs(30), child.wait_with_output())
@@ -517,7 +517,7 @@ mod tests {
 
     // ---- pam_service_in ----
 
-    /// Without a stack, keep the console-login service. Naming `obelisk` would select
+    /// Without a stack, keep the console-login service. Naming `mantle` would select
     /// `/etc/pam.d/other`, `pam_deny` on stock Arch, and reject the correct password.
     #[test]
     fn without_an_installed_stack_the_service_falls_back_to_login() {
@@ -528,8 +528,8 @@ mod tests {
     #[test]
     fn an_installed_stack_is_preferred_over_the_console_login_one() {
         let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("obelisk"), "auth include system-auth\n").unwrap();
-        assert_eq!(pam_service_in(dir.path()), "obelisk");
+        std::fs::write(dir.path().join("mantle"), "auth include system-auth\n").unwrap();
+        assert_eq!(pam_service_in(dir.path()), "mantle");
     }
 
     /// An unreadable PAM directory is "not installed", not a panic; this runs in the unlock worker.
@@ -544,7 +544,7 @@ mod tests {
     #[test]
     fn the_shipped_pam_stack_declares_both_chains_the_worker_drives() {
         let shipped =
-            std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../packaging/pam.d/obelisk")).unwrap();
+            std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../packaging/pam.d/mantle")).unwrap();
         let directives: Vec<&str> =
             shipped.lines().map(str::trim).filter(|line| !line.is_empty() && !line.starts_with('#')).collect();
         assert!(directives.iter().any(|line| line.starts_with("auth")), "no auth chain in {directives:?}");

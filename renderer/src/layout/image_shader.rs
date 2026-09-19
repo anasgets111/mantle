@@ -41,7 +41,7 @@ use crate::text::snap::{LogicalRect, PhysicalRect};
 /// (ADR-0184). Kept here rather than asked of the config so that a shader is a mask and not a
 /// pile of boilerplate, and so the sampling convention cannot drift between two of them.
 ///
-/// `obelisk_from`/`obelisk_to` return the endpoint's colour at a node-space coordinate, or
+/// `mantle_from`/`mantle_to` return the endpoint's colour at a node-space coordinate, or
 /// `u_fill` outside the picture -- the engine has already applied each endpoint's `fit`, so a
 /// shader never repeats that arithmetic and never disagrees with how the same image draws
 /// ordinarily.
@@ -59,9 +59,9 @@ uniform vec2 u_size;
 uniform vec4 u_from_rect;
 uniform vec4 u_to_rect;
 uniform vec4 u_fill;
-uniform float obelisk_opacity;
+uniform float mantle_opacity;
 
-vec4 obelisk_sample(sampler2D tex, vec4 rect, vec2 uv) {
+vec4 mantle_sample(sampler2D tex, vec4 rect, vec2 uv) {
     vec2 local = (uv - rect.xy) / rect.zw;
     if (local.x < 0.0 || local.x > 1.0 || local.y < 0.0 || local.y > 1.0) {
         return u_fill;
@@ -69,10 +69,10 @@ vec4 obelisk_sample(sampler2D tex, vec4 rect, vec2 uv) {
     return texture(tex, local);
 }
 
-vec4 obelisk_from(vec2 uv) { return obelisk_sample(u_from, u_from_rect, uv); }
-vec4 obelisk_to(vec2 uv) { return obelisk_sample(u_to, u_to_rect, uv); }
+vec4 mantle_from(vec2 uv) { return mantle_sample(u_from, u_from_rect, uv); }
+vec4 mantle_to(vec2 uv) { return mantle_sample(u_to, u_to_rect, uv); }
 
-#define main obelisk_effect
+#define main mantle_effect
 #line 1
 "#;
 
@@ -86,8 +86,8 @@ vec4 obelisk_to(vec2 uv) { return obelisk_sample(u_to, u_to_rect, uv); }
 const EPILOGUE: &str = r#"
 #undef main
 void main() {
-    obelisk_effect();
-    fragColor *= obelisk_opacity;
+    mantle_effect();
+    fragColor *= mantle_opacity;
 }
 "#;
 
@@ -102,7 +102,7 @@ void main() {
 /// epilogue applies the node's opacity once afterwards.
 const FADE: &str = r#"
 void main() {
-    fragColor = mix(obelisk_from(v_uv), obelisk_to(v_uv), u_progress);
+    fragColor = mix(mantle_from(v_uv), mantle_to(v_uv), u_progress);
 }
 "#;
 
@@ -334,7 +334,7 @@ impl ShaderStage {
             let mut params = HashMap::new();
             for index in 0..gl.get_active_uniforms(program) {
                 let Some(uniform) = gl.get_active_uniform(program, index) else { continue };
-                if uniform.name.starts_with("u_") || uniform.name.starts_with("obelisk_") {
+                if uniform.name.starts_with("u_") || uniform.name.starts_with("mantle_") {
                     continue;
                 }
                 if uniform.utype != glow::FLOAT {
@@ -359,7 +359,7 @@ impl ShaderStage {
                 from_rect: named("u_from_rect"),
                 to_rect: named("u_to_rect"),
                 fill: named("u_fill"),
-                opacity: named("obelisk_opacity"),
+                opacity: named("mantle_opacity"),
                 params,
             })
         }
@@ -689,12 +689,12 @@ mod tests {
     /// line at line 1 so a compiler error names a line the config can find.
     #[test]
     fn a_config_shader_is_wrapped_so_the_engine_owns_the_last_operation() {
-        let assembled = assemble("void main() { fragColor = obelisk_to(v_uv); }\n");
+        let assembled = assemble("void main() { fragColor = mantle_to(v_uv); }\n");
 
-        let effect = assembled.find("#define main obelisk_effect").expect("the rename");
+        let effect = assembled.find("#define main mantle_effect").expect("the rename");
         let user = assembled.find("void main() { fragColor").expect("the config's own source");
         let undef = assembled.find("#undef main").expect("the rename ends");
-        let engine = assembled.rfind("fragColor *= obelisk_opacity;").expect("the engine's last word");
+        let engine = assembled.rfind("fragColor *= mantle_opacity;").expect("the engine's last word");
         assert!(effect < user, "the rename has to reach the config's `main`");
         assert!(user < undef, "and has to stop before the engine writes its own");
         assert!(undef < engine);

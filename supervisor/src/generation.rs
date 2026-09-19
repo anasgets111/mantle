@@ -15,13 +15,13 @@ pub(super) const RESTART_COOLDOWN: Duration = Duration::from_secs(30);
 
 /// Installed Renderer filename. `renderer` is too generic for a user's `$PATH`; `cargo install`
 /// puts every binary in one directory.
-pub(crate) const RENDERER_BINARY: &str = "obelisk-renderer";
+pub(crate) const RENDERER_BINARY: &str = "mantle-renderer";
 
 /// Resolves the Renderer as a sibling of the running Supervisor.
 ///
 /// Keeps the Renderer off `$PATH` in an install with no code behind it. On Linux `current_exe`
-/// reads symlink-resolved `/proc/self/exe`, so `$PREFIX/bin/obelisk -> ../lib/obelisk/obelisk` finds
-/// `$PREFIX/lib/obelisk/obelisk-renderer`; users get one command on `$PATH` and the pair stays
+/// reads symlink-resolved `/proc/self/exe`, so `$PREFIX/bin/mantle -> ../lib/mantle/mantle` finds
+/// `$PREFIX/lib/mantle/mantle-renderer`; users get one command on `$PATH` and the pair stays
 /// together.
 ///
 /// The sibling rule makes `cargo run` a trap: it rebuilds one half and launches the other's stale

@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use shared::{debug, warn};
 
-/// `obelisk.sysinfo`'s five Lua-visible fields, with field names unchanged from the `StateSnapshot`
+/// `mantle.sysinfo`'s five Lua-visible fields, with field names unchanged from the `StateSnapshot`
 /// JSON keys.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 #[cfg_attr(test, derive(schemars::JsonSchema))]

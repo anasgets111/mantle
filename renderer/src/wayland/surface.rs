@@ -1149,7 +1149,7 @@ mod tests {
                 layer: LayerKind::Top,
                 anchor: node::Anchor { top: true, right: true, bottom: false, left: true },
                 monitor: "All".to_string(),
-                namespace: format!("obelisk-{id}"),
+                namespace: format!("mantle-{id}"),
             },
             keyboard_interactivity: node::KeyboardInteractivity::None,
             exclusive: node::Exclusive::Reserve,
@@ -1258,7 +1258,7 @@ mod tests {
         WindowSpec {
             id: id.to_string(),
             title: String::new(),
-            app_id: format!("obelisk-{id}"),
+            app_id: format!("mantle-{id}"),
             min_size: None,
             max_size: None,
         }

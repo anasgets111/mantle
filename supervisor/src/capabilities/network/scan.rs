@@ -1,4 +1,4 @@
-//! Access-point scanning for `obelisk.network`: `RequestScan`, the held access-point proxies, and
+//! Access-point scanning for `mantle.network`: `RequestScan`, the held access-point proxies, and
 //! the deduplicated, capped `available_networks` list `build_state` reads.
 
 use std::collections::{HashMap, HashSet};

@@ -1,4 +1,4 @@
-//! Arch's `pacman`, as an `obelisk.updates` backend (ADR-0034, ADR-0134). The one implementation
+//! Arch's `pacman`, as an `mantle.updates` backend (ADR-0034, ADR-0134). The one implementation
 //! of [`super::backend::Backend`] this Supervisor ships. Everything under here knows about
 //! `libalpm`, `/etc/pacman.conf` and `pacman`'s own stdout; nothing above the trait does.
 
@@ -33,7 +33,7 @@ impl Backend for PacmanBackend {
     }
 
     /// Root upgrade against real `/etc/pacman.conf` and `/var/lib/pacman`. `pkexec` triggers
-    /// Obelisk's registered polkit agent instead of requiring a terminal.
+    /// Mantle's registered polkit agent instead of requiring a terminal.
     fn install_command(&self) -> InstallCommand {
         InstallCommand {
             program: "pkexec".to_string(),
@@ -47,9 +47,9 @@ impl Backend for PacmanBackend {
 }
 
 /// Env names carrying the check into a re-exec of this binary.
-const CHECK_WORKER: &str = "OBELISK_PACMAN_CHECK";
-const CHECK_CONF: &str = "OBELISK_PACMAN_CONF";
-const CHECK_DB_ROOT: &str = "OBELISK_PACMAN_DB_ROOT";
+const CHECK_WORKER: &str = "MANTLE_PACMAN_CHECK";
+const CHECK_CONF: &str = "MANTLE_PACMAN_CONF";
+const CHECK_DB_ROOT: &str = "MANTLE_PACMAN_DB_ROOT";
 
 /// Runs the check in a child that then exits, because process exit is the only thing that returns
 /// the memory. One sync costs ~55 MiB of glibc arena and `malloc_trim` gives back none of it: the
@@ -141,7 +141,7 @@ mod tests {
         assert_eq!(backend.name(), "pacman");
 
         let command = backend.install_command();
-        assert_eq!(command.program, "pkexec", "elevation goes through polkit, so Obelisk's own agent prompts");
+        assert_eq!(command.program, "pkexec", "elevation goes through polkit, so Mantle's own agent prompts");
         assert_eq!(command.arguments, vec!["pacman", "-Syu", "--noconfirm"]);
     }
 

@@ -5,7 +5,7 @@ behavior and reload lifetimes; [roadmap](roadmap.md) owns gaps and proposed work
 [CONTEXT](../CONTEXT.md) owns terminology; [decisions](decisions.md) owns history.
 
 Exact capability fields and action names come from Rust types through
-[generated editor stubs](../supervisor/src/stubs.rs), installed by a package or, without one, `obelisk init`.
+[generated editor stubs](../supervisor/src/stubs.rs), installed by a package or, without one, `mantle init`.
 Keep schema inventories there rather than maintaining a second copy in Markdown.
 
 ## 1. Values and signals
@@ -38,12 +38,12 @@ See [VM setup](../renderer/src/lua/mod.rs), [JSON conversion](../renderer/src/lu
 | `geometry(name)` | The laid-out `{ x, y, width, height }` of the node declaring `geometry = geometry(name)`, written by each layout; a pass that changes it earns one follow-up pass, a tween tick none |
 | `delay(signal, ms)` | `signal` once it has held a new value for `ms`; a change that reverts sooner is dropped. Close-hold and trailing debounce in one shape |
 | `pulse(signal, ms)` | `true` for `ms` after `signal` changes value, `false` otherwise; a change inside an open window restarts it. What fires a one-shot animation, since nothing here can call `restart()` |
-| `obelisk.<capability>:on_change(fn)` | Runs `fn(current, previous)` per pushed snapshot; may invoke actions or write state |
+| `mantle.<capability>:on_change(fn)` | Runs `fn(current, previous)` per pushed snapshot; may invoke actions or write state |
 
 Pass the signal itself to a node property to keep it live:
 
 ```lua
-text { content = obelisk.keyboard.active_layout }
+text { content = mantle.keyboard.active_layout }
 ```
 
 A capability reads nil until hydrated; maps must handle it. A property resolving to nil uses its
@@ -56,7 +56,7 @@ Capability change handlers are cleared and registered again on evaluation.
 
 ## 2. Capability state
 
-Read state through `obelisk.<name>`; reading requests backend startup. Started backends remain
+Read state through `mantle.<name>`; reading requests backend startup. Started backends remain
 for the Supervisor's lifetime. These links lead to the actual serialized state definitions.
 
 | Capability | State definition |
@@ -84,9 +84,9 @@ for the Supervisor's lifetime. These links lead to the actual serialized state d
 | `polkit` | [Authentication challenge](../supervisor/src/capabilities/polkit.rs) |
 | `updates` | [Checks, packages and install progress](../supervisor/src/capabilities/updates/controller.rs) |
 
-Renderer-owned members are separate: `obelisk.rescue` carries `is_rescue` and `error_log` for reload
-failures; `obelisk.screens` carries output information. `obelisk.version` is a plain `{ major, minor, patch }`
-table; `obelisk.config_dir` is the loaded config directory path. See [namespace](../renderer/src/lua/namespace.rs)
+Renderer-owned members are separate: `mantle.rescue` carries `is_rescue` and `error_log` for reload
+failures; `mantle.screens` carries output information. `mantle.version` is a plain `{ major, minor, patch }`
+table; `mantle.config_dir` is the loaded config directory path. See [namespace](../renderer/src/lua/namespace.rs)
 and [output state](../renderer/src/wayland/output.rs).
 
 ## 3. Actions and I/O
@@ -94,8 +94,8 @@ and [output state](../renderer/src/wayland/output.rs).
 ### 3.1 Calling a capability
 
 ```lua
-obelisk.audio:invoke("set_volume", 0.5)
-obelisk.applications:invoke("launch", app_id)
+mantle.audio:invoke("set_volume", 0.5)
+mantle.applications:invoke("launch", app_id)
 ```
 
 Arguments follow the action name. There is no `capability:action(...)` sugar and no synchronous
@@ -105,8 +105,8 @@ unknown actions and wrong argument types or counts are logged and dropped by dis
 ### 3.2 Action arguments
 
 Hover or complete a command name in `invoke` for its positional signature, generated into
-[`lua-meta/obelisk.lua`](../lua-meta/obelisk.lua). The stubs give read-only capabilities no `invoke`; at
-runtime only `obelisk.idle` lacks it.
+[`lua-meta/mantle.lua`](../lua-meta/mantle.lua). The stubs give read-only capabilities no `invoke`; at
+runtime only `mantle.idle` lacks it.
 Targets are snapshot IDs. Volumes use 0–1, percentages 0–100, indices are zero-based, and an
 `integer` argument refuses `5.0`.
 
@@ -114,15 +114,15 @@ Targets are snapshot IDs. Volumes use 0–1, percentages 0–100, indices are ze
 
 | API | Contract |
 | :--- | :--- |
-| `obelisk.idle:register_threshold(seconds, on_idle, on_resume)` | Register inactivity callbacks; reset on re-evaluation |
-| `obelisk.idle:inhibit(reason)` / `release_inhibit()` | Acquire/release one generation-owned hold on logind idle inhibition |
+| `mantle.idle:register_threshold(seconds, on_idle, on_resume)` | Register inactivity callbacks; reset on re-evaluation |
+| `mantle.idle:inhibit(reason)` / `release_inhibit()` | Acquire/release one generation-owned hold on logind idle inhibition |
 | `fuzzy(haystack, needle)` | fzf's score and match start for one candidate; `nil` for no match. Smart case. The caller sorts |
 | `timer(ms, callback)` | Runs `callback` once, `ms` from now, `[1, 86400000]`; returns a handle with `cancel()`. One evaluation only; the handle is not what keeps it armed |
 | `persistent_table { path, name, defaults }` | Absolute directory and filename; defaults fill missing keys |
 | `store.key` / `store:set(key, value)` | Live key signal / write; nil deletes a key; `set` is reserved |
 | `process.run(cmd, args, out_cb, exit_cb)` | Spawns a process group; streams lines to `out_cb(line, stream)`; calls `exit_cb(code)`, `code` nil when a signal killed it; returns `{ kill() }` |
 | `process.detach(cmd, args)` | Spawns a program in its own session that survives reloads and outlives the shell; no handle, output or exit code |
-| `action(name, handler)` | Declares what `obelisk call <name>` runs; a string return prints bare, nil prints nothing, anything else prints as JSON. One evaluation only |
+| `action(name, handler)` | Declares what `mantle call <name>` runs; a string return prints bare, nil prints nothing, anything else prints as JSON. One evaluation only |
 | `session_process { name, stop_signal? }` | Declares a program whose lifetime is the session's; returns a handle with `running`/`pid`/`started_at`/`exit_code`/`start_error` signals and `start`/`signal`/`stop` methods |
 
 See [idle wrapper](../renderer/src/lua/idle.rs), [timers](../renderer/src/lua/timer.rs),
@@ -351,15 +351,15 @@ See [wire format and dispatch limits](services.md#13-control-socket-and-wire-for
 
 | Command | Behavior |
 | :--- | :--- |
-| `obelisk -d` | Starts the shell in its own session, prints its pid once it runs; output goes to `obelisk log` |
-| `obelisk log [-f]` | Prints the newest running shell's stdout and stderr, else the last run's; `-f` follows until that shell exits |
-| `obelisk list` | Running shells, oldest first: PID, UPTIME, DIR, CONFIG; exit 1 when none |
-| `obelisk init -c <dir> [--force]` | Writes `.luarc.json` and a starter `shell.lua`; copies the embedded stubs when no package installed them; `--force` overwrites the two config files |
-| `obelisk check -c <dir>` | Evaluates config/surface declarations without Wayland, GPU or subprocess execution |
-| `obelisk set <name> <value>` | Writes declared named state; parses JSON, otherwise uses a string |
-| `obelisk toggle <name>` | Toggles declared boolean state |
-| `obelisk toggle <name> <value>` | Sets declared state to the value, or back to its declared initial when it already holds it; one keybind for a modal whose state names the one showing |
-| `obelisk call <name> [args...]` | Runs the config's `action(name)` with JSON-or-string arguments, prints its return; non-zero exit on failure |
+| `mantle -d` | Starts the shell in its own session, prints its pid once it runs; output goes to `mantle log` |
+| `mantle log [-f]` | Prints the newest running shell's stdout and stderr, else the last run's; `-f` follows until that shell exits |
+| `mantle list` | Running shells, oldest first: PID, UPTIME, DIR, CONFIG; exit 1 when none |
+| `mantle init -c <dir> [--force]` | Writes `.luarc.json` and a starter `shell.lua`; copies the embedded stubs when no package installed them; `--force` overwrites the two config files |
+| `mantle check -c <dir>` | Evaluates config/surface declarations without Wayland, GPU or subprocess execution |
+| `mantle set <name> <value>` | Writes declared named state; parses JSON, otherwise uses a string |
+| `mantle toggle <name>` | Toggles declared boolean state |
+| `mantle toggle <name> <value>` | Sets declared state to the value, or back to its declared initial when it already holds it; one keybind for a modal whose state names the one showing |
+| `mantle call <name> [args...]` | Runs the config's `action(name)` with JSON-or-string arguments, prints its return; non-zero exit on failure |
 
 `set`, `toggle`, `call` and `log` take `--pid <pid>`, matched exactly. Without it, `set`, `toggle` and `call` reach the
 newest shell on the resolved config, else, without `-c`, the newest shell; `log` reads the newest running shell with a

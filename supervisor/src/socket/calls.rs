@@ -1,15 +1,15 @@
-//! Routes `obelisk call` answers back to the control client that asked (ADR-0197).
+//! Routes `mantle call` answers back to the control client that asked (ADR-0197).
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use tokio::sync::mpsc;
 
-/// Most `obelisk call`s that may be in flight at once (ADR-0197). A keybind makes one at a time; a
+/// Most `mantle call`s that may be in flight at once (ADR-0197). A keybind makes one at a time; a
 /// script could make more, and this bounds what a peer that never reads its answer can pin.
 pub(super) const MAX_PENDING_CALLS: usize = 64;
 
-/// Control clients waiting on an `obelisk call` answer, keyed by the id this assigns.
+/// Control clients waiting on an `mantle call` answer, keyed by the id this assigns.
 ///
 /// Not the `GenerationRegistry`: that is keyed by generation, and every control client shares
 /// [`shared::CONTROL_CLIENT_GENERATION`], so it cannot tell one waiting peer from another. The id

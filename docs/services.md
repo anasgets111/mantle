@@ -9,7 +9,7 @@ demand and remain started for the Supervisor's lifetime. State is event-driven w
 supports it; the clock, hardware telemetry and update checks use their own schedules.
 Lua owns presentation and user policy.
 
-Capability commands use `obelisk.<name>:invoke("action", ...)`. The exceptions are the
+Capability commands use `mantle.<name>:invoke("action", ...)`. The exceptions are the
 dedicated idle methods, `persistent_table`, `session_process`, `process.run` and `process.detach`.
 
 ## 1. Notifications
@@ -104,7 +104,7 @@ Missing Bluetooth hardware/service degrades to an inert controller.
 
 ### 5.3 Codec coverage
 
-Codecs come from PipeWire, not BlueZ. `obelisk.audio`'s `bluetooth` lists each BlueZ device's
+Codecs come from PipeWire, not BlueZ. `mantle.audio`'s `bluetooth` lists each BlueZ device's
 codec profiles by MAC, and the `set_bluetooth_profile(device, index)` action switches one. See
 [audio dispatch](../supervisor/src/capabilities/audio/mod.rs).
 
@@ -125,7 +125,7 @@ See [audio dispatch](../supervisor/src/capabilities/audio/mod.rs) and
 The Supervisor owns `ext_idle_notifier_v1`. Lua registers idle/resume callbacks per duration;
 equal durations share a Wayland listener. Registrations reset on re-evaluation.
 
-`obelisk.idle:inhibit(reason)` and `release_inhibit()` refcount one logind
+`mantle.idle:inhibit(reason)` and `release_inhibit()` refcount one logind
 `Inhibit(what="idle", mode="block")` fd across generation holds. Logind idle inhibition suppresses
 threshold events and resumes reported thresholds. `idle.inhibited` reflects any logind or compositor idle hold;
 `idle.inhibitors` names external holders.
@@ -148,7 +148,7 @@ focus, population, Hyprland special workspaces, and the focused active client (t
 floating state, and Hyprland fullscreen). Actions focus a workspace or toggle special workspaces.
 No complete window list is exposed.
 
-`obelisk.screens` is Renderer-owned output state, not a display-configuration API.
+`mantle.screens` is Renderer-owned output state, not a display-configuration API.
 See [workspaces](../supervisor/src/capabilities/workspaces/mod.rs) and
 [output handling](../renderer/src/wayland/output.rs).
 
@@ -172,7 +172,7 @@ Generation retirement and Supervisor shutdown reap managed children using SIGTER
 before SIGKILL. In-place reload preserves the generation without restarting processes.
 See [process registry](../supervisor/src/process/registry.rs).
 
-`session_process` declares the other lifetime. Those programs are held by `obelisk.processes` rather
+`session_process` declares the other lifetime. Those programs are held by `mantle.processes` rather
 than by a generation, so the retirement sweep never sees them; they survive every reload and are
 reaped only at shutdown, with the signal each declaration named and a five-second grace before
 SIGKILL. The longer grace is deliberate: a program is declared this way because it is doing
@@ -204,9 +204,9 @@ See [capability wiring](../supervisor/src/capabilities/mod.rs).
 | :--- | :--- |
 | Config | CLI `-c`, then shared config-path resolver |
 | Declared JSON stores | Absolute path and filename chosen by `persistent_table` |
-| Control socket, log, `instance.lock`, `config` | `$XDG_RUNTIME_DIR/obelisk/<supervisor pid>-<start ms>/` |
-| Spooled images | `$XDG_RUNTIME_DIR/obelisk/<supervisor pid>-<start ms>/<kind>/` |
-| Session-lock marker | `$XDG_RUNTIME_DIR/obelisk/session-locked` |
+| Control socket, log, `instance.lock`, `config` | `$XDG_RUNTIME_DIR/mantle/<supervisor pid>-<start ms>/` |
+| Spooled images | `$XDG_RUNTIME_DIR/mantle/<supervisor pid>-<start ms>/<kind>/` |
+| Session-lock marker | `$XDG_RUNTIME_DIR/mantle/session-locked` |
 
 Declared files push immediately and write 1 second after the last edit via temporary file and rename.
 Another writer's change replaces memory whole and pushes; an unparseable file is logged and never saved over.
@@ -244,6 +244,6 @@ See [wire types](../shared/src/lib.rs), [socket](../supervisor/src/socket/mod.rs
 Config edits trigger evaluation in the current generation, and a successful one applies in place:
 the scene reconciles, then surfaces whose declaration was removed, added or changed a creation-time
 field are destroyed or created (ADR-0216). Evaluation or apply failure preserves the active scene
-and surfaces and reports via `obelisk.rescue`. While locked, an edit that would recreate a lock
+and surfaces and reports via `mantle.rescue`. While locked, an edit that would recreate a lock
 surface is refused; save again after unlock.
 See [apply](../renderer/src/wayland/output.rs).

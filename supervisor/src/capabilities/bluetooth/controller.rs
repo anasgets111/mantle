@@ -1,4 +1,4 @@
-//! [`BluetoothController`]: the `obelisk.bluetooth` write-action dispatcher and state owner.
+//! [`BluetoothController`]: the `mantle.bluetooth` write-action dispatcher and state owner.
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -23,7 +23,7 @@ use super::{
 const CONNECT_RETRY_WINDOW: Duration = Duration::from_secs(3);
 const CONNECT_RETRY_INTERVAL: Duration = Duration::from_millis(500);
 
-/// Proxies needed by `obelisk.bluetooth` writes and state rebuilds. Every field is a cheap zbus
+/// Proxies needed by `mantle.bluetooth` writes and state rebuilds. Every field is a cheap zbus
 /// proxy or `Arc`, so a clone can move into a `tokio::spawn` task.
 #[derive(Clone)]
 pub struct BluetoothController {

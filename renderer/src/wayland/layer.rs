@@ -206,7 +206,7 @@ fn spec_update(
 /// Parameters for [`App::spawn_layer`], bundled for clippy's argument-count limit.
 pub(super) struct LayerSpec<'a> {
     layer_type: Layer,
-    /// Compositor-visible namespace (default `"obelisk-{id}"`), matched by `layerrule`.
+    /// Compositor-visible namespace (default `"mantle-{id}"`), matched by `layerrule`.
     namespace: &'a str,
     /// Always `Some` (ADR-0038 decision 3): one surface per `(surface, output)` pair.
     output: &'a wl_output::WlOutput,
@@ -688,7 +688,7 @@ mod tests {
                 layer: LayerKind::Top,
                 anchor: node::Anchor { top: true, right: true, bottom: false, left: true },
                 monitor: "All".to_string(),
-                namespace: format!("obelisk-{id}"),
+                namespace: format!("mantle-{id}"),
             },
             keyboard_interactivity: node::KeyboardInteractivity::None,
             exclusive: node::Exclusive::Reserve,

@@ -1,4 +1,4 @@
-//! PipeWire stream nodes for `obelisk.audio` and `obelisk.privacy`: classifying a node by
+//! PipeWire stream nodes for `mantle.audio` and `mantle.privacy`: classifying a node by
 //! `media.class`, and tracking audio streams, cameras, and microphone and screen captures from
 //! their `info` events.
 
@@ -14,7 +14,7 @@ use super::PropsLookup;
 const STREAM_OUTPUT_AUDIO: &str = "Stream/Output/Audio";
 
 /// `media.class` for camera capture (ADR-0034). PipeWire sees only portal-routed cameras, so this
-/// supplements `obelisk.privacy`'s kernel detection with a name-enrichment source.
+/// supplements `mantle.privacy`'s kernel detection with a name-enrichment source.
 const VIDEO_SOURCE: &str = "Video/Source";
 
 /// `media.class` for app audio capture (ADR-0137), distinct from `source_volume`, a device
@@ -144,7 +144,7 @@ pub(super) fn apply_info_event(
     previous != parsed
 }
 
-/// `Video/Source` data for `obelisk.privacy` name enrichment (ADR-0034): `pid` matches a
+/// `Video/Source` data for `mantle.privacy` name enrichment (ADR-0034): `pid` matches a
 /// kernel-detected `/dev/videoN` opener and `app_name` supplies its nicer PipeWire name. No
 /// `process_name`: privacy already falls back to `/proc/{pid}/comm`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]

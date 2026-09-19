@@ -1,10 +1,10 @@
-//! BlueZ Bluetooth D-Bus controller (`obelisk.bluetooth`; ADR-0030).
+//! BlueZ Bluetooth D-Bus controller (`mantle.bluetooth`; ADR-0030).
 //!
 //! Proxies follow BlueZ's D-Bus API docs; `org.freedesktop.DBus.ObjectManager` reuses
 //! `zbus::fdo::ObjectManagerProxy` (ADR-0030: no maintained BlueZ proxy crate).
 //!
 //! ponytail: [`BluetoothController::new`] degrades instead of failing like `NetworkController::new`
-//! (`zbus::Result<Self>`). NetworkManager is assumed present for `obelisk.network`; BlueZ may be
+//! (`zbus::Result<Self>`). NetworkManager is assumed present for `mantle.network`; BlueZ may be
 //! absent with no hardware or no `bluetoothd`, so binding, adapter lookup, and agent registration
 //! log and produce an inert controller: `enabled`/`discovering` are `false`, lists are empty, and
 //! writes log and no-op.
@@ -24,7 +24,7 @@
 use serde::Serialize;
 
 /// Object path where this Supervisor exports `org.bluez.Agent1` on its unique connection name.
-pub const AGENT_OBJECT_PATH: &str = "/org/obelisk/Bluez/Agent1";
+pub const AGENT_OBJECT_PATH: &str = "/org/mantle/Bluez/Agent1";
 
 pub mod agent;
 pub mod controller;
@@ -33,7 +33,7 @@ pub mod registry;
 
 pub use controller::BluetoothController;
 
-// State shape pushed as `obelisk.bluetooth`'s StateSnapshot.
+// State shape pushed as `mantle.bluetooth`'s StateSnapshot.
 // ---------------------------------------------------------------------------------------------
 
 /// The call this Supervisor is running for a device, drawn as its `busy`.
@@ -232,7 +232,7 @@ pub enum BluetoothAction {
     AnswerPairing { mac: String, accept: bool },
 }
 
-/// `obelisk.bluetooth` action dispatch (ADR-0037): `tokio::spawn`s each write action rather than
+/// `mantle.bluetooth` action dispatch (ADR-0037): `tokio::spawn`s each write action rather than
 /// awaiting inline (ADR-0030). `stop_discovery` leaves the last `discovered_devices` snapshot.
 pub fn dispatch(controller: &BluetoothController, envelope: &shared::CommandEnvelope) {
     let Some(action) = crate::parse_action::<BluetoothAction>(&envelope.params) else { return };

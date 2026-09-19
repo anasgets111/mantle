@@ -1,6 +1,6 @@
 ---
 name: diagnosing-bugs
-description: Diagnosis loop for hard Obelisk bugs and performance regressions, in the Rust framework or the Lua shell.
+description: Diagnosis loop for hard Mantle bugs and performance regressions, in the Rust framework or the Lua shell.
 ---
 
 # Diagnosing bugs
@@ -16,11 +16,11 @@ Stop guessing. Build a loop, hypothesize, measure, fix.
 No signal that goes red on this bug, no diagnosis. Cheapest first:
 
 1. A failing `cargo test -p <crate> <filter>` at the seam.
-2. `obelisk check -c <dir>`: evaluates a config with no display.
-3. The live session: `cargo build --workspace --release`, stop the running `obelisk`, copy both binaries over
-   `$CARGOBIN`, restart with `obelisk -d`, read `obelisk log -f`.
-4. Probes: `OBELISK_DUMP_LAYOUT=<surface@output>` for geometry, `WAYLAND_DEBUG=1` for protocol traffic,
-   `busctl`/`dbus-monitor` for backends, `obelisk call <action>` for Lua state.
+2. `mantle check -c <dir>`: evaluates a config with no display.
+3. The live session: `cargo build --workspace --release`, stop the running `mantle`, copy both binaries over
+   `$CARGOBIN`, restart with `mantle -d`, read `mantle log -f`.
+4. Probes: `MANTLE_DUMP_LAYOUT=<surface@output>` for geometry, `WAYLAND_DEBUG=1` for protocol traffic,
+   `busctl`/`dbus-monitor` for backends, `mantle call <action>` for Lua state.
 5. Only a human can see it (a frame, a flicker): numbered steps for the user, one y/n question each.
 
 Done when one command reproduces the exact symptom, in seconds, every time.

@@ -1,4 +1,4 @@
-//! `obelisk.sysinfo` provides CPU/RAM/swap/temperature telemetry with three independently
+//! `mantle.sysinfo` provides CPU/RAM/swap/temperature telemetry with three independently
 //! Lua-configurable poll intervals (ADR-0035).
 
 pub mod controller;

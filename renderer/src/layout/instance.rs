@@ -215,7 +215,7 @@ mod tests {
                 layer: LayerKind::Top,
                 anchor: Anchor::default(),
                 monitor: monitor.to_string(),
-                namespace: format!("obelisk-{id}"),
+                namespace: format!("mantle-{id}"),
             },
             keyboard_interactivity: KeyboardInteractivity::None,
             exclusive: crate::layout::node::Exclusive::Respect,
@@ -229,7 +229,7 @@ mod tests {
         SurfaceSpec::Window(WindowSpec {
             id: id.to_string(),
             title: "Settings".to_string(),
-            app_id: format!("obelisk-{id}"),
+            app_id: format!("mantle-{id}"),
             min_size: None,
             max_size: None,
         })

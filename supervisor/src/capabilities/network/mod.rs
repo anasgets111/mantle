@@ -1,4 +1,4 @@
-//! NetworkManager D-Bus controller (`obelisk.network`; ADR-0029). Its hand-written proxies'
+//! NetworkManager D-Bus controller (`mantle.network`; ADR-0029). Its hand-written proxies'
 //! (`proxies.rs`, ADR-0212) signal streams feed its worker task (`capabilities::spawn_worker`), which
 //! rebuilds state and sends it to `main.rs`.
 //!
@@ -54,7 +54,7 @@ pub struct JoinError {
     pub message: String,
 }
 
-/// `obelisk.network`'s whole live state, not only its scan results. Every field is re-derived from
+/// `mantle.network`'s whole live state, not only its scan results. Every field is re-derived from
 /// NetworkManager on each [`NetworkSignal`] (ADR-0029: no debounce or incremental state).
 ///
 /// The AP list cannot answer "am I online": it has no wired link and cannot distinguish a powered
@@ -179,7 +179,7 @@ pub enum NetworkAction {
     DisconnectWifi,
 }
 
-/// `obelisk.network` dispatch (ADR-0037). Writes spawn rather than await inline (ADR-0029);
+/// `mantle.network` dispatch (ADR-0037). Writes spawn rather than await inline (ADR-0029);
 /// `connect` stashes its intent until paired `secure_submit(network, connect)`.
 pub fn dispatch(controller: &NetworkController, envelope: &shared::CommandEnvelope) {
     let Some(action) = crate::parse_action::<NetworkAction>(&envelope.params) else { return };

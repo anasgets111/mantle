@@ -1,4 +1,4 @@
-//! `obelisk.lock`: session-lock commands and the lock-screen state (ADR-0042, ADR-0052 decisions 1
+//! `mantle.lock`: session-lock commands and the lock-screen state (ADR-0042, ADR-0052 decisions 1
 //! and 4).
 //!
 //! The Renderer holds `ext_session_lock_v1` and paints it. This owns acquisition, outcome state,

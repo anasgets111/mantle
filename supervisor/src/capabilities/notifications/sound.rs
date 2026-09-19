@@ -134,7 +134,7 @@ fn play_one(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
 
     let stream = pw::stream::StreamBox::new(
         &core,
-        "obelisk-notification-sound",
+        "mantle-notification-sound",
         pw::properties::properties! {
             *pw::keys::MEDIA_TYPE => "Audio",
             *pw::keys::MEDIA_ROLE => "Notification",

@@ -1,4 +1,4 @@
-//! Media players (`obelisk.mpris`, ADR-0036).
+//! Media players (`mantle.mpris`, ADR-0036).
 //!
 //! Supervisor-owned session-bus MPRIS discovery and zero-polling progress state, so `mpris.players`
 //! survives Renderer crash/reload like idle/lock authority (ADR-0010). Capture position once with
@@ -33,7 +33,7 @@ pub enum MprisAction {
     SeekRelative { id: String, offset_us: i64 },
 }
 
-/// `obelisk.mpris` action dispatch (ADR-0037): `tokio::spawn`s each write action
+/// `mantle.mpris` action dispatch (ADR-0037): `tokio::spawn`s each write action
 /// (ADR-0036/ADR-0029). Seeks are unclamped here; each command clamps, or declines to, where it runs.
 pub fn dispatch(controller: &MprisController, envelope: &shared::CommandEnvelope) {
     let Some(action) = crate::parse_action::<MprisAction>(&envelope.params) else { return };

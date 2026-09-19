@@ -1,4 +1,4 @@
-//! Tracked `obelisk.audio` state and pure parsing helpers, testable against recorded `pw-dump`
+//! Tracked `mantle.audio` state and pure parsing helpers, testable against recorded `pw-dump`
 //! properties without a live PipeWire proxy.
 
 use std::collections::{BTreeMap, HashMap};
@@ -13,7 +13,7 @@ use super::devices::{AudioDevice, BluetoothCodecs, BluezCard, DeviceEntry, bluet
 use super::streams::{AppStream, CaptureApp, VideoSourceApp, running};
 use crate::capabilities::audio::master;
 
-/// Full `obelisk.audio` payload (ADR-0053 decision 3).
+/// Full `mantle.audio` payload (ADR-0053 decision 3).
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[cfg_attr(test, derive(schemars::JsonSchema))]
 pub struct AudioState {
@@ -43,7 +43,7 @@ pub struct AudioState {
     pub bluetooth: Vec<BluetoothCodecs>,
 }
 
-/// All PipeWire inputs to `obelisk.privacy` in one snapshot (ADR-0137). One channel keeps the three
+/// All PipeWire inputs to `mantle.privacy` in one snapshot (ADR-0137). One channel keeps the three
 /// lists from arriving out of order when a config draws them together. All three lists change on
 /// the same registry events; separate senders would add orderings where one list is a push behind.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]

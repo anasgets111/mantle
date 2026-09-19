@@ -1,4 +1,4 @@
-//! Idle capability (`obelisk.idle`, ADR-0032). Notify uses the Supervisor's dedicated
+//! Idle capability (`mantle.idle`, ADR-0032). Notify uses the Supervisor's dedicated
 //! `ext_idle_notifier_v1` Wayland connection; inhibit uses `org.freedesktop.login1.Manager.Inhibit`
 //! on the existing system bus. They share one controller and generation-scoped cleanup.
 //!
@@ -21,7 +21,7 @@ pub use controller::IdleController;
 pub use state::IdleState;
 
 /// Actions accepted on an `idle` `CommandEnvelope`; exhaustive dispatch keeps variants and arms in
-/// sync. `obelisk.idle` has no `invoke`; only its methods and the reload path send these.
+/// sync. `mantle.idle` has no `invoke`; only its methods and the reload path send these.
 #[derive(Debug, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum IdleAction {
@@ -39,7 +39,7 @@ pub enum IdleAction {
     ReleaseInhibit,
 }
 
-/// `obelisk.idle` action dispatch (ADR-0037): matches and spawns every `idle` `CommandEnvelope`;
+/// `mantle.idle` action dispatch (ADR-0037): matches and spawns every `idle` `CommandEnvelope`;
 /// each action carries its registering generation id (ADR-0032/ADR-0006).
 pub fn dispatch(controller: &IdleController, envelope: &shared::CommandEnvelope) {
     let generation_id = envelope.params.generation_id;

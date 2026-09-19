@@ -1,4 +1,4 @@
-//! Notifications capability (`obelisk.notifications`, ADR-0033). Hosts
+//! Notifications capability (`mantle.notifications`, ADR-0033). Hosts
 //! `org.freedesktop.Notifications` with a 100-item FIFO, a 20-item newest-first feed view, global
 //! DND, and a Lua-configured per-urgency PipeWire sound registry. `sound-file` overrides a tier
 //! default for one notification; `suppress-sound` or a `set_app_muted` app wins; `sound-name`
@@ -330,7 +330,7 @@ impl<'de, T: Deserialize<'de> + Type> serde::de::Visitor<'de> for HintVisitor<T>
 pub struct Notification {
     /// Server id, starting at `1`; used by dismiss/reply/action and reused by replacement.
     pub id: u32,
-    /// Arrival time in Unix epoch seconds, matching `obelisk.system.time`; age is
+    /// Arrival time in Unix epoch seconds, matching `mantle.system.time`; age is
     /// `system.time - timestamp`. Replacements get fresh timestamps; carried because configs
     /// cannot recover history inside ADR-0021 side-effect-free `computed`s.
     pub timestamp: i64,
@@ -361,7 +361,7 @@ pub struct Notification {
     /// so history never sees them (ADR-0100).
     pub transient: bool,
     /// `hints["desktop-entry"]` id, e.g. `"org.telegram.desktop"`, used by
-    /// `obelisk.applications.by_app_id` instead of the mutable/non-unique `app_name`.
+    /// `mantle.applications.by_app_id` instead of the mutable/non-unique `app_name`.
     /// `nil` when absent; slashed values are dropped (ADR-0101).
     pub desktop_entry: Option<String>,
     /// Whether the sender offered inline reply; `:invoke("reply", id, text)` requires it.

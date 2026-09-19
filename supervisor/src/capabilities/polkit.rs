@@ -1,4 +1,4 @@
-//! `obelisk.polkit`: polkitd's pending challenge and the dialog's one action (ADR-0114).
+//! `mantle.polkit`: polkitd's pending challenge and the dialog's one action (ADR-0114).
 //!
 //! `crate::polkit` owns D-Bus; this owns the config state and held reply. Like `lock`, `main.rs`
 //! builds and pushes it because the bus callback, `secure_submit` frame, and PAM answer all land
@@ -9,7 +9,7 @@ use tokio::sync::oneshot;
 
 use crate::polkit::{AgentError, BeginAuthenticationCall, first_unix_user_uid};
 
-/// `obelisk.polkit`'s payload. All fields except `active` are empty while it is false.
+/// `mantle.polkit`'s payload. All fields except `active` are empty while it is false.
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize)]
 #[cfg_attr(test, derive(schemars::JsonSchema))]
 pub struct PolkitState {
@@ -131,7 +131,7 @@ impl PolkitController {
     }
 }
 
-/// `obelisk.polkit` action dispatch (ADR-0037). Returns whether state changed.
+/// `mantle.polkit` action dispatch (ADR-0037). Returns whether state changed.
 pub fn dispatch(controller: &mut PolkitController, envelope: &shared::CommandEnvelope) -> bool {
     let Some(action) = crate::parse_action::<PolkitAction>(&envelope.params) else { return false };
     match action {

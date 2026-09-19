@@ -66,9 +66,9 @@ pub fn parse_monitor(properties: &PropMap) -> Result<String, LayoutError> {
 }
 
 /// The layer-shell namespace, also used by Hyprland `layerrule` for blur and animations. It
-/// defaults to `"obelisk-{id}"`; `get_layer_surface` fixes it at creation, so an edit rebuilds the surface.
+/// defaults to `"mantle-{id}"`; `get_layer_surface` fixes it at creation, so an edit rebuilds the surface.
 pub fn parse_namespace(properties: &PropMap, id: &str) -> Result<String, LayoutError> {
-    let default = format!("obelisk-{id}");
+    let default = format!("mantle-{id}");
     parse_string_property(properties, "namespace", Some(&default))
 }
 
@@ -293,13 +293,13 @@ mod tests {
     }
 
     #[test]
-    fn namespace_absent_defaults_to_obelisk_dash_id() {
+    fn namespace_absent_defaults_to_mantle_dash_id() {
         let lua = lua();
         let table: mlua::Table =
             lua.load(r#"return { kind = "panel", id = "launcher", layer = "Overlay" }"#).eval().unwrap();
         let props = props_from_table(&table);
-        assert_eq!(parse_namespace(&props, "launcher").unwrap(), "obelisk-launcher");
-        assert_eq!(surface_topology(&props).unwrap().namespace, "obelisk-launcher");
+        assert_eq!(parse_namespace(&props, "launcher").unwrap(), "mantle-launcher");
+        assert_eq!(surface_topology(&props).unwrap().namespace, "mantle-launcher");
     }
 
     #[test]

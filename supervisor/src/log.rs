@@ -1,4 +1,4 @@
-//! `obelisk log`: the shell's own stdout and stderr, kept somewhere a detached run can be read
+//! `mantle log`: the shell's own stdout and stderr, kept somewhere a detached run can be read
 //! from (ADR-0199).
 //!
 //! Every diagnostic in both binaries is an `eprintln!`, so this is a `dup2` per descriptor, not a
@@ -20,7 +20,7 @@ const POLL: Duration = Duration::from_millis(200);
 /// Points whichever of stdout and stderr go to `/dev/null` at the instance directory's log.
 ///
 /// `/dev/null` is the only destination with nothing to lose; a terminal, redirect or pipe is one
-/// someone chose. Per descriptor, or `obelisk >mine.log 2>/dev/null` leaves `mine.log` empty.
+/// someone chose. Per descriptor, or `mantle >mine.log 2>/dev/null` leaves `mine.log` empty.
 pub fn capture(dir: &Path) -> io::Result<()> {
     let discarded: Vec<i32> =
         [libc::STDOUT_FILENO, libc::STDERR_FILENO].into_iter().filter(|fd| goes_to_dev_null(*fd)).collect();
@@ -38,7 +38,7 @@ pub fn capture(dir: &Path) -> io::Result<()> {
     Ok(())
 }
 
-/// `obelisk log [--follow]`: `dir`'s log, until its Supervisor exits.
+/// `mantle log [--follow]`: `dir`'s log, until its Supervisor exits.
 ///
 /// `colour` paints what the file deliberately does not hold (ADR-0229): the shell wrote these bytes
 /// to a file, so it left them plain, and the terminal they are finally shown on is this process's.
@@ -55,12 +55,12 @@ pub fn print(dir: &Path, follow: bool, colour: bool, out: &mut impl Write) -> Re
     // Said once, before any of it is printed: without this a dead run's bytes are indistinguishable
     // from a live one's, and `--follow` returns at once looking like it simply caught up.
     if !instance::is_locked(&lock)? {
-        eprintln!("obelisk: no shell is writing {}; this is the last run's output", path.display());
+        eprintln!("mantle: no shell is writing {}; this is the last run's output", path.display());
     }
     let mut writer_left = false;
     let mut pending = Vec::new();
     loop {
-        // Plain output stays a byte-for-byte copy, so `obelisk log | grep` is what it always was.
+        // Plain output stays a byte-for-byte copy, so `mantle log | grep` is what it always was.
         if colour {
             paint(&mut file, out, &mut pending)?;
         } else {

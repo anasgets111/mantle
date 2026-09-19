@@ -73,7 +73,7 @@ Removing patterns is half the job. Sterile, voiceless writing is just as obvious
 
 ### Plain speech
 
-27. **Say what it does, not how it feels.** "reloads feel instant", "config you can reason about" name a feeling. The fix names the mechanism or a number: "a value change reloads in place without a generation swap", "`obelisk check` exits non-zero on a config error". Ask what the sentence tells the reader to do or know, then write that. If you can't restate it as a concrete instruction, fact, or number, cut it. If the sentence could appear unchanged in another project's docs, cut it.
+27. **Say what it does, not how it feels.** "reloads feel instant", "config you can reason about" name a feeling. The fix names the mechanism or a number: "a value change reloads in place without a generation swap", "`mantle check` exits non-zero on a config error". Ask what the sentence tells the reader to do or know, then write that. If you can't restate it as a concrete instruction, fact, or number, cut it. If the sentence could appear unchanged in another project's docs, cut it.
 28. **Shorten or split dense sentences.** If the reader has to backtrack to parse a sentence, break it in two or drop clauses. One idea per sentence.
 29. **Active voice.** Prefer it. Catch "is/are/was/were + past participle" and name the actor: "queries are validated" becomes "the compiler validates queries", "the file is parsed by the loader" becomes "the loader parses the file". Passive is fine only when the actor is unknown or genuinely doesn't matter.
 30. **Cut adverbs, or use a stronger verb.** "runs quickly" becomes "is fast" or the number (e.g., "runs in 5ms"). "significantly improves" becomes the measured delta. An adverb propping up a weak verb means the verb is wrong.

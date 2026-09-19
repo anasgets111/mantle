@@ -1,4 +1,4 @@
-//! NetworkManager devices for `obelisk.network`: resolving the Wi-Fi and wired devices, and the
+//! NetworkManager devices for `mantle.network`: resolving the Wi-Fi and wired devices, and the
 //! forwarder tasks that turn their signals, and the manager's, into [`NetworkSignal`]s.
 
 use futures_util::{Stream, StreamExt, stream, stream_select};

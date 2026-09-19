@@ -216,8 +216,8 @@ mod tests {
     fn settings_window() -> WindowSpec {
         WindowSpec {
             id: "settings".to_string(),
-            title: "Obelisk settings".to_string(),
-            app_id: "obelisk.settings".to_string(),
+            title: "Mantle settings".to_string(),
+            app_id: "mantle.settings".to_string(),
             min_size: None,
             max_size: None,
         }
@@ -291,10 +291,10 @@ mod tests {
         );
 
         let mut rematched = applied.clone();
-        rematched.app_id = "obelisk.prefs".to_string();
+        rematched.app_id = "mantle.prefs".to_string();
         assert_eq!(
             window_update(&applied, &rematched),
-            WindowUpdate { app_id: Some("obelisk.prefs".to_string()), ..WindowUpdate::default() }
+            WindowUpdate { app_id: Some("mantle.prefs".to_string()), ..WindowUpdate::default() }
         );
 
         let mut bounded = applied.clone();

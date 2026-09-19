@@ -1,4 +1,4 @@
-//! Inhibit half of `obelisk.idle` (ADR-0032): login1 `Inhibit` on the existing system bus, with
+//! Inhibit half of `mantle.idle` (ADR-0032): login1 `Inhibit` on the existing system bus, with
 //! per-generation refcounts, a hand-written proxy, and shared fd state. Split from `dbus::idle`;
 //! see `hardware/idle/mod.rs`.
 
@@ -67,7 +67,7 @@ pub(crate) trait Login1Manager {
 /// ADR-0032 fixes `what`/`who`/`mode`; only `mode = "block"` stops systemd's auto-suspend-on-idle,
 /// while `delay` merely postpones it.
 pub(crate) const INHIBIT_WHAT: &str = "idle";
-pub(crate) const INHIBIT_WHO: &str = "obelisk";
+pub(crate) const INHIBIT_WHO: &str = "mantle";
 pub(crate) const INHIBIT_MODE: &str = "block";
 
 pub(crate) struct InhibitState {
@@ -220,7 +220,7 @@ mod tests {
                 .await;
 
         let proxy: Login1ManagerProxy<'_> = zbus::proxy::Builder::new(&caller_side)
-            .destination("org.obelisk.test")
+            .destination("org.mantle.test")
             .expect("valid destination bus name")
             .path("/org/freedesktop/login1")
             .expect("valid object path")
@@ -231,13 +231,13 @@ mod tests {
             .expect("failed to build a p2p Login1ManagerProxy");
 
         let fd =
-            proxy.inhibit("idle", "obelisk", "playing a video", "block").await.expect("Inhibit call should succeed");
+            proxy.inhibit("idle", "mantle", "playing a video", "block").await.expect("Inhibit call should succeed");
         // OwnedFd::drop must close it cleanly without panicking.
         drop(fd);
 
         let (what, who, why, mode) = calls_rx.recv().await.expect("stub Login1Manager never received Inhibit");
         assert_eq!(what, "idle");
-        assert_eq!(who, "obelisk");
+        assert_eq!(who, "mantle");
         assert_eq!(why, "playing a video");
         assert_eq!(mode, "block");
     }

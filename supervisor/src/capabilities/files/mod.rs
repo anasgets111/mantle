@@ -1,4 +1,4 @@
-//! `obelisk.files` keeps a config-requested folder listing current through inotify (ADR-0120).
+//! `mantle.files` keeps a config-requested folder listing current through inotify (ADR-0120).
 //! Plain filesystem reads and one kernel watch per folder, with no D-Bus proxy or hardware thread.
 //!
 //! The config VM has no `io` (ADR-0048); `process.run("ls")` would parse lines for a table the
@@ -33,7 +33,7 @@ fn absolute<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<String,
     if path.starts_with('/') { Ok(path) } else { Err(serde::de::Error::custom("expected an absolute path")) }
 }
 
-/// `obelisk.files`'s action dispatch (ADR-0037). Synchronous: `watch` spawns the listing and the
+/// `mantle.files`'s action dispatch (ADR-0037). Synchronous: `watch` spawns the listing and the
 /// inotify loop as a task and returns, and `unwatch` aborts that task.
 pub fn dispatch(controller: &FilesController, envelope: &shared::CommandEnvelope) {
     let Some(action) = crate::parse_action::<FilesAction>(&envelope.params) else { return };

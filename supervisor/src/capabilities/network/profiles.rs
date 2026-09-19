@@ -1,4 +1,4 @@
-//! Saved NetworkManager profiles for `obelisk.network`: reading them, the saved-SSID cache,
+//! Saved NetworkManager profiles for `mantle.network`: reading them, the saved-SSID cache,
 //! `forget`, wired autoconnect, and shaping a typed key into a saved profile.
 
 use std::collections::HashMap;

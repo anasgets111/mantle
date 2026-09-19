@@ -1,5 +1,5 @@
 ---
-name: obelisk-review
+name: mantle-review
 description: Three-axis code review (Standards vs. Spec vs. Correctness). Parallel execution. Enforces YAGNI and systems-level discipline.
 ---
 

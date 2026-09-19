@@ -1,5 +1,5 @@
 //! Reports what wakes the Renderer's poll loop, what work it does, and its CPU cost under
-//! `obelisk --profile`. It replaces ad-hoc probes, where each question meant a temporary
+//! `mantle --profile`. It replaces ad-hoc probes, where each question meant a temporary
 //! `eprintln!`, one reading, then deletion. ADR-0124 made polling timeout-free, so a wake with no
 //! work means an unnecessary re-arm and a spin. All figures here are release-build measurements.
 //! Idle costs 0.34% of a core; `dev` resolves roughly four times slower, so compare like builds.

@@ -1,4 +1,4 @@
-//! System tray host (`obelisk.tray`, ADR-0031).
+//! System tray host (`mantle.tray`, ADR-0031).
 //!
 //! Hosts `org.kde.StatusNotifierWatcher` at `/StatusNotifierWatcher` and handles registered
 //! `org.kde.StatusNotifierItem`s and optional `com.canonical.dbusmenu` menus. Hand-written proxies
@@ -116,7 +116,7 @@ pub enum TrayAction {
     MenuWillShow { id: String, submenu_id: i32 },
 }
 
-/// `obelisk.tray` dispatch (ADR-0037): spawns every write action (ADR-0031).
+/// `mantle.tray` dispatch (ADR-0037): spawns every write action (ADR-0031).
 pub fn dispatch(controller: &TrayController, envelope: &shared::CommandEnvelope) {
     let Some(action) = crate::parse_action::<TrayAction>(&envelope.params) else { return };
     let controller = controller.clone();

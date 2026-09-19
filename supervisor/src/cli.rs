@@ -1,4 +1,4 @@
-//! Argument parsing for the `obelisk` binary.
+//! Argument parsing for the `mantle` binary.
 //!
 //! Hand-rolled: a handful of flags, a handful of subcommands, and one non-obvious rule (`-c` may
 //! name a file). `clap` would be the workspace's largest dependency; the rule needs custom code
@@ -51,27 +51,27 @@ pub struct Args {
 }
 
 pub const HELP: &str = "\
-obelisk -- a Wayland desktop shell configured in Lua
+mantle -- a Wayland desktop shell configured in Lua
 
 USAGE:
-    obelisk [OPTIONS]            start the shell
-    obelisk init [OPTIONS]       set up a config directory for editing
-    obelisk check [OPTIONS]      evaluate the config and exit
-    obelisk set <NAME> <VALUE>   write the running config's state(NAME) signal
-    obelisk toggle <NAME>        flip it, when it holds a boolean
-    obelisk toggle <NAME> <VALUE>
+    mantle [OPTIONS]            start the shell
+    mantle init [OPTIONS]       set up a config directory for editing
+    mantle check [OPTIONS]      evaluate the config and exit
+    mantle set <NAME> <VALUE>   write the running config's state(NAME) signal
+    mantle toggle <NAME>        flip it, when it holds a boolean
+    mantle toggle <NAME> <VALUE>
                                 set it to VALUE, or back to its declared
                                 initial when it already is VALUE
-    obelisk call <NAME> [ARGS]   run the config's action(NAME) and print what
+    mantle call <NAME> [ARGS]   run the config's action(NAME) and print what
                                  it returned
-    obelisk log [-f]             print the shell's stdout and stderr
-    obelisk list                 show running shells: PID UPTIME DIR CONFIG
+    mantle log [-f]             print the shell's stdout and stderr
+    mantle list                 show running shells: PID UPTIME DIR CONFIG
 
 OPTIONS:
     -c, --config <DIR>   the config directory, holding shell.lua. Overrides
-                         $OBELISK_CONFIG_DIR and $XDG_CONFIG_HOME.
+                         $MANTLE_CONFIG_DIR and $XDG_CONFIG_HOME.
     -d, --detach         run only: start the shell in its own session and
-                         return, sending its output to `obelisk log`
+                         return, sending its output to `mantle log`
         --force          init only: overwrite files that already exist
     -f, --follow         log only: keep printing until the shell exits
         --pid <PID>      set, toggle, call and log: the shell `list` shows,
@@ -85,8 +85,8 @@ The config is a directory, not a file: `require` resolves inside it, and the
 shell reloads when any .lua file in it changes.
 
 `set` and `toggle` are how a compositor keybind reaches a running config:
-bind `obelisk toggle launcher_open` and the config's `state(\"launcher_open\",
-false)` flips; bind `obelisk toggle modal launcher` and `state(\"modal\", \"\")`
+bind `mantle toggle launcher_open` and the config's `state(\"launcher_open\",
+false)` flips; bind `mantle toggle modal launcher` and `state(\"modal\", \"\")`
 becomes \"launcher\", or \"\" again when it already was. VALUE is read as JSON
 (true, 3, \"text\", [1,2]); anything that is not JSON is taken as a string, so
 quoting `notifications` is optional.
@@ -95,12 +95,12 @@ quoting `notifications` is optional.
 /dev/null: when it does, stdout and stderr go to its runtime directory
 instead, and `-f` keeps reading until that shell exits. A
 terminal, a redirect or a pipe is left alone and there is no file to read.
-`-d` starts a shell that way deliberately and prints its pid, so `obelisk -d`
-then `obelisk log -f` runs one from a terminal without tying the terminal up.
+`-d` starts a shell that way deliberately and prints its pid, so `mantle -d`
+then `mantle log -f` runs one from a terminal without tying the terminal up.
 
 `call` is for what a keybind wants the shell to *do* rather than look like:
 the config declares `action(\"rec.toggle\", function() ... end)` and the bind is
-`obelisk call rec.toggle`. NAME is one opaque string -- the dot groups it for a
+`mantle call rec.toggle`. NAME is one opaque string -- the dot groups it for a
 reader, nothing splits on it. Arguments are read as JSON like VALUE above. It
 waits for the answer, prints it, and exits non-zero when the action failed or
 does not exist.
@@ -115,7 +115,7 @@ fn config_dir_from(raw: &str) -> Result<PathBuf, String> {
             .parent()
             .filter(|p| !p.as_os_str().is_empty())
             .ok_or_else(|| format!("--config {raw} is a file with no parent directory"))?;
-        eprintln!("obelisk: --config takes a directory; using {} because {raw} is a file", parent.display());
+        eprintln!("mantle: --config takes a directory; using {} because {raw} is a file", parent.display());
         parent.to_path_buf()
     } else {
         given.to_path_buf()
@@ -162,7 +162,7 @@ pub fn parse<I: IntoIterator<Item = String>>(argv: I) -> Result<Args, String> {
             }
             // Take the state name and `set` value before flags; a value may begin with a dash
             // (`-1`). An option the parser knows is still an option in that slot, or
-            // `obelisk toggle open -c /dir` would store the flag as the value and then choke on the
+            // `mantle toggle open -c /dir` would store the flag as the value and then choke on the
             // directory.
             _ if matches!(command, Some("set" | "toggle")) && positional.len() < 2 && !is_option(&arg) => {
                 positional.push(arg);
@@ -208,7 +208,7 @@ pub fn parse<I: IntoIterator<Item = String>>(argv: I) -> Result<Args, String> {
         Some("check") => Command::Check,
         Some("set") => {
             let [name, value] = <[String; 2]>::try_from(positional)
-                .map_err(|_| "set takes a state name and a value: `obelisk set launcher_open true`".to_string())?;
+                .map_err(|_| "set takes a state name and a value: `mantle set launcher_open true`".to_string())?;
             // Parse JSON when possible; bare words stay strings, so keybinds need no extra quotes.
             let value = serde_json::from_str(&value).unwrap_or(serde_json::Value::String(value));
             Command::SetState(shared::SetState { name, write: shared::StateWrite::Set(value) })
@@ -217,7 +217,7 @@ pub fn parse<I: IntoIterator<Item = String>>(argv: I) -> Result<Args, String> {
             let mut positional = positional.into_iter();
             let name = positional
                 .next()
-                .ok_or_else(|| "toggle takes a state name: `obelisk toggle launcher_open`".to_string())?;
+                .ok_or_else(|| "toggle takes a state name: `mantle toggle launcher_open`".to_string())?;
             let write = match positional.next() {
                 // The same reading as `set`: JSON when it parses, a string otherwise.
                 Some(value) => shared::StateWrite::ToggleTo(
@@ -230,7 +230,7 @@ pub fn parse<I: IntoIterator<Item = String>>(argv: I) -> Result<Args, String> {
         Some("call") => {
             let mut positional = positional.into_iter();
             let name =
-                positional.next().ok_or_else(|| "call takes an action name: `obelisk call rec.toggle`".to_string())?;
+                positional.next().ok_or_else(|| "call takes an action name: `mantle call rec.toggle`".to_string())?;
             // The same reading as `set`: JSON when it parses, a string otherwise, so a keybind
             // passing a word needs no shell quoting.
             let arguments =
@@ -274,7 +274,7 @@ mod tests {
     use super::*;
 
     fn parse_args(args: &[&str]) -> Result<Args, String> {
-        parse(std::iter::once("obelisk".to_string()).chain(args.iter().map(|a| (*a).to_string())))
+        parse(std::iter::once("mantle".to_string()).chain(args.iter().map(|a| (*a).to_string())))
     }
 
     /// The state name and value are taken before flags so a value like `-5` is not read as one,
@@ -343,7 +343,7 @@ mod tests {
 
     #[test]
     fn a_path_to_shell_lua_resolves_to_its_directory() {
-        // Accommodate the common `-c ~/.config/obelisk/shell.lua` after editing that file.
+        // Accommodate the common `-c ~/.config/mantle/shell.lua` after editing that file.
         //
         // The rule under test is "a path to a file resolves to its parent".
         // Absolute, because `is_file()` has to see it and tests run from the crate root.

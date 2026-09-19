@@ -269,7 +269,7 @@ mod tests {
 
     async fn agent1_proxy(caller_side: &zbus::Connection) -> zbus::Proxy<'_> {
         zbus::proxy::Builder::new(caller_side)
-            .destination("org.obelisk.Supervisor")
+            .destination("org.mantle.Supervisor")
             .expect("valid destination bus name")
             .path(AGENT_OBJECT_PATH)
             .expect("valid object path")

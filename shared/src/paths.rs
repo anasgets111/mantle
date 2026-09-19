@@ -6,21 +6,21 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-/// `$XDG_RUNTIME_DIR/obelisk`: per-login state, and one directory per running Supervisor (ADR-0222).
+/// `$XDG_RUNTIME_DIR/mantle`: per-login state, and one directory per running Supervisor (ADR-0222).
 pub fn runtime_root() -> io::Result<PathBuf> {
     let runtime_dir = std::env::var_os("XDG_RUNTIME_DIR")
         .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "XDG_RUNTIME_DIR is not set"))?;
-    Ok(PathBuf::from(runtime_dir).join("obelisk"))
+    Ok(PathBuf::from(runtime_dir).join("mantle"))
 }
 
 /// The Supervisor's `runtime_root()/<pid>-<start ms>`, handed to its Renderers through the environment.
-pub const INSTANCE_DIR_ENV: &str = "OBELISK_INSTANCE_DIR";
+pub const INSTANCE_DIR_ENV: &str = "MANTLE_INSTANCE_DIR";
 
 /// This shell's socket, log and icon spools (ADR-0222).
 pub fn instance_dir() -> io::Result<PathBuf> {
     std::env::var_os(INSTANCE_DIR_ENV)
         .map(PathBuf::from)
-        .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "OBELISK_INSTANCE_DIR is not set"))
+        .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "MANTLE_INSTANCE_DIR is not set"))
 }
 
 /// Control socket, shared by the `supervisor` listener and `renderer` client. Not `/tmp`: it is
@@ -37,20 +37,20 @@ pub fn session_locked_flag_path() -> io::Result<PathBuf> {
 }
 
 /// A config directory named by the session. The Supervisor passes every Renderer its resolved one.
-pub const CONFIG_DIR_ENV: &str = "OBELISK_CONFIG_DIR";
+pub const CONFIG_DIR_ENV: &str = "MANTLE_CONFIG_DIR";
 
 /// Generation id stamped on every spawned Renderer.
 ///
 /// Shared because both binaries read it. If absent, the Renderer treats that as "nobody spawned
 /// me" and refuses to start; the Supervisor sets it on boot and every respawn.
-pub const GENERATION_ID_ENV: &str = "OBELISK_GENERATION_ID";
+pub const GENERATION_ID_ENV: &str = "MANTLE_GENERATION_ID";
 
-/// Set when `obelisk check` re-execs the Renderer to evaluate a config without a display.
-pub const CHECK_ENV: &str = "OBELISK_CHECK";
+/// Set when `mantle check` re-execs the Renderer to evaluate a config without a display.
+pub const CHECK_ENV: &str = "MANTLE_CHECK";
 
-/// `obelisk --profile[=SECS]`, passed by the Supervisor to every Renderer generation. One
+/// `mantle --profile[=SECS]`, passed by the Supervisor to every Renderer generation. One
 /// switch for the idle, heap and PSS/GPU reports, so their lines share a clock.
-pub const PROFILE_ENV: &str = "OBELISK_PROFILE";
+pub const PROFILE_ENV: &str = "MANTLE_PROFILE";
 
 /// The report interval [`PROFILE_ENV`] carries; the CLI already refused a bad value.
 pub fn profile_interval() -> Option<Duration> {
@@ -66,8 +66,8 @@ pub fn profile_interval() -> Option<Duration> {
 /// for a gone Supervisor.
 pub const EXIT_COMPOSITOR_GONE: i32 = 71;
 
-/// `~/.config/obelisk/` by precedence: `$OBELISK_CONFIG_DIR`, `$XDG_CONFIG_HOME/obelisk`, then
-/// `$HOME/.config/obelisk`.
+/// `~/.config/mantle/` by precedence: `$MANTLE_CONFIG_DIR`, `$XDG_CONFIG_HOME/mantle`, then
+/// `$HOME/.config/mantle`.
 ///
 /// Both binaries agree through the environment: the Supervisor resolves it, `-c` included, and sets
 /// [`CONFIG_DIR_ENV`] on every Renderer it spawns, a replacement included. Passing a path through
@@ -93,12 +93,12 @@ fn config_dir_from(
     }
 
     if let Some(xdg_config_home) = xdg_config_home {
-        return Ok(PathBuf::from(xdg_config_home).join("obelisk"));
+        return Ok(PathBuf::from(xdg_config_home).join("mantle"));
     }
 
     let home =
         home.ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "neither XDG_CONFIG_HOME nor HOME is set"))?;
-    Ok(PathBuf::from(home).join(".config").join("obelisk"))
+    Ok(PathBuf::from(home).join(".config").join("mantle"))
 }
 
 /// `config_dir()` joined with the real config entry point, `shell.lua`.
@@ -119,7 +119,7 @@ mod tests {
         assert!(path.ends_with("shell.lua"));
     }
 
-    /// The named directory is the config itself, not a parent to join with `obelisk`.
+    /// The named directory is the config itself, not a parent to join with `mantle`.
     #[test]
     fn the_named_directory_wins_over_xdg_config_home() {
         let resolved = config_dir_from(Some("/tmp/env".into()), Some("/tmp/xdg".into()), None).unwrap();
@@ -132,7 +132,7 @@ mod tests {
     fn home_is_the_last_resort_and_is_joined_with_dot_config() {
         assert_eq!(
             config_dir_from(None, None, Some("/home/someone".into())).unwrap(),
-            PathBuf::from("/home/someone/.config/obelisk")
+            PathBuf::from("/home/someone/.config/mantle")
         );
     }
 

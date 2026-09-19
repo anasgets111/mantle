@@ -1,6 +1,6 @@
 //! Every runtime diagnostic goes through `shared`'s level macros (ADR-0229), so the clock, the
-//! subsystem and `OBELISK_LOG` all reach it. A bare `eprintln!` survives only where it runs before
-//! `shared::log::init` and has no subsystem to name: argument errors, usage, `obelisk log`'s own
+//! subsystem and `MANTLE_LOG` all reach it. A bare `eprintln!` survives only where it runs before
+//! `shared::log::init` and has no subsystem to name: argument errors, usage, `mantle log`'s own
 //! note about which run it picked.
 //!
 //! Here rather than beside either binary because the rule is the workspace's, and `shared/tests` is
@@ -62,7 +62,7 @@ fn a_message_does_not_repeat_the_subsystem_the_logger_puts_in_front_of_it() {
     let workspace = Path::new(env!("CARGO_MANIFEST_DIR")).parent().expect("shared sits inside the workspace");
     let mut offences = Vec::new();
 
-    for (krate, crate_src) in [("obelisk_renderer", "renderer/src"), ("obelisk", "supervisor/src")] {
+    for (krate, crate_src) in [("mantle_renderer", "renderer/src"), ("mantle", "supervisor/src")] {
         let mut paths = vec![workspace.join(crate_src)];
         while let Some(path) = paths.pop() {
             if path.is_dir() {

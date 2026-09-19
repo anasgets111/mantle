@@ -9,7 +9,7 @@
 //! static calls; this module moves that dispatch here.
 //!
 //! **One flat child module per roster entry.** Shared names cover `shared::Capability`,
-//! `obelisk.<name>`, and command `capability`; the former four-level `dbus/`/`hardware/` grouping
+//! `mantle.<name>`, and command `capability`; the former four-level `dbus/`/`hardware/` grouping
 //! split `battery` and `power` without benefit. [`read_attr`] moved here,
 //! `polkit` to `crate::polkit`, and `shm_icons` beside its two consumers (ADR-0076).
 
@@ -340,7 +340,7 @@ pub struct Capabilities {
 
 impl Capabilities {
     /// Builds channels and returns both halves. Controllers start only when config reads their
-    /// `obelisk` member (ADR-0070 decision 1).
+    /// `mantle` member (ADR-0070 decision 1).
     pub fn new(
         connection: zbus::Connection,
         sound_tx: std::sync::mpsc::SyncSender<PathBuf>,
@@ -382,7 +382,7 @@ impl Capabilities {
 
     /// Stops every program declared with `session_process` and waits for it, the session-lifetime
     /// counterpart to `reap_all_processes`. A no-op on most shutdowns: the controller exists only
-    /// once a config has read `obelisk.processes`.
+    /// once a config has read `mantle.processes`.
     ///
     /// Awaited rather than dropped because these are the processes whose exit path was worth
     /// declaring a signal for; a shell that exits without giving them theirs is the reason the

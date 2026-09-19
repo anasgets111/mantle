@@ -1,4 +1,4 @@
-//! `obelisk.processes` owns the programs declared with `session_process`: long-running things whose
+//! `mantle.processes` owns the programs declared with `session_process`: long-running things whose
 //! lifetime is the shell's rather than a generation's.
 //!
 //! Sibling of `storage` in shape -- a config declares a name, the Supervisor owns what sits behind
@@ -84,7 +84,7 @@ impl From<SignalName> for Signal {
     }
 }
 
-/// `obelisk.processes` action dispatch (ADR-0037). Synchronous: each action touches the entry map
+/// `mantle.processes` action dispatch (ADR-0037). Synchronous: each action touches the entry map
 /// and hands the work to the per-program task, which is where every await lives.
 pub fn dispatch(controller: &ProcessesController, envelope: &shared::CommandEnvelope) {
     let Some(action) = crate::parse_action::<ProcessesAction>(&envelope.params) else { return };

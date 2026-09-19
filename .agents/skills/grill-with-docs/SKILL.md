@@ -1,6 +1,6 @@
 ---
 name: grill-with-docs
-description: Relentless interview for sharpening an Obelisk plan and recording ADRs or glossary terms.
+description: Relentless interview for sharpening a Mantle plan and recording ADRs or glossary terms.
 ---
 
 # Grill with docs

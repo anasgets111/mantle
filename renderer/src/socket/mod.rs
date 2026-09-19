@@ -32,7 +32,7 @@ use tokio::sync::mpsc;
 /// parking, which is the largest legitimate burst.
 pub const INBOUND_CAPACITY: usize = 1024;
 
-/// This Renderer's generation id (`OBELISK_GENERATION_ID`, default `0`), stamped into the handshake
+/// This Renderer's generation id (`MANTLE_GENERATION_ID`, default `0`), stamped into the handshake
 /// and every outbound `CommandEnvelope`/`SecureSubmit`.
 pub fn generation_id_from_env() -> u32 {
     std::env::var(shared::GENERATION_ID_ENV).ok().and_then(|value| value.parse().ok()).unwrap_or(0)

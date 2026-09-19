@@ -5,9 +5,9 @@ edition.workspace = true
 rust-version.workspace = true
 
 # The installed name. The crate stays `renderer`, which is what `-p renderer` and every module
-# path in the tree already say; this is only what lands in `$PREFIX/lib/obelisk`.
+# path in the tree already say; this is only what lands in `$PREFIX/lib/mantle`.
 [[bin]]
-name = "obelisk-renderer"
+name = "mantle-renderer"
 path = "src/main.rs"
 
 [lints]

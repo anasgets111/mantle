@@ -1,5 +1,5 @@
-# Obelisk's PAM stack, for the lock screen (ADR-0052) and polkit authentication
-# (ADR-0028). Install to /etc/pam.d/obelisk.
+# Mantle's PAM stack, for the lock screen (ADR-0052) and polkit authentication
+# (ADR-0028). Install to /etc/pam.d/mantle.
 #
 # Until this file exists the worker authenticates against "login" instead, which works but is the
 # console-login stack and does considerably more than an unlock needs: pam_shells, pam_nologin,

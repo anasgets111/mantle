@@ -156,7 +156,7 @@ impl LockController {
     }
 }
 
-/// Every action `obelisk.lock:invoke(...)` accepts. There is no `unlock`: a lock screen's Lua button
+/// Every action `mantle.lock:invoke(...)` accepts. There is no `unlock`: a lock screen's Lua button
 /// callback would make it a one-click path past PAM, forbidden by ADR-0042. Unknown `"unlock"` is
 /// logged and dropped.
 #[derive(Debug, serde::Deserialize)]
@@ -182,7 +182,7 @@ pub enum LockAction {
 /// fault.
 pub const MAX_UNLOCK_ANIMATION: Duration = Duration::from_millis(600);
 
-/// `obelisk.lock` action dispatch (ADR-0037).
+/// `mantle.lock` action dispatch (ADR-0037).
 pub fn dispatch(controller: &LockController, envelope: &shared::CommandEnvelope) {
     let Some(action) = crate::parse_action::<LockAction>(&envelope.params) else { return };
     match action {

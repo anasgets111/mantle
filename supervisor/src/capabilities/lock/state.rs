@@ -1,4 +1,4 @@
-/// `obelisk.lock`'s payload (ADR-0052 decision 4). `attempts` counts failed authentications since
+/// `mantle.lock`'s payload (ADR-0052 decision 4). `attempts` counts failed authentications since
 /// acquisition. Lua cannot rebuild it from layout-time state (ADR-0044), so identical failures
 /// leave one `error` string; empty `error` means no failure, like `keyboard.active_layout`.
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize)]
@@ -99,7 +99,7 @@ pub fn apply(state: &mut LockState, event: LockEvent) {
             state.authenticating = false;
             state.error = reason;
         }
-        // `Finished` after `Locked` is teardown, not failure; Renderer sets `obelisk.rescue` after
+        // `Finished` after `Locked` is teardown, not failure; Renderer sets `mantle.rescue` after
         // lock surfaces are gone (ADR-0052 decision 4). Keep `attempts`.
         LockEvent::Reported(shared::LockOutcome::Finished | shared::LockOutcome::Unlocked) => {
             state.active = false;
@@ -170,7 +170,7 @@ pub fn accepts_outcome(state: &LockState, acquisition: u64) -> bool {
     state.active && state.acquisition == acquisition
 }
 
-/// The lock screen's failed-authentication line, not `obelisk.rescue`, which ordinary config
+/// The lock screen's failed-authentication line, not `mantle.rescue`, which ordinary config
 /// surfaces draw behind the lock (ADR-0052 decision 4). `Success` has no message. Polkit uses the
 /// same words.
 pub(crate) fn error_for_outcome(outcome: &shared::PamOutcome) -> String {

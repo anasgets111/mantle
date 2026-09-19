@@ -1,4 +1,4 @@
-//! Hand-written NetworkManager proxies, declaring only the members `obelisk.network` calls
+//! Hand-written NetworkManager proxies, declaring only the members `mantle.network` calls
 //! (ADR-0212).
 
 use std::collections::HashMap;

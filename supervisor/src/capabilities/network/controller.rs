@@ -1,4 +1,4 @@
-//! [`NetworkController`]: `obelisk.network`'s proxies and push state, rebuilt from NetworkManager on
+//! [`NetworkController`]: `mantle.network`'s proxies and push state, rebuilt from NetworkManager on
 //! every signal, and the networking, radio and wired switches.
 
 use std::collections::{HashMap, HashSet};
@@ -18,7 +18,7 @@ use super::proxies::{
 use super::scan::resolve_ssid;
 use super::{NetworkSignal, NetworkState, PendingNetworkConnect};
 
-/// Proxies needed by `obelisk.network`, resolved at construction. `Clone` is cheap for zbus handles,
+/// Proxies needed by `mantle.network`, resolved at construction. `Clone` is cheap for zbus handles,
 /// so writes can move a clone into `tokio::spawn` (ADR-0029).
 #[derive(Clone)]
 pub struct NetworkController {
@@ -37,7 +37,7 @@ pub struct NetworkController {
     /// [`NetworkSignal::SavedChanged`]. ponytail: an edited profile's SSID stays stale until the next
     /// add or remove. Upgrade path: watch each profile's `Updated`.
     pub(super) saved_ssids: Arc<Mutex<HashSet<Vec<u8>>>>,
-    /// `obelisk.network` push state (ADR-0037), mutated only by
+    /// `mantle.network` push state (ADR-0037), mutated only by
     /// [`handle_signal`](Self::handle_signal).
     /// The cloned controller shares it; the mutex is never held across an await.
     pub(super) state: Arc<Mutex<NetworkState>>,

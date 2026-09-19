@@ -395,7 +395,7 @@ mod tests {
 
 /// `lua-meta/nodes.lua` and `lua-meta/surfaces.lua` stay hand-written: no type describes their
 /// scattered `properties.get("...")` calls, each validating inline.
-/// `lua-meta/obelisk.lua` is generated (`supervisor/src/stubs.rs`) because capability payloads are
+/// `lua-meta/mantle.lua` is generated (`supervisor/src/stubs.rs`) because capability payloads are
 /// real `Serialize` structs.
 ///
 /// This guard covers the hand-written half, checking roster drift where a new kind lacks a stub;
@@ -569,7 +569,7 @@ mod meta_stub_tests {
     /// not require. One-way by design: `just types` catches engine-accepted fields missing from the
     /// stub. Missing `sample` rows fail.
     /// ponytail: checks, does not derive. Upgrade to per-kind props structs, making `nodes.lua`
-    /// generable like `obelisk.lua`; that rewrites parsing and trades property-specific errors for
+    /// generable like `mantle.lua`; that rewrites parsing and trades property-specific errors for
     /// serde's. Not worth it while this test holds.
     #[test]
     fn every_type_the_stubs_declare_is_accepted_by_the_engine() {
@@ -679,7 +679,7 @@ mod meta_stub_tests {
             }
             first.get_or_insert(literal);
         }
-        let bogus = around("\"obelisk_bogus\"");
+        let bogus = around("\"mantle_bogus\"");
         if members.iter().any(|m| m.starts_with('"'))
             && !members.contains(&"string")
             && apply_one(kind, required, field, Some(&bogus)).is_ok()
@@ -927,12 +927,12 @@ mod meta_stub_tests {
         out
     }
 
-    /// Every `shared::Capability::ALL` name as an `Obelisk` field.
+    /// Every `shared::Capability::ALL` name as an `Mantle` field.
     #[test]
     fn the_stubs_declare_every_capability_and_no_others() {
-        let source = meta("obelisk.lua");
-        // The `---@field` block under `---@class Obelisk`, not `ObeliskVersion`.
-        let class = source.split("---@class Obelisk\n").nth(1).expect("obelisk.lua declares an Obelisk class");
+        let source = meta("mantle.lua");
+        // The `---@field` block under `---@class Mantle`, not `MantleVersion`.
+        let class = source.split("---@class Mantle\n").nth(1).expect("mantle.lua declares a Mantle class");
         // Off-roster members lack a `StateSnapshot` and roster entry (`lua::namespace::build`).
         // `idle` left this list under ADR-0141: it is now a roster capability wrapped for three
         // callbacks that cannot cross the wire.
@@ -944,6 +944,6 @@ mod meta_stub_tests {
             .filter(|name| !off_roster.contains(name))
             .collect();
         let expected: BTreeSet<&str> = shared::Capability::ALL.iter().map(|c| c.as_str()).collect();
-        assert_eq!(declared, expected, "lua-meta/obelisk.lua is out of step with shared::Capability::ALL");
+        assert_eq!(declared, expected, "lua-meta/mantle.lua is out of step with shared::Capability::ALL");
     }
 }
