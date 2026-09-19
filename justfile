@@ -4,12 +4,10 @@
 # (`supervisor/src/generation.rs`), not as a Cargo dependency. `cargo run -p supervisor` rebuilds
 # half the stack, launches whatever `target/debug/mantle-renderer` happens to be, and reports the
 # mismatch as a config error in `shell.lua`, the last place the fault is.
-#
-# `just --list` shows only the last comment line, hence `[doc(...)]` on the multi-line blocks.
 
 default: check
 
-# Both binaries. Required before `run`.
+# Both binaries.
 build:
     cargo build --workspace
 
@@ -177,3 +175,63 @@ swap args="": release
     install -Dm755 target/release/mantle          "{{cargo_bin}}/mantle"
     install -Dm755 target/release/mantle-renderer "{{cargo_bin}}/mantle-renderer"
     "{{cargo_bin}}/mantle" -d {{args}}
+
+# Dev binaries: `[profile.release] strip = true` leaves a capture of bare addresses. The prefix
+# holds a *copy* of the Supervisor, since `current_exe` resolves symlinks, beside a wrapper
+# standing in for the Renderer; what that wrapper does is the only difference between the modes.
+#
+# Two heaptrack patches, neither visible in its own output. `exec`, because the Supervisor refuses
+# a control-socket claim from any pid but the child it spawned and heaptrack runs its target as a
+# child. `setsid`, because `exec` then leaves heaptrack's reader in the group `reap_process_group`
+# ends with `killpg`, which truncated the first capture mid-flush.
+[doc('Record a heaptrack capture of `renderer` or `supervisor` for `secs`, then restore the installed shell.')]
+heaptrack which="renderer" secs="900": build
+    #!/usr/bin/env bash
+    set -euo pipefail
+    case "{{which}}" in renderer|supervisor) ;; *) echo "which: renderer or supervisor" >&2; exit 2;; esac
+    work="$PWD/target/heaptrack"
+    mkdir -p "$work/bin" "$work/prefix"
+    # heaptrack resolves helpers as `$EXE_PATH/../lib`, so the copy needs that layout.
+    ln -sfn /usr/lib "$work/lib"
+    # Anchored on `DUMP_HEAPTRACK_OUTPUT=` and on leading whitespace: a bare `"$client" "$@"` also
+    # matches heaptrack's gdb branch, and patching that one corrupts it.
+    sed -e 's|DUMP_HEAPTRACK_OUTPUT="$pipe" "$client" "$@"|DUMP_HEAPTRACK_OUTPUT="$pipe" exec "$client" "$@"|' \
+        -e 's|^    "$INTERPRETER" < $pipe \| $COMPRESSOR > "$output" &|    setsid sh -c "$INTERPRETER < $pipe \| $COMPRESSOR > $output" \&|' \
+        -e 's|^    $COMPRESSOR < $pipe > "$output" &|    setsid sh -c "$COMPRESSOR < $pipe > $output" \&|' \
+        "$(command -v heaptrack)" > "$work/bin/heaptrack"
+    chmod +x "$work/bin/heaptrack"
+    cp target/debug/mantle "$work/prefix/mantle"
+    if [ "{{which}}" = renderer ]; then
+        printf '#!/bin/sh\nexec "%s/bin/heaptrack" -o "%s/renderer" "%s/target/debug/mantle-renderer" "$@"\n' \
+            "$work" "$work" "$PWD" > "$work/prefix/mantle-renderer"
+    else
+        # `spawn_group_leader` adds to the inherited environment, so heaptrack's LD_PRELOAD would
+        # trace the Renderer too: two writers on one fifo, its "duplicate exe event".
+        printf '#!/bin/sh\nexec env -u LD_PRELOAD -u DUMP_HEAPTRACK_OUTPUT "%s/target/debug/mantle-renderer" "$@"\n' \
+            "$PWD" > "$work/prefix/mantle-renderer"
+    fi
+    chmod +x "$work/prefix/mantle-renderer"
+    rm -f "$work/{{which}}.zst"
+    stop() {
+        for d in /proc/[0-9]*; do
+            case "$(readlink "$d/exe" 2>/dev/null)" in
+                {{cargo_bin}}/mantle|"$work"/prefix/mantle|*/mantle-renderer) kill "${d#/proc/}" || true;;
+            esac
+        done
+    }
+    stop
+    sleep 2
+    if [ "{{which}}" = renderer ]; then
+        "$work/prefix/mantle" -d --profile=120
+    else
+        # Not `-d`: it re-execs detached, and heaptrack would follow the process that leaves.
+        setsid "$work/bin/heaptrack" -o "$work/supervisor" "$work/prefix/mantle" --profile=120 >/dev/null 2>&1 &
+    fi
+    echo "recording {{which}} for {{secs}}s; this is a dev build under heaptrack, so it will be slow"
+    sleep {{secs}}
+    stop
+    # The reader outlived the killpg; give it time to drain the fifo and close the stream.
+    sleep 8
+    "{{cargo_bin}}/mantle" -d --profile=120
+    zstd -t "$work/{{which}}.zst"
+    echo "heaptrack_print -f $work/{{which}}.zst --print-leaks -n 15"
