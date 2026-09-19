@@ -218,7 +218,7 @@ impl NotificationsController {
         };
         let Some(outcome) = outcome else { return };
         if let Expiry::Removed { image_path: Some(path) } = outcome {
-            delete_icon_file(&path);
+            schedule_icon_deletion(path);
         }
         self.emit_notification_closed(id, CloseReason::Expired).await;
         let _ = self.events.send(NotificationsSignal::Changed);
@@ -236,7 +236,7 @@ impl NotificationsController {
             return;
         };
         if let Some(path) = removed.image_path {
-            delete_icon_file(&path);
+            schedule_icon_deletion(path);
         }
         self.emit_notification_closed(id, CloseReason::Dismissed).await;
         let _ = self.events.send(NotificationsSignal::Changed);
@@ -269,7 +269,7 @@ impl NotificationsController {
         self.emit_notification_replied(id, text).await;
         if let Some(removed) = removed {
             if let Some(path) = removed.image_path {
-                delete_icon_file(&path);
+                schedule_icon_deletion(path);
             }
             self.emit_notification_closed(id, CloseReason::Dismissed).await;
         }
@@ -300,7 +300,7 @@ impl NotificationsController {
         self.emit_action_invoked(id, key).await;
         if let Some(removed) = removed {
             if let Some(path) = removed.image_path {
-                delete_icon_file(&path);
+                schedule_icon_deletion(path);
             }
             self.emit_notification_closed(id, CloseReason::ClosedByMethod).await;
         }
@@ -367,6 +367,29 @@ impl NotificationsController {
 /// Maximum single hold. A hold means somebody is interacting now; five minutes of continuous
 /// interaction with one notification is past anything real. It bounds a config asking for a week.
 pub const MAX_EXPIRY_HOLD_SECS: u64 = 300;
+
+/// How long a spooled icon outlives its notification's removal. The renderer loads the file on
+/// its next paint, which can land after a synchronous unlink, so a notification can lose the race
+/// with its own removal. An icon re-requested minutes later is really gone; no delay helps that.
+const ICON_DELETE_GRACE: Duration = Duration::from_secs(5);
+
+/// Deletes `path` after [`ICON_DELETE_GRACE`], unless a later write took the same name: icons are
+/// `notif-{id}.png` with no cache-busting, so a `replaces_id` inside the window overwrites in
+/// place and deleting then would take the live icon. A moved mtime or length means back off.
+fn schedule_icon_deletion(path: String) {
+    let before = icon_stamp(&path);
+    tokio::spawn(async move {
+        tokio::time::sleep(ICON_DELETE_GRACE).await;
+        if icon_stamp(&path) == before {
+            delete_icon_file(&path);
+        }
+    });
+}
+
+/// Mtime and length, the same identity a rewrite in place changes and a no-op read does not.
+fn icon_stamp(path: &str) -> Option<(Option<SystemTime>, u64)> {
+    std::fs::metadata(path).ok().map(|m| (m.modified().ok(), m.len()))
+}
 
 /// Sleeps `remaining`, pausing for an ADR-0094 hold. Each expiring notification already has one
 /// task, so pausing that sleep needs no queue deadline, shared state, re-arming, or second place
@@ -490,10 +513,10 @@ impl NotificationsController {
             replace_or_push(&mut state.queue, notification)
         };
         match cleanup {
-            Some(QueueCleanup::ReplacedImage(path)) => delete_icon_file(&path),
+            Some(QueueCleanup::ReplacedImage(path)) => schedule_icon_deletion(path),
             Some(QueueCleanup::Evicted { id: evicted_id, image_path }) => {
                 if let Some(path) = image_path {
-                    delete_icon_file(&path);
+                    schedule_icon_deletion(path);
                 }
                 // A FIFO eviction past NOTIFICATION_QUEUE_CAP is a real close, not just an
                 // icon-file cleanup -- the evicted id is gone from the queue for good.
@@ -549,7 +572,7 @@ impl NotificationsController {
         };
         if let Some(removed) = removed {
             if let Some(path) = removed.image_path {
-                delete_icon_file(&path);
+                schedule_icon_deletion(path);
             }
             self.emit_notification_closed(id, CloseReason::ClosedByMethod).await;
             let _ = self.events.send(NotificationsSignal::Changed);
@@ -688,6 +711,21 @@ mod tests {
 
         controller.hold_expiry(0);
         assert_eq!(*controller.expiry_hold.borrow(), None, "0 releases");
+    }
+
+    /// The guard in [`schedule_icon_deletion`]: a same-name rewrite must not read as untouched.
+    #[test]
+    fn a_rewritten_icon_reads_a_different_stamp_than_the_file_it_replaced() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("notif-1.png");
+        std::fs::write(&path, b"old bytes").unwrap();
+        let before = icon_stamp(path.to_str().unwrap());
+
+        std::fs::write(&path, b"new bytes, different length").unwrap();
+        assert_ne!(icon_stamp(path.to_str().unwrap()), before, "a same-name rewrite must not look untouched");
+
+        std::fs::remove_file(&path).unwrap();
+        assert_ne!(icon_stamp(path.to_str().unwrap()), before, "and a deleted file is not untouched either");
     }
 
     #[tokio::test]
