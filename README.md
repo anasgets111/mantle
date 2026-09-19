@@ -37,7 +37,7 @@ just check   # fmt, tests, clippy, doc links, Lua parse and types
 just swap    # release build into $CARGO_HOME/bin, then restart running shell
 ```
 
-Autostart: `spawn-at-startup "mantle"` in niri, `exec-once = mantle` in Hyprland, `exec mantle` in sway.
+Autostart: `spawn-at-startup "mantle"` in niri, `exec-once = mantle` in Hyprland.
 
 ## Commands
 
