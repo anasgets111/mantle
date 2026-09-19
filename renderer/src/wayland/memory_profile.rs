@@ -56,11 +56,13 @@ impl Malloc {
 pub struct Census {
     /// `ImageCache::resident_bytes`: uploaded texture bytes across `Ready` slots.
     pub image_bytes: u64,
+    /// Slots occupied right now, read live off the map.
     pub image_ready: u64,
     pub image_pending: u64,
+    /// Failures, releases and uploads since start. Totals, not live reads: the paint drains the
+    /// evicted/landed queues before a report samples them, and `CACHE_CAPACITY` eviction reclaims
+    /// a `Failed` entry like any other, so a live count would drop failures already reported.
     pub image_failed: u64,
-    /// Textures released and textures uploaded since start. Totals, not queue depths: the paint
-    /// drains both queues before a report samples them, so the depths only ever read zero.
     pub image_evicted: u64,
     pub image_landed: u64,
     /// Memoized measurements, against `SHAPE_CACHE_CAPACITY`.

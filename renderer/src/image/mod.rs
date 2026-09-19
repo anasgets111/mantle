@@ -267,11 +267,11 @@ pub struct ImageCache {
     entries: HashMap<CacheKey, Entry>,
     /// Evicted since [`ImageCache::release_evicted`], not yet freed.
     evicted: Vec<ImageId>,
-    /// Textures released and textures uploaded over the cache's life, for
-    /// `wayland::memory_profile`. Counted rather than read off `evicted`/`landed`, which the paint
-    /// drains before the report samples them and so always read zero.
+    /// Textures released, textures uploaded and slots that failed to decode, over the cache's
+    /// life, for `wayland::memory_profile`. Totals rather than live reads; `Census` says why.
     evicted_total: usize,
     landed_total: usize,
+    failed_total: usize,
     /// Bytes across `Ready` slots, maintained by [`ImageCache::insert`] and [`ImageCache::evict`].
     resident_bytes: usize,
     /// Lamport clock incremented per [`ImageCache::image`], avoiding `Instant` and frame state.
@@ -332,6 +332,7 @@ impl ImageCache {
             evicted: Vec::new(),
             evicted_total: 0,
             landed_total: 0,
+            failed_total: 0,
             resident_bytes: 0,
             deferred: false,
             workers_gone: false,
@@ -343,22 +344,20 @@ impl ImageCache {
         }
     }
 
-    /// Resident bytes, slot counts and lifetime churn for `wayland::memory_profile`. Counts slots
-    /// rather than reading `resident_bytes` alone: bytes flat against a rising `pending` is a
-    /// decode queue backing up, which the byte total cannot show. The last two are totals since
-    /// start, so a step in the bytes can be read against how many textures moved to reach it.
+    /// Resident bytes, live `ready`/`pending` counts and lifetime totals for
+    /// `wayland::memory_profile`. Counts slots rather than reading `resident_bytes` alone: bytes
+    /// flat against a rising `pending` is a decode queue backing up, which the bytes cannot show.
     pub fn census(&self) -> (usize, usize, usize, usize, usize, usize) {
         let mut ready = 0;
         let mut pending = 0;
-        let mut failed = 0;
         for entry in self.entries.values() {
             match entry.slot {
                 Slot::Ready(..) => ready += 1,
                 Slot::Pending => pending += 1,
-                Slot::Failed => failed += 1,
+                Slot::Failed => {}
             }
         }
-        (self.resident_bytes, ready, pending, failed, self.evicted_total, self.landed_total)
+        (self.resident_bytes, ready, pending, self.failed_total, self.evicted_total, self.landed_total)
     }
 
     /// Frees last frame's evictions. `layout::paint::canvas::paint_tree` calls this before walking because
@@ -418,9 +417,13 @@ impl ImageCache {
                 continue;
             }
             let slot = upload_or_log(canvas, &key.path, result);
-            if let Slot::Ready(_, bytes) = slot {
-                self.resident_bytes += bytes;
-                self.landed_total += 1;
+            match slot {
+                Slot::Ready(_, bytes) => {
+                    self.resident_bytes += bytes;
+                    self.landed_total += 1;
+                }
+                Slot::Failed => self.failed_total += 1,
+                Slot::Pending => {}
             }
             if let Some(entry) = self.entries.get_mut(&key) {
                 entry.slot = slot;
@@ -587,8 +590,10 @@ impl ImageCache {
             };
             self.evict(&coldest);
         }
-        if let Slot::Ready(_, bytes) = slot {
-            self.resident_bytes += bytes;
+        match &slot {
+            Slot::Ready(_, bytes) => self.resident_bytes += *bytes,
+            Slot::Failed => self.failed_total += 1,
+            Slot::Pending => {}
         }
         self.entries.insert(key, Entry { slot, last_hit: self.tick });
     }
@@ -1093,6 +1098,17 @@ mod tests {
                 "the ten coldest go instead, /tmp/{n}.png among them"
             );
         }
+    }
+
+    /// Eviction frees a `Failed` slot's memory; it does not un-fail the load.
+    #[test]
+    fn failed_census_survives_capacity_eviction_of_old_failed_entries() {
+        let mut cache = ImageCache::new();
+        for n in 0..(CACHE_CAPACITY + 10) {
+            cache.insert(key(format!("/tmp/{n}.png"), 0, FileVersion::default()), Slot::Failed);
+        }
+        assert_eq!(cache.entries.len(), CACHE_CAPACITY, "the ten coldest were evicted to stay at the bound");
+        assert_eq!(cache.census().3, CACHE_CAPACITY + 10, "every insert failed once, evicted or not");
     }
 
     fn key(path: impl Into<PathBuf>, px: u32, version: FileVersion) -> CacheKey {
