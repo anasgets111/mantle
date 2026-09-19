@@ -1,9 +1,8 @@
 # Recipes for building, running and gating Mantle. `just` alone runs `check`.
 #
 # `run` depends on `build` because the Supervisor finds the Renderer as a filesystem sibling
-# (`supervisor/src/generation.rs`), not as a Cargo dependency. `cargo run -p supervisor` rebuilds
-# half the stack, launches whatever `target/debug/mantle-renderer` happens to be, and reports the
-# mismatch as a config error in `shell.lua`, the last place the fault is.
+# (`supervisor/src/generation.rs`), not as a Cargo dependency: `cargo run -p supervisor` launches
+# a stale Renderer and reports it as a config error in `shell.lua`, the last place the fault is.
 
 default: check
 
@@ -53,9 +52,8 @@ test:
 lint:
     cargo clippy --workspace --all-targets --all-features -- -D warnings
 
-# Unresolved intra-doc links, which clippy does not check. The baseline is exact in both
-# directions: over it hides a link that moved, under it means someone fixed links and never
-# committed the smaller number, leaving room for the next regression to sit in unreported.
+# Unresolved intra-doc links, which clippy does not check. Exact in both directions: over hides a
+# link that moved, under leaves room for the next regression to sit in unreported.
 [doc('Unresolved intra-doc links, against an exact per-crate baseline.')]
 docs:
     #!/usr/bin/env bash
@@ -72,15 +70,11 @@ docs:
         echo "$crate: $count unresolved doc links (baseline $baseline)"
     done
 
-# `lua` proves a file parses. This proves `share/starter` agrees with `lua-meta`, through the
-# engine the author's editor uses (ADR-0081).
-#
-# `lua-meta` is also checked alone, because a library's own diagnostics are suppressed. That hid
-# `---@return Signal Read-only, like `map``, where the comma made `like` a second return type.
-# Single-return prose is written `---@return T # ...`.
-#
-# Missing server is a failure, not a skip: a skip once let `just check` go green having checked no
-# stub. The Zed glob is the only other copy on this machine.
+# `lua` proves a file parses; this proves `share/starter` agrees with `lua-meta`, through the
+# engine the author's editor uses (ADR-0081). `lua-meta` is checked alone too, because a library's
+# own diagnostics are suppressed -- that hid a `---@return` whose comma made prose a second return
+# type. Missing server is a failure, not a skip: a skip once let `just check` go green having
+# checked no stub.
 [doc('The config and the stubs type-checked against each other.')]
 types:
     #!/usr/bin/env bash
@@ -96,13 +90,12 @@ types:
     log=$(mktemp -d)
     trap 'rm -rf "$log"' EXIT
     # `share/starter` ships no `.luarc.json`: `mantle init` writes one pointing at the *installed*
-    # stubs (`setup.rs`'s `luarc_json`), which would overwrite a checked-in copy. Absolute library
-    # path, because a relative one resolves against the workspace being checked.
+    # stubs, which would overwrite a checked-in copy. Absolute path: a relative one resolves
+    # against the workspace being checked.
     printf '{"runtime.version":"Lua 5.4","workspace.library":["%s/lua-meta"],"workspace.checkThirdParty":false}\n' "$PWD" >"$log/starter.luarc.json"
-    # `--check` exits non-zero and prints file, line, column, source line and caret run to stdout,
-    # mixed with a progress bar it redraws with carriage returns. Capture it, replay it without the
-    # progress chunks only on failure. Not `--check_format=json`: the human form carries the source
-    # line, and the JSON report block sat dead for months because nobody passed that flag.
+    # `--check` prints diagnostics to stdout mixed with a progress bar it redraws with carriage
+    # returns, so capture and replay without the progress chunks on failure. Not
+    # `--check_format=json`: only the human form carries the source line.
     check() {
         local out
         if out=$("$luals" --check "$PWD/$1" --checklevel=Warning --logpath="$log" "${@:2}" 2>&1); then
@@ -121,9 +114,8 @@ types:
 
 lua_dirs := "lua-meta share"
 
-# The formatter is here, not beside `cargo fmt`, so `lua_dirs` is written once and a Lua-only
-# commit is gated by `just lua types` alone (`.githooks/pre-commit`). `tools/luafmt.py` says why
-# the formatter is a language server; `.editorconfig` holds its rules.
+# Here, not beside `cargo fmt`, so `lua_dirs` is written once and a Lua-only commit is gated by
+# `just lua types` alone. `tools/luafmt.py` says why the formatter is a language server.
 [doc('Every Lua file parses and is formatted.')]
 lua:
     #!/usr/bin/env bash
@@ -147,9 +139,6 @@ fmt-check:
 fmt:
     cargo fmt --all
     python3 tools/luafmt.py {{lua_dirs}}
-
-clean:
-    cargo clean
 
 # Where `cargo install` put the shell that is actually running.
 cargo_bin := env("CARGO_HOME", home_directory() / ".cargo") / "bin"
