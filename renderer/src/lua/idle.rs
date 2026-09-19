@@ -17,7 +17,11 @@
 //! registration: two `register_threshold(300, ...)` calls make one listener and two local entries,
 //! both run by the same event.
 //!
-//! There is no unregister. Before each `shell.lua` evaluation, `Loader::evaluate_file` drops local
+//! `register_threshold` answers with a handle for `cancel_threshold` (ADR-0232). The handle is
+//! local: the Supervisor counts one fan-out entry per generation per duration, so `cancel` reaches
+//! it only when the last callback at that duration goes.
+//!
+//! Before each `shell.lua` evaluation, `Loader::evaluate_file` drops local
 //! thresholds; otherwise an in-place reload (ADR-0047) stacks callbacks on the same VM, so the
 //! tenth reload of a screen-dimming config dims ten times. That drop also sends
 //! `forget_thresholds`, so the Supervisor's fan-out entries go with the callbacks they fed
@@ -34,8 +38,9 @@ use shared::warn;
 
 use crate::lua::capability::Capability;
 
-/// Callbacks left by one `register_threshold` call.
+/// Callbacks left by one `register_threshold` call, under the handle that cancels them.
 struct Threshold {
+    id: u64,
     on_idle: Function,
     on_resume: Function,
 }
@@ -52,11 +57,13 @@ pub struct IdleRegistry {
 struct Inner {
     /// Keyed by seconds, the only field `shared::IdleEvent` carries for matching.
     thresholds: HashMap<u64, Vec<Threshold>>,
+    /// Never reused, so a handle cancelled twice cannot reach a later registration.
+    next_id: u64,
 }
 
 impl IdleRegistry {
     pub fn new(state: Capability) -> Self {
-        IdleRegistry { inner: Rc::new(RefCell::new(Inner { thresholds: HashMap::new() })), state }
+        IdleRegistry { inner: Rc::new(RefCell::new(Inner { thresholds: HashMap::new(), next_id: 1 })), state }
     }
 
     /// Read half for the wrapper's `get`/`map` and `signal::from_userdata`.
@@ -71,10 +78,33 @@ impl IdleRegistry {
     /// Registration is local; the command asks the Supervisor to create the listener, with no
     /// acknowledgement. Without `ext_idle_notifier_v1` (ADR-0032), the inert notify half never
     /// fires, which is indistinguishable from a user who never went idle.
-    fn register_threshold(&self, sec: u64, on_idle: Function, on_resume: Function) {
-        self.inner.borrow_mut().thresholds.entry(sec).or_default().push(Threshold { on_idle, on_resume });
+    fn register_threshold(&self, sec: u64, on_idle: Function, on_resume: Function) -> u64 {
+        let id = {
+            let mut inner = self.inner.borrow_mut();
+            let id = inner.next_id;
+            inner.next_id += 1;
+            inner.thresholds.entry(sec).or_default().push(Threshold { id, on_idle, on_resume });
+            id
+        };
         self.state.commands().start_capability("idle");
         self.state.commands().send("idle", "register", vec![serde_json::json!(sec)], 0);
+        id
+    }
+
+    /// `idle:cancel_threshold(handle)` (ADR-0232). An unknown handle is a no-op, so cancelling
+    /// twice is safe. The Supervisor hears about it only when this was the last callback at that
+    /// duration, which is the point at which its listener has no user left.
+    fn cancel_threshold(&self, id: u64) {
+        let emptied = {
+            let mut inner = self.inner.borrow_mut();
+            let held = inner.thresholds.iter_mut().find(|(_, entries)| entries.iter().any(|entry| entry.id == id));
+            let Some((&sec, entries)) = held else { return };
+            entries.retain(|entry| entry.id != id);
+            entries.is_empty().then_some(sec)
+        };
+        let Some(sec) = emptied else { return };
+        self.inner.borrow_mut().thresholds.remove(&sec);
+        self.state.commands().send("idle", "cancel", vec![serde_json::json!(sec)], 0);
     }
 
     /// `idle:inhibit(reason)` (ADR-0032). The Supervisor counts holds per generation, so two
@@ -177,9 +207,12 @@ impl UserData for IdleMember {
             this.0.state().add_handler(f);
             Ok(())
         });
-        methods.add_method("register_threshold", |_, this, (sec, on_idle, on_resume): (u64, Function, Function)| {
-            this.0.register_threshold(sec, on_idle, on_resume);
+        methods.add_method("cancel_threshold", |_, this, id: u64| {
+            this.0.cancel_threshold(id);
             Ok(())
+        });
+        methods.add_method("register_threshold", |_, this, (sec, on_idle, on_resume): (u64, Function, Function)| {
+            Ok(this.0.register_threshold(sec, on_idle, on_resume))
         });
         methods.add_method("inhibit", |_, this, reason: String| {
             this.0.inhibit(reason);
@@ -251,6 +284,43 @@ mod tests {
             .filter(|frame| matches!(frame, RendererFrame::StartCapability { .. }))
             .count();
         assert_eq!(starts, 1);
+    }
+
+    /// ADR-0232: the handle is local, so the Supervisor hears `cancel` only once nothing local is
+    /// left at that duration. Sending it per handle would take the listener out from under the
+    /// registration still using it.
+    #[test]
+    fn cancelling_one_of_two_handles_at_a_duration_stops_its_callback_and_tells_no_one() {
+        let (lua, registry, mut rx) = lua_with_idle(4);
+        lua.load(
+            r#"
+            fired = 0
+            first = idle:register_threshold(30, function() fired = fired + 1 end, function() end)
+            second = idle:register_threshold(30, function() fired = fired + 1 end, function() end)
+            idle:cancel_threshold(first)
+            idle:cancel_threshold(first)
+        "#,
+        )
+        .exec()
+        .unwrap();
+        assert_ne!(
+            lua.globals().get::<u64>("first").unwrap(),
+            lua.globals().get::<u64>("second").unwrap(),
+            "each registration needs its own handle"
+        );
+
+        registry.dispatch_event(30, shared::IdleState::Idled);
+        assert_eq!(lua.globals().get::<u32>("fired").unwrap(), 1, "only the surviving callback runs");
+        let actions: Vec<String> =
+            std::iter::from_fn(|| queued_command(&mut rx)).map(|envelope| envelope.params.action).collect();
+        assert_eq!(
+            actions,
+            vec!["register", "register"],
+            "a cancelled duration still in use tells the Supervisor nothing"
+        );
+
+        lua.load("idle:cancel_threshold(second)").exec().unwrap();
+        assert_eq!(queued_command(&mut rx).expect("the last handle releases the listener").params.action, "cancel");
     }
 
     /// ADR-0158: the fan-out entries must go when the callbacks they feed go, and the command must

@@ -64,6 +64,14 @@ pub fn register_threshold_entry(fanout: &mut HashMap<Duration, Vec<u32>>, genera
     created_new_listener
 }
 
+/// One duration's entry, dropped because the Renderer's last callback there was cancelled
+/// (ADR-0232). `take_unused_listeners` then hands back the listener nothing is left to feed.
+pub fn cancel_threshold_entry(fanout: &mut HashMap<Duration, Vec<u32>>, generation_id: u32, sec: u64) {
+    if let Some(entries) = fanout.get_mut(&Duration::from_secs(sec)) {
+        entries.retain(|&id| id != generation_id);
+    }
+}
+
 /// Drops every `generation_id` entry (notify half of `reset_registrations`, ADR-0006/ADR-0032),
 /// but leaves durations and empty listeners alive for reuse.
 pub fn cleanup_generation_thresholds(fanout: &mut HashMap<Duration, Vec<u32>>, generation_id: u32) {
@@ -494,6 +502,27 @@ mod tests {
             HashSet::from([Duration::from_secs(30)]),
             "the 30s pair generation 2 still wants must stay"
         );
+    }
+
+    /// Cancel is the one path that destroys a listener while its generation lives. A reload keeps
+    /// it (ADR-0159), because the same tree asks for the same duration again; a cancel says nothing
+    /// wants it, and a later registration wanting it again deserves a timer starting then.
+    #[test]
+    fn cancelling_the_last_entry_at_a_duration_hands_back_its_listener_pair() {
+        let mut fanout = HashMap::new();
+        register_threshold_entry(&mut fanout, 1, 30);
+        register_threshold_entry(&mut fanout, 2, 30);
+        let mut listeners: HashMap<ListenerId, u8> = [true, false]
+            .map(|respects_inhibitors| (ListenerId { duration: Duration::from_secs(30), respects_inhibitors }, 0))
+            .into_iter()
+            .collect();
+
+        cancel_threshold_entry(&mut fanout, 1, 30);
+        assert!(take_unused_listeners(&mut fanout, &mut listeners).is_empty(), "generation 2 still listens at 30s");
+
+        cancel_threshold_entry(&mut fanout, 2, 30);
+        assert_eq!(take_unused_listeners(&mut fanout, &mut listeners).len(), 2);
+        assert!(fanout.is_empty());
     }
 
     /// ADR-0158's ordering, as the two seams see it. A reload cleans the generation out, then its

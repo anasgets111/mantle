@@ -5326,3 +5326,27 @@ the cookie is still on the bus.
 
 Nothing in the engine classifies what is playing. Every implementation surveyed relays what clients
 declare, and guessing from media metadata guesses where the application already answered.
+
+## 0232. A threshold handle cancels one registration, and the Renderer decides when the Supervisor hears about it
+
+`register_threshold` had no counterpart, so a config changing a lock timeout from five minutes to
+ten left both registered and still locked at five. Configs worked around it by registering one short
+threshold and counting seconds in Lua.
+
+1. **The handle is Renderer-side.** `register_threshold` returns an integer; `cancel_threshold`
+   drops that one callback pair. The Supervisor's fan-out holds one entry per generation per
+   duration (ADR-0160 decision 8), so it cannot tell two registrations at one duration apart, and
+   nothing on the wire needs to. The Renderer sends `cancel` only when its last callback at that
+   duration goes, which is exactly when the listener has no user left.
+2. **Cancel destroys the listener, a reload keeps it.** `take_unused_listeners` already reaps a
+   duration nothing is registered at; cancel is the one path that reaches it while the generation
+   lives. The opposite of ADR-0159's rule, and for its reason: a reload asks for the same duration
+   again, so a listener recreated past its timeout would fire `idled` on an already-dimmed screen,
+   while a cancel says nothing wants it and a later registration deserves a timer starting then.
+3. **An unknown handle is a no-op**, so cancelling twice is safe and handles are never reused.
+
+This does not make two registrations at one duration independent. The later one still inherits a
+partly elapsed timer and misses an `idled` the shared listener already sent; that needs a listener
+per registration, and `wayland_inhibited`'s pairing (ADR-0160) keys listeners by duration today.
+The gate's `idled` set keeps the cancelled `(generation, threshold)` until the generation is reaped,
+which replays an `Idled` to no callback: bounded by distinct durations, and a no-op when it lands.

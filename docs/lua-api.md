@@ -114,7 +114,8 @@ Targets are snapshot IDs. Volumes use 0–1, percentages 0–100, indices are ze
 
 | API | Contract |
 | :--- | :--- |
-| `mantle.idle:register_threshold(seconds, on_idle, on_resume)` | Register inactivity callbacks; reset on re-evaluation |
+| `mantle.idle:register_threshold(seconds, on_idle, on_resume)` | Register inactivity callbacks, answering with a handle; reset on re-evaluation |
+| `mantle.idle:cancel_threshold(handle)` | Drop one registration. Unknown handles are a no-op |
 | `mantle.idle:inhibit(reason)` / `release_inhibit()` | Acquire/release one generation-owned hold on logind idle inhibition |
 | `fuzzy(haystack, needle)` | fzf's score and match start for one candidate; `nil` for no match. Smart case. The caller sorts |
 | `timer(ms, callback)` | Runs `callback` once, `ms` from now, `[1, 86400000]`; returns a handle with `cancel()`. One evaluation only; the handle is not what keeps it armed |

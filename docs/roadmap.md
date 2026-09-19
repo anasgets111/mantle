@@ -12,10 +12,11 @@ lacks is not an engine gap.
 Correctness before features. Each of these is a defect or a missing piece a config cannot work
 around.
 
-- **Cancellable idle registrations.** `register_threshold` has no counterpart, and the fan-out
-  shares one listener per duration, so a later registration inherits a partly elapsed timer or
-  misses an `idled` the shared listener already sent. Needs a per-registration listener behind a
-  handle that releases it when it is the last user.
+- **Idle registrations share one listener per duration.** `cancel_threshold` releases a duration's
+  listener once its last registration goes (ADR-0232), but two registrations at the same duration
+  still share one: the later one inherits a partly elapsed timer, or misses an `idled` the listener
+  already sent. Needs a listener per registration, which the pairing in `wayland_inhibited`
+  (ADR-0160) currently keys by duration.
 - **`expected_revision` is unchecked.** The socket drops a frame naming another generation, but
   nothing reads the revision it claims, so it is not an authorization guarantee (services.md § 13).
   Settle stale-revision semantics before anything relies on them.

@@ -32,6 +32,11 @@ pub enum IdleAction {
     Register {
         seconds: u64,
     },
+    /// Sent when the Renderer's last callback at `seconds` is cancelled, never per handle
+    /// (ADR-0232).
+    Cancel {
+        seconds: u64,
+    },
     // Sent by the Renderer's `IdleRegistry::forget_thresholds` before each evaluation, not by a
     // config (ADR-0158). It rides the same ordered socket as the registrations that follow it,
     // which is the whole point: a reset the Supervisor ran on its own timing landed after them.
@@ -53,6 +58,7 @@ pub fn dispatch(controller: &IdleController, envelope: &shared::CommandEnvelope)
         // apply them the other way round, which is the whole failure this pair exists to stop
         // (ADR-0158).
         IdleAction::Register { seconds } => controller.register_threshold(generation_id, seconds),
+        IdleAction::Cancel { seconds } => controller.cancel_threshold(generation_id, seconds),
         IdleAction::ForgetThresholds => controller.reset_thresholds(generation_id),
         IdleAction::Inhibit { reason } => {
             let controller = controller.clone();

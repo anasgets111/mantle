@@ -16,8 +16,8 @@ use super::inhibit::{
     apply_screensaver_inhibit, apply_screensaver_release, cleanup_generation_inhibit, drop_screensaver_peer,
 };
 use super::notify::{
-    ListenerId, NotifyState, cleanup_generation_thresholds, connect_wayland_idle, register_threshold_entry,
-    spawn_idle_event_forwarder, take_unused_listeners,
+    ListenerId, NotifyState, cancel_threshold_entry, cleanup_generation_thresholds, connect_wayland_idle,
+    register_threshold_entry, spawn_idle_event_forwarder, take_unused_listeners,
 };
 use super::state::{IdleState, foreign_idle_inhibitors};
 
@@ -267,6 +267,21 @@ impl IdleController {
             if let Err(err) = live.connection.flush() {
                 warn!("failed to flush the get_idle_notification request for {sec}s: {err}");
             }
+        }
+    }
+
+    /// Supervisor half of `idle:cancel_threshold(handle)` (ADR-0232), sent only for the last
+    /// callback at `sec`. Destroys the listener nothing feeds any more, unlike a reload, which
+    /// keeps it for the registration landing behind it (ADR-0159).
+    pub fn cancel_threshold(&self, generation_id: u32, sec: u64) {
+        self.pending.lock().unwrap().retain(|&queued| queued != (generation_id, sec));
+        let notify = self.notify.read().unwrap();
+        let NotifyState::Live(live) = &*notify else { return };
+        let mut registry = live.registry.lock().unwrap();
+        let registry = &mut *registry;
+        cancel_threshold_entry(&mut registry.fanout, generation_id, sec);
+        for listener in take_unused_listeners(&mut registry.fanout, &mut registry.listeners) {
+            listener.destroy();
         }
     }
 
