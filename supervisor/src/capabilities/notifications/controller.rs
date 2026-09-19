@@ -694,8 +694,15 @@ mod tests {
     async fn a_muted_app_is_silent_by_desktop_entry_or_app_name() {
         let (events, _rx) = tokio::sync::mpsc::unbounded_channel();
         let (sound_tx, sound_rx) = std::sync::mpsc::sync_channel(1);
-        let controller = &NotificationsController::inert(events, sound_tx);
-        controller.set_sound(Urgency::Normal, "/usr/share/sounds/freedesktop/stereo/message.oga");
+        // Its own root rather than `/usr/share`: the tier sound only has to be a trusted file the
+        // registry accepts, and no machine owes the test an installed sound theme.
+        let sounds = tempfile::tempdir().unwrap();
+        let sound = sounds.path().join("message.oga");
+        std::fs::write(&sound, b"").unwrap();
+        let mut inert = NotificationsController::inert(events, sound_tx);
+        inert.sound_roots = Arc::new(vec![sounds.path().to_path_buf()]);
+        let controller = &inert;
+        controller.set_sound(Urgency::Normal, sound.to_str().unwrap());
         controller.set_app_muted("vesktop".into(), true);
         let notify = move |app_name: &str, desktop_entry: Option<&'static str>| {
             let hints = Hints { desktop_entry: desktop_entry.map(str::to_string), ..Hints::default() };

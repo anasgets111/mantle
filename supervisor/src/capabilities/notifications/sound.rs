@@ -252,11 +252,17 @@ fn play_one(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
 mod tests {
     use super::*;
 
+    /// The Ogg branch, on a committed fixture rather than the installed theme a machine need not
+    /// have: nothing in this tree encodes Vorbis, and 2.7KB is a stream's floor -- the codebooks
+    /// in its setup header. 20ms of 8kHz mono from `ffmpeg -c:a libvorbis`, kept out of `src`,
+    /// whose every file `capabilities::test_support` reads as UTF-8 source.
     #[test]
-    fn decode_sound_reads_the_system_sound_theme() {
-        let decoded = decode_sound(Path::new("/usr/share/sounds/freedesktop/stereo/message-new-instant.oga"))
-            .expect("must decode the freedesktop theme");
-        assert!(decoded.channels <= 2 && !decoded.samples.is_empty());
+    fn decode_sound_reads_ogg_vorbis() {
+        let file = tempfile::NamedTempFile::with_suffix(".oga").unwrap();
+        std::fs::write(file.path(), include_bytes!("../../../fixtures/test-tone.oga")).unwrap();
+        let decoded = decode_sound(file.path()).expect("must decode Ogg Vorbis");
+        assert_eq!((decoded.channels, decoded.sample_rate), (1, 8_000));
+        assert!(!decoded.samples.is_empty());
     }
 
     #[test]
