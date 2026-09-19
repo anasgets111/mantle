@@ -77,7 +77,9 @@ fn a_message_does_not_repeat_the_subsystem_the_logger_puts_in_front_of_it() {
             let mut module = vec![krate.to_string()];
             module
                 .extend(relative.with_extension("").components().map(|c| c.as_os_str().to_string_lossy().into_owned()));
-            module.retain(|segment| segment != "mod");
+            // `main` and `mod` are not module segments: `module_path!()` in either is the module
+            // that contains them, and for a crate root's `main.rs` that is the crate itself.
+            module.retain(|segment| segment != "mod" && segment != "main");
             let subsystem = shared::log::subsystem(&module.join("::")).to_string();
 
             let source = std::fs::read_to_string(&path).expect("readable source");
