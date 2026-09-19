@@ -9,6 +9,7 @@ use shared::{error, info, warn};
 use tokio::io::Interest;
 use tokio::io::unix::AsyncFd;
 use tokio::sync::mpsc::UnboundedSender;
+use udev::MonitorSocket;
 
 use crate::compositor::{CompositorKind, detect_compositor, hyprland_signature, unsupported_session_report};
 
@@ -83,11 +84,7 @@ impl KeyboardController {
     /// `system_bus` carries logind backlight writes. `leds_root` (default `/sys/class/leds`) is
     /// test-injected and holds the backlight and the sysfs lock fallback. Layout selects one
     /// [`CompositorLink`] via `crate::compositor`'s env probe, or `None` without an implementor.
-    pub async fn new(
-        system_bus: zbus::Connection,
-        leds_root: &Path,
-        events_tx: UnboundedSender<KeyboardSignal>,
-    ) -> Self {
+    pub fn new(system_bus: zbus::Connection, leds_root: &Path, events_tx: UnboundedSender<KeyboardSignal>) -> Self {
         let state = Arc::new(Mutex::new(KeyboardState::default()));
         let backlight = find_backlight(leds_root);
         match &backlight {
@@ -96,7 +93,7 @@ impl KeyboardController {
                 info!("no usable *::kbd_backlight LED under {leds_root:?}; backlight reporting disabled for this run")
             }
         }
-        resolve_locks(leds_root, &state, events_tx.clone()).await;
+        tokio::spawn(watch_locks(resolve_locks(leds_root, &state), Arc::clone(&state), events_tx.clone()));
         let layout: Option<Box<dyn CompositorLink>> = match detect_compositor() {
             Some(CompositorKind::Hyprland) => match hyprland_signature() {
                 Some(signature) => Some(Box::new(HyprlandLink::new(signature, Arc::clone(&state), events_tx.clone()))),
@@ -193,82 +190,42 @@ fn watch_backlight(led: LedBacklight, state: Arc<Mutex<KeyboardState>>, events: 
     });
 }
 
-/// Picks the first `evdev::enumerate()` device whose LEDs include `LED_CAPSL`, leaving it open.
-/// Not fake-data unit-tested: enumeration scans real `/dev/input` nodes and was verified live on
-/// this machine (ADR-0034).
-fn find_keyboard_led_device() -> Option<evdev::Device> {
-    evdev::enumerate()
-        .find(|(_, device)| device.supported_leds().is_some_and(|leds| leds.contains(evdev::LedCode::LED_CAPSL)))
-        .map(|(_, device)| device)
+/// Publishes the LED snapshot of the first `evdev::enumerate()` device exposing `LED_CAPSL` and
+/// returns the stream carrying its live changes. `EV_LED` is queued per open fd, so there is no
+/// subscribe-before-read race. Silent when nothing is readable: that is the ordinary state between
+/// a keyboard being unplugged and plugged back in. Verified live rather than unit-tested, because
+/// enumeration scans real `/dev/input` nodes (ADR-0034).
+fn open_led_stream(state: &Mutex<KeyboardState>) -> Option<evdev::EventStream> {
+    let (_, device) = evdev::enumerate()
+        .find(|(_, device)| device.supported_leds().is_some_and(|leds| leds.contains(evdev::LedCode::LED_CAPSL)))?;
+    match device.get_led_state() {
+        Ok(led_state) => {
+            let mut guard = state.lock().unwrap();
+            guard.caps_lock = led_state.contains(evdev::LedCode::LED_CAPSL);
+            guard.num_lock = led_state.contains(evdev::LedCode::LED_NUML);
+            guard.scroll_lock = led_state.contains(evdev::LedCode::LED_SCROLLL);
+        }
+        Err(err) => {
+            warn!("failed to read initial evdev LED state; will pick up from the first EV_LED event: {err}")
+        }
+    }
+    device.into_event_stream().inspect_err(|err| warn!("failed to open an EV_LED event stream: {err}")).ok()
 }
 
-/// Uses evdev first (ADR-0034): `EV_LED` carries live changes, queued per open fd from
-/// `Device::open`, so it has no subscribe-before-read race. Sysfs
-/// (`locks::resolve_lock_leds`) is a static read-once fallback; neither source leaves all locks at
-/// their logged `false` defaults.
-async fn resolve_locks(leds_root: &Path, state: &Arc<Mutex<KeyboardState>>, events: UnboundedSender<KeyboardSignal>) {
-    if let Some(device) = find_keyboard_led_device() {
-        match device.get_led_state() {
-            Ok(led_state) => {
-                let mut guard = state.lock().unwrap();
-                guard.caps_lock = led_state.contains(evdev::LedCode::LED_CAPSL);
-                guard.num_lock = led_state.contains(evdev::LedCode::LED_NUML);
-                guard.scroll_lock = led_state.contains(evdev::LedCode::LED_SCROLLL);
-            }
-            Err(err) => {
-                warn!("failed to read initial evdev LED state; will pick up from the first EV_LED event: {err}")
-            }
-        }
-        match device.into_event_stream() {
-            Ok(mut stream) => {
-                let forward_state = Arc::clone(state);
-                tokio::spawn(async move {
-                    loop {
-                        let event = match stream.next_event().await {
-                            Ok(event) => event,
-                            Err(err) => {
-                                error!("evdev event stream ended; lock-state will no longer update: {err}");
-                                break;
-                            }
-                        };
-                        let evdev::EventSummary::Led(_, code, value) = event.destructure() else { continue };
-                        let on = value != 0;
-                        {
-                            let mut guard = forward_state.lock().unwrap();
-                            match code {
-                                evdev::LedCode::LED_CAPSL => guard.caps_lock = on,
-                                evdev::LedCode::LED_NUML => guard.num_lock = on,
-                                evdev::LedCode::LED_SCROLLL => guard.scroll_lock = on,
-                                _ => continue,
-                            }
-                        }
-                        if events.send(KeyboardSignal::Changed).is_err() {
-                            break;
-                        }
-                    }
-                });
-                // evdev is live; use sysfs only when it is not.
-                return;
-            }
-            Err(err) => {
-                // An un-streamable device still counts as evdev unavailable; use sysfs rather than
-                // leaving lock state at `false` forever.
-                warn!(
-                    "failed to open an EV_LED event stream; falling back to a one-time sysfs LED read for lock state: {err}"
-                );
-            }
-        }
-    } else {
-        warn!(
-            "no accessible evdev device with LED_CAPSL capability; falling back to a one-time sysfs LED read for lock state"
-        );
+/// Uses evdev first (ADR-0034); sysfs (`locks::resolve_lock_leds`) is a read-once fallback, so
+/// neither source leaves all locks at their logged `false` defaults.
+fn resolve_locks(leds_root: &Path, state: &Mutex<KeyboardState>) -> Option<evdev::EventStream> {
+    if let Some(stream) = open_led_stream(state) {
+        return Some(stream);
     }
-
+    warn!(
+        "no readable evdev device with LED_CAPSL capability; falling back to a one-time sysfs LED read for lock state"
+    );
     let Some(leds) = resolve_lock_leds(leds_root) else {
         info!(
             "no lock-state source available (neither evdev nor sysfs LED nodes); caps/num/scroll_lock will stay false"
         );
-        return;
+        return None;
     };
     let mut guard = state.lock().unwrap();
     match read_led_on(&leds.caps) {
@@ -282,6 +239,85 @@ async fn resolve_locks(leds_root: &Path, state: &Arc<Mutex<KeyboardState>>, even
     match read_led_on(&leds.scroll) {
         Ok(on) => guard.scroll_lock = on,
         Err(err) => warn!("failed to read the sysfs scrolllock LED; scroll_lock will stay false: {err}"),
+    }
+    None
+}
+
+/// Builds the `input` udev watch, like `brightness::controller::build_backlight_watch`.
+fn build_input_watch() -> std::io::Result<AsyncFd<MonitorSocket>> {
+    let socket = udev::MonitorBuilder::new()?.match_subsystem("input")?.listen()?;
+    AsyncFd::new(socket)
+}
+
+/// Forwards `EV_LED` changes until the stream ends, which unplugging the keyboard does with
+/// `ENODEV`. `false` means the signal receiver is gone and the watch should stop for good.
+async fn pump_leds(
+    stream: &mut evdev::EventStream,
+    state: &Mutex<KeyboardState>,
+    events: &UnboundedSender<KeyboardSignal>,
+) -> bool {
+    loop {
+        let event = match stream.next_event().await {
+            Ok(event) => event,
+            Err(err) => {
+                info!("evdev LED stream ended ({err}); waiting for a keyboard to appear");
+                return true;
+            }
+        };
+        let evdev::EventSummary::Led(_, code, value) = event.destructure() else { continue };
+        let on = value != 0;
+        {
+            let mut guard = state.lock().unwrap();
+            match code {
+                evdev::LedCode::LED_CAPSL => guard.caps_lock = on,
+                evdev::LedCode::LED_NUML => guard.num_lock = on,
+                evdev::LedCode::LED_SCROLLL => guard.scroll_lock = on,
+                _ => continue,
+            }
+        }
+        if events.send(KeyboardSignal::Changed).is_err() {
+            return false;
+        }
+    }
+}
+
+/// Re-opens the stream on every `input` uevent: a replugged keyboard is a new `/dev/input/event*`
+/// node, which the fd that died with the old one never sees. Without this the locks stay frozen
+/// where the unplug left them until the shell restarts.
+async fn watch_locks(
+    first: Option<evdev::EventStream>,
+    state: Arc<Mutex<KeyboardState>>,
+    events: UnboundedSender<KeyboardSignal>,
+) {
+    let mut stream = first;
+    let mut watch = build_input_watch()
+        .inspect_err(|err| {
+            error!("failed to set up the udev input watch ({err}); lock state will freeze if the keyboard is replugged")
+        })
+        .ok();
+    loop {
+        if let Some(mut live) = stream.take() {
+            if !pump_leds(&mut live, &state, &events).await {
+                return;
+            }
+            continue;
+        }
+        let Some(watch) = watch.as_mut() else { return };
+        let mut guard = match watch.readable_mut().await {
+            Ok(guard) => guard,
+            Err(err) => {
+                error!(
+                    "the udev input watch's fd errored ({err}); lock state will freeze if the keyboard is replugged"
+                );
+                return;
+            }
+        };
+        for _event in guard.get_inner().iter() {}
+        guard.clear_ready();
+        stream = open_led_stream(&state);
+        if stream.is_some() && events.send(KeyboardSignal::Changed).is_err() {
+            return;
+        }
     }
 }
 

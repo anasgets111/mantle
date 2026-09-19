@@ -539,9 +539,8 @@ impl Capabilities {
                 if self.keyboard.is_none() {
                     let (events, signals) = unbounded_channel();
                     let connection = self.connection.clone();
-                    let build = async move {
-                        Some(KeyboardController::new(connection, Path::new("/sys/class/leds"), events).await)
-                    };
+                    let build =
+                        async move { Some(KeyboardController::new(connection, Path::new("/sys/class/leds"), events)) };
                     let handle = |keyboard: KeyboardController, _| async move { keyboard.snapshot() };
                     self.keyboard = Some(spawn_worker(build, signals, handle, self.senders.keyboard.clone()));
                 }
