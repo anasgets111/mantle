@@ -60,8 +60,8 @@ pub struct ShapeResult {
     pub width: f32,
     pub height: f32,
     /// One entry per laid-out line, in order, each trimmed of the whitespace a word wrap leaves
-    /// behind at the break. Never empty for non-empty text: a string that needs no break is one
-    /// entry holding the whole string.
+    /// behind at the break. Never empty for non-empty text, except on a machine with no fonts: a
+    /// string that needs no break is one entry holding the whole string.
     pub lines: Arc<[String]>,
     /// Where each of `lines` came from: the byte range of the request's text it is a slice of,
     /// parallel to `lines` (`text[line_ranges[i]] == lines[i]`). What lets `layout` carry a
@@ -573,6 +573,17 @@ impl WorkerFonts {
 }
 
 fn shape(font_system: &mut FontSystem, primary_family: &str, request: &ShapeRequest, glyphs: bool) -> ShapeResult {
+    // cosmic-text panics ("no default font found") the moment it shapes a run against a database
+    // with no faces, which is what a machine with no fonts installed hands the worker.
+    if font_system.db().is_empty() {
+        return ShapeResult {
+            width: 0.0,
+            height: 0.0,
+            lines: Vec::new().into(),
+            line_ranges: Vec::new().into(),
+            shaped: Vec::new().into(),
+        };
+    }
     let metrics = Metrics::new(request.font_size, request.line_height);
     let mut buffer = Buffer::new(font_system, metrics);
     buffer.set_size(request.max_width, None);
@@ -1335,6 +1346,17 @@ mod tests {
             proportional.width,
             monospace.width
         );
+    }
+
+    /// A machine with no font files installed: `fonts::resolve_chain` hands back an empty
+    /// database, and cosmic-text's shaper panics outright on one ("no default font found"),
+    /// taking the worker thread with it.
+    #[test]
+    fn shaping_against_an_empty_database_measures_nothing_rather_than_panicking() {
+        let mut font_system = FontSystem::new_with_locale_and_db(detect_locale(), fontdb::Database::new());
+        let measured = shape(&mut font_system, "", &req("Mantle", 14.0), true);
+        assert_eq!((measured.width, measured.height), (0.0, 0.0));
+        assert!(measured.lines.is_empty() && measured.shaped.is_empty());
     }
 
     /// The trap `lines` was written into: cosmic-text's `LayoutRun::text` is the whole *source*

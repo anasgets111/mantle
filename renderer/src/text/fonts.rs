@@ -12,7 +12,7 @@ use std::path::PathBuf;
 use std::process::Command;
 
 use fontdb::{Database, Family, Query};
-use shared::{info, warn};
+use shared::{error, info, warn};
 
 /// Generic CSS family names fontconfig always resolves by substitution -- there is no literal
 /// "sans-serif" family to compare a match against, so the miss check (does the resolved family
@@ -153,16 +153,23 @@ fn system_fallback(chain: &[&str]) -> ResolvedFonts {
     );
     let mut db = Database::new();
     db.load_system_fonts();
-    let query = Query { families: &[Family::SansSerif], ..Default::default() };
-    let id = db
-        .query(&query)
-        .or_else(|| db.faces().next().map(|face| face.id))
-        .expect("fontdb has no loaded faces at all, system fallback exhausted");
-    let primary_family =
-        db.face(id).expect("queried id must be in the database that produced it").families[0].0.clone();
+    let primary_family = system_primary(&db).unwrap_or_else(|| {
+        error!("font chain: no usable face in the system font database -- no text can be drawn");
+        String::new()
+    });
     // Every face in the database came from the scan rather than a named file, so nothing here has
     // a path a later `load_family` could collide with.
     ResolvedFonts { db, primary_family, loaded_paths: HashSet::new() }
+}
+
+/// The family to shape the fallback database against: its sans serif, else any face it holds.
+///
+/// `None` is a machine with no font files, which `text::shaping::shape` answers by measuring every
+/// string as empty -- the shell draws its chrome without text rather than losing the render thread.
+fn system_primary(db: &Database) -> Option<String> {
+    let query = Query { families: &[Family::SansSerif], ..Default::default() };
+    let id = db.query(&query).or_else(|| db.faces().next().map(|face| face.id))?;
+    Some(db.face(id)?.families.first()?.0.clone())
 }
 
 /// Runs `fc-match` for `name` and returns the file it resolved to plus the family fontconfig
@@ -324,6 +331,13 @@ mod tests {
             Some(TEST_FAMILY)
         );
         assert_eq!(resolved.db.faces().count(), before, "the same file must not load twice");
+    }
+
+    /// A machine with no font files at all -- the case `system_fallback` reaches when even the
+    /// system scan comes up empty.
+    #[test]
+    fn a_database_with_no_faces_has_no_primary_family() {
+        assert_eq!(system_primary(&Database::new()), None);
     }
 
     #[test]
