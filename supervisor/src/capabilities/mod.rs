@@ -634,12 +634,26 @@ impl Capabilities {
             }
             Capability::Audio => self.ensure_mixer_thread(),
             // On the roster since ADR-0141. Push immediately after lazy start because a quiet
-            // inhibitor watch may never speak.
+            // inhibitor watch may never speak. Takes a session bus as well as the system one, to
+            // serve `org.freedesktop.ScreenSaver` (ADR-0231); without it that half stays unserved.
             Capability::Idle => {
                 if self.idle.is_none() {
+                    let session_bus = with_call_timeout(zbus::connection::Builder::session())
+                        .await
+                        .inspect_err(|err| {
+                            error!(
+                                "idle: failed to connect to the session bus; org.freedesktop.ScreenSaver inhibits are unavailable for this run: {err}"
+                            )
+                        })
+                        .ok();
                     self.idle = Some(
-                        IdleController::new(self.connection.clone(), self.idle_tx.clone(), self.senders.idle.clone())
-                            .await,
+                        IdleController::new(
+                            self.connection.clone(),
+                            session_bus,
+                            self.idle_tx.clone(),
+                            self.senders.idle.clone(),
+                        )
+                        .await,
                     );
                 }
                 if let Some(idle) = &self.idle {

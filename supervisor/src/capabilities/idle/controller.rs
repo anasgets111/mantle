@@ -11,8 +11,9 @@ use wayland_client::Proxy;
 
 use super::gate::{IdleGate, blocks_idle};
 use super::inhibit::{
-    INHIBIT_MODE, INHIBIT_WHAT, INHIBIT_WHO, InhibitState, LiveInhibit, Login1ManagerProxy, apply_inhibit,
-    apply_release_inhibit, cleanup_generation_inhibit,
+    INHIBIT_MODE, INHIBIT_WHAT, INHIBIT_WHO, InhibitState, LiveInhibit, Login1ManagerProxy, SCREENSAVER_BUS_NAME,
+    SCREENSAVER_HOLDER, SCREENSAVER_OBJECT_PATHS, ScreenSaver, apply_inhibit, apply_release_inhibit,
+    apply_screensaver_inhibit, apply_screensaver_release, cleanup_generation_inhibit, drop_screensaver_peer,
 };
 use super::notify::{
     ListenerId, NotifyState, cleanup_generation_thresholds, connect_wayland_idle, register_threshold_entry,
@@ -36,6 +37,7 @@ pub struct PublishedIdle {
     logind_blocked: bool,
     logind_inhibitors: Vec<super::state::IdleInhibitor>,
     wayland_inhibited: bool,
+    screensaver: Vec<super::state::IdleInhibitor>,
     last_sent: IdleState,
 }
 
@@ -46,13 +48,19 @@ impl PublishedIdle {
     /// already draws for a logind holder that gave none, and a `why` stating the observation.
     fn merged(&self) -> IdleState {
         let mut inhibitors = self.logind_inhibitors.clone();
+        // Ours by the time logind hears of them, and `foreign_idle_inhibitors` drops this shell's
+        // own row, so the names can only come from here (ADR-0231).
+        inhibitors.extend(self.screensaver.iter().cloned());
         if self.wayland_inhibited {
             inhibitors.push(super::state::IdleInhibitor {
                 who: String::new(),
                 why: "the compositor is holding off idle notifications".to_string(),
             });
         }
-        IdleState { inhibited: self.logind_blocked || self.wayland_inhibited, inhibitors }
+        IdleState {
+            inhibited: self.logind_blocked || self.wayland_inhibited || !self.screensaver.is_empty(),
+            inhibitors,
+        }
     }
 
     /// Records a change and returns the payload to send, or `None` when the answer is unchanged.
@@ -69,6 +77,13 @@ impl PublishedIdle {
     /// `notify::wayland_inhibited`.
     pub(crate) fn set_wayland_inhibited(&mut self, held: Option<bool>) -> Option<IdleState> {
         self.wayland_inhibited = held.unwrap_or(self.wayland_inhibited);
+        self.settle()
+    }
+
+    /// The `org.freedesktop.ScreenSaver` roster (ADR-0231). Reported before logind answers, so a
+    /// config sees the holder in the same push that stops its countdown.
+    fn set_screensaver(&mut self, holds: Vec<super::state::IdleInhibitor>) -> Option<IdleState> {
+        self.screensaver = holds;
         self.settle()
     }
 
@@ -102,13 +117,15 @@ pub struct IdleController {
 
 impl IdleController {
     /// Constructs both halves and returns immediately. `system_bus` is the Supervisor's system bus;
-    /// inhibit uses it directly (ADR-0032).
+    /// inhibit uses it directly (ADR-0032). `session_bus` carries the inbound half,
+    /// `org.freedesktop.ScreenSaver` (ADR-0231); `None` leaves it unserved.
     ///
     /// Notify starts [`NotifyState::Inert`] and upgrades to `Live` in a bounded `spawn_blocking`
     /// task running [`connect_wayland_idle`]. Its `roundtrip()` hung once against niri; awaiting
     /// it here would wedge the Supervisor.
     pub async fn new(
         system_bus: zbus::Connection,
+        session_bus: Option<zbus::Connection>,
         events_tx: UnboundedSender<shared::IdleEvent>,
         state_tx: UnboundedSender<IdleState>,
     ) -> Self {
@@ -133,9 +150,18 @@ impl IdleController {
             pending: Arc::new(std::sync::Mutex::new(Vec::new())),
             inhibit: Arc::new(LiveInhibit {
                 system_bus,
-                state: tokio::sync::Mutex::new(InhibitState { counts: HashMap::new(), fd: None }),
+                state: tokio::sync::Mutex::new(InhibitState {
+                    counts: HashMap::new(),
+                    screensaver: std::collections::BTreeMap::new(),
+                    next_cookie: 1,
+                    fd: None,
+                }),
             }),
         };
+
+        if let Some(session_bus) = session_bus {
+            export_screensaver(&session_bus, controller.clone()).await;
+        }
 
         let notify_for_task = notify.clone();
         let published_for_task = published.clone();
@@ -247,24 +273,26 @@ impl IdleController {
     /// `idle:inhibit(reason)` (ADR-0032): refcount decision, global 0->1 `Inhibit` call, and
     /// `fd`/count write stay under one `state` lock. Releasing it allows a stale zero during the
     /// call (leak) or lets an inhibit/release pair write `fd` out of order (clobber).
-    ///
-    /// A login1 proxy-build failure is a silent no-op (built fresh, not cached; see
-    /// [`LiveInhibit::system_bus`]). A failed `Inhibit` call rolls back its count bump.
     pub async fn inhibit(&self, generation_id: u32, reason: &str) {
         let mut state = self.inhibit.state.lock().await;
-
-        let should_open_fd = apply_inhibit(&mut state.counts, generation_id).should_open_fd;
-        if !should_open_fd {
-            return;
+        if apply_inhibit(&mut state.counts, generation_id).should_open_fd {
+            self.open_shared_fd(&mut state, generation_id, reason).await;
         }
+    }
 
+    /// The one logind fd every holder shares, taken on the global 0->1. The caller holds `state`
+    /// for the reasons [`IdleController::inhibit`] gives.
+    ///
+    /// A login1 proxy-build failure is a silent no-op (built fresh, not cached; see
+    /// [`LiveInhibit::system_bus`]). A failed `Inhibit` call rolls back its count bump; a
+    /// `ScreenSaver` cookie recorded against it stays, and releasing it then finds a zero count
+    /// and does nothing.
+    async fn open_shared_fd(&self, state: &mut InhibitState, holder: u32, reason: &str) {
         let proxy = match Login1ManagerProxy::new(&self.inhibit.system_bus).await {
             Ok(proxy) => proxy,
             Err(err) => {
-                warn!(
-                    "inhibit(generation {generation_id}, {reason:?}) failed to build the login1 Manager proxy: {err}"
-                );
-                apply_release_inhibit(&mut state.counts, generation_id);
+                warn!("inhibit(holder {holder}, {reason:?}) failed to build the login1 Manager proxy: {err}");
+                apply_release_inhibit(&mut state.counts, holder);
                 return;
             }
         };
@@ -275,8 +303,65 @@ impl IdleController {
             }
             Err(err) => {
                 warn!("Inhibit({INHIBIT_WHAT:?}, {INHIBIT_WHO:?}, {reason:?}, {INHIBIT_MODE:?}) failed: {err}");
-                apply_release_inhibit(&mut state.counts, generation_id);
+                apply_release_inhibit(&mut state.counts, holder);
             }
+        }
+    }
+
+    /// `org.freedesktop.ScreenSaver.Inhibit` (ADR-0231): takes the same logind fd a config's
+    /// `idle:inhibit` takes, so one refcount answers for both and the gate keeps one source.
+    pub async fn screensaver_inhibit(&self, peer: String, who: String, why: String) -> u32 {
+        let (cookie, holds) = {
+            let mut state = self.inhibit.state.lock().await;
+            let hold = super::state::IdleInhibitor { who, why };
+            let reason = hold.why.clone();
+            let (cookie, transition) = apply_screensaver_inhibit(&mut state, peer, hold);
+            if transition.should_open_fd {
+                self.open_shared_fd(&mut state, SCREENSAVER_HOLDER, &reason).await;
+            }
+            (cookie, screensaver_holds(&state))
+        };
+        // Debug, not info: a browser retakes its hold on every play, and the gate already says
+        // once, at info, that something holds the session awake.
+        debug!("ScreenSaver.Inhibit -> cookie {cookie}; {} hold(s) now live", holds.len());
+        self.publish_screensaver(holds);
+        cookie
+    }
+
+    /// `org.freedesktop.ScreenSaver.UnInhibit`; false for a cookie nothing holds, which the
+    /// interface answers as an error.
+    pub async fn screensaver_release(&self, cookie: u32) -> bool {
+        let holds = {
+            let mut state = self.inhibit.state.lock().await;
+            let Some(transition) = apply_screensaver_release(&mut state, cookie) else { return false };
+            if transition.should_close_fd {
+                state.fd = None;
+            }
+            screensaver_holds(&state)
+        };
+        debug!("ScreenSaver.UnInhibit(cookie {cookie}); {} hold(s) still live", holds.len());
+        self.publish_screensaver(holds);
+        true
+    }
+
+    async fn screensaver_peer_left(&self, departed: &str) {
+        let holds = {
+            let mut state = self.inhibit.state.lock().await;
+            let Some(transition) = drop_screensaver_peer(&mut state, departed) else { return };
+            if transition.should_close_fd {
+                state.fd = None;
+            }
+            screensaver_holds(&state)
+        };
+        info!("{departed} left the bus still holding an idle inhibitor; released it");
+        self.publish_screensaver(holds);
+    }
+
+    /// Held across the send; see the matching comment in `spawn_idle_event_forwarder`.
+    fn publish_screensaver(&self, holds: Vec<super::state::IdleInhibitor>) {
+        let mut published = self.published.lock().unwrap();
+        if let Some(next) = published.set_screensaver(holds) {
+            let _ = self.state_tx.send(next);
         }
     }
 
@@ -337,6 +422,52 @@ impl IdleController {
         if cleanup_generation_inhibit(&mut state.counts, generation_id).should_close_fd {
             state.fd = None;
         }
+    }
+}
+
+/// Every live `ScreenSaver` hold, oldest cookie first.
+fn screensaver_holds(state: &InhibitState) -> Vec<super::state::IdleInhibitor> {
+    state.screensaver.values().map(|(_, hold)| hold.clone()).collect()
+}
+
+/// Claims `org.freedesktop.ScreenSaver` and answers on both object paths (ADR-0231).
+///
+/// Exports before claiming the name, like the tray watcher: a call routed to the new owner has to
+/// find the object. `DoNotQueue` because a session already running a screensaver daemon keeps it;
+/// queueing would take the name later, mid-session, and answer for holds this shell never saw.
+async fn export_screensaver(session_bus: &zbus::Connection, controller: IdleController) {
+    for path in SCREENSAVER_OBJECT_PATHS {
+        let export = session_bus.object_server().at(path, ScreenSaver { controller: controller.clone() });
+        if let Err(err) = export.await {
+            warn!("failed to export {SCREENSAVER_BUS_NAME} at {path}: {err}");
+        }
+    }
+    match session_bus
+        .request_name_with_flags(SCREENSAVER_BUS_NAME, zbus::fdo::RequestNameFlags::DoNotQueue.into())
+        .await
+    {
+        Ok(zbus::fdo::RequestNameReply::PrimaryOwner) => {
+            info!("holding {SCREENSAVER_BUS_NAME}; idle inhibits from browsers and players reach the gate");
+            tokio::spawn(watch_screensaver_peers(session_bus.clone(), controller));
+        }
+        Ok(other) => warn!("RequestName({SCREENSAVER_BUS_NAME}) -> {other:?}; another daemon answers its clients"),
+        Err(err) => warn!("RequestName({SCREENSAVER_BUS_NAME}) failed: {err}; no client's inhibit reaches this shell"),
+    }
+}
+
+/// Releases a departed client's holds (ADR-0231). A player that crashes mid-video sends no
+/// `UnInhibit`, and nothing else would ever drop what it held.
+async fn watch_screensaver_peers(session_bus: zbus::Connection, controller: IdleController) {
+    let Ok(proxy) = zbus::fdo::DBusProxy::new(&session_bus).await else {
+        warn!("cannot watch for departing screensaver clients; a crashed client's hold would outlive it");
+        return;
+    };
+    // Filtered by the bus on `new_owner == ""`, not here: every application start and exit on the
+    // session bus changes some name, and none of those need to wake this shell.
+    let Ok(mut names) = proxy.receive_name_owner_changed_with_args(&[(2, "")]).await else { return };
+    while let Some(signal) = futures_util::StreamExt::next(&mut names).await {
+        let Ok(args) = signal.args() else { continue };
+        controller.screensaver_peer_left(&args.name.to_string()).await;
     }
 }
 

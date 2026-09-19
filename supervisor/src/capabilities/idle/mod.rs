@@ -2,6 +2,9 @@
 //! `ext_idle_notifier_v1` Wayland connection; inhibit uses `org.freedesktop.login1.Manager.Inhibit`
 //! on the existing system bus. They share one controller and generation-scoped cleanup.
 //!
+//! Inhibit also answers inbound: this shell owns `org.freedesktop.ScreenSaver`, where a browser's
+//! video hold arrives, and takes the same logind fd for it (ADR-0231).
+//!
 //! Notify becomes inert (silent no-op, logged once) if the protocol is absent, its connection
 //! fails, or setup exceeds [`IDLE_NOTIFY_SETUP_TIMEOUT`]. Background setup lets
 //! [`IdleController::new`] return before a hung compositor. Inhibit rides the required system

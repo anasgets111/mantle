@@ -5289,3 +5289,40 @@ everything else rests on, and the mantle a shell takes up -- while that was stil
 Rejected: keeping `obelisk` with `conflicts=('obelisk' 'obelisk-bin')`. It works today and costs
 nothing, but a file conflict is not negotiable in `extra`, so it trades a free rename now for a
 breaking one later.
+
+## 0231. The Supervisor owns `org.freedesktop.ScreenSaver`, because that is where a browser's video hold goes
+
+A film played in a browser did not stop the countdown, and the screen locked. The browser is a
+native Wayland client, takes no `zwp_idle_inhibitor_v1`, and calls `portal.Inhibit.Inhibit` with
+flags 8 (idle) and `reason = "Playing video"`. xdg-desktop-portal hands that to its GTK backend,
+which resolves an idle inhibit to `org.freedesktop.ScreenSaver.Inhibit`. Nothing owned that name,
+so the hold reached nothing; a stub owning it caught the browser's `"Playing video"` and
+`"Playing audio"` on the next play. Gecko tries that name before the portal, so owning it covers
+both routes. kscreenlocker, niri and noctalia own it too.
+
+1. **Both object paths, `DoNotQueue`.** `/org/freedesktop/ScreenSaver` and `/ScreenSaver`, because
+   KDE registered both and clients have split across them ever since. A session already running a
+   screensaver daemon keeps the name: queueing would claim it mid-session and answer for holds this
+   shell never saw. Losing it is a `warn!`, never a failed Supervisor (ADR-0033's shape).
+2. **A client's hold takes the same logind fd `idle:inhibit` takes.** One more entry in the existing
+   refcount, so `BlockInhibited` turns true, the ADR-0139 gate closes, and thresholds already idle
+   are taken back. A second boolean into `IdleGate` would race one answer between two sources, and
+   would leave logind's own `IdleAction` unaware.
+3. **Every screensaver client is one holder at the top of the `u32` range.** Generation ids are
+   handed out from 1 upwards, so a config reload's `reset_registrations` cannot reach that entry and
+   drop a film's hold. Cookies sit beside the counts under the one lock, so the roster and the
+   refcount cannot drift; an unknown cookie moves neither.
+4. **`who` is the application name as passed, which is empty through the portal.** The peer is the
+   portal, not the application, so naming it would be a guess; `why` carries the client's reason and
+   is usually the only label there is. This shell's own logind row stays excluded (ADR-0141), so
+   these names reach a config only through the roster.
+5. **A departed peer's holds are released**, filtered bus-side on an empty `new_owner`. A player
+   that crashes mid-video sends no `UnInhibit`, and nothing else would drop what it held.
+
+Not built: `GetActive`/`ActiveChanged`, which no inhibiting client calls, and
+`org.freedesktop.PowerManagement.Inhibit`, which Gecko reaches only when the first name is unowned.
+An application dying behind a portal that survives it is invisible here, because the peer holding
+the cookie is still on the bus.
+
+Nothing in the engine classifies what is playing. Every implementation surveyed relays what clients
+declare, and guessing from media metadata guesses where the application already answered.

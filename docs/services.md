@@ -126,8 +126,11 @@ The Supervisor owns `ext_idle_notifier_v1`. Lua registers idle/resume callbacks 
 equal durations share a Wayland listener. Registrations reset on re-evaluation.
 
 `mantle.idle:inhibit(reason)` and `release_inhibit()` refcount one logind
-`Inhibit(what="idle", mode="block")` fd across generation holds. Logind idle inhibition suppresses
-threshold events and resumes reported thresholds. `idle.inhibited` reflects any logind or compositor idle hold;
+`Inhibit(what="idle", mode="block")` fd across generation holds. The Supervisor also owns
+`org.freedesktop.ScreenSaver` on both object paths and takes that same fd for its clients, which is
+how a browser's "Playing video" hold reaches the gate, called directly or through
+xdg-desktop-portal (ADR-0231). Logind idle inhibition suppresses threshold events and resumes
+reported thresholds. `idle.inhibited` reflects any logind, screensaver or compositor idle hold;
 `idle.inhibitors` names external holders.
 
 Logind's session Lock signal and config lock commands request the session lock flow. The Supervisor

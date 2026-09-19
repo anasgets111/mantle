@@ -5,9 +5,10 @@
 //! the Supervisor dropped every threshold event: observed live with `systemd-inhibit --what=idle
 //! --who=mpv`, the screen said nothing. ADR-0141 adds the roster.
 //!
-//! [`IdleState::inhibited`] is true for either kind of holder: a logind inhibitor named by
-//! `Manager.BlockInhibited`, or a Wayland surface inhibitor detected from the compositor's silence
-//! (ADR-0160). [`IdleState::inhibitors`] names holders. The shell's own hold is excluded (see
+//! [`IdleState::inhibited`] is true for any kind of holder: a logind inhibitor named by
+//! `Manager.BlockInhibited`, a Wayland surface inhibitor detected from the compositor's silence
+//! (ADR-0160), or an `org.freedesktop.ScreenSaver` client this shell answers for (ADR-0231).
+//! [`IdleState::inhibitors`] names holders. The shell's own hold is excluded (see
 //! [`foreign_idle_inhibitors`]), which config can explain better than the `why` it passed down.
 //! Thus `inhibited` true with an empty list means only this shell holds the session awake.
 
@@ -27,14 +28,17 @@ pub struct IdleInhibitor {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 #[cfg_attr(test, derive(schemars::JsonSchema))]
 pub struct IdleState {
-    /// Anything is holding the session awake: a logind inhibitor including this shell's own, or
-    /// the compositor withholding idle notifications (ADR-0160). Either way no threshold event
-    /// arrives while it is true, so a countdown must stop -- but for different reasons. The logind
-    /// half is the Supervisor's own gate dropping events; the compositor half is the compositor
-    /// never sending them, and nothing in this process gates on it.
+    /// Anything is holding the session awake: a logind inhibitor including this shell's own, a
+    /// client's `org.freedesktop.ScreenSaver` hold (ADR-0231), or the compositor withholding idle
+    /// notifications (ADR-0160). Either way no threshold event arrives while it is true, so a
+    /// countdown must stop -- but for different reasons. The logind half is the Supervisor's own
+    /// gate dropping events, and a screensaver hold becomes one; the compositor half is the
+    /// compositor never sending them, and nothing in this process gates on it.
     pub inhibited: bool,
     /// Idle-inhibitor holders other than this shell. A Wayland holder has an empty `who`, because
-    /// no protocol names one (ADR-0160).
+    /// no protocol names one (ADR-0160). So does a `ScreenSaver` client arriving through
+    /// xdg-desktop-portal, which passes no application name, leaving `why` its only label: draw
+    /// `why` when `who` is empty.
     pub inhibitors: Vec<IdleInhibitor>,
 }
 

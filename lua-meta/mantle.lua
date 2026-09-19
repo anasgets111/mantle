@@ -365,8 +365,8 @@
 
 ---@class IdleState
 ---`mantle.idle` payload (ADR-0141).
----@field inhibited boolean Anything is holding the session awake: a logind inhibitor including this shell's own, or the compositor withholding idle notifications (ADR-0160). Either way no threshold event arrives while it is true, so a countdown must stop -- but for different reasons. The logind half is the Supervisor's own gate dropping events; the compositor half is the compositor never sending them, and nothing in this process gates on it.
----@field inhibitors IdleInhibitor[] Idle-inhibitor holders other than this shell. A Wayland holder has an empty `who`, because no protocol names one (ADR-0160).
+---@field inhibited boolean Anything is holding the session awake: a logind inhibitor including this shell's own, a client's `org.freedesktop.ScreenSaver` hold (ADR-0231), or the compositor withholding idle notifications (ADR-0160). Either way no threshold event arrives while it is true, so a countdown must stop -- but for different reasons. The logind half is the Supervisor's own gate dropping events, and a screensaver hold becomes one; the compositor half is the compositor never sending them, and nothing in this process gates on it.
+---@field inhibitors IdleInhibitor[] Idle-inhibitor holders other than this shell. A Wayland holder has an empty `who`, because no protocol names one (ADR-0160). So does a `ScreenSaver` client arriving through xdg-desktop-portal, which passes no application name, leaving `why` its only label: draw `why` when `who` is empty.
 
 ---@class BluetoothState
 ---@field available boolean An adapter is bound; without one every other field is inert and every write a logged no-op.
