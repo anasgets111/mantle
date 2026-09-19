@@ -516,6 +516,7 @@
 ---@field active_client? ActiveClient Focused toplevel, or `nil` if none. One window per session, not per output; an unfocused monitor cannot be queried (ADR-0056 decision 4).
 ---@field compositor string Source compositor, `"niri"` or `"hyprland"` (ADR-0119). Hyprland creates a numbered workspace on focus, so strips pad empty slots there; niri keeps its trailing empty one.
 ---@field outputs OutputWorkspaces[] One entry per output, keyed by connector name; empty until the first compositor answer.
+---@field overview_open? boolean Whether the compositor's overview is open; `nil` where there is no overview. A surface the compositor only composites inside one can stop drawing when this is false.
 ---@field special? SpecialWorkspace[] Compositor special workspaces, Hyprland's scratchpads, ordered by name (ADR-0119). Absent when unsupported (`special == nil`); an empty list means supported but none exist. Hyprland lists a special only while it holds a window or is shown.
 
 --- Capabilities -------------------------------------------------------------------------------

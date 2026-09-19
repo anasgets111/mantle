@@ -59,9 +59,9 @@ fn focused_window(windows: &HashMap<u64, niri_ipc::Window>) -> Option<FocusedWin
     })
 }
 
-/// Connects, requests the event stream, and folds events into niri's two state parts on an OS
+/// Connects, requests the event stream, and folds events into niri's three state parts on an OS
 /// thread (`std::net::UnixStream`). `EventStreamStatePart::apply` returns ignored events, so one
-/// `if let` chains both parts.
+/// `let` chain passes each event down the parts that did not want it.
 ///
 /// Uses a second event-stream connection; `keyboard` already owns one for `KeyboardLayoutsChanged`
 /// (ADR-0056 decision 2 weighs this against sharing).
@@ -81,6 +81,7 @@ pub fn spawn_reader(mut publisher: StatePublisher) {
         let mut read_event = socket.read_events();
         let mut niri_workspaces = niri_ipc::state::WorkspacesState::default();
         let mut niri_windows = niri_ipc::state::WindowsState::default();
+        let mut niri_overview = niri_ipc::state::OverviewState::default();
         loop {
             let event = match read_event() {
                 Ok(event) => event,
@@ -89,13 +90,15 @@ pub fn spawn_reader(mut publisher: StatePublisher) {
                     return;
                 }
             };
-            if let Some(event) = niri_workspaces.apply(event) {
-                niri_windows.apply(event);
+            if let Some(event) = niri_workspaces.apply(event)
+                && let Some(event) = niri_windows.apply(event)
+            {
+                niri_overview.apply(event);
             }
 
             let rows = workspace_rows(&niri_workspaces.workspaces, &niri_windows.windows);
             let focused = focused_window(&niri_windows.windows);
-            if !publisher.publish(&rows, focused.as_ref(), None) {
+            if !publisher.publish(&rows, focused.as_ref(), None, Some(niri_overview.is_open)) {
                 return;
             }
         }

@@ -285,7 +285,7 @@ pub fn spawn_reader(mut publisher: StatePublisher) {
 
     std::thread::spawn(move || {
         if let Some((rows, focused, special)) = read_state(&command_path)
-            && !publisher.publish(&rows, focused.as_ref(), Some(&special))
+            && !publisher.publish(&rows, focused.as_ref(), Some(&special), None)
         {
             return;
         }
@@ -298,7 +298,7 @@ pub fn spawn_reader(mut publisher: StatePublisher) {
                 continue;
             }
             if let Some((rows, focused, special)) = read_state(&command_path)
-                && !publisher.publish(&rows, focused.as_ref(), Some(&special))
+                && !publisher.publish(&rows, focused.as_ref(), Some(&special), None)
             {
                 return;
             }

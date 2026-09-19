@@ -34,6 +34,10 @@ pub struct WorkspacesState {
     /// lists a special only while it holds a window or is shown.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub special: Option<Vec<SpecialWorkspace>>,
+    /// Whether the compositor's overview is open; `nil` where there is no overview. A surface the
+    /// compositor only composites inside one can stop drawing when this is false.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub overview_open: Option<bool>,
 }
 
 /// One special workspace (ADR-0119), identified by `name`, the argument to
@@ -190,7 +194,7 @@ pub fn derive_state(workspaces: &[WorkspaceRow], focused: Option<&FocusedWindow>
         is_fullscreen: window.is_fullscreen,
     });
 
-    WorkspacesState { compositor: String::new(), outputs, active_client, special: None }
+    WorkspacesState { compositor: String::new(), outputs, active_client, special: None, overview_open: None }
 }
 
 /// Compositor-neutral reader half: reduce, drop equal updates, store, and wake `main.rs`, shared
@@ -222,9 +226,11 @@ impl StatePublisher {
         workspaces: &[WorkspaceRow],
         focused: Option<&FocusedWindow>,
         special: Option<&[SpecialWorkspace]>,
+        overview_open: Option<bool>,
     ) -> bool {
         let mut current = derive_state(workspaces, focused);
         current.compositor = self.compositor.name().to_string();
+        current.overview_open = overview_open;
         current.special = special.map(|list| {
             let mut list = list.to_vec();
             list.sort_by(|a, b| a.name.cmp(&b.name));
@@ -441,6 +447,20 @@ mod tests {
     }
 
     #[test]
+    fn an_overview_flag_is_absent_where_there_is_no_overview_and_false_where_it_is_shut() {
+        let (mut publisher, _rx) = publisher();
+        let workspaces = [workspace(1, 1, "eDP-1", true, true)];
+
+        assert!(publisher.publish(&workspaces, None, None, None));
+        let json = serde_json::to_value(publisher.state.lock().unwrap().clone()).unwrap();
+        assert!(json.get("overview_open").is_none(), "no key at all, as `special` does it");
+
+        assert!(publisher.publish(&workspaces, None, None, Some(false)), "shut is a change from unsupported");
+        let json = serde_json::to_value(publisher.state.lock().unwrap().clone()).unwrap();
+        assert_eq!(json["overview_open"], serde_json::json!(false));
+    }
+
+    #[test]
     fn a_state_with_nothing_focused_omits_active_client_rather_than_nulling_it() {
         let json = serde_json::to_value(WorkspacesState::default()).unwrap();
 
@@ -470,9 +490,9 @@ mod tests {
         let (mut publisher, mut rx) = publisher();
         let workspaces = [workspace(5, 1, "eDP-1", true, true)];
 
-        assert!(publisher.publish(&workspaces, None, None));
-        assert!(publisher.publish(&workspaces, None, None), "an event that changes nothing is not a change");
-        assert!(publisher.publish(&workspaces, Some(&window("a title", "kitty", false)), None));
+        assert!(publisher.publish(&workspaces, None, None, None));
+        assert!(publisher.publish(&workspaces, None, None, None), "an event that changes nothing is not a change");
+        assert!(publisher.publish(&workspaces, Some(&window("a title", "kitty", false)), None, None));
 
         assert_eq!(publisher.state.lock().unwrap().active_client.as_ref().unwrap().class, "kitty");
         let signals = std::iter::from_fn(|| rx.try_recv().ok()).count();
@@ -484,7 +504,7 @@ mod tests {
         let (mut publisher, rx) = publisher();
         drop(rx);
 
-        assert!(!publisher.publish(&[workspace(5, 1, "eDP-1", true, true)], None, None));
+        assert!(!publisher.publish(&[workspace(5, 1, "eDP-1", true, true)], None, None, None));
     }
 
     #[test]
@@ -492,7 +512,7 @@ mod tests {
         let (mut publisher, _rx) = publisher();
         let workspaces = [workspace(5, 1, "eDP-1", true, true)];
 
-        assert!(publisher.publish(&workspaces, None, None));
+        assert!(publisher.publish(&workspaces, None, None, None));
         let json = serde_json::to_value(publisher.state.lock().unwrap().clone()).unwrap();
         assert_eq!(json["compositor"], "niri");
         assert!(json.get("special").is_none(), "no key at all: `special == nil` is the feature test");
@@ -500,7 +520,8 @@ mod tests {
         assert!(publisher.publish(
             &workspaces,
             None,
-            Some(&[special("special:term", Some("eDP-1")), special("special", None)])
+            Some(&[special("special:term", Some("eDP-1")), special("special", None)]),
+            None
         ));
         let json = serde_json::to_value(publisher.state.lock().unwrap().clone()).unwrap();
         assert_eq!(json["special"][0]["name"], "special");
@@ -508,7 +529,7 @@ mod tests {
         assert_eq!(json["special"][1]["shown_on"], "eDP-1");
         assert!(json["special"][0].get("shown_on").is_none());
 
-        assert!(publisher.publish(&workspaces, None, Some(&[])));
+        assert!(publisher.publish(&workspaces, None, Some(&[]), None));
         let json = serde_json::to_value(publisher.state.lock().unwrap().clone()).unwrap();
         assert_eq!(json["special"], serde_json::json!([]), "the compositor has specials and none exist right now");
     }
