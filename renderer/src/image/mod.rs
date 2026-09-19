@@ -1,5 +1,6 @@
 //! Decodes, caches, and fits images into GPU textures (ADR-0054). PNG/JPEG/WebP use `image`
-//! ([`decode_raster`]); SVG uses `resvg` because Adwaita ships scalable icons.
+//! ([`decode_raster`]); SVG uses `resvg` because Adwaita ships scalable icons; a GIF holds every
+//! frame at once and the slot picks one by elapsed time ([`decode_gif`], ADR-0233).
 //!
 //! The key is path plus physical-pixel box: a vector made for 12px would blur at 24px, while a
 //! raster is downscaled to cover its box (ADR-0122), so a 4K wallpaper in a 230px thumbnail is a
@@ -31,6 +32,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Receiver, SyncSender, TryRecvError};
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use femtovg::renderer::OpenGl;
 use femtovg::rgb::FromSlice;
@@ -88,6 +90,12 @@ const MAX_DECODE_EDGE: u32 = 8_192;
 /// quarters of the budget sat idle. The ceiling is unchanged; where it is enforced is not
 /// (ADR-0187).
 const DECODE_POOL_BYTES: u64 = 256 * 1024 * 1024;
+
+/// Screenfuls of texture one animated source may hold, every frame being resident at once. A
+/// multiple of the display-derived budget, not a constant, for ADR-0182's reason: this cache has
+/// already measured what a screenful costs here. Three, because a GIF wallpaper is the large case
+/// and 84 frames of a 480x270 source is 43 MB against a 16 MB screenful.
+const ANIMATION_BUDGETS: usize = 3;
 
 /// One cache slot. `box_px` is the physical-pixel target: SVGs use their longest edge; rasters
 /// downscale to cover it (see the module docs).
@@ -164,9 +172,10 @@ pub enum Load {
     Background,
 }
 
-/// Decoder output awaiting texture upload.
+/// Decoder output awaiting texture upload: one frame, or a GIF's sequence with the delay that
+/// follows each. All frames share `width`/`height`, which GIF composition already guarantees.
 struct Decoded {
-    pixels: Vec<u8>,
+    frames: Vec<(Vec<u8>, Duration)>,
     width: u32,
     height: u32,
     /// tiny-skia `Pixmap` is premultiplied RGBA8; `image` is straight. The wrong femtovg flag gives
@@ -174,11 +183,16 @@ struct Decoded {
     premultiplied: bool,
 }
 
-/// Slot state. `Pending` draws and enqueues nothing after its first job until it lands. `Ready`
-/// carries texture bytes, width times height times four for RGBA8, counted against the budget.
+/// Slot state. `Pending` draws and enqueues nothing after its first job until it lands.
 enum Slot {
     Pending,
-    Ready(ImageId, usize),
+    /// One texture per frame with the delay after it, the sum of their bytes charged to the budget
+    /// as one, and the instant frame 0 went up. A still is one frame at [`Duration::ZERO`].
+    Ready {
+        frames: Vec<(ImageId, Duration)>,
+        bytes: usize,
+        start: Instant,
+    },
     Failed,
 }
 
@@ -188,10 +202,12 @@ struct Entry {
     last_hit: u64,
 }
 
-/// A queued decode's key, so a late result lands in the right slot, plus its tint.
+/// A queued decode's key, so a late result lands in the right slot, plus its tint and the
+/// animation ceiling read when it was queued.
 struct Job {
     key: CacheKey,
     tint: Option<Rgba>,
+    animation_bytes: usize,
 }
 
 /// Shared decode queue and result channel, at most `MAX_DECODE_WORKERS` threads. Spawned with the
@@ -244,8 +260,14 @@ impl Pool {
                         // size is known; `still_wanted` is re-asked there because a worker can now
                         // wait for room, and an entry can be evicted while it does (ADR-0187).
                         let still_wanted = || wanted.lock().is_ok_and(|wanted| wanted.contains(&job.key));
-                        let result =
-                            decode(&job.key, job.tint, cache_root.as_deref(), Charge::Waiting(&budget), &still_wanted);
+                        let result = decode(
+                            &job.key,
+                            job.tint,
+                            cache_root.as_deref(),
+                            Charge::Waiting(&budget),
+                            &still_wanted,
+                            job.animation_bytes,
+                        );
                         if result_tx.send((job.key, result)).is_err() {
                             return;
                         }
@@ -296,11 +318,11 @@ pub struct ImageCache {
     /// `wayland::output::texture_budget` (ADR-0182) and [`STARTING_TEXTURE_BUDGET`] until they are
     /// known.
     texture_budget: usize,
-    /// A request this paint turned away for [`MAX_INFLIGHT_DECODES`], recording no slot. Read and
-    /// cleared by [`ImageCache::take_deferred`] straight after the `execute` that set it, which is
-    /// what makes one flag enough for every surface: `image` is only ever called from a paint, and
-    /// paints are serialized on the dispatch thread.
-    deferred: bool,
+    /// When this paint owes another: now, for a request turned away for [`MAX_INFLIGHT_DECODES`]
+    /// with no slot recorded, or an animated source's next frame. Read and cleared by
+    /// [`ImageCache::take_deferred`] straight after the `execute` that set it, which is what makes
+    /// one field enough for every surface: paints are serialized on the dispatch thread.
+    deferred: Option<Instant>,
     /// Whether the pool's closed result channel has been reported. `poll` runs every turn and the
     /// channel never reopens, so without this one dead pool writes a line per turn into a log that
     /// does not rotate (ADR-0199).
@@ -329,6 +351,11 @@ impl ImageCache {
 
     /// Holds idle textures to `budget` bytes from here on (ADR-0182). Called whenever the outputs
     /// change, which is the only thing that changes the answer.
+    /// What one animated source may hold, scaled by the displays (ADR-0182, ADR-0233).
+    fn animation_bytes(&self) -> usize {
+        self.texture_budget * ANIMATION_BUDGETS
+    }
+
     pub fn set_texture_budget(&mut self, budget: usize) {
         self.texture_budget = budget;
     }
@@ -346,7 +373,7 @@ impl ImageCache {
             landed_total: 0,
             failed_total: 0,
             resident_bytes: 0,
-            deferred: false,
+            deferred: None,
             workers_gone: false,
             cancelled: Vec::new(),
             tick: 0,
@@ -363,7 +390,7 @@ impl ImageCache {
         let mut pending = 0;
         for entry in self.entries.values() {
             match entry.slot {
-                Slot::Ready(..) => ready += 1,
+                Slot::Ready { .. } => ready += 1,
                 Slot::Pending => pending += 1,
                 Slot::Failed => {}
             }
@@ -419,11 +446,11 @@ impl ImageCache {
         files
     }
 
-    /// Whether a request was turned away for capacity since this was last asked, clearing the
-    /// flag. The painting surface calls it straight after its own `execute` and carries the answer
-    /// into its `stale`, which is what gets that surface painted again (ADR-0185).
-    pub fn take_deferred(&mut self) -> bool {
-        std::mem::take(&mut self.deferred)
+    /// When this paint owes another, clearing the field. The painting surface calls it straight
+    /// after its own `execute` and carries the answer into its `stale`, which is what gets that
+    /// surface painted again (ADR-0185, ADR-0233).
+    pub fn take_deferred(&mut self) -> Option<Instant> {
+        self.deferred.take()
     }
 
     /// Uploads [`ImageCache::poll`] results at paint start, alongside
@@ -436,7 +463,7 @@ impl ImageCache {
             }
             let slot = upload_or_log(canvas, &key.path, result);
             match slot {
-                Slot::Ready(_, bytes) => {
+                Slot::Ready { bytes, .. } => {
                     self.resident_bytes += bytes;
                     self.landed_total += 1;
                 }
@@ -461,7 +488,7 @@ impl ImageCache {
         }
         let pinned = pinned();
         let candidates = self.entries.iter().filter_map(|(key, entry)| match entry.slot {
-            Slot::Ready(_, bytes) => Some((key.clone(), bytes, entry.last_hit)),
+            Slot::Ready { bytes, .. } => Some((key.clone(), bytes, entry.last_hit)),
             Slot::Pending | Slot::Failed => None,
         });
         for key in victims(candidates, self.texture_budget, &pinned) {
@@ -499,24 +526,18 @@ impl ImageCache {
         self.tick += 1;
         if let Some(cached) = self.entries.get_mut(&key) {
             cached.last_hit = self.tick;
-            return match cached.slot {
-                Slot::Ready(id, _) => Some(id),
-                Slot::Pending | Slot::Failed => None,
-            };
+            return self.showing(&key);
         }
         match load {
             Load::Inline => {
                 // Counted against the same ceiling the workers wait on, but never waiting for it:
                 // this is the dispatch thread (ADR-0187). Nothing is queued, so nothing can be
                 // evicted mid-decode and the request is still wanted by definition.
-                let decoded = decode(&key, tint, None, Charge::Immediate(&self.pool.budget), &|| true);
+                let decoded =
+                    decode(&key, tint, None, Charge::Immediate(&self.pool.budget), &|| true, self.animation_bytes());
                 let slot = upload_or_log(canvas, &key.path, decoded);
-                let id = match slot {
-                    Slot::Ready(id, _) => Some(id),
-                    _ => None,
-                };
-                self.insert(key, slot);
-                id
+                self.insert(key.clone(), slot);
+                self.showing(&key)
             }
             Load::Background => {
                 // One gate for the whole pipeline, not just the queue: see `MAX_INFLIGHT_DECODES`.
@@ -525,7 +546,7 @@ impl ImageCache {
                 if !self.admit(&key) {
                     return None;
                 }
-                match self.pool.jobs.try_send(Job { key: key.clone(), tint }) {
+                match self.pool.jobs.try_send(Job { key: key.clone(), tint, animation_bytes: self.animation_bytes() }) {
                     Ok(()) => {
                         self.insert(key, Slot::Pending);
                     }
@@ -533,7 +554,7 @@ impl ImageCache {
                         // The set has room but the channel does not, which the workers will clear.
                         // No slot again, so this owes the same repaint the ceiling above does.
                         self.unwant(&key);
-                        self.deferred = true;
+                        self.deferred = Some(Instant::now());
                     }
                     Err(std::sync::mpsc::TrySendError::Disconnected(_)) => {
                         warn!("{}: no decode worker left to take it", key.path.display());
@@ -544,6 +565,23 @@ impl ImageCache {
                 None
             }
         }
+    }
+
+    /// The frame `key` is showing now, and the repaint its successor owes. `None` for a pending
+    /// or failed slot, which draws nothing.
+    fn showing(&mut self, key: &CacheKey) -> Option<ImageId> {
+        let Some(Slot::Ready { frames, start, .. }) = self.entries.get(key).map(|entry| &entry.slot) else {
+            return None;
+        };
+        // A still never reads the clock: `image` is called once per draw per frame.
+        let (index, next) = if frames.len() > 1 { frame_at(frames, start.elapsed()) } else { (0, None) };
+        let id = frames[index].0;
+        if let Some(next) = next {
+            // The soonest wins: one pass can draw a refused tile and a 10 fps GIF.
+            let due = Instant::now() + next;
+            self.deferred = Some(self.deferred.map_or(due, |owed| owed.min(due)));
+        }
+        Some(id)
     }
 
     /// Reserves a pipeline slot for `key`, answering whether the caller may queue it.
@@ -563,7 +601,7 @@ impl ImageCache {
                 true
             }
             Ok(_) => {
-                self.deferred = true;
+                self.deferred = Some(Instant::now());
                 false
             }
             Err(_) => false,
@@ -609,7 +647,7 @@ impl ImageCache {
             self.evict(&coldest);
         }
         match &slot {
-            Slot::Ready(_, bytes) => self.resident_bytes += *bytes,
+            Slot::Ready { bytes, .. } => self.resident_bytes += *bytes,
             Slot::Failed => self.failed_total += 1,
             Slot::Pending => {}
         }
@@ -621,8 +659,8 @@ impl ImageCache {
     fn evict(&mut self, key: &CacheKey) {
         if let Some(entry) = self.entries.remove(key) {
             match &entry.slot {
-                Slot::Ready(id, bytes) => {
-                    self.evicted.push(*id);
+                Slot::Ready { frames, bytes, .. } => {
+                    self.evicted.extend(frames.iter().map(|(id, _)| *id));
                     self.evicted_total += 1;
                     self.resident_bytes -= *bytes;
                 }
@@ -683,16 +721,40 @@ fn victims(
 /// asking again.
 fn upload_or_log(canvas: &mut Canvas<OpenGl>, path: &Path, decoded: Result<Decoded, String>) -> Slot {
     let result = decoded.and_then(|decoded| {
-        let bytes = decoded.pixels.len();
-        upload(canvas, decoded).map(|id| (id, bytes))
+        let bytes = decoded.frames.iter().map(|(pixels, _)| pixels.len()).sum();
+        upload(canvas, decoded).map(|frames| Slot::Ready { frames, bytes, start: Instant::now() })
     });
     match result {
-        Ok((id, bytes)) => Slot::Ready(id, bytes),
+        Ok(slot) => slot,
         Err(err) => {
             warn!("{}: {err}", path.display());
             Slot::Failed
         }
     }
+}
+
+/// The frame showing `elapsed` after the first, and how long until the next. A still is frame 0
+/// with nothing owed; anything else loops. A zero-delay frame is skipped rather than held, which
+/// is why [`decode_gif`] floors what the file asks for.
+fn frame_at<T>(frames: &[(T, Duration)], elapsed: Duration) -> (usize, Option<Duration>) {
+    let total: Duration = frames.iter().map(|(_, delay)| *delay).sum();
+    if total.is_zero() {
+        return (0, None);
+    }
+    let mut at = Duration::from_nanos((elapsed.as_nanos() % total.as_nanos()) as u64);
+    for (index, (_, delay)) in frames.iter().enumerate() {
+        if at < *delay {
+            return (index, Some(*delay - at));
+        }
+        at -= *delay;
+    }
+    unreachable!("the remainder is under the total, so some frame holds it")
+}
+
+/// Frames of `width`x`height` RGBA8 that fit `budget`. At least one, so an oversized source shows
+/// a still rather than failing its node.
+fn frame_cap(width: u32, height: u32, budget: usize) -> usize {
+    (budget / (4 * width.max(1) as usize * height.max(1) as usize)).max(1)
 }
 
 /// By extension, not sniffing: `freedesktop-icons` returns `.svg`/`.png`, and `shm_icons.rs` writes
@@ -709,20 +771,85 @@ fn decode(
     thumbnails: Option<&Path>,
     charge: Charge<'_>,
     still_wanted: &dyn Fn() -> bool,
+    animation_bytes: usize,
 ) -> Result<Decoded, String> {
     let CacheKey { path, box_px, cropped, .. } = key;
     // An SVG rasterizes to `box_px`, not to whatever the file declares, so it is bounded by the
     // request and never approaches the pool budget. `MAX_SVG_BYTES` is what bounds the parse.
     if is_vector(path) {
         let (pixels, width, height) = rasterize_svg(path, box_px.0.max(box_px.1), tint)?;
-        return Ok(Decoded { pixels, width, height, premultiplied: true });
+        return Ok(Decoded { frames: vec![(pixels, Duration::ZERO)], width, height, premultiplied: true });
+    }
+    // ponytail: GIF only, so an animated WebP or APNG draws its first frame. Upgrade: match the
+    // sniffed format; `AnimationDecoder` covers both.
+    if path.extension().is_some_and(|ext| ext.eq_ignore_ascii_case("gif")) {
+        return decode_gif(path, *box_px, *cropped, charge, animation_bytes);
     }
     let (pixels, width, height) = decode_raster(path, *box_px, thumbnails, charge, still_wanted)?;
     // Here rather than inside `decode_raster`, which returns from three places (thumbnail hit,
     // rescaled thumbnail, full decode) and would need the crop at each.
     let (pixels, width, height) =
         if *cropped { crop_to_box(pixels, width, height, *box_px) } else { (pixels, width, height) };
-    Ok(Decoded { pixels, width, height, premultiplied: false })
+    Ok(Decoded { frames: vec![(pixels, Duration::ZERO)], width, height, premultiplied: false })
+}
+
+/// Every frame of a GIF, each scaled and cropped like any raster. All at once because a frame is a
+/// delta over its predecessor's disposal, so none can be fetched on demand later, and past
+/// [`thumbnails`], which holds one surface per path and would answer frame 0 forever.
+///
+/// More frames than [`frame_cap`] keeps only the first: a long animation shows as a still instead
+/// of eating the texture budget or failing the node.
+fn decode_gif(
+    path: &Path,
+    box_px: (u32, u32),
+    cropped: bool,
+    charge: Charge<'_>,
+    budget: usize,
+) -> Result<Decoded, String> {
+    refuse_irregular(path).map_err(|err| format!("{}: {err}", path.display()))?;
+    let file = std::io::BufReader::new(std::fs::File::open(path).map_err(|err| err.to_string())?);
+    let decoder = ::image::codecs::gif::GifDecoder::new(file).map_err(|err| err.to_string())?;
+    let (source_width, source_height) = ::image::ImageDecoder::dimensions(&decoder);
+    if source_width.max(source_height) > MAX_DECODE_EDGE {
+        return Err(format!("{source_width}x{source_height} is past the {MAX_DECODE_EDGE}px limit"));
+    }
+    let (stored_width, stored_height) = stored_size(source_width, source_height, box_px);
+    let (width, height) =
+        if cropped { (stored_width.min(box_px.0), stored_height.min(box_px.1)) } else { (stored_width, stored_height) };
+    let cap = frame_cap(width, height, budget);
+    // The kept frames' ceiling plus the canvas the decoder composites on, which stays the source
+    // size whatever the box asks for.
+    //
+    // ponytail: the ceiling, not this file's share, so four decodes hold most of the pool.
+    // Upgrade: charge per frame, where the count is finally known.
+    let _permit = charge.take(budget as u64 + 4 * u64::from(source_width) * u64::from(source_height));
+    let mut frames = Vec::new();
+    for frame in ::image::AnimationDecoder::into_frames(decoder) {
+        let frame = frame.map_err(|err| err.to_string())?;
+        // A floor, because a 0 ms frame is one `frame_at` skips and an all-0 file is a still, which
+        // much of the web's GIFs are. 20 ms, not the 100 ms browsers substitute: a frame here costs
+        // a whole surface repaint, and 50 fps is already the ceiling that buys.
+        let delay = Duration::from(frame.delay()).max(Duration::from_millis(20));
+        let buffer = ::image::DynamicImage::ImageRgba8(frame.into_buffer());
+        let scaled = if (stored_width, stored_height) == (buffer.width(), buffer.height()) {
+            buffer.into_rgba8()
+        } else {
+            buffer.thumbnail(stored_width, stored_height).into_rgba8()
+        };
+        let (scaled_width, scaled_height) = scaled.dimensions();
+        let pixels = scaled.into_raw();
+        frames.push((if cropped { crop_to_box(pixels, scaled_width, scaled_height, box_px).0 } else { pixels }, delay));
+        // ponytail: the frame that trips the cap is decoded before it is dropped; `into_frames`
+        // has no length to ask first.
+        if frames.len() > cap {
+            frames.truncate(1);
+            break;
+        }
+    }
+    if frames.is_empty() {
+        return Err("no frames".to_string());
+    }
+    Ok(Decoded { frames, width, height, premultiplied: false })
 }
 
 /// Centered crop of RGBA8 `pixels` to `box_px`, for the [`Fit::Cover`] rasters [`stored_size`]
@@ -747,7 +874,11 @@ fn crop_to_box(pixels: Vec<u8>, width: u32, height: u32, box_px: (u32, u32)) -> 
     (out, kept_width, kept_height)
 }
 
-/// Canvas-dependent half of a load: one texture from one decode.
+/// Canvas-dependent half of a load: one texture per frame of one decode.
+///
+/// ponytail: a frame that fails strands the ones before it, which only GPU exhaustion does.
+/// Upgrade: delete the partial set on the error arm.
+///
 /// Uploads premultiplied, whatever the decoder produced (ADR-0184). `image` hands back straight
 /// alpha and `resvg` hands back premultiplied, and passing that difference on as a femtovg flag was
 /// enough while femtovg was the only thing sampling these textures. A config shader samples them
@@ -758,13 +889,19 @@ fn crop_to_box(pixels: Vec<u8>, width: u32, height: u32, box_px: (u32, u32)) -> 
 /// first, so a straight-alpha edge interpolates colour the alpha was meant to hide, and no later
 /// multiply recovers it. Premultiplying the buffer is one pass over pixels that are about to be
 /// copied to the GPU anyway.
-fn upload(canvas: &mut Canvas<OpenGl>, decoded: Decoded) -> Result<ImageId, String> {
-    let Decoded { mut pixels, width, height, premultiplied } = decoded;
-    if !premultiplied {
-        premultiply(&mut pixels);
-    }
-    let source = ImageSource::from(femtovg::imgref::Img::new(pixels.as_rgba(), width as usize, height as usize));
-    canvas.create_image(source, ImageFlags::PREMULTIPLIED).map_err(femtovg_error)
+fn upload(canvas: &mut Canvas<OpenGl>, decoded: Decoded) -> Result<Vec<(ImageId, Duration)>, String> {
+    let Decoded { frames, width, height, premultiplied } = decoded;
+    frames
+        .into_iter()
+        .map(|(mut pixels, delay)| {
+            if !premultiplied {
+                premultiply(&mut pixels);
+            }
+            let source =
+                ImageSource::from(femtovg::imgref::Img::new(pixels.as_rgba(), width as usize, height as usize));
+            canvas.create_image(source, ImageFlags::PREMULTIPLIED).map(|id| (id, delay)).map_err(femtovg_error)
+        })
+        .collect()
 }
 
 /// Scales each RGBA8 pixel's colour by its own alpha, rounding the way a straight-to-premultiplied
@@ -1343,22 +1480,22 @@ mod tests {
 
         // Admitted while there is room, and nothing is owed: the caller got its slot.
         assert!(cache.admit(&key(1)), "the first request has the whole pipeline to itself");
-        assert!(!cache.take_deferred(), "an admitted request owes no repaint");
+        assert!(cache.take_deferred().is_none(), "an admitted request owes no repaint");
 
         for n in 1..MAX_INFLIGHT_DECODES as u32 {
             assert!(cache.admit(&key(n + 1)));
         }
-        assert!(!cache.take_deferred(), "filling the pipeline is not a refusal");
+        assert!(cache.take_deferred().is_none(), "filling the pipeline is not a refusal");
 
         // At the ceiling: refused, and the refusal is visible to the paint that has to retry it.
         assert!(!cache.admit(&key(9999)), "a request past the ceiling must be refused");
-        assert!(cache.take_deferred(), "a refused request must say a repaint is owed");
-        assert!(!cache.take_deferred(), "and the flag is taken, not left set for the next surface");
+        assert!(cache.take_deferred().is_some(), "a refused request must say a repaint is owed");
+        assert!(cache.take_deferred().is_none(), "and the flag is taken, not left set for the next surface");
 
         // Room again: admitted, and it owes nothing.
         cache.unwant(&key(1));
         assert!(cache.admit(&key(9999)), "a freed slot admits the next request");
-        assert!(!cache.take_deferred());
+        assert!(cache.take_deferred().is_none());
     }
 
     /// ADR-0185, the same stall reached from the other side: nobody refused this request, an
@@ -1449,7 +1586,7 @@ mod tests {
         // A worker skips a job nobody wants, so this stands in for what `image` records when it
         // queues one.
         cache.pool.wanted.lock().unwrap().insert(key.clone());
-        cache.pool.jobs.send(Job { key: key.clone(), tint: None }).unwrap();
+        cache.pool.jobs.send(Job { key: key.clone(), tint: None, animation_bytes: STARTING_TEXTURE_BUDGET }).unwrap();
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
         let mut files = cache.poll();
         while files.is_empty() {
@@ -1523,5 +1660,47 @@ mod tests {
         let real = dir.path().join("real.svg");
         std::fs::write(&real, b"<svg/>").unwrap();
         assert!(read_capped(&real, 1024).unwrap().is_some());
+    }
+
+    /// ADR-0233. Each frame's own delay, the zero-delay frame skipped, and a loop rather than a
+    /// stop on the last frame. A still owes nothing, which is what keeps a PNG off the poll
+    /// loop's timeout.
+    #[test]
+    fn a_frame_index_follows_each_delay_and_loops() {
+        let frames = [((), Duration::from_millis(100)), ((), Duration::ZERO), ((), Duration::from_millis(50))];
+        assert_eq!(frame_at(&frames, Duration::ZERO), (0, Some(Duration::from_millis(100))));
+        assert_eq!(frame_at(&frames, Duration::from_millis(99)), (0, Some(Duration::from_millis(1))));
+        assert_eq!(frame_at(&frames, Duration::from_millis(100)), (2, Some(Duration::from_millis(50))));
+        assert_eq!(frame_at(&frames, Duration::from_millis(150)), (0, Some(Duration::from_millis(100))));
+        assert_eq!(frame_at(&frames, Duration::from_millis(1_000_000)), (2, Some(Duration::from_millis(50))));
+        assert_eq!(frame_at(&[((), Duration::ZERO)], Duration::from_secs(9)), (0, None));
+    }
+
+    /// ADR-0233. Every frame decodes at once because disposal makes them sequential, and the cap
+    /// is bytes rather than a frame count: what a GIF costs is frames times its box.
+    #[test]
+    fn a_gif_decodes_every_frame_under_a_byte_cap() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("spin.gif");
+        let frames = (0..3u8).map(|n| {
+            ::image::Frame::from_parts(
+                ::image::RgbaImage::from_pixel(8, 8, ::image::Rgba([n * 40, 0, 0, 255])),
+                0,
+                0,
+                ::image::Delay::from_numer_denom_ms(80, 1),
+            )
+        });
+        ::image::codecs::gif::GifEncoder::new(std::fs::File::create(&path).unwrap()).encode_frames(frames).unwrap();
+
+        let decoded = decode_gif(&path, (8, 8), false, Charge::Free, STARTING_TEXTURE_BUDGET).unwrap();
+        assert_eq!(decoded.frames.len(), 3, "a still would be one, and frame 0 forever");
+        assert_eq!(decoded.frames[0].1, Duration::from_millis(80));
+        assert_eq!((decoded.width, decoded.height), (8, 8));
+
+        // Scaled by the budget, and never zero: a source too large to animate shows its first frame.
+        let budget = ANIMATION_BUDGETS * STARTING_TEXTURE_BUDGET;
+        assert_eq!(frame_cap(480, 270, budget), 97, "an 84-frame GIF wallpaper animates");
+        assert_eq!(frame_cap(128, 128, STARTING_TEXTURE_BUDGET), 256);
+        assert_eq!(frame_cap(MAX_DECODE_EDGE, MAX_DECODE_EDGE, budget), 1);
     }
 }

@@ -5350,3 +5350,34 @@ partly elapsed timer and misses an `idled` the shared listener already sent; tha
 per registration, and `wayland_inhibited`'s pairing (ADR-0160) keys listeners by duration today.
 The gate's `idled` set keeps the cancelled `(generation, threshold)` until the generation is reaped,
 which replays an `Idled` to no callback: bounded by distinct durations, and a no-op when it lands.
+
+## 0233. An animated GIF plays from its cache slot, paced by a repaint the cache asks for
+
+`image { source = "cat.gif" }` did not decode at all: the `image` crate was built without its `gif`
+feature. Turning that on decodes one frame, which is where a still image would have stopped.
+
+1. **Every frame decodes at once, straight to textures.** A GIF frame is a delta over its
+   predecessor's disposal, so frame 40 cannot be produced without the 39 before it and no frame can
+   be fetched on demand later. `thumbnails::Slot` is skipped for the same reason: it holds one
+   surface per path and would answer frame 0 forever. Each frame still takes `stored_size` and
+   `crop_to_box`, so a GIF in a 200px box costs 200px per frame rather than the source.
+2. **The slot holds N textures under one charge.** `Slot::Ready` carries each frame's `ImageId` with
+   the delay after it, their bytes summed as one figure against the texture budget, and the instant
+   frame 0 went up. Eviction frees all of them. A still is the same shape with one frame at a zero
+   delay, so nothing else in the cache has an animated case to handle.
+3. **The ceiling is three screenfuls, not a constant.** ADR-0182 already derives a texture budget
+   from the displays because no constant is right for an engine other people's shells run on, and
+   an animated source is the same problem one order up: 84 frames of a 480x270 GIF wallpaper is
+   43 MB, which a fixed 16 MiB would have shown as a still on every machine. Past the cap only
+   frame 0 is kept, because a config naming a 500-frame file wants a picture more than an error.
+4. **The next frame is the repaint `take_deferred` already owed, carrying an instant.** Two GIF
+   frames build a byte-identical display list, so `paint_surface`'s `unchanged` check skips the draw
+   and nothing arms a frame callback. `ImageCache::deferred` and `TrackedSurface::stale` become
+   `Option<Instant>` instead of `bool`: the paint that drew frame *n* records when *n+1* is due, and
+   the poll loop's timeout takes the soonest across mapped surfaces alongside the signal and timer
+   deadlines it already reads (ADR-0185's mechanism, ADR-0124's idle rule). A bare flag would have
+   repainted a 10 fps GIF at the display's refresh rate. The turn profiler learned the same thing:
+   a turn that swapped a surface is not idle, whatever asked it to.
+
+No `play`, `pause` or loop count on the node. A GIF plays and loops; nothing has asked to stop one,
+and the frame index is a function of elapsed time with no state a config could set.

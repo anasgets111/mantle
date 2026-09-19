@@ -34,9 +34,11 @@ pub struct Turn {
 }
 
 impl Turn {
-    /// A woken turn with `false` is the spin signature.
+    /// A woken turn with `false` is the spin signature. `drawn` counts because a repaint a
+    /// surface asked for by deadline -- an animated image (ADR-0233) -- moves pixels while every
+    /// other flag here stays false, and a permanent false `SPIN` teaches the reader to ignore it.
     fn did_work(self) -> bool {
-        self.dispatched || self.re_resolved || self.typed || self.decoded
+        self.dispatched || self.re_resolved || self.typed || self.decoded || self.drawn > 0
     }
 }
 
@@ -237,12 +239,14 @@ impl IdleProfile {
     }
 }
 
-/// Pure report formatting. `SPIN` needs at least 100 turns and more idle than busy turns: a few
-/// ignored Wayland events are ordinary; a hundred idle turns per second is the bug.
+/// Pure report formatting. `SPIN` needs at least 100 turns, more idle than busy turns, and no
+/// pixels moved: a few ignored Wayland events are ordinary; a hundred idle turns per second is the
+/// bug. A window that drew is not that bug -- an animated image (ADR-0233) costs a couple of
+/// ignored release and callback events per frame, which is the protocol, not a spin.
 fn render(window: Duration, c: &Counters, cpu: Cpu) -> String {
     let secs = window.as_secs_f64().max(f64::MIN_POSITIVE);
     let percent = |seconds: f64| seconds / secs * 100.0;
-    let spinning = c.turns >= 100 && c.idle_turns * 2 > c.turns;
+    let spinning = c.turns >= 100 && c.idle_turns * 2 > c.turns && c.drawn == 0;
     format!(
         "idle {:.1}s: turns={} idle={} cpu proc={:.2}% main={:.2}% | wake wl={} wake={} both={} none={} \
          | work dispatch={} resolve={} tick={} type={} decode={} paint={} drawn={} \
@@ -287,8 +291,9 @@ mod tests {
     }
 
     #[test]
-    fn a_turn_that_only_painted_still_counts_as_idle() {
-        assert!(!Turn { painted: true, ..Turn::default() }.did_work());
+    fn a_turn_that_only_painted_still_counts_as_idle_and_one_that_drew_does_not() {
+        assert!(!Turn { painted: true, ..Turn::default() }.did_work(), "a list built and skipped moved nothing");
+        assert!(Turn { drawn: 1, ..Turn::default() }.did_work(), "a swapped surface is work, whatever asked for it");
         assert!(Turn { re_resolved: true, ..Turn::default() }.did_work());
     }
 
@@ -302,6 +307,8 @@ mod tests {
     fn a_mostly_idle_window_is_marked_only_once_it_is_busy_enough_to_mean_something() {
         assert!(!render(Duration::from_secs(10), &counters(10, 9), Cpu::default()).contains("SPIN"));
         assert!(render(Duration::from_secs(10), &counters(1000, 900), Cpu::default()).contains("SPIN"));
+        let drew = Counters { drawn: 150, ..counters(1000, 900) };
+        assert!(!render(Duration::from_secs(10), &drew, Cpu::default()).contains("SPIN"), "a window that drew");
     }
 
     #[test]

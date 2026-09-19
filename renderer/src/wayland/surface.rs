@@ -245,16 +245,17 @@ pub(super) struct TrackedSurface {
     /// buffers; clear on rebind or any branch that cannot prove the pixels still match, or a stale
     /// frame can remain with no redraw trigger.
     pub(super) last_painted: Option<((u32, u32), layout::paint::DisplayList)>,
-    /// The pixels on screen are stale although `last_painted` still describes them, so the next
-    /// paint must run even against an identical list (ADR-0182). Set when a decode lands for a
-    /// file this surface draws: the list is unchanged, the texture behind it is not.
+    /// When the pixels on screen go stale although `last_painted` still describes them, so a paint
+    /// must run even against an identical list (ADR-0182). Set when a decode lands for a file this
+    /// surface draws, and to an animated source's next-frame instant (ADR-0233): the list is
+    /// unchanged, the texture behind it is not.
     ///
     /// Kept apart from clearing `last_painted` because that list is also the pin set
     /// `ImageCache::trim` reads. Dropping it unpinned every image a mapped surface was showing for
     /// the width of one repaint, and a wallpaper mid-dissolve repaints every frame -- so `trim`
     /// kept landing in that window, evicting a whole picker's thumbnails, which then re-decoded,
     /// landed, and unpinned everything again.
-    pub(super) stale: bool,
+    pub(super) stale: Option<std::time::Instant>,
     /// This surface's `ext_background_effect_surface_v1` (ADR-0195). `None` on a compositor without
     /// the protocol, and on every surface whose tree never sets `blur`. [`App::drop_role_object`]
     /// destroys it with its `wl_surface`: `set_blur_region` on an inert one kills the client.
@@ -275,10 +276,15 @@ impl TrackedSurface {
             map_state: MapState::Unmapped,
             configured_size: (0, 0),
             last_painted: None,
-            stale: false,
+            stale: None,
             blur_effect: None,
             last_blur_region: Vec::new(),
         }
+    }
+
+    /// Whether the repaint this surface owes has come due; see [`TrackedSurface::stale`].
+    fn owes_a_paint(&self) -> bool {
+        self.stale.is_some_and(|due| due <= std::time::Instant::now())
     }
 
     /// [`App::drop_role_object`]'s per-entry half.
@@ -709,7 +715,7 @@ impl App {
             // so without this the region would sit pending until some unrelated repaint. `stale`
             // is the existing word for "the committed state is behind what this surface should be
             // showing", and it costs one repaint of a surface whose glass just changed.
-            self.surfaces[index].stale = true;
+            self.surfaces[index].stale = Some(std::time::Instant::now());
         }
         self.surfaces[index].last_blur_region = regions;
     }
@@ -906,7 +912,7 @@ impl App {
             let focus = self.field_focus_for(&surface_id);
             tree.as_ref().map(|tree| layout::paint::build(tree, 1.0, focus.as_ref())).unwrap_or_default()
         };
-        let unchanged = !self.surfaces[index].stale
+        let unchanged = !self.surfaces[index].owes_a_paint()
             && self.surfaces[index]
                 .last_painted
                 .as_ref()
@@ -1050,7 +1056,7 @@ impl App {
             if surface.last_painted.as_ref().is_some_and(|(_, list)| list.draws_any_of(files)) {
                 // Marked, not cleared: this surface still shows those images until it repaints, so
                 // its list has to keep pinning them (ADR-0182).
-                surface.stale = true;
+                surface.stale = Some(std::time::Instant::now());
             }
         }
     }
@@ -1072,7 +1078,7 @@ impl App {
     /// what made arming a frame callback insufficient (ADR-0185).
     pub(super) fn repaint_surfaces_with_instance_ids(&mut self, instance_ids: &[String]) {
         let stale: Vec<String> =
-            self.surfaces.iter().filter(|surface| surface.stale).map(|surface| surface.surface_id.clone()).collect();
+            self.surfaces.iter().filter(|s| s.owes_a_paint()).map(|s| s.surface_id.clone()).collect();
         let targets = turn::narrowed_repaint_targets(instance_ids, &stale);
         self.repaint_mapped_surfaces_where(|surface_id| targets.iter().any(|id| id == surface_id));
     }
@@ -1081,7 +1087,20 @@ impl App {
     /// selection needs this: with nothing ticked, nothing typed and nothing landed, it would
     /// otherwise reach no repaint at all and a deferred decode would never be asked for again.
     pub(super) fn has_stale_surfaces(&self) -> bool {
-        self.surfaces.iter().any(|surface| surface.stale && surface.map_state == MapState::Mapped)
+        self.surfaces.iter().any(|surface| surface.owes_a_paint() && surface.map_state == MapState::Mapped)
+    }
+
+    /// When the earliest owed repaint comes due, for the poll loop's only timeout. A GIF's next
+    /// frame is owed by no tree, no signal and no frame callback, so nothing else would wake for
+    /// it (ADR-0233).
+    pub(super) fn next_stale_deadline(&self) -> Option<std::time::Instant> {
+        // Bound too: an unbound surface is skipped by the repaint that would clear this, so a
+        // deadline in the past would spin the poll loop instead of arming one wake.
+        self.surfaces
+            .iter()
+            .filter(|s| s.map_state == MapState::Mapped && s.bound.is_some())
+            .filter_map(|s| s.stale)
+            .min()
     }
 
     fn repaint_mapped_surfaces_where(&mut self, wanted: impl Fn(&str) -> bool) {

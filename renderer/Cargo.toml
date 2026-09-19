@@ -41,8 +41,8 @@ glow = "0.18.0"
 # femtovg declares `image` with `default-features = false` and turns no format on, so its own
 # `load_image_file` answers every PNG with `Unsupported(Exact(Png))`. `image::decode_raster` calls
 # the crate directly instead, and this is where the formats it accepts are named. `webp` because a
-# wallpaper folder is full of them (ADR-0122).
-image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "webp"] }
+# wallpaper folder is full of them (ADR-0122). `gif` for animated sources (ADR-0233).
+image = { version = "0.25.10", default-features = false, features = ["gif", "jpeg", "png", "webp"] }
 cursor-icon = "1.2.0"
 khronos-egl = { version = "6.0.0", features = ["static"] }
 # One `mallopt` call at startup (`main.rs`, ADR-0123). Already in the tree through `nix`.

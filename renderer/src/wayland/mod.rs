@@ -573,13 +573,14 @@ pub fn run(
             // No timeout while idle (ADR-0124): Wayland events use the connection fd; Supervisor
             // frames, landed decodes, and socket-thread exit use the waker. The one timeout is a
             // pending `delay(signal, ms)` or an open `pulse(signal, ms)` window (ADR-0146,
-            // ADR-0153), armed only while one is running, the way a frame callback is requested
-            // only while a tween is.
+            // ADR-0153) or an animated image's next frame (ADR-0233), armed only while one is
+            // running, the way a frame callback is requested only while a tween is.
             let mut fds = [
                 nix::poll::PollFd::new(fd, nix::poll::PollFlags::POLLIN),
                 nix::poll::PollFd::new(waker.fd(), nix::poll::PollFlags::POLLIN),
             ];
-            let timeout = app.client.next_wake_deadline().map_or(nix::poll::PollTimeout::NONE, |due| {
+            let deadline = app.client.next_wake_deadline().into_iter().chain(app.next_stale_deadline()).min();
+            let timeout = deadline.map_or(nix::poll::PollTimeout::NONE, |due| {
                 // Rounded up: `as_millis` on the last fraction of a hold is 0, and a zero timeout
                 // returns at once to a turn that finds the deadline still a few hundred
                 // microseconds away, hundreds of times over.
