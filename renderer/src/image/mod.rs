@@ -261,6 +261,18 @@ impl Pool {
     }
 }
 
+/// [`ImageCache::census`]'s reading, for `wayland::memory_profile::Census`, which documents the
+/// live/total split `ready`/`pending` and `failed`/`evicted`/`landed` carry over unchanged.
+#[derive(Clone, Copy, Debug)]
+pub struct ImageCacheCensus {
+    pub resident_bytes: usize,
+    pub ready: usize,
+    pub pending: usize,
+    pub failed: usize,
+    pub evicted: usize,
+    pub landed: usize,
+}
+
 /// Path/size to uploaded texture for one generation (`CONTEXT.md`, **Image cache**). Not shared or
 /// persisted: a replaced Renderer starts cold (ADR-0054).
 pub struct ImageCache {
@@ -344,10 +356,9 @@ impl ImageCache {
         }
     }
 
-    /// Resident bytes, live `ready`/`pending` counts and lifetime totals for
-    /// `wayland::memory_profile`. Counts slots rather than reading `resident_bytes` alone: bytes
-    /// flat against a rising `pending` is a decode queue backing up, which the bytes cannot show.
-    pub fn census(&self) -> (usize, usize, usize, usize, usize, usize) {
+    /// Counts slots rather than reading `resident_bytes` alone: bytes flat against a rising
+    /// `pending` is a decode queue backing up, which the bytes cannot show.
+    pub fn census(&self) -> ImageCacheCensus {
         let mut ready = 0;
         let mut pending = 0;
         for entry in self.entries.values() {
@@ -357,7 +368,14 @@ impl ImageCache {
                 Slot::Failed => {}
             }
         }
-        (self.resident_bytes, ready, pending, self.failed_total, self.evicted_total, self.landed_total)
+        ImageCacheCensus {
+            resident_bytes: self.resident_bytes,
+            ready,
+            pending,
+            failed: self.failed_total,
+            evicted: self.evicted_total,
+            landed: self.landed_total,
+        }
     }
 
     /// Frees last frame's evictions. `layout::paint::canvas::paint_tree` calls this before walking because
@@ -1108,7 +1126,7 @@ mod tests {
             cache.insert(key(format!("/tmp/{n}.png"), 0, FileVersion::default()), Slot::Failed);
         }
         assert_eq!(cache.entries.len(), CACHE_CAPACITY, "the ten coldest were evicted to stay at the bound");
-        assert_eq!(cache.census().3, CACHE_CAPACITY + 10, "every insert failed once, evicted or not");
+        assert_eq!(cache.census().failed, CACHE_CAPACITY + 10, "every insert failed once, evicted or not");
     }
 
     fn key(path: impl Into<PathBuf>, px: u32, version: FileVersion) -> CacheKey {

@@ -696,16 +696,16 @@ impl ShmHandler for App {
 /// after this returns, so the arena totals include whatever this walk allocated rather than
 /// missing it.
 fn census(app: &App) -> (memory_profile::Census, memory_profile::Surfaces) {
-    let (image_bytes, ready, pending, failed, evicted, landed) = app.image_cache.census();
+    let image = app.image_cache.census();
     let (shape_entries, shape_bytes) = app.shaping.census();
     let (surfaces, nodes, properties) = app.client.scene().census();
     let census = memory_profile::Census {
-        image_bytes: image_bytes as u64,
-        image_ready: ready as u64,
-        image_pending: pending as u64,
-        image_failed: failed as u64,
-        image_evicted: evicted as u64,
-        image_landed: landed as u64,
+        image_bytes: image.resident_bytes as u64,
+        image_ready: image.ready as u64,
+        image_pending: image.pending as u64,
+        image_failed: image.failed as u64,
+        image_evicted: image.evicted as u64,
+        image_landed: image.landed as u64,
         shape_entries: shape_entries as u64,
         shape_bytes: shape_bytes as u64,
         lua_bytes: app.client.lua().used_memory() as u64,
