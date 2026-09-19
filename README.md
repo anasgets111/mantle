@@ -11,8 +11,7 @@ built on the engine:
 
 https://github.com/user-attachments/assets/038ee763-d7b6-4df9-9f79-2f131d4f0dcd
 
-Status: pre-release. Nothing is published, the Lua API changes without notice, and there is no
-distro package yet.
+Status: pre-release. The Lua API changes without notice.
 
 ## Requirements
 
