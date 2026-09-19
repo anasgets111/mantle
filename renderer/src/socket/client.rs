@@ -13,7 +13,6 @@ use tokio::sync::mpsc;
 
 use crate::layout::instance::SurfaceInstance;
 use crate::layout::node::SurfaceSpec;
-use crate::layout::secure_submit::lock_stays_authenticatable;
 use crate::layout::{self, Scene};
 use crate::lua::capability::{Capability, CapabilityHandle, CommandSender};
 use crate::lua::process::ProcessRegistry;
@@ -58,8 +57,9 @@ pub struct RendererClient {
     /// [`Self::apply_instances`], [`Self::handle_apply_pending`], and
     /// [`Self::re_resolve_if_dirty`].
     instances: Vec<SurfaceInstance>,
-    /// Whether this process holds or requested a lock. Arms [`lock_stays_authenticatable`]:
-    /// `SurfaceFingerprint::Lock` carries only `id`, so editing `child` rebuilds nothing and
+    /// Whether this process holds or requested a lock. Arms
+    /// [`crate::layout::secure_submit::lock_stays_authenticatable`]: `SurfaceFingerprint::Lock`
+    /// carries only `id`, so editing `child` rebuilds nothing and
     /// reloads in place; deleting the password while locked would leave only a VT switch. Written
     /// by `crate::wayland::App::set_session_lock` and teardown. **A `bool`, not instance ids**:
     /// hotplug replaces instances, so the veto reads [`Self::instances`].
@@ -369,11 +369,13 @@ impl RendererClient {
         let Some(output) = self.state.applied_output.as_ref() else {
             return false;
         };
-        let (instances, locked) = (&self.instances, self.holds_session_lock);
-        let applied =
-            self.scene.apply_admitting(&output.surfaces, instances, &self.shaping, self.loader.lua(), |scene| {
-                lock_stays_authenticatable(scene, instances, locked)
-            });
+        let applied = self.scene.apply_locked(
+            &output.surfaces,
+            &self.instances,
+            &self.shaping,
+            self.loader.lua(),
+            self.holds_session_lock,
+        );
         match applied {
             Ok(()) => {
                 log_applied_surfaces(&self.scene, &self.instances);
@@ -506,10 +508,13 @@ impl RendererClient {
         let Some((output, specs)) = self.state.pending.take() else {
             return false;
         };
-        let (instances, locked) = (&self.instances, self.holds_session_lock);
-        match self.scene.apply_admitting(&output.surfaces, instances, &self.shaping, self.loader.lua(), |scene| {
-            lock_stays_authenticatable(scene, instances, locked)
-        }) {
+        match self.scene.apply_locked(
+            &output.surfaces,
+            &self.instances,
+            &self.shaping,
+            self.loader.lua(),
+            self.holds_session_lock,
+        ) {
             Ok(()) => {
                 log_applied_surfaces(&self.scene, &self.instances);
                 start_secure_submit_capabilities(&self.scene, &self.instances, &self.commands);
@@ -557,11 +562,13 @@ impl RendererClient {
         if !self.dirty.take() {
             return false;
         }
-        let (instances, locked) = (&self.instances, self.holds_session_lock);
-        let applied =
-            self.scene.apply_admitting(&output.surfaces, instances, &self.shaping, self.loader.lua(), |scene| {
-                lock_stays_authenticatable(scene, instances, locked)
-            });
+        let applied = self.scene.apply_locked(
+            &output.surfaces,
+            &self.instances,
+            &self.shaping,
+            self.loader.lua(),
+            self.holds_session_lock,
+        );
         if let Err(err) = applied {
             // Rollback keeps the prior scene. Do not set rescue: that is for `shell.lua`
             // evaluation, not a rejected capability push. ponytail: logging forever, nothing

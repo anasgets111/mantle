@@ -16,6 +16,7 @@ use crate::layout::node::{
     self, Align, Dissolve, EdgeInsets, LayoutError, PaintStyle, PropMap, SizeMode, StyleRun, Tween,
 };
 use crate::layout::paint::DrawnImage;
+use crate::layout::secure_submit::lock_stays_authenticatable;
 use crate::lua::nodes::VirtualNode;
 use crate::text::shaping::{self, ShapeRequest, ShapingHandle};
 use crate::text::snap::LogicalRect;
@@ -285,6 +286,21 @@ impl Scene {
         self.apply_admitting(fresh_surfaces, instances, shaping, lua, |_| Ok(()))
     }
 
+    /// Every production apply. While the session is locked the same rule vetoes each one, so no
+    /// path can drop the password field (ADR-0052 decision 3).
+    pub fn apply_locked(
+        &mut self,
+        fresh_surfaces: &[VirtualNode],
+        instances: &[SurfaceInstance],
+        shaping: &ShapingHandle,
+        lua: &Lua,
+        locked: bool,
+    ) -> Result<(), LayoutError> {
+        self.apply_admitting(fresh_surfaces, instances, shaping, lua, |scene| {
+            lock_stays_authenticatable(scene, instances, locked)
+        })
+    }
+
     /// Reconciles one retained tree per mapped instance against `fresh_surfaces`, using each
     /// instance's `available` size. Missing declared instances are skipped for unplugged outputs;
     /// an instance naming no declaration is an `InvalidProperty`. Retained instances absent from
@@ -298,7 +314,7 @@ impl Scene {
     /// ponytail: every visited instance's tree is deep-cloned as rollback, even on success; the
     /// dirty flag limits this to capability-push cadence. The structural clone is O(nodes), not
     /// O(Lua heap).
-    pub fn apply_admitting(
+    fn apply_admitting(
         &mut self,
         fresh_surfaces: &[VirtualNode],
         instances: &[SurfaceInstance],

@@ -202,6 +202,37 @@ fn release_completes_click(
     })
 }
 
+/// Which field a press focuses (ADR-0050 decision 4). Both halves are rewritten on every press:
+/// reply and password fields must displace each other.
+fn press_chooses_focus(
+    hit_field: Option<FieldTarget>,
+    instance_id: &str,
+    focused_secure_submit: Option<FocusedField>,
+    focused_text_field: Option<FocusedTextField>,
+) -> (Option<FocusedField>, Option<FocusedTextField>) {
+    match hit_field {
+        Some(FieldTarget::Masked(target)) => (Some(FocusedField { surface_id: instance_id.to_string(), target }), None),
+        // Re-pressing the same field resumes its draft (ADR-0108).
+        Some(FieldTarget::Plain { id, on_change, on_submit, on_cancel, on_navigate }) => (
+            None,
+            Some(FocusedTextField {
+                surface_id: instance_id.to_string(),
+                id,
+                buffer: focused_text_field.filter(|field| field.id == id).map(|field| field.buffer).unwrap_or_default(),
+                typing: true,
+                on_change,
+                on_submit,
+                on_cancel,
+                on_navigate,
+            }),
+        ),
+        // Elsewhere stops plain typing but keeps its draft (ADR-0108). Masked focus remains until
+        // another field takes it (ADR-0114 decision 8), so scrim, card, and Authenticate clicks do
+        // not discard a secret before `submit`.
+        None => (focused_secure_submit, focused_text_field.map(|field| FocusedTextField { typing: false, ..field })),
+    }
+}
+
 /// Call `on_click` with its button rect in surface logical coordinates (ADR-0050 decision 3). The
 /// rect round-trips to popup `anchor_rect` through Lua. Error labels distinguish building the
 /// engine's argument from a raised config handler.
@@ -272,45 +303,17 @@ impl PointerHandler for App {
                     // ADR-0051 amendment: preserve the "user asked again" stamp past disarm.
                     self.pointer_input_count += 1;
                     let hit = self.hit_under(index, event.position);
-                    // Press, not release, chooses focus (decision 4). Rewrite both focus halves on
-                    // every press: reply and password fields must displace each other. Remember
-                    // whether this press hit a field before consuming the match; a held draft is
-                    // still a plain field (ADR-0108).
+                    // Read before the call consumes `hit.field`; a held draft is still a plain
+                    // field (ADR-0108).
                     let pressed_a_field = hit.field.is_some();
-                    let (masked, plain) = match hit.field {
-                        Some(FieldTarget::Masked(target)) => {
-                            (Some(FocusedField { surface_id: instance_id.clone(), target }), None)
-                        }
-                        // Re-pressing the same field resumes its draft (ADR-0108).
-                        Some(FieldTarget::Plain { id, on_change, on_submit, on_cancel, on_navigate }) => {
-                            let buffer = self
-                                .focused_text_field
-                                .as_ref()
-                                .filter(|field| field.id == id)
-                                .map(|field| field.buffer.clone())
-                                .unwrap_or_default();
-                            (
-                                None,
-                                Some(FocusedTextField {
-                                    surface_id: instance_id.clone(),
-                                    id,
-                                    buffer,
-                                    typing: true,
-                                    on_change,
-                                    on_submit,
-                                    on_cancel,
-                                    on_navigate,
-                                }),
-                            )
-                        }
-                        // Elsewhere stops plain typing but keeps its draft (ADR-0108). Masked focus
-                        // remains until another field takes it (ADR-0114 decision 8), so scrim,
-                        // card, and Authenticate clicks do not discard a secret before `submit`.
-                        None => (
-                            self.focused_secure_submit.clone(),
-                            self.focused_text_field.clone().map(|field| FocusedTextField { typing: false, ..field }),
-                        ),
-                    };
+                    // Clones, not takes: the seams below compare what arrives against the focus
+                    // still held to decide whether to zeroize and what to repaint.
+                    let (masked, plain) = press_chooses_focus(
+                        hit.field,
+                        &instance_id,
+                        self.focused_secure_submit.clone(),
+                        self.focused_text_field.clone(),
+                    );
                     // Reassign through the zeroizing transition seam.
                     self.focus_secure_submit(masked);
                     self.focus_text_field(plain);
@@ -905,5 +908,98 @@ mod tests {
         let recorded: Table = lua.globals().get("anchor").unwrap();
         assert_eq!(recorded.get::<f32>("x").unwrap(), 40.0);
         assert_eq!(recorded.get::<f32>("height").unwrap(), 24.0);
+    }
+
+    /// A plain field as [`focused_field`] hands one back: a callback is what makes it plain. Each
+    /// handler names itself in the `fired` global, so landing in the wrong slot is visible.
+    fn plain_field(lua: &Lua, id: u64) -> FieldTarget {
+        let handler =
+            |name: &'static str| Some(lua.create_function(move |lua, ()| lua.globals().set("fired", name)).unwrap());
+        FieldTarget::Plain {
+            id: layout::scene::NodeId::test(id),
+            on_change: handler("change"),
+            on_submit: handler("submit"),
+            on_cancel: None,
+            on_navigate: None,
+        }
+    }
+
+    /// One `secure_submit` destination, as the parsers hand it back.
+    fn secure_target() -> node::SecureSubmitTarget {
+        node::SecureSubmitTarget { capability: "session_lock".to_string(), action: "authenticate".to_string() }
+    }
+
+    /// A draft as [`App::focus_text_field`] holds one between presses.
+    fn draft(id: u64, buffer: &str) -> FocusedTextField {
+        FocusedTextField {
+            surface_id: "calendar@eDP-1".to_string(),
+            id: layout::scene::NodeId::test(id),
+            buffer: buffer.to_string(),
+            typing: false,
+            on_change: None,
+            on_submit: None,
+            on_cancel: None,
+            on_navigate: None,
+        }
+    }
+
+    /// ADR-0108 decision 2: the draft outlives focus, so coming back to the same reply box has to
+    /// find the half-typed sentence still in it.
+    #[test]
+    fn re_pressing_the_field_a_draft_belongs_to_resumes_it_rather_than_starting_empty() {
+        let lua = Lua::new();
+        let (masked, plain) = press_chooses_focus(
+            Some(plain_field(&lua, 7)),
+            "notification_area@eDP-1",
+            None,
+            Some(draft(7, "half a sentence")),
+        );
+        let plain = plain.expect("the press focused the field it hit");
+        assert_eq!(plain.buffer, "half a sentence");
+        assert!(plain.typing, "the caret is back");
+        // `prune_text_field_focus` keys liveness off this, so the draft's stale surface would drop
+        // what was typed.
+        assert_eq!(plain.surface_id, "notification_area@eDP-1", "the press names the surface");
+        plain.on_change.unwrap().call::<()>(()).unwrap();
+        assert_eq!(lua.globals().get::<String>("fired").unwrap(), "change", "the handlers kept their slots");
+        assert!(masked.is_none());
+    }
+
+    #[test]
+    fn pressing_a_different_plain_field_starts_its_own_empty_draft() {
+        // Two reply boxes on one surface: the neighbour's text must not appear in this one.
+        let lua = Lua::new();
+        let (_, plain) = press_chooses_focus(
+            Some(plain_field(&lua, 8)),
+            "notification_area@eDP-1",
+            None,
+            Some(draft(7, "half a sentence")),
+        );
+        let plain = plain.expect("the press focused the field it hit");
+        assert_eq!(plain.buffer, "");
+        assert!(plain.typing);
+    }
+
+    #[test]
+    fn pressing_away_from_every_field_stops_typing_but_keeps_the_draft() {
+        let held = FocusedField { surface_id: "lock@eDP-1".to_string(), target: secure_target() };
+        let (masked, plain) = press_chooses_focus(None, "bar@eDP-1", Some(held.clone()), Some(draft(7, "kept")));
+        let plain = plain.expect("the draft survives a press elsewhere");
+        assert_eq!(plain.buffer, "kept");
+        assert!(!plain.typing, "no caret without focus");
+        // ADR-0114 decision 8: the scrim and the Authenticate button are both presses elsewhere.
+        assert_eq!(masked, Some(held));
+    }
+
+    #[test]
+    fn pressing_a_masked_field_takes_focus_from_the_plain_one() {
+        let (masked, plain) = press_chooses_focus(
+            Some(FieldTarget::Masked(secure_target())),
+            "lock@eDP-1",
+            None,
+            Some(draft(7, "half a sentence")),
+        );
+        assert_eq!(masked, Some(FocusedField { surface_id: "lock@eDP-1".to_string(), target: secure_target() }));
+        assert!(plain.is_none(), "one field holds the keys, and it is the password one");
     }
 }

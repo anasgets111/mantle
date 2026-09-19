@@ -104,7 +104,7 @@ pub(crate) fn tree_can_authenticate(tree: &ResolvedNode) -> bool {
 /// `id`, so changing `child` would reload in place and could delete the password field; the
 /// compositor would not unlock on client death. It reads the instances from this apply rather than
 /// a remembered list, which survives hotplug and avoids retired-tree fossils. `any` lock instance
-/// may authenticate, an empty set fails; restyling remains allowed (ADR-0052 decision 2).
+/// may authenticate, an empty set fails; restyling remains allowed (ADR-0052 decision 3).
 pub(crate) fn lock_stays_authenticatable(
     scene: &Scene,
     instances: &[SurfaceInstance],
