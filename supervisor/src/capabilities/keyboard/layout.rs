@@ -121,8 +121,13 @@ fn layout_index<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<u32
 fn parse_hyprland_devices(json: &str) -> Option<HyprlandKeyboard> {
     let root: serde_json::Value = serde_json::from_str(json).ok()?;
     let keyboards = root.get("keyboards")?.as_array()?;
-    let parsed: Vec<HyprlandKeyboard> =
-        keyboards.iter().filter_map(|keyboard| HyprlandKeyboard::deserialize(keyboard).ok()).collect();
+    // `"none"`/`"error"` is what Hyprland reports for a device xkb resolved no layout for, which a
+    // `wtype` virtual keyboard is while it holds `main`. Either draws as the layout name.
+    let parsed: Vec<HyprlandKeyboard> = keyboards
+        .iter()
+        .filter_map(|keyboard| HyprlandKeyboard::deserialize(keyboard).ok())
+        .filter(|k| !matches!(k.active_keymap.as_str(), "none" | "error"))
+        .collect();
     parsed.iter().find(|k| k.main).cloned().or_else(|| parsed.into_iter().next())
 }
 
@@ -274,6 +279,19 @@ mod tests {
             assert_eq!(keyboard.active_layout_index, 0, "{index}");
             assert_eq!(keyboard.active_keymap, "English (US)", "{index}");
         }
+    }
+
+    #[test]
+    fn parse_hyprland_devices_skips_a_keyboard_whose_keymap_hyprland_left_unresolved() {
+        // `wtype` registers a virtual keyboard that takes `main` for the keystrokes it injects.
+        let json = r#"{"keyboards":[
+            {"active_keymap":"Arabic (Egypt)","layout":"us,ara","active_layout_index":1,"main":false},
+            {"active_keymap":"none","layout":"us,ara","active_layout_index":0,"main":true}
+        ]}"#;
+        assert_eq!(parse_hyprland_devices(json).expect("should parse").active_keymap, "Arabic (Egypt)");
+
+        let json = r#"{"keyboards":[{"active_keymap":"error","layout":"us,ara","main":true}]}"#;
+        assert!(parse_hyprland_devices(json).is_none(), "the last good layout stands instead");
     }
 
     #[test]
