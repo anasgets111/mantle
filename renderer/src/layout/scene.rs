@@ -254,6 +254,8 @@ pub struct Scene {
 ///
 /// Sums to less than `ms resolve`: a tick-only turn resolves nothing, and the per-pass work
 /// outside `apply_one_instance` (the budget, `start_secure_submit_capabilities`) is in neither.
+/// Never past it: the turn loop drops what `apply_instances` and `handle_apply_pending` accumulate
+/// from dispatch, which `ms resolve` does not cover either.
 #[derive(Clone, Copy, Default)]
 pub struct ResolveSplit {
     pub clone: Duration,
