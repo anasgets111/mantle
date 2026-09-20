@@ -15,8 +15,12 @@ use nonstick::{ConversationAdapter, Transaction};
 use shared::{info, warn};
 use tokio::sync::mpsc::UnboundedSender;
 
-/// PAM service-stack directory. A constant lets [`pam_service_in`] tests use a temporary directory.
+/// Admin PAM service-stack directory. A constant lets [`pam_service_in`] tests use a temporary
+/// directory.
 const PAM_CONFIG_DIR: &str = "/etc/pam.d";
+
+/// PAM 1.7+ vendor stack directory, where a package (not an admin) installs a stack.
+const PAM_VENDOR_DIR: &str = "/usr/lib/pam.d";
 
 /// Service name for Mantle's installed stack (`packaging/pam.d/mantle`).
 const MANTLE_SERVICE: &str = "mantle";
@@ -29,13 +33,17 @@ const FALLBACK_SERVICE: &str = "login";
 /// `/etc/pam.d/other` fallback, `pam_deny` on stock Arch: hardcoding `mantle` would turn a missing
 /// package file into a lock screen rejecting every correct password, while failing closed locks
 /// out the user. `stat` runs once per authentication, deliberately uncached so installing the file
-/// takes effect without restarting the locked shell.
-fn pam_service_in(pam_config_dir: &std::path::Path) -> &'static str {
-    if pam_config_dir.join(MANTLE_SERVICE).exists() { MANTLE_SERVICE } else { FALLBACK_SERVICE }
+/// takes effect without restarting the locked shell. Checks both dirs libpam itself would.
+fn pam_service_in(pam_config_dir: &std::path::Path, pam_vendor_dir: &std::path::Path) -> &'static str {
+    if pam_config_dir.join(MANTLE_SERVICE).exists() || pam_vendor_dir.join(MANTLE_SERVICE).exists() {
+        MANTLE_SERVICE
+    } else {
+        FALLBACK_SERVICE
+    }
 }
 
 fn pam_service() -> &'static str {
-    pam_service_in(std::path::Path::new(PAM_CONFIG_DIR))
+    pam_service_in(std::path::Path::new(PAM_CONFIG_DIR), std::path::Path::new(PAM_VENDOR_DIR))
 }
 
 /// Ceiling on the whole worker exchange (`exchange_over`), not one PAM call. Long because PAM may be
@@ -521,21 +529,32 @@ mod tests {
     /// `/etc/pam.d/other`, `pam_deny` on stock Arch, and reject the correct password.
     #[test]
     fn without_an_installed_stack_the_service_falls_back_to_login() {
-        let dir = tempfile::tempdir().unwrap();
-        assert_eq!(pam_service_in(dir.path()), "login");
+        let admin = tempfile::tempdir().unwrap();
+        let vendor = tempfile::tempdir().unwrap();
+        assert_eq!(pam_service_in(admin.path(), vendor.path()), "login");
     }
 
     #[test]
     fn an_installed_stack_is_preferred_over_the_console_login_one() {
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("mantle"), "auth include system-auth\n").unwrap();
-        assert_eq!(pam_service_in(dir.path()), "mantle");
+        let admin = tempfile::tempdir().unwrap();
+        let vendor = tempfile::tempdir().unwrap();
+        std::fs::write(admin.path().join("mantle"), "auth include system-auth\n").unwrap();
+        assert_eq!(pam_service_in(admin.path(), vendor.path()), "mantle");
+    }
+
+    #[test]
+    fn a_stack_installed_to_the_vendor_directory_is_found_without_an_admin_override() {
+        let admin = tempfile::tempdir().unwrap();
+        let vendor = tempfile::tempdir().unwrap();
+        std::fs::write(vendor.path().join("mantle"), "auth include system-auth\n").unwrap();
+        assert_eq!(pam_service_in(admin.path(), vendor.path()), "mantle");
     }
 
     /// An unreadable PAM directory is "not installed", not a panic; this runs in the unlock worker.
     #[test]
     fn a_missing_pam_config_directory_falls_back_rather_than_failing() {
-        assert_eq!(pam_service_in(std::path::Path::new("/no/such/pam.d")), "login");
+        let no_such = std::path::Path::new("/no/such/pam.d");
+        assert_eq!(pam_service_in(no_such, no_such), "login");
     }
 
     /// The shipped file is what the probe finds and must carry both chains: `run_conversation`
