@@ -10,7 +10,7 @@ use std::path::Path;
 
 /// A Lua call whose own name opens with its subsystem. `process: process.detach: ...` reads as the
 /// action that failed, not as the subsystem said twice.
-const ACTION_NAMES: [&str; 1] = ["process.detach"];
+const ACTION_NAMES: [&str; 2] = ["process.detach", "process.run"];
 
 /// Files whose `eprintln!` is a command talking to whoever typed it, not the shell reporting on
 /// itself.

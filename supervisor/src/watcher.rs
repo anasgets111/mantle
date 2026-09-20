@@ -27,7 +27,7 @@ use std::time::Duration;
 
 use futures_util::StreamExt;
 use inotify::{EventMask, Inotify, WatchDescriptor, WatchMask, Watches};
-use shared::warn;
+use shared::{debug, warn};
 use tokio::sync::mpsc;
 
 /// Handled inotify kinds: create, modify, atomic-save rename in/out (including delete-via-rename),
@@ -206,6 +206,7 @@ pub fn spawn_watcher(dir: &Path, debounce: Duration) -> io::Result<mpsc::Unbound
                 }
                 _ = tokio::time::sleep_until(deadline.unwrap_or_else(tokio::time::Instant::now)), if deadline.is_some() => {
                     deadline = None;
+                    debug!("config change detected, triggering reload");
                     if tx.send(()).is_err() {
                         break; // receiver dropped: nobody's listening any more.
                     }

@@ -264,7 +264,9 @@ pub(super) fn spawn_name_owner_changed_forwarder(
             let mut departed = Vec::with_capacity(removed.len());
             for ((unique_name, object_path), entry) in removed {
                 // The same `service + path` spelling `register_item` announces (ADR-0172).
-                departed.push(format!("{}{}", unique_name.as_str(), object_path.as_str()));
+                let item_id = format!("{}{}", unique_name.as_str(), object_path.as_str());
+                debug!("tray item {} disconnected", item_id);
+                departed.push(item_id);
                 entry.properties_forwarder.abort();
                 if let Some(handle) = entry.menu_forwarder {
                     handle.abort();

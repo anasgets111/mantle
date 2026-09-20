@@ -109,7 +109,9 @@ pub fn hyprland_request(socket_path: &Path, command: &str) -> std::io::Result<St
 /// range.
 pub fn hyprland_command(socket_path: &Path, command: &str, capability: &str) {
     match hyprland_request(socket_path, command) {
-        Ok(reply) if reply.trim() == "ok" => {}
+        Ok(reply) if reply.trim() == "ok" => {
+            debug!(2; "{capability}: Hyprland command `{command}` succeeded");
+        }
         Ok(reply) => debug!("{capability}: Hyprland refused `{command}`: {}", reply.trim()),
         Err(err) => debug!("{capability}: Hyprland `{command}` request failed: {err}"),
     }

@@ -275,6 +275,7 @@ pub(crate) fn sample(
     snapshots: Vec<(&'static str, usize)>,
 ) -> io::Result<Sample> {
     let supervisor = read_process_memory(proc_root, "self")?;
+    debug!(3; "supervisor memory sampled: pss={} uss={} gpu_resident={}", supervisor.rollup.pss, supervisor.rollup.uss, supervisor.gpu.resident);
     let renderer = renderer.and_then(|(generation_id, pid)| match read_process_memory(proc_root, &pid.to_string()) {
         Ok(memory) => Some((generation_id, memory)),
         Err(err) => {

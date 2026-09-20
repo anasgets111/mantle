@@ -2,7 +2,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use shared::{error, warn};
+use shared::{debug, error, warn};
 use tokio::sync::mpsc::UnboundedSender;
 
 use super::state::{LockEvent, LockState, accepts_outcome, apply, may_authenticate, releases};
@@ -40,7 +40,7 @@ impl LockController {
         {
             let mut state = self.state.lock().unwrap();
             if state.active {
-                warn!("a lock is already held; dropping a lock() that cannot change anything");
+                debug!("a lock is already held; dropping a lock() that cannot change anything");
                 return;
             }
             apply(&mut state, LockEvent::LockRequested);

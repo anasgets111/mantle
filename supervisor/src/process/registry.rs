@@ -38,6 +38,7 @@ pub(crate) async fn dispatch(
         "run" => match process_run_args(&envelope.params.arguments) {
             Some((cmd, args)) => match spawn_and_register_process(processes, generation_id, id, &cmd, &args) {
                 Some((stdout, stderr)) => {
+                    debug!("process.run: spawned generation={} id={} cmd={:?}", generation_id, id, cmd);
                     let task_registry = registry.clone();
                     let task_done_tx = process_done_tx.clone();
                     tokio::spawn(async move {

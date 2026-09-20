@@ -59,6 +59,7 @@ fn publish_reboot_required(marker: &Path, state: &Arc<Mutex<UpdatesState>>, even
     if guard.reboot_required == required {
         return;
     }
+    debug!("reboot required: {}", required);
     guard.reboot_required = required;
     drop(guard);
     let _ = events.send(UpdatesSignal::Changed);

@@ -255,6 +255,7 @@ impl BluetoothController {
     /// `bluetooth:answer_pairing(mac, accept)`: answers the prompt on screen when it is for `mac`.
     /// `false` on a code display only takes it down.
     pub fn answer_pairing(&self, mac: &str, accept: bool) {
+        debug!(2; "answer_pairing: mac={mac}, accept={accept}");
         if agent::answer(&self.prompts, Some(mac), accept, Instant::now()) {
             let _ = self.events.send(BluetoothSignal::PairingChanged);
         }

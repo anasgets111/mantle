@@ -504,6 +504,7 @@ impl ShapingHandle {
         if chain.is_empty() {
             return;
         }
+        debug!("setting font chain to {} faces", chain.len());
         self.cache.lock().unwrap_or_else(PoisonError::into_inner).clear();
         // The worker drops its own family memo with the database those families resolved against,
         // so this side must forget them too or `ensure_family` would skip re-resolving one.

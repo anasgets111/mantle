@@ -127,6 +127,7 @@ impl NetworkController {
             if self.pending_connect.lock().unwrap().as_ref() != Some(pending) {
                 return;
             }
+            debug!("requesting password for ssid: {}", pending.ssid);
             state.password_ssid = Some(pending.ssid.clone());
             state.connect_error = None;
         }

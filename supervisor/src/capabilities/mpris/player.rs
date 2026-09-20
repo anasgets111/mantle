@@ -385,6 +385,7 @@ fn spawn_player_forwarder(
 pub(super) fn unregister_player(registry: &PlayerRegistry, bus_name: &str, events: &UnboundedSender<MprisSignal>) {
     let removed = registry.lock().unwrap().remove(bus_name);
     if let Some(entry) = removed {
+        debug!("MPRIS player departed: {bus_name}");
         if let Some(handle) = entry.forwarder {
             handle.abort();
         }

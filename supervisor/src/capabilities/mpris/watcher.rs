@@ -92,6 +92,7 @@ pub(super) async fn spawn_discovery(
             if !is_trackable_player(&name) {
                 continue;
             }
+            shared::debug!("MPRIS player signal: {name} owner={}", args.new_owner.is_some());
             if args.new_owner.is_some() {
                 register_player(&connection, &registry, &events, name).await;
             } else {

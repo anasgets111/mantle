@@ -63,6 +63,7 @@ impl TimerRegistry {
         let list = if self.evaluating { &mut self.staged } else { &mut self.entries };
         let at = list.partition_point(|entry| entry.due <= due);
         list.insert(at, Entry { due, id, callback });
+        debug!(2; "armed timer {id}");
         Ok(id)
     }
 

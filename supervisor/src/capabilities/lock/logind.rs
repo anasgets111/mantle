@@ -17,7 +17,7 @@
 //! config asks.
 
 use futures_util::StreamExt;
-use shared::{error, info, warn};
+use shared::{error, warn};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 
 #[zbus::proxy(
@@ -68,7 +68,7 @@ impl SessionBridge {
     /// returns. `()` on `lock_requests` means logind requested a lock; `main.rs` decides.
     pub async fn new(connection: zbus::Connection, lock_requests: UnboundedSender<()>) -> Self {
         let Some(path) = resolve_session_path(&connection).await else {
-            error!(
+            warn!(
                 "could not resolve this process's logind session; `loginctl lock-session` will not reach the \
                  shell and LockedHint will not be published"
             );
@@ -78,12 +78,12 @@ impl SessionBridge {
             Ok(builder) => match builder.build().await {
                 Ok(session) => session,
                 Err(err) => {
-                    error!("failed to bind the logind session at {path}; lock-session will not reach us: {err}");
+                    warn!("failed to bind the logind session at {path}; lock-session will not reach us: {err}");
                     return Self { hints: None };
                 }
             },
             Err(err) => {
-                error!("logind handed back an unusable session path {path}: {err}");
+                warn!("logind handed back an unusable session path {path}: {err}");
                 return Self { hints: None };
             }
         };
@@ -109,7 +109,7 @@ async fn forward_lock_signals(session: Login1SessionProxy<'static>, lock_request
         (Ok(locks), Ok(unlocks)) => (locks, unlocks),
         (locks, unlocks) => {
             let err = locks.err().or(unlocks.err());
-            error!("failed to subscribe to logind's Lock/Unlock signals; lock-session will not reach us: {err:?}");
+            warn!("failed to subscribe to logind's Lock/Unlock signals; lock-session will not reach us: {err:?}");
             return;
         }
     };
@@ -129,7 +129,7 @@ async fn forward_lock_signals(session: Login1SessionProxy<'static>, lock_request
                 if signal.is_none() {
                     break;
                 }
-                info!(
+                error!(
                     "logind asked for an unlock; refusing. Only a successful password authentication lifts a \
                      lock here (ADR-0042), so the way back in is the prompt or a VT switch"
                 );

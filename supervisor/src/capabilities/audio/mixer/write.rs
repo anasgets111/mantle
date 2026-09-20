@@ -21,6 +21,7 @@ const METADATA_JSON_TYPE: &str = "Spa:String:JSON";
 /// maps first and logs rather than guessing when it cannot. Stale ids matter because PipeWire
 /// recycles them. Results return through the same-loop event.
 pub(super) fn apply_command(state: &Rc<RefCell<MixerState>>, command: AudioCommand) {
+    debug!("applying command: {command:?}");
     match command {
         AudioCommand::SetMasterVolume(volume) => set_default_volume(state, DefaultDevice::Sink, volume),
         AudioCommand::SetMasterMuted(muted) => set_default_muted(state, DefaultDevice::Sink, Some(muted)),

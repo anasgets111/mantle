@@ -6,7 +6,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use shared::info;
+use shared::{debug, info};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 use tokio::task::JoinHandle;
 use wayland_client::globals::{GlobalListContents, registry_queue_init};
@@ -229,6 +229,7 @@ pub(crate) fn connect_wayland_idle()
         loop {
             if event_queue.blocking_dispatch(&mut state).is_err() {
                 // Compositor/socket died; exit quietly rather than spin.
+                debug!("ext_idle_notifier_v1 dispatch thread exiting");
                 break;
             }
         }

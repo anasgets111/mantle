@@ -4,7 +4,7 @@
 //! builds and pushes it because the bus callback, `secure_submit` frame, and PAM answer all land
 //! in that loop.
 
-use shared::warn;
+use shared::{error, info, warn};
 use tokio::sync::oneshot;
 
 use crate::polkit::{AgentError, BeginAuthenticationCall, first_unix_user_uid};
@@ -122,9 +122,11 @@ impl PolkitController {
         }
         self.state.authenticating = false;
         if outcome != shared::PamOutcome::Success {
+            error!("authentication for challenge {cookie:?} failed: {outcome:?}");
             self.state.error = super::lock::error_for_outcome(&outcome);
             return Answer::Failed;
         }
+        info!("challenge {cookie:?} authenticated successfully");
         let pending = self.pending.take().expect("checked above");
         self.state = PolkitState::default();
         Answer::Succeeded { reply: pending.reply }

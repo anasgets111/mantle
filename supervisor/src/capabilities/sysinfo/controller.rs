@@ -101,6 +101,7 @@ impl SysinfoController {
     /// Applies parsed `sysinfo:configure(cfg)`: present intervals wake, retime, or suspend their
     /// task at `0`; absent ones stay unchanged. `send` errors only after task panic, logged here.
     pub fn configure(&self, cfg: SysinfoConfigure) {
+        debug!("configure: cpu={:?} ram={:?} temp={:?}", cfg.cpu_interval, cfg.ram_interval, cfg.temp_interval);
         let send = |seconds: Option<u64>, sender: &tokio::sync::watch::Sender<Duration>, name: &str| {
             if let Some(sec) = seconds
                 && sender.send(Duration::from_secs(sec)).is_err()

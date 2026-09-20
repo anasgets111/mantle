@@ -198,6 +198,7 @@ impl TextPainter {
         if font_chain.is_empty() {
             return;
         }
+        debug!("syncing fonts to generation {generation}");
         self.faces = register(&self.text_context, &mut self.registered, font_chain);
         self.generation = generation;
     }

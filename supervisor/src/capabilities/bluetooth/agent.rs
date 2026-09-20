@@ -182,6 +182,7 @@ impl BluetoothAgent {
     /// BlueZ repeats this for every key typed on the device. The first call shows the code, and the
     /// rest find the slot taken by that same code.
     async fn display_passkey(&self, device: OwnedObjectPath, passkey: u32, _entered: u16) {
+        debug!(2; "display_passkey: device={}, passkey={:06}", device.as_str(), passkey);
         self.show(PairingKind::Display, &device, Some(format!("{passkey:06}")), None).await;
     }
 
@@ -194,6 +195,7 @@ impl BluetoothAgent {
     }
 
     async fn cancel(&self) {
+        debug!(2; "pairing cancelled");
         if answer(&self.prompts, None, false, Instant::now()) {
             let _ = self.events.send(BluetoothSignal::PairingChanged);
         }

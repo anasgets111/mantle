@@ -254,6 +254,7 @@ impl Supervisor {
         if generation_id != self.authoritative.generation_id {
             return;
         }
+        debug!("hydrating generation {generation_id} with {} snapshots", self.last_snapshots.len());
         for snapshot in self.last_snapshots.values() {
             send_frame_logged(&self.registry, generation_id, &SupervisorFrame::StateSnapshot(snapshot.clone()));
         }

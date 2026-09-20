@@ -145,6 +145,7 @@ impl UpdatesController {
         if self.backend.is_none() {
             return;
         }
+        debug!("configure: interval_secs={}", configure.interval_secs);
         if let Some(checked_at) = configure.checked_at {
             let mut guard = self.state.lock().unwrap();
             if guard.last_successful_check.is_none() {

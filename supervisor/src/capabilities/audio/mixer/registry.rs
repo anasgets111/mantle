@@ -332,6 +332,7 @@ fn bind_device_node(
             return;
         }
     };
+    debug!("bound {kind:?} device node {node_id}");
 
     let state_for_param = Rc::clone(state);
     let state_for_info = Rc::clone(state);

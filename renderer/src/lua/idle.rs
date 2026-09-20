@@ -86,6 +86,7 @@ impl IdleRegistry {
             inner.thresholds.entry(sec).or_default().push(Threshold { id, on_idle, on_resume });
             id
         };
+        debug!("registered threshold at {sec}s with handle {id}");
         self.state.commands().start_capability("idle");
         self.state.commands().send("idle", "register", vec![serde_json::json!(sec)], 0);
         id

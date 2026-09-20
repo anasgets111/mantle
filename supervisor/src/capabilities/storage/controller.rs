@@ -173,6 +173,9 @@ impl StorageController {
             }
         };
 
+        if changed {
+            debug!("store value changed: {}:{}", path.display(), key);
+        }
         self.schedule_save(path);
         if changed {
             let _ = self.signal_tx.send(StorageSignal::Changed);

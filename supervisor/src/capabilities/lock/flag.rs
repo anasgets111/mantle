@@ -1,4 +1,4 @@
-use shared::warn;
+use shared::{error, warn};
 
 use super::state::SessionLock;
 
@@ -30,7 +30,7 @@ impl SessionLockedFlag {
         match change {
             SessionLock::Taken => {
                 if let Err(err) = std::fs::File::create(&self.path) {
-                    warn!(
+                    error!(
                         "could not write {} ; a Supervisor restart will not know the session is locked: {err}",
                         self.path.display()
                     );

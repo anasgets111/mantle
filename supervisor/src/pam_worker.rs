@@ -12,7 +12,7 @@ use std::cell::RefCell;
 use std::time::Duration;
 
 use nonstick::{ConversationAdapter, Transaction};
-use shared::{info, warn};
+use shared::{error, info, warn};
 use tokio::sync::mpsc::UnboundedSender;
 
 /// Admin PAM service-stack directory. A constant lets [`pam_service_in`] tests use a temporary
@@ -305,6 +305,9 @@ impl<T> ReportOnDrop<T> {
 impl<T> Drop for ReportOnDrop<T> {
     fn drop(&mut self) {
         if let Some((tag, tx)) = self.pending.take() {
+            // Reached by a panic or a dropped future, not by any ordinary `.report()` call: the
+            // security decision this authentication owed was lost, not just delayed.
+            error!("an authentication task ended without ever reporting a PAM outcome");
             // Any `PamOutcome` clears `authenticating`; `PamError` supplies the prompt's error
             // text when no real PAM answer exists.
             let outcome =
@@ -372,8 +375,12 @@ async fn exchange_over(
     // only "early eof", and on 2026-09-08 that was the whole of the evidence: nothing on the
     // worker's inherited stderr, no coredump, nothing in the journal, and a session that could not
     // be unlocked until the next attempt happened to work. How it died is already in hand here and
-    // was being dropped on the floor.
-    outcome_result.map_err(|err| std::io::Error::new(err.kind(), format!("{err}; the worker {}", post_mortem(&reaped))))
+    // was being dropped on the floor: log it, not just the on-screen error text.
+    outcome_result.map_err(|err| {
+        let post_mortem = post_mortem(&reaped);
+        error!("pam worker exchange failed: {err}; the worker {post_mortem}");
+        std::io::Error::new(err.kind(), format!("{err}; the worker {post_mortem}"))
+    })
 }
 
 /// How the worker died, for an [`exchange_over`] that never got a frame.

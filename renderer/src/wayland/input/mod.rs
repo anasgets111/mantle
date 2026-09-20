@@ -1,7 +1,7 @@
 //! Seat input for `App`: the `wl_seat` capabilities here, pointer input in `pointer`, and keyboard
 //! focus with `secure_submit` typing in `keyboard`.
 
-use shared::error;
+use shared::{debug, error};
 
 use super::*;
 mod keyboard;
@@ -42,7 +42,10 @@ impl SeatHandler for App {
                     cursor_surface,
                     ThemeSpec::default(),
                 ) {
-                    Ok(pointer) => self.pointer = Some(pointer),
+                    Ok(pointer) => {
+                        debug!("pointer capability acquired");
+                        self.pointer = Some(pointer);
+                    }
                     // Nonfatal: painting, reload, and keyboard input remain; only `on_click` stops.
                     Err(e) => {
                         error!("wl_seat::get_pointer failed; no button's on_click will ever fire: {e}")
@@ -52,7 +55,10 @@ impl SeatHandler for App {
             // Use the compositor keymap (`None` rmlvo); there is no `on_key` for this shell to
             // interpret, so imposing a layout would serve no policy.
             Capability::Keyboard if self.keyboard.is_none() => match self.seat_state.get_keyboard(qh, &seat, None) {
-                Ok(keyboard) => self.keyboard = Some(keyboard),
+                Ok(keyboard) => {
+                    debug!("keyboard capability acquired");
+                    self.keyboard = Some(keyboard);
+                }
                 // Nonfatal, but `enter`/`leave` stop tracking focus and stale textfield focus may
                 // outlive the user.
                 Err(e) => error!("wl_seat::get_keyboard failed; keyboard focus will never be tracked: {e}"),

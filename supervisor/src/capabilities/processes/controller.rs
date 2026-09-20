@@ -126,6 +126,7 @@ impl ProcessesController {
     /// Declaring is what makes a name exist; `start` on an undeclared one is refused rather than
     /// creating the entry, so a config cannot run a program it never named.
     pub fn declare(&self, name: &str, stop_signal: Signal) {
+        debug!("session_process declared: {name:?} signal={stop_signal:?}");
         let mut guard = self.entries.lock().expect("processes entries mutex poisoned");
         match guard.get_mut(name) {
             Some(entry) => entry.stop_signal = stop_signal,

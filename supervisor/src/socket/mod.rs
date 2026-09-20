@@ -364,6 +364,7 @@ async fn handle_connection(
             );
             return Ok(());
         }
+        debug!("control-socket: renderer generation {generation_id} (pid {pid}) registered");
     }
     // Ids this connection waits on, dropped with it. Shared: the read loop fills it, cleanup drains.
     let opened: Arc<Mutex<Vec<u64>>> = Arc::new(Mutex::new(Vec::new()));

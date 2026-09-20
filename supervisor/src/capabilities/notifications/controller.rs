@@ -487,6 +487,7 @@ impl NotificationsController {
         };
         let image_path = self.resolve_and_spool_image(id, image_data, image_path, icon_data).await;
         let app_icon = resolve_app_icon(app_icon, &self.trusted_roots);
+        debug!(2; "notification id={id} from {app_name:?} ({summary:?}) queued");
 
         let notification = Notification {
             id,

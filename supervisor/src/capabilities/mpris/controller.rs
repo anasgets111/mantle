@@ -73,6 +73,7 @@ impl MprisController {
     }
 
     pub async fn control(&self, id: &str, cmd: PlayerCommand) {
+        debug!("control: player={id:?} cmd={cmd:?}");
         let Some(player) = self.find_player(id) else {
             debug!("send_command({id:?}, {cmd:?}) failed: {}", UNKNOWN_PLAYER);
             return;

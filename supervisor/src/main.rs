@@ -389,6 +389,7 @@ async fn run_supervisor(
                     );
                     continue;
                 }
+                debug!(2; "inbound frame from generation {}: {:?}", inbound.generation_id, inbound.frame);
                 match inbound.frame {
                 RendererFrame::LockReport(report) => supervisor.record_lock_report(report),
                 RendererFrame::Command(envelope) => match envelope.params.capability.as_str() {

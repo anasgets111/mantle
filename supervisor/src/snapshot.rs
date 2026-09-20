@@ -4,7 +4,7 @@
 
 use std::collections::HashMap;
 
-use shared::{Capability, SupervisorFrame, warn};
+use shared::{Capability, SupervisorFrame, debug, warn};
 
 use crate::{send_frame_logged, socket};
 
@@ -42,6 +42,7 @@ pub(crate) fn push_snapshot(
             });
             send_frame_logged(registry, generation_id, &frame);
             if let SupervisorFrame::StateSnapshot(snapshot) = frame {
+                debug!(3; "pushed: capability={} revision={}", capability, revision);
                 last_snapshots.insert(capability, snapshot);
             }
         }

@@ -44,6 +44,7 @@ pub fn write_png(subdir: &str, filename: &str, png_bytes: &[u8]) -> std::io::Res
     std::fs::create_dir_all(&dir)?;
     let path = dir.join(filename);
     std::fs::write(&path, png_bytes)?;
+    debug!(2; "{subdir}: wrote {filename}");
     Ok(path.to_string_lossy().into_owned())
 }
 
