@@ -7,7 +7,7 @@ use std::path::PathBuf;
 
 use shared::{
     IdleEvent, ProcessExited, ProcessOutputLine, RendererFrame, SetSessionLock, StateSnapshot, SupervisorFrame, debug,
-    error, warn,
+    error, info, warn,
 };
 use tokio::sync::mpsc;
 
@@ -487,6 +487,7 @@ impl RendererClient {
         self.clear_change_handlers();
         match evaluate_and_specs(&self.loader, &self.shell_lua_path) {
             Ok((output, specs)) => {
+                info!("shell.lua evaluated; applying it");
                 self.set_rescue_state(false, "");
                 self.state.pending = Some((output, specs));
                 true
@@ -516,6 +517,7 @@ impl RendererClient {
             self.holds_session_lock,
         ) {
             Ok(()) => {
+                info!("shell reloaded");
                 log_applied_surfaces(&self.scene, &self.instances);
                 start_secure_submit_capabilities(&self.scene, &self.instances, &self.commands);
                 self.state.applied_specs = specs;
