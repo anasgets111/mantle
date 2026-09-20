@@ -8,7 +8,7 @@
 use std::collections::HashMap;
 use std::io;
 
-use shared::debug;
+use shared::{debug, info};
 use std::path::Path;
 use std::time::Duration;
 
@@ -306,7 +306,7 @@ pub(crate) fn log_sample(
     snapshots: Vec<(&'static str, usize)>,
 ) {
     match sample(Path::new(PROC_ROOT), child.id().map(|pid| (generation_id, pid)), snapshots) {
-        Ok(sample) => debug!(3; "{}", report_line(label, &sample)),
+        Ok(sample) => info!("{}", report_line(label, &sample)),
         Err(err) => debug!("{label} sample failed: {err}"),
     }
 }

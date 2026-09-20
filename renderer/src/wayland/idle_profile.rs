@@ -9,7 +9,7 @@
 use std::time::{Duration, Instant};
 
 use nix::sys::resource::{UsageWho, getrusage};
-use shared::{debug, info};
+use shared::info;
 
 /// Work the loop already computed for one turn; the profiler measures none of these fields.
 #[derive(Clone, Copy, Default)]
@@ -232,7 +232,7 @@ impl IdleProfile {
             return;
         }
         let cpu = Cpu::now();
-        debug!(2; "{}", render(elapsed, &self.counters, cpu.since(self.cpu_at_window_start)));
+        info!("{}", render(elapsed, &self.counters, cpu.since(self.cpu_at_window_start)));
         self.window_started = Instant::now();
         self.cpu_at_window_start = cpu;
         self.counters = Counters::default();

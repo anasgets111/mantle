@@ -80,7 +80,8 @@ OPTIONS:
         --pid <PID>      set, toggle, call and log: the shell `list` shows,
                          not with -c
         --profile[=SECS] run only: log idle, heap and PSS/GPU reports every
-                         SECS seconds, 60 by default
+                         SECS seconds, 60 by default. Implies -v, which is
+                         the level the reports print at
     -v, --verbose        run only: repeat to raise the log level. None: only
                          Error. -v: also Warn and Info. -vv/-vvv: Debug,
                          itself levelled; -vvvv and past it holds at its
@@ -288,6 +289,11 @@ pub fn parse<I: IntoIterator<Item = String>>(argv: I) -> Result<Args, String> {
     if pid.is_some() && config_dir.is_some() {
         return Err("--pid names one shell; drop -c".to_string());
     }
+    // The reports print at Info, and asking for them is the whole point of the flag: without this
+    // `--profile` alone logs that profiling is on and then nothing at all. A louder `-v` still wins.
+    if profile.is_some() {
+        verbose = verbose.max(1);
+    }
     Ok(Args { command, config_dir, detach, profile, pid, verbose })
 }
 
@@ -350,6 +356,12 @@ mod tests {
         assert!(parse_args(&["--profile=0"]).is_err());
         assert!(parse_args(&["--profile=soon"]).is_err());
         assert!(parse_args(&["check", "--profile"]).is_err(), "nothing runs long enough to report");
+        assert_eq!(
+            parse_args(&["--profile"]).unwrap().verbose,
+            1,
+            "the reports print at Info, so the flag asks for it"
+        );
+        assert_eq!(parse_args(&["--profile", "-vvv"]).unwrap().verbose, 3, "an explicit -v still wins");
     }
 
     #[test]
