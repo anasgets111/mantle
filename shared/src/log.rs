@@ -9,7 +9,9 @@ use std::fmt::{Arguments, Write as _};
 use std::io::Write as _;
 use std::sync::OnceLock;
 
-/// Names the level a line was written at. `MANTLE_LOG` spells these, plus `off`.
+/// Names the level a line was written at. `MANTLE_LOG` spells these, plus `off`. `Debug` carries a
+/// verbosity (1-3, `-v`/`-vv`/`-vvv`-style): `debug!(2; ...)` writes at `Debug(2)`, and a threshold
+/// of `debug2` admits `Debug(1)` and `Debug(2)` but not `Debug(3)`.
 ///
 /// Ordered least to most frequent, so a threshold admits everything at or below it.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
@@ -17,17 +19,18 @@ pub enum Level {
     Error,
     Warn,
     Info,
-    Debug,
+    Debug(u8),
 }
 
 impl Level {
-    /// Padded, so the subsystem column does not move between levels.
+    /// Padded, so the subsystem column does not move between levels. The verbosity does not widen
+    /// it: it is a filter, not something a reader needs to see per line.
     fn name(self) -> &'static str {
         match self {
             Self::Error => "ERROR",
             Self::Warn => "WARN ",
             Self::Info => "INFO ",
-            Self::Debug => "DEBUG",
+            Self::Debug(_) => "DEBUG",
         }
     }
 
@@ -36,21 +39,24 @@ impl Level {
             Self::Error => "\x1b[31m",
             Self::Warn => "\x1b[33m",
             Self::Info => "\x1b[32m",
-            Self::Debug => "\x1b[2m",
+            Self::Debug(_) => "\x1b[2m",
         }
     }
 }
 
 /// One `MANTLE_LOG` level name. The outer `None` is "not a level at all", the inner one is `off`.
 fn threshold(text: &str) -> Option<Option<Level>> {
-    Some(match text.trim() {
-        "off" => None,
-        "error" => Some(Level::Error),
-        "warn" => Some(Level::Warn),
-        "info" => Some(Level::Info),
-        "debug" => Some(Level::Debug),
-        _ => return None,
-    })
+    match text.trim() {
+        "off" => Some(None),
+        "error" => Some(Some(Level::Error)),
+        "warn" => Some(Some(Level::Warn)),
+        "info" => Some(Some(Level::Info)),
+        "debug" => Some(Some(Level::Debug(1))),
+        other => Some(Some(Level::Debug(match other.strip_prefix("debug")?.parse().ok()? {
+            n @ 1..=3 => n,
+            _ => return None,
+        }))),
+    }
 }
 
 /// Everything [`emit`] needs, resolved once so no line pays for an env read.
@@ -70,13 +76,28 @@ impl Config {
 
 static CONFIG: OnceLock<Config> = OnceLock::new();
 
+/// `-v` count to default level: nothing without a flag but `Error`, `-v` adds `Warn`/`Info`
+/// together, `-vv`/`-vvv` step through `Debug`'s own verbosity, `-vvvv` and past it hold at
+/// `Debug(3)`. `MANTLE_LOG`'s own bare level, if set, still overrides this.
+fn verbosity_level(count: u8) -> Level {
+    match count {
+        0 => Level::Error,
+        1 => Level::Info,
+        2 => Level::Debug(1),
+        3 => Level::Debug(2),
+        _ => Level::Debug(3),
+    }
+}
+
 /// Resolves the filter and `tag`, then routes panics through the same format.
 ///
 /// Called before anything else in `main`. A diagnostic that beats it still prints, unstamped; see
-/// [`write_to`].
-pub fn init(tag: &'static str) {
+/// [`write_to`]. `verbose` is the Supervisor's own `-v` count; the Renderer has no argv of its own
+/// to parse one from, so it reads what the Supervisor forwarded through [`crate::VERBOSE_ENV`] at
+/// spawn (ADR-0243) and passes that instead.
+pub fn init(tag: &'static str, verbose: u8) {
     let raw = std::env::var("MANTLE_LOG").unwrap_or_default();
-    let (mut default, mut overrides, mut rejected) = (Some(Level::Info), Vec::new(), Vec::new());
+    let (mut default, mut overrides, mut rejected) = (Some(verbosity_level(verbose)), Vec::new(), Vec::new());
     for item in raw.split(',').map(str::trim).filter(|item| !item.is_empty()) {
         match item.split_once('=') {
             Some((name, level)) => match threshold(level) {
@@ -153,7 +174,9 @@ pub fn colourise(line: &str) -> String {
     let Some((clock, rest)) = line.split_once(' ') else { return line.to_string() };
     // Taken by width, not to the next space: every `Level::name` is padded to five.
     let (Some(name), Some(rest)) = (rest.get(..5), rest.get(5..)) else { return line.to_string() };
-    let Some(level) = [Level::Error, Level::Warn, Level::Info, Level::Debug].into_iter().find(|l| l.name() == name)
+    // The verbosity is irrelevant here: `colour` and `name` don't read it, and the line itself
+    // doesn't carry it back.
+    let Some(level) = [Level::Error, Level::Warn, Level::Info, Level::Debug(1)].into_iter().find(|l| l.name() == name)
     else {
         return line.to_string();
     };
@@ -216,7 +239,7 @@ mod tests {
     fn a_named_subsystem_overrides_the_default_level_without_moving_any_other() {
         let config = config("", "warn,tray=debug,network=off");
 
-        assert_eq!(config.threshold("tray"), Some(Level::Debug), "the named subsystem is raised");
+        assert_eq!(config.threshold("tray"), Some(Level::Debug(1)), "the named subsystem is raised");
         assert_eq!(config.threshold("network"), None, "`off` silences one subsystem outright");
         assert_eq!(config.threshold("audio"), Some(Level::Warn), "everything unnamed takes the default");
     }
@@ -228,6 +251,32 @@ mod tests {
         assert!(Level::Error <= config.threshold("audio").unwrap(), "a rarer level than the threshold prints");
         assert!(Level::Warn <= config.threshold("audio").unwrap(), "the threshold itself prints");
         assert!(Level::Info > config.threshold("audio").unwrap(), "a more frequent one does not");
+    }
+
+    #[test]
+    fn a_v_count_climbs_one_level_at_a_time_then_holds_at_the_loudest_debug() {
+        assert_eq!(verbosity_level(0), Level::Error, "no -v: only what would break something");
+        assert_eq!(verbosity_level(1), Level::Info, "one -v: warn and info both, in one step");
+        assert_eq!(verbosity_level(2), Level::Debug(1));
+        assert_eq!(verbosity_level(3), Level::Debug(2));
+        assert_eq!(verbosity_level(4), Level::Debug(3));
+        assert_eq!(verbosity_level(9), Level::Debug(3), "past 4, it holds rather than erroring");
+    }
+
+    #[test]
+    fn debug_verbosity_admits_its_own_number_and_everything_quieter() {
+        let config = config("", "debug2");
+
+        assert!(Level::Debug(1) <= config.threshold("audio").unwrap(), "a quieter debug level prints");
+        assert!(Level::Debug(2) <= config.threshold("audio").unwrap(), "the threshold itself prints");
+        assert!(Level::Debug(3) > config.threshold("audio").unwrap(), "a louder debug level does not");
+    }
+
+    #[test]
+    fn a_debug_verbosity_outside_one_to_three_is_rejected_like_a_typo() {
+        assert_eq!(threshold("debug0"), None, "0 is not a verbosity");
+        assert_eq!(threshold("debug4"), None, "verbosity tops out at 3, like -vvv");
+        assert_eq!(threshold("debugger"), None, "not a number at all");
     }
 
     #[test]

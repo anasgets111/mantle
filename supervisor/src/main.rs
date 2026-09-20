@@ -243,18 +243,23 @@ fn main() -> Result<(), Box<dyn Error>> {
             // by now it is the log or a pipe onto it, so the macros write the plain bytes the file
             // wants and `log::tee` paints the terminal's copy. Untagged: the Supervisor is most of
             // the log.
-            shared::log::init("");
+            shared::log::init("", args.verbose);
             // Exit explicitly: `run_supervisor` has finished its teardown, and dropping the runtime
             // would wait on blocking tasks. Two workers, not one per core (ADR-0124), cover
             // socket/D-Bus/inotify/timer waits; the blocking pool is separate. A twenty-core laptop
             // otherwise used twenty bar-serving threads.
             let runtime = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build()?;
-            runtime.block_on(run_supervisor(dir, config_dir, args.profile))?;
+            runtime.block_on(run_supervisor(dir, config_dir, args.profile, args.verbose))?;
             std::process::exit(0);
         }
     }
 }
-async fn run_supervisor(dir: PathBuf, config_dir: PathBuf, profile: Option<u64>) -> Result<(), Box<dyn Error>> {
+async fn run_supervisor(
+    dir: PathBuf,
+    config_dir: PathBuf,
+    profile: Option<u64>,
+    verbose: u8,
+) -> Result<(), Box<dyn Error>> {
     let connection = capabilities::with_call_timeout(zbus::connection::Builder::system()).await?;
 
     let (tx, mut agent_requests) = tokio::sync::mpsc::unbounded_channel();
@@ -299,7 +304,7 @@ async fn run_supervisor(dir: PathBuf, config_dir: PathBuf, profile: Option<u64>)
 
     // Generation 0 is boot-spawned by the Supervisor (ADR-0025); without it there is no shell, so
     // failure is fatal.
-    let renderer = Renderer::new(renderer_binary_path()?, &dir, &config_dir, profile);
+    let renderer = Renderer::new(renderer_binary_path()?, &dir, &config_dir, profile, verbose);
     let boot_child = renderer.spawn(0)?;
     // Immediately, and before the child can have finished starting: generation 0 belongs to this
     // pid, and the listener refuses any other process claiming it (`socket::GenerationRegistry`).

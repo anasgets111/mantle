@@ -48,6 +48,9 @@ pub struct Args {
     pub profile: Option<u64>,
     /// `--pid`: the Supervisor `set`, `toggle`, `call` and `log` address.
     pub pid: Option<u32>,
+    /// `-v`'s count, `-vv` and repetition both counted (ADR-0243). `0` leaves `MANTLE_LOG` in
+    /// charge of the default level.
+    pub verbose: u8,
 }
 
 pub const HELP: &str = "\
@@ -78,6 +81,10 @@ OPTIONS:
                          not with -c
         --profile[=SECS] run only: log idle, heap and PSS/GPU reports every
                          SECS seconds, 60 by default
+    -v, --verbose        run only: repeat to raise the log level. None: only
+                         Error. -v: also Warn and Info. -vv/-vvv: Debug,
+                         itself levelled; -vvvv and past it holds at its
+                         loudest. Overridden by a MANTLE_LOG default level.
     -V, --version
     -h, --help
 
@@ -125,6 +132,16 @@ fn config_dir_from(raw: &str) -> Result<PathBuf, String> {
     std::path::absolute(&dir).map_err(|err| format!("--config {}: {err}", dir.display()))
 }
 
+/// `-v`'s count: `--verbose` is 1, `-v` is 1, and `-vv`/`-vvv` (grouped, the common shape) count
+/// their own `v`s. `None` for anything else, `-` bare included.
+fn verbose_count(arg: &str) -> Option<u8> {
+    if arg == "--verbose" {
+        return Some(1);
+    }
+    let vees = arg.strip_prefix('-')?;
+    (!vees.is_empty() && vees.bytes().all(|b| b == b'v')).then_some(vees.len() as u8)
+}
+
 /// Whether `arg` is one of the options this parser knows, rather than a value that merely begins
 /// with a dash. `-1` is a `set` value; `-c` is an option even where a value is expected.
 fn is_option(arg: &str) -> bool {
@@ -134,6 +151,7 @@ fn is_option(arg: &str) -> bool {
     ) || arg == "--pid"
         || arg.starts_with("--config=")
         || arg.starts_with("--profile")
+        || verbose_count(arg).is_some()
 }
 
 pub fn parse<I: IntoIterator<Item = String>>(argv: I) -> Result<Args, String> {
@@ -145,9 +163,14 @@ pub fn parse<I: IntoIterator<Item = String>>(argv: I) -> Result<Args, String> {
     let mut detach = false;
     let mut profile = None;
     let mut pid = None;
+    let mut verbose: u8 = 0;
     let mut positional = Vec::new();
 
     while let Some(arg) = args.next() {
+        if let Some(count) = verbose_count(&arg) {
+            verbose = verbose.saturating_add(count);
+            continue;
+        }
         match arg.as_str() {
             "init" | "check" | "set" | "toggle" | "call" | "log" | "list" if command.is_none() => {
                 command = Some(match arg.as_str() {
@@ -182,10 +205,10 @@ pub fn parse<I: IntoIterator<Item = String>>(argv: I) -> Result<Args, String> {
             "--profile" => profile = Some(60),
             "--pid" => pid = Some(pid_from(args.next().as_deref().unwrap_or_default())?),
             "-V" | "--version" => {
-                return Ok(Args { command: Command::Version, config_dir, detach, profile, pid });
+                return Ok(Args { command: Command::Version, config_dir, detach, profile, pid, verbose });
             }
             "-h" | "--help" => {
-                return Ok(Args { command: Command::Help, config_dir, detach, profile, pid });
+                return Ok(Args { command: Command::Help, config_dir, detach, profile, pid, verbose });
             }
             other => {
                 if let Some(value) = other.strip_prefix("--config=") {
@@ -253,6 +276,9 @@ pub fn parse<I: IntoIterator<Item = String>>(argv: I) -> Result<Args, String> {
     if profile.is_some() && !matches!(command, Command::Run) {
         return Err("--profile is only meaningful when starting the shell".to_string());
     }
+    if verbose > 0 && !matches!(command, Command::Run) {
+        return Err("-v is only meaningful when starting the shell".to_string());
+    }
     if pid.is_some() && !matches!(command, Command::SetState(_) | Command::Call { .. } | Command::Log { .. }) {
         return Err("--pid is only meaningful with `set`, `toggle`, `call` and `log`".to_string());
     }
@@ -262,7 +288,7 @@ pub fn parse<I: IntoIterator<Item = String>>(argv: I) -> Result<Args, String> {
     if pid.is_some() && config_dir.is_some() {
         return Err("--pid names one shell; drop -c".to_string());
     }
-    Ok(Args { command, config_dir, detach, profile, pid })
+    Ok(Args { command, config_dir, detach, profile, pid, verbose })
 }
 
 fn pid_from(raw: &str) -> Result<u32, String> {
@@ -313,7 +339,7 @@ mod tests {
     fn no_arguments_runs_the_shell_against_the_default_config() {
         assert_eq!(
             parse_args(&[]).unwrap(),
-            Args { command: Command::Run, config_dir: None, detach: false, profile: None, pid: None }
+            Args { command: Command::Run, config_dir: None, detach: false, profile: None, pid: None, verbose: 0 }
         );
     }
 
@@ -324,6 +350,17 @@ mod tests {
         assert!(parse_args(&["--profile=0"]).is_err());
         assert!(parse_args(&["--profile=soon"]).is_err());
         assert!(parse_args(&["check", "--profile"]).is_err(), "nothing runs long enough to report");
+    }
+
+    #[test]
+    fn verbose_counts_repetition_and_grouping_the_same_way() {
+        assert_eq!(parse_args(&[]).unwrap().verbose, 0);
+        assert_eq!(parse_args(&["-v"]).unwrap().verbose, 1);
+        assert_eq!(parse_args(&["-v", "-v"]).unwrap().verbose, 2, "repeated, like -v twice on the shell");
+        assert_eq!(parse_args(&["-vv"]).unwrap().verbose, 2, "grouped, the common shape");
+        assert_eq!(parse_args(&["-vvv"]).unwrap().verbose, 3);
+        assert_eq!(parse_args(&["--verbose", "-v"]).unwrap().verbose, 2, "long and short form add up");
+        assert!(parse_args(&["check", "-v"]).is_err(), "nothing runs long enough to log anything");
     }
 
     #[test]

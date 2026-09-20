@@ -6,8 +6,9 @@ pub mod log;
 mod paths;
 mod secure_buffer;
 pub use paths::{
-    CHECK_ENV, CONFIG_DIR_ENV, EXIT_COMPOSITOR_GONE, GENERATION_ID_ENV, INSTANCE_DIR_ENV, PROFILE_ENV, config_dir,
-    control_socket_path, instance_dir, profile_interval, runtime_root, session_locked_flag_path, shell_lua_path,
+    CHECK_ENV, CONFIG_DIR_ENV, EXIT_COMPOSITOR_GONE, GENERATION_ID_ENV, INSTANCE_DIR_ENV, PROFILE_ENV, VERBOSE_ENV,
+    config_dir, control_socket_path, instance_dir, profile_interval, runtime_root, session_locked_flag_path,
+    shell_lua_path,
 };
 pub use secure_buffer::SecureBuffer;
 pub use zeroize::{Zeroize, Zeroizing};
@@ -53,10 +54,17 @@ macro_rules! info {
     ($($arg:tt)*) => { $crate::log::emit($crate::log::Level::Info, module_path!(), format_args!($($arg)*)) };
 }
 
-/// See [`error!`].
+/// See [`error!`]. `debug!(2; "...")` writes at verbosity 2 (1-3, `-v`/`-vv`/`-vvv`-style); bare
+/// `debug!(...)` is verbosity 1. The `;` (not `,`) keeps a plain format string from ever parsing as
+/// a verbosity: `debug!("a, b")`'s first token is the whole string literal, not a bare integer.
 #[macro_export]
 macro_rules! debug {
-    ($($arg:tt)*) => { $crate::log::emit($crate::log::Level::Debug, module_path!(), format_args!($($arg)*)) };
+    ($verbosity:literal; $($arg:tt)*) => {
+        $crate::log::emit($crate::log::Level::Debug($verbosity), module_path!(), format_args!($($arg)*))
+    };
+    ($($arg:tt)*) => {
+        $crate::log::emit($crate::log::Level::Debug(1), module_path!(), format_args!($($arg)*))
+    };
 }
 
 /// The snapshot-hydrated capability roster (ADR-0037; CONTEXT.md). Each [`Capability::as_str`]

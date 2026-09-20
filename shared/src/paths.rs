@@ -58,6 +58,10 @@ pub fn profile_interval() -> Option<Duration> {
     Some(Duration::from_secs(secs))
 }
 
+/// `mantle -v`'s count, passed by the Supervisor to every Renderer generation (ADR-0243): the
+/// Renderer takes no argv of its own to parse a repeated flag from.
+pub const VERBOSE_ENV: &str = "MANTLE_VERBOSE";
+
 /// Renderer exit code for a Wayland connection that is gone: a log out, a reboot, or a compositor
 /// crash. Shared because the Supervisor reads it as "the session is over" and stops rather than
 /// respawning into a compositor that is not there.

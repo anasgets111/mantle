@@ -32,7 +32,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     // Tagged, because these lines land in the Supervisor's log through inherited descriptors
     // (ADR-0199) and are the minority there.
-    shared::log::init("renderer");
+    //
+    // No argv of its own to read a repeated `-v` from: `MANTLE_VERBOSE` is what the Supervisor's
+    // CLI parsing forwarded at spawn (ADR-0243).
+    let verbose = std::env::var(shared::VERBOSE_ENV).ok().and_then(|value| value.parse().ok()).unwrap_or(0);
+    shared::log::init("renderer", verbose);
     // `mantle check` re-execs this binary because the Supervisor has no `mlua`, before any Wayland
     // connection because checking needs none.
     if std::env::var_os(shared::CHECK_ENV).is_some() {

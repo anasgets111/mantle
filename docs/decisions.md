@@ -5666,3 +5666,49 @@ on any system today asks for more than one prompt, so this lands the transport o
 ponytail: `response` in `exchange_messages` sits unzeroized if `PAM_EXCHANGE_TIMEOUT` cancels the
 future mid-`.await`. Bounded by that timeout and by the worker's own process lifetime; upgrade by
 giving `response` a drop guard if that gap needs closing too.
+
+## 0242. `Debug` takes a verbosity, `-v`/`-vv`/`-vvv`-style
+
+ADR-0229's `debug!` was one level: everything at it or nothing. A capability with both a
+once-per-event line and a per-frame one had no way to keep the first under `MANTLE_LOG=debug` while
+leaving the second for someone chasing that capability specifically.
+
+1. **`Level::Debug(u8)`, not a fifth variant.** `Ord`'s derive already orders a variant's payload
+   once the variant itself ties, so `Debug(1) < Debug(2) < Debug(3)` falls out for free and a
+   threshold of `debug2` admits `Debug(1)` and `Debug(2)` the same way `warn` admits `error`.
+   `MANTLE_LOG` spells it `debug`, `debug2`, `debug3` (`debug` is `Debug(1)`); a bare `debug` still
+   admits only what it always did, so no existing filter changes meaning. 4 and up are rejected like
+   a typo, same as any other unparseable item.
+2. **`debug!(2; "...")`, not a second macro.** `;` rather than `,` before the message: `,` would make
+   `debug!("a, b")` ambiguous, since a plain format string is itself a `literal` token macro_rules
+   could just as well bind to the verbosity. `;` never appears as a bare token in a call whose first
+   argument is a string literal, so the two arms never compete for the same input.
+3. **The verbosity never reaches the line.** `name()` and `colour()` ignore the payload; every
+   `Debug(n)` still prints `DEBUG`, padded the same as `ERROR`/`WARN `/`INFO `. It is a filter a
+   caller sets, not something a reader of the log needs to see.
+
+## 0243. `mantle -v` is quiet by default, one level per repeat
+
+The engine's default was `MANTLE_LOG`'s own default, `Info`: every run printed unless a subsystem
+was silenced by hand. Nothing distinguished "broke" from "happened", so a normal session's output
+was mostly noise, and there was no lever short of editing `MANTLE_LOG` to ask for more.
+
+1. **`-v`'s count indexes `verbosity_level`, an ordinal over [`Level`], (ADR-0242).** No `-v`:
+   `Error` only. `-v`: `Info`, which admits `Warn` and `Error` too since a threshold always does
+   (ADR-0229). `-vv`/`-vvv`: `Debug`'s own two further steps. `-vvvv` and past it holds at
+   `Debug(3)` rather than refusing, the shape quickshell's own `-v`/`-vv` uses for `Info`/`Debug`
+   (`src/launch/command.cpp`, checked for prior art): a fourth `-v` typed out of habit is not a
+   mistake worth an error for.
+2. **`shared::log::init` takes the count directly, not through `MANTLE_LOG`.** The Supervisor
+   already has it parsed from its own argv; routing it through the environment first would need
+   `set_var`, which every other mention of it in this codebase already flags as a process-wide,
+   racy rewrite to avoid. `MANTLE_LOG`'s own bare default, if the user also set one, still wins:
+   `verbosity_level`'s result seeds `default` and `MANTLE_LOG`'s parse loop runs on top of it
+   unchanged.
+3. **The Renderer takes no argv (`generation.rs`'s `spawn` passes none), so it learns the count
+   through `MANTLE_VERBOSE`,** set on its spawn env exactly like `MANTLE_PROFILE` and only when
+   `-v` was actually passed. Not a merge into `MANTLE_LOG` itself: that would need computing the
+   Renderer's filter twice, once wrong, to build the string.
+
+`-v` is refused outside `run`, alongside `--profile`: a `check` or `log` invocation has nothing
+running long enough to make verbosity matter.

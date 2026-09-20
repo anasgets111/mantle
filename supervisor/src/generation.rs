@@ -39,10 +39,21 @@ pub(crate) struct Renderer {
 }
 
 impl Renderer {
-    pub(crate) fn new(path: PathBuf, instance_dir: &Path, config_dir: &Path, profile: Option<u64>) -> Self {
+    pub(crate) fn new(
+        path: PathBuf,
+        instance_dir: &Path,
+        config_dir: &Path,
+        profile: Option<u64>,
+        verbose: u8,
+    ) -> Self {
         let mut env =
             vec![(shared::INSTANCE_DIR_ENV, instance_dir.into()), (shared::CONFIG_DIR_ENV, config_dir.into())];
         env.extend(profile.map(|secs| (shared::PROFILE_ENV, secs.to_string().into())));
+        // Sent only when it says something: an absent `MANTLE_VERBOSE` and a `0` both read back as
+        // no `-v` at all.
+        if verbose > 0 {
+            env.push((shared::VERBOSE_ENV, verbose.to_string().into()));
+        }
         Self { path, env }
     }
 
@@ -137,11 +148,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_renderer_is_told_its_instance_config_and_profile_explicitly() {
-        let env = |profile| Renderer::new(PathBuf::new(), Path::new("/instance"), Path::new("/cfg"), profile).env;
+    fn a_renderer_is_told_its_instance_config_profile_and_verbosity_explicitly() {
+        let env = |profile, verbose| {
+            Renderer::new(PathBuf::new(), Path::new("/instance"), Path::new("/cfg"), profile, verbose).env
+        };
         let told = [(shared::INSTANCE_DIR_ENV, "/instance".into()), (shared::CONFIG_DIR_ENV, "/cfg".into())];
-        assert_eq!(env(None), told);
-        assert_eq!(env(Some(60)), [&told[..], &[(shared::PROFILE_ENV, "60".into())]].concat());
+        assert_eq!(env(None, 0), told, "no profile, no -v: neither optional entry is sent");
+        assert_eq!(env(Some(60), 0), [&told[..], &[(shared::PROFILE_ENV, "60".into())]].concat());
+        assert_eq!(env(None, 2), [&told[..], &[(shared::VERBOSE_ENV, "2".into())]].concat());
     }
 
     /// Raw `wait(2)` status for normal exit `code`; keeps `<< 8` in one place.
