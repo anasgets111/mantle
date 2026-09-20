@@ -169,20 +169,20 @@ pub(crate) fn parse_drm_client(text: &str) -> Option<DrmClient> {
     Some(DrmClient { pdev: pdev?, client_id: client_id?, resident, shared })
 }
 
-/// A `drm-resident-<region>`, `drm-shared-<region>`, or `drm-memory-<region>` value: `279968 KiB`
-/// or bare `0` (real fdinfo prints zero unitless). Refuse bare nonzero and non-KiB units rather
-/// than guess; reading MiB as KiB under-reports by 1024x.
+/// A `drm-resident-<region>`, `drm-shared-<region>`, or `drm-memory-<region>` value: `279968 KiB`,
+/// `40 MiB`, or a unitless byte count. DRM core's `print_size` divides by 1K while the value stays
+/// 1K-aligned, so one field prints in all three forms as it grows; accepting only `KiB` read a
+/// MiB-aligned total as zero. An unknown unit is still refused rather than guessed at.
 fn parse_drm_kib(value: &str) -> Option<u64> {
-    if value == "0" {
-        return Some(0);
-    }
     let mut parts = value.split_whitespace();
-    let number = parts.next()?;
-    let unit = parts.next()?;
-    if unit != "KiB" || parts.next().is_some() {
-        return None;
-    }
-    number.parse().ok()
+    let number: u64 = parts.next()?.parse().ok()?;
+    let kib = match parts.next() {
+        None => number / 1024,
+        Some("KiB") => number,
+        Some("MiB") => number * 1024,
+        Some(_) => return None,
+    };
+    parts.next().is_none().then_some(kib)
 }
 
 /// Dedupes by `(pdev, client_id)` before summing. One client can hold many fds with the same id
@@ -463,20 +463,20 @@ drm-engine-video-enhance:\t0 ns\n";
     /// stale legacy number is wrong, not absent.
     #[test]
     fn an_unparseable_resident_value_does_not_fall_back_to_the_legacy_field() {
-        let text = "drm-driver:\ti915\ndrm-pdev:\t0000:00:02.0\ndrm-client-id:\t4\ndrm-resident-system0:\t50 MiB\ndrm-memory-system0:\t99999 KiB\n";
+        let text = "drm-driver:\ti915\ndrm-pdev:\t0000:00:02.0\ndrm-client-id:\t4\ndrm-resident-system0:\t50 GiB\ndrm-memory-system0:\t99999 KiB\n";
         assert_eq!(
             parse_drm_client(text),
             Some(DrmClient { pdev: "0000:00:02.0".to_string(), client_id: 4, resident: 0, shared: 0 })
         );
     }
 
+    /// Live i915 prints `drm-shared-system0: 40 MiB` beside a `KiB` resident total.
     #[test]
-    fn parse_drm_client_ignores_a_field_reported_in_a_unit_other_than_kib() {
-        // Reading `50 MiB` as 50 KiB under-reports by 1024x; drop it instead.
-        let text = "drm-driver:\ti915\ndrm-pdev:\t0000:00:02.0\ndrm-client-id:\t4\ndrm-resident-system0:\t50 MiB\ndrm-resident-other:\t1000 KiB\n";
+    fn parse_drm_client_scales_mib_and_unitless_byte_values() {
+        let text = "drm-driver:\ti915\ndrm-pdev:\t0000:00:02.0\ndrm-client-id:\t4\ndrm-resident-system0:\t50 MiB\ndrm-resident-other:\t1000 KiB\ndrm-shared-system0:\t2048\n";
         assert_eq!(
             parse_drm_client(text),
-            Some(DrmClient { pdev: "0000:00:02.0".to_string(), client_id: 4, resident: 1000, shared: 0 })
+            Some(DrmClient { pdev: "0000:00:02.0".to_string(), client_id: 4, resident: 52200, shared: 2 })
         );
     }
 
