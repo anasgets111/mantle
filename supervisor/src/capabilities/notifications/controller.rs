@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
 
-use shared::{info, warn};
+use shared::{debug, info, warn};
 use tokio::sync::mpsc::UnboundedSender;
 use tokio::sync::watch;
 // Use tokio's clock: deadlines move with `tokio::time::pause`, so countdowns test without sleeping.
@@ -133,7 +133,7 @@ impl NotificationsController {
         if let Some(live_connection) = &live_connection
             && let Err(err) = live_connection.object_server().at(NOTIFICATIONS_OBJECT_PATH, controller.clone()).await
         {
-            warn!("failed to export org.freedesktop.Notifications at {NOTIFICATIONS_OBJECT_PATH}: {err}");
+            debug!(1; "failed to export org.freedesktop.Notifications at {NOTIFICATIONS_OBJECT_PATH}: {err}");
         }
 
         controller
@@ -159,7 +159,7 @@ impl NotificationsController {
             Ok(emitter) => {
                 let _ = Self::notification_closed(&emitter, id, reason.into()).await;
             }
-            Err(err) => warn!("failed to build a signal emitter for NotificationClosed({id}, {reason:?}): {err}"),
+            Err(err) => debug!(1; "failed to build a signal emitter for NotificationClosed({id}, {reason:?}): {err}"),
         }
     }
 
@@ -169,7 +169,7 @@ impl NotificationsController {
             Ok(emitter) => {
                 let _ = Self::action_invoked(&emitter, id, action_key).await;
             }
-            Err(err) => warn!("failed to build a signal emitter for ActionInvoked({id}, {action_key:?}): {err}"),
+            Err(err) => debug!(1; "failed to build a signal emitter for ActionInvoked({id}, {action_key:?}): {err}"),
         }
     }
 
@@ -182,7 +182,7 @@ impl NotificationsController {
                 let _ = Self::notification_replied(&emitter, id, text).await;
             }
             Err(err) => {
-                warn!("failed to build a signal emitter for NotificationReplied({id}): {err}")
+                debug!(1; "failed to build a signal emitter for NotificationReplied({id}): {err}")
             }
         }
     }
@@ -232,7 +232,7 @@ impl NotificationsController {
             remove_by_id(&mut state.queue, id)
         };
         let Some(removed) = removed else {
-            warn!("dismiss({id}) ignored: no notification with that id is currently queued");
+            debug!(1; "dismiss({id}) ignored: no notification with that id is currently queued");
             return;
         };
         if let Some(path) = removed.image_path {
@@ -254,13 +254,13 @@ impl NotificationsController {
             let mut state = self.state.lock().unwrap();
             match state.queue.iter().position(|n| n.id == id) {
                 Some(index) if !state.queue[index].has_reply => {
-                    warn!("reply({id}, ...) ignored: that notification does not accept an inline reply");
+                    debug!(1; "reply({id}, ...) ignored: that notification does not accept an inline reply");
                     None
                 }
                 Some(index) if state.queue[index].resident => Some(None),
                 Some(_) => Some(remove_by_id(&mut state.queue, id)),
                 None => {
-                    warn!("reply({id}, ...) ignored: no notification with that id is currently queued");
+                    debug!(1; "reply({id}, ...) ignored: no notification with that id is currently queued");
                     None
                 }
             }
@@ -285,13 +285,13 @@ impl NotificationsController {
             let mut state = self.state.lock().unwrap();
             match state.queue.iter().position(|n| n.id == id) {
                 Some(index) if !declares_action(&state.queue[index], &key) => {
-                    warn!("invoke_action({id}, {key:?}) ignored: that notification declares no such action");
+                    debug!(1; "invoke_action({id}, {key:?}) ignored: that notification declares no such action");
                     None
                 }
                 Some(index) if state.queue[index].resident => Some(None),
                 Some(_) => Some(remove_by_id(&mut state.queue, id)),
                 None => {
-                    warn!("invoke_action({id}, {key:?}) ignored: no notification with that id is currently queued");
+                    debug!(1; "invoke_action({id}, {key:?}) ignored: no notification with that id is currently queued");
                     None
                 }
             }
@@ -314,7 +314,7 @@ impl NotificationsController {
             Some(validated) => {
                 self.state.lock().unwrap().sound_registry.insert(urgency, validated);
             }
-            None => warn!("set_sound({urgency:?}, {path:?}) ignored: not a trusted, existing sound file path"),
+            None => debug!(1; "set_sound({urgency:?}, {path:?}) ignored: not a trusted, existing sound file path"),
         }
     }
 
@@ -421,19 +421,19 @@ async fn sleep_past_holds(mut holds: watch::Receiver<Option<Instant>>, mut remai
 
 fn spool_raw_image(id: u32, raw: &RawImageData) -> Option<String> {
     if !image_data_is_valid(raw) {
-        warn!("rejected an image-data/icon_data hint for notification {id}: fails bounds checks");
+        debug!(1; "rejected an image-data/icon_data hint for notification {id}: fails bounds checks");
         return None;
     }
     match encode_image_data_to_png(raw) {
         Ok(png_bytes) => match write_icon_png(id, &png_bytes) {
             Ok(path) => Some(path),
             Err(err) => {
-                warn!("failed to spool icon PNG for notification {id}: {err}");
+                debug!(1; "failed to spool icon PNG for notification {id}: {err}");
                 None
             }
         },
         Err(err) => {
-            warn!("failed to encode image-data for notification {id}: {err}");
+            debug!(1; "failed to encode image-data for notification {id}: {err}");
             None
         }
     }

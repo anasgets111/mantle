@@ -13,7 +13,7 @@
 
 use std::time::{Duration, Instant};
 
-use shared::info;
+use shared::{debug, info};
 
 /// glibc's arena totals from `mallinfo2`, in bytes.
 #[derive(Clone, Copy, Default, PartialEq, Eq, Debug)]
@@ -117,8 +117,8 @@ impl MemoryProfile {
         let (census, surfaces) = collect();
         let malloc = Malloc::now();
         let census = Census { malloc, ..census };
-        info!("{}", render(self.started.elapsed(), &census, self.previous.as_ref(), self.first.as_ref()));
-        info!("{}", render_surfaces(self.started.elapsed(), &surfaces));
+        debug!(2; "{}", render(self.started.elapsed(), &census, self.previous.as_ref(), self.first.as_ref()));
+        debug!(2; "{}", render_surfaces(self.started.elapsed(), &surfaces));
         self.first.get_or_insert(census);
         self.previous = Some(census);
         self.window_started = Instant::now();

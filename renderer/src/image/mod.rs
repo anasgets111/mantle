@@ -38,7 +38,7 @@ use std::time::{Duration, Instant};
 use femtovg::renderer::OpenGl;
 use femtovg::rgb::FromSlice;
 use femtovg::{Canvas, ErrorKind, ImageFlags, ImageId, ImageSource};
-use shared::{error, warn};
+use shared::{debug, error};
 
 use crate::text::snap::LogicalRect;
 
@@ -603,7 +603,7 @@ impl ImageCache {
                         self.deferred = Some(Instant::now());
                     }
                     Err(std::sync::mpsc::TrySendError::Disconnected(_)) => {
-                        warn!("{}: no decode worker left to take it", key.path.display());
+                        debug!("{}: no decode worker left to take it", key.path.display());
                         self.unwant(&key);
                         self.insert(key, Slot::Failed);
                     }
@@ -803,7 +803,7 @@ fn upload_or_log(canvas: &mut Canvas<OpenGl>, path: &Path, decoded: Result<Decod
     match result {
         Ok(slot) => slot,
         Err(err) => {
-            warn!("{}: {err}", path.display());
+            debug!("{}: {err}", path.display());
             Slot::Failed
         }
     }
@@ -1193,7 +1193,7 @@ fn decode_raster(
         let thumb = decoded.thumbnail(slot.px, slot.px).into_rgba8();
         let (thumb_width, thumb_height) = thumb.dimensions();
         if let Err(err) = slot.write(thumb.as_raw(), thumb_width, thumb_height) {
-            warn!("{}: thumbnail not written: {err}", path.display());
+            debug!("{}: thumbnail not written: {err}", path.display());
         }
         // Both axes, because `stored_size` fills the box while `thumbnail` fits inside it: a wide
         // source thumbnails to 128x72 and stores at 228x128, and rescaling from that would be an

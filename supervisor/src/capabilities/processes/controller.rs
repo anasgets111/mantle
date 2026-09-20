@@ -28,7 +28,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use nix::errno::Errno;
 use nix::sys::signal::{Signal, kill};
 use nix::unistd::Pid;
-use shared::{error, warn};
+use shared::{debug, error, warn};
 use tokio::process::Child;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 use tokio::task::JoinHandle;
@@ -146,11 +146,11 @@ impl ProcessesController {
     pub fn start(&self, name: &str, cmd: &str, args: &[String]) {
         let mut guard = self.entries.lock().expect("processes entries mutex poisoned");
         let Some(entry) = guard.get_mut(name) else {
-            warn!("refused to start {name:?}; no session_process declared that name");
+            debug!("refused to start {name:?}; no session_process declared that name");
             return;
         };
         if entry.public.running {
-            warn!("{name:?} is already running as pid {:?}; ignoring start", entry.public.pid);
+            debug!("{name:?} is already running as pid {:?}; ignoring start", entry.public.pid);
             return;
         }
 

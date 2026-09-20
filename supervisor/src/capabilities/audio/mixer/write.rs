@@ -6,7 +6,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use pipewire as pw;
-use shared::warn;
+use shared::debug;
 
 use crate::capabilities::audio::master;
 
@@ -29,7 +29,7 @@ pub(super) fn apply_command(state: &Rc<RefCell<MixerState>>, command: AudioComma
             let Some((node_id, volumes)) = resolve_default(state, DefaultDevice::Sink)
                 .and_then(|(id, current)| Some((id, master::balanced_channel_volumes(&current, balance)?)))
             else {
-                warn!("set_balance({balance}) has no default output with left and right channels; ignored");
+                debug!("set_balance({balance}) has no default output with left and right channels; ignored");
                 return;
             };
             write_device_volume(state, DefaultDevice::Sink, node_id, Some(volumes), None);
@@ -39,11 +39,11 @@ pub(super) fn apply_command(state: &Rc<RefCell<MixerState>>, command: AudioComma
         AudioCommand::ToggleSourceMute => set_default_muted(state, DefaultDevice::Source, None),
         AudioCommand::SetAppVolume { id, volume } => {
             let Some(current) = state.borrow().app_props.get(&id).cloned() else {
-                warn!("set_app_volume({id}, {volume}) names a stream with no known Props; ignored");
+                debug!("set_app_volume({id}, {volume}) names a stream with no known Props; ignored");
                 return;
             };
             let Some(channel_volumes) = master::cubed_channel_volumes(volume, &current.channel_volumes, 1.0) else {
-                warn!("set_app_volume({id}, {volume}) names a stream that reports no channels; ignored");
+                debug!("set_app_volume({id}, {volume}) names a stream that reports no channels; ignored");
                 return;
             };
             write_node_props(state, id, Some(channel_volumes), None);
@@ -59,12 +59,12 @@ pub(super) fn apply_command(state: &Rc<RefCell<MixerState>>, command: AudioComma
 /// Sets one direction's default volume.
 fn set_default_volume(state: &Rc<RefCell<MixerState>>, kind: DefaultDevice, volume: f32) {
     let Some((node_id, current)) = resolve_default(state, kind) else {
-        warn!("a {kind:?} volume of {volume} has no resolved default device to write to; ignored");
+        debug!("a {kind:?} volume of {volume} has no resolved default device to write to; ignored");
         return;
     };
     let max = if kind == DefaultDevice::Sink { master::SINK_MAX_VOLUME } else { 1.0 };
     let Some(channel_volumes) = master::cubed_channel_volumes(volume, &current.channel_volumes, max) else {
-        warn!("a {kind:?} volume of {volume} resolved to node {node_id}, which reports no channels; ignored");
+        debug!("a {kind:?} volume of {volume} resolved to node {node_id}, which reports no channels; ignored");
         return;
     };
     write_device_volume(state, kind, node_id, Some(channel_volumes), None);
@@ -83,7 +83,7 @@ pub(super) fn cap_default_sink(state: &Rc<RefCell<MixerState>>) {
 /// channel count because mute carries no `channelVolumes`.
 fn set_default_muted(state: &Rc<RefCell<MixerState>>, kind: DefaultDevice, muted: Option<bool>) {
     let Some(node_id) = resolve_default_node(state, kind) else {
-        warn!("a {kind:?} mute has no resolved default device to write to; ignored");
+        debug!("a {kind:?} mute has no resolved default device to write to; ignored");
         return;
     };
     // A toggle needs the current value; an explicit set does not, so only the toggle waits for
@@ -94,7 +94,7 @@ fn set_default_muted(state: &Rc<RefCell<MixerState>>, kind: DefaultDevice, muted
     // narrower than the one this closes, and the write is attempted rather than refused.
     let current = || state.borrow().device_entries(kind).get(&node_id)?.props.as_ref().map(|props| !props.mute);
     let Some(muted) = muted.or_else(current) else {
-        warn!("a {kind:?} mute toggle has no Props on node {node_id} to read; ignored");
+        debug!("a {kind:?} mute toggle has no Props on node {node_id} to read; ignored");
         return;
     };
     write_device_volume(state, kind, node_id, None, Some(muted));
@@ -151,7 +151,7 @@ fn write_device_route(
     let Some(index) =
         state.borrow().device_routes.get(&(route.device_id, route.profile_device)).map(|active| active.index)
     else {
-        warn!(
+        debug!(
             "sink {node_id} routes through device {} port {}, whose active Route index has not been seen; ignored",
             route.device_id, route.profile_device
         );
@@ -161,7 +161,7 @@ fn write_device_route(
     with_pod(&object, format_args!("a Route object for device {}", route.device_id), |pod| {
         let state = state.borrow();
         let Some((device, _listener)) = state.devices.get(&route.device_id) else {
-            warn!("device {} is not bound; cannot write its Route", route.device_id);
+            debug!("device {} is not bound; cannot write its Route", route.device_id);
             return;
         };
         device.set_param(pw::spa::param::ParamType::Route, 0, pod);
@@ -174,7 +174,7 @@ fn write_bluetooth_profile(state: &Rc<RefCell<MixerState>>, device_id: u32, inde
     with_pod(&master::profile_object(index), format_args!("a Profile object for device {device_id}"), |pod| {
         let state = state.borrow();
         let Some((device, _listener)) = state.bluez_devices.get(&device_id) else {
-            warn!("set_bluetooth_profile({device_id}, {index}) names no bound Bluetooth device; ignored");
+            debug!("set_bluetooth_profile({device_id}, {index}) names no bound Bluetooth device; ignored");
             return;
         };
         device.set_param(pw::spa::param::ParamType::Profile, 0, pod);
@@ -197,7 +197,7 @@ fn write_node_props(
             .or_else(|| state.source_nodes.get(&node_id))
             .or_else(|| state.nodes.get(&node_id))
         else {
-            warn!("no bound node {node_id} to write Props to; ignored");
+            debug!("no bound node {node_id} to write Props to; ignored");
             return;
         };
         node.set_param(pw::spa::param::ParamType::Props, 0, pod);
@@ -209,11 +209,11 @@ fn write_node_props(
 /// into C, so dropping the `Vec` before the send would hand PipeWire a dangling pointer.
 fn with_pod(object: &pw::spa::pod::Value, what: std::fmt::Arguments, send: impl FnOnce(&pw::spa::pod::Pod)) {
     let Some(bytes) = master::serialize_props(object) else {
-        warn!("failed to serialize {what}; ignored");
+        debug!(2; "failed to serialize {what}; ignored");
         return;
     };
     let Some(pod) = pw::spa::pod::Pod::from_bytes(&bytes) else {
-        warn!("serialized {what} did not read back as a pod; ignored");
+        debug!(2; "serialized {what} did not read back as a pod; ignored");
         return;
     };
     send(pod);
@@ -226,11 +226,11 @@ fn write_default_device(state: &Rc<RefCell<MixerState>>, kind: DefaultDevice, id
     let state = state.borrow();
     let node_name = state.device_entries(kind).get(&id).map(|entry| entry.names.node_name.clone());
     let Some(node_name) = node_name else {
-        warn!("no tracked {kind:?} with registry id {id}; ignored");
+        debug!("no tracked {kind:?} with registry id {id}; ignored");
         return;
     };
     let Some((metadata, _listener)) = state.metadata.as_ref() else {
-        warn!("the `default` metadata object is not bound; cannot set the default {kind:?}");
+        debug!("the `default` metadata object is not bound; cannot set the default {kind:?}");
         return;
     };
     let key = match kind {

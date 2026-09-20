@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex};
 
 use futures_util::{Stream, StreamExt};
 use serde::Serialize;
-use shared::{error, info, warn};
+use shared::{debug, error, warn};
 use tokio::sync::mpsc::UnboundedSender;
 use zbus::zvariant::OwnedValue;
 
@@ -122,7 +122,7 @@ impl PowerController {
     /// write and external switches.
     pub async fn set_profile(&self, profile: &str) {
         let Some(proxy) = connect_power_profiles(&self.system_bus).await else {
-            warn!("set_profile({profile}) called but no power-profiles-daemon is reachable; ignored");
+            debug!("set_profile({profile}) called but no power-profiles-daemon is reachable; ignored");
             return;
         };
         if let Err(err) = proxy.set_active_profile(profile).await {
@@ -150,7 +150,7 @@ async fn connect_power_profiles(system_bus: &zbus::Connection) -> Option<PowerPr
                     return Some(proxy);
                 }
             }
-            Err(err) => warn!("failed to build a proxy for {service}: {err}"),
+            Err(err) => debug!("failed to build a proxy for {service}: {err}"),
         }
     }
     None
@@ -199,23 +199,23 @@ async fn run_power_task(
     let upower = match UPowerProxy::new(&system_bus).await {
         Ok(proxy) => Some(proxy),
         Err(err) => {
-            info!("no UPower manager reachable ({err}); on_battery will not be reported this run");
+            debug!("no UPower manager reachable ({err}); on_battery will not be reported this run");
             None
         }
     };
     let device = match DisplayDeviceProxy::new(&system_bus).await {
         Ok(proxy) => Some(proxy),
         Err(err) => {
-            info!("no UPower DisplayDevice reachable ({err}); energy_rate will not be reported this run");
+            debug!("no UPower DisplayDevice reachable ({err}); energy_rate will not be reported this run");
             None
         }
     };
     let profiles = connect_power_profiles(&system_bus).await;
     if profiles.is_none() {
-        info!("no power-profiles-daemon reachable; active_profile and profiles will not be reported this run");
+        debug!("no power-profiles-daemon reachable; active_profile and profiles will not be reported this run");
     }
     if upower.is_none() && device.is_none() && profiles.is_none() {
-        info!("nothing on this host can answer any of mantle.power's fields; power reporting disabled for this run");
+        debug!("nothing on this host can answer any of mantle.power's fields; power reporting disabled for this run");
         return;
     }
 

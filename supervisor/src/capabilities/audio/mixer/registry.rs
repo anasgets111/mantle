@@ -12,7 +12,7 @@ use pw::spa::pod::Value;
 use pw::spa::pod::deserialize::PodDeserializer;
 use pw::spa::utils::dict::DictRef;
 use pw::types::ObjectType;
-use shared::{error, warn};
+use shared::{debug, error, warn};
 use tokio::sync::mpsc::UnboundedSender;
 use tokio::sync::watch;
 
@@ -328,7 +328,7 @@ fn bind_device_node(
     let node: pw::node::Node = match registry.bind(obj) {
         Ok(node) => node,
         Err(err) => {
-            warn!("failed to bind {kind:?} node {node_id}: {err}");
+            debug!("failed to bind {kind:?} node {node_id}: {err}");
             return;
         }
     };
@@ -466,7 +466,7 @@ fn bind_device(state: &Rc<RefCell<MixerState>>, registry: &pw::registry::Registr
     let device: pw::device::Device = match registry.bind(obj) {
         Ok(device) => device,
         Err(err) => {
-            warn!("failed to bind ALSA device {device_id}: {err}");
+            debug!("failed to bind ALSA device {device_id}: {err}");
             return;
         }
     };
@@ -528,14 +528,14 @@ fn bind_bluez_device(
 ) {
     let Some(mac) = obj.props.and_then(|props| props.get_prop(*keys::DEVICE_NAME)).and_then(master::mac_from_card_name)
     else {
-        warn!("Bluetooth device {} names no address; its codecs are not tracked", obj.id);
+        debug!("Bluetooth device {} names no address; its codecs are not tracked", obj.id);
         return;
     };
     let device_id = obj.id;
     let device: pw::device::Device = match registry.bind(obj) {
         Ok(device) => device,
         Err(err) => {
-            warn!("failed to bind Bluetooth device {device_id} ({mac}): {err}");
+            debug!("failed to bind Bluetooth device {device_id} ({mac}): {err}");
             return;
         }
     };

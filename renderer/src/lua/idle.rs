@@ -34,7 +34,7 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use mlua::{Function, UserData, UserDataMethods};
-use shared::warn;
+use shared::debug;
 
 use crate::lua::capability::Capability;
 
@@ -142,7 +142,7 @@ impl IdleRegistry {
                     shared::IdleState::Idled => "on_idle",
                     shared::IdleState::Resumed => "on_resume",
                 };
-                warn!("mantle.idle:register_threshold({threshold_sec}): {which} raised an error: {err}");
+                debug!("mantle.idle:register_threshold({threshold_sec}): {which} raised an error: {err}");
             }
         }
     }

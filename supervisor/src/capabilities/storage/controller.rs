@@ -9,7 +9,7 @@ use std::time::Duration;
 use futures_util::StreamExt;
 use inotify::{Inotify, WatchMask, Watches};
 use serde_json::{Map, Value};
-use shared::{info, warn};
+use shared::{debug, info, warn};
 use tokio::sync::mpsc::UnboundedSender;
 use tokio::task::JoinHandle;
 
@@ -108,7 +108,7 @@ impl StorageController {
     /// key, not a reset. A changed merge schedules a save, creating the file on first run.
     pub fn open(&self, path: &str, defaults: &Value) {
         let Some(path) = absolute_path(path) else {
-            warn!("refused to open {path:?}; a store's path must be absolute");
+            debug!("refused to open {path:?}; a store's path must be absolute");
             return;
         };
         let key = path.to_string_lossy().into_owned();
@@ -149,18 +149,18 @@ impl StorageController {
     /// The save stays unconditional: rewriting is the only repair for a deleted file.
     pub fn set(&self, path: &str, key: &str, value: Value) {
         let Some(path) = absolute_path(path) else {
-            warn!("refused a write to {path:?}; a store's path must be absolute");
+            debug!("refused a write to {path:?}; a store's path must be absolute");
             return;
         };
         if key.is_empty() {
-            warn!("refused a write to {}; a key cannot be empty", path.display());
+            debug!("refused a write to {}; a key cannot be empty", path.display());
             return;
         }
 
         let changed = {
             let mut guard = self.stores.lock().expect("storage state mutex poisoned");
             let Some(store) = guard.files.get_mut(&*path.to_string_lossy()) else {
-                warn!("refused a write to {}; no persistent_table declared it", path.display());
+                debug!("refused a write to {}; no persistent_table declared it", path.display());
                 return;
             };
             match value {

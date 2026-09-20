@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use serde::Deserialize;
-use shared::{error, warn};
+use shared::{debug, error};
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::compositor::{
@@ -81,7 +81,7 @@ impl CompositorLink for NiriLink {
         // JSON-RPC supplies an unbounded u64, while niri's wire protocol takes u8. Reject overflow
         // instead of truncating 256 to 0.
         let Ok(index) = u8::try_from(index) else {
-            warn!("switch_layout index {index} is out of range for niri (must fit in a u8); ignored");
+            debug!(1; "switch_layout index {index} is out of range for niri (must fit in a u8); ignored");
             return;
         };
         let layout = niri_ipc::LayoutSwitchTarget::Index(index);
@@ -144,12 +144,12 @@ fn publish(socket_path: &Path, state: &Arc<Mutex<KeyboardState>>, events: &Unbou
     let reply = match hyprland_request(socket_path, "j/devices") {
         Ok(reply) => reply,
         Err(err) => {
-            warn!("Hyprland `devices` request failed; layout not updated this round: {err}");
+            debug!(1; "Hyprland `devices` request failed; layout not updated this round: {err}");
             return true;
         }
     };
     let Some(keyboard) = parse_hyprland_devices(&reply) else {
-        warn!("Hyprland `devices` reply held no usable keyboard entry; layout not updated this round");
+        debug!(1; "Hyprland `devices` reply held no usable keyboard entry; layout not updated this round");
         return true;
     };
     apply_hyprland_layout(state, &keyboard);
@@ -170,8 +170,8 @@ impl HyprlandLink {
         std::thread::spawn(move || {
             let stream = UnixStream::connect(&events_path)
                 .inspect_err(|err| {
-                    warn!(
-                        "failed to connect to Hyprland's event socket at {}; layout will not update after the first read: {err}",
+                    debug!(
+                        1; "failed to connect to Hyprland's event socket at {}; layout will not update after the first read: {err}",
                         events_path.display()
                     )
                 })

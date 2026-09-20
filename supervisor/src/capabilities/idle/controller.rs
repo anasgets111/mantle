@@ -265,7 +265,7 @@ impl IdleController {
             }
 
             if let Err(err) = live.connection.flush() {
-                warn!("failed to flush the get_idle_notification request for {sec}s: {err}");
+                error!("failed to flush the get_idle_notification request for {sec}s: {err}");
             }
         }
     }
@@ -368,7 +368,7 @@ impl IdleController {
             }
             screensaver_holds(&state)
         };
-        info!("{departed} left the bus still holding an idle inhibitor; released it");
+        debug!(1; "{departed} left the bus still holding an idle inhibitor; released it");
         self.publish_screensaver(holds);
     }
 

@@ -29,7 +29,7 @@ use capabilities::Capabilities;
 use capabilities::lock::{self, LockController};
 use generation::{Renderer, renderer_binary_path};
 use polkit::PolkitAgent;
-use shared::{Capability, RendererFrame, SupervisorFrame, Zeroize, info, warn};
+use shared::{Capability, RendererFrame, SupervisorFrame, Zeroize, debug, info, warn};
 use socket::send_frame_logged;
 use supervisor::Supervisor;
 
@@ -383,7 +383,7 @@ async fn run_supervisor(
                 // No Renderer is live during a cooldown, so only control clients and call answers dispatch.
                 let live = supervisor.respawn_at.map_or(supervisor.authoritative.generation_id, |_| shared::CONTROL_CLIENT_GENERATION);
                 if !frame_may_dispatch(&inbound.frame, inbound.generation_id, live) {
-                    warn!(
+                    debug!(
                         "dropping a frame from stale generation {} (authoritative is {})",
                         inbound.generation_id, supervisor.authoritative.generation_id
                     );
@@ -397,7 +397,7 @@ async fn run_supervisor(
                     "process" => supervisor.dispatch_process_command(&envelope).await,
                     name => match Capability::from_name(name) {
                         Some(capability) => supervisor.dispatch_capability_command(capability, &envelope),
-                        None => warn!("inbound command from generation {}: {:?}", inbound.generation_id, envelope),
+                        None => debug!("inbound command from generation {}: {:?}", inbound.generation_id, envelope),
                     },
                 },
                 RendererFrame::StartCapability { capability } => {
@@ -471,7 +471,7 @@ async fn run_supervisor(
                             outcome_tx,
                         ));
                     } else {
-                        warn!(
+                        debug!(
                             "generation {}'s secure_submit(lock, authenticate) arrived with no lock held, or with an attempt already in flight; dropping",
                             submit.generation_id
                         );
@@ -483,7 +483,7 @@ async fn run_supervisor(
                     // textfield/IPC half), none implemented yet. The length is deliberately absent:
                     // a misaddressed password reaches this arm, and its length is the one thing
                     // about it worth an attacker's time.
-                    warn!(
+                    debug!(
                         "generation {}'s secure_submit received: capability={:?} action={:?}",
                         submit.generation_id,
                         submit.capability,

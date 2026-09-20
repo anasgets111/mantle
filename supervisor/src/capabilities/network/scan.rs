@@ -3,7 +3,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use shared::warn;
+use shared::{debug, warn};
 use zbus::zvariant::OwnedObjectPath;
 
 use super::proxies::{AP_FLAGS_PRIVACY, AccessPointProxy};
@@ -128,7 +128,7 @@ impl NetworkController {
     /// Dispatches `RequestScan({})`. Missing Wi-Fi hardware is logged, not fatal.
     pub async fn scan(&self) {
         let Some(wifi) = self.wifi() else {
-            warn!("scan() requested but no Wi-Fi device is present");
+            debug!("scan() requested but no Wi-Fi device is present");
             return;
         };
         if let Err(err) = wifi.wireless.request_scan(HashMap::new()).await {
@@ -178,7 +178,7 @@ impl NetworkController {
         for path in missing {
             match bind::<AccessPointProxy>(&self.connection, path.clone()).await {
                 Ok(proxy) => bound.push((path, proxy)),
-                Err(err) => warn!("failed to bind access point {path}: {err}"),
+                Err(err) => debug!("failed to bind access point {path}: {err}"),
             }
         }
 

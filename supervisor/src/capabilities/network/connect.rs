@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 
 use futures_util::StreamExt;
-use shared::{Zeroize, info, warn};
+use shared::{Zeroize, debug, warn};
 use zbus::zvariant::OwnedObjectPath;
 
 use super::devices::WifiDevice;
@@ -105,11 +105,11 @@ impl NetworkController {
         if !saved && secure {
             // Log the fork: saved-profile and security facts come from different sources, so a
             // missing prompt otherwise leaves three plausible causes.
-            info!("connect {:?}: saved={saved} secure={secure}, asking for a password", pending.ssid);
+            debug!("connect {:?}: saved={saved} secure={secure}, asking for a password", pending.ssid);
             self.request_password(&pending);
             return;
         }
-        info!("connect {:?}: saved={saved} secure={secure}, connecting directly", pending.ssid);
+        debug!("connect {:?}: saved={saved} secure={secure}, connecting directly", pending.ssid);
         // Only this click's intent: another connect may have replaced it while the lookup was on the
         // wire, and that one resolves itself.
         let taken = self.pending_connect.lock().unwrap().take_if(|current| *current == pending);
@@ -154,7 +154,7 @@ impl NetworkController {
             state.password_ssid = None;
             state.connect_error = None;
         }
-        info!("the pending connect was cancelled; the password prompt is down");
+        debug!("the pending connect was cancelled; the password prompt is down");
         let _ = self.events.send(NetworkSignal::Changed);
     }
 
@@ -172,7 +172,7 @@ impl NetworkController {
             attempt.id += 1;
             attempt.joined.take()
         };
-        info!("the join in flight was aborted");
+        debug!("the join in flight was aborted");
         let _ = self.events.send(NetworkSignal::Changed);
         if let Some(in_flight) = in_flight {
             let controller = self.clone();

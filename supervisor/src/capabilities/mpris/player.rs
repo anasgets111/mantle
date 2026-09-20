@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex};
 
 use futures_util::StreamExt;
 use serde::Serialize;
-use shared::{info, warn};
+use shared::{debug, warn};
 use tokio::task::JoinHandle;
 
 use super::MprisSignal;
@@ -253,21 +253,21 @@ pub(super) async fn register_player(
     let player = match bind_player(connection, &bus_name).await {
         Ok(player) => player,
         Err(err) => {
-            warn!("failed to bind Player for {bus_name}: {err}");
+            debug!("failed to bind Player for {bus_name}: {err}");
             return;
         }
     };
     let root = match bind_root(connection, &bus_name).await {
         Ok(root) => root,
         Err(err) => {
-            warn!("failed to bind MediaPlayer2 for {bus_name}: {err}");
+            debug!("failed to bind MediaPlayer2 for {bus_name}: {err}");
             return;
         }
     };
     match player.can_control().await {
         Ok(true) => {}
         Ok(false) => {
-            info!("{bus_name} reports CanControl=false; not tracking it");
+            debug!("{bus_name} reports CanControl=false; not tracking it");
             return;
         }
         Err(err) => warn!("CanControl read failed for {bus_name} (tracking anyway): {err}"),

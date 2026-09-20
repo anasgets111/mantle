@@ -23,7 +23,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use shared::framing::{self, FramingError};
-use shared::{ConnectionHandshake, RendererFrame, SupervisorFrame, error, info, warn};
+use shared::{ConnectionHandshake, RendererFrame, SupervisorFrame, debug, error, info, warn};
 use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::mpsc::{self, UnboundedSender};
 
@@ -293,7 +293,7 @@ pub fn spawn_listener(
                     let live = Arc::clone(&live_connections);
                     tokio::spawn(async move {
                         if let Err(err) = handle_connection(stream, registry, routes, inbound_tx, connected_tx).await {
-                            warn!("control-socket connection ended: {err}");
+                            debug!("control-socket connection ended: {err}");
                         }
                         live.fetch_sub(1, Ordering::Relaxed);
                     });
@@ -332,7 +332,7 @@ async fn handle_connection(
         match tokio::time::timeout(HANDSHAKE_TIMEOUT, framing::read_json_frame(&mut read_half)).await {
             Ok(handshake) => handshake?,
             Err(_) => {
-                warn!(
+                debug!(1;
                     "control-socket: a peer sent no handshake within {}s and was disconnected",
                     HANDSHAKE_TIMEOUT.as_secs()
                 );
@@ -350,14 +350,14 @@ async fn handle_connection(
         // Refusing is a quiet disconnect: nothing this connection says afterwards is trustworthy,
         // and a detailed answer only tells a prober which generation ids are live.
         let Some(pid) = peer_pid else {
-            warn!(
+            debug!(1;
                 "control-socket: refusing a claim on generation {generation_id} from a peer whose \
                  credentials could not be read"
             );
             return Ok(());
         };
         if !registry.await_claim(generation_id, pid).await {
-            warn!(
+            debug!(1;
                 "control-socket: refusing pid {pid}'s claim on generation {generation_id}; \
                  that generation belongs to another process, and accepting would hand this \
                  connection its capability pushes"
@@ -390,14 +390,14 @@ async fn handle_connection(
             match framing::read_json_frame::<_, RendererFrame>(&mut read_half).await {
                 Ok(mut frame) => {
                     if let Some(refusal) = refuse_frame(control_client, generation_id, &frame) {
-                        warn!("control-socket: dropped a frame from generation {generation_id}: {refusal}");
+                        debug!("control-socket: dropped a frame from generation {generation_id}: {refusal}");
                         continue;
                     }
                     // Stamped here because this is where the waiting peer's write half is; `main`
                     // sees frames, not the connections they arrived on.
                     if let RendererFrame::Call(call) = &mut frame {
                         let Some(id) = routes.open(reply_tx.clone()) else {
-                            warn!(
+                            debug!(1;
                                 "control-socket: refusing `mantle call {}`; {MAX_PENDING_CALLS} calls are already \
                                  waiting",
                                 call.name
@@ -421,7 +421,7 @@ async fn handle_connection(
                 }
                 Err(FramingError::Decode(err)) => {
                     // Malformed frames do not kill the connection; transport failure does.
-                    warn!(
+                    debug!(1;
                         "control-socket frame from generation {generation_id} failed to decode as RendererFrame: {err}"
                     );
                 }
@@ -488,7 +488,7 @@ pub(crate) fn send_frame_logged(registry: &GenerationRegistry, generation_id: u3
     if let (SupervisorFrame::StateSnapshot(_), SendFrameError::NoConnection { .. }) = (frame, &err) {
         return;
     }
-    warn!("failed to push {frame:?} to generation {generation_id}: {err}");
+    debug!("failed to push {frame:?} to generation {generation_id}: {err}");
 }
 
 #[cfg(test)]

@@ -3,7 +3,7 @@
 
 use std::sync::{Arc, Mutex};
 
-use shared::warn;
+use shared::{debug, warn};
 use tokio::sync::mpsc::UnboundedSender;
 
 use super::registration::resolve_registration;
@@ -42,7 +42,7 @@ impl StatusNotifierWatcher {
         let (connection, registry, events) = (self.connection.clone(), self.registry.clone(), self.events.clone());
         tokio::spawn(async move {
             if let Err(err) = register_item(&connection, &registry, &events, resolved).await {
-                warn!("RegisterStatusNotifierItem({service:?}) failed: {err}");
+                debug!(1; "RegisterStatusNotifierItem({service:?}) failed: {err}");
                 return;
             }
             if let Ok(emitter) = zbus::object_server::SignalEmitter::new(&connection, WATCHER_OBJECT_PATH) {

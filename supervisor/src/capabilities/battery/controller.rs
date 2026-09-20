@@ -5,7 +5,7 @@ use std::sync::{Arc, Mutex};
 
 use futures_util::StreamExt;
 use serde::Serialize;
-use shared::{error, info};
+use shared::{debug, error};
 use tokio::sync::mpsc::UnboundedSender;
 
 /// `battery.state`, one of UPower's seven `Device.State` values.
@@ -206,7 +206,7 @@ async fn run_battery_task(
         {
             Ok(proxy) => proxy,
             Err(err) => {
-                info!("no UPower DisplayDevice reachable ({err}); battery will not be reported this run");
+                debug!("no UPower DisplayDevice reachable ({err}); battery will not be reported this run");
                 return;
             }
         };

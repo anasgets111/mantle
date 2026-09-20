@@ -5,7 +5,7 @@ use std::sync::{Arc, Mutex};
 
 use futures_util::StreamExt;
 use inotify::{Inotify, WatchMask};
-use shared::{info, warn};
+use shared::{debug, warn};
 use tokio::sync::mpsc::UnboundedSender;
 use tokio::sync::watch;
 
@@ -206,7 +206,7 @@ fn publish(proc_root: &Path, state: &Arc<Mutex<PrivacyState>>, opener_pids: &[u3
 /// only `camera_users` and is logged.
 fn watch_video_devices(devices: &[PathBuf]) -> Option<inotify::EventStream<Vec<u8>>> {
     if devices.is_empty() {
-        info!("no /dev/videoN devices found; camera_users will stay empty");
+        debug!("no /dev/videoN devices found; camera_users will stay empty");
         return None;
     }
     let inotify = match Inotify::init() {

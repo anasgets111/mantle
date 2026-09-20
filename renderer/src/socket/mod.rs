@@ -17,7 +17,7 @@ pub use client::{FrameOutcome, RendererClient};
 use std::path::Path;
 
 use shared::framing::{self, write_json_frame};
-use shared::{ConnectionHandshake, RendererFrame, SupervisorFrame, Zeroize, error, warn};
+use shared::{ConnectionHandshake, RendererFrame, SupervisorFrame, Zeroize, debug, error};
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::UnixStream;
 use tokio::sync::mpsc;
@@ -122,7 +122,7 @@ async fn pump<R, W>(
                     // if the `select!` below drops this future, the frame was not delivered and
                     // nothing half-arrives -- which is why the backpressure is safe to take here.
                     if let Err(err) = inbound_tx.send(frame).await {
-                        warn!("the Wayland thread is gone; stopping the socket loop: {err}");
+                        debug!("the Wayland thread is gone; stopping the socket loop: {err}");
                         break;
                     }
                     if let Some(waker) = waker {
@@ -139,7 +139,7 @@ async fn pump<R, W>(
     let writer = async {
         while let Some(mut frame) = outbound_rx.recv().await {
             if let Err(err) = write_json_frame(write_half, &frame).await {
-                warn!("failed to send a {} frame: {err}", frame_label(&frame));
+                debug!("failed to send a {} frame: {err}", frame_label(&frame));
             }
             // Scrub immediately after write, not at `Drop` (ADR-0005/ADR-0027). The serialized
             // copy is `write_json_frame`'s to scrub and it does; this is the frame's own bytes.

@@ -2,7 +2,7 @@
 //! decisions, rescue messages, surfaces, and callbacks. Shared bind/paint/(un)map logic is in
 //! `surface`.
 
-use shared::{error, info, warn};
+use shared::{debug, error, info};
 
 use super::*;
 use crate::layout::secure_submit::tree_can_authenticate;
@@ -99,7 +99,7 @@ impl App {
     /// it.
     pub(super) fn create_lock(&mut self, instance: &SurfaceInstance, outputs: &HashMap<String, wl_output::WlOutput>) {
         let Some(output) = outputs.get(&instance.output) else {
-            warn!("instance {:?} names an output that has since gone; skipping", instance.instance_id);
+            debug!(2; "instance {:?} names an output that has since gone; skipping", instance.instance_id);
             return;
         };
         self.surfaces.push(TrackedSurface::new(
@@ -132,7 +132,7 @@ impl App {
                 *surface = Some(lock_surface);
             }
             self.surfaces[index].map_state = MapState::AwaitingConfigure;
-            info!("{}: lock surface created, awaiting its configure", self.surfaces[index].surface_id);
+            debug!("{}: lock surface created, awaiting its configure", self.surfaces[index].surface_id);
         }
     }
 
@@ -208,7 +208,7 @@ impl App {
         let outcome = release_outcome(was_locked);
         match &outcome {
             LockOutcome::Unlocked => info!("the session lock was released"),
-            _ => warn!("{LOCK_NEVER_GRANTED}"),
+            _ => debug!(2; "{LOCK_NEVER_GRANTED}"),
         }
         self.report_lock(outcome);
     }

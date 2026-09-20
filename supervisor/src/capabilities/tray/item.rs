@@ -2,7 +2,7 @@
 //! Split from `dbus::tray` -- see `dbus/tray/mod.rs` for the module-level doc.
 
 use serde::Serialize;
-use shared::warn;
+use shared::debug;
 use zbus::names::OwnedUniqueName;
 use zbus::zvariant::OwnedObjectPath;
 
@@ -176,7 +176,7 @@ fn resolve_variant(
             Some(pixmap) => match write_icon_png(&format!("{stem}{spool_suffix}"), pixmap) {
                 Ok(path) => (None, Some(path)),
                 Err(err) => {
-                    warn!("failed to spool icon PNG for {stem}{spool_suffix}: {err}");
+                    debug!(1; "failed to spool icon PNG for {stem}{spool_suffix}: {err}");
                     (None, None)
                 }
             },

@@ -9,7 +9,7 @@ use tokio::sync::mpsc::UnboundedSender;
 use tokio::task::JoinHandle;
 use zbus::zvariant::OwnedObjectPath;
 
-use shared::{info, warn};
+use shared::{debug, info, warn};
 
 use super::BluetoothSignal;
 use super::proxies::{Adapter1Proxy, Battery1Proxy, Device1Proxy};
@@ -90,14 +90,14 @@ async fn register_device(
     let device = match bind::<Device1Proxy>(connection, path.clone()).await {
         Ok(device) => device,
         Err(err) => {
-            warn!("failed to bind device {path}: {err}");
+            debug!("failed to bind device {path}: {err}");
             return;
         }
     };
     let mac = match device.address().await {
         Ok(mac) => mac,
         Err(err) => {
-            warn!("failed to read Address for device {path}: {err}");
+            debug!("failed to read Address for device {path}: {err}");
             return;
         }
     };
@@ -105,7 +105,7 @@ async fn register_device(
         match bind::<Battery1Proxy>(connection, path.clone()).await {
             Ok(battery) => Some(battery),
             Err(err) => {
-                warn!("failed to bind Battery1 for device {path} ({mac}): {err}");
+                debug!("failed to bind Battery1 for device {path} ({mac}): {err}");
                 None
             }
         }

@@ -3,7 +3,7 @@
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use shared::{error, warn};
+use shared::{debug, error};
 use tokio::sync::mpsc::UnboundedSender;
 use tokio::sync::oneshot;
 use zbus::zvariant::{ObjectPath, OwnedObjectPath};
@@ -135,7 +135,7 @@ impl BluetoothAgent {
             _ => (self.invited)(&mac),
         };
         if !allowed {
-            warn!("refused a {kind:?} request from {mac}: not invited, or a service request from an unpaired device");
+            debug!("refused a {kind:?} request from {mac}: not invited, or a service request from an unpaired device");
             return false;
         }
         let name = match proxy {
@@ -236,7 +236,7 @@ pub(super) async fn register_agent_best_effort(
         return;
     }
     if let Err(err) = agent_manager.request_default_agent(&path).await {
-        warn!("RequestDefaultAgent failed: {err}");
+        debug!("RequestDefaultAgent failed: {err}");
     }
 }
 

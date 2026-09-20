@@ -16,7 +16,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use shared::{Capability, CommandEnvelope, error, warn};
+use shared::{Capability, CommandEnvelope, debug, error, warn};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 use tokio::sync::watch;
 
@@ -407,7 +407,7 @@ impl Capabilities {
                 let network = network.clone();
                 tokio::spawn(async move { network.connect(pending, secret).await });
             }
-            None => warn!(
+            None => debug!(
                 "generation {generation_id}'s secure_submit(network, connect) arrived with no intent for the network the prompt names; dropping"
             ),
         };
@@ -416,7 +416,7 @@ impl Capabilities {
             None => false,
         };
         if !sent {
-            warn!(
+            debug!(
                 "generation {generation_id}'s secure_submit(network, connect) arrived with no network backend; dropping"
             );
         }
@@ -826,7 +826,7 @@ impl Capabilities {
             Capability::Polkit => {}
             // Read-only: no action enum; a named command is malformed Renderer input.
             Capability::Battery | Capability::Privacy | Capability::System => {
-                warn!(
+                debug!(
                     "{capability}: read-only capability received a command from generation {}; dropping",
                     envelope.params.generation_id
                 )

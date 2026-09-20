@@ -5,7 +5,7 @@ use std::sync::{Arc, Mutex};
 
 use futures_util::StreamExt;
 use inotify::{Inotify, WatchMask};
-use shared::warn;
+use shared::{debug, warn};
 use tokio::sync::mpsc::UnboundedSender;
 
 use super::controller::{UpdatesSignal, UpdatesState};
@@ -25,7 +25,7 @@ pub(super) async fn run_reboot_marker_task(
     events: UnboundedSender<UpdatesSignal>,
 ) {
     let (Some(dir), Some(name)) = (marker.parent(), marker.file_name()) else {
-        warn!("{} is not a file path; the reboot badge stays off", marker.display());
+        debug!("{} is not a file path; the reboot badge stays off", marker.display());
         return;
     };
     publish_reboot_required(&marker, &state, &events);

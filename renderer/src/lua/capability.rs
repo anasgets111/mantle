@@ -17,7 +17,7 @@ use std::collections::HashSet;
 use std::rc::Rc;
 
 use mlua::{Function, Lua, LuaSerdeExt, MultiValue, UserData, UserDataMethods, Value};
-use shared::{CommandEnvelope, CommandParams, RendererFrame, error, warn};
+use shared::{CommandEnvelope, CommandParams, RendererFrame, debug, error};
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::lua::signal::{CpuBudget, DirtyFlag, LiveSignalHandle, Signal};
@@ -75,7 +75,7 @@ impl CommandSender {
                 warned.clear();
             }
             if warned.insert(capability.to_string()) {
-                warn!("mantle.{capability}: not a capability, so nothing starts");
+                debug!("mantle.{capability}: not a capability, so nothing starts");
             }
             return;
         };
@@ -225,7 +225,7 @@ impl CapabilityHandle {
                 budget.check_not_exceeded()
             });
             if let Err(err) = outcome {
-                warn!("mantle.{}:on_change handler raised, ignoring it: {err}", self.name);
+                debug!("mantle.{}:on_change handler raised, ignoring it: {err}", self.name);
             }
         }
     }

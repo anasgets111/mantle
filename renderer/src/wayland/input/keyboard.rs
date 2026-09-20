@@ -2,7 +2,7 @@
 //! `secure_submit` keystrokes, which become a `SecureSubmit` frame without a Lua value holding
 //! plaintext (ADR-0005/0027).
 
-use shared::{error, info, warn};
+use shared::{debug, error, warn};
 use unicode_segmentation::UnicodeSegmentation;
 
 use super::*;
@@ -235,11 +235,11 @@ fn submit_frame_for(
     let empty = buffer.is_empty();
     let Some(target) = target.filter(|_| !empty) else {
         match target {
-            None => warn!(
-                "secure submit dropped: no field is focused to send it to, so a password typed here reaches nothing"
+            None => debug!(
+                2; "secure submit dropped: no field is focused to send it to, so a password typed here reaches nothing"
             ),
             Some(target) => {
-                warn!("secure submit to {}/{} dropped: the field is empty", target.capability, target.action)
+                debug!(2; "secure submit to {}/{} dropped: the field is empty", target.capability, target.action)
             }
         }
         buffer.zeroize();
@@ -460,14 +460,14 @@ impl KeyboardHandler for App {
         // A scope with exactly one `secure_submit` becomes typable without a click.
         let next = self.field_the_scope_declares(&scope, self.focused_secure_submit.clone());
         match (&self.keyboard_focus, &next) {
-            (None, _) => info!("keyboard focus entered an untracked surface; not tracking it"),
-            (Some(id), Some(field)) => info!(
-                "keyboard focus entered {id} and takes {}'s `secure_submit` field ({}/{})",
+            (None, _) => debug!(2; "keyboard focus entered an untracked surface; not tracking it"),
+            (Some(id), Some(field)) => debug!(
+                2; "keyboard focus entered {id} and takes {}'s `secure_submit` field ({}/{})",
                 field.surface_id, field.target.capability, field.target.action
             ),
             // Report the searched popup scope so "no field" distinguishes out-of-reach from hidden.
-            (Some(id), None) => info!(
-                "keyboard focus entered {id}, and neither it nor its shown popups {:?} declare a sole `secure_submit` field",
+            (Some(id), None) => debug!(
+                2; "keyboard focus entered {id}, and neither it nor its shown popups {:?} declare a sole `secure_submit` field",
                 &scope[1..]
             ),
         }
@@ -506,7 +506,7 @@ impl KeyboardHandler for App {
         self.shift_held = false;
         self.ctrl_held = false;
         self.repeating = None;
-        info!("keyboard focus left {left}");
+        debug!(2; "keyboard focus left {left}");
     }
 
     // There is no key-handler property, and ADR-0050 adds none: `secure_submit` (ADR-0005) sends
@@ -716,7 +716,7 @@ impl App {
         if !self.surface_is_live(&field.surface_id) {
             return;
         }
-        info!(
+        debug!(
             "{}'s `secure_submit` field ({}/{}) became typable under the keyboard focus already held",
             field.surface_id, field.target.capability, field.target.action
         );
@@ -740,7 +740,7 @@ impl App {
             return;
         }
         let opened = on_change.clone();
-        info!("{surface_id}'s `autofocus` textfield takes the keyboard");
+        debug!("{surface_id}'s `autofocus` textfield takes the keyboard");
         self.focus_text_field(Some(FocusedTextField {
             surface_id: surface_id.clone(),
             id,
@@ -793,8 +793,8 @@ impl App {
         if focus_is_still_armed(field, &self.keyboard_focus_scope(), self.surface_is_live(&field.surface_id)) {
             return;
         }
-        warn!(
-            "the focused secure_submit field is no longer the one receiving keys; dropping it and scrubbing its buffer"
+        debug!(
+            2; "the focused secure_submit field is no longer the one receiving keys; dropping it and scrubbing its buffer"
         );
         self.focus_secure_submit(None);
     }
@@ -822,7 +822,7 @@ impl App {
     pub(in crate::wayland) fn drop_secure_focus_if_its_surface_is_gone(&mut self) {
         let gone = self.focused_secure_submit.as_ref().is_some_and(|field| !self.surface_is_live(&field.surface_id));
         if gone {
-            warn!("the surface holding the focused secure_submit field is gone; dropping it and scrubbing its buffer");
+            debug!(2; "the surface holding the focused secure_submit field is gone; dropping it and scrubbing its buffer");
             self.focus_secure_submit(None);
         }
     }
@@ -842,8 +842,8 @@ impl App {
             if matches!(action, KeyAction::Submit)
                 && !self.focused_text_field.as_ref().is_some_and(|field| self.text_field_takes_keys(field))
             {
-                warn!(
-                    "submit pressed while no secure field holds focus; nothing was typed into one and nothing was sent"
+                debug!(
+                    2; "submit pressed while no secure field holds focus; nothing was typed into one and nothing was sent"
                 );
             }
             return;
@@ -940,7 +940,7 @@ impl App {
         if self.surface_is_live(&field.surface_id) && node_exists {
             return;
         }
-        warn!("the focused textfield is gone; dropping what was typed");
+        debug!(2; "the focused textfield is gone; dropping what was typed");
         self.focus_text_field(None);
     }
 
@@ -1031,11 +1031,11 @@ impl App {
         let target = self.focused_secure_submit.as_ref().map(|field| &field.target);
         let Some(frame) = submit_frame_for(self.generation_id, target, &mut self.secure_buffer) else {
             match addressed {
-                None => warn!(
-                    "secure_submit dropped: no focused textfield named a capability and action to address it to, so nothing was sent"
+                None => debug!(
+                    2; "secure_submit dropped: no focused textfield named a capability and action to address it to, so nothing was sent"
                 ),
                 Some(target) if nothing_typed => {
-                    warn!("secure_submit to {}/{} dropped: nothing had been typed", target.capability, target.action)
+                    debug!(2; "secure_submit to {}/{} dropped: nothing had been typed", target.capability, target.action)
                 }
                 Some(target) => error!(
                     "secure_submit to {}/{} dropped for no recorded reason; this is a bug",

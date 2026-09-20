@@ -6,8 +6,8 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 use shared::{
-    IdleEvent, ProcessExited, ProcessOutputLine, RendererFrame, SetSessionLock, StateSnapshot, SupervisorFrame, error,
-    info, warn,
+    IdleEvent, ProcessExited, ProcessOutputLine, RendererFrame, SetSessionLock, StateSnapshot, SupervisorFrame, debug,
+    error, warn,
 };
 use tokio::sync::mpsc;
 
@@ -652,7 +652,7 @@ fn dump_layout_if_asked(scene: &Scene) {
     }
     let mut out = format!("layout dump: {wanted}\n");
     walk(surface, 0, &mut out);
-    info!("{out}");
+    debug!(2; "{out}");
 }
 
 /// Starts capabilities named by applied `textfield` `secure_submit`s (ADR-0070 decision 5), so a
@@ -680,8 +680,8 @@ fn log_applied_surfaces(scene: &Scene, instances: &[SurfaceInstance]) {
     dump_layout_if_asked(scene);
     for instance in instances {
         match scene.surface(&instance.instance_id) {
-            Some(r) => info!(
-                "layout resolved: surface {:?} on {:?} kind={} rect={:?} visible={} children={} properties={}",
+            Some(r) => debug!(
+                2; "layout resolved: surface {:?} on {:?} kind={} rect={:?} visible={} children={} properties={}",
                 instance.instance_id,
                 instance.output,
                 r.kind,

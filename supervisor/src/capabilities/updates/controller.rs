@@ -164,15 +164,15 @@ impl UpdatesController {
     /// second request while checking; the in-flight answer is the requested answer.
     pub fn check_now(&self) {
         if self.backend.is_none() {
-            warn!("check() called on a machine with no package manager this Supervisor speaks; ignored");
+            debug!("check() called on a machine with no package manager this Supervisor speaks; ignored");
             return;
         }
         if self.state.lock().unwrap().checking {
-            warn!("check() called while a check is already running; ignored");
+            debug!("check() called while a check is already running; ignored");
             return;
         }
         if self.check_now_tx.try_send(()).is_err() {
-            warn!("check() could not be queued (one is already pending, or the check task is gone); ignored");
+            debug!("check() could not be queued (one is already pending, or the check task is gone); ignored");
         }
     }
 
@@ -181,14 +181,14 @@ impl UpdatesController {
     /// calls cannot both observe `installing == false` and launch upgrades.
     pub async fn install(&self) {
         let Some(backend) = self.backend.clone() else {
-            warn!("install() called on a machine with no package manager this Supervisor speaks; ignored");
+            debug!("install() called on a machine with no package manager this Supervisor speaks; ignored");
             return;
         };
         {
             let mut guard = self.state.lock().unwrap();
             if guard.installing {
                 drop(guard);
-                warn!("install() called while an install is already running; ignored");
+                debug!("install() called while an install is already running; ignored");
                 return;
             }
             guard.installing = true;

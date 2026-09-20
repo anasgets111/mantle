@@ -2,7 +2,7 @@
 //! create/destroy/paint/(un)map lifecycle. Role-specific behavior is in `layer`, `xdg_shell`, and
 //! `lock`.
 
-use shared::{error, info, warn};
+use shared::{debug, error, warn};
 
 use super::*;
 use crate::layout::node::PropMap;
@@ -383,7 +383,7 @@ impl App {
 
         for instance in instances {
             let Some(roster) = specs.iter().find(|spec| spec.declared_id() == instance.declared_id) else {
-                warn!("instance {:?} has no matching declaration; skipping", instance.instance_id);
+                debug!(2; "instance {:?} has no matching declaration; skipping", instance.instance_id);
                 continue;
             };
             // `Scene::surface` returns an owned tree, ending the client borrow before creation.
@@ -775,7 +775,7 @@ impl App {
         }
         // More than tint: `on_hover(false)` is how a config releases what hovering took.
         self.pointer_left_destroyed_surface(index);
-        info!("{} destroyed", self.surfaces[index].surface_id);
+        debug!("{} destroyed", self.surfaces[index].surface_id);
     }
 
     /// Lazily builds the process-wide EGL state on the first drawable surface (ADR-0071). Failure
@@ -873,7 +873,7 @@ impl App {
             })
         });
 
-        info!("{surface_id} up: {width}x{height}, EGL context current");
+        debug!("{surface_id} up: {width}x{height}, EGL context current");
         self.surfaces[index].bound = Some(BoundSurface { egl_surface, native_window });
         // A new EGL surface has empty buffers, so the next paint is unconditional.
         self.surfaces[index].last_painted = None;

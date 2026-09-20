@@ -5,7 +5,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use shared::{error, info, warn};
+use shared::{debug, error, warn};
 use tokio::sync::mpsc::UnboundedSender;
 use zbus::zvariant::OwnedObjectPath;
 
@@ -86,7 +86,7 @@ impl BluetoothController {
         }
 
         if adapter.lock().unwrap().is_none() {
-            info!("no adapter found; bluetooth stays unavailable until BlueZ adds one");
+            debug!("no adapter found; bluetooth stays unavailable until BlueZ adds one");
         }
         if let Some((added, removed)) = object_manager_streams {
             spawn_object_manager_forwarder(
@@ -277,7 +277,7 @@ impl BluetoothController {
     /// observes the real change; `main.rs` then rebuilds and pushes state.
     pub async fn set_enabled(&self, enabled: bool) {
         let Some(adapter) = self.adapter() else {
-            warn!("set_enabled({enabled}) failed: {}", BluetoothActionError::NoAdapter);
+            error!("set_enabled({enabled}) failed: {}", BluetoothActionError::NoAdapter);
             return;
         };
         if let Err(err) = adapter.set_powered(enabled).await {
@@ -289,7 +289,7 @@ impl BluetoothController {
     /// observes the change, including BlueZ's own switch-off at `DiscoverableTimeout`.
     pub async fn set_discoverable(&self, on: bool) {
         let Some(adapter) = self.adapter() else {
-            warn!("set_discoverable({on}) failed: {}", BluetoothActionError::NoAdapter);
+            error!("set_discoverable({on}) failed: {}", BluetoothActionError::NoAdapter);
             return;
         };
         if let Err(err) = adapter.set_discoverable(on).await {
@@ -349,7 +349,7 @@ impl BluetoothController {
     /// for the call; see [`discovery_due`](Self::discovery_due).
     pub async fn pair(&self, mac: &str) {
         let Some((_, device)) = self.resolve_device(mac) else {
-            warn!("pair({mac:?}) failed: {}", BluetoothActionError::UnknownDevice);
+            debug!("pair({mac:?}) failed: {}", BluetoothActionError::UnknownDevice);
             return;
         };
         let busy = self.mark_busy(mac, DeviceAction::Pairing);
@@ -375,20 +375,20 @@ impl BluetoothController {
     /// `org.bluez.Error.Failed`.
     async fn connect_within(&self, mac: &str, window: Duration) {
         let Some((_, device)) = self.resolve_device(mac) else {
-            warn!("connect({mac:?}) failed: {}", BluetoothActionError::UnknownDevice);
+            debug!("connect({mac:?}) failed: {}", BluetoothActionError::UnknownDevice);
             return;
         };
         let _busy = self.mark_busy(mac, DeviceAction::Connecting);
         if let Err(err) = device.set_trusted(true).await {
-            warn!("failed to set Trusted on {mac:?}: {err}");
+            debug!("failed to set Trusted on {mac:?}: {err}");
         }
         let deadline = tokio::time::Instant::now() + window;
         while let Err(err) = device.connect().await {
             if tokio::time::Instant::now() >= deadline {
-                warn!("connect({mac:?}) failed: {err}");
+                error!("connect({mac:?}) failed: {err}");
                 return;
             }
-            warn!("connect({mac:?}) refused, retrying: {err}");
+            debug!("connect({mac:?}) refused, retrying: {err}");
             tokio::time::sleep(CONNECT_RETRY_INTERVAL).await;
         }
     }
@@ -396,7 +396,7 @@ impl BluetoothController {
     /// `bluetooth:disconnect(mac)`.
     pub async fn disconnect(&self, mac: &str) {
         let Some((_, device)) = self.resolve_device(mac) else {
-            warn!("disconnect({mac:?}) failed: {}", BluetoothActionError::UnknownDevice);
+            debug!("disconnect({mac:?}) failed: {}", BluetoothActionError::UnknownDevice);
             return;
         };
         let _busy = self.mark_busy(mac, DeviceAction::Disconnecting);
@@ -409,11 +409,11 @@ impl BluetoothController {
     /// paired credentials from disk.
     pub async fn forget(&self, mac: &str) {
         let Some(adapter) = self.adapter() else {
-            warn!("forget({mac:?}) failed: {}", BluetoothActionError::NoAdapter);
+            error!("forget({mac:?}) failed: {}", BluetoothActionError::NoAdapter);
             return;
         };
         let Some((path, _)) = self.resolve_device(mac) else {
-            warn!("forget({mac:?}) failed: {}", BluetoothActionError::UnknownDevice);
+            debug!("forget({mac:?}) failed: {}", BluetoothActionError::UnknownDevice);
             return;
         };
         if let Err(err) = adapter.remove_device(&path).await {

@@ -7,10 +7,10 @@
 
 use std::collections::HashMap;
 use std::io;
+
+use shared::debug;
 use std::path::Path;
 use std::time::Duration;
-
-use shared::{info, warn};
 
 /// Passed in at the one production call site, [`log_sample`], instead of being reached for inside
 /// the readers, so a test can point them at a tempdir of fake files. Every sysfs and procfs reader
@@ -278,7 +278,7 @@ pub(crate) fn sample(
     let renderer = renderer.and_then(|(generation_id, pid)| match read_process_memory(proc_root, &pid.to_string()) {
         Ok(memory) => Some((generation_id, memory)),
         Err(err) => {
-            warn!("generation {generation_id} (pid {pid}) could not be sampled, skipping: {err}");
+            debug!("generation {generation_id} (pid {pid}) could not be sampled, skipping: {err}");
             None
         }
     });
@@ -305,8 +305,8 @@ pub(crate) fn log_sample(
     snapshots: Vec<(&'static str, usize)>,
 ) {
     match sample(Path::new(PROC_ROOT), child.id().map(|pid| (generation_id, pid)), snapshots) {
-        Ok(sample) => info!("{}", report_line(label, &sample)),
-        Err(err) => warn!("{label} sample failed: {err}"),
+        Ok(sample) => debug!(3; "{}", report_line(label, &sample)),
+        Err(err) => debug!("{label} sample failed: {err}"),
     }
 }
 

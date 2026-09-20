@@ -8,7 +8,7 @@
 
 use std::collections::HashMap;
 
-use shared::{Capability, SupervisorFrame, error, info, warn};
+use shared::{Capability, SupervisorFrame, debug, error, info, warn};
 
 use crate::capabilities::lock::{self, LockController};
 use crate::capabilities::polkit::{self, Answer, PolkitController};
@@ -208,7 +208,7 @@ impl Supervisor {
     pub(crate) fn record_polkit_outcome(&mut self, cookie: String, outcome: shared::PamOutcome) {
         match self.polkit.record_outcome(&cookie, outcome) {
             Answer::Stale => {
-                warn!("polkit: dropping an outcome for {cookie:?}, which is no longer the challenge on screen")
+                debug!("polkit: dropping an outcome for {cookie:?}, which is no longer the challenge on screen")
             }
             Answer::Failed => self.push_polkit_state(),
             Answer::Succeeded { reply } => {
@@ -365,7 +365,7 @@ impl Supervisor {
         info!("lock: pam answered {outcome:?} for acquisition {acquisition}");
         if !self.lock.record_authentication(acquisition, outcome) {
             // No push: refusal changed no state; `push_lock_state` would bump the revision anyway.
-            warn!(
+            debug!(1;
                 "lock: dropping a pam outcome for acquisition {acquisition}, which is no longer the lock on the glass"
             );
         } else {

@@ -1,7 +1,7 @@
 //! `popup` (`xdg_popup`): positioners, reposition, nested teardown and the ADR-0049/0051 dismissal
 //! latch.
 
-use shared::{error, info, warn};
+use shared::{debug, error, info, warn};
 
 use super::*;
 use crate::wayland::surface::MapState;
@@ -330,7 +330,7 @@ impl App {
         if let TrackedRole::Popup { positioned, .. } = &mut self.surfaces[index].role {
             *positioned = Some(placement);
         }
-        info!(
+        debug!(
             "{surface_id} creating: visible = true, anchored to {parent_id}, grab {}",
             if grab.is_some() { "taken" } else { "not requested" }
         );
@@ -479,7 +479,7 @@ impl PopupHandler for App {
             return;
         };
         let surface_id = self.surfaces[index].surface_id.clone();
-        info!("{surface_id}: dismissed by the compositor");
+        debug!("{surface_id}: dismissed by the compositor");
         self.hide_popup(index);
         self.latch_popup(index);
 

@@ -2,7 +2,7 @@
 //! exclusive zones, creation, updates, and callbacks. Shared bind/paint/(un)map logic is in
 //! `surface`.
 
-use shared::{info, warn};
+use shared::{debug, warn};
 
 use super::*;
 use crate::wayland::surface::MapState;
@@ -253,7 +253,7 @@ impl App {
         measured: layout::LogicalSize,
     ) {
         let Some(output) = outputs.get(&instance.output) else {
-            warn!("instance {:?} names an output that has since gone; skipping", instance.instance_id);
+            debug!(2; "instance {:?} names an output that has since gone; skipping", instance.instance_id);
             return;
         };
         // Before the first configure, and before `set_instance_size` has replaced it, `available`
@@ -334,7 +334,7 @@ impl App {
         };
         if layer.is_some() {
             self.surfaces[index].map_state = map_state_for_kept_layer(self.surfaces[index].configured_size);
-            info!("{} mapping: visible = true", self.surfaces[index].surface_id);
+            debug!("{} mapping: visible = true", self.surfaces[index].surface_id);
             return;
         }
         // `measured` is this pass's: [`App::apply_resolved_state`] writes it from the solved root
@@ -377,7 +377,7 @@ impl App {
             *requested = size;
         }
         self.surfaces[index].map_state = MapState::AwaitingConfigure;
-        info!("{} created: visible = true", self.surfaces[index].surface_id);
+        debug!("{} created: visible = true", self.surfaces[index].surface_id);
     }
 
     /// Stages `Reserve`'s configured-size zone, explicit `0` for `Respect`, or `-1` for `Ignore`.
@@ -440,7 +440,7 @@ impl App {
             // Log every change: it takes the keyboard from whatever the user was typing in, and a
             // dead password prompt otherwise cannot distinguish a missing request from compositor
             // inaction.
-            info!("{}: keyboard_interactivity -> {mode:?}", self.surfaces[index].surface_id);
+            debug!(2; "{}: keyboard_interactivity -> {mode:?}", self.surfaces[index].surface_id);
             layer.set_keyboard_interactivity(keyboard_interactivity_for(mode));
         }
         let mut sent = None;

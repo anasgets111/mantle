@@ -12,7 +12,7 @@ use std::path::PathBuf;
 use std::process::Command;
 
 use fontdb::{Database, Family, Query};
-use shared::{error, info, warn};
+use shared::{debug, error, warn};
 
 /// Generic CSS family names fontconfig always resolves by substitution -- there is no literal
 /// "sans-serif" family to compare a match against, so the miss check (does the resolved family
@@ -86,17 +86,17 @@ pub fn load_covering(db: &mut Database, ch: char, loaded_paths: &mut HashSet<Pat
     // The shaper tried every loaded face before reaching here, so fontconfig answering with one of
     // them is it declining rather than helping -- this query's substitution check (ADR-0239).
     if loaded_paths.contains(&path) {
-        warn!("font chain: U+{cp:04X} -> no installed face covers it");
+        debug!(2; "font chain: U+{cp:04X} -> no installed face covers it");
         return false;
     }
     match db.load_font_file(&path) {
         Ok(()) => {
-            info!("font chain: U+{cp:04X} -> {path:?}");
+            debug!(2; "font chain: U+{cp:04X} -> {path:?}");
             loaded_paths.insert(path);
             true
         }
         Err(e) => {
-            warn!("font chain: U+{cp:04X} resolved to {path:?}, which failed to load: {e}");
+            debug!(2; "font chain: U+{cp:04X} resolved to {path:?}, which failed to load: {e}");
             false
         }
     }
@@ -109,10 +109,10 @@ fn load_chain(db: &mut Database, chain: &[&str], loaded_paths: &mut HashSet<Path
 
     for &name in chain {
         let Some((path, resolved_family)) = fc_match(name) else {
-            warn!("font chain: {name:?} -> no installed match, skipped");
+            debug!(2; "font chain: {name:?} -> no installed match, skipped");
             continue;
         };
-        info!("font chain: {name:?} -> {path:?} ({resolved_family:?})");
+        debug!(2; "font chain: {name:?} -> {path:?} ({resolved_family:?})");
 
         // Two chain entries can resolve to the same file (e.g. a generic alias and the literal
         // family name it happens to expand to) -- load it once.
@@ -122,7 +122,7 @@ fn load_chain(db: &mut Database, chain: &[&str], loaded_paths: &mut HashSet<Path
                     loaded_paths.insert(path);
                 }
                 Err(e) => {
-                    warn!("font chain: {name:?} resolved to {path:?}, which failed to load: {e}");
+                    debug!(2; "font chain: {name:?} resolved to {path:?}, which failed to load: {e}");
                     continue;
                 }
             }
@@ -160,10 +160,10 @@ fn load_variants(db: &mut Database, name: &str, resolved_family: &str, loaded_pa
         }
         match db.load_font_file(&path) {
             Ok(()) => {
-                info!("font chain: {name:?} {variant} -> {path:?}");
+                debug!(2; "font chain: {name:?} {variant} -> {path:?}");
                 loaded_paths.insert(path);
             }
-            Err(e) => warn!("font chain: {name:?} {variant} resolved to {path:?}, which failed to load: {e}"),
+            Err(e) => debug!(2; "font chain: {name:?} {variant} resolved to {path:?}, which failed to load: {e}"),
         }
     }
 }

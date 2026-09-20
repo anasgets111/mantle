@@ -3,7 +3,7 @@
 
 use std::time::Duration;
 
-use shared::{debug, warn};
+use shared::debug;
 
 /// `mantle.sysinfo`'s five Lua-visible fields, with field names unchanged from the `StateSnapshot`
 /// JSON keys.
@@ -105,7 +105,7 @@ impl SysinfoController {
             if let Some(sec) = seconds
                 && sender.send(Duration::from_secs(sec)).is_err()
             {
-                warn!("{name} task is gone, {name}_interval update dropped");
+                debug!("{name} task is gone, {name}_interval update dropped");
             }
         };
         send(cfg.cpu_interval, &self.cpu_interval, "cpu");

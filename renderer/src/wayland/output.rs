@@ -4,7 +4,7 @@
 
 use super::*;
 use crate::wayland::surface::TrackedRole;
-use shared::{info, warn};
+use shared::{debug, info, warn};
 
 /// One connected output, the source for the `screens` signal and `monitor` matching
 /// (ADR-0041 decision 2).
@@ -109,7 +109,7 @@ impl App {
                 continue;
             }
             let Some(info) = self.output_state.info(&output) else {
-                warn!("output {index} advertised no info yet; no surface created on it");
+                debug!("output {index} advertised no info yet; no surface created on it");
                 continue;
             };
             let facts = OutputFacts {
@@ -124,7 +124,7 @@ impl App {
             };
             match screen_entry(index, &facts) {
                 Some(screen) => screens.push(screen),
-                None => warn!(
+                None => debug!(1;
                     "output {:?} reports neither a logical size nor a current mode; no surface created on it",
                     info.name.as_deref().unwrap_or("<unnamed>")
                 ),

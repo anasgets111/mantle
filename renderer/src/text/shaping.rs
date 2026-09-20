@@ -17,7 +17,7 @@ use std::sync::{Arc, Mutex, PoisonError, mpsc};
 use std::thread;
 
 use cosmic_text::{Attrs, Buffer, Family, FontSystem, LineIter, Metrics, Shaping, Style, Weight};
-use shared::warn;
+use shared::debug;
 
 use super::fonts::{self, ResolvedFonts};
 
@@ -867,7 +867,7 @@ fn font_chain_data(db: &mut fontdb::Database) -> Vec<FontFace> {
         // already makes for every font it renders.
         match unsafe { db.make_shared_face_data(id) } {
             Some((bytes, index)) => data.push(FontFace { data: FontData(bytes), index, id }),
-            None => warn!("font chain: face {id:?} could not be mapped, skipped"),
+            None => debug!(2; "font chain: face {id:?} could not be mapped, skipped"),
         }
     }
     data

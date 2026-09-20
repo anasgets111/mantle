@@ -1,6 +1,6 @@
 //! `window` (`xdg_toplevel`): creation, size negotiation and live property updates.
 
-use shared::{error, info, warn};
+use shared::{debug, error, warn};
 
 use super::*;
 use crate::wayland::surface::MapState;
@@ -146,7 +146,7 @@ impl App {
             *slot = Some(window);
         }
         self.surfaces[index].map_state = MapState::AwaitingConfigure;
-        info!("{} creating: visible = true", self.surfaces[index].surface_id);
+        debug!("{} creating: visible = true", self.surfaces[index].surface_id);
     }
 }
 
@@ -169,8 +169,8 @@ impl WindowHandler for App {
                 _ => None,
             });
         let Some(on_close) = on_close else {
-            warn!(
-                "{surface_id}: the compositor asked it to close and no `on_close` declined or accepted; staying open"
+            debug!(
+                2; "{surface_id}: the compositor asked it to close and no `on_close` declined or accepted; staying open"
             );
             return;
         };
@@ -197,8 +197,8 @@ impl WindowHandler for App {
         if configure.decoration_mode == DecorationMode::Client
             && self.surfaces[index].map_state == MapState::AwaitingConfigure
         {
-            warn!(
-                "{surface_id}: the compositor granted client-side decorations; carrying on undecorated, since this shell draws no titlebar of its own"
+            debug!(
+                2; "{surface_id}: the compositor granted client-side decorations; carrying on undecorated, since this shell draws no titlebar of its own"
             );
         }
         let TrackedRole::Window { spec, .. } = &self.surfaces[index].role else {

@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use shared::{info, warn};
+use shared::{debug, warn};
 use tokio::io::unix::AsyncFd;
 use tokio::sync::mpsc::UnboundedSender;
 use udev::MonitorSocket;
@@ -119,7 +119,7 @@ impl BrightnessController {
             Some(device) => {
                 tokio::spawn(run_brightness_task(device.dir.clone(), device.max, Arc::clone(&state), events));
             }
-            None => info!(
+            None => debug!(
                 "no usable backlight device found under {backlight_root:?}; brightness reporting disabled for this run"
             ),
         }
@@ -133,7 +133,7 @@ impl BrightnessController {
     /// `brightness:set(pct)`. Logs and returns when this machine has no backlight device.
     pub async fn set(&self, pct: u64) {
         let Some(device) = self.device.as_ref() else {
-            warn!("set called but no backlight device was found; ignored");
+            debug!("set called but no backlight device was found; ignored");
             return;
         };
         let proxy = match Login1SessionProxy::new(&self.system_bus).await {

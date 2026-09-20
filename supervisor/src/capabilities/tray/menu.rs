@@ -2,7 +2,7 @@
 //! Split from `dbus::tray` -- see `dbus/tray/mod.rs` for the module-level doc.
 
 use serde::Serialize;
-use shared::warn;
+use shared::debug;
 use zbus::zvariant::Value;
 
 use super::proxies::{DBusMenuProxy, raw_menu_layout_to_value};
@@ -135,8 +135,8 @@ pub(super) fn parse_menu_node(value: &Value<'_>, depth: u32, budget: &mut usize)
     let toggle_state = toggle_type.as_ref().map(|_| toggle_state_raw.unwrap_or(-1));
 
     let children = if depth >= MAX_MENU_DEPTH {
-        warn!(
-            "GetLayout reply exceeded the maximum menu depth ({MAX_MENU_DEPTH}) at node id {id}; truncating its children"
+        debug!(
+            1; "GetLayout reply exceeded the maximum menu depth ({MAX_MENU_DEPTH}) at node id {id}; truncating its children"
         );
         Vec::new()
     } else {
@@ -158,7 +158,7 @@ pub(super) async fn fetch_menu_via(menu: &DBusMenuProxy<'static>) -> zbus::Resul
     // Reported here rather than at the node that ran out: exhaustion stops every remaining sibling
     // and ancestor alike, so warning inside the recursion means one line per ancestor for one reply.
     if budget == 0 {
-        warn!("GetLayout reply hit the {MAX_MENU_NODES}-node cap; the rest of the menu was dropped");
+        debug!(1; "GetLayout reply hit the {MAX_MENU_NODES}-node cap; the rest of the menu was dropped");
     }
     Ok(items)
 }

@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use serde::Serialize;
-use shared::warn;
+use shared::{debug, warn};
 use tokio::sync::mpsc::UnboundedSender;
 
 use super::metadata::clamp_seek_target;
@@ -74,7 +74,7 @@ impl MprisController {
 
     pub async fn control(&self, id: &str, cmd: PlayerCommand) {
         let Some(player) = self.find_player(id) else {
-            warn!("send_command({id:?}, {cmd:?}) failed: {}", UNKNOWN_PLAYER);
+            debug!("send_command({id:?}, {cmd:?}) failed: {}", UNKNOWN_PLAYER);
             return;
         };
         let result = match cmd {
@@ -85,7 +85,7 @@ impl MprisController {
             PlayerCommand::Previous => player.previous().await,
         };
         if let Err(err) = result {
-            warn!("send_command({id:?}, {cmd:?}) failed: {err}");
+            debug!("send_command({id:?}, {cmd:?}) failed: {err}");
         }
     }
 
@@ -109,11 +109,11 @@ impl MprisController {
     /// silently differ from what every other MPRIS client does.
     pub async fn seek_relative(&self, id: &str, off: i64) {
         let Some(player) = self.find_player(id) else {
-            warn!("seek_relative({id:?}, {off}) failed: {}", UNKNOWN_PLAYER);
+            debug!("seek_relative({id:?}, {off}) failed: {}", UNKNOWN_PLAYER);
             return;
         };
         if let Err(err) = player.seek(off).await {
-            warn!("seek_relative({id:?}, {off}) failed: {err}");
+            debug!("seek_relative({id:?}, {off}) failed: {err}");
         }
     }
 
@@ -128,11 +128,11 @@ impl MprisController {
         target: i64,
     ) -> zbus::Result<()> {
         let Some(position) = self.live_position(id).await.filter(|position| *position >= 0) else {
-            warn!("seek to {target} for {id:?} needs a position to convert against and has none");
+            debug!("seek to {target} for {id:?} needs a position to convert against and has none");
             return Ok(());
         };
         let Some(offset) = target.checked_sub(position) else {
-            warn!("seek to {target} for {id:?} does not fit an i64 offset from {position}");
+            debug!("seek to {target} for {id:?} does not fit an i64 offset from {position}");
             return Ok(());
         };
         player.seek(offset).await
@@ -152,7 +152,7 @@ impl MprisController {
 
     async fn seek_to(&self, id: &str, target_us: i64) {
         let Some(context) = self.find_seek_context(id) else {
-            warn!("seek to {target_us} for {id:?} failed: {}", UNKNOWN_PLAYER);
+            debug!("seek to {target_us} for {id:?} failed: {}", UNKNOWN_PLAYER);
             return;
         };
         let target = clamp_seek_target(target_us, context.length);
@@ -172,7 +172,7 @@ impl MprisController {
             None => self.seek_by_difference(id, &context.player, target).await,
         };
         if let Err(err) = result {
-            warn!("seek to {target} for {id:?} failed: {err}");
+            debug!("seek to {target} for {id:?} failed: {err}");
         }
     }
 

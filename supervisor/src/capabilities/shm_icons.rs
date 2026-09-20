@@ -3,7 +3,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
-use shared::warn;
+use shared::debug;
 
 /// This Supervisor's instance directory, set once before any capability starts.
 ///
@@ -25,7 +25,7 @@ pub fn remove_png(subdir: &str, path: &str) {
         return;
     }
     if let Err(err) = std::fs::remove_file(path) {
-        warn!("{subdir}: failed to delete spooled icon {path:?}: {err}");
+        debug!("{subdir}: failed to delete spooled icon {path:?}: {err}");
     }
 }
 

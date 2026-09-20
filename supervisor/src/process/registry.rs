@@ -4,7 +4,7 @@
 use std::collections::HashMap;
 use std::io;
 
-use shared::{ProcessExited, ProcessOutputLine, ProcessStream, SupervisorFrame, warn};
+use shared::{ProcessExited, ProcessOutputLine, ProcessStream, SupervisorFrame, debug, warn};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt};
 use tokio::process::{Child, ChildStderr, ChildStdout};
 
@@ -54,7 +54,10 @@ pub(crate) async fn dispatch(
                 }
             },
             None => {
-                warn!("malformed process.run command from generation {generation_id}: {:?}", envelope.params.arguments);
+                debug!(
+                    "malformed process.run command from generation {generation_id}: {:?}",
+                    envelope.params.arguments
+                );
                 // Lua's ProcessHandle already awaits `id`'s exit_cb; this prevents a callback pair
                 // leak when no process spawned.
                 send_frame_logged(
@@ -70,10 +73,10 @@ pub(crate) async fn dispatch(
         "detach" => match process_run_args(&envelope.params.arguments) {
             Some((cmd, args)) => {
                 if let Err(err) = crate::process::spawn_detached(&cmd, &args) {
-                    warn!("process.detach: spawning {cmd:?} failed: {err}");
+                    debug!("process.detach: spawning {cmd:?} failed: {err}");
                 }
             }
-            None => warn!(
+            None => debug!(
                 "malformed process.detach command from generation {generation_id}: {:?}",
                 envelope.params.arguments
             ),
@@ -93,7 +96,7 @@ pub(crate) async fn dispatch(
             }
             KillOutcome::NotRegistered => {}
         },
-        _ => warn!("unknown action {:?} from generation {generation_id}", envelope.params.action),
+        _ => debug!("unknown action {:?} from generation {generation_id}", envelope.params.action),
     }
 }
 
@@ -114,7 +117,7 @@ pub(crate) fn spawn_and_register_process(
             Some((stdout, stderr))
         }
         Err(err) => {
-            warn!("process.run({cmd:?}, {args:?}) failed to spawn: {err}");
+            debug!("process.run({cmd:?}, {args:?}) failed to spawn: {err}");
             None
         }
     }

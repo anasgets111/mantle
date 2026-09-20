@@ -13,7 +13,7 @@ use std::sync::Arc;
 
 use femtovg::renderer::OpenGl;
 use femtovg::{Canvas, Color, FontId, ImageId, Paint, Path, PositionedGlyph, TextContext};
-use shared::warn;
+use shared::debug;
 
 use crate::layout::node::{Rgba, StyleRun, TextAlign, font_runs};
 use crate::text::shaping::{FontFace, Glyph, ShapingHandle, caret_thickness, caret_visible_left, caret_x};
@@ -100,7 +100,7 @@ fn register(
                 }
                 // fontdb accepts faces femtovg's parser refuses; that one draws nothing, the rest draw.
                 Err(e) => {
-                    warn!("font chain: femtovg refused face {:?}, skipped: {e}", face.id);
+                    debug!(2; "font chain: femtovg refused face {:?}, skipped: {e}", face.id);
                     continue;
                 }
             },

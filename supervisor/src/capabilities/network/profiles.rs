@@ -8,7 +8,7 @@ use zbus::zvariant::{OwnedObjectPath, OwnedValue, Value};
 use super::proxies::{DeviceProxy, SettingsConnectionProxy};
 use super::{NetworkController, root_object_path};
 use crate::capabilities::bind;
-use shared::warn;
+use shared::{debug, warn};
 
 /// Whether `get_settings()` permits autoconnect. Missing means NetworkManager's default `true`
 /// (ADR-0029: only explicit `false` disqualifies a profile).
@@ -80,7 +80,7 @@ impl NetworkController {
         let paths = match self.settings.list_connections().await {
             Ok(paths) => paths,
             Err(err) => {
-                warn!("{context} failed to list connections: {err}");
+                debug!("{context} failed to list connections: {err}");
                 return Vec::new();
             }
         };
@@ -96,14 +96,14 @@ impl NetworkController {
             let connection = match bind::<SettingsConnectionProxy>(&self.connection, path.clone()).await {
                 Ok(connection) => connection,
                 Err(err) => {
-                    warn!("{context} failed to bind connection {path}: {err}");
+                    debug!("{context} failed to bind connection {path}: {err}");
                     return None;
                 }
             };
             match connection.get_settings().await {
                 Ok(settings) => Some(SavedProfile { path, connection, settings }),
                 Err(err) => {
-                    warn!("{context} failed to read settings for {path}: {err}");
+                    debug!("{context} failed to read settings for {path}: {err}");
                     None
                 }
             }
@@ -135,7 +135,7 @@ impl NetworkController {
         let profile = match self.find_autoconnect_profile(device).await {
             Ok(profile) => profile,
             Err(err) => {
-                warn!("failed to inspect connections for ethernet device {device_path}: {err}");
+                debug!("failed to inspect connections for ethernet device {device_path}: {err}");
                 return;
             }
         };

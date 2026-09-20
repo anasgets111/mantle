@@ -15,7 +15,7 @@ use std::io::{Read, Write};
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 
-use shared::{error, warn};
+use shared::{debug, error};
 
 /// A compositor implemented here, narrower than "a compositor that exists". Other sessions yield
 /// [`detect_compositor`]'s `None`; dependent capabilities degrade rather than guess (ADR-0056
@@ -110,8 +110,8 @@ pub fn hyprland_request(socket_path: &Path, command: &str) -> std::io::Result<St
 pub fn hyprland_command(socket_path: &Path, command: &str, capability: &str) {
     match hyprland_request(socket_path, command) {
         Ok(reply) if reply.trim() == "ok" => {}
-        Ok(reply) => warn!("{capability}: Hyprland refused `{command}`: {}", reply.trim()),
-        Err(err) => warn!("{capability}: Hyprland `{command}` request failed: {err}"),
+        Ok(reply) => debug!("{capability}: Hyprland refused `{command}`: {}", reply.trim()),
+        Err(err) => debug!("{capability}: Hyprland `{command}` request failed: {err}"),
     }
 }
 
@@ -150,12 +150,12 @@ pub fn niri_action(action: niri_ipc::Action, capability: &'static str) {
         let mut socket = match niri_ipc::socket::Socket::connect() {
             Ok(socket) => socket,
             Err(err) => {
-                warn!("{capability}: failed to connect to the niri IPC socket for {label}: {err}");
+                debug!("{capability}: failed to connect to the niri IPC socket for {label}: {err}");
                 return;
             }
         };
         if let Err(err) = socket.send(niri_ipc::Request::Action(action)) {
-            warn!("{capability}: niri {label} request failed: {err}");
+            debug!("{capability}: niri {label} request failed: {err}");
         }
     });
 }
