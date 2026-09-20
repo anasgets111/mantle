@@ -623,7 +623,8 @@ impl ImageCache {
                 ));
                 let _ = canvas.update_image(id, source, 0, 0);
             }
-            for delta in &anim.deltas[catch_up] {
+            // A change the crop cut away entirely extracts to nothing and uploads nothing.
+            for delta in anim.deltas[catch_up].iter().filter(|delta| !delta.pixels.is_empty()) {
                 let (left, top, width, height) = delta.rect;
                 let source = ImageSource::from(femtovg::imgref::Img::new(
                     delta.pixels.as_rgba(),
@@ -895,9 +896,24 @@ fn decode_gif(
     let _permit = charge.take(budget as u64 + 4 * u64::from(source_width) * u64::from(source_height));
 
     let mut canvas = vec![0u8; source_width as usize * source_height as usize * 4];
-    let extract = |canvas: &[u8], rect: (u32, u32, u32, u32)| -> Vec<u8> {
+    // Where a source rect lands in the stored frame: floor the origin and ceil the far edge, so a
+    // shrunk change keeps the edge pixels it bleeds into, then take off what the centred crop cut.
+    let map_rect = |(left, top, w, h): (u32, u32, u32, u32)| {
+        let start = |v: u32, from: u32, to: u32| (u64::from(v) * u64::from(to) / u64::from(from).max(1)) as u32;
+        let end = |v: u32, from: u32, to: u32| (u64::from(v) * u64::from(to)).div_ceil(u64::from(from).max(1)) as u32;
+        let (crop_x, crop_y) = ((stored_width - width) / 2, (stored_height - height) / 2);
+        let x0 = start(left, source_width, stored_width).saturating_sub(crop_x).min(width);
+        let y0 = start(top, source_height, stored_height).saturating_sub(crop_y).min(height);
+        let x1 = end(left + w, source_width, stored_width).saturating_sub(crop_x).min(width);
+        let y1 = end(top + h, source_height, stored_height).saturating_sub(crop_y).min(height);
+        (x0, y0, x1 - x0, y1 - y0)
+    };
+    // The pixels for `rect` and where they land, both in the stored frame's coordinates. Scaling
+    // the whole canvas and cutting the rect out of the result keeps resampling seam-free while what
+    // is kept stays the size of the change; extracting from a scaled sub-rect would seam.
+    let extract = |canvas: &[u8], rect: (u32, u32, u32, u32)| -> (Vec<u8>, (u32, u32, u32, u32)) {
         if native {
-            return read_rect(canvas, source_width, rect);
+            return (read_rect(canvas, source_width, rect), rect);
         }
         let scaled = if (stored_width, stored_height) == (source_width, source_height) {
             canvas.to_vec()
@@ -906,7 +922,9 @@ fn decode_gif(
                 .expect("canvas is exactly source_width * source_height * 4 bytes");
             ::image::DynamicImage::ImageRgba8(image).thumbnail(stored_width, stored_height).into_rgba8().into_raw()
         };
-        if cropped { crop_to_box(scaled, stored_width, stored_height, box_px).0 } else { scaled }
+        let frame = if cropped { crop_to_box(scaled, stored_width, stored_height, box_px).0 } else { scaled };
+        let mapped = map_rect(rect);
+        if mapped == (0, 0, width, height) { (frame, mapped) } else { (read_rect(&frame, width, mapped), mapped) }
     };
     let whole = (0, 0, source_width, source_height);
 
@@ -926,16 +944,16 @@ fn decode_gif(
         blend_rect(&mut canvas, source_width, rect, &frame.buffer);
 
         if base.is_none() {
-            base = Some(extract(&canvas, whole));
+            base = Some(extract(&canvas, whole).0);
             delays.push(delay);
         } else {
-            let pixels = extract(&canvas, rect);
+            let (pixels, rect) = extract(&canvas, rect);
             if delta_bytes + pixels.len() > budget {
                 break;
             }
             delta_bytes += pixels.len();
             delays.push(delay);
-            deltas.push(GifDelta { rect: if native { rect } else { (0, 0, width, height) }, pixels });
+            deltas.push(GifDelta { rect, pixels });
         }
 
         match frame.dispose {
@@ -1907,5 +1925,25 @@ mod tests {
         let decoded = decode_gif(&path, (4, 4), false, Charge::Free, 32).unwrap();
         assert_eq!(decoded.deltas.len(), 2, "a third 16-byte delta would total 48 bytes, past the 32-byte budget");
         assert_eq!(decoded.delays.len(), 3, "the base plus the two kept deltas");
+    }
+
+    /// A wallpaper is scaled, cropped, or both, so it never takes the native path; keeping a whole
+    /// stored frame per delta there cost a screenful each and clipped the loop at the byte budget.
+    #[test]
+    fn a_scaled_gif_keeps_the_changed_rect_rather_than_a_whole_stored_frame() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("scaled.gif");
+        {
+            let mut file = std::fs::File::create(&path).unwrap();
+            let mut encoder = gif::Encoder::new(&mut file, 8, 8, &[]).unwrap();
+            write_frame(&mut encoder, (0, 0, 8, 8), [255, 0, 0, 255], gif::DisposalMethod::Keep, 5);
+            write_frame(&mut encoder, (4, 4, 4, 4), [0, 255, 0, 255], gif::DisposalMethod::Keep, 5);
+        }
+
+        let decoded = decode_gif(&path, (4, 4), false, Charge::Free, STARTING_TEXTURE_BUDGET).unwrap();
+        assert_eq!((decoded.width, decoded.height), (4, 4), "8x8 halved into a 4x4 box");
+        assert_eq!(decoded.base.len(), 4 * 4 * 4, "the base is still the whole stored frame");
+        assert_eq!(decoded.deltas[0].rect, (2, 2, 2, 2), "the source rect halved with it");
+        assert_eq!(decoded.deltas[0].pixels.len(), 2 * 2 * 4, "against 64 bytes for a whole stored frame");
     }
 }
