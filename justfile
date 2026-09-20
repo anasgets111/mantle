@@ -143,17 +143,21 @@ fmt:
 # Where `cargo install` put the shell that is actually running.
 cargo_bin := env("CARGO_HOME", home_directory() / ".cargo") / "bin"
 
+# What `just swap` builds; `just profile=release swap` builds the shipped binary instead.
+profile := "swap"
+
 # The edit-build-swap-restart loop for the compositor-interaction bugs no unit test reaches, and the
-# only path that exercises a release build. `args` passes through to the new shell, as in
+# only path that exercises an optimised build. `args` passes through to the new shell, as in
 # `just swap --profile=120`.
 #
 # Kills by the `exe` symlink, never by name: any `pkill -f` pattern holding "mantle" also matches
 # the calling shell and takes the terminal down with it, and `pkill -x` cannot tell the `cargo_bin`
-# copy from a `target/release` one.
+# copy from a `target/` one.
 [doc('Rebuild, swap both binaries under `cargo_bin`, and restart the shell detached.')]
-swap args="": release
+swap args="":
     #!/usr/bin/env bash
     set -euo pipefail
+    cargo build --workspace --profile {{profile}}
     for d in /proc/[0-9]*; do
         case "$(readlink "$d/exe" 2>/dev/null)" in
             {{cargo_bin}}/mantle|{{cargo_bin}}/mantle-renderer) kill "${d#/proc/}" || true;;
@@ -161,8 +165,8 @@ swap args="": release
     done
     # Copying over a running binary is ETXTBSY, so let both of those actually go first.
     sleep 2
-    install -Dm755 target/release/mantle          "{{cargo_bin}}/mantle"
-    install -Dm755 target/release/mantle-renderer "{{cargo_bin}}/mantle-renderer"
+    install -Dm755 target/{{profile}}/mantle          "{{cargo_bin}}/mantle"
+    install -Dm755 target/{{profile}}/mantle-renderer "{{cargo_bin}}/mantle-renderer"
     "{{cargo_bin}}/mantle" -d {{args}}
 
 # Dev binaries: `[profile.release] strip = true` leaves a capture of bare addresses. The prefix
