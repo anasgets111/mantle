@@ -1,13 +1,14 @@
 //! `mantle log`: the shell's own stdout and stderr, kept somewhere a detached run can be read
 //! from (ADR-0199).
 //!
-//! Every diagnostic in both binaries is an `eprintln!`, so this is a `dup2` per descriptor, not a
-//! logging framework. The Renderer inherits them through `process::spawn_group_leader`, and a
-//! panic reaches the file directly because no thread of ours sits in between.
+//! Every diagnostic in both binaries is an `eprintln!`, so this is `dup2` per descriptor, not a
+//! logging framework. The Renderer inherits them through `process::spawn_group_leader`. A
+//! descriptor replaced outright carries a panic to the file with no thread of ours in between; one
+//! that had a destination of its own is drained by [`tee`] instead, which does.
 
 use std::fs::File;
-use std::io::{self, Read, Write};
-use std::os::fd::AsRawFd;
+use std::io::{self, IsTerminal, Read, Write};
+use std::os::fd::{AsRawFd, FromRawFd};
 use std::path::Path;
 use std::time::Duration;
 
@@ -17,25 +18,85 @@ use crate::instance;
 /// none, and a fifth of a second is nobody's problem in a log reader.
 const POLL: Duration = Duration::from_millis(200);
 
-/// Points whichever of stdout and stderr go to `/dev/null` at the instance directory's log.
+/// Sends stdout and stderr to the instance directory's log, whatever else they were going to.
 ///
-/// `/dev/null` is the only destination with nothing to lose; a terminal, redirect or pipe is one
-/// someone chose. Per descriptor, or `mantle >mine.log 2>/dev/null` leaves `mine.log` empty.
+/// Every shell gets a log, so `mantle log` never has to answer with an older run's. `/dev/null` is
+/// the only destination with nothing to lose and is replaced; a terminal, redirect or pipe is one
+/// someone chose and is copied to. Per descriptor, or `mantle >mine.log 2>/dev/null` would send
+/// half of it to one place.
 pub fn capture(dir: &Path) -> io::Result<()> {
-    let discarded: Vec<i32> =
-        [libc::STDOUT_FILENO, libc::STDERR_FILENO].into_iter().filter(|fd| goes_to_dev_null(*fd)).collect();
-    if discarded.is_empty() {
-        return Ok(());
-    }
     let file = File::create(dir.join(instance::LOG))?;
-    for target in discarded {
-        // SAFETY: both arguments are live descriptors. `file`'s comes from the `open` above, and
-        // the target is a standard stream this process has not closed.
-        if unsafe { libc::dup2(file.as_raw_fd(), target) } == -1 {
-            return Err(io::Error::last_os_error());
+    for target in [libc::STDOUT_FILENO, libc::STDERR_FILENO] {
+        match goes_to_dev_null(target) {
+            true => redirect(&file, target)?,
+            false => tee(&file, target)?,
         }
     }
     Ok(())
+}
+
+/// Makes `target` a second name for `to`.
+fn redirect(to: &impl AsRawFd, target: i32) -> io::Result<()> {
+    // SAFETY: both arguments are live descriptors. `to`'s is owned by the caller, and the target is
+    // a standard stream this process has not closed.
+    match unsafe { libc::dup2(to.as_raw_fd(), target) } {
+        -1 => Err(io::Error::last_os_error()),
+        _ => Ok(()),
+    }
+}
+
+/// Replaces `target` with a pipe, drained into both the log and where `target` pointed before.
+///
+/// ponytail: bytes still in the pipe when the process aborts reach neither, so a panic under a
+/// terminal lands on screen but not in the file. Draining from a process that outlives the writer
+/// would fix it, the way `MANTLE_PAM_WORKER` is already a second process.
+fn tee(file: &File, target: i32) -> io::Result<()> {
+    // SAFETY: `target` is a standard stream this process has not closed.
+    let duplicate = unsafe { libc::dup(target) };
+    if duplicate == -1 {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: `dup` returned this descriptor above and nothing else holds it.
+    let mut original = unsafe { File::from_raw_fd(duplicate) };
+    // Asked before the pipe takes the descriptor's place, which is the last moment it is the truth.
+    // `shared::log::init` asks the same question afterwards and gets `false`, which is what keeps
+    // the file plain (ADR-0229) while the terminal still gets colour, from `paint` below.
+    let colour = original.is_terminal();
+    let (mut pipe, writer) = io::pipe()?;
+    redirect(&writer, target)?;
+    drop(writer);
+    let mut file = file.try_clone()?;
+    std::thread::Builder::new().name("mantle-log-tee".into()).spawn(move || {
+        let mut chunk = [0; 8192];
+        let mut pending = Vec::new();
+        loop {
+            match pipe.read(&mut chunk) {
+                Ok(0) => return,
+                Ok(read) if pump(&chunk[..read], &mut file, &mut original, colour, &mut pending).is_err() => return,
+                Ok(_) => (),
+                // A signal interrupting the read is not the writer leaving; anything else is.
+                Err(error) if error.kind() == io::ErrorKind::Interrupted => (),
+                Err(_) => return,
+            }
+        }
+    })?;
+    Ok(())
+}
+
+/// Writes `bytes` to the log verbatim and onward as `mantle log` would show them, holding a line
+/// split across two reads in `pending`.
+fn pump(
+    bytes: &[u8],
+    file: &mut impl Write,
+    original: &mut impl Write,
+    colour: bool,
+    pending: &mut Vec<u8>,
+) -> io::Result<()> {
+    file.write_all(bytes)?;
+    match colour {
+        true => paint(&mut { bytes }, original, pending),
+        false => original.write_all(bytes),
+    }
 }
 
 /// `mantle log [--follow]`: `dir`'s log, until its Supervisor exits.
@@ -105,6 +166,30 @@ fn goes_to_dev_null(fd: i32) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_teed_descriptor_keeps_the_log_plain_and_paints_what_it_replaced() {
+        let line = "08:00:00 WARN  tray: the item went away\n";
+        let (mut log, mut terminal) = (Vec::new(), Vec::new());
+
+        pump(line.as_bytes(), &mut log, &mut terminal, true, &mut Vec::new()).unwrap();
+
+        assert_eq!(String::from_utf8(log).unwrap(), line, "ADR-0229: the file holds no colour");
+        assert_eq!(String::from_utf8(terminal).unwrap(), shared::log::colourise(line));
+    }
+
+    #[test]
+    fn a_line_split_across_two_reads_is_painted_once_it_is_whole() {
+        let (head, tail) = ("08:00:00 INFO  idle: notif", "y is live\n");
+        let (mut log, mut terminal, mut pending) = (Vec::new(), Vec::new(), Vec::new());
+
+        pump(head.as_bytes(), &mut log, &mut terminal, true, &mut pending).unwrap();
+        assert!(terminal.is_empty(), "half a line cannot be painted yet");
+        pump(tail.as_bytes(), &mut log, &mut terminal, true, &mut pending).unwrap();
+
+        assert_eq!(String::from_utf8(log).unwrap(), format!("{head}{tail}"));
+        assert_eq!(String::from_utf8(terminal).unwrap(), shared::log::colourise(&format!("{head}{tail}")));
+    }
 
     #[test]
     fn a_follow_ends_when_its_supervisor_drops_the_lock() {

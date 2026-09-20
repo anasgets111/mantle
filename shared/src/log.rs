@@ -6,7 +6,7 @@
 //! terminal run and a detached one are stamped by the same code.
 
 use std::fmt::{Arguments, Write as _};
-use std::io::{IsTerminal, Write as _};
+use std::io::Write as _;
 use std::sync::OnceLock;
 
 /// Names the level a line was written at. `MANTLE_LOG` spells these, plus `off`.
@@ -53,12 +53,11 @@ fn threshold(text: &str) -> Option<Option<Level>> {
     })
 }
 
-/// Everything [`emit`] needs, resolved once so no line pays for an env read or an `isatty`.
+/// Everything [`emit`] needs, resolved once so no line pays for an env read.
 struct Config {
     /// Prepended to the subsystem, to tell two processes writing one log apart. Empty for the
     /// Supervisor, which is the majority of lines and needs no marking.
     tag: &'static str,
-    colour: bool,
     default: Option<Level>,
     overrides: Vec<(String, Option<Level>)>,
 }
@@ -71,7 +70,7 @@ impl Config {
 
 static CONFIG: OnceLock<Config> = OnceLock::new();
 
-/// Resolves the filter, the colour rule and `tag`, then routes panics through the same format.
+/// Resolves the filter and `tag`, then routes panics through the same format.
 ///
 /// Called before anything else in `main`. A diagnostic that beats it still prints, unstamped; see
 /// [`write_to`].
@@ -91,10 +90,7 @@ pub fn init(tag: &'static str) {
         }
     }
 
-    // `colour` asks about stderr alone. A detached run's stderr is the log file (ADR-0199), so the
-    // file holds plain bytes without the question being asked twice.
-    let colour = std::io::stderr().is_terminal();
-    let _ = CONFIG.set(Config { tag, colour, default, overrides });
+    let _ = CONFIG.set(Config { tag, default, overrides });
 
     if !rejected.is_empty() {
         // Named rather than dropped: a typo in `MANTLE_LOG` otherwise looks like a subsystem that
@@ -129,12 +125,13 @@ fn write_to(level: Level, target: &str, args: Arguments<'_>) {
     let line = format_line(config.tag, level, target, args);
     // One `write_all` of the whole line: two processes share this descriptor, and a line assembled
     // in several writes is a line the other one can cut in half.
-    let _ = std::io::stderr().write_all(if config.colour { colourise(&line) } else { line }.as_bytes());
+    let _ = std::io::stderr().write_all(line.as_bytes());
 }
 
 /// Split from [`write_to`] so the format is testable without owning the process-wide [`CONFIG`].
 ///
-/// Always plain. Colour is added afterwards by [`colourise`], which is also how `mantle log`
+/// Always plain: `capture` leaves stderr on the log or a pipe onto it (ADR-0199), so nothing this
+/// writes is ever going straight to a terminal. Colour is [`colourise`]'s, which is how `mantle log`
 /// reaches it: the file holds these bytes, and whoever prints them to a terminal paints them.
 fn format_line(tag: &str, level: Level, target: &str, args: Arguments<'_>) -> String {
     let mut line = String::with_capacity(96);
@@ -212,7 +209,7 @@ mod tests {
                 None => default = threshold(item).unwrap(),
             }
         }
-        Config { tag, colour: false, default, overrides }
+        Config { tag, default, overrides }
     }
 
     #[test]

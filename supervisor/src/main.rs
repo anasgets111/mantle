@@ -123,9 +123,9 @@ pub(crate) fn parse_action<A: serde::de::DeserializeOwned>(params: &shared::Comm
 /// gets its prompt back and `mantle log -f` finds it.
 ///
 /// One `setsid`, not [`process::spawn_detached`]'s double fork: that orphans a grandchild while the
-/// Supervisor lives on, whereas this child is the Supervisor. `/dev/null` is the point rather than
-/// tidiness -- it is what makes `log::capture` write a log, so a detached shell is the one
-/// `mantle log` can read (ADR-0199).
+/// Supervisor lives on, whereas this child is the Supervisor. `/dev/null` for all three streams
+/// leaves `log::capture` a descriptor with nothing to preserve, so a detached shell writes its log
+/// without a drain thread behind it (ADR-0199).
 fn detach_self(root: &std::path::Path) -> Result<(), Box<dyn Error>> {
     use std::os::unix::process::CommandExt;
     let mut command = std::process::Command::new(std::env::current_exe()?);
@@ -240,7 +240,9 @@ fn main() -> Result<(), Box<dyn Error>> {
             // detached run still loses a `-c` substitution notice.
             log::capture(&dir)?;
             // After `capture`, never before: the colour rule asks whether stderr is a terminal, and
-            // before this line it still is one. Untagged, because the Supervisor is most of the log.
+            // by now it is the log or a pipe onto it, so the macros write the plain bytes the file
+            // wants and `log::tee` paints the terminal's copy. Untagged: the Supervisor is most of
+            // the log.
             shared::log::init("");
             // Exit explicitly: `run_supervisor` has finished its teardown, and dropping the runtime
             // would wait on blocking tasks. Two workers, not one per core (ADR-0124), cover

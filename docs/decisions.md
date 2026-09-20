@@ -5441,3 +5441,33 @@ frame -- most of a GIF's cost is redrawing pixels that did not change.
 
 `frame_cap` and the truncate-to-1 fallback are gone: a byte-metered delta is never worse than a
 full frame, so nothing needs the "eating the budget or failing" tradeoff they existed for.
+
+## 0237. Every shell writes a log, and a descriptor with somewhere to be is copied rather than replaced
+
+A shell started from a terminal wrote no `shell.log` at all, so `mantle log` fell through to the
+newest dead run (ADR-0222 decision 6) and answered a question about a live shell with a corpse four
+minutes old. It said so — `no shell is writing ...; this is the last run's output` — but never that
+a live shell existed and was printing to a terminal, because `select_log` filters on `has_log` and
+a live shell without one is invisible to it. The one message that explains the situation, `print`'s
+`a shell with a terminal or a redirect writes there instead`, is unreachable for exactly this case.
+
+1. **`capture` always creates the file.** A run's log existing is not conditional on how it was
+   started. This is what makes ADR-0222 decision 6's "newest live with a log" mean "newest live";
+   `has_log` stays for directories older builds left without one.
+2. **`/dev/null` is replaced, anything else is copied.** Per descriptor, so
+   `mantle >mine.log 2>/dev/null` still fills `mine.log`. A copied descriptor becomes a pipe that a
+   thread drains into both the log and wherever it pointed before.
+3. **Amends ADR-0199's third bullet.** The pump thread it rejected is taken, and the cost it named
+   is real: bytes still in the pipe when the process aborts reach neither destination, so a panic
+   under a terminal lands on screen but not in the file. Confined to runs that have a terminal
+   showing it — a detached or compositor-started shell keeps the plain `dup2` and its unbroken path
+   from panic to file, and those are the runs whose logs get read later. `ponytail:` a drain that
+   outlives the writer has to be a second process, as `MANTLE_PAM_WORKER` already is.
+4. **Colour leaves the macros.** `shared::log::init` asked whether stderr was a terminal; after
+   `capture` it never is, so `Config.colour` was always false and its branch unreachable. Deleted.
+   The file holds plain bytes (ADR-0229) and whoever prints them paints them: `mantle log` through
+   `colourise`, and a copied descriptor through the same function on its way out.
+
+ADR-0199's runaway-`eprintln!` ceiling widens: a terminal run now fills `$XDG_RUNTIME_DIR` too,
+where it used to cost nothing. Still a bug bounding a bug, and still not worth a size check in the
+write path.
