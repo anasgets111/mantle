@@ -87,7 +87,13 @@ pub fn link_under(node: &ResolvedNode, point: LogicalPoint, shaping: &ShapingHan
 /// ponytail: cluster starts come from the shaper in logical order, so on a right-to-left or mixed
 /// line the press lands on the cluster left of the one under the pointer. Upgrade path: order the
 /// glyphs by `x` and read the direction of the run the press fell in.
-pub fn caret_at(path: &[&ResolvedNode], point: LogicalPoint, text: &str, shaping: &ShapingHandle) -> Option<usize> {
+pub fn caret_at(
+    path: &[&ResolvedNode],
+    point: LogicalPoint,
+    text: &str,
+    caret: usize,
+    shaping: &ShapingHandle,
+) -> Option<usize> {
     let depth = path.iter().rposition(|node| node.kind == "textfield")?;
     // A masked field has none: a position inside a secret is one nothing outside `SecureBuffer`
     // may hold (ADR-0064).
@@ -98,6 +104,14 @@ pub fn caret_at(path: &[&ResolvedNode], point: LogicalPoint, text: &str, shaping
     let (_, shaped) = shaping.shape_lines(text, &[], *font_size, None).into_iter().next()?;
     let laid = shaped.shaped.first()?;
     let left = rect.x + align.line_left(laid.rtl, 0.0, rect.width, laid.width);
+    // The same slide paint applies, or a scrolled draft answers every press with the wrong byte.
+    let left = shaping::caret_visible_left(
+        left,
+        rect.x,
+        rect.x + rect.width,
+        shaping::caret_x(laid, caret),
+        shaping::caret_thickness(*font_size),
+    );
     Some(shaping::caret_at(laid, point.x - left, text.len()))
 }
 
@@ -386,7 +400,7 @@ mod tests {
         });
         let path = [&field];
         // The node sits at x = 10, and `point` is surface-local, so every press is offset by it.
-        let at = |x: f32| caret_at(&path, LogicalPoint { x: 10.0 + x, y: 5.0 }, text, &shaping);
+        let at = |x: f32| caret_at(&path, LogicalPoint { x: 10.0 + x, y: 5.0 }, text, 0, &shaping);
         assert_eq!(at(-4.0), Some(0), "a press left of the text lands before the first character");
         assert_eq!(at(width_of(&shaping, "hel") + 1.0), Some(3), "just past the third character's midpoint");
         assert_eq!(at(width_of(&shaping, text) + 40.0), Some(text.len()), "past the end is the end");
@@ -397,7 +411,7 @@ mod tests {
             capability: "session_lock".to_string(),
             action: "authenticate".to_string(),
         });
-        assert_eq!(caret_at(&[&field], LogicalPoint { x: 12.0, y: 5.0 }, text, &shaping), None);
+        assert_eq!(caret_at(&[&field], LogicalPoint { x: 12.0, y: 5.0 }, text, 0, &shaping), None);
     }
 
     /// An empty draft measures to 0 like any other press, which is why `hit_under` hands this
@@ -414,7 +428,7 @@ mod tests {
             color: crate::layout::node::Rgba { r: 1.0, g: 1.0, b: 1.0, a: 1.0 },
             align: TextAlign::Start,
         });
-        assert_eq!(caret_at(&[&field], LogicalPoint { x: 90.0, y: 5.0 }, "", &shaping), Some(0));
+        assert_eq!(caret_at(&[&field], LogicalPoint { x: 90.0, y: 5.0 }, "", 0, &shaping), Some(0));
     }
 
     #[test]

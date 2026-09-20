@@ -5514,3 +5514,25 @@ a live shell without one is invisible to it. The one message that explains the s
 ADR-0199's runaway-`eprintln!` ceiling widens: a terminal run now fills `$XDG_RUNTIME_DIR` too,
 where it used to cost nothing. Still a bug bounding a bug, and still not worth a size check in the
 write path.
+
+## 0238. A chord is matched by where the key is, not only by what it types
+
+Ctrl+A did nothing while an Arabic layout was active. The chord was matched on `Keysym::a`, and
+under a non-Latin layout that key carries the layout's own letter, so it never matched — losing
+select-all to exactly the people most likely to be typing in one. Amends ADR-0236 decision 6, which
+read Shift alone.
+
+1. **Ctrl reaches four bindings and no more.** A selects the draft, Backspace and Delete erase a
+   word, Left and Right move by one. Every other chord belongs to the compositor, and swallowing it
+   here would take it from them.
+2. **Matched by keysym or by evdev code.** `KEY_A` is what the Wayland key event carries whatever
+   the layout prints on it. Keysym first, so a layout that moves the key where the keysym follows
+   is still right; position second, so a layout that renames it is too. A layout that does both at
+   once is nobody's, and is not worth a keymap lookup.
+3. **One `Erase(Motion)`, not a key per reach.** Backspace, Delete and their Ctrl chords differ
+   only in how far they reach, and a word motion is the same distance a Ctrl+arrow moves. Delete
+   reached nothing at all before this.
+4. **A word takes the space before it.** One press crosses the gap and the word together, or
+   clearing a line costs two presses per word.
+5. **The masked field keeps the backwards erase alone.** Every other reach is measured from a
+   caret, and a secret holds none (ADR-0064).

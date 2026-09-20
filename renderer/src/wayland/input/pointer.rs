@@ -471,14 +471,16 @@ impl App {
         // `None`, not `""`, for a field this does not hold: an empty draft measures to offset 0,
         // and handing that to `drag_selection` moves the held field's head into another field's
         // text. Only the draft `press_chooses_focus` would resume has a caret (ADR-0108).
-        let drafted = self
+        let held = self
             .focused_text_field
             .as_ref()
-            .filter(|held| matches!(&field, Some(FieldTarget::Plain { id, .. }) if *id == held.id))
-            .map(|held| held.buffer.as_str());
+            .filter(|held| matches!(&field, Some(FieldTarget::Plain { id, .. }) if *id == held.id));
         PointerHit {
             button: clickable(&path, point, &self.shaping),
-            caret: drafted.and_then(|draft| layout::hit::caret_at(&path, point, draft, &self.shaping)),
+            // Its own caret too, not just its draft: a draft too wide to fit is drawn slid to
+            // follow the caret, and a press reads the byte under where it actually landed.
+            caret: held
+                .and_then(|held| layout::hit::caret_at(&path, point, &held.buffer, held.selection.1, &self.shaping)),
             field,
             drag: draggable_button(&path).map(|(rect, handler)| (rect, handler.clone())),
         }

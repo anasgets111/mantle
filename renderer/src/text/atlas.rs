@@ -16,7 +16,7 @@ use femtovg::{Canvas, Color, FontId, ImageId, Paint, Path, PositionedGlyph, Text
 use shared::warn;
 
 use crate::layout::node::{Rgba, StyleRun, TextAlign, font_runs};
-use crate::text::shaping::{FontFace, Glyph, ShapingHandle, caret_x};
+use crate::text::shaping::{FontFace, Glyph, ShapingHandle, caret_thickness, caret_visible_left, caret_x};
 
 use super::snap::{LogicalRect, snap_to_physical};
 
@@ -235,7 +235,7 @@ impl TextPainter {
         // so on a fractional or 2x output every glyph in this shell draws at logical size. Upgrade
         // path: shape at the scaled size; only reachable with a HiDPI output to verify against.
         let step = crate::text::shaping::line_height(font_size);
-        let thickness = (font_size / 16.0).max(1.0).round();
+        let thickness = caret_thickness(font_size);
         let mut row = 0;
         for (line_start, shaped) in self.shaping.shape_lines(text, &font_runs(runs), font_size, font) {
             for laid in shaped.shaped.iter() {
@@ -248,6 +248,15 @@ impl TextPainter {
                 // path: a phase off the animation clock, which already wakes the loop (ADR-0145).
                 let top = baseline - laid.baseline;
                 let selection = caret.filter(|_| row == 1);
+                // Past the width that fits, the line follows the caret rather than its alignment,
+                // or the end of a long draft is drawn outside the field it belongs to (ADR-0236).
+                let left = match selection {
+                    Some((_, at)) => {
+                        let cx = caret_x(laid, at);
+                        caret_visible_left(left, physical.x0 as f32, physical.x1 as f32, cx, thickness)
+                    }
+                    None => left,
+                };
                 // Behind the glyphs, so the words inside it stay readable. One rect per visually
                 // contiguous stretch: a selection crossing a direction change is not one box.
                 if let Some((lo, hi)) = selection.map(|(anchor, at)| (anchor.min(at), anchor.max(at))) {

@@ -122,6 +122,20 @@ impl PlainEdit {
         PlainEdit { changed: false, submitted: false, cancelled: false, navigated: None, moved: false };
 }
 
+/// Byte offset one word before `at`, taking the run of spaces before that word with it so a single
+/// Ctrl+Backspace crosses the gap and the word together.
+fn previous_word(text: &str, at: usize) -> usize {
+    text[..at].split_word_bound_indices().rfind(|(_, word)| !word.trim().is_empty()).map_or(0, |(start, _)| start)
+}
+
+/// Byte offset one word after `at`, taking the spaces before that word with it.
+fn next_word(text: &str, at: usize) -> usize {
+    text[at..]
+        .split_word_bound_indices()
+        .find(|(_, word)| !word.trim().is_empty())
+        .map_or(text.len(), |(start, word)| at + start + word.len())
+}
+
 /// Byte offset of the grapheme cluster boundary before `at`, or the start of `text`.
 fn previous_boundary(text: &str, at: usize) -> usize {
     text[..at].grapheme_indices(true).next_back().map_or(0, |(start, _)| start)
@@ -151,10 +165,20 @@ fn edit_plain_buffer(
             *selection = (from + text.len(), from + text.len());
             PlainEdit { changed: true, ..PlainEdit::NONE }
         }
-        // Backspace takes the selection when there is one, otherwise the cluster before the caret:
-        // one keystroke removes what the user sees as one character (ADR-0236).
-        KeyAction::Backspace => {
-            let from = if from < to { from } else { previous_boundary(buffer, caret) };
+        // A selection is what one erase removes; without one it reaches as far as the key asked,
+        // and one cluster is what the user sees as one character (ADR-0236).
+        KeyAction::Erase(reach) => {
+            let (from, to) = match from < to {
+                true => (from, to),
+                false => match reach {
+                    Motion::Left => (previous_boundary(buffer, caret), caret),
+                    Motion::Right => (caret, next_boundary(buffer, caret)),
+                    Motion::WordLeft => (previous_word(buffer, caret), caret),
+                    Motion::WordRight => (caret, next_word(buffer, caret)),
+                    Motion::Start => (0, caret),
+                    Motion::End => (caret, buffer.len()),
+                },
+            };
             buffer.replace_range(from..to, "");
             *selection = (from, from);
             PlainEdit { changed: from < to, ..PlainEdit::NONE }
@@ -173,10 +197,18 @@ fn edit_plain_buffer(
                 Motion::Right if from < to && !shift => to,
                 Motion::Left => previous_boundary(buffer, caret),
                 Motion::Right => next_boundary(buffer, caret),
+                Motion::WordLeft => previous_word(buffer, caret),
+                Motion::WordRight => next_word(buffer, caret),
                 Motion::Start => 0,
                 Motion::End => buffer.len(),
             };
             let next = (if shift { anchor } else { moved_to }, moved_to);
+            let moved = next != *selection;
+            *selection = next;
+            PlainEdit { moved, ..PlainEdit::NONE }
+        }
+        KeyAction::SelectAll => {
+            let next = (0, buffer.len());
             let moved = next != *selection;
             *selection = next;
             PlainEdit { moved, ..PlainEdit::NONE }
@@ -296,12 +328,16 @@ fn plain_field_takes_keys(typing: bool, its_surface_is_in_scope: bool, a_masked_
 #[derive(Debug, PartialEq, Eq)]
 enum KeyAction<'a> {
     Append(&'a str),
-    Backspace,
+    /// How far one erase reaches, from the caret. A selection outranks it: what is highlighted is
+    /// what goes, whichever key asked.
+    Erase(Motion),
     /// Caret motion on a plain field; masked fields ignore it (ADR-0064).
     Move(Motion),
     /// Escape clears and stays in the field.
     Clear,
     Submit,
+    /// Ctrl+A on a plain field; masked fields ignore it, having no selection to make.
+    SelectAll,
     /// Navigation name for a plain field (ADR-0112); masked fields ignore it. Not Left or Right,
     /// which a caret has an edit for.
     Navigate(&'static str),
@@ -313,6 +349,8 @@ enum KeyAction<'a> {
 enum Motion {
     Left,
     Right,
+    WordLeft,
+    WordRight,
     Start,
     End,
 }
@@ -328,7 +366,27 @@ enum Motion {
 /// Filter control characters by text, not keysym: xkbcommon returns C0 text for Escape, Tab, and
 /// Return, and appending it would put an invisible ESC in a PAM password. Ignore repeated Enter;
 /// [`secure_submit_frame`] zeroizes on submit, so repeat would send an empty PAM attempt.
-fn key_action<'a>(event: &'a KeyEvent, repeat: bool) -> KeyAction<'a> {
+fn key_action<'a>(event: &'a KeyEvent, repeat: bool, ctrl: bool) -> KeyAction<'a> {
+    /// evdev's code for the key `a` sits on, which the Wayland key event carries verbatim
+    /// (linux/input-event-codes.h).
+    const KEY_A: u32 = 30;
+
+    // The key `a` sits on, by what it types or by where it is (ADR-0238 decision 2). Under an
+    // Arabic or Cyrillic layout the keysym is that layout's own letter, and asking only what it
+    // types loses the chord to exactly the people most likely to be using one.
+    let selects_all = matches!(event.keysym, Keysym::a | Keysym::A) || event.raw_code == KEY_A;
+    // Ctrl reaches editing, word motion and select-all. Every other chord belongs to the
+    // compositor, and swallowing it here would take it from them.
+    if ctrl {
+        return match event.keysym {
+            Keysym::BackSpace => KeyAction::Erase(Motion::WordLeft),
+            Keysym::Delete | Keysym::KP_Delete => KeyAction::Erase(Motion::WordRight),
+            Keysym::Left | Keysym::KP_Left => KeyAction::Move(Motion::WordLeft),
+            Keysym::Right | Keysym::KP_Right => KeyAction::Move(Motion::WordRight),
+            _ if selects_all => KeyAction::SelectAll,
+            _ => KeyAction::Ignore,
+        };
+    }
     match event.keysym {
         Keysym::Return | Keysym::KP_Enter => {
             if repeat {
@@ -337,7 +395,8 @@ fn key_action<'a>(event: &'a KeyEvent, repeat: bool) -> KeyAction<'a> {
                 KeyAction::Submit
             }
         }
-        Keysym::BackSpace => KeyAction::Backspace,
+        Keysym::BackSpace => KeyAction::Erase(Motion::Left),
+        Keysym::Delete | Keysym::KP_Delete => KeyAction::Erase(Motion::Right),
         // PAM counts wrong attempts; Escape clears a mistyped password without Backspace-per-char.
         Keysym::Escape => KeyAction::Clear,
         Keysym::Left | Keysym::KP_Left => KeyAction::Move(Motion::Left),
@@ -442,8 +501,11 @@ impl KeyboardHandler for App {
         self.field_input_changed |= self.focused_text_field.is_some();
         self.armed = None;
         // A Shift released while someone else holds the keyboard sends no `modifiers` here, and a
-        // stale one turns the next press into a selection the user never made (ADR-0236).
+        // stale one turns the next press into a selection the user never made (ADR-0236). The
+        // release that would stop a repeat does not arrive either.
         self.shift_held = false;
+        self.ctrl_held = false;
+        self.repeating = None;
         info!("keyboard focus left {left}");
     }
 
@@ -458,6 +520,26 @@ impl KeyboardHandler for App {
         event: KeyEvent,
     ) {
         self.apply_key(&event, false);
+        self.arm_repeat(event);
+    }
+
+    /// The compositor's rate and delay. SCTK offers this for a repeat outside calloop, which is
+    /// what [`App::fire_due_repeat`] is: taking the seat's own numbers rather than picking any.
+    fn update_repeat_info(
+        &mut self,
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+        _keyboard: &wl_keyboard::WlKeyboard,
+        info: RepeatInfo,
+    ) {
+        self.repeat_info = match info {
+            RepeatInfo::Repeat { rate, delay } => Some((
+                std::time::Duration::from_millis(u64::from(delay)),
+                std::time::Duration::from_secs(1) / rate.get(),
+            )),
+            RepeatInfo::Disable => None,
+        };
+        self.repeating = None;
     }
 
     fn repeat_key(
@@ -471,20 +553,23 @@ impl KeyboardHandler for App {
         self.apply_key(&event, true);
     }
 
-    // Empty by design: SCTK release events have no `utf8`, and modifiers/layout do not edit a
-    // buffer. `KeyboardHandler` provides no default bodies.
+    // SCTK release events have no `utf8` and edit no buffer; all a release does is stop the
+    // repeat it started, and only if a newer press has not already taken it over.
     fn release_key(
         &mut self,
         _conn: &Connection,
         _qh: &QueueHandle<Self>,
         _keyboard: &wl_keyboard::WlKeyboard,
         _serial: u32,
-        _event: KeyEvent,
+        event: KeyEvent,
     ) {
+        if self.repeating.as_ref().is_some_and(|(held, _)| held.raw_code == event.raw_code) {
+            self.repeating = None;
+        }
     }
 
-    /// Shift is the only modifier this engine reads: it turns a caret motion into a selection
-    /// (ADR-0236). Ctrl and Alt are the config's business, and there is no key handler for them.
+    /// Shift turns a caret motion into a selection and Ctrl reaches one binding (ADR-0236). Alt is
+    /// the config's business, and there is no key handler for it.
     fn update_modifiers(
         &mut self,
         _conn: &Connection,
@@ -496,6 +581,7 @@ impl KeyboardHandler for App {
         _layout: u32,
     ) {
         self.shift_held = modifiers.shift;
+        self.ctrl_held = modifiers.ctrl;
     }
 }
 
@@ -744,7 +830,7 @@ impl App {
     /// Apply one secure key (ADR-0005). Focus is the destination gate; masked fields without one
     /// are never focused. Bytes go `KeyEvent` → native `SecureBuffer` → Supervisor, never Lua.
     fn apply_secure_key(&mut self, event: &KeyEvent, repeat: bool) {
-        let action = key_action(event, repeat);
+        let action = key_action(event, repeat, self.ctrl_held);
         if self.focused_secure_submit.is_none() {
             // Enter with nothing focused is the shape a stuck lock screen takes: the keys went
             // nowhere, `finish_secure_submit` is never reached, and every refusal log lives below
@@ -766,10 +852,12 @@ impl App {
         self.field_input_changed = true;
         match action {
             KeyAction::Append(text) => self.secure_buffer.push_str(text),
-            // `pop_grapheme` zeroizes dropped bytes, not just the length.
-            KeyAction::Backspace => {
+            // `pop_grapheme` zeroizes dropped bytes, not just the length. Only the backwards one:
+            // every other reach needs a caret, and a secret holds none (ADR-0064).
+            KeyAction::Erase(Motion::Left) => {
                 self.secure_buffer.pop_grapheme();
             }
+            KeyAction::Erase(_) => {}
             // Use the transition seam to scrub, then re-arm the same field for retyping.
             KeyAction::Clear => {
                 let field = self.focused_secure_submit.clone();
@@ -779,8 +867,34 @@ impl App {
             KeyAction::Submit => self.finish_secure_submit(),
             // Password prompts have no navigation, and a masked field has no caret to move: a
             // position in a secret is a position the tree must never hold (ADR-0064).
-            KeyAction::Navigate(_) | KeyAction::Move(_) | KeyAction::Ignore => {}
+            KeyAction::Navigate(_) | KeyAction::Move(_) | KeyAction::SelectAll | KeyAction::Ignore => {}
         }
+    }
+
+    /// Holds `event` for repeat when repeating it would do anything: a modifier or an Enter would
+    /// only wake the loop to reach [`KeyAction::Ignore`]. A newer press takes the timer over.
+    fn arm_repeat(&mut self, event: KeyEvent) {
+        let repeats = !matches!(key_action(&event, true, self.ctrl_held), KeyAction::Ignore);
+        self.repeating =
+            self.repeat_info.filter(|_| repeats).map(|(delay, _)| (event, std::time::Instant::now() + delay));
+    }
+
+    /// When the held key next repeats, for `poll`'s timeout.
+    pub(in crate::wayland) fn next_repeat_deadline(&self) -> Option<std::time::Instant> {
+        self.repeating.as_ref().map(|(_, due)| *due)
+    }
+
+    /// Delivers the held key if its moment has come. One per turn, counted from now rather than
+    /// from the moment missed: a loop that slept through several owes one keystroke, not a burst.
+    pub(in crate::wayland) fn fire_due_repeat(&mut self) {
+        let now = std::time::Instant::now();
+        let Some((_, interval)) = self.repeat_info else { return };
+        if !self.repeating.as_ref().is_some_and(|(_, due)| *due <= now) {
+            return;
+        }
+        let Some((event, _)) = self.repeating.take() else { return };
+        self.apply_key(&event, true);
+        self.repeating = Some((event, now + interval));
     }
 
     /// Apply one key to either field kind (ADR-0092), pruning both focuses once before dispatch.
@@ -859,7 +973,7 @@ impl App {
         let edit = edit_plain_buffer(
             &mut field.buffer,
             &mut field.selection,
-            key_action(event, repeat),
+            key_action(event, repeat, self.ctrl_held),
             shift,
             field.on_cancel.is_some(),
         );
@@ -1427,10 +1541,10 @@ mod tests {
         // `zwp_text_input_v3` alone did not deliver this: it only produces a `commit_string` when
         // the compositor has an input method bound, so on a session with no IME not one byte
         // reached `SecureBuffer`.
-        assert_eq!(key_action(&key(Keysym::a, Some("a")), false), KeyAction::Append("a"));
-        assert_eq!(key_action(&key(Keysym::Return, Some("\r")), false), KeyAction::Submit);
-        assert_eq!(key_action(&key(Keysym::KP_Enter, Some("\r")), false), KeyAction::Submit);
-        assert_eq!(key_action(&key(Keysym::BackSpace, Some("\u{8}")), false), KeyAction::Backspace);
+        assert_eq!(key_action(&key(Keysym::a, Some("a")), false, false), KeyAction::Append("a"));
+        assert_eq!(key_action(&key(Keysym::Return, Some("\r")), false, false), KeyAction::Submit);
+        assert_eq!(key_action(&key(Keysym::KP_Enter, Some("\r")), false, false), KeyAction::Submit);
+        assert_eq!(key_action(&key(Keysym::BackSpace, Some("\u{8}")), false, false), KeyAction::Erase(Motion::Left));
     }
 
     #[test]
@@ -1439,9 +1553,9 @@ mod tests {
         // character for each -- so an unfiltered append would silently put an ESC byte in the
         // middle of a secret that PAM then rejects with no visible reason. Tab is a navigation
         // key now (ADR-0112); what matters here is that it is still not an `Append`.
-        assert_eq!(key_action(&key(Keysym::Tab, Some("\t")), false), KeyAction::Navigate("tab"));
-        assert_eq!(key_action(&key(Keysym::Shift_L, None), false), KeyAction::Ignore);
-        assert_eq!(key_action(&key(Keysym::Control_L, Some("\u{1b}")), false), KeyAction::Ignore);
+        assert_eq!(key_action(&key(Keysym::Tab, Some("\t")), false, false), KeyAction::Navigate("tab"));
+        assert_eq!(key_action(&key(Keysym::Shift_L, None), false, false), KeyAction::Ignore);
+        assert_eq!(key_action(&key(Keysym::Control_L, Some("\u{1b}")), false, false), KeyAction::Ignore);
     }
 
     /// [`edit_plain_buffer`] with the caret at the end of the buffer and no Shift held, which is
@@ -1456,7 +1570,7 @@ mod tests {
         // Escape used to reach the control-character filter above and be dropped, which left one
         // Backspace per character as the only way to abandon a mistyped password -- on the surface
         // where a wrong guess costs a counted PAM attempt and a `pam_unix` failure delay.
-        assert_eq!(key_action(&key(Keysym::Escape, Some("\u{1b}")), false), KeyAction::Clear);
+        assert_eq!(key_action(&key(Keysym::Escape, Some("\u{1b}")), false, false), KeyAction::Clear);
     }
 
     #[test]
@@ -1504,7 +1618,7 @@ mod tests {
         let mut buffer = "e\u{301}\u{1F469}\u{200D}\u{1F469}\u{200D}\u{1F467}".to_string();
         let mut selection = (buffer.len(), buffer.len());
         let edit = |buffer: &mut String, selection: &mut (usize, usize)| {
-            edit_plain_buffer(buffer, selection, KeyAction::Backspace, false, false)
+            edit_plain_buffer(buffer, selection, KeyAction::Erase(Motion::Left), false, false)
         };
 
         assert_eq!(edit(&mut buffer, &mut selection), PlainEdit { changed: true, ..PlainEdit::NONE });
@@ -1517,6 +1631,66 @@ mod tests {
 
     /// Left and Right step over a cluster, not a scalar, so one press of each returns the caret to
     /// where it started.
+    /// Ctrl+A under an Arabic layout. The keysym is that layout's own letter, so a chord matched
+    /// only by keysym is lost to exactly the people most likely to be typing in it.
+    #[test]
+    fn ctrl_a_reaches_select_all_under_a_non_latin_layout() {
+        // evdev `KEY_A`, carrying `ش` because that is what the layout puts there.
+        let mut arabic = key(Keysym::Arabic_sheen, Some("ش"));
+        arabic.raw_code = 30;
+
+        assert_eq!(key_action(&arabic, false, true), KeyAction::SelectAll, "the key's place still says A");
+        assert_eq!(key_action(&arabic, false, false), KeyAction::Append("ش"), "and without Ctrl it still types");
+    }
+
+    /// Delete reaches forward, Ctrl reaches a whole word, and a word takes the space before it so
+    /// one press crosses the gap and the word together.
+    #[test]
+    fn an_erase_reaches_as_far_as_the_key_asked() {
+        assert_eq!(key_action(&key(Keysym::Delete, None), false, false), KeyAction::Erase(Motion::Right));
+        assert_eq!(key_action(&key(Keysym::BackSpace, None), false, true), KeyAction::Erase(Motion::WordLeft));
+        assert_eq!(key_action(&key(Keysym::Delete, None), false, true), KeyAction::Erase(Motion::WordRight));
+
+        let (mut buffer, mut selection) = ("on my way".to_string(), (9, 9));
+        let word = |buffer: &mut String, selection: &mut (usize, usize), reach| {
+            edit_plain_buffer(buffer, selection, KeyAction::Erase(reach), false, false);
+        };
+        word(&mut buffer, &mut selection, Motion::WordLeft);
+        assert_eq!(buffer, "on my ");
+        word(&mut buffer, &mut selection, Motion::WordLeft);
+        assert_eq!(buffer, "on ", "the second press takes `my` and the space it sat behind");
+
+        let (mut buffer, mut selection) = ("on my way".to_string(), (0, 0));
+        word(&mut buffer, &mut selection, Motion::WordRight);
+        assert_eq!(buffer, " my way", "forward from the start takes the first word alone");
+
+        // Forward from the end, and backward from the start, have nothing to take.
+        let (mut buffer, mut selection) = ("hi".to_string(), (2, 2));
+        word(&mut buffer, &mut selection, Motion::WordRight);
+        assert_eq!(buffer, "hi");
+        selection = (0, 0);
+        word(&mut buffer, &mut selection, Motion::WordLeft);
+        assert_eq!(buffer, "hi");
+    }
+
+    /// Ctrl reaches exactly one binding; every other chord stays the compositor's to bind.
+    #[test]
+    fn ctrl_a_selects_the_draft_and_no_other_chord_is_taken() {
+        assert_eq!(key_action(&key(Keysym::a, Some("a")), false, true), KeyAction::SelectAll);
+        assert_eq!(key_action(&key(Keysym::c, Some("c")), false, true), KeyAction::Ignore, "Ctrl+C is not ours");
+        assert_eq!(key_action(&key(Keysym::a, Some("a")), false, false), KeyAction::Append("a"), "and plain a types");
+
+        let mut buffer = "on my way".to_string();
+        let mut selection = (3, 3);
+        let edit = edit_plain_buffer(&mut buffer, &mut selection, KeyAction::SelectAll, false, false);
+        assert_eq!(selection, (0, "on my way".len()), "anchor at the start, caret at the end");
+        assert!(edit.moved, "and the field repaints");
+
+        // Backspace then takes the whole thing, which is what select-all is for.
+        edit_plain_buffer(&mut buffer, &mut selection, KeyAction::Erase(Motion::Left), false, false);
+        assert_eq!(buffer, "");
+    }
+
     #[test]
     fn the_caret_steps_over_a_composed_character_in_one_move() {
         let buffer = "ae\u{301}b".to_string();
@@ -1552,7 +1726,7 @@ mod tests {
         assert_eq!((buffer.as_str(), selection), ("on foot", (7, 7)));
 
         let mut selection = (3, 7);
-        edit_plain_buffer(&mut buffer, &mut selection, KeyAction::Backspace, false, false);
+        edit_plain_buffer(&mut buffer, &mut selection, KeyAction::Erase(Motion::Left), false, false);
         assert_eq!((buffer.as_str(), selection), ("on ", (3, 3)), "Backspace takes the selection, not one cluster");
 
         buffer = "on my way".to_string();
@@ -1580,9 +1754,9 @@ mod tests {
         // A submit zeroizes the buffer as it reads it, so the second submit of a key repeat would
         // send an *empty* password to PAM and burn one of the user's attempts. Backspace and
         // ordinary characters repeat normally, which is what every text field does.
-        assert_eq!(key_action(&key(Keysym::Return, Some("\r")), true), KeyAction::Ignore);
-        assert_eq!(key_action(&key(Keysym::BackSpace, Some("\u{8}")), true), KeyAction::Backspace);
-        assert_eq!(key_action(&key(Keysym::a, Some("a")), true), KeyAction::Append("a"));
+        assert_eq!(key_action(&key(Keysym::Return, Some("\r")), true, false), KeyAction::Ignore);
+        assert_eq!(key_action(&key(Keysym::BackSpace, Some("\u{8}")), true, false), KeyAction::Erase(Motion::Left));
+        assert_eq!(key_action(&key(Keysym::a, Some("a")), true, false), KeyAction::Append("a"));
     }
 
     /// ADR-0112: the keys a single-line field cannot edit with reach the config by name. Tab is the
@@ -1590,11 +1764,15 @@ mod tests {
     /// below it would drop that as a control character.
     #[test]
     fn arrow_paging_and_tab_keys_navigate_instead_of_editing() {
-        assert_eq!(key_action(&key(Keysym::Up, None), false), KeyAction::Navigate("up"));
-        assert_eq!(key_action(&key(Keysym::Down, None), true), KeyAction::Navigate("down"), "held Down keeps moving");
-        assert_eq!(key_action(&key(Keysym::Page_Down, None), false), KeyAction::Navigate("page_down"));
-        assert_eq!(key_action(&key(Keysym::Tab, Some("\t")), false), KeyAction::Navigate("tab"));
-        assert_eq!(key_action(&key(Keysym::ISO_Left_Tab, None), false), KeyAction::Navigate("backtab"));
+        assert_eq!(key_action(&key(Keysym::Up, None), false, false), KeyAction::Navigate("up"));
+        assert_eq!(
+            key_action(&key(Keysym::Down, None), true, false),
+            KeyAction::Navigate("down"),
+            "held Down keeps moving"
+        );
+        assert_eq!(key_action(&key(Keysym::Page_Down, None), false, false), KeyAction::Navigate("page_down"));
+        assert_eq!(key_action(&key(Keysym::Tab, Some("\t")), false, false), KeyAction::Navigate("tab"));
+        assert_eq!(key_action(&key(Keysym::ISO_Left_Tab, None), false, false), KeyAction::Navigate("backtab"));
 
         let mut buffer = "fire".to_string();
         let edit = edit_at_end(&mut buffer, KeyAction::Navigate("down"), true);

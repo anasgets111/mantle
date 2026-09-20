@@ -12,7 +12,7 @@ use smithay_client_toolkit::compositor::{CompositorHandler, CompositorState, Fra
 use smithay_client_toolkit::output::{OutputHandler, OutputState};
 use smithay_client_toolkit::registry::{ProvidesRegistryState, RegistryState};
 use smithay_client_toolkit::seat::keyboard::{
-    KeyEvent, KeyboardData, KeyboardHandler, Keysym, Modifiers, RawModifiers,
+    KeyEvent, KeyboardData, KeyboardHandler, Keysym, Modifiers, RawModifiers, RepeatInfo,
 };
 use smithay_client_toolkit::seat::pointer::{
     BTN_LEFT, BTN_MIDDLE, BTN_RIGHT, PointerData, PointerEvent, PointerEventKind, PointerHandler, ThemeSpec,
@@ -186,9 +186,17 @@ pub struct App {
     ///
     /// Mutually exclusive with `focused_secure_submit`; the innermost textfield is one kind.
     focused_text_field: Option<FocusedTextField>,
-    /// Shift on the seat's keyboard, the one modifier any edit reads: it turns a caret motion or
-    /// a press into a selection (ADR-0236).
+    /// Shift on the seat's keyboard: it turns a caret motion or a press into a selection
+    /// (ADR-0236).
     shift_held: bool,
+    /// Ctrl on the seat's keyboard, read for Ctrl+A alone (ADR-0236).
+    ctrl_held: bool,
+    /// The seat's repeat delay and interval, absent when the compositor turned repeat off. SCTK
+    /// drives its own repeat from a calloop timer, which this renderer does not link (ADR-0124),
+    /// so `poll`'s deadline carries it instead.
+    repeat_info: Option<(std::time::Duration, std::time::Duration)>,
+    /// The held key and when it next repeats.
+    repeating: Option<(KeyEvent, std::time::Instant)>,
     /// Native, Lua-invisible keystroke buffer until Enter (ADR-0005/ADR-0009/ADR-0027). Its
     /// lifetime follows `focused_secure_submit`; destination changes zeroize it.
     secure_buffer: shared::SecureBuffer,
@@ -305,6 +313,9 @@ pub fn run(
         focused_text_field: None,
         secure_buffer: shared::SecureBuffer::new(),
         shift_held: false,
+        ctrl_held: false,
+        repeat_info: None,
+        repeating: None,
         field_input_changed: false,
         animation_frame_due: false,
         surfaces_drawn: 0,
@@ -383,6 +394,9 @@ pub fn run(
         if app.exit {
             break;
         }
+        // Before the turn reads `field_input_changed`, so a repeat lands in this turn's repaint
+        // rather than waiting for the next wake.
+        app.fire_due_repeat();
         // Drain every `SupervisorFrame` (ADR-0039), coalescing snapshot bursts into one wake. A
         // dead socket is distinct from an empty one (ADR-0059 decision 1), or the Renderer could
         // block in `poll` with no capability source.
@@ -583,7 +597,13 @@ pub fn run(
                 nix::poll::PollFd::new(fd, nix::poll::PollFlags::POLLIN),
                 nix::poll::PollFd::new(waker.fd(), nix::poll::PollFlags::POLLIN),
             ];
-            let deadline = app.client.next_wake_deadline().into_iter().chain(app.next_stale_deadline()).min();
+            let deadline = app
+                .client
+                .next_wake_deadline()
+                .into_iter()
+                .chain(app.next_stale_deadline())
+                .chain(app.next_repeat_deadline())
+                .min();
             let timeout = deadline.map_or(nix::poll::PollTimeout::NONE, |due| {
                 // Rounded up: `as_millis` on the last fraction of a hold is 0, and a zero timeout
                 // returns at once to a turn that finds the deadline still a few hundred
