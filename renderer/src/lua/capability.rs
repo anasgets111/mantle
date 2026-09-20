@@ -204,7 +204,7 @@ impl CapabilityHandle {
     /// [`Self::notify_change`].
     pub fn hydrate(&self, value: Value, revision: u32) -> Value {
         self.revision.set(revision);
-        let previous = self.signal.get();
+        let previous = if self.handlers.borrow().is_empty() { Value::Nil } else { self.signal.get() };
         self.signal.set(value);
         previous
     }

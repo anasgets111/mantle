@@ -14,19 +14,27 @@ pub struct MemInfo {
 /// Parses `/proc/meminfo`'s `key:   value kB` lines. `None` if `MemTotal` or `MemAvailable` is
 /// missing; absent `SwapTotal`/`SwapFree` default to `0`.
 pub fn parse_meminfo(text: &str) -> Option<MemInfo> {
-    let mut values = std::collections::HashMap::new();
+    let mut mem_total = None;
+    let mut mem_available = None;
+    let mut swap_total = None;
+    let mut swap_free = None;
     for line in text.lines() {
         // Skip blank or colon-less lines; `str::lines()` yields an empty line for blanks.
         let Some((key, rest)) = line.split_once(':') else { continue };
-        if let Some(value) = rest.split_whitespace().next().and_then(|v| v.parse::<u64>().ok()) {
-            values.insert(key, value);
+        let Some(value) = rest.split_whitespace().next().and_then(|v| v.parse::<u64>().ok()) else { continue };
+        match key {
+            "MemTotal" => mem_total = Some(value),
+            "MemAvailable" => mem_available = Some(value),
+            "SwapTotal" => swap_total = Some(value),
+            "SwapFree" => swap_free = Some(value),
+            _ => {}
         }
     }
     Some(MemInfo {
-        mem_total: *values.get("MemTotal")?,
-        mem_available: *values.get("MemAvailable")?,
-        swap_total: values.get("SwapTotal").copied().unwrap_or(0),
-        swap_free: values.get("SwapFree").copied().unwrap_or(0),
+        mem_total: mem_total?,
+        mem_available: mem_available?,
+        swap_total: swap_total.unwrap_or(0),
+        swap_free: swap_free.unwrap_or(0),
     })
 }
 

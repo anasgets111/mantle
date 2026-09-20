@@ -245,6 +245,7 @@ pub(super) struct TrackedSurface {
     /// buffers; clear on rebind or any branch that cannot prove the pixels still match, or a stale
     /// frame can remain with no redraw trigger.
     pub(super) last_painted: Option<((u32, u32), layout::paint::DisplayList)>,
+    pub(super) dirty: bool,
     /// When the pixels on screen go stale although `last_painted` still describes them, so a paint
     /// must run even against an identical list (ADR-0182). Set when a decode lands for a file this
     /// surface draws, and to an animated source's next-frame instant (ADR-0233): the list is
@@ -276,10 +277,15 @@ impl TrackedSurface {
             map_state: MapState::Unmapped,
             configured_size: (0, 0),
             last_painted: None,
+            dirty: true,
             stale: None,
             blur_effect: None,
             last_blur_region: Vec::new(),
         }
+    }
+
+    fn is_clean(&self) -> bool {
+        !self.dirty && self.last_painted.is_some()
     }
 
     /// Whether the repaint this surface owes has come due; see [`TrackedSurface::stale`].
@@ -307,6 +313,7 @@ impl TrackedSurface {
         self.map_state = MapState::Unmapped;
         // Those pixels are gone, and a kept list would pin its images through `trim` (ADR-0182).
         self.last_painted = None;
+        self.dirty = true;
     }
 }
 
@@ -557,6 +564,7 @@ impl App {
     /// `apply_visibility`, so a newly shown window uses this pass's spec; callers commit all staged
     /// state together, while create/destroy/map/unmap commit by definition.
     fn apply_resolved_state(&mut self, index: usize) {
+        self.surfaces[index].dirty = true;
         let surface_id = self.surfaces[index].surface_id.clone();
         // `Scene::surface` lends its tree, so what the tree is read for is taken here and the
         // borrow ends with this block; the role updates below write through `&mut self`. Exactly
@@ -900,12 +908,25 @@ impl App {
         let (width, height) = self.surfaces[index].configured_size;
         let (width, height) = (width.max(1), height.max(1));
 
+        let tree = self.client.scene().surface(&surface_id);
+        let mut animating = tree.is_some_and(layout::ResolvedNode::animating);
+
+        let is_clean = self.surfaces[index].is_clean() && self.field_focus_for(&surface_id).is_none();
+        if is_clean
+            && !self.surfaces[index].owes_a_paint()
+            && self.surfaces[index].last_painted.as_ref().is_some_and(|(s, _)| *s == (width, height))
+        {
+            if animating && let Some(surface) = self.surfaces[index].role.wl_surface() {
+                surface.frame(&self.queue_handle, FrameCallbackData(surface.clone()));
+                surface.commit();
+            }
+            return;
+        }
+
         // Build before GL work so an unchanged surface costs one tree walk, not make-current,
         // clear, draw calls, and swap. This stops a 1920x1200 wallpaper redrawing every second
         // because the clock's seconds digit advanced (ADR-0044 decision 2's global dirty flag).
         // An absent tree becomes an empty list and still reaches clear/swap to erase old contents.
-        let tree = self.client.scene().surface(&surface_id);
-        let mut animating = tree.is_some_and(layout::ResolvedNode::animating);
         // End the immutable field-focus borrow before mutably borrowing the painter; `Draw::Text`
         // owns its string.
         let list = {
@@ -918,6 +939,7 @@ impl App {
                 .as_ref()
                 .is_some_and(|(painted_size, painted)| *painted_size == (width, height) && *painted == list);
         if unchanged {
+            self.surfaces[index].dirty = false;
             // A mid-tween surface still has to commit: a frame callback is only answered after
             // one, and a tween whose tick moved nothing visible would otherwise never get its
             // next (ADR-0145). What it does not have to do is draw the same pixels again. A
@@ -1032,6 +1054,7 @@ impl App {
         // this surface on an unchanged list, and `repaint_mapped_surfaces_where` is what stops a
         // narrowed repaint passing it over (ADR-0185).
         self.surfaces[index].stale = deferred;
+        self.surfaces[index].dirty = false;
         self.surfaces_drawn += 1;
         // Images absent from every current list are idle (ADR-0123); queue eviction for the next
         // paint.
@@ -1057,6 +1080,7 @@ impl App {
                 // Marked, not cleared: this surface still shows those images until it repaints, so
                 // its list has to keep pinning them (ADR-0182).
                 surface.stale = Some(std::time::Instant::now());
+                surface.dirty = true;
             }
         }
     }

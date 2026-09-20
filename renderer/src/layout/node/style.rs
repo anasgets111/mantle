@@ -38,11 +38,12 @@ pub fn parse_size_mode(properties: &PropMap, property: &str) -> Result<SizeMode,
         return Ok(SizeMode::Pixels(within(property, n)?));
     }
     if let Value::String(s) = value {
-        let s = checked_string(property, s)?;
-        if s == "Fill" {
+        if &*s.as_bytes() == b"Fill" {
             return Ok(SizeMode::Fill);
         }
-        if let Some(pct) = parse_percent(&s) {
+        if let Ok(s_str) = s.to_str()
+            && let Some(pct) = parse_percent(&s_str)
+        {
             return Ok(SizeMode::Percent(pct));
         }
     }
@@ -125,8 +126,8 @@ pub fn parse_background(properties: &PropMap) -> Result<Option<Rgba>, LayoutErro
 pub fn parse_radius(properties: &PropMap) -> Result<f32, LayoutError> {
     let scoop = match properties.get("corner_shape") {
         None => false,
-        Some(Value::String(s)) if *s == "Round" => false,
-        Some(Value::String(s)) if *s == "Scoop" => true,
+        Some(Value::String(s)) if s.as_bytes() == b"Round" => false,
+        Some(Value::String(s)) if s.as_bytes() == b"Scoop" => true,
         Some(other) => {
             let got = preview_for_error(other);
             return Err(invalid("corner_shape", format!("expected \"Round\" or \"Scoop\", got {got}")));
@@ -293,10 +294,10 @@ pub fn parse_clip(properties: &PropMap) -> Result<ClipShape, LayoutError> {
     let Value::String(s) = value else {
         return Err(invalid("clip", format!("must be a string, got {}", preview_for_error(value))));
     };
-    match checked_string("clip", s)?.as_str() {
-        "Box" => Ok(ClipShape::Box),
-        "Rounded" => Ok(ClipShape::Rounded),
-        other => Err(invalid("clip", format!("must be \"Box\" or \"Rounded\", got {other:?}"))),
+    match &*s.as_bytes() {
+        b"Box" => Ok(ClipShape::Box),
+        b"Rounded" => Ok(ClipShape::Rounded),
+        _ => Err(invalid("clip", format!("must be \"Box\" or \"Rounded\", got {}", preview_for_error(value)))),
     }
 }
 
@@ -370,12 +371,12 @@ pub fn parse_align(properties: &PropMap, property: &str) -> Result<Align, Layout
     let Value::String(s) = value else {
         return Err(invalid(property, format!("expected a string, got {}", preview_for_error(value))));
     };
-    match checked_string(property, s)?.as_str() {
-        "Start" => Ok(Align::Start),
-        "Center" => Ok(Align::Center),
-        "End" => Ok(Align::End),
-        "Stretch" => Ok(Align::Stretch),
-        other => Err(invalid(property, format!("unknown alignment `{other}`"))),
+    match &*s.as_bytes() {
+        b"Start" => Ok(Align::Start),
+        b"Center" => Ok(Align::Center),
+        b"End" => Ok(Align::End),
+        b"Stretch" => Ok(Align::Stretch),
+        _ => Err(invalid(property, format!("unknown alignment {}", preview_for_error(value)))),
     }
 }
 
@@ -388,10 +389,13 @@ pub fn parse_list_direction(properties: &PropMap) -> Result<&'static str, Layout
     let Value::String(s) = value else {
         return Err(invalid("direction", format!("expected a string, got {}", preview_for_error(value))));
     };
-    match checked_string("direction", s)?.as_str() {
-        "Vertical" => Ok("column"),
-        "Horizontal" => Ok("row"),
-        other => Err(invalid("direction", format!("unknown direction `{other}`, expected `Vertical` or `Horizontal`"))),
+    match &*s.as_bytes() {
+        b"Vertical" => Ok("column"),
+        b"Horizontal" => Ok("row"),
+        _ => Err(invalid(
+            "direction",
+            format!("unknown direction {}, expected `Vertical` or `Horizontal`", preview_for_error(value)),
+        )),
     }
 }
 

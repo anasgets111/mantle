@@ -156,7 +156,8 @@ fn write_to(level: Level, target: &str, args: Arguments<'_>) {
 /// reaches it: the file holds these bytes, and whoever prints them to a terminal paints them.
 fn format_line(tag: &str, level: Level, target: &str, args: Arguments<'_>) -> String {
     let mut line = String::with_capacity(96);
-    let _ = write!(line, "{} {} ", clock(), level.name());
+    let mut clock_buf = [0u8; 8];
+    let _ = write!(line, "{} {} ", clock(&mut clock_buf), level.name());
     if !tag.is_empty() {
         let _ = write!(line, "{tag}/");
     }
@@ -204,7 +205,7 @@ pub fn subsystem(module: &str) -> &str {
 ///
 /// Per line rather than an offset resolved once, so a session running across a DST change keeps
 /// telling the truth.
-fn clock() -> String {
+fn clock(buf: &mut [u8; 8]) -> &str {
     let now = std::time::SystemTime::now();
     let secs = now.duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs() as libc::time_t;
     // SAFETY: `libc::tm` is a C struct of integers and pointers, so an all-zero value is a valid one
@@ -213,11 +214,14 @@ fn clock() -> String {
     let tm = unsafe {
         let mut tm: libc::tm = std::mem::zeroed();
         if libc::localtime_r(&secs, &mut tm).is_null() {
-            return "--:--:--".to_string();
+            return "--:--:--";
         }
         tm
     };
-    format!("{:02}:{:02}:{:02}", tm.tm_hour, tm.tm_min, tm.tm_sec)
+    if write!(&mut buf[..], "{:02}:{:02}:{:02}", tm.tm_hour, tm.tm_min, tm.tm_sec).is_err() {
+        return "--:--:--";
+    }
+    std::str::from_utf8(buf).unwrap_or("--:--:--")
 }
 
 #[cfg(test)]
@@ -321,7 +325,8 @@ mod tests {
 
     #[test]
     fn the_clock_reads_as_a_wall_clock_time() {
-        let clock = clock();
+        let mut buf = [0u8; 8];
+        let clock = clock(&mut buf);
 
         let parts: Vec<&str> = clock.split(':').collect();
         assert_eq!(parts.len(), 3, "{clock:?}");

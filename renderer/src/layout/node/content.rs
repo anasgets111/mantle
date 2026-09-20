@@ -167,8 +167,12 @@ pub fn parse_fit(properties: &PropMap) -> Result<Fit, LayoutError> {
     let Value::String(s) = value else {
         return Err(invalid("fit", format!("expected a string, got {}", preview_for_error(value))));
     };
-    let s = checked_string("fit", s)?;
-    Fit::from_str(&s).ok_or_else(|| invalid("fit", format!("expected `cover`, `contain` or `stretch`, got {s:?}")))
+    match &*s.as_bytes() {
+        b"cover" => Ok(Fit::Cover),
+        b"contain" => Ok(Fit::Contain),
+        b"stretch" => Ok(Fit::Stretch),
+        _ => Err(invalid("fit", format!("expected `cover`, `contain` or `stretch`, got {}", preview_for_error(value)))),
+    }
 }
 
 /// `image.async` (ADR-0122): absent/`false` decodes in the frame; `true` uses the pool and draws
@@ -276,10 +280,10 @@ pub fn parse_elide(properties: &PropMap) -> Result<Elide, LayoutError> {
     let Value::String(s) = value else {
         return Err(invalid("elide", format!("must be a string, got {}", preview_for_error(value))));
     };
-    match checked_string("elide", s)?.as_str() {
-        "None" => Ok(Elide::None),
-        "End" => Ok(Elide::End),
-        other => Err(invalid("elide", format!("must be \"None\" or \"End\", got {other:?}"))),
+    match &*s.as_bytes() {
+        b"None" => Ok(Elide::None),
+        b"End" => Ok(Elide::End),
+        _ => Err(invalid("elide", format!("must be \"None\" or \"End\", got {}", preview_for_error(value)))),
     }
 }
 
@@ -305,10 +309,10 @@ pub fn parse_wrap(properties: &PropMap) -> Result<Wrap, LayoutError> {
     let Value::String(s) = value else {
         return Err(invalid("wrap", format!("must be a string, got {}", preview_for_error(value))));
     };
-    match checked_string("wrap", s)?.as_str() {
-        "None" => Ok(Wrap::None),
-        "Word" => Ok(Wrap::Word),
-        other => Err(invalid("wrap", format!("must be \"None\" or \"Word\", got {other:?}"))),
+    match &*s.as_bytes() {
+        b"None" => Ok(Wrap::None),
+        b"Word" => Ok(Wrap::Word),
+        _ => Err(invalid("wrap", format!("must be \"None\" or \"Word\", got {}", preview_for_error(value)))),
     }
 }
 
@@ -337,11 +341,14 @@ pub fn parse_text_align(properties: &PropMap) -> Result<TextAlign, LayoutError> 
     let Value::String(s) = value else {
         return Err(invalid("text_align", format!("must be a string, got {}", preview_for_error(value))));
     };
-    match checked_string("text_align", s)?.as_str() {
-        "Start" => Ok(TextAlign::Start),
-        "Center" => Ok(TextAlign::Center),
-        "End" => Ok(TextAlign::End),
-        other => Err(invalid("text_align", format!("must be \"Start\", \"Center\" or \"End\", got {other:?}"))),
+    match &*s.as_bytes() {
+        b"Start" => Ok(TextAlign::Start),
+        b"Center" => Ok(TextAlign::Center),
+        b"End" => Ok(TextAlign::End),
+        _ => Err(invalid(
+            "text_align",
+            format!("must be \"Start\", \"Center\" or \"End\", got {}", preview_for_error(value)),
+        )),
     }
 }
 
@@ -594,6 +601,21 @@ mod tests {
         assert_eq!(fonts.len(), 2);
         assert_eq!((fonts[0].range.clone(), fonts[0].bold, fonts[0].italic), (2..4, true, false));
         assert_eq!((fonts[1].range.clone(), fonts[1].bold, fonts[1].italic), (4..6, false, true));
+    }
+
+    #[test]
+    fn fit_parses_the_three_spelled_modes_and_nothing_else() {
+        let lua = lua();
+        for (spelling, expected) in [("cover", Fit::Cover), ("contain", Fit::Contain), ("stretch", Fit::Stretch)] {
+            let table: mlua::Table =
+                lua.load(format!(r#"return {{ kind = "image", fit = "{spelling}" }}"#)).eval().unwrap();
+            assert_eq!(parse_fit(&props_from_table(&table)).unwrap(), expected);
+        }
+        let table: mlua::Table = lua.load(r#"return { kind = "image" }"#).eval().unwrap();
+        assert_eq!(parse_fit(&props_from_table(&table)).unwrap(), Fit::Cover, "an absent `fit` covers");
+        // Case matters: `Cover` is not a spelling.
+        let table: mlua::Table = lua.load(r#"return { kind = "image", fit = "Cover" }"#).eval().unwrap();
+        assert!(parse_fit(&props_from_table(&table)).is_err());
     }
 
     #[test]

@@ -368,10 +368,17 @@ fn spawn_player_forwarder(
 
             let mut guard = registry.lock().unwrap();
             let Some(entry) = guard.get_mut(&bus_name) else { break };
+            // Record what `resync` found either way: `identity` and `trackid` can move while the
+            // state compares equal -- the same track re-queued gets a fresh `mpris:trackid`, and a
+            // stale one misaddresses `SetPosition`. Only the notification is worth skipping.
+            let unchanged = entry.last_known == state;
             entry.last_known = state;
             entry.track_identity = identity;
             entry.cached_trackid = trackid;
             drop(guard);
+            if unchanged {
+                continue;
+            }
 
             if events.send(MprisSignal::Changed).is_err() {
                 break;

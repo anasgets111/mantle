@@ -8,7 +8,7 @@ const MAX_SAFE_INTEGER: i64 = (1i64 << 53) - 1;
 const MIN_SAFE_INTEGER: i64 = -MAX_SAFE_INTEGER;
 
 /// Maximum string size: 64KB.
-const MAX_STRING_BYTES: usize = 64 * 1024;
+pub(crate) const MAX_STRING_BYTES: usize = 64 * 1024;
 
 #[derive(Debug, PartialEq, Eq, thiserror::Error)]
 pub enum MarshalError {

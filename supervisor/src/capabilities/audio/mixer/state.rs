@@ -84,6 +84,7 @@ pub(super) struct MixerState {
     ///
     /// The maps keep updating throughout. This gates sending, not tracking.
     pub(super) hydrated: bool,
+    pub(super) last_sent: Option<AudioState>,
     /// Maps are keyed by node id; `BTreeMap` publishes them in id order.
     pub(super) apps: BTreeMap<u32, AppStream>,
     pub(super) video_sources: BTreeMap<u32, VideoSourceApp>,
@@ -126,6 +127,7 @@ impl MixerState {
     pub(super) fn new(updates: UnboundedSender<AudioState>, privacy_updates: watch::Sender<PrivacySources>) -> Self {
         Self {
             hydrated: false,
+            last_sent: None,
             apps: BTreeMap::new(),
             video_sources: BTreeMap::new(),
             microphones: BTreeMap::new(),
@@ -175,7 +177,7 @@ impl MixerState {
     /// Publishes even if the receiver is absent; that is startup or shutdown, not a tracking error.
     ///
     /// Silent until [`MixerState::hydrated`], so the first snapshot is complete: volumes, device and privacy lists.
-    pub(super) fn publish_audio(&self) {
+    pub(super) fn publish_audio(&mut self) {
         if !self.hydrated {
             return;
         }
@@ -200,7 +202,7 @@ impl MixerState {
                 None => app,
             })
             .collect();
-        let state = AudioState {
+        let next = AudioState {
             volume: master.map(|m| m.volume.min(master::SINK_MAX_VOLUME)),
             muted: master.is_some_and(|m| m.muted),
             balance: master.and_then(|m| m.balance),
@@ -211,7 +213,11 @@ impl MixerState {
             apps,
             bluetooth: bluetooth_codecs(&self.bluez_cards),
         };
-        let _ = self.updates.send(state);
+        if Some(&next) == self.last_sent.as_ref() {
+            return;
+        }
+        let _ = self.updates.send(next.clone());
+        self.last_sent = Some(next);
     }
 
     /// Publishes all three privacy lists together (ADR-0137), even when only one changed.
@@ -393,7 +399,7 @@ mod tests {
     fn publish_audio_reports_no_master_volume_with_no_sink_tracked() {
         let (updates, mut rx) = tokio::sync::mpsc::unbounded_channel();
         let (privacy_updates, _privacy_rx) = watch::channel(PrivacySources::default());
-        let state = mixer_state(updates, privacy_updates);
+        let mut state = mixer_state(updates, privacy_updates);
 
         state.publish_audio();
 
@@ -523,5 +529,16 @@ mod tests {
         // The source's Props use the master's cube-root conversion.
         assert!((published.source_volume.unwrap() - 0.6).abs() < 1e-6, "got {:?}", published.source_volume);
         assert!(published.source_muted);
+    }
+
+    #[test]
+    fn publish_audio_deduplicates_identical_state() {
+        let (updates, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let (privacy_updates, _privacy_rx) = watch::channel(PrivacySources::default());
+        let mut state = mixer_state(updates, privacy_updates);
+        state.publish_audio();
+        assert!(rx.try_recv().is_ok());
+        state.publish_audio();
+        assert!(rx.try_recv().is_err(), "second publish with identical state must be skipped");
     }
 }

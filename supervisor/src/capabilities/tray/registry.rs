@@ -244,12 +244,9 @@ pub(super) fn spawn_name_owner_changed_forwarder(
     events: UnboundedSender<TraySignal>,
 ) -> JoinHandle<()> {
     tokio::spawn(async move {
-        let Ok(mut stream) = dbus_proxy.receive_name_owner_changed().await else { return };
+        let Ok(mut stream) = dbus_proxy.receive_name_owner_changed_with_args(&[(2, "")]).await else { return };
         while let Some(signal) = stream.next().await {
             let Ok(args) = signal.args() else { continue };
-            if args.new_owner.is_some() {
-                continue;
-            }
             let dropped_name = args.name.to_string();
 
             let removed: Vec<(ItemKey, ItemEntry)> = {

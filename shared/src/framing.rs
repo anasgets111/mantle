@@ -87,7 +87,7 @@ pub async fn write_json_frame<W: AsyncWrite + Unpin, T: Serialize>(
     writer: &mut W,
     value: &T,
 ) -> Result<(), FramingError> {
-    let mut scrubbing = ScrubbingWriter(crate::secure_buffer::SecureBuffer::new());
+    let mut scrubbing = ScrubbingWriter(crate::secure_buffer::SecureBuffer::with_capacity(256));
     serde_json::to_writer(&mut scrubbing, value)?;
     // `SecureBuffer` is `ZeroizeOnDrop`, so the serialized copy is cleared when this returns --
     // including on the `?` above and on cancellation mid-write.

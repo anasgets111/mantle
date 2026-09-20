@@ -157,19 +157,6 @@ pub enum Fit {
     Stretch,
 }
 
-impl Fit {
-    /// `"cover"`, `"contain"`, `"stretch"`; anything else `None` for the caller's property-named
-    /// `LayoutError`.
-    pub fn from_str(value: &str) -> Option<Self> {
-        match value {
-            "cover" => Some(Fit::Cover),
-            "contain" => Some(Fit::Contain),
-            "stretch" => Some(Fit::Stretch),
-            _ => None,
-        }
-    }
-}
-
 /// Whether a draw waits for pixels (ADR-0122). `Inline` is the default for icons and wallpaper:
 /// decode in the first frame so its presentation is complete (ADR-0003). `Background` queues the
 /// decode and draws nothing until it lands, avoiding a second of frozen shell for forty tiles.
@@ -1862,16 +1849,6 @@ mod tests {
         let version = FileVersion::read(&present);
         assert_ne!(version, FileVersion::default());
         assert!(version.len > 0);
-    }
-
-    #[test]
-    fn fit_parses_the_three_spelled_modes_and_nothing_else() {
-        assert_eq!(Fit::from_str("cover"), Some(Fit::Cover));
-        assert_eq!(Fit::from_str("contain"), Some(Fit::Contain));
-        assert_eq!(Fit::from_str("stretch"), Some(Fit::Stretch));
-        assert_eq!(Fit::from_str("Cover"), None);
-        assert_eq!(Fit::from_str("fill"), None);
-        assert_eq!(Fit::default(), Fit::Cover);
     }
 
     /// The failure this prevents is not a bad image but a frozen shell: `File::open` on a FIFO with

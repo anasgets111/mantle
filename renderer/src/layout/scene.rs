@@ -323,26 +323,19 @@ impl Scene {
         admit: impl Fn(&Scene) -> Result<(), LayoutError>,
     ) -> Result<(), LayoutError> {
         let next_id_snapshot = self.next_id;
-        // `apply_one_instance` inserts and removes at one key, its own instance id, so the other
-        // retained trees cannot change and do not need saving.
-        let surfaces_snapshot: HashMap<String, ResolvedNode> = instances
-            .iter()
-            .filter_map(|instance| self.surfaces.get_key_value(&instance.instance_id))
-            .map(|(key, tree)| (key.clone(), tree.clone()))
-            .collect();
-
         // One budget for the whole pass: the hook covers gaps where a resolved table's `__index`
         // runs, and individually legal 5ms getters cannot add up without a pass deadline.
         let budget = match crate::lua::signal::LayoutPassBudget::enter(lua) {
             Ok(budget) => budget,
             Err(err) => return Err(node::invalid("layout", err.to_string())),
         };
-        let outcome = self.apply_visiting(fresh_surfaces, instances, shaping, lua, &budget, admit);
+        let mut rollback = Vec::new();
+        let outcome = self.apply_visiting(fresh_surfaces, instances, shaping, lua, &budget, &mut rollback, admit);
         if outcome.is_err() {
-            for instance in instances {
-                match surfaces_snapshot.get(&instance.instance_id) {
-                    Some(tree) => self.surfaces.insert(instance.instance_id.clone(), tree.clone()),
-                    None => self.surfaces.remove(&instance.instance_id),
+            for (key, tree) in rollback {
+                match tree {
+                    Some(tree) => self.surfaces.insert(key, tree),
+                    None => self.surfaces.remove(&key),
                 };
             }
             self.next_id = next_id_snapshot;
@@ -352,6 +345,7 @@ impl Scene {
 
     /// [`Self::apply_admitting`] minus the snapshot and rollback, so the three failure exits are
     /// one `?` each rather than three copies of the restore.
+    #[allow(clippy::too_many_arguments)]
     fn apply_visiting(
         &mut self,
         fresh_surfaces: &[VirtualNode],
@@ -359,6 +353,7 @@ impl Scene {
         shaping: &ShapingHandle,
         lua: &Lua,
         budget: &crate::lua::signal::LayoutPassBudget,
+        rollback: &mut Vec<(String, Option<ResolvedNode>)>,
         admit: impl Fn(&Scene) -> Result<(), LayoutError>,
     ) -> Result<(), LayoutError> {
         // One clock reading for the pass, so every tween it starts shares a start.
@@ -369,7 +364,7 @@ impl Scene {
             |outcome: LayoutError| if budget.exceeded() { LayoutError::PassBudgetExceeded } else { outcome };
 
         for instance in instances {
-            if let Err(err) = self.apply_one_instance(fresh_surfaces, instance, shaping, lua, now) {
+            if let Err(err) = self.apply_one_instance(fresh_surfaces, instance, shaping, lua, now, rollback) {
                 // Blame first: a hook interruption is about the pass, not this instance.
                 return Err(match blame_the_budget(err) {
                     LayoutError::PassBudgetExceeded => LayoutError::PassBudgetExceeded,
@@ -394,6 +389,7 @@ impl Scene {
         shaping: &ShapingHandle,
         lua: &Lua,
         now: Instant,
+        rollback: &mut Vec<(String, Option<ResolvedNode>)>,
     ) -> Result<(), LayoutError> {
         // Match the declared id, then key the retained tree by instance id (ADR-0045 decision 1).
         let mut fresh = None;
@@ -416,6 +412,7 @@ impl Scene {
         let key = instance.instance_id.clone();
         let available = instance.available;
         let existing = self.surfaces.remove(&key);
+        rollback.push((key.clone(), existing.clone()));
         // Check admissibility before resolution runs Lua. Children get the same check in the loop
         // that parses their margin before recursing.
         ensure_node_admissible(fresh.kind, 0)?;
@@ -803,6 +800,14 @@ fn pair_children_by_id_then_position(
     fresh_children: &[VirtualNode],
     old_children: Vec<ResolvedNode>,
 ) -> Result<(Vec<Option<ResolvedNode>>, Vec<ResolvedNode>), LayoutError> {
+    if !fresh_children.iter().any(|c| c.properties.contains_key("id"))
+        && !old_children.iter().any(|c| c.properties.contains_key("id"))
+    {
+        let mut old_iter = old_children.into_iter();
+        let matched = (0..fresh_children.len()).map(|_| old_iter.next()).collect();
+        return Ok((matched, old_iter.collect()));
+    }
+
     // Not `collect`: a `Result` collect drops the size hint, and a list is as long as its data.
     let mut fresh_ids: Vec<Option<String>> = Vec::with_capacity(fresh_children.len());
     for child in fresh_children {

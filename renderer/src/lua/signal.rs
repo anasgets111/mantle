@@ -11,6 +11,8 @@ use std::collections::HashMap;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
+use rustc_hash::FxHashMap;
+
 use mlua::{Function, Lua, MultiValue, Table, UserData, UserDataMethods, Value};
 
 use crate::lua::marshal;
@@ -42,7 +44,8 @@ struct Deadline {
 }
 
 impl Deadline {
-    /// `cap` from now on both clocks.
+    /// `cap` from now on both clocks. Anchoring CPU here and not at wall expiry is what keeps the
+    /// cap a cap: read later, the deadline would be `cap` of CPU *after* the wall cap, doubling it.
     fn lasting(cap: Duration) -> Self {
         Self { wall: Instant::now() + cap, cpu: thread_cpu_time().map(|used| used + cap) }
     }
@@ -217,7 +220,10 @@ fn check_lua_authored(value: &Value) -> Result<(), marshal::MarshalError> {
             marshal::check_integer(*i)?;
         }
         Value::String(s) => {
-            marshal::check_string(&String::from_utf8_lossy(&s.as_bytes()))?;
+            let len = s.as_bytes().len();
+            if len > marshal::MAX_STRING_BYTES {
+                return Err(marshal::MarshalError::StringTooLong { len });
+            }
         }
         _ => {}
     }
@@ -742,7 +748,10 @@ fn next_computed_id() -> MemoKey {
 
 /// Values already produced during the current outermost [`Signal::get_value`].
 #[derive(Default)]
-struct MemoTable(HashMap<MemoKey, Value>);
+struct MemoTable {
+    map: FxHashMap<MemoKey, Value>,
+    depth: usize,
+}
 
 /// One evaluation's memo, closing ADR-0044 decision 3's ceiling: without it a shared dependency is
 /// re-run once per path that reaches it, so a launcher ran its whole application filter twice for
@@ -775,29 +784,40 @@ struct EvaluationMemo<'lua> {
 
 impl<'lua> EvaluationMemo<'lua> {
     fn enter(lua: &'lua Lua) -> Self {
-        let owner = lua.app_data_ref::<MemoTable>().is_none();
-        if owner {
-            lua.set_app_data(MemoTable::default());
-        }
+        let in_pass = lua.app_data_ref::<PassDeadline>().is_some_and(|slot| slot.0.is_some());
+        let owner = if in_pass {
+            false
+        } else {
+            if lua.app_data_ref::<MemoTable>().is_none() {
+                lua.set_app_data(MemoTable::default());
+            }
+            let mut table = lua.app_data_mut::<MemoTable>().expect("just ensured the memo table exists");
+            let owner = table.depth == 0;
+            table.depth += 1;
+            owner
+        };
         Self { lua, owner }
     }
 
     /// `None` outside an evaluation, which is the outermost `Computed`'s own first look.
     fn get(lua: &Lua, key: MemoKey) -> Option<Value> {
-        lua.app_data_ref::<MemoTable>()?.0.get(&key).cloned()
+        lua.app_data_ref::<MemoTable>()?.map.get(&key).cloned()
     }
 
     fn insert(lua: &Lua, key: MemoKey, value: &Value) {
         if let Some(mut table) = lua.app_data_mut::<MemoTable>() {
-            table.0.insert(key, value.clone());
+            table.map.insert(key, value.clone());
         }
     }
 }
 
 impl Drop for EvaluationMemo<'_> {
     fn drop(&mut self) {
-        if self.owner {
-            self.lua.remove_app_data::<MemoTable>();
+        if let Ok(Some(mut table)) = self.lua.try_app_data_mut::<MemoTable>() {
+            table.depth = table.depth.saturating_sub(1);
+            if self.owner {
+                table.map.clear();
+            }
         }
     }
 }
@@ -858,12 +878,10 @@ impl<'lua> LayoutPassBudget<'lua> {
         }
         lua.app_data_mut::<PassDeadline>().expect("just ensured the slot exists").0 =
             Some(Deadline::lasting(LAYOUT_PASS_CAP));
-        // Unconditional, like the deadline above it: only a `Computed` installs a memo and none is
-        // running when a pass starts, so there is never a table here to displace. Both fields
-        // assume one live budget for the same reason -- nesting two would have the inner `Drop`
-        // clear the outer's deadline as well -- and an `owner` flag on one of them would only
-        // suggest otherwise.
-        lua.set_app_data(MemoTable::default());
+        // Starts with or retains the memo table across passes, clearing it at pass end.
+        if lua.app_data_ref::<MemoTable>().is_none() {
+            lua.set_app_data(MemoTable::default());
+        }
         Ok(Self { lua })
     }
 
@@ -879,9 +897,9 @@ impl Drop for LayoutPassBudget<'_> {
         if let Ok(Some(mut slot)) = self.lua.try_app_data_mut::<PassDeadline>() {
             slot.0 = None;
         }
-        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            self.lua.remove_app_data::<MemoTable>();
-        }));
+        if let Ok(Some(mut table)) = self.lua.try_app_data_mut::<MemoTable>() {
+            table.map.clear();
+        }
     }
 }
 
@@ -899,9 +917,9 @@ impl<'lua> CpuBudget<'lua> {
                 "signal nesting exceeded its maximum depth of {MAX_SIGNAL_NESTING_DEPTH} levels -- a computed/map chain recursing into itself, or a dependency chain that long?"
             )));
         }
-        lua.app_data_mut::<Vec<Deadline>>()
-            .expect("just ensured the deadline stack exists")
-            .push(Deadline::lasting(CPU_CAP));
+        let mut stack = lua.app_data_mut::<Vec<Deadline>>().expect("just ensured the deadline stack exists");
+        let deadline = stack.first().copied().unwrap_or_else(|| Deadline::lasting(CPU_CAP));
+        stack.push(deadline);
         Ok(Self { lua })
     }
 

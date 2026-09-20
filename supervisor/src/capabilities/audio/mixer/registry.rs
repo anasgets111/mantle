@@ -496,7 +496,7 @@ fn bind_device(state: &Rc<RefCell<MixerState>>, registry: &pw::registry::Registr
                 return;
             }
             // ponytail: the first push can lack `port` until Route answers; upgrade: fold Route into hydration.
-            state_for_param.borrow().publish_audio();
+            state_for_param.borrow_mut().publish_audio();
             if previous.map(|previous| previous.index) != Some(route.index) {
                 cap_default_sink(&state_for_param);
             }

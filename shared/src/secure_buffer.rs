@@ -19,7 +19,11 @@ pub struct SecureBuffer {
 
 impl SecureBuffer {
     pub fn new() -> Self {
-        Self::default()
+        Self::with_capacity(64)
+    }
+
+    pub fn with_capacity(capacity: usize) -> Self {
+        Self { bytes: Vec::with_capacity(capacity) }
     }
 
     /// Appends UTF-8 bytes. Called once per `commit_string` edit diff (input method, ADR-0009) and
