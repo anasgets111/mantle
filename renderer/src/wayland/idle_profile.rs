@@ -52,6 +52,7 @@ pub struct Phases {
     resolve: Duration,
     surface_state: Duration,
     repaint: Duration,
+    resolve_split: crate::layout::scene::ResolveSplit,
 }
 
 impl Phases {
@@ -71,6 +72,12 @@ impl Phases {
 
     pub fn mark_resolve(&mut self) {
         self.resolve = self.split();
+    }
+
+    /// The three-way breakdown of the phase `mark_resolve` just closed, which `Scene` accumulated
+    /// per instance while it ran.
+    pub fn mark_resolve_split(&mut self, split: crate::layout::scene::ResolveSplit) {
+        self.resolve_split = split;
     }
 
     pub fn mark_surface_state(&mut self) {
@@ -108,6 +115,11 @@ pub struct Counters {
     painted: u64,
     drawn: u64,
     resolve: Duration,
+    /// `resolve` split three ways; see `layout::scene::ResolveSplit` for what each covers and why
+    /// they sum to less than it.
+    resolve_clone: Duration,
+    resolve_props: Duration,
+    resolve_solve: Duration,
     surface_state: Duration,
     repaint: Duration,
     dispatch_cpu: Duration,
@@ -224,6 +236,9 @@ impl IdleProfile {
         c.painted += u64::from(turn.painted);
         c.drawn += turn.drawn as u64;
         c.resolve += phases.resolve;
+        c.resolve_clone += phases.resolve_split.clone;
+        c.resolve_props += phases.resolve_split.resolve;
+        c.resolve_solve += phases.resolve_split.solve;
         c.surface_state += phases.surface_state;
         c.repaint += phases.repaint;
 
@@ -250,7 +265,7 @@ fn render(window: Duration, c: &Counters, cpu: Cpu) -> String {
     format!(
         "idle {:.1}s: turns={} idle={} cpu proc={:.2}% main={:.2}% | wake wl={} wake={} both={} none={} \
          | work dispatch={} resolve={} tick={} type={} decode={} paint={} drawn={} \
-         | ms resolve={:.1} surfstate={:.1} repaint={:.1} dispatch={:.1} \
+         | ms resolve={:.1} (clone={:.1} props={:.1} solve={:.1}) surfstate={:.1} repaint={:.1} dispatch={:.1} \
          | focus turns={} searched={} redundant={} ms={:.1} redundant={:.1} ({:.2}% of a core){}",
         secs,
         c.turns,
@@ -269,6 +284,9 @@ fn render(window: Duration, c: &Counters, cpu: Cpu) -> String {
         c.painted,
         c.drawn,
         c.resolve.as_secs_f64() * 1000.0,
+        c.resolve_clone.as_secs_f64() * 1000.0,
+        c.resolve_props.as_secs_f64() * 1000.0,
+        c.resolve_solve.as_secs_f64() * 1000.0,
         c.surface_state.as_secs_f64() * 1000.0,
         c.repaint.as_secs_f64() * 1000.0,
         c.dispatch_cpu.as_secs_f64() * 1000.0,
@@ -319,13 +337,16 @@ mod tests {
             painted: 18,
             drawn: 0,
             resolve: Duration::from_micros(21_600),
+            resolve_clone: Duration::from_micros(9_100),
+            resolve_props: Duration::from_micros(7_300),
+            resolve_solve: Duration::from_micros(4_200),
             surface_state: Duration::from_micros(1_400),
             repaint: Duration::from_micros(500),
             ..Counters::default()
         };
         let line = render(Duration::from_secs(10), &c, Cpu::default());
         assert!(line.contains("paint=18 drawn=0"), "{line}");
-        assert!(line.contains("ms resolve=21.6 surfstate=1.4 repaint=0.5"), "{line}");
+        assert!(line.contains("ms resolve=21.6 (clone=9.1 props=7.3 solve=4.2) surfstate=1.4 repaint=0.5"), "{line}");
     }
 
     #[test]

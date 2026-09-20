@@ -6,7 +6,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::ops::Range;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use mlua::{Lua, Value};
 use shared::debug;
@@ -244,6 +244,42 @@ impl ResolvedNode {
 pub struct Scene {
     surfaces: HashMap<String, ResolvedNode>,
     next_id: u64,
+    resolve_split: ResolveSplit,
+}
+
+/// Where one resolve pass spends itself, split the three ways [`Scene::apply_one_instance`]
+/// divides into: saving the retained tree for rollback, running Lua and building the solver tree,
+/// then solving and measuring. `ms resolve` is one number for all three plus the tween tick, which
+/// says the phase is expensive without saying which part is.
+///
+/// Sums to less than `ms resolve`: a tick-only turn resolves nothing, and the per-pass work
+/// outside `apply_one_instance` (the budget, `start_secure_submit_capabilities`) is in neither.
+#[derive(Clone, Copy, Default)]
+pub struct ResolveSplit {
+    pub clone: Duration,
+    pub resolve: Duration,
+    pub solve: Duration,
+}
+
+/// One getenv for the process, like the profilers this feeds: `--profile` cannot come and go while
+/// the Renderer runs. Off, [`open_span`] reads no clock, the switch `Phases` already uses.
+fn timing_on() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| shared::profile_interval().is_some())
+}
+
+/// Opens a timing span, or `None` with the profile off.
+fn open_span() -> Option<Instant> {
+    timing_on().then(Instant::now)
+}
+
+/// Closes `at` into `total` and reopens, so three spans cost three clock reads, not six.
+fn close(at: &mut Option<Instant>, total: &mut Duration) {
+    if let Some(started) = *at {
+        let now = Instant::now();
+        *total += now.duration_since(started);
+        *at = Some(now);
+    }
 }
 
 /// Adds `node` and its descendants to the running node and property totals. Shared by
@@ -266,6 +302,12 @@ fn census_walk(node: &ResolvedNode, nodes: &mut usize, properties: &mut usize) {
 impl Scene {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Drained, not read: a turn that only ticked resolves nothing and must report zero rather
+    /// than whichever pass ran last.
+    pub fn take_resolve_split(&mut self) -> ResolveSplit {
+        std::mem::take(&mut self.resolve_split)
     }
 
     fn alloc_id(&mut self) -> NodeId {
@@ -411,8 +453,10 @@ impl Scene {
         };
         let key = instance.instance_id.clone();
         let available = instance.available;
+        let mut at = open_span();
         let existing = self.surfaces.remove(&key);
         rollback.push((key.clone(), existing.clone()));
+        close(&mut at, &mut self.resolve_split.clone);
         // Check admissibility before resolution runs Lua. Children get the same check in the loop
         // that parses their margin before recursing.
         ensure_node_admissible(fresh.kind, 0)?;
@@ -428,9 +472,11 @@ impl Scene {
         // failed walk drops the temporary tree without extra rollback state.
         let mut tree = new_solver_tree();
         let prepared = prepare(self, &mut tree, existing, fresh.kind, properties, style, tweens, None, lua, now, 0)?;
+        close(&mut at, &mut self.resolve_split.resolve);
         let solved = solve_instance(&mut tree, prepared, available, shaping)?;
         publish_geometry(&solved, 0.0, 0.0, lua, false).map_err(|e| node::invalid("geometry", e.to_string()))?;
         self.surfaces.insert(key, solved);
+        close(&mut at, &mut self.resolve_split.solve);
         Ok(())
     }
 
@@ -2064,6 +2110,23 @@ mod flow_kind_tests {
 pub(super) mod tests {
     use super::*;
     use crate::lua::nodes::{deserialize_lua_table, register_node_constructors};
+
+    #[test]
+    fn a_closed_timing_span_accumulates_and_reopens_for_the_next_region() {
+        let mut at = Some(Instant::now());
+        let mut total = Duration::ZERO;
+        close(&mut at, &mut total);
+        let after_first = total;
+        assert!(at.is_some(), "the span reopens, so three regions cost three clock reads and not six");
+        close(&mut at, &mut total);
+        assert!(total >= after_first, "the second region adds to the first rather than replacing it");
+
+        // Off is the production default, and the whole point of the switch: no clock, no total.
+        let (mut off, mut total) = (None, Duration::ZERO);
+        close(&mut off, &mut total);
+        assert_eq!(total, Duration::ZERO);
+        assert!(off.is_none(), "an unopened span stays closed");
+    }
 
     /// Returns the `Lua` alongside the parsed node: an `mlua::Value` (every string/table
     /// property) is tied to the state that created it and panics on use once that state drops,

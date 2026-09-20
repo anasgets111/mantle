@@ -473,6 +473,7 @@ pub fn run(
         };
         let re_resolved = passed || !ticked.is_empty();
         phases.mark_resolve();
+        phases.mark_resolve_split(app.client.take_resolve_split());
         // Take unconditionally so a keystroke arriving with a push is covered by this repaint, not
         // repeated next turn.
         let typed = std::mem::take(&mut app.field_input_changed);
