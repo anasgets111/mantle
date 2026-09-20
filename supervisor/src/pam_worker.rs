@@ -1,14 +1,14 @@
-//! Real PAM conversation, closing ADR-0015. ADR-0028's halves share `shared::PamOutcome` over
-//! `shared::framing` and [`pam_service`]. Blocking `nonstick` FFI runs in a re-exec'd worker, not
-//! the async Supervisor. [`run_worker`] handles `MANTLE_PAM_WORKER=1`, reads one stdin password,
-//! runs one transaction, and writes one outcome frame. [`run_authentication`] re-execs via
-//! [`crate::process::spawn_group_leader_stdio_piped`], exchanges piped stdin/stdout, and reports
-//! to `main.rs`, the only unlock authority (ADR-0052). [`run_polkit_helper`] uses polkit's root
-//! helper instead: polkitd accepts the agent response only from uid 0 (ADR-0114).
-//! It does not reuse `RendererFrame`/`SupervisorFrame`, which cross a different boundary.
+//! Real PAM conversation, closing ADR-0015. ADR-0028's halves share `shared::PamMessage`/
+//! `PamOutcome` over `shared::framing` and [`pam_service`]. Blocking `nonstick` FFI runs in a
+//! re-exec'd worker, not the async Supervisor. [`run_worker`] handles `MANTLE_PAM_WORKER=1`,
+//! relaying every PAM prompt over stdio and answering with a `Response` (ADR-0241).
+//! [`run_authentication`] re-execs via [`crate::process::spawn_group_leader_stdio_piped`],
+//! exchanges piped stdin/stdout, and reports to `main.rs`, the only unlock authority (ADR-0052).
+//! [`run_polkit_helper`] uses polkit's root helper instead: polkitd accepts the agent response only
+//! from uid 0 (ADR-0114). It does not reuse `RendererFrame`/`SupervisorFrame`, which cross a
+//! different boundary.
 
 use std::cell::RefCell;
-use std::rc::Rc;
 use std::time::Duration;
 
 use nonstick::{ConversationAdapter, Transaction};
@@ -52,29 +52,36 @@ fn pam_service() -> &'static str {
 /// forever while the prompt remains `authenticating`.
 const PAM_EXCHANGE_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// ADR-0028 supplies one password before the conversation, so `masked_prompt` returns it for any
-/// text. `prompt`/`radio_prompt`/`binary_prompt` are unexpected and return `ConversationError`.
-/// PAM's `char*` boundary forces a plain, non-zeroizable `OsString` copy. The worker's source
-/// `Vec<u8>` and this struct's `Rc<RefCell<_>>` bytes are zeroized after PAM calls; `Drop` is the
-/// ADR-0005 backstop if an FFI panic skips that explicit call.
-struct PasswordConversation {
-    password: Rc<RefCell<Vec<u8>>>,
+/// Relays every PAM prompt to the Supervisor and blocks for its answer (ADR-0241): `prompt`
+/// (echo-on) and `masked_prompt` both forward their text rather than one refusing outright and the
+/// other replaying a password captured up front. Blocking `std::io`, not `shared::framing`: `nonstick`
+/// calls these synchronously from FFI, with no async context to `.await` in. The received `secret`
+/// moves straight into PAM's `char*` copy, which is why nothing here needs zeroizing on drop; there
+/// is no buffer left to scrub once each round returns.
+struct RelayConversation<R, W> {
+    reader: RefCell<R>,
+    writer: RefCell<W>,
 }
 
-impl Drop for PasswordConversation {
-    fn drop(&mut self) {
-        shared::Zeroize::zeroize(&mut *self.password.borrow_mut());
-    }
-}
-
-impl ConversationAdapter for PasswordConversation {
-    fn prompt(&self, _request: impl AsRef<std::ffi::OsStr>) -> nonstick::Result<std::ffi::OsString> {
-        Err(nonstick::ErrorCode::ConversationError)
-    }
-
-    fn masked_prompt(&self, _request: impl AsRef<std::ffi::OsStr>) -> nonstick::Result<std::ffi::OsString> {
+impl<R: std::io::Read, W: std::io::Write> RelayConversation<R, W> {
+    fn relay(&self, text: String, echo: bool) -> nonstick::Result<std::ffi::OsString> {
         use std::os::unix::ffi::OsStringExt;
-        Ok(std::ffi::OsString::from_vec(self.password.borrow().clone()))
+        write_frame(&mut *self.writer.borrow_mut(), &shared::PamMessage::Prompt { text, echo })
+            .map_err(|_| nonstick::ErrorCode::ConversationError)?;
+        match read_frame(&mut *self.reader.borrow_mut()).map_err(|_| nonstick::ErrorCode::ConversationError)? {
+            shared::PamMessage::Response { secret } => Ok(std::ffi::OsString::from_vec(secret)),
+            _ => Err(nonstick::ErrorCode::ConversationError),
+        }
+    }
+}
+
+impl<R: std::io::Read, W: std::io::Write> ConversationAdapter for RelayConversation<R, W> {
+    fn prompt(&self, request: impl AsRef<std::ffi::OsStr>) -> nonstick::Result<std::ffi::OsString> {
+        self.relay(request.as_ref().to_string_lossy().into_owned(), true)
+    }
+
+    fn masked_prompt(&self, request: impl AsRef<std::ffi::OsStr>) -> nonstick::Result<std::ffi::OsString> {
+        self.relay(request.as_ref().to_string_lossy().into_owned(), false)
     }
 
     fn error_msg(&self, message: impl AsRef<std::ffi::OsStr>) {
@@ -84,6 +91,33 @@ impl ConversationAdapter for PasswordConversation {
     fn info_msg(&self, message: impl AsRef<std::ffi::OsStr>) {
         info!("{}", message.as_ref().to_string_lossy());
     }
+}
+
+/// Blocking mirror of `shared::framing`'s wire format: nonstick's conversation callbacks are
+/// synchronous FFI, so a worker round trip cannot `.await`.
+fn write_frame(mut writer: impl std::io::Write, message: &shared::PamMessage) -> std::io::Result<()> {
+    let payload = serde_json::to_vec(message).map_err(std::io::Error::other)?;
+    if payload.len() > shared::framing::MAX_FRAME_LEN {
+        return Err(std::io::Error::other(format!("frame length {} exceeds the limit", payload.len())));
+    }
+    writer.write_all(&(payload.len() as u32).to_be_bytes())?;
+    writer.write_all(&payload)?;
+    writer.flush()
+}
+
+/// [`write_frame`]'s read half. The payload buffer is `Zeroizing`, matching
+/// `shared::framing::read_frame`: only a `Response` ever carries a secret, but every frame is
+/// scrubbed alike rather than teaching this function which ones do.
+fn read_frame(mut reader: impl std::io::Read) -> std::io::Result<shared::PamMessage> {
+    let mut len = [0u8; 4];
+    reader.read_exact(&mut len)?;
+    let len = u32::from_be_bytes(len) as usize;
+    if len > shared::framing::MAX_FRAME_LEN {
+        return Err(std::io::Error::other(format!("frame length {len} exceeds the limit")));
+    }
+    let mut payload = shared::Zeroizing::new(vec![0u8; len]);
+    reader.read_exact(&mut payload)?;
+    serde_json::from_slice(&payload).map_err(std::io::Error::other)
 }
 
 /// Maps a `nonstick` failure to the [`shared::PamOutcome`] the spawn side handles. Pure and
@@ -99,12 +133,14 @@ fn outcome_for_error(err: nonstick::ErrorCode) -> shared::PamOutcome {
     }
 }
 
-/// Runs `pam_start` via `TransactionBuilder`, then `authenticate` and `account_management`, using
-/// `password` for every prompt.
-fn run_conversation(username: &str, password: &[u8]) -> shared::PamOutcome {
-    let password = Rc::new(RefCell::new(password.to_vec()));
-    let conversation = PasswordConversation { password: Rc::clone(&password) };
-    let outcome = match nonstick::TransactionBuilder::new_with_service(pam_service())
+/// Runs `pam_start` via `TransactionBuilder`, then `authenticate` and `account_management`,
+/// relaying every prompt over stdio (ADR-0241).
+fn run_conversation(username: &str) -> shared::PamOutcome {
+    let conversation = RelayConversation {
+        reader: RefCell::new(std::io::stdin().lock()),
+        writer: RefCell::new(std::io::stdout().lock()),
+    };
+    match nonstick::TransactionBuilder::new_with_service(pam_service())
         .username(username)
         .build(conversation.into_conversation())
     {
@@ -118,43 +154,17 @@ fn run_conversation(username: &str, password: &[u8]) -> shared::PamOutcome {
             }
         }
         Err(err) => shared::PamOutcome::StartFailed(format!("{err:?}")),
-    };
-    // Explicit ADR-0005 call, not only `PasswordConversation::Drop`: the Rc reaches the same bytes
-    // whether `txn` already dropped, and zeroizing twice is harmless.
-    shared::Zeroize::zeroize(&mut *password.borrow_mut());
-    outcome
-}
-
-/// Reads `reader` to EOF. On a mid-read error, zeroize bytes already in the buffer before
-/// propagating; otherwise `?` would drop password bytes unscrubbed. The success path returns
-/// `Zeroizing`, so every later exit scrubs on drop -- including an unwind out of
-/// `run_conversation`, which an explicit scrub after the call would miss.
-fn read_password(mut reader: impl std::io::Read) -> std::io::Result<shared::Zeroizing<Vec<u8>>> {
-    let mut password = Vec::new();
-    if let Err(err) = reader.read_to_end(&mut password) {
-        shared::Zeroize::zeroize(&mut password);
-        return Err(err);
     }
-    Ok(shared::Zeroizing::new(password))
 }
 
-/// ADR-0028 worker path for `MANTLE_PAM_WORKER=1`. `main.rs` enters it before D-Bus/runtime/audio
-/// setup. Read stdin until the spawn side closes it, run PAM, zeroize, and write one outcome frame.
-/// `run_conversation` is blocking; only `write_json_frame` needs an executor because
-/// `shared::framing` uses `tokio::io::AsyncWrite`, so `new_current_thread()` is sufficient.
+/// ADR-0028/ADR-0241 worker path for `MANTLE_PAM_WORKER=1`. `main.rs` enters it before
+/// D-Bus/runtime/audio setup. Every `stdin`/`stdout` round trip PAM asks for happens inside
+/// `run_conversation`; this only writes the frame that ends it. Plain blocking I/O throughout, so
+/// no runtime is spun up here.
 pub fn run_worker() -> Result<(), Box<dyn std::error::Error>> {
     let username = std::env::var("MANTLE_PAM_USERNAME")?;
-
-    let password = read_password(std::io::stdin().lock())?;
-
-    let outcome = run_conversation(&username, &password);
-    drop(password);
-
-    let rt = tokio::runtime::Builder::new_current_thread().enable_all().build()?;
-    rt.block_on(async {
-        let mut stdout = tokio::io::stdout();
-        shared::framing::write_json_frame(&mut stdout, &outcome).await
-    })?;
+    let outcome = run_conversation(&username);
+    write_frame(std::io::stdout().lock(), &shared::PamMessage::Outcome(outcome))?;
     Ok(())
 }
 
@@ -328,20 +338,23 @@ async fn spawn_worker_and_exchange(username: &str, secret: &[u8]) -> std::io::Re
     exchange_over(child, secret, PAM_EXCHANGE_TIMEOUT).await
 }
 
-/// Writes `secret` to stdin, closes it so the worker sees EOF, reads one outcome frame from stdout,
-/// then reaps the process group. The split enables fake-worker protocol tests. Reap always runs,
-/// including after failed/timed-out I/O, so a hung worker is not untracked. `timeout` covers only
-/// write/read; `reap_process_group` has its own grace. Without it, `read_json_frame` could hang
-/// forever and the inline polkit path would stall `main.rs`'s `select!`. Parameterize it so tests
-/// avoid the real 30-second [`PAM_EXCHANGE_TIMEOUT`]. A failed exchange carries [`post_mortem`]'s
-/// account of how the worker died, because the reap already knows and the lock screen otherwise
-/// reports an I/O error with no subject.
+/// Reads Prompt/Outcome frames from stdout and answers each Prompt with `secret` on stdin
+/// ([`exchange_messages`]), then reaps the process group (ADR-0241). Stdin/stdout are taken out of
+/// `child` before the timeout so `exchange_messages` is testable over a plain duplex pipe. Reap
+/// always runs, including after failed/timed-out I/O, so a hung worker is not untracked. `timeout`
+/// covers only the message loop; `reap_process_group` has its own grace. Without it, a wedged
+/// prompt could hang forever and the inline polkit path would stall `main.rs`'s `select!`.
+/// Parameterize it so tests avoid the real 30-second [`PAM_EXCHANGE_TIMEOUT`]. A failed exchange
+/// carries [`post_mortem`]'s account of how the worker died, because the reap already knows and the
+/// lock screen otherwise reports an I/O error with no subject.
 async fn exchange_over(
     mut child: tokio::process::Child,
     secret: &[u8],
     timeout: Duration,
 ) -> std::io::Result<shared::PamOutcome> {
-    let outcome_result = match tokio::time::timeout(timeout, write_secret_then_read_outcome(&mut child, secret)).await {
+    let stdin = child.stdin.take().expect("spawn_group_leader_stdio_piped always pipes stdin");
+    let stdout = child.stdout.take().expect("spawn_group_leader_stdio_piped always pipes stdout");
+    let outcome_result = match tokio::time::timeout(timeout, exchange_messages(stdout, stdin, secret)).await {
         Ok(result) => result,
         Err(_elapsed) => {
             Err(std::io::Error::new(std::io::ErrorKind::TimedOut, "pam worker did not respond within the timeout"))
@@ -386,19 +399,40 @@ fn post_mortem(reaped: &std::io::Result<crate::process::ReapOutcome>) -> String 
     }
 }
 
-/// Write/read half wrapped by [`exchange_over`] in `tokio::time::timeout`. It borrows `child`, so
-/// `exchange_over` can reap after completion or cancellation. Cancellation drops the taken stdin
-/// handle and closes that pipe even mid-write.
-async fn write_secret_then_read_outcome(
-    child: &mut tokio::process::Child,
+/// Answers every `Prompt` with `secret` until `Outcome` ends the conversation (ADR-0241): the
+/// lock's only caller today has one password, so every prompt -- echo-on or off -- gets the same
+/// answer. A `Response` arriving from the worker is a protocol violation, not a valid frame.
+async fn exchange_messages(
+    mut reader: impl tokio::io::AsyncRead + Unpin,
+    mut writer: impl tokio::io::AsyncWrite + Unpin,
     secret: &[u8],
 ) -> std::io::Result<shared::PamOutcome> {
-    let mut stdin = child.stdin.take().expect("spawn_group_leader_stdio_piped always pipes stdin");
-    tokio::io::AsyncWriteExt::write_all(&mut stdin, secret).await?;
-    drop(stdin); // closes the write half so the worker's stdin read hits EOF
-
-    let mut stdout = child.stdout.take().expect("spawn_group_leader_stdio_piped always pipes stdout");
-    shared::framing::read_json_frame(&mut stdout).await.map_err(std::io::Error::other)
+    // One clone for the whole exchange, not one per round, reused across every prompt and
+    // zeroized once the loop ends.
+    //
+    // ponytail: left unzeroized if `exchange_over`'s timeout cancels this future mid-`.await`.
+    // Bounded by that timeout and by the worker's own process lifetime; upgrade by giving
+    // `response` a drop guard if that gap needs closing too.
+    let mut response = shared::PamMessage::Response { secret: secret.to_vec() };
+    let result = loop {
+        let message = match shared::framing::read_json_frame(&mut reader).await {
+            Ok(message) => message,
+            Err(err) => break Err(std::io::Error::other(err)),
+        };
+        match message {
+            shared::PamMessage::Outcome(outcome) => break Ok(outcome),
+            shared::PamMessage::Prompt { .. } => {
+                if let Err(err) = shared::framing::write_json_frame(&mut writer, &response).await {
+                    break Err(std::io::Error::other(err));
+                }
+            }
+            shared::PamMessage::Response { .. } => {
+                break Err(std::io::Error::other("the worker sent a Response, which is the Supervisor's to send"));
+            }
+        }
+    };
+    shared::Zeroize::zeroize(&mut response);
+    result
 }
 
 #[cfg(test)]
@@ -600,10 +634,10 @@ mod tests {
     // worker instead.
 
     #[tokio::test]
-    async fn exchange_over_reads_back_the_worker_s_one_shot_outcome_frame() {
-        // `shared::framing`: 4-byte big-endian length, then JSON. `Success` is the 9-byte JSON
-        // string `"Success"`.
-        let script = r#"cat > /dev/null; printf '\000\000\000\011"Success"'"#;
+    async fn exchange_over_reads_back_the_worker_s_final_outcome_frame() {
+        // `shared::framing`: 4-byte big-endian length, then JSON. `{"Outcome":"Success"}` is 21
+        // bytes. No `Prompt` is sent, so nothing is written back; the script need not drain stdin.
+        let script = r#"printf '\000\000\000\025{"Outcome":"Success"}'"#;
         let child = crate::process::spawn_group_leader_stdio_piped("sh", &["-c".to_string(), script.to_string()], &[])
             .expect("failed to spawn the fake worker");
 
@@ -647,20 +681,38 @@ mod tests {
         }
     }
 
+    /// The multi-round case ADR-0241 exists for: a module asking twice, once echo-off and once
+    /// echo-on, gets the same secret both times, then `Outcome` ends it. An in-memory duplex
+    /// stands in for the worker's piped stdio; `exchange_over`'s own tests already cover the real
+    /// child/reap plumbing around this loop.
     #[tokio::test]
-    async fn exchange_over_actually_delivers_the_secret_to_the_child_s_stdin() {
-        // Fake worker reports stdin byte count, proving delivery and EOF closure.
-        let script = r#"n=$(wc -c < /dev/stdin); printf '\000\000\000\025{"PamError":"got %s"}' "$n""#;
-        let child = crate::process::spawn_group_leader_stdio_piped("sh", &["-c".to_string(), script.to_string()], &[])
-            .expect("failed to spawn the fake worker");
+    async fn exchange_messages_answers_every_prompt_with_the_secret_until_outcome() {
+        let (ours, theirs) = tokio::io::duplex(256);
+        let (their_reader, their_writer) = tokio::io::split(theirs);
+        let fake_worker = tokio::spawn(async move {
+            let mut writer = their_writer;
+            let mut reader = their_reader;
+            let mut secrets_seen = Vec::new();
+            for (text, echo) in [("Password:", false), ("One-time code:", true)] {
+                shared::framing::write_json_frame(&mut writer, &shared::PamMessage::Prompt { text: text.into(), echo })
+                    .await
+                    .unwrap();
+                match shared::framing::read_json_frame(&mut reader).await.unwrap() {
+                    shared::PamMessage::Response { secret } => secrets_seen.push(secret),
+                    other => panic!("expected a Response, got {other:?}"),
+                }
+            }
+            shared::framing::write_json_frame(&mut writer, &shared::PamMessage::Outcome(shared::PamOutcome::Success))
+                .await
+                .unwrap();
+            secrets_seen
+        });
 
-        let outcome = exchange_over(child, b"the-password", TEST_TIMEOUT).await.expect("exchange_over failed");
+        let (my_reader, my_writer) = tokio::io::split(ours);
+        let outcome = exchange_messages(my_reader, my_writer, b"hunter2").await.expect("exchange_messages failed");
 
-        assert_eq!(
-            outcome,
-            shared::PamOutcome::PamError("got 12".to_string()),
-            "the fake worker must have seen all 12 bytes of the secret"
-        );
+        assert_eq!(outcome, shared::PamOutcome::Success);
+        assert_eq!(fake_worker.await.unwrap(), [b"hunter2".to_vec(), b"hunter2".to_vec()]);
     }
 
     #[tokio::test]
@@ -707,31 +759,63 @@ mod tests {
     }
 
     #[test]
-    fn read_password_zeroizes_whatever_it_already_read_before_a_mid_stream_error() {
-        // Supplies real bytes once, then fails, reproducing a mid-`read_to_end` pipe error.
-        struct FailsAfterFirstChunk {
+    fn read_frame_zeroizes_whatever_it_already_read_before_a_mid_stream_error() {
+        // A valid length prefix, then real payload bytes once, then failure -- reproducing a
+        // mid-`read_exact` pipe error after the secret has partly landed in the buffer.
+        struct FailsAfterTheLengthPrefix {
+            length: [u8; 4],
             chunk: &'static [u8],
-            handed_out: bool,
+            step: u8,
         }
-        impl std::io::Read for FailsAfterFirstChunk {
+        impl std::io::Read for FailsAfterTheLengthPrefix {
             fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
-                if !self.handed_out {
-                    self.handed_out = true;
-                    let n = self.chunk.len().min(buf.len());
-                    buf[..n].copy_from_slice(&self.chunk[..n]);
-                    Ok(n)
-                } else {
-                    Err(std::io::Error::other("simulated mid-read pipe failure"))
+                self.step += 1;
+                match self.step {
+                    1 => {
+                        buf[..4].copy_from_slice(&self.length);
+                        Ok(4)
+                    }
+                    2 => {
+                        let n = self.chunk.len().min(buf.len());
+                        buf[..n].copy_from_slice(&self.chunk[..n]);
+                        Ok(n)
+                    }
+                    _ => Err(std::io::Error::other("simulated mid-read pipe failure")),
                 }
             }
         }
 
-        let err = read_password(FailsAfterFirstChunk { chunk: b"hunter2", handed_out: false })
+        let err = read_frame(FailsAfterTheLengthPrefix { length: 8u32.to_be_bytes(), chunk: b"hunter2", step: 0 })
             .expect_err("a reader that errors mid-stream must surface that error, not silently truncate");
 
         assert_eq!(err.to_string(), "simulated mid-read pipe failure");
-        // The partial Vec is already dropped here; proving live zeroization requires observing it
-        // before drop, not afterward.
+        // The partial buffer is already dropped here; proving live zeroization requires observing
+        // it before drop, not afterward.
+    }
+
+    /// The worker's actual conversation driver, proven without PAM or a subprocess: more than one
+    /// prompt, echo-off then echo-on, each answered from the wire rather than one password
+    /// replayed (ADR-0241).
+    #[test]
+    fn relay_conversation_carries_an_echo_off_then_an_echo_on_prompt_over_the_wire() {
+        let mut canned = Vec::new();
+        write_frame(&mut canned, &shared::PamMessage::Response { secret: b"hunter2".to_vec() }).unwrap();
+        write_frame(&mut canned, &shared::PamMessage::Response { secret: b"123456".to_vec() }).unwrap();
+        let conversation =
+            RelayConversation { reader: RefCell::new(std::io::Cursor::new(canned)), writer: RefCell::new(Vec::new()) };
+
+        assert_eq!(conversation.masked_prompt("Password:").unwrap(), std::ffi::OsString::from("hunter2"));
+        assert_eq!(conversation.prompt("One-time code:").unwrap(), std::ffi::OsString::from("123456"));
+
+        let mut sent = std::io::Cursor::new(conversation.writer.into_inner());
+        assert_eq!(
+            read_frame(&mut sent).unwrap(),
+            shared::PamMessage::Prompt { text: "Password:".into(), echo: false }
+        );
+        assert_eq!(
+            read_frame(&mut sent).unwrap(),
+            shared::PamMessage::Prompt { text: "One-time code:".into(), echo: true }
+        );
     }
 
     // Pin release when the spawned authentication task panics or drops before reporting.

@@ -5637,3 +5637,30 @@ only changes `source_blur` is invisible to it and blanks until the newly blurred
 `retain = true` or not. `source_blur` is meant to be set once per `source` and left there, matching
 decision 1's "not built" for a source that keeps changing; if it needs to be live, `displayed_source`
 becomes a `(source, blur_px)` pair, not a rename or a wider condition alone.
+
+## 0241. PAM worker: relay every prompt instead of replaying one password
+
+ADR-0028 read one password before the transaction and answered every `masked_prompt` with it;
+`prompt` (echo-on) returned `ConversationError`. Fingerprint, 2FA and an expired password each need
+a second round.
+
+1. **Wire: `shared::PamMessage`, alongside `PamOutcome` on the same pipes.** `Prompt { text, echo }`
+   and `Outcome` are the worker's; `Response { secret }` is the Supervisor's only reply. Same
+   4-byte-length-prefixed JSON as `PamOutcome`, so `exchange_over`'s reap, timeout and post-mortem
+   logic needs no change.
+2. **Worker: one `RelayConversation`, no captured password.** `prompt` and `masked_prompt` both
+   write a `Prompt` and block for a `Response`, over blocking `std::io` rather than
+   `shared::framing`: `nonstick` calls these synchronously from FFI, with no async context to
+   `.await` in. Echo-on and echo-off are forwarded alike; neither is a hard error.
+3. **Supervisor: one secret, answered to every prompt.** `exchange_messages` loops
+   `read_json_frame`/`write_json_frame` until `Outcome`, answering each `Prompt` with the password
+   `secure_submit(lock, authenticate)` already collected. One clone lives for the exchange,
+   zeroized when the loop ends.
+
+Not built: a UI for a second prompt. `LockState` and `secure_submit` still carry one password; a
+module asking for a second answer gets `AuthFailed` when PAM rejects the reused one. No PAM module
+on any system today asks for more than one prompt, so this lands the transport only.
+
+ponytail: `response` in `exchange_messages` sits unzeroized if `PAM_EXCHANGE_TIMEOUT` cancels the
+future mid-`.await`. Bounded by that timeout and by the worker's own process lifetime; upgrade by
+giving `response` a drop guard if that gap needs closing too.

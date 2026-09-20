@@ -394,8 +394,8 @@ pub enum RendererFrame {
     },
 }
 
-/// One-shot result from the Supervisor's re-exec'd PAM worker, written once to worker stdout as a
-/// `shared::framing` JSON frame when its PAM conversation ends (ADR-0028). It crosses a different
+/// Final result of the Supervisor's re-exec'd PAM worker's conversation, carried as the last
+/// [`PamMessage::Outcome`] on the worker's stdout (ADR-0028, ADR-0241). It crosses a different
 /// process boundary from `RendererFrame`/`SupervisorFrame`, so is not reused as one. There is no
 /// `OtherError`: spawn failure, pipe I/O, a wedged worker or an undecodable frame returns
 /// `io::Result::Err` from `supervisor::pam_worker::exchange_over`.
@@ -406,6 +406,42 @@ pub enum PamOutcome {
     AuthFailed,
     MaxTries,
     PamError(String),
+}
+
+/// One PAM worker <-> Supervisor conversation frame, carried on the worker's piped stdio in
+/// `shared::framing`'s length-prefixed JSON, alongside [`PamOutcome`] (ADR-0241). `Prompt` and
+/// `Outcome` are the worker's to send; `Response` answers the `Prompt` just received and only the
+/// Supervisor sends it.
+#[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub enum PamMessage {
+    /// A PAM module asked for input. `echo` tells `pam_prompt`'s echo-on kind from the masked one;
+    /// neither is refused.
+    Prompt { text: String, echo: bool },
+    /// The answer to the most recent `Prompt`.
+    Response { secret: Vec<u8> },
+    /// The conversation ended.
+    Outcome(PamOutcome),
+}
+
+/// Hand-written like [`SecureSubmit`]'s: a derived `Debug` would print `Response`'s plaintext.
+impl std::fmt::Debug for PamMessage {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Prompt { text, echo } => f.debug_struct("Prompt").field("text", text).field("echo", echo).finish(),
+            Self::Response { secret } => {
+                f.debug_struct("Response").field("secret", &format_args!("<{} bytes redacted>", secret.len())).finish()
+            }
+            Self::Outcome(outcome) => f.debug_tuple("Outcome").field(outcome).finish(),
+        }
+    }
+}
+
+impl Zeroize for PamMessage {
+    fn zeroize(&mut self) {
+        if let Self::Response { secret } = self {
+            secret.zeroize();
+        }
+    }
 }
 
 #[cfg(test)]
@@ -630,6 +666,24 @@ mod tests {
             let parsed: PamOutcome = serde_json::from_value(wire).unwrap();
             assert_eq!(parsed, outcome);
         }
+    }
+
+    #[test]
+    fn a_pam_message_response_never_formats_its_secret() {
+        let rendered = format!("{:?}", PamMessage::Response { secret: b"hunter2".to_vec() });
+        assert!(rendered.contains("<7 bytes redacted>"), "the length is the only thing worth logging: {rendered}");
+        assert!(!rendered.contains("104"), "a byte of the plaintext reached the formatter: {rendered}");
+    }
+
+    #[test]
+    fn zeroizing_a_pam_message_clears_only_a_response_s_secret() {
+        let mut prompt = PamMessage::Prompt { text: "Password:".to_string(), echo: false };
+        prompt.zeroize();
+        assert_eq!(prompt, PamMessage::Prompt { text: "Password:".to_string(), echo: false }, "nothing to scrub here");
+
+        let mut response = PamMessage::Response { secret: b"hunter2".to_vec() };
+        response.zeroize();
+        assert_eq!(response, PamMessage::Response { secret: Vec::new() });
     }
 }
 
