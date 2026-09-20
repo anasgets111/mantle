@@ -36,6 +36,7 @@ femtovg = { version = "0.27.0", default-features = false, features = ["swash"] }
 fontdb = { version = "0.23.0", default-features = false, features = ["std", "fs", "memmap"] }
 # A wrapped line's own direction, for `layout::scene`'s direction mark (ADR-0211).
 unicode-bidi = "0.3.18"
+unicode-segmentation.workspace = true
 # Inflating `.svgz` under a cap of our own, because `usvg::decompress_svgz` reads to the end
 # (ADR-0234). Already compiled for `png`, so declaring it adds no crate.
 flate2 = { version = "1.1", default-features = false, features = ["rust_backend"] }

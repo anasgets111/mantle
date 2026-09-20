@@ -5442,6 +5442,49 @@ frame -- most of a GIF's cost is redrawing pixels that did not change.
 `frame_cap` and the truncate-to-1 fallback are gone: a byte-metered delta is never worse than a
 full frame, so nothing needs the "eating the budget or failing" tradeoff they existed for.
 
+## 0236. A plain `textfield` gets a caret and a selection; the masked one gets neither
+
+ADR-0064 and ADR-0092 both closed with "no caret in this pass", and the pass they deferred left an
+append-only field with a `│` glyph pasted onto the end of the drawn string. That glyph is deleted
+here.
+
+1. **Deletion is by grapheme cluster, in both fields.** `Backspace` removed one `char` in the plain
+   field and one UTF-8 scalar in `SecureBuffer`, so an `e` with a combining acute lost its letter
+   and kept its accent, and a family emoji lost one member per press. `unicode-segmentation` is
+   already resolved through cosmic-text, so declaring it compiles no new crate.
+   `SecureBuffer::grapheme_count` moves with it: the dot count has to fall by exactly one per
+   keystroke, which supersedes ADR-0064 decision 1's "count Unicode characters".
+2. **Caret and selection live beside the draft, not in the tree.** `FocusedTextField` gains
+   `(anchor, caret)` byte offsets, the way ADR-0069 keeps a scroll offset next to what it scrolls.
+   The draft is already outside the resolved tree (ADR-0092), and a caret that re-resolved the
+   scene would relayout every surface per keystroke.
+3. **The caret is a filled rect, drawn by the painter that placed the glyphs.** `Draw::Text` carries
+   the two offsets and `TextPainter::draw_text` fills a bar at the caret and a 30%-alpha band behind
+   the selection, both in the field's own `foreground`. Paint is the only place holding glyph
+   positions, so the alternative was threading the shaping handle through `paint::build` and
+   splitting one node's draw into three commands. The underline of ADR-0104 already fills rects
+   from the same glyph positions in the same loop. The caret does not blink: a still one costs no
+   timer and no repaint.
+4. **No new Lua property.** A caret in a colour other than the text it sits in, or a selection band
+   a config names, is a property nothing has asked for; both derive from `foreground`. There is no
+   `read_only`, no `on_select` and no Lua-visible selection range either.
+5. **The masked field keeps exactly its model.** No caret index, no selection, no click-derived
+   position. Paint receives a count and nothing else (ADR-0064), and a position inside a secret
+   would say where in the password the user is, which the count does not. Its `Zeroize` guarantees
+   are untouched: `pop_grapheme` still scrubs before it truncates.
+6. **Shift is the only modifier read.** `update_modifiers` was empty; it now records Shift, which
+   turns an arrow or a press into a selection. Nothing else is a key handler, and ADR-0050 still
+   adds none.
+7. **Not `cosmic_text::Editor`.** The one `FontSystem` lives inside the shaping worker and is
+   reachable only by channel (ADR-0039), while `Editor::action` takes `&mut FontSystem` per call.
+   Adopting it means a blocking round trip per keystroke plus retained state on a deliberately
+   stateless worker, or a second `FontSystem`. Four boundary functions are less code than either.
+
+Left alone: undo, paste, and word-wise motion, none of which has a consumer. ADR-0092 decision 2's
+line on dead keys and compose sequences also stands as written, unverified: SCTK feeds every keysym
+through `xkb::compose::State` before the `utf8` this engine reads, so the line may be stale, but
+proving it needs a physical key press on a compose layout.
+
 ## 0237. Every shell writes a log, and a descriptor with somewhere to be is copied rather than replaced
 
 A shell started from a terminal wrote no `shell.log` at all, so `mantle log` fell through to the

@@ -160,6 +160,9 @@ fn clickable(
 struct PointerHit {
     button: Option<Clickable>,
     field: Option<FieldTarget>,
+    /// Byte offset under the point in the plain `textfield` it landed in (ADR-0236), decided on
+    /// this same walk so one event cannot get two answers.
+    caret: Option<usize>,
     /// `on_drag` button under the press, with its rect (ADR-0116 decision 1).
     drag: Option<(LogicalRect, Function)>,
 }
@@ -203,33 +206,49 @@ fn release_completes_click(
 }
 
 /// Which field a press focuses (ADR-0050 decision 4). Both halves are rewritten on every press:
-/// reply and password fields must displace each other.
+/// reply and password fields must displace each other. `caret` is the byte offset under the press
+/// point ([`layout::hit::caret_at`]), absent when nothing measured it; `extend` is Shift, which
+/// selects from where the caret already was instead of collapsing to the press (ADR-0236).
 fn press_chooses_focus(
     hit_field: Option<FieldTarget>,
     instance_id: &str,
+    caret: Option<usize>,
+    extend: bool,
     focused_secure_submit: Option<FocusedField>,
     focused_text_field: Option<FocusedTextField>,
 ) -> (Option<FocusedField>, Option<FocusedTextField>) {
     match hit_field {
         Some(FieldTarget::Masked(target)) => (Some(FocusedField { surface_id: instance_id.to_string(), target }), None),
         // Re-pressing the same field resumes its draft (ADR-0108).
-        Some(FieldTarget::Plain { id, on_change, on_submit, on_cancel, on_navigate }) => (
-            None,
-            Some(FocusedTextField {
-                surface_id: instance_id.to_string(),
-                id,
-                buffer: focused_text_field.filter(|field| field.id == id).map(|field| field.buffer).unwrap_or_default(),
-                typing: true,
-                on_change,
-                on_submit,
-                on_cancel,
-                on_navigate,
-            }),
-        ),
+        Some(FieldTarget::Plain { id, on_change, on_submit, on_cancel, on_navigate }) => {
+            let resumed = focused_text_field.filter(|field| field.id == id);
+            let anchor = resumed.as_ref().map(|field| field.selection.0);
+            let buffer = resumed.map(|field| field.buffer).unwrap_or_default();
+            // Where the press landed; the end of the draft when nothing measured it (ADR-0236).
+            let caret = caret.unwrap_or(buffer.len()).min(buffer.len());
+            (
+                None,
+                Some(FocusedTextField {
+                    surface_id: instance_id.to_string(),
+                    id,
+                    selection: (anchor.filter(|_| extend).unwrap_or(caret), caret),
+                    buffer,
+                    typing: true,
+                    selecting: true,
+                    on_change,
+                    on_submit,
+                    on_cancel,
+                    on_navigate,
+                }),
+            )
+        }
         // Elsewhere stops plain typing but keeps its draft (ADR-0108). Masked focus remains until
         // another field takes it (ADR-0114 decision 8), so scrim, card, and Authenticate clicks do
         // not discard a secret before `submit`.
-        None => (focused_secure_submit, focused_text_field.map(|field| FocusedTextField { typing: false, ..field })),
+        None => (
+            focused_secure_submit,
+            focused_text_field.map(|field| FocusedTextField { typing: false, selecting: false, ..field }),
+        ),
     }
 }
 
@@ -311,6 +330,8 @@ impl PointerHandler for App {
                     let (masked, plain) = press_chooses_focus(
                         hit.field,
                         &instance_id,
+                        hit.caret,
+                        self.shift_held,
                         self.focused_secure_submit.clone(),
                         self.focused_text_field.clone(),
                     );
@@ -345,6 +366,10 @@ impl PointerHandler for App {
                     // opened by `on_click`.
                     self.input_serial = Some(ArmedSerial { serial, instance_id: instance_id.clone() });
                     self.pointer_input_count += 1;
+                    // The pointer is up, so motion stops growing a selection (ADR-0236).
+                    if let Some(field) = self.focused_text_field.as_mut() {
+                        field.selecting = false;
+                    }
                     // Release does not change focus; drag-off must not un-focus a textfield. End
                     // drag before click so a combined control commits before its click handler.
                     if button == BTN_LEFT {
@@ -405,6 +430,7 @@ impl PointerHandler for App {
                     // Fires before the write: no `on_drag` handler can read `pointer_at`.
                     if moved {
                         self.fire_on_drag(&instance_id, event.position, "move");
+                        self.drag_selection(index, &instance_id, event.position);
                     }
                     self.pointer_at = Some((instance_id, event.position));
                     // One lookup serves both; `Scene::surface` lends its tree.
@@ -437,14 +463,39 @@ impl App {
     /// cloned out of the lent tree; the tree itself is not.
     fn hit_under(&self, index: usize, position: (f64, f64)) -> PointerHit {
         let Some(tree) = self.client.scene().surface(&self.surfaces[index].surface_id) else {
-            return PointerHit { button: None, field: None, drag: None };
+            return PointerHit { button: None, field: None, caret: None, drag: None };
         };
         let point = layout::hit::LogicalPoint { x: position.0 as f32, y: position.1 as f32 };
         let path = layout::hit::hit_path(tree, point);
+        let field = focused_field(&path);
+        // `None`, not `""`, for a field this does not hold: an empty draft measures to offset 0,
+        // and handing that to `drag_selection` moves the held field's head into another field's
+        // text. Only the draft `press_chooses_focus` would resume has a caret (ADR-0108).
+        let drafted = self
+            .focused_text_field
+            .as_ref()
+            .filter(|held| matches!(&field, Some(FieldTarget::Plain { id, .. }) if *id == held.id))
+            .map(|held| held.buffer.as_str());
         PointerHit {
             button: clickable(&path, point, &self.shaping),
-            field: focused_field(&path),
+            caret: drafted.and_then(|draft| layout::hit::caret_at(&path, point, draft, &self.shaping)),
+            field,
             drag: draggable_button(&path).map(|(rect, handler)| (rect, handler.clone())),
+        }
+    }
+
+    /// Grow the focused field's selection to the pointer, keeping its anchor: a press inside a
+    /// plain field that has since moved (ADR-0236). Off its own surface the drag does nothing,
+    /// rather than reading a caret out of some other field the pointer crossed.
+    fn drag_selection(&mut self, index: usize, instance_id: &str, position: (f64, f64)) {
+        let selecting =
+            self.focused_text_field.as_ref().is_some_and(|field| field.selecting && field.surface_id == instance_id);
+        let Some(caret) = selecting.then(|| self.hit_under(index, position).caret).flatten() else {
+            return;
+        };
+        if let Some(field) = self.focused_text_field.as_mut().filter(|field| field.selection.1 != caret) {
+            field.selection.1 = caret;
+            self.field_input_changed = true;
         }
     }
 
@@ -934,8 +985,10 @@ mod tests {
         FocusedTextField {
             surface_id: "calendar@eDP-1".to_string(),
             id: layout::scene::NodeId::test(id),
+            selection: (buffer.len(), buffer.len()),
             buffer: buffer.to_string(),
             typing: false,
+            selecting: false,
             on_change: None,
             on_submit: None,
             on_cancel: None,
@@ -951,12 +1004,15 @@ mod tests {
         let (masked, plain) = press_chooses_focus(
             Some(plain_field(&lua, 7)),
             "notification_area@eDP-1",
+            Some(7),
+            false,
             None,
             Some(draft(7, "half a sentence")),
         );
         let plain = plain.expect("the press focused the field it hit");
         assert_eq!(plain.buffer, "half a sentence");
         assert!(plain.typing, "the caret is back");
+        assert_eq!(plain.selection, (7, 7), "the caret lands where the press did, not at the end");
         // `prune_text_field_focus` keys liveness off this, so the draft's stale surface would drop
         // what was typed.
         assert_eq!(plain.surface_id, "notification_area@eDP-1", "the press names the surface");
@@ -973,6 +1029,8 @@ mod tests {
             Some(plain_field(&lua, 8)),
             "notification_area@eDP-1",
             None,
+            false,
+            None,
             Some(draft(7, "half a sentence")),
         );
         let plain = plain.expect("the press focused the field it hit");
@@ -980,10 +1038,36 @@ mod tests {
         assert!(plain.typing);
     }
 
+    /// ADR-0236: Shift selects from where the caret was. `leave` clears `shift_held` so a Shift
+    /// released under another client cannot make this happen to a press the user meant as plain.
+    #[test]
+    fn shift_pressing_a_held_field_selects_from_the_caret_it_already_had() {
+        let lua = Lua::new();
+        let held = draft(7, "half a sentence");
+        let anchor = held.selection.0;
+        let (_, plain) =
+            press_chooses_focus(Some(plain_field(&lua, 7)), "notification_area@eDP-1", Some(4), true, None, Some(held));
+        let plain = plain.expect("the press focused the field it hit");
+        assert_eq!(plain.selection, (anchor, 4), "the anchor stays put and the press moves the head");
+
+        // Without Shift the same press collapses instead, which is the difference a stale
+        // `shift_held` would erase.
+        let (_, plain) = press_chooses_focus(
+            Some(plain_field(&lua, 7)),
+            "notification_area@eDP-1",
+            Some(4),
+            false,
+            None,
+            Some(draft(7, "half a sentence")),
+        );
+        assert_eq!(plain.expect("focused").selection, (4, 4));
+    }
+
     #[test]
     fn pressing_away_from_every_field_stops_typing_but_keeps_the_draft() {
         let held = FocusedField { surface_id: "lock@eDP-1".to_string(), target: secure_target() };
-        let (masked, plain) = press_chooses_focus(None, "bar@eDP-1", Some(held.clone()), Some(draft(7, "kept")));
+        let (masked, plain) =
+            press_chooses_focus(None, "bar@eDP-1", None, false, Some(held.clone()), Some(draft(7, "kept")));
         let plain = plain.expect("the draft survives a press elsewhere");
         assert_eq!(plain.buffer, "kept");
         assert!(!plain.typing, "no caret without focus");
@@ -996,6 +1080,8 @@ mod tests {
         let (masked, plain) = press_chooses_focus(
             Some(FieldTarget::Masked(secure_target())),
             "lock@eDP-1",
+            None,
+            false,
             None,
             Some(draft(7, "half a sentence")),
         );

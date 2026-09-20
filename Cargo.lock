@@ -1533,6 +1533,7 @@ dependencies = [
  "thiserror 2.0.20",
  "tokio",
  "unicode-bidi",
+ "unicode-segmentation",
  "wayland-client",
  "wayland-egl",
  "wayland-protocols",
@@ -1732,6 +1733,7 @@ dependencies = [
  "serde_json",
  "thiserror 2.0.20",
  "tokio",
+ "unicode-segmentation",
  "zeroize",
 ]
 

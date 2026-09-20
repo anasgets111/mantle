@@ -7,6 +7,7 @@
 //! return. `ZeroizeOnDrop` backs that up, and only that: release is `panic = "abort"`, so on a
 //! panic no destructor runs and the explicit call is the only scrub.
 
+use unicode_segmentation::UnicodeSegmentation;
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
 /// Growable bytes whose full backing allocation is zeroized explicitly and again on `Drop`
@@ -50,20 +51,21 @@ impl SecureBuffer {
         self.bytes.extend_from_slice(bytes);
     }
 
-    /// Backspace on `secure_submit`: zeroizes the last UTF-8 character in place before shortening
+    /// Backspace on `secure_submit`: zeroizes the last grapheme cluster in place before shortening
     /// the length.
     ///
     /// `Vec::truncate` would leave deleted bytes live while the user keeps typing; the submit's
     /// later `.zeroize()` is too late because a lock screen holds this buffer through corrections
     /// (ADR-0005).
     ///
-    /// Delete a whole scalar, not a byte: `expose_secret` sends bytes straight into an IPC
-    /// envelope with no second UTF-8 decode, so a split multi-byte scalar would reach the wire.
-    /// `rposition` finds the last non-continuation byte, the only valid cut point.
+    /// Delete what the user sees as one character (ADR-0236): an `e` and its combining acute are
+    /// two scalars and one keystroke, and `expose_secret` sends bytes straight into an IPC envelope
+    /// with no second decode, so a cut anywhere but a cluster boundary would reach the wire.
     ///
-    /// Returns `false` for Backspace on an empty field.
-    pub fn pop_char(&mut self) -> bool {
-        let Some(start) = self.bytes.iter().rposition(|byte| (byte & 0xC0) != 0x80) else {
+    /// Returns `false` for Backspace on an empty field. [`Self::push_bytes`] can hold non-UTF-8
+    /// for a serializer sink, but only keystrokes are ever deleted, and those arrive as `str`.
+    pub fn pop_grapheme(&mut self) -> bool {
+        let Some((start, _)) = self.text().and_then(|text| text.grapheme_indices(true).next_back()) else {
             return false;
         };
         // `truncate` neither reallocates nor frees, so scrubbed bytes stay in this allocation.
@@ -82,14 +84,17 @@ impl SecureBuffer {
 
     /// Number of typed characters, so a masked field draws one glyph per character.
     ///
-    /// Count characters, not [`Self::len`]'s bytes: one non-ASCII character would otherwise draw
-    /// two or three dots for one keystroke.
-    ///
-    /// Count non-continuation bytes with the same `(byte & 0xC0) != 0x80` boundary test as
-    /// [`Self::pop_char`], without copying or decoding. This is the only read besides
+    /// Clusters, not [`Self::len`]'s bytes and not scalars: the count has to move by exactly one
+    /// per keystroke, and [`Self::pop_grapheme`] deletes by cluster. This is the only read besides
     /// `expose_secret`; it discloses only the length already shown by the dots.
-    pub fn char_count(&self) -> usize {
-        self.bytes.iter().filter(|byte| (*byte & 0xC0) != 0x80).count()
+    pub fn grapheme_count(&self) -> usize {
+        self.text().map_or(0, |text| text.graphemes(true).count())
+    }
+
+    /// The buffer as text, for the two reads that need cluster boundaries. `None` for bytes a
+    /// serializer sink pushed, which no masked field ever draws or deletes.
+    fn text(&self) -> Option<&str> {
+        std::str::from_utf8(&self.bytes).ok()
     }
 
     /// The one sanctioned trust-boundary read, for serialization into an outgoing IPC envelope.
@@ -129,25 +134,25 @@ mod tests {
     use super::*;
 
     #[test]
-    fn char_count_counts_characters_not_bytes() {
+    fn grapheme_count_counts_characters_not_bytes() {
         let mut buf = SecureBuffer::new();
         buf.push_str("pa\u{00df}w\u{00f6}rd");
         assert_eq!(buf.len(), 9, "two of these seven characters are two bytes each");
-        assert_eq!(buf.char_count(), 7, "a masked field must draw one dot per keystroke, not per byte");
+        assert_eq!(buf.grapheme_count(), 7, "a masked field must draw one dot per keystroke, not per byte");
     }
 
     #[test]
-    fn char_count_follows_a_backspace() {
+    fn grapheme_count_follows_a_backspace() {
         let mut buf = SecureBuffer::new();
         buf.push_str("ab\u{00e9}");
-        assert_eq!(buf.char_count(), 3);
-        assert!(buf.pop_char());
-        assert_eq!(buf.char_count(), 2, "deleting one multi-byte character removes exactly one dot");
+        assert_eq!(buf.grapheme_count(), 3);
+        assert!(buf.pop_grapheme());
+        assert_eq!(buf.grapheme_count(), 2, "deleting one multi-byte character removes exactly one dot");
     }
 
     #[test]
     fn an_empty_buffer_has_no_characters() {
-        assert_eq!(SecureBuffer::new().char_count(), 0);
+        assert_eq!(SecureBuffer::new().grapheme_count(), 0);
     }
 
     #[test]
@@ -189,15 +194,15 @@ mod tests {
     }
 
     /// A lock screen keeps the buffer live while typing, so deleted characters must not remain
-    /// readable from the heap. This is why [`SecureBuffer::pop_char`] is not bare `truncate`.
+    /// readable from the heap. This is why [`SecureBuffer::pop_grapheme`] is not bare `truncate`.
     #[test]
-    fn pop_char_zeroizes_the_bytes_it_removes() {
+    fn pop_grapheme_zeroizes_the_bytes_it_removes() {
         let mut buf = SecureBuffer::new();
         buf.push_str("hunter2");
-        assert!(buf.pop_char());
+        assert!(buf.pop_grapheme());
 
         assert_eq!(buf.expose_secret(), b"hunter");
-        // SAFETY: `pop_char` truncates without deallocating, so the byte past the new length is
+        // SAFETY: `pop_grapheme` truncates without deallocating, so the byte past the new length is
         // live and initialised. Read after the mutation, for the reason above.
         assert_eq!(unsafe { *buf.bytes.as_ptr().add(6) }, 0, "the removed byte was left in the backing allocation");
     }
@@ -205,16 +210,32 @@ mod tests {
     /// A multi-byte character is one Backspace, not one byte; `expose_secret` sends it straight to
     /// the wire without a second decode to catch a split scalar (ADR-0005).
     #[test]
-    fn pop_char_removes_a_whole_utf8_scalar_and_reports_an_empty_buffer() {
+    fn pop_grapheme_removes_a_whole_character_and_reports_an_empty_buffer() {
         let mut buf = SecureBuffer::new();
         buf.push_str("a\u{e9}");
         assert_eq!(buf.len(), 3);
 
-        assert!(buf.pop_char());
+        assert!(buf.pop_grapheme());
         assert_eq!(buf.expose_secret(), b"a");
 
-        assert!(buf.pop_char());
+        assert!(buf.pop_grapheme());
         assert!(buf.is_empty());
-        assert!(!buf.pop_char());
+        assert!(!buf.pop_grapheme());
+    }
+
+    /// One keystroke, one deletion, whatever the typist composed: a base letter plus its combining
+    /// mark is two scalars, and a flag is two. Scalar-wise deletion left the acute behind on a
+    /// stripped `e` and half a flag (ADR-0236).
+    #[test]
+    fn pop_grapheme_deletes_a_composed_character_whole() {
+        let mut buf = SecureBuffer::new();
+        buf.push_str("e\u{301}\u{1F1E9}\u{1F1EA}");
+        assert_eq!(buf.grapheme_count(), 2);
+
+        assert!(buf.pop_grapheme());
+        assert_eq!(buf.expose_secret(), "e\u{301}".as_bytes(), "the flag's two regional indicators go together");
+
+        assert!(buf.pop_grapheme());
+        assert!(buf.is_empty(), "the combining acute leaves with the letter it sits on");
     }
 }

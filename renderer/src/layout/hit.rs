@@ -77,6 +77,30 @@ pub fn link_under(node: &ResolvedNode, point: LogicalPoint, shaping: &ShapingHan
     None
 }
 
+/// Byte offset in `text` nearest a press at `point` in the innermost plain `textfield` on `path`,
+/// or `None` when there is none or it draws nothing (ADR-0236). `point` is surface-local, as
+/// [`hit_path`] takes it.
+///
+/// Measured where paint puts the same string (ADR-0211): one shaped line under the field's own
+/// alignment, and the first cluster whose midpoint the press has not passed.
+///
+/// ponytail: cluster starts come from the shaper in logical order, so on a right-to-left or mixed
+/// line the press lands on the cluster left of the one under the pointer. Upgrade path: order the
+/// glyphs by `x` and read the direction of the run the press fell in.
+pub fn caret_at(path: &[&ResolvedNode], point: LogicalPoint, text: &str, shaping: &ShapingHandle) -> Option<usize> {
+    let depth = path.iter().rposition(|node| node.kind == "textfield")?;
+    // A masked field has none: a position inside a secret is one nothing outside `SecureBuffer`
+    // may hold (ADR-0064).
+    let Some(PaintStyle::TextField { target: None, font_size, align, .. }) = path[depth].paint.as_ref() else {
+        return None;
+    };
+    let rect = absolute_rect(&path[..=depth])?;
+    let (_, shaped) = shaping.shape_lines(text, &[], *font_size, None).into_iter().next()?;
+    let laid = shaped.shaped.first()?;
+    let left = rect.x + align.line_left(laid.rtl, 0.0, rect.width, laid.width);
+    Some(shaping::caret_at(laid, point.x - left, text.len()))
+}
+
 /// The shape the pointer should take over `path`'s deepest node (ADR-0107). Innermost wins, and
 /// at each node an explicit `cursor` property beats what the node is: a `text` with `on_link` over
 /// a link's own words is a `pointer`, a `textfield` is `text`, a button that
@@ -343,6 +367,54 @@ mod tests {
                 font: None,
             })
             .width
+    }
+
+    // ---- caret_at (ADR-0236) ----
+
+    #[test]
+    fn a_press_puts_the_caret_on_the_boundary_nearest_it() {
+        let shaping = ShapingHandle::spawn();
+        let text = "hello";
+        let mut field = node("textfield", (10.0, 0.0, 200.0, 28.0), Vec::new());
+        field.paint = Some(PaintStyle::TextField {
+            target: None,
+            placeholder: String::new(),
+            mask: "*".to_string(),
+            font_size: 14.0,
+            color: crate::layout::node::Rgba { r: 1.0, g: 1.0, b: 1.0, a: 1.0 },
+            align: TextAlign::Start,
+        });
+        let path = [&field];
+        // The node sits at x = 10, and `point` is surface-local, so every press is offset by it.
+        let at = |x: f32| caret_at(&path, LogicalPoint { x: 10.0 + x, y: 5.0 }, text, &shaping);
+        assert_eq!(at(-4.0), Some(0), "a press left of the text lands before the first character");
+        assert_eq!(at(width_of(&shaping, "hel") + 1.0), Some(3), "just past the third character's midpoint");
+        assert_eq!(at(width_of(&shaping, text) + 40.0), Some(text.len()), "past the end is the end");
+
+        // A masked field never answers: its caret would say where the secret is (ADR-0064).
+        let Some(PaintStyle::TextField { target, .. }) = field.paint.as_mut() else { unreachable!() };
+        *target = Some(crate::layout::node::SecureSubmitTarget {
+            capability: "session_lock".to_string(),
+            action: "authenticate".to_string(),
+        });
+        assert_eq!(caret_at(&[&field], LogicalPoint { x: 12.0, y: 5.0 }, text, &shaping), None);
+    }
+
+    /// An empty draft measures to 0 like any other press, which is why `hit_under` hands this
+    /// `None` rather than `""` for a field it does not hold: 0 is indistinguishable from an answer.
+    #[test]
+    fn an_empty_draft_still_answers_with_a_caret() {
+        let shaping = ShapingHandle::spawn();
+        let mut field = node("textfield", (10.0, 0.0, 200.0, 28.0), Vec::new());
+        field.paint = Some(PaintStyle::TextField {
+            target: None,
+            placeholder: "reply".to_string(),
+            mask: "*".to_string(),
+            font_size: 14.0,
+            color: crate::layout::node::Rgba { r: 1.0, g: 1.0, b: 1.0, a: 1.0 },
+            align: TextAlign::Start,
+        });
+        assert_eq!(caret_at(&[&field], LogicalPoint { x: 90.0, y: 5.0 }, "", &shaping), Some(0));
     }
 
     #[test]

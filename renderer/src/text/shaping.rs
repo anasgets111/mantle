@@ -95,6 +95,61 @@ pub struct Glyph {
     pub y: f32,
     pub advance: f32,
     pub start: usize,
+    pub end: usize,
+    /// This glyph's own direction, which an embedded run does not share with its line.
+    pub rtl: bool,
+}
+
+/// The byte a caret takes when the pointer lands at `x`, line-relative.
+///
+/// The half of a glyph's box nearer its own leading edge takes its `start`, and a right-to-left
+/// glyph leads on the right. Per glyph, never per line: Latin embedded in an Arabic line runs the
+/// other way, and reading the line's direction there puts the caret one cluster off at exactly the
+/// boundary where the two meet -- which every single-direction test still passes.
+pub fn caret_at(line: &ShapedLine, x: f32, text_len: usize) -> usize {
+    if let Some(glyph) = line.glyphs.iter().find(|glyph| x >= glyph.x && x < glyph.x + glyph.advance) {
+        return match (x < glyph.x + glyph.advance / 2.0) != glyph.rtl {
+            true => glyph.start,
+            false => glyph.end,
+        };
+    }
+    // Past every box, so the line's own direction says which byte each side is.
+    match line.glyphs.iter().all(|glyph| x < glyph.x) != line.rtl {
+        true => 0,
+        false => text_len,
+    }
+}
+
+/// Where a caret at `offset` draws, line-relative: the inverse of [`caret_at`], whose every answer
+/// is some glyph's `start` or `end`.
+///
+/// An offset where two runs meet ends one glyph and starts another, and both edges are valid: the
+/// first in visual order wins, so the caret stays on the run the text before it belongs to.
+///
+/// ponytail: an offset inside a cluster draws at the cluster's leading edge, so stepping through
+/// `لا` moves the caret without moving the mark. Both this and the boundary tie-break above want
+/// the same upgrade: a caret that carries which side of a boundary it sits on.
+pub fn caret_x(line: &ShapedLine, offset: usize) -> f32 {
+    let leading = |glyph: &Glyph| match glyph.rtl {
+        true => glyph.x + glyph.advance,
+        false => glyph.x,
+    };
+    let trailing = |glyph: &Glyph| match glyph.rtl {
+        true => glyph.x,
+        false => glyph.x + glyph.advance,
+    };
+    line.glyphs
+        .iter()
+        .find_map(|glyph| match offset {
+            _ if offset == glyph.start => Some(leading(glyph)),
+            _ if offset == glyph.end => Some(trailing(glyph)),
+            _ if (glyph.start..glyph.end).contains(&offset) => Some(leading(glyph)),
+            _ => None,
+        })
+        .unwrap_or(match line.rtl {
+            true => line.width,
+            false => 0.0,
+        })
 }
 
 /// The multiplier every measurement and every paint derives a line height from.
@@ -644,6 +699,8 @@ fn shape(font_system: &mut FontSystem, primary_family: &str, request: &ShapeRequ
                     y: glyph.y - glyph.y_offset * glyph.font_size,
                     advance: glyph.w,
                     start: paragraph_start + glyph.start,
+                    end: paragraph_start + glyph.end,
+                    rtl: glyph.level.is_rtl(),
                 })
                 .collect(),
             false => Box::default(),
@@ -986,6 +1043,43 @@ mod tests {
                 assert!(faces.contains(&glyph.face), "{glyph:?} names a face femtovg is never given");
             }
         }
+    }
+
+    /// ADR-0236: byte 0 is the first letter, which a right-to-left line draws rightmost, so its
+    /// caret belongs at the line's right edge and the press that lands there answers with it.
+    #[test]
+    fn a_right_to_left_caret_leads_on_the_right() {
+        let handle = ShapingHandle::spawn();
+        let text = "مرحبا";
+        let shaped = handle.shape_glyphs(req(text, 20.0));
+        let line = &shaped.shaped[0];
+
+        assert_eq!(caret_x(line, 0), line.width, "the first byte draws at the right edge");
+        assert_eq!(caret_x(line, text.len()), 0.0, "and the last at the left");
+        assert_eq!(caret_at(line, line.width - 1.0, text.len()), 0, "a press at the right edge is byte 0");
+        assert_eq!(caret_at(line, 1.0, text.len()), text.len(), "and one at the left is the end");
+    }
+
+    /// An embedded Latin run runs the other way inside a right-to-left line, so which side of a
+    /// glyph is "before" comes from the glyph and never from the line. Reading `line.rtl` here
+    /// answers 11 instead of 12 -- one cluster off, silently, and only where the two meet.
+    #[test]
+    fn a_caret_in_an_embedded_run_reads_that_runs_direction() {
+        let handle = ShapingHandle::spawn();
+        let text = "مرحبا abc";
+        let shaped = handle.shape_glyphs(req(text, 20.0));
+        let line = &shaped.shaped[0];
+        assert!(line.rtl, "the line is right to left");
+        let a = line.glyphs.iter().find(|glyph| glyph.start == 11).expect("a glyph for 'a'");
+        assert!(!a.rtl, "but the letter 'a' in it is not");
+
+        assert_eq!(caret_at(line, a.x + a.advance * 0.75, text.len()), 12, "past 'a' is before 'b'");
+        assert_eq!(caret_at(line, a.x + a.advance * 0.25, text.len()), 11, "and short of it is before 'a'");
+        // Byte 11 ends the space and starts 'a': two valid carets at a direction change. The
+        // first in visual order wins, which keeps it on the Arabic the text before it belongs to.
+        let space = line.glyphs.iter().find(|glyph| glyph.end == 11).expect("a glyph for the space");
+        assert_eq!(caret_x(line, 11), space.x, "the earlier run's trailing edge, not 'a' s leading one");
+        assert_eq!(caret_x(line, 12), a.x + a.advance, "and past 'a' is its own trailing edge");
     }
 
     /// A right-to-left paragraph says so, and lays the letter it starts with out rightmost.

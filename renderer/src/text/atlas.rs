@@ -16,7 +16,7 @@ use femtovg::{Canvas, Color, FontId, ImageId, Paint, Path, PositionedGlyph, Text
 use shared::warn;
 
 use crate::layout::node::{Rgba, StyleRun, TextAlign, font_runs};
-use crate::text::shaping::{FontFace, Glyph, ShapingHandle};
+use crate::text::shaping::{FontFace, Glyph, ShapingHandle, caret_x};
 
 use super::snap::{LogicalRect, snap_to_physical};
 
@@ -76,6 +76,8 @@ pub struct TextDraw<'a> {
     pub font: Option<&'a Arc<str>>,
     pub color: Rgba,
     pub align: TextAlign,
+    /// A focused plain `textfield`'s `(anchor, caret)` byte offsets into `text` (ADR-0236).
+    pub caret: Option<(usize, usize)>,
 }
 
 /// Registers every face of `font_chain` femtovg does not hold yet, and maps each face's shaping id
@@ -110,7 +112,7 @@ fn register(
 
 /// The spans under the glyphs `in_run` picks, one per visually contiguous group of them: bidi can
 /// split a run around text that is not in it (ADR-0211). `glyphs` are in visual order.
-fn underline_spans(glyphs: &[Glyph], in_run: impl Fn(&Glyph) -> bool) -> Vec<(f32, f32)> {
+fn x_spans(glyphs: &[Glyph], in_run: impl Fn(&Glyph) -> bool) -> Vec<(f32, f32)> {
     glyphs
         .chunk_by(|a, b| in_run(a) == in_run(b))
         .filter(|group| in_run(&group[0]))
@@ -227,7 +229,7 @@ impl TextPainter {
     /// Rows are the glyphs [`ShapingHandle::shape_lines`] laid out, so measurement and paint share
     /// one shaper (ADR-0211); `runs` (ADR-0104) colour and underline by the byte each glyph came from.
     pub fn draw_text(&mut self, line: TextDraw<'_>, rect: LogicalRect, scale: f32) {
-        let TextDraw { text, runs, font_size, font, color, align } = line;
+        let TextDraw { text, runs, font_size, font, color, align, caret } = line;
         let physical = snap_to_physical(rect, scale);
         // ponytail: glyphs are placed at logical size in a physical-pixel canvas whose dpi is 1.0,
         // so on a fractional or 2x output every glyph in this shell draws at logical size. Upgrade
@@ -240,6 +242,19 @@ impl TextPainter {
                 let left = align.line_left(laid.rtl, physical.x0 as f32, physical.x1 as f32, laid.width);
                 let baseline = physical.y0 as f32 + row as f32 * step + laid.baseline;
                 row += 1;
+                // A `textfield`'s selection and caret, in the ink the field already declared for
+                // its text (ADR-0236). A draft holds no newline, so only the first row has either.
+                // ponytail: the caret does not blink, which costs no timer and no repaint. Upgrade
+                // path: a phase off the animation clock, which already wakes the loop (ADR-0145).
+                let top = baseline - laid.baseline;
+                let selection = caret.filter(|_| row == 1);
+                // Behind the glyphs, so the words inside it stay readable. One rect per visually
+                // contiguous stretch: a selection crossing a direction change is not one box.
+                if let Some((lo, hi)) = selection.map(|(anchor, at)| (anchor.min(at), anchor.max(at))) {
+                    for (x0, x1) in x_spans(&laid.glyphs, |glyph| glyph.start < hi && glyph.end > lo) {
+                        self.fill(left + x0, top, x1 - x0, step, Rgba { a: color.a * 0.3, ..color });
+                    }
+                }
                 let style = |start: usize| runs.iter().find(|run| run.range.contains(&(line_start + start)));
                 let key = |glyph: &Glyph| {
                     (glyph.face, glyph.weight, style(glyph.start).and_then(|run| run.color).unwrap_or(color))
@@ -252,19 +267,26 @@ impl TextPainter {
                     });
                     self.fill_run(key(&group[0]), glyphs, font_size);
                 }
+                // Over them, so a glyph's side bearing cannot swallow it.
+                if let Some((.., at)) = selection {
+                    self.fill(left + caret_x(laid, at), top, thickness, step, color);
+                }
 
                 for run in runs.iter().filter(|run| run.underline) {
                     let tint = run.color.unwrap_or(color);
-                    for (x0, x1) in
-                        underline_spans(&laid.glyphs, |glyph| run.range.contains(&(line_start + glyph.start)))
-                    {
-                        let mut path = Path::new();
-                        path.rect(left + x0, (baseline + thickness).round(), x1 - x0, thickness);
-                        self.canvas.fill_path(&path, &Paint::color(Color::rgbaf(tint.r, tint.g, tint.b, tint.a)));
+                    for (x0, x1) in x_spans(&laid.glyphs, |glyph| run.range.contains(&(line_start + glyph.start))) {
+                        self.fill(left + x0, (baseline + thickness).round(), x1 - x0, thickness, tint);
                     }
                 }
             }
         }
+    }
+
+    /// One filled rectangle: an underline, a caret, or the highlight behind a selection.
+    fn fill(&mut self, x: f32, y: f32, width: f32, height: f32, color: Rgba) {
+        let mut path = Path::new();
+        path.rect(x, y, width, height);
+        self.canvas.fill_path(&path, &Paint::color(Color::rgbaf(color.r, color.g, color.b, color.a)));
     }
 
     /// Draws `glyphs` in `face` at `weight`; a face femtovg never registered draws nothing.
@@ -300,10 +322,10 @@ mod tests {
         assert_eq!(evicted, vec![(0, 40), (1, 40), (2, 40)], "asked for longest ago, not largest or newest");
     }
 
-    /// A run bidi splits around other text is underlined piece by piece, never across the text
-    /// between the pieces.
+    /// A run bidi splits around other text is drawn piece by piece, never across the text between
+    /// the pieces -- for an underline, and for the selection behind a `textfield` (ADR-0236).
     #[test]
-    fn a_run_split_around_other_text_is_underlined_under_each_piece() {
+    fn a_run_split_around_other_text_is_drawn_under_each_piece() {
         let glyph = |x: f32, start: usize| Glyph {
             face: fontdb::ID::dummy(),
             weight: 400,
@@ -312,9 +334,19 @@ mod tests {
             y: 0.0,
             advance: 10.0,
             start,
+            end: start + 1,
+            rtl: false,
         };
         let glyphs = [glyph(0.0, 4), glyph(10.0, 5), glyph(20.0, 0), glyph(30.0, 6)];
-        assert_eq!(underline_spans(&glyphs, |glyph| glyph.start >= 4), vec![(0.0, 20.0), (30.0, 40.0)]);
-        assert_eq!(underline_spans(&glyphs, |glyph| glyph.start == 9), Vec::new());
+        assert_eq!(x_spans(&glyphs, |glyph| glyph.start >= 4), vec![(0.0, 20.0), (30.0, 40.0)]);
+        assert_eq!(x_spans(&glyphs, |glyph| glyph.start == 9), Vec::new());
+        // Bytes 4..7 are contiguous in the source and two boxes on screen, which is why a
+        // selection cannot be one rect.
+        let (lo, hi) = (4, 7);
+        assert_eq!(
+            x_spans(&glyphs, |glyph| glyph.start < hi && glyph.end > lo),
+            vec![(0.0, 20.0), (30.0, 40.0)],
+            "one rect per visually contiguous stretch"
+        );
     }
 }

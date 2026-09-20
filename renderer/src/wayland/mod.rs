@@ -186,6 +186,9 @@ pub struct App {
     ///
     /// Mutually exclusive with `focused_secure_submit`; the innermost textfield is one kind.
     focused_text_field: Option<FocusedTextField>,
+    /// Shift on the seat's keyboard, the one modifier any edit reads: it turns a caret motion or
+    /// a press into a selection (ADR-0236).
+    shift_held: bool,
     /// Native, Lua-invisible keystroke buffer until Enter (ADR-0005/ADR-0009/ADR-0027). Its
     /// lifetime follows `focused_secure_submit`; destination changes zeroize it.
     secure_buffer: shared::SecureBuffer,
@@ -301,6 +304,7 @@ pub fn run(
         last_focus_key: (Vec::new(), false),
         focused_text_field: None,
         secure_buffer: shared::SecureBuffer::new(),
+        shift_held: false,
         field_input_changed: false,
         animation_frame_due: false,
         surfaces_drawn: 0,

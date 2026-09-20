@@ -126,7 +126,7 @@ fn run(painter: &mut TextPainter, walk: &mut Walk<'_, '_>, commands: &[DrawCmd],
                 }
                 paint_border(painter.canvas_mut(), rect, *radius, *colors, *widths, scale);
             }
-            Draw::Text { content, runs, font_size, font, color, align, centered } => {
+            Draw::Text { content, runs, font_size, font, color, align, centered, caret } => {
                 let mut rect = rect;
                 if *centered {
                     rect.y += ((rect.height - crate::text::shaping::line_height(*font_size)) / 2.0).max(0.0);
@@ -139,6 +139,7 @@ fn run(painter: &mut TextPainter, walk: &mut Walk<'_, '_>, commands: &[DrawCmd],
                         font: font.as_ref(),
                         color: *color,
                         align: *align,
+                        caret: *caret,
                     },
                     rect,
                     scale,

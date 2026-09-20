@@ -41,6 +41,10 @@ pub enum Draw {
         align: TextAlign,
         /// Center a `textfield` line; ordinary text starts at the top of its content box.
         centered: bool,
+        /// A focused plain `textfield`'s `(anchor, caret)` byte offsets into `content` (ADR-0236).
+        /// Here rather than in a second command because the rects are glyph positions, and paint
+        /// is where the glyphs are. `None` for every other node.
+        caret: Option<(usize, usize)>,
     },
     /// Theme name, resolved in [`execute`]. Icons carry alpha separately because `Paint::image`
     /// takes it as an argument.
@@ -159,14 +163,16 @@ fn is_empty(clip: PhysicalRect) -> bool {
 pub enum FieldFocus<'a> {
     Masked {
         target: &'a node::SecureSubmitTarget,
-        /// `shared::SecureBuffer::char_count`.
+        /// `shared::SecureBuffer::grapheme_count`.
         filled: usize,
     },
     Plain {
         /// Focused node, stable across movement, resizing, and inserted siblings.
         id: NodeId,
         text: &'a str,
-        caret: bool,
+        /// `(anchor, caret)` byte offsets into `text` while the field takes keys, `None` when it
+        /// does not, which is what hides the caret (ADR-0108).
+        caret: Option<(usize, usize)>,
     },
 }
 
@@ -348,6 +354,7 @@ fn draw_for(
                 color: fade(*color, opacity),
                 align: *align,
                 centered: false,
+                caret: None,
             })
         }
 
@@ -403,39 +410,31 @@ fn draw_for(
         // trigger `pam_faillock` and a ten-minute lockout. `retarget_secure_submit` zeroizes the
         // buffer on focus changes, so only the focused field can show typed state.
         PaintStyle::TextField { target, placeholder, mask, font_size, color, align } => {
-            let content = match focus {
+            let (content, caret) = match focus {
                 // An empty masked field remains a prompt.
                 Some(FieldFocus::Masked { target: focused, filled }) if *filled > 0 => {
                     if target.as_ref().is_some_and(|declared| declared == *focused) {
-                        mask.repeat(*filled)
+                        (mask.repeat(*filled), None)
                     } else {
-                        placeholder.clone()
+                        (placeholder.clone(), None)
                     }
                 }
-                // Empty focused fields also show the placeholder (ADR-0135). The old caret-only
-                // rule hid the prompt of every `autofocus` field, which holds the keyboard from
-                // the first frame. With no arrow-key
-                // movement, the caret stays at the end. Keep `target.is_none()` beside the id:
-                // the same node may gain `secure_submit`, and a masked field must never draw plain
-                // text.
+                // Empty focused fields show the placeholder rather than a bare caret (ADR-0135):
+                // the caret-only rule hid the prompt of every `autofocus` field, which holds the
+                // keyboard from the first frame. Keep `target.is_none()` beside the id: the same
+                // node may gain `secure_submit`, and a masked field must never draw plain text.
                 Some(FieldFocus::Plain { id, text, caret }) if *id == node_id && target.is_none() => {
-                    if !text.is_empty() {
+                    match text.is_empty() && !placeholder.is_empty() {
+                        true => (placeholder.clone(), None),
                         // The draft remains visible without a caret (ADR-0108).
-                        match caret {
-                            true => format!("{text}\u{2502}"),
-                            false => text.to_string(),
-                        }
-                    } else if !placeholder.is_empty() {
-                        placeholder.clone()
-                    } else if *caret {
-                        "\u{2502}".to_string()
-                    } else {
-                        String::new()
+                        false => (text.to_string(), *caret),
                     }
                 }
-                _ => placeholder.clone(),
+                _ => (placeholder.clone(), None),
             };
-            (!content.is_empty()).then_some(Draw::Text {
+            // An empty field with no placeholder still draws, for the caret alone (ADR-0135
+            // decision 2).
+            (!content.is_empty() || caret.is_some()).then_some(Draw::Text {
                 content,
                 runs: Vec::new(),
                 font_size: *font_size,
@@ -445,6 +444,7 @@ fn draw_for(
                 color: fade(*color, opacity),
                 align: *align,
                 centered: true,
+                caret,
             })
         }
     }
@@ -975,8 +975,8 @@ mod tests {
         assert_eq!(drawn_text(&build(&tree, 1.0, None)), vec!["Reply".to_string()]);
 
         let id = tree.children[0].id;
-        let typed = build(&tree, 1.0, Some(&FieldFocus::Plain { id, text: "on my way", caret: true }));
-        assert_eq!(drawn_text(&typed), vec!["on my way\u{2502}".to_string()]);
+        let typed = build(&tree, 1.0, Some(&FieldFocus::Plain { id, text: "on my way", caret: Some((9, 9)) }));
+        assert_eq!(drawn_text(&typed), vec!["on my way".to_string()]);
     }
 
     /// An empty focused field shows its placeholder, the same as an empty idle one and the same as
@@ -989,13 +989,14 @@ mod tests {
         let tree = reply_surface(&lua);
         let id = tree.children[0].id;
         assert_eq!(
-            drawn_text(&build(&tree, 1.0, Some(&FieldFocus::Plain { id, text: "", caret: true }))),
+            drawn_text(&build(&tree, 1.0, Some(&FieldFocus::Plain { id, text: "", caret: Some((0, 0)) }))),
             vec!["Reply".to_string()]
         );
     }
 
     /// The caret alone is what a field with no placeholder to show falls back to, which is the one
-    /// case left where an empty focused field still says it is live by drawing something.
+    /// case left where an empty focused field still says it is live by drawing something. It is a
+    /// rect the painter fills at the caret, so the command carries no text to draw (ADR-0236).
     #[test]
     fn a_focused_empty_field_that_declared_no_placeholder_draws_the_caret_alone() {
         let lua = Lua::new();
@@ -1004,12 +1005,15 @@ mod tests {
         let tree = resolved_surface(&lua, src, LogicalSize { width: 200.0, height: 40.0 });
         let id = tree.children[0].id;
 
-        assert_eq!(
-            drawn_text(&build(&tree, 1.0, Some(&FieldFocus::Plain { id, text: "", caret: true }))),
-            vec!["\u{2502}".to_string()]
+        let list = build(&tree, 1.0, Some(&FieldFocus::Plain { id, text: "", caret: Some((0, 0)) }));
+        assert!(
+            list.commands
+                .iter()
+                .any(|c| matches!(&c.draw, Draw::Text { content, caret, .. } if content.is_empty() && caret.is_some())),
+            "an empty field with the keyboard says so with its caret"
         );
         assert!(
-            drawn_text(&build(&tree, 1.0, Some(&FieldFocus::Plain { id, text: "", caret: false }))).is_empty(),
+            drawn_text(&build(&tree, 1.0, Some(&FieldFocus::Plain { id, text: "", caret: None }))).is_empty(),
             "with no keyboard and nothing to say, an empty field draws nothing at all"
         );
     }
@@ -1023,11 +1027,11 @@ mod tests {
         let tree = reply_surface(&lua);
         let id = tree.children[0].id;
         assert_eq!(
-            drawn_text(&build(&tree, 1.0, Some(&FieldFocus::Plain { id, text: "on my way", caret: false }))),
+            drawn_text(&build(&tree, 1.0, Some(&FieldFocus::Plain { id, text: "on my way", caret: None }))),
             vec!["on my way".to_string()]
         );
         assert_eq!(
-            drawn_text(&build(&tree, 1.0, Some(&FieldFocus::Plain { id, text: "", caret: false }))),
+            drawn_text(&build(&tree, 1.0, Some(&FieldFocus::Plain { id, text: "", caret: None }))),
             vec!["Reply".to_string()]
         );
     }
@@ -1037,7 +1041,7 @@ mod tests {
         let lua = Lua::new();
         let tree = reply_surface(&lua);
         let elsewhere = crate::layout::scene::NodeId::test(9999);
-        let list = build(&tree, 1.0, Some(&FieldFocus::Plain { id: elsewhere, text: "not mine", caret: true }));
+        let list = build(&tree, 1.0, Some(&FieldFocus::Plain { id: elsewhere, text: "not mine", caret: Some((0, 0)) }));
         assert_eq!(drawn_text(&list), vec!["Reply".to_string()]);
     }
 
@@ -1052,8 +1056,8 @@ mod tests {
         let tree = reply_surface(&lua);
         let id = tree.children[0].id;
         assert_eq!(
-            drawn_text(&build(&tree, 1.0, Some(&FieldFocus::Plain { id, text: "on my way", caret: true }))),
-            vec!["on my way\u{2502}".to_string()]
+            drawn_text(&build(&tree, 1.0, Some(&FieldFocus::Plain { id, text: "on my way", caret: Some((9, 9)) }))),
+            vec!["on my way".to_string()]
         );
 
         // The same node, pushed down and narrowed the way a re-resolve would. Kept inside the
@@ -1062,8 +1066,8 @@ mod tests {
         moved.children[0].rect.y += 6.0;
         moved.children[0].rect.width -= 40.0;
         assert_eq!(
-            drawn_text(&build(&moved, 1.0, Some(&FieldFocus::Plain { id, text: "on my way", caret: true }))),
-            vec!["on my way\u{2502}".to_string()],
+            drawn_text(&build(&moved, 1.0, Some(&FieldFocus::Plain { id, text: "on my way", caret: Some((9, 9)) }))),
+            vec!["on my way".to_string()],
             "the caret follows the node, not the box it used to occupy"
         );
     }
@@ -1081,8 +1085,11 @@ mod tests {
         other.children[0].id = crate::layout::scene::NodeId::test(4242);
         other.children[0].rect = vacated;
 
-        let list =
-            build(&other, 1.0, Some(&FieldFocus::Plain { id: tree.children[0].id, text: "on my way", caret: true }));
+        let list = build(
+            &other,
+            1.0,
+            Some(&FieldFocus::Plain { id: tree.children[0].id, text: "on my way", caret: Some((9, 9)) }),
+        );
         assert_eq!(drawn_text(&list), vec!["Reply".to_string()]);
     }
 
@@ -1093,7 +1100,7 @@ mod tests {
         let lua = Lua::new();
         let tree = password_surface(&lua);
         let id = tree.children[0].id;
-        let list = build(&tree, 1.0, Some(&FieldFocus::Plain { id, text: "hunter2", caret: true }));
+        let list = build(&tree, 1.0, Some(&FieldFocus::Plain { id, text: "hunter2", caret: Some((0, 0)) }));
         assert_eq!(drawn_text(&list), vec!["password".to_string()]);
     }
 

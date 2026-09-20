@@ -20,8 +20,6 @@ around.
 - **`expected_revision` is unchecked.** The socket drops a frame naming another generation, but
   nothing reads the revision it claims, so it is not an authorization guarantee (services.md § 13).
   Settle stale-revision semantics before anything relies on them.
-- **Text field editing.** Append, backspace, `on_navigate` and `on_cancel` only (ADR-0112). No
-  caret movement, selection, undo or IME composition. The secure input path stays separate.
 - **Keyboard focus and accessibility.** Only `textfield` can hold keyboard focus, and Tab reaches
   the config as `on_navigate("tab")` rather than moving it. Needs focusable controls, keyboard
   activation and an accessibility tree.
@@ -41,6 +39,7 @@ Wanted, but each needs a consumer or a decision first.
 | External IPC | `set` and `toggle` are one-way; `call` answers, but only what the config chose to return (ADR-0197). No generic state read and no subscription. Does an integration need either? |
 | Process control | `run`, `detach` (ADR-0188) and `session_process` (ADR-0175) cover start, stream and signal. Does anything need to write a child's stdin, or set its cwd and env? |
 | Move transitions | A sibling closing a gap does not animate. Needs the solver's old and new rects for every sibling, so add it against a demonstrated consumer |
+| Text field editing | A plain field has a caret, grapheme-wise motion and deletion, click-to-position and drag or Shift selection (ADR-0064, ADR-0092, ADR-0102, ADR-0236). No undo, no paste and no IME composition, and the secure path is still append and backspace. Paste needs a Wayland selection read, which nothing has asked for |
 | Fonts and localization | `text.font` is per-node over the global chain (ADR-0144). No translation API, and `Name`/`GenericName`/`Keywords` are read unlocalized (ADR-0112) |
 | Wayland and input extras | No shortcut inhibition, per-surface idle inhibition, touch gestures or cross-app drag and drop. Pick the protocol and a consumer; logind and screensaver inhibition already work |
 | Capture | No screen or window image. Build it for previews when something asks; external recorders do not need renderer capture |
