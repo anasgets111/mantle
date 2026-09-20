@@ -57,6 +57,11 @@ pub enum PaintStyle {
         /// `transition` (ADR-0181): cross from the covering source to the landed one over a
         /// duration, instead of swapping between them in one frame.
         transition: Option<TransitionSpec>,
+        /// `source_blur` (ADR-0240): a static blur run once when the source's decode lands, in
+        /// logical pixels. `0.0` is off. Distinct from `blur` (ADR-0195), which asks the
+        /// compositor to blur the desktop *behind* a node instead of blurring the node's own
+        /// pixels, and which an `image` can set too since it is a `BOX_PROPERTIES` name.
+        source_blur: f32,
     },
     /// `target` is `None` when no `secure_submit` is declared. Malformed targets fail here instead
     /// of being skipped until the press path (`layout::secure_submit` used to do that).
@@ -108,6 +113,7 @@ pub fn paint_style(kind: &str, properties: &PropMap) -> Result<Option<PaintStyle
                 // declaring retention; making a config write both would only let it write one.
                 retain: parse_retain(properties)? || transition.is_some(),
                 transition,
+                source_blur: parse_source_blur(properties)?,
             }
         }
         "textfield" => PaintStyle::TextField {

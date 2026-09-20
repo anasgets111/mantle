@@ -184,6 +184,12 @@ pub fn parse_retain(properties: &PropMap) -> Result<bool, LayoutError> {
     parse_bool(properties, "retain", false)
 }
 
+/// `image.source_blur` (ADR-0240): logical pixels, `0.0` (off) by default, capped at 8192 like
+/// every property `style::range_of` has no bound of its own for.
+pub fn parse_source_blur(properties: &PropMap) -> Result<f32, LayoutError> {
+    style::within("source_blur", parse_number(properties, "source_blur", 0.0)?)
+}
+
 fn parse_optional_string(properties: &PropMap, property: &str) -> Result<String, LayoutError> {
     let Some(value) = properties.get(property) else {
         return Ok(String::new());
@@ -608,6 +614,22 @@ mod tests {
         assert!(parse_image_source(&props_from_table(&table)).is_err());
         let table: mlua::Table = lua.load(r#"return { kind = "image", source = "/tmp/w.png" }"#).eval().unwrap();
         assert_eq!(parse_image_source(&props_from_table(&table)).unwrap(), "/tmp/w.png");
+    }
+
+    #[test]
+    fn source_blur_defaults_to_zero_and_rejects_negative() {
+        let lua = lua();
+        let table: mlua::Table = lua.load(r#"return { kind = "image", source = "/tmp/w.png" }"#).eval().unwrap();
+        assert_eq!(parse_source_blur(&props_from_table(&table)).unwrap(), 0.0);
+
+        let table: mlua::Table = lua.load(r#"return { kind = "image", source_blur = 12 }"#).eval().unwrap();
+        assert_eq!(parse_source_blur(&props_from_table(&table)).unwrap(), 12.0);
+
+        let table: mlua::Table = lua.load(r#"return { kind = "image", source_blur = -1 }"#).eval().unwrap();
+        assert!(matches!(
+            parse_source_blur(&props_from_table(&table)).unwrap_err(),
+            LayoutError::InvalidProperty { property, .. } if property == "source_blur"
+        ));
     }
 
     #[test]

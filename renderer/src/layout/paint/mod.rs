@@ -78,6 +78,9 @@ pub enum Draw {
         /// The config shader this cross is drawn with and the `params` it is given (ADR-0184).
         /// `None` is the built-in dissolve, and so is a shader that would not build.
         shader: Option<(std::path::PathBuf, Vec<(String, f32)>)>,
+        /// `image.source_blur` in physical pixels (ADR-0240). `0` for no blur, which `ImageCache`
+        /// never distinguishes from a request it decided not to run.
+        blur_px: u32,
     },
     /// A subtree masked by the declaring node's rounded arc. Rectangular clips flatten into each
     /// command; rounded clips stay grouped for [`execute`].
@@ -372,7 +375,7 @@ fn draw_for(
         // picture being crossed away from, otherwise the one the node is still covering a decoding
         // source with. One field because the node is never doing both -- `displayed_source` has
         // already moved on to `source` by the time a dissolve starts.
-        PaintStyle::Image { source, fit, load, retain, transition } => (!source.is_empty()).then(|| {
+        PaintStyle::Image { source, fit, load, retain, transition, source_blur } => (!source.is_empty()).then(|| {
             // What goes under the draw. Dropped once the node draws what it names: an equal pair in
             // the list would be one more thing to compare, and its disappearance ends the cover.
             let cover = match dissolve {
@@ -402,6 +405,7 @@ fn draw_for(
                     // snaps back to the outgoing, and only then crosses.
                     None => (transition.is_some() && has_cover).then_some(0.0),
                 },
+                blur_px: physical_blur(*source_blur, scale),
             }
         }),
 
@@ -458,6 +462,14 @@ fn physical_edge(logical: f32, scale: f32) -> u32 {
         return 1;
     }
     physical.round() as u32
+}
+
+/// `image.source_blur` in physical pixels. Floored at 0, not [`physical_edge`]'s 1: a box always
+/// covers some area, but a blur may genuinely be off. `parse_source_blur` already rejects
+/// negative, infinite and NaN logical values, and `scale` is always positive, so unlike
+/// `physical_edge` there is no out-of-range input here to clamp.
+fn physical_blur(logical: f32, scale: f32) -> u32 {
+    (logical * scale).round() as u32
 }
 
 #[cfg(test)]

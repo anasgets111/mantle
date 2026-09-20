@@ -5573,3 +5573,67 @@ policy and not always the one a designer would pick — on a machine carrying Fo
 family in its chain, where the choice is its own. The fix if that stops being enough is asking
 fontconfig for the codepoint's script as well, which needs a Unicode script table this workspace
 does not carry.
+
+## 0240. `image.source_blur` blurs the source once at decode, because the source never changes after that
+
+`blur` (ADR-0195) asks the compositor to blur what it draws behind a node's box; it cannot blur the
+node's own pixels; an `ext-background-effect-v1` region never touches the surface's own content. A
+lock screen's backdrop and a "frosted" picture both want the second thing: an `image` that is
+itself blurred, not glass over whatever is behind it.
+
+1. **One CPU pass, at decode, not a GPU pass every repaint.** The blur runs inside `decode()`,
+   before upload; the blurred result is cached and uploaded exactly like an unblurred texture, so
+   every draw after the first is a plain `Paint::image` fill. Nothing about `canvas`, femtovg, or
+   the paint walk changes. This decode runs once per source; a source that keeps changing on its
+   own (a video, a live-updating wallpaper) is out of scope, and re-blurring it every update is not
+   built. `decode()` itself runs on a pool thread only under `async = true`; the default
+   `async = false` runs it inline, on the same Wayland dispatch/config-VM thread every decode
+   already blocks under ADR-0039 — a `source_blur` there adds to that block, which is why decision
+   5 below picks the cheaper of two blur algorithms specifically to keep it small.
+2. **`blur_px` joins `CacheKey`, zeroed for an animated source.** A sharp and a blurred draw of the
+   same file and box are different slots, the way `tint` and `cropped` already are. Eviction and
+   pinning already match coarser than the full key — by path and box alone (ADR-0183) — so one pin
+   still protects both. `ImageCache::image` zeros the field before it reaches the key when
+   `is_animated` — see decision 6 for why a GIF's blur is always zero regardless of what
+   `source_blur` asked for; keying it as asked would otherwise store the same animation twice.
+3. **`source_blur` is logical pixels, converted at paint time like `box_px`, through a floor of 0
+   and not `physical_edge`'s floor of 1.** That floor is right for a box, which always covers some
+   area; wrong for an effect that is legitimately off, which would otherwise blur every `image` by
+   one physical pixel whether or not `source_blur` was ever set. It is a physical-pixel count in
+   the source's own stored raster, before `fit` places it (`stored_size` never upscales and always
+   covers): exact under the default `"cover"` at the source's native size or smaller, and scaled
+   along with the source under `"contain"` or a source `stored_size` upscales to cover its box.
+4. **Passed straight through as the blur's `sigma`.** No radius-to-sigma conversion: one number,
+   one meaning, nothing to get backwards translating between them.
+5. **`imageops::fast_blur`, not the exact `imageops::blur`.** Both assume premultiplied input for a
+   non-constant alpha (a straight-alpha raster is premultiplied first, and the result is handed
+   back already in that state so `upload` does not do it twice) and both assume scene-linear light,
+   which sRGB source pixels are not — a known, accepted approximation error at high-contrast edges,
+   the same one the compositor's own blur makes. They differ in cost: the true Gaussian is a
+   separable FIR whose time scales with sigma and whose peak working set measured ~12x a 3840x2160
+   raster (421 MB), which at `source_blur` past 20 on a 4K panel is a multi-second stall on
+   whichever thread decision 1 already blocks. `fast_blur`'s three box passes cost the same
+   regardless of sigma (~500 ms at 4K, sigma 4 through 40 alike) and peak under 3x the raster.
+6. **An animated GIF ignores it, silently — decision 7's rule from ADR-0195 for a capability a
+   config asked for and the pipeline does not have.** `decode_gif` keeps only each frame's changed
+   rect against `ANIMATION_BUDGETS` (ADR-0235); a blur samples past that rect's edge, so blurring
+   it correctly means storing a whole frame per delta, undoing exactly the saving that budget
+   exists for. `decode`'s call into `decode_gif` never passes `blur_px`, so the decode is a
+   structural no-op; decision 2 makes the cache key agree.
+
+Rejected: a GPU offscreen pass reusing `draw_clipped`'s scratch targets and a fragment shader like
+`image_shader.rs`'s transitions. Right for a live effect, wrong for a static one — it would pay a
+render-to-texture and a two-pass shader on every repaint for a picture that never changes, where
+one CPU pass at decode is free on every frame after the first.
+
+Rejected: blurring the composited GIF frame and re-storing it, keeping the animation. Correct, but
+`decode_gif` exists (ADR-0235) because whole frames blew the 128 MiB animation budget at 16 of 86
+kept; blurring only grows each frame. An animated blurred source, if ever wanted, is this path plus
+its own much smaller budget, not a default that taxes every other animation's ceiling.
+
+Not built: covering a `source_blur`-only change the way `retain` covers a `source` change. `retain`
+and the dissolve it feeds compare `displayed_source` against `source` — one string — so a node that
+only changes `source_blur` is invisible to it and blanks until the newly blurred texture lands, same
+`retain = true` or not. `source_blur` is meant to be set once per `source` and left there, matching
+decision 1's "not built" for a source that keeps changing; if it needs to be live, `displayed_source`
+becomes a `(source, blur_px)` pair, not a rename or a wider condition alone.

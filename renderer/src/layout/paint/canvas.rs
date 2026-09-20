@@ -155,12 +155,21 @@ fn run(painter: &mut TextPainter, walk: &mut Walk<'_, '_>, commands: &[DrawCmd],
                         alpha: *alpha,
                         tint: *color,
                         load: Load::Inline,
+                        blur_px: 0,
                     };
                     let _ = draw_file(painter.canvas_mut(), walk.images, &path, draw);
                 }
             }
-            Draw::Image { node, source, fit, box_px, alpha, load, retained, dissolve, shader } => {
-                let draw = FileDraw { fit: *fit, rect, box_px: *box_px, alpha: *alpha, tint: None, load: *load };
+            Draw::Image { node, source, fit, box_px, alpha, load, retained, dissolve, shader, blur_px } => {
+                let draw = FileDraw {
+                    fit: *fit,
+                    rect,
+                    box_px: *box_px,
+                    alpha: *alpha,
+                    tint: None,
+                    load: *load,
+                    blur_px: *blur_px,
+                };
                 let under = retained.as_deref().map(std::path::Path::new);
                 match dissolve {
                     Some(progress) => {
@@ -330,6 +339,8 @@ struct FileDraw {
     /// `None` for an `image`, which names a file the config chose rather than a themed icon.
     tint: Option<Rgba>,
     load: Load,
+    /// `0` for an icon, which has no `source_blur` (ADR-0240).
+    blur_px: u32,
 }
 
 /// Cache lookup and one `fill_path` over the fitted rect. Filling the full box with a `Contain`
@@ -353,8 +364,8 @@ fn file_texture(
     file: &std::path::Path,
     draw: FileDraw,
 ) -> Option<(ImageId, LogicalRect)> {
-    let FileDraw { fit, rect, box_px, alpha: _, tint, load } = draw;
-    let id = images.image(canvas, file, box_px, tint, load, fit)?;
+    let FileDraw { fit, rect, box_px, alpha: _, tint, load, blur_px } = draw;
+    let id = images.image(canvas, file, box_px, tint, load, fit, blur_px)?;
     let (width, height) = canvas.image_size(id).ok()?;
     Some((id, image::fitted_rect(rect, width as f32, height as f32, fit)))
 }

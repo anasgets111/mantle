@@ -114,6 +114,10 @@ struct CacheKey {
     /// Stored cropped to `box_px`, which only [`Fit::Cover`] rasters are. In the key because a
     /// `Contain` draw of the same file and box needs the uncropped pixels.
     cropped: bool,
+    /// `image.source_blur` in physical pixels (ADR-0240): a sharp and a blurred draw of the same
+    /// file and box are different slots. Zero for every kind but a static `image`; `decode_gif`
+    /// never reads it, so an animated source is keyed as if it were always zero.
+    blur_px: u32,
 }
 
 /// File revision at a stable path (ADR-0031 deferred item): tray updates reuse
@@ -536,6 +540,11 @@ impl ImageCache {
     /// `Load::Inline` reads and rasterizes inside the frame, also the Wayland dispatch/config-VM
     /// thread (ADR-0039). That keeps a wallpaper's first frame whole; tile grids use
     /// `Load::Background` (ADR-0122).
+    // ponytail: keep the eight arguments. `canvas::FileDraw` already bundles five of them, but
+    // `image` is `layout::paint`'s dependency, not the reverse, so taking it here would either
+    // move that type down into `image` or duplicate it; a `CacheKey`-shaped struct of its own
+    // would just be `FileDraw` again under a different name.
+    #[allow(clippy::too_many_arguments)]
     pub fn image(
         &mut self,
         canvas: &mut Canvas<OpenGl>,
@@ -544,6 +553,7 @@ impl ImageCache {
         tint: Option<Rgba>,
         load: Load,
         fit: Fit,
+        blur_px: u32,
     ) -> Option<ImageId> {
         let vector = is_vector(path);
         let key = CacheKey {
@@ -554,6 +564,10 @@ impl ImageCache {
             tint: if vector { tint.map(packed_rgb) } else { None },
             // An SVG rasterizes straight to its box, so there is never overflow to crop.
             cropped: !vector && fit == Fit::Cover,
+            // `decode` never reads `blur_px` for an animated source (ADR-0240); zeroed here too,
+            // or a blurred and a sharp draw of the same GIF would be two slots each paying its
+            // full animation budget for byte-identical frames.
+            blur_px: if is_animated(path) { 0 } else { blur_px },
         };
         self.tick += 1;
         if let Some(cached) = self.entries.get_mut(&key) {
@@ -826,6 +840,13 @@ fn is_vector(path: &Path) -> bool {
     path.extension().is_some_and(|ext| ext.eq_ignore_ascii_case("svg") || ext.eq_ignore_ascii_case("svgz"))
 }
 
+/// ponytail: GIF only, so an animated WebP or APNG draws its first frame like a still (and so, per
+/// [`ImageCache::image`], can carry a `source_blur`). Upgrade: match the sniffed format;
+/// `AnimationDecoder` covers both.
+fn is_animated(path: &Path) -> bool {
+    path.extension().is_some_and(|ext| ext.eq_ignore_ascii_case("gif"))
+}
+
 /// Canvas-free load half for pool threads: raster decode/downscale through `thumbnails` when
 /// available, or SVG rasterization at `box_px`'s longest edge.
 fn decode(
@@ -836,11 +857,12 @@ fn decode(
     still_wanted: &dyn Fn() -> bool,
     animation_bytes: usize,
 ) -> Result<Decoded, String> {
-    let CacheKey { path, box_px, cropped, .. } = key;
+    let CacheKey { path, box_px, cropped, blur_px, .. } = key;
     // An SVG rasterizes to `box_px`, not to whatever the file declares, so it is bounded by the
     // request and never approaches the pool budget. `MAX_SVG_BYTES` is what bounds the parse.
     if is_vector(path) {
         let (pixels, width, height) = rasterize_svg(path, box_px.0.max(box_px.1), tint)?;
+        let pixels = blur_rgba(pixels, width, height, *blur_px, true)?;
         return Ok(Decoded {
             base: pixels,
             delays: vec![Duration::ZERO],
@@ -850,9 +872,14 @@ fn decode(
             premultiplied: true,
         });
     }
-    // ponytail: GIF only, so an animated WebP or APNG draws its first frame. Upgrade: match the
-    // sniffed format; `AnimationDecoder` covers both.
-    if path.extension().is_some_and(|ext| ext.eq_ignore_ascii_case("gif")) {
+    // `blur_px` is never passed on here (ADR-0240): the delta replay `decode_gif` stores keeps
+    // only each frame's changed rect, and a blur samples past that rect's edge, so blurring
+    // correctly means storing a full frame per delta -- the exact cost the deltas exist to avoid.
+    // A `source_blur` on an animated source is silently ignored, matching ADR-0195 decision 7's
+    // rule for a capability the config asked for and the pipeline does not have; `ImageCache::
+    // image` also zeroes it in the key, so a blurred and a sharp draw of the same GIF share one
+    // slot instead of each paying the animation budget for identical frames.
+    if is_animated(path) {
         return decode_gif(path, *box_px, *cropped, charge, animation_bytes);
     }
     let (pixels, width, height) = decode_raster(path, *box_px, thumbnails, charge, still_wanted)?;
@@ -860,7 +887,9 @@ fn decode(
     // rescaled thumbnail, full decode) and would need the crop at each.
     let (pixels, width, height) =
         if *cropped { crop_to_box(pixels, width, height, *box_px) } else { (pixels, width, height) };
-    Ok(Decoded { base: pixels, delays: vec![Duration::ZERO], deltas: Vec::new(), width, height, premultiplied: false })
+    let premultiplied = *blur_px > 0;
+    let pixels = blur_rgba(pixels, width, height, *blur_px, false)?;
+    Ok(Decoded { base: pixels, delays: vec![Duration::ZERO], deltas: Vec::new(), width, height, premultiplied })
 }
 
 /// The base frame and each later frame's own rect, composited here rather than by `image`'s
@@ -1071,6 +1100,30 @@ fn premultiply(pixels: &mut [u8]) {
             *channel = ((scaled + scaled / 255) / 256) as u8;
         }
     }
+}
+
+/// `image.source_blur` (ADR-0240): a static blur, run once here rather than every repaint because
+/// the source it blurs never changes for the life of a decode. `fast_blur`, not the exact
+/// `imageops::blur`: the true Gaussian is a separable FIR whose cost scales with sigma and whose
+/// peak working set is several multiples of the raster (measured ~12x at 4K), which turned a
+/// large `source_blur` on a wallpaper-sized image into a multi-second stall on the thread that
+/// called `decode` (the dispatch/config-VM thread itself, under the default `async = false`).
+/// `fast_blur`'s three box passes cost the same regardless of sigma and peak at a small multiple
+/// of the raster instead. Both assume premultiplied input for a non-constant alpha; a
+/// straight-alpha raster is premultiplied first, and the result is handed back already in that
+/// state so `upload` does not premultiply it a second time. A no-op for `blur_px == 0`; no
+/// dimension guard beside it; `box_px` is never zero (`physical_edge` floors at 1), and
+/// `fast_blur` itself tolerates a zero-sized buffer.
+fn blur_rgba(pixels: Vec<u8>, width: u32, height: u32, blur_px: u32, premultiplied: bool) -> Result<Vec<u8>, String> {
+    if blur_px == 0 {
+        return Ok(pixels);
+    }
+    let mut pixels = pixels;
+    if !premultiplied {
+        premultiply(&mut pixels);
+    }
+    let image = ::image::RgbaImage::from_raw(width, height, pixels).ok_or("blurred image pixel count is off")?;
+    Ok(::image::imageops::fast_blur(&image, blur_px as f32).into_raw())
 }
 
 /// Every one of femtovg's sixteen `ErrorKind` variants formats as `"canvas error"`; `Debug` names
@@ -1325,12 +1378,27 @@ mod tests {
     }
 
     #[test]
+    fn a_sharp_and_a_blurred_draw_of_the_same_file_and_box_are_different_slots() {
+        let sharp = key("/x.png", 18, FileVersion::default());
+        let blurred = CacheKey { blur_px: 6, ..sharp.clone() };
+        assert_ne!(sharp, blurred);
+    }
+
+    #[test]
     fn only_svg_is_rasterized_by_size() {
         assert!(is_vector(Path::new("/usr/share/icons/Adwaita/symbolic/x.svg")));
         assert!(is_vector(Path::new("/tmp/X.SVG")));
         assert!(is_vector(Path::new("/tmp/gzipped.svgz")));
         assert!(!is_vector(Path::new("/run/user/1000/mantle/tray/telegram.png")));
         assert!(!is_vector(Path::new("/tmp/no-extension")));
+    }
+
+    #[test]
+    fn only_gif_is_animated() {
+        assert!(is_animated(Path::new("/tmp/wallpaper.gif")));
+        assert!(is_animated(Path::new("/tmp/WALLPAPER.GIF")));
+        assert!(!is_animated(Path::new("/tmp/still.png")));
+        assert!(!is_animated(Path::new("/tmp/no-extension")));
     }
 
     /// A wallpaper's shape without a wallpaper's art: a 16:9 viewBox filled corner to corner by one
@@ -1423,7 +1491,7 @@ mod tests {
     }
 
     fn key(path: impl Into<PathBuf>, px: u32, version: FileVersion) -> CacheKey {
-        CacheKey { path: path.into(), box_px: (px, px), version, tint: None, cropped: false }
+        CacheKey { path: path.into(), box_px: (px, px), version, tint: None, cropped: false, blur_px: 0 }
     }
 
     #[test]
@@ -1945,5 +2013,61 @@ mod tests {
         assert_eq!(decoded.base.len(), 4 * 4 * 4, "the base is still the whole stored frame");
         assert_eq!(decoded.deltas[0].rect, (2, 2, 2, 2), "the source rect halved with it");
         assert_eq!(decoded.deltas[0].pixels.len(), 2 * 2 * 4, "against 64 bytes for a whole stored frame");
+    }
+
+    /// ADR-0240. `decode`'s call into `decode_gif` never passes `blur_px`, so this is a structural
+    /// no-op rather than a checked one; this test is what would catch a future refactor wiring it
+    /// through by accident.
+    #[test]
+    fn source_blur_is_ignored_on_an_animated_gif() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("animated.gif");
+        {
+            let mut file = std::fs::File::create(&path).unwrap();
+            let mut encoder = gif::Encoder::new(&mut file, 4, 4, &[]).unwrap();
+            write_frame(&mut encoder, (0, 0, 4, 4), [255, 0, 0, 255], gif::DisposalMethod::Keep, 5);
+            write_frame(&mut encoder, (0, 0, 4, 4), [0, 255, 0, 255], gif::DisposalMethod::Keep, 5);
+        }
+        let sharp = key(&path, 4, FileVersion::read(&path));
+        let blurred = CacheKey { blur_px: 50, ..sharp.clone() };
+
+        let a = decode(&sharp, None, None, Charge::Free, &|| true, STARTING_TEXTURE_BUDGET).unwrap();
+        let b = decode(&blurred, None, None, Charge::Free, &|| true, STARTING_TEXTURE_BUDGET).unwrap();
+        assert_eq!(a.base, b.base, "an animated source keeps playing sharp regardless of source_blur");
+        assert_eq!(a.deltas.len(), b.deltas.len());
+        for (sharp, blurred) in a.deltas.iter().zip(&b.deltas) {
+            assert_eq!(sharp.pixels, blurred.pixels);
+        }
+    }
+
+    /// ADR-0240. `blur_px == 0` must be a true no-op: `physical_blur` in `layout::paint` floors at
+    /// 0 rather than [`physical_edge`](crate::layout::paint::physical_edge)'s 1 for exactly this
+    /// reason, and this is the decode-side half of that guarantee.
+    #[test]
+    fn source_blur_softens_a_hard_edge_and_zero_leaves_it_untouched() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("edge.png");
+        let (w, h) = (8u32, 8u32);
+        let mut pixels = vec![0u8; (w * h * 4) as usize];
+        for y in 0..h {
+            for x in 0..w {
+                let i = ((y * w + x) * 4) as usize;
+                let v = if x < w / 2 { 0 } else { 255 };
+                pixels[i..i + 4].copy_from_slice(&[v, v, v, 255]);
+            }
+        }
+        ::image::RgbaImage::from_raw(w, h, pixels).unwrap().save(&path).unwrap();
+
+        let sharp = key(&path, w, FileVersion::read(&path));
+        let blurred = CacheKey { blur_px: 3, ..sharp.clone() };
+        let a = decode(&sharp, None, None, Charge::Free, &|| true, STARTING_TEXTURE_BUDGET).unwrap();
+        let b = decode(&blurred, None, None, Charge::Free, &|| true, STARTING_TEXTURE_BUDGET).unwrap();
+
+        // The last black pixel before the edge, on the middle row.
+        let at = ((h / 2 * w + w / 2 - 1) * 4) as usize;
+        assert_eq!(a.base[at], 0, "source_blur = 0 leaves the hard edge untouched");
+        assert!(b.base[at] > 0 && b.base[at] < 255, "source_blur = 3 softens across it, got {}", b.base[at]);
+        assert!(!a.premultiplied, "an untouched raster stays straight alpha");
+        assert!(b.premultiplied, "blurring premultiplies so upload does not do it twice");
     }
 }

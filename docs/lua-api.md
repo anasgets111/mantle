@@ -256,7 +256,7 @@ See [paint parsing](../renderer/src/layout/node/paint_style.rs).
 | `column` | `children`, `spacing`, `scroll`; vertical flow |
 | `text` | `content`, `font`, `font_size`, `foreground`, `text_align`, `elide`, `wrap`, `max_lines`, `on_link` |
 | `icon` | `name`, `size`, `foreground`; name is a theme name or absolute image path |
-| `image` | `source`, `fit`, `async`, `retain`, `transition`; fit is `"cover"` by default, `"contain"` or `"stretch"` |
+| `image` | `source`, `fit`, `async`, `retain`, `transition`, `source_blur`; fit is `"cover"` by default, `"contain"` or `"stretch"` |
 | `button` | `children`, `on_click`, `on_drag`, `on_wheel`, `submit` |
 | `list` | `source`, `itemfn`, optional `key`, `direction`, `spacing`, `scroll` |
 | `textfield` | `placeholder`, `font_size`, `foreground`, `text_align`, `autofocus`, `on_change`, `on_submit`, `on_cancel`, `on_navigate`, `secure_submit`, `mask_character` |
@@ -271,7 +271,13 @@ refuses a zero line height. Text and icon content defaults can render empty befo
 `image.retain = true` keeps the last picture up while a new `source` decodes.
 `image.transition = { duration, easing?, shader?, params? }` crosses to it instead and implies `retain`;
 both need `async` and a stable `id`. `shader` is an absolute `.frag` path; `params` maps uniforms to numbers.
-Icons resolve in the Renderer. See [content parsing](../renderer/src/layout/node/content.rs).
+`image.source_blur` (default 0, off) blurs the source's own pixels once, when its decode lands — a static
+effect, distinct from `blur` (a `BOX_PROPERTIES` name every surface role and `image` also has) which asks the
+compositor to blur the desktop *behind* the node. Set once per `source`: changing it on a live node is not
+covered by `retain` and blanks the picture until the new blur lands. Runs on whichever thread decodes, so pair
+a large `source` with `async = true`. In the source's own stored pixels before `fit`, so it is exact under the
+default `"cover"` at native size or smaller and approximate otherwise. Ignored on an animated GIF, which keeps
+playing sharp. Icons resolve in the Renderer. See [content parsing](../renderer/src/layout/node/content.rs).
 
 A list calls `itemfn(element)` for every source element, including offscreen items.
 `key(element)` must return a unique sibling string; without it identity is positional.
