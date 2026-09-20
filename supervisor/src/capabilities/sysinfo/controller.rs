@@ -89,7 +89,13 @@ impl SysinfoController {
         let (temp_interval, temp_rx) = tokio::sync::watch::channel(Duration::ZERO);
 
         let core_source = super::temp::resolve_temp_cores_source(&hwmon_root);
+        if core_source == super::temp::CoreTempSource::Unavailable {
+            debug!("no CPU temperature chip found under {}; temp_cores will stay empty", hwmon_root.display());
+        }
         let gpu_chip = super::temp::resolve_gpu_chip(&hwmon_root);
+        if gpu_chip.is_none() {
+            debug!("no GPU temperature chip found under {}; temp_gpu will report -1", hwmon_root.display());
+        }
 
         tokio::spawn(run_cpu_task(proc_root.clone(), cpu_rx, std::sync::Arc::clone(&state), signal_tx.clone()));
         tokio::spawn(run_ram_task(proc_root, ram_rx, std::sync::Arc::clone(&state), signal_tx.clone()));

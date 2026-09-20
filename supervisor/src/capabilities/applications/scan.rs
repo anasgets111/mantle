@@ -4,6 +4,8 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
+use shared::debug;
+
 use super::entry::{desktop_file_id, flag, parse_group, tokenize_exec};
 
 /// Walk depth under an applications directory. Subdirectories are allowed and real trees use one
@@ -95,9 +97,11 @@ pub fn scan(dirs: &[PathBuf]) -> ScanResult {
                 continue; // a higher-precedence directory already provided this id.
             }
             let Ok(contents) = std::fs::read_to_string(&path) else {
+                debug!(2; "{}: unreadable, skipping this entry", path.display());
                 continue; // unreadable entry: one missing app, never a failed scan.
             };
             let Some(group) = parse_group(&contents) else {
+                debug!(2; "{}: no [Desktop Entry] group, skipping this entry", path.display());
                 continue; // no `[Desktop Entry]` group at all.
             };
             // `Type` has no `Application` default; a `Link` or `Directory` is not launchable.
@@ -108,9 +112,11 @@ pub fn scan(dirs: &[PathBuf]) -> ScanResult {
                 continue;
             }
             let (Some(name), Some(exec)) = (group.get("Name"), group.get("Exec")) else {
+                debug!(2; "{id}: missing Name or Exec, skipping this entry");
                 continue;
             };
             let Some((command, args)) = tokenize_exec(exec) else {
+                debug!(2; "{id}: Exec={exec:?} has no command left after field-code removal, skipping this entry");
                 continue;
             };
             launch.insert(id.clone(), LaunchTarget { command, args, terminal: flag(&group, "Terminal") });
