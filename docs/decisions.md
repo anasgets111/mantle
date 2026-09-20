@@ -5536,3 +5536,40 @@ read Shift alone.
    clearing a line costs two presses per word.
 5. **The masked field keeps the backwards erase alone.** Every other reach is measured from a
    caret, and a secret holds none (ADR-0064).
+
+## 0239. A codepoint the chain cannot draw fetches a face that can
+
+`notify-send "♡ ..."` drew a box. Nothing in the declared chain carried U+2661, and `text::fonts`
+loads only the families the chain names (ADR-0043 decision 2), so cosmic-text had no face to fall
+back to — where a toolkit linking libfontconfig reaches across the whole system. A shell draws text
+it did not write: notification bodies, MPRIS titles, window titles. Curating a chain against
+arbitrary remote text is not something a config can do.
+
+1. **Glyph 0 is the signal.** `.notdef` is every sfnt font's box, so the shaper reports the first
+   codepoint that reached one. Read whether or not the request keeps its glyphs: a string measured
+   as a box and painted as a letter is laid out wrong.
+2. **One `fc-match :charset=<hex>`, then shape again.** ~10ms warm, once per codepoint per process.
+   Both outcomes are remembered, so a codepoint nothing on the system covers costs one lookup
+   rather than one per measurement — the bargain ADR-0144 already struck for a family that is not
+   installed.
+3. **`loaded_paths` is the substitution check.** fontconfig substitutes rather than failing here
+   too, and a codepoint carries no family name to compare the answer against the way a chain entry
+   does. The shaper reached this codepoint having already tried every face in the database, so an
+   answer among them is fontconfig declining, not a face worth loading twice.
+4. **Every box in a string is reported, not the first.** One codepoint nothing on the system
+   covers would otherwise hide every box behind it — `한국어 ภาษาไทย` on a machine with no Korean
+   face left the Thai unexamined, though 112 installed faces could draw it. One pass covers what it
+   can and shapes again only when a face actually arrived, so a string is fully covered before its
+   measurement is cached. It terminates because a repeat pass happens only when a file the database
+   did not have was loaded, and a codepoint that cannot be covered is remembered. The memo is
+   cleared by `set_chain` and nothing else: a rescue is noticed *after* the measurement, unlike
+   ADR-0144's family load, which resolves before it.
+5. **fontdb maps rather than reads.** A rescued face costs its touched pages, not its file size,
+   which is what makes a 32MB CJK collection an acceptable answer to one character.
+
+ponytail: the face is whichever one fontconfig ranks first, which is the system's declared font
+policy and not always the one a designer would pick — on a machine carrying Font Awesome,
+`fc-match :charset=1f600` answers with it rather than an emoji face. A shell that cares names the
+family in its chain, where the choice is its own. The fix if that stops being enough is asking
+fontconfig for the codepoint's script as well, which needs a Unicode script table this workspace
+does not carry.

@@ -343,8 +343,16 @@ impl ShapingHandle {
                     match request {
                         Request::Shape(req, glyphs, reply) => {
                             let family = fonts.family_for(req.font.as_ref(), &generation, &worker_ensured);
+                            let (mut result, mut missing) = shape(&mut fonts.font_system, &family, &req, glyphs);
+                            // `any` is the whole loop control: it runs out of codepoints when none
+                            // can be covered, and short-circuits on the first that can, which is
+                            // exactly when shaping again is worth it. A codepoint nothing covers
+                            // is remembered by `cover`, so neither branch can spin.
+                            while missing.iter().any(|&ch| fonts.cover(ch, &generation)) {
+                                (result, missing) = shape(&mut fonts.font_system, &family, &req, glyphs);
+                            }
                             // A dropped receiver just means the result is discarded.
-                            let _ = reply.send(shape(&mut fonts.font_system, &family, &req, glyphs));
+                            let _ = reply.send(result);
                         }
                         Request::EnsureFamily(asked, reply) => {
                             fonts.family_for(Some(&asked), &generation, &worker_ensured);
@@ -610,6 +618,10 @@ struct WorkerFonts {
     families: HashMap<Arc<str>, Option<String>>,
     /// Every file already loaded, so `load_family` can tell a new one from a repeat.
     loaded_paths: HashSet<PathBuf>,
+    /// Codepoints already looked up by [`WorkerFonts::cover`], found or not, so one nothing on the
+    /// system covers costs a single `fc-match` for the life of the process rather than one per
+    /// measurement -- the bargain `families` strikes for a family that is not installed.
+    probed: HashSet<char>,
     /// What `font_chain_data` last produced: the faces `TextPainter` registers with femtovg.
     chain_data: Vec<FontFace>,
 }
@@ -622,7 +634,7 @@ impl WorkerFonts {
         let families = HashMap::new();
         let chain_data = font_chain_data(&mut db);
         let font_system = FontSystem::new_with_locale_and_db(detect_locale(), db);
-        Self { font_system, primary_family, families, loaded_paths, chain_data }
+        Self { font_system, primary_family, families, loaded_paths, probed: HashSet::new(), chain_data }
     }
 
     /// The family name to shape `asked` under, resolving it on first sight (ADR-0144).
@@ -657,19 +669,49 @@ impl WorkerFonts {
         }
         self.families[asked].clone().unwrap_or_else(|| self.primary_family.clone())
     }
+
+    /// Loads a face for a codepoint the chain drew as a box (ADR-0239). `true` when the database
+    /// changed, which is the caller's cue to shape the same request again.
+    ///
+    /// A shell draws text it did not write -- notification bodies, MPRIS titles, window titles --
+    /// so the codepoints it meets are not the ones its chain was chosen for.
+    fn cover(&mut self, ch: char, generation: &AtomicU64) -> bool {
+        if !self.probed.insert(ch) {
+            return false;
+        }
+        // Bounded for `families`' reason: the text arriving here is not the shell's own.
+        if self.probed.len() > SHAPE_CACHE_CAPACITY {
+            self.probed.clear();
+        }
+        if !fonts::load_covering(self.font_system.db_mut(), ch, &mut self.loaded_paths) {
+            return false;
+        }
+        self.chain_data = font_chain_data(self.font_system.db_mut());
+        generation.fetch_add(1, Ordering::Release);
+        true
+    }
 }
 
-fn shape(font_system: &mut FontSystem, primary_family: &str, request: &ShapeRequest, glyphs: bool) -> ShapeResult {
+/// Measures `request`, and reports every codepoint the loaded faces had no glyph for so the worker
+/// can go find faces for them (ADR-0239). All of them, not the first: one codepoint nothing on the
+/// system covers would otherwise hide every box after it in the same string.
+fn shape(
+    font_system: &mut FontSystem,
+    primary_family: &str,
+    request: &ShapeRequest,
+    glyphs: bool,
+) -> (ShapeResult, Vec<char>) {
     // cosmic-text panics ("no default font found") the moment it shapes a run against a database
     // with no faces, which is what a machine with no fonts installed hands the worker.
     if font_system.db().is_empty() {
-        return ShapeResult {
+        let empty = ShapeResult {
             width: 0.0,
             height: 0.0,
             lines: Vec::new().into(),
             line_ranges: Vec::new().into(),
             shaped: Vec::new().into(),
         };
+        return (empty, Vec::new());
     }
     let metrics = Metrics::new(request.font_size, request.line_height);
     let mut buffer = Buffer::new(font_system, metrics);
@@ -694,6 +736,7 @@ fn shape(font_system: &mut FontSystem, primary_family: &str, request: &ShapeRequ
     }
 
     let mut width = 0.0f32;
+    let mut missing: Vec<char> = Vec::new();
     let mut lines: Vec<String> = Vec::new();
     let mut line_ranges: Vec<Range<usize>> = Vec::new();
     let mut shaped: Vec<ShapedLine> = Vec::new();
@@ -716,6 +759,16 @@ fn shape(font_system: &mut FontSystem, primary_family: &str, request: &ShapeRequ
         let paragraph_start = paragraph_starts.get(run.line_i).copied().unwrap_or(0);
         line_ranges.push(paragraph_start + start..paragraph_start + start + trimmed.len());
         lines.push(trimmed.to_string());
+
+        // Glyph 0 is `.notdef`, every sfnt font's box. Read whether or not this request keeps its
+        // glyphs, because a string measured as a box and painted as a letter is laid out wrong.
+        // Repeats are left in: `cover` dedupes them against every codepoint it has already tried.
+        missing.extend(
+            run.glyphs
+                .iter()
+                .filter(|glyph| glyph.glyph_id == 0)
+                .filter_map(|glyph| run.text[glyph.start..glyph.end].chars().next()),
+        );
 
         // Positions from the line's own left edge: paint places the line by its alignment.
         let left = run.glyphs.iter().map(|glyph| glyph.x).fold(f32::INFINITY, f32::min);
@@ -745,13 +798,14 @@ fn shape(font_system: &mut FontSystem, primary_family: &str, request: &ShapeRequ
         });
     }
 
-    ShapeResult {
+    let result = ShapeResult {
         width,
         height: lines.len() as f32 * metrics.line_height,
         lines: lines.into(),
         line_ranges: line_ranges.into(),
         shaped: shaped.into(),
-    }
+    };
+    (result, missing)
 }
 
 /// `text` as the `(slice, attrs)` spans `Buffer::set_rich_text` takes: each run in a face of its
@@ -864,7 +918,68 @@ mod tests {
             return None;
         }
         let (declared, named) = ("Noto Sans", "Noto Sans Mono");
-        (fonts::family_installed(declared) && fonts::family_installed(named)).then_some((declared, named))
+        (fonts::fc_lists(declared) && fonts::fc_lists(named)).then_some((declared, named))
+    }
+
+    /// A family installed here, and a codepoint it cannot draw that something else here can.
+    /// `None` when the machine offers no such pair, which is a skip rather than a failure: a font
+    /// set is a property of the machine, not of this workspace.
+    fn a_family_and_a_codepoint_it_lacks() -> Option<(&'static str, char)> {
+        let (declared, _) = two_families()?;
+        let covered = |ch: char| fonts::fc_lists(&format!(":charset={:x}", ch as u32));
+        let declared_draws = |ch: char| fonts::fc_lists(&format!("{declared}:charset={:x}", ch as u32));
+        // Symbols a text face is unlikely to carry; which one this machine can draw is asked.
+        let ch = "\u{2661}\u{2687}\u{2B50}\u{1F0A1}".chars().find(|&ch| covered(ch) && !declared_draws(ch))?;
+        Some((declared, ch))
+    }
+
+    /// A codepoint no face in the chain can draw is given one, rather than left as the box every
+    /// sfnt font keeps at glyph 0 (ADR-0239).
+    #[test]
+    fn a_codepoint_the_chain_cannot_draw_fetches_a_face_that_can() {
+        let Some((declared, rescued)) = a_family_and_a_codepoint_it_lacks() else {
+            eprintln!("skip: no codepoint this machine covers and the declared family does not");
+            return;
+        };
+        let handle = ShapingHandle::spawn();
+        handle.set_chain(&[declared.to_string()]);
+        let before = handle.font_generation();
+
+        let shaped = handle.shape_glyphs(req(&rescued.to_string(), 20.0));
+
+        let glyphs = &shaped.shaped[0].glyphs;
+        assert!(!glyphs.is_empty(), "a codepoint has to shape to something");
+        assert!(glyphs.iter().all(|glyph| glyph.id != 0), "a codepoint the machine can draw must not stay a box");
+        assert!(handle.font_generation() > before, "the painter has to hear about the face that drew it");
+    }
+
+    /// A codepoint nothing on the system covers must not hide the boxes behind it. Caught live:
+    /// `"한국어 ภาษาไทย"` drew both as boxes because no face on that machine had Korean, and
+    /// reporting only the first box meant the Thai after it was never looked up at all -- though
+    /// 112 installed faces could draw it.
+    #[test]
+    fn a_codepoint_nothing_covers_does_not_hide_the_ones_that_can_be() {
+        let Some((declared, rescued)) = a_family_and_a_codepoint_it_lacks() else {
+            eprintln!("skip: no codepoint this machine covers and the declared family does not");
+            return;
+        };
+        // Plane 15 is private use: assigned to nobody, so nothing is expected to draw it.
+        let hopeless = '\u{F0000}';
+        if fonts::fc_lists(&format!(":charset={:x}", hopeless as u32)) {
+            eprintln!("skip: this machine has a face for {hopeless:?}, so it cannot stand for a hopeless one");
+            return;
+        }
+        let handle = ShapingHandle::spawn();
+        handle.set_chain(&[declared.to_string()]);
+
+        let shaped = handle.shape_glyphs(req(&format!("{hopeless}{rescued}"), 20.0));
+
+        let unreachable = hopeless.len_utf8();
+        let boxes: Vec<&Glyph> = shaped.shaped[0].glyphs.iter().filter(|glyph| glyph.id == 0).collect();
+        assert!(
+            boxes.iter().all(|glyph| glyph.start < unreachable),
+            "only the codepoint nothing covers may stay a box, but {boxes:?} did"
+        );
     }
 
     /// A family a node names joins the faces femtovg is handed, so glyphs shaped in it can be
@@ -1025,7 +1140,7 @@ mod tests {
     fn another_family(primary: &str) -> Option<String> {
         ["DejaVu Sans Mono", "Liberation Mono", "Noto Sans Mono"]
             .into_iter()
-            .find(|family| *family != primary && fonts::family_installed(family))
+            .find(|family| *family != primary && fonts::fc_lists(family))
             .map(str::to_string)
     }
 
@@ -1063,14 +1178,17 @@ mod tests {
     // ---- styled runs (ADR-0104) ----
 
     /// Paint draws the faces cosmic-text chose, so every face a shape names has to be one the
-    /// painter is handed: the regular, a bold run's, and coverage like emoji (ADR-0211).
+    /// painter is handed: the regular, a bold run's, and coverage like emoji and Arabic (ADR-0211).
     #[test]
     fn every_face_a_shape_names_is_one_the_painter_is_handed() {
         let handle = ShapingHandle::spawn();
-        let faces: Vec<fontdb::ID> = handle.font_chain_data().iter().map(|face| face.id).collect();
         let text = "Mantle 🙏 شكرا";
         let bold = ShapeRequest { runs: vec![FontRun { range: 0..7, bold: true, italic: false }], ..req(text, 20.0) };
-        for shaped in [handle.shape_glyphs(req(text, 20.0)), handle.shape_glyphs(bold)] {
+        let shapes = [handle.shape_glyphs(req(text, 20.0)), handle.shape_glyphs(bold)];
+        // Read after shaping, as paint reads it: a codepoint the chain cannot draw loads a face
+        // mid-shape (ADR-0239), and `TextPainter` re-syncs on the generation that bumps.
+        let faces: Vec<fontdb::ID> = handle.font_chain_data().iter().map(|face| face.id).collect();
+        for shaped in shapes {
             for glyph in shaped.shaped.iter().flat_map(|line| line.glyphs.iter()) {
                 assert!(faces.contains(&glyph.face), "{glyph:?} names a face femtovg is never given");
             }
@@ -1479,7 +1597,7 @@ mod tests {
             eprintln!("fc-match not available, skip");
             return;
         }
-        if !fonts::family_installed("Noto Sans") || !fonts::family_installed("Noto Sans Mono") {
+        if !fonts::fc_lists("Noto Sans") || !fonts::fc_lists("Noto Sans Mono") {
             eprintln!("\"Noto Sans\" and/or \"Noto Sans Mono\" not installed on this machine, skip");
             return;
         }
@@ -1495,8 +1613,8 @@ mod tests {
             runs: Vec::new(),
             font: None,
         };
-        let proportional = shape(&mut font_system, "Noto Sans", &request, false);
-        let monospace = shape(&mut font_system, "Noto Sans Mono", &request, false);
+        let (proportional, _) = shape(&mut font_system, "Noto Sans", &request, false);
+        let (monospace, _) = shape(&mut font_system, "Noto Sans Mono", &request, false);
 
         // Near-equal widths would mean the family argument did nothing; 10% clears rounding noise.
         let diff = (proportional.width - monospace.width).abs();
@@ -1517,9 +1635,10 @@ mod tests {
     #[test]
     fn shaping_against_an_empty_database_measures_nothing_rather_than_panicking() {
         let mut font_system = FontSystem::new_with_locale_and_db(detect_locale(), fontdb::Database::new());
-        let measured = shape(&mut font_system, "", &req("Mantle", 14.0), true);
+        let (measured, missing) = shape(&mut font_system, "", &req("Mantle", 14.0), true);
         assert_eq!((measured.width, measured.height), (0.0, 0.0));
         assert!(measured.lines.is_empty() && measured.shaped.is_empty());
+        assert!(missing.is_empty(), "a database with nothing in it has no codepoint to go looking for");
     }
 
     /// The trap `lines` was written into: cosmic-text's `LayoutRun::text` is the whole *source*

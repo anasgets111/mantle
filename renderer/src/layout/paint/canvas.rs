@@ -1118,8 +1118,8 @@ mod tests {
         let Some(instance) = init_headless_egl(400, 60) else { return };
         let (declared, named) = ("Noto Sans", "Noto Sans Mono");
         if !crate::text::fonts::fc_match_available()
-            || !crate::text::fonts::family_installed(declared)
-            || !crate::text::fonts::family_installed(named)
+            || !crate::text::fonts::fc_lists(declared)
+            || !crate::text::fonts::fc_lists(named)
         {
             eprintln!("skip: need two installed families to tell apart");
             return;
@@ -1166,7 +1166,7 @@ mod tests {
     fn a_bold_run_in_a_variable_family_draws_the_bold_instance() {
         let Some(instance) = init_headless_egl(240, 40) else { return };
         let family = "Inter Variable";
-        if !crate::text::fonts::fc_match_available() || !crate::text::fonts::family_installed(family) {
+        if !crate::text::fonts::fc_match_available() || !crate::text::fonts::fc_lists(family) {
             eprintln!("skip: {family} is not installed");
             return;
         }

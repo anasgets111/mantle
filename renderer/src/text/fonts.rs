@@ -72,6 +72,36 @@ pub fn load_family(db: &mut Database, name: &str, loaded_paths: &mut HashSet<Pat
     load_chain(db, &[name], loaded_paths)
 }
 
+/// Loads a face covering `ch`, for a codepoint every face the chain loaded drew as a box
+/// (ADR-0239). `true` when the database gained one and the caller must shape again.
+///
+/// ponytail: the face is fontconfig's own first-ranked answer -- the system's declared font
+/// policy, not a designer's pick. With Font Awesome installed, `:charset=1f600` resolves to it
+/// rather than to an emoji face. A shell that cares names the family in its chain.
+pub fn load_covering(db: &mut Database, ch: char, loaded_paths: &mut HashSet<PathBuf>) -> bool {
+    let cp = ch as u32;
+    let Some((path, _)) = fc_match_raw(&format!(":charset={cp:x}")) else {
+        return false;
+    };
+    // The shaper tried every loaded face before reaching here, so fontconfig answering with one of
+    // them is it declining rather than helping -- this query's substitution check (ADR-0239).
+    if loaded_paths.contains(&path) {
+        warn!("font chain: U+{cp:04X} -> no installed face covers it");
+        return false;
+    }
+    match db.load_font_file(&path) {
+        Ok(()) => {
+            info!("font chain: U+{cp:04X} -> {path:?}");
+            loaded_paths.insert(path);
+            true
+        }
+        Err(e) => {
+            warn!("font chain: U+{cp:04X} resolved to {path:?}, which failed to load: {e}");
+            false
+        }
+    }
+}
+
 /// Loads every entry of one chain into `db` and returns the first that hit, which is that chain's
 /// primary family, along with that primary's bold, italic and bold-italic files.
 fn load_chain(db: &mut Database, chain: &[&str], loaded_paths: &mut HashSet<PathBuf>) -> Option<String> {
@@ -188,30 +218,36 @@ fn system_primary(db: &Database) -> Option<String> {
 /// fontconfig's own configuration file is the system's declared font policy -- a better default
 /// than "first face in scan order", which is what this whole module replaces.
 fn fc_match(name: &str) -> Option<(PathBuf, String)> {
-    let output = Command::new("fc-match").args(["-f", "%{file}\t%{family}\n", name]).output().ok()?;
-    if !output.status.success() {
-        return None;
-    }
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let line = stdout.lines().next()?;
-    let (file, families) = line.split_once('\t')?;
-    if file.is_empty() {
-        return None;
-    }
+    let (path, families) = fc_match_raw(name)?;
 
     // `Family:weight=bold` is fontconfig's own pattern syntax and the family is the part before
     // the colon; a bare family name has no colon and is itself.
     let family_asked = name.split(':').next().unwrap_or(name);
     let is_generic = GENERIC_ALIASES.iter().any(|generic| generic.eq_ignore_ascii_case(family_asked));
     let resolved_family = if is_generic {
-        families.split(',').next().unwrap_or(families).trim().to_string()
+        families.split(',').next().unwrap_or(&families).trim().to_string()
     } else {
         let hit = families.split(',').find(|family| family.trim().eq_ignore_ascii_case(family_asked))?;
         hit.trim().to_string()
     };
 
-    Some((PathBuf::from(file), resolved_family))
+    Some((path, resolved_family))
+}
+
+/// The file `fc-match` answers `pattern` with, and the families that file holds, before any check
+/// that the answer is a hit rather than fontconfig's substitution -- which [`load_covering`],
+/// asking by codepoint, has no family name to make.
+fn fc_match_raw(pattern: &str) -> Option<(PathBuf, String)> {
+    let output = Command::new("fc-match").args(["-f", "%{file}\t%{family}\n", pattern]).output().ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let (file, families) = stdout.lines().next()?.split_once('\t')?;
+    match file.is_empty() {
+        true => None,
+        false => Some((PathBuf::from(file), families.to_string())),
+    }
 }
 
 /// True if `fc-match` is reachable at all -- gates this module's tests and `text::shaping`'s:
@@ -222,13 +258,14 @@ pub(crate) fn fc_match_available() -> bool {
     Command::new("fc-match").arg("--version").output().is_ok_and(|o| o.status.success())
 }
 
-/// True if `fc-list` finds at least one face for `family`. Unlike `fc-match`, `fc-list` never
-/// substitutes -- an absent family prints nothing rather than someone else's font -- so this
-/// gates a test on "is this specific family actually here", which varies by machine (no bundled
-/// dev font set in this workspace). `pub(crate)` for the same reason as `fc_match_available`.
+/// True if `fc-list` finds at least one face matching `pattern`: a family name, a
+/// `:charset=<hex>` codepoint query, or a family and a codepoint together. Unlike `fc-match`,
+/// `fc-list` never substitutes -- an absent family or an uncovered codepoint prints nothing rather
+/// than someone else's font -- so this gates a test on what the machine actually has, which varies
+/// (no bundled dev font set in this workspace). `pub(crate)` for `fc_match_available`'s reason.
 #[cfg(test)]
-pub(crate) fn family_installed(family: &str) -> bool {
-    Command::new("fc-list").args([family, "file"]).output().is_ok_and(|o| o.status.success() && !o.stdout.is_empty())
+pub(crate) fn fc_lists(pattern: &str) -> bool {
+    Command::new("fc-list").args([pattern, "file"]).output().is_ok_and(|o| o.status.success() && !o.stdout.is_empty())
 }
 
 #[cfg(test)]
@@ -236,7 +273,7 @@ mod tests {
     use super::*;
 
     /// Picked because it happens to be installed on machines this runs on, and resolves to
-    /// itself rather than a substitute -- both checked via `family_installed`/`resolve_chain`
+    /// itself rather than a substitute -- both checked via `fc_lists`/`resolve_chain`
     /// rather than assumed. There is no bundled dev font set in this workspace, so a hardcoded
     /// family must be verified, not assumed present.
     const TEST_FAMILY: &str = "Noto Sans Mono";
@@ -247,7 +284,7 @@ mod tests {
             eprintln!("fc-match not available, skip");
             return;
         }
-        if !family_installed(TEST_FAMILY) {
+        if !fc_lists(TEST_FAMILY) {
             eprintln!("{TEST_FAMILY:?} not installed on this machine, skip");
             return;
         }
@@ -263,7 +300,7 @@ mod tests {
             eprintln!("fc-match not available, skip");
             return;
         }
-        if !family_installed(TEST_FAMILY) {
+        if !fc_lists(TEST_FAMILY) {
             eprintln!("{TEST_FAMILY:?} not installed on this machine, skip");
             return;
         }
@@ -284,8 +321,8 @@ mod tests {
         }
         let named = ["DejaVu Sans Mono", "Liberation Mono", "Noto Sans Mono"]
             .into_iter()
-            .find(|family| family_installed(family) && *family != TEST_FAMILY);
-        let (Some(named), true) = (named, family_installed(TEST_FAMILY)) else {
+            .find(|family| fc_lists(family) && *family != TEST_FAMILY);
+        let (Some(named), true) = (named, fc_lists(TEST_FAMILY)) else {
             eprintln!("no two distinct families installed to tell apart, skip");
             return;
         };
@@ -307,7 +344,7 @@ mod tests {
     /// declared chain, so the database must come back untouched rather than half-loaded.
     #[test]
     fn a_named_family_nothing_answers_leaves_the_database_alone() {
-        if !fc_match_available() || !family_installed(TEST_FAMILY) {
+        if !fc_match_available() || !fc_lists(TEST_FAMILY) {
             eprintln!("fc-match or {TEST_FAMILY:?} not available, skip");
             return;
         }
@@ -320,7 +357,7 @@ mod tests {
     /// Naming a family the chain already loaded must not map its file a second time.
     #[test]
     fn naming_a_family_the_chain_already_loaded_reuses_its_file() {
-        if !fc_match_available() || !family_installed(TEST_FAMILY) {
+        if !fc_match_available() || !fc_lists(TEST_FAMILY) {
             eprintln!("fc-match or {TEST_FAMILY:?} not available, skip");
             return;
         }
