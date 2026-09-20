@@ -1,7 +1,7 @@
 //! Real PAM conversation, closing ADR-0015. ADR-0028's halves share `shared::PamMessage`/
 //! `PamOutcome` over `shared::framing` and [`pam_service`]. Blocking `nonstick` FFI runs in a
 //! re-exec'd worker, not the async Supervisor. [`run_worker`] handles `MANTLE_PAM_WORKER=1`,
-//! relaying every PAM prompt over stdio and answering with a `Response` (ADR-0241).
+//! relaying masked prompts over stdio and answering with a `Response`, echo-on refused (ADR-0241).
 //! [`run_authentication`] re-execs via [`crate::process::spawn_group_leader_stdio_piped`],
 //! exchanges piped stdin/stdout, and reports to `main.rs`, the only unlock authority (ADR-0052).
 //! [`run_polkit_helper`] uses polkit's root helper instead: polkitd accepts the agent response only
@@ -52,21 +52,20 @@ fn pam_service() -> &'static str {
 /// forever while the prompt remains `authenticating`.
 const PAM_EXCHANGE_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// Relays every PAM prompt to the Supervisor and blocks for its answer (ADR-0241): `prompt`
-/// (echo-on) and `masked_prompt` both forward their text rather than one refusing outright and the
-/// other replaying a password captured up front. Blocking `std::io`, not `shared::framing`: `nonstick`
-/// calls these synchronously from FFI, with no async context to `.await` in. The received `secret`
-/// moves straight into PAM's `char*` copy, which is why nothing here needs zeroizing on drop; there
-/// is no buffer left to scrub once each round returns.
+/// Relays a masked PAM prompt to the Supervisor and blocks for its answer (ADR-0241): `masked_prompt`
+/// forwards its text rather than replaying a password captured up front. Blocking `std::io`, not
+/// `shared::framing`: `nonstick` calls these synchronously from FFI, with no async context to
+/// `.await` in. The received `secret` moves straight into PAM's `char*` copy, which is why nothing
+/// here needs zeroizing on drop; there is no buffer left to scrub once each round returns.
 struct RelayConversation<R, W> {
     reader: RefCell<R>,
     writer: RefCell<W>,
 }
 
 impl<R: std::io::Read, W: std::io::Write> RelayConversation<R, W> {
-    fn relay(&self, text: String, echo: bool) -> nonstick::Result<std::ffi::OsString> {
+    fn relay(&self, text: String) -> nonstick::Result<std::ffi::OsString> {
         use std::os::unix::ffi::OsStringExt;
-        write_frame(&mut *self.writer.borrow_mut(), &shared::PamMessage::Prompt { text, echo })
+        write_frame(&mut *self.writer.borrow_mut(), &shared::PamMessage::Prompt { text, echo: false })
             .map_err(|_| nonstick::ErrorCode::ConversationError)?;
         match read_frame(&mut *self.reader.borrow_mut()).map_err(|_| nonstick::ErrorCode::ConversationError)? {
             shared::PamMessage::Response { secret } => Ok(std::ffi::OsString::from_vec(secret)),
@@ -76,12 +75,15 @@ impl<R: std::io::Read, W: std::io::Write> RelayConversation<R, W> {
 }
 
 impl<R: std::io::Read, W: std::io::Write> ConversationAdapter for RelayConversation<R, W> {
-    fn prompt(&self, request: impl AsRef<std::ffi::OsStr>) -> nonstick::Result<std::ffi::OsString> {
-        self.relay(request.as_ref().to_string_lossy().into_owned(), true)
+    /// Echo-on has no safe answer: the only secret held here is the lock password, and PAM treats
+    /// an echo-on answer as displayable/loggable. Refusing, not relaying, keeps that password out
+    /// of a channel PAM considers non-secret.
+    fn prompt(&self, _request: impl AsRef<std::ffi::OsStr>) -> nonstick::Result<std::ffi::OsString> {
+        Err(nonstick::ErrorCode::ConversationError)
     }
 
     fn masked_prompt(&self, request: impl AsRef<std::ffi::OsStr>) -> nonstick::Result<std::ffi::OsString> {
-        self.relay(request.as_ref().to_string_lossy().into_owned(), false)
+        self.relay(request.as_ref().to_string_lossy().into_owned())
     }
 
     fn error_msg(&self, message: impl AsRef<std::ffi::OsStr>) {
@@ -134,7 +136,7 @@ fn outcome_for_error(err: nonstick::ErrorCode) -> shared::PamOutcome {
 }
 
 /// Runs `pam_start` via `TransactionBuilder`, then `authenticate` and `account_management`,
-/// relaying every prompt over stdio (ADR-0241).
+/// relaying masked prompts over stdio (ADR-0241).
 fn run_conversation(username: &str) -> shared::PamOutcome {
     let conversation = RelayConversation {
         reader: RefCell::new(std::io::stdin().lock()),
@@ -797,24 +799,23 @@ mod tests {
     /// prompt, echo-off then echo-on, each answered from the wire rather than one password
     /// replayed (ADR-0241).
     #[test]
-    fn relay_conversation_carries_an_echo_off_then_an_echo_on_prompt_over_the_wire() {
+    fn relay_conversation_relays_a_masked_prompt_but_refuses_an_echo_on_one() {
         let mut canned = Vec::new();
         write_frame(&mut canned, &shared::PamMessage::Response { secret: b"hunter2".to_vec() }).unwrap();
-        write_frame(&mut canned, &shared::PamMessage::Response { secret: b"123456".to_vec() }).unwrap();
         let conversation =
             RelayConversation { reader: RefCell::new(std::io::Cursor::new(canned)), writer: RefCell::new(Vec::new()) };
 
         assert_eq!(conversation.masked_prompt("Password:").unwrap(), std::ffi::OsString::from("hunter2"));
-        assert_eq!(conversation.prompt("One-time code:").unwrap(), std::ffi::OsString::from("123456"));
+        assert!(conversation.prompt("One-time code:").is_err(), "an echo-on prompt has no safe answer to relay");
 
         let mut sent = std::io::Cursor::new(conversation.writer.into_inner());
         assert_eq!(
             read_frame(&mut sent).unwrap(),
             shared::PamMessage::Prompt { text: "Password:".into(), echo: false }
         );
-        assert_eq!(
-            read_frame(&mut sent).unwrap(),
-            shared::PamMessage::Prompt { text: "One-time code:".into(), echo: true }
+        assert!(
+            sent.position() as usize == sent.get_ref().len(),
+            "refusing must not write a frame for the echo-on prompt"
         );
     }
 

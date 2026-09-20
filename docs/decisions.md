@@ -5648,10 +5648,12 @@ a second round.
    and `Outcome` are the worker's; `Response { secret }` is the Supervisor's only reply. Same
    4-byte-length-prefixed JSON as `PamOutcome`, so `exchange_over`'s reap, timeout and post-mortem
    logic needs no change.
-2. **Worker: one `RelayConversation`, no captured password.** `prompt` and `masked_prompt` both
-   write a `Prompt` and block for a `Response`, over blocking `std::io` rather than
-   `shared::framing`: `nonstick` calls these synchronously from FFI, with no async context to
-   `.await` in. Echo-on and echo-off are forwarded alike; neither is a hard error.
+2. **Worker: one `RelayConversation`, no captured password.** `masked_prompt` writes a `Prompt` and
+   blocks for a `Response`, over blocking `std::io` rather than `shared::framing`: `nonstick` calls
+   these synchronously from FFI, with no async context to `.await` in. `prompt` (echo-on) still
+   returns `ConversationError`: the only secret held here is the lock password, and PAM treats an
+   echo-on answer as displayable/loggable, so relaying it there would be the one new way this
+   change could leak a password PAM itself never asked to see.
 3. **Supervisor: one secret, answered to every prompt.** `exchange_messages` loops
    `read_json_frame`/`write_json_frame` until `Outcome`, answering each `Prompt` with the password
    `secure_submit(lock, authenticate)` already collected. One clone lives for the exchange,
