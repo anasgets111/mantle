@@ -433,7 +433,10 @@ struct BusyGuard<'a> {
 
 impl Drop for BusyGuard<'_> {
     fn drop(&mut self) {
-        let mut busy = self.controller.busy.lock().unwrap();
+        let mut busy = match self.controller.busy.lock() {
+            Ok(g) => g,
+            Err(p) => p.into_inner(),
+        };
         if busy.get(&self.mac) == Some(&self.action) {
             busy.remove(&self.mac);
         }

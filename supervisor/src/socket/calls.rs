@@ -58,21 +58,25 @@ impl CallRoutes {
     pub fn answer(&self, from_generation: u32, result: &shared::CallResult) -> Result<(), String> {
         let entry = {
             let mut pending = self.0.lock().expect("call routes mutex poisoned");
-            match pending.waiting.get(&result.id).map(|entry| entry.dispatched_to) {
-                None => return Err(format!("no caller is waiting on call {}", result.id)),
+            let Some(entry) = pending.waiting.remove(&result.id) else {
+                return Err(format!("no caller is waiting on call {}", result.id));
+            };
+            match entry.dispatched_to {
                 // Not yet forwarded, so no generation can have been asked. Refused without removing
                 // the route: the call it belongs to has not been made, and consuming it here would
                 // strand the caller that is about to make it.
-                Some(None) => {
+                None => {
+                    pending.waiting.insert(result.id, entry);
                     return Err(format!("call {} has not been dispatched yet", result.id));
                 }
-                Some(Some(asked)) if asked != from_generation => {
+                Some(asked) if asked != from_generation => {
+                    pending.waiting.insert(result.id, entry);
                     return Err(format!(
                         "call {} was dispatched to generation {asked}, so generation {from_generation} cannot answer it",
                         result.id
                     ));
                 }
-                Some(Some(_)) => pending.waiting.remove(&result.id).expect("just looked it up"),
+                Some(_) => entry,
             }
         };
         let payload = serde_json::to_vec(&shared::SupervisorFrame::CallResult(result.clone()))

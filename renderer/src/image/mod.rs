@@ -962,7 +962,12 @@ fn decode_gif(
     let mut deltas: Vec<GifDelta> = Vec::new();
     let mut delta_bytes = 0usize;
     while let Some(frame) = decoder.read_next_frame().map_err(|err| err.to_string())? {
-        let rect = (u32::from(frame.left), u32::from(frame.top), u32::from(frame.width), u32::from(frame.height));
+        let (left, top, w, h) =
+            (u32::from(frame.left), u32::from(frame.top), u32::from(frame.width), u32::from(frame.height));
+        if left + w > source_width || top + h > source_height {
+            continue;
+        }
+        let rect = (left, top, w, h);
         // A floor, because a 0 ms frame is one `frame_at` skips and an all-0 file is a still, which
         // much of the web's GIFs are. 20 ms, not the 100 ms browsers substitute: a frame here costs
         // a whole surface repaint, and 50 fps is already the ceiling that buys.
@@ -987,7 +992,11 @@ fn decode_gif(
 
         match frame.dispose {
             gif::DisposalMethod::Background => clear_rect(&mut canvas, source_width, rect),
-            gif::DisposalMethod::Previous => write_rect(&mut canvas, source_width, rect, &restore.unwrap()),
+            gif::DisposalMethod::Previous => {
+                if let Some(ref saved) = restore {
+                    write_rect(&mut canvas, source_width, rect, saved);
+                }
+            }
             gif::DisposalMethod::Keep | gif::DisposalMethod::Any => {}
         }
     }
@@ -1032,7 +1041,10 @@ fn clear_rect(pixels: &mut [u8], width: u32, rect: (u32, u32, u32, u32)) {
 /// pixel so whatever the canvas already holds shows through. GIF transparency is a 1-bit mask,
 /// never partial, so "skip" is the whole rule.
 fn blend_rect(pixels: &mut [u8], width: u32, rect: (u32, u32, u32, u32), src: &[u8]) {
-    let (left, top, w, _) = rect;
+    let (left, top, w, h) = rect;
+    if w == 0 || h == 0 {
+        return;
+    }
     for (i, pixel) in src.as_chunks::<4>().0.iter().enumerate() {
         if pixel[3] == 0 {
             continue;

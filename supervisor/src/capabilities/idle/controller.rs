@@ -491,8 +491,8 @@ async fn watch_screensaver_peers(session_bus: zbus::Connection, controller: Idle
 /// Watches the property rather than polling `ListInhibitors`: logind emits `PropertiesChanged`,
 /// so any `systemd-inhibit --what=idle` reaches the gate in one round trip and costs nothing idle.
 ///
-/// Reading before subscribing races; zbus replays the cached property on subscribe, making the
-/// first item the startup state. Failure degrades to a permanently open gate, logged once.
+/// Subscribing first avoids missing changes; the first loop iteration reads the initial state so
+/// startup inhibitors are not missed. Failure degrades to a permanently open gate, logged once.
 async fn watch_idle_inhibitors(
     system_bus: zbus::Connection,
     gate: Arc<std::sync::Mutex<IdleGate>>,
@@ -508,7 +508,9 @@ async fn watch_idle_inhibitors(
         }
     };
     let mut changes = proxy.receive_block_inhibited_changed().await;
-    while futures_util::StreamExt::next(&mut changes).await.is_some() {
+    let mut initial = true;
+    while initial || futures_util::StreamExt::next(&mut changes).await.is_some() {
+        initial = false;
         // Read through the proxy: zbus caches the property and avoids naming the stream item's
         // borrowed type.
         let Ok(what) = proxy.block_inhibited().await else { continue };

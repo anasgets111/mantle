@@ -876,8 +876,12 @@ impl<'lua> LayoutPassBudget<'lua> {
 
 impl Drop for LayoutPassBudget<'_> {
     fn drop(&mut self) {
-        self.lua.app_data_mut::<PassDeadline>().expect("enter always runs before its Drop").0 = None;
-        self.lua.remove_app_data::<MemoTable>();
+        if let Ok(Some(mut slot)) = self.lua.try_app_data_mut::<PassDeadline>() {
+            slot.0 = None;
+        }
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            self.lua.remove_app_data::<MemoTable>();
+        }));
     }
 }
 
@@ -915,7 +919,9 @@ impl<'lua> CpuBudget<'lua> {
 
 impl Drop for CpuBudget<'_> {
     fn drop(&mut self) {
-        self.lua.app_data_mut::<Vec<Deadline>>().expect("CpuBudget::enter always runs before its Drop").pop();
+        if let Ok(Some(mut stack)) = self.lua.try_app_data_mut::<Vec<Deadline>>() {
+            stack.pop();
+        }
     }
 }
 

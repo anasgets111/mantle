@@ -222,6 +222,12 @@ pub(super) fn spawn_object_manager_forwarder<A, R>(
                             entry.forwarder.abort();
                         }
                         if events.send(BluetoothSignal::DeviceRegistryChanged).is_err() { break; }
+                    } else if args.interfaces().iter().any(|i| i.as_str() == "org.bluez.Battery1") {
+                        let path: OwnedObjectPath = args.object_path().to_owned().into();
+                        let changed = devices.lock().unwrap().get_mut(&path).is_some_and(|entry| entry.battery.take().is_some());
+                        if changed && events.send(BluetoothSignal::DeviceRegistryChanged).is_err() {
+                            break;
+                        }
                     }
                 }
                 else => break,

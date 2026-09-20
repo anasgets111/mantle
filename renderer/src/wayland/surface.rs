@@ -13,7 +13,7 @@ use crate::layout::node::PropMap;
 use wayland_protocols::ext::background_effect::v1::client::ext_background_effect_surface_v1::ExtBackgroundEffectSurfaceV1;
 
 pub(super) struct BoundSurface {
-    egl_surface: EglSurface,
+    pub(super) egl_surface: EglSurface,
     #[allow(dead_code)]
     native_window: WlEglSurface,
 }

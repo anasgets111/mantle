@@ -9,6 +9,7 @@
 use std::fs::File;
 use std::io::{self, IsTerminal, Read, Write};
 use std::os::fd::{AsRawFd, FromRawFd};
+use std::os::unix::fs::MetadataExt;
 use std::path::Path;
 use std::time::Duration;
 
@@ -52,11 +53,11 @@ fn redirect(to: &impl AsRawFd, target: i32) -> io::Result<()> {
 /// would fix it, the way `MANTLE_PAM_WORKER` is already a second process.
 fn tee(file: &File, target: i32) -> io::Result<()> {
     // SAFETY: `target` is a standard stream this process has not closed.
-    let duplicate = unsafe { libc::dup(target) };
+    let duplicate = unsafe { libc::fcntl(target, libc::F_DUPFD_CLOEXEC, 0) };
     if duplicate == -1 {
         return Err(io::Error::last_os_error());
     }
-    // SAFETY: `dup` returned this descriptor above and nothing else holds it.
+    // SAFETY: `fcntl` returned this descriptor above and nothing else holds it.
     let mut original = unsafe { File::from_raw_fd(duplicate) };
     // Asked before the pipe takes the descriptor's place, which is the last moment it is the truth.
     // `shared::log::init` asks the same question afterwards and gets `false`, which is what keeps
@@ -157,10 +158,16 @@ fn paint(from: &mut impl Read, to: &mut impl Write, pending: &mut Vec<u8>) -> io
     Ok(())
 }
 
-/// Whether `fd` goes to `/dev/null`, as `/proc/self/fd` spells it. Only a confirmed match counts:
-/// a failed readlink says nothing, and guessing is how a redirect gets swallowed.
+/// Whether `fd` points to `/dev/null`.
 fn goes_to_dev_null(fd: i32) -> bool {
-    std::fs::read_link(format!("/proc/self/fd/{fd}")).is_ok_and(|target| target == Path::new("/dev/null"))
+    let mut stat = std::mem::MaybeUninit::<libc::stat>::uninit();
+    // SAFETY: stat points to uninitialized stack memory ready to be populated by fstat.
+    if unsafe { libc::fstat(fd, stat.as_mut_ptr()) } != 0 {
+        return false;
+    }
+    // SAFETY: fstat succeeded so stat is initialized.
+    let stat = unsafe { stat.assume_init() };
+    std::fs::metadata("/dev/null").is_ok_and(|null| null.rdev() == stat.st_rdev)
 }
 
 #[cfg(test)]

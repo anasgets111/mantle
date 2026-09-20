@@ -653,9 +653,20 @@ pub fn run(
     // While a context is still current, and only here: a config shader's program outlives every
     // generation, so nothing earlier owns its end (ADR-0184). A context already gone took its
     // objects with it, which is why this is an orderly teardown and not a recovery.
-    if let Some(gl) = app.gl.as_ref() {
-        // SAFETY: this is the context every paint bound, on the one thread that ever bound it.
-        unsafe { app.shader_stage.destroy(gl) };
+    if let (Some(egl), Some(gl)) = (app.egl.as_ref(), app.gl.as_ref()) {
+        use glow::HasContext;
+        let active = if egl.instance.get_current_context() == Some(egl.context) {
+            true
+        } else {
+            let surf = app.surfaces.iter().find_map(|s| s.bound.as_ref().map(|b| b.egl_surface));
+            egl.instance.make_current(egl.display, surf, surf, Some(egl.context)).is_ok()
+        };
+        // SAFETY: active is true only when the GL context was confirmed current on this thread.
+        let not_lost = active && unsafe { gl.get_error() } != glow::CONTEXT_LOST;
+        if not_lost {
+            // SAFETY: this is the context every paint bound, on the one thread that ever bound it.
+            unsafe { app.shader_stage.destroy(gl) };
+        }
     }
     Err("stopped on an EGL/GPU failure, the only thing that sets `app.exit`".into())
 }

@@ -311,7 +311,9 @@ fn write(path: &Path, contents: &Map<String, Value>) -> std::io::Result<()> {
     let file_name = path.file_name().unwrap_or_default().to_string_lossy();
     let temporary = path.with_file_name(format!(".{file_name}.{}.tmp", std::process::id()));
     std::fs::write(&temporary, &serialized)?;
-    std::fs::rename(&temporary, path)
+    std::fs::rename(&temporary, path).inspect_err(|_| {
+        let _ = std::fs::remove_file(&temporary);
+    })
 }
 
 #[cfg(test)]

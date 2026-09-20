@@ -66,7 +66,7 @@ fn select_backlight_device(backlight_root: &Path) -> Option<(PathBuf, i32)> {
 /// [`select_backlight_device`] guarantees positive `max`, so the `u8` result is `[0, 100]`.
 fn read_percent(device_dir: &Path, max: i32) -> u8 {
     let brightness = read_attr(device_dir, "brightness").and_then(|text| text.parse::<i32>().ok()).unwrap_or(0);
-    percent_from_raw(brightness, max) as u8
+    percent_from_raw(brightness, max).max(0) as u8
 }
 
 /// `org.freedesktop.login1.Session.SetBrightness` on fixed `session/auto`, which logind resolves
