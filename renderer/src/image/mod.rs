@@ -1,6 +1,7 @@
 //! Decodes, caches, and fits images into GPU textures (ADR-0054). PNG/JPEG/WebP use `image`
-//! ([`decode_raster`]); SVG uses `resvg` because Adwaita ships scalable icons; a GIF holds every
-//! frame at once and the slot picks one by elapsed time ([`decode_gif`], ADR-0233).
+//! ([`decode_raster`]); SVG uses `resvg` because Adwaita ships scalable icons; a GIF is one texture
+//! plus its frames' changed rects, replayed onto it as the slot's elapsed time advances
+//! ([`decode_gif`], ADR-0233, ADR-0235).
 //!
 //! The key is path plus physical-pixel box: a vector made for 12px would blur at 24px, while a
 //! raster is downscaled to cover its box (ADR-0122), so a 4K wallpaper in a 230px thumbnail is a
@@ -91,11 +92,13 @@ const MAX_DECODE_EDGE: u32 = 8_192;
 /// (ADR-0187).
 const DECODE_POOL_BYTES: u64 = 256 * 1024 * 1024;
 
-/// Screenfuls of texture one animated source may hold, every frame being resident at once. A
-/// multiple of the display-derived budget, not a constant, for ADR-0182's reason: this cache has
-/// already measured what a screenful costs here. Three, because a GIF wallpaper is the large case
-/// and 84 frames of a 480x270 source is 43 MB against a 16 MB screenful.
-const ANIMATION_BUDGETS: usize = 3;
+/// Screenfuls of host bytes one animated source's kept deltas may hold (ADR-0235). Display-derived
+/// for ADR-0182's reason, and larger than the GPU pool because these are host bytes: three kept 52
+/// of a measured 1080p wallpaper's 86 frames.
+///
+/// ponytail: past this, trailing frames are dropped and the wrap shows as a jump. Upgrade: merge
+/// deltas so what fits spreads over the loop instead of being cut from its end.
+const ANIMATION_BUDGETS: usize = 8;
 
 /// One cache slot. `box_px` is the physical-pixel target: SVGs use their longest edge; rasters
 /// downscale to cover it (see the module docs).
@@ -172,10 +175,16 @@ pub enum Load {
     Background,
 }
 
-/// Decoder output awaiting texture upload: one frame, or a GIF's sequence with the delay that
-/// follows each. All frames share `width`/`height`, which GIF composition already guarantees.
+/// Decoder output awaiting texture upload: a still's one frame, or a GIF's base frame plus its
+/// later frames' changed rects (ADR-0235). `deltas` and `delays` are empty and length-1
+/// respectively for anything that is not an animation.
 struct Decoded {
-    frames: Vec<(Vec<u8>, Duration)>,
+    /// Frame 0, full `width`x`height`.
+    base: Vec<u8>,
+    /// One delay per shown frame: `delays[0]` is the base's, `delays[i]` pairs with `deltas[i - 1]`.
+    delays: Vec<Duration>,
+    /// Frame `i + 1`'s rect, already composited with its disposal applied.
+    deltas: Vec<GifDelta>,
     width: u32,
     height: u32,
     /// tiny-skia `Pixmap` is premultiplied RGBA8; `image` is straight. The wrong femtovg flag gives
@@ -183,15 +192,37 @@ struct Decoded {
     premultiplied: bool,
 }
 
+/// One GIF frame's changed rectangle after disposal (ADR-0235): physical-pixel left/top/width/
+/// height and its RGBA8 pixels, ready for `Canvas::update_image`.
+struct GifDelta {
+    rect: (u32, u32, u32, u32),
+    pixels: Vec<u8>,
+}
+
+/// A landed GIF's replay state (ADR-0235): the base frame's own pixels, kept to re-upload on loop
+/// wrap, and the rects later frames change, applied to the live texture in [`ImageCache::showing`]
+/// as its shown index advances.
+struct Animation {
+    base: Vec<u8>,
+    width: u32,
+    height: u32,
+    delays: Vec<Duration>,
+    deltas: Vec<GifDelta>,
+    /// The frame index currently on the texture.
+    current: usize,
+}
+
 /// Slot state. `Pending` draws and enqueues nothing after its first job until it lands.
 enum Slot {
     Pending,
-    /// One texture per frame with the delay after it, the sum of their bytes charged to the budget
-    /// as one, and the instant frame 0 went up. A still is one frame at [`Duration::ZERO`].
+    /// One texture, the instant it went up, and the bytes charged to the budget: the texture's,
+    /// plus the animation's host deltas, which nothing else would reclaim. `anim` is `None` for a
+    /// still: nothing to replay onto it.
     Ready {
-        frames: Vec<(ImageId, Duration)>,
+        image: ImageId,
         bytes: usize,
         start: Instant,
+        anim: Option<Animation>,
     },
     Failed,
 }
@@ -306,7 +337,8 @@ pub struct ImageCache {
     evicted_total: usize,
     landed_total: usize,
     failed_total: usize,
-    /// Bytes across `Ready` slots, maintained by [`ImageCache::insert`] and [`ImageCache::evict`].
+    /// Bytes across `Ready` slots -- texture, plus an animation's host deltas (ADR-0235) --
+    /// maintained by [`ImageCache::insert`] and [`ImageCache::evict`].
     resident_bytes: usize,
     /// Lamport clock incremented per [`ImageCache::image`], avoiding `Instant` and frame state.
     tick: u64,
@@ -526,7 +558,7 @@ impl ImageCache {
         self.tick += 1;
         if let Some(cached) = self.entries.get_mut(&key) {
             cached.last_hit = self.tick;
-            return self.showing(&key);
+            return self.showing(canvas, &key);
         }
         match load {
             Load::Inline => {
@@ -537,7 +569,7 @@ impl ImageCache {
                     decode(&key, tint, None, Charge::Immediate(&self.pool.budget), &|| true, self.animation_bytes());
                 let slot = upload_or_log(canvas, &key.path, decoded);
                 self.insert(key.clone(), slot);
-                self.showing(&key)
+                self.showing(canvas, &key)
             }
             Load::Background => {
                 // One gate for the whole pipeline, not just the queue: see `MAX_INFLIGHT_DECODES`.
@@ -567,15 +599,41 @@ impl ImageCache {
         }
     }
 
-    /// The frame `key` is showing now, and the repaint its successor owes. `None` for a pending
-    /// or failed slot, which draws nothing.
-    fn showing(&mut self, key: &CacheKey) -> Option<ImageId> {
-        let Some(Slot::Ready { frames, start, .. }) = self.entries.get(key).map(|entry| &entry.slot) else {
+    /// The texture `key` is showing now, replaying its animation's deltas onto it if the elapsed
+    /// time has moved its frame on, and the repaint its successor owes (ADR-0235). `None` for a
+    /// pending or failed slot, which draws nothing.
+    fn showing(&mut self, canvas: &mut Canvas<OpenGl>, key: &CacheKey) -> Option<ImageId> {
+        let Some(Slot::Ready { image, start, anim, .. }) = self.entries.get_mut(key).map(|entry| &mut entry.slot)
+        else {
             return None;
         };
-        // A still never reads the clock: `image` is called once per draw per frame.
-        let (index, next) = if frames.len() > 1 { frame_at(frames, start.elapsed()) } else { (0, None) };
-        let id = frames[index].0;
+        let id = *image;
+        // A still, or an animation with nothing to replay, never reads the clock.
+        let Some(anim) = anim.as_mut().filter(|anim| !anim.deltas.is_empty()) else {
+            return Some(id);
+        };
+        let (target, next) = frame_at(&anim.delays, start.elapsed());
+        if target != anim.current {
+            let (reset, catch_up) = replay_steps(anim.current, target);
+            if reset {
+                let source = ImageSource::from(femtovg::imgref::Img::new(
+                    anim.base.as_rgba(),
+                    anim.width as usize,
+                    anim.height as usize,
+                ));
+                let _ = canvas.update_image(id, source, 0, 0);
+            }
+            for delta in &anim.deltas[catch_up] {
+                let (left, top, width, height) = delta.rect;
+                let source = ImageSource::from(femtovg::imgref::Img::new(
+                    delta.pixels.as_rgba(),
+                    width as usize,
+                    height as usize,
+                ));
+                let _ = canvas.update_image(id, source, left as usize, top as usize);
+            }
+            anim.current = target;
+        }
         if let Some(next) = next {
             // The soonest wins: one pass can draw a refused tile and a 10 fps GIF.
             let due = Instant::now() + next;
@@ -659,8 +717,8 @@ impl ImageCache {
     fn evict(&mut self, key: &CacheKey) {
         if let Some(entry) = self.entries.remove(key) {
             match &entry.slot {
-                Slot::Ready { frames, bytes, .. } => {
-                    self.evicted.extend(frames.iter().map(|(id, _)| *id));
+                Slot::Ready { image, bytes, .. } => {
+                    self.evicted.push(*image);
                     self.evicted_total += 1;
                     self.resident_bytes -= *bytes;
                 }
@@ -721,8 +779,11 @@ fn victims(
 /// asking again.
 fn upload_or_log(canvas: &mut Canvas<OpenGl>, path: &Path, decoded: Result<Decoded, String>) -> Slot {
     let result = decoded.and_then(|decoded| {
-        let bytes = decoded.frames.iter().map(|(pixels, _)| pixels.len()).sum();
-        upload(canvas, decoded).map(|frames| Slot::Ready { frames, bytes, start: Instant::now() })
+        // Host delta bytes counted beside the texture's, or nothing reclaims them: `trim` is the
+        // only thing that drops an entry, a shown source is pinned against it either way, and an
+        // animation nobody draws held its whole ceiling for the life of the process (ADR-0235).
+        let bytes = decoded.base.len() + decoded.deltas.iter().map(|delta| delta.pixels.len()).sum::<usize>();
+        upload(canvas, decoded).map(|(image, anim)| Slot::Ready { image, bytes, start: Instant::now(), anim })
     });
     match result {
         Ok(slot) => slot,
@@ -736,13 +797,13 @@ fn upload_or_log(canvas: &mut Canvas<OpenGl>, path: &Path, decoded: Result<Decod
 /// The frame showing `elapsed` after the first, and how long until the next. A still is frame 0
 /// with nothing owed; anything else loops. A zero-delay frame is skipped rather than held, which
 /// is why [`decode_gif`] floors what the file asks for.
-fn frame_at<T>(frames: &[(T, Duration)], elapsed: Duration) -> (usize, Option<Duration>) {
-    let total: Duration = frames.iter().map(|(_, delay)| *delay).sum();
+fn frame_at(delays: &[Duration], elapsed: Duration) -> (usize, Option<Duration>) {
+    let total: Duration = delays.iter().sum();
     if total.is_zero() {
         return (0, None);
     }
     let mut at = Duration::from_nanos((elapsed.as_nanos() % total.as_nanos()) as u64);
-    for (index, (_, delay)) in frames.iter().enumerate() {
+    for (index, delay) in delays.iter().enumerate() {
         if at < *delay {
             return (index, Some(*delay - at));
         }
@@ -751,10 +812,11 @@ fn frame_at<T>(frames: &[(T, Duration)], elapsed: Duration) -> (usize, Option<Du
     unreachable!("the remainder is under the total, so some frame holds it")
 }
 
-/// Frames of `width`x`height` RGBA8 that fit `budget`. At least one, so an oversized source shows
-/// a still rather than failing its node.
-fn frame_cap(width: u32, height: u32, budget: usize) -> usize {
-    (budget / (4 * width.max(1) as usize * height.max(1) as usize)).max(1)
+/// [`Animation::deltas`] to replay to move the shown frame from `current` to `target`, and whether
+/// the base has to go back up first. A loop wrap (`target < current`) always does, since nothing
+/// else undoes a later frame's rects; moving forward replays only what changed since `current`.
+fn replay_steps(current: usize, target: usize) -> (bool, std::ops::Range<usize>) {
+    if target >= current { (false, current..target) } else { (true, 0..target) }
 }
 
 /// By extension, not sniffing: `freedesktop-icons` returns `.svg`/`.png`, and `shm_icons.rs` writes
@@ -778,7 +840,14 @@ fn decode(
     // request and never approaches the pool budget. `MAX_SVG_BYTES` is what bounds the parse.
     if is_vector(path) {
         let (pixels, width, height) = rasterize_svg(path, box_px.0.max(box_px.1), tint)?;
-        return Ok(Decoded { frames: vec![(pixels, Duration::ZERO)], width, height, premultiplied: true });
+        return Ok(Decoded {
+            base: pixels,
+            delays: vec![Duration::ZERO],
+            deltas: Vec::new(),
+            width,
+            height,
+            premultiplied: true,
+        });
     }
     // ponytail: GIF only, so an animated WebP or APNG draws its first frame. Upgrade: match the
     // sniffed format; `AnimationDecoder` covers both.
@@ -790,15 +859,14 @@ fn decode(
     // rescaled thumbnail, full decode) and would need the crop at each.
     let (pixels, width, height) =
         if *cropped { crop_to_box(pixels, width, height, *box_px) } else { (pixels, width, height) };
-    Ok(Decoded { frames: vec![(pixels, Duration::ZERO)], width, height, premultiplied: false })
+    Ok(Decoded { base: pixels, delays: vec![Duration::ZERO], deltas: Vec::new(), width, height, premultiplied: false })
 }
 
-/// Every frame of a GIF, each scaled and cropped like any raster. All at once because a frame is a
-/// delta over its predecessor's disposal, so none can be fetched on demand later, and past
-/// [`thumbnails`], which holds one surface per path and would answer frame 0 forever.
+/// The base frame and each later frame's own rect, composited here rather than by `image`'s
+/// `AnimationDecoder`, which discards the rects [`ImageCache::showing`] replays (ADR-0235).
 ///
-/// More frames than [`frame_cap`] keeps only the first: a long animation shows as a still instead
-/// of eating the texture budget or failing the node.
+/// Past [`thumbnails`], which holds one surface per path and would answer frame 0 forever. A box
+/// that scales or crops loses the rects and keeps whole frames instead; `native` is that split.
 fn decode_gif(
     path: &Path,
     box_px: (u32, u32),
@@ -808,48 +876,124 @@ fn decode_gif(
 ) -> Result<Decoded, String> {
     refuse_irregular(path).map_err(|err| format!("{}: {err}", path.display()))?;
     let file = std::io::BufReader::new(std::fs::File::open(path).map_err(|err| err.to_string())?);
-    let decoder = ::image::codecs::gif::GifDecoder::new(file).map_err(|err| err.to_string())?;
-    let (source_width, source_height) = ::image::ImageDecoder::dimensions(&decoder);
+    let mut options = gif::DecodeOptions::new();
+    options.set_color_output(gif::ColorOutput::RGBA);
+    let mut decoder = options.read_info(file).map_err(|err| err.to_string())?;
+    let (source_width, source_height) = (u32::from(decoder.width()), u32::from(decoder.height()));
     if source_width.max(source_height) > MAX_DECODE_EDGE {
         return Err(format!("{source_width}x{source_height} is past the {MAX_DECODE_EDGE}px limit"));
     }
     let (stored_width, stored_height) = stored_size(source_width, source_height, box_px);
     let (width, height) =
         if cropped { (stored_width.min(box_px.0), stored_height.min(box_px.1)) } else { (stored_width, stored_height) };
-    let cap = frame_cap(width, height, budget);
-    // The kept frames' ceiling plus the canvas the decoder composites on, which stays the source
-    // size whatever the box asks for.
-    //
-    // ponytail: the ceiling, not this file's share, so four decodes hold most of the pool.
-    // Upgrade: charge per frame, where the count is finally known.
+    // Unscaled and uncropped only; see the doc comment above for the smaller-box fallback.
+    let native = !cropped && (stored_width, stored_height) == (source_width, source_height);
+
+    // The kept deltas' byte ceiling plus the canvas compositing runs on, which stays the source
+    // size whatever the box asks for -- the same charge this function always took, now for a
+    // canvas it owns directly instead of one `image::AnimationDecoder` owned internally.
     let _permit = charge.take(budget as u64 + 4 * u64::from(source_width) * u64::from(source_height));
-    let mut frames = Vec::new();
-    for frame in ::image::AnimationDecoder::into_frames(decoder) {
-        let frame = frame.map_err(|err| err.to_string())?;
+
+    let mut canvas = vec![0u8; source_width as usize * source_height as usize * 4];
+    let extract = |canvas: &[u8], rect: (u32, u32, u32, u32)| -> Vec<u8> {
+        if native {
+            return read_rect(canvas, source_width, rect);
+        }
+        let scaled = if (stored_width, stored_height) == (source_width, source_height) {
+            canvas.to_vec()
+        } else {
+            let image = ::image::RgbaImage::from_raw(source_width, source_height, canvas.to_vec())
+                .expect("canvas is exactly source_width * source_height * 4 bytes");
+            ::image::DynamicImage::ImageRgba8(image).thumbnail(stored_width, stored_height).into_rgba8().into_raw()
+        };
+        if cropped { crop_to_box(scaled, stored_width, stored_height, box_px).0 } else { scaled }
+    };
+    let whole = (0, 0, source_width, source_height);
+
+    let mut base = None;
+    let mut delays = Vec::new();
+    let mut deltas: Vec<GifDelta> = Vec::new();
+    let mut delta_bytes = 0usize;
+    while let Some(frame) = decoder.read_next_frame().map_err(|err| err.to_string())? {
+        let rect = (u32::from(frame.left), u32::from(frame.top), u32::from(frame.width), u32::from(frame.height));
         // A floor, because a 0 ms frame is one `frame_at` skips and an all-0 file is a still, which
         // much of the web's GIFs are. 20 ms, not the 100 ms browsers substitute: a frame here costs
         // a whole surface repaint, and 50 fps is already the ceiling that buys.
-        let delay = Duration::from(frame.delay()).max(Duration::from_millis(20));
-        let buffer = ::image::DynamicImage::ImageRgba8(frame.into_buffer());
-        let scaled = if (stored_width, stored_height) == (buffer.width(), buffer.height()) {
-            buffer.into_rgba8()
+        let delay = Duration::from_millis(u64::from(frame.delay) * 10).max(Duration::from_millis(20));
+        // `Previous` disposal undoes this frame's draw once it has been shown; the pixels it would
+        // overwrite have to be saved before that draw happens.
+        let restore = (frame.dispose == gif::DisposalMethod::Previous).then(|| read_rect(&canvas, source_width, rect));
+        blend_rect(&mut canvas, source_width, rect, &frame.buffer);
+
+        if base.is_none() {
+            base = Some(extract(&canvas, whole));
+            delays.push(delay);
         } else {
-            buffer.thumbnail(stored_width, stored_height).into_rgba8()
-        };
-        let (scaled_width, scaled_height) = scaled.dimensions();
-        let pixels = scaled.into_raw();
-        frames.push((if cropped { crop_to_box(pixels, scaled_width, scaled_height, box_px).0 } else { pixels }, delay));
-        // ponytail: the frame that trips the cap is decoded before it is dropped; `into_frames`
-        // has no length to ask first.
-        if frames.len() > cap {
-            frames.truncate(1);
-            break;
+            let pixels = extract(&canvas, rect);
+            if delta_bytes + pixels.len() > budget {
+                break;
+            }
+            delta_bytes += pixels.len();
+            delays.push(delay);
+            deltas.push(GifDelta { rect: if native { rect } else { (0, 0, width, height) }, pixels });
+        }
+
+        match frame.dispose {
+            gif::DisposalMethod::Background => clear_rect(&mut canvas, source_width, rect),
+            gif::DisposalMethod::Previous => write_rect(&mut canvas, source_width, rect, &restore.unwrap()),
+            gif::DisposalMethod::Keep | gif::DisposalMethod::Any => {}
         }
     }
-    if frames.is_empty() {
-        return Err("no frames".to_string());
+    let Some(base) = base else { return Err("no frames".to_string()) };
+    Ok(Decoded { base, delays, deltas, width, height, premultiplied: false })
+}
+
+/// Copies a `width`-wide RGBA8 buffer's rect out, row by row.
+fn read_rect(pixels: &[u8], width: u32, rect: (u32, u32, u32, u32)) -> Vec<u8> {
+    let (left, top, w, h) = rect;
+    let row = w as usize * 4;
+    let mut out = Vec::with_capacity(row * h as usize);
+    for y in 0..h {
+        let start = ((top + y) as usize * width as usize + left as usize) * 4;
+        out.extend_from_slice(&pixels[start..start + row]);
     }
-    Ok(Decoded { frames, width, height, premultiplied: false })
+    out
+}
+
+/// The inverse of [`read_rect`]: overwrites a rect from `src`, for `DisposalMethod::Previous`.
+fn write_rect(pixels: &mut [u8], width: u32, rect: (u32, u32, u32, u32), src: &[u8]) {
+    let (left, top, w, h) = rect;
+    let row = w as usize * 4;
+    for y in 0..h {
+        let start = ((top + y) as usize * width as usize + left as usize) * 4;
+        pixels[start..start + row].copy_from_slice(&src[y as usize * row..(y as usize + 1) * row]);
+    }
+}
+
+/// Zeroes a rect to transparent, for `DisposalMethod::Background`. The file's own background
+/// colour is not it: browsers ignore it and so does `image`'s own GIF decoder, "for web
+/// compatibility", which is the behaviour a delta replay has to match.
+fn clear_rect(pixels: &mut [u8], width: u32, rect: (u32, u32, u32, u32)) {
+    let (left, top, w, h) = rect;
+    for y in 0..h {
+        let start = ((top + y) as usize * width as usize + left as usize) * 4;
+        pixels[start..start + w as usize * 4].fill(0);
+    }
+}
+
+/// Draws `src` (a frame's own buffer, `rect`'s size) onto a rect, skipping a transparent source
+/// pixel so whatever the canvas already holds shows through. GIF transparency is a 1-bit mask,
+/// never partial, so "skip" is the whole rule.
+fn blend_rect(pixels: &mut [u8], width: u32, rect: (u32, u32, u32, u32), src: &[u8]) {
+    let (left, top, w, _) = rect;
+    for (i, pixel) in src.as_chunks::<4>().0.iter().enumerate() {
+        if pixel[3] == 0 {
+            continue;
+        }
+        let (x, y) = (left as usize + i % w as usize, top as usize + i / w as usize);
+        let at = (y * width as usize + x) * 4;
+        pixels[at..at + 4].copy_from_slice(pixel);
+    }
 }
 
 /// Centered crop of RGBA8 `pixels` to `box_px`, for the [`Fit::Cover`] rasters [`stored_size`]
@@ -865,43 +1009,34 @@ fn crop_to_box(pixels: Vec<u8>, width: u32, height: u32, box_px: (u32, u32)) -> 
         return (pixels, width, height);
     }
     let (left, top) = ((width - kept_width) / 2, (height - kept_height) / 2);
-    let row_bytes = kept_width as usize * 4;
-    let mut out = Vec::with_capacity(row_bytes * kept_height as usize);
-    for row in 0..kept_height {
-        let start = ((top + row) as usize * width as usize + left as usize) * 4;
-        out.extend_from_slice(&pixels[start..start + row_bytes]);
-    }
-    (out, kept_width, kept_height)
+    (read_rect(&pixels, width, (left, top, kept_width, kept_height)), kept_width, kept_height)
 }
 
-/// Canvas-dependent half of a load: one texture per frame of one decode.
+/// Canvas-dependent half of a load: one texture, from the base frame, plus the later frames' rects
+/// kept on the CPU for [`ImageCache::showing`] to replay (ADR-0235).
 ///
-/// ponytail: a frame that fails strands the ones before it, which only GPU exhaustion does.
-/// Upgrade: delete the partial set on the error arm.
-///
-/// Uploads premultiplied, whatever the decoder produced (ADR-0184). `image` hands back straight
-/// alpha and `resvg` hands back premultiplied, and passing that difference on as a femtovg flag was
-/// enough while femtovg was the only thing sampling these textures. A config shader samples them
-/// directly, and cannot be handed two conventions: it would have to know which decoder produced its
-/// endpoint, which is an engine detail with no business in a config's `main()`.
+/// Uploads premultiplied, whatever the decoder produced (ADR-0184). `image` and `gif` hand back
+/// straight alpha and `resvg` hands back premultiplied, and passing that difference on as a femtovg
+/// flag was enough while femtovg was the only thing sampling these textures. A config shader
+/// samples them directly, and cannot be handed two conventions: it would have to know which decoder
+/// produced its endpoint, which is an engine detail with no business in a config's `main()`.
 ///
 /// Multiplying after the sample would not do instead. A texture lookup filters between texels
 /// first, so a straight-alpha edge interpolates colour the alpha was meant to hide, and no later
 /// multiply recovers it. Premultiplying the buffer is one pass over pixels that are about to be
 /// copied to the GPU anyway.
-fn upload(canvas: &mut Canvas<OpenGl>, decoded: Decoded) -> Result<Vec<(ImageId, Duration)>, String> {
-    let Decoded { frames, width, height, premultiplied } = decoded;
-    frames
-        .into_iter()
-        .map(|(mut pixels, delay)| {
-            if !premultiplied {
-                premultiply(&mut pixels);
-            }
-            let source =
-                ImageSource::from(femtovg::imgref::Img::new(pixels.as_rgba(), width as usize, height as usize));
-            canvas.create_image(source, ImageFlags::PREMULTIPLIED).map(|id| (id, delay)).map_err(femtovg_error)
-        })
-        .collect()
+fn upload(canvas: &mut Canvas<OpenGl>, decoded: Decoded) -> Result<(ImageId, Option<Animation>), String> {
+    let Decoded { mut base, delays, mut deltas, width, height, premultiplied } = decoded;
+    if !premultiplied {
+        premultiply(&mut base);
+        for delta in &mut deltas {
+            premultiply(&mut delta.pixels);
+        }
+    }
+    let source = ImageSource::from(femtovg::imgref::Img::new(base.as_rgba(), width as usize, height as usize));
+    let image = canvas.create_image(source, ImageFlags::PREMULTIPLIED).map_err(femtovg_error)?;
+    let anim = (!deltas.is_empty()).then_some(Animation { base, width, height, delays, deltas, current: 0 });
+    Ok((image, anim))
 }
 
 /// Scales each RGBA8 pixel's colour by its own alpha, rounding the way a straight-to-premultiplied
@@ -1670,40 +1805,107 @@ mod tests {
     /// loop's timeout.
     #[test]
     fn a_frame_index_follows_each_delay_and_loops() {
-        let frames = [((), Duration::from_millis(100)), ((), Duration::ZERO), ((), Duration::from_millis(50))];
-        assert_eq!(frame_at(&frames, Duration::ZERO), (0, Some(Duration::from_millis(100))));
-        assert_eq!(frame_at(&frames, Duration::from_millis(99)), (0, Some(Duration::from_millis(1))));
-        assert_eq!(frame_at(&frames, Duration::from_millis(100)), (2, Some(Duration::from_millis(50))));
-        assert_eq!(frame_at(&frames, Duration::from_millis(150)), (0, Some(Duration::from_millis(100))));
-        assert_eq!(frame_at(&frames, Duration::from_millis(1_000_000)), (2, Some(Duration::from_millis(50))));
-        assert_eq!(frame_at(&[((), Duration::ZERO)], Duration::from_secs(9)), (0, None));
+        let delays = [Duration::from_millis(100), Duration::ZERO, Duration::from_millis(50)];
+        assert_eq!(frame_at(&delays, Duration::ZERO), (0, Some(Duration::from_millis(100))));
+        assert_eq!(frame_at(&delays, Duration::from_millis(99)), (0, Some(Duration::from_millis(1))));
+        assert_eq!(frame_at(&delays, Duration::from_millis(100)), (2, Some(Duration::from_millis(50))));
+        assert_eq!(frame_at(&delays, Duration::from_millis(150)), (0, Some(Duration::from_millis(100))));
+        assert_eq!(frame_at(&delays, Duration::from_millis(1_000_000)), (2, Some(Duration::from_millis(50))));
+        assert_eq!(frame_at(&[Duration::ZERO], Duration::from_secs(9)), (0, None));
     }
 
-    /// ADR-0233. Every frame decodes at once because disposal makes them sequential, and the cap
-    /// is bytes rather than a frame count: what a GIF costs is frames times its box.
+    /// [`replay_steps`] moving forward replays only what changed; a loop wrap always re-uploads the
+    /// base first, since nothing else undoes a later frame's rect.
     #[test]
-    fn a_gif_decodes_every_frame_under_a_byte_cap() {
+    fn replay_steps_only_resets_on_a_loop_wrap() {
+        assert_eq!(replay_steps(0, 3), (false, 0..3));
+        assert_eq!(replay_steps(2, 3), (false, 2..3));
+        assert_eq!(replay_steps(2, 2), (false, 2..2), "no movement, nothing to replay");
+        assert_eq!(replay_steps(3, 0), (true, 0..0), "wrapping to the base itself replays no delta");
+        assert_eq!(replay_steps(3, 1), (true, 0..1), "wrapping past the base replays up to the target");
+    }
+
+    /// Writes a `width`x`height` GIF frame of one RGBA colour at `rect`, with `dispose` and `delay`
+    /// (centiseconds, the file's own unit).
+    fn write_frame(
+        encoder: &mut gif::Encoder<&mut std::fs::File>,
+        rect: (u16, u16, u16, u16),
+        rgba: [u8; 4],
+        dispose: gif::DisposalMethod,
+        delay: u16,
+    ) {
+        let (left, top, width, height) = rect;
+        let mut pixels = rgba.repeat(width as usize * height as usize);
+        let mut frame = gif::Frame::from_rgba(width, height, &mut pixels);
+        frame.left = left;
+        frame.top = top;
+        frame.dispose = dispose;
+        frame.delay = delay;
+        encoder.write_frame(&frame).unwrap();
+    }
+
+    /// ADR-0235. Every disposal method decides what the *next* frame's transparent pixels show
+    /// through to, never the current one's own draw -- `Keep` carries a frame's pixels forward,
+    /// `Background` clears its rect to transparent first, `Previous` undoes the draw entirely. A
+    /// delta replay has to land on the same pixels an independent full recomposite gives at every
+    /// frame, which is `image`'s own `AnimationDecoder` here, not this module.
+    #[test]
+    fn disposal_methods_replay_to_the_same_pixels_a_full_recomposite_gives() {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("spin.gif");
-        let frames = (0..3u8).map(|n| {
-            ::image::Frame::from_parts(
-                ::image::RgbaImage::from_pixel(8, 8, ::image::Rgba([n * 40, 0, 0, 255])),
-                0,
-                0,
-                ::image::Delay::from_numer_denom_ms(80, 1),
-            )
-        });
-        ::image::codecs::gif::GifEncoder::new(std::fs::File::create(&path).unwrap()).encode_frames(frames).unwrap();
+        let path = dir.path().join("dispose.gif");
+        {
+            let mut file = std::fs::File::create(&path).unwrap();
+            let mut encoder = gif::Encoder::new(&mut file, 4, 4, &[]).unwrap();
+            write_frame(&mut encoder, (0, 0, 4, 4), [255, 0, 0, 255], gif::DisposalMethod::Keep, 5);
+            // Background: its green square must not still show once this frame is gone.
+            write_frame(&mut encoder, (0, 0, 2, 2), [0, 255, 0, 255], gif::DisposalMethod::Background, 5);
+            // Transparent over a `Background`-disposed rect shows through to nothing, not to the
+            // red frame 0 underneath it.
+            write_frame(&mut encoder, (0, 0, 2, 2), [0, 0, 0, 0], gif::DisposalMethod::Keep, 5);
+            // Previous: its blue square must not still show once this frame is gone either.
+            write_frame(&mut encoder, (0, 0, 2, 2), [0, 0, 255, 255], gif::DisposalMethod::Previous, 5);
+            write_frame(&mut encoder, (0, 0, 2, 2), [0, 0, 0, 0], gif::DisposalMethod::Keep, 5);
+        }
 
-        let decoded = decode_gif(&path, (8, 8), false, Charge::Free, STARTING_TEXTURE_BUDGET).unwrap();
-        assert_eq!(decoded.frames.len(), 3, "a still would be one, and frame 0 forever");
-        assert_eq!(decoded.frames[0].1, Duration::from_millis(80));
-        assert_eq!((decoded.width, decoded.height), (8, 8));
+        let decoded = decode_gif(&path, (4, 4), false, Charge::Free, STARTING_TEXTURE_BUDGET).unwrap();
+        assert_eq!(decoded.deltas.len(), 4, "5 frames, the first is the base");
+        assert!(decoded.deltas.iter().all(|delta| delta.rect == (0, 0, 2, 2)), "the native rect, not the full canvas");
 
-        // Scaled by the budget, and never zero: a source too large to animate shows its first frame.
-        let budget = ANIMATION_BUDGETS * STARTING_TEXTURE_BUDGET;
-        assert_eq!(frame_cap(480, 270, budget), 97, "an 84-frame GIF wallpaper animates");
-        assert_eq!(frame_cap(128, 128, STARTING_TEXTURE_BUDGET), 256);
-        assert_eq!(frame_cap(MAX_DECODE_EDGE, MAX_DECODE_EDGE, budget), 1);
+        let gif_decoder =
+            ::image::codecs::gif::GifDecoder::new(std::io::BufReader::new(std::fs::File::open(&path).unwrap()))
+                .unwrap();
+        let ground_truth = ::image::AnimationDecoder::into_frames(gif_decoder).collect_frames().unwrap();
+        assert_eq!(ground_truth.len(), 5);
+        for (index, frame) in ground_truth.iter().enumerate() {
+            let mut replayed = decoded.base.clone();
+            for delta in &decoded.deltas[..index] {
+                write_rect(&mut replayed, 4, delta.rect, &delta.pixels);
+            }
+            assert_eq!(
+                replayed,
+                frame.buffer().as_raw().as_slice(),
+                "frame {index} diverged from the full recomposite"
+            );
+        }
+    }
+
+    /// ADR-0235. The frame that would push the kept deltas past their byte budget is dropped
+    /// rather than collapsing the whole animation to a still: playback loops over what fit.
+    #[test]
+    fn a_delta_past_its_byte_budget_is_dropped_and_the_rest_still_play() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("many.gif");
+        {
+            let mut file = std::fs::File::create(&path).unwrap();
+            let mut encoder = gif::Encoder::new(&mut file, 4, 4, &[]).unwrap();
+            write_frame(&mut encoder, (0, 0, 4, 4), [255, 0, 0, 255], gif::DisposalMethod::Keep, 5);
+            for n in 0..4u8 {
+                write_frame(&mut encoder, (0, 0, 2, 2), [0, n * 50, 0, 255], gif::DisposalMethod::Keep, 5);
+            }
+        }
+        // Each 2x2 delta is 16 bytes; a 32-byte budget keeps exactly two.
+        let decoded = decode_gif(&path, (4, 4), false, Charge::Free, 32).unwrap();
+        assert_eq!(decoded.deltas.len(), 2, "a third 16-byte delta would total 48 bytes, past the 32-byte budget");
+        assert_eq!(decoded.delays.len(), 3, "the base plus the two kept deltas");
     }
 }

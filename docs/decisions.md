@@ -5401,3 +5401,43 @@ adds no crate: flate2 is already compiled here for `png`.
    process, so text support means a font generation in the key and a way to publish the face set
    from the shaping thread to the decode pool. Icon themes ship paths; an asset that wants text
    converts it to paths and keeps the font its author chose.
+
+## 0235. A GIF is one texture and its frames' changed rects, not N textures
+
+ADR-0233's N-texture slot made a 1920x1080, 86-frame wallpaper 713 MB, past `frame_cap` at any
+sane budget, so it fell back to frame 0 forever. Measuring that file's per-frame changed area
+(numpy bounding box over `-coalesce` output) gives a median of 1%, mean 12%, max 61% of the
+frame -- most of a GIF's cost is redrawing pixels that did not change.
+
+1. **Decode through `gif` directly, not `image::AnimationDecoder`.** `image`'s decoder composites
+   each frame's declared `left`/`top`/`width`/`height`/`dispose` into a full frame and discards the
+   rect. `gif` (already compiled -- it is what `image`'s `gif` feature uses) hands that rect over,
+   so `decode_gif` composites it once, itself, exactly as `image` does: `Keep` carries a frame's
+   pixels forward, `Background` clears its rect to transparent before the next frame, `Previous`
+   restores the rect to what it held before this frame drew. All three are one match arm each,
+   not disproportionate the way this ADR's first draft worried they might be.
+2. **The slot is one `ImageId`, replayed forward.** `Slot::Ready` keeps the base frame's own bytes
+   (to re-upload on loop wrap) and each later frame's rect, and `ImageCache::showing` moves the
+   shown index with `Canvas::update_image` -- the same partial upload `text/atlas.rs`'s glyph atlas
+   already relies on. `resident_bytes`/`trim` (ADR-0182) now charge one frame's bytes per animated
+   source, same as a still, because that is what is actually on the GPU.
+3. **A box that scales or crops the source keeps one texture but not the smaller rects.**
+   Thumbnailing a sub-rectangle on its own would seam at its edges, where a triangle filter needs
+   neighbours outside it. That path re-scales the whole canvas per kept frame and stores it as one
+   full-frame delta -- the bytes ADR-0233 always spent, still collapsed to one texture, just not
+   the wallpaper-sized win. Every source goes through the same replay mechanism; only the delta
+   size differs.
+4. **Kept deltas have their own decode ceiling and are charged to `resident_bytes` all the same.**
+   `ANIMATION_BUDGETS * texture_budget` bounds what `decode_gif` keeps -- eight screenfuls, not the
+   three that bound the GPU, because these are host bytes: three kept 52 of the measured file's 86
+   frames and the loop jumped where they ran out. Past the ceiling, trailing frames are dropped
+   rather than the whole animation.
+   Those bytes are then counted in `resident_bytes` beside the texture's, because `trim` is the
+   only thing that drops an entry. Charging the texture alone left a switched-away wallpaper's
+   134 MB resident for the life of the process: its 7.9 MB texture never moved the budget, and
+   `evicted` stayed 0 across a measured 45 seconds. A *shown* source is pinned by its surface's
+   paint list and is exempt from eviction either way, so the pins already cover what keeping these
+   out of the pool was meant to protect.
+
+`frame_cap` and the truncate-to-1 fallback are gone: a byte-metered delta is never worse than a
+full frame, so nothing needs the "eating the budget or failing" tradeoff they existed for.
