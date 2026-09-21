@@ -2043,7 +2043,7 @@ wrapped height by 13.2 px.
 
 Same-day amendment:
 
-7. Hover callbacks fire for Motion/Leave, not Enter or layout movement under a resting pointer.
+7. Hover callbacks fire for Enter/Motion/Leave crossings, not layout movement under a resting pointer.
 8. Refresh hover signals silently after layout at the remembered pointer position.
 9. Every autofocus arm emits an empty change callback, allowing selection/scroll reset when empty.
 10. Two-stage Escape is config policy: clear first, close when empty.

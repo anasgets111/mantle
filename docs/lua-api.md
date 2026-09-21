@@ -167,7 +167,7 @@ tables do not resolve, so derive the whole table instead.
 | `id` | Optional identity unique among siblings; unidentified siblings match positionally |
 | `cursor` | CSS cursor name; innermost explicit/default cursor wins |
 | `hover` | Handle from `hover(name)` |
-| `on_hover` | `function(inside)` on hover edges |
+| `on_hover` | `function(inside)` on Wayland Enter, Motion, and Leave hover edges; layout refreshes stay silent |
 | `geometry` | The signal `geometry(name)` returned; the pass writes this node's absolute rect into it |
 | `animate` | `{ <property> = ms \| { duration = ms, easing = "<name>" \| { x1, y1, x2, y2 } \| { steps = n }, from = <value>, keyframes = { <value>, ... }, loops = n \| "Infinite" }, exit = { duration = ms, easing = "<name>", <property> = <target>, ... } }`; named properties ease from the displayed value to a newly resolved one instead of snapping; `from` is where a property nothing displayed yet starts; `exit` is where the node eases to once the tree drops it |
 | `blur` | `true` asks the compositor to blur the desktop behind this node's box (ADR-0195). Opt-in and never inferred from a translucent `background`; the engine unions every asking node in a surface, following the transforms and clips it is painted under. Box-painting kinds and the four surface roles. Silently nothing without `ext-background-effect-v1`; strength and xray are the compositor's own configuration, which is why this is a boolean |

@@ -13,6 +13,17 @@ const WHEEL_STEP_PIXELS: f32 = 39.0;
 
 const VALUE120_PER_NOTCH: f32 = 120.0;
 
+enum HoverUpdate {
+    Pointer,
+    Layout,
+}
+
+impl HoverUpdate {
+    fn fires_on_hover(&self) -> bool {
+        matches!(self, Self::Pointer)
+    }
+}
+
 /// Scroll distance in logical pixels (ADR-0069 decision 6). Use touchpad `pixels` as sent; use
 /// `value120` (120 per notch) only without pixels, or compositors sending both double the motion.
 fn wheel_delta(pixels: f64, value120: i32) -> f32 {
@@ -418,12 +429,10 @@ impl PointerHandler for App {
                     self.cursor_shown = None;
                     self.pointer_at = None;
                     let tree = self.client.scene().surface(&self.surfaces[index].surface_id);
-                    self.sync_hover(index, tree, None, true);
+                    self.sync_hover(index, tree, None, HoverUpdate::Pointer);
                 }
                 // Motion off the armed rect does not disarm; return and release still click. Enter
-                // and Motion update hover, but only Motion fires `on_hover` (ADR-0112 amendment):
-                // an Enter over a surface opened under a resting pointer is layout movement, not a
-                // user choice. Actual movement sends Motion shortly after.
+                // and Motion update hover and may fire `on_hover` on crossings.
                 PointerEventKind::Enter { .. } | PointerEventKind::Motion { .. } => {
                     let moved = matches!(event.kind, PointerEventKind::Motion { .. });
                     let instance_id = self.surfaces[index].surface_id.clone();
@@ -435,7 +444,7 @@ impl PointerHandler for App {
                     self.pointer_at = Some((instance_id, event.position));
                     // One lookup serves both; `Scene::surface` lends its tree.
                     let tree = self.client.scene().surface(&self.surfaces[index].surface_id);
-                    self.sync_hover(index, tree, Some(event.position), moved);
+                    self.sync_hover(index, tree, Some(event.position), HoverUpdate::Pointer);
                     // Chosen while the tree is still borrowed, shown once that borrow has ended.
                     let shape = self.cursor_for(tree, event.position);
                     self.show_cursor(shape);
@@ -625,7 +634,7 @@ impl App {
             return;
         };
         let tree = self.client.scene().surface(surface_id);
-        self.sync_hover(index, tree, Some(*position), false);
+        self.sync_hover(index, tree, Some(*position), HoverUpdate::Layout);
     }
 
     /// The pointer half of `App::drop_role_object`'s scrub, for the one leave the compositor never
@@ -650,18 +659,23 @@ impl App {
         self.cursor_shown = None;
         self.pointer_at = None;
         let tree = self.client.scene().surface(&surface_id);
-        self.sync_hover(index, tree, None, true);
+        self.sync_hover(index, tree, None, HoverUpdate::Pointer);
     }
 
     /// Write all `hover` signals, or clear them for `None` (ADR-0062). Collect writes before
     /// `set_changed` because the tree borrow must end; only moved values dirty the scene (decision
     /// 4), so a stationary pointer inside one button re-resolves nothing while device-rate motion
-    /// continues (ADR-0044 decision 2). `fire` enables `on_hover` only for motion/leave, not enter-
-    /// motion or re-layout.
+    /// continues (ADR-0044 decision 2). Pointer updates enable `on_hover`; layout refreshes do not.
     ///
     /// Takes the tree rather than fetching it so one lookup serves this and the cursor.
     ///
-    fn sync_hover(&self, index: usize, tree: Option<&layout::ResolvedNode>, position: Option<(f64, f64)>, fire: bool) {
+    fn sync_hover(
+        &self,
+        index: usize,
+        tree: Option<&layout::ResolvedNode>,
+        position: Option<(f64, f64)>,
+        update: HoverUpdate,
+    ) {
         // Skip the expensive tree walk when no config registered `hover(name)`.
         if !crate::lua::signal::any_hover_registered(self.client.lua()) {
             return;
@@ -683,7 +697,7 @@ impl App {
             // Fire only on edges (ADR-0095): device-rate motion could call a handler hundreds of
             // times across one button. Swallow handler errors like `fire_on_click`.
             if crossed
-                && fire
+                && update.fires_on_hover()
                 && let Some(on_hover) = &write.on_hover
                 && let Err(err) = on_hover.call::<()>(write.hovered)
             {
@@ -718,6 +732,12 @@ impl App {
 mod tests {
     use super::super::tests::hit_node;
     use super::*;
+
+    #[test]
+    fn pointer_hover_updates_fire_callbacks_but_layout_refreshes_do_not() {
+        assert!(HoverUpdate::Pointer.fires_on_hover(), "Enter, Motion, and Leave are user input");
+        assert!(!HoverUpdate::Layout.fires_on_hover(), "layout movement under a resting pointer is silent");
+    }
 
     /// ADR-0069 decision 6. The rest of `scroll_at` needs a compositor to deliver a notch;
     /// this is the half that does not.
