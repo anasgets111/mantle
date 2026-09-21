@@ -16,13 +16,31 @@ use femtovg::{Canvas, Color, FontId, ImageId, Paint, Path, PositionedGlyph, Text
 use shared::debug;
 
 use crate::layout::node::{Rgba, StyleRun, TextAlign, font_runs};
-use crate::text::shaping::{FontFace, Glyph, ShapingHandle, caret_thickness, caret_visible_left, caret_x};
+use crate::text::shaping::{
+    FontFace, FontRun, Glyph, ShapeResult, ShapingHandle, caret_thickness, caret_visible_left, caret_x,
+};
 
 use super::snap::{LogicalRect, snap_to_physical};
 
 /// Distinct offscreen sizes [`TextPainter`] keeps between paints (ADR-0217): a clip tweening its
 /// width asks for a new one every frame and reuses none.
 const SCRATCH_SIZES: usize = 16;
+
+/// Cache key for shaped lines in [`TextPainter`].
+struct TextLineKey {
+    text: String,
+    runs: Vec<FontRun>,
+    font_size_bits: u32,
+    font: Option<Arc<str>>,
+}
+
+impl TextLineKey {
+    fn matches(&self, text: &str, runs: &[FontRun], font_size_bits: u32, font: Option<&Arc<str>>) -> bool {
+        self.font_size_bits == font_size_bits && self.text == text && self.font.as_ref() == font && self.runs == runs
+    }
+}
+
+type CachedLineEntry = (TextLineKey, Arc<Vec<(usize, ShapeResult)>>);
 
 /// A FemtoVG canvas bound to the calling thread's current EGL/GL context, with every face the
 /// shaping worker can place a glyph in registered and ready to draw with.
@@ -54,6 +72,9 @@ pub struct TextPainter {
     /// What [`TextPainter::recycle_scratch`] ages by. Not a timer: a size goes stale because other
     /// sizes were asked for since, not because seconds passed.
     paints: u64,
+    /// Warm cache of shaped lines to bypass re-shaping and glyph vector clones on static text frames.
+    lines_cache: HashMap<u64, Vec<CachedLineEntry>>,
+    lines_cache_len: usize,
 }
 
 /// The sizes to delete to bring a scratch pool back to [`SCRATCH_SIZES`]: those asked for longest
@@ -158,7 +179,18 @@ impl TextPainter {
         if faces.is_empty() {
             return Err("TextPainter::new requires at least one loaded font".into());
         }
-        Ok(Self { canvas, faces, generation, text_context, registered, shaping, scratch: HashMap::new(), paints: 0 })
+        Ok(Self {
+            canvas,
+            faces,
+            generation,
+            text_context,
+            registered,
+            shaping,
+            scratch: HashMap::new(),
+            paints: 0,
+            lines_cache: HashMap::new(),
+            lines_cache_len: 0,
+        })
     }
 
     /// The shaping-worker face-set generation this painter's femtovg registry is built from.
@@ -201,6 +233,8 @@ impl TextPainter {
         debug!("syncing fonts to generation {generation}");
         self.faces = register(&self.text_context, &mut self.registered, font_chain);
         self.generation = generation;
+        self.lines_cache.clear();
+        self.lines_cache_len = 0;
     }
 
     /// Updates the canvas's viewport to match the surface's current size. Cheap and idempotent --
@@ -237,8 +271,40 @@ impl TextPainter {
         // path: shape at the scaled size; only reachable with a HiDPI output to verify against.
         let step = crate::text::shaping::line_height(font_size);
         let thickness = caret_thickness(font_size);
+
+        let runs_key = font_runs(runs);
+        let font_size_bits = font_size.to_bits();
+        let hash = {
+            use std::hash::{Hash, Hasher};
+            let mut hasher = std::collections::hash_map::DefaultHasher::new();
+            text.hash(&mut hasher);
+            font_size_bits.hash(&mut hasher);
+            font.hash(&mut hasher);
+            runs_key.hash(&mut hasher);
+            hasher.finish()
+        };
+
+        let shaped_lines = if let Some(bucket) = self.lines_cache.get(&hash)
+            && let Some((_, lines)) = bucket.iter().find(|(k, _)| k.matches(text, &runs_key, font_size_bits, font))
+        {
+            Arc::clone(lines)
+        } else {
+            let lines = Arc::new(self.shaping.shape_lines(text, &runs_key, font_size, font));
+            if self.lines_cache_len >= 1024 {
+                self.lines_cache.clear();
+                self.lines_cache_len = 0;
+            }
+            self.lines_cache.entry(hash).or_default().push((
+                TextLineKey { text: text.to_string(), runs: runs_key, font_size_bits, font: font.cloned() },
+                Arc::clone(&lines),
+            ));
+            self.lines_cache_len += 1;
+            lines
+        };
+
         let mut row = 0;
-        for (line_start, shaped) in self.shaping.shape_lines(text, &font_runs(runs), font_size, font) {
+        for (line_start, shaped) in shaped_lines.iter() {
+            let line_start = *line_start;
             for laid in shaped.shaped.iter() {
                 let left = align.line_left(laid.rtl, physical.x0 as f32, physical.x1 as f32, laid.width);
                 let baseline = physical.y0 as f32 + row as f32 * step + laid.baseline;

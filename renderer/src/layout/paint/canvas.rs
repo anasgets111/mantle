@@ -122,15 +122,20 @@ pub fn execute(
 /// holds offscreen images until [`execute`] flushes.
 fn run(painter: &mut TextPainter, walk: &mut Walk<'_, '_>, commands: &[DrawCmd], target: RenderTarget, frame: Frame) {
     let scale = walk.scale;
+    // ponytail: avoid redundant scissor calls that break FemtoVG draw call batching. Reset on nested targets.
+    let mut current_clip: Option<PhysicalRect> = None;
     for command in commands {
         // `command.clip` already contains every ancestor intersection, so set the final scissor.
         let clip = command.clip;
-        painter.canvas_mut().scissor(
-            clip.x0 as f32,
-            clip.y0 as f32,
-            (clip.x1 - clip.x0) as f32,
-            (clip.y1 - clip.y0) as f32,
-        );
+        if current_clip != Some(clip) {
+            painter.canvas_mut().scissor(
+                clip.x0 as f32,
+                clip.y0 as f32,
+                (clip.x1 - clip.x0) as f32,
+                (clip.y1 - clip.y0) as f32,
+            );
+            current_clip = Some(clip);
+        }
         let rect = command.rect;
         match &command.draw {
             Draw::Box { background, radius, colors, widths } => {
@@ -264,7 +269,8 @@ fn run(painter: &mut TextPainter, walk: &mut Walk<'_, '_>, commands: &[DrawCmd],
                 }
             }
             Draw::Clipped { radius, commands } => {
-                draw_clipped(painter, walk, rect, clip, *radius, commands, target, frame)
+                draw_clipped(painter, walk, rect, clip, *radius, commands, target, frame);
+                current_clip = None;
             }
             Draw::Transformed { matrix, commands } => {
                 let canvas = painter.canvas_mut();
@@ -272,6 +278,7 @@ fn run(painter: &mut TextPainter, walk: &mut Walk<'_, '_>, commands: &[DrawCmd],
                 canvas.set_transform(&femtovg::Transform2D(*matrix));
                 run(painter, walk, commands, target, Frame { transform: Some(*matrix), ..frame });
                 painter.canvas_mut().restore();
+                current_clip = None;
             }
         }
     }
