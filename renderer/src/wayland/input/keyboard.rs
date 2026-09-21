@@ -453,7 +453,7 @@ impl KeyboardHandler for App {
         // compositor sent it (`visible` flip or output change); `None` is not an error.
         self.keyboard_focus = self.surface_id_for(surface).map(str::to_string);
         // Redraw the caret of a field whose keyboard returned (ADR-0108; see `leave`).
-        self.field_input_changed |= self.focused_text_field.is_some();
+        self.mark_focused_text_field_changed();
         // Include shown child popups, where a panel password prompt lives
         // (see [`App::keyboard_focus_scope`]).
         let scope = self.keyboard_focus_scope();
@@ -498,7 +498,7 @@ impl KeyboardHandler for App {
         self.focus_secure_submit(None);
         // Keep the plain draft (ADR-0108): OnDemand/focus-follows-mouse temporarily removes the
         // keyboard, not the reply. It stops keys/caret until focus returns.
-        self.field_input_changed |= self.focused_text_field.is_some();
+        self.mark_focused_text_field_changed();
         self.armed = None;
         // A Shift released while someone else holds the keyboard sends no `modifiers` here, and a
         // stale one turns the next press into a selection the user never made (ADR-0236). The
@@ -633,10 +633,11 @@ impl App {
     /// enforces the buffer's lifetime; assigning the field directly anywhere else reopens the leak
     /// that function closes.
     pub(in crate::wayland) fn focus_secure_submit(&mut self, next: Option<FocusedField>) {
+        self.mark_focused_secure_submit_changed();
+        if let Some(ref next_field) = next {
+            self.mark_field_input_changed(&next_field.surface_id);
+        }
         retarget_secure_submit(&mut self.focused_secure_submit, &mut self.secure_buffer, next);
-        // A focus change zeroizes the buffer, so the field that had dots must be repainted without
-        // them, the same reason a keystroke sets this.
-        self.field_input_changed = true;
     }
 
     /// Whether `instance_id` is still a surface this process has a live `wl_surface` for.
@@ -849,7 +850,7 @@ impl App {
             return;
         }
         // Append/backspace/clear all change the drawn character count.
-        self.field_input_changed = true;
+        self.mark_focused_secure_submit_changed();
         match action {
             KeyAction::Append(text) => self.secure_buffer.push_str(text),
             // `pop_grapheme` zeroizes dropped bytes, not just the length. Only the backwards one:
@@ -913,8 +914,11 @@ impl App {
         if self.focused_text_field.is_none() && next.is_none() {
             return;
         }
+        self.mark_focused_text_field_changed();
+        if let Some(ref next_field) = next {
+            self.mark_field_input_changed(&next_field.surface_id);
+        }
         self.focused_text_field = next;
-        self.field_input_changed = true;
     }
 
     /// [`App::prune_secure_focus`]'s counterpart. The same two clauses -- the surface is still
@@ -982,7 +986,7 @@ impl App {
         }
         // A caret move repaints and tells the config nothing: no text changed.
         if edit.moved {
-            self.field_input_changed = true;
+            self.mark_focused_text_field_changed();
             return;
         }
         // Clone before callbacks can write a signal and re-resolve the scene.
@@ -1016,7 +1020,7 @@ impl App {
         if edit.cancelled {
             self.focus_text_field(None);
         }
-        self.field_input_changed = true;
+        self.mark_field_input_changed(&surface_id);
         deliver_plain_edit(&surface_id, edit, text, PlainCallbacks { on_change, on_submit, on_cancel });
     }
 

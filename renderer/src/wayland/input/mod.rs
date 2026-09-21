@@ -128,6 +128,24 @@ impl App {
     fn keyboard_seat(&self) -> Option<wl_seat::WlSeat> {
         Some(self.keyboard.as_ref()?.data::<KeyboardData<App, ()>>()?.seat().clone())
     }
+
+    pub(in crate::wayland) fn mark_field_input_changed(&mut self, surface_id: &str) {
+        if !self.field_input_surfaces.iter().any(|s| s == surface_id) {
+            self.field_input_surfaces.push(surface_id.to_string());
+        }
+    }
+
+    pub(in crate::wayland) fn mark_focused_text_field_changed(&mut self) {
+        if let Some(id) = self.focused_text_field.as_ref().map(|f| f.surface_id.clone()) {
+            self.mark_field_input_changed(&id);
+        }
+    }
+
+    pub(in crate::wayland) fn mark_focused_secure_submit_changed(&mut self) {
+        if let Some(id) = self.focused_secure_submit.as_ref().map(|f| f.surface_id.clone()) {
+            self.mark_field_input_changed(&id);
+        }
+    }
 }
 
 #[cfg(test)]
@@ -169,6 +187,7 @@ mod tests {
             opacity: 1.0,
             properties,
             children: Vec::new(),
+            text_memo: None,
         }
     }
 }

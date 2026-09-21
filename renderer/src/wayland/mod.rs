@@ -202,10 +202,8 @@ pub struct App {
     secure_buffer: shared::SecureBuffer,
     /// A keystroke/focus change changed field rendering without dirtying the retained tree: masked
     /// bytes and plain text live outside it (ADR-0005, ADR-0092), so re-resolve misses the update.
-    /// Repaint only; `FieldFocus` changes the display list, and `paint_surface` narrows it to the
-    /// field's surface. Without this flag, the mask or caret appears only on an unrelated repaint,
-    /// once a second on a lock-screen clock.
-    field_input_changed: bool,
+    /// Surfaces whose text fields had caret movement or input edits this turn.
+    field_input_surfaces: Vec<String>,
     /// A compositor frame callback landed for a surface whose tree was mid-tween (ADR-0145). The
     /// poll loop takes it once per turn and advances every tween; `paint_surface` asks for the
     /// next one while anything is still moving, which is what keeps the chain alive and lets it
@@ -316,7 +314,7 @@ pub fn run(
         ctrl_held: false,
         repeat_info: None,
         repeating: None,
-        field_input_changed: false,
+        field_input_surfaces: Vec::new(),
         animation_frame_due: false,
         surfaces_drawn: 0,
     };
@@ -482,7 +480,8 @@ pub fn run(
         let re_resolved = passed || !ticked.is_empty();
         // Take unconditionally so a keystroke arriving with a push is covered by this repaint, not
         // repeated next turn.
-        let typed = std::mem::take(&mut app.field_input_changed);
+        let typed_surfaces = std::mem::take(&mut app.field_input_surfaces);
+        let typed = !typed_surfaces.is_empty();
         // A decode changes neither retained properties nor a list that names the file, so it is
         // its own repaint/invalidation (ADR-0122).
         let landed = app.image_cache.poll();
@@ -529,6 +528,7 @@ pub fn run(
             turn::Repaint::Narrowed => {
                 let mut targets = targeted_instances.unwrap_or_default();
                 targets.extend(ticked.clone());
+                targets.extend(typed_surfaces);
                 app.repaint_surfaces_with_instance_ids(&targets);
             }
             turn::Repaint::Everything => app.repaint_mapped_surfaces(),

@@ -235,6 +235,7 @@ mod tests {
             properties: PropMap::default(),
             paint: None,
             children,
+            text_memo: None,
         }
     }
 

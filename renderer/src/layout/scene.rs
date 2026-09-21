@@ -178,6 +178,8 @@ pub struct ResolvedNode {
     /// slot) and out of reach (no hit, no input region, no geometry), painted after its live
     /// siblings until the last tween ends, when the next pass drops it.
     pub leaving: bool,
+    /// The last `(max_width, size)` a `text` node measured, carried so unchanged text skips shaping.
+    pub text_memo: Option<(Option<f32>, taffy::Size<f32>)>,
 }
 
 impl ResolvedNode {
@@ -815,11 +817,17 @@ fn prepare_retained(
     lua: &Lua,
     now: Instant,
 ) -> Result<PreparedNode, LayoutError> {
+    // Checked before `advance`: on the frame a tween lands, `resting` is still false here,
+    // so `text_memo` is cleared and the final layout size is measured before `resting` locks in
+    // the memo on subsequent frames.
+    let text_tweening =
+        node.kind == "text" && node.tweens.iter().any(|t| !t.resting && TEXT_MEASURE_KEYS.contains(&t.property));
     node::advance(&mut node.tweens, &mut node.properties, now, lua)?;
     let style = LayoutStyle::parse(&node.properties)?;
-    let ResolvedNode { id, kind, properties, children, tweens, displayed_source, dissolve, .. } = node;
+    let ResolvedNode { id, kind, properties, children, tweens, displayed_source, dissolve, text_memo, .. } = node;
+    let text_memo = if text_tweening { None } else { text_memo };
     let paint = node::paint_style(kind, &properties)?;
-    let measure = measure_for(kind, paint.as_ref(), &properties)?;
+    let measure = measure_for(kind, paint.as_ref(), &properties, text_memo)?;
     let taffy_id = new_solver_node(tree, kind, &properties, &style, parent_axis, measure)?;
     let mut node = PreparedNode {
         id,
@@ -1299,15 +1307,26 @@ fn new_solver_node(
     .map_err(taffy_failed)
 }
 
+const TEXT_MEASURE_KEYS: &[&str] = &["content", "font_size", "font", "wrap", "max_lines"];
+
+fn text_measure_matches(fresh: &PropMap, retained: &PropMap) -> bool {
+    TEXT_MEASURE_KEYS.iter().all(|k| fresh.get(k) == retained.get(k))
+}
+
 /// What the solver asks a leaf for its size with, for the two kinds whose size is their content.
-fn measure_for(kind: &str, paint: Option<&PaintStyle>, properties: &PropMap) -> Result<Option<Measure>, LayoutError> {
+fn measure_for(
+    kind: &str,
+    paint: Option<&PaintStyle>,
+    properties: &PropMap,
+    memo: Option<(Option<f32>, taffy::Size<f32>)>,
+) -> Result<Option<Measure>, LayoutError> {
     Ok(match flow_kind(kind, properties)? {
         // `node::paint_style` gives every `text` a `PaintStyle::Text` and `flow_kind` cannot route
         // another kind here, so the arm is total, the same shape as `children_of`'s
-        // `unreachable!`.
+        // `unreachable!` arm below.
         "text" => {
             let Some(PaintStyle::Text { content, runs, font_size, font, wrap, max_lines, .. }) = paint else {
-                unreachable!("a `text` node always carries a `PaintStyle::Text`")
+                unreachable!("paint_style produces PaintStyle::Text for text nodes");
             };
             Some(Measure::Text {
                 content: content.clone(),
@@ -1316,7 +1335,7 @@ fn measure_for(kind: &str, paint: Option<&PaintStyle>, properties: &PropMap) -> 
                 font: font.clone(),
                 wrap: *wrap,
                 max_lines: *max_lines,
-                memo: None,
+                memo,
             })
         }
         "icon" => Some(Measure::Square(node::parse_icon_size(properties)?)),
@@ -1358,9 +1377,13 @@ fn prepare(
     // trusting a call site, notably `children_of`'s `unreachable!` arm below.
     ensure_node_admissible(kind, depth)?;
 
-    let (id, displayed_source, dissolve, old_children) = match retained {
-        Some(r) => (r.id, r.displayed_source, r.dissolve, r.children),
-        None => (scene.alloc_id(), None, None, Vec::new()),
+    let (id, displayed_source, dissolve, old_children, text_memo) = match retained {
+        Some(r) => {
+            let memo =
+                if kind == "text" && text_measure_matches(&properties, &r.properties) { r.text_memo } else { None };
+            (r.id, r.displayed_source, r.dissolve, r.children, memo)
+        }
+        None => (scene.alloc_id(), None, None, Vec::new(), None),
     };
     // Already leaving children are not paired again: a re-added id is a new node beside the one
     // still fading.
@@ -1375,7 +1398,7 @@ fn prepare(
     // Before the children, because a `text`'s measurement reads the `content` and `font_size`
     // parsed here rather than parsing them a second time.
     let paint = node::paint_style(kind, &properties)?;
-    let measure = measure_for(kind, paint.as_ref(), &properties)?;
+    let measure = measure_for(kind, paint.as_ref(), &properties, text_memo)?;
 
     // Before the children, so their ids attach afterwards, and so the `taffy::Style` behind it is
     // gone from the stack by the time this frame recurses (see `new_solver_node`).
@@ -1506,6 +1529,12 @@ fn finish(
     } = prepared;
     let layout = tree.layout(taffy_id).map_err(taffy_failed)?;
     let size = LogicalSize { width: layout.size.width, height: layout.size.height };
+    let (text_memo, unconstrained_width) = match tree.get_node_context(taffy_id) {
+        Some(Measure::Text { memo: Some((max_width, size)), .. }) => {
+            (Some((*max_width, *size)), if max_width.is_none() { Some(size.width) } else { None })
+        }
+        _ => (None, None),
+    };
 
     // Frozen children come back as they were (see `prepare`): no scroll offset applied again to
     // rects that already carry one, no text refitted to a box that was not laid out.
@@ -1526,6 +1555,7 @@ fn finish(
             children: frozen,
             tweens,
             leaving: false,
+            text_memo: None,
         });
     }
 
@@ -1567,7 +1597,7 @@ fn finish(
 
     // After sizing, because the width it fits into is this node's own, and before the node is
     // built, because what it rewrites is the string the display list will carry.
-    fit_text_to_box(&mut paint, (size.width - style.padding.horizontal()).max(0.0), shaping);
+    fit_text_to_box(&mut paint, (size.width - style.padding.horizontal()).max(0.0), unconstrained_width, shaping);
 
     // Last, so an exit paints over what took its place -- and after the scroll loop above, which
     // is why a leaving child keeps the offset it was dropped at rather than travelling with the
@@ -1593,6 +1623,7 @@ fn finish(
         children,
         tweens,
         leaving: false,
+        text_memo,
     })
 }
 
@@ -1796,7 +1827,12 @@ fn scroll_offset(properties: &PropMap, content_main: f32, total_main: f32) -> f3
 /// sized, and the shaping worker isn't reachable from a display-list build, which is pure by
 /// design. Does nothing for a run that neither wraps nor elides, and nothing on a `Content`-sized
 /// node under `elide` alone, whose box came from measuring this same string and so always fits it.
-fn fit_text_to_box(paint: &mut Option<PaintStyle>, content_width: f32, shaping: &ShapingHandle) {
+fn fit_text_to_box(
+    paint: &mut Option<PaintStyle>,
+    content_width: f32,
+    unconstrained_width: Option<f32>,
+    shaping: &ShapingHandle,
+) {
     let Some(PaintStyle::Text { content, runs, font_size, font, elide, wrap, max_lines, .. }) = paint.as_mut() else {
         return;
     };
@@ -1818,7 +1854,8 @@ fn fit_text_to_box(paint: &mut Option<PaintStyle>, content_width: f32, shaping: 
         // The measured-width check is the fast path, not politeness: most strings fit, and
         // skipping the binary search below is the difference on a list of them.
         node::Wrap::None => {
-            if *elide == node::Elide::End && measured_width(content, runs, &face, shaping) > content_width {
+            let width = unconstrained_width.unwrap_or_else(|| measured_width(content, runs, &face, shaping));
+            if *elide == node::Elide::End && width > content_width {
                 let mut fitted = Fitted::new(content, runs);
                 let cut = elide_cut(content, runs, 0..content.len(), &face, content_width, shaping);
                 fitted.push_source(0..cut);
@@ -5795,6 +5832,53 @@ pub(super) mod tests {
         assert!(scene.surface("bar@TEST").is_none(), "topology handling is what drops it");
         scene.forget("bar@TEST");
         assert!(scene.surface("bar@TEST").is_none(), "and forgetting one twice is not an error");
+    }
+
+    #[test]
+    fn font_size_change_invalidates_text_memo() {
+        let mut scene = Scene::new();
+        let shaping = ShapingHandle::spawn();
+        let (lua, surface) = surface_from(
+            r#"return panel { id = "bar", child = text { content = "Hello World", font_size = state("fs", 12) } }"#,
+        );
+        apply_at(&mut scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
+        let width_12 = scene.surface("bar@TEST").unwrap().children[0].rect.width;
+
+        lua.load(r#"state("fs", 12):set(24)"#).exec().unwrap();
+        apply_at(&mut scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
+        let width_24 = scene.surface("bar@TEST").unwrap().children[0].rect.width;
+
+        assert!(width_24 > width_12 * 1.5, "larger font_size must produce larger box: {width_12} vs {width_24}");
+    }
+
+    #[test]
+    fn font_size_tween_invalidates_text_memo() {
+        let mut scene = Scene::new();
+        let shaping = ShapingHandle::spawn();
+        let (lua, surface) = surface_from(
+            r#"return panel { id = "bar", child = text { content = "Hello World",
+                font_size = state("fs", 12),
+                animate = { font_size = { duration = 100, easing = "Linear" } } } }"#,
+        );
+        apply_at(&mut scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
+        let width_12 = scene.surface("bar@TEST").unwrap().children[0].rect.width;
+
+        lua.load(r#"state("fs", 12):set(36)"#).exec().unwrap();
+        apply_at(&mut scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
+        let started = scene.surface("bar@TEST").unwrap().children[0].tweens[0].started;
+
+        scene.tick(&[instance_at(&surface, full())], &shaping, &lua, started + std::time::Duration::from_millis(50));
+        let width_mid = scene.surface("bar@TEST").unwrap().children[0].rect.width;
+        assert!(width_mid > width_12, "box must grow as font_size tweens: {width_12} vs {width_mid}");
+
+        scene.tick(&[instance_at(&surface, full())], &shaping, &lua, started + std::time::Duration::from_millis(150));
+        let width_36 = scene.surface("bar@TEST").unwrap().children[0].rect.width;
+        assert!(width_36 > width_mid, "completed tween must reach full size: {width_mid} vs {width_36}");
+
+        // Tick after completion: memo is locked in and text retains the final shaped width.
+        scene.tick(&[instance_at(&surface, full())], &shaping, &lua, started + std::time::Duration::from_millis(200));
+        assert_eq!(scene.surface("bar@TEST").unwrap().children[0].rect.width, width_36);
+        assert!(scene.surface("bar@TEST").unwrap().children[0].text_memo.is_some());
     }
 }
 

@@ -132,6 +132,7 @@ mod tests {
             properties,
             paint: None,
             children,
+            text_memo: None,
         }
     }
 

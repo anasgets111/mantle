@@ -43,23 +43,15 @@ pub(super) enum Repaint {
     Everything,
 }
 
-/// A turn that only ticked owes the screen exactly the surfaces it advanced, and `tick` just
-/// named them. Every other reason to repaint is scene-wide: a pass can change any tree, a
-/// keystroke moves a caret through `field_focus_for`, and a landed decode invalidates by file
-/// across every list that draws it.
-///
-/// So `passed` rules the narrowing out on its own, and it has to be the pass flag rather than the
-/// "did anything change" one the main loop also derives from the tick. Reading the derived flag
-/// let a pass that changed a panel be narrowed down to an unrelated `stale` wallpaper, and the
-/// panel's own repaint was simply dropped: the tick list it narrowed by was empty, because a turn
-/// that re-resolves does not tick.
+/// A turn that only ticked or typed owes the screen only the surfaces it affected. Whole-scene
+/// repaints are reserved for untargeted passes and landed decodes that invalidate by file.
 ///
 /// A surface left `stale` by a decode turned away for capacity owes a repaint that no tree and no
 /// landing can ask for, so it is its own reason to reach one (ADR-0185).
 pub(super) fn repaint_for_turn(changes: TurnChanges) -> Repaint {
-    if (changes.passed && !changes.targeted) || changes.typed || changes.landed {
+    if (changes.passed && !changes.targeted) || changes.landed {
         Repaint::Everything
-    } else if (changes.passed && changes.targeted) || changes.ticked || changes.stale {
+    } else if (changes.passed && changes.targeted) || changes.ticked || changes.typed || changes.stale {
         Repaint::Narrowed
     } else {
         Repaint::Nothing
@@ -176,8 +168,9 @@ mod tests {
         assert_eq!(turn(false, true, false, false, false), Repaint::Narrowed);
         assert_eq!(turn(false, false, true, false, false), Repaint::Narrowed);
 
-        // A caret and a landed decode are both scene-wide, and outrank a tick on the same turn.
-        assert_eq!(turn(false, true, false, true, false), Repaint::Everything);
+        // A caret repaints narrowed to the typed surface; a landed decode is scene-wide.
+        assert_eq!(turn(false, true, false, true, false), Repaint::Narrowed);
+        assert_eq!(turn(false, false, false, true, false), Repaint::Narrowed);
         assert_eq!(turn(false, true, false, false, true), Repaint::Everything);
 
         // An idle turn paints nothing and stays timeout-free (ADR-0124).

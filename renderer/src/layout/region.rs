@@ -310,6 +310,7 @@ mod tests {
             properties: PropMap::default(),
             paint,
             children,
+            text_memo: None,
         }
     }
 

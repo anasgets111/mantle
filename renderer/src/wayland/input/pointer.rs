@@ -497,7 +497,7 @@ impl App {
         };
         if let Some(field) = self.focused_text_field.as_mut().filter(|field| field.selection.1 != caret) {
             field.selection.1 = caret;
-            self.field_input_changed = true;
+            self.mark_field_input_changed(instance_id);
         }
     }
 
