@@ -38,7 +38,7 @@ impl LockController {
     /// event and removing this guard.
     pub fn lock(&self) {
         {
-            let mut state = self.state.lock().unwrap();
+            let mut state = self.state.lock().expect("mutex poisoned");
             if state.active {
                 debug!("a lock is already held; dropping a lock() that cannot change anything");
                 return;
@@ -118,18 +118,18 @@ impl LockController {
     }
 
     pub fn record(&self, event: LockEvent) {
-        apply(&mut self.state.lock().unwrap(), event);
+        apply(&mut self.state.lock().expect("mutex poisoned"), event);
     }
 
     pub fn snapshot(&self) -> LockState {
-        self.state.lock().unwrap().clone()
+        self.state.lock().expect("mutex poisoned").clone()
     }
 
     /// Atomically admits and marks one PAM conversation, or refuses. `main.rs` spawns it, so a
     /// getter plus record would race. `Some` carries the acquisition for
     /// [`Self::record_authentication`], the only moment the worker's lock number is known.
     pub fn try_begin_authentication(&self) -> Option<u64> {
-        let mut state = self.state.lock().unwrap();
+        let mut state = self.state.lock().expect("mutex poisoned");
         if !may_authenticate(&state) {
             return None;
         }
@@ -140,7 +140,7 @@ impl LockController {
     /// Applies a PAM answer to its acquisition or refuses it. `main.rs`'s `pam_outcomes` arm then
     /// avoids unlocking a lock that no longer exists (see [`accepts_outcome`]).
     pub fn record_authentication(&self, acquisition: u64, outcome: shared::PamOutcome) -> bool {
-        let mut state = self.state.lock().unwrap();
+        let mut state = self.state.lock().expect("mutex poisoned");
         if !accepts_outcome(&state, acquisition) {
             return false;
         }

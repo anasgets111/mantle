@@ -39,11 +39,8 @@ unicode-segmentation = "1.13.3"
 wayland-client = "0.31.15"
 wayland-protocols = "0.32.13"
 
-# Every `unsafe` block in this workspace is a real one -- a C API (EGL, GL, fontdb's mmap) or the
-# one process-wide `set_var` in `main`. `undocumented_unsafe_blocks` makes the SAFETY comment a
-# build requirement rather than a convention, because the convention had already drifted: two
-# comments claimed no other test touched the variable they were setting while another test set it,
-# which is how a `just check` failed on a race that had been latent for weeks.
+# `clippy::undocumented_unsafe_blocks` makes each SAFETY comment a build requirement. Keep it on
+# because this workspace crosses FFI, GL/Wayland, and raw allocation boundaries.
 [workspace.lints.rust]
 unsafe_op_in_unsafe_fn = "deny"
 

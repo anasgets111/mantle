@@ -129,7 +129,7 @@ impl KeyboardController {
             debug!(1; "SetBrightness(leds, {name}, {raw}) failed: {err}");
         }
         // `brightness_hw_changed` reports only hardware changes, so read this write back.
-        self.state.lock().unwrap().backlight_pct = read_backlight_pct(led);
+        self.state.lock().expect("mutex poisoned").backlight_pct = read_backlight_pct(led);
         let _ = self.events.send(KeyboardSignal::Changed);
     }
 
@@ -143,7 +143,7 @@ impl KeyboardController {
     }
 
     pub fn snapshot(&self) -> KeyboardState {
-        self.state.lock().unwrap().clone()
+        self.state.lock().expect("mutex poisoned").clone()
     }
 }
 
@@ -163,7 +163,7 @@ fn read_backlight_pct(led: &LedBacklight) -> i32 {
 fn watch_backlight(led: LedBacklight, state: Arc<Mutex<KeyboardState>>, events: UnboundedSender<KeyboardSignal>) {
     let watch = std::fs::File::open(led.dir.join("brightness_hw_changed"))
         .and_then(|file| AsyncFd::with_interest(file, Interest::PRIORITY));
-    state.lock().unwrap().backlight_pct = read_backlight_pct(&led);
+    state.lock().expect("mutex poisoned").backlight_pct = read_backlight_pct(&led);
     let watch = match watch {
         Ok(watch) => watch,
         Err(err) => {
@@ -182,7 +182,7 @@ fn watch_backlight(led: LedBacklight, state: Arc<Mutex<KeyboardState>>, events: 
             }
             // Reading from offset 0 re-arms kernfs's `POLLPRI`.
             let _ = watch.get_ref().read_at(&mut [0; 8], 0);
-            state.lock().unwrap().backlight_pct = read_backlight_pct(&led);
+            state.lock().expect("mutex poisoned").backlight_pct = read_backlight_pct(&led);
             if events.send(KeyboardSignal::Changed).is_err() {
                 break;
             }
@@ -200,7 +200,7 @@ fn open_led_stream(state: &Mutex<KeyboardState>) -> Option<evdev::EventStream> {
         .find(|(_, device)| device.supported_leds().is_some_and(|leds| leds.contains(evdev::LedCode::LED_CAPSL)))?;
     match device.get_led_state() {
         Ok(led_state) => {
-            let mut guard = state.lock().unwrap();
+            let mut guard = state.lock().expect("mutex poisoned");
             guard.caps_lock = led_state.contains(evdev::LedCode::LED_CAPSL);
             guard.num_lock = led_state.contains(evdev::LedCode::LED_NUML);
             guard.scroll_lock = led_state.contains(evdev::LedCode::LED_SCROLLL);
@@ -227,7 +227,7 @@ fn resolve_locks(leds_root: &Path, state: &Mutex<KeyboardState>) -> Option<evdev
         );
         return None;
     };
-    let mut guard = state.lock().unwrap();
+    let mut guard = state.lock().expect("mutex poisoned");
     match read_led_on(&leds.caps) {
         Ok(on) => guard.caps_lock = on,
         Err(err) => debug!(1; "failed to read the sysfs capslock LED; caps_lock will stay false: {err}"),
@@ -267,7 +267,7 @@ async fn pump_leds(
         let evdev::EventSummary::Led(_, code, value) = event.destructure() else { continue };
         let on = value != 0;
         {
-            let mut guard = state.lock().unwrap();
+            let mut guard = state.lock().expect("mutex poisoned");
             match code {
                 evdev::LedCode::LED_CAPSL => guard.caps_lock = on,
                 evdev::LedCode::LED_NUML => guard.num_lock = on,

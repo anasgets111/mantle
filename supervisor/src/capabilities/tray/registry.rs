@@ -125,7 +125,7 @@ pub(super) async fn register_item(
     let mut entry =
         ItemEntry { item, menu, last_known: tray_item, registered: 0, properties_forwarder, menu_forwarder };
     let previous = {
-        let mut guard = registry.lock().unwrap();
+        let mut guard = registry.lock().expect("mutex poisoned");
         entry.registered = match guard.get(&key) {
             // Same key means re-registration, so keep its place. A restart gets a new unique name
             // and key, so it is a new item.
@@ -191,7 +191,7 @@ fn spawn_item_signal_forwarder(
 
             let refreshed = fetch_tray_item_base(&item, &unique_name, &key.1).await;
 
-            let mut guard = registry.lock().unwrap();
+            let mut guard = registry.lock().expect("mutex poisoned");
             let Some(entry) = guard.get_mut(&key) else { break };
             keep_menu_across(entry, refreshed);
             drop(guard);
@@ -216,7 +216,7 @@ fn spawn_menu_signal_forwarder(
         while layout_updated.next().await.is_some() {
             match fetch_menu_via(&menu).await {
                 Ok(items) => {
-                    let mut guard = registry.lock().unwrap();
+                    let mut guard = registry.lock().expect("mutex poisoned");
                     let Some(entry) = guard.get_mut(&key) else { break };
                     entry.last_known.menu = Some(items);
                     drop(guard);
@@ -250,7 +250,7 @@ pub(super) fn spawn_name_owner_changed_forwarder(
             let dropped_name = args.name.to_string();
 
             let removed: Vec<(ItemKey, ItemEntry)> = {
-                let mut guard = registry.lock().unwrap();
+                let mut guard = registry.lock().expect("mutex poisoned");
                 let stale_keys: Vec<ItemKey> =
                     guard.keys().filter(|(unique_name, _)| unique_name.as_str() == dropped_name).cloned().collect();
                 stale_keys.into_iter().filter_map(|key| guard.remove(&key).map(|entry| (key, entry))).collect()

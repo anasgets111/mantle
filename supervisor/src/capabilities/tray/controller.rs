@@ -96,7 +96,7 @@ impl TrayController {
     }
 
     fn find_item_id(&self, id: &str) -> Option<(ItemKey, TrayItem)> {
-        let guard = self.registry.lock().unwrap();
+        let guard = self.registry.lock().expect("mutex poisoned");
         guard
             .iter()
             .find(|(key, _)| item_id(key.0.as_str(), key.1.as_str()) == id)
@@ -104,11 +104,11 @@ impl TrayController {
     }
 
     fn find_item_proxy(&self, key: &ItemKey) -> Option<StatusNotifierItemProxy<'static>> {
-        self.registry.lock().unwrap().get(key).map(|entry| entry.item.clone())
+        self.registry.lock().expect("mutex poisoned").get(key).map(|entry| entry.item.clone())
     }
 
     fn find_menu_proxy(&self, key: &ItemKey) -> Option<DBusMenuProxy<'static>> {
-        self.registry.lock().unwrap().get(key).and_then(|entry| entry.menu.clone())
+        self.registry.lock().expect("mutex poisoned").get(key).and_then(|entry| entry.menu.clone())
     }
 
     /// `tray:activate(id, x, y)`. Skips `Activate` when `ItemIsMenu` is true, per SNI semantics
@@ -196,7 +196,7 @@ impl TrayController {
         }
         match fetch_menu_via(&menu).await {
             Ok(items) => {
-                let mut guard = self.registry.lock().unwrap();
+                let mut guard = self.registry.lock().expect("mutex poisoned");
                 if let Some(entry) = guard.get_mut(&key) {
                     entry.last_known.menu = Some(items);
                 }

@@ -147,7 +147,7 @@ impl UpdatesController {
         }
         debug!("configure: interval_secs={}", configure.interval_secs);
         if let Some(checked_at) = configure.checked_at {
-            let mut guard = self.state.lock().unwrap();
+            let mut guard = self.state.lock().expect("mutex poisoned");
             if guard.last_successful_check.is_none() {
                 guard.last_successful_check = Some(checked_at);
                 guard.count = configure.packages.len() as u32;
@@ -168,7 +168,7 @@ impl UpdatesController {
             debug!("check() called on a machine with no package manager this Supervisor speaks; ignored");
             return;
         }
-        if self.state.lock().unwrap().checking {
+        if self.state.lock().expect("mutex poisoned").checking {
             debug!("check() called while a check is already running; ignored");
             return;
         }
@@ -186,7 +186,7 @@ impl UpdatesController {
             return;
         };
         {
-            let mut guard = self.state.lock().unwrap();
+            let mut guard = self.state.lock().expect("mutex poisoned");
             if guard.installing {
                 drop(guard);
                 debug!("install() called while an install is already running; ignored");
@@ -206,7 +206,7 @@ impl UpdatesController {
     }
 
     pub fn snapshot(&self) -> UpdatesState {
-        self.state.lock().unwrap().clone()
+        self.state.lock().expect("mutex poisoned").clone()
     }
 }
 
@@ -247,7 +247,7 @@ async fn run_check_task(
             // (ADR-0113 amendment). Skip only when this process has a fresh check; the
             // controller outlives config generations; under the old unconditional consume,
             // every save reset the hour and a day of editing never checked at all.
-            if !first_check_is_due(state.lock().unwrap().last_successful_check, now_unix(), interval) {
+            if !first_check_is_due(state.lock().expect("mutex poisoned").last_successful_check, now_unix(), interval) {
                 ticker.tick().await;
             }
             loop {
@@ -281,13 +281,13 @@ async fn run_one_check(
     state: &Arc<Mutex<UpdatesState>>,
     events: &UnboundedSender<UpdatesSignal>,
 ) {
-    state.lock().unwrap().checking = true;
+    state.lock().expect("mutex poisoned").checking = true;
     let _ = events.send(UpdatesSignal::Changed);
 
     let backend = Arc::clone(backend);
     let result = tokio::task::spawn_blocking(move || backend.check()).await;
 
-    let mut guard = state.lock().unwrap();
+    let mut guard = state.lock().expect("mutex poisoned");
     guard.checking = false;
     match result.map_err(|join_err| format!("check task panicked: {join_err}")) {
         Ok(Ok(candidates)) => {
@@ -330,7 +330,7 @@ async fn run_install(
     let child = match process::spawn_group_leader_piped(&command.program, &command.arguments) {
         Ok(child) => child,
         Err(err) => {
-            let mut guard = state.lock().unwrap();
+            let mut guard = state.lock().expect("mutex poisoned");
             guard.installing = false;
             guard.install_error = Some(format!("failed to spawn {}: {err}", command.program));
             drop(guard);
@@ -359,7 +359,7 @@ async fn run_install_with_child(
             let mut lines = BufReader::new(stderr).lines();
             while let Ok(Some(line)) = lines.next_line().await {
                 debug!("install stderr: {line}");
-                push_log_line(&mut state.lock().unwrap().install_log, line);
+                push_log_line(&mut state.lock().expect("mutex poisoned").install_log, line);
                 let _ = events.send(UpdatesSignal::Changed);
             }
         })
@@ -369,7 +369,7 @@ async fn run_install_with_child(
         let mut lines = BufReader::new(stdout).lines();
         while let Ok(Some(line)) = lines.next_line().await {
             let step = backend.parse_install_step(&line);
-            let mut guard = state.lock().unwrap();
+            let mut guard = state.lock().expect("mutex poisoned");
             push_log_line(&mut guard.install_log, line);
             if let Some(step) = step {
                 guard.install_current_step = step.current;
@@ -391,7 +391,7 @@ async fn run_install_with_child(
     if let Some(drain) = stderr_drain {
         let _ = drain.await;
     }
-    let mut guard = state.lock().unwrap();
+    let mut guard = state.lock().expect("mutex poisoned");
     guard.installing = false;
     guard.install_finished_at = Some(now_unix());
     match status {

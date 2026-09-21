@@ -85,7 +85,7 @@ impl BluetoothController {
             }
         }
 
-        if adapter.lock().unwrap().is_none() {
+        if adapter.lock().expect("mutex poisoned").is_none() {
             debug!("no adapter found; bluetooth stays unavailable until BlueZ adds one");
         }
         if let Some((added, removed)) = object_manager_streams {
@@ -151,7 +151,7 @@ impl BluetoothController {
                     ),
                     None => (false, false, false),
                 };
-                let mut state = self.state.lock().unwrap();
+                let mut state = self.state.lock().expect("mutex poisoned");
                 state.available = adapter.is_some();
                 state.enabled = enabled;
                 state.discovering = discovering;
@@ -161,20 +161,21 @@ impl BluetoothController {
             BluetoothSignal::DeviceRegistryChanged => {
                 let (connected_devices, paired_devices, discovered_devices) = self.build_device_lists().await;
                 self.clear_finished_display(&connected_devices, &paired_devices);
-                let mut state = self.state.lock().unwrap();
+                let mut state = self.state.lock().expect("mutex poisoned");
                 state.connected_devices = connected_devices;
                 state.paired_devices = paired_devices;
                 state.discovered_devices = discovered_devices;
                 state.clone()
             }
             BluetoothSignal::DiscoveryCleared => {
-                let mut state = self.state.lock().unwrap();
+                let mut state = self.state.lock().expect("mutex poisoned");
                 state.discovered_devices = Vec::new();
                 state.clone()
             }
             BluetoothSignal::PairingChanged => {
-                let request = self.prompts.lock().unwrap().as_ref().map(|prompt| prompt.request.clone());
-                let mut state = self.state.lock().unwrap();
+                let request =
+                    self.prompts.lock().expect("mutex poisoned").as_ref().map(|prompt| prompt.request.clone());
+                let mut state = self.state.lock().expect("mutex poisoned");
                 state.pairing_request = request;
                 state.clone()
             }
@@ -189,7 +190,7 @@ impl BluetoothController {
 
     /// The adapter in use now, cloned out so no await holds the slot's lock.
     fn adapter(&self) -> Option<Adapter1Proxy<'static>> {
-        self.adapter.lock().unwrap().as_ref().map(|bound| bound.proxy.clone())
+        self.adapter.lock().expect("mutex poisoned").as_ref().map(|bound| bound.proxy.clone())
     }
 
     /// Re-derives the three lists from the full registry: paired and connected, paired only, and
@@ -197,11 +198,11 @@ impl BluetoothController {
     /// session-scoped; see `bluetooth/mod.rs`'s ponytail note.
     async fn build_device_lists(&self) -> (Vec<ConnectedDevice>, Vec<PairedDevice>, Vec<DiscoveredDevice>) {
         let snapshot: Vec<(String, Device1Proxy<'static>, Option<Battery1Proxy<'static>>)> = {
-            let guard = self.devices.lock().unwrap();
+            let guard = self.devices.lock().expect("mutex poisoned");
             guard.values().map(|entry| (entry.mac.clone(), entry.device.clone(), entry.battery.clone())).collect()
         };
 
-        let running = self.busy.lock().unwrap().clone();
+        let running = self.busy.lock().expect("mutex poisoned").clone();
         let mut connected = Vec::new();
         let mut paired_only = Vec::new();
         let mut discovered = Vec::new();
@@ -234,7 +235,7 @@ impl BluetoothController {
     /// the row spins on the click. A later action replaces the label, which is how `pair` hands the
     /// row to its `connect`; the earlier guard then finds its label gone and leaves it.
     fn mark_busy(&self, mac: &str, action: DeviceAction) -> BusyGuard<'_> {
-        self.busy.lock().unwrap().insert(mac.to_string(), action);
+        self.busy.lock().expect("mutex poisoned").insert(mac.to_string(), action);
         let _ = self.events.send(BluetoothSignal::DeviceRegistryChanged);
         BusyGuard { controller: self, mac: mac.to_string(), action }
     }
@@ -242,13 +243,14 @@ impl BluetoothController {
     /// Whether `mac` may raise a pairing prompt: the adapter is visible, or this Supervisor is
     /// pairing that device, so nothing in range can put cards on screen at will.
     fn invited(&self, mac: &str) -> bool {
-        self.state.lock().unwrap().discoverable || self.busy.lock().unwrap().get(mac) == Some(&DeviceAction::Pairing)
+        self.state.lock().expect("mutex poisoned").discoverable
+            || self.busy.lock().expect("mutex poisoned").get(mac) == Some(&DeviceAction::Pairing)
     }
 
     /// Synchronously resolves `mac` to its tracked path and `Device1` proxy. No `.await`, so the
     /// registry mutex is never held across an await.
     fn resolve_device(&self, mac: &str) -> Option<(OwnedObjectPath, Device1Proxy<'static>)> {
-        let guard = self.devices.lock().unwrap();
+        let guard = self.devices.lock().expect("mutex poisoned");
         guard.iter().find(|(_, entry)| entry.mac == mac).map(|(path, entry)| (path.clone(), entry.device.clone()))
     }
 
@@ -266,7 +268,7 @@ impl BluetoothController {
     /// the missing reply again under its lock, so a request that replaced the display in between is
     /// not the one removed.
     fn clear_finished_display(&self, connected: &[ConnectedDevice], paired: &[PairedDevice]) {
-        let shown = self.prompts.lock().unwrap().as_ref().map(|prompt| prompt.request.mac.clone());
+        let shown = self.prompts.lock().expect("mutex poisoned").as_ref().map(|prompt| prompt.request.mac.clone());
         let Some(mac) = shown else { return };
         let done = connected.iter().map(|d| &d.mac).chain(paired.iter().map(|d| &d.mac)).any(|m| *m == mac);
         if done && agent::clear_display(&self.prompts, &mac) {
@@ -311,7 +313,7 @@ impl BluetoothController {
     /// KDE and GNOME both pause discovery while pairing, which a scanning radio slows down.
     fn discovery_due(&self) -> bool {
         self.discovery_wanted.load(Ordering::Relaxed)
-            && !self.busy.lock().unwrap().values().any(|action| *action == DeviceAction::Pairing)
+            && !self.busy.lock().expect("mutex poisoned").values().any(|action| *action == DeviceAction::Pairing)
     }
 
     fn spawn_reconcile_discovery(&self) {

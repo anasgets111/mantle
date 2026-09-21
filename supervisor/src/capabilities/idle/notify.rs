@@ -288,13 +288,18 @@ pub(crate) fn spawn_idle_event_forwarder(
                 if !listener.respects_inhibitors {
                     continue;
                 }
-                let generation_ids =
-                    registry.lock().unwrap().fanout.get(&listener.duration).cloned().unwrap_or_default();
+                let generation_ids = registry
+                    .lock()
+                    .expect("mutex poisoned")
+                    .fanout
+                    .get(&listener.duration)
+                    .cloned()
+                    .unwrap_or_default();
                 for generation_id in generation_ids {
                     let event = shared::IdleEvent { generation_id, threshold_sec: listener.duration.as_secs(), state };
                     // Gate after fan-out: it must see each pair to know which `Resumed` events it
                     // owes when an inhibitor arrives (ADR-0139).
-                    let Some(event) = gate.lock().unwrap().observe(event) else { continue };
+                    let Some(event) = gate.lock().expect("mutex poisoned").observe(event) else { continue };
                     if events_tx.send(event).is_err() {
                         return;
                     }
@@ -304,7 +309,7 @@ pub(crate) fn spawn_idle_event_forwarder(
             {
                 // A destroyed listener never sends the `Resumed` that clears its duration, so a
                 // seat idle at reap time would latch here for the rest of the run.
-                let live = registry.lock().unwrap();
+                let live = registry.lock().expect("mutex poisoned");
                 let still_listening = |duration: &Duration, respects_inhibitors| {
                     live.listeners.contains_key(&ListenerId { duration: *duration, respects_inhibitors })
                 };
@@ -316,7 +321,7 @@ pub(crate) fn spawn_idle_event_forwarder(
             // blocks. Releasing first let the other writer settle and send between our two steps,
             // so the older payload arrived last with `last_sent` already past it. A subscriber
             // then kept a stale answer that no later unchanged observation could repair.
-            let mut published = published.lock().unwrap();
+            let mut published = published.lock().expect("mutex poisoned");
             if let Some(next) = published.set_wayland_inhibited(answer) {
                 // Say it, like the logind gate does. Nothing lists the holders, so a user asking
                 // "why will this not lock" has only this line and the widget. Report the

@@ -213,7 +213,7 @@ impl NotificationsController {
     /// `ActionInvoked`, and should not update the entry in place; `transient` entries are removed.
     async fn expire(&self, id: u32, incarnation: u64) {
         let outcome = {
-            let mut state = self.state.lock().unwrap();
+            let mut state = self.state.lock().expect("mutex poisoned");
             expire_entry(&mut state.queue, id, incarnation)
         };
         let Some(outcome) = outcome else { return };
@@ -228,7 +228,7 @@ impl NotificationsController {
     /// recheck, emits `NotificationClosed(..., Dismissed)`, and pushes state. Unknown ids no-op.
     pub async fn dismiss(&self, id: u32) {
         let removed = {
-            let mut state = self.state.lock().unwrap();
+            let mut state = self.state.lock().expect("mutex poisoned");
             remove_by_id(&mut state.queue, id)
         };
         let Some(removed) = removed else {
@@ -251,7 +251,7 @@ impl NotificationsController {
     /// user finishing with the notification.
     pub async fn reply(&self, id: u32, text: String) {
         let outcome = {
-            let mut state = self.state.lock().unwrap();
+            let mut state = self.state.lock().expect("mutex poisoned");
             match state.queue.iter().position(|n| n.id == id) {
                 Some(index) if !state.queue[index].has_reply => {
                     debug!(1; "reply({id}, ...) ignored: that notification does not accept an inline reply");
@@ -282,7 +282,7 @@ impl NotificationsController {
     /// keys log/no-op; non-resident removal also emits `NotificationClosed`.
     pub async fn invoke_action(&self, id: u32, key: String) {
         let outcome = {
-            let mut state = self.state.lock().unwrap();
+            let mut state = self.state.lock().expect("mutex poisoned");
             match state.queue.iter().position(|n| n.id == id) {
                 Some(index) if !declares_action(&state.queue[index], &key) => {
                     debug!(1; "invoke_action({id}, {key:?}) ignored: that notification declares no such action");
@@ -312,7 +312,7 @@ impl NotificationsController {
     pub fn set_sound(&self, urgency: Urgency, path: &str) {
         match validate_trusted_path(path, &self.sound_roots) {
             Some(validated) => {
-                self.state.lock().unwrap().sound_registry.insert(urgency, validated);
+                self.state.lock().expect("mutex poisoned").sound_registry.insert(urgency, validated);
             }
             None => debug!(1; "set_sound({urgency:?}, {path:?}) ignored: not a trusted, existing sound file path"),
         }
@@ -320,19 +320,19 @@ impl NotificationsController {
 
     /// `notifications:set_dnd(enabled)` (ADR-0033) flips the global sound gate; feed is unchanged.
     pub fn set_dnd(&self, enabled: bool) {
-        self.state.lock().unwrap().dnd = enabled;
+        self.state.lock().expect("mutex poisoned").dnd = enabled;
         let _ = self.events.send(NotificationsSignal::Changed);
     }
 
     /// `notifications:set_quiet(enabled)` gates sound like DND, for a config's own rules (locked,
     /// displays off); not in the snapshot, so it never shows as the user's DND.
     pub fn set_quiet(&self, enabled: bool) {
-        self.state.lock().unwrap().quiet = enabled;
+        self.state.lock().expect("mutex poisoned").quiet = enabled;
     }
 
     /// `notifications:set_app_muted(app, muted)` silences an app that plays its own sound (ADR-0033).
     pub fn set_app_muted(&self, app: String, muted: bool) {
-        let mut state = self.state.lock().unwrap();
+        let mut state = self.state.lock().expect("mutex poisoned");
         if muted {
             state.muted_apps.insert(app);
         } else {
@@ -359,7 +359,7 @@ impl NotificationsController {
     /// Full re-derivation of `notifications.feed`/`notifications.dnd` from current state:
     /// synchronous, no D-Bus round trip needed.
     pub fn build_state(&self) -> NotificationsState {
-        let state = self.state.lock().unwrap();
+        let state = self.state.lock().expect("mutex poisoned");
         NotificationsState { feed: feed_view(&state.queue), dnd: state.dnd }
     }
 }
@@ -471,7 +471,7 @@ impl NotificationsController {
         let app_icon = (!app_icon.is_empty()).then_some(app_icon).or(image_name);
         let icon_data = hints.icon_data;
         let app_muted = {
-            let state = self.state.lock().unwrap();
+            let state = self.state.lock().expect("mutex poisoned");
             state.muted_apps.contains(&app_name)
                 || desktop_entry.as_ref().is_some_and(|entry| state.muted_apps.contains(entry))
         };
@@ -480,7 +480,7 @@ impl NotificationsController {
         let sound_name = hints.sound_name;
 
         let (id, incarnation) = {
-            let mut state = self.state.lock().unwrap();
+            let mut state = self.state.lock().expect("mutex poisoned");
             let id = resolve_notification_id(replaces_id, &mut state.next_id);
             let incarnation = next_incarnation(&mut state.next_incarnation);
             (id, incarnation)
@@ -510,7 +510,7 @@ impl NotificationsController {
         };
 
         let cleanup = {
-            let mut state = self.state.lock().unwrap();
+            let mut state = self.state.lock().expect("mutex poisoned");
             replace_or_push(&mut state.queue, notification)
         };
         match cleanup {
@@ -545,7 +545,7 @@ impl NotificationsController {
         }
 
         let (silenced, tier_default_sound) = {
-            let state = self.state.lock().unwrap();
+            let state = self.state.lock().expect("mutex poisoned");
             (state.dnd || state.quiet, state.sound_registry.get(&urgency).cloned())
         };
         let client_sound_file =
@@ -568,7 +568,7 @@ impl NotificationsController {
     #[zbus(name = "CloseNotification")]
     async fn close_notification(&self, id: u32) {
         let removed = {
-            let mut state = self.state.lock().unwrap();
+            let mut state = self.state.lock().expect("mutex poisoned");
             remove_by_id(&mut state.queue, id)
         };
         if let Some(removed) = removed {

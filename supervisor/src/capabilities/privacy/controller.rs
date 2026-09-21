@@ -127,7 +127,7 @@ impl PrivacyController {
     }
 
     pub fn snapshot(&self) -> PrivacyState {
-        self.state.lock().unwrap().clone()
+        self.state.lock().expect("mutex poisoned").clone()
     }
 }
 
@@ -196,7 +196,7 @@ fn publish(proc_root: &Path, state: &Arc<Mutex<PrivacyState>>, opener_pids: &[u3
         microphone_users: name_capture_users(proc_root, &pipewire.microphones),
         screencast_users: name_capture_users(proc_root, &pipewire.screencasts),
     };
-    let mut state = state.lock().unwrap();
+    let mut state = state.lock().expect("mutex poisoned");
     let changed = *state != next;
     *state = next;
     changed

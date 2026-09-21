@@ -179,17 +179,17 @@ impl MprisController {
 
     fn find_player(&self, id: &str) -> Option<super::proxies::MprisPlayerProxy<'static>> {
         let bus_name = service_name_for_id(id);
-        self.registry.lock().unwrap().get(&bus_name).map(|entry| entry.player.clone())
+        self.registry.lock().expect("mutex poisoned").get(&bus_name).map(|entry| entry.player.clone())
     }
 
     fn cached_position(&self, id: &str) -> Option<i64> {
         let bus_name = service_name_for_id(id);
-        self.registry.lock().unwrap().get(&bus_name).map(|entry| entry.last_known.position)
+        self.registry.lock().expect("mutex poisoned").get(&bus_name).map(|entry| entry.last_known.position)
     }
 
     fn find_seek_context(&self, id: &str) -> Option<SeekContext> {
         let bus_name = service_name_for_id(id);
-        let guard = self.registry.lock().unwrap();
+        let guard = self.registry.lock().expect("mutex poisoned");
         let entry = guard.get(&bus_name)?;
         Some(SeekContext {
             bus_name: bus_name.clone(),

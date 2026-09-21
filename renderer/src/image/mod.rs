@@ -241,10 +241,11 @@ struct Job {
     animation_bytes: usize,
 }
 
-/// Shared decode queue and result channel, at most `MAX_DECODE_WORKERS` threads. Spawned with the
-/// cache before Lua reads anything, so a failed spawn is a startup failure, not a later blank tile.
+/// Shared decode queue and result channel, at most `MAX_DECODE_WORKERS` threads. If resource
+/// limits refuse every worker, background requests fall back to the inline path.
 struct Pool {
     jobs: SyncSender<Job>,
+    workers: usize,
     results: Receiver<(CacheKey, Result<Decoded, String>)>,
     /// Keys whose decode is still wanted. A worker checks this before spending anything on a job,
     /// so closing the picker stops the queued tiles rather than decoding all of them into slots
@@ -264,6 +265,7 @@ impl Pool {
         let budget: Arc<Budget> = Arc::new(Budget::default());
         let workers = std::thread::available_parallelism().map_or(1, |n| n.get()).clamp(1, MAX_DECODE_WORKERS);
         let cache_root = thumbnails::cache_dir();
+        let mut started = 0;
         for index in 0..workers {
             let job_rx = Arc::clone(&job_rx);
             let result_tx = result_tx.clone();
@@ -271,46 +273,47 @@ impl Pool {
             let waker = waker.clone();
             let wanted = Arc::clone(&wanted);
             let budget = Arc::clone(&budget);
-            std::thread::Builder::new()
-                .name(format!("mantle-image-decode-{index}"))
-                .spawn(move || {
-                    loop {
-                        // Hold the lock only to take a job; workers drain while another decodes.
-                        let job = match job_rx.lock() {
-                            Ok(rx) => rx.recv(),
-                            Err(_) => return,
-                        };
-                        let Ok(job) = job else { return };
-                        // Nobody is waiting for this any more: the entry was evicted, or the
-                        // surface that asked went away. Decoding it would cost a full raster and
-                        // land in a slot that `upload_landed` then skips.
-                        if !wanted.lock().is_ok_and(|wanted| wanted.contains(&job.key)) {
-                            continue;
-                        }
-                        // The permit is taken inside, where the source has been chosen and its
-                        // size is known; `still_wanted` is re-asked there because a worker can now
-                        // wait for room, and an entry can be evicted while it does (ADR-0187).
-                        let still_wanted = || wanted.lock().is_ok_and(|wanted| wanted.contains(&job.key));
-                        let result = decode(
-                            &job.key,
-                            job.tint,
-                            cache_root.as_deref(),
-                            Charge::Waiting(&budget),
-                            &still_wanted,
-                            job.animation_bytes,
-                        );
-                        if result_tx.send((job.key, result)).is_err() {
-                            return;
-                        }
-                        // After sending, so the woken loop finds it in `poll`.
-                        if let Some(waker) = &waker {
-                            waker.wake();
-                        }
+            let spawned = std::thread::Builder::new().name(format!("mantle-image-decode-{index}")).spawn(move || {
+                loop {
+                    // Hold the lock only to take a job; workers drain while another decodes.
+                    let job = match job_rx.lock() {
+                        Ok(rx) => rx.recv(),
+                        Err(_) => return,
+                    };
+                    let Ok(job) = job else { return };
+                    // Nobody is waiting for this any more: the entry was evicted, or the
+                    // surface that asked went away. Decoding it would cost a full raster and
+                    // land in a slot that `upload_landed` then skips.
+                    if !wanted.lock().is_ok_and(|wanted| wanted.contains(&job.key)) {
+                        continue;
                     }
-                })
-                .expect("failed to spawn a mantle-image-decode thread");
+                    // The permit is taken inside, where the source has been chosen and its
+                    // size is known; `still_wanted` is re-asked there because a worker can now
+                    // wait for room, and an entry can be evicted while it does (ADR-0187).
+                    let still_wanted = || wanted.lock().is_ok_and(|wanted| wanted.contains(&job.key));
+                    let result = decode(
+                        &job.key,
+                        job.tint,
+                        cache_root.as_deref(),
+                        Charge::Waiting(&budget),
+                        &still_wanted,
+                        job.animation_bytes,
+                    );
+                    if result_tx.send((job.key, result)).is_err() {
+                        return;
+                    }
+                    // After sending, so the woken loop finds it in `poll`.
+                    if let Some(waker) = &waker {
+                        waker.wake();
+                    }
+                }
+            });
+            match spawned {
+                Ok(_) => started += 1,
+                Err(err) => error!("failed to spawn mantle-image-decode thread: {err}"),
+            }
         }
-        Pool { jobs, results, wanted, budget }
+        Pool { jobs, workers: started, results, wanted, budget }
     }
 }
 
@@ -465,7 +468,7 @@ impl ImageCache {
                 }
                 Err(TryRecvError::Empty) => break,
                 Err(TryRecvError::Disconnected) => {
-                    if !std::mem::replace(&mut self.workers_gone, true) {
+                    if !std::mem::replace(&mut self.workers_gone, true) && self.pool.workers > 0 {
                         error!("every decode worker is gone; background images will not load");
                     }
                     break;
@@ -570,6 +573,7 @@ impl ImageCache {
             cached.last_hit = self.tick;
             return self.showing(canvas, &key);
         }
+        let load = if self.pool.workers == 0 { Load::Inline } else { load };
         match load {
             Load::Inline => {
                 // Counted against the same ceiling the workers wait on, but never waiting for it:

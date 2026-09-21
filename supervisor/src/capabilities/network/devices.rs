@@ -244,7 +244,7 @@ impl NetworkController {
             }
         };
         let unchanged = {
-            let current = self.devices.lock().unwrap();
+            let current = self.devices.lock().expect("mutex poisoned");
             current.wifi.as_ref().map(|wifi| &wifi.device_path) == wifi.as_ref().map(|wifi| &wifi.device_path)
                 && current.ethernet.iter().map(|device| &device.path).eq(ethernet.iter().map(|device| &device.path))
         };
@@ -253,7 +253,8 @@ impl NetworkController {
         }
         debug!("device set changed: wifi={} ethernet={}", wifi.is_some(), ethernet.len());
         let watchers = watch_devices(&self.connection, wifi.as_ref(), &ethernet, &self.events);
-        let previous = std::mem::replace(&mut *self.devices.lock().unwrap(), Devices { wifi, ethernet, watchers });
+        let previous =
+            std::mem::replace(&mut *self.devices.lock().expect("mutex poisoned"), Devices { wifi, ethernet, watchers });
         for watcher in previous.watchers {
             watcher.abort();
         }

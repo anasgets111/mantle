@@ -24,7 +24,7 @@ pub trait CompositorLink: Send + Sync {
 }
 
 fn apply_niri_layout(state: &Arc<Mutex<KeyboardState>>, names: &[String], idx: u8) {
-    let mut guard = state.lock().unwrap();
+    let mut guard = state.lock().expect("mutex poisoned");
     guard.active_layout = names.get(idx as usize).cloned().unwrap_or_default();
     guard.active_layout_index = u32::from(idx);
     guard.layout_count = names.len() as u32;
@@ -132,7 +132,7 @@ fn parse_hyprland_devices(json: &str) -> Option<HyprlandKeyboard> {
 }
 
 fn apply_hyprland_layout(state: &Arc<Mutex<KeyboardState>>, keyboard: &HyprlandKeyboard) {
-    let mut guard = state.lock().unwrap();
+    let mut guard = state.lock().expect("mutex poisoned");
     guard.active_layout = keyboard.active_keymap.clone();
     guard.active_layout_index = keyboard.active_layout_index;
     guard.layout_count = keyboard.layout.split(',').filter(|s| !s.is_empty()).count() as u32;

@@ -120,7 +120,7 @@ impl NetworkController {
     /// `RequestScan`. Only does so with Wi-Fi hardware; otherwise [`scan`](Self::scan) no-ops and
     /// `scanning` would stick at `true`.
     pub fn mark_scanning(&self) {
-        if self.devices.lock().unwrap().wifi.is_some() {
+        if self.devices.lock().expect("mutex poisoned").wifi.is_some() {
             let _ = self.events.send(NetworkSignal::ScanStarted);
         }
     }
@@ -155,7 +155,7 @@ impl NetworkController {
         };
 
         let access_points = self.warm_access_points(&ap_paths).await;
-        let saved_ssids = self.saved_ssids.lock().unwrap().clone();
+        let saved_ssids = self.saved_ssids.lock().expect("mutex poisoned").clone();
         let mut aps = Vec::with_capacity(access_points.len());
         for (path, proxy) in &access_points {
             if let Some(ap) = read_access_point(proxy, active_path.as_ref() == Some(path), &saved_ssids).await {
@@ -171,7 +171,7 @@ impl NetworkController {
     /// Takes the lock around, not across, binding because it is a plain mutex and binding awaits.
     async fn warm_access_points(&self, paths: &[OwnedObjectPath]) -> Vec<(OwnedObjectPath, AccessPointProxy<'static>)> {
         let missing: Vec<OwnedObjectPath> = {
-            let held = self.access_points.lock().unwrap();
+            let held = self.access_points.lock().expect("mutex poisoned");
             paths.iter().filter(|path| !held.contains_key(*path)).cloned().collect()
         };
         let mut bound = Vec::with_capacity(missing.len());
@@ -183,7 +183,7 @@ impl NetworkController {
         }
 
         let in_range: HashSet<&OwnedObjectPath> = paths.iter().collect();
-        let mut held = self.access_points.lock().unwrap();
+        let mut held = self.access_points.lock().expect("mutex poisoned");
         held.extend(bound);
         held.retain(|path, _| in_range.contains(path));
         paths.iter().filter_map(|path| Some((path.clone(), held.get(path)?.clone()))).collect()

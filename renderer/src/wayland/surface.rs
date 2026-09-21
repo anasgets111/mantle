@@ -819,8 +819,7 @@ impl App {
         if self.egl.is_some() {
             return true;
         }
-        // SAFETY: the pointer comes from this `App`'s `Connection`, which outlives its EGL objects.
-        match egl::init(self.conn.backend().display_ptr() as *mut c_void) {
+        match egl::init(&self.conn) {
             Ok(state) => {
                 self.egl = Some(state);
                 true

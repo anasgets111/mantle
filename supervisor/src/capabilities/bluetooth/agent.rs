@@ -53,7 +53,7 @@ pub(super) type Invited = Arc<dyn Fn(&str) -> bool + Send + Sync>;
 /// the prompt went up is ignored and leaves it up. Returns whether a prompt came down.
 pub(super) fn answer(prompts: &PromptSlot, mac: Option<&str>, accept: bool, now: Instant) -> bool {
     let prompt = {
-        let mut slot = prompts.lock().unwrap();
+        let mut slot = prompts.lock().expect("mutex poisoned");
         let Some(current) = slot.as_ref() else {
             return false;
         };
@@ -73,7 +73,7 @@ pub(super) fn answer(prompts: &PromptSlot, mac: Option<&str>, accept: bool, now:
 
 /// Takes down a code display for `mac`, if that is what is showing. Returns whether it did.
 pub(super) fn clear_display(prompts: &PromptSlot, mac: &str) -> bool {
-    let mut slot = prompts.lock().unwrap();
+    let mut slot = prompts.lock().expect("mutex poisoned");
     let showing = slot.as_ref().is_some_and(|prompt| prompt.reply.is_none() && prompt.request.mac == mac);
     if showing {
         slot.take();
@@ -128,7 +128,7 @@ impl BluetoothAgent {
         reply: Option<oneshot::Sender<bool>>,
     ) -> bool {
         let mac = mac_from_path(device.as_str());
-        let proxy = self.devices.lock().unwrap().get(device).map(|entry| entry.device.clone());
+        let proxy = self.devices.lock().expect("mutex poisoned").get(device).map(|entry| entry.device.clone());
         let allowed = match (kind, &proxy) {
             (PairingKind::Service, Some(proxy)) => proxy.paired().await.unwrap_or(false),
             (PairingKind::Service, None) => false,
@@ -144,7 +144,7 @@ impl BluetoothAgent {
         };
         let request = PairingRequest { kind, mac, name, code };
         {
-            let mut slot = self.prompts.lock().unwrap();
+            let mut slot = self.prompts.lock().expect("mutex poisoned");
             let free = slot.as_ref().is_none_or(|current| current.reply.is_none() && reply.is_some());
             if !free {
                 return false;

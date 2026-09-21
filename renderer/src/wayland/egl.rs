@@ -38,12 +38,11 @@ pub struct EglState {
 
 /// Initializes EGL against Wayland and picks the first candidate that satisfies
 /// [`satisfies_requirements`], not merely the first returned by `eglChooseConfig`.
-pub fn init(wl_display_ptr: *mut c_void) -> Result<EglState, String> {
+pub fn init(connection: &wayland_client::Connection) -> Result<EglState, String> {
     let instance = egl::Instance::new(egl::Static);
 
-    // SAFETY: `wl_display_ptr` comes from `Connection::backend().display_ptr()` and stays live
-    // for this process's Wayland connection.
-    let display = unsafe { instance.get_display(wl_display_ptr) }
+    // SAFETY: the pointer comes from the live Wayland connection borrowed by this call.
+    let display = unsafe { instance.get_display(connection.backend().display_ptr() as *mut c_void) }
         .ok_or("eglGetDisplay returned no display for the Wayland connection")?;
 
     instance.initialize(display).map_err(|e| format!("eglInitialize failed: {e}"))?;

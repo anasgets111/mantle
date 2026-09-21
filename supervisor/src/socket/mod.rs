@@ -129,7 +129,7 @@ impl GenerationRegistry {
     /// raw-byte crossing into an outbound channel (ADR-0022); [`Self::send_frame`] builds on it.
     pub fn send_to(&self, generation_id: u32, payload: Vec<u8>) -> bool {
         let mut wedged = None;
-        let connections = self.connections.lock().unwrap();
+        let connections = self.connections.lock().expect("mutex poisoned");
         let sent = match connections.get(&generation_id) {
             // `try_send` rather than `send`: this is called from synchronous code all over
             // Supervisor, and a full queue means the peer is wedged, not that the caller should
@@ -156,7 +156,7 @@ impl GenerationRegistry {
         };
         drop(connections);
         if let Some(hangup) = wedged {
-            self.connections.lock().unwrap().remove(&generation_id);
+            self.connections.lock().expect("mutex poisoned").remove(&generation_id);
             // Removing the entry only stops new frames queueing; the connection task has to be told
             // to stop, or its writer sits blocked writing to a peer that is not reading. Closing
             // the socket makes the Renderer's own loop see its Supervisor go away, and it exits
@@ -180,13 +180,13 @@ impl GenerationRegistry {
     /// Replaces any previous entry: generation ids are handed out monotonically, and a reused id
     /// would mean a new process is the rightful holder anyway.
     pub fn expect_generation(&self, generation_id: u32, pid: u32) {
-        self.expected_pids.lock().unwrap().insert(generation_id, pid);
+        self.expected_pids.lock().expect("mutex poisoned").insert(generation_id, pid);
     }
 
     /// Drops a generation's expectation once its Renderer is gone, so a dead generation's id
     /// cannot be claimed by whatever the kernel gives that pid to next.
     pub fn forget_generation(&self, generation_id: u32) {
-        self.expected_pids.lock().unwrap().remove(&generation_id);
+        self.expected_pids.lock().expect("mutex poisoned").remove(&generation_id);
     }
 
     /// Whether `pid` may claim `generation_id`, or `None` if no expectation is recorded yet.
@@ -194,7 +194,7 @@ impl GenerationRegistry {
     /// The three states matter: recorded-and-matching admits, recorded-and-different refuses, and
     /// not-yet-recorded is neither. See [`Self::await_claim`].
     fn may_claim(&self, generation_id: u32, pid: u32) -> Option<bool> {
-        self.expected_pids.lock().unwrap().get(&generation_id).map(|expected| *expected == pid)
+        self.expected_pids.lock().expect("mutex poisoned").get(&generation_id).map(|expected| *expected == pid)
     }
 
     /// [`Self::may_claim`], waiting for the expectation to appear if it has not yet.
@@ -226,13 +226,13 @@ impl GenerationRegistry {
         hangup: Arc<tokio::sync::Notify>,
     ) -> u64 {
         let token = self.next_token.fetch_add(1, Ordering::Relaxed);
-        self.connections.lock().unwrap().insert(generation_id, Entry { token, tx, hangup });
+        self.connections.lock().expect("mutex poisoned").insert(generation_id, Entry { token, tx, hangup });
         token
     }
 
     /// Removes only if `token` is still current; superseded cleanup cannot evict the live entry.
     fn unregister(&self, generation_id: u32, token: u64) {
-        let mut connections = self.connections.lock().unwrap();
+        let mut connections = self.connections.lock().expect("mutex poisoned");
         if connections.get(&generation_id).is_some_and(|entry| entry.token == token) {
             connections.remove(&generation_id);
         }

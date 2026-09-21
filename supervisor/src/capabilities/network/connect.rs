@@ -59,16 +59,16 @@ impl NetworkController {
     /// Stashes `network:connect(ssid, hidden)` until paired `secure_submit(network, connect)`.
     /// Newest intent wins.
     pub fn stash_connect_intent(&self, pending: PendingNetworkConnect) {
-        *self.pending_connect.lock().unwrap() = Some(pending);
+        *self.pending_connect.lock().expect("mutex poisoned") = Some(pending);
     }
 
     /// Takes the pending intent for `secure_submit(network, connect)`, only while the prompt names
     /// it. The frame carries no SSID, so a click that replaced the intent under an open prompt
     /// would otherwise join, and save the key into, a network the key was never typed for.
     pub fn take_prompted_intent(&self) -> Option<PendingNetworkConnect> {
-        let state = self.state.lock().unwrap();
+        let state = self.state.lock().expect("mutex poisoned");
         let prompted = state.password_ssid.as_deref();
-        self.pending_connect.lock().unwrap().take_if(|pending| prompted == Some(pending.ssid.as_str()))
+        self.pending_connect.lock().expect("mutex poisoned").take_if(|pending| prompted == Some(pending.ssid.as_str()))
     }
 
     /// Decides whether a stashed `network:connect` can complete or needs a password.
@@ -88,7 +88,7 @@ impl NetworkController {
     /// profiles. Passing the match through `connect` saves about a millisecond at the cost of three
     /// signatures.
     pub async fn resolve_connect_intent(&self) {
-        let Some(pending) = self.pending_connect.lock().unwrap().clone() else {
+        let Some(pending) = self.pending_connect.lock().expect("mutex poisoned").clone() else {
             return;
         };
         let saved = !self.saved_profiles_for_ssid(&pending.ssid, "connect").await.is_empty();
@@ -112,7 +112,7 @@ impl NetworkController {
         debug!("connect {:?}: saved={saved} secure={secure}, connecting directly", pending.ssid);
         // Only this click's intent: another connect may have replaced it while the lookup was on the
         // wire, and that one resolves itself.
-        let taken = self.pending_connect.lock().unwrap().take_if(|current| *current == pending);
+        let taken = self.pending_connect.lock().expect("mutex poisoned").take_if(|current| *current == pending);
         if let Some(pending) = taken {
             self.connect(pending, shared::Zeroizing::new(Vec::new())).await;
         }
@@ -123,8 +123,8 @@ impl NetworkController {
     /// `secure_submit(network, connect)`.
     fn request_password(&self, pending: &PendingNetworkConnect) {
         {
-            let mut state = self.state.lock().unwrap();
-            if self.pending_connect.lock().unwrap().as_ref() != Some(pending) {
+            let mut state = self.state.lock().expect("mutex poisoned");
+            if self.pending_connect.lock().expect("mutex poisoned").as_ref() != Some(pending) {
                 return;
             }
             debug!("requesting password for ssid: {}", pending.ssid);
@@ -146,12 +146,12 @@ impl NetworkController {
     /// No-op without a pending prompt, so a config can call it on any close. Without the guard, an
     /// unrelated close would clear `connect_error` and push a misleading `Changed`.
     pub fn cancel_connect(&self) {
-        let pending = self.pending_connect.lock().unwrap().take();
-        if pending.is_none() && self.state.lock().unwrap().password_ssid.is_none() {
+        let pending = self.pending_connect.lock().expect("mutex poisoned").take();
+        if pending.is_none() && self.state.lock().expect("mutex poisoned").password_ssid.is_none() {
             return;
         }
         {
-            let mut state = self.state.lock().unwrap();
+            let mut state = self.state.lock().expect("mutex poisoned");
             state.password_ssid = None;
             state.connect_error = None;
         }
@@ -164,12 +164,12 @@ impl NetworkController {
     /// an attempt. Before NM accepts, [`accept`](Self::accept) refuses the join and `connect` stops it.
     pub fn abort_connect(&self) {
         let in_flight = {
-            let mut state = self.state.lock().unwrap();
+            let mut state = self.state.lock().expect("mutex poisoned");
             if state.connecting_ssid.take().is_none() {
                 return;
             }
             state.connect_error = None;
-            let mut attempt = self.attempt.lock().unwrap();
+            let mut attempt = self.attempt.lock().expect("mutex poisoned");
             attempt.id += 1;
             attempt.joined.take()
         };
@@ -245,13 +245,13 @@ impl NetworkController {
     /// the row spins on the click. Returns the attempt's id.
     fn begin_connect(&self, ssid: &str) -> u64 {
         let id = {
-            let mut state = self.state.lock().unwrap();
+            let mut state = self.state.lock().expect("mutex poisoned");
             state.connecting_ssid = Some(ssid.to_string());
             state.connect_error = None;
             // The attempt answers the prompt. Clear here, not only in `secure_submit`, so direct
             // connects also drop the prompt's keyboard focus on Enter.
             state.password_ssid = None;
-            let mut attempt = self.attempt.lock().unwrap();
+            let mut attempt = self.attempt.lock().expect("mutex poisoned");
             attempt.id += 1;
             // The new attempt owns no join until NM accepts it, so an abort before then cannot
             // stop the previous one.
@@ -265,7 +265,7 @@ impl NetworkController {
     /// Records the join NM accepted for `attempt`. `false` when an abort or a newer attempt came
     /// first, and the caller stops the join instead of watching it.
     fn accept(&self, attempt: u64, in_flight: &InFlight) -> bool {
-        let mut current = self.attempt.lock().unwrap();
+        let mut current = self.attempt.lock().expect("mutex poisoned");
         let live = current.id == attempt;
         if live {
             current.joined = Some(in_flight.clone());
@@ -279,15 +279,15 @@ impl NetworkController {
     /// ran already holds the slot.
     fn finish_connect(&self, attempt: u64, pending: &PendingNetworkConnect, error: Option<String>, ask_password: bool) {
         {
-            let mut state = self.state.lock().unwrap();
-            let mut current = self.attempt.lock().unwrap();
+            let mut state = self.state.lock().expect("mutex poisoned");
+            let mut current = self.attempt.lock().expect("mutex poisoned");
             if current.id != attempt {
                 return;
             }
             state.connecting_ssid = None;
             state.connect_error = error.map(|message| JoinError { ssid: pending.ssid.clone(), message });
             current.joined = None;
-            let mut slot = self.pending_connect.lock().unwrap();
+            let mut slot = self.pending_connect.lock().expect("mutex poisoned");
             if ask_password && slot.is_none() {
                 state.password_ssid = Some(pending.ssid.clone());
                 *slot = Some(pending.clone());

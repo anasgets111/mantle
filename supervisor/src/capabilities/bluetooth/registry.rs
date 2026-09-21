@@ -45,7 +45,7 @@ async fn adopt_adapter(
     path: OwnedObjectPath,
     events: &UnboundedSender<BluetoothSignal>,
 ) {
-    if slot.lock().unwrap().is_some() {
+    if slot.lock().expect("mutex poisoned").is_some() {
         return;
     }
     let proxy = match bind::<Adapter1Proxy>(connection, path.clone()).await {
@@ -57,7 +57,7 @@ async fn adopt_adapter(
     };
     info!("using adapter {path}");
     let forwarder = spawn_adapter_signal_forwarder(proxy.clone(), events.clone()).abort_handle();
-    *slot.lock().unwrap() = Some(BoundAdapter { path, proxy, forwarder });
+    *slot.lock().expect("mutex poisoned") = Some(BoundAdapter { path, proxy, forwarder });
     let _ = events.send(BluetoothSignal::AdapterChanged);
 }
 
@@ -68,7 +68,7 @@ async fn adopt_adapter(
 /// adds it again. Upgrade path: rerun `GetManagedObjects` here and adopt the first `Adapter1`.
 fn release_adapter(slot: &AdapterSlot, path: &OwnedObjectPath, events: &UnboundedSender<BluetoothSignal>) {
     let released = {
-        let mut bound = slot.lock().unwrap();
+        let mut bound = slot.lock().expect("mutex poisoned");
         if bound.as_ref().is_some_and(|adapter| &adapter.path == path) { bound.take() } else { None }
     };
     if let Some(adapter) = released {
@@ -116,7 +116,8 @@ async fn register_device(
     // BlueZ can emit a second `InterfacesAdded` for an existing path when GATT adds `Battery1`.
     // Dropping a `JoinHandle` does not abort its task, so abort the prior forwarder or it fires
     // twice.
-    let previous = devices.lock().unwrap().insert(path, DeviceEntry { mac, device, battery, forwarder });
+    let previous =
+        devices.lock().expect("mutex poisoned").insert(path, DeviceEntry { mac, device, battery, forwarder });
     if let Some(previous) = previous {
         previous.forwarder.abort();
     }
@@ -140,7 +141,7 @@ pub(super) async fn track_interfaces(
     }
     let has_battery = has("org.bluez.Battery1");
     // A battery-only event without a prior `Device1` has nothing to attach to.
-    let tracked = has_battery && devices.lock().unwrap().contains_key(&path);
+    let tracked = has_battery && devices.lock().expect("mutex poisoned").contains_key(&path);
     if !has("org.bluez.Device1") && !tracked {
         return false;
     }
@@ -217,14 +218,14 @@ pub(super) fn spawn_object_manager_forwarder<A, R>(
                     let has_device = args.interfaces().iter().any(|i| i.as_str() == "org.bluez.Device1");
                     if has_device {
                         let path: OwnedObjectPath = args.object_path().to_owned().into();
-                        let removed_entry = devices.lock().unwrap().remove(&path);
+                        let removed_entry = devices.lock().expect("mutex poisoned").remove(&path);
                         if let Some(entry) = removed_entry {
                             entry.forwarder.abort();
                         }
                         if events.send(BluetoothSignal::DeviceRegistryChanged).is_err() { break; }
                     } else if args.interfaces().iter().any(|i| i.as_str() == "org.bluez.Battery1") {
                         let path: OwnedObjectPath = args.object_path().to_owned().into();
-                        let changed = devices.lock().unwrap().get_mut(&path).is_some_and(|entry| entry.battery.take().is_some());
+                        let changed = devices.lock().expect("mutex poisoned").get_mut(&path).is_some_and(|entry| entry.battery.take().is_some());
                         if changed && events.send(BluetoothSignal::DeviceRegistryChanged).is_err() {
                             break;
                         }

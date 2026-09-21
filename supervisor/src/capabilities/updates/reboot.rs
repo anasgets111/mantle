@@ -55,7 +55,7 @@ pub(super) async fn run_reboot_marker_task(
 /// decision 2).
 fn publish_reboot_required(marker: &Path, state: &Arc<Mutex<UpdatesState>>, events: &UnboundedSender<UpdatesSignal>) {
     let required = marker.exists();
-    let mut guard = state.lock().unwrap();
+    let mut guard = state.lock().expect("mutex poisoned");
     if guard.reboot_required == required {
         return;
     }

@@ -119,7 +119,7 @@ impl NetworkController {
             .iter()
             .filter_map(|profile| profile_ssid(&profile.settings))
             .collect();
-        *self.saved_ssids.lock().unwrap() = ssids;
+        *self.saved_ssids.lock().expect("mutex poisoned") = ssids;
     }
 
     /// Deletes every connection profile matching `ssid`.

@@ -180,7 +180,7 @@ impl IdleController {
                         events_tx,
                         state_tx,
                     );
-                    *notify_for_task.write().unwrap() = NotifyState::Live(live);
+                    *notify_for_task.write().expect("rwlock poisoned") = NotifyState::Live(live);
                     info!(
                         "dedicated Wayland connection for ext_idle_notifier_v1 established; notify live for this run"
                     );
@@ -212,13 +212,13 @@ impl IdleController {
     /// Inhibitor state for the initial `Capabilities::start` push; without it quiet machines read
     /// `nil` forever (ADR-0076).
     pub fn snapshot(&self) -> IdleState {
-        self.published.lock().unwrap().merged()
+        self.published.lock().expect("mutex poisoned").merged()
     }
 
     /// Registers queued thresholds oldest first. Drain under the queue lock, then register outside
     /// it: `register_threshold` takes the same lock to requeue when notify is still inert.
     fn replay_pending_registrations(&self) {
-        let queued: Vec<(u32, u64)> = std::mem::take(&mut *self.pending.lock().unwrap());
+        let queued: Vec<(u32, u64)> = std::mem::take(&mut *self.pending.lock().expect("mutex poisoned"));
         if queued.is_empty() {
             return;
         }
@@ -232,17 +232,17 @@ impl IdleController {
     /// notify queues nothing here; live notify applies [`register_threshold_entry`] and creates a
     /// new listener if needed.
     pub fn register_threshold(&self, generation_id: u32, sec: u64) {
-        let notify = self.notify.read().unwrap();
+        let notify = self.notify.read().expect("rwlock poisoned");
         let NotifyState::Live(live) = &*notify else {
             // Inert means degraded or still setting up. Queue entries in either case; a failed
             // setup leaves a small `(u32, u64)` queue rather than dropping every boot registration.
-            self.pending.lock().unwrap().push((generation_id, sec));
+            self.pending.lock().expect("mutex poisoned").push((generation_id, sec));
             debug!("register_threshold(generation {generation_id}, {sec}s) queued: notify is not live yet");
             return;
         };
 
         let created_new_listener = {
-            let mut registry = live.registry.lock().unwrap();
+            let mut registry = live.registry.lock().expect("mutex poisoned");
             register_threshold_entry(&mut registry.fanout, generation_id, sec)
         };
 
@@ -251,7 +251,7 @@ impl IdleController {
             let timeout_ms = u32::try_from(duration.as_millis()).unwrap_or(u32::MAX);
             let gated = ListenerId { duration, respects_inhibitors: true };
             let notification = live.notifier.get_idle_notification(timeout_ms, &live.seat, &live.queue_handle, gated);
-            live.registry.lock().unwrap().listeners.insert(gated, notification);
+            live.registry.lock().expect("mutex poisoned").listeners.insert(gated, notification);
 
             // The twin the compositor may not withhold. Its only job is to prove that silence on
             // the gated listener means an application is holding the session awake, rather than a
@@ -261,7 +261,7 @@ impl IdleController {
                 let input = ListenerId { duration, respects_inhibitors: false };
                 let notification =
                     live.notifier.get_input_idle_notification(timeout_ms, &live.seat, &live.queue_handle, input);
-                live.registry.lock().unwrap().listeners.insert(input, notification);
+                live.registry.lock().expect("mutex poisoned").listeners.insert(input, notification);
             }
 
             if let Err(err) = live.connection.flush() {
@@ -274,10 +274,10 @@ impl IdleController {
     /// callback at `sec`. Destroys the listener nothing feeds any more, unlike a reload, which
     /// keeps it for the registration landing behind it (ADR-0159).
     pub fn cancel_threshold(&self, generation_id: u32, sec: u64) {
-        self.pending.lock().unwrap().retain(|&queued| queued != (generation_id, sec));
-        let notify = self.notify.read().unwrap();
+        self.pending.lock().expect("mutex poisoned").retain(|&queued| queued != (generation_id, sec));
+        let notify = self.notify.read().expect("rwlock poisoned");
         let NotifyState::Live(live) = &*notify else { return };
-        let mut registry = live.registry.lock().unwrap();
+        let mut registry = live.registry.lock().expect("mutex poisoned");
         let registry = &mut *registry;
         cancel_threshold_entry(&mut registry.fanout, generation_id, sec);
         for listener in take_unused_listeners(&mut registry.fanout, &mut registry.listeners) {
@@ -374,7 +374,7 @@ impl IdleController {
 
     /// Held across the send; see the matching comment in `spawn_idle_event_forwarder`.
     fn publish_screensaver(&self, holds: Vec<super::state::IdleInhibitor>) {
-        let mut published = self.published.lock().unwrap();
+        let mut published = self.published.lock().expect("mutex poisoned");
         if let Some(next) = published.set_screensaver(holds) {
             let _ = self.state_tx.send(next);
         }
@@ -399,10 +399,13 @@ impl IdleController {
     pub fn reset_thresholds(&self, generation_id: u32) {
         // Remove queued registrations first: a reload replaced the tree owning their callbacks
         // and must not replay them later (ADR-0139).
-        self.pending.lock().unwrap().retain(|&(queued_generation, _)| queued_generation != generation_id);
-        let notify = self.notify.read().unwrap();
+        self.pending
+            .lock()
+            .expect("mutex poisoned")
+            .retain(|&(queued_generation, _)| queued_generation != generation_id);
+        let notify = self.notify.read().expect("rwlock poisoned");
         if let NotifyState::Live(live) = &*notify {
-            cleanup_generation_thresholds(&mut live.registry.lock().unwrap().fanout, generation_id);
+            cleanup_generation_thresholds(&mut live.registry.lock().expect("mutex poisoned").fanout, generation_id);
         }
     }
 
@@ -413,8 +416,8 @@ impl IdleController {
         self.reset_thresholds(generation_id);
         // Destroying listeners is reap-only: see `take_unused_listeners`.
         let mut listening = true;
-        if let NotifyState::Live(live) = &*self.notify.read().unwrap() {
-            let mut registry = live.registry.lock().unwrap();
+        if let NotifyState::Live(live) = &*self.notify.read().expect("rwlock poisoned") {
+            let mut registry = live.registry.lock().expect("mutex poisoned");
             let registry = &mut *registry;
             for listener in take_unused_listeners(&mut registry.fanout, &mut registry.listeners) {
                 listener.destroy();
@@ -425,13 +428,15 @@ impl IdleController {
         // `true` published before the reap would stand for the session. Nothing is watching, which
         // is not the same evidence as an inhibitor, but it is the answer that does not strand a
         // config reporting the compositor as holding the session awake.
-        if !listening && let Some(next) = self.published.lock().unwrap().set_wayland_inhibited(Some(false)) {
+        if !listening
+            && let Some(next) = self.published.lock().expect("mutex poisoned").set_wayland_inhibited(Some(false))
+        {
             let _ = self.state_tx.send(next);
         }
         // Also not in `reset_thresholds`: an in-place reload keeps the generation id and its
         // listeners, and the compositor never resends `idled`, so the gate's entries still belong
         // to it.
-        self.gate.lock().unwrap().forget(generation_id);
+        self.gate.lock().expect("mutex poisoned").forget(generation_id);
 
         let mut state = self.inhibit.state.lock().await;
         if cleanup_generation_inhibit(&mut state.counts, generation_id).should_close_fd {
@@ -518,7 +523,7 @@ async fn watch_idle_inhibitors(
         // `None` means the same idle answer as before. `BlockInhibited` changes for every kind of
         // inhibitor, while the list can change without the answer moving (mpv releases while
         // Firefox still holds one), so publish state on every change but gate on transitions.
-        if let Some(owed) = gate.lock().unwrap().set_blocked(blocked) {
+        if let Some(owed) = gate.lock().expect("mutex poisoned").set_blocked(blocked) {
             if blocked {
                 info!("logind reports an idle inhibitor ({what}); threshold events are held until it is released");
             } else {
@@ -539,7 +544,7 @@ async fn watch_idle_inhibitors(
             Vec::new()
         };
         // Held across the send; see the matching comment in `spawn_idle_event_forwarder`.
-        let mut published = published.lock().unwrap();
+        let mut published = published.lock().expect("mutex poisoned");
         let Some(next_state) = published.set_logind(blocked, inhibitors) else { continue };
         if state_tx.send(next_state).is_err() {
             return;

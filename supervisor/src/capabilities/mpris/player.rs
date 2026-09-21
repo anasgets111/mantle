@@ -284,7 +284,7 @@ pub(super) async fn register_player(
         forwarder: None,
     };
     let previous = {
-        let mut guard = registry.lock().unwrap();
+        let mut guard = registry.lock().expect("mutex poisoned");
         entry.registered = match guard.get(&bus_name) {
             // Same bus name, same player: holds its place; a restart gets a new unique name.
             Some(existing) => existing.registered,
@@ -299,7 +299,7 @@ pub(super) async fn register_player(
     }
 
     let forwarder = spawn_player_forwarder(bus_name.clone(), player, root, registry.clone(), events.clone());
-    match registry.lock().unwrap().get_mut(&bus_name) {
+    match registry.lock().expect("mutex poisoned").get_mut(&bus_name) {
         Some(entry) => entry.forwarder = Some(forwarder),
         // A real NameOwnerChanged departure raced insertion; abort the new forwarder rather than
         // leak an untracked, un-abortable task.
@@ -358,7 +358,7 @@ fn spawn_player_forwarder(
 
             let previous =
                 {
-                    registry.lock().unwrap().get(&bus_name).map(|entry| {
+                    registry.lock().expect("mutex poisoned").get(&bus_name).map(|entry| {
                         (entry.last_known.clone(), entry.track_identity.clone(), entry.cached_trackid.clone())
                     })
                 };
@@ -366,7 +366,7 @@ fn spawn_player_forwarder(
                 previous.as_ref().map(|(state, identity, trackid)| Previous { state, identity, trackid });
             let Resynced { state, identity, trackid } = resync(&bus_name, &player, &root, previous_ctx).await;
 
-            let mut guard = registry.lock().unwrap();
+            let mut guard = registry.lock().expect("mutex poisoned");
             let Some(entry) = guard.get_mut(&bus_name) else { break };
             // Record what `resync` found either way: `identity` and `trackid` can move while the
             // state compares equal -- the same track re-queued gets a fresh `mpris:trackid`, and a
@@ -390,7 +390,7 @@ fn spawn_player_forwarder(
 /// Removes a departed `bus_name` (`NameOwnerChanged` with an empty new owner) and aborts its
 /// forwarder. No-op if untracked, including skipped `playerctld` or uncontrollable sources.
 pub(super) fn unregister_player(registry: &PlayerRegistry, bus_name: &str, events: &UnboundedSender<MprisSignal>) {
-    let removed = registry.lock().unwrap().remove(bus_name);
+    let removed = registry.lock().expect("mutex poisoned").remove(bus_name);
     if let Some(entry) = removed {
         debug!("MPRIS player departed: {bus_name}");
         if let Some(handle) = entry.forwarder {

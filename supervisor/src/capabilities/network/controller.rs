@@ -115,7 +115,7 @@ impl NetworkController {
     pub async fn handle_signal(&self, signal: NetworkSignal) -> NetworkState {
         match signal {
             NetworkSignal::ScanStarted => {
-                let mut state = self.state.lock().unwrap();
+                let mut state = self.state.lock().expect("mutex poisoned");
                 state.scanning = true;
                 state.clone()
             }
@@ -127,7 +127,7 @@ impl NetworkController {
                 }
                 // Read D-Bus before taking the plain mutex; never hold it across an await.
                 let mut next = self.build_state().await;
-                let mut state = self.state.lock().unwrap();
+                let mut state = self.state.lock().expect("mutex poisoned");
                 carry_across_rebuild(&mut next, &mut state, signal);
                 *state = next;
                 state.clone()
@@ -188,12 +188,12 @@ impl NetworkController {
 
     /// The Wi-Fi device now, cloned out so no await holds the device lock.
     pub(super) fn wifi(&self) -> Option<WifiDevice> {
-        self.devices.lock().unwrap().wifi.clone()
+        self.devices.lock().expect("mutex poisoned").wifi.clone()
     }
 
     /// The wired devices now, cloned out like [`wifi`](Self::wifi).
     pub(super) fn ethernet(&self) -> Vec<EthernetDevice> {
-        self.devices.lock().unwrap().ethernet.clone()
+        self.devices.lock().expect("mutex poisoned").ethernet.clone()
     }
 
     /// `NetworkingEnabled` is read-only; only `WirelessEnabled`/`WwanEnabled`/`WimaxEnabled`

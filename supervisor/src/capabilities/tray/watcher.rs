@@ -61,7 +61,7 @@ impl StatusNotifierWatcher {
         // Accepted trivially (ADR-0031). Mantle is the relevant host; this exists for spec
         // completeness and permits self-registration (see `TrayController::new`).
         let was_registered = {
-            let mut guard = self.host_registered.lock().unwrap();
+            let mut guard = self.host_registered.lock().expect("mutex poisoned");
             let was = *guard;
             *guard = true;
             was
@@ -85,7 +85,7 @@ impl StatusNotifierWatcher {
 
     #[zbus(property, name = "IsStatusNotifierHostRegistered")]
     async fn is_status_notifier_host_registered(&self) -> bool {
-        *self.host_registered.lock().unwrap()
+        *self.host_registered.lock().expect("mutex poisoned")
     }
 
     #[zbus(property, name = "ProtocolVersion")]
@@ -256,8 +256,12 @@ mod tests {
     async fn wait_for_entries(registry: &ItemRegistry, count: usize) -> Vec<String> {
         tokio::time::timeout(std::time::Duration::from_secs(2), async {
             loop {
-                let paths: Vec<String> =
-                    registry.lock().unwrap().keys().map(|(_, object_path)| object_path.to_string()).collect();
+                let paths: Vec<String> = registry
+                    .lock()
+                    .expect("mutex poisoned")
+                    .keys()
+                    .map(|(_, object_path)| object_path.to_string())
+                    .collect();
                 if paths.len() >= count {
                     return paths;
                 }
