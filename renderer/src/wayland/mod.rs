@@ -212,6 +212,7 @@ pub struct App {
     /// Surfaces actually drawn and swapped since the last idle-profile sample; paint walks all
     /// mapped surfaces and declines most, so the aggregate count matters.
     surfaces_drawn: usize,
+    repaint_split: surface::RepaintSplit,
 }
 
 /// Shortest gap between `malloc_trim` calls: a keystroke burst pays for one arena walk, not one
@@ -317,6 +318,7 @@ pub fn run(
         field_input_surfaces: Vec::new(),
         animation_frame_due: false,
         surfaces_drawn: 0,
+        repaint_split: surface::RepaintSplit::default(),
     };
 
     // Binding delivers outputs and seat capabilities as a burst; two roundtrips populate the
@@ -535,6 +537,7 @@ pub fn run(
             turn::Repaint::Nothing => {}
         }
         phases.mark_repaint();
+        phases.mark_repaint_split(app.take_repaint_split());
         // Skip focus maintenance on a truly idle turn (ADR-0124). It clones the focused tree to
         // find fields; at 66 turns/s on an open picker, that was most of the process's work.
         let active = dispatched || re_resolved || typed || !landed.is_empty();

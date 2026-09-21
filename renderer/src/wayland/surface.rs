@@ -2,6 +2,8 @@
 //! create/destroy/paint/(un)map lifecycle. Role-specific behavior is in `layer`, `xdg_shell`, and
 //! `lock`.
 
+use std::time::{Duration, Instant};
+
 use shared::{debug, error, warn};
 
 use super::*;
@@ -11,6 +13,30 @@ use crate::layout::node::PropMap;
 /// wayland-egl requires `WlEglSurface` to outlive the EGL surface, and Rust drops top to bottom;
 /// `khronos_egl::Surface` has no `Drop`, so [`App::destroy_surface_by_id`] destroys it explicitly.
 use wayland_protocols::ext::background_effect::v1::client::ext_background_effect_surface_v1::ExtBackgroundEffectSurfaceV1;
+
+/// Timing breakdown of what [`App::paint_surface`] spent across phases.
+#[derive(Clone, Copy, Default, Debug)]
+pub struct RepaintSplit {
+    pub build: Duration,
+    pub gl: Duration,
+    pub text: Duration,
+    pub icons: Duration,
+    pub boxes: Duration,
+    pub flush: Duration,
+    pub swap: Duration,
+}
+
+impl std::ops::AddAssign for RepaintSplit {
+    fn add_assign(&mut self, rhs: Self) {
+        self.build += rhs.build;
+        self.gl += rhs.gl;
+        self.text += rhs.text;
+        self.icons += rhs.icons;
+        self.boxes += rhs.boxes;
+        self.flush += rhs.flush;
+        self.swap += rhs.swap;
+    }
+}
 
 pub(super) struct BoundSurface {
     pub(super) egl_surface: EglSurface,
@@ -929,6 +955,7 @@ impl App {
         // An absent tree becomes an empty list and still reaches clear/swap to erase old contents.
         // End the immutable field-focus borrow before mutably borrowing the painter; `Draw::Text`
         // owns its string.
+        let t_build = Instant::now();
         let list = {
             let focus = self.field_focus_for(&surface_id);
             tree.as_ref().map(|tree| layout::paint::build(tree, 1.0, focus.as_ref())).unwrap_or_default()
@@ -938,6 +965,7 @@ impl App {
                 .last_painted
                 .as_ref()
                 .is_some_and(|(painted_size, painted)| *painted_size == (width, height) && *painted == list);
+        self.repaint_split.build += t_build.elapsed();
         if unchanged {
             self.surfaces[index].dirty = false;
             // A mid-tween surface still has to commit: a frame callback is only answered after
@@ -954,6 +982,7 @@ impl App {
             return;
         }
 
+        let t_gl = Instant::now();
         // Another surface may have changed the current framebuffer, so re-establish it; bound
         // surfaces always have shared EGL state.
         let Some(egl) = self.egl.as_ref() else {
@@ -1001,10 +1030,14 @@ impl App {
             // that names them is drawn (ADR-0144). One atomic load on the frames where nothing
             // changed, which is all of them after startup.
             painter.sync();
+        }
+        self.repaint_split.gl += t_gl.elapsed();
+
+        if let Some(painter) = self.text_painter.as_mut() {
             // The context is current from `make_current` above, so a config shader can take a
             // cross this frame; without one every cross falls back to the dissolve (ADR-0184).
             let shaders = self.gl.as_ref().map(|gl| layout::paint::Shaders { gl, stage: &mut self.shader_stage });
-            let drawn = layout::paint::execute(
+            let (drawn, split) = layout::paint::execute(
                 painter,
                 &mut self.image_cache,
                 &list,
@@ -1012,6 +1045,10 @@ impl App {
                 (width as f32, height as f32),
                 shaders,
             );
+            self.repaint_split.text += split.text;
+            self.repaint_split.icons += split.icons;
+            self.repaint_split.boxes += split.boxes;
+            self.repaint_split.flush += split.flush;
             // After the draws that answered it, before the swap: the tree this reads is the one
             // the next build walks, so a `retain` cover ends and a `transition` starts on the
             // frame paint proved the texture exists (ADR-0183).
@@ -1036,6 +1073,7 @@ impl App {
         }
         // ponytail: only the swap is guarded; khronos-egl's other wrappers (make_current etc.) still unwrap (upstream #25).
         use khronos_egl::api::EGL1_0;
+        let t_swap = Instant::now();
         // SAFETY: `egl_surface` was made current on `egl.display` above.
         if unsafe { khronos_egl::Static.eglSwapBuffers(egl.display.as_ptr(), egl_surface.as_ptr()) }
             == khronos_egl::FALSE
@@ -1046,6 +1084,7 @@ impl App {
             self.exit = true;
             return;
         }
+        self.repaint_split.swap += t_swap.elapsed();
         // Record only after swap; otherwise an unpresented frame could make the next identical list
         // skip the paint the screen never received.
         self.surfaces[index].last_painted = Some(((width, height), list));
@@ -1105,6 +1144,10 @@ impl App {
             self.surfaces.iter().filter(|s| s.owes_a_paint()).map(|s| s.surface_id.clone()).collect();
         let targets = turn::narrowed_repaint_targets(instance_ids, &stale);
         self.repaint_mapped_surfaces_where(|surface_id| targets.iter().any(|id| id == surface_id));
+    }
+
+    pub(super) fn take_repaint_split(&mut self) -> RepaintSplit {
+        std::mem::take(&mut self.repaint_split)
     }
 
     /// Whether any mapped surface owes a repaint its tree cannot ask for. The main loop's repaint

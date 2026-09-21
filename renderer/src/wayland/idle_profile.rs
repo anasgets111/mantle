@@ -54,6 +54,7 @@ pub struct Phases {
     surface_state: Duration,
     repaint: Duration,
     resolve_split: crate::layout::scene::ResolveSplit,
+    repaint_split: crate::wayland::surface::RepaintSplit,
 }
 
 impl Phases {
@@ -92,6 +93,10 @@ impl Phases {
     pub fn mark_repaint(&mut self) {
         self.repaint = self.split();
     }
+
+    pub fn mark_repaint_split(&mut self, split: crate::wayland::surface::RepaintSplit) {
+        self.repaint_split = split;
+    }
 }
 
 /// Readiness of the two polled fds. Both or neither can be ready; zero or an error is retried and
@@ -128,6 +133,7 @@ pub struct Counters {
     resolve_solve: Duration,
     surface_state: Duration,
     repaint: Duration,
+    repaint_split: crate::wayland::surface::RepaintSplit,
     tick: Duration,
     dispatch_cpu: Duration,
     focus_turns: u64,
@@ -249,6 +255,7 @@ impl IdleProfile {
         c.resolve_solve += phases.resolve_split.solve;
         c.surface_state += phases.surface_state;
         c.repaint += phases.repaint;
+        c.repaint_split += phases.repaint_split;
         c.tick += phases.tick;
 
         let elapsed = self.window_started.elapsed();
@@ -274,7 +281,7 @@ fn render(window: Duration, c: &Counters, cpu: Cpu) -> String {
     format!(
         "idle {:.1}s: turns={} idle={} cpu proc={:.2}% main={:.2}% | wake wl={} wake={} both={} none={} \
          | work dispatch={} resolve={} tick={} type={} decode={} paint={} drawn={} \
-         | ms resolve={:.1} (clone={:.1} list={:.1} props={:.1} solve={:.1}) surfstate={:.1} repaint={:.1} tick={:.1} dispatch={:.1} \
+         | ms resolve={:.1} (clone={:.1} list={:.1} props={:.1} solve={:.1}) surfstate={:.1} repaint={:.1} (build={:.1} gl={:.1} text={:.1} icon={:.1} box={:.1} flush={:.1} swap={:.1}) tick={:.1} dispatch={:.1} \
          | focus turns={} searched={} redundant={} ms={:.1} redundant={:.1} ({:.2}% of a core){}",
         secs,
         c.turns,
@@ -299,6 +306,13 @@ fn render(window: Duration, c: &Counters, cpu: Cpu) -> String {
         c.resolve_solve.as_secs_f64() * 1000.0,
         c.surface_state.as_secs_f64() * 1000.0,
         c.repaint.as_secs_f64() * 1000.0,
+        c.repaint_split.build.as_secs_f64() * 1000.0,
+        c.repaint_split.gl.as_secs_f64() * 1000.0,
+        c.repaint_split.text.as_secs_f64() * 1000.0,
+        c.repaint_split.icons.as_secs_f64() * 1000.0,
+        c.repaint_split.boxes.as_secs_f64() * 1000.0,
+        c.repaint_split.flush.as_secs_f64() * 1000.0,
+        c.repaint_split.swap.as_secs_f64() * 1000.0,
         c.tick.as_secs_f64() * 1000.0,
         c.dispatch_cpu.as_secs_f64() * 1000.0,
         c.focus_turns,

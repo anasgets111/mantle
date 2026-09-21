@@ -2,6 +2,7 @@
 //! transforms.
 
 use std::f32::consts::{FRAC_PI_2, PI};
+use std::time::{Duration, Instant};
 
 use femtovg::renderer::OpenGl;
 use femtovg::{Canvas, Color, ImageFlags, ImageId, Paint, Path, PixelFormat, RenderTarget, Solidity};
@@ -19,6 +20,15 @@ use crate::text::snap::{LogicalRect, PhysicalRect, snap_border_band};
 use super::build;
 use super::{DisplayList, Draw, DrawCmd};
 
+/// Timing breakdown of what [`execute`] drew.
+#[derive(Clone, Copy, Default, Debug)]
+pub struct PaintSplit {
+    pub text: Duration,
+    pub icons: Duration,
+    pub boxes: Duration,
+    pub flush: Duration,
+}
+
 /// Test helper that paints a tree through [`build`] and [`execute`] at the caller's scale.
 /// The production caller is `wayland::App::paint_surface`: `socket/client.rs` keys a `Scene` by the `id` a
 /// config writes and `wayland::App` keys a `wl_surface` the same way, since ADR-0038 decision 1
@@ -30,7 +40,7 @@ pub fn paint_tree(painter: &mut TextPainter, images: &mut ImageCache, root: &Res
     let (width, height) = (canvas.width(), canvas.height());
     canvas.clear_rect(0, 0, width, height, Color::rgbaf(0.0, 0.0, 0.0, 0.0));
     // No GL context reaches this harness, so a config shader falls back to the dissolve.
-    execute(painter, images, &build(root, scale, None), scale, (0.0, 0.0), None);
+    let _ = execute(painter, images, &build(root, scale, None), scale, (0.0, 0.0), None);
 }
 
 /// One `image` node's source that this paint had a texture for. `layout::scene` moves the node onto
@@ -66,6 +76,7 @@ struct Walk<'a, 'g> {
     scratch: Vec<(ImageId, (usize, usize))>,
     drawn: Vec<DrawnImage>,
     shaders: Option<Shaders<'g>>,
+    split: PaintSplit,
 }
 
 /// The framebuffer a walk is drawing into and the transform in force there. Both are the screen's
@@ -88,20 +99,23 @@ pub fn execute(
     scale: f32,
     target_size: (f32, f32),
     shaders: Option<Shaders<'_>>,
-) -> Vec<DrawnImage> {
+) -> (Vec<DrawnImage>, PaintSplit) {
     // Before recording draws, after the previous flush: evicted textures cannot be queued draws.
     images.release_evicted(painter.canvas_mut());
     // Upload before any draw names the texture.
     images.upload_landed(painter.canvas_mut());
-    let mut walk = Walk { images, scale, scratch: Vec::new(), drawn: Vec::new(), shaders };
+    let mut walk =
+        Walk { images, scale, scratch: Vec::new(), drawn: Vec::new(), shaders, split: PaintSplit::default() };
     let frame = Frame { size: target_size, origin: (0.0, 0.0), transform: None };
     run(painter, &mut walk, &list.commands, RenderTarget::Screen, frame);
     painter.canvas_mut().reset_scissor();
+    let t_flush = Instant::now();
     painter.canvas_mut().flush();
+    walk.split.flush += t_flush.elapsed();
     // Recycle scratch targets only after flush; femtovg still executes queued calls at flush, as
     // `release_shadow_images` does for drop-shadow targets.
     painter.recycle_scratch(std::mem::take(&mut walk.scratch));
-    walk.drawn
+    (walk.drawn, walk.split)
 }
 
 /// Runs commands against `target`, recursively restoring parent images for nested clips. `scratch`
@@ -120,13 +134,16 @@ fn run(painter: &mut TextPainter, walk: &mut Walk<'_, '_>, commands: &[DrawCmd],
         let rect = command.rect;
         match &command.draw {
             Draw::Box { background, radius, colors, widths } => {
+                let t0 = Instant::now();
                 // `None` skips the fill; alpha 0 remains an explicit transparent rect.
                 if let Some(color) = background {
                     fill_rect(painter.canvas_mut(), rect, *radius, *color);
                 }
                 paint_border(painter.canvas_mut(), rect, *radius, *colors, *widths, scale);
+                walk.split.boxes += t0.elapsed();
             }
             Draw::Text { content, runs, font_size, font, color, align, centered, caret } => {
+                let t0 = Instant::now();
                 let mut rect = rect;
                 if *centered {
                     rect.y += ((rect.height - crate::text::shaping::line_height(*font_size)) / 2.0).max(0.0);
@@ -143,9 +160,11 @@ fn run(painter: &mut TextPainter, walk: &mut Walk<'_, '_>, commands: &[DrawCmd],
                     },
                     rect,
                     scale,
-                )
+                );
+                walk.split.text += t0.elapsed();
             }
             Draw::Icon { name, px, alpha, color } => {
+                let t0 = Instant::now();
                 // `freedesktop-icons` uses `u16`; themes have no directory above 512.
                 if let Some(path) = image::icons::resolve(name, (*px).min(512) as u16) {
                     let draw = FileDraw {
@@ -159,6 +178,7 @@ fn run(painter: &mut TextPainter, walk: &mut Walk<'_, '_>, commands: &[DrawCmd],
                     };
                     let _ = draw_file(painter.canvas_mut(), walk.images, &path, draw);
                 }
+                walk.split.icons += t0.elapsed();
             }
             Draw::Image { node, source, fit, box_px, alpha, load, retained, dissolve, shader, blur_px } => {
                 let draw = FileDraw {

@@ -16,7 +16,8 @@
 
 mod canvas;
 
-pub use canvas::{DrawnImage, Shaders, execute};
+#[allow(unused_imports)]
+pub use canvas::{DrawnImage, PaintSplit, Shaders, execute};
 
 use crate::image::{self, Fit, Load};
 use crate::layout::node::{self, BorderColor, ClipShape, EdgeInsets, PaintStyle, Rgba, StyleRun, TextAlign};
