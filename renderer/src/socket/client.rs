@@ -98,6 +98,8 @@ pub struct RendererClient {
     idle_registry: crate::lua::idle::IdleRegistry,
     /// Scene-dirty flag (ADR-0044 decision 2), cloned into every handed-out `LiveSignalHandle`.
     dirty: DirtyFlag,
+    /// Instance IDs narrowed during the last dirty re-resolve, or `None` if full resolve.
+    last_resolved: Option<Vec<String>>,
     state: ReloadState,
     /// `mantle` table for lazy members. Above `loader` for drop order.
     mantle: mlua::Table,
@@ -164,10 +166,16 @@ impl RendererClient {
             process_registry,
             idle_registry: namespace.idle,
             dirty,
+            last_resolved: None,
             state: ReloadState { applied_specs: Vec::new(), applied_output: None, pending: None },
             mantle: namespace.table,
             loader,
         })
+    }
+
+    /// Returns and clears the instance IDs narrowed during the last dirty re-resolve, if any.
+    pub fn take_last_resolved(&mut self) -> Option<Vec<String>> {
+        self.last_resolved.take()
     }
 
     /// Writes `rescue`'s `{ is_rescue, error_log }` only when changed. A write marks the shared
@@ -384,6 +392,7 @@ impl RendererClient {
                 // Consume `set_screens`'s pre-evaluation seed (ADR-0041 decision 2) only after
                 // success; a failed apply leaves it for the next one.
                 self.dirty.take();
+                self.last_resolved = None;
                 self.settle_geometry();
                 true
             }
@@ -422,6 +431,7 @@ impl RendererClient {
     /// surface is destroyed. Both, because an instance left here reconciles as unchanged, so
     /// nothing rebuilds its surface and the scene re-grows a tree with no `wl_surface` behind it.
     pub fn forget_surface(&mut self, instance_id: &str) {
+        crate::lua::signal::forget_instance(self.loader.lua(), instance_id);
         self.scene.forget(instance_id);
         self.instances.retain(|instance| instance.instance_id != instance_id);
     }
@@ -529,7 +539,9 @@ impl RendererClient {
                 // ADR-0044 decision 2 re-resolve target.
                 self.state.applied_output = Some(output);
                 // The poll loop repaints on `re_resolve_if_dirty`.
+                crate::lua::signal::reset_read_tracker(self.loader.lua());
                 self.dirty.mark();
+                self.last_resolved = None;
                 self.settle_geometry();
                 lua::timer::promote(self.loader.lua());
                 true
@@ -566,12 +578,34 @@ impl RendererClient {
         let Some(output) = self.state.applied_output.as_ref() else {
             return false;
         };
-        if !self.dirty.take() {
-            return false;
-        }
+        let scope = if self.holds_session_lock {
+            if !self.dirty.take() {
+                return false;
+            }
+            crate::lua::signal::DirtyScope::All
+        } else {
+            self.dirty.take_scope(self.loader.lua())
+        };
+        let (resolved_scope, instances) = match scope {
+            crate::lua::signal::DirtyScope::Clean => return false,
+            crate::lua::signal::DirtyScope::All => (None, self.instances.clone()),
+            crate::lua::signal::DirtyScope::Instances(ids) => {
+                let filtered: Vec<SurfaceInstance> = self
+                    .instances
+                    .iter()
+                    .filter(|inst| ids.iter().any(|id| id == &inst.instance_id))
+                    .cloned()
+                    .collect();
+                if filtered.is_empty() {
+                    self.dirty.mark();
+                    return false;
+                }
+                (Some(ids), filtered)
+            }
+        };
         let applied = self.scene.apply_locked(
             &output.surfaces,
-            &self.instances,
+            &instances,
             &self.shaping,
             self.loader.lua(),
             self.holds_session_lock,
@@ -581,9 +615,12 @@ impl RendererClient {
             // evaluation, not a rejected capability push. ponytail: logging forever, nothing
             // user-visible. Upgrade: rescue-adjacent channel for rejected pushed values.
             warn!("dirty-scene re-resolve failed, keeping the prior scene: {err}");
+            self.dirty.mark();
+            crate::lua::signal::reset_read_tracker(self.loader.lua());
             return false;
         }
-        start_secure_submit_capabilities(&self.scene, &self.instances, &self.commands);
+        self.last_resolved = resolved_scope;
+        start_secure_submit_capabilities(&self.scene, &instances, &self.commands);
         self.settle_geometry();
         dump_layout_if_asked(&self.scene);
         true
@@ -2396,6 +2433,66 @@ mod tests {
             !client.scene.surface("bar@TEST").unwrap().visible,
             "with nothing pushed since, a second re-resolve must do no work at all, even though a different applied_output is now in place"
         );
+    }
+
+    #[test]
+    fn re_resolve_if_dirty_narrows_to_targeted_instances() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_shell_lua(
+            dir.path(),
+            r#"
+            q = state("q", false)
+            return {
+                panel { id = "bar", layer = "Top" },
+                panel { id = "modal", layer = "Top", visible = q },
+            }
+            "#,
+        );
+        let (mut client, _outbound_rx) = test_client(&path);
+        run_startup(&mut client);
+        assert_eq!(client.take_last_resolved(), None);
+
+        client.loader.lua().load("q:set(true)").exec().unwrap();
+
+        assert!(client.re_resolve_if_dirty());
+        assert_eq!(client.take_last_resolved(), Some(vec!["modal@TEST".to_string()]));
+    }
+
+    #[test]
+    fn failed_narrowed_pass_does_not_freeze_retained_readers() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_shell_lua(
+            dir.path(),
+            r#"
+            q = state("q", true)
+            armed = state("armed", false)
+            local modal_opacity = computed({armed}, function(a)
+                if a then return 2.0 else return 1.0 end
+            end)
+            return {
+                panel { id = "bar", layer = "Top", visible = q },
+                panel { id = "modal", layer = "Top", child = text { content = "m", opacity = modal_opacity } },
+            }
+            "#,
+        );
+        let (mut client, _outbound_rx) = test_client(&path);
+        run_startup(&mut client);
+        assert!(client.scene.surface("bar@TEST").unwrap().visible);
+
+        // Fail modal resolution.
+        client.loader.lua().load("armed:set(true)").exec().unwrap();
+        assert!(!client.re_resolve_if_dirty(), "pass with invalid property must fail");
+        assert!(client.scene.surface("bar@TEST").unwrap().visible, "retained tree preserved");
+
+        // Disarm failure.
+        client.loader.lua().load("armed:set(false)").exec().unwrap();
+        assert!(client.re_resolve_if_dirty(), "recovery pass must succeed");
+
+        // Mutate q: bar must still be tracked and resolve to false.
+        client.loader.lua().load("q:set(false)").exec().unwrap();
+        assert!(client.re_resolve_if_dirty());
+        assert_eq!(client.take_last_resolved(), Some(vec!["bar@TEST".to_string()]));
+        assert!(!client.scene.surface("bar@TEST").unwrap().visible);
     }
 
     #[test]

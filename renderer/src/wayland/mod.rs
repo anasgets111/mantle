@@ -466,6 +466,7 @@ pub fn run(
         // rules out the narrowed repaint, and only a pass makes every surface's protocol state
         // worth re-deriving.
         let passed = app.client.re_resolve_if_dirty();
+        let targeted_instances = if passed { app.client.take_last_resolved() } else { None };
         phases.mark_resolve();
         phases.mark_resolve_split(app.client.take_resolve_split());
         // A frame callback is the tween clock (ADR-0145). Taken every turn so a callback that
@@ -492,9 +493,19 @@ pub fn run(
             app.forget_painted_lists_drawing(&landed);
         }
         // What protocol state this turn owes; `surface_state_for_turn` carries the reasoning.
-        let state = turn::surface_state_for_turn(passed, !ticked.is_empty(), app.input_serial.is_some());
+        let state = turn::surface_state_for_turn(
+            passed,
+            targeted_instances.is_some(),
+            !ticked.is_empty(),
+            app.input_serial.is_some(),
+        );
         match state.scope {
             turn::StateScope::Everything => app.apply_resolved_surface_state(),
+            turn::StateScope::Targeted => {
+                if let Some(ref ids) = targeted_instances {
+                    app.apply_resolved_surface_state_for(ids);
+                }
+            }
             turn::StateScope::Ticked => app.apply_resolved_surface_state_for(&ticked),
             turn::StateScope::Nothing => {}
         }
@@ -509,12 +520,17 @@ pub fn run(
         // Which surfaces this turn owes the screen; `repaint_for_turn` carries the reasoning.
         match turn::repaint_for_turn(turn::TurnChanges {
             passed,
+            targeted: targeted_instances.is_some(),
             ticked: !ticked.is_empty(),
             stale: app.has_stale_surfaces(),
             typed,
             landed: !landed.is_empty(),
         }) {
-            turn::Repaint::Narrowed => app.repaint_surfaces_with_instance_ids(&ticked),
+            turn::Repaint::Narrowed => {
+                let mut targets = targeted_instances.unwrap_or_default();
+                targets.extend(ticked.clone());
+                app.repaint_surfaces_with_instance_ids(&targets);
+            }
             turn::Repaint::Everything => app.repaint_mapped_surfaces(),
             turn::Repaint::Nothing => {}
         }

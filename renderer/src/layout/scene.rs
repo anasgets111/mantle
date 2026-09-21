@@ -301,6 +301,21 @@ fn census_walk(node: &ResolvedNode, nodes: &mut usize, properties: &mut usize) {
     }
 }
 
+struct InstanceResolveGuard<'a>(&'a Lua);
+
+impl<'a> InstanceResolveGuard<'a> {
+    fn enter(lua: &'a Lua, instance_id: &str) -> Self {
+        crate::lua::signal::begin_instance_resolve(lua, instance_id);
+        Self(lua)
+    }
+}
+
+impl Drop for InstanceResolveGuard<'_> {
+    fn drop(&mut self) {
+        crate::lua::signal::end_instance_resolve(self.0);
+    }
+}
+
 impl Scene {
     pub fn new() -> Self {
         Self::default()
@@ -435,6 +450,7 @@ impl Scene {
         now: Instant,
         rollback: &mut Vec<(String, Option<ResolvedNode>)>,
     ) -> Result<(), LayoutError> {
+        let _guard = InstanceResolveGuard::enter(lua, &instance.instance_id);
         // Match the declared id, then key the retained tree by instance id (ADR-0045 decision 1).
         let mut fresh = None;
         for candidate in fresh_surfaces {

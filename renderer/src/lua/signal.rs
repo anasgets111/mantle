@@ -91,6 +91,15 @@ const CPU_CAP_EXCEEDED: &str = "exceeded the 5ms CPU budget for one evaluation";
 /// reaches it, the hole this budget closes.
 const LAYOUT_PASS_CAP_EXCEEDED: &str = "the layout pass exceeded its 2s CPU budget";
 
+/// Globally unique identifier for a reactive cell, avoiding pointer recycling issues (ADR-0170).
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub(crate) struct CellId(u64);
+
+fn next_cell_id() -> CellId {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    CellId(NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed))
+}
+
 #[derive(Clone)]
 enum SignalKind {
     // ponytail: only `try_new_direct` constructs this; no production caller yet, tests only.
@@ -105,16 +114,17 @@ enum SignalKind {
     Derived(mlua::AnyUserData),
     /// Rust-overwritable value (`Signal::new_live`/`LiveSignalHandle`). `Rc<RefCell<_>>` because
     /// the Loader stays on one Wayland dispatch thread (ADR-0039).
-    Live(Rc<RefCell<Value>>),
+    Live { id: CellId, cell: Rc<RefCell<Value>> },
     /// Engine-written, config-read boolean from `hover(name)` (ADR-0062), separate from `Live` so
     /// only `hover_handle` can write it and `hover = mantle.network` gets no writer. `paired_rect`
     /// links the boolean to `hover_rect(name)`'s cell; the rect half has `None` and is not a
     /// trigger.
-    Hover { cell: Rc<RefCell<Value>>, paired_rect: Option<Rc<RefCell<Value>>>, dirty: DirtyFlag },
+    Hover { id: CellId, cell: Rc<RefCell<Value>>, paired_rect: Option<(CellId, Rc<RefCell<Value>>)>, dirty: DirtyFlag },
     /// Scroll offset in logical pixels (ADR-0069), written by the wheel handler and layout clamp.
     /// Separate from `Hover` so only `scroll_handle` writes it; `scroll = mantle.network` cannot
     /// overwrite a capability snapshot.
     Scroll {
+        id: CellId,
         cell: Rc<RefCell<Value>>,
         dirty: DirtyFlag,
         /// One-shot 1-based child request from `signal:reveal(index)` (ADR-0112), consumed by the
@@ -126,7 +136,7 @@ enum SignalKind {
     /// even with identical storage: accepting `set` on `Live` would let config overwrite a pushed
     /// network SSID. The kind makes read-only capabilities a type-system fact. Carries the shared
     /// dirty flag because `set` has no `RendererClient` in reach.
-    State { cell: Rc<RefCell<Value>>, dirty: DirtyFlag },
+    State { id: CellId, cell: Rc<RefCell<Value>>, dirty: DirtyFlag },
     /// `geometry(name)` (ADR-0147): the laid-out `{ x, y, width, height }` of the node declaring
     /// `geometry = geometry(name)`, in its surface's logical coordinates, the same space `on_click`
     /// and `hover_rect` report. Written by the layout pass and by a tween tick, never by Lua, and
@@ -198,7 +208,7 @@ impl SignalKind {
         match self {
             SignalKind::Direct(_) => "a direct",
             SignalKind::Computed { .. } | SignalKind::Derived(_) => "a computed",
-            SignalKind::Live(_) => "a capability",
+            SignalKind::Live { .. } => "a capability",
             SignalKind::Hover { .. } => "a hover",
             SignalKind::Scroll { .. } => "a scroll",
             SignalKind::State { .. } => "a state",
@@ -262,11 +272,10 @@ impl Signal {
     }
 
     /// Signal behind `state(name, initial)` (ADR-0044 decision 5), writable through `set`, which
-    /// marks
-    /// `dirty`; `initial` is Lua-authored and marshal-checked, unlike `new_live`.
+    /// marks `dirty`; `initial` is Lua-authored and marshal-checked, unlike `new_live`.
     pub fn new_state(initial: Value, dirty: DirtyFlag) -> Result<Self, marshal::MarshalError> {
         check_lua_authored(&initial)?;
-        Ok(Signal(SignalKind::State { cell: Rc::new(RefCell::new(initial)), dirty }))
+        Ok(Signal(SignalKind::State { id: next_cell_id(), cell: Rc::new(RefCell::new(initial)), dirty }))
     }
 
     /// Replaces a state value when the config changed its literal (ADR-0044 amendment), so the file
@@ -274,12 +283,12 @@ impl Signal {
     /// other kind is a caller bug, not config error.
     pub fn reseed(&self, value: Value) -> Result<(), marshal::MarshalError> {
         check_lua_authored(&value)?;
-        let SignalKind::State { cell, dirty } = &self.0 else {
+        let SignalKind::State { id, cell, dirty } = &self.0 else {
             debug_assert!(false, "reseed on {} signal, which the state registry cannot hold", self.0.describe());
             return Ok(());
         };
         *cell.borrow_mut() = value;
-        dirty.mark();
+        dirty.mark_cell(*id);
         Ok(())
     }
 
@@ -287,8 +296,9 @@ impl Signal {
     /// marshalling checks cannot find NaN/Inf/oversized strings. Every live signal shares one
     /// generation dirty flag, whose clone `renderer/src/socket/client.rs`'s `RendererClient` drains.
     pub fn new_live(initial: Value, dirty: DirtyFlag) -> (Self, LiveSignalHandle) {
+        let id = next_cell_id();
         let cell = Rc::new(RefCell::new(initial));
-        (Signal(SignalKind::Live(Rc::clone(&cell))), LiveSignalHandle(cell, dirty))
+        (Signal(SignalKind::Live { id, cell: Rc::clone(&cell) }), LiveSignalHandle(id, cell, dirty))
     }
 
     /// Boolean written by `wl_pointer`, read-only to Lua (ADR-0062 decision 2). Starts `false`, not
@@ -296,15 +306,18 @@ impl Signal {
     /// must be a real non-zero 1x1 table: tooltips require a non-zero `anchor_rect` before any
     /// pointer event, and this constructor lacks a Lua to build the table.
     pub fn new_hover(dirty: DirtyFlag, initial_rect: Value) -> (Self, Self) {
+        let over_id = next_cell_id();
+        let rect_id = next_cell_id();
         let over = Rc::new(RefCell::new(Value::Boolean(false)));
         let rect = Rc::new(RefCell::new(initial_rect));
         (
             Signal(SignalKind::Hover {
+                id: over_id,
                 cell: Rc::clone(&over),
-                paired_rect: Some(Rc::clone(&rect)),
+                paired_rect: Some((rect_id, Rc::clone(&rect))),
                 dirty: dirty.clone(),
             }),
-            Signal(SignalKind::Hover { cell: rect, paired_rect: None, dirty }),
+            Signal(SignalKind::Hover { id: rect_id, cell: rect, paired_rect: None, dirty }),
         )
     }
 
@@ -312,6 +325,7 @@ impl Signal {
     /// scrollbar uses content extent yet, so the first such config can define its shape.
     pub fn new_scroll(dirty: DirtyFlag) -> Self {
         Signal(SignalKind::Scroll {
+            id: next_cell_id(),
             cell: Rc::new(RefCell::new(Value::Number(0.0))),
             dirty,
             reveal: Rc::new(Cell::new(None)),
@@ -321,9 +335,9 @@ impl Signal {
     /// Requests the next positioning pass scroll visible child `index` (1-based) into view, marking
     /// dirty (ADR-0112). Other kinds return false for `signal:reveal()`'s named refusal.
     pub(crate) fn request_reveal(&self, index: usize) -> bool {
-        let SignalKind::Scroll { reveal, dirty, .. } = &self.0 else { return false };
+        let SignalKind::Scroll { id, reveal, dirty, .. } = &self.0 else { return false };
         reveal.set(Some(index));
-        dirty.mark();
+        dirty.mark_cell(*id);
         true
     }
 
@@ -336,8 +350,8 @@ impl Signal {
     /// Scroll write end for wheel and positioning clamp; `None` for other kinds keeps wheels off
     /// capability signals.
     pub(crate) fn scroll_handle(&self) -> Option<LiveSignalHandle> {
-        let SignalKind::Scroll { cell, dirty, .. } = &self.0 else { return None };
-        Some(LiveSignalHandle(Rc::clone(cell), dirty.clone()))
+        let SignalKind::Scroll { id, cell, dirty, .. } = &self.0 else { return None };
+        Some(LiveSignalHandle(*id, Rc::clone(cell), dirty.clone()))
     }
 
     /// Scroll offset without `Lua`: `layout::scene` clamps deep in a pass holding no VM reference,
@@ -359,16 +373,27 @@ impl Signal {
 
     /// Hover write end for `crate::wayland`; `None` for other kinds by design.
     pub(crate) fn hover_handle(&self) -> Option<LiveSignalHandle> {
-        let SignalKind::Hover { cell, dirty, .. } = &self.0 else { return None };
-        Some(LiveSignalHandle(Rc::clone(cell), dirty.clone()))
+        let SignalKind::Hover { id, cell, dirty, .. } = &self.0 else { return None };
+        Some(LiveSignalHandle(*id, Rc::clone(cell), dirty.clone()))
     }
 
     /// Rect write end for the boolean hover half: last node position in surface logical
     /// coordinates, consumed by tooltip `popup.anchor_rect`. `None` for other kinds and the rect
     /// half itself.
     pub(crate) fn hover_rect_handle(&self) -> Option<LiveSignalHandle> {
-        let SignalKind::Hover { paired_rect: Some(rect), dirty, .. } = &self.0 else { return None };
-        Some(LiveSignalHandle(Rc::clone(rect), dirty.clone()))
+        let SignalKind::Hover { paired_rect: Some((rect_id, rect)), dirty, .. } = &self.0 else { return None };
+        Some(LiveSignalHandle(*rect_id, Rc::clone(rect), dirty.clone()))
+    }
+
+    /// Reactive cell identifier for targeted invalidation tracking, if this signal is backed by a cell.
+    pub(crate) fn cell_id(&self) -> Option<CellId> {
+        match &self.0 {
+            SignalKind::Live { id, .. }
+            | SignalKind::Hover { id, .. }
+            | SignalKind::Scroll { id, .. }
+            | SignalKind::State { id, .. } => Some(*id),
+            _ => None,
+        }
     }
 
     /// `map(f)` as a one-dependency `Computed`, recomputed on every read (ADR-0044 decision 3).
@@ -386,11 +411,14 @@ impl Signal {
     pub(crate) fn get_value(&self, lua: &Lua) -> mlua::Result<Value> {
         match &self.0 {
             SignalKind::Direct(value) => Ok(value.clone()),
-            SignalKind::Live(cell)
-            | SignalKind::Hover { cell, .. }
-            | SignalKind::Scroll { cell, .. }
-            | SignalKind::State { cell, .. }
-            | SignalKind::Geometry(cell) => Ok(cell.borrow().clone()),
+            SignalKind::Live { id, cell }
+            | SignalKind::Hover { id, cell, .. }
+            | SignalKind::Scroll { id, cell, .. }
+            | SignalKind::State { id, cell, .. } => {
+                note_read(lua, *id);
+                Ok(cell.borrow().clone())
+            }
+            SignalKind::Geometry(cell) => Ok(cell.borrow().clone()),
             SignalKind::Computed { .. } | SignalKind::Delayed { .. } | SignalKind::Pulse { .. } => Err(
                 mlua::Error::runtime("a derived signal was read without the userdata holding its function and sources"),
             ),
@@ -462,7 +490,10 @@ fn read_derived(lua: &Lua, ud: &mlua::AnyUserData) -> mlua::Result<Value> {
             // level either, or a wide diamond would hit `MAX_SIGNAL_NESTING_DEPTH` on cache
             // hits alone.
             if let Some(hit) = EvaluationMemo::get(lua, id) {
-                return Ok(hit);
+                for &cell in &hit.cells {
+                    note_read(lua, cell);
+                }
+                return Ok(hit.value);
             }
 
             // Enter before dependency resolution, not only `func.call`, so nesting depth also
@@ -473,6 +504,7 @@ fn read_derived(lua: &Lua, ud: &mlua::AnyUserData) -> mlua::Result<Value> {
             // `capability::CapabilityHandle::notify_change` handler: that handler may `:set()`
             // between its own `:get()` calls and has to observe its own writes.
             let _memo = EvaluationMemo::enter(lua);
+            let frame = ComputedFrame::enter(lua);
 
             let mut args = Vec::with_capacity(arity);
             for slot in FIRST_SOURCE_SLOT..FIRST_SOURCE_SLOT + arity {
@@ -481,7 +513,8 @@ fn read_derived(lua: &Lua, ud: &mlua::AnyUserData) -> mlua::Result<Value> {
             let func: Function = ud.nth_user_value(FUNCTION_SLOT)?;
             let value = func.call::<Value>(MultiValue::from_vec(args))?;
             budget.check_not_exceeded()?;
-            EvaluationMemo::insert(lua, id, &value);
+            let cells = frame.finish();
+            EvaluationMemo::insert(lua, id, &value, cells);
             Ok(value)
         }
         other => Signal(other).get_value(lua),
@@ -536,19 +569,18 @@ impl PulseCell {
 /// Rust handle for [`Signal::new_live`] storage, used for `StateSnapshot` pushes. Lua reads the
 /// latest value, with no memoization.
 #[derive(Clone)]
-pub struct LiveSignalHandle(Rc<RefCell<Value>>, DirtyFlag);
+pub struct LiveSignalHandle(CellId, Rc<RefCell<Value>>, DirtyFlag);
 
 impl LiveSignalHandle {
     /// Last value, for `CapabilityHandle::hydrate` to pass as `on_change`'s replaced value.
     pub fn get(&self) -> Value {
-        self.0.borrow().clone()
+        self.1.borrow().clone()
     }
 
-    /// Writes and marks the shared scene dirty (ADR-0044 decision 2); without a dependency graph
-    /// (decision 3), the next poll re-resolves the whole scene.
+    /// Writes and marks the cell dirty.
     pub fn set(&self, value: Value) {
-        *self.0.borrow_mut() = value;
-        self.1.mark();
+        *self.1.borrow_mut() = value;
+        self.2.mark_cell(self.0);
     }
 
     /// Writes without dirtying for `layout::scene`'s clamp, which derives the value from geometry
@@ -556,14 +588,13 @@ impl LiveSignalHandle {
     /// staleness only when clamping: same-pass `scroll("x")` sees wheel input, derived readouts see
     /// the clamped value next pass. Positioning itself uses the clamped value immediately.
     pub(crate) fn set_quiet(&self, value: Value) {
-        *self.0.borrow_mut() = value;
+        *self.1.borrow_mut() = value;
     }
 
     /// [`Self::set`] with equality deduplication. ADR-0062 decision 4 calls it for every
-    /// device-rate `wl_pointer` motion; one mark re-resolves every surface (ADR-0044 decision 2),
-    /// so compare first to re-resolve only on boundary crossings.
+    /// device-rate `wl_pointer` motion; compare first to re-resolve only on boundary crossings.
     pub fn set_changed(&self, value: Value) -> bool {
-        let unchanged = *self.0.borrow() == value;
+        let unchanged = *self.1.borrow() == value;
         if unchanged {
             return false;
         }
@@ -572,15 +603,30 @@ impl LiveSignalHandle {
     }
 }
 
-/// One ADR-0044 decision 2 scene-dirty bool shared by every generation handle and `RendererClient`,
-/// not per signal/surface. `Rc<Cell<bool>>` fits the single Wayland thread (ADR-0039). ponytail:
-/// every push re-resolves every surface. Upgrade to per-surface flags keyed by read tracking.
-#[derive(Clone)]
-pub struct DirtyFlag(Rc<Cell<bool>>);
+/// Which surfaces an invalidation marks dirty.
+#[derive(Debug, PartialEq, Eq)]
+pub enum DirtyScope {
+    /// No change since the last take.
+    Clean,
+    /// Scene-wide change or unknown cell dependency; every surface must re-resolve.
+    All,
+    /// Targeted set of instance IDs whose nodes actually read the modified cells.
+    Instances(Vec<String>),
+}
+
+#[derive(Default)]
+struct DirtyState {
+    all: bool,
+    cells: rustc_hash::FxHashSet<CellId>,
+}
+
+/// Shared invalidation flag tracking scene-wide or cell-targeted dirty marks.
+#[derive(Clone, Default)]
+pub struct DirtyFlag(Rc<RefCell<DirtyState>>);
 
 impl DirtyFlag {
     pub fn new() -> Self {
-        Self(Rc::new(Cell::new(false)))
+        Self(Rc::new(RefCell::new(DirtyState::default())))
     }
 
     /// `configure` changing one surface's size invalidates resolved geometry like a capability
@@ -588,20 +634,49 @@ impl DirtyFlag {
     /// `RendererClient::set_instance_size` marks this flag rather than adding a second mechanism
     /// (ADR-0044 decision 2).
     pub(crate) fn mark(&self) {
-        self.0.set(true);
+        self.0.borrow_mut().all = true;
+    }
+
+    /// Marks a specific reactive cell dirty.
+    pub(crate) fn mark_cell(&self, id: CellId) {
+        self.0.borrow_mut().cells.insert(id);
     }
 
     /// Reads and clears atomically: drain inbound frames, then re-resolve once
     /// (ADR-0044 decision 2).
-    /// `wayland::run` coalesces a burst of `StateSnapshot` pushes into one resolve.
     pub fn take(&self) -> bool {
-        self.0.replace(false)
+        let mut state = self.0.borrow_mut();
+        if state.all || !state.cells.is_empty() {
+            *state = DirtyState::default();
+            true
+        } else {
+            false
+        }
     }
-}
 
-impl Default for DirtyFlag {
-    fn default() -> Self {
-        Self::new()
+    /// Takes the invalidation scope: Clean, All, or targeted Instances based on ReadTracker.
+    pub fn take_scope(&self, lua: &Lua) -> DirtyScope {
+        let mut state = self.0.borrow_mut();
+        if !state.all && state.cells.is_empty() {
+            return DirtyScope::Clean;
+        }
+        if state.all {
+            *state = DirtyState::default();
+            return DirtyScope::All;
+        }
+        let cells = std::mem::take(&mut state.cells);
+        let tracker = lua.app_data_ref::<ReadTracker>();
+        let mut instances = rustc_hash::FxHashSet::default();
+        if let Some(tracker) = tracker {
+            for cell_id in cells {
+                if let Some(readers) = tracker.cell_readers.get(&cell_id) {
+                    for reader in readers {
+                        instances.insert(reader.to_string());
+                    }
+                }
+            }
+        }
+        if instances.is_empty() { DirtyScope::Clean } else { DirtyScope::Instances(instances.into_iter().collect()) }
     }
 }
 
@@ -631,7 +706,7 @@ impl UserData for Signal {
         // `network:set(...)`
         // says why.
         methods.add_method("set", |_, this, value: Value| {
-            let SignalKind::State { cell, dirty } = &this.0 else {
+            let SignalKind::State { id, cell, dirty } = &this.0 else {
                 return Err(mlua::Error::runtime(format!(
                     "signal:set() is only valid on a state(name, initial) signal, and this is {} signal: every other signal kind is read-only to Lua (ADR-0044 decision 5)",
                     this.0.describe()
@@ -643,7 +718,7 @@ impl UserData for Signal {
                 mlua::Error::runtime(format!("signal:set() refused its value at the marshalling boundary: {err}"))
             })?;
             *cell.borrow_mut() = value;
-            dirty.mark();
+            dirty.mark_cell(*id);
             Ok(())
         });
     }
@@ -746,11 +821,109 @@ fn next_computed_id() -> MemoKey {
     NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
 }
 
+#[derive(Clone)]
+struct MemoEntry {
+    value: Value,
+    cells: Vec<CellId>,
+}
+
 /// Values already produced during the current outermost [`Signal::get_value`].
 #[derive(Default)]
 struct MemoTable {
-    map: FxHashMap<MemoKey, Value>,
+    map: FxHashMap<MemoKey, MemoEntry>,
     depth: usize,
+    eval_stack: Vec<Vec<CellId>>,
+}
+
+struct ComputedFrame<'lua>(&'lua Lua);
+
+impl<'lua> ComputedFrame<'lua> {
+    fn enter(lua: &'lua Lua) -> Self {
+        EvaluationMemo::push_frame(lua);
+        Self(lua)
+    }
+
+    fn finish(self) -> Vec<CellId> {
+        let cells = EvaluationMemo::pop_frame(self.0);
+        std::mem::forget(self);
+        cells
+    }
+}
+
+impl Drop for ComputedFrame<'_> {
+    fn drop(&mut self) {
+        EvaluationMemo::pop_frame(self.0);
+    }
+}
+
+/// Maps cell reads to surface instances for targeted invalidation (ADR-0044).
+#[derive(Default)]
+struct ReadTracker {
+    active_instance: Option<Rc<str>>,
+    cell_readers: rustc_hash::FxHashMap<CellId, rustc_hash::FxHashSet<Rc<str>>>,
+    instance_cells: rustc_hash::FxHashMap<Rc<str>, rustc_hash::FxHashSet<CellId>>,
+}
+
+/// Marks the beginning of an instance's layout resolution, clearing its prior reads.
+pub(crate) fn begin_instance_resolve(lua: &Lua, instance_id: &str) {
+    if lua.app_data_ref::<ReadTracker>().is_none() {
+        lua.set_app_data(ReadTracker::default());
+    }
+    let mut tracker = lua.app_data_mut::<ReadTracker>().expect("tracker exists");
+    let instance_rc: Rc<str> = Rc::from(instance_id);
+    if let Some(old_cells) = tracker.instance_cells.remove(&instance_rc) {
+        for cell_id in old_cells {
+            if let std::collections::hash_map::Entry::Occupied(mut e) = tracker.cell_readers.entry(cell_id) {
+                e.get_mut().remove(&instance_rc);
+                if e.get().is_empty() {
+                    e.remove();
+                }
+            }
+        }
+    }
+    tracker.active_instance = Some(instance_rc);
+}
+
+/// Closes the active instance layout resolution scope.
+pub(crate) fn end_instance_resolve(lua: &Lua) {
+    if let Some(mut tracker) = lua.app_data_mut::<ReadTracker>() {
+        tracker.active_instance = None;
+    }
+}
+
+/// Drops an instance and its cell associations when a surface is destroyed.
+pub(crate) fn forget_instance(lua: &Lua, instance_id: &str) {
+    if let Some(mut tracker) = lua.app_data_mut::<ReadTracker>() {
+        let instance_rc: Rc<str> = Rc::from(instance_id);
+        if let Some(old_cells) = tracker.instance_cells.remove(&instance_rc) {
+            for cell_id in old_cells {
+                if let std::collections::hash_map::Entry::Occupied(mut e) = tracker.cell_readers.entry(cell_id) {
+                    e.get_mut().remove(&instance_rc);
+                    if e.get().is_empty() {
+                        e.remove();
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Resets all tracked cell-instance mappings (e.g. after a failed pass or on config reload).
+pub(crate) fn reset_read_tracker(lua: &Lua) {
+    if let Some(mut tracker) = lua.app_data_mut::<ReadTracker>() {
+        *tracker = ReadTracker::default();
+    }
+}
+
+/// Records that the active instance (and any enclosing computed evaluation) read `cell_id`.
+pub(crate) fn note_read(lua: &Lua, cell_id: CellId) {
+    if let Some(mut tracker) = lua.app_data_mut::<ReadTracker>()
+        && let Some(instance_id) = tracker.active_instance.as_ref().map(Rc::clone)
+    {
+        tracker.cell_readers.entry(cell_id).or_default().insert(Rc::clone(&instance_id));
+        tracker.instance_cells.entry(instance_id).or_default().insert(cell_id);
+    }
+    EvaluationMemo::record_dependency(lua, cell_id);
 }
 
 /// One evaluation's memo, closing ADR-0044 decision 3's ceiling: without it a shared dependency is
@@ -778,7 +951,6 @@ struct MemoTable {
 /// both were previously answered one way above the writer and another way below it.
 struct EvaluationMemo<'lua> {
     lua: &'lua Lua,
-    /// Only the outermost holder installs and removes the table.
     owner: bool,
 }
 
@@ -800,13 +972,43 @@ impl<'lua> EvaluationMemo<'lua> {
     }
 
     /// `None` outside an evaluation, which is the outermost `Computed`'s own first look.
-    fn get(lua: &Lua, key: MemoKey) -> Option<Value> {
+    fn get(lua: &Lua, key: MemoKey) -> Option<MemoEntry> {
         lua.app_data_ref::<MemoTable>()?.map.get(&key).cloned()
     }
 
-    fn insert(lua: &Lua, key: MemoKey, value: &Value) {
+    fn insert(lua: &Lua, key: MemoKey, value: &Value, cells: Vec<CellId>) {
         if let Some(mut table) = lua.app_data_mut::<MemoTable>() {
-            table.map.insert(key, value.clone());
+            table.map.insert(key, MemoEntry { value: value.clone(), cells });
+        }
+    }
+
+    fn push_frame(lua: &Lua) {
+        if let Some(mut table) = lua.app_data_mut::<MemoTable>() {
+            table.eval_stack.push(Vec::new());
+        }
+    }
+
+    fn pop_frame(lua: &Lua) -> Vec<CellId> {
+        let Some(mut table) = lua.app_data_mut::<MemoTable>() else {
+            return Vec::new();
+        };
+        let cells = table.eval_stack.pop().unwrap_or_default();
+        if let Some(parent) = table.eval_stack.last_mut() {
+            for &c in &cells {
+                if !parent.contains(&c) {
+                    parent.push(c);
+                }
+            }
+        }
+        cells
+    }
+
+    fn record_dependency(lua: &Lua, cell_id: CellId) {
+        if let Some(mut table) = lua.app_data_mut::<MemoTable>()
+            && let Some(frame) = table.eval_stack.last_mut()
+            && !frame.contains(&cell_id)
+        {
+            frame.push(cell_id);
         }
     }
 }
@@ -817,6 +1019,7 @@ impl Drop for EvaluationMemo<'_> {
             table.depth = table.depth.saturating_sub(1);
             if self.owner {
                 table.map.clear();
+                table.eval_stack.clear();
             }
         }
     }
@@ -899,6 +1102,7 @@ impl Drop for LayoutPassBudget<'_> {
         }
         if let Ok(Some(mut table)) = self.lua.try_app_data_mut::<MemoTable>() {
             table.map.clear();
+            table.eval_stack.clear();
         }
     }
 }
@@ -2268,5 +2472,83 @@ mod tests {
             err.contains("must be Signals or `mantle` capabilities"),
             "the error must say what was expected: {err}"
         );
+    }
+
+    #[test]
+    fn targeted_dirty_flag_isolates_surfaces_by_cell_reads() {
+        let (lua, dirty) = lua_with_state();
+        lua.load(
+            r#"
+            q = state("q", "search")
+            clock = state("clock", "12:00")
+            "#,
+        )
+        .exec()
+        .unwrap();
+
+        begin_instance_resolve(&lua, "modal_host@DP-1");
+        lua.load("q:get()").exec().unwrap();
+        end_instance_resolve(&lua);
+
+        begin_instance_resolve(&lua, "bar@DP-1");
+        lua.load("clock:get()").exec().unwrap();
+        end_instance_resolve(&lua);
+
+        // Mutating `q` marks only modal_host@DP-1 dirty
+        lua.load("q:set('new_search')").exec().unwrap();
+        match dirty.take_scope(&lua) {
+            DirtyScope::Instances(instances) => {
+                assert_eq!(instances, vec!["modal_host@DP-1".to_string()]);
+            }
+            other => panic!("expected DirtyScope::Instances, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn unread_cell_write_is_clean_and_mark_falls_back_to_all() {
+        let (lua, dirty) = lua_with_state();
+        // A cell with no registered readers in the scene owes no work.
+        lua.load("unused = state('unused', 1)").exec().unwrap();
+        lua.load("unused:set(2)").exec().unwrap();
+        assert_eq!(dirty.take_scope(&lua), DirtyScope::Clean);
+
+        // An explicit unscoped mark forces whole-scene resolve.
+        dirty.mark();
+        assert_eq!(dirty.take_scope(&lua), DirtyScope::All);
+    }
+
+    #[test]
+    fn computed_memo_hit_records_dependencies_for_subsequent_surface_readers() {
+        let (lua, dirty) = lua_with_state();
+        lua.load(
+            r#"
+            q = state("q", "hello")
+            c = computed({q}, function(text) return text .. " world" end)
+            "#,
+        )
+        .exec()
+        .unwrap();
+
+        {
+            let _pass = LayoutPassBudget::enter(&lua).unwrap();
+            begin_instance_resolve(&lua, "surface_1");
+            let v1: String = lua.load("return c:get()").eval().unwrap();
+            assert_eq!(v1, "hello world");
+            end_instance_resolve(&lua);
+
+            begin_instance_resolve(&lua, "surface_2");
+            let v2: String = lua.load("return c:get()").eval().unwrap();
+            assert_eq!(v2, "hello world");
+            end_instance_resolve(&lua);
+        }
+
+        lua.load("q:set('bye')").exec().unwrap();
+        match dirty.take_scope(&lua) {
+            DirtyScope::Instances(mut instances) => {
+                instances.sort();
+                assert_eq!(instances, vec!["surface_1".to_string(), "surface_2".to_string()]);
+            }
+            other => panic!("expected DirtyScope::Instances with both surfaces, got {other:?}"),
+        }
     }
 }

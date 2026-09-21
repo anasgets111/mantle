@@ -22,6 +22,8 @@ pub(super) fn narrowed_repaint_targets(ticked: &[String], stale: &[String]) -> V
 pub(super) struct TurnChanges {
     /// A re-resolve ran, so any tree in the scene may differ.
     pub(super) passed: bool,
+    /// Whether the pass was narrowed to targeted instances, rather than whole-scene.
+    pub(super) targeted: bool,
     /// A tween tick advanced at least one instance. Never true on the same turn as `passed`.
     pub(super) ticked: bool,
     /// Some mapped surface owes a repaint its tree cannot ask for (ADR-0185).
@@ -55,9 +57,9 @@ pub(super) enum Repaint {
 /// A surface left `stale` by a decode turned away for capacity owes a repaint that no tree and no
 /// landing can ask for, so it is its own reason to reach one (ADR-0185).
 pub(super) fn repaint_for_turn(changes: TurnChanges) -> Repaint {
-    if changes.passed || changes.typed || changes.landed {
+    if (changes.passed && !changes.targeted) || changes.typed || changes.landed {
         Repaint::Everything
-    } else if changes.ticked || changes.stale {
+    } else if (changes.passed && changes.targeted) || changes.ticked || changes.stale {
         Repaint::Narrowed
     } else {
         Repaint::Nothing
@@ -69,6 +71,8 @@ pub(super) fn repaint_for_turn(changes: TurnChanges) -> Repaint {
 pub(super) enum StateScope {
     /// Every tracked surface, because a pass can change any tree.
     Everything,
+    /// Targeted instances from a narrowed pass.
+    Targeted,
     /// The instances a tick named, and no others.
     Ticked,
     Nothing,
@@ -94,11 +98,17 @@ pub(super) struct SurfaceStateWork {
 /// writes no signal -- `on_click` setting an already-true `visible` -- re-resolves nothing, so
 /// nothing would look at whether the compositor has dismissed a popup the config still calls
 /// visible. That reopen used to depend on some unrelated surface happening to be mid-tween.
-pub(super) fn surface_state_for_turn(passed: bool, ticked: bool, armed_input: bool) -> SurfaceStateWork {
-    let scope = match (passed, ticked) {
-        (true, _) => StateScope::Everything,
-        (false, true) => StateScope::Ticked,
-        (false, false) => StateScope::Nothing,
+pub(super) fn surface_state_for_turn(
+    passed: bool,
+    targeted: bool,
+    ticked: bool,
+    armed_input: bool,
+) -> SurfaceStateWork {
+    let scope = match (passed, targeted, ticked) {
+        (true, false, _) => StateScope::Everything,
+        (true, true, _) => StateScope::Targeted,
+        (false, _, true) => StateScope::Ticked,
+        (false, _, false) => StateScope::Nothing,
     };
     // `Everything` has already visited every popup with this turn's serial in hand.
     let popup_latch = armed_input && scope != StateScope::Everything;
@@ -141,13 +151,26 @@ mod tests {
     #[test]
     fn a_pass_repaints_everything_even_when_something_else_is_stale() {
         let turn = |passed, ticked, stale, typed, landed| {
-            repaint_for_turn(TurnChanges { passed, ticked, stale, typed, landed })
+            repaint_for_turn(TurnChanges { passed, targeted: false, ticked, stale, typed, landed })
         };
 
         // The bug: a pass changed a panel while a wallpaper waited on a refused decode. The
         // narrowed repaint covers the wallpaper and the panel never reaches the screen.
         assert_eq!(turn(true, false, true, false, false), Repaint::Everything);
         assert_eq!(turn(true, false, false, false, false), Repaint::Everything);
+
+        // A targeted pass repaints narrowed when neither typed nor landed.
+        assert_eq!(
+            repaint_for_turn(TurnChanges {
+                passed: true,
+                targeted: true,
+                ticked: false,
+                stale: false,
+                typed: false,
+                landed: false,
+            }),
+            Repaint::Narrowed
+        );
 
         // A tween frame is what narrowing exists for, stale surface or not (ADR-0178, ADR-0185).
         assert_eq!(turn(false, true, false, false, false), Repaint::Narrowed);
@@ -167,12 +190,18 @@ mod tests {
     /// `visible` stayed true would be reopened only when some unrelated surface was mid-tween.
     #[test]
     fn a_click_gets_the_popup_latch_looked_at_whatever_else_the_turn_did() {
-        let turn = surface_state_for_turn;
+        let turn = |passed, ticked, armed_input| surface_state_for_turn(passed, false, ticked, armed_input);
 
         // A pass visits every popup with this turn's serial in hand, so the latch is not owed
         // twice.
         assert_eq!(turn(true, false, true), SurfaceStateWork { scope: StateScope::Everything, popup_latch: false });
         assert_eq!(turn(true, false, false), SurfaceStateWork { scope: StateScope::Everything, popup_latch: false });
+
+        // A targeted pass sets StateScope::Targeted and preserves popup latch on armed input.
+        assert_eq!(
+            surface_state_for_turn(true, true, false, true),
+            SurfaceStateWork { scope: StateScope::Targeted, popup_latch: true }
+        );
 
         // A tween frame re-derives state for what it advanced. The click on top of it is still
         // owed the latch, because the surfaces the tick named are not the popup's.

@@ -5712,3 +5712,31 @@ was mostly noise, and there was no lever short of editing `MANTLE_LOG` to ask fo
 
 `-v` is refused outside `run`, alongside `--profile`: a `check` or `log` invocation has nothing
 running long enough to make verbosity matter.
+
+## 0244. A dirty signal pass narrows to the surfaces that read it, falling back to whole-scene on untracked writes or rollback
+
+ADR-0044 decision 2 and ADR-0178 rejected per-surface dirty tracking because arbitrary Lua getters
+could read untracked state, causing silent staleness. On shells with complex panels, typing into an
+input field in a modal launcher dirtied every surface in the scene (22 surfaces, hundreds of nodes),
+spending most of the frame relayouting and repainting unaffected surfaces.
+
+1. **Per-cell read tracking with conservative whole-scene fallback.** Each reactive cell (`CellId`)
+   records reading instances during its layout resolve (`ReadTracker`). Mutating a cell narrows
+   re-resolve and repaint to those instances (`DirtyScope::Instances`). Untracked writes (resizes,
+   session unlocks, explicit `dirty.mark()`) fall back to `DirtyScope::All`.
+2. **Unread cell writes are clean.** A cell with no recorded readers in the scene owes no visual or
+   protocol update and evaluates as `DirtyScope::Clean`, avoiding whole-scene relayouts from unused
+   background capability pushes.
+3. **Structural properties and computed memo hits attribute dependencies.** `hover` and `scroll`
+   signals copied by `resolve_properties` explicitly attribute reads to the active instance.
+   `Computed` memo hits in the same pass replay their constituent cell dependencies to the reading
+   surface.
+4. **Failure rollback resets tracker state.** If a narrowed pass fails admission or parsing, the
+   prior scene tree is retained, the dirty flag is marked whole-scene (`all: true`), and
+   `ReadTracker` is reset so the subsequent pass rebuilds all reader registrations cleanly without
+   leaving retained surfaces permanently frozen.
+5. **Session lock bypasses narrowing.** An active session lock forces whole-scene resolve so
+   authentication surfaces are never starved of layout updates.
+
+**Amends ADR-0044 decision 2 and ADR-0178.**
+
