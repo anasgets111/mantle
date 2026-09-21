@@ -957,7 +957,8 @@ impl App {
         // An absent tree becomes an empty list and still reaches clear/swap to erase old contents.
         // End the immutable field-focus borrow before mutably borrowing the painter; `Draw::Text`
         // owns its string.
-        let t_build = Instant::now();
+        let timing = crate::layout::scene::timing_on();
+        let t_build = timing.then(Instant::now);
         let list = {
             let focus = self.field_focus_for(&surface_id);
             tree.as_ref().map(|tree| layout::paint::build(tree, 1.0, focus.as_ref())).unwrap_or_default()
@@ -967,7 +968,9 @@ impl App {
                 .last_painted
                 .as_ref()
                 .is_some_and(|(painted_size, painted)| *painted_size == (width, height) && *painted == list);
-        self.repaint_split.build += t_build.elapsed();
+        if let Some(t_build) = t_build {
+            self.repaint_split.build += t_build.elapsed();
+        }
         if unchanged {
             self.surfaces[index].dirty = false;
             // A mid-tween surface still has to commit: a frame callback is only answered after
@@ -984,12 +987,11 @@ impl App {
             return;
         }
 
-        let t_gl = Instant::now();
-        // Another surface may have changed the current framebuffer, so re-establish it; bound
-        // surfaces always have shared EGL state.
+        let t_gl = timing.then(Instant::now);
         let Some(egl) = self.egl.as_ref() else {
             return;
         };
+        // Re-establish the surface when switching between surfaces; bound surfaces share EGL state.
         // ponytail: skip make_current when this exact surface is already current on the GL context.
         if self.current_egl_surface != Some(egl_surface) {
             if let Err(e) =
@@ -1038,7 +1040,9 @@ impl App {
             // changed, which is all of them after startup.
             painter.sync();
         }
-        self.repaint_split.gl += t_gl.elapsed();
+        if let Some(t_gl) = t_gl {
+            self.repaint_split.gl += t_gl.elapsed();
+        }
 
         if let Some(painter) = self.text_painter.as_mut() {
             // The context is current from `make_current` above, so a config shader can take a
@@ -1080,7 +1084,7 @@ impl App {
         }
         // ponytail: only the swap is guarded; khronos-egl's other wrappers (make_current etc.) still unwrap (upstream #25).
         use khronos_egl::api::EGL1_0;
-        let t_swap = Instant::now();
+        let t_swap = timing.then(Instant::now);
         // SAFETY: `egl_surface` was made current on `egl.display` above.
         if unsafe { khronos_egl::Static.eglSwapBuffers(egl.display.as_ptr(), egl_surface.as_ptr()) }
             == khronos_egl::FALSE
@@ -1091,7 +1095,9 @@ impl App {
             self.exit = true;
             return;
         }
-        self.repaint_split.swap += t_swap.elapsed();
+        if let Some(t_swap) = t_swap {
+            self.repaint_split.swap += t_swap.elapsed();
+        }
         // Record only after swap; otherwise an unpresented frame could make the next identical list
         // skip the paint the screen never received.
         self.surfaces[index].last_painted = Some(((width, height), list));

@@ -216,10 +216,6 @@ pub struct App {
     current_egl_surface: Option<EglSurface>,
 }
 
-/// Shortest gap between `malloc_trim` calls: a keystroke burst pays for one arena walk, not one
-/// per turn.
-const TRIM_INTERVAL: std::time::Duration = std::time::Duration::from_secs(30);
-
 /// Renderer main thread: Wayland, EGL, Lua, the retained `Scene`, and live signals (ADR-0039).
 /// `inbound_rx` carries socket-decoded `SupervisorFrame`s; `outbound_tx` carries every frame this
 /// thread sends back, including replies and lock reports. Ends
@@ -372,7 +368,7 @@ pub fn run(
     // Both `None` unless `mantle --profile`.
     let mut profile = idle_profile::IdleProfile::from_env();
     let mut memory = memory_profile::MemoryProfile::from_env();
-    let mut trimmed = std::time::Instant::now();
+    let mut was_active = false;
 
     loop {
         // `then` leaves the clock unread while the profile is off, as `idle_profile` promises.
@@ -543,6 +539,9 @@ pub fn run(
         // Skip focus maintenance on a truly idle turn (ADR-0124). It clones the focused tree to
         // find fields; at 66 turns/s on an open picker, that was most of the process's work.
         let active = dispatched || re_resolved || typed || !landed.is_empty();
+        if active {
+            was_active = true;
+        }
         // Disarm after the turn, not only when active: `dispatch_pending` armed this serial and
         // `apply_resolved_surface_state` is its only reader. This enforces ADR-0049's one-turn
         // real-input window.
@@ -639,17 +638,17 @@ pub fn run(
                 nix::poll::PollTimeout::try_from(millis.min(i32::MAX as u128) as i32)
                     .unwrap_or(nix::poll::PollTimeout::NONE)
             });
-            // Hand glibc's free lists back before sleeping, or they only ratchet up: 1.7 MiB over
-            // 90s here while `in_use` fell. `malloc_trim` is per-process, so no other process can
-            // do it for this one. Not a timer: an idle loop still never wakes (ADR-0124), this
-            // trims on the wake that ends it.
-            if trimmed.elapsed() >= TRIM_INTERVAL {
+            // Collect Lua garbage and hand glibc's free lists back to the OS before entering indefinite
+            // sleep (ADR-0124). Keystroke bursts and animations pay zero trims while running, and trim
+            // exactly once when settling into idle.
+            if was_active && timeout == nix::poll::PollTimeout::NONE {
+                let _ = app.client.lua().gc_collect();
                 // SAFETY: plain one-integer FFI. `malloc_trim` locks the arenas itself and only
                 // `madvise`s pages the allocator already holds free, never live chunks.
                 unsafe {
                     libc::malloc_trim(0);
                 }
-                trimmed = std::time::Instant::now();
+                was_active = false;
             }
             let woke = matches!(nix::poll::poll(&mut fds, timeout), Ok(n) if n > 0);
             let wayland_ready = woke && fds[0].any().unwrap_or(false);

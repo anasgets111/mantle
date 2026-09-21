@@ -290,6 +290,7 @@ impl TextPainter {
             Arc::clone(lines)
         } else {
             let lines = Arc::new(self.shaping.shape_lines(text, &runs_key, font_size, font));
+            // ponytail: 1024 entries bounds lines cache memory. Clears wholesale at cap like shaping cache. Upgrade path: per-frame generational epoch.
             if self.lines_cache_len >= 1024 {
                 self.lines_cache.clear();
                 self.lines_cache_len = 0;

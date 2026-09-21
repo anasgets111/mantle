@@ -268,7 +268,7 @@ pub struct ResolveSplit {
 
 /// One getenv for the process, like the profilers this feeds: `--profile` cannot come and go while
 /// the Renderer runs. Off, [`open_span`] reads no clock, the switch `Phases` already uses.
-fn timing_on() -> bool {
+pub(crate) fn timing_on() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *ON.get_or_init(|| shared::profile_interval().is_some())
 }

@@ -530,8 +530,8 @@ impl ImageCache {
 
     /// Uploaded texture for `path`, or `None` for a once-logged failure or pending background load.
     /// `box_px` is physical pixels: SVGs use their longest edge; rasters cover without upscaling.
-    /// The canvas must be current on the sole painting thread (ADR-0039). Stat every call, hits
-    /// included, because the key carries [`FileVersion`]: ten icons at 60Hz means 600 stats/sec.
+    /// The canvas must be current on the sole painting thread (ADR-0039). Static system assets
+    /// bypass stat; dynamic paths check [`FileVersion`].
     ///
     /// `Load::Inline` reads and rasterizes inside the frame, also the Wayland dispatch/config-VM
     /// thread (ADR-0039). That keeps a wallpaper's first frame whole; tile grids use

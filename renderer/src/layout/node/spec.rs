@@ -157,18 +157,18 @@ pub fn parse_list_children(properties: &PropMap) -> Result<Vec<VirtualNode>, Lay
 
     // ponytail: limit bounds item construction for search/launchers. Upgrade path: viewport windowing (ADR-0191).
     let limit = match properties.get("limit") {
-        Some(Value::Integer(n)) if *n >= 0 => (*n as usize).min(MAX_ARRAY_ELEMENTS),
-        Some(Value::Number(n)) if *n >= 0.0 && n.fract() == 0.0 => (*n as usize).min(MAX_ARRAY_ELEMENTS),
+        Some(Value::Integer(n)) if *n >= 0 => Some((*n as usize).min(MAX_ARRAY_ELEMENTS)),
+        Some(Value::Number(n)) if *n >= 0.0 && n.fract() == 0.0 => Some((*n as usize).min(MAX_ARRAY_ELEMENTS)),
         Some(other) => {
             return Err(invalid("limit", format!("expected a non-negative integer, got {}", preview_for_error(other))));
         }
-        None => MAX_ARRAY_ELEMENTS,
+        None => None,
     };
 
-    let mut children = Vec::with_capacity(source.raw_len().min(limit));
+    let mut children = Vec::with_capacity(source.raw_len().min(limit.unwrap_or(MAX_ARRAY_ELEMENTS)));
     let mut seen_keys: HashSet<String> = HashSet::new();
     for element in source.sequence_values::<Value>() {
-        if children.len() == limit {
+        if limit.is_some_and(|lim| children.len() == lim) {
             break;
         }
         if children.len() == MAX_ARRAY_ELEMENTS {

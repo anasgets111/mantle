@@ -109,9 +109,12 @@ pub fn execute(
     let frame = Frame { size: target_size, origin: (0.0, 0.0), transform: None };
     run(painter, &mut walk, &list.commands, RenderTarget::Screen, frame);
     painter.canvas_mut().reset_scissor();
-    let t_flush = Instant::now();
+    let timing = crate::layout::scene::timing_on();
+    let t_flush = timing.then(Instant::now);
     painter.canvas_mut().flush();
-    walk.split.flush += t_flush.elapsed();
+    if let Some(t_flush) = t_flush {
+        walk.split.flush += t_flush.elapsed();
+    }
     // Recycle scratch targets only after flush; femtovg still executes queued calls at flush, as
     // `release_shadow_images` does for drop-shadow targets.
     painter.recycle_scratch(std::mem::take(&mut walk.scratch));
@@ -122,7 +125,7 @@ pub fn execute(
 /// holds offscreen images until [`execute`] flushes.
 fn run(painter: &mut TextPainter, walk: &mut Walk<'_, '_>, commands: &[DrawCmd], target: RenderTarget, frame: Frame) {
     let scale = walk.scale;
-    // ponytail: avoid redundant scissor calls that break FemtoVG draw call batching. Reset on nested targets.
+    let timing = crate::layout::scene::timing_on();
     let mut current_clip: Option<PhysicalRect> = None;
     for command in commands {
         // `command.clip` already contains every ancestor intersection, so set the final scissor.
@@ -139,16 +142,18 @@ fn run(painter: &mut TextPainter, walk: &mut Walk<'_, '_>, commands: &[DrawCmd],
         let rect = command.rect;
         match &command.draw {
             Draw::Box { background, radius, colors, widths } => {
-                let t0 = Instant::now();
+                let t0 = timing.then(Instant::now);
                 // `None` skips the fill; alpha 0 remains an explicit transparent rect.
                 if let Some(color) = background {
                     fill_rect(painter.canvas_mut(), rect, *radius, *color);
                 }
                 paint_border(painter.canvas_mut(), rect, *radius, *colors, *widths, scale);
-                walk.split.boxes += t0.elapsed();
+                if let Some(t0) = t0 {
+                    walk.split.boxes += t0.elapsed();
+                }
             }
             Draw::Text { content, runs, font_size, font, color, align, centered, caret } => {
-                let t0 = Instant::now();
+                let t0 = timing.then(Instant::now);
                 let mut rect = rect;
                 if *centered {
                     rect.y += ((rect.height - crate::text::shaping::line_height(*font_size)) / 2.0).max(0.0);
@@ -166,10 +171,12 @@ fn run(painter: &mut TextPainter, walk: &mut Walk<'_, '_>, commands: &[DrawCmd],
                     rect,
                     scale,
                 );
-                walk.split.text += t0.elapsed();
+                if let Some(t0) = t0 {
+                    walk.split.text += t0.elapsed();
+                }
             }
             Draw::Icon { name, px, alpha, color } => {
-                let t0 = Instant::now();
+                let t0 = timing.then(Instant::now);
                 // `freedesktop-icons` uses `u16`; themes have no directory above 512.
                 if let Some(path) = image::icons::resolve(name, (*px).min(512) as u16) {
                     let draw = FileDraw {
@@ -183,7 +190,9 @@ fn run(painter: &mut TextPainter, walk: &mut Walk<'_, '_>, commands: &[DrawCmd],
                     };
                     let _ = draw_file(painter.canvas_mut(), walk.images, &path, draw);
                 }
-                walk.split.icons += t0.elapsed();
+                if let Some(t0) = t0 {
+                    walk.split.icons += t0.elapsed();
+                }
             }
             Draw::Image { node, source, fit, box_px, alpha, load, retained, dissolve, shader, blur_px } => {
                 let draw = FileDraw {
