@@ -339,52 +339,45 @@ fn is_structural_property(kind: &str, property: &str) -> bool {
 /// nothing downstream looked at: deferring would mean keeping the getter around to re-run later,
 /// the second read this function prevents.
 ///
-/// ponytail: one fresh `HashMap` per node per pass, not reusing the retained node's allocation
-/// across passes. Costs more now that ADR-0044 decision 2's dirty flag makes a pass a per-push,
-/// not per-config-edit, event on the dispatch thread. Upgrade path: resolve in place over the
-/// retained map, reordering the reconcile match before resolution.
-///
-/// ponytail: every property *holding a `Signal`* is evaluated every pass, paint-only ones
-/// included (`background`, `color`, `radius`), each buying its own ADR-0021 5ms budget, so
-/// four signal-bound paint properties cost four budgets in a pass ADR-0044 decision 2 now runs per
-/// capability push. Upgrade path: [`parse_edge_insets`]'s `ponytail:` whole-pass budget.
-pub fn resolve_properties(properties: PropMap, kind: &str, lua: &Lua) -> Result<PropMap, LayoutError> {
-    // Sorted, and the sort is the point: unsorted, two failing properties on one node name
-    // whichever bucket the hasher put first. `renderer/src/socket/client.rs` puts this message in the
-    // `rescue` global's `error_log` for a human to read (ADR-0024), so which one a broken config
-    // names must come from the config. `two_failing_properties_always_report_the_same_one` guards
-    // it. Taken by value so an unresolved entry moves rather than being copied (ADR-0218).
-    let mut entries: Vec<(&'static str, Value)> = properties.into_iter().collect();
-    entries.sort_unstable_by_key(|(property, _)| *property);
-    let mut resolved = PropMap::with_capacity_and_hasher(entries.len(), Default::default());
-    for (property, value) in entries {
-        if is_structural_property(kind, property) {
-            resolved.insert(property, value);
-            continue;
-        }
-        let Value::UserData(ud) = &value else {
-            resolved.insert(property, value);
-            continue;
-        };
-        let Some(signal) = signal::from_userdata(ud) else {
-            resolved.insert(property, value);
-            continue;
-        };
-        // Name the node kind: a config has many `background`s, and the bare property left a reader
-        // grepping every one of them. `Scene::apply_admitting` adds the surface.
-        let value = signal
-            .get_value(lua)
-            .map_err(|e| invalid(property, format!("Signal getter on a `{kind}` node failed: {e}")))?;
-        match value {
-            Value::UserData(_) => {
-                return Err(invalid(
-                    property,
-                    "a Signal resolved to another Signal -- resolution happens exactly once, not to a fixed point",
-                ));
+/// Evaluates every property holding a [`crate::lua::signal::Signal`] once per pass. Non-signal
+/// properties remain untouched in the map. When no signals are present, resolution completes
+/// in place with no allocations or sorting.
+pub fn resolve_properties(mut properties: PropMap, kind: &str, lua: &Lua) -> Result<PropMap, LayoutError> {
+    if properties.values().any(|v| matches!(v, Value::UserData(_))) {
+        // Sorted, and the sort is the point: unsorted, two failing properties on one node name
+        // whichever bucket the hasher put first. `renderer/src/socket/client.rs` puts this message in the
+        // `rescue` global's `error_log` for a human to read (ADR-0024), so which one a broken config
+        // names must come from the config. `two_failing_properties_always_report_the_same_one` guards it.
+        let mut keys: Vec<&'static str> = properties.keys().copied().collect();
+        keys.sort_unstable();
+        for property in keys {
+            if is_structural_property(kind, property) {
+                continue;
             }
-            Value::Nil => {}
-            value => {
-                resolved.insert(property, value);
+            let Some(Value::UserData(ud)) = properties.get(property) else {
+                continue;
+            };
+            let Some(signal) = signal::from_userdata(ud) else {
+                continue;
+            };
+            // Name the node kind: a config has many `background`s, and the bare property left a reader
+            // grepping every one of them. `Scene::apply_admitting` adds the surface.
+            let value = signal
+                .get_value(lua)
+                .map_err(|e| invalid(property, format!("Signal getter on a `{kind}` node failed: {e}")))?;
+            match value {
+                Value::UserData(_) => {
+                    return Err(invalid(
+                        property,
+                        "a Signal resolved to another Signal -- resolution happens exactly once, not to a fixed point",
+                    ));
+                }
+                Value::Nil => {
+                    properties.remove(property);
+                }
+                value => {
+                    properties.insert(property, value);
+                }
             }
         }
     }
@@ -393,13 +386,13 @@ pub fn resolve_properties(properties: PropMap, kind: &str, lua: &Lua) -> Result<
     // Without a slot the callback is unreachable, and this is the kind of silence
     // `deserialize_lua_table`'s unknown-key rejection exists to end: a config that declared it
     // would watch a handler never fire with nothing anywhere saying why.
-    if resolved.contains_key("on_hover") && !resolved.contains_key("hover") {
+    if properties.contains_key("on_hover") && !properties.contains_key("hover") {
         return Err(invalid(
             "on_hover",
             "declared without a `hover` slot on the same node -- add `hover = hover(\"a-name\")`, which is what remembers whether this node was hovered last pass, and so what tells its crossings from another node's",
         ));
     }
-    Ok(resolved)
+    Ok(properties)
 }
 
 /// The carve-outs from decision 1's "parsers resolve a `Signal`" rule: [`SurfaceTopology`]'s five

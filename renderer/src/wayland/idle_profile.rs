@@ -38,11 +38,11 @@ impl Turn {
     /// surface asked for by deadline -- an animated image (ADR-0233) -- moves pixels while every
     /// other flag here stays false, and a permanent false `SPIN` teaches the reader to ignore it.
     fn did_work(self) -> bool {
-        self.dispatched || self.re_resolved || self.typed || self.decoded || self.drawn > 0
+        self.dispatched || self.re_resolved || self.ticked || self.typed || self.decoded || self.drawn > 0
     }
 }
 
-/// Measured phase times. Each turn costs three `clock_gettime` calls when enabled; with the profile
+/// Measured phase times. Each turn costs four `clock_gettime` calls when enabled; with the profile
 /// off, `mark` branches on `None` and the loop touches no clock. The split explains `drawn=0`, so
 /// it shares the main switch rather than adding another environment variable.
 #[derive(Clone, Copy, Default)]
@@ -50,6 +50,7 @@ pub struct Phases {
     /// Current phase start, or `None` when profiling is off.
     at: Option<Instant>,
     resolve: Duration,
+    tick: Duration,
     surface_state: Duration,
     repaint: Duration,
     resolve_split: crate::layout::scene::ResolveSplit,
@@ -72,6 +73,10 @@ impl Phases {
 
     pub fn mark_resolve(&mut self) {
         self.resolve = self.split();
+    }
+
+    pub fn mark_tick(&mut self) {
+        self.tick = self.split();
     }
 
     /// The three-way breakdown of the phase `mark_resolve` just closed, which `Scene` accumulated
@@ -122,6 +127,7 @@ pub struct Counters {
     resolve_solve: Duration,
     surface_state: Duration,
     repaint: Duration,
+    tick: Duration,
     dispatch_cpu: Duration,
     focus_turns: u64,
     focus_searched: u64,
@@ -241,6 +247,7 @@ impl IdleProfile {
         c.resolve_solve += phases.resolve_split.solve;
         c.surface_state += phases.surface_state;
         c.repaint += phases.repaint;
+        c.tick += phases.tick;
 
         let elapsed = self.window_started.elapsed();
         if elapsed < self.interval {
@@ -265,7 +272,7 @@ fn render(window: Duration, c: &Counters, cpu: Cpu) -> String {
     format!(
         "idle {:.1}s: turns={} idle={} cpu proc={:.2}% main={:.2}% | wake wl={} wake={} both={} none={} \
          | work dispatch={} resolve={} tick={} type={} decode={} paint={} drawn={} \
-         | ms resolve={:.1} (clone={:.1} props={:.1} solve={:.1}) surfstate={:.1} repaint={:.1} dispatch={:.1} \
+         | ms resolve={:.1} (clone={:.1} props={:.1} solve={:.1}) surfstate={:.1} repaint={:.1} tick={:.1} dispatch={:.1} \
          | focus turns={} searched={} redundant={} ms={:.1} redundant={:.1} ({:.2}% of a core){}",
         secs,
         c.turns,
@@ -289,6 +296,7 @@ fn render(window: Duration, c: &Counters, cpu: Cpu) -> String {
         c.resolve_solve.as_secs_f64() * 1000.0,
         c.surface_state.as_secs_f64() * 1000.0,
         c.repaint.as_secs_f64() * 1000.0,
+        c.tick.as_secs_f64() * 1000.0,
         c.dispatch_cpu.as_secs_f64() * 1000.0,
         c.focus_turns,
         c.focus_searched,
@@ -313,6 +321,7 @@ mod tests {
         assert!(!Turn { painted: true, ..Turn::default() }.did_work(), "a list built and skipped moved nothing");
         assert!(Turn { drawn: 1, ..Turn::default() }.did_work(), "a swapped surface is work, whatever asked for it");
         assert!(Turn { re_resolved: true, ..Turn::default() }.did_work());
+        assert!(Turn { ticked: true, ..Turn::default() }.did_work());
     }
 
     #[test]
@@ -353,10 +362,11 @@ mod tests {
     fn phases_with_the_profile_off_read_no_clock_and_report_nothing() {
         let mut phases = Phases::start(false);
         phases.mark_resolve();
+        phases.mark_tick();
         phases.mark_surface_state();
         phases.mark_repaint();
         assert!(phases.at.is_none());
-        assert_eq!((phases.resolve, phases.surface_state, phases.repaint), Default::default());
+        assert_eq!((phases.resolve, phases.tick, phases.surface_state, phases.repaint), Default::default());
     }
 
     #[test]

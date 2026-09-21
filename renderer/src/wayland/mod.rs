@@ -466,6 +466,8 @@ pub fn run(
         // rules out the narrowed repaint, and only a pass makes every surface's protocol state
         // worth re-deriving.
         let passed = app.client.re_resolve_if_dirty();
+        phases.mark_resolve();
+        phases.mark_resolve_split(app.client.take_resolve_split());
         // A frame callback is the tween clock (ADR-0145). Taken every turn so a callback that
         // arrives with a push is answered by this repaint, not repeated next turn. A turn that
         // re-resolved skips the tick: the pass's `retarget` already advanced every visible tween
@@ -475,9 +477,8 @@ pub fn run(
         } else {
             Vec::new()
         };
+        phases.mark_tick();
         let re_resolved = passed || !ticked.is_empty();
-        phases.mark_resolve();
-        phases.mark_resolve_split(app.client.take_resolve_split());
         // Take unconditionally so a keystroke arriving with a push is covered by this repaint, not
         // repeated next turn.
         let typed = std::mem::take(&mut app.field_input_changed);
@@ -563,7 +564,7 @@ pub fn run(
             profile.turn(
                 idle_profile::Turn {
                     dispatched,
-                    re_resolved,
+                    re_resolved: passed,
                     ticked: !ticked.is_empty(),
                     typed,
                     decoded: !landed.is_empty(),
