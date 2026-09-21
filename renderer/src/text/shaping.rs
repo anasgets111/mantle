@@ -516,6 +516,15 @@ impl ShapingHandle {
         let _ = reply_rx.recv();
     }
 
+    /// Drops cached measurements when settling into idle.
+    pub fn trim_cache(&self) {
+        let mut cache = self.cache.lock().unwrap_or_else(PoisonError::into_inner);
+        if !cache.is_empty() {
+            cache.clear();
+            cache.shrink_to_fit();
+        }
+    }
+
     /// How many measurements are memoized. Test-only: exposing this in production would invite a
     /// caller to reason about cache state instead of treating [`shape`](Self::shape) as pure.
     #[cfg(test)]
@@ -534,7 +543,9 @@ impl ShapingHandle {
         let bytes: usize = cache
             .iter()
             .map(|(key, result)| {
-                let key_bytes = key.text.len() + key.runs.len() * std::mem::size_of::<FontRun>();
+                let key_bytes = key.text.len()
+                    + key.runs.len() * std::mem::size_of::<FontRun>()
+                    + key.font.as_deref().map_or(0, str::len);
                 let line_bytes: usize = result.lines.iter().map(String::len).sum();
                 let range_bytes = result.line_ranges.len() * std::mem::size_of::<Range<usize>>();
                 let glyph_bytes: usize = result
@@ -1715,5 +1726,16 @@ mod tests {
         });
         assert!(wrapped.height > unconstrained.height, "wrapping onto more lines must grow the measured height");
         assert!(wrapped.width <= unconstrained.width, "a wrapped line can't be wider than the unconstrained text");
+    }
+
+    #[test]
+    fn trim_cache_drops_entries_when_idle() {
+        let handle = ShapingHandle::spawn();
+        for i in 0..10 {
+            let _ = handle.shape(req(&format!("small text {i}"), 14.0));
+        }
+        assert_eq!(handle.cached_len(), 10);
+        handle.trim_cache();
+        assert_eq!(handle.cached_len(), 0, "entries cleared while idle");
     }
 }

@@ -638,11 +638,12 @@ pub fn run(
                 nix::poll::PollTimeout::try_from(millis.min(i32::MAX as u128) as i32)
                     .unwrap_or(nix::poll::PollTimeout::NONE)
             });
-            // Collect Lua garbage and hand glibc's free lists back to the OS before entering indefinite
-            // sleep (ADR-0124). Keystroke bursts and animations pay zero trims while running, and trim
-            // exactly once when settling into idle.
+            // Collect Lua garbage and hand glibc's free lists back to the OS before entering
+            // indefinite sleep (ADR-0124). Keystroke bursts and animations pay zero trims while
+            // running, and trim exactly once when settling into idle.
             if was_active && timeout == nix::poll::PollTimeout::NONE {
                 let _ = app.client.lua().gc_collect();
+                app.shaping.trim_cache();
                 // SAFETY: plain one-integer FFI. `malloc_trim` locks the arenas itself and only
                 // `madvise`s pages the allocator already holds free, never live chunks.
                 unsafe {
