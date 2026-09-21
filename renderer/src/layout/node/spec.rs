@@ -155,9 +155,22 @@ pub fn parse_list_children(properties: &PropMap) -> Result<Vec<VirtualNode>, Lay
         None => None,
     };
 
-    let mut children = Vec::with_capacity(source.raw_len().min(MAX_ARRAY_ELEMENTS));
+    // ponytail: limit bounds item construction for search/launchers. Upgrade path: viewport windowing (ADR-0191).
+    let limit = match properties.get("limit") {
+        Some(Value::Integer(n)) if *n >= 0 => (*n as usize).min(MAX_ARRAY_ELEMENTS),
+        Some(Value::Number(n)) if *n >= 0.0 && n.fract() == 0.0 => (*n as usize).min(MAX_ARRAY_ELEMENTS),
+        Some(other) => {
+            return Err(invalid("limit", format!("expected a non-negative integer, got {}", preview_for_error(other))));
+        }
+        None => MAX_ARRAY_ELEMENTS,
+    };
+
+    let mut children = Vec::with_capacity(source.raw_len().min(limit));
     let mut seen_keys: HashSet<String> = HashSet::new();
     for element in source.sequence_values::<Value>() {
+        if children.len() == limit {
+            break;
+        }
         if children.len() == MAX_ARRAY_ELEMENTS {
             return Err(invalid("source", format!("more than {MAX_ARRAY_ELEMENTS} items in one list")));
         }
@@ -515,5 +528,27 @@ mod tests {
         properties.insert("children", Value::Table(table));
 
         assert_eq!(parse_children(&properties).unwrap().len(), 2);
+    }
+
+    #[test]
+    fn parse_list_children_bounds_to_limit_and_refuses_invalid_values() {
+        let lua = lua();
+        crate::lua::nodes::register_node_constructors(&lua).unwrap();
+        let eval = |s: &str| -> Result<usize, LayoutError> {
+            let t: mlua::Table = lua.load(s).eval().unwrap();
+            parse_list_children(&props_from_table(&t)).map(|c| c.len())
+        };
+        assert_eq!(
+            eval("return list { source = { 1, 2, 3, 4 }, limit = 2, itemfn = function(i) return rect { width = i, height = i } end }").unwrap(),
+            2
+        );
+        assert_eq!(
+            eval("return list { source = { 1, 2 }, limit = 0, itemfn = function() error('unreached') end }").unwrap(),
+            0
+        );
+        assert!(matches!(
+            eval("return list { source = { 1 }, limit = -1, itemfn = function() return rect {} end }").unwrap_err(),
+            LayoutError::InvalidProperty { property, .. } if property == "limit"
+        ));
     }
 }

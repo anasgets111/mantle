@@ -159,6 +159,7 @@
 ---@field source any[]|Bound A flat array table, or a signal wrapping one. A literal array is legal and stays fixed; the signal is what makes the list rebuild.
 ---@field itemfn fun(item: any): Node Built for every element.
 ---@field key? fun(item: any): string Maps an element to a stable string. Items reconcile by key, so inserting one rebuilds one. Duplicate keys are an error. Without it items match by index and an insertion rebuilds everything after it.
+---@field limit? integer|Bound Max number of items to build from `source`. Caps item construction for long sources such as search results.
 ---@field direction? "Vertical"|"Horizontal"|Bound Default `"Vertical"`. Which way the generated items stack.
 ---@field spacing? number|Bound Pixels between generated items, along `direction`.
 ---@field scroll? Bound The signal `scroll(name)` returned. Makes this a viewport its children move inside.

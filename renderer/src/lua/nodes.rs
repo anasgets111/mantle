@@ -82,7 +82,7 @@ const NODE_PROPERTIES: &[(&str, &[&str])] = &[
     ("icon", &["foreground", "name", "size"]),
     ("image", &["async", "fit", "retain", "source", "source_blur", "transition"]),
     ("button", &["children", "on_click", "on_drag", "on_wheel", "submit"]),
-    ("list", &["direction", "itemfn", "key", "scroll", "source", "spacing"]),
+    ("list", &["direction", "itemfn", "key", "limit", "scroll", "source", "spacing"]),
     // `node::paint_style` reads these for `textfield`, which draws a placeholder or masked content.
     (
         "textfield",

@@ -261,6 +261,7 @@ pub struct Scene {
 #[derive(Clone, Copy, Default)]
 pub struct ResolveSplit {
     pub clone: Duration,
+    pub list: Duration,
     pub resolve: Duration,
     pub solve: Duration,
 }
@@ -1429,7 +1430,14 @@ fn prepare(
         return Ok(node);
     }
 
-    let fresh_children = children_of(kind, &node.properties)?;
+    let fresh_children = if kind == "list" {
+        let mut at = open_span();
+        let res = children_of(kind, &node.properties);
+        close(&mut at, &mut scene.resolve_split.list);
+        res?
+    } else {
+        children_of(kind, &node.properties)?
+    };
     let (matched_candidates, mut unclaimed) =
         pair_children_by_id_then_position(&fresh_children, std::mem::take(&mut node.frozen))?;
     let own_axis = main_axis_of(kind, &node.properties)?;
