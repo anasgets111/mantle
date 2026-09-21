@@ -213,6 +213,7 @@ pub struct App {
     /// mapped surfaces and declines most, so the aggregate count matters.
     surfaces_drawn: usize,
     repaint_split: surface::RepaintSplit,
+    current_egl_surface: Option<EglSurface>,
 }
 
 /// Shortest gap between `malloc_trim` calls: a keystroke burst pays for one arena walk, not one
@@ -319,6 +320,7 @@ pub fn run(
         animation_frame_due: false,
         surfaces_drawn: 0,
         repaint_split: surface::RepaintSplit::default(),
+        current_egl_surface: None,
     };
 
     // Binding delivers outputs and seat capabilities as a burst; two roundtrips populate the

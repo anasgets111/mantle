@@ -133,6 +133,15 @@ pub struct FileVersion {
 
 impl FileVersion {
     pub fn read(path: &Path) -> Self {
+        // ponytail: system assets under /usr, /nix, /var/lib/flatpak, or /opt are static.
+        // Skipping stat avoids thousands of redundant filesystem queries per second for theme icons.
+        if path.starts_with("/usr")
+            || path.starts_with("/nix")
+            || path.starts_with("/var/lib/flatpak")
+            || path.starts_with("/opt")
+        {
+            return FileVersion::default();
+        }
         let Ok(metadata) = std::fs::metadata(path) else {
             return FileVersion::default();
         };

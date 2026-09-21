@@ -469,6 +469,7 @@ impl App {
             // the dead one bound: the next swap failed with EGL_BAD_SURFACE and quit the Renderer.
             // Every paint makes its own surface current again.
             let _ = egl.instance.make_current(egl.display, None, None, None);
+            self.current_egl_surface = None;
             if let Err(err) = egl.instance.destroy_surface(egl.display, bound.egl_surface) {
                 log_bind_failure(&self.surfaces[index].surface_id, "eglDestroySurface", err);
             }
@@ -889,6 +890,7 @@ impl App {
             self.exit = true;
             return false;
         }
+        self.current_egl_surface = Some(egl_surface);
 
         // Request non-blocking swaps on each newly current surface. EGL defaults to 1, which would
         // stall this same thread's Wayland dispatch, Supervisor reads, and input. Today the loop
@@ -988,11 +990,16 @@ impl App {
         let Some(egl) = self.egl.as_ref() else {
             return;
         };
-        if let Err(e) = egl.instance.make_current(egl.display, Some(egl_surface), Some(egl_surface), Some(egl.context))
-        {
-            log_bind_failure(&surface_id, "eglMakeCurrent", e);
-            self.exit = true;
-            return;
+        // ponytail: skip make_current when this exact surface is already current on the GL context.
+        if self.current_egl_surface != Some(egl_surface) {
+            if let Err(e) =
+                egl.instance.make_current(egl.display, Some(egl_surface), Some(egl_surface), Some(egl.context))
+            {
+                log_bind_failure(&surface_id, "eglMakeCurrent", e);
+                self.exit = true;
+                return;
+            }
+            self.current_egl_surface = Some(egl_surface);
         }
 
         // SAFETY: the `eglMakeCurrent` above is the only live context on this thread and matches
