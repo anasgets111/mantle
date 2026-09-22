@@ -1132,9 +1132,14 @@ pub fn retarget(
                 // fresh spec whole would stop a moving spring dead on the first pass any unrelated
                 // signal caused, so one whose constants still match carries the spring across.
                 // Only the spring: the rest of the entry is re-read, so an edited `delay` lands on
-                // a spring already moving. Editing a constant takes the new spring at its parsed
+                // a spring still in its lead-in. Editing a constant takes the new spring at its parsed
                 // rest -- either way the run continues, it is the motion under it that changed.
                 let mut spec = spec;
+                // A delay only means something before motion starts; re-reading it after that would
+                // rewind the run, as a staggered card does when a newcomer shifts its index.
+                if now.saturating_duration_since(running.started) >= running.spec.delay {
+                    spec.delay = running.spec.delay;
+                }
                 if let (Motion::Spring(fresh), Motion::Spring(prior)) = (&spec.motion, &running.spec.motion)
                     && fresh.constants() == prior.constants()
                 {
@@ -2045,6 +2050,31 @@ mod tests {
         // The delay is added to the life of the tween, not taken out of it.
         assert!(!tween.done(started + Duration::from_millis(100)));
         assert!(tween.done(started + Duration::from_millis(150)));
+    }
+
+    #[test]
+    fn a_pass_that_lengthens_the_delay_of_a_moving_tween_does_not_rewind_it() {
+        let lua = Lua::new();
+        let started = Instant::now();
+        let running = [Tween {
+            property: "width",
+            from: Animatable::Number(0.0),
+            to: Animatable::Number(100.0),
+            started,
+            spec: AnimationSpec {
+                motion: Motion::Eased { duration: Duration::from_millis(200), easing: Easing::Linear },
+                delay: Duration::ZERO,
+                from: None,
+            },
+            resting: false,
+        }];
+        let shown: PropMap = PropMap::from_iter([("width", Value::Number(50.0))]);
+        let mut properties =
+            rect_props(&lua, "return { width = 100, animate = { width = { duration = 200, delay = 120 } } }");
+        let now = started + Duration::from_millis(100);
+        retarget("rect", Some((&running[..], &shown)), &mut properties, now, &lua).unwrap();
+        let displayed = Animatable::from_value("width", properties.get("width")).unwrap();
+        assert_eq!(displayed, Some(Animatable::Number(50.0)), "halfway stays halfway");
     }
 
     /// A delay offsets a sequence's whole run once, not each time round: the phase is measured
