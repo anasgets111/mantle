@@ -304,6 +304,43 @@ pub(in crate::wayland) fn rect_table(lua: &Lua, rect: LogicalRect) -> mlua::Resu
     Ok(table)
 }
 
+/// Writes one node's hover answer: the boolean, the rect it was crossed at, then its `on_hover`.
+///
+/// The rect precedes the callback because a handler is documented to read `hover_rect(name)` for
+/// the crossing it was called for; writing it after would hand a per-item tooltip the rect of the
+/// item left behind, or the startup placeholder on a first hover.
+fn apply_hover_write(lua: &Lua, write: layout::hover::HoverWrite, fires_on_hover: bool, surface_id: &str) {
+    // Non-hover signals stay untouched, so `hover = mantle.network` cannot overwrite a
+    // capability snapshot (ADR-0062 decision 2).
+    let Some(handle) = write.signal.hover_handle() else {
+        return;
+    };
+    // The boolean gates rect and callback writes.
+    let crossed = handle.set_changed(mlua::Value::Boolean(write.hovered));
+    if !crossed {
+        return;
+    }
+    // Rects are edge-only, not merely an optimization: mlua table equality is identity, so
+    // a fresh equal table would undo decision 4 on every motion.
+    if let Some(rect) = write.rect
+        && let Some(rect_handle) = write.signal.hover_rect_handle()
+    {
+        match rect_table(lua, rect) {
+            Ok(table) => rect_handle.set(mlua::Value::Table(table)),
+            // The boolean landed; keep the last tooltip position on table-build failure.
+            Err(err) => warn!("{surface_id}: could not build a hover rect: {err}"),
+        }
+    }
+    // Fire only on edges (ADR-0095): device-rate motion could call a handler hundreds of
+    // times across one button. Swallow handler errors like `fire_on_click`.
+    if fires_on_hover
+        && let Some(on_hover) = &write.on_hover
+        && let Err(err) = on_hover.call::<()>(write.hovered)
+    {
+        warn!("{surface_id}: on_hover handler raised: {err}");
+    }
+}
+
 /// Pointer input to `on_click` (ADR-0050); dispatch is delegated by `delegate_dispatch2!(App)`.
 impl PointerHandler for App {
     fn pointer_frame(
@@ -687,34 +724,7 @@ impl App {
         let writes = layout::hover::hover_writes(tree, point);
         let lua = self.client.lua();
         for write in writes {
-            // Non-hover signals stay untouched, so `hover = mantle.network` cannot overwrite a
-            // capability snapshot (ADR-0062 decision 2).
-            let Some(handle) = write.signal.hover_handle() else {
-                continue;
-            };
-            // The boolean gates rect and callback writes.
-            let crossed = handle.set_changed(mlua::Value::Boolean(write.hovered));
-            // Fire only on edges (ADR-0095): device-rate motion could call a handler hundreds of
-            // times across one button. Swallow handler errors like `fire_on_click`.
-            if crossed
-                && update.fires_on_hover()
-                && let Some(on_hover) = &write.on_hover
-                && let Err(err) = on_hover.call::<()>(write.hovered)
-            {
-                warn!("{}: on_hover handler raised: {err}", self.surfaces[index].surface_id);
-            }
-            // Rects are edge-only, not merely an optimization: mlua table equality is identity, so
-            // a fresh equal table would undo decision 4 on every motion.
-            if crossed
-                && let Some(rect) = write.rect
-                && let Some(rect_handle) = write.signal.hover_rect_handle()
-            {
-                match rect_table(lua, rect) {
-                    Ok(table) => rect_handle.set(mlua::Value::Table(table)),
-                    // The boolean landed; keep the last tooltip position on table-build failure.
-                    Err(err) => warn!("{}: could not build a hover rect: {err}", self.surfaces[index].surface_id),
-                }
-            }
+            apply_hover_write(lua, write, update.fires_on_hover(), &self.surfaces[index].surface_id);
         }
     }
 
@@ -737,6 +747,35 @@ mod tests {
     fn pointer_hover_updates_fire_callbacks_but_layout_refreshes_do_not() {
         assert!(HoverUpdate::Pointer.fires_on_hover(), "Enter, Motion, and Leave are user input");
         assert!(!HoverUpdate::Layout.fires_on_hover(), "layout movement under a resting pointer is silent");
+    }
+
+    /// A per-item tooltip reads the hovered item's rect in `on_hover` to place itself, so the
+    /// crossing's rect has to be there when the handler runs.
+    #[test]
+    fn on_hover_reads_the_rect_of_the_crossing_it_was_called_for() {
+        let lua = Lua::new();
+        let (signal, rect_signal) =
+            crate::lua::signal::Signal::new_hover(crate::lua::signal::DirtyFlag::new(), mlua::Value::Boolean(false));
+        let seen = std::rc::Rc::new(std::cell::RefCell::new(None));
+        let sink = std::rc::Rc::clone(&seen);
+        let read_rect = rect_signal.clone();
+        let on_hover = lua
+            .create_function(move |lua, _hovered: bool| {
+                let mlua::Value::Table(rect) = read_rect.get_value(lua).unwrap() else { panic!("a rect table") };
+                *sink.borrow_mut() = Some(rect.get::<f32>("x").unwrap());
+                Ok(())
+            })
+            .unwrap();
+
+        let write = layout::hover::HoverWrite {
+            signal,
+            hovered: true,
+            rect: Some(LogicalRect { x: 140.0, y: 0.0, width: 24.0, height: 24.0 }),
+            on_hover: Some(on_hover),
+        };
+        apply_hover_write(&lua, write, true, "bar");
+
+        assert_eq!(*seen.borrow(), Some(140.0), "the handler saw this crossing, not the one before it");
     }
 
     /// ADR-0069 decision 6. The rest of `scroll_at` needs a compositor to deliver a notch;
