@@ -110,6 +110,8 @@ pub fn init(tag: &'static str, verbose: u8) {
             },
         }
     }
+    // Last, so a parsed `lua=` override matches first (ADR-0245).
+    overrides.push(("lua".to_string(), Some(Level::Debug(3))));
 
     let _ = CONFIG.set(Config { tag, default, overrides });
 

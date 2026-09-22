@@ -73,6 +73,22 @@ json = {}
 ---@return any value, string? error
 function json.decode(text) end
 
+log = {}
+
+---Writes a stamped, levelled line to the shell's log. Every level prints without `-v`; only
+---`MANTLE_LOG=lua=warn` or `lua=off` filters these. Arguments are joined like `print`'s.
+---@param ... any
+function log.error(...) end
+
+---@param ... any
+function log.warn(...) end
+
+---@param ... any
+function log.info(...) end
+
+---@param ... any
+function log.debug(...) end
+
 process = {}
 
 ---Declares what `mantle call <name>` runs (ADR-0197).

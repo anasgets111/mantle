@@ -8,6 +8,7 @@ pub mod fonts;
 pub mod fuzzy;
 pub mod idle;
 pub mod json;
+pub mod log;
 pub mod marshal;
 pub mod namespace;
 pub mod nodes;
@@ -131,6 +132,7 @@ impl Loader {
         nodes::register_node_constructors(&lua)?;
         action::register(&lua)?;
         json::register(&lua)?;
+        log::register(&lua)?;
         fonts::register(&lua)?;
         fuzzy::register(&lua)?;
         signal::register(&lua, dirty)?;
@@ -515,12 +517,12 @@ mod tests {
         assert!(year >= 2024, "os.date has to be the real one, not a stub: got {year}");
     }
 
-    /// Every engine global, and every member of the engine-owned `os`/`process`/`json`, has a
+    /// Every engine global, and every member of the engine-owned `os`/`process`/`json`/`log`, has a
     /// `lua-meta` stub, and no stub names what the VM lacks. Enumerated at runtime, so any
     /// registration style counts. `mantle`'s members are `mantle.lua`'s generator's to check.
     #[test]
     fn the_stubs_declare_every_engine_global() {
-        const MEMBER_TABLES: [&str; 3] = ["os", "process", "json"];
+        const MEMBER_TABLES: [&str; 4] = ["os", "process", "json", "log"];
         let dir = tempfile::tempdir().unwrap();
         let dirty = signal::DirtyFlag::new();
         let loader = Loader::new(dirty.clone(), dir.path()).unwrap();

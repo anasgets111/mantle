@@ -5740,3 +5740,14 @@ spending most of the frame relayouting and repainting unaffected surfaces.
 
 **Amends ADR-0044 decision 2 and ADR-0178.**
 
+## 0245. A config's `log.*` prints at every level without `-v`
+
+`print` output has no stamp or level, and `mantle log` leaves it uncoloured.
+`log.error`/`warn`/`info`/`debug` write through `shared::log` as the `lua` subsystem.
+
+1. **`-v` does not gate `lua`.** ADR-0243 quiets engine lines the config author never wrote. A
+   `log.*` line is one they did write. `init` appends `lua=debug3` after `MANTLE_LOG`'s overrides,
+   and `threshold` takes the first match, so `MANTLE_LOG=lua=warn` or `lua=off` still wins.
+2. **Arguments join like `print`'s**, so a `print` becomes `log.info` unchanged.
+
+**Amends ADR-0243 decision 1.**

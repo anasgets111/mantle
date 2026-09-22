@@ -86,6 +86,7 @@ OPTIONS:
                          Error. -v: also Warn and Info. -vv/-vvv: Debug,
                          itself levelled; -vvvv and past it holds at its
                          loudest. Overridden by a MANTLE_LOG default level.
+                         The config's own log.* always prints.
     -V, --version
     -h, --help
 
