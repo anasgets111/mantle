@@ -206,6 +206,11 @@ fn run_inner(
     Ok(())
 }
 
+/// A `param` event's pod as a value tree; `None` for an absent or undecodable one.
+fn decode(param: Option<&pw::spa::pod::Pod>) -> Option<Value> {
+    PodDeserializer::deserialize_from::<Value>(param?.as_bytes()).ok().map(|(_, value)| value)
+}
+
 /// Routes `Node`, `Device`, and `default` `Metadata` globals to their binders; ignores the rest.
 fn on_global(state: &Rc<RefCell<MixerState>>, registry: &pw::registry::RegistryRc, obj: &GlobalObject<&DictRef>) {
     match obj.type_ {
@@ -287,10 +292,7 @@ fn on_node_global(state: &Rc<RefCell<MixerState>>, registry: &pw::registry::Regi
             if param_type != pw::spa::param::ParamType::Props {
                 return;
             }
-            let Some(pod) = param else { return };
-            let Ok((_, value)) = PodDeserializer::deserialize_from::<Value>(pod.as_bytes()) else {
-                return;
-            };
+            let Some(value) = decode(param) else { return };
             // As for master sinks, a node can advertise multiple Props objects; missing
             // channelVolumes means this is not a mixer update, not zero volume.
             let Some(raw) = master::extract_sink_props(&value) else {
@@ -342,10 +344,7 @@ fn bind_device_node(
             if param_type != pw::spa::param::ParamType::Props {
                 return;
             }
-            let Some(pod) = param else { return };
-            let Ok((_, value)) = PodDeserializer::deserialize_from::<Value>(pod.as_bytes()) else {
-                return;
-            };
+            let Some(value) = decode(param) else { return };
             let Some(raw) = master::extract_sink_props(&value) else {
                 return;
             };
@@ -483,10 +482,7 @@ fn bind_device(state: &Rc<RefCell<MixerState>>, registry: &pw::registry::Registr
             if param_type != pw::spa::param::ParamType::Route {
                 return;
             }
-            let Some(pod) = param else { return };
-            let Ok((_, value)) = PodDeserializer::deserialize_from::<Value>(pod.as_bytes()) else {
-                return;
-            };
+            let Some(value) = decode(param) else { return };
             let Some((profile_device, route)) = master::extract_route_target(&value) else {
                 return;
             };
@@ -549,10 +545,7 @@ fn bind_bluez_device(
     let listener = device
         .add_listener_local()
         .param(move |_seq, param_type, _index, _next, param| {
-            let Some(pod) = param else { return };
-            let Ok((_, value)) = PodDeserializer::deserialize_from::<Value>(pod.as_bytes()) else {
-                return;
-            };
+            let Some(value) = decode(param) else { return };
             let Some(profile) = master::extract_profile(&value) else { return };
             let mut state = state_for_param.borrow_mut();
             let Some(card) = state.bluez_cards.get_mut(&device_id) else { return };
