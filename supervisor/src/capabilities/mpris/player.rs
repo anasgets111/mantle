@@ -134,15 +134,24 @@ struct Previous<'a> {
 ///
 /// A zero on a track we were *not* already inside is published, because that is where a new one
 /// begins.
+///
+/// An unchanged reading under an unchanged `play_state` keeps its stamp too, so a re-sent
+/// `Metadata` from a paused player compares equal and is not pushed. A changed `play_state`
+/// restamps: extrapolation restarts from the moment playback resumed.
 fn resolve_position(
     read: zbus::Result<i64>,
     previous: Option<&Previous<'_>>,
     same_track: bool,
+    play_state: &str,
     bus_name: &str,
 ) -> (i64, i64) {
     let last = previous.map(|p| (p.state.position, p.state.position_updated_at));
+    let settled = previous.is_some_and(|p| p.state.play_state == play_state);
     match read {
         Ok(0) if same_track && matches!(last, Some((position, _)) if position > 0) => last.unwrap_or((-1, 0)),
+        Ok(position) if same_track && settled && matches!(last, Some((known, _)) if known == position) => {
+            last.unwrap_or((-1, 0))
+        }
         Ok(position) => (position, monotonic_micros()),
         Err(err) => {
             debug!("Position read failed for {bus_name}; keeping the last known reading this round: {err}");
@@ -180,7 +189,8 @@ async fn resync(
             "Metadata read failed for {bus_name}; keeping the last known title/artist/art/length/trackid this round"
         );
         // Keeping the previous track's fields is by definition the same-track case.
-        let (position, position_updated_at) = resolve_position(raw_position, previous.as_ref(), true, bus_name);
+        let (position, position_updated_at) =
+            resolve_position(raw_position, previous.as_ref(), true, &play_state, bus_name);
         let state = PlayerState {
             id: player_id(bus_name).to_string(),
             identity: player_identity,
@@ -214,7 +224,8 @@ async fn resync(
         _ => -1,
     };
 
-    let (position, position_updated_at) = resolve_position(raw_position, previous.as_ref(), same_track, bus_name);
+    let (position, position_updated_at) =
+        resolve_position(raw_position, previous.as_ref(), same_track, &play_state, bus_name);
 
     let trackid = parsed.trackid.clone();
     let state = PlayerState {
@@ -421,7 +432,7 @@ mod position_tests {
         let state = previous_at(340_000_000);
         let identity = TrackIdentity::default();
         let previous = previous_ctx(&state, &identity);
-        assert_eq!(resolve_position(Ok(0), Some(&previous), true, "test"), (340_000_000, 42));
+        assert_eq!(resolve_position(Ok(0), Some(&previous), true, "", "test"), (340_000_000, 42));
     }
 
     #[test]
@@ -431,7 +442,7 @@ mod position_tests {
         let state = previous_at(340_000_000);
         let identity = TrackIdentity::default();
         let previous = previous_ctx(&state, &identity);
-        let (position, updated_at) = resolve_position(Ok(0), Some(&previous), false, "test");
+        let (position, updated_at) = resolve_position(Ok(0), Some(&previous), false, "", "test");
         assert_eq!(position, 0);
         assert_ne!(updated_at, 42, "a believed reading carries the moment it was taken");
     }
@@ -441,22 +452,32 @@ mod position_tests {
         let state = previous_at(340_000_000);
         let identity = TrackIdentity::default();
         let previous = previous_ctx(&state, &identity);
-        let (position, updated_at) = resolve_position(Ok(363_000_000), Some(&previous), true, "test");
+        let (position, updated_at) = resolve_position(Ok(363_000_000), Some(&previous), true, "", "test");
         assert_eq!(position, 363_000_000);
         assert_ne!(updated_at, 42);
     }
 
     #[test]
+    fn an_unchanged_reading_keeps_its_stamp_until_the_play_state_moves() {
+        let state = PlayerState { play_state: "Paused".to_string(), ..previous_at(340_000_000) };
+        let identity = TrackIdentity::default();
+        let previous = previous_ctx(&state, &identity);
+        assert_eq!(resolve_position(Ok(340_000_000), Some(&previous), true, "Paused", "test"), (340_000_000, 42));
+        let (_, resumed_at) = resolve_position(Ok(340_000_000), Some(&previous), true, "Playing", "test");
+        assert_ne!(resumed_at, 42, "resuming restarts extrapolation from now");
+    }
+
+    #[test]
     fn a_zero_with_nothing_to_fall_back_on_is_published() {
         // The first reading of a player that really is at the start has no previous to keep.
-        let (position, _) = resolve_position(Ok(0), None, true, "test");
+        let (position, _) = resolve_position(Ok(0), None, true, "", "test");
         assert_eq!(position, 0);
     }
 
     #[test]
     fn an_unread_position_is_minus_one_rather_than_a_fabricated_zero() {
         // ADR-0036: unavailable is not zero. Nothing has ever been read here.
-        assert_eq!(resolve_position(Err(zbus::Error::InvalidReply), None, true, "test"), (-1, 0));
+        assert_eq!(resolve_position(Err(zbus::Error::InvalidReply), None, true, "", "test"), (-1, 0));
     }
 }
 
