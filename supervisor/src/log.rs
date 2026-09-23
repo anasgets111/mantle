@@ -146,13 +146,14 @@ pub fn print(dir: &Path, follow: bool, colour: bool, out: &mut impl Write) -> Re
 /// `--follow` produces whenever it catches the writer mid-line.
 fn paint(from: &mut impl Read, to: &mut impl Write, pending: &mut Vec<u8>) -> io::Result<()> {
     from.read_to_end(pending)?;
-    while let Some(end) = pending.iter().position(|byte| *byte == b'\n') {
-        let line: Vec<u8> = pending.drain(..=end).collect();
-        match std::str::from_utf8(&line) {
+    let Some(last) = pending.iter().rposition(|byte| *byte == b'\n') else { return Ok(()) };
+    for line in pending[..=last].split_inclusive(|byte| *byte == b'\n') {
+        match std::str::from_utf8(line) {
             Ok(text) => to.write_all(shared::log::colourise(text).as_bytes())?,
-            Err(_) => to.write_all(&line)?,
+            Err(_) => to.write_all(line)?,
         }
     }
+    pending.drain(..=last);
     Ok(())
 }
 
@@ -194,6 +195,17 @@ mod tests {
 
         assert_eq!(String::from_utf8(log).unwrap(), format!("{head}{tail}"));
         assert_eq!(String::from_utf8(terminal).unwrap(), shared::log::colourise(&format!("{head}{tail}")));
+    }
+
+    #[test]
+    fn one_read_of_many_lines_paints_each_and_keeps_the_unfinished_tail() {
+        let (mut terminal, mut pending) = (Vec::new(), Vec::new());
+
+        paint(&mut "a\nb\nc".as_bytes(), &mut terminal, &mut pending).unwrap();
+
+        let painted = ["a\n", "b\n"].map(shared::log::colourise).concat();
+        assert_eq!(String::from_utf8(terminal).unwrap(), painted);
+        assert_eq!(pending, b"c");
     }
 
     #[test]
