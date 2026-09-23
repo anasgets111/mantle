@@ -415,14 +415,10 @@ async fn exchange_messages(
     mut writer: impl tokio::io::AsyncWrite + Unpin,
     secret: &[u8],
 ) -> std::io::Result<shared::PamOutcome> {
-    // One clone for the whole exchange, not one per round, reused across every prompt and
-    // zeroized once the loop ends.
-    //
-    // ponytail: left unzeroized if `exchange_over`'s timeout cancels this future mid-`.await`.
-    // Bounded by that timeout and by the worker's own process lifetime; upgrade by giving
-    // `response` a drop guard if that gap needs closing too.
-    let mut response = shared::PamMessage::Response { secret: secret.to_vec() };
-    let result = loop {
+    // One clone for the whole exchange, not one per round. `Zeroizing` clears it on every exit,
+    // including `exchange_over`'s timeout dropping this future mid-`.await`.
+    let response = shared::Zeroizing::new(shared::PamMessage::Response { secret: secret.to_vec() });
+    loop {
         let message = match shared::framing::read_json_frame(&mut reader).await {
             Ok(message) => message,
             Err(err) => break Err(std::io::Error::other(err)),
@@ -430,7 +426,7 @@ async fn exchange_messages(
         match message {
             shared::PamMessage::Outcome(outcome) => break Ok(outcome),
             shared::PamMessage::Prompt { .. } => {
-                if let Err(err) = shared::framing::write_json_frame(&mut writer, &response).await {
+                if let Err(err) = shared::framing::write_json_frame(&mut writer, &*response).await {
                     break Err(std::io::Error::other(err));
                 }
             }
@@ -438,9 +434,7 @@ async fn exchange_messages(
                 break Err(std::io::Error::other("the worker sent a Response, which is the Supervisor's to send"));
             }
         }
-    };
-    shared::Zeroize::zeroize(&mut response);
-    result
+    }
 }
 
 #[cfg(test)]
