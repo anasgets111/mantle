@@ -1865,9 +1865,7 @@ mod tests {
     fn a_fifo_is_refused_rather_than_opened() {
         let dir = tempfile::tempdir().unwrap();
         let fifo = dir.path().join("icon.png");
-        let path = std::ffi::CString::new(fifo.as_os_str().as_encoded_bytes()).unwrap();
-        // SAFETY: `mkfifo` takes a NUL-terminated path and a mode; `path` outlives the call.
-        assert_eq!(unsafe { libc::mkfifo(path.as_ptr(), 0o644) }, 0, "the test needs a real FIFO");
+        nix::unistd::mkfifo(&fifo, nix::sys::stat::Mode::S_IRWXU).expect("the test needs a real FIFO");
 
         // Both open paths must refuse it. Neither call may block, which is what this asserts by
         // returning at all.
