@@ -285,17 +285,12 @@ pub enum ClipShape {
 /// `rect.clip` defaults to [`ClipShape::Box`] and is opt-in because rounded clipping
 /// needs an offscreen target and composite, while a square clip is a free GPU scissor.
 pub fn parse_clip(properties: &PropMap) -> Result<ClipShape, LayoutError> {
-    let Some(value) = properties.get("clip") else {
-        return Ok(ClipShape::Box);
-    };
-    let Value::String(s) = value else {
-        return Err(invalid("clip", format!("must be a string, got {}", preview_for_error(value))));
-    };
-    match &*s.as_bytes() {
-        b"Box" => Ok(ClipShape::Box),
-        b"Rounded" => Ok(ClipShape::Rounded),
-        _ => Err(invalid("clip", format!("must be \"Box\" or \"Rounded\", got {}", preview_for_error(value)))),
-    }
+    content::parse_keyword(
+        properties,
+        "clip",
+        ClipShape::Box,
+        &[("Box", ClipShape::Box), ("Rounded", ClipShape::Rounded)],
+    )
 }
 
 /// `rect.border_color`, one colour per edge. `None` means "not painted", the same
@@ -362,38 +357,15 @@ pub fn parse_border_width(properties: &PropMap) -> Result<EdgeInsets, LayoutErro
 }
 
 pub fn parse_align(properties: &PropMap, property: &str) -> Result<Align, LayoutError> {
-    let Some(value) = properties.get(property) else {
-        return Ok(Align::Start);
-    };
-    let Value::String(s) = value else {
-        return Err(invalid(property, format!("expected a string, got {}", preview_for_error(value))));
-    };
-    match &*s.as_bytes() {
-        b"Start" => Ok(Align::Start),
-        b"Center" => Ok(Align::Center),
-        b"End" => Ok(Align::End),
-        b"Stretch" => Ok(Align::Stretch),
-        _ => Err(invalid(property, format!("unknown alignment {}", preview_for_error(value)))),
-    }
+    let choices =
+        [("Start", Align::Start), ("Center", Align::Center), ("End", Align::End), ("Stretch", Align::Stretch)];
+    content::parse_keyword(properties, property, Align::Start, &choices)
 }
 
 /// `list.direction`, defaulting to `"Vertical"`; returns the borrowed `row` or `column` kind rather
 /// than adding a third layout arm.
 pub fn parse_list_direction(properties: &PropMap) -> Result<&'static str, LayoutError> {
-    let Some(value) = properties.get("direction") else {
-        return Ok("column");
-    };
-    let Value::String(s) = value else {
-        return Err(invalid("direction", format!("expected a string, got {}", preview_for_error(value))));
-    };
-    match &*s.as_bytes() {
-        b"Vertical" => Ok("column"),
-        b"Horizontal" => Ok("row"),
-        _ => Err(invalid(
-            "direction",
-            format!("unknown direction {}, expected `Vertical` or `Horizontal`", preview_for_error(value)),
-        )),
-    }
+    content::parse_keyword(properties, "direction", "column", &[("Vertical", "column"), ("Horizontal", "row")])
 }
 
 /// `opacity` belongs to every kind, including non-painting lists, and is inherited by
@@ -773,7 +745,7 @@ mod tests {
         let props = deserialize_lua_table(&table).unwrap().properties;
         let err = parse_clip(&props).unwrap_err();
         assert!(
-            matches!(&err, LayoutError::InvalidProperty { property, detail } if property == "clip" && detail.contains("\"Box\" or \"Rounded\"")),
+            matches!(&err, LayoutError::InvalidProperty { property, detail } if property == "clip" && detail.contains("`Box`, `Rounded`")),
             "got {err:?}"
         );
 

@@ -161,18 +161,8 @@ pub fn parse_image_source(properties: &PropMap) -> Result<String, LayoutError> {
 /// `image.fit` (ADR-0055 decision 3) defaults to `cover`; an unrecognised string errors rather
 /// than silently selecting a fit.
 pub fn parse_fit(properties: &PropMap) -> Result<Fit, LayoutError> {
-    let Some(value) = properties.get("fit") else {
-        return Ok(Fit::default());
-    };
-    let Value::String(s) = value else {
-        return Err(invalid("fit", format!("expected a string, got {}", preview_for_error(value))));
-    };
-    match &*s.as_bytes() {
-        b"cover" => Ok(Fit::Cover),
-        b"contain" => Ok(Fit::Contain),
-        b"stretch" => Ok(Fit::Stretch),
-        _ => Err(invalid("fit", format!("expected `cover`, `contain` or `stretch`, got {}", preview_for_error(value)))),
-    }
+    let choices = [("cover", Fit::Cover), ("contain", Fit::Contain), ("stretch", Fit::Stretch)];
+    parse_keyword(properties, "fit", Fit::default(), &choices)
 }
 
 /// `image.async` (ADR-0122): absent/`false` decodes in the frame; `true` uses the pool and draws
@@ -293,17 +283,7 @@ pub enum Elide {
 
 /// `elide`. Only `"End"` is offered: middle elision needs a grapheme budget across runs.
 pub fn parse_elide(properties: &PropMap) -> Result<Elide, LayoutError> {
-    let Some(value) = properties.get("elide") else {
-        return Ok(Elide::None);
-    };
-    let Value::String(s) = value else {
-        return Err(invalid("elide", format!("must be a string, got {}", preview_for_error(value))));
-    };
-    match &*s.as_bytes() {
-        b"None" => Ok(Elide::None),
-        b"End" => Ok(Elide::End),
-        _ => Err(invalid("elide", format!("must be \"None\" or \"End\", got {}", preview_for_error(value)))),
-    }
+    parse_keyword(properties, "elide", Elide::None, &[("None", Elide::None), ("End", Elide::End)])
 }
 
 /// Whether oversized text breaks onto another line. It composes with `elide`: `wrap = "Word"` and
@@ -322,17 +302,7 @@ pub enum Wrap {
 /// but painted one clipped line; making wrapping default would have drawn into that extra height
 /// everywhere. `None` now measures one line, keeping box and paint consistent.
 pub fn parse_wrap(properties: &PropMap) -> Result<Wrap, LayoutError> {
-    let Some(value) = properties.get("wrap") else {
-        return Ok(Wrap::None);
-    };
-    let Value::String(s) = value else {
-        return Err(invalid("wrap", format!("must be a string, got {}", preview_for_error(value))));
-    };
-    match &*s.as_bytes() {
-        b"None" => Ok(Wrap::None),
-        b"Word" => Ok(Wrap::Word),
-        _ => Err(invalid("wrap", format!("must be \"None\" or \"Word\", got {}", preview_for_error(value)))),
-    }
+    parse_keyword(properties, "wrap", Wrap::None, &[("None", Wrap::None), ("Word", Wrap::Word)])
 }
 
 /// `max_lines` is uncapped when absent or `0`; zero lets signal-driven values spell "absent"
@@ -354,21 +324,8 @@ pub fn parse_max_lines(properties: &PropMap) -> Result<Option<usize>, LayoutErro
 /// `text_align` defaults to `Start` and uses the same string boundary as `fit`, `layer`, `align_h`,
 /// and `on_click`. `Start`/`End` match `align_h`.
 pub fn parse_text_align(properties: &PropMap) -> Result<TextAlign, LayoutError> {
-    let Some(value) = properties.get("text_align") else {
-        return Ok(TextAlign::Start);
-    };
-    let Value::String(s) = value else {
-        return Err(invalid("text_align", format!("must be a string, got {}", preview_for_error(value))));
-    };
-    match &*s.as_bytes() {
-        b"Start" => Ok(TextAlign::Start),
-        b"Center" => Ok(TextAlign::Center),
-        b"End" => Ok(TextAlign::End),
-        _ => Err(invalid(
-            "text_align",
-            format!("must be \"Start\", \"Center\" or \"End\", got {}", preview_for_error(value)),
-        )),
-    }
+    let choices = [("Start", TextAlign::Start), ("Center", TextAlign::Center), ("End", TextAlign::End)];
+    parse_keyword(properties, "text_align", TextAlign::Start, &choices)
 }
 
 /// The declared `foreground`, or `None` when absent. Icons preserve their file colours unless
@@ -411,6 +368,26 @@ pub(super) fn parse_bool(properties: &PropMap, property: &str, default: bool) ->
         Some(Value::Boolean(b)) => Ok(*b),
         Some(other) => Err(invalid(property, format!("expected a boolean, got {}", preview_for_error(other)))),
     }
+}
+
+/// One of `choices`' names, `default` when absent. Anything else errors naming every choice.
+pub(super) fn parse_keyword<T: Copy>(
+    properties: &PropMap,
+    property: &str,
+    default: T,
+    choices: &[(&str, T)],
+) -> Result<T, LayoutError> {
+    let Some(value) = properties.get(property) else {
+        return Ok(default);
+    };
+    let Value::String(s) = value else {
+        return Err(invalid(property, format!("expected a string, got {}", preview_for_error(value))));
+    };
+    let bytes = s.as_bytes();
+    choices.iter().find(|(name, _)| name.as_bytes() == &*bytes).map(|&(_, choice)| choice).ok_or_else(|| {
+        let names: Vec<String> = choices.iter().map(|(name, _)| format!("`{name}`")).collect();
+        invalid(property, format!("expected one of {}, got {}", names.join(", "), preview_for_error(value)))
+    })
 }
 
 /// Shared number parser behind [`parse_font_size`], [`parse_icon_size`] and `style::parse_spacing`.
