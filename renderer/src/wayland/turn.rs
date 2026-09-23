@@ -1,21 +1,13 @@
 //! What one main-loop turn owes: which surfaces repaint and which get their protocol state pushed.
 
-/// Which surfaces a narrowed repaint must cover: the ones a tick advanced, plus every surface
-/// already marked `stale`.
+/// Whether a narrowed repaint covers a surface: one this turn's pass, tick or keystroke named, or
+/// one already `stale`.
 ///
-/// Pure so the narrowing is testable -- `TrackedSurface` holds Wayland objects no test can build,
-/// and this is the part that was wrong. `stale` means a surface differs for a reason its tree
-/// cannot show, so a repaint chosen by tree identity alone passes it over: a decode refused for
-/// pool capacity armed a frame callback, ticked nothing, and was narrowed straight back out
-/// (ADR-0185).
-pub(super) fn narrowed_repaint_targets(ticked: &[String], stale: &[String]) -> Vec<String> {
-    let mut targets = ticked.to_vec();
-    for id in stale {
-        if !targets.iter().any(|target| target == id) {
-            targets.push(id.clone());
-        }
-    }
-    targets
+/// `stale` means a surface differs for a reason its tree cannot show, so a repaint chosen by tree
+/// identity alone passes it over: a decode refused for pool capacity armed a frame callback,
+/// ticked nothing, and was narrowed straight back out (ADR-0185).
+pub(super) fn narrowed_repaint_covers(named: &[&[String]], surface_id: &str, stale: bool) -> bool {
+    stale || named.iter().any(|ids| ids.iter().any(|id| id == surface_id))
 }
 
 /// What changed on one turn of the main loop, as the repaint decision reads it.
@@ -36,7 +28,7 @@ pub(super) struct TurnChanges {
 #[derive(Debug, PartialEq, Eq)]
 pub(super) enum Repaint {
     Nothing,
-    /// The ticked instances plus whatever is `stale`; see [`narrowed_repaint_targets`].
+    /// The ticked instances plus whatever is `stale`; see [`narrowed_repaint_covers`].
     Narrowed,
     Everything,
 }
@@ -117,23 +109,19 @@ mod tests {
     /// that has to stop causing it.
     #[test]
     fn a_narrowed_repaint_still_covers_a_stale_surface_no_tick_named() {
-        let id = |s: &str| s.to_string();
+        let bar = ["bar@eDP-1".to_string()];
 
         // The bug: nothing ticked, one surface stale. Narrowing by tick alone repaints nothing.
-        assert_eq!(narrowed_repaint_targets(&[], &[id("wallpaper@eDP-1")]), vec![id("wallpaper@eDP-1")]);
+        assert!(narrowed_repaint_covers(&[], "wallpaper@eDP-1", true));
 
         // A tick elsewhere must not narrow the stale surface out, which is the case that actually
         // happens: a clock ticks every second while a wallpaper waits on a refused decode.
-        assert_eq!(
-            narrowed_repaint_targets(&[id("bar@eDP-1")], &[id("wallpaper@eDP-1")]),
-            vec![id("bar@eDP-1"), id("wallpaper@eDP-1")]
-        );
+        assert!(narrowed_repaint_covers(&[&bar], "wallpaper@eDP-1", true));
+        assert!(narrowed_repaint_covers(&[&bar], "bar@eDP-1", false));
 
-        // Both at once is one repaint, not two.
-        assert_eq!(narrowed_repaint_targets(&[id("bar@eDP-1")], &[id("bar@eDP-1")]), vec![id("bar@eDP-1")]);
-
-        // Nothing owed, nothing painted: the idle turn stays idle (ADR-0124).
-        assert!(narrowed_repaint_targets(&[], &[]).is_empty());
+        // Neither named nor stale is left alone: the idle turn stays idle (ADR-0124).
+        assert!(!narrowed_repaint_covers(&[&bar], "wallpaper@eDP-1", false));
+        assert!(!narrowed_repaint_covers(&[&[], &[]], "bar@eDP-1", false));
     }
 
     /// The narrowing above is only ever right for a turn that did not re-resolve. A pass can

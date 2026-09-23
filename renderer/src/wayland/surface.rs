@@ -557,9 +557,9 @@ impl App {
     /// not diff, a reasonable trade when a GPU repaint follows, which for a narrowed tick is
     /// exactly what does not. Eighteen mapped surfaces at 60 Hz make that seventeen round trips a
     /// frame for surfaces nothing is going to paint.
-    pub(super) fn apply_resolved_surface_state_for(&mut self, instance_ids: &[String]) {
+    pub(super) fn apply_resolved_surface_state_for(&mut self, named: &[&[String]]) {
         for index in 0..self.surfaces.len() {
-            if instance_ids.iter().any(|id| *id == self.surfaces[index].surface_id) {
+            if named.iter().any(|ids| ids.contains(&self.surfaces[index].surface_id)) {
                 self.apply_resolved_state(index);
             }
         }
@@ -1191,22 +1191,13 @@ impl App {
         self.repaint_mapped_surfaces_where(|_| true);
     }
 
-    /// The surfaces a tween tick just advanced, by the instance ids `Scene::tick` returned, plus
-    /// any surface already marked `stale`.
+    /// The surfaces this turn's pass, tick or keystroke named, plus any surface already `stale`.
     ///
     /// A tick changes only the trees it names, so the others would each build a display list and
     /// have it rejected as equal to the one they last painted. That build is not free: a text draw
-    /// copies its content and style runs, an image or icon its name. This is the same repaint,
-    /// asked of the surfaces that can actually differ.
-    ///
-    /// `stale` is exactly the flag that says a surface differs for a reason its tree cannot show,
-    /// a decode turned away for capacity, whose retry *is* the next paint. Narrowing it out is
-    /// what made arming a frame callback insufficient (ADR-0185).
-    pub(super) fn repaint_surfaces_with_instance_ids(&mut self, instance_ids: &[String]) {
-        let stale: Vec<String> =
-            self.surfaces.iter().filter(|s| s.owes_a_paint()).map(|s| s.surface_id.clone()).collect();
-        let targets = turn::narrowed_repaint_targets(instance_ids, &stale);
-        self.repaint_mapped_surfaces_where(|surface_id| targets.iter().any(|id| id == surface_id));
+    /// copies its content and style runs, an image or icon its name.
+    pub(super) fn repaint_surfaces_named(&mut self, named: &[&[String]]) {
+        self.repaint_mapped_surfaces_where(|s| turn::narrowed_repaint_covers(named, &s.surface_id, s.owes_a_paint()));
     }
 
     pub(super) fn take_repaint_split(&mut self) -> RepaintSplit {
@@ -1233,13 +1224,13 @@ impl App {
             .min()
     }
 
-    fn repaint_mapped_surfaces_where(&mut self, wanted: impl Fn(&str) -> bool) {
+    fn repaint_mapped_surfaces_where(&mut self, wanted: impl Fn(&TrackedSurface) -> bool) {
         let drawn = self.surfaces_drawn;
         for index in 0..self.surfaces.len() {
             if self.surfaces[index].map_state != MapState::Mapped {
                 continue;
             }
-            if !wanted(&self.surfaces[index].surface_id) {
+            if !wanted(&self.surfaces[index]) {
                 continue;
             }
             if self.surfaces[index].bound.is_none() {

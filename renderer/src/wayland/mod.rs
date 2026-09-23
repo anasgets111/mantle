@@ -522,10 +522,10 @@ pub fn run(
             turn::StateScope::Everything => app.apply_resolved_surface_state(),
             turn::StateScope::Targeted => {
                 if let Some(ref ids) = targeted_instances {
-                    app.apply_resolved_surface_state_for(&[ids.as_slice(), &ticked].concat());
+                    app.apply_resolved_surface_state_for(&[ids, &ticked]);
                 }
             }
-            turn::StateScope::Ticked => app.apply_resolved_surface_state_for(&ticked),
+            turn::StateScope::Ticked => app.apply_resolved_surface_state_for(&[&ticked]),
             turn::StateScope::Nothing => {}
         }
         if state.popup_latch {
@@ -544,12 +544,11 @@ pub fn run(
             stale: app.has_stale_surfaces(),
             typed,
         }) {
-            turn::Repaint::Narrowed => {
-                let mut targets = targeted_instances.unwrap_or_default();
-                targets.extend(ticked.clone());
-                targets.extend(typed_surfaces);
-                app.repaint_surfaces_with_instance_ids(&targets);
-            }
+            turn::Repaint::Narrowed => app.repaint_surfaces_named(&[
+                targeted_instances.as_deref().unwrap_or_default(),
+                &ticked,
+                &typed_surfaces,
+            ]),
             turn::Repaint::Everything => app.repaint_mapped_surfaces(),
             turn::Repaint::Nothing => {}
         }
