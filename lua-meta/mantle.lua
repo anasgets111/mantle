@@ -323,6 +323,20 @@
 ---@alias Urgency "low"|"normal"|"critical"
 ---`low`/`normal`/`critical` urgency tier, also used as the sound-registry key.
 
+---@class WindowEntry
+---One window. `id` is opaque and backend-shaped; compare it and pass it back to `:invoke`, never
+---parse it.
+---@field app_id string Wayland `app_id`; Hyprland reports its `class` here, the closest equivalent.
+---@field floating? boolean Absent on the wlr-protocol path, which has no floating/tiled concept.
+---@field focused boolean
+---@field fullscreen? boolean Absent on niri, whose IPC does not report fullscreen state.
+---@field id string
+---@field maximized? boolean Absent on niri, which has no maximize concept.
+---@field minimized? boolean Only the wlr-protocol path reports this.
+---@field output? string Connector name; absent when unknown.
+---@field title string Empty when unset.
+---@field workspace_id? integer Absent where the backend has no workspace concept.
+
 ---@class WorkspaceEntry
 ---`id` is the stable, monitor-independent identity used by `active_workspace`,
 ---`focused_workspace`, and `:invoke("focus", id)`. `idx` is the output-local 1-based position,
@@ -519,6 +533,11 @@
 ---@field overview_open? boolean Whether the compositor's overview is open; `nil` where there is no overview. A surface the compositor only composites inside one can stop drawing when this is false.
 ---@field special? SpecialWorkspace[] Compositor special workspaces, Hyprland's scratchpads, ordered by name (ADR-0119). Absent when unsupported (`special == nil`); an empty list means supported but none exist. Hyprland lists a special only while it holds a window or is shown.
 
+---@class WindowsState
+---`mantle.windows` payload.
+---@field source string `"niri"`, `"hyprland"`, or `"wlr_foreign_toplevel"`.
+---@field windows WindowEntry[] Sorted by workspace, then each backend's own order.
+
 --- Capabilities -------------------------------------------------------------------------------
 
 ---@class ApplicationsCapability: Capability<ApplicationsState>
@@ -646,6 +665,15 @@ local SystemCapability = {}
 ---@field invoke fun(self: WorkspacesCapability, command: "focus", id: integer) Focuses a `WorkspaceEntry.id`; the compositor ignores one that does not exist.
 ---@field invoke fun(self: WorkspacesCapability, command: "toggle_special", name: string) Shows or hides a special workspace; Hyprland creates an unknown name.
 
+---@class WindowsCapability: Capability<WindowsState>
+---Per-action backend support is documented on each variant. An unsupported action logs at debug
+---and does nothing.
+---@field invoke fun(self: WindowsCapability, command: "focus", id: string) Focuses a window and switches to its workspace.
+---@field invoke fun(self: WindowsCapability, command: "close", id: string) Asks the compositor to close the window.
+---@field invoke fun(self: WindowsCapability, command: "set_fullscreen", id: string, fullscreen: boolean) Sets fullscreen on or off. Hyprland only toggles, so it writes only on a real change; niri reports no fullscreen state, so it ignores this.
+---@field invoke fun(self: WindowsCapability, command: "set_minimized", id: string, minimized: boolean) Sets minimized on or off. Only the wlr-protocol path has a minimize concept.
+---@field invoke fun(self: WindowsCapability, command: "set_maximized", id: string, maximized: boolean) Sets maximized on or off. niri has no maximize concept; Hyprland only toggles.
+
 --- Off-roster members ---------------------------------------------------------------------------
 -- Not capabilities and not in `shared::Capability::ALL`, so they have no payload struct to derive
 -- from and are written by hand: `Screen` and `RescueState` come from the renderer's own state.
@@ -712,6 +740,7 @@ local SystemCapability = {}
 ---@field storage StorageCapability Every JSON file a config declared with `persistent_table`, keyed by its absolute path.
 ---@field idle IdleCapability Whether anything is holding the session awake, and which application it is. Its thresholds and the inhibit pair are methods on the same member.
 ---@field processes ProcessesCapability Every long-running program a config declared with `session_process`: whether it is up, since when, and how the last run ended.
+---@field windows WindowsCapability Every open toplevel window: title, app ID, workspace, output, and focused/floating/fullscreen/minimized/maximized where the backend can report them.
 ---@field screens Signal<Screen[]> Renderer-sourced, seeded to an empty list, and the one signal with a value at first evaluation (ADR-0041).
 ---@field rescue Signal<RescueState> Renderer-sourced, no commands (ADR-0046).
 ---@field version MantleVersion Three integers a config can compare. Not a signal.

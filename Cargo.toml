@@ -38,6 +38,7 @@ tokio = "1.53.1"
 unicode-segmentation = "1.13.3"
 wayland-client = "0.31.15"
 wayland-protocols = "0.32.13"
+wayland-protocols-wlr = "0.3.12"
 
 # `clippy::undocumented_unsafe_blocks` makes each SAFETY comment a build requirement. Keep it on
 # because this workspace crosses FFI, GL/Wayland, and raw allocation boundaries.

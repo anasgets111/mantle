@@ -124,4 +124,6 @@ Current project vocabulary. Implementation contracts live in [docs](docs/lua-api
 
 **Compositor probe**: Session-level detection that selects the supported compositor implementation. _Avoid_: compositor detection trait, session detector
 
+**Toplevel window**: Another application's top-level window, listed and controlled by the `windows` capability for taskbars, docks and alt-tab. Distinct from a config's own `window` surface role. _Avoid_: window (ambiguous with the surface role), client
+
 **Track identity**: The combined track ID, URL and title used to distinguish a changed track from a refresh of the same track. _Avoid_: track key, cache key

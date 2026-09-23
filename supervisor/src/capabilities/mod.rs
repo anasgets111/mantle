@@ -15,11 +15,13 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 
 use shared::{Capability, CommandEnvelope, debug, error, warn};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 use tokio::sync::watch;
 
+use crate::compositor::CompositorKind;
 use crate::snapshot::push_snapshot;
 use crate::{log_unstarted, socket};
 use applications::{ApplicationsController, ApplicationsSignal};
@@ -42,6 +44,7 @@ use sysinfo::{SysinfoController, SysinfoSignal};
 use system::{SystemController, SystemSignal};
 use tray::{TrayController, TraySignal};
 use updates::{UpdatesController, UpdatesSignal};
+use windows::{WindowsController, WindowsSignal};
 use workspaces::{WorkspacesController, WorkspacesSignal};
 
 /// Every Supervisor bus gets the 25s call timeout Qt, GDBus and libdbus default to; zbus has none
@@ -75,6 +78,7 @@ pub mod system;
 pub(crate) mod test_support;
 pub mod tray;
 pub mod updates;
+pub mod windows;
 pub mod workspaces;
 
 /// Reads and trims a sysfs attribute under `entry_dir`; missing or unreadable means absent.
@@ -190,6 +194,7 @@ pub enum Signal {
     Battery,
     Brightness,
     Workspaces,
+    Windows,
     Power,
     Applications,
     Files,
@@ -285,6 +290,7 @@ capability_channels! {
         System => system: SystemSignal, Some(SystemSignal::Changed) => Signal::System;
         Brightness => brightness: BrightnessSignal, Some(BrightnessSignal::Changed) => Signal::Brightness;
         Workspaces => workspaces: WorkspacesSignal, Some(WorkspacesSignal::Changed) => Signal::Workspaces;
+        Windows => windows: WindowsSignal, Some(WindowsSignal::Changed) => Signal::Windows;
         Power => power: PowerSignal, Some(PowerSignal::Changed) => Signal::Power;
         Applications => applications: ApplicationsSignal,
             Some(ApplicationsSignal::Changed) => Signal::Applications;
@@ -314,6 +320,7 @@ pub struct Capabilities {
     battery: Option<BatteryController>,
     brightness: Option<BrightnessController>,
     workspaces: Option<WorkspacesController>,
+    windows: Option<WindowsController>,
     power: Option<PowerController>,
     system: Option<SystemController>,
     applications: Option<ApplicationsController>,
@@ -336,6 +343,18 @@ pub struct Capabilities {
     /// `run_privacy_task` ever reads.
     privacy_tx: Option<watch::Sender<PrivacySources>>,
     privacy_sources: watch::Receiver<PrivacySources>,
+    /// `workspaces` and `windows`' shared niri/Hyprland reader: whichever starts first spawns it,
+    /// the other attaches instead of opening a second connection.
+    compositor_reader: CompositorReader,
+}
+
+/// The state handles always exist; only the reader thread is deferred to first use.
+#[derive(Default)]
+struct CompositorReader {
+    workspaces: Arc<Mutex<workspaces::controller::WorkspacesState>>,
+    windows: Arc<Mutex<windows::controller::WindowsState>>,
+    compositor: Option<CompositorKind>,
+    started: bool,
 }
 
 impl Capabilities {
@@ -362,6 +381,7 @@ impl Capabilities {
             battery: None,
             brightness: None,
             workspaces: None,
+            windows: None,
             power: None,
             system: None,
             applications: None,
@@ -376,8 +396,37 @@ impl Capabilities {
             sound_tx,
             privacy_tx: Some(privacy_tx),
             privacy_sources,
+            compositor_reader: CompositorReader::default(),
         };
         (capabilities, signals)
+    }
+
+    /// Spawns the niri/Hyprland reader on the first call; later calls reuse it. Returns the
+    /// detected compositor, if any.
+    fn ensure_compositor_reader(&mut self) -> Option<CompositorKind> {
+        if !self.compositor_reader.started {
+            self.compositor_reader.started = true;
+            self.compositor_reader.compositor = crate::compositor::detect_compositor();
+            if let Some(kind) = self.compositor_reader.compositor {
+                let workspaces_publisher = workspaces::controller::StatePublisher::new(
+                    Arc::clone(&self.compositor_reader.workspaces),
+                    self.senders.workspaces.clone(),
+                    kind,
+                );
+                let windows_publisher = windows::controller::StatePublisher::new(
+                    Arc::clone(&self.compositor_reader.windows),
+                    self.senders.windows.clone(),
+                    kind.name(),
+                );
+                match kind {
+                    CompositorKind::Niri => workspaces::niri::spawn_reader(workspaces_publisher, windows_publisher),
+                    CompositorKind::Hyprland => {
+                        workspaces::hyprland::spawn_reader(workspaces_publisher, windows_publisher)
+                    }
+                }
+            }
+        }
+        self.compositor_reader.compositor
     }
 
     /// Stops every program declared with `session_process` and waits for it, the session-lifetime
@@ -582,10 +631,30 @@ impl Capabilities {
                     ));
                 }
             }
-            // niri IPC via `$NIRI_SOCKET`; no implementor means no push.
+            // niri/Hyprland IPC, shared with `windows` (ADR-0247); no implementor means no push.
             Capability::Workspaces => {
                 if self.workspaces.is_none() {
-                    self.workspaces = Some(WorkspacesController::new(self.senders.workspaces.clone()));
+                    let compositor = self.ensure_compositor_reader();
+                    self.workspaces = Some(WorkspacesController::new(
+                        Arc::clone(&self.compositor_reader.workspaces),
+                        compositor,
+                        self.senders.workspaces.clone(),
+                    ));
+                }
+            }
+            // Shares the same reader with `workspaces`, or falls back to
+            // `zwlr_foreign_toplevel_manager_v1` on its own connection (ADR-0247).
+            Capability::Windows => {
+                if self.windows.is_none() {
+                    let compositor = self.ensure_compositor_reader();
+                    self.windows = Some(
+                        WindowsController::new(
+                            Arc::clone(&self.compositor_reader.windows),
+                            compositor,
+                            self.senders.windows.clone(),
+                        )
+                        .await,
+                    );
                 }
             }
             // UPower supplies on_battery/energy_rate; power-profiles-daemon supplies profiles;
@@ -738,6 +807,11 @@ impl Capabilities {
                     push!(Capability::Workspaces, &workspaces.snapshot());
                 }
             }
+            Signal::Windows => {
+                if let Some(windows) = &self.windows {
+                    push!(Capability::Windows, &windows.snapshot());
+                }
+            }
             // Controller filters UPower's roughly once-per-minute EnergyRate repeats.
             Signal::Power => {
                 if let Some(power) = &self.power {
@@ -813,6 +887,7 @@ impl Capabilities {
             Capability::Keyboard => queue(&self.keyboard, envelope, keyboard::dispatch),
             Capability::Brightness => to!(self.brightness, brightness::dispatch),
             Capability::Workspaces => to!(self.workspaces, workspaces::dispatch),
+            Capability::Windows => to!(self.windows, windows::dispatch),
             Capability::Power => to!(self.power, power::dispatch),
             Capability::Updates => to!(self.updates, updates::dispatch),
             Capability::Applications => to!(self.applications, applications::dispatch),

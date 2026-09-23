@@ -1290,6 +1290,9 @@ the stable ID, not the index.
 No window list beyond the focused client, or special-workspace model. Amendment, ADR-0075: move
 compositor probing to a shared top-level module; keep niri types local.
 
+Amendment, ADR-0247: decision 2's niri/Hyprland reader now feeds `windows` too, the third consumer
+that justified sharing it instead of a second connection.
+
 ## 0057. `json.decode` is one function on the engine's existing null mapping
 
 1. Reuse the capability payload converter. JSON null becomes Lua nil, not a sentinel; null array
@@ -2157,6 +2160,9 @@ the louder side keeps its level and never passes the cap.
 3. Example strip collapses on row hover and resolves installed icons, otherwise shows numbers.
 
 A populated window without app ID remains populated. No width animation or opacity fade.
+
+Amendment, ADR-0247: decision 2's rejected list now exists as `windows`, a separate capability
+keyed by `workspace_id` rather than a nested per-workspace field.
 
 ## 0118. `workspaces` speaks Hyprland, as a module behind the same publisher
 
@@ -5779,3 +5785,55 @@ Rejected: reading the focused output from `mantle.workspaces` and targeting its 
 workspaces backend and rebuilds a shown surface on every focus change.
 
 **Amends ADR-0038 decision 3.**
+
+## 0247. `windows` lists every open toplevel, for taskbars, docks and alt-tab
+
+niri and Hyprland already carry every window field over IPC. Every other compositor gets
+`zwlr_foreign_toplevel_management_v1`, the protocol built for exactly this, free on any
+wlroots-based compositor.
+
+1. niri and Hyprland speak their existing IPC; everything else speaks
+   `zwlr_foreign_toplevel_management_v1` on its own connection, hand-dispatched like `idle`.
+   `ext-foreign-toplevel-list-v1` is not bound anywhere; it adds no field neither path already has.
+2. niri and Hyprland windows come from the same event stream `workspaces` already opens, not a
+   second connection: the third consumer ADR-0056 decision 2 said would justify sharing.
+3. `id` is opaque and backend-shaped: niri's decimal id, Hyprland's client address as given, the
+   protocol connection's own creation-order counter. Compare it and pass it back; never parse it.
+4. A field is absent, not fabricated, wherever a backend cannot report it: `workspace_id`,
+   `output`, `floating`, `fullscreen`, `minimized`, `maximized`. Windows are ordered by workspace,
+   then each backend's own order.
+5. `focus`/`close` work on every backend. Hyprland only toggles fullscreen and maximize, so
+   `set_*` writes only on a real change; the protocol path sets them directly. niri reports no
+   fullscreen state, so a blind toggle could undo the request and niri ignores `set_fullscreen`.
+   Only the protocol path can minimize.
+6. No test-only backend-forcing switch. The protocol path gets a live test later; every reducer is
+   unit-tested against inline fixtures instead.
+
+Rejected: `ext-foreign-toplevel-list-v1` as a join layer; a typed numeric `id` (Hyprland's address
+does not fit `u64`).
+
+Deferred: joining a window to its live capture on the protocol path.
+
+**Amends ADR-0056 decision 2 and ADR-0117 decision 2.**
+
+## 0249. `palette.quantize` extracts dominant colours in the Renderer
+
+Quickshell's `ColorQuantizer` parity, for theming from a wallpaper or album art.
+
+1. A Renderer-local Lua function, not a capability. A palette is one value derived from a path the
+   config already has, with nothing to supervise.
+2. `path` is a local raster file. Nothing in the engine fetches a URL to decode.
+3. Hand-written median cut, not `color_quant`. NeuQuant is stochastic and takes a sample fraction,
+   not a `depth`. A bucket of one colour stays whole, so a plain image returns fewer colours
+   instead of duplicates.
+4. A freedesktop thumbnail already covering `rescale` replaces the source decode (ADR-0122).
+   Nothing new is written to the thumbnail cache.
+5. `depth` defaults to 3 and allows 0 to 8; outside that is a config error. `rescale` defaults to
+   128, the "normal" thumbnail edge, so the default reads a cached thumbnail.
+6. Colours return as `#RRGGBB`, most common first, so `colors[1]` is dominant and fits any `Color`.
+7. One thread per call, not the image pool. The pool's jobs are texture uploads. The decode goes
+   uncounted against its `Budget`, accepted until measured.
+8. `:cancel()` drops the callback; the decode finishes and its result is discarded.
+
+Rejected: computing it in the Supervisor, which has no raster decoder and would need the pixels
+sent over the socket.

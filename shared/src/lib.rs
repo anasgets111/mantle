@@ -132,6 +132,7 @@ roster! {
     Storage => "storage", "Every JSON file a config declared with `persistent_table`, keyed by its absolute path.",
     Idle => "idle", "Whether anything is holding the session awake, and which application it is. Its thresholds and the inhibit pair are methods on the same member.",
     Processes => "processes", "Every long-running program a config declared with `session_process`: whether it is up, since when, and how the last run ended.",
+    Windows => "windows", "Every open toplevel window: title, app ID, workspace, output, and focused/floating/fullscreen/minimized/maximized where the backend can report them.",
 }
 
 impl Capability {
@@ -703,7 +704,7 @@ mod capability_tests {
     fn every_entry_round_trips_through_its_name() {
         // One `roster!` list makes omission from `ALL` or `as_str` unrepresentable; this pins
         // `from_name` agreeing with the two wire-facing matches.
-        assert_eq!(Capability::ALL.len(), 22, "a variant was added or removed; check every iterator over ALL");
+        assert_eq!(Capability::ALL.len(), 23, "a variant was added or removed; check every iterator over ALL");
         for capability in Capability::ALL {
             assert_eq!(Capability::from_name(capability.as_str()), Some(*capability));
         }

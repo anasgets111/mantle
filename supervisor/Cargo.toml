@@ -38,6 +38,9 @@ tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "pro
 udev = { version = "0.9.3", features = ["send"] }
 wayland-client.workspace = true
 wayland-protocols = { workspace = true, features = ["client", "staging"] }
+# zwlr_foreign_toplevel_management_v1, hand-dispatched like ext_idle_notifier_v1 (`idle`); every
+# compositor without niri/Hyprland IPC (`windows`, ADR-0247).
+wayland-protocols-wlr = { workspace = true, features = ["client"] }
 # No defaults: they add an async-io executor beside tokio.
 zbus = { version = "5.19.0", default-features = false, features = ["tokio"] }
 # 5.1.0 is the floor, not a preference: RUSTSEC-2026-0278 is an authorization bypass through PID

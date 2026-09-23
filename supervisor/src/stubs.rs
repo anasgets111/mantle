@@ -115,6 +115,11 @@ fn capability_schemas() -> Vec<(&'static str, Schema, Option<Schema>)> {
             schema_for!(crate::capabilities::workspaces::controller::WorkspacesState),
             Some(schema_for!(crate::capabilities::workspaces::WorkspacesAction)),
         ),
+        (
+            "windows",
+            schema_for!(crate::capabilities::windows::controller::WindowsState),
+            Some(schema_for!(crate::capabilities::windows::WindowsAction)),
+        ),
     ]
 }
 

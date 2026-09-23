@@ -9,9 +9,10 @@
 
 use std::collections::HashMap;
 
-use shared::error;
+use shared::{debug, error};
 
 use super::controller::{FocusedWindow, StatePublisher, WorkspaceRow};
+use crate::capabilities::windows::controller::{StatePublisher as WindowsPublisher, WindowEntry};
 
 /// niri workspaces reduced to the common input. Clone `name` and `output` per event; a session has
 /// only a handful of workspaces.
@@ -44,6 +45,32 @@ fn workspace_rows(
         .collect()
 }
 
+/// Every niri window, for `windows`. `output` joins through `workspace_id`: niri's `Window` has no
+/// output field of its own. Sorted by ascending window id, since niri's ids climb monotonically
+/// and the source map has no order.
+fn window_rows(
+    windows: &HashMap<u64, niri_ipc::Window>,
+    workspaces: &HashMap<u64, niri_ipc::Workspace>,
+) -> Vec<WindowEntry> {
+    let mut ordered: Vec<&niri_ipc::Window> = windows.values().collect();
+    ordered.sort_by_key(|window| window.id);
+    ordered
+        .into_iter()
+        .map(|window| WindowEntry {
+            id: window.id.to_string(),
+            title: window.title.clone().unwrap_or_default(),
+            app_id: window.app_id.clone().unwrap_or_default(),
+            workspace_id: window.workspace_id,
+            output: window.workspace_id.and_then(|id| workspaces.get(&id)).and_then(|ws| ws.output.clone()),
+            focused: window.is_focused,
+            floating: Some(window.is_floating),
+            fullscreen: None,
+            minimized: None,
+            maximized: None,
+        })
+        .collect()
+}
+
 /// niri flags focus on each window, so search here rather than in `derive_state`. Clone only the
 /// winner; even a fifty-window session builds one `FocusedWindow` per event.
 ///
@@ -72,8 +99,12 @@ fn focused_window(windows: &HashMap<u64, niri_ipc::Window>) -> Option<FocusedWin
 /// the run and stderr gets the backtrace. Upgrade with `catch_unwind` around `apply`, resetting
 /// both parts and re-requesting the stream; no instance has been observed and this code cannot
 /// trigger the case.
-pub fn spawn_reader(mut publisher: StatePublisher) {
-    let Some(socket) = crate::compositor::niri_event_stream("workspaces", "workspace reporting") else { return };
+///
+/// Also drives `mantle.windows` from the same stream, rather than a second connection.
+pub fn spawn_reader(mut publisher: StatePublisher, mut windows_publisher: WindowsPublisher) {
+    let Some(socket) = crate::compositor::niri_event_stream("workspaces", "workspace and window reporting") else {
+        return;
+    };
 
     std::thread::spawn(move || {
         use niri_ipc::state::EventStreamStatePart;
@@ -86,7 +117,7 @@ pub fn spawn_reader(mut publisher: StatePublisher) {
             let event = match read_event() {
                 Ok(event) => event,
                 Err(err) => {
-                    error!("niri event stream ended; workspaces will no longer update: {err}");
+                    error!("niri event stream ended; workspaces and windows will no longer update: {err}");
                     return;
                 }
             };
@@ -98,7 +129,10 @@ pub fn spawn_reader(mut publisher: StatePublisher) {
 
             let rows = workspace_rows(&niri_workspaces.workspaces, &niri_windows.windows);
             let focused = focused_window(&niri_windows.windows);
-            if !publisher.publish(&rows, focused.as_ref(), None, Some(niri_overview.is_open)) {
+            let workspaces_alive = publisher.publish(&rows, focused.as_ref(), None, Some(niri_overview.is_open));
+            let windows_alive =
+                windows_publisher.publish(&window_rows(&niri_windows.windows, &niri_workspaces.workspaces));
+            if !workspaces_alive && !windows_alive {
                 return;
             }
         }
@@ -110,6 +144,22 @@ pub fn spawn_reader(mut publisher: StatePublisher) {
 pub fn focus(id: u64) {
     let reference = niri_ipc::WorkspaceReferenceArg::Id(id);
     crate::compositor::niri_action(niri_ipc::Action::FocusWorkspace { reference }, "workspaces");
+}
+
+pub fn focus_window(id: &str) {
+    let Ok(id) = id.parse::<u64>() else {
+        debug!("focus({id:?}) is not a niri window id; ignored");
+        return;
+    };
+    crate::compositor::niri_action(niri_ipc::Action::FocusWindow { id }, "windows");
+}
+
+pub fn close_window(id: &str) {
+    let Ok(id) = id.parse::<u64>() else {
+        debug!("close({id:?}) is not a niri window id; ignored");
+        return;
+    };
+    crate::compositor::niri_action(niri_ipc::Action::CloseWindow { id: Some(id) }, "windows");
 }
 
 #[cfg(test)]
@@ -216,6 +266,38 @@ mod tests {
         orphan.output = None;
 
         assert_eq!(workspace_rows(&map(vec![(1, orphan)]), &HashMap::new())[0].output, None);
+    }
+
+    #[test]
+    fn window_rows_carries_every_window_ordered_by_id_and_joins_output_through_workspace() {
+        let workspaces = map(vec![(5, workspace(5, 1, "eDP-1", true, true))]);
+        let windows = map(vec![
+            (14, window(14, "Sign in | Slack", "slack", false, false)),
+            (2, window(2, "src/main.rs - Neovim", "kitty", true, true)),
+        ]);
+
+        let rows = window_rows(&windows, &workspaces);
+
+        assert_eq!(rows.iter().map(|row| row.id.as_str()).collect::<Vec<_>>(), ["2", "14"], "ascending window id");
+        let kitty = &rows[0];
+        assert_eq!(kitty.title, "src/main.rs - Neovim");
+        assert_eq!(kitty.app_id, "kitty");
+        assert_eq!(kitty.workspace_id, Some(5));
+        assert_eq!(kitty.output.as_deref(), Some("eDP-1"));
+        assert!(kitty.focused);
+        assert_eq!(kitty.floating, Some(true));
+        assert_eq!((kitty.fullscreen, kitty.minimized, kitty.maximized), (None, None, None));
+    }
+
+    #[test]
+    fn window_rows_leaves_output_absent_for_a_window_off_every_known_workspace() {
+        let mut orphan = window(9, "orphan", "orphan", false, false);
+        orphan.workspace_id = Some(99);
+
+        let rows = window_rows(&map(vec![(9, orphan)]), &HashMap::new());
+
+        assert_eq!(rows[0].workspace_id, Some(99));
+        assert_eq!(rows[0].output, None, "workspace 99 is unknown, so no output can be joined");
     }
 
     #[test]

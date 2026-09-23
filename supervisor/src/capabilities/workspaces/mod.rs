@@ -9,7 +9,8 @@
 //! absence sentinel, and `outputs: []` would mean no workspaces rather than no answer.
 //!
 //! `controller` holds the payload, reduction, and publish contract; `niri` owns `niri_ipc`, and
-//! `hyprland` owns Hyprland JSON.
+//! `hyprland` owns Hyprland JSON. Both also feed `mantle.windows`' full window list from the same
+//! events, through a second publisher.
 
 pub mod controller;
 pub mod hyprland;

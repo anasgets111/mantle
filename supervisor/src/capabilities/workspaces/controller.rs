@@ -11,7 +11,7 @@ use serde::Serialize;
 use shared::debug;
 use tokio::sync::mpsc::UnboundedSender;
 
-use crate::compositor::{CompositorKind, detect_compositor, unsupported_session_report};
+use crate::compositor::{CompositorKind, unsupported_session_report};
 
 use super::{hyprland, niri};
 
@@ -245,30 +245,31 @@ impl StatePublisher {
     }
 }
 
-/// No `Clone`: adaptors spawn OS threads and move only what they need because niri's socket is a
-/// blocking `std::net::UnixStream`, not tokio-aware.
+/// No `Clone`: the reader owns an OS thread and moves only what it needs because niri's socket is
+/// a blocking `std::net::UnixStream`, not tokio-aware.
 pub struct WorkspacesController {
     state: Arc<Mutex<WorkspacesState>>,
     compositor: Option<CompositorKind>,
 }
 
 impl WorkspacesController {
-    /// Returns immediately without a reader when no compositor implements the session, so nothing
-    /// pushes (ADR-0056 decision 1). Exhaustive matching makes a new `CompositorKind` fail here.
-    pub fn new(events: UnboundedSender<WorkspacesSignal>) -> Self {
-        let state = Arc::new(Mutex::new(WorkspacesState::default()));
-        let compositor = detect_compositor();
-        match compositor {
-            Some(kind) => {
-                let publisher = StatePublisher::new(Arc::clone(&state), events, kind);
-                match kind {
-                    CompositorKind::Niri => niri::spawn_reader(publisher),
-                    CompositorKind::Hyprland => hyprland::spawn_reader(publisher),
-                }
-            }
-            None => {
-                debug!("{}; workspace reporting disabled for this run", unsupported_session_report())
-            }
+    /// `state` and `compositor` come from `Capabilities::ensure_compositor_reader` (ADR-0247
+    /// decision 2), which spawns the niri/Hyprland reader at most once and shares it with
+    /// `windows`. `None` means no compositor implements this session, so nothing ever pushes
+    /// (ADR-0056 decision 1).
+    ///
+    /// A reader that was already running wrote `state` and signalled before this controller
+    /// existed to catch it, so a non-default `state` here needs its own signal: otherwise this
+    /// generation reads `nil` until the next real compositor event.
+    pub fn new(
+        state: Arc<Mutex<WorkspacesState>>,
+        compositor: Option<CompositorKind>,
+        events: UnboundedSender<WorkspacesSignal>,
+    ) -> Self {
+        if compositor.is_none() {
+            debug!("{}; workspace reporting disabled for this run", unsupported_session_report());
+        } else if *state.lock().expect("workspaces state mutex poisoned") != WorkspacesState::default() {
+            let _ = events.send(WorkspacesSignal::Changed);
         }
         Self { state, compositor }
     }
@@ -532,5 +533,29 @@ mod tests {
         assert!(publisher.publish(&workspaces, None, Some(&[]), None));
         let json = serde_json::to_value(publisher.state.lock().unwrap().clone()).unwrap();
         assert_eq!(json["special"], serde_json::json!([]), "the compositor has specials and none exist right now");
+    }
+
+    /// A reader started by an earlier capability already wrote real state before this one
+    /// attached; without a catch-up signal, `mantle.workspaces:get()` stays `nil` until the next
+    /// compositor event.
+    #[test]
+    fn new_sends_a_catch_up_signal_when_the_shared_state_is_already_populated() {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let state =
+            Arc::new(Mutex::new(WorkspacesState { compositor: "niri".to_string(), ..WorkspacesState::default() }));
+
+        let _controller = WorkspacesController::new(state, Some(CompositorKind::Niri), tx);
+
+        assert!(matches!(rx.try_recv(), Ok(WorkspacesSignal::Changed)));
+    }
+
+    #[test]
+    fn new_sends_nothing_when_the_shared_state_is_still_default() {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+
+        let _controller =
+            WorkspacesController::new(Arc::new(Mutex::new(WorkspacesState::default())), Some(CompositorKind::Niri), tx);
+
+        assert!(rx.try_recv().is_err());
     }
 }

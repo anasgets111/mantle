@@ -31,6 +31,8 @@
 //!   replace the focused monitor's regular workspace.
 //! - `is_fullscreen` is active-window `fullscreen`: int since Hyprland 0.42 (`0` none, `1`
 //!   maximized, `2` fullscreen), bool before; only the real value counts.
+//!
+//! `spawn_reader` also folds every `clients` entry into a `windows` row, from the same reads.
 
 use std::io::{BufRead, BufReader};
 use std::os::unix::net::UnixStream;
@@ -39,8 +41,9 @@ use std::path::Path;
 use serde::Deserialize;
 
 use super::controller::{FocusedWindow, SpecialWorkspace, StatePublisher, WorkspaceRow};
+use crate::capabilities::windows::controller::{StatePublisher as WindowsPublisher, WindowEntry};
 use crate::compositor::{hyprland_command, hyprland_request, hyprland_signature, hyprland_socket_path};
-use shared::{debug, error};
+use shared::{Capability, debug, error};
 
 /// One `j/workspaces` entry. Hyprland's `windows` count identifies empty workspaces without a
 /// client scan.
@@ -59,6 +62,10 @@ struct HyprlandWorkspace {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct HyprlandMonitor {
+    /// Numeric id, joined against a client's `monitor` field (`windows`' `output`); the name is
+    /// the connector this capability and `workspaces` otherwise key on.
+    #[serde(default)]
+    id: i64,
     name: String,
     active_workspace: WorkspaceRef,
     /// `{ "id": 0, "name": "" }` when no special is shown here.
@@ -80,6 +87,9 @@ struct WorkspaceRef {
 /// omits it; an unmapped client has no surface to represent a workspace.
 #[derive(Debug, Clone, Deserialize)]
 struct HyprlandClient {
+    /// `windows`' opaque window id, passed back to select this client.
+    #[serde(default)]
+    address: String,
     #[serde(default)]
     class: String,
     #[serde(default)]
@@ -87,24 +97,50 @@ struct HyprlandClient {
     workspace: WorkspaceRef,
     #[serde(default)]
     floating: bool,
+    /// Numeric monitor id, joined against [`HyprlandMonitor::id`] for `windows`' `output`.
+    #[serde(default)]
+    monitor: i64,
     #[serde(rename = "focusHistoryID", default)]
     focus_history_id: i64,
     #[serde(default = "yes")]
     mapped: bool,
-    #[serde(default, deserialize_with = "fullscreen_flag")]
-    fullscreen: bool,
+    #[serde(default, deserialize_with = "fullscreen_mode")]
+    fullscreen: FullscreenMode,
 }
 
 fn yes() -> bool {
     true
 }
 
-/// `fullscreen` in either wire shape: bool as itself, int as "is `2`".
-fn fullscreen_flag<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<bool, D::Error> {
+/// Hyprland's `fullscreen` field: an int since 0.42 (`0` none, `1` maximized, `2` real
+/// fullscreen), bool before (`true` meant real fullscreen; there was no maximize).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+enum FullscreenMode {
+    #[default]
+    None,
+    Maximized,
+    Fullscreen,
+}
+
+impl FullscreenMode {
+    fn is_fullscreen(self) -> bool {
+        self == FullscreenMode::Fullscreen
+    }
+
+    fn is_maximized(self) -> bool {
+        self == FullscreenMode::Maximized
+    }
+}
+
+fn fullscreen_mode<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<FullscreenMode, D::Error> {
     Ok(match serde_json::Value::deserialize(deserializer)? {
-        serde_json::Value::Bool(flag) => flag,
-        serde_json::Value::Number(mode) => mode.as_i64() == Some(2),
-        _ => false,
+        serde_json::Value::Bool(true) => FullscreenMode::Fullscreen,
+        serde_json::Value::Number(mode) => match mode.as_i64() {
+            Some(1) => FullscreenMode::Maximized,
+            Some(2) => FullscreenMode::Fullscreen,
+            _ => FullscreenMode::None,
+        },
+        _ => FullscreenMode::None,
     })
 }
 
@@ -170,8 +206,9 @@ fn special_list(
 }
 
 /// `j/activewindow` reply: `{}` without a focused toplevel. Any other non-client shape is a
-/// protocol change, logged once per occurrence rather than treated as no focus.
-fn focused_window(json: &str) -> Option<FocusedWindow> {
+/// protocol change, logged once per occurrence rather than treated as no focus. `read_state` uses
+/// this once for both [`FocusedWindow`] and `windows`' per-client focus comparison.
+fn parse_active_client(json: &str) -> Option<HyprlandClient> {
     let value: serde_json::Value = match serde_json::from_str(json) {
         Ok(value) => value,
         Err(err) => {
@@ -183,17 +220,47 @@ fn focused_window(json: &str) -> Option<FocusedWindow> {
         return None;
     }
     match serde_json::from_value::<HyprlandClient>(value) {
-        Ok(client) => Some(FocusedWindow {
-            title: client.title,
-            app_id: client.class,
-            is_floating: client.floating,
-            is_fullscreen: Some(client.fullscreen),
-        }),
+        Ok(client) => Some(client),
         Err(err) => {
             debug!("Hyprland's activewindow reply has an unexpected shape; treating as no focused window: {err}");
             None
         }
     }
+}
+
+fn to_focused_window(client: &HyprlandClient) -> FocusedWindow {
+    FocusedWindow {
+        title: client.title.clone(),
+        app_id: client.class.clone(),
+        is_floating: client.floating,
+        is_fullscreen: Some(client.fullscreen.is_fullscreen()),
+    }
+}
+
+/// Every mapped client, for `windows`. `focused` compares each address against
+/// `j/activewindow`'s: `focusHistoryID == 0` names the last toplevel, not necessarily the focused
+/// one.
+fn window_rows(
+    clients: &[HyprlandClient],
+    monitors: &[HyprlandMonitor],
+    active_address: Option<&str>,
+) -> Vec<WindowEntry> {
+    clients
+        .iter()
+        .filter(|client| client.mapped)
+        .map(|client| WindowEntry {
+            id: client.address.clone(),
+            title: client.title.clone(),
+            app_id: client.class.clone(),
+            workspace_id: (client.workspace.id > 0).then_some(client.workspace.id as u64),
+            output: monitors.iter().find(|monitor| monitor.id == client.monitor).map(|monitor| monitor.name.clone()),
+            focused: active_address.is_some_and(|address| address == client.address),
+            floating: Some(client.floating),
+            fullscreen: Some(client.fullscreen.is_fullscreen()),
+            minimized: None,
+            maximized: Some(client.fullscreen.is_maximized()),
+        })
+        .collect()
 }
 
 /// Event names that trigger a state read: prefix before `>>`, with `v2` removed because each v2
@@ -211,6 +278,7 @@ const TRIGGERS: &[&str] = &[
     "closewindow",
     "movewindow",
     "activewindow",
+    "fullscreen",
     "changefloatingmode",
     "windowtitle",
     "monitoradded",
@@ -223,9 +291,10 @@ fn is_trigger(line: &str) -> bool {
     TRIGGERS.contains(&name)
 }
 
-/// Four parsed reads. `None` logs the failed read and leaves the previous publish, so one dropped
-/// request costs a stale frame, not the run.
-type State = (Vec<WorkspaceRow>, Option<FocusedWindow>, Vec<SpecialWorkspace>);
+/// Four parsed reads, plus the full window list folded from the same `clients`/`activewindow`.
+/// `None` logs the failed read and leaves the previous publish, so one dropped request costs a
+/// stale frame, not the run.
+type State = (Vec<WorkspaceRow>, Option<FocusedWindow>, Vec<SpecialWorkspace>, Vec<WindowEntry>);
 
 fn read_state(socket_path: &Path) -> Option<State> {
     fn read<T: for<'de> Deserialize<'de>>(socket_path: &Path, name: &str) -> Option<T> {
@@ -255,19 +324,21 @@ fn read_state(socket_path: &Path) -> Option<State> {
             return None;
         }
     };
+    let active_client = parse_active_client(&active);
     Some((
         workspace_rows(&workspaces, &monitors, &clients),
-        focused_window(&active),
+        active_client.as_ref().map(to_focused_window),
         special_list(&workspaces, &monitors, &clients),
+        window_rows(&clients, &monitors, active_client.as_ref().map(|client| client.address.as_str())),
     ))
 }
 
 /// Connects to the event socket before the first state read, so an intervening change remains a
 /// line to process. One OS thread then re-reads after every trigger until socket end or no
-/// listener.
-pub fn spawn_reader(mut publisher: StatePublisher) {
+/// listener. Also drives `mantle.windows` from the same reads.
+pub fn spawn_reader(mut publisher: StatePublisher, mut windows_publisher: WindowsPublisher) {
     let Some(signature) = hyprland_signature() else {
-        debug!("HYPRLAND_INSTANCE_SIGNATURE is unset or empty; workspace reporting disabled for this run");
+        debug!("HYPRLAND_INSTANCE_SIGNATURE is unset or empty; workspace and window reporting disabled for this run");
         return;
     };
     let events_path = hyprland_socket_path(&signature, ".socket2.sock");
@@ -276,53 +347,77 @@ pub fn spawn_reader(mut publisher: StatePublisher) {
         Ok(stream) => stream,
         Err(err) => {
             error!(
-                "failed to connect to Hyprland's event socket at {}; workspace reporting disabled for this run: {err}",
+                "failed to connect to Hyprland's event socket at {}; workspace and window reporting disabled for this run: {err}",
                 events_path.display()
             );
             return;
         }
     };
 
+    macro_rules! publish {
+        ($rows:expr, $focused:expr, $special:expr, $windows:expr) => {
+            let workspaces_alive = publisher.publish($rows, $focused, $special, None);
+            let windows_alive = windows_publisher.publish($windows);
+            if !workspaces_alive && !windows_alive {
+                return;
+            }
+        };
+    }
+
     std::thread::spawn(move || {
-        if let Some((rows, focused, special)) = read_state(&command_path)
-            && !publisher.publish(&rows, focused.as_ref(), Some(&special), None)
-        {
-            return;
+        if let Some((rows, focused, special, windows)) = read_state(&command_path) {
+            publish!(&rows, focused.as_ref(), Some(&special), &windows);
         }
         for line in BufReader::new(stream).lines() {
             let Ok(line) = line else {
-                error!("Hyprland event socket read failed; workspaces will no longer update");
+                error!("Hyprland event socket read failed; workspaces and windows will no longer update");
                 return;
             };
             if !is_trigger(&line) {
                 continue;
             }
-            if let Some((rows, focused, special)) = read_state(&command_path)
-                && !publisher.publish(&rows, focused.as_ref(), Some(&special), None)
-            {
-                return;
+            if let Some((rows, focused, special, windows)) = read_state(&command_path) {
+                publish!(&rows, focused.as_ref(), Some(&special), &windows);
             }
         }
-        error!("Hyprland event socket closed; workspaces will no longer update");
+        error!("Hyprland event socket closed; workspaces and windows will no longer update");
     });
 }
 
 /// One `dispatch` on its own thread. Hyprland answers `ok` or a reason; anything else is printed
-/// with the command.
-fn dispatch(what: String) {
+/// with the command. `capability` tags the log line for whichever capability asked.
+fn dispatch(what: String, capability: &'static str) {
     let Some(signature) = hyprland_signature() else {
         debug!("`dispatch {what}` requested but HYPRLAND_INSTANCE_SIGNATURE is unset; ignored");
         return;
     };
     std::thread::spawn(move || {
         let socket_path = hyprland_socket_path(&signature, ".socket.sock");
-        hyprland_command(&socket_path, &format!("dispatch {what}"), "workspaces");
+        hyprland_command(&socket_path, &format!("dispatch {what}"), capability);
     });
 }
 
 /// `workspaces:focus(id)`; a new number creates the empty slot a strip can pad into.
 pub fn focus(id: u64) {
-    dispatch(focus_command(id));
+    dispatch(focus_command(id), Capability::Workspaces.as_str());
+}
+
+pub fn focus_window(id: &str) {
+    window_dispatch("hl.dsp.focus", id, None);
+}
+
+pub fn close_window(id: &str) {
+    window_dispatch("hl.dsp.window.close", id, None);
+}
+
+/// Hyprland only toggles; the caller checks this is a real change first.
+pub fn toggle_window_fullscreen(id: &str) {
+    window_dispatch("hl.dsp.window.fullscreen", id, None);
+}
+
+/// Same dispatcher as fullscreen, with `mode = "maximized"`.
+pub fn toggle_window_maximized(id: &str) {
+    window_dispatch("hl.dsp.window.fullscreen", id, Some("maximized"));
 }
 
 /// The table form, not `hl.dsp.focus(N)`: `focus` takes one table and reads the field, the same
@@ -332,9 +427,21 @@ fn focus_command(id: u64) -> String {
     format!("hl.dsp.focus({{ workspace = {id} }})")
 }
 
+/// `dispatcher` is `hl.dsp.focus` or an `hl.dsp.window.*` name; every window write shares this
+/// table shape.
+fn window_dispatch_command(dispatcher: &str, id: &str, mode: Option<&str>) -> String {
+    let id = lua_escape(id);
+    let mode = mode.map(|value| format!(r#", mode = "{value}""#)).unwrap_or_default();
+    format!(r#"{dispatcher}({{ window = "address:{id}"{mode} }})"#)
+}
+
+fn window_dispatch(dispatcher: &str, id: &str, mode: Option<&str>) {
+    dispatch(window_dispatch_command(dispatcher, id, mode), Capability::Windows.as_str());
+}
+
 /// `workspaces:toggle_special(name)`.
 pub fn toggle_special(name: &str) {
-    dispatch(toggle_special_command(name));
+    dispatch(toggle_special_command(name), Capability::Workspaces.as_str());
 }
 
 /// Strip `special:`; the unnamed `special` passes the empty string, which the dispatcher reads as
@@ -525,6 +632,12 @@ mod tests {
         assert!(!rows[1].is_active);
     }
 
+    /// Test-only: production reads `parse_active_client` once per state read and derives both
+    /// [`FocusedWindow`] and the `windows` address comparison from it (see `read_state`).
+    fn focused_window(json: &str) -> Option<FocusedWindow> {
+        parse_active_client(json).as_ref().map(to_focused_window)
+    }
+
     #[test]
     fn focused_window_reads_activewindow_and_treats_the_empty_object_as_nothing_focused() {
         let focused = focused_window(&client("kitty", "~ - fish", 1, 0, true).to_string()).unwrap();
@@ -553,6 +666,14 @@ mod tests {
         assert!(!is_trigger("urgent>>55d1c0a3b2c0"));
     }
 
+    /// Without this, `set_maximized`/`set_fullscreen` compare against stale state and can toggle
+    /// right back off.
+    #[test]
+    fn a_fullscreen_or_maximize_change_is_a_trigger() {
+        assert!(is_trigger("fullscreen>>1"));
+        assert!(is_trigger("fullscreenv2>>0,1"));
+    }
+
     #[test]
     fn is_fullscreen_reads_the_int_mode_and_the_older_bool_and_counts_only_real_fullscreen() {
         let mut window = client("mpv", "film.mkv", 1, 0, false);
@@ -566,6 +687,39 @@ mod tests {
             window["fullscreen"] = wire.clone();
             assert_eq!(focused_window(&window.to_string()).unwrap().is_fullscreen, expected, "{wire}");
         }
+    }
+
+    #[test]
+    fn window_rows_carries_every_mapped_client_joins_output_by_monitor_id_and_finds_the_focused_one() {
+        let mut steam = client("steam", "Steam", 1, 3, false);
+        steam["mapped"] = serde_json::json!(false);
+        let mut firefox = client("firefox", "Hyprland Wiki", 1, 1, false);
+        firefox["fullscreen"] = serde_json::json!(1);
+        firefox["address"] = serde_json::json!("0xa11ce");
+        let rows = window_rows(
+            &clients(serde_json::json!([client("kitty", "~", 1, 0, true), firefox, steam])),
+            &monitors(serde_json::json!([monitor("DP-1", 1, true)])),
+            Some("0x55d1c0a3b2c0"),
+        );
+
+        assert_eq!(rows.len(), 2, "the unmapped steam overlay is dropped");
+        let kitty = rows.iter().find(|row| row.app_id == "kitty").unwrap();
+        assert_eq!(kitty.id, "0x55d1c0a3b2c0");
+        assert_eq!(kitty.workspace_id, Some(1));
+        assert_eq!(kitty.output.as_deref(), Some("DP-1"));
+        assert!(kitty.focused, "its address matches j/activewindow's");
+        assert_eq!(kitty.minimized, None, "Hyprland has no minimize concept");
+        let firefox = rows.iter().find(|row| row.app_id == "firefox").unwrap();
+        assert!(!firefox.focused);
+        assert_eq!(firefox.maximized, Some(true));
+        assert_eq!(firefox.fullscreen, Some(false), "mode 1 is maximized, not fullscreen");
+    }
+
+    #[test]
+    fn window_rows_drops_the_workspace_id_for_a_special_or_negative_workspace() {
+        let rows = window_rows(&clients(serde_json::json!([client("kitty", "~", -99, 0, true)])), &[], None);
+
+        assert_eq!(rows[0].workspace_id, None, "-99 is a special, not a `WorkspaceEntry.id`");
     }
 
     #[test]
@@ -627,6 +781,28 @@ mod tests {
             toggle_special_command("special:é"),
             r#"hl.dsp.workspace.toggle_special("é")"#,
             "a non-ASCII name reaches the socket as itself, not as its bytes read as codepoints"
+        );
+    }
+
+    /// `focuswindow`/`closewindow` as top-level dispatchers do not exist ("attempt to call a nil
+    /// value"); windows go through `hl.dsp.focus`/`hl.dsp.window.*` like every other 0.56 write.
+    #[test]
+    fn window_writes_are_the_lua_dispatchers_0_56_actually_has() {
+        assert_eq!(
+            window_dispatch_command("hl.dsp.focus", "0xa11ce", None),
+            r#"hl.dsp.focus({ window = "address:0xa11ce" })"#
+        );
+        assert_eq!(
+            window_dispatch_command("hl.dsp.window.close", "0xa11ce", None),
+            r#"hl.dsp.window.close({ window = "address:0xa11ce" })"#
+        );
+        assert_eq!(
+            window_dispatch_command("hl.dsp.window.fullscreen", "0xa11ce", None),
+            r#"hl.dsp.window.fullscreen({ window = "address:0xa11ce" })"#
+        );
+        assert_eq!(
+            window_dispatch_command("hl.dsp.window.fullscreen", "0xa11ce", Some("maximized")),
+            r#"hl.dsp.window.fullscreen({ window = "address:0xa11ce", mode = "maximized" })"#
         );
     }
 }

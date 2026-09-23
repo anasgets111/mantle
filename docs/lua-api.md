@@ -70,6 +70,7 @@ for the Supervisor's lifetime. These links lead to the actual serialized state d
 | `notifications` | [Feed, spans, actions and DND](../supervisor/src/capabilities/notifications/mod.rs) |
 | `mpris` | [Player metadata and position](../supervisor/src/capabilities/mpris/player.rs) |
 | `workspaces` | [Per-output workspaces and active client](../supervisor/src/capabilities/workspaces/controller.rs) |
+| `windows` | [Every open toplevel: title, app ID, workspace, output and focus/floating/fullscreen/minimize/maximize state](../supervisor/src/capabilities/windows/controller.rs) |
 | `system` | [Clock](../supervisor/src/capabilities/system/controller.rs) |
 | `sysinfo` | [CPU, memory and temperatures](../supervisor/src/capabilities/sysinfo/controller.rs) |
 | `power` | [Profiles and energy state](../supervisor/src/capabilities/power/controller.rs) |
