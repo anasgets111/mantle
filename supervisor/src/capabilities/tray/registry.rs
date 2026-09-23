@@ -258,12 +258,11 @@ pub(super) fn spawn_name_owner_changed_forwarder(
             let Ok(args) = signal.args() else { continue };
             let dropped_name = args.name.to_string();
 
-            let removed: Vec<(ItemKey, ItemEntry)> = {
-                let mut guard = registry.lock().expect("mutex poisoned");
-                let stale_keys: Vec<ItemKey> =
-                    guard.keys().filter(|(unique_name, _)| unique_name.as_str() == dropped_name).cloned().collect();
-                stale_keys.into_iter().filter_map(|key| guard.remove(&key).map(|entry| (key, entry))).collect()
-            };
+            let removed: Vec<(ItemKey, ItemEntry)> = registry
+                .lock()
+                .expect("mutex poisoned")
+                .extract_if(|(unique_name, _), _| unique_name.as_str() == dropped_name)
+                .collect();
             if removed.is_empty() {
                 continue;
             }
