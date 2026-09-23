@@ -37,10 +37,7 @@ pub fn register(lua: &Lua) -> mlua::Result<()> {
             if name.is_empty() {
                 return Err(mlua::Error::runtime("action() needs a name; `mantle call` has nothing to ask for"));
             }
-            if lua.app_data_ref::<ActionRegistry>().is_none() {
-                lua.set_app_data(ActionRegistry::default());
-            }
-            let mut registry = lua.app_data_mut::<ActionRegistry>().expect("just ensured the registry exists");
+            let mut registry = super::app_data_or_default::<ActionRegistry>(lua);
             // Refused rather than replaced: two modules claiming one name is a collision the config
             // author has to see, and silently keeping the last would make which one wins depend on
             // `require` order.

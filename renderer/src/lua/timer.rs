@@ -107,11 +107,8 @@ pub fn register(lua: &Lua) -> mlua::Result<()> {
             if !(MIN_MS..=MAX_MS).contains(&ms) {
                 return Err(mlua::Error::runtime(format!("timer({ms}) is outside {MIN_MS}..={MAX_MS} milliseconds")));
             }
-            if lua.app_data_ref::<TimerRegistry>().is_none() {
-                lua.set_app_data(TimerRegistry::default());
-            }
             let due = Instant::now() + Duration::from_millis(ms);
-            let mut registry = lua.app_data_mut::<TimerRegistry>().expect("just ensured the registry exists");
+            let mut registry = super::app_data_or_default::<TimerRegistry>(lua);
             let id = registry.arm(due, callback)?;
             drop(registry);
             lua.create_userdata(TimerHandle(id))
@@ -174,10 +171,7 @@ pub fn dispatch_due(lua: &Lua, now: Instant) {
 /// [`super::action::clear`]. `next_id` keeps counting, so a handle from before this cancels nothing
 /// armed after it.
 pub fn begin_evaluation(lua: &Lua) {
-    if lua.app_data_ref::<TimerRegistry>().is_none() {
-        lua.set_app_data(TimerRegistry::default());
-    }
-    let mut registry = lua.app_data_mut::<TimerRegistry>().expect("just ensured the registry exists");
+    let mut registry = super::app_data_or_default::<TimerRegistry>(lua);
     registry.entries.clear();
     registry.staged.clear();
     registry.firing.clear();

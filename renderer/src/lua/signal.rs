@@ -180,10 +180,7 @@ struct PulseCell {
 struct WakeDeadline(Option<Instant>);
 
 fn arm_wake(lua: &Lua, due: Instant) {
-    if lua.app_data_ref::<WakeDeadline>().is_none() {
-        lua.set_app_data(WakeDeadline::default());
-    }
-    let mut slot = lua.app_data_mut::<WakeDeadline>().expect("just ensured the slot exists");
+    let mut slot = super::app_data_or_default::<WakeDeadline>(lua);
     slot.0 = Some(slot.0.map_or(due, |current| current.min(due)));
 }
 
@@ -871,10 +868,7 @@ struct ReadTracker {
 
 /// Marks the beginning of an instance's layout resolution, clearing its prior reads.
 pub(crate) fn begin_instance_resolve(lua: &Lua, instance_id: &str) {
-    if lua.app_data_ref::<ReadTracker>().is_none() {
-        lua.set_app_data(ReadTracker::default());
-    }
-    let mut tracker = lua.app_data_mut::<ReadTracker>().expect("tracker exists");
+    let mut tracker = super::app_data_or_default::<ReadTracker>(lua);
     let instance_rc: Rc<str> = Rc::from(instance_id);
     if let Some(old_cells) = tracker.instance_cells.remove(&instance_rc) {
         for cell_id in old_cells {
@@ -965,10 +959,7 @@ impl<'lua> EvaluationMemo<'lua> {
         let owner = if in_pass {
             false
         } else {
-            if lua.app_data_ref::<MemoTable>().is_none() {
-                lua.set_app_data(MemoTable::default());
-            }
-            let mut table = lua.app_data_mut::<MemoTable>().expect("just ensured the memo table exists");
+            let mut table = super::app_data_or_default::<MemoTable>(lua);
             let owner = table.depth == 0;
             table.depth += 1;
             owner
@@ -1081,15 +1072,9 @@ impl<'lua> LayoutPassBudget<'lua> {
     /// opens the [`EvaluationMemo`] for the pass: a computed then answers once for every node and
     /// property that reads it, instead of once per property (ADR-0157).
     pub(crate) fn enter(lua: &'lua Lua) -> mlua::Result<Self> {
-        if lua.app_data_ref::<PassDeadline>().is_none() {
-            lua.set_app_data(PassDeadline::default());
-        }
-        lua.app_data_mut::<PassDeadline>().expect("just ensured the slot exists").0 =
-            Some(Deadline::lasting(LAYOUT_PASS_CAP));
+        super::app_data_or_default::<PassDeadline>(lua).0 = Some(Deadline::lasting(LAYOUT_PASS_CAP));
         // Starts with or retains the memo table across passes, clearing it at pass end.
-        if lua.app_data_ref::<MemoTable>().is_none() {
-            lua.set_app_data(MemoTable::default());
-        }
+        super::app_data_or_default::<MemoTable>(lua);
         Ok(Self { lua })
     }
 
@@ -1117,16 +1102,12 @@ impl<'lua> CpuBudget<'lua> {
     /// pushing so early return cannot strand a deadline and disable the VM's cap; no Lua runs
     /// between the two, and the hook tolerates an empty stack.
     pub(crate) fn enter(lua: &'lua Lua) -> mlua::Result<Self> {
-        if lua.app_data_ref::<Vec<Deadline>>().is_none() {
-            lua.set_app_data(Vec::<Deadline>::new());
-        }
-        let depth = lua.app_data_ref::<Vec<Deadline>>().expect("just ensured the deadline stack exists").len();
-        if depth >= MAX_SIGNAL_NESTING_DEPTH {
+        let mut stack = super::app_data_or_default::<Vec<Deadline>>(lua);
+        if stack.len() >= MAX_SIGNAL_NESTING_DEPTH {
             return Err(mlua::Error::runtime(format!(
                 "signal nesting exceeded its maximum depth of {MAX_SIGNAL_NESTING_DEPTH} levels -- a computed/map chain recursing into itself, or a dependency chain that long?"
             )));
         }
-        let mut stack = lua.app_data_mut::<Vec<Deadline>>().expect("just ensured the deadline stack exists");
         let deadline = stack.first().copied().unwrap_or_else(|| Deadline::lasting(CPU_CAP));
         stack.push(deadline);
         Ok(Self { lua })
@@ -1269,15 +1250,7 @@ pub fn register(lua: &Lua, dirty: DirtyFlag) -> mlua::Result<()> {
     lua.globals().set(
         "state",
         lua.create_function(move |lua, (name, initial): (String, Value)| {
-            if lua.app_data_ref::<StateRegistry>().is_none() {
-                lua.set_app_data(StateRegistry::default());
-            }
-            let existing = lua
-                .app_data_ref::<StateRegistry>()
-                .expect("just ensured the state registry exists")
-                .0
-                .get(&name)
-                .cloned();
+            let existing = super::app_data_or_default::<StateRegistry>(lua).0.get(&name).cloned();
             if let Some((signal, seeded)) = existing {
                 // Existing name wins across reload; an edited `initial` is later than `set` and
                 // reseeds it (ADR-0044 decision 5 amendment).
@@ -1287,10 +1260,7 @@ pub fn register(lua: &Lua, dirty: DirtyFlag) -> mlua::Result<()> {
                             "state(\"{name}\", ...) refused its new initial value at the marshalling boundary: {err}"
                         ))
                     })?;
-                    lua.app_data_mut::<StateRegistry>()
-                        .expect("just ensured the state registry exists")
-                        .0
-                        .insert(name, (signal.clone(), initial));
+                    super::app_data_or_default::<StateRegistry>(lua).0.insert(name, (signal.clone(), initial));
                 }
                 return Ok(signal);
             }
@@ -1299,10 +1269,7 @@ pub fn register(lua: &Lua, dirty: DirtyFlag) -> mlua::Result<()> {
                     "state(\"{name}\", ...) refused its initial value at the marshalling boundary: {err}"
                 ))
             })?;
-            lua.app_data_mut::<StateRegistry>()
-                .expect("just ensured the state registry exists")
-                .0
-                .insert(name, (signal.clone(), initial));
+            super::app_data_or_default::<StateRegistry>(lua).0.insert(name, (signal.clone(), initial));
             Ok(signal)
         })?,
     )?;
@@ -1320,11 +1287,7 @@ pub fn register(lua: &Lua, dirty: DirtyFlag) -> mlua::Result<()> {
     lua.globals().set(
         "geometry",
         lua.create_function(|lua, name: String| {
-            if lua.app_data_ref::<GeometryRegistry>().is_none() {
-                lua.set_app_data(GeometryRegistry::default());
-            }
-            let existing =
-                lua.app_data_ref::<GeometryRegistry>().expect("just ensured the registry exists").0.get(&name).cloned();
+            let existing = super::app_data_or_default::<GeometryRegistry>(lua).0.get(&name).cloned();
             if let Some(signal) = existing {
                 return Ok(signal);
             }
@@ -1333,22 +1296,14 @@ pub fn register(lua: &Lua, dirty: DirtyFlag) -> mlua::Result<()> {
                 zero.set(key, 0.0)?;
             }
             let signal = Signal(SignalKind::Geometry(next_cell_id(), Rc::new(RefCell::new(Value::Table(zero)))));
-            lua.app_data_mut::<GeometryRegistry>()
-                .expect("just ensured the registry exists")
-                .0
-                .insert(name, signal.clone());
+            super::app_data_or_default::<GeometryRegistry>(lua).0.insert(name, signal.clone());
             Ok(signal)
         })?,
     )?;
     lua.globals().set(
         "scroll",
         lua.create_function(move |lua, name: String| {
-            if lua.app_data_ref::<ScrollRegistry>().is_none() {
-                lua.set_app_data(ScrollRegistry::default());
-            }
-            Ok(lua
-                .app_data_mut::<ScrollRegistry>()
-                .expect("just ensured the scroll registry exists")
+            Ok(super::app_data_or_default::<ScrollRegistry>(lua)
                 .0
                 .entry(name)
                 .or_insert_with(|| Signal::new_scroll(scroll_dirty.clone()))
@@ -1362,16 +1317,12 @@ pub fn register(lua: &Lua, dirty: DirtyFlag) -> mlua::Result<()> {
 /// Either global creates the pair, and reloads share it. No marshalling: pointer handler owns both
 /// values, not Lua.
 fn hover_slot(lua: &Lua, dirty: &DirtyFlag, name: String) -> mlua::Result<(Signal, Signal)> {
-    if lua.app_data_ref::<HoverRegistry>().is_none() {
-        lua.set_app_data(HoverRegistry::default());
-    }
-    let existing =
-        lua.app_data_ref::<HoverRegistry>().expect("just ensured the hover registry exists").0.get(&name).cloned();
+    let existing = super::app_data_or_default::<HoverRegistry>(lua).0.get(&name).cloned();
     if let Some(slot) = existing {
         return Ok(slot);
     }
     let slot = Signal::new_hover(dirty.clone(), Value::Table(unhovered_rect(lua)?));
-    lua.app_data_mut::<HoverRegistry>().expect("just ensured the hover registry exists").0.insert(name, slot.clone());
+    super::app_data_or_default::<HoverRegistry>(lua).0.insert(name, slot.clone());
     Ok(slot)
 }
 

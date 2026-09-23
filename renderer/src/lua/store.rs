@@ -40,20 +40,12 @@ pub fn register(lua: &Lua) -> mlua::Result<()> {
             };
             storage.call_method::<()>("invoke", ("open", file.clone(), defaults))?;
 
-            if lua.app_data_ref::<StoreRegistry>().is_none() {
-                lua.set_app_data(StoreRegistry::default());
-            }
-            if let Some(existing) =
-                lua.app_data_ref::<StoreRegistry>().expect("just ensured the registry exists").0.get(&file).cloned()
-            {
+            if let Some(existing) = super::app_data_or_default::<StoreRegistry>(lua).0.get(&file).cloned() {
                 return Ok(existing);
             }
 
             let store = build_store(lua, &file, storage)?;
-            lua.app_data_mut::<StoreRegistry>()
-                .expect("just ensured the registry exists")
-                .0
-                .insert(file, store.clone());
+            super::app_data_or_default::<StoreRegistry>(lua).0.insert(file, store.clone());
             Ok(store)
         })?,
     )

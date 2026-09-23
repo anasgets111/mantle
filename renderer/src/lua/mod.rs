@@ -25,6 +25,14 @@ use std::cell::RefCell;
 
 use mlua::{Lua, Table, Value};
 
+/// `T`'s app data, inserted as `T::default()` on first use.
+pub(crate) fn app_data_or_default<T: Default + 'static>(lua: &Lua) -> mlua::AppDataRefMut<'_, T> {
+    if lua.app_data_ref::<T>().is_none() {
+        lua.set_app_data(T::default());
+    }
+    lua.app_data_mut::<T>().expect("inserted above")
+}
+
 /// Config VM libraries, explicit instead of `StdLib::ALL_SAFE` (ADR-0048). Lua runs on the Wayland
 /// thread (ADR-0039), so `io.read` or `os.execute` would freeze every monitor; the 5ms instruction
 /// cap cannot catch a parked syscall (ADR-0021). `IO` is absent; `OS` remains for [`restrict_os`]'s

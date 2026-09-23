@@ -43,20 +43,12 @@ pub fn register(lua: &Lua) -> mlua::Result<()> {
             // a program already up.
             processes.call_method::<()>("invoke", ("declare", name.clone(), stop_signal))?;
 
-            if lua.app_data_ref::<SessionRegistry>().is_none() {
-                lua.set_app_data(SessionRegistry::default());
-            }
-            if let Some(existing) =
-                lua.app_data_ref::<SessionRegistry>().expect("just ensured the registry exists").0.get(&name).cloned()
-            {
+            if let Some(existing) = super::app_data_or_default::<SessionRegistry>(lua).0.get(&name).cloned() {
                 return Ok(existing);
             }
 
             let handle = build_handle(lua, &name, processes)?;
-            lua.app_data_mut::<SessionRegistry>()
-                .expect("just ensured the registry exists")
-                .0
-                .insert(name, handle.clone());
+            super::app_data_or_default::<SessionRegistry>(lua).0.insert(name, handle.clone());
             Ok(handle)
         })?,
     )
