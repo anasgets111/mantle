@@ -49,10 +49,13 @@ type ImageTargetTexture2DOes = unsafe extern "system" fn(u32, *mut c_void);
 
 /// Looks up one extension function; `None` means the driver lacks it, read by callers as "no
 /// dma-buf import" (ADR-0248 amendment decision 4).
-fn load<T>(instance: &egl::Instance<egl::Static>, name: &str) -> Option<T> {
+///
+/// # Safety
+/// `T` must be the `unsafe extern "system" fn` type of `name`'s C prototype.
+unsafe fn load<T>(instance: &egl::Instance<egl::Static>, name: &str) -> Option<T> {
     let addr = instance.get_proc_address(name)?;
-    // SAFETY: `name` names a fixed EGL/GLES extension whose C signature matches `T`; a non-null
-    // `eglGetProcAddress` return is valid for the process's lifetime.
+    // SAFETY: `T` is a function pointer of `name`'s signature per this function's contract, so the
+    // sizes match; a non-null `eglGetProcAddress` return lives as long as the static libEGL.
     Some(unsafe { std::mem::transmute_copy::<extern "system" fn(), T>(&addr) })
 }
 
@@ -70,7 +73,8 @@ pub fn swap_buffers_with_damage(
         extensions
             .split_whitespace()
             .any(|name| name == format!("EGL_{vendor}_swap_buffers_with_damage"))
-            .then(|| load(instance, &format!("eglSwapBuffersWithDamage{vendor}")))?
+            // SAFETY: `SwapBuffersWithDamage` is both vendors' shared prototype.
+            .then(|| unsafe { load(instance, &format!("eglSwapBuffersWithDamage{vendor}")) })?
     })
 }
 
@@ -86,12 +90,15 @@ impl DmabufEntryPoints {
     /// `None` if this driver is missing any one of the four extensions; the caller treats that as
     /// "no dma-buf import" (amendment decision 4), same as a missing compositor protocol.
     pub fn load(egl: &EglState) -> Option<Self> {
-        Some(DmabufEntryPoints {
-            query_display_attrib: load(&egl.instance, "eglQueryDisplayAttribEXT")?,
-            query_device_string: load(&egl.instance, "eglQueryDeviceStringEXT")?,
-            query_modifiers: load(&egl.instance, "eglQueryDmaBufModifiersEXT")?,
-            image_target_texture_2d_oes: load(&egl.instance, "glEGLImageTargetTexture2DOES")?,
-        })
+        // SAFETY: each field's type alias transcribes the C prototype of the name loaded into it.
+        unsafe {
+            Some(DmabufEntryPoints {
+                query_display_attrib: load(&egl.instance, "eglQueryDisplayAttribEXT")?,
+                query_device_string: load(&egl.instance, "eglQueryDeviceStringEXT")?,
+                query_modifiers: load(&egl.instance, "eglQueryDmaBufModifiersEXT")?,
+                image_target_texture_2d_oes: load(&egl.instance, "glEGLImageTargetTexture2DOES")?,
+            })
+        }
     }
 
     /// This process's own render node: `EGL_EXT_device_query` to the `EGLDeviceEXT` behind
