@@ -397,10 +397,12 @@ mod tests {
     #[tokio::test]
     async fn no_video_devices_still_sends_one_signal_so_the_empty_state_gets_announced() {
         let video4linux_root = tempfile::tempdir().unwrap(); // empty -- no videoN entries.
+        let proc_root = tempfile::tempdir().unwrap();
         let (_privacy_tx, sources) = watch::channel(PrivacySources::default());
         let (events_tx, mut events_rx) = tokio::sync::mpsc::unbounded_channel();
 
-        let controller = PrivacyController::new(PathBuf::from("/proc"), video4linux_root.path(), sources, events_tx);
+        let controller =
+            PrivacyController::new(proc_root.path().to_path_buf(), video4linux_root.path(), sources, events_tx);
 
         let signal = tokio::time::timeout(std::time::Duration::from_secs(2), events_rx.recv()).await;
         assert_eq!(
@@ -415,10 +417,12 @@ mod tests {
     #[tokio::test]
     async fn a_machine_with_no_camera_still_reports_a_microphone() {
         let video4linux_root = tempfile::tempdir().unwrap(); // empty -- no videoN entries.
+        let proc_root = tempfile::tempdir().unwrap();
         let (privacy_tx, sources) = watch::channel(PrivacySources::default());
         let (events_tx, mut events_rx) = tokio::sync::mpsc::unbounded_channel();
 
-        let controller = PrivacyController::new(PathBuf::from("/proc"), video4linux_root.path(), sources, events_tx);
+        let controller =
+            PrivacyController::new(proc_root.path().to_path_buf(), video4linux_root.path(), sources, events_tx);
         assert_eq!(events_rx.recv().await, Some(PrivacySignal::Changed), "the empty seed");
 
         privacy_tx
