@@ -183,7 +183,7 @@ pub fn list_folder(dir: &Path, extensions: &[String]) -> std::io::Result<Vec<Fil
             .map_or(0, |elapsed| elapsed.as_secs() as i64);
         entries.push(FileEntry { name: name.to_string(), path: entry.path().to_string_lossy().into_owned(), modified });
     }
-    entries.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()).then_with(|| a.name.cmp(&b.name)));
+    entries.sort_by_cached_key(|entry| (entry.name.to_lowercase(), entry.name.clone()));
     Ok(entries)
 }
 
