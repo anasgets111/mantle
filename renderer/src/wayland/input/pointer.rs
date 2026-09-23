@@ -586,7 +586,7 @@ impl App {
         let path = layout::hit::hit_path(tree, point);
         // Deepest scrollable under the pointer wins.
         let scrollable = path.iter().enumerate().rev().find_map(|(depth, node)| {
-            let signal = layout::scene::scroll_signal(&node.properties)?;
+            let signal = layout::node::signal_at(&node.properties, "scroll")?;
             let axis = layout::scene::main_axis_of(node.kind, &node.properties).ok()??;
             Some((depth, signal, axis))
         });

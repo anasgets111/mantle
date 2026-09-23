@@ -1758,22 +1758,6 @@ fn flow_kind<'a>(kind: &'a str, properties: &PropMap) -> Result<&'a str, LayoutE
     if kind == "list" { node::parse_list_direction(properties) } else { Ok(kind) }
 }
 
-/// The `Signal` behind a node's `scroll` property, or `None` if it declares none.
-///
-/// Unresolved in the slot because `layout::node::is_structural_property` says so, the same way
-/// `hover` arrives (ADR-0062 decision 3, ADR-0069 decision 4). Anything else there (a number, a
-/// `state()` signal, a capability) is silently inert rather than an error, matching
-/// `layout::hover::hover_signal`: `Signal::scroll_handle` refuses every kind this must not write,
-/// so naming the wrong thing gets no scrolling instead of a wheel writing somewhere it should not.
-///
-/// `pub(crate)` for `wayland::input`'s wheel handler.
-pub(crate) fn scroll_signal(properties: &PropMap) -> Option<crate::lua::signal::Signal> {
-    let Some(Value::UserData(ud)) = properties.get("scroll") else {
-        return None;
-    };
-    crate::lua::signal::from_userdata(ud)
-}
-
 /// Honours a pending `signal:reveal(index)` on this container's scroll signal (ADR-0112): moves the
 /// asked offset the least distance that puts the `index`-th visible child's border box inside the
 /// viewport, or leaves it alone when the child is already in view. Written quietly, ahead of
@@ -1788,7 +1772,7 @@ fn reveal_child(
     padding_start: f32,
     content_main: f32,
 ) {
-    let Some(signal) = scroll_signal(properties) else {
+    let Some(signal) = node::signal_at(properties, "scroll") else {
         return;
     };
     let Some(index) = signal.take_reveal() else {
@@ -1824,7 +1808,7 @@ fn reveal_child(
 /// (content and viewport the same number by construction) is a no-op, the same answer `Fill` gives
 /// in a `Content` parent for the same reason: no remainder (decision 5).
 fn scroll_offset(properties: &PropMap, content_main: f32, total_main: f32) -> f32 {
-    let Some(signal) = scroll_signal(properties) else {
+    let Some(signal) = node::signal_at(properties, "scroll") else {
         return 0.0;
     };
     let Some(asked) = signal.scroll_offset() else {
@@ -2113,9 +2097,7 @@ fn publish_geometry(node: &ResolvedNode, origin_x: f32, origin_y: f32, lua: &Lua
         return Ok(());
     }
     let (x, y) = (origin_x + node.rect.x, origin_y + node.rect.y);
-    if let Some(Value::UserData(ud)) = node.properties.get("geometry")
-        && let Some((id, cell)) = crate::lua::signal::from_userdata(ud).and_then(|signal| signal.geometry_cell())
-    {
+    if let Some((id, cell)) = node::signal_at(&node.properties, "geometry").and_then(|signal| signal.geometry_cell()) {
         const KEYS: [&str; 4] = ["x", "y", "width", "height"];
         let fresh = [x, y, node.rect.width, node.rect.height];
         let same = match &*cell.borrow() {

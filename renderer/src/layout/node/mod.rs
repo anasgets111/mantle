@@ -161,6 +161,16 @@ impl LayoutError {
     }
 }
 
+/// The `Signal` held unresolved in `property`, or `None` for any other value. A structural slot
+/// (`hover`, `scroll`, `geometry`) holding something else is inert rather than an error: the
+/// engine's write handles refuse every kind it must not write.
+pub(crate) fn signal_at(properties: &PropMap, property: &str) -> Option<signal::Signal> {
+    let Some(Value::UserData(ud)) = properties.get(property) else {
+        return None;
+    };
+    signal::from_userdata(ud)
+}
+
 /// Crate-visible for `layout::scene::Scene::apply_one_instance`; all crate `InvalidProperty`
 /// values use this helper.
 pub(crate) fn invalid(property: &str, detail: impl Into<String>) -> LayoutError {
@@ -356,17 +366,13 @@ pub fn resolve_properties(mut properties: PropMap, kind: &str, lua: &Lua) -> Res
                 // The writer of a `geometry` rect is not its reader: a moved rect re-resolves only
                 // the nodes that read it.
                 if property != "geometry"
-                    && let Some(Value::UserData(ud)) = properties.get(property)
-                    && let Some(cell) = signal::from_userdata(ud).and_then(|s| s.cell_id())
+                    && let Some(cell) = signal_at(&properties, property).and_then(|s| s.cell_id())
                 {
                     signal::note_read(lua, cell);
                 }
                 continue;
             }
-            let Some(Value::UserData(ud)) = properties.get(property) else {
-                continue;
-            };
-            let Some(signal) = signal::from_userdata(ud) else {
+            let Some(signal) = signal_at(&properties, property) else {
                 continue;
             };
             // Name the node kind: a config has many `background`s, and the bare property left a reader

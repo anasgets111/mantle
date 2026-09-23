@@ -6,7 +6,7 @@ use mlua::{Function, Value};
 
 use super::hit::{self, LogicalPoint};
 use super::scene::ResolvedNode;
-use crate::lua::signal::{self, Signal};
+use crate::lua::signal::Signal;
 use crate::text::snap::LogicalRect;
 
 /// One node's answer: its hover signal, whether the pointer is on it, and where it is.
@@ -58,7 +58,8 @@ pub fn hover_writes(tree: &ResolvedNode, point: Option<LogicalPoint>) -> Vec<Hov
 /// Pushes `node`'s hover signal, if any, then recurses. Every node is visited so a hover can turn
 /// off after the pointer leaves or the node becomes invisible.
 fn collect(node: &ResolvedNode, path: &[&ResolvedNode], writes: &mut Vec<HoverWrite>) {
-    if let Some(signal) = hover_signal(node) {
+    // ADR-0062 decision 3: the Wayland writer does not turn a non-hover value into a config error.
+    if let Some(signal) = super::node::signal_at(&node.properties, "hover") {
         // Both references index the same tree and `ResolvedNode` has no comparable id. The path
         // is bounded by `scene::MAX_TREE_DEPTH`, so this scan is at most 64 comparisons.
         let depth = path.iter().position(|on_path| std::ptr::eq(*on_path, node));
@@ -73,16 +74,6 @@ fn collect(node: &ResolvedNode, path: &[&ResolvedNode], writes: &mut Vec<HoverWr
     for child in &node.children {
         collect(child, path, writes);
     }
-}
-
-/// The unresolved `Signal` handle behind `hover` (ADR-0062 decision 3). Other values, including a
-/// bare boolean or `state()` signal, are inert because `Signal::hover_handle` refuses them. The
-/// Wayland writer deliberately does not turn these unsupported values into config errors.
-fn hover_signal(node: &ResolvedNode) -> Option<Signal> {
-    let Some(Value::UserData(ud)) = node.properties.get("hover") else {
-        return None;
-    };
-    signal::from_userdata(ud)
 }
 
 #[cfg(test)]
