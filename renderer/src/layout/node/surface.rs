@@ -60,7 +60,7 @@ pub fn parse_anchor(properties: &PropMap) -> Result<Anchor, LayoutError> {
 }
 
 /// A specific output's connector name (e.g. `"DP-1"`, matched against `output.name` by
-/// `expand_instances`), or `"All"`; absent defaults to `"All"`.
+/// `expand_instances`), `"All"`, or `"Active"` (ADR-0246); absent defaults to `"All"`.
 pub fn parse_monitor(properties: &PropMap) -> Result<String, LayoutError> {
     parse_string_property(properties, "monitor", Some("All"))
 }
@@ -191,14 +191,26 @@ pub struct PanelSpec {
 }
 
 pub fn panel_spec(properties: &PropMap) -> Result<PanelSpec, LayoutError> {
-    Ok(PanelSpec {
+    let spec = PanelSpec {
         topology: surface_topology(properties)?,
         keyboard_interactivity: parse_keyboard_interactivity(properties)?,
         exclusive: parse_exclusive(properties)?,
         margin: parse_edge_insets(properties, "margin")?,
         width: parse_size_mode(properties, "width")?,
         height: parse_size_mode(properties, "height")?,
-    })
+    };
+    // A percentage needs the output, which the compositor picks unseen (ADR-0246 decision 3).
+    for (key, mode) in [("width", spec.width), ("height", spec.height)] {
+        if spec.topology.monitor == "Active" && matches!(mode, SizeMode::Percent(_)) {
+            return Err(invalid(
+                key,
+                "a percentage needs a known output, and `monitor = \"Active\"` leaves it to the compositor; \
+                 use `\"Fill\"` with anchors and margins, or pixels"
+                    .to_string(),
+            ));
+        }
+    }
+    Ok(spec)
 }
 
 #[cfg(test)]
@@ -414,6 +426,16 @@ mod tests {
         let table: mlua::Table =
             lua.load(r#"return { kind = "panel", exclusive = state("hide_bar", true) }"#).eval().unwrap();
         assert_eq!(parse_exclusive(&props_from_table(&table)).unwrap(), Exclusive::Respect);
+    }
+
+    #[test]
+    fn an_active_panel_refuses_a_percentage_it_has_no_output_to_resolve_against() {
+        let lua = lua();
+        let table: mlua::Table = lua
+            .load(r#"return { kind = "panel", id = "osd", layer = "Overlay", monitor = "Active", height = "50%" }"#)
+            .eval()
+            .unwrap();
+        assert!(matches!(panel_spec(&props_from_table(&table)), Err(LayoutError::InvalidProperty { .. })));
     }
 
     #[test]

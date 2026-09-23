@@ -30,7 +30,7 @@ Current project vocabulary. Implementation contracts live in [docs](docs/lua-api
 
 **Lock client**: The Renderer holding the session-lock protocol handle and painting its lock surfaces. _Avoid_: lock authority, locker, lock screen
 
-**Surface instance**: One live mapping of a surface declaration. Panels and locks use `{id}@{output}`; windows and popups use their declared ID. _Avoid_: surface copy, per-monitor surface
+**Surface instance**: One live mapping of a surface declaration. Panels and locks use `{id}@{output}`; windows, popups and `monitor = "Active"` panels use their declared ID. _Avoid_: surface copy, per-monitor surface
 
 **Wallpaper surface**: A config-declared Background panel displaying an image behind applications. _Avoid_: background layer, wallpaper capability
 

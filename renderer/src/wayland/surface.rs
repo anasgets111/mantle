@@ -73,9 +73,9 @@ pub(super) enum TrackedRole {
         /// all follow the spec, yet the surface never returns. A notification's first display and
         /// every later one were invisible; reopening a hidden bar stayed blank (ADR-0088).
         layer: Option<LayerSurface>,
-        /// Instance output, reused by [`App::show_panel`] (ADR-0038 decision 3: the compositor
-        /// never picks it).
-        output: wl_output::WlOutput,
+        /// Instance output, reused by [`App::show_panel`] (ADR-0038 decision 3). `None` for
+        /// `monitor = "Active"`, whose every show lets the compositor pick (ADR-0246).
+        output: Option<wl_output::WlOutput>,
         /// `layer::spec_update`'s diff baseline and the spec used by
         /// [`App::apply_exclusive_zone`] after configure (ADR-0038 decision 2).
         spec: PanelSpec,

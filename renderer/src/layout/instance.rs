@@ -61,6 +61,8 @@ pub struct OutputGeometry {
 /// **`panel`**: expands per output. `monitor = "All"` (the default) yields one instance per
 /// output, in `outputs` order; other values match the named output, else none. The
 /// `"{id}@{output}"` id form stays uniform even for a single match (`"DP-1"` yields `"bar@DP-1"`).
+/// `"Active"` yields one instance on the bare id with no output, since the compositor picks it at
+/// each show (ADR-0246); none while no output exists to pick.
 ///
 /// **`window`**: always exactly one instance, whatever `outputs` holds, including none, since the
 /// compositor places a toplevel, with no output to qualify the id (ADR-0049 decision 2). The
@@ -82,6 +84,19 @@ pub fn expand_instances(specs: &[SurfaceSpec], outputs: &[OutputGeometry]) -> Ve
     let mut instances = Vec::new();
     for spec in specs {
         match spec {
+            SurfaceSpec::Panel(panel) if panel.topology.monitor == "Active" => {
+                if let Some(first) = outputs.first() {
+                    instances.push(SurfaceInstance {
+                        instance_id: panel.topology.id.clone(),
+                        declared_id: panel.topology.id.clone(),
+                        output: String::new(),
+                        // ponytail: the picked output is unknown until `wl_surface.enter`, so this
+                        // seeds from the first; `Percent`, the one size reading it, is refused.
+                        available: first.size,
+                        measured_axes: (false, false),
+                    });
+                }
+            }
             SurfaceSpec::Panel(panel) => {
                 for output in outputs {
                     if panel.topology.monitor != "All" && panel.topology.monitor != output.name {
@@ -142,6 +157,22 @@ pub fn expand_instances(specs: &[SurfaceSpec], outputs: &[OutputGeometry]) -> Ve
     instances
 }
 
+/// Logs each `panel` whose `monitor` names no connected output. Called at apply rather than in
+/// [`expand_instances`], which a hotplug runs twice.
+pub fn warn_unmatched_monitors(specs: &[SurfaceSpec], outputs: &[OutputGeometry]) {
+    let connected: Vec<&str> = outputs.iter().map(|output| output.name.as_str()).collect();
+    for spec in specs {
+        let SurfaceSpec::Panel(panel) = spec else { continue };
+        let monitor = panel.topology.monitor.as_str();
+        if !matches!(monitor, "All" | "Active") && !connected.contains(&monitor) {
+            warn!(
+                "surface {:?} targets monitor {monitor:?}, which is not connected (connected: {connected:?}); no surface created for it",
+                panel.topology.id
+            );
+        }
+    }
+}
+
 /// Whether `instance_id` names an instance of the surface declared as `declared_id`: the inverse
 /// of the `"{id}@{output}"` rule [`expand_instances`] applies. One caller:
 /// `crate::wayland::App`'s popup parent lookup (ADR-0051 decision 1), pairing a declared `parent`
@@ -155,22 +186,6 @@ pub fn expand_instances(specs: &[SurfaceSpec], outputs: &[OutputGeometry]) -> Ve
 /// `SurfaceInstance`'s `declared_id` on `TrackedSurface` instead of re-deriving it here.
 pub fn is_instance_of(instance_id: &str, declared_id: &str) -> bool {
     instance_id == declared_id || instance_id.strip_prefix(declared_id).is_some_and(|rest| rest.starts_with('@'))
-}
-
-/// Logs each `panel` whose `monitor` names no connected output. Called at apply rather than in
-/// [`expand_instances`], which a hotplug runs twice.
-pub fn warn_unmatched_monitors(specs: &[SurfaceSpec], outputs: &[OutputGeometry]) {
-    let connected: Vec<&str> = outputs.iter().map(|output| output.name.as_str()).collect();
-    for spec in specs {
-        let SurfaceSpec::Panel(panel) = spec else { continue };
-        let monitor = panel.topology.monitor.as_str();
-        if monitor != "All" && !connected.contains(&monitor) {
-            warn!(
-                "surface {:?} targets monitor {monitor:?}, which is not connected (connected: {connected:?}); no surface created for it",
-                panel.topology.id
-            );
-        }
-    }
 }
 
 /// What one output change does to a live generation's surface instances (ADR-0038 decision 3:
@@ -282,6 +297,16 @@ mod tests {
     fn a_monitor_that_matches_no_connected_output_produces_no_instance_at_all() {
         let outputs = [output("eDP-1", 1920.0, 1080.0)];
         assert!(expand_instances(&[spec("bar", "HDMI-A-9")], &outputs).is_empty());
+    }
+
+    #[test]
+    fn an_active_panel_is_one_bare_instance_with_no_output_and_none_without_outputs() {
+        let outputs = [output("eDP-1", 1920.0, 1080.0), output("DP-1", 3840.0, 2160.0)];
+        let instances = expand_instances(&[spec("osd", "Active")], &outputs);
+
+        assert_eq!(instances.len(), 1);
+        assert_eq!((instances[0].instance_id.as_str(), instances[0].output.as_str()), ("osd", ""));
+        assert!(expand_instances(&[spec("osd", "Active")], &[]).is_empty());
     }
 
     #[test]

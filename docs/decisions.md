@@ -920,7 +920,7 @@ layering, per-output content or exclusive zones; zero-overhead did not justify i
 Amendments: ADR-0078 adds exclusive Ignore without changing the in-place property list. ADR-0049
 makes popup/window visibility create/destroy protocol objects because popup creation needs an input
 serial and consumes its positioner. ADR-0088 applies it to panels because layer-shell remapping
-failed. The declared set remains fixed.
+failed. The declared set remains fixed. ADR-0246 lets a panel leave its output to the compositor.
 
 Scope reversals: ADR-0040 adds deferred window/popup roles and corrects the claim that click-outside
 dismissal has no portable answer, using popup grabs. ADR-0042 reverses the
@@ -5751,3 +5751,31 @@ spending most of the frame relayouting and repainting unaffected surfaces.
 2. **Arguments join like `print`'s**, so a `print` becomes `log.info` unchanged.
 
 **Amends ADR-0243 decision 1.**
+
+## 0246. `monitor = "Active"` leaves a panel's output to the compositor
+
+An OSD or notification belongs on the output in use. Only the compositor knows which one, and a
+null output in `get_layer_surface` asks it. Quickshell's `screen: null` and LayerShellQt's
+`wantsToBeOnActiveScreen` make the same request.
+
+1. **`"Active"` passes a null output.** It yields one instance on the bare declared id, and none
+   while no output exists. Hiding destroys the layer object (ADR-0088), so the compositor picks
+   again at each show. A shown surface stays where it mapped. The name is Plasma's "active screen".
+   The choice is compositor policy. KWin follows the last input and GNOME splits pointer from
+   keyboard focus, so "Focused" would promise one policy.
+2. **A function `child` is refused**, as on a window (ADR-0121). The Renderer builds the child
+   before the compositor names the output. Quickshell, Plasma and GNOME all keep such content
+   output-agnostic.
+3. **Percentage sizes are refused.** Mantle resolves them against an output it does not know.
+   The compositor sizes `"Fill"` with anchors, and the content sizes a measured axis, so both stay
+   correct.
+4. **`closed` re-shows instead of destroying.** KWin closes the surface when its output goes
+   (`handleOutputRemoved`). A config never sees `closed` and still has the panel visible, so the
+   Renderer drops the object and the next pass recreates it wherever the compositor picks. GNOME
+   re-homes its UI the same way. The Renderer retries only a mapped surface, so one refused at
+   creation does not loop.
+
+Rejected: reading the focused output from `mantle.workspaces` and targeting its name. It needs a
+workspaces backend and rebuilds a shown surface on every focus change.
+
+**Amends ADR-0038 decision 3.**

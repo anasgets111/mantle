@@ -346,6 +346,11 @@ impl RendererClient {
         self.dirty.mark();
     }
 
+    /// Forces a whole-scene pass, for a surface state change no signal carries.
+    pub fn mark_dirty(&self) {
+        self.dirty.mark();
+    }
+
     /// Replaces one instance's compositor-configured `available` size and dirties the scene through
     /// ADR-0044 decision 2's [`DirtyFlag`] (ADR-0023). Ignore unknown ids instead of dirtying a
     /// nonexistent surface.

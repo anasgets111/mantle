@@ -208,8 +208,9 @@ pub(super) struct LayerSpec<'a> {
     layer_type: Layer,
     /// Compositor-visible namespace (default `"mantle-{id}"`), matched by `layerrule`.
     namespace: &'a str,
-    /// Always `Some` (ADR-0038 decision 3): one surface per `(surface, output)` pair.
-    output: &'a wl_output::WlOutput,
+    /// `None` lets the compositor pick (ADR-0246); otherwise one surface per `(surface, output)`
+    /// pair (ADR-0038 decision 3).
+    output: Option<&'a wl_output::WlOutput>,
     anchor: Anchor,
     size: (u32, u32),
     margin: node::EdgeInsets,
@@ -220,13 +221,8 @@ impl App {
     /// Creates and configures (but does not commit) a layer-shell surface.
     pub(super) fn spawn_layer(&mut self, qh: &QueueHandle<App>, spec: LayerSpec) -> LayerSurface {
         let surface = self.compositor_state.create_surface(qh);
-        let layer = self.layer_shell.create_layer_surface(
-            qh,
-            surface,
-            spec.layer_type,
-            Some(spec.namespace),
-            Some(spec.output),
-        );
+        let layer =
+            self.layer_shell.create_layer_surface(qh, surface, spec.layer_type, Some(spec.namespace), spec.output);
         layer.set_anchor(spec.anchor);
         layer.set_size(spec.size.0, spec.size.1);
         layer.set_keyboard_interactivity(spec.keyboard_interactivity);
@@ -252,10 +248,12 @@ impl App {
         visible: bool,
         measured: layout::LogicalSize,
     ) {
-        let Some(output) = outputs.get(&instance.output) else {
+        // An empty name is `"Active"`, which has no output to find (ADR-0246).
+        let output = outputs.get(&instance.output);
+        if output.is_none() && !instance.output.is_empty() {
             debug!(2; "instance {:?} names an output that has since gone; skipping", instance.instance_id);
             return;
-        };
+        }
         // Before the first configure, and before `set_instance_size` has replaced it, `available`
         // is still the output's own size, which is what `Percent` wants.
         let size = layer_size_for(spec, instance.available, measured);
@@ -306,7 +304,7 @@ impl App {
             ..TrackedSurface::new(
                 TrackedRole::Panel {
                     layer,
-                    output: output.clone(),
+                    output: output.cloned(),
                     spec: spec.clone(),
                     output_size: instance.available,
                     measured,
@@ -364,7 +362,7 @@ impl App {
             LayerSpec {
                 layer_type,
                 namespace: &namespace,
-                output: &output,
+                output: output.as_ref(),
                 anchor,
                 size,
                 margin,
@@ -491,9 +489,19 @@ impl LayerShellHandler for App {
     /// ponytail: closing every surface leaves the process alive with nothing on screen. Upgrade:
     /// exit on `closed` only when no output change explains it.
     fn closed(&mut self, _conn: &Connection, _qh: &QueueHandle<Self>, layer: &LayerSurface) {
-        let Some(surface_id) = self.surface_id_for(layer.wl_surface()).map(str::to_string) else {
+        let Some(index) = self.index_of_surface(layer.wl_surface()) else {
             return;
         };
+        // An `"Active"` panel outlives its output (ADR-0246 decision 4). Mapped only, so a surface
+        // refused at creation is not retried every pass.
+        if let TrackedRole::Panel { output: None, .. } = self.surfaces[index].role
+            && self.surfaces[index].map_state == MapState::Mapped
+        {
+            self.drop_role_object(index);
+            self.client.mark_dirty();
+            return;
+        }
+        let surface_id = self.surfaces[index].surface_id.clone();
         self.destroy_surface_by_id(&surface_id);
     }
 

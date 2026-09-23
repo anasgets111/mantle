@@ -684,18 +684,18 @@ fn children_of(kind: &str, properties: &PropMap) -> Result<Vec<VirtualNode>, Lay
 
 /// `child = function(output)` on a `panel`/`lock` (ADR-0121) runs per instance and pass, with the
 /// output name, before the ordinary child walk. Per-pass calls preserve registry-stable state such
-/// as `state("wallpaper_" .. output)`. `window`/`popup` have no output name, so function children
-/// are refused rather than called with `""`.
+/// as `state("wallpaper_" .. output)`. `window`/`popup` and a `monitor = "Active"` panel (ADR-0246)
+/// have no output name, so function children are refused rather than called with `""`.
 fn build_child_for_output(mut properties: PropMap, kind: &str, output: &str) -> Result<PropMap, LayoutError> {
     let Some(Value::Function(builder)) = properties.get("child") else {
         return Ok(properties);
     };
-    if !matches!(kind, "panel" | "lock") {
+    if !matches!(kind, "panel" | "lock") || output.is_empty() {
         return Err(node::invalid(
             "child",
             format!(
                 "a function child is for a `panel` or `lock`, which have one instance per output to hand it; \
-                 a `{kind}` has one instance wherever the compositor places it"
+                 this `{kind}` has one instance wherever the compositor places it"
             ),
         ));
     }
