@@ -48,13 +48,19 @@ macro_rules! warn {
     ($($arg:tt)*) => { $crate::log::emit($crate::log::Level::Warn, module_path!(), format_args!($($arg)*)) };
 }
 
+/// See [`error!`]. The shell's lifecycle: start, reload, respawn, stop (ADR-0251).
+#[macro_export]
+macro_rules! notice {
+    ($($arg:tt)*) => { $crate::log::emit($crate::log::Level::Notice, module_path!(), format_args!($($arg)*)) };
+}
+
 /// See [`error!`].
 #[macro_export]
 macro_rules! info {
     ($($arg:tt)*) => { $crate::log::emit($crate::log::Level::Info, module_path!(), format_args!($($arg)*)) };
 }
 
-/// See [`error!`]. `debug!(2; "...")` writes at verbosity 2 (1-3, `-v`/`-vv`/`-vvv`-style); bare
+/// See [`error!`]. `debug!(2; "...")` writes at verbosity 2 (`-vvv`); bare
 /// `debug!(...)` is verbosity 1. The `;` (not `,`) keeps a plain format string from ever parsing as
 /// a verbosity: `debug!("a, b")`'s first token is the whole string literal, not a bare integer.
 #[macro_export]

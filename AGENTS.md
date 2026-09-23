@@ -45,10 +45,11 @@ Trace the execution flow end-to-end before writing code, then stop at the first 
 
 ## Logging
 
-- **Runtime diagnostics.** Use `error!`, `warn!`, `info!`, or `debug!` from `shared`, imported by path
+- **Runtime diagnostics.** Use `error!`, `warn!`, `notice!`, `info!`, or `debug!` from `shared`, imported by path
   like `use shared::warn;`. The macro provides timestamp, level, and subsystem. Never write the
   subsystem into the message. Use `eprintln!` only for CLI output preceding `shared::log::init`.
 - **Log filtering.** `MANTLE_LOG` takes filters like `debug`, `warn,tray=debug`, `network=off` per ADR-0229.
+- **Levels.** `notice!` is start, reload, respawn, and stop. `info!` is a state change, never setup (ADR-0251).
 
 ## Testing
 

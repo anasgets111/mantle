@@ -346,9 +346,11 @@ async fn run_install(
     let child = match process::spawn_group_leader_piped(&command.program, &command.arguments) {
         Ok(child) => child,
         Err(err) => {
+            let message = format!("failed to spawn {}: {err}", command.program);
+            warn!("{message}");
             let mut guard = state.lock().expect("mutex poisoned");
             guard.installing = false;
-            guard.install_error = Some(format!("failed to spawn {}: {err}", command.program));
+            guard.install_error = Some(message);
             drop(guard);
             let _ = events.send(UpdatesSignal::Changed);
             return;
@@ -374,7 +376,7 @@ async fn run_install_with_child(
         tokio::spawn(async move {
             let mut lines = BufReader::new(stderr).lines();
             while let Ok(Some(line)) = lines.next_line().await {
-                debug!("install stderr: {line}");
+                debug!(2; "install stderr: {line}");
                 push_log_line(&mut state.lock().expect("mutex poisoned").install_log, line);
                 let _ = events.send(UpdatesSignal::Changed);
             }
@@ -412,7 +414,12 @@ async fn run_install_with_child(
     guard.install_finished_at = Some(now_unix());
     match status {
         // `None` means the process was killed by a signal.
-        Ok(status) => guard.install_exit_code = status.code(),
+        Ok(status) => {
+            if !status.success() {
+                warn!("install exited with {status}: {}", guard.install_log.last().map_or("", String::as_str));
+            }
+            guard.install_exit_code = status.code();
+        }
         Err(err) => guard.install_error = Some(format!("failed to wait on the install command: {err}")),
     }
     drop(guard);

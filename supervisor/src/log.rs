@@ -1,8 +1,8 @@
 //! `mantle log`: the shell's own stdout and stderr, kept somewhere a detached run can be read
 //! from (ADR-0199).
 //!
-//! Every diagnostic in both binaries is an `eprintln!`, so this is `dup2` per descriptor, not a
-//! logging framework. The Renderer inherits them through `process::spawn_group_leader`. A
+//! Every diagnostic in both binaries goes to stderr through `shared::log`, so this is `dup2` per
+//! descriptor, not a logging framework. The Renderer inherits them through `process::spawn_group_leader`. A
 //! descriptor replaced outright carries a panic to the file with no thread of ours in between; one
 //! that had a destination of its own is drained by [`tee`] instead, which does.
 
@@ -109,9 +109,7 @@ fn pump(
 /// struct rather than a sentence.
 pub fn print(dir: &Path, follow: bool, colour: bool, out: &mut impl Write) -> Result<(), Box<dyn std::error::Error>> {
     let path = dir.join(instance::LOG);
-    let mut file = File::open(&path).map_err(|err| {
-        format!("no log at {}: {err}. A shell with a terminal or a redirect writes there instead", path.display())
-    })?;
+    let mut file = File::open(&path).map_err(|err| format!("no log at {}: {err}", path.display()))?;
     let lock = File::open(dir.join(instance::LOCK))
         .map_err(|err| format!("{} has no lock, so its shell died starting: {err}", dir.display()))?;
     // Said once, before any of it is printed: without this a dead run's bytes are indistinguishable

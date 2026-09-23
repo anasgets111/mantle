@@ -55,7 +55,7 @@ async fn adopt_adapter(
             return;
         }
     };
-    info!("using adapter {path}");
+    debug!("using adapter {path}");
     let forwarder = spawn_adapter_signal_forwarder(proxy.clone(), events.clone()).abort_handle();
     *slot.lock().expect("mutex poisoned") = Some(BoundAdapter { path, proxy, forwarder });
     let _ = events.send(BluetoothSignal::AdapterChanged);

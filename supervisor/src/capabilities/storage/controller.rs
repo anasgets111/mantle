@@ -174,7 +174,7 @@ impl StorageController {
         };
 
         if changed {
-            debug!("store value changed: {}:{}", path.display(), key);
+            debug!(2; "store value changed: {}:{}", path.display(), key);
         }
         self.schedule_save(path);
         if changed {

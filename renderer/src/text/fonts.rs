@@ -67,7 +67,7 @@ pub fn resolve_chain(chain: &[&str]) -> ResolvedFonts {
 /// independent font discovery -- the divergence ADR-0043 decision 2 closed.
 ///
 /// `None` for a family nothing on the system answers. The caller draws in the declared chain and
-/// says so once; a missing font is a diagnostic, not a dead node.
+/// logs it once at `-vvv`; a missing font is a diagnostic, not a dead node.
 pub fn load_family(db: &mut Database, name: &str, loaded_paths: &mut HashSet<PathBuf>) -> Option<String> {
     load_chain(db, &[name], loaded_paths)
 }

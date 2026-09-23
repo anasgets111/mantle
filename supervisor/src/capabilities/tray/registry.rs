@@ -87,7 +87,7 @@ pub(super) async fn register_item(
             match bind_dbusmenu(connection, &destination, path).await {
                 Ok(menu) => Some(menu),
                 Err(err) => {
-                    debug!(1; "failed to bind DBusMenu for {unique_name} at {path}: {err}");
+                    debug!("failed to bind DBusMenu for {unique_name} at {path}: {err}");
                     None
                 }
             }
@@ -97,7 +97,7 @@ pub(super) async fn register_item(
     if let Some(menu) = &menu {
         match fetch_menu_via(menu).await {
             Ok(items) => tray_item.menu = Some(items),
-            Err(err) => debug!(1; "GetLayout failed for {unique_name}: {err}"),
+            Err(err) => debug!("GetLayout failed for {unique_name}: {err}"),
         }
     }
 
@@ -112,7 +112,7 @@ pub(super) async fn register_item(
             Ok(false) => return Err(format!("{unique_name} disconnected during registration")),
             Ok(true) => {}
             Err(err) => {
-                debug!(1; "pre-insert liveness check for {unique_name} failed (proceeding anyway): {err}")
+                debug!("pre-insert liveness check for {unique_name} failed (proceeding anyway): {err}")
             }
         }
     }

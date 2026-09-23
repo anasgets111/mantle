@@ -12,7 +12,7 @@
 
 use std::collections::HashMap;
 
-use shared::{error, info, warn};
+use shared::{debug, error, warn};
 use tokio::sync::mpsc::UnboundedSender;
 use tokio::sync::oneshot;
 use zbus::interface;
@@ -166,7 +166,7 @@ impl PolkitAgent {
         let connection = connection.clone();
         tokio::spawn(async move {
             match register_agent(&connection, agent, &subject, "en_US.UTF-8", AGENT_OBJECT_PATH).await {
-                Ok(()) => info!("registered as this session's authentication agent"),
+                Ok(()) => debug!("registered as this session's authentication agent"),
                 Err(err) => warn!(
                     "RegisterAuthenticationAgent failed, so another agent answers this session; disabled for this run: {err}"
                 ),

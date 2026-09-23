@@ -172,7 +172,7 @@ impl App {
                     // hotplug retires and replaces instance ids.
                     self.client.set_session_locked(true);
                     self.ensure_lock_surfaces(qh);
-                    info!("session lock requested; waiting for the compositor's `locked` or `finished`");
+                    debug!("session lock requested; waiting for the compositor's `locked` or `finished`");
                 }
                 // Preserve `GlobalError`'s own missing-global diagnosis.
                 Err(err) => {

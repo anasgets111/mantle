@@ -53,7 +53,7 @@ impl BluetoothController {
         let object_manager = match bind_object_manager(&connection).await {
             Ok(object_manager) => Some(object_manager),
             Err(err) => {
-                error!("failed to bind org.bluez's ObjectManager (bluetoothd not running?): {err}");
+                debug!("failed to bind org.bluez's ObjectManager (bluetoothd not running?): {err}");
                 None
             }
         };
@@ -280,7 +280,7 @@ impl BluetoothController {
     /// observes the real change; `main.rs` then rebuilds and pushes state.
     pub async fn set_enabled(&self, enabled: bool) {
         let Some(adapter) = self.adapter() else {
-            error!("set_enabled({enabled}) failed: {}", BluetoothActionError::NoAdapter);
+            debug!("set_enabled({enabled}) failed: {}", BluetoothActionError::NoAdapter);
             return;
         };
         if let Err(err) = adapter.set_powered(enabled).await {
@@ -292,7 +292,7 @@ impl BluetoothController {
     /// observes the change, including BlueZ's own switch-off at `DiscoverableTimeout`.
     pub async fn set_discoverable(&self, on: bool) {
         let Some(adapter) = self.adapter() else {
-            error!("set_discoverable({on}) failed: {}", BluetoothActionError::NoAdapter);
+            debug!("set_discoverable({on}) failed: {}", BluetoothActionError::NoAdapter);
             return;
         };
         if let Err(err) = adapter.set_discoverable(on).await {
@@ -412,7 +412,7 @@ impl BluetoothController {
     /// paired credentials from disk.
     pub async fn forget(&self, mac: &str) {
         let Some(adapter) = self.adapter() else {
-            error!("forget({mac:?}) failed: {}", BluetoothActionError::NoAdapter);
+            debug!("forget({mac:?}) failed: {}", BluetoothActionError::NoAdapter);
             return;
         };
         let Some((path, _)) = self.resolve_device(mac) else {

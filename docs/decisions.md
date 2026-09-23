@@ -5967,3 +5967,11 @@ ponytail: two helpers, detected once. Another helper is one `HELPERS` entry; a h
 mid-session needs a Supervisor restart.
 
 **Amends ADR-0034 and ADR-0134.**
+
+## 0251. A run without `-v` logs failures and the shell's lifecycle
+
+1. **The default is `Notice`, between `Warn` and `Info`.** `notice!` marks start, reload, respawn, and stop.
+2. **`Info` is a state change.** Capability setup is `Debug`. `Debug(3)` folds into `Debug(2)`.
+3. **A config's `log.*` writes as `config`.** As `lua`, it shared a name with `renderer::lua::*`.
+
+**Amends ADR-0243 and ADR-0245.**

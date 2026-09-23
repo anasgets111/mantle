@@ -184,7 +184,7 @@ impl App {
             };
             match screen_entry(index, &facts) {
                 Some(screen) => screens.push(screen),
-                None => debug!(1;
+                None => debug!(
                     "output {:?} reports neither a logical size nor a current mode; no surface created on it",
                     info.name.as_deref().unwrap_or("<unnamed>")
                 ),

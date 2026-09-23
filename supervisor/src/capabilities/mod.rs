@@ -17,7 +17,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-use shared::{Capability, CommandEnvelope, debug, error, warn};
+use shared::{Capability, CommandEnvelope, debug, error};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 use tokio::sync::watch;
 
@@ -173,7 +173,10 @@ fn queue<C: 'static>(worker: &Option<Worker<C>>, envelope: &CommandEnvelope, dis
     let Some(worker) = worker else { return log_unstarted(envelope) };
     let command = envelope.clone();
     if worker.send(Box::new(move |controller| dispatch(controller, &command))).is_err() {
-        warn!("{}: its backend failed to start; {} was dropped", envelope.params.capability, envelope.params.action);
+        debug!(
+            "{} for {} was dropped: its backend failed to start",
+            envelope.params.action, envelope.params.capability
+        );
     }
 }
 
@@ -500,7 +503,7 @@ impl Capabilities {
                         NetworkController::new(connection, events)
                             .await
                             .map_err(|err| {
-                                warn!("network: NetworkManager is unreachable; disabled until the next start: {err}")
+                                debug!("NetworkManager is unreachable; disabled until the next start: {err}")
                             })
                             .ok()
                     };
@@ -868,7 +871,7 @@ impl Capabilities {
     /// reads their member (ADR-0070), so missing ones call `log_unstarted`; boot-built `lock` is
     /// passed in, and read-only `battery`/`privacy`/`system` have no dispatch.
     pub fn dispatch(&mut self, capability: Capability, envelope: &CommandEnvelope, lock: &LockController) {
-        debug!(3; "dispatching command: {capability} {}", envelope.params.action);
+        debug!(2; "dispatching command: {capability} {}", envelope.params.action);
         macro_rules! to {
             ($held:expr, $dispatch:path) => {
                 match &$held {

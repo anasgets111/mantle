@@ -132,7 +132,7 @@ impl NetworkController {
             return;
         };
         if let Err(err) = wifi.wireless.request_scan(HashMap::new()).await {
-            warn!("RequestScan failed: {err}");
+            debug!("RequestScan failed: {err}");
             // A refused scan never moves `LastScan`, so `mark_scanning`'s flag would hold until NM
             // scans on its own, minutes later on a joined radio and never on a powered-down one.
             let _ = self.events.send(NetworkSignal::ScanCompleted);

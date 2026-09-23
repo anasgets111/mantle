@@ -167,7 +167,7 @@
 
 ---@class MenuItem
 ---One DBusMenu layout node, resolved to `tray.items[].menu`.
----@field children MenuItem[] Nested entries from the single `GetLayout(0, -1)` reply, so no `"menu_will_show"` is needed to populate them. Empty for leaves and for nodes at `MAX_MENU_DEPTH`, whose children are dropped with an stderr line.
+---@field children MenuItem[] Nested entries from the single `GetLayout(0, -1)` reply, so no `"menu_will_show"` is needed to populate them. Empty for leaves and for nodes at `MAX_MENU_DEPTH`, whose children are dropped with a debug line.
 ---@field enabled boolean `false` for a greyed-out entry. Activation is a no-op; keep it to preserve the application's layout instead of filtering it.
 ---@field icon_name? string Theme icon name, or `nil`; DBusMenu pixmaps are not carried.
 ---@field id integer DBusMenu item id, the second argument of `:invoke("activate_menu_item", id, menu_item_id)` and of `"menu_will_show"`.

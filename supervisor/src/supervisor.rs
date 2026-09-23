@@ -8,7 +8,7 @@
 
 use std::collections::HashMap;
 
-use shared::{Capability, SupervisorFrame, debug, error, info, warn};
+use shared::{Capability, SupervisorFrame, debug, error, info, notice, warn};
 
 use crate::capabilities::lock::{self, LockController};
 use crate::capabilities::polkit::{self, Answer, PolkitController};
@@ -320,7 +320,7 @@ impl Supervisor {
                 self.registry.forget_generation(departed);
                 self.authoritative = Authoritative { generation_id: replacement_generation_id, child };
                 self.renderer_departed = false;
-                info!("spawned generation {replacement_generation_id} to replace it");
+                notice!("spawned generation {replacement_generation_id} to replace it");
                 self.capabilities.forget_departed_requests();
                 // Without this the dead id kept its idle fan-out entry
                 // (a failed push per idle transition, and any inhibit it held) and its `process.run`
@@ -366,7 +366,7 @@ impl Supervisor {
         info!("lock: pam answered {outcome:?} for acquisition {acquisition}");
         if !self.lock.record_authentication(acquisition, outcome) {
             // No push: refusal changed no state; `push_lock_state` would bump the revision anyway.
-            debug!(1;
+            debug!(
                 "lock: dropping a pam outcome for acquisition {acquisition}, which is no longer the lock on the glass"
             );
         } else {

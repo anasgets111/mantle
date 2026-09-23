@@ -12,7 +12,7 @@ use std::cell::RefCell;
 use std::time::Duration;
 
 use nonstick::{ConversationAdapter, Transaction};
-use shared::{error, info, warn};
+use shared::{debug, error, info, warn};
 use tokio::sync::mpsc::UnboundedSender;
 
 /// Admin PAM service-stack directory. A constant lets [`pam_service_in`] tests use a temporary
@@ -250,7 +250,7 @@ async fn drive_helper(
         } else if line == "FAILURE" {
             return Ok(shared::PamOutcome::AuthFailed);
         } else {
-            info!("polkit helper: {line}");
+            debug!("polkit helper: {line}");
         }
     }
     Err(std::io::Error::other("the helper closed without a verdict"))

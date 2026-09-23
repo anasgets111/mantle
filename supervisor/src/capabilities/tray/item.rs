@@ -176,7 +176,7 @@ fn resolve_variant(
             Some(pixmap) => match write_icon_png(&format!("{stem}{spool_suffix}"), pixmap) {
                 Ok(path) => (None, Some(path)),
                 Err(err) => {
-                    debug!(1; "failed to spool icon PNG for {stem}{spool_suffix}: {err}");
+                    debug!("failed to spool icon PNG for {stem}{spool_suffix}: {err}");
                     (None, None)
                 }
             },

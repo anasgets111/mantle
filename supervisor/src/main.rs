@@ -29,7 +29,7 @@ use capabilities::Capabilities;
 use capabilities::lock::{self, LockController};
 use generation::{Renderer, renderer_binary_path};
 use polkit::PolkitAgent;
-use shared::{Capability, RendererFrame, SupervisorFrame, Zeroize, debug, info, warn};
+use shared::{Capability, RendererFrame, SupervisorFrame, Zeroize, debug, info, notice, warn};
 use socket::send_frame_logged;
 use supervisor::Supervisor;
 
@@ -58,7 +58,7 @@ fn frame_may_dispatch(frame: &RendererFrame, generation_id: u32, authoritative_g
 /// or hand-written frame, so name the capability instead of staying silent.
 pub(crate) fn log_unstarted(envelope: &shared::CommandEnvelope) {
     let params = &envelope.params;
-    eprintln!(
+    warn!(
         "generation {}'s mantle.{}:invoke({:?}) arrived before anything started {}; dropping",
         params.generation_id, params.capability, params.action, params.capability
     );
@@ -111,7 +111,7 @@ pub(crate) fn parse_action<A: serde::de::DeserializeOwned>(params: &shared::Comm
     let invocation = Invocation(params.action.clone(), params.arguments.clone());
     A::deserialize(serde::de::value::EnumAccessDeserializer::new(invocation))
         .map_err(|err| {
-            eprintln!(
+            warn!(
                 "malformed {}.{} command from generation {}: {err}; arguments {:?}",
                 params.capability, params.action, params.generation_id, params.arguments
             )
@@ -130,7 +130,12 @@ fn detach_self(root: &std::path::Path) -> Result<(), Box<dyn Error>> {
     use std::os::unix::process::CommandExt;
     let mut command = std::process::Command::new(std::env::current_exe()?);
     command
-        .args(std::env::args().skip(1).filter(|arg| arg != "-d" && arg != "--detach"))
+        // `--detached` in `-d`'s place, so the child's `started` line shows it was asked for.
+        .args(
+            std::env::args()
+                .skip(1)
+                .map(|arg| if arg == "-d" || arg == "--detach" { "--detached".into() } else { arg }),
+        )
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null());
@@ -310,6 +315,8 @@ async fn run_supervisor(
     // pid, and the listener refuses any other process claiming it (`socket::GenerationRegistry`).
     if let Some(pid) = boot_child.id() {
         registry.expect_generation(0, pid);
+        let argv: String = std::env::args().skip(1).map(|arg| format!(" {arg}")).collect();
+        notice!("started `mantle{argv}` on {}; renderer pid {pid}", config_dir.display());
     }
 
     let mut supervisor = Supervisor::new(
@@ -333,11 +340,11 @@ async fn run_supervisor(
     loop {
         tokio::select! {
             _ = tokio::signal::ctrl_c() => {
-                info!("SIGINT received, shutting down");
+                notice!("SIGINT received, shutting down");
                 break;
             }
             _ = sigterm.recv() => {
-                info!("SIGTERM received, shutting down");
+                notice!("SIGTERM received, shutting down");
                 break;
             }
             // ADR-0058 decision 1: dead and healthy-idle Renderers both send no frames; without

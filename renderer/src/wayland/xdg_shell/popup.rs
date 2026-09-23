@@ -1,7 +1,7 @@
 //! `popup` (`xdg_popup`): positioners, reposition, nested teardown and the ADR-0049/0051 dismissal
 //! latch.
 
-use shared::{debug, error, info, warn};
+use shared::{debug, error, warn};
 
 use super::*;
 use crate::wayland::surface::MapState;
@@ -384,9 +384,9 @@ impl App {
         } else {
             None
         };
-        // Rare enough to say every time: a popup only repositions when its content or its anchor
-        // actually moved, and if that starts happening on every pass this line is the evidence.
-        info!(
+        // A popup only repositions when its content or its anchor actually moved, and if that
+        // starts happening on every pass this line is the evidence.
+        debug!(
             "{surface_id} repositioned to {:?} from {:?} (token {token})",
             placement.size,
             was.map(|placement| placement.size)

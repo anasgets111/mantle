@@ -181,7 +181,7 @@ impl IdleController {
                         state_tx,
                     );
                     *notify_for_task.write().expect("rwlock poisoned") = NotifyState::Live(live);
-                    info!(
+                    debug!(
                         "dedicated Wayland connection for ext_idle_notifier_v1 established; notify live for this run"
                     );
                     // Swap first: otherwise `register_threshold` sees inert and requeues the
@@ -222,7 +222,7 @@ impl IdleController {
         if queued.is_empty() {
             return;
         }
-        info!("notify is live; registering {} threshold(s) that arrived before it was", queued.len());
+        debug!("notify is live; registering {} threshold(s) that arrived before it was", queued.len());
         for (generation_id, sec) in queued {
             self.register_threshold(generation_id, sec);
         }
@@ -368,7 +368,7 @@ impl IdleController {
             }
             screensaver_holds(&state)
         };
-        debug!(1; "{departed} left the bus still holding an idle inhibitor; released it");
+        debug!("{departed} left the bus still holding an idle inhibitor; released it");
         self.publish_screensaver(holds);
     }
 
@@ -467,7 +467,7 @@ async fn export_screensaver(session_bus: &zbus::Connection, controller: IdleCont
         .await
     {
         Ok(zbus::fdo::RequestNameReply::PrimaryOwner) => {
-            info!("holding {SCREENSAVER_BUS_NAME}; idle inhibits from browsers and players reach the gate");
+            debug!("holding {SCREENSAVER_BUS_NAME}; idle inhibits from browsers and players reach the gate");
             tokio::spawn(watch_screensaver_peers(session_bus.clone(), controller));
         }
         Ok(other) => warn!("RequestName({SCREENSAVER_BUS_NAME}) -> {other:?}; another daemon answers its clients"),

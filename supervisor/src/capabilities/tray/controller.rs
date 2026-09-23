@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use enumflags2::BitFlags;
-use shared::{debug, error, info, warn};
+use shared::{debug, error, warn};
 use tokio::sync::mpsc::UnboundedSender;
 use zbus::fdo::RequestNameFlags;
 use zbus::zvariant::{OwnedObjectPath, Value};
@@ -48,7 +48,7 @@ impl TrayController {
             warn!("failed to export StatusNotifierWatcher at {WATCHER_OBJECT_PATH}: {err}");
         }
         match connection.request_name_with_flags(WATCHER_BUS_NAME, BitFlags::<RequestNameFlags>::empty()).await {
-            Ok(reply) => info!("RequestName({WATCHER_BUS_NAME}) -> {reply}"),
+            Ok(reply) => debug!("RequestName({WATCHER_BUS_NAME}) -> {reply}"),
             Err(err) => error!("RequestName({WATCHER_BUS_NAME}) failed: {err}"),
         }
 
@@ -59,11 +59,13 @@ impl TrayController {
                 Ok(watcher_client) => {
                     let our_unique_name = connection.unique_name().map(|name| name.to_string()).unwrap_or_default();
                     if let Err(err) = watcher_client.register_status_notifier_host(&our_unique_name).await {
-                        debug!(1; "RegisterStatusNotifierHost failed: {err}");
+                        debug!("RegisterStatusNotifierHost failed: {err}");
                     }
                 }
                 Err(err) => {
-                    debug!(1; "failed to bind the StatusNotifierWatcher client proxy for RegisterStatusNotifierHost: {err}")
+                    debug!(
+                        "failed to bind the StatusNotifierWatcher client proxy for RegisterStatusNotifierHost: {err}"
+                    )
                 }
             }
             match zbus::fdo::DBusProxy::new(&connection).await {
@@ -115,18 +117,18 @@ impl TrayController {
     /// (ADR-0031, [`should_call_activate`]).
     pub async fn activate(&self, id: &str, x: i32, y: i32) {
         let Some((key, tray_item)) = self.find_item_id(id) else {
-            debug!(1; "activate({id:?}) failed: {}", TrayActionError::UnknownItem);
+            debug!("activate({id:?}) failed: {}", TrayActionError::UnknownItem);
             return;
         };
         if !should_call_activate(tray_item.item_is_menu) {
             return;
         }
         let Some(item) = self.find_item_proxy(&key) else {
-            debug!(1; "activate({id:?}) failed: {}", TrayActionError::UnknownItem);
+            debug!("activate({id:?}) failed: {}", TrayActionError::UnknownItem);
             return;
         };
         if let Err(err) = item.activate(x, y).await {
-            debug!(1; "activate({id:?}) failed: {err}");
+            debug!("activate({id:?}) failed: {err}");
         }
     }
 
@@ -134,15 +136,15 @@ impl TrayController {
     /// gate: `ItemIsMenu` constrains primary clicks only.
     pub async fn secondary_activate(&self, id: &str, x: i32, y: i32) {
         let Some((key, _)) = self.find_item_id(id) else {
-            debug!(1; "secondary_activate({id:?}) failed: {}", TrayActionError::UnknownItem);
+            debug!("secondary_activate({id:?}) failed: {}", TrayActionError::UnknownItem);
             return;
         };
         let Some(item) = self.find_item_proxy(&key) else {
-            debug!(1; "secondary_activate({id:?}) failed: {}", TrayActionError::UnknownItem);
+            debug!("secondary_activate({id:?}) failed: {}", TrayActionError::UnknownItem);
             return;
         };
         if let Err(err) = item.secondary_activate(x, y).await {
-            debug!(1; "secondary_activate({id:?}) failed: {err}");
+            debug!("secondary_activate({id:?}) failed: {err}");
         }
     }
 
@@ -150,15 +152,15 @@ impl TrayController {
     /// verbatim; the application interprets it, including values beyond the two named orientations.
     pub async fn scroll(&self, id: &str, delta: i32, orientation: &str) {
         let Some((key, _)) = self.find_item_id(id) else {
-            debug!(1; "scroll({id:?}) failed: {}", TrayActionError::UnknownItem);
+            debug!("scroll({id:?}) failed: {}", TrayActionError::UnknownItem);
             return;
         };
         let Some(item) = self.find_item_proxy(&key) else {
-            debug!(1; "scroll({id:?}) failed: {}", TrayActionError::UnknownItem);
+            debug!("scroll({id:?}) failed: {}", TrayActionError::UnknownItem);
             return;
         };
         if let Err(err) = item.scroll(delta, orientation).await {
-            debug!(1; "scroll({id:?}) failed: {err}");
+            debug!("scroll({id:?}) failed: {err}");
         }
     }
 
@@ -166,16 +168,16 @@ impl TrayController {
     /// timestamp)` (ADR-0031).
     pub async fn activate_menu_item(&self, id: &str, menu_item_id: i32) {
         let Some((key, _)) = self.find_item_id(id) else {
-            debug!(1; "activate_menu_item({id:?}, {menu_item_id}) failed: {}", TrayActionError::UnknownItem);
+            debug!("activate_menu_item({id:?}, {menu_item_id}) failed: {}", TrayActionError::UnknownItem);
             return;
         };
         let Some(menu) = self.find_menu_proxy(&key) else {
-            debug!(1; "activate_menu_item({id:?}, {menu_item_id}) failed: {}", TrayActionError::NoMenu);
+            debug!("activate_menu_item({id:?}, {menu_item_id}) failed: {}", TrayActionError::NoMenu);
             return;
         };
         let data = Value::I32(0);
         if let Err(err) = menu.event(menu_item_id, "clicked", &data, unix_timestamp_u32()).await {
-            debug!(1; "activate_menu_item({id:?}, {menu_item_id}) failed: {err}");
+            debug!("activate_menu_item({id:?}, {menu_item_id}) failed: {err}");
         }
     }
 
@@ -184,15 +186,15 @@ impl TrayController {
     /// refetch is adequate for human-scale trees.
     pub async fn menu_will_show(&self, id: &str, submenu_id: i32) {
         let Some((key, _)) = self.find_item_id(id) else {
-            debug!(1; "menu_will_show({id:?}, {submenu_id}) failed: {}", TrayActionError::UnknownItem);
+            debug!("menu_will_show({id:?}, {submenu_id}) failed: {}", TrayActionError::UnknownItem);
             return;
         };
         let Some(menu) = self.find_menu_proxy(&key) else {
-            debug!(1; "menu_will_show({id:?}, {submenu_id}) failed: {}", TrayActionError::NoMenu);
+            debug!("menu_will_show({id:?}, {submenu_id}) failed: {}", TrayActionError::NoMenu);
             return;
         };
         if let Err(err) = menu.about_to_show(submenu_id).await {
-            debug!(1; "menu_will_show({id:?}, {submenu_id}) AboutToShow failed: {err}");
+            debug!("menu_will_show({id:?}, {submenu_id}) AboutToShow failed: {err}");
         }
         match fetch_menu_via(&menu).await {
             Ok(items) => {
@@ -203,7 +205,7 @@ impl TrayController {
                 drop(guard);
                 let _ = self.events.send(TraySignal::RegistryChanged);
             }
-            Err(err) => debug!(1; "menu_will_show({id:?}, {submenu_id}) GetLayout failed: {err}"),
+            Err(err) => debug!("menu_will_show({id:?}, {submenu_id}) GetLayout failed: {err}"),
         }
     }
 }
@@ -281,7 +283,7 @@ async fn adopt_existing_items(
                 let attempt = ResolvedRegistration { object_path, ..resolved.clone() };
                 match register_item(&connection, &registry, &events, attempt).await {
                     Ok(()) => {
-                        debug!(1; "adopted {name} at {candidate}, registered before this host started");
+                        debug!("adopted {name} at {candidate}, registered before this host started");
                         return;
                     }
                     Err(err) => refusals.push(err),

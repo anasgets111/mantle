@@ -48,8 +48,7 @@ pub struct Args {
     pub profile: Option<u64>,
     /// `--pid`: the Supervisor `set`, `toggle`, `call` and `log` address.
     pub pid: Option<u32>,
-    /// `-v`'s count, `-vv` and repetition both counted (ADR-0243). `0` leaves `MANTLE_LOG` in
-    /// charge of the default level.
+    /// `-v`'s count, `-vv` and repetition both counted (ADR-0243).
     pub verbose: u8,
 }
 
@@ -82,11 +81,11 @@ OPTIONS:
         --profile[=SECS] run only: log idle, heap and PSS/GPU reports every
                          SECS seconds, 60 by default. Implies -v, which is
                          the level the reports print at
-    -v, --verbose        run only: repeat to raise the log level. None: only
-                         Error. -v: also Warn and Info. -vv/-vvv: Debug,
-                         itself levelled; -vvvv and past it holds at its
-                         loudest. Overridden by a MANTLE_LOG default level.
-                         The config's own log.* always prints.
+    -v, --verbose        run only: repeat to raise the log level. None:
+                         Error, Warn, and start/reload/respawn/stop. -v:
+                         also Info. -vv/-vvv: Debug, itself levelled; past
+                         -vvv it holds. Overridden by a MANTLE_LOG default
+                         level. The config's own log.* always prints.
     -V, --version
     -h, --help
 
@@ -100,10 +99,9 @@ becomes \"launcher\", or \"\" again when it already was. VALUE is read as JSON
 (true, 3, \"text\", [1,2]); anything that is not JSON is taken as a string, so
 quoting `notifications` is optional.
 
-`log` is for a shell the compositor started, whose output would otherwise go to
-/dev/null: when it does, stdout and stderr go to its runtime directory
-instead, and `-f` keeps reading until that shell exits. A
-terminal, a redirect or a pipe is left alone and there is no file to read.
+`log` prints a shell's log from its runtime directory, and `-f` keeps reading
+until that shell exits. Every run writes it; a terminal, a redirect or a pipe
+also gets a copy.
 `-d` starts a shell that way deliberately and prints its pid, so `mantle -d`
 then `mantle log -f` runs one from a terminal without tying the terminal up.
 
@@ -202,6 +200,8 @@ pub fn parse<I: IntoIterator<Item = String>>(argv: I) -> Result<Args, String> {
                 config_dir = Some(config_dir_from(&value)?);
             }
             "-d" | "--detach" => detach = true,
+            // `detach_self`'s marker for the child it re-execs; it runs in the foreground.
+            "--detached" => {}
             "--force" => force = true,
             "-f" | "--follow" => follow = true,
             "--profile" => profile = Some(60),
@@ -472,6 +472,7 @@ mod tests {
         assert!(parse_args(&["-f"]).is_err(), "--follow has nothing to follow without `log`");
         assert!(parse_args(&["log", "-d"]).is_err(), "--detach has nothing to detach without a run");
         assert!(parse_args(&["-d"]).unwrap().detach, "a bare run takes it");
+        assert!(!parse_args(&["--detached"]).unwrap().detach, "the re-exec'd child must not detach again");
     }
 
     #[test]

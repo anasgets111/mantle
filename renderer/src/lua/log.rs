@@ -16,7 +16,7 @@ pub fn register(lua: &Lua) -> mlua::Result<()> {
         table.set(
             name,
             lua.create_function(move |_, args: Variadic<Value>| {
-                shared::log::emit(level, "lua", format_args!("{}", message(args)?));
+                shared::log::emit(level, "config", format_args!("{}", message(args)?));
                 Ok(())
             })?,
         )?;

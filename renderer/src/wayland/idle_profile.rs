@@ -9,7 +9,7 @@
 use std::time::{Duration, Instant};
 
 use nix::sys::resource::{UsageWho, getrusage};
-use shared::info;
+use shared::{debug, info};
 
 /// Work the loop already computed for one turn; the profiler measures none of these fields.
 #[derive(Clone, Copy, Default)]
@@ -194,7 +194,7 @@ impl IdleProfile {
     /// `Some` only under `--profile`.
     pub fn from_env() -> Option<Self> {
         let interval = shared::profile_interval()?;
-        info!("idle profile on, reporting every {}s", interval.as_secs());
+        debug!("idle profile on, reporting every {}s", interval.as_secs());
         Some(Self {
             interval,
             window_started: Instant::now(),

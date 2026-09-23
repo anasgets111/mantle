@@ -13,7 +13,7 @@
 
 use std::time::{Duration, Instant};
 
-use shared::info;
+use shared::{debug, info};
 
 /// glibc's arena totals from `mallinfo2`, in bytes.
 #[derive(Clone, Copy, Default, PartialEq, Eq, Debug)]
@@ -103,7 +103,7 @@ impl MemoryProfile {
     /// `Some` only under `--profile`.
     pub fn from_env() -> Option<Self> {
         let interval = shared::profile_interval()?;
-        info!("memory profile on, reporting every {}s", interval.as_secs());
+        debug!("memory profile on, reporting every {}s", interval.as_secs());
         let now = Instant::now();
         Some(Self { interval, started: now, window_started: now, previous: None, first: None })
     }

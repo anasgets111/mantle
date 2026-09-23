@@ -76,7 +76,7 @@ function json.decode(text) end
 log = {}
 
 ---Writes a stamped, levelled line to the shell's log. Every level prints without `-v`; only
----`MANTLE_LOG=lua=warn` or `lua=off` filters these. Arguments are joined like `print`'s.
+---`MANTLE_LOG=config=warn` or `config=off` filters these. Arguments are joined like `print`'s.
 ---@param ... any
 function log.error(...) end
 

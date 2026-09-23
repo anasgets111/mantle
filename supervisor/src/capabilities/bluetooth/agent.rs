@@ -222,7 +222,7 @@ pub(super) async fn register_agent_best_effort(
     let agent_manager = match bind_agent_manager(connection).await {
         Ok(proxy) => proxy,
         Err(err) => {
-            error!("failed to bind org.bluez.AgentManager1 (bluetoothd not running?): {err}");
+            debug!("failed to bind org.bluez.AgentManager1 (bluetoothd not running?): {err}");
             return;
         }
     };

@@ -263,7 +263,7 @@ impl TextAlign {
 ///
 /// The name is not validated here. Parsing sees the property, not the loaded font set -- and the
 /// set is not fixed at parse time, since a family is resolved on first sight. An unresolvable name
-/// draws in the declared chain and says so once on stderr, the same bargain `fonts { ... }` already
+/// draws in the declared chain and logs it once at `-vvv`, the same bargain `fonts { ... }` already
 /// makes for a chain entry nothing on the system answers.
 pub fn parse_font_family(properties: &PropMap) -> Result<Option<Arc<str>>, LayoutError> {
     let Some(value) = properties.get("font") else {

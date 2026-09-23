@@ -106,7 +106,7 @@ fn a_message_does_not_repeat_the_subsystem_the_logger_puts_in_front_of_it() {
 /// The lowercase word a levelled message opens with, before its first `": "`. Bounded in length and
 /// restricted to word characters, so a sentence that merely contains a colon is not read as a prefix.
 fn opening_prefix(line: &str) -> Option<String> {
-    let start = ["error!(\"", "warn!(\"", "info!(\"", "debug!(\"", "debug!(1; \"", "debug!(2; \"", "debug!(3; \""]
+    let start = ["error!(\"", "warn!(\"", "notice!(\"", "info!(\"", "debug!(\"", "debug!(1; \"", "debug!(2; \""]
         .iter()
         .find_map(|open| line.find(open).map(|at| at + open.len()))?;
     let rest = &line[start..];

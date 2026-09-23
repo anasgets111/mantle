@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use serde::Serialize;
-use shared::{debug, warn};
+use shared::debug;
 use tokio::sync::mpsc::UnboundedSender;
 
 use super::metadata::clamp_seek_target;
@@ -27,7 +27,7 @@ pub enum MprisSignal {
     Changed,
 }
 
-/// Every command here fails the same one way, and only into a `warn!`. An enum with `Display`
+/// Every command here fails the same one way, and only into a `debug!`. An enum with `Display`
 /// and `Error` impls bought nothing a constant does not: nothing matches on it and nothing returns
 /// it.
 const UNKNOWN_PLAYER: &str = "no MPRIS player with that id is currently tracked";
@@ -145,7 +145,7 @@ impl MprisController {
         match player.position().await {
             Ok(position) => Some(position),
             Err(err) => {
-                warn!("live Position read failed for {id:?}, falling back to the cached value: {err}");
+                debug!("live Position read failed for {id:?}, falling back to the cached value: {err}");
                 self.cached_position(id)
             }
         }
@@ -161,7 +161,7 @@ impl MprisController {
             Some(trackid) => match zbus::zvariant::ObjectPath::try_from(trackid.as_str()) {
                 Ok(path) => context.player.set_position(path, target).await,
                 Err(err) => {
-                    warn!(
+                    debug!(
                         "cached trackid {trackid:?} for {} isn't a valid object path, falling back to relative Seek: {err}",
                         context.bus_name
                     );
