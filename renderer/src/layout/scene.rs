@@ -196,7 +196,7 @@ pub struct ResolvedNode {
     /// The cross-dissolve this `image` is in the middle of (ADR-0181), from the source it was
     /// covering the gap with to the one `displayed_source` has just moved to. `None` whenever the
     /// node is showing one picture, which is nearly always.
-    pub dissolve: Option<Dissolve>,
+    pub dissolve: Option<Box<Dissolve>>,
     pub children: Vec<ResolvedNode>,
     /// Properties in flight between two resolved targets (ADR-0145). `properties` holds what is
     /// displayed this frame, each tween the target it is heading for; `Scene::tick` advances them
@@ -552,7 +552,7 @@ impl Scene {
                 if let (Some(spec), Some(previous)) = (transition, previous)
                     && node.dissolve.is_none()
                 {
-                    node.dissolve = Some(Dissolve::start(previous, shown.source.clone(), spec.clone(), now));
+                    node.dissolve = Some(Box::new(Dissolve::start(previous, shown.source.clone(), spec.clone(), now)));
                 }
             }
             node.children.iter_mut().for_each(|child| walk(child, drawn, now));
@@ -1017,7 +1017,7 @@ struct PreparedNode {
     /// Carried across the pass untouched; see [`ResolvedNode::displayed_source`].
     displayed_source: Option<String>,
     /// Advanced to the pass's instant before it is carried; see [`ResolvedNode::dissolve`].
-    dissolve: Option<Dissolve>,
+    dissolve: Option<Box<Dissolve>>,
     taffy: taffy::NodeId,
     children: Vec<PreparedNode>,
     /// The retained children of a node that is not `visible` this pass, carried through untouched
@@ -1085,7 +1085,7 @@ fn advance_paint_only(node: &mut ResolvedNode, now: Instant, lua: &Lua) -> Resul
 /// Advances a dissolve to `now` and drops it once it is over (ADR-0181). Unlike a tween it writes
 /// nothing into the property map and cannot be refused, so it needs none of the save-and-restore
 /// below: the only thing it moves is a number `layout::paint` reads.
-fn advanced_dissolve(dissolve: Option<Dissolve>, now: Instant) -> Option<Dissolve> {
+fn advanced_dissolve(dissolve: Option<Box<Dissolve>>, now: Instant) -> Option<Box<Dissolve>> {
     let mut dissolve = dissolve?;
     dissolve.advance(now).then_some(dissolve)
 }

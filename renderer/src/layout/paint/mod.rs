@@ -445,7 +445,7 @@ fn draw_for(
 ) -> Option<Draw> {
     let node_id = node.id;
     let retained = node.displayed_source.as_deref();
-    let dissolve = node.dissolve.as_ref();
+    let dissolve = node.dissolve.as_deref();
     match node.paint.as_ref()? {
         // The shared paint of `rect`/`row`/`column`/`button` and all four surface roles: background
         // fill, then borders. `clip` is not read here: it decides what this node's *children* are
@@ -703,7 +703,7 @@ mod tests {
 
         // What `note_landed_images` leaves behind: the source moved on, the outgoing on the run.
         tree.children[0].displayed_source = Some("/tmp/new.png".to_string());
-        tree.children[0].dissolve = Some(node::Dissolve {
+        tree.children[0].dissolve = Some(Box::new(node::Dissolve {
             from: "/tmp/old.png".to_string(),
             to: "/tmp/new.png".to_string(),
             started: std::time::Instant::now(),
@@ -714,7 +714,7 @@ mod tests {
                 params: Vec::new(),
             },
             progress: 0.25,
-        });
+        }));
         assert_eq!(image_draw(&tree), Some((Some("/tmp/old.png".to_string()), Some(0.25))));
 
         // Both are drawn, so both are pinned; losing the outgoing mid-cross is a hole in the frame.
