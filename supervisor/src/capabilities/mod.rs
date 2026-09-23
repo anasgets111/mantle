@@ -210,6 +210,15 @@ pub enum Signal {
     Idle(IdleState),
 }
 
+/// The newest value queued on `rx`. Cancel-safe: `recv` is the only await.
+async fn recv_latest<T>(rx: &mut UnboundedReceiver<T>) -> Option<T> {
+    let mut latest = rx.recv().await?;
+    while let Ok(newer) = rx.try_recv() {
+        latest = newer;
+    }
+    Some(latest)
+}
+
 /// Declares each capability channel once, generating [`Signals`], [`Senders`], cancel-safe
 /// [`Signals::next`], and their constructor.
 ///
@@ -252,11 +261,13 @@ macro_rules! capability_channels {
         }
 
         impl Signals {
-            /// Awaits the first signal. Bare `recv()` branches are cancel-safe; `None` requires all
-            /// senders to drop, which cannot happen while [`Capabilities`] lives.
+            /// Awaits the first signal, folding whatever else its channel has queued into it: each
+            /// push reads current state, so a burst of install output lines is one push, not
+            /// hundreds. [`recv_latest`] is cancel-safe; `None` requires all senders to drop, which
+            /// cannot happen while [`Capabilities`] lives.
             pub async fn next(&mut self) -> Option<Signal> {
                 tokio::select! {
-                    $($pattern = self.$field.recv() => Some($signal),)+
+                    $($pattern = recv_latest(&mut self.$field) => Some($signal),)+
                     else => None,
                 }
             }
@@ -958,6 +969,21 @@ mod tests {
     #[test]
     fn truncate_utf8_bytes_handles_a_cap_of_zero() {
         assert_eq!(truncate_utf8_bytes("hello", 0), "");
+    }
+
+    #[tokio::test]
+    async fn a_burst_on_one_channel_is_one_signal_carrying_the_newest_state() {
+        let (senders, mut signals) = Senders::channels();
+        for n in 1..=3 {
+            senders.updates.send(UpdatesSignal::Changed).unwrap();
+            senders.keyboard.send(KeyboardState { backlight_pct: n, ..KeyboardState::default() }).unwrap();
+        }
+        let mut seen = vec![signals.next().await.unwrap(), signals.next().await.unwrap()];
+        seen.sort_by_key(|signal| matches!(signal, Signal::Updates));
+        assert!(matches!(&seen[0], Signal::Keyboard(state) if state.backlight_pct == 3), "{seen:?}");
+        assert!(matches!(seen[1], Signal::Updates));
+        let pending = tokio::time::timeout(std::time::Duration::from_millis(10), signals.next()).await;
+        assert!(pending.is_err(), "the burst must leave nothing queued");
     }
 
     #[tokio::test]
