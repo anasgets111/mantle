@@ -334,12 +334,14 @@ async fn run_supervisor(
 
     // Without handlers, Ctrl-C or SIGTERM kills the Supervisor and leaves a headless orphaned
     // Renderer.
-    let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
+    use tokio::signal::unix::{SignalKind, signal};
+    let mut sigint = signal(SignalKind::interrupt())?;
+    let mut sigterm = signal(SignalKind::terminate())?;
     let mut memory_sampler = memory::sampler(profile.map(Duration::from_secs));
 
     loop {
         tokio::select! {
-            _ = tokio::signal::ctrl_c() => {
+            _ = sigint.recv() => {
                 notice!("SIGINT received, shutting down");
                 break;
             }
