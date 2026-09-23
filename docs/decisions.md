@@ -5937,7 +5937,7 @@ second algorithm while `share` already lets a config score.
 ## 0250. `updates` checks the AUR natively and installs through the helper it finds
 
 The AUR check is the same for every helper: foreign packages against the AUR web API. Only the
-install differs, and paru and yay take the same unattended argv.
+install differs, and paru and yay share its argv except for how each turns off the sudo loop.
 
 1. **Opt-in.** `configure { aur = true }`. The check posts every foreign package name to
    aur.archlinux.org, so nothing leaves the machine without it.
@@ -5949,7 +5949,10 @@ install differs, and paru and yay take the same unattended argv.
 4. **Install is `<helper> -Syu --noconfirm --sudo pkexec` as the user, stdin closed.** One run
    upgrades repo and AUR packages together. `makepkg` refuses root, so the helper elevates itself
    through Mantle's polkit agent. `--noconfirm` also skips PKGBUILD review in both helpers; that
-   is what `aur = true` accepts.
+   is what `aur = true` accepts. The sudo loop is forced off (`--nosudoloop`, yay's
+   `--sudoloop=false`): pkexec has no `-v`, and yay retries a failed `-v` forever. A helper calls
+   pkexec once per root step, so `packaging/polkit-1/rules.d/50-mantle-pacman.rules` keeps the
+   approval for pacman ~5 min (`auth_admin_keep`), scoped to the calling helper process.
 5. **`aur_error` is separate from `check_error`.** An AUR outage keeps the repo list fresh.
    `aur = true` with no helper sets it at `configure`, checks repos only, and installs with pacman,
    so one config works on a machine without a helper.

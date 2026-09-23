@@ -23,10 +23,12 @@ fn first_helper(path: &OsStr) -> Option<&'static str> {
     HELPERS.into_iter().find(|helper| program_is_in(path, helper))
 }
 
-/// Same for paru and yay: `--noconfirm` also skips PKGBUILD review, and `--sudo pkexec` sends the
-/// elevation prompt to Mantle's polkit agent, since no terminal can take a `sudo` password.
-pub fn install_arguments() -> Vec<String> {
-    ["-Syu", "--noconfirm", "--sudo", "pkexec"].map(String::from).to_vec()
+/// `--noconfirm` also skips PKGBUILD review, and `--sudo pkexec` sends the elevation prompt to
+/// Mantle's polkit agent, since no terminal can take a `sudo` password. The sudo loop is forced off:
+/// pkexec has no `-v`, and yay retries a failed `-v` forever.
+pub fn install_arguments(helper: &str) -> Vec<String> {
+    let no_sudo_loop = if helper == "yay" { "--sudoloop=false" } else { "--nosudoloop" };
+    ["-Syu", "--noconfirm", "--sudo", "pkexec", no_sudo_loop].map(String::from).to_vec()
 }
 
 /// AUR upgrades for `foreign` `(name, installed version)` pairs, in one POST.

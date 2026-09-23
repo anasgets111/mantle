@@ -54,7 +54,7 @@ impl Backend for PacmanBackend {
     /// as the user instead and elevates itself (ADR-0250).
     fn install_command(&self) -> InstallCommand {
         match self.active_helper() {
-            Some(helper) => InstallCommand { program: helper.to_string(), arguments: aur::install_arguments() },
+            Some(helper) => InstallCommand { program: helper.to_string(), arguments: aur::install_arguments(helper) },
             None => InstallCommand {
                 program: "pkexec".to_string(),
                 arguments: vec!["pacman".to_string(), "-Syu".to_string(), "--noconfirm".to_string()],
@@ -191,7 +191,7 @@ mod tests {
         assert_eq!(backend.set_aur(true), None);
         let command = backend.install_command();
         assert_eq!(command.program, "paru");
-        assert_eq!(command.arguments, ["-Syu", "--noconfirm", "--sudo", "pkexec"]);
+        assert_eq!(command.arguments, ["-Syu", "--noconfirm", "--sudo", "pkexec", "--nosudoloop"]);
     }
 
     #[test]
