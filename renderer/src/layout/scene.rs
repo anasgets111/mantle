@@ -520,7 +520,8 @@ impl Scene {
         // Taffy trees are per-instance and per-pass; only retained `NodeId`s cross the call, so a
         // failed walk drops the temporary tree without extra rollback state.
         let mut tree = new_solver_tree();
-        let prepared = prepare(self, &mut tree, existing, fresh.kind, properties, style, tweens, None, lua, now, 0)?;
+        let prepared =
+            prepare(self, &mut tree, existing, fresh.kind, properties, style, tweens, None, false, lua, now, 0)?;
         close(&mut at, &mut self.resolve_split.resolve);
         let solved = solve_instance(&mut tree, prepared, available, shaping)?;
         publish_geometry(&solved, 0.0, 0.0, lua, false).map_err(|e| node::invalid("geometry", e.to_string()))?;
@@ -1392,6 +1393,7 @@ fn prepare(
     style: LayoutStyle,
     tweens: Vec<Tween>,
     parent_axis: Option<MainAxis>,
+    thawing: bool,
     lua: &Lua,
     now: Instant,
     depth: u32,
@@ -1400,6 +1402,8 @@ fn prepare(
     // exists to enforce), repeated here so this function holds its own preconditions rather than
     // trusting a call site, notably `children_of`'s `unreachable!` arm below.
     ensure_node_admissible(kind, depth)?;
+    // Removed while hidden means removed off screen: no exit plays anywhere under a thaw.
+    let thawing = thawing || retained.as_ref().is_some_and(|r| !r.visible);
 
     let (id, displayed_source, dissolve, old_children, text_memo) = match retained {
         Some(r) => {
@@ -1505,6 +1509,7 @@ fn prepare(
                 child_style,
                 child_tweens,
                 own_axis,
+                thawing,
                 lua,
                 now,
                 depth + 1,
@@ -1521,7 +1526,7 @@ fn prepare(
         }
     }
     for mut child in unclaimed {
-        if child.visible && node::depart(child.kind, &mut child.tweens, &mut child.properties, now, lua)? {
+        if !thawing && child.visible && node::depart(child.kind, &mut child.tweens, &mut child.properties, now, lua)? {
             child.leaving = true;
             node.leaving.push(child);
         }
@@ -3111,6 +3116,31 @@ pub(super) mod tests {
         assert_eq!(ids_after, ids_before, "showing it again pairs the fresh items with the frozen nodes");
         assert_eq!(built(), 4);
         assert_eq!(thawed.children[0].children[0].children[1].rect.y, 10.0, "and lays them out again");
+    }
+
+    #[test]
+    fn a_child_removed_while_hidden_plays_no_exit_on_thaw() {
+        let mut scene = Scene::new();
+        let shaping = ShapingHandle::spawn();
+        let (lua, surface) = surface_from(
+            r#"panel { id = "bar", child = column { visible = state("open", true),
+                children = { list { source = state("items", { "a", "b" }), itemfn = function(name)
+                    return rect { id = name, width = 10, height = 10,
+                        animate = { exit = { duration = 100, opacity = 0 } } }
+                end } } } }"#,
+        );
+        apply_at(&mut scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
+        lua.load(r#"state("open", true):set(false) state("items", {}):set({ "b" })"#).exec().unwrap();
+        apply_at(&mut scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
+        lua.load(r#"state("open", true):set(true)"#).exec().unwrap();
+        apply_at(&mut scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
+        let list = &scene.surface("bar@TEST").unwrap().children[0].children[0];
+        assert_eq!(
+            list.children.len(),
+            1,
+            "a is gone, not leaving: {:?}",
+            list.children.iter().map(|c| c.leaving).collect::<Vec<_>>()
+        );
     }
 
     #[test]
