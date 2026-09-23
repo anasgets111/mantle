@@ -241,8 +241,7 @@ mod tests {
 
     // ---- cursor_under (ADR-0107) ----
 
-    fn with(mut node: ResolvedNode, lua: &mlua::Lua, key: &'static str, value: Value) -> ResolvedNode {
-        let _ = lua;
+    fn with(mut node: ResolvedNode, key: &'static str, value: Value) -> ResolvedNode {
         node.properties.insert(key, value);
         node
     }
@@ -281,7 +280,6 @@ mod tests {
             vec![
                 with(
                     node("button", (0.0, 0.0, 50.0, 20.0), vec![node("text", (0.0, 0.0, 30.0, 20.0), vec![])]),
-                    &lua,
                     "on_click",
                     function(&lua),
                 ),
@@ -294,10 +292,10 @@ mod tests {
         assert_eq!(cursor_under(&hit_path(&handled, point), point, &shaping), CursorIcon::Default);
         assert_eq!(cursor_under(&[], point, &shaping), CursorIcon::Default, "off every node");
 
-        let submit = with(node("button", (0.0, 0.0, 50.0, 20.0), vec![]), &lua, "submit", Value::Boolean(true));
+        let submit = with(node("button", (0.0, 0.0, 50.0, 20.0), vec![]), "submit", Value::Boolean(true));
         let point = LogicalPoint { x: 10.0, y: 10.0 };
         assert_eq!(cursor_under(&hit_path(&submit, point), point, &shaping), CursorIcon::Pointer, "submit = true");
-        let wheel = with(node("button", (0.0, 0.0, 50.0, 20.0), vec![]), &lua, "on_wheel", function(&lua));
+        let wheel = with(node("button", (0.0, 0.0, 50.0, 20.0), vec![]), "on_wheel", function(&lua));
         assert_eq!(cursor_under(&hit_path(&wheel, point), point, &shaping), CursorIcon::Pointer, "on_wheel only");
     }
 
@@ -306,15 +304,13 @@ mod tests {
         let shaping = ShapingHandle::spawn();
         let lua = mlua::Lua::new();
         let disabled = with(
-            with(node("button", (0.0, 0.0, 50.0, 20.0), vec![]), &lua, "on_click", function(&lua)),
-            &lua,
+            with(node("button", (0.0, 0.0, 50.0, 20.0), vec![]), "on_click", function(&lua)),
             "cursor",
             Value::String(lua.create_string("not-allowed").unwrap()),
         );
         let field = node("textfield", (0.0, 0.0, 50.0, 20.0), vec![]);
         let handle = with(
             node("row", (0.0, 0.0, 100.0, 20.0), vec![disabled, node("row", (50.0, 0.0, 50.0, 20.0), vec![field])]),
-            &lua,
             "cursor",
             Value::String(lua.create_string("grab").unwrap()),
         );
@@ -334,7 +330,6 @@ mod tests {
         let lua = mlua::Lua::new();
         let text = with(
             styled_text("see this page now", vec![link(4..13, "https://a/")], TextAlign::Start, 300.0),
-            &lua,
             "on_link",
             function(&lua),
         );
