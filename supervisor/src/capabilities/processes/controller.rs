@@ -1,7 +1,7 @@
 //! [`ProcessesController`] owns the programs a config declared with `session_process`.
 //!
 //! The difference from `process.run` is lifetime, and it is the whole feature. A `process.run`
-//! child belongs to the generation that spawned it, and `reap_generations_processes` kills its
+//! child belongs to the generation that spawned it, and `reap_processes` kills its
 //! group when that Renderer is replaced; a config wanting a program to survive has to orphan it
 //! with `setsid` and then re-find it through a lock file and `/proc`, because by then nothing in
 //! the shell still holds it. That costs a config a pid, the pid's kernel start time, and a
@@ -200,7 +200,7 @@ impl ProcessesController {
         }
     }
 
-    /// Stops every running program and waits for it, the counterpart to `reap_all_processes`.
+    /// Stops every running program and waits for it, the counterpart to `reap_processes`.
     ///
     /// Awaited rather than fired and forgotten: these are the processes whose exit path matters,
     /// which is why they were declared with a stop signal in the first place. [`supervise`] bounds

@@ -19,7 +19,7 @@ use crate::generation::{
 };
 use crate::pam_worker;
 use crate::polkit::AgentRequest;
-use crate::process::registry::{LiveProcesses, reap_all_processes, wait_and_report_exit};
+use crate::process::registry::{LiveProcesses, reap_processes, wait_and_report_exit};
 use crate::snapshot::push_snapshot;
 use crate::socket;
 use crate::{process, send_frame_logged};
@@ -332,7 +332,7 @@ impl Supervisor {
                 if let Some(idle) = self.capabilities.idle() {
                     idle.reset_registrations(departed).await;
                 }
-                crate::process::registry::reap_generations_processes(&mut self.processes, departed).await;
+                reap_processes(&mut self.processes, Some(departed)).await;
                 // Registration replays every `last_snapshots` entry via `hydrate`.
                 if was_locked {
                     // ADR-0058 decision 4: the lock object died; `active` is stale. `RendererLost`
@@ -453,7 +453,7 @@ impl Supervisor {
                 self.authoritative.generation_id
             );
         }
-        reap_all_processes(&mut self.processes).await;
+        reap_processes(&mut self.processes, None).await;
         // Session processes are not in `self.processes`: they outlive generations by design, so
         // the per-generation sweep never sees them and this is their only reap.
         self.capabilities.reap_sessions().await;

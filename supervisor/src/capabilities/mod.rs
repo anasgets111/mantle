@@ -443,7 +443,7 @@ impl Capabilities {
     }
 
     /// Stops every program declared with `session_process` and waits for it, the session-lifetime
-    /// counterpart to `reap_all_processes`. A no-op on most shutdowns: the controller exists only
+    /// counterpart to `reap_processes`. A no-op on most shutdowns: the controller exists only
     /// once a config has read `mantle.processes`.
     ///
     /// Awaited rather than dropped because these are the processes whose exit path was worth

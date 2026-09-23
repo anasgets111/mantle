@@ -319,32 +319,19 @@ pub(crate) async fn wait_and_report_exit(
     send_frame_logged(&registry, generation_id, &SupervisorFrame::ProcessExited(ProcessExited { id, code }));
 }
 
-/// Applies the SIGTERM/SIGKILL group reap to every process spawned by a departed generation's Lua,
-/// not only its Renderer. Send no `ProcessExited`; that generation's connection is already gone.
-pub(crate) async fn reap_generations_processes(processes: &mut LiveProcesses, generation_id: u32) {
-    let stale_ids: Vec<(u32, u64)> =
-        processes.keys().filter(|(entry_generation_id, _)| *entry_generation_id == generation_id).copied().collect();
-    for key in stale_ids {
-        if let Some(mut child) = processes.remove(&key)
-            && let Err(err) = super::reap_process_group(&mut child, super::DEFAULT_REAP_GRACE).await
-        {
-            warn!("failed to reap process {key:?} belonging to departed generation {generation_id}: {err}");
+/// Reaps `generation_id`'s processes, or every tracked one at shutdown when `None`, concurrently so
+/// the sweep costs one grace rather than one per child. Sends no `ProcessExited`: the generation's
+/// connection is already gone. Includes every Lua-spawned child, not only the Renderer.
+pub(crate) async fn reap_processes(processes: &mut LiveProcesses, generation_id: Option<u32>) {
+    let keys: Vec<(u32, u64)> =
+        processes.keys().filter(|(entry, _)| generation_id.is_none_or(|g| g == *entry)).copied().collect();
+    let children = keys.into_iter().filter_map(|key| processes.remove(&key).map(|child| (key, child)));
+    futures_util::future::join_all(children.map(|(key, mut child)| async move {
+        if let Err(err) = super::reap_process_group(&mut child, super::DEFAULT_REAP_GRACE).await {
+            warn!("failed to reap process {key:?}: {err}");
         }
-    }
-}
-
-/// Reaps every tracked child at shutdown, the counterpart to the per-generation sweep. Without
-/// it, SIGINT/SIGTERM orphaned live children; a boot Renderer was confirmed to keep running
-/// headless in its own group.
-pub(crate) async fn reap_all_processes(processes: &mut LiveProcesses) {
-    let ids: Vec<(u32, u64)> = processes.keys().copied().collect();
-    for key in ids {
-        if let Some(mut child) = processes.remove(&key)
-            && let Err(err) = super::reap_process_group(&mut child, super::DEFAULT_REAP_GRACE).await
-        {
-            warn!("failed to reap process {key:?} on shutdown: {err}");
-        }
-    }
+    }))
+    .await;
 }
 
 #[cfg(test)]
@@ -581,13 +568,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn reap_generations_processes_reaps_only_the_matching_generations_entries() {
+    async fn reaping_one_generation_reaps_only_the_matching_generations_entries() {
         let mut processes: LiveProcesses = HashMap::new();
         spawn_and_register_process(&mut processes, 1, 1, "sh", &sh_args("sleep 30"));
         spawn_and_register_process(&mut processes, 2, 1, "sh", &sh_args("sleep 30"));
         let pid = processes[&(1, 1)].id().expect("freshly spawned child has a pid");
 
-        reap_generations_processes(&mut processes, 1).await;
+        reap_processes(&mut processes, Some(1)).await;
 
         assert!(!processes.contains_key(&(1, 1)), "generation 1's process must be reaped and removed");
         assert!(crate::process::exited(&[pid]).await, "process {pid} must be dead, not just removed from the registry");
@@ -597,14 +584,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn reap_all_processes_reaps_every_generations_entries() {
+    async fn reaping_without_a_generation_reaps_every_generations_entries() {
         let mut processes: LiveProcesses = HashMap::new();
         spawn_and_register_process(&mut processes, 1, 1, "sh", &sh_args("sleep 30"));
         spawn_and_register_process(&mut processes, 2, 1, "sh", &sh_args("sleep 30"));
         let pids: Vec<u32> =
             processes.values().map(|child| child.id().expect("freshly spawned child has a pid")).collect();
 
-        reap_all_processes(&mut processes).await;
+        reap_processes(&mut processes, None).await;
 
         assert!(processes.is_empty(), "shutdown must reap every tracked process, not just one generation's");
         assert!(crate::process::exited(&pids).await, "every process must be dead, not just removed from the registry");
