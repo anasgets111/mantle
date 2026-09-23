@@ -773,7 +773,7 @@ fn census(app: &App) -> (memory_profile::Census, memory_profile::Surfaces) {
         scene_surfaces: surfaces as u64,
         scene_nodes: nodes as u64,
         scene_properties: properties as u64,
-        malloc: memory_profile::Malloc::default(),
+        malloc: shared::Malloc::default(),
     };
     (census, memory_profile::Surfaces(app.client.scene().census_by_surface()))
 }

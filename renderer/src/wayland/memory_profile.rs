@@ -13,42 +13,7 @@
 
 use std::time::{Duration, Instant};
 
-use shared::{debug, info};
-
-/// glibc's arena totals from `mallinfo2`, in bytes.
-#[derive(Clone, Copy, Default, PartialEq, Eq, Debug)]
-pub struct Malloc {
-    /// `arena`: bytes obtained from the kernel via `brk`, the `[heap]` mapping `smaps` shows.
-    pub arena: u64,
-    /// `hblkhd`: bytes in `mmap`ed blocks, which large allocations take instead of the arena.
-    pub mmapped: u64,
-    /// `uordblks`: bytes in chunks handed out and not yet freed. This is the shell's live heap.
-    pub in_use: u64,
-    /// `fordblks`: bytes glibc holds on its free lists. Freed by the shell, still charged to the
-    /// process until a trim returns the pages.
-    pub free: u64,
-}
-
-impl Malloc {
-    /// Reads every arena's totals, or zeroes these columns on a platform without `mallinfo2`.
-    #[cfg(target_env = "gnu")]
-    fn now() -> Self {
-        // SAFETY: plain FFI returning a POD struct by value. `mallinfo2` takes no arguments,
-        // locks the arenas itself, and only reads counters.
-        let info = unsafe { libc::mallinfo2() };
-        Self {
-            arena: info.arena as u64,
-            mmapped: info.hblkhd as u64,
-            in_use: info.uordblks as u64,
-            free: info.fordblks as u64,
-        }
-    }
-
-    #[cfg(not(target_env = "gnu"))]
-    fn now() -> Self {
-        Self::default()
-    }
-}
+use shared::{Malloc, debug, info};
 
 /// One instant's per-subsystem byte and entry counts. Built by the caller, which owns every
 /// source; this module only formats and diffs, so [`render`] stays pure and testable.

@@ -8,7 +8,7 @@
 use std::collections::HashMap;
 use std::io;
 
-use shared::{debug, info};
+use shared::{Malloc, debug, info};
 use std::path::Path;
 use std::time::Duration;
 
@@ -60,42 +60,6 @@ pub(crate) struct Sample {
     /// the only place that growth is visible.
     pub(crate) snapshots: Vec<(&'static str, usize)>,
     pub(crate) renderer: Option<(u32, ProcessMemory)>,
-}
-
-/// glibc's totals for this process from `mallinfo2`, in bytes. `smaps` says how much the
-/// Supervisor holds; only the in-use/free split says whether it is live, for the reason
-/// `renderer/src/wayland/memory_profile.rs` gives about the Renderer. Read here rather than shared
-/// with that copy, which would put `libc` in `shared` for twelve lines of FFI.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub(crate) struct Malloc {
-    /// `arena`: bytes taken from the kernel via `brk`, across every per-thread arena.
-    pub(crate) arena: u64,
-    /// `hblkhd`: bytes in `mmap`ed blocks, which allocations past `M_MMAP_THRESHOLD` take instead.
-    pub(crate) mmapped: u64,
-    /// `uordblks`: bytes handed out and not yet freed.
-    pub(crate) in_use: u64,
-    /// `fordblks`: bytes on glibc's free lists, still charged to the process until a trim.
-    pub(crate) free: u64,
-}
-
-impl Malloc {
-    #[cfg(target_env = "gnu")]
-    fn now() -> Self {
-        // SAFETY: plain FFI returning a POD struct by value. `mallinfo2` takes no arguments, locks
-        // the arenas itself, and only reads counters.
-        let info = unsafe { libc::mallinfo2() };
-        Self {
-            arena: info.arena as u64,
-            mmapped: info.hblkhd as u64,
-            in_use: info.uordblks as u64,
-            free: info.fordblks as u64,
-        }
-    }
-
-    #[cfg(not(target_env = "gnu"))]
-    fn now() -> Self {
-        Self::default()
-    }
 }
 
 /// Parses `smaps_rollup` into PSS and USS. Missing `Pss:` yields `None`: a truncated rollup is not
