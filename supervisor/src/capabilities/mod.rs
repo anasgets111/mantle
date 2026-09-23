@@ -134,7 +134,7 @@ where
 /// frame behind it, with no timeout. Requests queue in the channel until the build lands, in order.
 type Worker<C> = UnboundedSender<Box<dyn FnOnce(&C) + Send>>;
 
-/// Builds a [`Worker`]; `handle` turns each signal into the state sent to the loop. A failed build
+/// Builds a [`Worker`]; `handle` turns each run of equal queued signals into the state sent to the loop. A failed build
 /// closes the worker, so the next start retries it.
 fn spawn_worker<C, S, T, Fut>(
     build: impl Future<Output = Option<C>> + Send + 'static,
@@ -144,7 +144,7 @@ fn spawn_worker<C, S, T, Fut>(
 ) -> Worker<C>
 where
     C: Clone + Send + Sync + 'static,
-    S: Send + 'static,
+    S: PartialEq + Send + 'static,
     T: Send + 'static,
     Fut: Future<Output = T> + Send,
 {
@@ -155,8 +155,17 @@ where
             tokio::select! {
                 Some(request) = requests.recv() => request(&controller),
                 Some(signal) = signals.recv() => {
-                    if states.send(handle(controller.clone(), signal).await).is_err() {
-                        break;
+                    // Every handler re-reads the live service, so one pass covers a run of the same
+                    // signal queued before it; a Wi-Fi scan's burst is one rebuild, not one per AP.
+                    let mut burst = vec![signal];
+                    while let Ok(signal) = signals.try_recv() {
+                        burst.push(signal);
+                    }
+                    burst.dedup();
+                    for signal in burst {
+                        if states.send(handle(controller.clone(), signal).await).is_err() {
+                            return;
+                        }
                     }
                 }
                 else => break,
@@ -1011,5 +1020,26 @@ mod tests {
             unbounded_channel().0,
         );
         failed.closed().await;
+    }
+
+    /// A queued run of one signal is one rebuild; distinct signals keep their order.
+    #[tokio::test]
+    async fn a_worker_handles_a_run_of_equal_queued_signals_once() {
+        let (release, built) = tokio::sync::oneshot::channel::<()>();
+        let (signal_tx, signals) = unbounded_channel();
+        let (states_tx, mut states) = unbounded_channel();
+        // No request sender, so the task ends once the signals close.
+        let _ = spawn_worker(async move { built.await.ok() }, signals, |(), s: u32| async move { s }, states_tx);
+        for signal in [1, 1, 1, 2, 2, 1] {
+            signal_tx.send(signal).unwrap();
+        }
+        release.send(()).unwrap();
+
+        drop(signal_tx);
+        let mut seen = Vec::new();
+        while let Some(state) = states.recv().await {
+            seen.push(state);
+        }
+        assert_eq!(seen, [1, 2, 1]);
     }
 }
