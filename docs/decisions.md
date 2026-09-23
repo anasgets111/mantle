@@ -845,8 +845,9 @@ uses SwapFree.
 
 Resolve hwmon chips once because onboard sensors do not hotplug. CPU preference is k10temp, then
 coretemp, with acpitz fallback; GPU preference is amdgpu, nouveau, then nvidia. Sort core
-temperatures by core index; exclude package aggregates, Wi-Fi, NVMe and battery sensors. No matching
-GPU returns -1, not zero.
+temperatures by `Core N` or `Tccd N` index; exclude package aggregates, Wi-Fi, NVMe and battery
+sensors. A CPU chip with no per-core sensor reports its first one, such as `Tctl`. No matching GPU
+returns -1, not zero.
 
 Intervals start at zero. Zero awaits configuration changes with no timer or wakeups. Three producers
 update fields under one mutex and signal one push channel; each push bumps the capability revision.

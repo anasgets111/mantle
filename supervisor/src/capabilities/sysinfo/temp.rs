@@ -21,8 +21,9 @@ pub fn resolve_chip(hwmon_root: &Path, preference: &[&str]) -> Option<PathBuf> {
     })
 }
 
-/// Reads `tempN_input` sensors whose paired `tempN_label` matches `Core \d+`, converting to Celsius
-/// and sorting by core index. Excludes package aggregates and unlabeled sensors.
+/// Reads `tempN_input` sensors whose paired `tempN_label` matches `Core \d+` (coretemp) or
+/// `Tccd\d+` (k10temp), converting to Celsius and sorting by index. Excludes package aggregates
+/// (`Package id N`, `Tctl`) and unlabeled sensors.
 pub fn read_cores(chip_dir: &Path) -> Vec<i64> {
     let Ok(entries) = std::fs::read_dir(chip_dir) else {
         return Vec::new();
@@ -35,11 +36,12 @@ pub fn read_cores(chip_dir: &Path) -> Vec<i64> {
         let Some(rest) = file_name.strip_suffix("_input") else { continue };
         let label_path = chip_dir.join(format!("{rest}_label"));
         let Ok(label) = std::fs::read_to_string(&label_path) else { continue };
-        // `^Core (\d+)$` without the regex. The digit check is what keeps `parse` from accepting
-        // the leading `+` that `\d+` rejects; an empty remainder fails `parse` on its own.
+        // `^(Core |Tccd)(\d+)$` without the regex. The digit check is what keeps `parse` from
+        // accepting the leading `+` that `\d+` rejects; an empty remainder fails `parse` on its own.
+        let label = label.trim();
         let Some(core_index) = label
-            .trim()
             .strip_prefix("Core ")
+            .or_else(|| label.strip_prefix("Tccd"))
             .filter(|index| index.chars().all(|c| c.is_ascii_digit()))
             .and_then(|index| index.parse::<u32>().ok())
         else {
@@ -79,7 +81,8 @@ const GPU_TEMP_PREFERENCE: &[&str] = &["amdgpu", "nouveau", "nvidia"];
 /// tick (see [`resolve_temp_cores_source`]).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CoreTempSource {
-    /// CPU chip (`k10temp`/`coretemp`) resolved; read every per-core sensor.
+    /// CPU chip (`k10temp`/`coretemp`) resolved; read every per-core sensor, or its primary sensor
+    /// when none is per-core.
     PerCore(PathBuf),
     /// No CPU chip; generic `acpitz` fallback resolved to one sensor.
     Single(PathBuf),
@@ -102,7 +105,11 @@ pub fn resolve_temp_cores_source(hwmon_root: &Path) -> CoreTempSource {
 /// Reads `temp_cores` from an already-resolved [`CoreTempSource`] (ADR-0035); no directory scan.
 pub fn read_temp_cores_from(source: &CoreTempSource) -> Vec<i64> {
     match source {
-        CoreTempSource::PerCore(chip_dir) => read_cores(chip_dir),
+        // A monolithic Ryzen APU exposes only `Tctl`; one aggregate beats an empty list.
+        CoreTempSource::PerCore(chip_dir) => match read_cores(chip_dir) {
+            cores if cores.is_empty() => read_primary_sensor(chip_dir).into_iter().collect(),
+            cores => cores,
+        },
         CoreTempSource::Single(chip_dir) => read_primary_sensor(chip_dir).into_iter().collect(),
         CoreTempSource::Unavailable => Vec::new(),
     }
@@ -161,6 +168,23 @@ mod tests {
         write_sensor(&chip_dir, 6, "Core 4", 78000);
 
         assert_eq!(read_cores(&chip_dir), vec![57, 78, 65]);
+    }
+
+    #[test]
+    fn read_temp_cores_reads_k10temp_ccds_and_falls_back_to_tctl_without_them() {
+        let dir = tempfile::tempdir().unwrap();
+        write_chip(dir.path(), "hwmon2", "k10temp");
+        let chip_dir = dir.path().join("hwmon2");
+        write_sensor(&chip_dir, 1, "Tctl", 71000); // excluded: control aggregate
+        write_sensor(&chip_dir, 4, "Tccd2", 63000);
+        write_sensor(&chip_dir, 3, "Tccd1", 66000);
+        assert_eq!(resolve_and_read_temp_cores(dir.path()), vec![66, 63]);
+
+        std::fs::remove_file(chip_dir.join("temp3_label")).unwrap();
+        std::fs::remove_file(chip_dir.join("temp3_input")).unwrap();
+        std::fs::remove_file(chip_dir.join("temp4_label")).unwrap();
+        std::fs::remove_file(chip_dir.join("temp4_input")).unwrap();
+        assert_eq!(resolve_and_read_temp_cores(dir.path()), vec![71]);
     }
 
     #[test]
