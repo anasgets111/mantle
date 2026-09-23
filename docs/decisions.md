@@ -1414,12 +1414,11 @@ invisible resolution remained separate because config maps could have side effec
 **Amendment: swap damage.** A repaint still redraws the whole buffer but reports only what changed,
 through `EGL_KHR`/`EXT_swap_buffers_with_damage`: one rect over the commands outside the old and new
 lists' common prefix and suffix, plus one per command drawing a texture, since a landed decode,
-capture or GIF frame changes pixels under an unchanged entry. Each command is bounded by its own box,
-widened where the draw may overflow it and cut by its clip; bounding by the clip alone damaged the
-whole panel area. Full-surface damage made Hyprland re-blur a 3440x1440 layer every frame: 9-24 ms per
-165 Hz frame callback, against 6-7.6 ms with damage. The whole surface is still damaged with no prior
-list, on a resize, past 32 rects, and while a field is focused, whose caret blinks under an unchanged
-list.
+capture or GIF frame changes pixels under an unchanged entry. A node's clip is already cut to its
+own box, so a leaf's clip bounds it; a transformed group also counts its commands untransformed,
+since the shader stage scissors by the raw clip. Full-surface damage made Hyprland re-blur a
+3440x1440 layer every frame: 9-24 ms per 165 Hz frame callback, against 6-7.6 ms with damage. The
+whole surface is still damaged with no prior list, on a resize, and past 32 rects.
 
 ## 0064. A masked field draws from a count the tree never holds
 

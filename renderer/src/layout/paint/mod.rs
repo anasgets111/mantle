@@ -230,66 +230,33 @@ impl DisplayList {
     }
 }
 
-/// Every pixel `command` can touch: its own box, widened where a draw may overflow it, cut by its
-/// clip, then padded because femtovg antialiases its scissor edge too. A transformed group's box is its commands'
-/// bounds under its matrix; femtovg composes nested matrices, so recursing composes them too.
+/// Every pixel `command` can touch. `build_node` cuts each node's clip to its own box and
+/// `execute` scissors every draw to it, so a leaf's clip bounds it, padded because femtovg
+/// antialiases its scissor edge. A transformed group covers its commands' bounds under its matrix,
+/// which femtovg composes with an outer one as the recursion does, and also those bounds
+/// untransformed: the shader stage scissors by the raw clip under the innermost matrix alone.
 fn command_bounds(command: &DrawCmd) -> PhysicalRect {
     const PAD: i32 = 2;
-    let rect = command.rect;
-    let grow = |dx: f32, dy: f32| LogicalRect {
-        x: rect.x - dx,
-        y: rect.y - dy,
-        width: rect.width + 2.0 * dx,
-        height: rect.height + 2.0 * dy,
+    let Draw::Transformed { matrix, commands } = &command.draw else {
+        let clip = command.clip;
+        return PhysicalRect {
+            x0: clip.x0.saturating_sub(PAD),
+            y0: clip.y0.saturating_sub(PAD),
+            x1: clip.x1.saturating_add(PAD),
+            y1: clip.y1.saturating_add(PAD),
+        };
     };
-    let clip = command.clip;
-    // In `f32`: an unclipped span overflows `i32`.
-    let clip_rect = LogicalRect {
-        x: clip.x0 as f32,
-        y: clip.y0 as f32,
-        width: clip.x1 as f32 - clip.x0 as f32,
-        height: clip.y1 as f32 - clip.y0 as f32,
+    let Some(inner) = commands.iter().map(command_bounds).reduce(union) else {
+        return PhysicalRect { x0: 0, y0: 0, x1: 0, y1: 0 };
     };
-    let own = match &command.draw {
-        Draw::Transformed { matrix, commands } => {
-            let Some(inner) = commands.iter().map(command_bounds).filter(|r| !is_empty(*r)).reduce(union) else {
-                return PhysicalRect { x0: 0, y0: 0, x1: 0, y1: 0 };
-            };
-            if !matrix.iter().all(|n| n.is_finite()) {
-                return UNCLIPPED;
-            }
-            let corners = [(inner.x0, inner.y0), (inner.x1, inner.y0), (inner.x0, inner.y1), (inner.x1, inner.y1)]
-                .map(|(x, y)| node::apply_affine(*matrix, x as f32, y as f32));
-            let (x0, y0) = corners.iter().fold((f32::MAX, f32::MAX), |(x, y), c| (x.min(c.0), y.min(c.1)));
-            let (x1, y1) = corners.iter().fold((f32::MIN, f32::MIN), |(x, y), c| (x.max(c.0), y.max(c.1)));
-            // Inner bounds are already padded and clipped; the group's own clip is pre-transform.
-            return snap_to_physical(LogicalRect { x: x0, y: y0, width: x1 - x0, height: y1 - y0 }, 1.0);
-        }
-        Draw::Box { widths, .. } => {
-            let border = widths.left.max(widths.right).max(widths.top).max(widths.bottom);
-            grow(border, border)
-        }
-        // A line wider than its box is not wrapped away, so the clip bounds it across; glyph
-        // ascenders and italics overhang by at most a line.
-        Draw::Text { font_size, .. } => LogicalRect { x: clip_rect.x, width: clip_rect.width, ..grow(0.0, *font_size) },
-        Draw::Icon { px, .. } => {
-            let px = *px as f32;
-            grow(((px - rect.width) / 2.0).max(0.0), ((px - rect.height) / 2.0).max(0.0))
-        }
-        // `Cover` scales past the box and only the clip cuts it.
-        Draw::Image { fit: Fit::Cover, .. } | Draw::Capture { fit: Fit::Cover, .. } => clip_rect,
-        Draw::Image { .. } | Draw::Capture { .. } | Draw::Clipped { .. } => rect,
-    };
-    let cut = snap_to_physical(own, 1.0).intersect(clip);
-    if is_empty(cut) {
-        return cut;
+    if !matrix.iter().all(|n| n.is_finite()) {
+        return UNCLIPPED;
     }
-    PhysicalRect {
-        x0: cut.x0.saturating_sub(PAD),
-        y0: cut.y0.saturating_sub(PAD),
-        x1: cut.x1.saturating_add(PAD),
-        y1: cut.y1.saturating_add(PAD),
-    }
+    let corners = [(inner.x0, inner.y0), (inner.x1, inner.y0), (inner.x0, inner.y1), (inner.x1, inner.y1)]
+        .map(|(x, y)| node::apply_affine(*matrix, x as f32, y as f32));
+    let (x0, y0) = corners.iter().fold((f32::MAX, f32::MAX), |(x, y), c| (x.min(c.0), y.min(c.1)));
+    let (x1, y1) = corners.iter().fold((f32::MIN, f32::MIN), |(x, y), c| (x.max(c.0), y.max(c.1)));
+    union(inner, snap_to_physical(LogicalRect { x: x0, y: y0, width: x1 - x0, height: y1 - y0 }, 1.0))
 }
 
 fn union(a: PhysicalRect, b: PhysicalRect) -> PhysicalRect {

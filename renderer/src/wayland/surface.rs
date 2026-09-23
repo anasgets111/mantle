@@ -987,10 +987,9 @@ impl App {
         }
 
         // What the compositor re-blurs and recomposites behind this surface, as EGL's bottom-left
-        // `x, y, w, h` quadruples; `None` is the whole surface. A caret blinks under an unchanged
-        // list, so a focused field damages everything (ADR-0063 amendment).
+        // `x, y, w, h` quadruples; `None` is the whole surface (ADR-0063 amendment).
         let damage = match &self.surfaces[index].last_painted {
-            Some((size, painted)) if *size == (width, height) && self.field_focus_for(&surface_id).is_none() => {
+            Some((size, painted)) if *size == (width, height) => {
                 let surface_rect =
                     crate::text::snap::PhysicalRect { x0: 0, y0: 0, x1: width as i32, y1: height as i32 };
                 let rects: Vec<i32> = list
