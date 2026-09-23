@@ -217,13 +217,11 @@ Pending saves do not flush at shutdown. See [storage](../supervisor/src/capabili
 
 ## 13. Control socket and wire format
 
-Communication between Renderer and Supervisor uses JSON-RPC 2.0 over a private Unix domain socket.
+Renderer and Supervisor exchange JSON frames over a private Unix domain socket.
 Commands carry generation and revision metadata:
 
 ```json
 {
-  "jsonrpc": "2.0",
-  "method": "ExecuteCommand",
   "params": {
     "generation_id": 4,
     "capability": "audio",

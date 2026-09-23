@@ -39,8 +39,6 @@ struct Inner {
 
 fn process_command(generation_id: u32, action: &str, arguments: Vec<serde_json::Value>, id: u64) -> CommandEnvelope {
     CommandEnvelope {
-        jsonrpc: "2.0".to_string(),
-        method: "ExecuteCommand".to_string(),
         params: CommandParams {
             generation_id,
             capability: "process".to_string(),

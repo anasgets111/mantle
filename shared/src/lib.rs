@@ -153,11 +153,9 @@ impl std::fmt::Display for Capability {
         f.write_str(self.as_str())
     }
 }
-/// Guarded JSON-RPC 2.0 envelope for a Lua write action.
+/// Guarded envelope for a Lua write action.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct CommandEnvelope {
-    pub jsonrpc: String,
-    pub method: String,
     pub params: CommandParams,
     pub id: u64,
 }
@@ -483,8 +481,6 @@ mod tests {
     #[test]
     fn command_envelope_matches_idl_wire_format() {
         let wire = serde_json::json!({
-            "jsonrpc": "2.0",
-            "method": "ExecuteCommand",
             "params": {
                 "generation_id": 4,
                 "capability": "audio",
@@ -496,8 +492,6 @@ mod tests {
         });
 
         let envelope: CommandEnvelope = serde_json::from_value(wire.clone()).unwrap();
-        assert_eq!(envelope.jsonrpc, "2.0");
-        assert_eq!(envelope.method, "ExecuteCommand");
         assert_eq!(envelope.id, 105);
         assert_eq!(envelope.params.generation_id, 4);
         assert_eq!(envelope.params.capability, "audio");
@@ -570,8 +564,6 @@ mod tests {
     #[test]
     fn renderer_frame_command_is_adjacently_tagged() {
         let envelope = CommandEnvelope {
-            jsonrpc: "2.0".to_string(),
-            method: "ExecuteCommand".to_string(),
             params: CommandParams {
                 generation_id: 4,
                 capability: "audio".to_string(),
@@ -584,7 +576,7 @@ mod tests {
         let frame = RendererFrame::Command(envelope.clone());
         let wire = serde_json::to_value(&frame).unwrap();
         assert_eq!(wire["kind"], "Command");
-        assert_eq!(wire["data"]["method"], "ExecuteCommand");
+        assert_eq!(wire["data"]["id"], 105);
 
         let parsed: RendererFrame = serde_json::from_value(wire).unwrap();
         match parsed {

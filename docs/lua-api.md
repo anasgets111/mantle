@@ -361,7 +361,7 @@ See [surface parsing](../renderer/src/lua/surfaces.rs),
 
 ## 7. Wire format envelope
 
-Lua capability invocations serialize to a JSON-RPC 2.0 envelope over the control socket.
+Lua capability invocations serialize to a JSON command envelope over the control socket.
 See [wire format and dispatch limits](services.md#13-control-socket-and-wire-format).
 
 ## 8. Tooling

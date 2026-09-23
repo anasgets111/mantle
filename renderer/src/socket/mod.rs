@@ -221,8 +221,6 @@ mod tests {
     #[tokio::test]
     async fn pump_writes_a_queued_process_command_frame_to_the_wire() {
         let envelope = CommandEnvelope {
-            jsonrpc: "2.0".to_string(),
-            method: "ExecuteCommand".to_string(),
             params: shared::CommandParams {
                 generation_id: 0,
                 capability: "process".to_string(),

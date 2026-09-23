@@ -324,8 +324,6 @@ mod tests {
 
     fn envelope(action: &str) -> shared::CommandEnvelope {
         shared::CommandEnvelope {
-            jsonrpc: "2.0".to_string(),
-            method: "command".to_string(),
             params: shared::CommandParams {
                 generation_id: 0,
                 capability: "lock".to_string(),

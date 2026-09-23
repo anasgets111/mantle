@@ -78,7 +78,7 @@ impl CompositorLink for NiriLink {
     }
 
     fn switch_layout(&self, index: usize) {
-        // JSON-RPC supplies an unbounded u64, while niri's wire protocol takes u8. Reject overflow
+        // A command supplies an unbounded u64, while niri's wire protocol takes u8. Reject overflow
         // instead of truncating 256 to 0.
         let Ok(index) = u8::try_from(index) else {
             debug!("switch_layout index {index} is out of range for niri (must fit in a u8); ignored");

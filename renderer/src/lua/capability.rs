@@ -32,7 +32,7 @@ const WARNED_UNKNOWN_CAP: usize = 64;
 #[derive(Clone)]
 pub struct CommandSender {
     generation_id: u32,
-    /// JSON-RPC request id (e.g. `"id": 105`), shared across clones so capabilities never reuse
+    /// `CommandEnvelope.id` (e.g. `"id": 105`), shared across clones so capabilities never reuse
     /// an id. `Rc<Cell<_>>` is safe here because the sender is single-threaded.
     next_id: Rc<Cell<u64>>,
     /// Capabilities this generation already asked the Supervisor to start. Shared across clones;
@@ -106,8 +106,6 @@ impl CommandSender {
         let id = self.next_id.get();
         self.next_id.set(id + 1);
         let envelope = CommandEnvelope {
-            jsonrpc: "2.0".to_string(),
-            method: "ExecuteCommand".to_string(),
             params: CommandParams {
                 generation_id: self.generation_id,
                 capability: capability.to_string(),
@@ -322,8 +320,6 @@ pub(crate) mod tests {
         lua.load(r#"mantle.probe:invoke("set_volume", 0.75)"#).exec().unwrap();
 
         let envelope = queued_command(&mut rx).expect("invoke must queue a command");
-        assert_eq!(envelope.jsonrpc, "2.0");
-        assert_eq!(envelope.method, "ExecuteCommand");
         assert_eq!(envelope.params.generation_id, 4);
         assert_eq!(envelope.params.capability, "probe");
         assert_eq!(envelope.params.action, "set_volume");

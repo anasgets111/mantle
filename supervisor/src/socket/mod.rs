@@ -495,8 +495,6 @@ mod tests {
 
     fn command_frame(generation_id: u32) -> RendererFrame {
         RendererFrame::Command(shared::CommandEnvelope {
-            jsonrpc: "2.0".to_string(),
-            method: "capability.invoke".to_string(),
             id: 1,
             params: shared::CommandParams {
                 generation_id,
@@ -681,8 +679,6 @@ mod tests {
         framing::write_json_frame(&mut client, &ConnectionHandshake { generation_id: 5 }).await.unwrap();
 
         let envelope = shared::CommandEnvelope {
-            jsonrpc: "2.0".to_string(),
-            method: "ExecuteCommand".to_string(),
             params: shared::CommandParams {
                 generation_id: 5,
                 capability: "audio".to_string(),
