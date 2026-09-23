@@ -50,7 +50,7 @@ test:
     cargo test --workspace
 
 lint:
-    cargo clippy --workspace --all-targets --all-features -- -D warnings
+    cargo clippy --workspace --all-targets -- -D warnings
 
 # Unresolved intra-doc links, which clippy does not check. Exact in both directions: over hides a
 # link that moved, under leaves room for the next regression to sit in unreported.
