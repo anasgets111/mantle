@@ -763,12 +763,11 @@ impl Capabilities {
         signal: Signal,
         registry: &socket::GenerationRegistry,
         generation_id: u32,
-        revisions: &mut HashMap<Capability, u32>,
         last_snapshots: &mut HashMap<Capability, shared::StateSnapshot>,
     ) {
         macro_rules! push {
             ($capability:expr, $state:expr) => {
-                push_snapshot(registry, generation_id, revisions, last_snapshots, $capability, $state)
+                push_snapshot(registry, generation_id, last_snapshots, $capability, $state)
             };
         }
         match signal {

@@ -1,6 +1,5 @@
-//! Snapshot-push path (ADR-0037): bump the capability revision, serialize, send to the
-//! authoritative generation, and record in `last_snapshots`. Replaces per-capability functions
-//! (ADR-0029's `revisions`/`last_snapshots` maps).
+//! Snapshot-push path (ADR-0037): serialize, send to the authoritative generation, and record in
+//! `last_snapshots`, whose entry also carries the capability's revision.
 
 use std::collections::HashMap;
 
@@ -8,24 +7,14 @@ use shared::{Capability, SupervisorFrame, warn};
 
 use crate::{send_frame_logged, socket};
 
-/// Bumps and returns `capability`'s state-version counter (ADR-0004).
-/// First push is `1`.
-pub(crate) fn bump_revision(revisions: &mut HashMap<Capability, u32>, capability: Capability) -> u32 {
-    let revision = revisions.entry(capability).or_insert(0);
-    *revision += 1;
-    *revision
-}
-
 /// Bumps the revision, pushes `state` as a fresh `StateSnapshot`, and records it in
 /// `last_snapshots` (ADR-0029), which `Supervisor::hydrate` replays to a new generation. A payload
 /// equal to the last one is dropped: every push re-resolves the Renderer's scene (ADR-0044).
 ///
-/// ADR-0037's `&[&str]` roster check was a `debug_assert`. Taking [`Capability`] makes off-roster
-/// names unrepresentable (ADR-0076).
+/// Taking [`Capability`] makes off-roster names unrepresentable (ADR-0076).
 pub(crate) fn push_snapshot(
     registry: &socket::GenerationRegistry,
     generation_id: u32,
-    revisions: &mut HashMap<Capability, u32>,
     last_snapshots: &mut HashMap<Capability, shared::StateSnapshot>,
     capability: Capability,
     state: &impl serde::Serialize,
@@ -38,7 +27,8 @@ pub(crate) fn push_snapshot(
             if !spools_icons && last_snapshots.get(&capability).is_some_and(|last| last.payload == payload) {
                 return;
             }
-            let revision = bump_revision(revisions, capability);
+            // ADR-0004's state version; the first push is `1`.
+            let revision = last_snapshots.get(&capability).map_or(0, |last| last.revision) + 1;
             // Move the snapshot through the frame and take it back out. `send_frame_logged`
             // borrows, so the obvious spelling deep-clones the whole `payload` tree -- the largest
             // thing on this path -- on every signal, purely to keep a copy.
@@ -63,10 +53,10 @@ mod tests {
     #[test]
     fn an_equal_payload_is_not_pushed_again_except_for_icon_spools() {
         let registry = socket::GenerationRegistry::default();
-        let (mut revisions, mut last_snapshots) = (HashMap::new(), HashMap::new());
+        let mut last_snapshots = HashMap::new();
         let mut push = |capability, value: u32| {
-            push_snapshot(&registry, 1, &mut revisions, &mut last_snapshots, capability, &value);
-            revisions[&capability]
+            push_snapshot(&registry, 1, &mut last_snapshots, capability, &value);
+            last_snapshots[&capability].revision
         };
         assert_eq!(push(Capability::Audio, 1), 1);
         assert_eq!(push(Capability::Audio, 1), 1, "an equal payload must not bump the revision");

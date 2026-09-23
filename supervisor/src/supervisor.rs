@@ -75,9 +75,8 @@ pub(crate) struct Supervisor {
     /// logind half of the same fact (ADR-0138), publishing `loginctl show-session`'s `LockedHint`
     /// whenever the marker changes.
     session_bridge: lock::logind::SessionBridge,
-    /// Capability state-version counters (ADR-0004).
-    revisions: HashMap<Capability, u32>,
-    /// Last snapshot per capability, replayed to each new generation by [`Supervisor::hydrate`].
+    /// Last snapshot per capability, replayed to each new generation by [`Supervisor::hydrate`]. Its
+    /// revision is the capability's state version (ADR-0004).
     last_snapshots: HashMap<Capability, shared::StateSnapshot>,
     /// Id for the next crash replacement.
     next_generation_id: u32,
@@ -129,7 +128,6 @@ impl Supervisor {
             polkit_outcome_tx,
             locked_flag,
             session_bridge,
-            revisions: HashMap::new(),
             last_snapshots: HashMap::new(),
             next_generation_id: 1,
             renderer,
@@ -156,7 +154,6 @@ impl Supervisor {
         push_snapshot(
             &self.registry,
             self.authoritative.generation_id,
-            &mut self.revisions,
             &mut self.last_snapshots,
             Capability::Lock,
             &self.lock.snapshot(),
@@ -167,7 +164,6 @@ impl Supervisor {
         push_snapshot(
             &self.registry,
             self.authoritative.generation_id,
-            &mut self.revisions,
             &mut self.last_snapshots,
             Capability::Polkit,
             &self.polkit.snapshot(),
@@ -220,13 +216,7 @@ impl Supervisor {
 
     /// Pushes one roster capability signal as a snapshot (ADR-0076).
     pub(crate) fn push_capability_signal(&mut self, signal: Signal) {
-        self.capabilities.push(
-            signal,
-            &self.registry,
-            self.authoritative.generation_id,
-            &mut self.revisions,
-            &mut self.last_snapshots,
-        );
+        self.capabilities.push(signal, &self.registry, self.authoritative.generation_id, &mut self.last_snapshots);
     }
 
     /// Asks the authoritative generation to re-evaluate its config (ADR-0216).
