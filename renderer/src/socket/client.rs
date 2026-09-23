@@ -1,6 +1,7 @@
 //! The Wayland thread's half: [`RendererClient`], which services each frame [`pump`](super::pump)
 //! decodes.
 
+use std::borrow::Cow;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -612,7 +613,7 @@ impl RendererClient {
                 self.geometry_follow_up = false;
                 return false;
             }
-            crate::lua::signal::DirtyScope::All => (None, self.instances.clone()),
+            crate::lua::signal::DirtyScope::All => (None, Cow::Borrowed(self.instances.as_slice())),
             crate::lua::signal::DirtyScope::Instances(ids) => {
                 let filtered: Vec<SurfaceInstance> = self
                     .instances
@@ -624,7 +625,7 @@ impl RendererClient {
                     self.dirty.mark();
                     return false;
                 }
-                (Some(ids), filtered)
+                (Some(ids), Cow::Owned(filtered))
             }
         };
         let applied = self.scene.apply_locked(
