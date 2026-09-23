@@ -2129,6 +2129,11 @@ Masked Escape-to-cancel, multibyte mask support and interactive prompt metadata 
 
 Actionable update notifications, timer-based dedupe and OSDs without backend facts remained out of scope.
 
+**Amendment: Renderer-sourced members.** `mantle.screens` and `mantle.rescue` take `on_change` too, so a
+config can prune per-output state when a monitor leaves. They reuse the capability member; their
+`invoke` reaches the Supervisor as an unknown name, which it drops. A screen change runs the old
+evaluation's handlers before the re-evaluation it triggers clears them.
+
 ## 0116. Pointer drags and wheels on a button, and the microphone's volume
 
 1. Buttons receive left-drag start/move/end with local unclamped pointer coordinates. Hold through

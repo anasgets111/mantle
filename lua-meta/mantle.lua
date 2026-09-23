@@ -741,8 +741,8 @@ local SystemCapability = {}
 ---@field idle IdleCapability Whether anything is holding the session awake, and which application it is. Its thresholds and the inhibit pair are methods on the same member.
 ---@field processes ProcessesCapability Every long-running program a config declared with `session_process`: whether it is up, since when, and how the last run ended.
 ---@field windows WindowsCapability Every open toplevel window: title, app ID, workspace, output, and focused/floating/fullscreen/minimized/maximized where the backend can report them.
----@field screens Signal<Screen[]> Renderer-sourced, seeded to an empty list, and the one signal with a value at first evaluation (ADR-0041).
----@field rescue Signal<RescueState> Renderer-sourced, no commands (ADR-0046).
+---@field screens ReadOnlyCapability<Screen[]> Renderer-sourced, seeded to an empty list, and the one signal with a value at first evaluation (ADR-0041).
+---@field rescue ReadOnlyCapability<RescueState> Renderer-sourced, no commands (ADR-0046).
 ---@field version MantleVersion Three integers a config can compare. Not a signal.
 ---@field config_dir string The directory `shell.lua` was loaded from, so a config can name a file it ships beside itself. Not a signal.
 mantle = {}

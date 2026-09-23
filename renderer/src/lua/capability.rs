@@ -150,7 +150,13 @@ impl Capability {
     pub fn new(name: &str, dirty: DirtyFlag, commands: CommandSender) -> (Self, CapabilityHandle) {
         // `nil` until the Supervisor's first push (ADR-0037), paired with revision `0`, which no
         // push can produce.
-        let (signal, signal_handle) = Signal::new_live(Value::Nil, dirty);
+        Self::seeded(name, Value::Nil, dirty, commands)
+    }
+
+    /// A member holding `initial` before its first write, for the Renderer-sourced `screens` and
+    /// `rescue`. Their `invoke` reaches the Supervisor as an unknown name, which it drops.
+    pub fn seeded(name: &str, initial: Value, dirty: DirtyFlag, commands: CommandSender) -> (Self, CapabilityHandle) {
+        let (signal, signal_handle) = Signal::new_live(initial, dirty);
         let revision = Rc::new(Cell::new(0));
         let handlers = Rc::new(RefCell::new(Vec::new()));
         let capability = Capability {
@@ -239,8 +245,7 @@ impl CapabilityHandle {
 
 impl UserData for Capability {
     fn add_methods<M: UserDataMethods<Self>>(methods: &mut M) {
-        // Delegate `get`/`map` so capabilities read like bare `Signal` globals
-        // (`rescue`, `screens`).
+        // Delegate `get`/`map` so capabilities read like bare `Signal` globals.
         methods.add_method("get", |lua, this, ()| this.signal.get_value(lua));
         methods.add_function("map", |lua, (ud, f): (mlua::AnyUserData, Function)| Signal::mapped(lua, ud, f));
         // The one non-rendering push reaction (ADR-0115): once per `StateSnapshot`, outside layout,

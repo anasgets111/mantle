@@ -10,17 +10,17 @@ use std::path::Path;
 use crate::lua::Loader;
 use crate::lua::capability::{Capability, CapabilityHandle, CommandSender};
 use crate::lua::idle::IdleRegistry;
-use crate::lua::signal::{DirtyFlag, LiveSignalHandle};
+use crate::lua::signal::DirtyFlag;
 
 /// One generation's `mantle` table and the handles its owner writes after construction.
 pub(crate) struct Namespace {
     pub(crate) table: mlua::Table,
     /// One `StateSnapshot` hydration handle per `shared::Capability::ALL` name.
     pub(crate) capabilities: HashMap<String, CapabilityHandle>,
-    pub(crate) rescue: LiveSignalHandle,
+    pub(crate) rescue: CapabilityHandle,
     /// `mantle.idle` registry for inbound `SupervisorFrame::IdleEvent` callback dispatch.
     pub(crate) idle: IdleRegistry,
-    pub(crate) screens: LiveSignalHandle,
+    pub(crate) screens: CapabilityHandle,
     /// Current `screens` payload, for diffing later output changes.
     pub(crate) screens_payload: serde_json::Value,
 }
@@ -64,11 +64,11 @@ pub(crate) fn build(
     let idle = IdleRegistry::new(idle_state);
     table.set("idle", idle.member())?;
     loader.register_idle(idle.clone());
-    let rescue = register_rescue_signal(loader, &table, dirty.clone())?;
+    let rescue = register_rescue_signal(loader, &table, dirty.clone(), commands)?;
     // Seed with an empty list, not `nil`, so `mantle.screens` loops zero times; pass it to
     // `new_live` rather than `set` so initialization does not dirty an unapplied scene.
     let screens_payload = serde_json::Value::Array(Vec::new());
-    let screens = register_screens_signal(loader, &table, dirty.clone(), &screens_payload)?;
+    let screens = register_screens_signal(loader, &table, dirty.clone(), commands, &screens_payload)?;
     table.set("version", version_table(loader)?)?;
     // Parent of the loaded `shell.lua`, so config can name adjacent files without disagreeing with
     // `shared::config_dir()`. Static string beside `version`, not a pushing capability.
@@ -109,14 +109,16 @@ fn install_capability_index(
     Ok(())
 }
 
-/// `mantle.rescue`, returning its update handle.
-///
-/// Bare `lua::signal::Signal`, not [`Capability`]: Renderer-sourced, with no Supervisor dispatch or
-/// roster entry, so `invoke` would only queue a command the Supervisor drops.
-fn register_rescue_signal(loader: &Loader, mantle: &mlua::Table, dirty: DirtyFlag) -> mlua::Result<LiveSignalHandle> {
+/// `mantle.rescue`, returning its update handle. Renderer-sourced, so it has no roster entry.
+fn register_rescue_signal(
+    loader: &Loader,
+    mantle: &mlua::Table,
+    dirty: DirtyFlag,
+    commands: &CommandSender,
+) -> mlua::Result<CapabilityHandle> {
     let table = rescue_table(loader, false, "")?;
-    let (signal, handle) = crate::lua::signal::Signal::new_live(mlua::Value::Table(table), dirty);
-    mantle.set("rescue", signal)?;
+    let (member, handle) = Capability::seeded("rescue", mlua::Value::Table(table), dirty, commands.clone());
+    mantle.set("rescue", member)?;
     Ok(handle)
 }
 
@@ -129,10 +131,11 @@ fn register_screens_signal(
     loader: &Loader,
     mantle: &mlua::Table,
     dirty: DirtyFlag,
+    commands: &CommandSender,
     initial: &serde_json::Value,
-) -> mlua::Result<LiveSignalHandle> {
-    let (signal, handle) = crate::lua::signal::Signal::new_live(loader.to_lua_value(initial)?, dirty);
-    mantle.set("screens", signal)?;
+) -> mlua::Result<CapabilityHandle> {
+    let (member, handle) = Capability::seeded("screens", loader.to_lua_value(initial)?, dirty, commands.clone());
+    mantle.set("screens", member)?;
     Ok(handle)
 }
 

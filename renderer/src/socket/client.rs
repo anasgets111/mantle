@@ -17,7 +17,7 @@ use crate::layout::{self, Scene};
 use crate::lua::capability::{Capability, CapabilityHandle, CommandSender};
 use crate::lua::palette::PaletteRegistry;
 use crate::lua::process::ProcessRegistry;
-use crate::lua::signal::{DirtyFlag, LiveSignalHandle};
+use crate::lua::signal::DirtyFlag;
 use crate::lua::surfaces::evaluate_and_specs;
 use crate::lua::{self, Loader};
 use crate::text::shaping::ShapingHandle;
@@ -87,9 +87,9 @@ pub struct RendererClient {
     /// so the bound lands on the queue instead of on the callback. Bounding this channel as it
     /// stands would trade a memory bug for a correctness one.
     commands: CommandSender,
-    rescue_handle: LiveSignalHandle,
+    rescue_handle: CapabilityHandle,
     /// Renderer-sourced `mantle.screens` handle (ADR-0041 decision 2), not in `capabilities`.
-    screens_handle: LiveSignalHandle,
+    screens_handle: CapabilityHandle,
     /// `screens_handle`'s JSON mirror for [`Self::set_screens`] change detection.
     screens_payload: serde_json::Value,
     /// `rescue_handle`'s mirror for [`Self::set_rescue_state`] no-op detection.
@@ -202,7 +202,8 @@ impl RendererClient {
         }
         match lua::namespace::rescue_table(&self.loader, is_rescue, error_log) {
             Ok(table) => {
-                self.rescue_handle.set(mlua::Value::Table(table));
+                let previous = self.rescue_handle.hydrate(mlua::Value::Table(table), 0);
+                self.rescue_handle.notify_change(self.loader.lua(), previous);
                 self.rescue_state = (is_rescue, error_log.to_string());
             }
             Err(err) => warn!("failed to build rescue state: {err}"),
@@ -233,7 +234,7 @@ impl RendererClient {
     /// config answering `mantle call` is worse than none, and the scene still on screen is the
     /// previous evaluation's, whose registrations this already dropped.
     fn clear_change_handlers(&self) {
-        for handle in self.capabilities.borrow().values() {
+        for handle in self.capabilities.borrow().values().chain([&self.rescue_handle, &self.screens_handle]) {
             handle.clear_handlers();
         }
         lua::action::clear(self.loader.lua());
@@ -317,7 +318,8 @@ impl RendererClient {
         }
         match self.loader.to_lua_value(&payload) {
             Ok(value) => {
-                self.screens_handle.set(value);
+                let previous = self.screens_handle.hydrate(value, 0);
+                self.screens_handle.notify_change(self.loader.lua(), previous);
                 self.screens_payload = payload;
                 true
             }
@@ -778,7 +780,7 @@ mod tests {
         loader.lua().globals().get(name).unwrap()
     }
 
-    /// Reads `rescue:get()` by probe script; `LiveSignalHandle` exposes only `set`, so this is the
+    /// Reads `rescue:get()` by probe script; `CapabilityHandle` has no getter, so this is the
     /// only way to observe `set_rescue_state`'s stored value.
     fn rescue_state(loader: &Loader) -> (bool, String) {
         let setup = "is_rescue, error_log = mantle.rescue:get().is_rescue, mantle.rescue:get().error_log";
@@ -2811,6 +2813,31 @@ mod tests {
         assert!(client.set_screens(screens_json(&["eDP-1", "DP-1"])), "a monitor appearing is an output change");
         assert!(client.re_resolve_if_dirty(), "and the scene must re-resolve against it without re-reading shell.lua");
         assert_eq!(content(&client), "n=2");
+    }
+
+    /// ADR-0115 on a Renderer-sourced member: `screens` runs the handler with both lists, and a
+    /// re-evaluation drops it like a capability's.
+    #[test]
+    fn screens_on_change_sees_both_lists_and_a_re_evaluation_drops_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_shell_lua(
+            dir.path(),
+            r#"
+            mantle.screens:on_change(function(now, before) seen = #before .. "->" .. #now end)
+            return panel { id = "bar", layer = "Top" }
+            "#,
+        );
+        let (mut client, _outbound_rx) = test_client(&path);
+        client.set_screens(screens_json(&["eDP-1"]));
+        run_startup(&mut client);
+
+        client.set_screens(screens_json(&["eDP-1", "DP-1"]));
+        assert_eq!(client.loader.lua().globals().get::<String>("seen").unwrap(), "1->2");
+
+        std::fs::write(&path, r#"return panel { id = "bar", layer = "Top" }"#).unwrap();
+        assert!(client.reevaluate());
+        client.set_screens(screens_json(&["eDP-1"]));
+        assert_eq!(client.loader.lua().globals().get::<String>("seen").unwrap(), "1->2", "the dropped handler ran");
     }
 
     #[test]
