@@ -1,5 +1,4 @@
 //! `TrayItem` hydration from `StatusNotifierItem` properties; `menu` is fetched separately.
-//! Split from `dbus::tray` -- see `dbus/tray/mod.rs` for the module-level doc.
 
 use std::collections::HashMap;
 use std::hash::{BuildHasher, BuildHasherDefault, DefaultHasher};
@@ -111,7 +110,7 @@ async fn get_all(item: &StatusNotifierItemProxy<'static>) -> HashMap<String, Own
 }
 
 /// Reads every property `tray.items` needs except `menu`, which uses the caller's bound proxy via
-/// [`fetch_menu_via`]. A missing property falls back to its empty/default value. `previous` is the
+/// [`super::menu::fetch_menu_via`]. A missing property falls back to its empty/default value. `previous` is the
 /// item this refresh replaces; pixels it already spooled are not encoded again.
 pub(super) async fn fetch_tray_item_base(
     item: &StatusNotifierItemProxy<'static>,

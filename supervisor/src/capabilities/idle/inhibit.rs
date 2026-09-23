@@ -1,6 +1,5 @@
 //! Inhibit half of `mantle.idle` (ADR-0032): login1 `Inhibit` on the existing system bus, with
-//! per-holder refcounts, a hand-written proxy, and shared fd state. Split from `dbus::idle`;
-//! see `hardware/idle/mod.rs`.
+//! per-holder refcounts, a hand-written proxy, and shared fd state.
 //!
 //! Holds arrive from two sides. A config calls `idle:inhibit(reason)`; a session client calls
 //! `org.freedesktop.ScreenSaver.Inhibit`, which is where a browser's video hold lands (ADR-0231).

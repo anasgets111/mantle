@@ -1,5 +1,4 @@
 //! [`IdleController`]: `mantle.idle`'s write dispatcher and state owner for notify and inhibit.
-//! Split from `dbus::idle` -- see `hardware/idle/mod.rs` for the module-level doc.
 
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};

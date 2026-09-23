@@ -78,7 +78,7 @@ pub enum AudioCommand {
 /// they use `param`, while `nodes` handles stream/video `info`.
 pub(super) struct MixerState {
     /// False until PipeWire has answered for everything the listener asked for at startup, which
-    /// `registry::run_inner` decides with two `core.sync` barriers. Both publishers build their
+    /// `registry::run_inner` decides with a `core.sync` barrier re-armed behind each new global. Both publishers build their
     /// payload from the maps and send nothing while it is false, so the first snapshot a config
     /// ever sees is a complete one rather than a default it will watch get corrected.
     ///

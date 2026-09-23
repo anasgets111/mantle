@@ -1,5 +1,4 @@
-//! [`NotificationsController`], the D-Bus interface, write dispatcher, and state owner. Split from
-//! `dbus::notifications`, see `dbus/notifications/mod.rs` for the module-level doc.
+//! [`NotificationsController`], the D-Bus interface, write dispatcher, and state owner.
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
@@ -74,7 +73,7 @@ impl From<CloseReason> for u32 {
 }
 
 // `NotificationsController` is both the exported `org.freedesktop.Notifications` object and the
-// cheap-clone handle `main.rs` holds for write dispatch. Unlike `dbus::tray`'s split, one type
+// cheap-clone handle `main.rs` holds for write dispatch. Unlike `tray`'s split, one type
 // serves both roles here.
 #[derive(Clone)]
 pub struct NotificationsController {

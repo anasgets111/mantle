@@ -4,14 +4,14 @@
 //! default for one notification; `suppress-sound` or a `set_app_muted` app wins; `sound-name`
 //! picks a freedesktop theme sound in place of a registered tier default.
 //!
-//! Like `dbus::tray`, a controller owns writes, degrades to inert without the session bus, and
+//! Like `tray`, a controller owns writes, degrades to inert without the session bus, and
 //! delegates decisions to pure helpers. Queue/DND are global Supervisor state (ADR-0033), not
 //! per-generation; there is no `reset_registrations`.
 //!
 //! The parser replaces the base spec's blanket strip-to-plain-text sanitizer with a wider allowlist
 //! grammar: five constructs are allowlisted (`<b>`, `<i>`, `<u>`, `<a href>`, `<img src>`);
 //! everything else is rejected. Images, `image-path`, and action icons share
-//! [`validate_trusted_path`]: an existing regular file under a canonicalized trusted root,
+//! [`icon::validate_trusted_path`]: an existing regular file under a canonicalized trusted root,
 //! otherwise no icon and no error.
 
 use std::marker::PhantomData;
@@ -107,7 +107,7 @@ const MAX_REPLY_PLACEHOLDER_BYTES: usize = MAX_ACTION_LABEL_BYTES;
 const NOTIFICATION_QUEUE_CAP: usize = 100;
 const NOTIFICATION_FEED_VIEW: usize = 20;
 
-/// Raw image-data dimension cap, shared with `dbus::tray`.
+/// Raw image-data dimension cap, shared with `tray`.
 const MAX_IMAGE_DIMENSION: i32 = 128;
 
 /// Server default for `expire_timeout == -1`, matching mako/dunst (ADR-0033).
@@ -115,7 +115,7 @@ const DEFAULT_EXPIRE_MS: u64 = 5000;
 
 /// `GetCapabilities`'s exact 10 strings (ADR-0033). Only `icon-multi` is absent because `Notify`
 /// has no multi-size wire field. `sound` honors `sound-file`, `sound-name` and the tier default via
-/// [`should_play_sound`].
+/// [`queue::should_play_sound`].
 const NOTIFICATIONS_CAPABILITIES: [&str; 10] = [
     "action-icons",
     "actions",
@@ -158,9 +158,7 @@ pub enum NotificationSpan {
 }
 
 /// One offered action button (ADR-0090), excluding `default` activation and `inline-reply`, which
-/// become [`Notification::has_default_action`] and [`Notification::has_reply`]. The flat array
-/// was once read for one bool and discarded, so `GetCapabilities` advertised `actions` and
-/// `action-icons` while neither was true; parsed buttons are retained now.
+/// become [`Notification::has_default_action`] and [`Notification::has_reply`].
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[cfg_attr(test, derive(schemars::JsonSchema))]
 pub struct NotificationAction {
@@ -378,7 +376,7 @@ pub struct Notification {
     #[serde(skip)]
     pub resident: bool,
     /// Bookkeeping only (`#[serde(skip)]`): incremented per `Notify` placement so stale expiry
-    /// timers can detect replacement (see [`find_expiring_entry`]).
+    /// timers can detect replacement (see [`queue::find_expiring_entry`]).
     #[serde(skip)]
     pub incarnation: u64,
 }
@@ -396,7 +394,7 @@ pub struct NotificationsState {
     pub dnd: bool,
 }
 
-/// Channel carrying queue/DND changes, matching `dbus::tray::TraySignal`'s single variant.
+/// Channel carrying queue/DND changes, matching `tray::TraySignal`'s single variant.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NotificationsSignal {
     Changed,

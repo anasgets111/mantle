@@ -59,7 +59,7 @@ docs:
     #!/usr/bin/env bash
     set -euo pipefail
     out=$(cargo doc --workspace --no-deps 2>&1)
-    for pair in renderer:3 supervisor:20; do
+    for pair in renderer:3 supervisor:7; do
         crate=${pair%:*} baseline=${pair#*:}
         count=$(echo "$out" | grep -A1 "unresolved link" | grep -cE "^\s*--> $crate/" || true)
         if [ "$count" -ne "$baseline" ]; then

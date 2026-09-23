@@ -1,6 +1,5 @@
 //! Icon pipeline: `IconName`-vs-`IconPixmap` resolution, bounds-checking, and ARGB32-to-PNG
 //! encoding/spooling (ADR-0031: prefer IconName, decode IconPixmap only as fallback).
-//! Split from `dbus::tray` -- see `dbus/tray/mod.rs` for the module-level doc.
 
 use crate::capabilities::shm_icons;
 
@@ -107,15 +106,15 @@ fn encode_argb32_to_png(width: u32, height: u32, argb: &[u8]) -> Result<Vec<u8>,
     Ok(buffer)
 }
 
-/// Writes a validated pixmap to `tray/{filename_stem}.png` in the instance dir
-/// ([`shm_icons::write_png`]), creating the tree and overwriting the same path (no cache-busting,
-/// ADR-0031). Base, attention, and overlay stems differ so their files do not collide (ADR-0074).
 /// An item id as a flat filename stem: [`super::registration::item_id`] ends in an object path and
 /// the spool is one directory. `_` doubles first, so no two ids fold onto one file.
 pub(super) fn icon_filename_stem(id: &str) -> String {
     id.replace('_', "__").replace('/', "_")
 }
 
+/// Writes a validated pixmap to `tray/{filename_stem}.png` in the instance dir
+/// ([`shm_icons::write_png`]), creating the tree and overwriting the same path (no cache-busting,
+/// ADR-0031). Base, attention, and overlay stems differ so their files do not collide (ADR-0074).
 pub(super) fn write_icon_png(filename_stem: &str, pixmap: &IconPixmap) -> std::io::Result<String> {
     let png_bytes = encode_argb32_to_png(pixmap.width as u32, pixmap.height as u32, &pixmap.bytes)
         .map_err(std::io::Error::other)?;

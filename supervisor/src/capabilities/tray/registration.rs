@@ -1,5 +1,4 @@
 //! `RegisterStatusNotifierItem`'s `service`-argument classification and resolution (ADR-0031).
-//! Split from `dbus::tray` -- see `dbus/tray/mod.rs` for the module-level doc.
 
 use zbus::names::{BusName, OwnedBusName, OwnedUniqueName, WellKnownName};
 use zbus::zvariant::OwnedObjectPath;

@@ -24,7 +24,7 @@ pub(super) fn default_trusted_icon_roots() -> Vec<PathBuf> {
 
 /// Accepts only an existing regular file under a trusted absolute root (ADR-0033). Canonicalizing
 /// both sides rejects `..` traversal and symlinks escaping the root. Relative paths and bare theme
-/// names degrade to no icon; theme lookup is the unbuilt `system:find_icon` row.
+/// names degrade to no icon.
 pub(super) fn validate_trusted_path(path: &str, trusted_roots: &[PathBuf]) -> Option<PathBuf> {
     let candidate = Path::new(path);
     if !candidate.is_absolute() {
@@ -86,7 +86,7 @@ pub(super) fn image_data_is_valid(image: &RawImageData) -> bool {
         && image.data.len() == (image.rowstride as usize) * (image.height as usize)
 }
 
-/// Encodes checked [`RawImageData`] to PNG. Unlike `dbus::tray`'s `encode_argb32_to_png`, no
+/// Encodes checked [`RawImageData`] to PNG. Unlike `tray`'s `encode_argb32_to_png`, no
 /// channel reorder is needed: freedesktop data is RGB(A) row-major, not ARGB network-byte-order
 /// pixmaps.
 pub(super) fn encode_image_data_to_png(image: &RawImageData) -> Result<Vec<u8>, png::EncodingError> {
@@ -106,7 +106,7 @@ pub(super) fn write_icon_png(id: u32, png_bytes: &[u8]) -> std::io::Result<Strin
 }
 
 /// `Notification.image_path` may be our spooled copy or a client's own `image-path`/`app_icon`
-/// (for example under `/usr/share/icons`); only the first is ours to delete (finding 1).
+/// (for example under `/usr/share/icons`); only the first is ours to delete.
 pub(super) fn delete_icon_file(path: &str) {
     shm_icons::remove_png("notifications", path);
 }
@@ -164,9 +164,6 @@ pub(super) fn split_image_path_hint(hint: Option<String>) -> (Option<String>, Op
 /// root check.
 ///
 /// A separator check, not `is_absolute`, keeps `../../etc/passwd` from becoming a theme name.
-///
-/// Before ADR-0091, validating the whole value rejected bare names, so nearly every notification
-/// drew the same generic fallback.
 pub(super) fn resolve_app_icon(app_icon: Option<String>, trusted_roots: &[PathBuf]) -> Option<String> {
     let app_icon = app_icon.filter(|icon| !icon.is_empty())?;
     let stripped = strip_file_uri(&app_icon);

@@ -1,5 +1,4 @@
 //! The exported `org.kde.StatusNotifierWatcher` object itself (ADR-0031's "dual-role dance").
-//! Split from `dbus::tray` -- see `dbus/tray/mod.rs` for the module-level doc.
 
 use std::sync::{Arc, Mutex};
 

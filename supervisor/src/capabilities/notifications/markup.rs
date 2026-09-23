@@ -1,5 +1,4 @@
-//! Allowlist parser for `<b>`, `<i>`, `<u>`, `<a href>`, and `<img src>` body markup. Split from
-//! `dbus::notifications`, see `dbus/notifications/mod.rs` for the module-level doc.
+//! Allowlist parser for `<b>`, `<i>`, `<u>`, `<a href>`, and `<img src>` body markup.
 
 use std::sync::LazyLock;
 
@@ -139,7 +138,7 @@ fn flush_text(
 }
 
 /// Parses exactly the five allowlisted constructs (ADR-0033). `<img>` paths stay unvalidated;
-/// [`sanitize_body`] applies [`validate_trusted_path`] separately so this remains filesystem-free.
+/// [`super::icon::sanitize_body`] applies [`super::icon::validate_trusted_path`] separately so this remains filesystem-free.
 ///
 /// Style depth counters compose nesting (`<b><i>x</i></b>` is both styles), and unclosed tags
 /// style through end-of-input, matching mako. `href` uses a stack; the innermost target wins.

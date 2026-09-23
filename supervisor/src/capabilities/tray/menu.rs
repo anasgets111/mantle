@@ -1,5 +1,4 @@
 //! DBusMenu `GetLayout` parsing: recursive `zvariant::Value` walking into [`MenuItem`] (ADR-0031).
-//! Split from `dbus::tray` -- see `dbus/tray/mod.rs` for the module-level doc.
 
 use serde::Serialize;
 use shared::debug;

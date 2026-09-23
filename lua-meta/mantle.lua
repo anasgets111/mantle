@@ -197,9 +197,7 @@
 
 ---@class NotificationAction
 ---One offered action button (ADR-0090), excluding `default` activation and `inline-reply`, which
----become `Notification::has_default_action` and `Notification::has_reply`. The flat array
----was once read for one bool and discarded, so `GetCapabilities` advertised `actions` and
----`action-icons` while neither was true; parsed buttons are retained now.
+---become `Notification::has_default_action` and `Notification::has_reply`.
 ---@field icon_name? string Theme icon name when `action-icons` is set; never a path or resolved here. Keys containing `/` are refused to prevent a sender naming arbitrary files (ADR-0054 decision 2).
 ---@field key string Opaque key accepted by `:invoke("invoke_action", id, key)` and returned as `ActionInvoked.action_key`.
 ---@field label string Button label, falling back to the key when empty unless the action is icon-only.

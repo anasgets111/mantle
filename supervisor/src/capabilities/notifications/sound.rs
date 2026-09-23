@@ -1,5 +1,4 @@
-//! Testable Ogg Vorbis and WAV decode plus a dedicated one-shot PipeWire playback thread. Split from
-//! `dbus::notifications`, see `dbus/notifications/mod.rs` for the module-level doc.
+//! Testable Ogg Vorbis and WAV decode plus a dedicated one-shot PipeWire playback thread.
 
 use std::path::{Path, PathBuf};
 
@@ -99,7 +98,7 @@ fn max_samples(channels: u32, sample_rate: u32) -> Result<usize, Box<dyn std::er
 /// `pw::stream::Stream` writes audio, while `pw::registry` listens for nodes.
 ///
 /// ponytail: real PipeWire I/O is live-test-only, like idle's raw Wayland dispatch (ADR-0032); this
-/// and [`play_one`] have no unit tests. [`decode_sound`] and [`should_play_sound`] are
+/// and [`play_one`] have no unit tests. [`decode_sound`] and [`super::queue::should_play_sound`] are
 /// the tested seams around it.
 pub fn run_sound_player(requests: std::sync::mpsc::Receiver<PathBuf>) {
     while let Ok(path) = requests.recv() {

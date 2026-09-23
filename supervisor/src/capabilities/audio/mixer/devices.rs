@@ -93,7 +93,7 @@ impl BluezCard {
     }
 }
 
-/// Builds [`AudioState::bluetooth`], ordered by device id for deterministic publishes.
+/// Builds [`super::AudioState::bluetooth`], ordered by device id for deterministic publishes.
 pub(super) fn bluetooth_codecs(cards: &HashMap<u32, BluezCard>) -> Vec<BluetoothCodecs> {
     let mut out: Vec<BluetoothCodecs> = cards
         .iter()

@@ -1,6 +1,5 @@
 //! Per-item registry: hydration + signal-forwarder tasks that keep each tracked
 //! `StatusNotifierItem`'s [`super::item::TrayItem`] snapshot live.
-//! Split from `dbus::tray` -- see `dbus/tray/mod.rs` for the module-level doc.
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -30,8 +29,8 @@ pub(super) struct ItemEntry {
     pub(super) item: StatusNotifierItemProxy<'static>,
     pub(super) menu: Option<DBusMenuProxy<'static>>,
     pub(super) last_known: TrayItem,
-    /// First-registration sequence used by [`ordered_items`]. Without it, `HashMap` iteration made
-    /// two pushes of the same set differ and an unrelated property update reshuffled the tray.
+    /// First-registration sequence used by [`ordered_items`], so `HashMap` iteration order never
+    /// reshuffles the tray.
     registered: u64,
     properties_forwarder: JoinHandle<()>,
     menu_forwarder: Option<JoinHandle<()>>,
@@ -62,19 +61,9 @@ pub(super) async fn register_item(
         .await
         .map_err(|err| format!("failed to bind StatusNotifierItem: {err}"))?;
 
-    // An object that answers nothing is not an item. `bind_item` performs no I/O and
-    // `fetch_tray_item_base` falls back to a default for every property, so without this probe a
-    // path nobody exports still produced a blank `TrayItem` and got inserted.
-    //
-    // That is not hypothetical: startup adoption (ADR-0073) has no registration string to read a
-    // path out of and can only guess `DEFAULT_ITEM_OBJECT_PATH`, while Chromium exports its item
-    // one level down (ADR-0168). Slack was therefore registered twice from one connection -- the
-    // phantom at the guessed path and the real one at `/StatusNotifierItem/1` -- and since
-    // `TrayItem::id` is the unique name alone, both reached Lua as one id. A keyed `list` refused
-    // the duplicate key and every re-resolve was dropped, freezing the surface.
-    //
-    // `Status` because SNI makes it mandatory and it is the one property whose absence is
-    // unambiguous: a live item always answers it.
+    // An object that answers nothing is not an item: `bind_item` does no I/O and
+    // `fetch_tray_item_base` defaults every property, so an adoption guess at a path nobody exports
+    // would insert a blank phantom (ADR-0168). SNI makes `Status` mandatory, so a live item answers.
     if let Err(err) = item.status().await {
         return Err(format!("{destination} exports no StatusNotifierItem at {object_path}: {err}"));
     }
@@ -255,11 +244,8 @@ fn spawn_menu_signal_forwarder(
 
 /// Removes entries whose unique name drops off the bus (`new_owner` empty). SNI has no
 /// `UnregisterStatusNotifierItem` signal, so this one global subscription supplies liveness
-/// (ADR-0031).
-/// `connection` is here only to emit `StatusNotifierItemUnregistered`. Registration announced
-/// itself from the day it was written and departure never did, so another host on the bus kept
-/// every item that ever left. Mantle's own tray reads this registry rather than the signal, which
-/// is why nothing here noticed.
+/// (ADR-0031). `connection` emits `StatusNotifierItemUnregistered` for other hosts on the bus;
+/// Mantle's own tray reads this registry instead.
 pub(super) fn spawn_name_owner_changed_forwarder(
     connection: zbus::Connection,
     dbus_proxy: zbus::fdo::DBusProxy<'static>,

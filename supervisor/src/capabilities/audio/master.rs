@@ -25,7 +25,7 @@ pub struct MasterVolume {
     pub balance: Option<f32>,
 }
 
-/// The `SPA_PROP_mute`/`SPA_PROP_channelVolumes`/`SPA_PROP_channelMap` values `mixer.rs` pulls from
+/// The `SPA_PROP_mute`/`SPA_PROP_channelVolumes`/`SPA_PROP_channelMap` values the mixer pulls from
 /// a sink `Props` pod, stripped of pod machinery so [`master_volume_from_props`] stays testable.
 #[derive(Debug, Clone, PartialEq)]
 pub struct RawSinkProps {

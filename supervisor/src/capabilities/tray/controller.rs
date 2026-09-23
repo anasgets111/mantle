@@ -1,5 +1,4 @@
 //! [`TrayController`]: the `mantle.tray` write-action dispatcher and state owner.
-//! Split from `dbus::tray` -- see `dbus/tray/mod.rs` for the module-level doc.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -201,10 +200,8 @@ fn is_item_bus_name(name: &str) -> bool {
 /// answers (ADR-0171).
 ///
 /// Adoption has no `RegisterStatusNotifierItem` argument to read, so ADR-0031's default is a guess,
-/// and it is the wrong guess for every Chromium application: Slack exports at
-/// `/StatusNotifierItem/1`. Until the liveness probe (ADR-0168) that guess produced a blank item
-/// instead of nothing, so the gap showed up as a duplicate-key freeze rather than as the missing
-/// icon it always was.
+/// and it is the wrong guess for every Chromium application, which exports at
+/// `/StatusNotifierItem/1`.
 ///
 /// The list is the conventions a real session shows. An item exporting anywhere else still needs
 /// introspection, which ADR-0073 declined; the ayatana shape is deliberately absent, because its

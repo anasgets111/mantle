@@ -1,5 +1,4 @@
-//! Urgency expiry, DND sound gating, and FIFO queue/icon lifecycle. Split from
-//! `dbus::notifications`, see `dbus/notifications/mod.rs` for the module-level doc.
+//! Urgency expiry, DND sound gating, and FIFO queue/icon lifecycle.
 
 use std::collections::VecDeque;
 use std::path::PathBuf;
@@ -63,7 +62,7 @@ pub(super) fn resolve_notification_id(replaces_id: u32, next_id: &mut u32) -> u3
 }
 
 /// Cleanup after queue mutation. FIFO eviction needs icon deletion and
-/// `NotificationClosed(evicted_id, reason=Evicted)` (finding 3); same-id replacement needs only
+/// `NotificationClosed(evicted_id, reason=Evicted)`; same-id replacement needs only
 /// deletion because the id remains queued.
 #[derive(Debug, Clone, PartialEq)]
 pub(super) enum QueueCleanup {
@@ -74,8 +73,8 @@ pub(super) enum QueueCleanup {
 }
 
 /// Appends a new arrival, evicting past [`NOTIFICATION_QUEUE_CAP`]. FIFO eviction returns the
-/// evicted id/icon so the caller deletes its spooled file in the same step and emits finding 3's
-/// `NotificationClosed(..., reason=Evicted)` signal.
+/// evicted id/icon so the caller deletes its spooled file in the same step and emits
+/// `NotificationClosed(..., reason=Evicted)`.
 fn push_new(queue: &mut VecDeque<Notification>, notification: Notification) -> Option<QueueCleanup> {
     queue.push_back(notification);
     if queue.len() > NOTIFICATION_QUEUE_CAP {
@@ -134,7 +133,7 @@ pub(super) enum Expiry {
     Removed { image_path: Option<String> },
 }
 
-/// Expiry decision for [`NotificationsController::expire`] (ADR-0100): an ordinary entry retires
+/// Expiry decision for [`super::controller::NotificationsController::expire`] (ADR-0100): an ordinary entry retires
 /// into history and only `dismiss` removes it, so history shows what happened; a `transient` entry
 /// is removed.
 /// `None` covers stale/missing or already-expired entries, preventing duplicate close signals.

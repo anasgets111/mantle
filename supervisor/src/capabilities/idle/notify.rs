@@ -1,6 +1,5 @@
 //! Notify half of `mantle.idle` (ADR-0032): `ext_idle_notifier_v1` on the Supervisor's dedicated
 //! Wayland connection, with one listener per distinct threshold and a dispatch thread.
-//! Split from `dbus::idle` -- see `hardware/idle/mod.rs` for the module-level doc.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
@@ -107,7 +106,7 @@ pub(crate) fn take_unused_listeners<T>(
 
 /// Dispatch target for the separate Wayland connection (ADR-0010, survives Renderer crash/reload).
 /// Holds only the raw-event channel; fan-out state and bound `Send` proxies stay on the async side
-/// via [`IdleController`] (ADR-0032).
+/// via [`super::IdleController`] (ADR-0032).
 pub(crate) struct WaylandThreadState {
     raw_events_tx: UnboundedSender<(ListenerId, shared::IdleState)>,
 }
@@ -156,7 +155,7 @@ impl Dispatch<ExtIdleNotifierV1, ()> for WaylandThreadState {
 }
 
 /// Forwards `idled`/`resumed` with the listener's creation `Duration` from proxy user-data (set by
-/// [`IdleController::register_threshold`]). A dropped receiver is not logged.
+/// [`super::IdleController::register_threshold`]). A dropped receiver is not logged.
 impl Dispatch<ExtIdleNotificationV1, ListenerId> for WaylandThreadState {
     fn event(
         state: &mut Self,
@@ -203,11 +202,11 @@ pub(crate) enum NotifyState {
 pub(crate) type RawIdleEventReceiver = UnboundedReceiver<(ListenerId, shared::IdleState)>;
 
 /// Establishes the separate Wayland connection (ADR-0010), binds `wl_seat` and
-/// `ext_idle_notifier_v1` at version 1, and spawns its dispatch thread. `wayland-client` 0.31's
+/// `ext_idle_notifier_v1` at up to version 2, and spawns its dispatch thread. `wayland-client` 0.31's
 /// `blocking_dispatch` cannot run on tokio (ADR-0032). Returns the raw receiver for fan-out.
 ///
-/// Blocking throughout: call only from [`IdleController::new`] inside `spawn_blocking`, bounded by
-/// [`IDLE_NOTIFY_SETUP_TIMEOUT`]. Its error is `Send + Sync` across that boundary.
+/// Blocking throughout: call only from [`super::IdleController::new`] inside `spawn_blocking`, bounded by
+/// `controller::IDLE_NOTIFY_SETUP_TIMEOUT`. Its error is `Send + Sync` across that boundary.
 pub(crate) fn connect_wayland_idle()
 -> Result<(LiveNotify, RawIdleEventReceiver), Box<dyn std::error::Error + Send + Sync>> {
     let connection = Connection::connect_to_env()?;

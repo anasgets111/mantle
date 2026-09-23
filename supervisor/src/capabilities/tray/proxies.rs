@@ -1,6 +1,5 @@
 //! Hand-written proxies for SNI, DBusMenu, and the watcher (ADR-0031: no maintained zbus proxy
 //! crate).
-//! Split from `dbus::tray` -- see `dbus/tray/mod.rs` for the module-level doc.
 
 use std::collections::HashMap;
 
