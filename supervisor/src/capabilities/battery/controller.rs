@@ -1,12 +1,14 @@
 //! [`BatteryController`] owns read-only `mantle.battery` telemetry. Module-level behavior is
 //! documented in `battery/mod.rs`.
 
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use futures_util::StreamExt;
 use serde::Serialize;
-use shared::{debug, error};
+use shared::error;
 use tokio::sync::mpsc::UnboundedSender;
+use zbus::zvariant::OwnedValue;
 
 /// `battery.state`, one of UPower's seven `Device.State` values.
 ///
@@ -93,32 +95,9 @@ pub enum BatterySignal {
     Changed,
 }
 
-/// UPower's `DisplayDevice`, the composite of every battery. `power::controller` reads
-/// `EnergyRate` from it.
-///
-/// Its documented path is fixed, so this proxies it directly instead of calling
-/// `GetDisplayDevice()`.
-#[zbus::proxy(
-    interface = "org.freedesktop.UPower.Device",
-    default_service = "org.freedesktop.UPower",
-    default_path = "/org/freedesktop/UPower/devices/DisplayDevice"
-)]
-trait DisplayDevice {
-    /// `2` is Battery. On a desktop the display device exists but is not one.
-    #[zbus(property, name = "Type")]
-    fn device_type(&self) -> zbus::Result<u32>;
-    #[zbus(property)]
-    fn is_present(&self) -> zbus::Result<bool>;
-    /// `[0, 100]`, not a fraction.
-    #[zbus(property)]
-    fn percentage(&self) -> zbus::Result<f64>;
-    #[zbus(property)]
-    fn state(&self) -> zbus::Result<u32>;
-    #[zbus(property)]
-    fn time_to_empty(&self) -> zbus::Result<i64>;
-    #[zbus(property)]
-    fn time_to_full(&self) -> zbus::Result<i64>;
-}
+/// UPower's `DisplayDevice`, the composite of every battery. Its documented path is fixed, so
+/// this reads it directly instead of calling `GetDisplayDevice()`.
+const DISPLAY_DEVICE: &str = "/org/freedesktop/UPower/devices/DisplayDevice";
 
 /// UPower's `Type` value for a battery.
 const UPOWER_TYPE_BATTERY: u32 = 2;
@@ -145,25 +124,32 @@ fn seconds(reported: i64) -> Option<u32> {
     u32::try_from(reported).ok().filter(|seconds| *seconds > 0)
 }
 
-/// Reads the whole payload. Failed properties keep their defaults rather than stale values, the
-/// same rule as `power::controller::read_state`: a live-looking stale number is worse than zero.
-///
+/// Reads the whole payload in one `GetAll`. Failed properties keep their defaults rather than stale
+/// values, the same rule as `power::controller::read_state`: a live-looking stale number is worse
+/// than zero.
+async fn read_state(properties: &zbus::fdo::PropertiesProxy<'static>) -> BatteryState {
+    let interface = zbus::names::InterfaceName::from_static_str_unchecked("org.freedesktop.UPower.Device");
+    properties.get_all(interface).await.map(|all| from_properties(&all)).unwrap_or_default()
+}
+
 /// `IsPresent` alone is true for non-battery display devices, so `Type` and `IsPresent` are checked
 /// together.
-async fn read_state(device: &DisplayDeviceProxy<'static>) -> BatteryState {
-    let is_battery = device.device_type().await.is_ok_and(|kind| kind == UPOWER_TYPE_BATTERY);
-    let present = is_battery && device.is_present().await.unwrap_or(false);
-    if !present {
+fn from_properties(all: &HashMap<String, OwnedValue>) -> BatteryState {
+    fn get<'a, T: TryFrom<&'a OwnedValue>>(all: &'a HashMap<String, OwnedValue>, name: &str) -> Option<T> {
+        all.get(name).and_then(|value| T::try_from(value).ok())
+    }
+    let is_battery = get::<u32>(all, "Type") == Some(UPOWER_TYPE_BATTERY);
+    if !is_battery || get::<bool>(all, "IsPresent") != Some(true) {
         return BatteryState::default();
     }
 
     BatteryState {
         present: true,
         // Round rather than cast: 69.8% would otherwise show 69 for the whole minute before 70.
-        percent: device.percentage().await.unwrap_or(0.0).clamp(0.0, 100.0).round() as u8,
-        state: device.state().await.map(BatteryStatus::from_upower).unwrap_or_default(),
-        time_to_empty: device.time_to_empty().await.ok().and_then(seconds),
-        time_to_full: device.time_to_full().await.ok().and_then(seconds),
+        percent: get::<f64>(all, "Percentage").unwrap_or(0.0).clamp(0.0, 100.0).round() as u8,
+        state: get::<u32>(all, "State").map(BatteryStatus::from_upower).unwrap_or_default(),
+        time_to_empty: get::<i64>(all, "TimeToEmpty").and_then(seconds),
+        time_to_full: get::<i64>(all, "TimeToFull").and_then(seconds),
     }
 }
 
@@ -193,29 +179,15 @@ async fn run_battery_task(
     state: Arc<Mutex<BatteryState>>,
     events: UnboundedSender<BatterySignal>,
 ) {
-    // Disable zbus's property cache. Its refresh task listens to the same signal, so our stream
-    // can win the race and read the pre-change cache, compare equal to `previous`, and leave a
-    // newly plugged charger showing `Discharging` until a later property moves. Uncached means
-    // five real `Get` round trips per event, only a few times an hour.
+    // A live `GetAll`, never zbus's property cache: its refresh task listens to the same signal, so
+    // our stream can win the race, read the pre-change cache, and leave a newly plugged charger
+    // showing `Discharging` until a later property moves.
     //
-    // `power::controller` wakes on zbus's cache-backed `receive_*_changed`, so its cache is current
-    // when the stream yields. That is why `power.on_battery` was instant while `battery.charging`
-    // lagged by a full change.
-    let device =
-        match DisplayDeviceProxy::builder(&system_bus).cache_properties(zbus::proxy::CacheProperties::No).build().await
-        {
-            Ok(proxy) => proxy,
-            Err(err) => {
-                debug!("no UPower DisplayDevice reachable ({err}); battery will not be reported this run");
-                return;
-            }
-        };
-
     // Subscribe before the first read. A cable change during the subscription round trip must not
     // land between a read and a subscription that does not exist yet.
     let properties = match zbus::fdo::PropertiesProxy::builder(&system_bus)
         .destination("org.freedesktop.UPower")
-        .and_then(|builder| builder.path("/org/freedesktop/UPower/devices/DisplayDevice"))
+        .and_then(|builder| builder.path(DISPLAY_DEVICE))
     {
         Ok(builder) => match builder.build().await {
             Ok(proxy) => proxy,
@@ -234,7 +206,7 @@ async fn run_battery_task(
         return;
     };
 
-    let mut previous = read_state(&device).await;
+    let mut previous = read_state(&properties).await;
     *state.lock().expect("battery state mutex poisoned") = previous;
     if events.send(BatterySignal::Changed).is_err() {
         return;
@@ -242,7 +214,7 @@ async fn run_battery_task(
 
     // UPower going away drops the proxies and ends the task; parking on a dead stream leaks it.
     while changed.next().await.is_some() {
-        let current = hold_through_glitch(previous, read_state(&device).await);
+        let current = hold_through_glitch(previous, read_state(&properties).await);
         if current != previous {
             *state.lock().expect("battery state mutex poisoned") = current;
             previous = current;
@@ -314,6 +286,34 @@ mod tests {
         assert_eq!(seconds(0), None);
         assert_eq!(seconds(-1), None);
         assert_eq!(seconds(8040), Some(8040));
+    }
+
+    fn properties(pairs: &[(&str, zbus::zvariant::Value<'static>)]) -> HashMap<String, OwnedValue> {
+        pairs.iter().map(|(key, value)| (key.to_string(), OwnedValue::try_from(value.clone()).unwrap())).collect()
+    }
+
+    #[test]
+    fn get_all_reads_a_present_battery_and_ignores_a_non_battery_display_device() {
+        let battery = properties(&[
+            ("Type", 2u32.into()),
+            ("IsPresent", true.into()),
+            ("Percentage", 69.8f64.into()),
+            ("State", 5u32.into()),
+            ("TimeToEmpty", 0i64.into()),
+            ("TimeToFull", 8040i64.into()),
+        ]);
+        assert_eq!(
+            from_properties(&battery),
+            BatteryState {
+                present: true,
+                percent: 70,
+                state: BatteryStatus::PendingCharge,
+                time_to_empty: None,
+                time_to_full: Some(8040)
+            }
+        );
+        let mains = properties(&[("Type", 1u32.into()), ("IsPresent", true.into()), ("Percentage", 50f64.into())]);
+        assert_eq!(from_properties(&mains), BatteryState::default());
     }
 
     /// A desktop's non-battery display device yields the default payload, not an error.
