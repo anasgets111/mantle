@@ -31,7 +31,6 @@ regex-lite = "0.1.9"
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 shared.workspace = true
-tempfile.workspace = true
 # `full` minus `fs` and `parking_lot`, which nothing here uses.
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "process", "signal", "sync", "time", "io-util"] }
 udev = { version = "0.9.3", features = ["send"] }
@@ -50,6 +49,7 @@ zbus_polkit = { version = "5.1.0", default-features = false, features = ["tokio"
 [dev-dependencies]
 # The JsonSchema derives exist only for the test-only stub generator (`stubs.rs`).
 schemars = "1.2.2"
+tempfile.workspace = true
 # Only `test-util`, so tests build the tokio that ships. It is what `start_paused = true` needs:
 # `battery::controller`'s loop is on a 30s timer, so testing it in real time is not testing it.
 tokio = { workspace = true, features = ["test-util"] }

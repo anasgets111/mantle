@@ -1,6 +1,6 @@
 //! Real `alpm` sync and outdated-package diff (ADR-0034), replacing `checkupdates`+`expac`
 //! subprocesses with the Arch project's own `libalpm` binding.
-//! Requires a real handle and mirror I/O, so it is verified live with a throwaway db root. `alpm`
+//! Requires a real handle and mirror I/O, so it is verified live against a sync db root. `alpm`
 //! wraps non-`Send` C pointers; callers run this inside one `spawn_blocking` closure.
 
 use std::path::Path;
@@ -11,9 +11,9 @@ use super::conf::RepoServers;
 /// Each foreign package's installed name and version: in no synced repo.
 pub type Foreign = Vec<(String, String)>;
 
-/// Registers `repos` against throwaway `db_path`, force-syncs them like `checkupdates`, then diffs
-/// `root`'s installed packages with `alpm::sync_new_version`. No `fakeroot` is needed for the
-/// user-owned temp db. Also returns the foreign packages.
+/// Registers `repos` against user-owned `db_path`, syncs them like `checkupdates`' `pacman -Sy`
+/// (a db the mirror reports unchanged is not downloaded), then diffs `root`'s installed packages
+/// with `alpm::sync_new_version`. Also returns the foreign packages.
 pub fn check_for_updates(
     root: &Path,
     db_path: &Path,
@@ -28,7 +28,7 @@ pub fn check_for_updates(
         }
     }
 
-    handle.syncdbs_mut().update(true)?;
+    handle.syncdbs_mut().update(false)?;
 
     let syncdbs = handle.syncdbs();
     let mut candidates = Vec::new();
