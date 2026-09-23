@@ -90,13 +90,6 @@ impl MprisController {
         }
     }
 
-    /// `mpris:seek(id, pos_us)`: `SetPosition(cached trackid, clamped pos_us)` when available;
-    /// otherwise relative `Seek` from the last known position because some players never report
-    /// `mpris:trackid` (ADR-0036). State waits for real `Seeked`/`PropertiesChanged` signals.
-    pub async fn seek(&self, id: &str, pos_us: i64) {
-        self.seek_to(id, pos_us).await;
-    }
-
     /// `mpris:seek_relative(id, off)`: MPRIS `Seek`, which is relative already.
     ///
     /// Never a live `Position` plus `SetPosition`: `resolve_position`'s protection does not reach
@@ -149,7 +142,10 @@ impl MprisController {
         }
     }
 
-    async fn seek_to(&self, id: &str, target_us: i64) {
+    /// `mpris:seek(id, pos_us)`: `SetPosition(cached trackid, clamped pos_us)` when available;
+    /// otherwise relative `Seek` from the last known position because some players never report
+    /// `mpris:trackid` (ADR-0036). State waits for real `Seeked`/`PropertiesChanged` signals.
+    pub async fn seek(&self, id: &str, target_us: i64) {
         let Some(context) = self.find_seek_context(id) else {
             debug!("seek to {target_us} for {id:?} failed: {}", UNKNOWN_PLAYER);
             return;
@@ -199,7 +195,7 @@ impl MprisController {
 }
 
 /// [`MprisController::find_seek_context`]'s named return instead of a four-element tuple, so
-/// `seek_to` reads fields by name.
+/// `seek` reads fields by name.
 struct SeekContext {
     bus_name: String,
     player: super::proxies::MprisPlayerProxy<'static>,
