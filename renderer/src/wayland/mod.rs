@@ -111,9 +111,6 @@ pub struct App {
     /// Config shaders compiled against `gl`, kept for the context's lifetime rather than a
     /// generation's: a reload replaces the scene, not the GL objects (ADR-0184).
     shader_stage: crate::layout::image_shader::ShaderStage,
-    /// Owns the `wl_display` pointer [`App::ensure_egl`] passes to EGL. Keeping the whole
-    /// `Connection` refcounted guarantees `egl::init`'s SAFETY precondition: the display outlives
-    /// every EGL object built from it.
     conn: Connection,
     /// Process-wide shaping handle; `client` clones it, so content sizing and painting share one
     /// worker and `FontSystem` (ADR-0039 decision 3).

@@ -36,6 +36,8 @@ pub struct EglState {
     pub context: egl::Context,
     /// `None` swaps with plain `eglSwapBuffers`, which damages the whole surface.
     pub swap_with_damage: Option<super::egl_ext::SwapBuffersWithDamage>,
+    /// Keeps alive the `wl_display` EGL holds a raw pointer to.
+    _connection: wayland_client::Connection,
 }
 
 /// Initializes EGL against Wayland and picks the first candidate that satisfies
@@ -43,7 +45,8 @@ pub struct EglState {
 pub fn init(connection: &wayland_client::Connection) -> Result<EglState, String> {
     let instance = egl::Instance::new(egl::Static);
 
-    // SAFETY: the pointer comes from the live Wayland connection borrowed by this call.
+    // SAFETY: a live `wl_display*`, kept alive past this call by the returned state's clone of
+    // `connection`, which EGL requires for as long as the display is used.
     let display = unsafe { instance.get_display(connection.backend().display_ptr() as *mut c_void) }
         .ok_or("eglGetDisplay returned no display for the Wayland connection")?;
 
@@ -93,7 +96,7 @@ pub fn init(connection: &wayland_client::Connection) -> Result<EglState, String>
         .map_err(|e| format!("eglCreateContext (GLES3) failed: {e}"))?;
 
     let swap_with_damage = super::egl_ext::swap_buffers_with_damage(&instance, display);
-    Ok(EglState { instance, display, config, context, swap_with_damage })
+    Ok(EglState { instance, display, config, context, swap_with_damage, _connection: connection.clone() })
 }
 
 fn query_config_attribs(
