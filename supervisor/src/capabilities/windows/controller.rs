@@ -130,14 +130,11 @@ impl WindowsController {
         self.state.lock().expect("windows state mutex poisoned").clone()
     }
 
-    fn window(&self, id: &str) -> Option<WindowEntry> {
-        self.snapshot().windows.into_iter().find(|window| window.id == id)
-    }
-
     /// Whether `read`'s last known value for `id` disagrees with `desired`; niri and Hyprland only
     /// toggle, so a write is sent only on a real change.
     fn differs(&self, id: &str, read: impl Fn(&WindowEntry) -> Option<bool>, desired: bool) -> bool {
-        self.window(id).and_then(|window| read(&window)).unwrap_or(false) != desired
+        let state = self.state.lock().expect("windows state mutex poisoned");
+        state.windows.iter().find(|window| window.id == id).and_then(read).unwrap_or(false) != desired
     }
 
     pub fn focus(&self, id: &str) {
