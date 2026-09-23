@@ -182,7 +182,8 @@ impl TrayController {
     }
 
     /// `tray:menu_will_show(id, submenu_id)` calls DBusMenu `AboutToShow(submenu_id)`, its
-    /// lazy-population signal, then re-fetches and pushes the entire menu tree (ADR-0031). Full
+    /// lazy-population signal, then re-fetches and pushes the entire menu tree unless the item
+    /// answers that nothing changed; a later change arrives as `LayoutUpdated` (ADR-0031). Full
     /// refetch is adequate for human-scale trees.
     pub async fn menu_will_show(&self, id: &str, submenu_id: i32) {
         let Some((key, _)) = self.find_item_id(id) else {
@@ -193,8 +194,11 @@ impl TrayController {
             debug!("menu_will_show({id:?}, {submenu_id}) failed: {}", TrayActionError::NoMenu);
             return;
         };
-        if let Err(err) = menu.about_to_show(submenu_id).await {
-            debug!("menu_will_show({id:?}, {submenu_id}) AboutToShow failed: {err}");
+        // An error still refetches: some items never implement `AboutToShow`.
+        match menu.about_to_show(submenu_id).await {
+            Ok(false) => return,
+            Ok(true) => {}
+            Err(err) => debug!("menu_will_show({id:?}, {submenu_id}) AboutToShow failed: {err}"),
         }
         match fetch_menu_via(&menu).await {
             Ok(items) => {
