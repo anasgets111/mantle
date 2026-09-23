@@ -56,6 +56,18 @@ async fn discover_existing(
     }
 }
 
+/// `NameOwnerChanged` for player names only; `arg0namespace` keeps the bus from waking discovery
+/// for every unrelated name on the session.
+fn player_owner_rule() -> zbus::Result<zbus::MatchRule<'static>> {
+    Ok(zbus::MatchRule::builder()
+        .msg_type(zbus::message::Type::Signal)
+        .sender("org.freedesktop.DBus")?
+        .interface("org.freedesktop.DBus")?
+        .member("NameOwnerChanged")?
+        .arg0ns(MPRIS_SERVICE_PREFIX.trim_end_matches('.'))?
+        .build())
+}
+
 /// Binds `org.freedesktop.DBus`, subscribes to `NameOwnerChanged`, scans with
 /// [`discover_existing`], then starts the forwarder over that live subscription. Bind or
 /// subscribe failure logs and disables discovery.
@@ -75,7 +87,11 @@ pub(super) async fn spawn_discovery(
             return;
         }
     };
-    let mut stream = match dbus_proxy.receive_name_owner_changed().await {
+    let stream = match player_owner_rule() {
+        Ok(rule) => zbus::MessageStream::for_match_rule(rule, &connection, None).await,
+        Err(err) => Err(err),
+    };
+    let mut stream = match stream {
         Ok(stream) => stream,
         Err(err) => {
             error!("failed to subscribe to NameOwnerChanged; player discovery disabled for this run: {err}");
@@ -86,7 +102,8 @@ pub(super) async fn spawn_discovery(
     discover_existing(&connection, &dbus_proxy, &registry, &events).await;
 
     tokio::spawn(async move {
-        while let Some(signal) = stream.next().await {
+        while let Some(message) = stream.next().await {
+            let Some(signal) = message.ok().and_then(zbus::fdo::NameOwnerChanged::from_message) else { continue };
             let Ok(args) = signal.args() else { continue };
             let name = args.name.to_string();
             if !is_trackable_player(&name) {
@@ -105,6 +122,22 @@ pub(super) async fn spawn_discovery(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn player_owner_rule_matches_player_names_only() {
+        let rule = player_owner_rule().unwrap();
+        let owner_changed = |name: &str| {
+            zbus::Message::signal("/org/freedesktop/DBus", "org.freedesktop.DBus", "NameOwnerChanged")
+                .unwrap()
+                .sender("org.freedesktop.DBus")
+                .unwrap()
+                .build(&(name, "", ":1.7"))
+                .unwrap()
+        };
+        assert!(rule.matches(&owner_changed("org.mpris.MediaPlayer2.firefox")).unwrap());
+        assert!(!rule.matches(&owner_changed(":1.42")).unwrap());
+        assert!(!rule.matches(&owner_changed("org.mpris.MediaPlayer2Extra")).unwrap());
+    }
 
     #[test]
     fn is_trackable_player_accepts_a_real_player_bus_name() {
