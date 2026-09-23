@@ -11,20 +11,28 @@ use shared::{debug, info, warn};
 #[derive(Debug, Clone, PartialEq)]
 pub(super) struct Screen {
     name: String,
+    x: i32,
+    y: i32,
     width: i32,
     height: i32,
     scale: i32,
     /// Hz; `wl_output::mode` reports millihertz, so conversion happens once here.
     refresh: f64,
+    model: String,
+    description: Option<String>,
 }
 /// The `OutputInfo` fields [`screen_entry`] reads, copied by [`App::screens`] because SCTK's type
 /// is `#[non_exhaustive]` and has no public constructor for unit tests.
 struct OutputFacts {
     name: Option<String>,
+    /// `logical_position` (`xdg_output`), else the `wl_output` geometry `location`.
+    position: (i32, i32),
     logical_size: Option<(i32, i32)>,
     /// The current `Mode`'s `(dimensions, refresh_rate)`, or `None`; the pair stays coherent.
     current_mode: Option<((i32, i32), i32)>,
     scale_factor: i32,
+    model: String,
+    description: Option<String>,
 }
 /// Floor under [`texture_budget`], and what that budget was before it was derived: enough for one
 /// config's closed picker plus a 1920x1200 wallpaper (ADR-0123). It keeps a small display, or one
@@ -63,11 +71,15 @@ fn screen_entry(index: usize, facts: &OutputFacts) -> Option<Screen> {
     let (width, height) = facts.logical_size.or_else(|| facts.current_mode.map(|(dimensions, _)| dimensions))?;
     Some(Screen {
         name: facts.name.clone().unwrap_or_else(|| format!("output-{index}")),
+        x: facts.position.0,
+        y: facts.position.1,
         width,
         height,
         scale: facts.scale_factor,
         // `Mode` allows zero when an output has no correct refresh rate, such as a virtual output.
         refresh: facts.current_mode.map_or(0.0, |(_, rate)| f64::from(rate) / 1000.0),
+        model: facts.model.clone(),
+        description: facts.description.clone(),
     })
 }
 /// Per-output fields as a JSON array, pushed through the same `Loader::to_lua_value` as
@@ -79,10 +91,14 @@ pub(super) fn screens_payload(screens: &[Screen]) -> serde_json::Value {
             .map(|screen| {
                 serde_json::json!({
                     "name": screen.name,
+                    "x": screen.x,
+                    "y": screen.y,
                     "width": screen.width,
                     "height": screen.height,
                     "scale": screen.scale,
                     "refresh": screen.refresh,
+                    "model": screen.model,
+                    "description": screen.description,
                 })
             })
             .collect(),
@@ -114,6 +130,7 @@ impl App {
             };
             let facts = OutputFacts {
                 name: info.name.clone(),
+                position: info.logical_position.unwrap_or(info.location),
                 logical_size: info.logical_size,
                 current_mode: info
                     .modes
@@ -121,6 +138,8 @@ impl App {
                     .find(|mode| mode.current)
                     .map(|mode| (mode.dimensions, mode.refresh_rate)),
                 scale_factor: info.scale_factor,
+                model: info.model.clone(),
+                description: info.description.clone(),
             };
             match screen_entry(index, &facts) {
                 Some(screen) => screens.push(screen),
@@ -286,9 +305,12 @@ mod tests {
     fn facts(name: Option<&str>) -> OutputFacts {
         OutputFacts {
             name: name.map(str::to_string),
+            position: (0, 0),
             logical_size: Some((1920, 1080)),
             current_mode: Some(((1920, 1080), 60_000)),
             scale_factor: 1,
+            model: "TEST".to_string(),
+            description: None,
         }
     }
 
@@ -297,7 +319,17 @@ mod tests {
     /// the constant this replaced.
     #[test]
     fn the_texture_budget_follows_the_displays_rather_than_a_constant() {
-        let screen = |width, height, scale| Screen { name: "TEST".to_string(), width, height, scale, refresh: 60.0 };
+        let screen = |width, height, scale| Screen {
+            name: "TEST".to_string(),
+            x: 0,
+            y: 0,
+            width,
+            height,
+            scale,
+            refresh: 60.0,
+            model: "TEST".to_string(),
+            description: None,
+        };
         assert_eq!(texture_budget(&[]), MIN_TEXTURE_BUDGET, "no output yet is the floor, not zero");
         assert_eq!(
             texture_budget(&[screen(1920, 1200, 1)]),
@@ -383,13 +415,19 @@ mod tests {
 
     #[test]
     fn the_screens_payload_is_the_array_of_field_tables_a_config_loops_over() {
-        let screens = [screen_entry(0, &facts(Some("eDP-1"))).unwrap(), screen_entry(1, &facts(Some("DP-1"))).unwrap()];
+        let mut dp = facts(Some("DP-1"));
+        dp.position = (1920, 0);
+        dp.description = Some("Dell Inc. DELL U2720Q 1234 (DP-1)".to_string());
+        let screens = [screen_entry(0, &facts(Some("eDP-1"))).unwrap(), screen_entry(1, &dp).unwrap()];
 
+        // `description` is optional in `wl_output` v4; `null` reaches Lua as an absent key.
         assert_eq!(
             screens_payload(&screens),
             serde_json::json!([
-                { "name": "eDP-1", "width": 1920, "height": 1080, "scale": 1, "refresh": 60.0 },
-                { "name": "DP-1", "width": 1920, "height": 1080, "scale": 1, "refresh": 60.0 },
+                { "name": "eDP-1", "x": 0, "y": 0, "width": 1920, "height": 1080, "scale": 1, "refresh": 60.0,
+                  "model": "TEST", "description": null },
+                { "name": "DP-1", "x": 1920, "y": 0, "width": 1920, "height": 1080, "scale": 1, "refresh": 60.0,
+                  "model": "TEST", "description": "Dell Inc. DELL U2720Q 1234 (DP-1)" },
             ])
         );
     }

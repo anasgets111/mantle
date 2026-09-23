@@ -487,10 +487,14 @@ const RENDERER_SOURCED: &str = r#"
 
 ---@class Screen
 ---@field name string The connector name, e.g. `"eDP-1"`. What a surface's `monitor` takes, and what an `mantle.workspaces` output entry is keyed by.
+---@field x integer Left edge in compositor space, logical pixels. Sort by it to order outputs left to right. `0` when the compositor hides positions.
+---@field y integer Top edge, on the same terms as `x`.
 ---@field width integer Logical pixels, already divided by `scale`. Not the mode's pixel count.
 ---@field height integer Logical pixels, on the same terms as `width`.
 ---@field scale integer The compositor's integer scale factor for this output, `1` on an ordinary display and `2` on a HiDPI one. Not a divisor: `width` and `height` above are already logical. Read it to pick sizes.
 ---@field refresh number Hz. `0` for an output with no current mode, such as a virtual one.
+---@field model string The monitor model the compositor advertises, e.g. `"DELL U2720Q"`. Survives a connector rename when a dock or GPU change turns `DP-3` into `DP-5`.
+---@field description? string The compositor's label for people. Its format varies by compositor. Hyprland's includes the serial, which tells two identical monitors apart. Absent below `wl_output` v4.
 
 ---@class RescueState
 ---@field is_rescue boolean A reload failed and the scene from before the edit is still on screen. Covers reloads only: a config that fails its very first evaluation has no tree to render a banner through (ADR-0046).
