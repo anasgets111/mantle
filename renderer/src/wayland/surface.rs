@@ -1021,8 +1021,6 @@ impl App {
             self.current_egl_surface = Some(egl_surface);
         }
 
-        // SAFETY: the `eglMakeCurrent` above is the only live context on this thread and matches
-        // `gl`'s loader.
         if let Some(gl) = self.gl.as_ref() {
             // SAFETY: the context was made current above and has not switched since.
             unsafe {
