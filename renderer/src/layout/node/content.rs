@@ -495,10 +495,6 @@ mod tests {
         assert_eq!(TextAlign::Center.line_left(true, 0.0, 15.0, 6.0), 4.5);
     }
 
-    fn lua() -> mlua::Lua {
-        mlua::Lua::new()
-    }
-
     #[test]
     fn text_content_absent_defaults_to_the_empty_string() {
         let props = PropMap::default();
@@ -507,7 +503,7 @@ mod tests {
 
     #[test]
     fn a_signal_resolving_to_a_string_satisfies_content() {
-        let lua = lua();
+        let lua = mlua::Lua::new();
         crate::lua::signal::register(&lua, crate::lua::signal::DirtyFlag::new()).unwrap();
         let hello = lua.create_string("hello").unwrap();
         let signal = crate::lua::signal::Signal::new_live(Value::String(hello), crate::lua::signal::DirtyFlag::new()).0;
@@ -520,7 +516,7 @@ mod tests {
 
     #[test]
     fn a_signal_resolving_to_a_number_reports_the_same_error_a_literal_number_would() {
-        let lua = lua();
+        let lua = mlua::Lua::new();
         crate::lua::signal::register(&lua, crate::lua::signal::DirtyFlag::new()).unwrap();
 
         let literal_table: mlua::Table = lua.load(r#"return { kind = "text", content = 5 }"#).eval().unwrap();
@@ -552,7 +548,7 @@ mod tests {
 
     #[test]
     fn an_array_of_runs_joins_their_text_and_keeps_where_each_styled_one_lies() {
-        let lua = lua();
+        let lua = mlua::Lua::new();
         let (content, runs) = runs_content(
             &lua,
             r##"{ { text = "Alice" , bold = true }, { text = ": see " }, { text = "this", underline = true, color = "#ff0000" }, { text = "!" } }"##,
@@ -569,7 +565,7 @@ mod tests {
 
     #[test]
     fn an_empty_run_array_is_empty_content_and_an_empty_run_is_skipped() {
-        let lua = lua();
+        let lua = mlua::Lua::new();
         assert_eq!(runs_content(&lua, "{}").unwrap(), (String::new(), Vec::new()));
         let (content, runs) = runs_content(&lua, r#"{ { text = "", bold = true }, { text = "a" } }"#).unwrap();
         assert_eq!((content.as_str(), runs.len()), ("a", 0));
@@ -579,7 +575,7 @@ mod tests {
     /// that says what to do about it, rather than drawn as nothing or as its path.
     #[test]
     fn a_run_without_text_is_refused_naming_the_run() {
-        let lua = lua();
+        let lua = mlua::Lua::new();
         let err = runs_content(&lua, r#"{ { text = "a" }, { kind = "image", image_path = "/x.png" } }"#).unwrap_err();
         assert!(
             matches!(&err, LayoutError::InvalidProperty { property, detail }
@@ -590,7 +586,7 @@ mod tests {
 
     #[test]
     fn a_run_with_a_mistyped_flag_or_colour_is_refused() {
-        let lua = lua();
+        let lua = mlua::Lua::new();
         assert!(runs_content(&lua, r#"{ { text = "a", bold = "yes" } }"#).is_err());
         assert!(runs_content(&lua, r#"{ { text = "a", color = "red" } }"#).is_err());
         assert!(runs_content(&lua, r#"{ "just a string" }"#).is_err());
@@ -598,7 +594,7 @@ mod tests {
 
     #[test]
     fn a_run_with_an_href_is_a_styled_run_even_with_no_other_style() {
-        let lua = lua();
+        let lua = mlua::Lua::new();
         let (content, runs) =
             runs_content(&lua, r#"{ { text = "see " }, { text = "this", href = "https://x.example/" } }"#).unwrap();
         assert_eq!(content, "see this");
@@ -624,7 +620,7 @@ mod tests {
 
     #[test]
     fn fit_parses_the_three_spelled_modes_and_nothing_else() {
-        let lua = lua();
+        let lua = mlua::Lua::new();
         for (spelling, expected) in [("cover", Fit::Cover), ("contain", Fit::Contain), ("stretch", Fit::Stretch)] {
             let table: mlua::Table =
                 lua.load(format!(r#"return {{ kind = "image", fit = "{spelling}" }}"#)).eval().unwrap();
@@ -639,7 +635,7 @@ mod tests {
 
     #[test]
     fn fit_rejects_a_mode_that_does_not_exist_rather_than_covering_silently() {
-        let lua = lua();
+        let lua = mlua::Lua::new();
         let table: mlua::Table = lua.load(r#"return { kind = "image", fit = "fill" }"#).eval().unwrap();
         let err = parse_fit(&props_from_table(&table)).unwrap_err();
         assert!(format!("{err}").contains("cover"), "the error should name the modes that do exist, got {err}");
@@ -650,7 +646,7 @@ mod tests {
 
     #[test]
     fn an_image_source_that_is_not_a_string_is_rejected() {
-        let lua = lua();
+        let lua = mlua::Lua::new();
         let table: mlua::Table = lua.load(r#"return { kind = "image", source = 5 }"#).eval().unwrap();
         assert!(parse_image_source(&props_from_table(&table)).is_err());
         let table: mlua::Table = lua.load(r#"return { kind = "image", source = "/tmp/w.png" }"#).eval().unwrap();
@@ -659,7 +655,7 @@ mod tests {
 
     #[test]
     fn capture_output_defaults_to_empty_and_reads_a_connector_name() {
-        let lua = lua();
+        let lua = mlua::Lua::new();
         let table: mlua::Table = lua.load(r#"return { kind = "capture" }"#).eval().unwrap();
         assert_eq!(parse_capture_output(&props_from_table(&table)).unwrap(), "");
         let table: mlua::Table = lua.load(r#"return { kind = "capture", output = "DP-1" }"#).eval().unwrap();
@@ -668,7 +664,7 @@ mod tests {
 
     #[test]
     fn live_and_paint_cursor_default_false_and_reject_non_booleans() {
-        let lua = lua();
+        let lua = mlua::Lua::new();
         let table: mlua::Table = lua.load(r#"return { kind = "capture" }"#).eval().unwrap();
         let props = props_from_table(&table);
         assert!(!parse_live(&props).unwrap());
@@ -686,7 +682,7 @@ mod tests {
 
     #[test]
     fn source_blur_defaults_to_zero_and_rejects_negative() {
-        let lua = lua();
+        let lua = mlua::Lua::new();
         let table: mlua::Table = lua.load(r#"return { kind = "image", source = "/tmp/w.png" }"#).eval().unwrap();
         assert_eq!(parse_source_blur(&props_from_table(&table)).unwrap(), 0.0);
 
@@ -702,7 +698,7 @@ mod tests {
 
     #[test]
     fn font_size_of_1e300_is_rejected_instead_of_overflowing_to_inf() {
-        let lua = lua();
+        let lua = mlua::Lua::new();
         let table: mlua::Table = lua.load(r#"return { kind = "text", font_size = 1e300 }"#).eval().unwrap();
         let props = props_from_table(&table);
         assert!(matches!(
@@ -715,7 +711,7 @@ mod tests {
     /// height, so a zero here aborted the Renderer. `-0.0` counts: IEEE 754 says it equals `0.0`.
     #[test]
     fn font_size_of_zero_is_rejected_rather_than_reaching_the_shaper() {
-        let lua = lua();
+        let lua = mlua::Lua::new();
         for source in [r#"return { kind = "text", font_size = 0 }"#, r#"return { kind = "text", font_size = -0.0 }"#] {
             let table: mlua::Table = lua.load(source).eval().unwrap();
             assert!(matches!(
@@ -727,7 +723,7 @@ mod tests {
 
     #[test]
     fn wrap_defaults_to_one_line_and_rejects_a_mode_that_does_not_exist() {
-        let lua = lua();
+        let lua = mlua::Lua::new();
         assert_eq!(parse_wrap(&PropMap::default()).unwrap(), Wrap::None);
 
         let table: mlua::Table = lua.load(r#"return { kind = "text", wrap = "Word" }"#).eval().unwrap();
@@ -744,7 +740,7 @@ mod tests {
     /// own arithmetic.
     #[test]
     fn max_lines_treats_absent_and_zero_alike_and_refuses_a_negative() {
-        let lua = lua();
+        let lua = mlua::Lua::new();
         assert_eq!(parse_max_lines(&PropMap::default()).unwrap(), None);
 
         let table: mlua::Table = lua.load(r#"return { kind = "text", max_lines = 0 }"#).eval().unwrap();
@@ -771,7 +767,7 @@ mod tests {
 
     #[test]
     fn a_signal_resolving_to_a_number_satisfies_font_size_through_marshals_check_number() {
-        let lua = lua();
+        let lua = mlua::Lua::new();
         crate::lua::signal::register(&lua, crate::lua::signal::DirtyFlag::new()).unwrap();
         let signal = crate::lua::signal::Signal::new_live(Value::Number(18.0), crate::lua::signal::DirtyFlag::new()).0;
         let table = lua.create_table().unwrap();
@@ -795,7 +791,7 @@ mod tests {
 
     #[test]
     fn node_id_reads_the_string() {
-        let lua = lua();
+        let lua = mlua::Lua::new();
         let table: mlua::Table = lua.load(r#"return { kind = "rect", id = "handle" }"#).eval().unwrap();
         let props = props_from_table(&table);
         assert_eq!(parse_node_id(&props).unwrap(), Some("handle".to_string()));
@@ -803,7 +799,7 @@ mod tests {
 
     #[test]
     fn a_signal_userdata_in_node_id_is_rejected() {
-        let lua = lua();
+        let lua = mlua::Lua::new();
         crate::lua::signal::register(&lua, crate::lua::signal::DirtyFlag::new()).unwrap();
         let signal = crate::lua::signal::Signal::new_live(Value::Boolean(true), crate::lua::signal::DirtyFlag::new()).0;
         let table = lua.create_table().unwrap();
@@ -817,7 +813,7 @@ mod tests {
 
     #[test]
     fn a_non_utf8_node_id_is_rejected_rather_than_lossily_converted() {
-        let lua = lua();
+        let lua = mlua::Lua::new();
         let table = lua.create_table().unwrap();
         table.set("kind", "rect").unwrap();
         table.set("id", lua.create_string(b"\xff").unwrap()).unwrap();
@@ -831,7 +827,7 @@ mod tests {
 
     #[test]
     fn two_distinct_non_utf8_ids_do_not_collapse_onto_one_replacement_character() {
-        let lua = lua();
+        let lua = mlua::Lua::new();
         for byte in [b"\xff".as_slice(), b"\xfe".as_slice()] {
             let table = lua.create_table().unwrap();
             table.set("kind", "rect").unwrap();
@@ -851,7 +847,7 @@ mod tests {
 
     #[test]
     fn foreground_reads_a_hex_colour() {
-        let lua = lua();
+        let lua = mlua::Lua::new();
         let table: mlua::Table = lua.load(r##"return { kind = "text", foreground = "#00ff0080" }"##).eval().unwrap();
         let props = props_from_table(&table);
         assert_eq!(parse_foreground(&props).unwrap(), Rgba { r: 0.0, g: 1.0, b: 0.0, a: 0x80 as f32 / 255.0 });
@@ -859,7 +855,7 @@ mod tests {
 
     #[test]
     fn foreground_wrong_type_is_rejected() {
-        let lua = lua();
+        let lua = mlua::Lua::new();
         let table: mlua::Table = lua.load(r#"return { kind = "text", foreground = 5 }"#).eval().unwrap();
         let props = props_from_table(&table);
         let err = parse_foreground(&props).unwrap_err();

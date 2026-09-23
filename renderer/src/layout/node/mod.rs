@@ -480,13 +480,9 @@ mod tests {
     use crate::image::Fit;
     use crate::lua::nodes::deserialize_lua_table;
 
-    fn lua() -> mlua::Lua {
-        mlua::Lua::new()
-    }
-
     #[test]
     fn a_signal_resolving_to_another_signal_is_an_error() {
-        let lua = lua();
+        let lua = mlua::Lua::new();
         crate::lua::signal::register(&lua, crate::lua::signal::DirtyFlag::new()).unwrap();
         let inner = crate::lua::signal::Signal::new_live(Value::Integer(5), crate::lua::signal::DirtyFlag::new()).0;
         let inner_userdata = lua.create_userdata(inner).unwrap();
@@ -521,7 +517,7 @@ mod tests {
 
     #[test]
     fn a_signal_resolving_to_nil_takes_each_parsers_absent_property_default() {
-        let lua = lua();
+        let lua = mlua::Lua::new();
         assert!(
             !props_with_nil_signal(&lua, "rect", "width").contains_key("width"),
             "the rule is one omitted key, not a Nil each parser re-checks"
@@ -546,7 +542,7 @@ mod tests {
 
     #[test]
     fn resolve_properties_copies_a_structural_field_through_raw_so_it_can_still_be_rejected() {
-        let lua = lua();
+        let lua = mlua::Lua::new();
         crate::lua::signal::register(&lua, crate::lua::signal::DirtyFlag::new()).unwrap();
         let signal = crate::lua::signal::Signal::new_live(Value::Boolean(true), crate::lua::signal::DirtyFlag::new()).0;
         let table = lua.create_table().unwrap();
@@ -567,7 +563,7 @@ mod tests {
     /// handler a config watches never fire.
     #[test]
     fn on_hover_without_a_hover_slot_is_refused() {
-        let lua = lua();
+        let lua = mlua::Lua::new();
         crate::lua::signal::register(&lua, crate::lua::signal::DirtyFlag::new()).unwrap();
         let table = lua.create_table().unwrap();
         table.set("kind", "rect").unwrap();
@@ -580,7 +576,7 @@ mod tests {
 
     #[test]
     fn on_hover_alongside_a_hover_slot_resolves() {
-        let lua = lua();
+        let lua = mlua::Lua::new();
         crate::lua::signal::register(&lua, crate::lua::signal::DirtyFlag::new()).unwrap();
         let (over, _rect) = crate::lua::signal::Signal::new_hover(crate::lua::signal::DirtyFlag::new(), Value::Nil);
         let table = lua.create_table().unwrap();
@@ -599,7 +595,7 @@ mod tests {
     /// assertion is what keeps a hasher change from quietly making the second one vacuous.
     #[test]
     fn two_failing_properties_always_report_the_same_one() {
-        let lua = lua();
+        let lua = mlua::Lua::new();
         crate::lua::signal::register(&lua, crate::lua::signal::DirtyFlag::new()).unwrap();
         let table: mlua::Table = lua
             .load(
@@ -627,7 +623,7 @@ mod tests {
 
     #[test]
     fn oversized_string_property_error_message_is_bounded() {
-        let lua = lua();
+        let lua = mlua::Lua::new();
         let table: mlua::Table =
             lua.load(r#"return { kind = "rect", radius = string.rep("Q", 20 * 1024 * 1024) }"#).eval().unwrap();
         let props = props_from_table(&table);
@@ -645,7 +641,7 @@ mod tests {
 
     #[test]
     fn oversized_string_property_error_still_names_type_and_shows_a_recognizable_prefix() {
-        let lua = lua();
+        let lua = mlua::Lua::new();
         let table: mlua::Table =
             lua.load(r#"return { kind = "rect", radius = string.rep("Q", 20 * 1024 * 1024) }"#).eval().unwrap();
         let props = props_from_table(&table);
@@ -664,7 +660,7 @@ mod tests {
 
     #[test]
     fn short_string_property_error_message_is_unchanged() {
-        let lua = lua();
+        let lua = mlua::Lua::new();
         let table: mlua::Table = lua.load(r#"return { kind = "rect", radius = "banana" }"#).eval().unwrap();
         let props = props_from_table(&table);
         let err = parse_radius(&props).unwrap_err();
@@ -676,7 +672,7 @@ mod tests {
 
     #[test]
     fn non_string_variant_error_message_is_unchanged() {
-        let lua = lua();
+        let lua = mlua::Lua::new();
         let table: mlua::Table = lua.load(r#"return { kind = "rect", radius = true }"#).eval().unwrap();
         let props = props_from_table(&table);
         let err = parse_radius(&props).unwrap_err();

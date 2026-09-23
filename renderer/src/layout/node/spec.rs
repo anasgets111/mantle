@@ -264,13 +264,9 @@ pub fn parse_secure_submit(properties: &PropMap) -> Result<Option<SecureSubmitTa
 mod tests {
     use super::*;
 
-    fn lua() -> mlua::Lua {
-        mlua::Lua::new()
-    }
-
     #[test]
     fn parse_children_walks_nested_node_tables() {
-        let lua = lua();
+        let lua = mlua::Lua::new();
         let table: mlua::Table = lua
                 .load(r#"return { kind = "row", children = { { kind = "text", content = "a" }, { kind = "text", content = "b" } } }"#)
                 .eval()
@@ -284,7 +280,7 @@ mod tests {
 
     #[test]
     fn parse_single_child_converts_the_child_table() {
-        let lua = lua();
+        let lua = mlua::Lua::new();
         let table: mlua::Table = lua.load(r#"return { kind = "panel", child = { kind = "rect" } }"#).eval().unwrap();
         let props = props_from_table(&table);
         let child = parse_single_child(&props).unwrap();
@@ -305,7 +301,7 @@ mod tests {
 
     #[test]
     fn secure_submit_well_formed_table_parses_capability_and_action() {
-        let lua = lua();
+        let lua = mlua::Lua::new();
         let table: mlua::Table = lua
             .load(r#"return { kind = "textfield", secure_submit = { capability = "network", action = "connect" } }"#)
             .eval()
@@ -319,7 +315,7 @@ mod tests {
 
     #[test]
     fn secure_submit_missing_capability_is_invalid_property_naming_the_field() {
-        let lua = lua();
+        let lua = mlua::Lua::new();
         let table: mlua::Table =
             lua.load(r#"return { kind = "textfield", secure_submit = { action = "connect" } }"#).eval().unwrap();
         let props = props_from_table(&table);
@@ -332,7 +328,7 @@ mod tests {
 
     #[test]
     fn secure_submit_missing_action_is_invalid_property_naming_the_field() {
-        let lua = lua();
+        let lua = mlua::Lua::new();
         let table: mlua::Table =
             lua.load(r#"return { kind = "textfield", secure_submit = { capability = "network" } }"#).eval().unwrap();
         let props = props_from_table(&table);
@@ -345,7 +341,7 @@ mod tests {
 
     #[test]
     fn secure_submit_empty_capability_is_invalid_property() {
-        let lua = lua();
+        let lua = mlua::Lua::new();
         let table: mlua::Table = lua
             .load(r#"return { kind = "textfield", secure_submit = { capability = "", action = "connect" } }"#)
             .eval()
@@ -360,7 +356,7 @@ mod tests {
 
     #[test]
     fn secure_submit_empty_action_is_invalid_property() {
-        let lua = lua();
+        let lua = mlua::Lua::new();
         let table: mlua::Table = lua
             .load(r#"return { kind = "textfield", secure_submit = { capability = "network", action = "" } }"#)
             .eval()
@@ -375,7 +371,7 @@ mod tests {
 
     #[test]
     fn secure_submit_non_table_value_is_invalid_property() {
-        let lua = lua();
+        let lua = mlua::Lua::new();
         let table: mlua::Table =
             lua.load(r#"return { kind = "textfield", secure_submit = "network.connect" }"#).eval().unwrap();
         let props = props_from_table(&table);
@@ -387,7 +383,7 @@ mod tests {
 
     #[test]
     fn secure_submit_non_utf8_capability_is_rejected_rather_than_lossily_converted() {
-        let lua = lua();
+        let lua = mlua::Lua::new();
         let table = lua.create_table().unwrap();
         table.set("kind", "textfield").unwrap();
         let inner = lua.create_table().unwrap();
@@ -404,7 +400,7 @@ mod tests {
 
     #[test]
     fn lock_spec_reads_the_id_and_carries_nothing_else() {
-        let lua = lua();
+        let lua = mlua::Lua::new();
         let table: mlua::Table =
             lua.load(r#"return { kind = "lock", id = "screen-lock", child = { kind = "rect" } }"#).eval().unwrap();
         assert_eq!(lock_spec(&props_from_table(&table)).unwrap(), LockSpec { id: "screen-lock".to_string() });
@@ -412,7 +408,7 @@ mod tests {
 
     #[test]
     fn a_lock_without_an_id_is_rejected_the_same_way_every_other_role_is() {
-        let lua = lua();
+        let lua = mlua::Lua::new();
         let table: mlua::Table = lua.load(r#"return { kind = "lock" }"#).eval().unwrap();
         assert!(matches!(
             lock_spec(&props_from_table(&table)).unwrap_err(),
@@ -422,7 +418,7 @@ mod tests {
 
     #[test]
     fn every_property_a_lock_denies_is_refused_by_name_rather_than_ignored() {
-        let lua = lua();
+        let lua = mlua::Lua::new();
         // `monitor` and `anchor` never reach `lock_spec` from a config any more: they are not on
         // `lock`'s row in `nodes::NODE_PROPERTIES`, so `deserialize_lua_table` refuses them first
         // (`a_lock_property_that_is_not_even_on_the_kind_is_refused_before_lock_spec_sees_it`).
@@ -442,7 +438,7 @@ mod tests {
     /// reach `lock_spec` at all, so the refusal a config author sees is the property gate's.
     #[test]
     fn a_lock_property_that_is_not_even_on_the_kind_is_refused_before_lock_spec_sees_it() {
-        let lua = lua();
+        let lua = mlua::Lua::new();
         for property in ["monitor", "anchor"] {
             let table: mlua::Table =
                 lua.load(format!(r#"return {{ kind = "lock", id = "screen-lock", {property} = 1 }}"#)).eval().unwrap();
@@ -453,7 +449,7 @@ mod tests {
 
     #[test]
     fn a_refused_lock_property_wins_over_a_missing_id_because_it_is_the_error_that_teaches() {
-        let lua = lua();
+        let lua = mlua::Lua::new();
         let table: mlua::Table = lua.load(r#"return { kind = "lock", visible = false }"#).eval().unwrap();
         assert!(matches!(
             lock_spec(&props_from_table(&table)).unwrap_err(),
@@ -463,7 +459,7 @@ mod tests {
 
     #[test]
     fn a_signal_bound_lock_property_is_refused_on_the_evaluation_pass_like_a_literal_one() {
-        let lua = lua();
+        let lua = mlua::Lua::new();
         crate::lua::signal::register(&lua, crate::lua::signal::DirtyFlag::new()).unwrap();
         let table: mlua::Table =
             lua.load(r#"return { kind = "lock", id = "screen-lock", visible = state("v", true) }"#).eval().unwrap();
@@ -475,7 +471,7 @@ mod tests {
 
     #[test]
     fn a_signal_in_a_lock_id_is_rejected_by_the_universal_structural_arm_with_no_new_carve_out() {
-        let lua = lua();
+        let lua = mlua::Lua::new();
         crate::lua::signal::register(&lua, crate::lua::signal::DirtyFlag::new()).unwrap();
         let table: mlua::Table =
             lua.load(r#"return { kind = "lock", id = state("i", "screen-lock") }"#).eval().unwrap();
@@ -532,7 +528,7 @@ mod tests {
 
     #[test]
     fn parse_list_children_bounds_to_limit_and_refuses_invalid_values() {
-        let lua = lua();
+        let lua = mlua::Lua::new();
         crate::lua::nodes::register_node_constructors(&lua).unwrap();
         let eval = |s: &str| -> Result<usize, LayoutError> {
             let t: mlua::Table = lua.load(s).eval().unwrap();

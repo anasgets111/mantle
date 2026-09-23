@@ -382,13 +382,9 @@ pub fn popup_spec(properties: &PropMap) -> Result<PopupSpec, LayoutError> {
 mod tests {
     use super::*;
 
-    fn lua() -> mlua::Lua {
-        mlua::Lua::new()
-    }
-
     #[test]
     fn window_spec_reads_every_toplevel_field_in_one_pass() {
-        let lua = lua();
+        let lua = mlua::Lua::new();
         let table: mlua::Table = lua
             .load(
                 r#"return { kind = "window", id = "settings", title = "Mantle Settings", app_id = "mantle.settings",
@@ -411,7 +407,7 @@ mod tests {
 
     #[test]
     fn a_window_without_an_id_is_rejected_the_same_way_a_panel_is() {
-        let lua = lua();
+        let lua = mlua::Lua::new();
         let table: mlua::Table = lua.load(r#"return { kind = "window", title = "x" }"#).eval().unwrap();
         assert!(matches!(
             window_spec(&props_from_table(&table)).unwrap_err(),
@@ -421,21 +417,21 @@ mod tests {
 
     #[test]
     fn window_title_absent_defaults_to_the_empty_string_rather_than_the_id() {
-        let lua = lua();
+        let lua = mlua::Lua::new();
         let table: mlua::Table = lua.load(r#"return { kind = "window", id = "settings" }"#).eval().unwrap();
         assert_eq!(window_spec(&props_from_table(&table)).unwrap().title, "");
     }
 
     #[test]
     fn window_app_id_absent_defaults_to_mantle_dash_id() {
-        let lua = lua();
+        let lua = mlua::Lua::new();
         let table: mlua::Table = lua.load(r#"return { kind = "window", id = "settings" }"#).eval().unwrap();
         assert_eq!(window_spec(&props_from_table(&table)).unwrap().app_id, "mantle-settings");
     }
 
     #[test]
     fn window_min_size_and_max_size_are_absent_when_undeclared() {
-        let lua = lua();
+        let lua = mlua::Lua::new();
         let table: mlua::Table = lua.load(r#"return { kind = "window", id = "settings" }"#).eval().unwrap();
         let spec = window_spec(&props_from_table(&table)).unwrap();
         assert_eq!(spec.min_size, None);
@@ -444,7 +440,7 @@ mod tests {
 
     #[test]
     fn a_negative_window_min_size_axis_is_a_layout_error_rather_than_invalid_size() {
-        let lua = lua();
+        let lua = mlua::Lua::new();
         let table: mlua::Table = lua
             .load(r#"return { kind = "window", id = "settings", min_size = { width = -1, height = 240 } }"#)
             .eval()
@@ -457,7 +453,7 @@ mod tests {
 
     #[test]
     fn a_max_size_below_min_size_is_a_layout_error_rather_than_invalid_size() {
-        let lua = lua();
+        let lua = mlua::Lua::new();
         let table: mlua::Table = lua
             .load(
                 r#"return { kind = "window", id = "settings", min_size = { width = 800, height = 600 },
@@ -473,7 +469,7 @@ mod tests {
 
     #[test]
     fn a_zero_max_size_axis_means_unset_and_does_not_collide_with_min_size() {
-        let lua = lua();
+        let lua = mlua::Lua::new();
         let table: mlua::Table = lua
             .load(
                 r#"return { kind = "window", id = "settings", min_size = { width = 800, height = 600 },
@@ -489,7 +485,7 @@ mod tests {
 
     #[test]
     fn a_window_size_hint_missing_an_axis_is_rejected_naming_the_axis() {
-        let lua = lua();
+        let lua = mlua::Lua::new();
         let table: mlua::Table =
             lua.load(r#"return { kind = "window", id = "settings", min_size = { width = 320 } }"#).eval().unwrap();
         assert!(matches!(
@@ -500,7 +496,7 @@ mod tests {
 
     #[test]
     fn a_window_size_hint_that_is_not_a_table_is_rejected() {
-        let lua = lua();
+        let lua = mlua::Lua::new();
         let table: mlua::Table =
             lua.load(r#"return { kind = "window", id = "settings", max_size = 800 }"#).eval().unwrap();
         assert!(matches!(
@@ -511,7 +507,7 @@ mod tests {
 
     #[test]
     fn a_signal_in_a_window_title_resolves_because_set_title_is_valid_on_a_live_toplevel() {
-        let lua = lua();
+        let lua = mlua::Lua::new();
         crate::lua::signal::register(&lua, crate::lua::signal::DirtyFlag::new()).unwrap();
         let signal = crate::lua::signal::Signal::new_live(
             Value::String(lua.create_string("Now Playing").unwrap()),
@@ -526,7 +522,7 @@ mod tests {
 
     #[test]
     fn a_signal_in_a_window_app_id_resolves_because_set_app_id_is_valid_on_a_live_toplevel() {
-        let lua = lua();
+        let lua = mlua::Lua::new();
         crate::lua::signal::register(&lua, crate::lua::signal::DirtyFlag::new()).unwrap();
         let signal = crate::lua::signal::Signal::new_live(
             Value::String(lua.create_string("mantle.later").unwrap()),
@@ -541,7 +537,7 @@ mod tests {
 
     #[test]
     fn a_signal_in_a_window_id_is_still_rejected_because_id_is_every_kinds_reconcile_identity() {
-        let lua = lua();
+        let lua = mlua::Lua::new();
         crate::lua::signal::register(&lua, crate::lua::signal::DirtyFlag::new()).unwrap();
         let signal = crate::lua::signal::Signal::new_live(
             Value::String(lua.create_string("w").unwrap()),
@@ -576,7 +572,7 @@ mod tests {
 
     #[test]
     fn popup_spec_reads_every_positioner_field_in_one_pass() {
-        let lua = lua();
+        let lua = mlua::Lua::new();
         let props = popup_props(
             &lua,
             r#", anchor = "BottomLeft", gravity = "BottomRight",
@@ -606,7 +602,7 @@ mod tests {
 
     #[test]
     fn a_popup_without_a_parent_is_rejected() {
-        let lua = lua();
+        let lua = mlua::Lua::new();
         let table: mlua::Table = lua
                 .load(r#"return { kind = "popup", id = "menu", anchor_rect = { width = 1, height = 1 }, width = 8, height = 8 }"#)
                 .eval()
@@ -619,7 +615,7 @@ mod tests {
 
     #[test]
     fn a_popup_with_an_empty_parent_is_rejected() {
-        let lua = lua();
+        let lua = mlua::Lua::new();
         let props = popup_props(&lua, r#", parent = """#);
         assert!(matches!(
             popup_spec(&props).unwrap_err(),
@@ -629,7 +625,7 @@ mod tests {
 
     #[test]
     fn a_popup_without_an_anchor_rect_is_a_layout_error_rather_than_invalid_positioner() {
-        let lua = lua();
+        let lua = mlua::Lua::new();
         let table: mlua::Table = lua
             .load(r#"return { kind = "popup", id = "menu", parent = "bar", width = 8, height = 8 }"#)
             .eval()
@@ -642,7 +638,7 @@ mod tests {
 
     #[test]
     fn a_zero_size_anchor_rect_is_a_layout_error_rather_than_invalid_positioner() {
-        let lua = lua();
+        let lua = mlua::Lua::new();
         for axis in ["width", "height"] {
             let props = popup_props(
                 &lua,
@@ -657,7 +653,7 @@ mod tests {
 
     #[test]
     fn a_negative_anchor_rect_size_is_a_layout_error_rather_than_invalid_input() {
-        let lua = lua();
+        let lua = mlua::Lua::new();
         let props = popup_props(&lua, r#", anchor_rect = { x = 0, y = 0, width = -24, height = 24 }"#);
         assert!(matches!(
             popup_spec(&props).unwrap_err(),
@@ -667,7 +663,7 @@ mod tests {
 
     #[test]
     fn an_anchor_rect_omitting_x_and_y_defaults_them_to_zero() {
-        let lua = lua();
+        let lua = mlua::Lua::new();
         let props = popup_props(&lua, r#", anchor_rect = { width = 24, height = 24 }"#);
         let rect = popup_spec(&props).unwrap().anchor_rect;
         assert_eq!(rect, LogicalRect { x: 0.0, y: 0.0, width: 24.0, height: 24.0 });
@@ -675,7 +671,7 @@ mod tests {
 
     #[test]
     fn an_anchor_rect_that_is_not_a_table_is_rejected() {
-        let lua = lua();
+        let lua = mlua::Lua::new();
         let props = popup_props(&lua, r#", anchor_rect = 24"#);
         assert!(matches!(
             popup_spec(&props).unwrap_err(),
@@ -689,7 +685,7 @@ mod tests {
         // hand-guessed pair of numbers and cut off any text longer than the one it was guessed for. An omitted axis is `Content` here as it is
         // on every other node; `wayland::surface::popup_requested_size` turns it into the number
         // the positioner needs, off the box the pass measured.
-        let lua = lua();
+        let lua = mlua::Lua::new();
         for (present, omitted) in [("width", "height"), ("height", "width")] {
             let table: mlua::Table = lua
                 .load(format!(
@@ -708,7 +704,7 @@ mod tests {
 
     #[test]
     fn a_zero_popup_width_or_height_is_a_layout_error_rather_than_invalid_input() {
-        let lua = lua();
+        let lua = mlua::Lua::new();
         for axis in ["width", "height"] {
             let props = popup_props(&lua, &format!(r#", {axis} = 0"#));
             assert!(
@@ -720,7 +716,7 @@ mod tests {
 
     #[test]
     fn a_fill_popup_width_is_rejected_because_a_popup_has_no_fill() {
-        let lua = lua();
+        let lua = mlua::Lua::new();
         let props = popup_props(&lua, r#", width = "Fill""#);
         assert!(matches!(
             popup_spec(&props).unwrap_err(),
@@ -730,7 +726,7 @@ mod tests {
 
     #[test]
     fn popup_anchor_and_gravity_read_the_same_nine_value_set() {
-        let lua = lua();
+        let lua = mlua::Lua::new();
         for (text, expected) in [
             ("Top", PopupAnchor::Top),
             ("Bottom", PopupAnchor::Bottom),
@@ -751,7 +747,7 @@ mod tests {
 
     #[test]
     fn popup_anchor_and_gravity_absent_default_to_center() {
-        let lua = lua();
+        let lua = mlua::Lua::new();
         let spec = popup_spec(&popup_props(&lua, "")).unwrap();
         assert_eq!(spec.anchor, PopupAnchor::Center);
         assert_eq!(spec.gravity, PopupAnchor::Center);
@@ -759,7 +755,7 @@ mod tests {
 
     #[test]
     fn an_unknown_popup_anchor_is_rejected_naming_the_property() {
-        let lua = lua();
+        let lua = mlua::Lua::new();
         let props = popup_props(&lua, r#", anchor = "Middle""#);
         assert!(matches!(
             popup_spec(&props).unwrap_err(),
@@ -769,7 +765,7 @@ mod tests {
 
     #[test]
     fn an_unknown_popup_gravity_is_rejected_naming_the_property() {
-        let lua = lua();
+        let lua = mlua::Lua::new();
         let props = popup_props(&lua, r#", gravity = "Downward""#);
         assert!(matches!(
             popup_spec(&props).unwrap_err(),
@@ -779,7 +775,7 @@ mod tests {
 
     #[test]
     fn constraint_adjustment_absent_defaults_to_flip_y_and_slide_x() {
-        let lua = lua();
+        let lua = mlua::Lua::new();
         assert_eq!(
             popup_spec(&popup_props(&lua, "")).unwrap().constraint_adjustment,
             ConstraintAdjustment { flip_y: true, slide_x: true, ..ConstraintAdjustment::NONE }
@@ -788,7 +784,7 @@ mod tests {
 
     #[test]
     fn constraint_adjustment_reads_every_named_adjustment() {
-        let lua = lua();
+        let lua = mlua::Lua::new();
         let props = popup_props(
             &lua,
             r#", constraint_adjustment = { "SlideX", "SlideY", "FlipX", "FlipY", "ResizeX", "ResizeY" }"#,
@@ -808,7 +804,7 @@ mod tests {
 
     #[test]
     fn constraint_adjustment_is_a_set_so_order_and_repetition_do_not_change_it() {
-        let lua = lua();
+        let lua = mlua::Lua::new();
         let ordered = popup_spec(&popup_props(&lua, r#", constraint_adjustment = { "FlipY", "SlideX" }"#)).unwrap();
         let reversed =
             popup_spec(&popup_props(&lua, r#", constraint_adjustment = { "SlideX", "FlipY", "SlideX" }"#)).unwrap();
@@ -817,7 +813,7 @@ mod tests {
 
     #[test]
     fn an_explicitly_empty_constraint_adjustment_is_the_protocols_own_no_adjustment() {
-        let lua = lua();
+        let lua = mlua::Lua::new();
         assert_eq!(
             popup_spec(&popup_props(&lua, r#", constraint_adjustment = {}"#)).unwrap().constraint_adjustment,
             ConstraintAdjustment::NONE
@@ -826,7 +822,7 @@ mod tests {
 
     #[test]
     fn an_unknown_constraint_adjustment_entry_is_rejected() {
-        let lua = lua();
+        let lua = mlua::Lua::new();
         let props = popup_props(&lua, r#", constraint_adjustment = { "FlipY", "SlideZ" }"#);
         assert!(matches!(
             popup_spec(&props).unwrap_err(),
@@ -836,7 +832,7 @@ mod tests {
 
     #[test]
     fn a_constraint_adjustment_that_is_not_an_array_table_is_rejected() {
-        let lua = lua();
+        let lua = mlua::Lua::new();
         let props = popup_props(&lua, r#", constraint_adjustment = "FlipY""#);
         assert!(matches!(
             popup_spec(&props).unwrap_err(),
@@ -846,20 +842,20 @@ mod tests {
 
     #[test]
     fn popup_offset_absent_defaults_to_zero() {
-        let lua = lua();
+        let lua = mlua::Lua::new();
         assert_eq!(popup_spec(&popup_props(&lua, "")).unwrap().offset, PopupOffset { x: 0.0, y: 0.0 });
     }
 
     #[test]
     fn popup_offset_may_be_negative_on_either_axis() {
-        let lua = lua();
+        let lua = mlua::Lua::new();
         let props = popup_props(&lua, r#", offset = { x = -8, y = -2 }"#);
         assert_eq!(popup_spec(&props).unwrap().offset, PopupOffset { x: -8.0, y: -2.0 });
     }
 
     #[test]
     fn a_popup_offset_that_is_not_a_table_is_rejected() {
-        let lua = lua();
+        let lua = mlua::Lua::new();
         let props = popup_props(&lua, r#", offset = 4"#);
         assert!(matches!(
             popup_spec(&props).unwrap_err(),
@@ -869,13 +865,13 @@ mod tests {
 
     #[test]
     fn popup_grab_absent_defaults_to_true() {
-        let lua = lua();
+        let lua = mlua::Lua::new();
         assert!(popup_spec(&popup_props(&lua, "")).unwrap().grab);
     }
 
     #[test]
     fn popup_grab_reads_the_boolean_and_rejects_anything_else() {
-        let lua = lua();
+        let lua = mlua::Lua::new();
         assert!(!popup_spec(&popup_props(&lua, ", grab = false")).unwrap().grab);
         assert!(matches!(
             popup_spec(&popup_props(&lua, ", grab = 1")).unwrap_err(),
@@ -885,7 +881,7 @@ mod tests {
 
     #[test]
     fn a_signal_in_a_popup_anchor_rect_resolves_because_the_positioner_is_rebuilt_on_every_open() {
-        let lua = lua();
+        let lua = mlua::Lua::new();
         crate::lua::signal::register(&lua, crate::lua::signal::DirtyFlag::new()).unwrap();
         let table: mlua::Table = lua
             .load(
@@ -919,7 +915,7 @@ mod tests {
 
     #[test]
     fn a_signal_bound_popup_property_is_deferred_rather_than_rejected_before_it_resolves() {
-        let lua = lua();
+        let lua = mlua::Lua::new();
         let spec = popup_spec(&unresolved_popup_props(
             &lua,
             r#", width = state("w", 200), height = state("h", 300), anchor = state("an", "Top"),
@@ -937,7 +933,7 @@ mod tests {
 
     #[test]
     fn a_literal_typo_beside_a_deferred_signal_still_fails_on_the_evaluation_pass() {
-        let lua = lua();
+        let lua = mlua::Lua::new();
         assert!(matches!(
             popup_spec(&unresolved_popup_props(&lua, r#", anchor = "Middle""#)).unwrap_err(),
             LayoutError::InvalidProperty { property, .. } if property == "anchor"
@@ -946,7 +942,7 @@ mod tests {
 
     #[test]
     fn a_signal_in_a_popup_parent_is_still_rejected_on_the_evaluation_pass() {
-        let lua = lua();
+        let lua = mlua::Lua::new();
         assert!(matches!(
             popup_spec(&unresolved_popup_props(&lua, r#", parent = state("p", "bar")"#)).unwrap_err(),
             LayoutError::UnsupportedSignalProperty(p) if p == "parent"
@@ -955,7 +951,7 @@ mod tests {
 
     #[test]
     fn a_signal_in_a_window_title_app_id_or_size_hint_is_deferred_on_the_evaluation_pass_too() {
-        let lua = lua();
+        let lua = mlua::Lua::new();
         crate::lua::signal::register(&lua, crate::lua::signal::DirtyFlag::new()).unwrap();
         let table: mlua::Table = lua
             .load(
