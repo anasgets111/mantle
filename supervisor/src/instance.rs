@@ -3,11 +3,12 @@
 use std::ffi::OsString;
 use std::fs::{DirBuilder, File};
 use std::io;
-use std::os::fd::AsRawFd;
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::os::unix::fs::DirBuilderExt;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
+
+use nix::fcntl::{FcntlArg, fcntl};
 
 pub const LOCK: &str = "instance.lock";
 pub const LOG: &str = "shell.log";
@@ -37,24 +38,16 @@ fn whole_file(kind: libc::c_int) -> libc::flock {
     }
 }
 
-/// Takes the lock. `file` must be open for writing.
+/// Takes the lock without blocking. `file` must be open for writing.
 fn take_lock(file: &File) -> io::Result<()> {
-    let lock = whole_file(libc::F_WRLCK);
-    // SAFETY: a live descriptor and a fully initialized `flock`. `F_OFD_SETLK` never blocks.
-    if unsafe { libc::fcntl(file.as_raw_fd(), libc::F_OFD_SETLK, &lock) } == -1 {
-        return Err(io::Error::last_os_error());
-    }
+    fcntl(file, FcntlArg::F_OFD_SETLK(&whole_file(libc::F_WRLCK)))?;
     Ok(())
 }
 
 /// Whether anyone holds the lock on `file`. A query: it takes nothing.
 pub fn is_locked(file: &File) -> io::Result<bool> {
     let mut lock = whole_file(libc::F_WRLCK);
-    // SAFETY: as `take_lock`. `F_OFD_GETLK` only reads, overwriting `lock` with the holder it
-    // found or `F_UNLCK`.
-    if unsafe { libc::fcntl(file.as_raw_fd(), libc::F_OFD_GETLK, &mut lock) } == -1 {
-        return Err(io::Error::last_os_error());
-    }
+    fcntl(file, FcntlArg::F_OFD_GETLK(&mut lock))?;
     Ok(lock.l_type != libc::F_UNLCK as libc::c_short)
 }
 

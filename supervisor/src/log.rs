@@ -8,10 +8,13 @@
 
 use std::fs::File;
 use std::io::{self, IsTerminal, Read, Write};
-use std::os::fd::{AsRawFd, FromRawFd};
+use std::os::fd::{AsFd, BorrowedFd};
 use std::os::unix::fs::MetadataExt;
 use std::path::Path;
 use std::time::Duration;
+
+use nix::sys::stat::fstat;
+use nix::unistd::{dup2_stderr, dup2_stdout};
 
 use crate::instance;
 
@@ -27,44 +30,34 @@ const POLL: Duration = Duration::from_millis(200);
 /// half of it to one place.
 pub fn capture(dir: &Path) -> io::Result<()> {
     let file = File::create(dir.join(instance::LOG))?;
-    for target in [libc::STDOUT_FILENO, libc::STDERR_FILENO] {
+    let (stdout, stderr) = (io::stdout(), io::stderr());
+    let streams: [(BorrowedFd, Redirect); 2] =
+        [(stdout.as_fd(), |to| dup2_stdout(to)), (stderr.as_fd(), |to| dup2_stderr(to))];
+    for (target, redirect) in streams {
         match goes_to_dev_null(target) {
-            true => redirect(&file, target)?,
-            false => tee(&file, target)?,
+            true => redirect(file.as_fd())?,
+            false => tee(&file, target, redirect)?,
         }
     }
     Ok(())
 }
 
-/// Makes `target` a second name for `to`.
-fn redirect(to: &impl AsRawFd, target: i32) -> io::Result<()> {
-    // SAFETY: both arguments are live descriptors. `to`'s is owned by the caller, and the target is
-    // a standard stream this process has not closed.
-    match unsafe { libc::dup2(to.as_raw_fd(), target) } {
-        -1 => Err(io::Error::last_os_error()),
-        _ => Ok(()),
-    }
-}
+/// Makes one standard stream a second name for its argument.
+type Redirect = fn(BorrowedFd) -> nix::Result<()>;
 
 /// Replaces `target` with a pipe, drained into both the log and where `target` pointed before.
 ///
 /// ponytail: bytes still in the pipe when the process aborts reach neither, so a panic under a
 /// terminal lands on screen but not in the file. Draining from a process that outlives the writer
 /// would fix it, the way `MANTLE_PAM_WORKER` is already a second process.
-fn tee(file: &File, target: i32) -> io::Result<()> {
-    // SAFETY: `target` is a standard stream this process has not closed.
-    let duplicate = unsafe { libc::fcntl(target, libc::F_DUPFD_CLOEXEC, 0) };
-    if duplicate == -1 {
-        return Err(io::Error::last_os_error());
-    }
-    // SAFETY: `fcntl` returned this descriptor above and nothing else holds it.
-    let mut original = unsafe { File::from_raw_fd(duplicate) };
+fn tee(file: &File, target: BorrowedFd, redirect: Redirect) -> io::Result<()> {
+    let mut original = File::from(target.try_clone_to_owned()?);
     // Asked before the pipe takes the descriptor's place, which is the last moment it is the truth.
     // `shared::log::init` asks the same question afterwards and gets `false`, which is what keeps
     // the file plain (ADR-0229) while the terminal still gets colour, from `paint` below.
     let colour = original.is_terminal();
     let (mut pipe, writer) = io::pipe()?;
-    redirect(&writer, target)?;
+    redirect(writer.as_fd())?;
     drop(writer);
     let mut file = file.try_clone()?;
     std::thread::Builder::new().name("mantle-log-tee".into()).spawn(move || {
@@ -158,20 +151,19 @@ fn paint(from: &mut impl Read, to: &mut impl Write, pending: &mut Vec<u8>) -> io
 }
 
 /// Whether `fd` points to `/dev/null`.
-fn goes_to_dev_null(fd: i32) -> bool {
-    let mut stat = std::mem::MaybeUninit::<libc::stat>::uninit();
-    // SAFETY: stat points to uninitialized stack memory ready to be populated by fstat.
-    if unsafe { libc::fstat(fd, stat.as_mut_ptr()) } != 0 {
-        return false;
-    }
-    // SAFETY: fstat succeeded so stat is initialized.
-    let stat = unsafe { stat.assume_init() };
-    std::fs::metadata("/dev/null").is_ok_and(|null| null.rdev() == stat.st_rdev)
+fn goes_to_dev_null(fd: BorrowedFd) -> bool {
+    fstat(fd).is_ok_and(|stat| std::fs::metadata("/dev/null").is_ok_and(|null| null.rdev() == stat.st_rdev))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_dev_null_counts_as_dev_null() {
+        assert!(goes_to_dev_null(File::open("/dev/null").unwrap().as_fd()));
+        assert!(!goes_to_dev_null(tempfile::tempfile().unwrap().as_fd()));
+    }
 
     #[test]
     fn a_teed_descriptor_keeps_the_log_plain_and_paints_what_it_replaced() {
