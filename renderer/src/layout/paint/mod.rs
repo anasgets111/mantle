@@ -199,55 +199,101 @@ impl DisplayList {
         walk(&self.commands, out)
     }
 
-    /// The pixels that can differ from `previous`, `None` if none can. Commands outside the
-    /// common prefix and suffix are the only ones that differ, so their bounds, old and new, cover
-    /// every changed pixel.
-    /// ponytail: one rect, so two changes at opposite corners damage everything between. Upgrade
-    /// path is a rect per changed command, capped, for `eglSwapBuffersWithDamage`.
-    pub fn damage_since(&self, previous: &DisplayList) -> Option<PhysicalRect> {
+    /// The pixels that can differ from `previous`, empty if none can. Commands outside the common
+    /// prefix and suffix are the only ones whose list entry differs, so their bounds, old and new,
+    /// cover those. A texture changes under an unchanged entry (a decode or capture landing, a GIF
+    /// frame), so every command drawing one adds its own bounds too.
+    /// ponytail: the changed commands merge into one rect, so two changes at opposite corners
+    /// damage everything between. Upgrade path is a rect per changed command, capped.
+    pub fn damage_since(&self, previous: &DisplayList) -> Vec<PhysicalRect> {
         let (old, new) = (&previous.commands, &self.commands);
         let prefix = old.iter().zip(new).take_while(|(a, b)| a == b).count();
         let (old, new) = (&old[prefix..], &new[prefix..]);
         let suffix = old.iter().rev().zip(new.iter().rev()).take_while(|(a, b)| a == b).count();
-        old[..old.len() - suffix].iter().chain(&new[..new.len() - suffix]).map(command_bounds).reduce(|a, b| {
-            PhysicalRect { x0: a.x0.min(b.x0), y0: a.y0.min(b.y0), x1: a.x1.max(b.x1), y1: a.y1.max(b.y1) }
-        })
+        let changed = old[..old.len() - suffix].iter().chain(&new[..new.len() - suffix]).map(command_bounds);
+        let textured = self
+            .commands
+            .iter()
+            .filter(|command| {
+                any_draw_matches(std::slice::from_ref(command), |draw| {
+                    matches!(draw, Draw::Image { .. } | Draw::Icon { .. } | Draw::Capture { .. })
+                })
+            })
+            .map(command_bounds);
+        changed
+            .filter(|rect| !is_empty(*rect))
+            .reduce(union)
+            .into_iter()
+            .chain(textured)
+            .filter(|r| !is_empty(*r))
+            .collect()
     }
 }
 
-/// Every pixel `command` can touch. `execute` scissors each draw to its `clip`, and a transformed
-/// group's scissors follow its matrix, so the clip's mapped corners bound it. A nested transform
-/// composes and can outgrow that, so it counts as unbounded. Padded because femtovg's scissor
-/// edge is antialiased.
+/// Every pixel `command` can touch: its own box, widened where a draw may overflow it, cut by its
+/// clip, then padded because femtovg antialiases its scissor edge too. A transformed group's box is its commands'
+/// bounds under its matrix; femtovg composes nested matrices, so recursing composes them too.
 fn command_bounds(command: &DrawCmd) -> PhysicalRect {
     const PAD: i32 = 2;
-    fn nests_transform(commands: &[DrawCmd]) -> bool {
-        commands.iter().any(|command| match &command.draw {
-            Draw::Transformed { .. } => true,
-            Draw::Clipped { commands, .. } => nests_transform(commands),
-            _ => false,
-        })
-    }
+    let rect = command.rect;
+    let grow = |dx: f32, dy: f32| LogicalRect {
+        x: rect.x - dx,
+        y: rect.y - dy,
+        width: rect.width + 2.0 * dx,
+        height: rect.height + 2.0 * dy,
+    };
     let clip = command.clip;
-    let clip = match &command.draw {
-        Draw::Transformed { matrix, commands }
-            if matrix.iter().all(|n| n.is_finite()) && !nests_transform(commands) =>
-        {
-            let corners = [(clip.x0, clip.y0), (clip.x1, clip.y0), (clip.x0, clip.y1), (clip.x1, clip.y1)]
+    // In `f32`: an unclipped span overflows `i32`.
+    let clip_rect = LogicalRect {
+        x: clip.x0 as f32,
+        y: clip.y0 as f32,
+        width: clip.x1 as f32 - clip.x0 as f32,
+        height: clip.y1 as f32 - clip.y0 as f32,
+    };
+    let own = match &command.draw {
+        Draw::Transformed { matrix, commands } => {
+            let Some(inner) = commands.iter().map(command_bounds).filter(|r| !is_empty(*r)).reduce(union) else {
+                return PhysicalRect { x0: 0, y0: 0, x1: 0, y1: 0 };
+            };
+            if !matrix.iter().all(|n| n.is_finite()) {
+                return UNCLIPPED;
+            }
+            let corners = [(inner.x0, inner.y0), (inner.x1, inner.y0), (inner.x0, inner.y1), (inner.x1, inner.y1)]
                 .map(|(x, y)| node::apply_affine(*matrix, x as f32, y as f32));
             let (x0, y0) = corners.iter().fold((f32::MAX, f32::MAX), |(x, y), c| (x.min(c.0), y.min(c.1)));
             let (x1, y1) = corners.iter().fold((f32::MIN, f32::MIN), |(x, y), c| (x.max(c.0), y.max(c.1)));
-            snap_to_physical(LogicalRect { x: x0, y: y0, width: x1 - x0, height: y1 - y0 }, 1.0)
+            // Inner bounds are already padded and clipped; the group's own clip is pre-transform.
+            return snap_to_physical(LogicalRect { x: x0, y: y0, width: x1 - x0, height: y1 - y0 }, 1.0);
         }
-        Draw::Transformed { .. } => UNCLIPPED,
-        _ => clip,
+        Draw::Box { widths, .. } => {
+            let border = widths.left.max(widths.right).max(widths.top).max(widths.bottom);
+            grow(border, border)
+        }
+        // A line wider than its box is not wrapped away, so the clip bounds it across; glyph
+        // ascenders and italics overhang by at most a line.
+        Draw::Text { font_size, .. } => LogicalRect { x: clip_rect.x, width: clip_rect.width, ..grow(0.0, *font_size) },
+        Draw::Icon { px, .. } => {
+            let px = *px as f32;
+            grow(((px - rect.width) / 2.0).max(0.0), ((px - rect.height) / 2.0).max(0.0))
+        }
+        // `Cover` scales past the box and only the clip cuts it.
+        Draw::Image { fit: Fit::Cover, .. } | Draw::Capture { fit: Fit::Cover, .. } => clip_rect,
+        Draw::Image { .. } | Draw::Capture { .. } | Draw::Clipped { .. } => rect,
     };
-    PhysicalRect {
-        x0: clip.x0.saturating_sub(PAD),
-        y0: clip.y0.saturating_sub(PAD),
-        x1: clip.x1.saturating_add(PAD),
-        y1: clip.y1.saturating_add(PAD),
+    let cut = snap_to_physical(own, 1.0).intersect(clip);
+    if is_empty(cut) {
+        return cut;
     }
+    PhysicalRect {
+        x0: cut.x0.saturating_sub(PAD),
+        y0: cut.y0.saturating_sub(PAD),
+        x1: cut.x1.saturating_add(PAD),
+        y1: cut.y1.saturating_add(PAD),
+    }
+}
+
+fn union(a: PhysicalRect, b: PhysicalRect) -> PhysicalRect {
+    PhysicalRect { x0: a.x0.min(b.x0), y0: a.y0.min(b.y0), x1: a.x1.max(b.x1), y1: a.y1.max(b.y1) }
 }
 
 /// Identity clip before any scissor is pushed.
@@ -1351,17 +1397,14 @@ mod tests {
         };
         let before = DisplayList { commands: vec![cmd(0.0), cmd(100.0), cmd(500.0)] };
         let after = DisplayList { commands: vec![cmd(0.0), cmd(140.0), cmd(500.0)] };
-        assert_eq!(after.damage_since(&before), Some(PhysicalRect { x0: 98, y0: 8, x1: 162, y1: 32 }));
-        assert_eq!(before.damage_since(&before), None);
+        assert_eq!(after.damage_since(&before), [PhysicalRect { x0: 98, y0: 8, x1: 162, y1: 32 }]);
+        assert!(before.damage_since(&before).is_empty());
         let transformed = |scale: f32| DisplayList {
             commands: vec![DrawCmd {
                 draw: Draw::Transformed { matrix: [scale, 0.0, 0.0, scale, 0.0, 0.0], commands: vec![cmd(100.0)] },
                 ..cmd(100.0)
             }],
         };
-        assert_eq!(
-            transformed(2.0).damage_since(&transformed(1.0)),
-            Some(PhysicalRect { x0: 98, y0: 8, x1: 242, y1: 62 })
-        );
+        assert_eq!(transformed(2.0).damage_since(&transformed(1.0)), [PhysicalRect { x0: 98, y0: 8, x1: 244, y1: 64 }]);
     }
 }

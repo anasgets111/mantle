@@ -1412,11 +1412,14 @@ from 2.23/s to zero. Resolution and cloning still visit every surface on each di
 invisible resolution remained separate because config maps could have side effects.
 
 **Amendment: swap damage.** A repaint still redraws the whole buffer but reports only what changed,
-through `EGL_KHR`/`EXT_swap_buffers_with_damage`: the bounds of the commands outside the old and
-new lists' common prefix and suffix, as one rect. Full-surface damage made Hyprland re-blur a
-3440x1440 layer every frame, 9-24 ms per 165 Hz frame callback against 6-7.5 ms without blur.
-The whole surface is still damaged with no prior list, on a resize, while `stale` or a field is
-focused, and for a transform nested in another transform.
+through `EGL_KHR`/`EXT_swap_buffers_with_damage`: one rect over the commands outside the old and new
+lists' common prefix and suffix, plus one per command drawing a texture, since a landed decode,
+capture or GIF frame changes pixels under an unchanged entry. Each command is bounded by its own box,
+widened where the draw may overflow it and cut by its clip; bounding by the clip alone damaged the
+whole panel area. Full-surface damage made Hyprland re-blur a 3440x1440 layer every frame: 9-24 ms per
+165 Hz frame callback, against 6-7.6 ms with damage. The whole surface is still damaged with no prior
+list, on a resize, past 32 rects, and while a field is focused, whose caret blinks under an unchanged
+list.
 
 ## 0064. A masked field draws from a count the tree never holds
 

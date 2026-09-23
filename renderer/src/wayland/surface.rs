@@ -986,21 +986,25 @@ impl App {
             return;
         }
 
-        // What the compositor re-blurs and recomposites behind this surface; `None` is the whole
-        // surface, for every case where pixels change that the list does not name (ADR-0063
-        // amendment): a landed decode or capture, an animated image, a caret.
+        // What the compositor re-blurs and recomposites behind this surface, as EGL's bottom-left
+        // `x, y, w, h` quadruples; `None` is the whole surface. A caret blinks under an unchanged
+        // list, so a focused field damages everything (ADR-0063 amendment).
         let damage = match &self.surfaces[index].last_painted {
-            Some((size, painted))
-                if *size == (width, height)
-                    && self.surfaces[index].stale.is_none()
-                    && self.field_focus_for(&surface_id).is_none() =>
-            {
-                list.damage_since(painted)
+            Some((size, painted)) if *size == (width, height) && self.field_focus_for(&surface_id).is_none() => {
+                let surface_rect =
+                    crate::text::snap::PhysicalRect { x0: 0, y0: 0, x1: width as i32, y1: height as i32 };
+                let rects: Vec<i32> = list
+                    .damage_since(painted)
+                    .into_iter()
+                    .map(|rect| rect.intersect(surface_rect))
+                    .filter(|r| r.x1 > r.x0 && r.y1 > r.y0)
+                    .flat_map(|r| [r.x0, height as i32 - r.y1, r.x1 - r.x0, r.y1 - r.y0])
+                    .collect();
+                // ponytail: past this many rects a compositor merges them anyway.
+                (!rects.is_empty() && rects.len() <= 4 * 32).then_some(rects)
             }
             _ => None,
         };
-        let surface_rect = crate::text::snap::PhysicalRect { x0: 0, y0: 0, x1: width as i32, y1: height as i32 };
-        let damage = damage.map(|rect| rect.intersect(surface_rect)).filter(|r| r.x1 > r.x0 && r.y1 > r.y0);
 
         let t_gl = timing.then(Instant::now);
         let Some(egl) = self.egl.as_ref() else {
@@ -1112,12 +1116,10 @@ impl App {
         use khronos_egl::api::EGL1_0;
         let t_swap = timing.then(Instant::now);
         let swapped = match (egl.swap_with_damage, damage) {
-            (Some(swap), Some(r)) => {
-                // Buffer coordinates, origin bottom-left.
-                let rect = [r.x0, height as i32 - r.y1, r.x1 - r.x0, r.y1 - r.y0];
-                // SAFETY: `egl_surface` was made current on `egl.display` above; `rect` holds the
-                // one `x, y, w, h` quadruple `n_rects = 1` promises.
-                unsafe { swap(egl.display.as_ptr(), egl_surface.as_ptr(), rect.as_ptr(), 1) }
+            (Some(swap), Some(rects)) => {
+                // SAFETY: `egl_surface` was made current on `egl.display` above; `rects` holds the
+                // `n_rects` whole quadruples it promises.
+                unsafe { swap(egl.display.as_ptr(), egl_surface.as_ptr(), rects.as_ptr(), (rects.len() / 4) as i32) }
             }
             // SAFETY: `egl_surface` was made current on `egl.display` above.
             _ => unsafe { khronos_egl::Static.eglSwapBuffers(egl.display.as_ptr(), egl_surface.as_ptr()) },
