@@ -172,7 +172,8 @@ impl UpdatesController {
         if changed {
             let _ = self.events.send(UpdatesSignal::Changed);
         }
-        if self.interval_tx.send(Duration::from_secs(configure.interval_secs)).is_err() {
+        // Capped because tokio's `interval` adds it to an `Instant`, which aborts near `i64::MAX` seconds.
+        if self.interval_tx.send(Duration::from_secs(configure.interval_secs.min(u32::MAX.into()))).is_err() {
             warn!("configure called but the check task is gone; ignored");
         }
     }

@@ -113,7 +113,8 @@ impl SysinfoController {
         debug!("configure: cpu={:?} ram={:?} temp={:?}", cfg.cpu_interval, cfg.ram_interval, cfg.temp_interval);
         let send = |seconds: Option<u64>, sender: &tokio::sync::watch::Sender<Duration>, name: &str| {
             if let Some(sec) = seconds
-                && sender.send(Duration::from_secs(sec)).is_err()
+                // Capped because tokio's `interval` adds it to an `Instant`, which aborts near `i64::MAX` seconds.
+                && sender.send(Duration::from_secs(sec.min(u32::MAX.into()))).is_err()
             {
                 debug!("{name} task is gone, {name}_interval update dropped");
             }
