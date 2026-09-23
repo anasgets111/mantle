@@ -17,7 +17,7 @@ pub struct SysinfoState {
     /// Swap in use, `0` to `100`; `0` means either no swap or empty swap.
     pub swap_percent: u8,
     /// Per-core Celsius temperatures from one hwmon pass. Empty when none are exposed. Length is
-    /// sensor count, not core count, in hwmon order.
+    /// sensor count, not core count, in core or CCD index order.
     pub temp_cores: Vec<i64>,
     /// GPU temperature in Celsius, or `-1` without a GPU sensor. Read in the same hwmon pass as
     /// [`SysinfoState::temp_cores`], so neither is newer than the other.
@@ -78,7 +78,7 @@ pub struct SysinfoController {
 
 impl SysinfoController {
     /// Spawns all three dormant (`Duration::ZERO`) until Lua calls `configure`. They share
-    /// `signal_tx` and signal only after real-tick state updates. Resolve temp chips once here;
+    /// `signal_tx` and signal only after real-tick state updates. Resolve temp inputs once here;
     /// `hwmon_root` is not threaded into the task.
     pub fn new(
         proc_root: std::path::PathBuf,
@@ -91,18 +91,18 @@ impl SysinfoController {
         let (ram_interval, ram_rx) = tokio::sync::watch::channel(Duration::ZERO);
         let (temp_interval, temp_rx) = tokio::sync::watch::channel(Duration::ZERO);
 
-        let core_source = super::temp::resolve_temp_cores_source(&hwmon_root);
-        if core_source == super::temp::CoreTempSource::Unavailable {
-            debug!("no CPU temperature chip found under {}; temp_cores will stay empty", hwmon_root.display());
+        let core_inputs = super::temp::resolve_temp_cores_inputs(&hwmon_root);
+        if core_inputs.is_empty() {
+            debug!("no CPU temperature sensor found under {}; temp_cores will stay empty", hwmon_root.display());
         }
-        let gpu_chip = super::temp::resolve_gpu_chip(&hwmon_root);
-        if gpu_chip.is_none() {
-            debug!("no GPU temperature chip found under {}; temp_gpu will report -1", hwmon_root.display());
+        let gpu_input = super::temp::resolve_gpu_input(&hwmon_root);
+        if gpu_input.is_none() {
+            debug!("no GPU temperature sensor found under {}; temp_gpu will report -1", hwmon_root.display());
         }
 
         tokio::spawn(run_cpu_task(proc_root.clone(), cpu_rx, std::sync::Arc::clone(&state), signal_tx.clone()));
         tokio::spawn(run_ram_task(proc_root, ram_rx, std::sync::Arc::clone(&state), signal_tx.clone()));
-        tokio::spawn(run_temp_task(core_source, gpu_chip, temp_rx, std::sync::Arc::clone(&state), signal_tx));
+        tokio::spawn(run_temp_task(core_inputs, gpu_input, temp_rx, std::sync::Arc::clone(&state), signal_tx));
 
         Self { state, cpu_interval, ram_interval, temp_interval }
     }
@@ -232,19 +232,18 @@ async fn run_ram_task(
     .await
 }
 
-/// `temp_cores`/`temp_gpu` task. One hwmon pass per tick; `temp_gpu` rides `temp_interval`. Resolve
-/// `core_source`/`gpu_chip` once in `new`: onboard sensors do not hotplug, so rescanning each tick
-/// wastes work.
+/// `temp_cores`/`temp_gpu` task. Each tick reads only the inputs `new` resolved; `temp_gpu` rides
+/// `temp_interval`.
 async fn run_temp_task(
-    core_source: super::temp::CoreTempSource,
-    gpu_chip: Option<std::path::PathBuf>,
+    core_inputs: Vec<std::path::PathBuf>,
+    gpu_input: Option<std::path::PathBuf>,
     interval_rx: tokio::sync::watch::Receiver<Duration>,
     state: std::sync::Arc<std::sync::Mutex<SysinfoState>>,
     signal_tx: tokio::sync::mpsc::UnboundedSender<SysinfoSignal>,
 ) {
     run_ticker(interval_rx, |_: &mut Option<()>| {
-        let temp_cores = super::temp::read_temp_cores_from(&core_source);
-        let temp_gpu = super::temp::read_temp_gpu_from(gpu_chip.as_deref());
+        let temp_cores = super::temp::read_temp_cores(&core_inputs);
+        let temp_gpu = super::temp::read_temp_gpu(gpu_input.as_deref());
         publish_if_changed(&state, &signal_tx, |state| {
             let changed = state.temp_cores != temp_cores || state.temp_gpu != temp_gpu;
             state.temp_cores = temp_cores;

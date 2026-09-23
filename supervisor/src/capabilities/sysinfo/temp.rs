@@ -21,15 +21,15 @@ pub fn resolve_chip(hwmon_root: &Path, preference: &[&str]) -> Option<PathBuf> {
     })
 }
 
-/// Reads `tempN_input` sensors whose paired `tempN_label` matches `Core \d+` (coretemp) or
-/// `Tccd\d+` (k10temp), converting to Celsius and sorting by index. Excludes package aggregates
-/// (`Package id N`, `Tctl`) and unlabeled sensors.
-pub fn read_cores(chip_dir: &Path) -> Vec<i64> {
+/// `tempN_input` paths whose paired `tempN_label` matches `Core \d+` (coretemp) or `Tccd\d+`
+/// (k10temp), sorted by that index. Excludes package aggregates (`Package id N`, `Tctl`) and
+/// unlabeled sensors.
+fn core_inputs(chip_dir: &Path) -> Vec<PathBuf> {
     let Ok(entries) = std::fs::read_dir(chip_dir) else {
         return Vec::new();
     };
 
-    let mut cores: Vec<(u32, i64)> = Vec::new();
+    let mut cores: Vec<(u32, PathBuf)> = Vec::new();
     for entry in entries.filter_map(|e| e.ok()) {
         let file_name = entry.file_name();
         let Some(file_name) = file_name.to_str() else { continue };
@@ -47,26 +47,27 @@ pub fn read_cores(chip_dir: &Path) -> Vec<i64> {
         else {
             continue;
         };
-        let Ok(value) = std::fs::read_to_string(entry.path()) else { continue };
-        let Ok(milli_c) = value.trim().parse::<i64>() else { continue };
-        cores.push((core_index, milli_c));
+        cores.push((core_index, entry.path()));
     }
     cores.sort_by_key(|(core_index, _)| *core_index);
-    cores.into_iter().map(|(_, milli_c)| round_milli_c(milli_c)).collect()
+    cores.into_iter().map(|(_, input)| input).collect()
 }
 
-/// Reads the lowest-numbered `tempN_input`, regardless of label, for `acpitz` fallback and
-/// `temp_gpu`. `None` when no such file exists.
-fn read_primary_sensor(chip_dir: &Path) -> Option<i64> {
-    let entries = std::fs::read_dir(chip_dir).ok()?;
-    let lowest = entries
+/// The lowest-numbered `tempN_input`, regardless of label, for `acpitz`, `Tctl` and `temp_gpu`.
+fn primary_input(chip_dir: &Path) -> Option<PathBuf> {
+    let lowest = std::fs::read_dir(chip_dir)
+        .ok()?
         .filter_map(|e| e.ok())
         .filter_map(|e| {
             e.file_name().to_str().and_then(|n| n.strip_suffix("_input")?.strip_prefix("temp")?.parse::<u32>().ok())
         })
         .min()?;
-    let value = std::fs::read_to_string(chip_dir.join(format!("temp{lowest}_input"))).ok()?;
-    value.trim().parse::<i64>().ok().map(round_milli_c)
+    Some(chip_dir.join(format!("temp{lowest}_input")))
+}
+
+/// One `tempN_input` in whole Celsius.
+fn read_celsius(input: &Path) -> Option<i64> {
+    std::fs::read_to_string(input).ok()?.trim().parse::<i64>().ok().map(round_milli_c)
 }
 
 /// Controller-construction preference for `temp_cores` (ADR-0035).
@@ -77,53 +78,33 @@ const GENERIC_TEMP_FALLBACK: &str = "acpitz";
 /// Controller-construction preference for `temp_gpu` (ADR-0035).
 const GPU_TEMP_PREFERENCE: &[&str] = &["amdgpu", "nouveau", "nvidia"];
 
-/// Resolved `temp_cores` source (ADR-0035): chip resolution happens at construction, never per
-/// tick (see [`resolve_temp_cores_source`]).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum CoreTempSource {
-    /// CPU chip (`k10temp`/`coretemp`) resolved; read every per-core sensor, or its primary sensor
-    /// when none is per-core.
-    PerCore(PathBuf),
-    /// No CPU chip; generic `acpitz` fallback resolved to one sensor.
-    Single(PathBuf),
-    /// Neither resolved; `temp_cores` stays empty.
-    Unavailable,
-}
-
-/// Resolves `temp_cores`: CPU preference, then `acpitz`, then unavailable (ADR-0035). Call once at
-/// construction; onboard chips do not hotplug, so per-tick scans waste work.
-pub fn resolve_temp_cores_source(hwmon_root: &Path) -> CoreTempSource {
+/// `temp_cores` inputs: a CPU chip's per-core sensors, else its primary one, else `acpitz`'s
+/// (ADR-0035). Resolved once; onboard sensors do not hotplug.
+pub fn resolve_temp_cores_inputs(hwmon_root: &Path) -> Vec<PathBuf> {
     if let Some(chip_dir) = resolve_chip(hwmon_root, CPU_TEMP_PREFERENCE) {
-        return CoreTempSource::PerCore(chip_dir);
-    }
-    match resolve_chip(hwmon_root, &[GENERIC_TEMP_FALLBACK]) {
-        Some(chip_dir) => CoreTempSource::Single(chip_dir),
-        None => CoreTempSource::Unavailable,
-    }
-}
-
-/// Reads `temp_cores` from an already-resolved [`CoreTempSource`] (ADR-0035); no directory scan.
-pub fn read_temp_cores_from(source: &CoreTempSource) -> Vec<i64> {
-    match source {
+        let cores = core_inputs(&chip_dir);
         // A monolithic Ryzen APU exposes only `Tctl`; one aggregate beats an empty list.
-        CoreTempSource::PerCore(chip_dir) => match read_cores(chip_dir) {
-            cores if cores.is_empty() => read_primary_sensor(chip_dir).into_iter().collect(),
-            cores => cores,
-        },
-        CoreTempSource::Single(chip_dir) => read_primary_sensor(chip_dir).into_iter().collect(),
-        CoreTempSource::Unavailable => Vec::new(),
+        return if cores.is_empty() { primary_input(&chip_dir).into_iter().collect() } else { cores };
     }
+    resolve_chip(hwmon_root, &[GENERIC_TEMP_FALLBACK])
+        .and_then(|chip_dir| primary_input(&chip_dir))
+        .into_iter()
+        .collect()
 }
 
-/// Resolves `temp_gpu`'s chip once at construction (ADR-0035); chips do not hotplug.
-pub fn resolve_gpu_chip(hwmon_root: &Path) -> Option<PathBuf> {
-    resolve_chip(hwmon_root, GPU_TEMP_PREFERENCE)
+/// `temp_cores` from resolved inputs; an unreadable one is skipped.
+pub fn read_temp_cores(inputs: &[PathBuf]) -> Vec<i64> {
+    inputs.iter().filter_map(|input| read_celsius(input)).collect()
 }
 
-/// Reads `temp_gpu` from an already-resolved chip, or IDL sentinel `-1` when none resolved
-/// (ADR-0035); no per-tick resolution.
-pub fn read_temp_gpu_from(gpu_chip: Option<&Path>) -> i64 {
-    gpu_chip.and_then(read_primary_sensor).unwrap_or(-1)
+/// `temp_gpu`'s input, resolved once (ADR-0035).
+pub fn resolve_gpu_input(hwmon_root: &Path) -> Option<PathBuf> {
+    resolve_chip(hwmon_root, GPU_TEMP_PREFERENCE).and_then(|chip_dir| primary_input(&chip_dir))
+}
+
+/// `temp_gpu` from its resolved input, or IDL sentinel `-1` (ADR-0035).
+pub fn read_temp_gpu(input: Option<&Path>) -> i64 {
+    input.and_then(read_celsius).unwrap_or(-1)
 }
 
 #[cfg(test)]
@@ -132,12 +113,12 @@ mod tests {
 
     /// Test-only resolve-and-read convenience; production resolves once and reads per tick.
     fn resolve_and_read_temp_cores(hwmon_root: &Path) -> Vec<i64> {
-        read_temp_cores_from(&resolve_temp_cores_source(hwmon_root))
+        read_temp_cores(&resolve_temp_cores_inputs(hwmon_root))
     }
 
     /// Test-only resolve-and-read convenience for `temp_gpu`.
     fn resolve_and_read_temp_gpu(hwmon_root: &Path) -> i64 {
-        read_temp_gpu_from(resolve_gpu_chip(hwmon_root).as_deref())
+        read_temp_gpu(resolve_gpu_input(hwmon_root).as_deref())
     }
 
     /// Builds fake `hwmon_root` chips under `dir`, each with only a `name` file, for
@@ -156,7 +137,7 @@ mod tests {
     }
 
     #[test]
-    fn read_cores_extracts_and_sorts_by_core_index_not_filename_or_insertion_order() {
+    fn core_inputs_extract_and_sort_by_core_index_not_filename_or_insertion_order() {
         let dir = tempfile::tempdir().unwrap();
         let chip_dir = dir.path().join("hwmon6");
         std::fs::create_dir_all(&chip_dir).unwrap();
@@ -167,7 +148,7 @@ mod tests {
         write_sensor(&chip_dir, 2, "Core 0", 57000);
         write_sensor(&chip_dir, 6, "Core 4", 78000);
 
-        assert_eq!(read_cores(&chip_dir), vec![57, 78, 65]);
+        assert_eq!(read_temp_cores(&core_inputs(&chip_dir)), vec![57, 78, 65]);
     }
 
     #[test]
@@ -188,26 +169,26 @@ mod tests {
     }
 
     #[test]
-    fn read_cores_is_empty_for_a_chip_with_no_core_labeled_sensors() {
+    fn core_inputs_are_empty_for_a_chip_with_no_core_labeled_sensors() {
         let dir = tempfile::tempdir().unwrap();
         let chip_dir = dir.path().join("hwmon1");
         std::fs::create_dir_all(&chip_dir).unwrap();
         write_sensor(&chip_dir, 1, "", 92000); // acpitz: unlabeled, single zone
-        assert_eq!(read_cores(&chip_dir), Vec::<i64>::new());
+        assert_eq!(core_inputs(&chip_dir), Vec::<PathBuf>::new());
     }
 
     #[test]
-    fn read_primary_sensor_reads_the_lowest_numbered_input_regardless_of_label() {
+    fn primary_input_is_the_lowest_numbered_input_regardless_of_label() {
         let dir = tempfile::tempdir().unwrap();
         let chip_dir = dir.path().join("hwmon1");
         std::fs::create_dir_all(&chip_dir).unwrap();
         // acpitz-shaped: one unlabeled captured sensor.
         write_sensor(&chip_dir, 1, "", 92000);
-        assert_eq!(read_primary_sensor(&chip_dir), Some(92));
+        assert_eq!(primary_input(&chip_dir), Some(chip_dir.join("temp1_input")));
     }
 
     #[test]
-    fn read_primary_sensor_picks_the_lowest_input_number_when_several_exist() {
+    fn primary_input_picks_the_lowest_input_number_when_several_exist() {
         let dir = tempfile::tempdir().unwrap();
         let chip_dir = dir.path().join("hwmon3");
         std::fs::create_dir_all(&chip_dir).unwrap();
@@ -216,7 +197,7 @@ mod tests {
         write_sensor(&chip_dir, 1, "Composite", 35850);
         write_sensor(&chip_dir, 2, "Sensor 1", 35850);
         // Lowest input is temp1 (Composite), 35850 milli-C = 35.85°C -> 36.
-        assert_eq!(read_primary_sensor(&chip_dir), Some(36));
+        assert_eq!(primary_input(&chip_dir).as_deref().and_then(read_celsius), Some(36));
     }
 
     #[test]
@@ -230,11 +211,11 @@ mod tests {
     }
 
     #[test]
-    fn read_primary_sensor_is_none_for_a_chip_directory_with_no_sensors() {
+    fn primary_input_is_none_for_a_chip_directory_with_no_sensors() {
         let dir = tempfile::tempdir().unwrap();
         let chip_dir = dir.path().join("hwmon4");
         std::fs::create_dir_all(&chip_dir).unwrap();
-        assert_eq!(read_primary_sensor(&chip_dir), None);
+        assert_eq!(primary_input(&chip_dir), None);
     }
 
     #[test]
@@ -282,67 +263,16 @@ mod tests {
     }
 
     #[test]
-    fn resolve_temp_cores_source_picks_per_core_over_the_acpitz_fallback() {
-        let dir = tempfile::tempdir().unwrap();
-        write_chip(dir.path(), "hwmon1", "acpitz");
-        write_chip(dir.path(), "hwmon6", "coretemp");
-
-        assert_eq!(resolve_temp_cores_source(dir.path()), CoreTempSource::PerCore(dir.path().join("hwmon6")));
-    }
-
-    #[test]
-    fn resolve_temp_cores_source_falls_back_to_single_when_no_cpu_chip_exists() {
-        let dir = tempfile::tempdir().unwrap();
-        write_chip(dir.path(), "hwmon1", "acpitz");
-
-        assert_eq!(resolve_temp_cores_source(dir.path()), CoreTempSource::Single(dir.path().join("hwmon1")));
-    }
-
-    #[test]
-    fn resolve_temp_cores_source_is_unavailable_when_nothing_matches() {
-        let dir = tempfile::tempdir().unwrap();
-        write_chip(dir.path(), "hwmon7", "mt7921_phy0");
-
-        assert_eq!(resolve_temp_cores_source(dir.path()), CoreTempSource::Unavailable);
-    }
-
-    #[test]
-    fn resolve_gpu_chip_finds_a_matching_chip() {
-        let dir = tempfile::tempdir().unwrap();
-        write_chip(dir.path(), "hwmon2", "amdgpu");
-        write_chip(dir.path(), "hwmon6", "coretemp");
-
-        assert_eq!(resolve_gpu_chip(dir.path()), Some(dir.path().join("hwmon2")));
-    }
-
-    #[test]
-    fn resolve_gpu_chip_returns_none_when_no_gpu_chip_exists() {
+    fn resolved_inputs_are_reread_each_tick_without_rescanning_the_chip() {
         let dir = tempfile::tempdir().unwrap();
         write_chip(dir.path(), "hwmon6", "coretemp");
-
-        assert_eq!(resolve_gpu_chip(dir.path()), None);
-    }
-
-    #[test]
-    fn read_temp_cores_from_reads_an_already_resolved_source() {
-        let dir = tempfile::tempdir().unwrap();
         let chip_dir = dir.path().join("hwmon6");
-        std::fs::create_dir_all(&chip_dir).unwrap();
         write_sensor(&chip_dir, 2, "Core 0", 57000);
+        let inputs = resolve_temp_cores_inputs(dir.path());
 
-        assert_eq!(read_temp_cores_from(&CoreTempSource::PerCore(chip_dir)), vec![57]);
-        assert_eq!(read_temp_cores_from(&CoreTempSource::Unavailable), Vec::<i64>::new());
-    }
-
-    #[test]
-    fn read_temp_gpu_from_reads_an_already_resolved_chip_or_the_sentinel() {
-        let dir = tempfile::tempdir().unwrap();
-        let chip_dir = dir.path().join("hwmon2");
-        std::fs::create_dir_all(&chip_dir).unwrap();
-        write_sensor(&chip_dir, 1, "edge", 45000);
-
-        assert_eq!(read_temp_gpu_from(Some(&chip_dir)), 45);
-        assert_eq!(read_temp_gpu_from(None), -1);
+        write_sensor(&chip_dir, 2, "Core 0", 61000);
+        write_sensor(&chip_dir, 3, "Core 1", 70000); // appears after resolution: never read
+        assert_eq!(read_temp_cores(&inputs), vec![61]);
     }
 
     #[test]

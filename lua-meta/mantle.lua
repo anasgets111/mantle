@@ -482,7 +482,7 @@
 ---@field cpu_percent integer Total CPU utilization, `0` to `100`, across cores. `0` before two samples can form a delta.
 ---@field ram_percent integer Physical memory in use, `0` to `100`.
 ---@field swap_percent integer Swap in use, `0` to `100`; `0` means either no swap or empty swap.
----@field temp_cores integer[] Per-core Celsius temperatures from one hwmon pass. Empty when none are exposed. Length is sensor count, not core count, in hwmon order.
+---@field temp_cores integer[] Per-core Celsius temperatures from one hwmon pass. Empty when none are exposed. Length is sensor count, not core count, in core or CCD index order.
 ---@field temp_gpu integer GPU temperature in Celsius, or `-1` without a GPU sensor. Read in the same hwmon pass as `SysinfoState::temp_cores`, so neither is newer than the other.
 
 ---@class SystemState
