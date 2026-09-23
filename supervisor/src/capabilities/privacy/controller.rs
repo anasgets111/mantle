@@ -120,8 +120,8 @@ impl PrivacyController {
 }
 
 /// Watches resolved video devices for live-reliable `OPEN`/`CLOSE` (see `privacy::video`) and
-/// drains `sources`. Either triggers a full rebuild of all three lists, without debounce; only a
-/// device event pays for the `/proc` scan.
+/// drains `sources`. Either triggers a full rebuild of all three lists; only a device event pays for
+/// the `/proc` scan, once per burst of ready events.
 ///
 /// The camera watch is optional, not the loop. Without a webcam, or after `Inotify`/stream failure,
 /// `camera_users` stays empty while microphone and screencast continue. Before ADR-0137 those
@@ -198,7 +198,7 @@ fn publish(proc_root: &Path, state: &Arc<Mutex<PrivacyState>>, opener_pids: &[u3
 
 /// Inotify stream for `/dev/videoN`, or `None` when no device exists or setup failed. Failure costs
 /// only `camera_users` and is logged.
-fn watch_video_devices(devices: &[PathBuf]) -> Option<inotify::EventStream<Vec<u8>>> {
+fn watch_video_devices(devices: &[PathBuf]) -> Option<DeviceEvents> {
     if devices.is_empty() {
         debug!("no /dev/videoN devices found; camera_users will stay empty");
         return None;
@@ -216,13 +216,16 @@ fn watch_video_devices(devices: &[PathBuf]) -> Option<inotify::EventStream<Vec<u
         }
     }
     match inotify.into_event_stream(vec![0u8; 4096]) {
-        Ok(stream) => Some(stream),
+        // An app probing every node opens and closes each; one scan answers the whole burst.
+        Ok(stream) => Some(stream.ready_chunks(64)),
         Err(err) => {
             warn!("failed to start the inotify event stream; camera detection disabled for this run: {err}");
             None
         }
     }
 }
+
+type DeviceEvents = futures_util::stream::ReadyChunks<inotify::EventStream<Vec<u8>>>;
 
 /// Camera watch event. The enum names cases and lets [`next_device_event`] flatten a missing watch.
 enum DeviceEvent {
@@ -233,11 +236,11 @@ enum DeviceEvent {
 
 /// Next device open/close, or a never-completing future without a camera. `select!` still needs an
 /// arm future in that case.
-async fn next_device_event(stream: &mut Option<inotify::EventStream<Vec<u8>>>) -> DeviceEvent {
+async fn next_device_event(stream: &mut Option<DeviceEvents>) -> DeviceEvent {
     let Some(stream) = stream.as_mut() else { return std::future::pending().await };
     match stream.next().await {
-        Some(Ok(_)) => DeviceEvent::Opened,
-        Some(Err(err)) => DeviceEvent::Failed(err),
+        Some(events) if events.iter().any(Result::is_ok) => DeviceEvent::Opened,
+        Some(mut events) => DeviceEvent::Failed(events.swap_remove(0).unwrap_err()),
         None => DeviceEvent::Ended,
     }
 }
@@ -380,6 +383,19 @@ mod tests {
         );
 
         assert_eq!(users, vec![PrivacyUser { app_name: "Firefox".to_string() }]);
+    }
+
+    #[tokio::test]
+    async fn a_burst_of_device_opens_and_closes_is_one_event() {
+        let device = tempfile::NamedTempFile::new().unwrap();
+        let mut stream = watch_video_devices(&[device.path().to_path_buf()]);
+        for _ in 0..5 {
+            std::fs::File::open(device.path()).unwrap();
+        }
+
+        assert!(matches!(next_device_event(&mut stream).await, DeviceEvent::Opened));
+        let second = tokio::time::timeout(std::time::Duration::from_millis(100), next_device_event(&mut stream)).await;
+        assert!(second.is_err(), "ten queued events must cost one scan, not ten");
     }
 
     #[tokio::test]
