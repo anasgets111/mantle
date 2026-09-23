@@ -23,6 +23,7 @@
 mod budget;
 pub mod capture;
 pub mod icons;
+pub mod quantize;
 mod svg;
 pub mod thumbnails;
 

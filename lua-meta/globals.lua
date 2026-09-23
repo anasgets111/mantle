@@ -89,6 +89,26 @@ function log.info(...) end
 ---@param ... any
 function log.debug(...) end
 
+palette = {}
+
+---@class PaletteSwatch
+---@field color Color `#RRGGBB`.
+---@field share number Fraction of the image's non-transparent pixels this colour stands for, 0 to 1.
+
+---@class PaletteHandle
+local PaletteHandle = {}
+
+---Drops the callback. The decode still finishes.
+function PaletteHandle:cancel() end
+
+---Extracts an image's dominant colours off the Lua thread (ADR-0249). `cb` gets them most common
+---first, or `nil` on failure with a logged warning.
+---@param path string A local raster file. No SVG or URL.
+---@param opts? { depth?: integer, rescale?: integer } `depth` 0 to 8, default 3, gives up to `2^depth` colours. `rescale` is the longest edge to shrink to first, default 128, `0` for full size.
+---@param cb fun(swatches: PaletteSwatch[]?)
+---@return PaletteHandle
+function palette.quantize(path, opts, cb) end
+
 process = {}
 
 ---Declares what `mantle call <name>` runs (ADR-0197).

@@ -208,7 +208,7 @@ pub fn parse_live(properties: &PropMap) -> Result<bool, LayoutError> {
     parse_bool(properties, "live", false)
 }
 
-/// `capture.paint_cursor` (ADR-0248), default `false`, matching Quickshell's `ScreencopyView`.
+/// `capture.paint_cursor` (ADR-0248), default `false`.
 pub fn parse_paint_cursor(properties: &PropMap) -> Result<bool, LayoutError> {
     parse_bool(properties, "paint_cursor", false)
 }

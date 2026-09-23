@@ -12,6 +12,7 @@ pub mod log;
 pub mod marshal;
 pub mod namespace;
 pub mod nodes;
+pub mod palette;
 pub mod process;
 pub mod session_process;
 pub mod signal;
@@ -190,6 +191,11 @@ impl Loader {
     /// cannot go through [`Self::set_global`] and [`Self::create_table`] alone.
     pub fn register_process(&self, registry: process::ProcessRegistry) -> mlua::Result<()> {
         process::register(&self.lua, registry)
+    }
+
+    /// See [`Self::register_process`].
+    pub fn register_palette(&self, registry: palette::PaletteRegistry) -> mlua::Result<()> {
+        palette::register(&self.lua, registry)
     }
 
     /// Gives the loader the `mantle.idle` registry from `lua::namespace::build`, so
@@ -522,12 +528,13 @@ mod tests {
     /// registration style counts. `mantle`'s members are `mantle.lua`'s generator's to check.
     #[test]
     fn the_stubs_declare_every_engine_global() {
-        const MEMBER_TABLES: [&str; 4] = ["os", "process", "json", "log"];
+        const MEMBER_TABLES: [&str; 5] = ["os", "process", "json", "log", "palette"];
         let dir = tempfile::tempdir().unwrap();
         let dirty = signal::DirtyFlag::new();
         let loader = Loader::new(dirty.clone(), dir.path()).unwrap();
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
         loader.register_process(process::ProcessRegistry::new(0, tx.clone())).unwrap();
+        loader.register_palette(palette::PaletteRegistry::new(None)).unwrap();
         let commands = capability::CommandSender::new(0, tx);
         namespace::build(&loader, &dirty, &commands, &dir.path().join("shell.lua")).unwrap();
 

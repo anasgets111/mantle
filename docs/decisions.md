@@ -5896,10 +5896,13 @@ Quickshell's `ColorQuantizer` parity, for theming from a wallpaper or album art.
    Nothing new is written to the thumbnail cache.
 5. `depth` defaults to 3 and allows 0 to 8; outside that is a config error. `rescale` defaults to
    128, the "normal" thumbnail edge, so the default reads a cached thumbnail.
-6. Colours return as `#RRGGBB`, most common first, so `colors[1]` is dominant and fits any `Color`.
+6. Each swatch is `{ color, share }`, most common first. `color` is `#RRGGBB` and fits any
+   `Color`; `share` lets a config score accents itself, as Material's population-times-chroma
+   score does, without the engine choosing a theming policy.
 7. One thread per call, not the image pool. The pool's jobs are texture uploads. The decode goes
    uncounted against its `Budget`, accepted until measured.
 8. `:cancel()` drops the callback; the decode finishes and its result is discarded.
 
 Rejected: computing it in the Supervisor, which has no raster decoder and would need the pixels
-sent over the socket.
+sent over the socket. Material's HCT scoring in the engine, which bakes one theming opinion into a
+second algorithm while `share` already lets a config score.

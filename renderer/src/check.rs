@@ -9,6 +9,7 @@ use std::path::Path;
 
 use crate::layout::node::SurfaceSpec;
 use crate::lua::capability::CommandSender;
+use crate::lua::palette::PaletteRegistry;
 use crate::lua::process::ProcessRegistry;
 use crate::lua::signal::DirtyFlag;
 use crate::lua::{Loader, namespace, surfaces::evaluate_and_specs};
@@ -37,15 +38,17 @@ pub fn run(config_dir: &Path) -> Result<String, String> {
     let dirty = DirtyFlag::new();
     let loader = Loader::new(dirty.clone(), config_dir).map_err(|err| format!("{}: {err}", shell_lua.display()))?;
 
-    // Register `mantle` and `process.run`: configs reach for both during evaluation, and a bare
-    // `Loader` dies on the first `mantle.` access. Capabilities read `nil`, as at real boot before
-    // the first snapshot.
+    // Register `mantle`, `process.run` and `palette.quantize`: configs reach for all three during
+    // evaluation, and a bare `Loader` dies on the first `mantle.` access. Capabilities read `nil`,
+    // as at real boot before the first snapshot.
     //
     // Frames go into an undrained channel: without a Supervisor, `process.run` has nowhere to run.
-    // Correct for a checker that evaluates, but does not start, a config.
+    // Correct for a checker that evaluates, but does not start, a config. Nothing polls
+    // `palette.quantize` here either.
     let (outbound_tx, _outbound_rx) = tokio::sync::mpsc::unbounded_channel();
     let commands = CommandSender::new(0, outbound_tx.clone());
     loader.register_process(ProcessRegistry::new(0, outbound_tx)).map_err(|err| err.to_string())?;
+    loader.register_palette(PaletteRegistry::new(None)).map_err(|err| err.to_string())?;
     namespace::build(&loader, &dirty, &commands, &shell_lua).map_err(|err| err.to_string())?;
 
     let (_output, specs) =

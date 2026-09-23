@@ -287,8 +287,7 @@ name matching no connected output draws nothing and logs a warning once. `live =
 captures once, when the node appears and again whenever `output` changes; `live = true` keeps
 requesting the next frame as soon as the previous one arrives, at most one in flight. Capturing
 pauses while the node's surface is unmapped or the node leaves the scene, and resumes fresh on the
-next show. `paint_cursor` composites the pointer onto the captured frame; default `false`. Phase 1
-covers an output; a window source needs the `windows` capability's toplevel ids first (ADR-0248).
+next show. `paint_cursor` composites the pointer onto the captured frame; default `false`.
 
 A list calls `itemfn(element)` for every source element, including offscreen items.
 `key(element)` must return a unique sibling string; without it identity is positional.

@@ -15,6 +15,7 @@ use crate::layout::instance::SurfaceInstance;
 use crate::layout::node::SurfaceSpec;
 use crate::layout::{self, Scene};
 use crate::lua::capability::{Capability, CapabilityHandle, CommandSender};
+use crate::lua::palette::PaletteRegistry;
 use crate::lua::process::ProcessRegistry;
 use crate::lua::signal::{DirtyFlag, LiveSignalHandle};
 use crate::lua::surfaces::evaluate_and_specs;
@@ -94,6 +95,7 @@ pub struct RendererClient {
     /// `rescue_handle`'s mirror for [`Self::set_rescue_state`] no-op detection.
     rescue_state: (bool, String),
     process_registry: ProcessRegistry,
+    palette_registry: PaletteRegistry,
     /// Renderer-sourced `mantle.idle` threshold callbacks (ADR-0032).
     idle_registry: crate::lua::idle::IdleRegistry,
     /// Scene-dirty flag (ADR-0044 decision 2), cloned into every handed-out `LiveSignalHandle`.
@@ -116,6 +118,7 @@ impl RendererClient {
         shaping: ShapingHandle,
         outbound_tx: mpsc::UnboundedSender<RendererFrame>,
         generation_id: u32,
+        waker: crate::wake::Waker,
     ) -> Result<Self, Box<dyn std::error::Error>> {
         let shell_lua_path =
             shared::shell_lua_path().map_err(|err| format!("failed to resolve shell.lua's path: {err}"))?;
@@ -130,9 +133,13 @@ impl RendererClient {
             .register_process(process_registry.clone())
             .map_err(|err| format!("failed to register the process global: {err}"))?;
         // `ProcessRegistry` uses the same id, so `process.kill` cannot cross generations.
+        let palette_registry = PaletteRegistry::new(Some(waker));
+        loader
+            .register_palette(palette_registry.clone())
+            .map_err(|err| format!("failed to register the palette global: {err}"))?;
         // Capability commands all use this write path.
         let commands = CommandSender::new(generation_id, outbound_tx);
-        let client = Self::new(loader, shell_lua_path, shaping, commands, process_registry, dirty)
+        let client = Self::new(loader, shell_lua_path, shaping, commands, process_registry, palette_registry, dirty)
             .map_err(|err| format!("failed to build the `mantle` namespace: {err}"))?;
         Ok(client)
     }
@@ -145,6 +152,7 @@ impl RendererClient {
         shaping: ShapingHandle,
         commands: CommandSender,
         process_registry: ProcessRegistry,
+        palette_registry: PaletteRegistry,
         dirty: DirtyFlag,
     ) -> mlua::Result<Self> {
         // Take it from `commands`, avoiding a drifting clone.
@@ -164,6 +172,7 @@ impl RendererClient {
             // Matches `lua::namespace::build`'s initial rescue signal.
             rescue_state: (false, String::new()),
             process_registry,
+            palette_registry,
             idle_registry: namespace.idle,
             dirty,
             last_resolved: None,
@@ -171,6 +180,10 @@ impl RendererClient {
             mantle: namespace.table,
             loader,
         })
+    }
+
+    pub fn poll_palette(&self) {
+        self.palette_registry.poll();
     }
 
     /// Returns and clears the instance IDs narrowed during the last dirty re-resolve, if any.
@@ -779,6 +792,8 @@ mod tests {
         let loader = Loader::new(dirty.clone(), shell_lua_path.parent().unwrap()).unwrap();
         let process_registry = ProcessRegistry::new(0, outbound_tx.clone());
         loader.register_process(process_registry.clone()).unwrap();
+        let palette_registry = PaletteRegistry::new(None);
+        loader.register_palette(palette_registry.clone()).unwrap();
         let commands = CommandSender::new(0, outbound_tx);
         let client = RendererClient::new(
             loader,
@@ -786,6 +801,7 @@ mod tests {
             ShapingHandle::spawn(),
             commands,
             process_registry,
+            palette_registry,
             dirty,
         )
         .unwrap();
