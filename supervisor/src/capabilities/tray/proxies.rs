@@ -4,9 +4,8 @@
 
 use std::collections::HashMap;
 
-use serde::Deserialize;
 use zbus::names::OwnedBusName;
-use zbus::zvariant::{Array, Dict, OwnedObjectPath, OwnedValue, Signature, Str, StructureBuilder, Type, Value};
+use zbus::zvariant::{OwnedObjectPath, OwnedValue, Value};
 
 #[zbus::proxy(interface = "org.kde.StatusNotifierItem")]
 pub(super) trait StatusNotifierItem {
@@ -40,42 +39,9 @@ pub(super) trait StatusNotifierItem {
     fn new_status(&self, status: String);
 }
 
-/// `GetLayout`'s `(ia{sv}av)` reply, decoded by `#[derive(Type, Deserialize)]` rather than
-/// `OwnedValue`. `Body::deserialize` checks the Rust signature, while `OwnedValue` is always `"v"`
-/// and would reject the real signature with a mismatch. `properties`/`children` remain
-/// `OwnedValue` after successful decoding for [`parse_menu_node`] to walk.
-#[derive(Debug, Deserialize, Type)]
-pub(super) struct RawMenuLayout {
-    id: i32,
-    properties: HashMap<String, OwnedValue>,
-    children: Vec<OwnedValue>,
-}
-
-/// Rebuilds the `Value::Structure` expected by [`parse_menu_node`] so the top-level reply and
-/// recursive children share one parser.
-pub(super) fn raw_menu_layout_to_value(raw: RawMenuLayout) -> Value<'static> {
-    let mut properties = Dict::new(&Signature::Str, &Signature::Variant);
-    for (key, value) in raw.properties {
-        // The dict declares variant values (`"v"`); only `Value::Value(Box<Value>)` has that
-        // signature. Explicit wrapping is required.
-        properties
-            .append(Value::Str(Str::from(key)), Value::Value(Box::new(Value::from(value))))
-            .expect("Str key / explicitly-wrapped-variant value always matches this dict's own declared signature");
-    }
-    let mut children = Array::new(&Signature::Variant);
-    for child in raw.children {
-        children
-            .append(Value::Value(Box::new(Value::from(child))))
-            .expect("an explicitly-wrapped-variant element always matches this array's own declared signature");
-    }
-    let structure = StructureBuilder::new()
-        .add_field(raw.id)
-        .append_field(Value::Dict(properties))
-        .append_field(Value::Array(children))
-        .build()
-        .expect("a 3-field (id, properties, children) structure is always well-formed");
-    Value::Structure(structure)
-}
+/// `GetLayout`'s `(ia{sv}av)` reply: id, properties, children. Typed rather than one `OwnedValue`,
+/// whose signature is always `"v"` and fails `Body::deserialize`'s check against the real one.
+pub(super) type RawMenuLayout = (i32, HashMap<String, OwnedValue>, Vec<OwnedValue>);
 
 #[zbus::proxy(interface = "com.canonical.dbusmenu")]
 pub(super) trait DBusMenu {
@@ -136,36 +102,14 @@ pub(super) async fn bind_dbusmenu(
 
 #[cfg(test)]
 mod tests {
-    use super::super::menu::parse_menu_node;
-    use super::*;
+    use zbus::zvariant::Type;
 
-    // ---- RawMenuLayout / raw_menu_layout_to_value ----
+    use super::*;
 
     #[test]
     fn raw_menu_layout_signature_matches_the_real_dbusmenu_wire_shape() {
         // The DBusMenu wire signature must match or every real `GetLayout` fails, even if local
         // tests pass.
         assert_eq!(RawMenuLayout::SIGNATURE.to_string(), "(ia{sv}av)");
-    }
-
-    #[test]
-    fn raw_menu_layout_to_value_round_trips_through_parse_menu_node() {
-        let mut properties = HashMap::new();
-        properties.insert("label".to_string(), OwnedValue::try_from(Value::Str(Str::from("Quit"))).unwrap());
-        properties.insert("enabled".to_string(), OwnedValue::try_from(Value::Bool(false)).unwrap());
-
-        let child = RawMenuLayout { id: 11, properties: HashMap::new(), children: Vec::new() };
-        let child_value = raw_menu_layout_to_value(child);
-        let root = RawMenuLayout { id: 0, properties, children: vec![OwnedValue::try_from(child_value).unwrap()] };
-
-        let root_value = raw_menu_layout_to_value(root);
-        let item = parse_menu_node(&root_value, 0, &mut { crate::capabilities::tray::MAX_MENU_NODES })
-            .expect("must parse a reconstructed layout");
-
-        assert_eq!(item.id, 0);
-        assert_eq!(item.label, Some("Quit".to_string()));
-        assert!(!item.enabled);
-        assert_eq!(item.children.len(), 1);
-        assert_eq!(item.children[0].id, 11);
     }
 }

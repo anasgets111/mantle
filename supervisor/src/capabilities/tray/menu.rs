@@ -5,7 +5,7 @@ use serde::Serialize;
 use shared::debug;
 use zbus::zvariant::Value;
 
-use super::proxies::{DBusMenuProxy, raw_menu_layout_to_value};
+use super::proxies::DBusMenuProxy;
 use super::{MAX_MENU_NODES, MAX_TRAY_TEXT_BYTES};
 use crate::capabilities::truncate_utf8_bytes;
 
@@ -149,11 +149,10 @@ pub(super) fn parse_menu_node(value: &Value<'_>, depth: u32, budget: &mut usize)
 }
 
 pub(super) async fn fetch_menu_via(menu: &DBusMenuProxy<'static>) -> zbus::Result<Vec<MenuItem>> {
-    let (_, raw_root) = menu.get_layout(0, -1, &[]).await?;
-    let root_value = raw_menu_layout_to_value(raw_root);
+    let (_, (_, _, children)) = menu.get_layout(0, -1, &[]).await?;
     // The root is one of the budgeted nodes, so the reply as a whole cannot exceed the cap.
-    let mut budget = MAX_MENU_NODES;
-    let items = parse_menu_node(&root_value, 0, &mut budget).map(|root| root.children).unwrap_or_default();
+    let mut budget = MAX_MENU_NODES - 1;
+    let items = children.iter().filter_map(|child| parse_menu_node(child, 1, &mut budget)).collect();
     // Reported here rather than at the node that ran out: exhaustion stops every remaining sibling
     // and ancestor alike, so warning inside the recursion means one line per ancestor for one reply.
     if budget == 0 {
