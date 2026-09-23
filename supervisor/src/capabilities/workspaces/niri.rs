@@ -121,10 +121,20 @@ pub fn spawn_reader(mut publisher: StatePublisher, mut windows_publisher: Window
                     return;
                 }
             };
+            // No published row reads layouts, focus timestamps or urgency.
+            let moves_rows = !matches!(
+                event,
+                niri_ipc::Event::WindowLayoutsChanged { .. }
+                    | niri_ipc::Event::WindowFocusTimestampChanged { .. }
+                    | niri_ipc::Event::WindowUrgencyChanged { .. }
+            );
             if let Some(event) = niri_workspaces.apply(event)
                 && let Some(event) = niri_windows.apply(event)
             {
                 niri_overview.apply(event);
+            }
+            if !moves_rows {
+                continue;
             }
 
             let rows = workspace_rows(&niri_workspaces.workspaces, &niri_windows.windows);
