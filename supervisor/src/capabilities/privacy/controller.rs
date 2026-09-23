@@ -161,8 +161,14 @@ async fn run_privacy_task(
         tokio::select! {
             event = next_device_event(&mut inotify_stream) => {
                 match event {
-                    // Only a device open/close can change who holds it; this arm pays for the scan.
-                    DeviceEvent::Opened => opener_pids = scan_camera_pids(&proc_root, &devices),
+                    // Only a device open/close can change who holds it; this arm pays for the scan,
+                    // a readlink of every fd in `/proc`, so it runs off the two async workers.
+                    DeviceEvent::Opened => {
+                        let (root, watched) = (proc_root.clone(), devices.clone());
+                        if let Ok(pids) = tokio::task::spawn_blocking(move || scan_camera_pids(&root, &watched)).await {
+                            opener_pids = pids;
+                        }
+                    }
                     DeviceEvent::Failed(err) => {
                         warn!("inotify read failed: {err}");
                         continue;
