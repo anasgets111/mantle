@@ -387,13 +387,11 @@ async fn exchange_over(
 /// `reap_process_group` sends `SIGTERM` before waiting, so a live worker dies by our hand and
 /// reports signal 15. That is not the ambiguity it looks like: this runs only when the pipe already
 /// closed, which a live process does not do, so in practice the status is the worker's own.
-fn post_mortem(reaped: &std::io::Result<crate::process::ReapOutcome>) -> String {
+fn post_mortem(reaped: &std::io::Result<std::process::ExitStatus>) -> String {
     use std::os::unix::process::ExitStatusExt;
 
     let status = match reaped {
-        Ok(crate::process::ReapOutcome::ExitedCleanly(status) | crate::process::ReapOutcome::Escalated(status)) => {
-            status
-        }
+        Ok(status) => status,
         Err(err) => return format!("could not be reaped, so how it died is unknown: {err}"),
     };
     if let Some(signal) = status.signal() {

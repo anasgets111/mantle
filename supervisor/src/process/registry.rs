@@ -82,21 +82,11 @@ pub(crate) async fn dispatch(
                 envelope.params.arguments
             ),
         },
-        "kill" => match kill_registered_process(processes, generation_id, id).await {
-            KillOutcome::Reaped(code) => {
+        "kill" => {
+            if let Some(code) = kill_registered_process(processes, generation_id, id).await {
                 send_frame_logged(registry, generation_id, &SupervisorFrame::ProcessExited(ProcessExited { id, code }));
             }
-            KillOutcome::ReapFailed => {
-                // Entry is removed and failure logged; send `None` to stop `id`'s exit_cb leaking.
-                // `None` is honest, not synthesized.
-                send_frame_logged(
-                    registry,
-                    generation_id,
-                    &SupervisorFrame::ProcessExited(ProcessExited { id, code: None }),
-                );
-            }
-            KillOutcome::NotRegistered => {}
-        },
+        }
         _ => debug!("unknown action {:?} from generation {generation_id}", envelope.params.action),
     }
 }
@@ -269,30 +259,21 @@ fn report_process_output_line(
     }
 }
 
-/// What `("process", "kill")` found for `(generation_id, id)`.
-#[derive(Debug)]
-pub(crate) enum KillOutcome {
-    /// No entry: already reaped via completion, or Lua never received a handle.
-    NotRegistered,
-    /// Group reaped; report its exit code to Lua.
-    Reaped(Option<i32>),
-    /// `reap_process_group` failed; already logged.
-    ReapFailed,
-}
-
 /// Removes `(generation_id, id)` and reaps its group via `super::reap_process_group` (ADR-0018).
-/// Reuse the returned code, usually `None` for SIGTERM/SIGKILL deaths, so `exit_cb` is honest.
-pub(crate) async fn kill_registered_process(processes: &mut LiveProcesses, generation_id: u32, id: u64) -> KillOutcome {
-    let Some(mut child) = processes.remove(&(generation_id, id)) else {
-        return KillOutcome::NotRegistered;
-    };
+/// `None` means no entry: already reaped via completion, or Lua never received a handle. Otherwise
+/// the code for `exit_cb`: usually `None` for a SIGTERM/SIGKILL death, and `None` when the reap
+/// failed (logged here) so `id`'s `exit_cb` is still answered.
+pub(crate) async fn kill_registered_process(
+    processes: &mut LiveProcesses,
+    generation_id: u32,
+    id: u64,
+) -> Option<Option<i32>> {
+    let mut child = processes.remove(&(generation_id, id))?;
     match super::reap_process_group(&mut child, super::DEFAULT_REAP_GRACE).await {
-        Ok(super::ReapOutcome::ExitedCleanly(status) | super::ReapOutcome::Escalated(status)) => {
-            KillOutcome::Reaped(status.code())
-        }
+        Ok(status) => Some(status.code()),
         Err(err) => {
             warn!("failed to reap process {id} (generation {generation_id}) on kill: {err}");
-            KillOutcome::ReapFailed
+            Some(None)
         }
     }
 }
@@ -311,7 +292,7 @@ pub(crate) async fn wait_and_report_exit(
         Ok(status) => status.code(),
         Err(err) => {
             warn!("failed to wait on exited process {id} (generation {generation_id}): {err}");
-            // `None` for the same reason as `KillOutcome::ReapFailed`: `id`'s `exit_cb` is waiting
+            // `None` for the same reason as a failed kill reap: `id`'s `exit_cb` is waiting
             // and no other path will answer it.
             None
         }
@@ -554,17 +535,18 @@ mod tests {
         spawn_and_register_process(&mut processes, 1, 3, "sh", &sh_args("sleep 5"));
         assert!(processes.contains_key(&(1, 3)));
 
-        match kill_registered_process(&mut processes, 1, 3).await {
-            KillOutcome::Reaped(code) => assert_eq!(code, None, "a SIGTERM/SIGKILL death has no exit code"),
-            other => panic!("expected Reaped, got {other:?}"),
-        }
+        assert_eq!(
+            kill_registered_process(&mut processes, 1, 3).await,
+            Some(None),
+            "a SIGTERM/SIGKILL death has no exit code"
+        );
         assert!(!processes.contains_key(&(1, 3)));
     }
 
     #[tokio::test]
     async fn kill_registered_process_on_an_unregistered_id_is_a_silent_no_op() {
         let mut processes: LiveProcesses = HashMap::new();
-        assert!(matches!(kill_registered_process(&mut processes, 1, 99).await, KillOutcome::NotRegistered));
+        assert_eq!(kill_registered_process(&mut processes, 1, 99).await, None);
     }
 
     #[tokio::test]

@@ -126,33 +126,24 @@ pub fn spawn_group_leader_stdio_piped(cmd: &str, args: &[String], envs: &[(Strin
         .spawn()
 }
 
-/// How [`reap_process_group`] recovered `child`'s process group.
-#[derive(Debug)]
-pub enum ReapOutcome {
-    /// The group exited within grace; `SIGKILL` was not sent.
-    ExitedCleanly(ExitStatus),
-    /// The group ignored or was too slow for `SIGTERM`; `SIGKILL` forced it down.
-    Escalated(ExitStatus),
-}
-
 /// Reaps `child`'s group: SIGTERM, wait `grace`, then SIGKILL. Signaling the group reaches
 /// descendants in it, not just `child`.
 ///
 /// `child` must come from [`spawn_group_leader`]: `child.id()` is the pgid only for a group leader.
 ///
 /// Waits at most `grace` plus 2s; only D-state I/O outlasts SIGKILL that long (ADR-0018).
-pub async fn reap_process_group(child: &mut Child, grace: Duration) -> io::Result<ReapOutcome> {
+pub async fn reap_process_group(child: &mut Child, grace: Duration) -> io::Result<ExitStatus> {
     let pid = child.id().ok_or_else(|| io::Error::other("child has no pid; already reaped"))?;
     let pgid = Pid::from_raw(pid as i32);
 
     signal_group_best_effort(pgid, Signal::SIGTERM)?;
     if let TimeoutRace::ActuallyExited(status) = wait_or_classify(child, grace).await? {
-        return Ok(ReapOutcome::ExitedCleanly(status));
+        return Ok(status);
     }
 
     signal_group_best_effort(pgid, Signal::SIGKILL)?;
     match wait_or_classify(child, Duration::from_secs(2)).await? {
-        TimeoutRace::ActuallyExited(status) => Ok(ReapOutcome::Escalated(status)),
+        TimeoutRace::ActuallyExited(status) => Ok(status),
         TimeoutRace::StillRunning => {
             Err(io::Error::other("process group did not exit even after SIGKILL (likely stuck in uninterruptible I/O)"))
         }
@@ -236,9 +227,9 @@ mod tests {
     async fn reap_process_group_reaps_a_sigterm_compliant_child_without_escalating() {
         let mut child = spawn_group_leader("sh", &sh_args("sleep 5"), &[]).expect("failed to spawn");
 
-        let outcome = reap_process_group(&mut child, Duration::from_millis(500)).await.expect("reap failed");
+        let status = reap_process_group(&mut child, Duration::from_millis(500)).await.expect("reap failed");
 
-        assert!(matches!(outcome, ReapOutcome::ExitedCleanly(_)), "expected a clean exit, got {outcome:?}");
+        assert_eq!(status.signal(), Some(libc::SIGTERM), "expected SIGTERM alone to end it, got {status:?}");
     }
 
     #[tokio::test]
@@ -249,13 +240,9 @@ mod tests {
         let armed = BufReader::new(child.stdout.take().expect("stdout was piped")).lines().next_line().await;
         assert_eq!(armed.expect("reading the trap line").as_deref(), Some("armed"));
 
-        let outcome = reap_process_group(&mut child, Duration::from_millis(50)).await.expect("reap failed");
+        let status = reap_process_group(&mut child, Duration::from_millis(50)).await.expect("reap failed");
 
-        let status = match outcome {
-            ReapOutcome::Escalated(status) => status,
-            ReapOutcome::ExitedCleanly(_) => panic!("expected escalation, child ignores SIGTERM"),
-        };
-        assert!(!status.success(), "a SIGKILLed process must not report success");
+        assert_eq!(status.signal(), Some(libc::SIGKILL), "expected escalation, child ignores SIGTERM");
     }
 
     #[tokio::test]
