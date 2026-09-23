@@ -560,7 +560,9 @@ mod tests {
             (decode::<FilesAction>("unwatch", json!(["walls"])), Err("absolute")),
             (
                 decode::<UpdatesAction>("configure", json!([{"interval": 3600, "packages": {}}])),
-                Ok("Configure { config: UpdatesConfigure { interval_secs: 3600, checked_at: None, packages: [] } }"),
+                Ok(
+                    "Configure { config: UpdatesConfigure { interval_secs: 3600, checked_at: None, packages: [], aur: false } }",
+                ),
             ),
             // A Lua `nil` value arrives as a missing argument and means delete.
             (

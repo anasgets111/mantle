@@ -19,6 +19,17 @@ pub struct UpdateCandidate {
     pub download_size: i64,
     /// Bytes occupied unpacked, not a delta. Config subtracts the old size if needed.
     pub installed_size: i64,
+    /// Where the new version comes from: the repo's name, e.g. `"extra"`, or `"aur"`. Empty in a
+    /// list seeded from before the field existed.
+    #[serde(default)]
+    pub repository: String,
+}
+
+/// One successful check. `aur_error` means the AUR half failed; `packages` still holds the repos'.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct CheckReport {
+    pub packages: Vec<UpdateCandidate>,
+    pub aur_error: Option<String>,
 }
 
 /// Parsed install progress: which package of how many. `None` for other lines; progress stays put.
@@ -48,13 +59,23 @@ pub trait Backend: Send + Sync + 'static {
     ///
     /// Must not modify the real system: a wrong answer is a badge error; side effects can leave a
     /// half-upgraded machine.
-    fn check(&self) -> Result<Vec<UpdateCandidate>, String>;
+    fn check(&self) -> Result<CheckReport, String>;
 
     /// The command that performs the real upgrade.
     fn install_command(&self) -> InstallCommand;
 
     /// Parses one [`Backend::install_command`] output line as progress, if applicable.
     fn parse_install_step(&self, line: &str) -> Option<InstallStep>;
+
+    /// The AUR helper this backend would install through, if it has one (ADR-0250).
+    fn aur_helper(&self) -> Option<&'static str> {
+        None
+    }
+
+    /// Applies `configure`'s `aur`, returning the `aur_error` it leaves.
+    fn set_aur(&self, _enabled: bool) -> Option<String> {
+        None
+    }
 }
 
 /// Package manager supported on this machine, or `None`. Mirrors `command -v pacman` without a
@@ -65,6 +86,7 @@ pub fn detect() -> Option<Box<dyn Backend>> {
         return Some(Box::new(super::pacman::PacmanBackend::new(
             PathBuf::from("/etc/pacman.conf"),
             PathBuf::from("/var/lib/pacman"),
+            super::pacman::aur::detect_helper(),
         )));
     }
     None
@@ -77,7 +99,7 @@ fn on_path(program: &str) -> bool {
 }
 
 /// [`on_path`] against an explicit `PATH`, so tests avoid mutating the process environment.
-fn program_is_in(path: &std::ffi::OsStr, program: &str) -> bool {
+pub(super) fn program_is_in(path: &std::ffi::OsStr, program: &str) -> bool {
     std::env::split_paths(path).any(|directory| directory.join(program).is_file())
 }
 

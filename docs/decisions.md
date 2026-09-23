@@ -5929,3 +5929,34 @@ Quickshell's `ColorQuantizer` parity, for theming from a wallpaper or album art.
 Rejected: computing it in the Supervisor, which has no raster decoder and would need the pixels
 sent over the socket. Material's HCT scoring in the engine, which bakes one theming opinion into a
 second algorithm while `share` already lets a config score.
+
+## 0250. `updates` checks the AUR natively and installs through the helper it finds
+
+The AUR check is the same for every helper: foreign packages against the AUR web API. Only the
+install differs, and paru and yay take the same unattended argv.
+
+1. **Opt-in.** `configure { aur = true }`. The check posts every foreign package name to
+   aur.archlinux.org, so nothing leaves the machine without it.
+2. **Helper detected once at start, paru before yay**, like `package_manager` (ADR-0134 decision 2).
+   `aur_helper` publishes it.
+3. **The check stays native, in the check worker.** Foreign means installed and in no freshly
+   synced repo. One `curl` POST asks `rpc/v5/info`, since pacman depends on `curl`. `vercmp`
+   compares. Names nobody asked for are dropped.
+4. **Install is `<helper> -Syu --noconfirm --sudo pkexec` as the user, stdin closed.** One run
+   upgrades repo and AUR packages together. `makepkg` refuses root, so the helper elevates itself
+   through Mantle's polkit agent. `--noconfirm` also skips PKGBUILD review in both helpers; that
+   is what `aur = true` accepts.
+5. **`aur_error` is separate from `check_error`.** An AUR outage keeps the repo list fresh.
+   `aur = true` with no helper sets it at `configure`, checks repos only, and installs with pacman,
+   so one config works on a machine without a helper.
+6. **`repository` names each candidate's source**: the sync db name, or `"aur"`. dnf and apt have
+   repos too.
+
+Rejected: the helper's own `-Qua` for the check, which needs a helper just to look; rejecting
+`configure` without a helper, which drops the whole schedule; a config-supplied install argv, until
+a helper needs different flags.
+
+ponytail: two helpers, detected once. Another helper is one `HELPERS` entry; a helper installed
+mid-session needs a Supervisor restart.
+
+**Amends ADR-0034 and ADR-0134.**

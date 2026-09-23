@@ -103,9 +103,15 @@ pub fn spawn_detached(cmd: &str, args: &[String]) -> io::Result<()> {
 }
 
 /// [`spawn_group_leader`] with piped stdout/stderr for `process.run` (ADR-0026) to forward as
-/// `SupervisorFrame::ProcessOutput`; stdin stays inherited.
+/// `SupervisorFrame::ProcessOutput`. Stdin is null, so a prompt fails instead of waiting forever.
 pub fn spawn_group_leader_piped(cmd: &str, args: &[String]) -> io::Result<Child> {
-    Command::new(cmd).args(args).process_group(0).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn()
+    Command::new(cmd)
+        .args(args)
+        .process_group(0)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
 }
 
 /// [`spawn_group_leader`] with piped stdin/stdout for PAM (ADR-0028): write one password,

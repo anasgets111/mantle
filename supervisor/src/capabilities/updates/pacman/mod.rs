@@ -2,24 +2,39 @@
 //! of [`super::backend::Backend`] this Supervisor ships. Everything under here knows about
 //! `libalpm`, `/etc/pacman.conf` and `pacman`'s own stdout; nothing above the trait does.
 
+pub mod aur;
 pub mod check;
 pub mod conf;
 pub mod install;
 
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 
-use super::backend::{Backend, InstallCommand, InstallStep, UpdateCandidate};
+use shared::warn;
+
+use super::backend::{Backend, CheckReport, InstallCommand, InstallStep};
 
 /// Checks use a throwaway db root; installs use the real one. Injected paths let tests use a
 /// tempdir.
 pub struct PacmanBackend {
     conf_path: PathBuf,
     db_root: PathBuf,
+    aur_helper: Option<&'static str>,
+    aur: AtomicBool,
 }
 
 impl PacmanBackend {
-    pub fn new(conf_path: PathBuf, db_root: PathBuf) -> Self {
-        Self { conf_path, db_root }
+    pub fn new(conf_path: PathBuf, db_root: PathBuf, aur_helper: Option<&'static str>) -> Self {
+        Self { conf_path, db_root, aur_helper, aur: AtomicBool::new(false) }
+    }
+
+    /// The helper to check and install through: detected and asked for.
+    fn active_helper(&self) -> Option<&'static str> {
+        self.aur_helper.filter(|_| self.aur.load(Ordering::Relaxed))
+    }
+
+    fn missing_helper(&self) -> Option<String> {
+        (self.aur.load(Ordering::Relaxed) && self.aur_helper.is_none()).then(|| aur::NO_HELPER.to_string())
     }
 }
 
@@ -28,21 +43,40 @@ impl Backend for PacmanBackend {
         "pacman"
     }
 
-    fn check(&self) -> Result<Vec<UpdateCandidate>, String> {
-        check_in_a_child(&self.conf_path, &self.db_root)
+    fn check(&self) -> Result<CheckReport, String> {
+        let mut report = check_in_a_child(&self.conf_path, &self.db_root, self.active_helper().is_some())?;
+        report.aur_error = report.aur_error.or_else(|| self.missing_helper());
+        Ok(report)
     }
 
     /// Root upgrade against real `/etc/pacman.conf` and `/var/lib/pacman`. `pkexec` triggers
-    /// Mantle's registered polkit agent instead of requiring a terminal.
+    /// Mantle's registered polkit agent instead of requiring a terminal. An active AUR helper runs
+    /// as the user instead and elevates itself (ADR-0250).
     fn install_command(&self) -> InstallCommand {
-        InstallCommand {
-            program: "pkexec".to_string(),
-            arguments: vec!["pacman".to_string(), "-Syu".to_string(), "--noconfirm".to_string()],
+        match self.active_helper() {
+            Some(helper) => InstallCommand { program: helper.to_string(), arguments: aur::install_arguments() },
+            None => InstallCommand {
+                program: "pkexec".to_string(),
+                arguments: vec!["pacman".to_string(), "-Syu".to_string(), "--noconfirm".to_string()],
+            },
         }
     }
 
     fn parse_install_step(&self, line: &str) -> Option<InstallStep> {
         install::parse_install_step(line)
+    }
+
+    fn aur_helper(&self) -> Option<&'static str> {
+        self.aur_helper
+    }
+
+    fn set_aur(&self, enabled: bool) -> Option<String> {
+        self.aur.store(enabled, Ordering::Relaxed);
+        let missing = self.missing_helper();
+        if let Some(error) = &missing {
+            warn!("aur requested: {error}");
+        }
+        missing
     }
 }
 
@@ -50,6 +84,7 @@ impl Backend for PacmanBackend {
 const CHECK_WORKER: &str = "MANTLE_PACMAN_CHECK";
 const CHECK_CONF: &str = "MANTLE_PACMAN_CONF";
 const CHECK_DB_ROOT: &str = "MANTLE_PACMAN_DB_ROOT";
+const CHECK_AUR: &str = "MANTLE_PACMAN_AUR";
 
 /// Runs the check in a child that then exits, because process exit is the only thing that returns
 /// the memory. One sync costs ~55 MiB of glibc arena and `malloc_trim` gives back none of it: the
@@ -59,13 +94,13 @@ const CHECK_DB_ROOT: &str = "MANTLE_PACMAN_DB_ROOT";
 ///
 /// `Backend::check` already runs inside `spawn_blocking`, so this waits on the child rather than
 /// reaching for `tokio::process`.
-fn check_in_a_child(conf_path: &Path, db_root: &Path) -> Result<Vec<UpdateCandidate>, String> {
-    let output = std::process::Command::new(crate::pam_worker::SELF_EXE)
-        .env(CHECK_WORKER, "1")
-        .env(CHECK_CONF, conf_path)
-        .env(CHECK_DB_ROOT, db_root)
-        .output()
-        .map_err(|err| format!("failed to spawn the update check: {err}"))?;
+fn check_in_a_child(conf_path: &Path, db_root: &Path, aur: bool) -> Result<CheckReport, String> {
+    let mut command = std::process::Command::new(crate::pam_worker::SELF_EXE);
+    command.env(CHECK_WORKER, "1").env(CHECK_CONF, conf_path).env(CHECK_DB_ROOT, db_root);
+    if aur {
+        command.env(CHECK_AUR, "1");
+    }
+    let output = command.output().map_err(|err| format!("failed to spawn the update check: {err}"))?;
 
     if !output.status.success() {
         // The worker prints its own diagnosis; without one, name the status so a crash is not a
@@ -79,7 +114,7 @@ fn check_in_a_child(conf_path: &Path, db_root: &Path) -> Result<Vec<UpdateCandid
         });
     }
 
-    serde_json::from_slice::<Result<Vec<UpdateCandidate>, String>>(&output.stdout)
+    serde_json::from_slice::<Result<CheckReport, String>>(&output.stdout)
         .map_err(|err| format!("the update check returned no readable result: {err}"))?
 }
 
@@ -89,7 +124,7 @@ pub(crate) fn run_check_worker() -> Result<(), Box<dyn std::error::Error>> {
     let conf_path = PathBuf::from(std::env::var_os(CHECK_CONF).ok_or("missing the pacman conf path")?);
     let db_root = PathBuf::from(std::env::var_os(CHECK_DB_ROOT).ok_or("missing the pacman db root")?);
 
-    let result = check_against_a_throwaway_copy(&conf_path, &db_root);
+    let result = check_against_a_throwaway_copy(&conf_path, &db_root, std::env::var_os(CHECK_AUR).is_some());
     serde_json::to_writer(std::io::stdout().lock(), &result)?;
     Ok(())
 }
@@ -104,7 +139,7 @@ pub(crate) fn run_check_worker() -> Result<(), Box<dyn std::error::Error>> {
 ///
 /// ponytail: unlike the old snapshot copy, the symlink can observe a concurrent install mid-write,
 /// causing a transient `check_error`. This matches `checkupdates` and self-heals next check.
-fn check_against_a_throwaway_copy(conf_path: &Path, db_root: &Path) -> Result<Vec<UpdateCandidate>, String> {
+fn check_against_a_throwaway_copy(conf_path: &Path, db_root: &Path, aur: bool) -> Result<CheckReport, String> {
     let throwaway = tempfile::tempdir().map_err(|err| format!("failed to create a throwaway temp dir: {err}"))?;
     link_local_db(db_root, throwaway.path())?;
 
@@ -113,7 +148,10 @@ fn check_against_a_throwaway_copy(conf_path: &Path, db_root: &Path) -> Result<Ve
         return Err(format!("no repos resolved from {}", conf_path.display()));
     }
 
-    check::check_for_updates(Path::new("/"), throwaway.path(), &repos).map_err(|err| err.to_string())
+    let (mut packages, foreign) =
+        check::check_for_updates(Path::new("/"), throwaway.path(), &repos).map_err(|err| err.to_string())?;
+    let aur_error = if aur { aur::check(&foreign).map(|found| packages.extend(found)).err() } else { None };
+    Ok(CheckReport { packages, aur_error })
 }
 
 /// Links `db_root/local` in as `throwaway/local`, the one name `alpm` looks for when it reads
@@ -137,12 +175,32 @@ mod tests {
 
     #[test]
     fn the_backend_names_itself_after_the_command_a_config_would_recognize() {
-        let backend = PacmanBackend::new(PathBuf::from("/etc/pacman.conf"), PathBuf::from("/var/lib/pacman"));
+        let backend = PacmanBackend::new(PathBuf::from("/etc/pacman.conf"), PathBuf::from("/var/lib/pacman"), None);
         assert_eq!(backend.name(), "pacman");
 
         let command = backend.install_command();
         assert_eq!(command.program, "pkexec", "elevation goes through polkit, so Mantle's own agent prompts");
         assert_eq!(command.arguments, vec!["pacman", "-Syu", "--noconfirm"]);
+    }
+
+    #[test]
+    fn a_detected_helper_installs_only_once_aur_is_asked_for() {
+        let backend = PacmanBackend::new(PathBuf::new(), PathBuf::new(), Some("paru"));
+        assert_eq!(backend.install_command().program, "pkexec");
+
+        assert_eq!(backend.set_aur(true), None);
+        let command = backend.install_command();
+        assert_eq!(command.program, "paru");
+        assert_eq!(command.arguments, ["-Syu", "--noconfirm", "--sudo", "pkexec"]);
+    }
+
+    #[test]
+    fn aur_without_a_helper_is_an_error_and_pacman_still_installs() {
+        let backend = PacmanBackend::new(PathBuf::new(), PathBuf::new(), None);
+
+        assert_eq!(backend.set_aur(true).as_deref(), Some(aur::NO_HELPER));
+        assert_eq!(backend.install_command().program, "pkexec");
+        assert_eq!(backend.set_aur(false), None);
     }
 
     #[test]

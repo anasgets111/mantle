@@ -21,6 +21,9 @@ pub struct UpdatesState {
     /// Package manager name, or `nil` when unsupported. Available before any check and used by an
     /// indicator to decide whether it belongs on the bar (ADR-0134), e.g. `"pacman"`.
     pub package_manager: Option<String>,
+    /// AUR helper found at start, `"paru"` or `"yay"`, or `nil`. Installs go through it only once
+    /// `configure` sets `aur` (ADR-0250).
+    pub aur_helper: Option<String>,
     /// Number of packages with newer synced-repo versions. Always `#packages`, duplicated so a
     /// badge need not walk the list.
     pub count: u32,
@@ -33,6 +36,9 @@ pub struct UpdatesState {
     /// Last check error, or `nil` after success. Checks never modify the system
     /// (`Backend::check`), so this is a network/parse failure, not a half-applied change.
     pub check_error: Option<String>,
+    /// Why the last check has no AUR answer, or `nil`. `packages` still holds the repos' answer.
+    /// Set at `configure` when `aur` finds no helper.
+    pub aur_error: Option<String>,
     /// A check is running. Set before sync and cleared when its result is written, with a push at
     /// both edges for spinners/refresh controls. `"check"` refuses a second check while true.
     pub checking: bool,
@@ -89,6 +95,10 @@ pub struct UpdatesConfigure {
     /// the rest of the hour. Ignored without `checked_at`, since a list with no age is unusable.
     #[serde(default, deserialize_with = "crate::capabilities::lua_list")]
     pub packages: Vec<UpdateCandidate>,
+    /// Also checks the AUR and installs through `aur_helper` (ADR-0250). Sends every foreign
+    /// package name to aur.archlinux.org and builds without PKGBUILD review.
+    #[serde(default)]
+    pub aur: bool,
 }
 
 /// Tail length for [`UpdatesState::install_log`]. Enough to hold a failure and nearby lines; a
@@ -126,6 +136,7 @@ impl UpdatesController {
     ) -> Self {
         let state = Arc::new(Mutex::new(UpdatesState {
             package_manager: backend.as_ref().map(|backend| backend.name().to_string()),
+            aur_helper: backend.as_ref().and_then(|backend| backend.aur_helper()).map(String::from),
             ..UpdatesState::default()
         }));
         let (interval_tx, interval_rx) = watch::channel(Duration::ZERO);
@@ -142,19 +153,23 @@ impl UpdatesController {
     /// the seed only before this process checks, never moving `last_successful_check` backwards.
     /// Seeding pushes because the field is Lua-visible.
     pub fn configure(&self, configure: UpdatesConfigure) {
-        if self.backend.is_none() {
-            return;
-        }
+        let Some(backend) = &self.backend else { return };
         debug!("configure: interval_secs={}", configure.interval_secs);
-        if let Some(checked_at) = configure.checked_at {
-            let mut guard = self.state.lock().expect("mutex poisoned");
-            if guard.last_successful_check.is_none() {
-                guard.last_successful_check = Some(checked_at);
-                guard.count = configure.packages.len() as u32;
-                guard.packages = configure.packages;
-                drop(guard);
-                let _ = self.events.send(UpdatesSignal::Changed);
-            }
+        let aur_error = backend.set_aur(configure.aur);
+        let mut guard = self.state.lock().expect("mutex poisoned");
+        let mut changed = guard.aur_error != aur_error;
+        guard.aur_error = aur_error;
+        if let Some(checked_at) = configure.checked_at
+            && guard.last_successful_check.is_none()
+        {
+            guard.last_successful_check = Some(checked_at);
+            guard.count = configure.packages.len() as u32;
+            guard.packages = configure.packages;
+            changed = true;
+        }
+        drop(guard);
+        if changed {
+            let _ = self.events.send(UpdatesSignal::Changed);
         }
         if self.interval_tx.send(Duration::from_secs(configure.interval_secs)).is_err() {
             warn!("configure called but the check task is gone; ignored");
@@ -290,9 +305,10 @@ async fn run_one_check(
     let mut guard = state.lock().expect("mutex poisoned");
     guard.checking = false;
     match result.map_err(|join_err| format!("check task panicked: {join_err}")) {
-        Ok(Ok(candidates)) => {
-            guard.count = candidates.len() as u32;
-            guard.packages = candidates;
+        Ok(Ok(report)) => {
+            guard.count = report.packages.len() as u32;
+            guard.packages = report.packages;
+            guard.aur_error = report.aur_error;
             guard.last_successful_check = Some(now_unix());
             guard.check_error = None;
             guard.consecutive_check_failures = 0;
@@ -416,7 +432,7 @@ fn push_log_line(log: &mut Vec<String>, line: String) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::capabilities::updates::backend::{InstallCommand, InstallStep};
+    use crate::capabilities::updates::backend::{CheckReport, InstallCommand, InstallStep};
 
     /// A marker path under a fresh tempdir, so a scheduler test never watches the real `/run`
     /// file and never sees the `Changed` its presence would push.
@@ -434,7 +450,7 @@ mod tests {
             "stub"
         }
 
-        fn check(&self) -> Result<Vec<UpdateCandidate>, String> {
+        fn check(&self) -> Result<CheckReport, String> {
             Err("this stub cannot check anything".to_string())
         }
 
@@ -454,6 +470,7 @@ mod tests {
             new_version: "6.2".into(),
             download_size: 42,
             installed_size: 0,
+            repository: "core".into(),
         }
     }
 
@@ -463,13 +480,19 @@ mod tests {
 
         // Without a time the list has no age and is dropped, so a badge cannot light up from a
         // list nobody can call fresh.
-        controller.configure(UpdatesConfigure { interval_secs: 0, checked_at: None, packages: vec![candidate()] });
+        controller.configure(UpdatesConfigure {
+            interval_secs: 0,
+            checked_at: None,
+            packages: vec![candidate()],
+            aur: false,
+        });
         assert_eq!(controller.snapshot().count, 0);
 
         controller.configure(UpdatesConfigure {
             interval_secs: 0,
             checked_at: Some(1_800_000_000),
             packages: vec![candidate()],
+            aur: false,
         });
         let seeded = controller.snapshot();
         assert_eq!(seeded.last_successful_check, Some(1_800_000_000));
@@ -478,7 +501,12 @@ mod tests {
         assert_eq!(events_rx.recv().await, Some(UpdatesSignal::Changed), "a seed is Lua-visible, so it pushes");
 
         // A second seed is a later config reload, not a later check: the slot is taken.
-        controller.configure(UpdatesConfigure { interval_secs: 0, checked_at: Some(1_700_000_000), packages: vec![] });
+        controller.configure(UpdatesConfigure {
+            interval_secs: 0,
+            checked_at: Some(1_700_000_000),
+            packages: vec![],
+            aur: false,
+        });
         let kept = controller.snapshot();
         assert_eq!(
             kept.last_successful_check,
@@ -585,6 +613,7 @@ mod tests {
             interval_secs: 3600,
             checked_at: Some(1_800_000_000),
             packages: vec![],
+            aur: false,
         });
         controller.check_now();
         controller.install().await;

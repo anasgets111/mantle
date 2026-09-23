@@ -313,9 +313,11 @@
 ---@field name string The package name, as the package manager spells it.
 ---@field new_version string Version offered by synced repositories.
 ---@field old_version string Installed version in the manager's spelling.
+---@field repository? string Where the new version comes from: the repo's name, e.g. `"extra"`, or `"aur"`. Empty in a list seeded from before the field existed.
 
 ---@class UpdatesConfigure
 ---What `updates:configure` carries. One wrong-typed key drops the whole call (ADR-0034).
+---@field aur? boolean Also checks the AUR and installs through `aur_helper` (ADR-0250). Sends every foreign package name to aur.archlinux.org and builds without PKGBUILD review.
 ---@field checked_at? integer Remembered Unix time of the last successful check, likely from `system.state`. Optional seed, not override: used only before this process has checked, so restarts can answer "has an hour passed?" without starting over.
 ---@field interval integer Seconds between scheduled checks. Zero is dormant: nothing checks until a `check` asks.
 ---@field packages? UpdateCandidate[] Remembered list from the check `checked_at` stamps, under the same seed rule: a restart inside the interval skips its first check, and without this it would show "up to date" for the rest of the hour. Ignored without `checked_at`, since a list with no age is unusable.
@@ -507,6 +509,8 @@
 ---@class UpdatesState
 ---`mantle.updates` payload. `check_error`/`install_error` are `None` when clear. While
 ---`installing`, `install_total_steps == 0` means the manager has not printed the transaction size.
+---@field aur_error? string Why the last check has no AUR answer, or `nil`. `packages` still holds the repos' answer. Set at `configure` when `aur` finds no helper.
+---@field aur_helper? string AUR helper found at start, `"paru"` or `"yay"`, or `nil`. Installs go through it only once `configure` sets `aur` (ADR-0250).
 ---@field check_error? string Last check error, or `nil` after success. Checks never modify the system (`Backend::check`), so this is a network/parse failure, not a half-applied change.
 ---@field checking boolean A check is running. Set before sync and cleared when its result is written, with a push at both edges for spinners/refresh controls. `"check"` refuses a second check while true.
 ---@field consecutive_check_failures integer Consecutive check failures, reset to `0` by the first success. Thresholds belong in config.
