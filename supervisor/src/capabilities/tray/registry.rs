@@ -148,9 +148,18 @@ pub(super) async fn register_item(
 ///
 /// `fetch_tray_item_base` reads properties only and leaves `menu` unset, so the menu has to move
 /// across; assigning `refreshed` on its own blanks the menu on every title or icon change.
-fn keep_menu_across(entry: &mut ItemEntry, mut refreshed: TrayItem) {
-    refreshed.menu = entry.last_known.menu.take();
+///
+/// Returns whether the item changed. A pixmap icon always counts: its PNG keeps its path when the
+/// pixels change, and the push is what makes the renderer read it again.
+fn keep_menu_across(entry: &mut ItemEntry, mut refreshed: TrayItem) -> bool {
+    let menu = entry.last_known.menu.take();
+    let changed = refreshed != entry.last_known
+        || [&refreshed.icon_path, &refreshed.attention_icon_path, &refreshed.overlay_icon_path]
+            .iter()
+            .any(|path| path.is_some());
+    refreshed.menu = menu;
     entry.last_known = refreshed;
+    changed
 }
 
 /// Re-fetches the [`TrayItem`] properties on every `NewX` signal and updates the entry in place
@@ -193,10 +202,10 @@ fn spawn_item_signal_forwarder(
 
             let mut guard = registry.lock().expect("mutex poisoned");
             let Some(entry) = guard.get_mut(&key) else { break };
-            keep_menu_across(entry, refreshed);
+            let changed = keep_menu_across(entry, refreshed);
             drop(guard);
 
-            if events.send(TraySignal::RegistryChanged).is_err() {
+            if changed && events.send(TraySignal::RegistryChanged).is_err() {
                 break;
             }
         }
@@ -366,19 +375,24 @@ mod tests {
     /// A property signal carries no menu, so assigning the refreshed item on its own would blank a
     /// menu that only `LayoutUpdated` and opening the menu ever refill.
     #[tokio::test]
-    async fn refreshing_properties_keeps_the_menu_the_entry_already_has() {
+    async fn refreshing_properties_keeps_the_menu_and_reports_only_real_changes() {
         let (connection, _peer) = p2p_pair().await;
         let mut entry = entry(&connection, "item", 0).await;
         entry.last_known.menu = Some(vec![MenuItem { label: Some("Quit".to_string()), ..MenuItem::default() }]);
 
-        keep_menu_across(
-            &mut entry,
-            TrayItem { id: "item".to_string(), name: "renamed".to_string(), ..TrayItem::default() },
-        );
+        let renamed = TrayItem { id: "item".to_string(), name: "renamed".to_string(), ..TrayItem::default() };
+        assert!(keep_menu_across(&mut entry, renamed.clone()));
 
         assert_eq!(entry.last_known.name, "renamed", "the refreshed properties must land");
         let menu = entry.last_known.menu.as_ref().expect("a property refresh must not blank the menu");
         assert_eq!(menu[0].label.as_deref(), Some("Quit"));
+
+        assert!(!keep_menu_across(&mut entry, renamed.clone()), "an identical refresh is no change");
+        assert!(entry.last_known.menu.is_some(), "an unchanged refresh must not blank the menu either");
+
+        let pixmap = TrayItem { icon_path: Some("/spool/item.png".to_string()), ..renamed };
+        assert!(keep_menu_across(&mut entry, pixmap.clone()));
+        assert!(keep_menu_across(&mut entry, pixmap), "the same PNG path can hold new pixels");
     }
 
     /// In-place updates must not move an item.
