@@ -473,11 +473,8 @@ fn read_derived(lua: &Lua, ud: &mlua::AnyUserData) -> mlua::Result<Value> {
             // `CpuBudget::enter` on purpose: a hit does no work, so it must not spend a nesting
             // level either, or a wide diamond would hit `MAX_SIGNAL_NESTING_DEPTH` on cache
             // hits alone.
-            if let Some(hit) = EvaluationMemo::get(lua, id) {
-                for &cell in &hit.cells {
-                    note_read(lua, cell);
-                }
-                return Ok(hit.value);
+            if let Some(value) = EvaluationMemo::get(lua, id) {
+                return Ok(value);
             }
 
             // Enter before dependency resolution, not only `func.call`, so nesting depth also
@@ -809,7 +806,6 @@ fn next_computed_id() -> MemoKey {
     NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
 }
 
-#[derive(Clone)]
 struct MemoEntry {
     value: Value,
     cells: Vec<CellId>,
@@ -854,19 +850,8 @@ struct ReadTracker {
 
 /// Marks the beginning of an instance's layout resolution, clearing its prior reads.
 pub(crate) fn begin_instance_resolve(lua: &Lua, instance_id: &str) {
-    let mut tracker = super::app_data_or_default::<ReadTracker>(lua);
-    let instance_rc: Rc<str> = Rc::from(instance_id);
-    if let Some(old_cells) = tracker.instance_cells.remove(&instance_rc) {
-        for cell_id in old_cells {
-            if let std::collections::hash_map::Entry::Occupied(mut e) = tracker.cell_readers.entry(cell_id) {
-                e.get_mut().remove(&instance_rc);
-                if e.get().is_empty() {
-                    e.remove();
-                }
-            }
-        }
-    }
-    tracker.active_instance = Some(instance_rc);
+    forget_instance(lua, instance_id);
+    super::app_data_or_default::<ReadTracker>(lua).active_instance = Some(Rc::from(instance_id));
 }
 
 /// Closes the active instance layout resolution scope.
@@ -902,13 +887,29 @@ pub(crate) fn reset_read_tracker(lua: &Lua) {
 
 /// Records that the active instance (and any enclosing computed evaluation) read `cell_id`.
 pub(crate) fn note_read(lua: &Lua, cell_id: CellId) {
+    note_instance_reads(lua, &[cell_id]);
+    EvaluationMemo::record_dependency(lua, cell_id);
+}
+
+/// [`note_read`]'s instance half.
+fn note_instance_reads(lua: &Lua, cells: &[CellId]) {
     if let Some(mut tracker) = lua.app_data_mut::<ReadTracker>()
         && let Some(instance_id) = tracker.active_instance.as_ref().map(Rc::clone)
     {
-        tracker.cell_readers.entry(cell_id).or_default().insert(Rc::clone(&instance_id));
-        tracker.instance_cells.entry(instance_id).or_default().insert(cell_id);
+        for &cell_id in cells {
+            tracker.cell_readers.entry(cell_id).or_default().insert(Rc::clone(&instance_id));
+            tracker.instance_cells.entry(Rc::clone(&instance_id)).or_default().insert(cell_id);
+        }
     }
-    EvaluationMemo::record_dependency(lua, cell_id);
+}
+
+/// Appends each of `cells` that `frame` does not hold yet.
+fn add_unique(frame: &mut Vec<CellId>, cells: &[CellId]) {
+    for &cell in cells {
+        if !frame.contains(&cell) {
+            frame.push(cell);
+        }
+    }
 }
 
 /// One evaluation's memo, closing ADR-0044 decision 3's ceiling: without it a shared dependency is
@@ -953,9 +954,18 @@ impl<'lua> EvaluationMemo<'lua> {
         Self { lua, owner }
     }
 
-    /// `None` outside an evaluation, which is the outermost `Computed`'s own first look.
-    fn get(lua: &Lua, key: MemoKey) -> Option<MemoEntry> {
-        lua.app_data_ref::<MemoTable>()?.map.get(&key).cloned()
+    /// A value already produced, with its cells noted as read by the active instance and the
+    /// enclosing frame. `None` outside an evaluation, which is the outermost `Computed`'s own
+    /// first look.
+    fn get(lua: &Lua, key: MemoKey) -> Option<Value> {
+        let mut table = lua.app_data_mut::<MemoTable>()?;
+        let MemoTable { map, eval_stack, .. } = &mut *table;
+        let entry = map.get(&key)?;
+        note_instance_reads(lua, &entry.cells);
+        if let Some(frame) = eval_stack.last_mut() {
+            add_unique(frame, &entry.cells);
+        }
+        Some(entry.value.clone())
     }
 
     fn insert(lua: &Lua, key: MemoKey, value: &Value, cells: Vec<CellId>) {
@@ -976,11 +986,7 @@ impl<'lua> EvaluationMemo<'lua> {
         };
         let cells = table.eval_stack.pop().unwrap_or_default();
         if let Some(parent) = table.eval_stack.last_mut() {
-            for &c in &cells {
-                if !parent.contains(&c) {
-                    parent.push(c);
-                }
-            }
+            add_unique(parent, &cells);
         }
         cells
     }
