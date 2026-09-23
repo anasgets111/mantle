@@ -3,38 +3,30 @@
 //! after each result. The loop runs when work exists, not 66 times per second on a 15ms timer.
 
 use std::io;
-use std::os::fd::{AsFd, AsRawFd, BorrowedFd, FromRawFd, OwnedFd};
+use std::os::fd::{AsFd, BorrowedFd};
 use std::sync::Arc;
+
+use nix::sys::eventfd::{EfdFlags, EventFd};
 
 /// Cloneable handle on the shared fd.
 #[derive(Clone)]
-pub struct Waker(Arc<OwnedFd>);
+pub struct Waker(Arc<EventFd>);
 
 impl Waker {
     pub fn new() -> io::Result<Self> {
-        // SAFETY: plain syscall; the returned fd is owned here and nowhere else.
-        let fd = unsafe { libc::eventfd(0, libc::EFD_NONBLOCK | libc::EFD_CLOEXEC) };
-        if fd < 0 {
-            return Err(io::Error::last_os_error());
-        }
-        // SAFETY: `fd` is valid and owned by this process.
-        Ok(Waker(Arc::new(unsafe { OwnedFd::from_raw_fd(fd) })))
+        Ok(Waker(Arc::new(EventFd::from_flags(EfdFlags::EFD_NONBLOCK | EfdFlags::EFD_CLOEXEC)?)))
     }
 
     /// Makes the fd readable until [`Waker::drain`]. Eventfd counts accumulate, so a burst is one
-    /// pending wakeup.
+    /// pending wakeup. `EAGAIN` means poll is already due.
     pub fn wake(&self) {
-        let one: u64 = 1;
-        // SAFETY: writes eight local bytes to the owned fd. `EAGAIN` means poll is already due.
-        let _ = unsafe { libc::write(self.0.as_raw_fd(), (&raw const one).cast(), 8) };
+        let _ = self.0.write(1);
     }
 
     /// Clears the count so the next `poll` blocks. Called after wakeup, before servicing the turn,
-    /// so a wake during that turn is not lost.
+    /// so a wake during that turn is not lost. Empty is `EAGAIN`.
     pub fn drain(&self) {
-        let mut count: u64 = 0;
-        // SAFETY: reads eight bytes into a local from the owned nonblocking fd; empty is `EAGAIN`.
-        let _ = unsafe { libc::read(self.0.as_raw_fd(), (&raw mut count).cast(), 8) };
+        let _ = self.0.read();
     }
 
     pub fn fd(&self) -> BorrowedFd<'_> {
