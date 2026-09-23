@@ -18,8 +18,7 @@ use super::registry::{
 };
 use super::watcher::StatusNotifierWatcher;
 use super::{
-    DEFAULT_ITEM_OBJECT_PATH, TrayActionError, TraySignal, TrayState, WATCHER_BUS_NAME, WATCHER_OBJECT_PATH,
-    should_call_activate, unix_timestamp_u32,
+    DEFAULT_ITEM_OBJECT_PATH, TraySignal, TrayState, WATCHER_BUS_NAME, WATCHER_OBJECT_PATH, unix_timestamp_u32,
 };
 
 #[derive(Clone)]
@@ -104,20 +103,20 @@ impl TrayController {
         let guard = self.registry.lock().expect("mutex poisoned");
         let found = guard.iter().find(|(key, _)| item_id(key.0.as_str(), key.1.as_str()) == id);
         if found.is_none() {
-            debug!("{action}({id:?}) failed: {}", TrayActionError::UnknownItem);
+            debug!("{action}({id:?}) failed: no tray item with that id has been registered");
         }
         found.map(|(key, entry)| pick(key, entry))
     }
 
-    /// `tray:activate(id, x, y)`. Skips `Activate` when `ItemIsMenu` is true, per SNI semantics
-    /// (ADR-0031, [`should_call_activate`]).
+    /// `tray:activate(id, x, y)`. Skips `Activate` when `ItemIsMenu` is true, per SNI semantics,
+    /// here rather than in every config (ADR-0031).
     pub async fn activate(&self, id: &str, x: i32, y: i32) {
         let Some((item_is_menu, item)) =
             self.find("activate", id, |_, entry| (entry.last_known.item_is_menu, entry.item.clone()))
         else {
             return;
         };
-        if !should_call_activate(item_is_menu) {
+        if item_is_menu {
             return;
         }
         if let Err(err) = item.activate(x, y).await {
@@ -125,8 +124,8 @@ impl TrayController {
         }
     }
 
-    /// `tray:secondary_activate(id, x, y)`: middle-click (ADR-0074). No `should_call_activate`
-    /// gate: `ItemIsMenu` constrains primary clicks only.
+    /// `tray:secondary_activate(id, x, y)`: middle-click (ADR-0074). No `ItemIsMenu` gate: it
+    /// constrains primary clicks only.
     pub async fn secondary_activate(&self, id: &str, x: i32, y: i32) {
         let Some(item) = self.find("secondary_activate", id, |_, entry| entry.item.clone()) else { return };
         if let Err(err) = item.secondary_activate(x, y).await {
@@ -148,7 +147,7 @@ impl TrayController {
     pub async fn activate_menu_item(&self, id: &str, menu_item_id: i32) {
         let Some(menu) = self.find("activate_menu_item", id, |_, entry| entry.menu.clone()) else { return };
         let Some(menu) = menu else {
-            debug!("activate_menu_item({id:?}, {menu_item_id}) failed: {}", TrayActionError::NoMenu);
+            debug!("activate_menu_item({id:?}, {menu_item_id}) failed: that tray item has no registered dbusmenu");
             return;
         };
         let data = Value::I32(0);
@@ -166,7 +165,7 @@ impl TrayController {
             return;
         };
         let Some(menu) = menu else {
-            debug!("menu_will_show({id:?}, {submenu_id}) failed: {}", TrayActionError::NoMenu);
+            debug!("menu_will_show({id:?}, {submenu_id}) failed: that tray item has no registered dbusmenu");
             return;
         };
         // An error still refetches: some items never implement `AboutToShow`.

@@ -167,24 +167,6 @@ pub enum BluetoothSignal {
     PairingChanged,
 }
 
-/// `bluetooth:*` write failures before reaching BlueZ; displayed only in call-site logs.
-#[derive(Debug)]
-enum BluetoothActionError {
-    NoAdapter,
-    UnknownDevice,
-}
-
-impl std::fmt::Display for BluetoothActionError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::NoAdapter => write!(f, "no Bluetooth adapter is present"),
-            Self::UnknownDevice => write!(f, "no device with that MAC address has been observed via ObjectManager"),
-        }
-    }
-}
-
-impl std::error::Error for BluetoothActionError {}
-
 /// Maps BlueZ `Class` bits 8-12 (Major) and 2-7 (Minor) (ADR-0030). Parses them instead of
 /// trusting `Icon`, which is empty when `Class == 0`, common for BLE peripherals before GAP data.
 fn class_to_category(class: u32) -> &'static str {

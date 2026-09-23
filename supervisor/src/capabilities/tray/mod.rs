@@ -75,27 +75,6 @@ pub enum TraySignal {
     RegistryChanged,
 }
 
-#[derive(Debug)]
-enum TrayActionError {
-    UnknownItem,
-    NoMenu,
-}
-
-impl std::fmt::Display for TrayActionError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::UnknownItem => write!(f, "no tray item with that id has been registered"),
-            Self::NoMenu => write!(f, "that tray item has no registered dbusmenu"),
-        }
-    }
-}
-
-/// `tray:activate` gate (ADR-0031): `ItemIsMenu == true` means show the menu, not `Activate`,
-/// enforced here once and centrally rather than trusted to every `shell.lua` author.
-fn should_call_activate(item_is_menu: bool) -> bool {
-    !item_is_menu
-}
-
 fn unix_timestamp_u32() -> u32 {
     SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs() as u32).unwrap_or(0)
 }
@@ -129,21 +108,4 @@ pub fn dispatch(controller: &TrayController, envelope: &shared::CommandEnvelope)
             TrayAction::MenuWillShow { id, submenu_id } => controller.menu_will_show(&id, submenu_id).await,
         }
     });
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    // ---- should_call_activate ----
-
-    #[test]
-    fn should_call_activate_is_true_when_item_is_not_a_menu() {
-        assert!(should_call_activate(false));
-    }
-
-    #[test]
-    fn should_call_activate_is_false_when_item_is_a_menu() {
-        assert!(!should_call_activate(true));
-    }
 }

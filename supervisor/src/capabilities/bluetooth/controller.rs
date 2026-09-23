@@ -13,8 +13,7 @@ use super::agent::{self, Invited, PromptSlot, register_agent_best_effort};
 use super::proxies::{Adapter1Proxy, Battery1Proxy, Device1Proxy, bind_object_manager, subscribe_object_manager};
 use super::registry::{AdapterSlot, DeviceRegistry, spawn_object_manager_forwarder, track_interfaces};
 use super::{
-    BluetoothActionError, BluetoothSignal, BluetoothState, ConnectedDevice, DeviceAction, DiscoveredDevice,
-    PairedDevice, class_to_category,
+    BluetoothSignal, BluetoothState, ConnectedDevice, DeviceAction, DiscoveredDevice, PairedDevice, class_to_category,
 };
 
 /// How long [`BluetoothController::pair`] retries a refused `Connect`, and how often. Many headsets
@@ -280,7 +279,7 @@ impl BluetoothController {
     /// observes the real change; `main.rs` then rebuilds and pushes state.
     pub async fn set_enabled(&self, enabled: bool) {
         let Some(adapter) = self.adapter() else {
-            debug!("set_enabled({enabled}) failed: {}", BluetoothActionError::NoAdapter);
+            debug!("set_enabled({enabled}) failed: no Bluetooth adapter is present");
             return;
         };
         if let Err(err) = adapter.set_powered(enabled).await {
@@ -292,7 +291,7 @@ impl BluetoothController {
     /// observes the change, including BlueZ's own switch-off at `DiscoverableTimeout`.
     pub async fn set_discoverable(&self, on: bool) {
         let Some(adapter) = self.adapter() else {
-            debug!("set_discoverable({on}) failed: {}", BluetoothActionError::NoAdapter);
+            debug!("set_discoverable({on}) failed: no Bluetooth adapter is present");
             return;
         };
         if let Err(err) = adapter.set_discoverable(on).await {
@@ -352,7 +351,7 @@ impl BluetoothController {
     /// for the call; see [`discovery_due`](Self::discovery_due).
     pub async fn pair(&self, mac: &str) {
         let Some((_, device)) = self.resolve_device(mac) else {
-            debug!("pair({mac:?}) failed: {}", BluetoothActionError::UnknownDevice);
+            debug!("pair({mac:?}) failed: no device with that MAC address has been observed via ObjectManager");
             return;
         };
         let busy = self.mark_busy(mac, DeviceAction::Pairing);
@@ -378,7 +377,7 @@ impl BluetoothController {
     /// `org.bluez.Error.Failed`.
     async fn connect_within(&self, mac: &str, window: Duration) {
         let Some((_, device)) = self.resolve_device(mac) else {
-            debug!("connect({mac:?}) failed: {}", BluetoothActionError::UnknownDevice);
+            debug!("connect({mac:?}) failed: no device with that MAC address has been observed via ObjectManager");
             return;
         };
         let _busy = self.mark_busy(mac, DeviceAction::Connecting);
@@ -399,7 +398,7 @@ impl BluetoothController {
     /// `bluetooth:disconnect(mac)`.
     pub async fn disconnect(&self, mac: &str) {
         let Some((_, device)) = self.resolve_device(mac) else {
-            debug!("disconnect({mac:?}) failed: {}", BluetoothActionError::UnknownDevice);
+            debug!("disconnect({mac:?}) failed: no device with that MAC address has been observed via ObjectManager");
             return;
         };
         let _busy = self.mark_busy(mac, DeviceAction::Disconnecting);
@@ -412,11 +411,11 @@ impl BluetoothController {
     /// paired credentials from disk.
     pub async fn forget(&self, mac: &str) {
         let Some(adapter) = self.adapter() else {
-            debug!("forget({mac:?}) failed: {}", BluetoothActionError::NoAdapter);
+            debug!("forget({mac:?}) failed: no Bluetooth adapter is present");
             return;
         };
         let Some((path, _)) = self.resolve_device(mac) else {
-            debug!("forget({mac:?}) failed: {}", BluetoothActionError::UnknownDevice);
+            debug!("forget({mac:?}) failed: no device with that MAC address has been observed via ObjectManager");
             return;
         };
         if let Err(err) = adapter.remove_device(&path).await {
