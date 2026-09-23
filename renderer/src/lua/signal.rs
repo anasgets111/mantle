@@ -1273,15 +1273,8 @@ pub fn register(lua: &Lua, dirty: DirtyFlag) -> mlua::Result<()> {
             Ok(signal)
         })?,
     )?;
-    lua.globals().set(
-        "hover",
-        lua.create_function(move |lua, name: String| {
-            if lua.app_data_ref::<HoverRegistry>().is_none() {
-                lua.set_app_data(HoverRegistry::default());
-            }
-            Ok(hover_slot(lua, &hover_dirty, name)?.0)
-        })?,
-    )?;
+    lua.globals()
+        .set("hover", lua.create_function(move |lua, name: String| Ok(hover_slot(lua, &hover_dirty, name)?.0))?)?;
     lua.globals()
         .set("hover_rect", lua.create_function(move |lua, name: String| Ok(hover_slot(lua, &rect_dirty, name)?.1))?)?;
     lua.globals().set(
