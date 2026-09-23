@@ -73,8 +73,7 @@ struct ThreadState {
 
 impl ThreadState {
     fn publish(&mut self) {
-        let rows: Vec<WindowEntry> = self.rows.values().cloned().collect();
-        self.publisher.publish(&rows);
+        self.publisher.publish(self.rows.values().cloned().collect());
     }
 }
 

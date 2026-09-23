@@ -131,7 +131,7 @@ pub fn spawn_reader(mut publisher: StatePublisher, mut windows_publisher: Window
             let focused = focused_window(&niri_windows.windows);
             let workspaces_alive = publisher.publish(&rows, focused.as_ref(), None, Some(niri_overview.is_open));
             let windows_alive =
-                windows_publisher.publish(&window_rows(&niri_windows.windows, &niri_workspaces.workspaces));
+                windows_publisher.publish(window_rows(&niri_windows.windows, &niri_workspaces.workspaces));
             if !workspaces_alive && !windows_alive {
                 return;
             }

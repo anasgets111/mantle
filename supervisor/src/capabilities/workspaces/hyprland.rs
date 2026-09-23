@@ -366,7 +366,7 @@ pub fn spawn_reader(mut publisher: StatePublisher, mut windows_publisher: Window
 
     std::thread::spawn(move || {
         if let Some((rows, focused, special, windows)) = read_state(&command_path) {
-            publish!(&rows, focused.as_ref(), Some(&special), &windows);
+            publish!(&rows, focused.as_ref(), Some(&special), windows);
         }
         for line in BufReader::new(stream).lines() {
             let Ok(line) = line else {
@@ -377,7 +377,7 @@ pub fn spawn_reader(mut publisher: StatePublisher, mut windows_publisher: Window
                 continue;
             }
             if let Some((rows, focused, special, windows)) = read_state(&command_path) {
-                publish!(&rows, focused.as_ref(), Some(&special), &windows);
+                publish!(&rows, focused.as_ref(), Some(&special), windows);
             }
         }
         error!("Hyprland event socket closed; workspaces and windows will no longer update");

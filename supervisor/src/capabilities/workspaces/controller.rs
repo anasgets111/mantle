@@ -203,7 +203,6 @@ pub struct StatePublisher {
     state: Arc<Mutex<WorkspacesState>>,
     events: UnboundedSender<WorkspacesSignal>,
     compositor: CompositorKind,
-    previous: WorkspacesState,
 }
 
 impl StatePublisher {
@@ -212,7 +211,7 @@ impl StatePublisher {
         events: UnboundedSender<WorkspacesSignal>,
         compositor: CompositorKind,
     ) -> Self {
-        Self { state, events, compositor, previous: WorkspacesState::default() }
+        Self { state, events, compositor }
     }
 
     /// `false` once no one listens, ending the reader loop. Not debounced: startup replays are
@@ -236,11 +235,12 @@ impl StatePublisher {
             list.sort_by(|a, b| a.name.cmp(&b.name));
             list
         });
-        if current == self.previous {
+        let mut state = self.state.lock().expect("workspaces state mutex poisoned");
+        if *state == current {
             return true;
         }
-        *self.state.lock().expect("workspaces state mutex poisoned") = current.clone();
-        self.previous = current;
+        *state = current;
+        drop(state);
         self.events.send(WorkspacesSignal::Changed).is_ok()
     }
 }

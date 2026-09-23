@@ -64,24 +64,23 @@ pub struct StatePublisher {
     state: Arc<Mutex<WindowsState>>,
     events: UnboundedSender<WindowsSignal>,
     source: &'static str,
-    previous: WindowsState,
 }
 
 impl StatePublisher {
     pub fn new(state: Arc<Mutex<WindowsState>>, events: UnboundedSender<WindowsSignal>, source: &'static str) -> Self {
-        Self { state, events, source, previous: WindowsState::default() }
+        Self { state, events, source }
     }
 
     /// `false` once no one listens, so a reader loop that owns no other publisher can stop.
-    pub fn publish(&mut self, entries: &[WindowEntry]) -> bool {
-        let mut windows = entries.to_vec();
+    pub fn publish(&mut self, mut windows: Vec<WindowEntry>) -> bool {
         windows.sort_by_key(|window| window.workspace_id.unwrap_or(u64::MAX));
         let current = WindowsState { source: self.source.to_string(), windows };
-        if current == self.previous {
+        let mut state = self.state.lock().expect("windows state mutex poisoned");
+        if *state == current {
             return true;
         }
-        *self.state.lock().expect("windows state mutex poisoned") = current.clone();
-        self.previous = current;
+        *state = current;
+        drop(state);
         self.events.send(WindowsSignal::Changed).is_ok()
     }
 }
@@ -232,7 +231,7 @@ mod tests {
         let (mut publisher, _rx) = publisher();
         let entries = [entry("3", Some(2)), entry("1", Some(1)), entry("2", Some(1)), entry("4", None)];
 
-        publisher.publish(&entries);
+        publisher.publish(entries.to_vec());
 
         let state = publisher.state.lock().unwrap().clone();
         assert_eq!(
@@ -247,11 +246,11 @@ mod tests {
         let (mut publisher, mut rx) = publisher();
         let entries = [entry("1", Some(1))];
 
-        assert!(publisher.publish(&entries));
-        assert!(publisher.publish(&entries), "an event that changes nothing is not a change");
+        assert!(publisher.publish(entries.to_vec()));
+        assert!(publisher.publish(entries.to_vec()), "an event that changes nothing is not a change");
         let mut moved = entries[0].clone();
         moved.focused = true;
-        assert!(publisher.publish(&[moved]));
+        assert!(publisher.publish(vec![moved]));
 
         let json = serde_json::to_value(publisher.state.lock().unwrap().clone()).unwrap();
         assert_eq!(json["source"], "niri");
@@ -265,7 +264,7 @@ mod tests {
         let (mut publisher, rx) = publisher();
         drop(rx);
 
-        assert!(!publisher.publish(&[entry("1", None)]));
+        assert!(!publisher.publish(vec![entry("1", None)]));
     }
 
     /// A reader started by an earlier capability already wrote real state before this one
