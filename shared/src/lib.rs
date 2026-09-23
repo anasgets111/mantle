@@ -77,13 +77,11 @@ macro_rules! debug {
 /// name is both the Lua `mantle.<name>` member and command `capability` field, so
 /// one spelling reaches one capability. Reading a name starts its Supervisor controller
 /// (ADR-0070); it remains `nil` until the first `StateSnapshot`, so an unread name costs nothing.
-/// `idle` is event-shaped, not snapshot state (ADR-0032), so the Supervisor's `Startable` covers
-/// it. `polkit` is included (ADR-0114), and a naming `secure_submit` starts it too.
+/// A `secure_submit` naming `polkit` starts it too (ADR-0114).
 ///
-/// This enum replaces `&[&str]` (ADR-0076). Exhaustive matches cover the two decisions that
-/// strings once let drift, by silently accepting an unimplemented name and leaving its Lua member
-/// `nil` forever: starting a controller and dispatching its commands. The `roster!` list
-/// generates [`Capability::ALL`] and [`Capability::as_str`], so a new variant missing from the Lua
+/// An enum, not strings (ADR-0076): exhaustive matches make starting a controller and dispatching
+/// its commands fail to compile for an unimplemented name. The `roster!` list generates
+/// [`Capability::ALL`] and [`Capability::as_str`], so a new variant missing from the Lua
 /// namespace, stubs or schema check fails to compile instead of staying silently `nil`.
 macro_rules! roster {
     ($($variant:ident => $name:literal, $blurb:literal),+ $(,)?) => {

@@ -278,16 +278,15 @@ async fn run_supervisor(
     std::thread::spawn(move || capabilities::notifications::run_sound_player(sound_rx));
 
     // Idle (ADR-0032): notify uses its own Wayland connection so idle authority survives Renderer
-    // crash/reload (ADR-0010); inhibit uses the shared one. It starts on the first
-    // `mantle.idle` method call (ADR-0070), off the roster, so methods send start rather than
-    // `__index` (`renderer/src/lua/idle.rs`). Events are not snapshots, so this receiver stays
-    // separate from `Signals`.
+    // crash/reload (ADR-0010); inhibit uses the shared one. Threshold events go to the generation
+    // that registered them rather than into a snapshot, so this receiver stays separate from
+    // `Signals`.
     let (idle_signal_tx, mut idle_signals) = tokio::sync::mpsc::unbounded_channel::<shared::IdleEvent>();
 
     let _ = capabilities::shm_icons::INSTANCE_DIR.set(dir.clone());
     // Every capability's channel/controller (ADR-0076). `capabilities` owns running capabilities
-    // and senders; `signals` is the receiver this loop awaits. An unread capability's idle sender
-    // never wakes the loop.
+    // and senders; `signals` is the receiver this loop awaits. An unread capability's sender never
+    // sends, so it never wakes the loop.
     let (capabilities, mut signals) = Capabilities::new(connection.clone(), sound_tx, idle_signal_tx);
 
     let socket_path = shared::control_socket_path(&dir);
@@ -384,7 +383,7 @@ async fn run_supervisor(
             Some(event) = idle_signals.recv() => {
                 // Route to the generation whose `register_threshold` fired (`event.generation_id`),
                 // not the authoritative one (ADR-0006). Send raw `IdleEvent`, not the
-                // StateSnapshot/revision path: idle is event-shaped, not pollable state (ADR-0032).
+                // StateSnapshot/revision path: a threshold crossing is an event, not state (ADR-0032).
                 send_frame_logged(&supervisor.registry, event.generation_id, &SupervisorFrame::IdleEvent(event));
             }
             Some(command) = lock_commands.recv() => supervisor.send_lock_command(command),
@@ -409,7 +408,6 @@ async fn run_supervisor(
                 RendererFrame::LockReport(report) => supervisor.record_lock_report(report),
                 RendererFrame::Command(envelope) => match envelope.params.capability.as_str() {
                     // `process` is addressable but never started, so it is not a roster capability.
-                    // `idle` joined the roster with ADR-0141 and uses the generic path.
                     "process" => supervisor.dispatch_process_command(&envelope).await,
                     name => match Capability::from_name(name) {
                         Some(capability) => supervisor.dispatch_capability_command(capability, &envelope),

@@ -1,10 +1,8 @@
 //! Which compositor this session is running, and the probe that answers it.
 //!
-//! Top-level because compositor identity belongs to the session, not a capability. It lived in
-//! `hardware/keyboard/layout.rs` (ADR-0034 put it there for `keyboard.active_layout`) until
-//! `workspaces` became the second caller and had to reach sideways into a sibling capability's
-//! module. `CONTEXT.md`'s **Compositor link** already scoped that trait to "what keyboard layout
-//! needs today", so the probe belonged elsewhere.
+//! Top-level because compositor identity belongs to the session, not a capability: `keyboard`
+//! and `workspaces` both need it, and **Compositor link** (`CONTEXT.md`) is scoped to keyboard
+//! layout.
 //!
 //! This owns detection and compositor IPC plumbing, with no adaptor. ADR-0056 decision 1 says
 //! `workspaces` gets no trait and `CompositorLink` does not grow one. The two capabilities share
@@ -54,12 +52,12 @@ pub fn detect_compositor() -> Option<CompositorKind> {
     PROBES.iter().find(|(_, var)| std::env::var_os(var).is_some()).map(|(kind, _)| *kind)
 }
 
-/// The shared "disabled for this run" line when [`detect_compositor`] returns `None`. `keyboard`
-/// and `workspaces` had diverged in how much their local versions told the user.
+/// The "disabled for this run" line `keyboard` and `workspaces` share when [`detect_compositor`]
+/// returns `None`.
 ///
-/// If set, names `$XDG_CURRENT_DESKTOP`: "this session is sway, which has no implementor" is
-/// actionable, unlike `keyboard`'s old "neither HYPRLAND_INSTANCE_SIGNATURE nor NIRI_SOCKET is
-/// set". This is not a second detection path; an unrecognised name still yields no implementor.
+/// If set, names `$XDG_CURRENT_DESKTOP`, because "this session is sway, which has no implementor"
+/// is actionable. This is not a second detection path; an unrecognised name still yields no
+/// implementor.
 pub fn unsupported_session_report() -> String {
     match session_desktop() {
         Some(desktop) => format!("this session is {desktop}, which has no implementor"),

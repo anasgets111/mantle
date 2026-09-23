@@ -29,8 +29,8 @@ pub enum FramingError {
     Decode(#[from] serde_json::Error),
 }
 
-/// Writes a 4-byte big-endian length prefix followed by `payload`, flushed: the PAM worker's
-/// `tokio::io::stdout()` queues writes that its dropped runtime lost, a failed unlock.
+/// Writes a 4-byte big-endian length prefix followed by `payload`, then flushes so a buffered
+/// writer never holds a frame back.
 pub async fn write_frame<W: AsyncWrite + Unpin>(writer: &mut W, payload: &[u8]) -> Result<(), FramingError> {
     if payload.len() > MAX_FRAME_LEN {
         return Err(FramingError::FrameTooLarge { len: payload.len() });

@@ -1,12 +1,11 @@
 //! Lazy capability startup, signal routing, and command dispatch (ADR-0037, ADR-0070, ADR-0076).
 //!
-//! `run_supervisor` once held sixteen controllers, twenty channels, five locals each, and 800
-//! lines, requiring six edits across five `main.rs` regions per capability. [`Capabilities`] now
-//! owns the fields; exhaustive start, push, and dispatch matches fail at each required arm.
+//! [`Capabilities`] owns every controller and channel, so `main.rs` does not grow per capability;
+//! exhaustive start, push, and dispatch matches fail to compile at a missing arm.
 //!
 //! No trait or boxed registry: controllers differ (`build_state`, `snapshot`, async
 //! `handle_signal`, or a channel), and `main.rs` needs concrete types. ADR-0037 decision 3 chose
-//! static calls; this module moves that dispatch here.
+//! static calls.
 //!
 //! **One flat child module per roster entry.** Shared names cover `shared::Capability`,
 //! `mantle.<name>`, and command `capability`. [`read_attr`] lives here, `polkit` in
@@ -850,8 +849,7 @@ impl Capabilities {
                     push!(Capability::Processes, &processes.snapshot());
                 }
             }
-            // Only timer-driven capability: once per wall-clock second when epoch changes
-            // (ADR-0053 decision 2).
+            // Once per wall-clock second, when the epoch changes (ADR-0053 decision 2).
             Signal::System => {
                 if let Some(system) = &self.system {
                     push!(Capability::System, &system.snapshot());

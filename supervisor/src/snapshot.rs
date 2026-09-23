@@ -7,7 +7,7 @@ use shared::{Capability, SupervisorFrame, warn};
 
 use crate::{send_frame_logged, socket};
 
-/// Bumps the revision, pushes `state` as a fresh `StateSnapshot`, and records it in
+/// Pushes `state` as a fresh `StateSnapshot` with the next revision, and records it in
 /// `last_snapshots` (ADR-0029), which `Supervisor::hydrate` replays to a new generation. A payload
 /// equal to the last one is dropped: every push re-resolves the Renderer's scene (ADR-0044).
 ///
