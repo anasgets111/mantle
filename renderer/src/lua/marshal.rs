@@ -1,6 +1,6 @@
 //! Rust-Lua marshalling boundary, enforcing strict, non-coercive rules for `f64`, `i64`/`u64`,
 //! and `String`. `mlua` maps shape but does not reject NaN, unsafe integers, or oversized
-//! strings. First caller: `signal::Signal::try_new_direct`.
+//! strings.
 
 /// `2^53 - 1`, the largest exact integer in Lua's IEEE-754-double `number`, even when its integer
 /// subtype holds it.

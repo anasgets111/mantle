@@ -102,9 +102,6 @@ fn next_cell_id() -> CellId {
 
 #[derive(Clone)]
 enum SignalKind {
-    // ponytail: only `try_new_direct` constructs this; no production caller yet, tests only.
-    #[allow(dead_code)]
-    Direct(Value),
     /// `computed`/`map`. Function and sources are user values, not fields, so a cycle through a
     /// config table stays collectable (ADR-0221); `Delayed`/`Pulse` keep their source and values the
     /// same way, leaving only their clocks in Rust.
@@ -203,7 +200,6 @@ impl SignalKind {
     /// Name used in [`Signal::set`] refusal messages.
     fn describe(&self) -> &'static str {
         match self {
-            SignalKind::Direct(_) => "a direct",
             SignalKind::Computed { .. } | SignalKind::Derived(_) => "a computed",
             SignalKind::Live { .. } => "a capability",
             SignalKind::Hover { .. } => "a hover",
@@ -217,7 +213,7 @@ impl SignalKind {
 }
 
 /// Applies `marshal.rs` checks to Lua-authored `Number`/`Integer`/`String`; other shapes pass
-/// unchanged. Shared by `try_new_direct`, `new_state`, and `set`; `new_live` receives Rust data.
+/// unchanged. Shared by `new_state` and `set`; `new_live` receives Rust data.
 fn check_lua_authored(value: &Value) -> Result<(), marshal::MarshalError> {
     match value {
         Value::Number(n) => {
@@ -254,20 +250,11 @@ fn literal_was_edited(current: &Value, seeded: &Value) -> Option<bool> {
     Some(current != seeded)
 }
 
-/// Read-only reactive value: plain (`Direct`/Rust-pushed) or recomputed Lua closure (`Computed`).
+/// Read-only reactive value: plain (`State`/Rust-pushed) or recomputed Lua closure (`Computed`).
 #[derive(Clone)]
 pub struct Signal(SignalKind);
 
 impl Signal {
-    /// Wraps `value` as `Direct`, enforcing `marshal.rs` for `Number`/`Integer`/`String`.
-    /// ponytail: tests only; production live values use `new_live`. A Lua-created Direct signal is
-    /// future work.
-    #[allow(dead_code)]
-    pub fn try_new_direct(value: Value) -> Result<Self, marshal::MarshalError> {
-        check_lua_authored(&value)?;
-        Ok(Signal(SignalKind::Direct(value)))
-    }
-
     /// Signal behind `state(name, initial)` (ADR-0044 decision 5), writable through `set`, which
     /// marks `dirty`; `initial` is Lua-authored and marshal-checked, unlike `new_live`.
     pub fn new_state(initial: Value, dirty: DirtyFlag) -> Result<Self, marshal::MarshalError> {
@@ -408,7 +395,6 @@ impl Signal {
     /// from `AnyUserData`/`Value`.
     pub(crate) fn get_value(&self, lua: &Lua) -> mlua::Result<Value> {
         match &self.0 {
-            SignalKind::Direct(value) => Ok(value.clone()),
             SignalKind::Live { id, cell }
             | SignalKind::Hover { id, cell, .. }
             | SignalKind::Scroll { id, cell, .. }
@@ -1337,7 +1323,7 @@ mod tests {
 
     fn lua_with_signal(name: &str, value: Value) -> Lua {
         let lua = lua_with_state().0;
-        let signal = Signal::try_new_direct(value).unwrap();
+        let signal = Signal::new_state(value, DirtyFlag::new()).unwrap();
         lua.globals().set(name, signal).unwrap();
         lua
     }
@@ -1984,7 +1970,7 @@ mod tests {
     }
 
     #[test]
-    fn get_returns_the_wrapped_direct_value() {
+    fn get_returns_the_wrapped_value() {
         let lua = lua_with_signal("s", Value::Number(0.75));
         let result: f64 = lua.load("return s:get()").eval().unwrap();
         assert_eq!(result, 0.75);
@@ -2000,15 +1986,15 @@ mod tests {
     #[test]
     fn computed_combines_multiple_dependencies_current_values() {
         let lua = lua_with_state().0;
-        lua.globals().set("a", Signal::try_new_direct(Value::Integer(3)).unwrap()).unwrap();
-        lua.globals().set("b", Signal::try_new_direct(Value::Integer(4)).unwrap()).unwrap();
+        lua.globals().set("a", Signal::new_state(Value::Integer(3), DirtyFlag::new()).unwrap()).unwrap();
+        lua.globals().set("b", Signal::new_state(Value::Integer(4), DirtyFlag::new()).unwrap()).unwrap();
 
         let result: i64 = lua.load("return computed({a, b}, function(x, y) return x + y end):get()").eval().unwrap();
         assert_eq!(result, 7);
     }
 
     #[test]
-    fn computed_reflects_a_later_direct_signal_reconstruction_not_a_stale_cache() {
+    fn computed_reflects_a_later_signal_reconstruction_not_a_stale_cache() {
         // No memoization: later `get` sees a rebuilt dependency, not a cached first read.
         let lua = lua_with_signal("a", Value::Integer(1));
         lua.load("doubled = computed({a}, function(x) return x * 2 end)").exec().unwrap();
@@ -2016,7 +2002,7 @@ mod tests {
         let first: i64 = lua.load("return doubled:get()").eval().unwrap();
         assert_eq!(first, 2);
 
-        lua.globals().set("a", Signal::try_new_direct(Value::Integer(5)).unwrap()).unwrap();
+        lua.globals().set("a", Signal::new_state(Value::Integer(5), DirtyFlag::new()).unwrap()).unwrap();
         lua.load("doubled = computed({a}, function(x) return x * 2 end)").exec().unwrap();
         let second: i64 = lua.load("return doubled:get()").eval().unwrap();
         assert_eq!(second, 10);
@@ -2040,7 +2026,7 @@ mod tests {
         // A body reading a second Signal re-enters the budget; inner return must preserve the outer
         // cap.
         let lua = lua_with_signal("a", Value::Integer(1));
-        lua.globals().set("other", Signal::try_new_direct(Value::Integer(2)).unwrap()).unwrap();
+        lua.globals().set("other", Signal::new_state(Value::Integer(2), DirtyFlag::new()).unwrap()).unwrap();
 
         let start = Instant::now();
         let result: mlua::Result<i64> =
@@ -2106,7 +2092,7 @@ mod tests {
         assert!(elapsed < Duration::from_secs(1), "the depth cap must trip well under a second, took {elapsed:?}");
     }
 
-    /// `s:map(f):map(f):...` `links` deep over Direct signal `a`.
+    /// `s:map(f):map(f):...` `links` deep over signal `a`.
     fn map_chain_source(links: usize) -> String {
         format!(
             r#"
@@ -2129,7 +2115,7 @@ mod tests {
         );
     }
 
-    /// `delay(delay(...))` / `pulse(pulse(...))` `links` deep over Direct signal `a`.
+    /// `delay(delay(...))` / `pulse(pulse(...))` `links` deep over signal `a`.
     fn hold_chain_source(builder: &str, links: usize) -> String {
         format!(
             r#"
@@ -2392,7 +2378,7 @@ mod tests {
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
         let (capability, _handle) = Capability::new("probe", DirtyFlag::new(), CommandSender::new(0, tx));
         lua.globals().set("probe", capability).unwrap();
-        lua.globals().set("plain", Signal::try_new_direct(Value::Integer(1)).unwrap()).unwrap();
+        lua.globals().set("plain", Signal::new_state(Value::Integer(1), DirtyFlag::new()).unwrap()).unwrap();
         // Neither type: both checks must say no.
         lua.globals().set("handle", lua.create_any_userdata(7u32).unwrap()).unwrap();
 
