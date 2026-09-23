@@ -10,11 +10,12 @@ use tokio::sync::mpsc::UnboundedSender;
 use zbus::fdo::RequestNameFlags;
 use zbus::zvariant::{OwnedObjectPath, Value};
 
-use super::item::TrayItem;
 use super::menu::fetch_menu_via;
-use super::proxies::{DBusMenuProxy, StatusNotifierItemProxy, StatusNotifierWatcherClientProxy};
+use super::proxies::StatusNotifierWatcherClientProxy;
 use super::registration::{ResolvedRegistration, item_id, resolve_registration};
-use super::registry::{ItemKey, ItemRegistry, ordered_items, register_item, spawn_name_owner_changed_forwarder};
+use super::registry::{
+    ItemEntry, ItemKey, ItemRegistry, ordered_items, register_item, spawn_name_owner_changed_forwarder,
+};
 use super::watcher::StatusNotifierWatcher;
 use super::{
     DEFAULT_ITEM_OBJECT_PATH, TrayActionError, TraySignal, TrayState, WATCHER_BUS_NAME, WATCHER_OBJECT_PATH,
@@ -97,36 +98,28 @@ impl TrayController {
         TrayState { items: ordered_items(&self.registry) }
     }
 
-    fn find_item_id(&self, id: &str) -> Option<(ItemKey, TrayItem)> {
+    /// What `pick` clones out of the entry `id` names, under one lock that no D-Bus call outlives.
+    /// An unknown id is logged under `action`.
+    fn find<T>(&self, action: &str, id: &str, pick: impl FnOnce(&ItemKey, &ItemEntry) -> T) -> Option<T> {
         let guard = self.registry.lock().expect("mutex poisoned");
-        guard
-            .iter()
-            .find(|(key, _)| item_id(key.0.as_str(), key.1.as_str()) == id)
-            .map(|(key, entry)| (key.clone(), entry.last_known.clone()))
-    }
-
-    fn find_item_proxy(&self, key: &ItemKey) -> Option<StatusNotifierItemProxy<'static>> {
-        self.registry.lock().expect("mutex poisoned").get(key).map(|entry| entry.item.clone())
-    }
-
-    fn find_menu_proxy(&self, key: &ItemKey) -> Option<DBusMenuProxy<'static>> {
-        self.registry.lock().expect("mutex poisoned").get(key).and_then(|entry| entry.menu.clone())
+        let found = guard.iter().find(|(key, _)| item_id(key.0.as_str(), key.1.as_str()) == id);
+        if found.is_none() {
+            debug!("{action}({id:?}) failed: {}", TrayActionError::UnknownItem);
+        }
+        found.map(|(key, entry)| pick(key, entry))
     }
 
     /// `tray:activate(id, x, y)`. Skips `Activate` when `ItemIsMenu` is true, per SNI semantics
     /// (ADR-0031, [`should_call_activate`]).
     pub async fn activate(&self, id: &str, x: i32, y: i32) {
-        let Some((key, tray_item)) = self.find_item_id(id) else {
-            debug!("activate({id:?}) failed: {}", TrayActionError::UnknownItem);
+        let Some((item_is_menu, item)) =
+            self.find("activate", id, |_, entry| (entry.last_known.item_is_menu, entry.item.clone()))
+        else {
             return;
         };
-        if !should_call_activate(tray_item.item_is_menu) {
+        if !should_call_activate(item_is_menu) {
             return;
         }
-        let Some(item) = self.find_item_proxy(&key) else {
-            debug!("activate({id:?}) failed: {}", TrayActionError::UnknownItem);
-            return;
-        };
         if let Err(err) = item.activate(x, y).await {
             debug!("activate({id:?}) failed: {err}");
         }
@@ -135,14 +128,7 @@ impl TrayController {
     /// `tray:secondary_activate(id, x, y)`: middle-click (ADR-0074). No `should_call_activate`
     /// gate: `ItemIsMenu` constrains primary clicks only.
     pub async fn secondary_activate(&self, id: &str, x: i32, y: i32) {
-        let Some((key, _)) = self.find_item_id(id) else {
-            debug!("secondary_activate({id:?}) failed: {}", TrayActionError::UnknownItem);
-            return;
-        };
-        let Some(item) = self.find_item_proxy(&key) else {
-            debug!("secondary_activate({id:?}) failed: {}", TrayActionError::UnknownItem);
-            return;
-        };
+        let Some(item) = self.find("secondary_activate", id, |_, entry| entry.item.clone()) else { return };
         if let Err(err) = item.secondary_activate(x, y).await {
             debug!("secondary_activate({id:?}) failed: {err}");
         }
@@ -151,14 +137,7 @@ impl TrayController {
     /// `tray:scroll(id, delta, orientation)`: icon scroll (ADR-0074). Passes `orientation`
     /// verbatim; the application interprets it, including values beyond the two named orientations.
     pub async fn scroll(&self, id: &str, delta: i32, orientation: &str) {
-        let Some((key, _)) = self.find_item_id(id) else {
-            debug!("scroll({id:?}) failed: {}", TrayActionError::UnknownItem);
-            return;
-        };
-        let Some(item) = self.find_item_proxy(&key) else {
-            debug!("scroll({id:?}) failed: {}", TrayActionError::UnknownItem);
-            return;
-        };
+        let Some(item) = self.find("scroll", id, |_, entry| entry.item.clone()) else { return };
         if let Err(err) = item.scroll(delta, orientation).await {
             debug!("scroll({id:?}) failed: {err}");
         }
@@ -167,11 +146,8 @@ impl TrayController {
     /// `tray:activate_menu_item(id, menu_item_id)` sends `DBusMenu.Event(id, "clicked", 0,
     /// timestamp)` (ADR-0031).
     pub async fn activate_menu_item(&self, id: &str, menu_item_id: i32) {
-        let Some((key, _)) = self.find_item_id(id) else {
-            debug!("activate_menu_item({id:?}, {menu_item_id}) failed: {}", TrayActionError::UnknownItem);
-            return;
-        };
-        let Some(menu) = self.find_menu_proxy(&key) else {
+        let Some(menu) = self.find("activate_menu_item", id, |_, entry| entry.menu.clone()) else { return };
+        let Some(menu) = menu else {
             debug!("activate_menu_item({id:?}, {menu_item_id}) failed: {}", TrayActionError::NoMenu);
             return;
         };
@@ -186,11 +162,10 @@ impl TrayController {
     /// answers that nothing changed; a later change arrives as `LayoutUpdated` (ADR-0031). Full
     /// refetch is adequate for human-scale trees.
     pub async fn menu_will_show(&self, id: &str, submenu_id: i32) {
-        let Some((key, _)) = self.find_item_id(id) else {
-            debug!("menu_will_show({id:?}, {submenu_id}) failed: {}", TrayActionError::UnknownItem);
+        let Some((key, menu)) = self.find("menu_will_show", id, |key, entry| (key.clone(), entry.menu.clone())) else {
             return;
         };
-        let Some(menu) = self.find_menu_proxy(&key) else {
+        let Some(menu) = menu else {
             debug!("menu_will_show({id:?}, {submenu_id}) failed: {}", TrayActionError::NoMenu);
             return;
         };
