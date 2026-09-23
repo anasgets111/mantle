@@ -465,11 +465,12 @@ async fn export_screensaver(session_bus: &zbus::Connection, controller: IdleCont
         .request_name_with_flags(SCREENSAVER_BUS_NAME, zbus::fdo::RequestNameFlags::DoNotQueue.into())
         .await
     {
-        Ok(zbus::fdo::RequestNameReply::PrimaryOwner) => {
+        // A fresh connection with `DoNotQueue` gets only `PrimaryOwner`; zbus turns `Exists` into `NameTaken`.
+        Ok(_) => {
             debug!("holding {SCREENSAVER_BUS_NAME}; idle inhibits from browsers and players reach the gate");
             tokio::spawn(watch_screensaver_peers(session_bus.clone(), controller));
         }
-        Ok(other) => warn!("RequestName({SCREENSAVER_BUS_NAME}) -> {other:?}; another daemon answers its clients"),
+        Err(zbus::Error::NameTaken) => warn!("{SCREENSAVER_BUS_NAME} is taken; another daemon answers its clients"),
         Err(err) => warn!("RequestName({SCREENSAVER_BUS_NAME}) failed: {err}; no client's inhibit reaches this shell"),
     }
 }
