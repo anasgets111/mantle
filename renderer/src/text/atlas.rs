@@ -99,6 +99,8 @@ pub struct TextDraw<'a> {
     pub align: TextAlign,
     /// A focused plain `textfield`'s `(anchor, caret)` byte offsets into `text` (ADR-0236).
     pub caret: Option<(usize, usize)>,
+    /// The blink's phase: off drops the bar and keeps the selection and scroll.
+    pub caret_on: bool,
 }
 
 /// Registers every face of `font_chain` femtovg does not hold yet, and maps each face's shaping id
@@ -264,7 +266,7 @@ impl TextPainter {
     /// Rows are the glyphs [`ShapingHandle::shape_lines`] laid out, so measurement and paint share
     /// one shaper (ADR-0211); `runs` (ADR-0104) colour and underline by the byte each glyph came from.
     pub fn draw_text(&mut self, line: TextDraw<'_>, rect: LogicalRect, scale: f32) {
-        let TextDraw { text, runs, font_size, font, color, align, caret } = line;
+        let TextDraw { text, runs, font_size, font, color, align, caret, caret_on } = line;
         let physical = snap_to_physical(rect, scale);
         // ponytail: glyphs are placed at logical size in a physical-pixel canvas whose dpi is 1.0,
         // so on a fractional or 2x output every glyph in this shell draws at logical size. Upgrade
@@ -312,8 +314,6 @@ impl TextPainter {
                 row += 1;
                 // A `textfield`'s selection and caret, in the ink the field already declared for
                 // its text (ADR-0236). A draft holds no newline, so only the first row has either.
-                // ponytail: the caret does not blink, which costs no timer and no repaint. Upgrade
-                // path: a phase off the animation clock, which already wakes the loop (ADR-0145).
                 let top = baseline - laid.baseline;
                 let selection = caret.filter(|_| row == 1);
                 // Past the width that fits, the line follows the caret rather than its alignment,
@@ -345,7 +345,7 @@ impl TextPainter {
                     self.fill_run(key(&group[0]), glyphs, font_size);
                 }
                 // Over them, so a glyph's side bearing cannot swallow it.
-                if let Some((.., at)) = selection {
+                if let Some((.., at)) = selection.filter(|_| caret_on) {
                     self.fill(left + caret_x(laid, at), top, thickness, step, color);
                 }
 

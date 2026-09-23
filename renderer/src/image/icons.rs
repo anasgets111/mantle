@@ -85,7 +85,7 @@ type Memo = HashMap<u16, HashMap<String, Option<PathBuf>>>;
 /// font-chain cadence, rather than rereading settings behind every paint.
 fn theme() -> &'static str {
     static THEME: OnceLock<String> = OnceLock::new();
-    THEME.get_or_init(|| gtk_icon_theme_name().unwrap_or_else(|| "hicolor".to_string()))
+    THEME.get_or_init(|| gtk_setting("gtk-icon-theme-name").unwrap_or_else(|| "hicolor".to_string()))
 }
 
 /// Do not use `freedesktop-icons::default_theme_gtk()`: it spawns
@@ -94,26 +94,26 @@ fn theme() -> &'static str {
 /// (`"Tela circle dracula"`), while `with_theme` needs the directory name
 /// (`"Tela-circle-dracula"`). The mismatch silently returns `None`.
 ///
-/// Read the directory name directly from settings, GTK 4 before GTK 3, then `hicolor`, the spec's
+/// Read `key` directly from settings, GTK 4 before GTK 3; the icon theme then falls to `hicolor`, the spec's
 /// implicit fallback.
 ///
 /// ponytail: GTK settings only. KDE uses `Icons/Theme` in `kdeglobals`, so Plasma falls to
 /// `hicolor`, drawing app icons but almost no status icons. Upgrade: another `find_map` arm; not
 /// built because Plasma is untested and a second untested parser is worse than this gap.
-fn gtk_icon_theme_name() -> Option<String> {
+pub(crate) fn gtk_setting(key: &str) -> Option<String> {
     let config = std::env::var_os("XDG_CONFIG_HOME")
         .map(PathBuf::from)
         .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".config")))?;
     ["gtk-4.0", "gtk-3.0"].into_iter().find_map(|version| {
         let text = std::fs::read_to_string(config.join(version).join("settings.ini")).ok()?;
-        icon_theme_from_settings(&text)
+        setting_from_ini(&text, key)
     })
 }
 
-/// The `gtk-icon-theme-name` value from `settings.ini`, split out so parsing needs no home dir.
-fn icon_theme_from_settings(text: &str) -> Option<String> {
+/// `key`'s value in `settings.ini`, split out so parsing needs no home dir.
+fn setting_from_ini(text: &str, key: &str) -> Option<String> {
     text.lines()
-        .filter_map(|line| line.trim().strip_prefix("gtk-icon-theme-name"))
+        .filter_map(|line| line.trim().strip_prefix(key))
         .filter_map(|rest| rest.trim_start().strip_prefix('='))
         .map(|value| value.trim().trim_matches('"').to_string())
         .find(|value| !value.is_empty())
@@ -148,18 +148,24 @@ mod tests {
     #[test]
     fn the_settings_parse_returns_the_directory_name_gtk_wrote() {
         let ini = "[Settings]\ngtk-theme-name=Adwaita-dark\ngtk-icon-theme-name=Tela-circle-dracula\ngtk-font-name=Cantarell 11\n";
-        assert_eq!(icon_theme_from_settings(ini).as_deref(), Some("Tela-circle-dracula"));
+        assert_eq!(setting_from_ini(ini, "gtk-icon-theme-name").as_deref(), Some("Tela-circle-dracula"));
         // GLib permits spaces around `=`; some tools quote the value.
-        assert_eq!(icon_theme_from_settings("gtk-icon-theme-name = Papirus").as_deref(), Some("Papirus"));
-        assert_eq!(icon_theme_from_settings("gtk-icon-theme-name=\"Papirus\"").as_deref(), Some("Papirus"));
+        assert_eq!(
+            setting_from_ini("gtk-icon-theme-name = Papirus", "gtk-icon-theme-name").as_deref(),
+            Some("Papirus")
+        );
+        assert_eq!(
+            setting_from_ini("gtk-icon-theme-name=\"Papirus\"", "gtk-icon-theme-name").as_deref(),
+            Some("Papirus")
+        );
     }
 
     #[test]
     fn a_settings_file_without_the_key_falls_through_rather_than_matching_a_prefix() {
-        assert_eq!(icon_theme_from_settings("[Settings]\ngtk-theme-name=Adwaita\n"), None);
-        assert_eq!(icon_theme_from_settings(""), None);
+        assert_eq!(setting_from_ini("[Settings]\ngtk-theme-name=Adwaita\n", "gtk-icon-theme-name"), None);
+        assert_eq!(setting_from_ini("", "gtk-icon-theme-name"), None);
         // Empty is not a theme: `with_theme("")` silently loses every icon.
-        assert_eq!(icon_theme_from_settings("gtk-icon-theme-name="), None);
+        assert_eq!(setting_from_ini("gtk-icon-theme-name=", "gtk-icon-theme-name"), None);
     }
 
     #[test]

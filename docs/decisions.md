@@ -5505,6 +5505,12 @@ line on dead keys and compose sequences also stands as written, unverified: SCTK
 through `xkb::compose::State` before the `utf8` this engine reads, so the line may be stale, but
 proving it needs a physical key press on a compose layout.
 
+**Amendment: the caret blinks.** GTK's `gtk-cursor-blink`, `-time` and `-timeout` from
+`settings.ini` (defaults on, 1200 ms, 10 s), read once at start. Any field input restarts it showing;
+past the timeout it holds on and arms no wake. Off drops the bar alone, so the selection and the
+line's scroll to the caret hold still. A flip changes only that `Draw::Text`, so swap damage (ADR-0063
+amendment) re-blurs a caret-sized strip, not the layer.
+
 ## 0237. Every shell writes a log, and a descriptor with somewhere to be is copied rather than replaced
 
 A shell started from a terminal wrote no `shell.log` at all, so `mantle log` fell through to the

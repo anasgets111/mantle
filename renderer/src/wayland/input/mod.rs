@@ -120,6 +120,20 @@ impl SeatHandler for App {
     }
 }
 
+/// GTK's `gtk-cursor-blink`, `-time` (a whole cycle, in ms) and `-timeout` (in s), with GTK's own
+/// defaults, as (half a cycle, blink duration). `None` when blinking is off.
+/// ponytail: read once, so a changed setting lands on the next Renderer start.
+pub(in crate::wayland) fn caret_blink() -> Option<(std::time::Duration, std::time::Duration)> {
+    let setting = |key| crate::image::icons::gtk_setting(key);
+    if setting("gtk-cursor-blink").is_some_and(|on| matches!(on.as_str(), "false" | "0")) {
+        return None;
+    }
+    let cycle = setting("gtk-cursor-blink-time").and_then(|ms| ms.parse().ok()).unwrap_or(1200u64);
+    let timeout = setting("gtk-cursor-blink-timeout").and_then(|s| s.parse().ok()).unwrap_or(10u64);
+    (cycle >= 2 && timeout > 0)
+        .then(|| (std::time::Duration::from_millis(cycle / 2), std::time::Duration::from_secs(timeout)))
+}
+
 impl App {
     fn pointer_seat(&self) -> Option<wl_seat::WlSeat> {
         Some(self.pointer.as_ref()?.pointer().data::<PointerData<()>>()?.seat().clone())
@@ -130,6 +144,8 @@ impl App {
     }
 
     pub(in crate::wayland) fn mark_field_input_changed(&mut self, surface_id: &str) {
+        self.caret_epoch = std::time::Instant::now();
+        self.caret_painted_on = true;
         if !self.field_input_surfaces.iter().any(|s| s == surface_id) {
             self.field_input_surfaces.push(surface_id.to_string());
         }

@@ -814,7 +814,37 @@ impl App {
             id: focused.id,
             text: &focused.buffer,
             caret: self.text_field_takes_keys(focused).then_some(focused.selection),
+            caret_on: self.caret_on(std::time::Instant::now()),
         })
+    }
+
+    fn caret_on(&self, now: std::time::Instant) -> bool {
+        caret_phase(self.caret_blink, now.saturating_duration_since(self.caret_epoch)).0
+    }
+
+    /// The next phase flip while a field that takes keys is blinking, for the poll timeout.
+    /// ponytail: an empty draft arms none, since it shows its placeholder and no caret (ADR-0135);
+    /// the rare field with no placeholder keeps a steady caret until the first key.
+    pub(in crate::wayland) fn next_caret_deadline(&self) -> Option<std::time::Instant> {
+        self.focused_text_field
+            .as_ref()
+            .filter(|field| !field.buffer.is_empty() && self.text_field_takes_keys(field))?;
+        let elapsed = std::time::Instant::now().saturating_duration_since(self.caret_epoch);
+        caret_phase(self.caret_blink, elapsed).1.map(|flip| self.caret_epoch + flip)
+    }
+
+    /// Queues the focused field's surface when the phase changed since it was last queued.
+    pub(in crate::wayland) fn repaint_caret_if_it_flipped(&mut self) {
+        let on = self.caret_on(std::time::Instant::now());
+        if on == self.caret_painted_on {
+            return;
+        }
+        self.caret_painted_on = on;
+        if let Some(id) = self.focused_text_field.as_ref().map(|field| field.surface_id.clone())
+            && !self.field_input_surfaces.contains(&id)
+        {
+            self.field_input_surfaces.push(id);
+        }
     }
 
     /// Poll-turn cleanup for a destroyed surface. Only liveness is checked here: checking routing
@@ -1054,8 +1084,37 @@ impl App {
     }
 }
 
+/// The caret's phase `elapsed` after the last input, and when it next flips, both measured from
+/// that input. On for the first half of each cycle, then on for good once `timeout` passes, so an
+/// idle focused field arms no wake.
+fn caret_phase(
+    blink: Option<(std::time::Duration, std::time::Duration)>,
+    elapsed: std::time::Duration,
+) -> (bool, Option<std::time::Duration>) {
+    let Some((half, timeout)) = blink else { return (true, None) };
+    if elapsed >= timeout {
+        return (true, None);
+    }
+    let flips = elapsed.as_millis() / half.as_millis();
+    let next = u32::try_from(flips + 1).ok().map(|n| (half * n).min(timeout));
+    (flips.is_multiple_of(2), next)
+}
+
 #[cfg(test)]
 mod tests {
+    /// GTK's default: 600 ms on, 600 ms off, solid from 10 s on, and an idle field arms no wake.
+    #[test]
+    fn the_caret_blinks_in_half_cycles_then_holds_on_past_the_timeout() {
+        use std::time::Duration;
+        let ms = Duration::from_millis;
+        let blink = Some((ms(600), Duration::from_secs(10)));
+        assert_eq!(caret_phase(blink, ms(0)), (true, Some(ms(600))));
+        assert_eq!(caret_phase(blink, ms(700)), (false, Some(ms(1200))));
+        assert_eq!(caret_phase(blink, ms(9_700)), (true, Some(ms(10_000))));
+        assert_eq!(caret_phase(blink, ms(10_000)), (true, None));
+        assert_eq!(caret_phase(None, ms(700)), (true, None));
+    }
+
     use super::super::tests::hit_node;
     use super::*;
     use crate::layout::secure_submit::sole_secure_submit;

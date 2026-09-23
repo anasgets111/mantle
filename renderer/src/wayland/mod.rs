@@ -217,6 +217,13 @@ pub struct App {
     /// bytes and plain text live outside it (ADR-0005, ADR-0092), so re-resolve misses the update.
     /// Surfaces whose text fields had caret movement or input edits this turn.
     field_input_surfaces: Vec<String>,
+    /// GTK's caret blink as (half a cycle, how long it blinks after input), `None` when the
+    /// desktop turned it off. Read once at start.
+    caret_blink: Option<(std::time::Duration, std::time::Duration)>,
+    /// The last field input, which restarts the blink showing.
+    caret_epoch: std::time::Instant,
+    /// The phase the focused field was last queued to paint.
+    caret_painted_on: bool,
     /// A compositor frame callback landed for a surface whose tree was mid-tween (ADR-0145). The
     /// poll loop takes it once per turn and advances every tween; `paint_surface` asks for the
     /// next one while anything is still moving, which is what keeps the chain alive and lets it
@@ -329,6 +336,9 @@ pub fn run(
         repeat_info: None,
         repeating: None,
         field_input_surfaces: Vec::new(),
+        caret_blink: input::caret_blink(),
+        caret_epoch: std::time::Instant::now(),
+        caret_painted_on: true,
         animation_frame_due: false,
         surfaces_drawn: 0,
         repaint_split: surface::RepaintSplit::default(),
@@ -484,6 +494,7 @@ pub fn run(
         let re_resolved = passed || !ticked.is_empty();
         // Take unconditionally so a keystroke arriving with a push is covered by this repaint, not
         // repeated next turn.
+        app.repaint_caret_if_it_flipped();
         let typed_surfaces = std::mem::take(&mut app.field_input_surfaces);
         let typed = !typed_surfaces.is_empty();
         // A decode changes neither retained properties nor a list that names the file, so it is
@@ -640,6 +651,7 @@ pub fn run(
                 .into_iter()
                 .chain(app.next_stale_deadline())
                 .chain(app.next_repeat_deadline())
+                .chain(app.next_caret_deadline())
                 .min();
             let timeout = deadline.map_or(nix::poll::PollTimeout::NONE, |due| {
                 // Rounded up: `as_millis` on the last fraction of a hold is 0, and a zero timeout
