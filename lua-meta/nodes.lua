@@ -148,6 +148,14 @@
 ---@field transition? Transition|Bound Cross from the picture the node is holding to the one that just landed, instead of swapping in one frame (ADR-0181). Implies `retain`, which is where the outgoing picture comes from, and like it needs `async = true` and a node whose `id` survives the change. The first picture a node ever shows appears rather than crosses, having nothing to cross from. Without a `shader` the cross is a straight dissolve, run by the engine's own fragment shader so that it composes exactly: a transparent incoming pixel does not show the outgoing one through it, and a node `opacity` below 1 reads the same density mid-cross as at either end (ADR-0186). Name a `shader` for anything else -- a wipe, a disc, a pixelate -- which is a `.frag` file your config owns rather than an effect this engine ships (ADR-0184). A shader that will not build logs once and falls back to the plain dissolve.
 ---@field source_blur? number|Bound Default `0`, off. Blurs this image's own pixels once, when its decode lands (ADR-0240) -- unlike `blur` (a `BoxBase` field this node also has), which asks the compositor to blur the desktop *behind* the node instead. Set once per `source`, not tweened or rebound: `retain` covers a gap while `source` decodes but not one this alone opens, so changing it on a live node blanks the picture until the newly blurred texture lands. Runs on whichever thread decodes -- inline on the one driving Wayland dispatch and the config VM under the default `async = false`, so a large `source` with a large `source_blur` is a real stall there; pair it with `async = true` past icon-sized sources. In the source's own stored pixels, before `fit` places it: exact for the default `"cover"` at the source's native size or smaller, approximate under `"contain"` or a source upscaled to cover its box, where the drawn radius scales with it. Ignored on an animated GIF, which keeps playing sharp: a blur samples past a changed frame's edge, and blurring it would mean storing whole frames instead of the changed rects the engine keeps to stay inside its animation budget.
 
+--- Has no intrinsic size, unlike `image`: without an explicit `width`/`height` it lays out at
+--- 0x0 and draws nothing.
+---@class CaptureProps: NodeBase
+---@field output? string|Bound A connector name, matching `panel.monitor`'s spelling (e.g. `"DP-1"`). A name matching no connected output draws nothing and logs a warning once. Phase 1 covers an output; a later phase adds a window source.
+---@field fit? "cover"|"contain"|"stretch"|Bound Default `"cover"`. Same meaning as `image.fit`.
+---@field live? boolean|Bound Default `false`. `false` captures once, when the node appears and again whenever `output` changes. `true` keeps requesting the next frame as soon as the previous one arrives, at most one in flight. Paused while the node's surface is unmapped or the node leaves the scene, resuming on the next show.
+---@field paint_cursor? boolean|Bound Default `false`. Composite the pointer cursor onto the captured frame.
+
 ---@class ButtonProps: NodeBase, BoxBase
 ---@field children? Node[] Drawn in order. A hole in the array truncates it, since `#` is undefined on a sparse table.
 ---@field submit? boolean|Bound A click also sends the surface's armed `secure_submit` field, as Enter would (ADR-0114). The one way a button reaches a password, since no callback may; clickable with or without `on_click`.
@@ -214,6 +222,10 @@ function icon(props) end
 ---@param props ImageProps
 ---@return Node
 function image(props) end
+
+---@param props CaptureProps
+---@return Node
+function capture(props) end
 
 ---@param props ButtonProps
 ---@return Node

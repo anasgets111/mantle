@@ -63,6 +63,9 @@ pub enum PaintStyle {
         /// pixels, and which an `image` can set too since it is a `BOX_PROPERTIES` name.
         source_blur: f32,
     },
+    /// `capture` (ADR-0248): an output's live contents. `output` empty or naming nothing connected
+    /// draws nothing, the same answer `image`'s empty `source` gets.
+    Capture { output: String, fit: Fit, live: bool, paint_cursor: bool },
     /// `target` is `None` when no `secure_submit` is declared. Malformed targets fail here instead
     /// of being skipped until the press path (`layout::secure_submit` used to do that).
     TextField {
@@ -116,6 +119,12 @@ pub fn paint_style(kind: &str, properties: &PropMap) -> Result<Option<PaintStyle
                 source_blur: parse_source_blur(properties)?,
             }
         }
+        "capture" => PaintStyle::Capture {
+            output: parse_capture_output(properties)?,
+            fit: parse_fit(properties)?,
+            live: parse_live(properties)?,
+            paint_cursor: parse_paint_cursor(properties)?,
+        },
         "textfield" => PaintStyle::TextField {
             target: parse_secure_submit(properties)?,
             placeholder: parse_placeholder(properties)?,
@@ -211,6 +220,16 @@ mod tests {
     fn a_malformed_secure_submit_names_no_capability_and_fails_the_pass() {
         let lua = Lua::new();
         assert!(style(&lua, "return { kind = 'textfield', secure_submit = 'polkit' }").is_err());
+    }
+
+    #[test]
+    fn capture_parses_output_fit_live_and_paint_cursor() {
+        let lua = Lua::new();
+        let parsed = style(&lua, r#"return { kind = "capture", output = "DP-1", live = true }"#).unwrap().unwrap();
+        assert_eq!(
+            parsed,
+            PaintStyle::Capture { output: "DP-1".to_string(), fit: Fit::Cover, live: true, paint_cursor: false }
+        );
     }
 
     #[test]

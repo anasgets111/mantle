@@ -82,6 +82,10 @@ pub enum Draw {
         /// never distinguishes from a request it decided not to run.
         blur_px: u32,
     },
+    /// An output's live contents (ADR-0248). `wayland::capture` owns the texture, keyed by `node`;
+    /// this carries what a draw places it with and what the capture registry paces a source by,
+    /// the same split `Draw::Image` makes between pixels and policy.
+    Capture { node: NodeId, output: String, fit: Fit, alpha: f32, live: bool, paint_cursor: bool },
     /// A subtree masked by the declaring node's rounded arc. Rectangular clips flatten into each
     /// command; rounded clips stay grouped for [`execute`].
     Clipped { radius: f32, commands: Vec<DrawCmd> },
@@ -99,6 +103,17 @@ pub struct DrawCmd {
     pub draw: Draw,
 }
 
+/// One `capture` node as `DisplayList::capture_nodes` reports it: identity plus everything
+/// `wayland::App::sync_captures` paces a source by. No `fit`/`alpha`/`box_px`: those are draw
+/// concerns the registry never reads.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CaptureNode {
+    pub node: NodeId,
+    pub output: String,
+    pub live: bool,
+    pub paint_cursor: bool,
+}
+
 /// One surface's draw order, flattened for equality. Before this, the single dirty flag repainted
 /// every mapped surface on every re-resolve (ADR-0044 decision 2). Float equality is safe because
 /// identical inputs produce identical bits; `NaN` repaints forever rather than leaving stale
@@ -108,22 +123,55 @@ pub struct DisplayList {
     pub commands: Vec<DrawCmd>,
 }
 
+/// Walks `commands` for a leaf `matches`, descending into `Clipped`/`Transformed` subtrees.
+/// Shared by [`DisplayList::draws_any_of`] and [`DisplayList::captures_any_of`], which differ only
+/// in which `Draw` variant and field they compare.
+fn any_draw_matches(commands: &[DrawCmd], matches: impl Fn(&Draw) -> bool + Copy) -> bool {
+    commands.iter().any(|command| match &command.draw {
+        Draw::Clipped { commands, .. } | Draw::Transformed { commands, .. } => any_draw_matches(commands, matches),
+        draw => matches(draw),
+    })
+}
+
 impl DisplayList {
     /// Whether any `image` in this list draws one of `files` (ADR-0122). A background decode
     /// landing changes no list, since a list names the file and not the texture, so this is how
     /// `wayland::App` tells which surfaces' skipped repaint is now stale.
     pub fn draws_any_of(&self, files: &[std::path::PathBuf]) -> bool {
-        fn walk(commands: &[DrawCmd], files: &[std::path::PathBuf]) -> bool {
-            commands.iter().any(|command| match &command.draw {
-                Draw::Image { source, retained, .. } => files.iter().any(|file| {
-                    file.as_os_str() == source.as_str()
-                        || retained.as_ref().is_some_and(|cover| file.as_os_str() == cover.as_str())
-                }),
-                Draw::Clipped { commands, .. } | Draw::Transformed { commands, .. } => walk(commands, files),
-                _ => false,
-            })
+        any_draw_matches(&self.commands, |draw| {
+            matches!(draw, Draw::Image { source, retained, .. } if files.iter().any(|file| {
+                file.as_os_str() == source.as_str()
+                    || retained.as_ref().is_some_and(|cover| file.as_os_str() == cover.as_str())
+            }))
+        })
+    }
+
+    /// Whether any `capture` in this list is one of `nodes` (ADR-0248): a landed frame names the
+    /// node it uploads for, mirroring [`Self::draws_any_of`]'s file-name lookup for `image`.
+    pub fn captures_any_of(&self, nodes: &[NodeId]) -> bool {
+        any_draw_matches(&self.commands, |draw| matches!(draw, Draw::Capture { node, .. } if nodes.contains(node)))
+    }
+
+    /// Every `capture` node in this list, for `wayland::App::sync_captures` (ADR-0248):
+    /// which sources to keep requesting, which to stop, and by what pacing and output.
+    pub fn capture_nodes(&self, out: &mut Vec<CaptureNode>) {
+        fn walk(commands: &[DrawCmd], out: &mut Vec<CaptureNode>) {
+            for command in commands {
+                match &command.draw {
+                    Draw::Capture { node, output, live, paint_cursor, .. } => {
+                        out.push(CaptureNode {
+                            node: *node,
+                            output: output.clone(),
+                            live: *live,
+                            paint_cursor: *paint_cursor,
+                        });
+                    }
+                    Draw::Clipped { commands, .. } | Draw::Transformed { commands, .. } => walk(commands, out),
+                    _ => {}
+                }
+            }
         }
-        walk(&self.commands, files)
+        walk(&self.commands, out)
     }
 
     /// Images as `(path, box)` cache keys for `ImageCache::trim` pins (ADR-0123). A mapped surface
@@ -317,8 +365,8 @@ fn fade_border(colors: BorderColor, opacity: f32) -> BorderColor {
 /// Converts a node's parsed paint to a draw. `scale` supplies physical image size and `focus`
 /// supplies field content; malformed properties already failed `Scene::apply`.
 ///
-/// Takes the node rather than its `paint`, because an `image` reads three things off it -- the
-/// paint, the source it last had a texture for, and any dissolve crossing between them -- and the
+/// Takes the node rather than its `paint`, because an `image` reads three things off it (the
+/// paint, the source it last had a texture for, and any dissolve crossing between them), and the
 /// pass supplies only the geometry.
 fn draw_for(
     node: &ResolvedNode,
@@ -343,7 +391,7 @@ fn draw_for(
 
         // `text`: `content` through `TextPainter`, at `rect`, coloured by `foreground`. `elide`,
         // `wrap` and `max_lines` are absent on purpose: `Scene::apply` already rewrote `content` to
-        // the string that fits -- ellipsized, or line-broken with `\n` -- in the only place the box
+        // the string that fits (ellipsized, or line-broken with `\n`) in the only place the box
         // width and the shaping worker are both in reach.
         PaintStyle::Text { content, runs, font_size, font, color, align, elide: _, wrap: _, max_lines: _ } => {
             Some(Draw::Text {
@@ -373,7 +421,7 @@ fn draw_for(
         // edges enter the cache because `Cover` may scale an SVG past the shorter edge (ADR-0122).
         // `retained` is what goes *under* the draw, and it is one of two things: mid-dissolve the
         // picture being crossed away from, otherwise the one the node is still covering a decoding
-        // source with. One field because the node is never doing both -- `displayed_source` has
+        // source with. One field because the node is never doing both: `displayed_source` has
         // already moved on to `source` by the time a dissolve starts.
         PaintStyle::Image { source, fit, load, retain, transition, source_blur } => (!source.is_empty()).then(|| {
             // What goes under the draw. Dropped once the node draws what it names: an equal pair in
@@ -399,7 +447,7 @@ fn draw_for(
                 dissolve: match dissolve {
                     Some(dissolve) => Some(dissolve.progress),
                     // A declared transition still covering a gap opens its cross *here*, at zero,
-                    // before anything has proved the incoming texture exists -- because asking for
+                    // before anything has proved the incoming texture exists, because asking for
                     // the draw is the only way to prove it (ADR-0183). Drawing the incoming at full
                     // alpha on that frame and starting the cross on the next one shows it whole,
                     // snaps back to the outgoing, and only then crosses.
@@ -451,6 +499,17 @@ fn draw_for(
                 caret,
             })
         }
+
+        // `capture` (ADR-0248): empty `output` draws nothing, the same rule `image`'s empty
+        // `source` follows.
+        PaintStyle::Capture { output, fit, live, paint_cursor } => (!output.is_empty()).then(|| Draw::Capture {
+            node: node_id,
+            output: output.clone(),
+            fit: *fit,
+            alpha: opacity,
+            live: *live,
+            paint_cursor: *paint_cursor,
+        }),
     }
 }
 
@@ -485,7 +544,7 @@ mod tests {
     use crate::text::shaping::ShapingHandle;
 
     /// Evaluates `lua_src` as one surface's tree, applies it, and returns the resolved root at
-    /// `size`. Panics on any layout error -- every fixture below is a config this harness controls,
+    /// `size`. Panics on any layout error: every fixture below is a config this harness controls,
     /// so a rejection is this test's own bug, not something to assert on.
     pub(super) fn resolved_surface(lua: &Lua, lua_src: &str, size: LogicalSize) -> ResolvedNode {
         register_node_constructors(lua).unwrap();
@@ -505,7 +564,7 @@ mod tests {
         scene.surface("bar@TEST").unwrap().clone()
     }
 
-    // ---- display list (`build`), the seam that needs no EGL context ----
+    // display list (`build`), the seam that needs no EGL context
 
     fn text_align_of(list: &DisplayList) -> TextAlign {
         list.commands
@@ -555,7 +614,7 @@ mod tests {
     }
 
     /// ADR-0181. Mid-dissolve the list carries the outgoing picture and the alpha the incoming is
-    /// drawn over it at, in the same field the gap cover uses -- the node is never doing both.
+    /// drawn over it at, in the same field the gap cover uses: the node is never doing both.
     #[test]
     fn a_dissolving_image_carries_the_outgoing_picture_and_the_alpha_to_draw_the_incoming_at() {
         let lua = Lua::new();
@@ -600,7 +659,7 @@ mod tests {
         );
 
         // `transition` implies `retain`, so the same node covers a gap without the property being
-        // written twice -- and covering with a transition declared opens the cross at zero, which
+        // written twice, and covering with a transition declared opens the cross at zero, which
         // is the subject of its own test below.
         tree.children[0].dissolve = None;
         tree.children[0].displayed_source = Some("/tmp/old.png".to_string());
@@ -864,7 +923,7 @@ mod tests {
     }
 
     /// `visible = false` collapses the node and everything under it, the same rule the tree walk
-    /// this replaced applied -- so an invisible subtree costs nothing to compare, not just
+    /// this replaced applied, so an invisible subtree costs nothing to compare, not just
     /// nothing to draw.
     #[test]
     fn an_invisible_node_and_its_children_contribute_nothing() {
@@ -931,7 +990,7 @@ mod tests {
     }
 
     /// A node scrolled or positioned entirely outside its parent draws nothing, so it earns no
-    /// entry -- and, more usefully, moving it around off-screen produces no list change and so no
+    /// entry, and, more usefully, moving it around off-screen produces no list change and so no
     /// repaint.
     #[test]
     fn a_subtree_clipped_to_nothing_is_left_out_entirely() {
@@ -946,7 +1005,7 @@ mod tests {
         );
     }
 
-    // ---- textfield masking ----
+    // textfield masking
 
     fn lock_target() -> node::SecureSubmitTarget {
         node::SecureSubmitTarget { capability: "lock".to_string(), action: "authenticate".to_string() }
@@ -1059,7 +1118,7 @@ mod tests {
 
     /// The bug the box stood in the way of (ADR-0099). A notification arriving above the card being
     /// replied to re-lays the surface out and the field lands somewhere else, and under a
-    /// box-keyed focus paint stopped finding it -- the caret and the typed text vanished from a
+    /// box-keyed focus paint stopped finding it: the caret and the typed text vanished from a
     /// field that was still receiving every keystroke. Here the same tree is drawn at two different
     /// geometries and the focus follows the node.
     #[test]
@@ -1157,7 +1216,7 @@ mod tests {
 
     /// The count is all paint ever gets (see [`FieldFocus`]), so there is no path by which a
     /// typed character reaches the list. Asserted because a display list is cloned, compared and
-    /// retained in `last_painted` -- exactly the places ADR-0005 keeps a secret out of.
+    /// retained in `last_painted`, exactly the places ADR-0005 keeps a secret out of.
     #[test]
     fn a_masked_field_draws_only_the_mask_character() {
         let lua = Lua::new();

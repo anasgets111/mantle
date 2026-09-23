@@ -13,13 +13,14 @@ use crate::layout::node::PropMap;
 /// (ADR-0040). `lock` joined under ADR-0052 decision 2: declaration location is separate from
 /// Wayland object lifetime (ADR-0049); `window`/`popup` wait for `visible`, `lock` for compositor
 /// `locked`.
-const NODE_KINDS: [&str; 13] = [
+const NODE_KINDS: [&str; 14] = [
     "rect",
     "row",
     "column",
     "text",
     "icon",
     "image",
+    "capture",
     "button",
     "list",
     "textfield",
@@ -81,6 +82,9 @@ const NODE_PROPERTIES: &[(&str, &[&str])] = &[
     // icons name no `currentColor`, so this is safe.
     ("icon", &["foreground", "name", "size"]),
     ("image", &["async", "fit", "retain", "source", "source_blur", "transition"]),
+    // A live output preview (ADR-0248): no `async`/`retain`/`transition`, which are about a decode
+    // this node has none of.
+    ("capture", &["fit", "live", "output", "paint_cursor"]),
     ("button", &["children", "on_click", "on_drag", "on_wheel", "submit"]),
     ("list", &["direction", "itemfn", "key", "limit", "scroll", "source", "spacing"]),
     // `node::paint_style` reads these for `textfield`, which draws a placeholder or masked content.

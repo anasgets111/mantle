@@ -71,9 +71,16 @@ tokio = { workspace = true, features = ["rt", "net", "macros", "sync"] }
 wayland-client.workspace = true
 wayland-egl = "0.32.11"
 wayland-protocols = { workspace = true, features = ["client", "staging"] }
+# `zwlr_screencopy_manager_v1`: Hyprland has not shipped `ext-image-copy-capture-v1` (ADR-0248).
+wayland-protocols-wlr = { workspace = true, features = ["client"] }
 md5 = "0.8"
 png.workspace = true
 rustc-hash = "2"
+# dma-buf capture allocation (ADR-0248 amendment). No default features: `import-wayland` and
+# `import-egl` are the reverse direction (a compositor importing a client's dmabuf), and
+# `drm-support` only adds KMS scanout traits neither `Device` nor `BufferObject` need here.
+# `Format`/`Modifier` are `drm_fourcc` re-exports gbm always carries, so no separate dependency.
+gbm = { version = "0.18.0", default-features = false }
 
 [dev-dependencies]
 tempfile.workspace = true

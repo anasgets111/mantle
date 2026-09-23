@@ -194,6 +194,25 @@ pub fn parse_source_blur(properties: &PropMap) -> Result<f32, LayoutError> {
     style::within("source_blur", parse_number(properties, "source_blur", 0.0)?)
 }
 
+/// `capture.output` (ADR-0248): a connector name, matching `panel.monitor`'s spelling
+/// (`surface::parse_monitor`). Unlike `monitor`, this is an ordinary resolved property, not
+/// structural: a config may rebind a capture node to a different output at runtime. Absent
+/// resolves to `""`, the same "unknown output, draw nothing" answer a name matching no connected
+/// output gets, so a config racing capability data against startup fails the same way either way.
+pub fn parse_capture_output(properties: &PropMap) -> Result<String, LayoutError> {
+    parse_optional_string(properties, "output")
+}
+
+/// `capture.live` (ADR-0248), default `false`: a one-shot capture versus a continuous stream.
+pub fn parse_live(properties: &PropMap) -> Result<bool, LayoutError> {
+    parse_bool(properties, "live", false)
+}
+
+/// `capture.paint_cursor` (ADR-0248), default `false`, matching Quickshell's `ScreencopyView`.
+pub fn parse_paint_cursor(properties: &PropMap) -> Result<bool, LayoutError> {
+    parse_bool(properties, "paint_cursor", false)
+}
+
 fn parse_optional_string(properties: &PropMap, property: &str) -> Result<String, LayoutError> {
     let Some(value) = properties.get(property) else {
         return Ok(String::new());
@@ -636,6 +655,33 @@ mod tests {
         assert!(parse_image_source(&props_from_table(&table)).is_err());
         let table: mlua::Table = lua.load(r#"return { kind = "image", source = "/tmp/w.png" }"#).eval().unwrap();
         assert_eq!(parse_image_source(&props_from_table(&table)).unwrap(), "/tmp/w.png");
+    }
+
+    #[test]
+    fn capture_output_defaults_to_empty_and_reads_a_connector_name() {
+        let lua = lua();
+        let table: mlua::Table = lua.load(r#"return { kind = "capture" }"#).eval().unwrap();
+        assert_eq!(parse_capture_output(&props_from_table(&table)).unwrap(), "");
+        let table: mlua::Table = lua.load(r#"return { kind = "capture", output = "DP-1" }"#).eval().unwrap();
+        assert_eq!(parse_capture_output(&props_from_table(&table)).unwrap(), "DP-1");
+    }
+
+    #[test]
+    fn live_and_paint_cursor_default_false_and_reject_non_booleans() {
+        let lua = lua();
+        let table: mlua::Table = lua.load(r#"return { kind = "capture" }"#).eval().unwrap();
+        let props = props_from_table(&table);
+        assert!(!parse_live(&props).unwrap());
+        assert!(!parse_paint_cursor(&props).unwrap());
+
+        let table: mlua::Table =
+            lua.load(r#"return { kind = "capture", live = true, paint_cursor = true }"#).eval().unwrap();
+        let props = props_from_table(&table);
+        assert!(parse_live(&props).unwrap());
+        assert!(parse_paint_cursor(&props).unwrap());
+
+        let table: mlua::Table = lua.load(r#"return { kind = "capture", live = "yes" }"#).eval().unwrap();
+        assert!(parse_live(&props_from_table(&table)).is_err());
     }
 
     #[test]

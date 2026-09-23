@@ -51,7 +51,7 @@ const MIN_TEXTURE_BUDGET: usize = 16 << 20;
 ///
 /// A constant cannot be right for an engine other people's shells run on. 16 MB was measured
 /// against one 1920x1200 laptop and one config's 54-file picker, and a single 4K wallpaper is 33 MB
-/// on its own -- so that machine would sit permanently over budget while this one has room to
+/// on its own, so that machine would sit permanently over budget while this one has room to
 /// spare. Every texture this cache holds is sized by the box it is drawn into, so display geometry
 /// is the one thing in reach that scales with the working set.
 ///
@@ -203,6 +203,8 @@ impl App {
         // Before the early return: an output arriving during the startup burst changes what the
         // cache may hold even though nothing else here runs yet.
         self.image_cache.set_texture_budget(texture_budget(&screens));
+        self.capture_cache.set_texture_budget(texture_budget(&screens));
+        self.captures.clear_failures();
         if !self.client.set_screens(screens_payload(&screens)) || !self.startup_complete {
             // Seed from the initial output burst; `startup_complete` gates the rest.
             return;
@@ -399,7 +401,7 @@ mod tests {
     #[test]
     fn a_screens_entry_reports_the_logical_size_in_preference_to_the_current_modes_dimensions() {
         // A 3840x2160 panel driven at scale 2 is 1920x1080 of compositor space, which is the
-        // coordinate system a layer surface's own geometry is in -- so the mode's raw dimensions
+        // coordinate system a layer surface's own geometry is in, so the mode's raw dimensions
         // would put a config's own arithmetic on a different grid than the engine's.
         let mut facts = facts(Some("eDP-1"));
         facts.logical_size = Some((1920, 1080));

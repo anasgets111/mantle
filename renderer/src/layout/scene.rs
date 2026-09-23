@@ -647,8 +647,8 @@ impl Scene {
 /// before the compositor has handed out a surface (ADR-0040 decision 1, ADR-0052 decision 2).
 fn ensure_supported_kind(kind: &str) -> Result<(), LayoutError> {
     match kind {
-        "panel" | "window" | "popup" | "lock" | "rect" | "row" | "column" | "text" | "icon" | "image" | "button"
-        | "list" | "textfield" => Ok(()),
+        "panel" | "window" | "popup" | "lock" | "rect" | "row" | "column" | "text" | "icon" | "image" | "capture"
+        | "button" | "list" | "textfield" => Ok(()),
         other => Err(LayoutError::UnsupportedNodeKind(other.to_string())),
     }
 }
@@ -677,7 +677,7 @@ fn children_of(kind: &str, properties: &PropMap) -> Result<Vec<VirtualNode>, Lay
         "rect" | "row" | "column" | "button" => node::parse_children(properties),
         // ADR-0045 decision 3: list children are generated from `source`, not a literal table.
         "list" => node::parse_list_children(properties),
-        "text" | "icon" | "image" | "textfield" => Ok(Vec::new()),
+        "text" | "icon" | "image" | "capture" | "textfield" => Ok(Vec::new()),
         other => unreachable!("ensure_supported_kind already rejected `{other}`"),
     }
 }
@@ -4333,6 +4333,19 @@ pub(super) mod tests {
 
         let icon = &row.children[1];
         assert_eq!((icon.rect.width, icon.rect.height), (24.0, 24.0));
+    }
+
+    #[test]
+    fn capture_is_a_supported_leaf_with_no_intrinsic_size() {
+        let mut scene = Scene::new();
+        let shaping = ShapingHandle::spawn();
+        let (_lua, surface) = surface_from(r#"panel { id = "bar", child = capture { output = "DP-1", live = true } }"#);
+        apply_at(&mut scene, &[surface], full(), &shaping, &_lua).unwrap();
+
+        let capture = &scene.surface("bar@TEST").unwrap().children[0];
+        assert_eq!(capture.kind, "capture");
+        assert!(capture.children.is_empty(), "capture is a leaf, never a container");
+        assert_eq!((capture.rect.width, capture.rect.height), (0.0, 0.0));
     }
 
     #[test]

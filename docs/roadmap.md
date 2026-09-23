@@ -42,7 +42,7 @@ Wanted, but each needs a consumer or a decision first.
 | Text field editing | A plain field has a caret, grapheme-wise motion and deletion, click-to-position and drag or Shift selection (ADR-0064, ADR-0092, ADR-0102, ADR-0236). No undo, no paste and no IME composition, and the secure path is still append and backspace. Paste needs a Wayland selection read, which nothing has asked for |
 | Fonts and localization | `text.font` is per-node over the global chain (ADR-0144). No translation API, and `Name`/`GenericName`/`Keywords` are read unlocalized (ADR-0112) |
 | Wayland and input extras | No shortcut inhibition, per-surface idle inhibition, touch gestures or cross-app drag and drop. Pick the protocol and a consumer; logind and screensaver inhibition already work |
-| Capture | No screen or window image. Build it for previews when something asks; external recorders do not need renderer capture |
+| Window capture | `capture` covers an output (ADR-0248); a window source needs the `windows` capability's toplevel ids first |
 | Native I/O | No HTTP, sockets or arbitrary watched file contents; JSON storage and folder watching exist. Subprocess helpers first, native only for a measured latency or volume need |
 | KDE Connect | No device or plugin model. A Supervisor capability or a helper streaming state, but not unrestricted D-Bus for parity |
 | Dynamic topology | A reload rebuilds only what changed (ADR-0216). Keep the current rules unless dynamic windows need a different lifetime model |

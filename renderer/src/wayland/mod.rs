@@ -40,7 +40,10 @@ use wayland_egl::WlEglSurface;
 use wayland_protocols::ext::background_effect::v1::client::ext_background_effect_manager_v1;
 use wayland_protocols::xdg::shell::client::{xdg_positioner, xdg_surface};
 
+use capture::CaptureRegistry;
+
 use crate::image::ImageCache;
+use crate::image::capture::CaptureCache;
 use crate::layout;
 use crate::layout::instance::{
     OutputGeometry, SurfaceInstance, expand_instances, is_instance_of, reconcile_instances, warn_unmatched_monitors,
@@ -55,6 +58,9 @@ use crate::text::atlas::TextPainter;
 use crate::text::shaping::ShapingHandle;
 use crate::text::snap::LogicalRect;
 
+mod capture;
+mod dmabuf;
+mod egl_ext;
 mod idle_profile;
 mod input;
 mod layer;
@@ -116,6 +122,11 @@ pub struct App {
     /// Process-wide image cache keyed by file path and pixel size, so repeated icons upload once
     /// (`CONTEXT.md`, **Image cache**).
     image_cache: ImageCache,
+    /// One texture per live `capture` node, sized by `image_cache`'s budget but counted apart
+    /// (ADR-0248 decision 6).
+    capture_cache: CaptureCache,
+    /// Protocol objects and pacing for every live `capture` node (ADR-0248).
+    captures: CaptureRegistry,
     /// Lua VM, `Loader`, retained `Scene`, live signals, and reload state (ADR-0039). `mlua::Lua`
     /// is `!Send`; `wayland-client` imposes no `Send` bound on dispatch state.
     client: RendererClient,
@@ -265,6 +276,7 @@ pub fn run(
     // (ADR-0052 decision 4).
     let session_lock_state = SessionLockState::new(&globals, &qh);
     let registry_state = RegistryState::new(&globals);
+    let captures = CaptureRegistry::bind(&globals, &qh);
     // One process-wide shaping handle; `RendererClient` gets a clone (ADR-0039 decision 3).
     // `Loader::new()` stays here because `mlua::Lua` is `!Send`.
     let shaping = ShapingHandle::spawn();
@@ -288,6 +300,8 @@ pub fn run(
         shaping,
         text_painter: None,
         image_cache: ImageCache::with_waker(waker.clone()),
+        capture_cache: CaptureCache::default(),
+        captures,
         client,
         surfaces: Vec::new(),
         exit: false,
@@ -331,6 +345,7 @@ pub fn run(
     let screens = app.screens(None);
     let outputs = geometries_from(&screens);
     app.image_cache.set_texture_budget(output::texture_budget(&screens));
+    app.capture_cache.set_texture_budget(output::texture_budget(&screens));
     app.client.set_screens(screens_payload(&screens));
     let specs = app.client.run_startup_evaluation().unwrap_or_default();
     // Set the declared font chain after evaluation but before first paint; `TextPainter` loads it
@@ -478,6 +493,13 @@ pub fn run(
             // the paint that follows, which is the only thing holding the exact cache keys
             // (ADR-0183).
             app.forget_painted_lists_drawing(&landed);
+        }
+        // A capture frame lands from a `Dispatch` callback during `dispatch_pending` above, with
+        // no GL context to upload it (ADR-0039); this is its repaint cue, the same role `landed`
+        // plays for a decode.
+        let captured = app.capture_cache.poll();
+        if !captured.is_empty() {
+            app.mark_surfaces_stale_for_captures(&captured);
         }
         // What protocol state this turn owes; `surface_state_for_turn` carries the reasoning.
         let state = turn::surface_state_for_turn(

@@ -5816,6 +5816,72 @@ Deferred: joining a window to its live capture on the protocol path.
 
 **Amends ADR-0056 decision 2 and ADR-0117 decision 2.**
 
+## 0248. `capture` is a node, a live preview of one output through screencopy
+
+Quickshell's `ScreencopyView` renders a compositor screencopy stream into an item. This is the same
+shape as ADR-0055's wallpaper: rendering output, not platform state a config subscribes to, so it is
+a node next to `image`, not a capability.
+
+1. **Protocol priority: ext-image-copy-capture-v1 + ext-image-capture-source-v1 first,
+   zwlr_screencopy_manager_v1 fallback.** Hyprland has not shipped the ext protocol; niri, sway and
+   labwc have. Both hand-dispatched, like ADR-0009's text-input-v3.
+2. **shm only.** The client allocates the buffer and uploads through the GIF replay path's
+   `create_image`/`update_image`. Measured on Hyprland, a live 3440x1440 capture shown on the
+   output it captures costs 64% of a core at 55 fps; hidden, 0.5%.
+3. **One frame in flight per source, with a failure backoff.** `live` requests the next frame only
+   after the previous `ready`/`failed`; `Failed` stops retrying and warns once instead, resuming
+   when the output list changes, which is what an unplug/replug does. One shm buffer per source,
+   reused across frames, not a double-buffer swapchain.
+4. **A source absent from a paint's capture nodes is torn down, not paused.** Unmapped, hidden, or
+   removed all read the same way, through the paint pin set `ImageCache::trim` already walks. A
+   reshow is a fresh capture; ponytail: this blinks a `live = false` node that had already captured.
+5. **Only the damaged rows upload.** A first frame, a resize, or no damage reported uploads the
+   whole buffer; otherwise only the band the reported rects span, merged to one rect past 16.
+6. **Sized by the texture budget `ImageCache` trims idle textures to, counted over captures
+   only.** `ImageCache` never refuses a visible texture, so its resident bytes cannot gate a
+   capture either; counting them refused every capture once a full-output wallpaper was resident.
+   An empty pool admits any size, and nothing evicts one capture to make room for another.
+7. **`output` resolves like `panel.monitor`'s spelling**, as an ordinary property since a capture
+   may rebind at runtime. An unmatched name warns once and draws nothing.
+8. **No intrinsic size.** Like `image`, a box-less capture lays out at 0x0 and draws nothing; not
+   worth adding, since a config already has to size an `image` the same way.
+
+Deferred: window capture by ADR-0247's window `id`.
+
+Rejected: building this as a capability. Rendering output is what `image` already is; a
+`Capability`'s payload is platform state, not a stream of pixels.
+
+**Amendment: dmabuf zero-copy, phase 2 of decision 2.**
+
+1. The client allocates with `gbm` on the render node EGL's own device query names, using the
+   format and modifier the compositor offers intersected with what EGL can import. The
+   compositor's advertised device (ext-image-copy-capture names one; wlr-screencopy does not) is
+   not compared: the protocol leaves the node type unspecified, so a primary `cardN` node for the
+   same GPU as our render node is a false mismatch. Modifiers come from EGL's own query for each
+   fourcc offered; a real import failure (decision 4), not a device check, is what falls back.
+2. Import is `eglCreateImage(EGL_LINUX_DMA_BUF_EXT)` + `glEGLImageTargetTexture2DOES` onto
+   `GL_TEXTURE_2D`, wrapped with femtovg's native-texture import. EGL maps the fourcc's byte
+   order itself, so only alpha is swizzled to one. The swapchain slot owns its texture, and the
+   capture cache never frees it; the GL texture is deleted explicitly when a discarded buffer is
+   freed, since a native-texture femtovg image only releases its own bookkeeping. Measured on
+   Hyprland against the same self-capturing 3440x1440 test: 21% of a core at 96 fps, down from 64%
+   at 55 fps on shm.
+3. Double-buffered per source: the compositor writes into one slot while the other's texture is
+   drawn, reused across frames while size, format and modifier match.
+4. Any failure (no shared format, gbm alloc, EGL import) falls back to shm for that source, warned
+   once, permanent until the source is recreated for a new `output`. No env escape hatch. The shm
+   fallback negotiates from the compositor's cached shm offer rather than waiting for a fresh
+   `Done`, since a steady output never sends one again.
+5. Charged against the same texture budget as the shm path (the main list's decision 6). Damage no longer matters for upload with no CPU copy to bound; the shm damage path is unchanged.
+6. A `Done` that arrives on an ext session while a frame is still outstanding is deferred to
+   `Ready`/`Failed` rather than acted on immediately: creating a second frame before the first
+   completes is the protocol's `duplicate_frame` error, and swapping the attached buffer under an
+   outstanding frame would corrupt the copy in progress.
+
+ponytail: a live source's next request, issued straight from `Ready`, has no frame-callback
+pacing of its own; it runs as fast as the compositor answers. Upgrade path if that ever floods a
+slow output: gate it behind `wl_surface::frame` the way an ordinary repaint already is.
+
 ## 0249. `palette.quantize` extracts dominant colours in the Renderer
 
 Quickshell's `ColorQuantizer` parity, for theming from a wallpaper or album art.

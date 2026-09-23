@@ -65,8 +65,8 @@ pub(crate) enum Charge<'a> {
     /// arriving together.
     Waiting(&'a Budget),
     /// The Wayland dispatch thread: counted, so the workers see it, but never waiting. Blocking
-    /// here stalls Wayland dispatch, Supervisor reads and input -- a frozen shell in exchange for
-    /// an accounting nicety.
+    /// here stalls Wayland dispatch, Supervisor reads and input, trading a frozen shell for an
+    /// accounting nicety.
     Immediate(&'a Budget),
 }
 

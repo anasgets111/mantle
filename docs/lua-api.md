@@ -258,6 +258,7 @@ See [paint parsing](../renderer/src/layout/node/paint_style.rs).
 | `text` | `content`, `font`, `font_size`, `foreground`, `text_align`, `elide`, `wrap`, `max_lines`, `on_link` |
 | `icon` | `name`, `size`, `foreground`; name is a theme name or absolute image path |
 | `image` | `source`, `fit`, `async`, `retain`, `transition`, `source_blur`; fit is `"cover"` by default, `"contain"` or `"stretch"` |
+| `capture` | `output`, `fit`, `live`, `paint_cursor`; a live preview of one output |
 | `button` | `children`, `on_click`, `on_drag`, `on_wheel`, `submit` |
 | `list` | `source`, `itemfn`, optional `key`, `direction`, `spacing`, `scroll` |
 | `textfield` | `placeholder`, `font_size`, `foreground`, `text_align`, `autofocus`, `on_change`, `on_submit`, `on_cancel`, `on_navigate`, `secure_submit`, `mask_character` |
@@ -279,6 +280,15 @@ covered by `retain` and blanks the picture until the new blur lands. Runs on whi
 a large `source` with `async = true`. In the source's own stored pixels before `fit`, so it is exact under the
 default `"cover"` at native size or smaller and approximate otherwise. Ignored on an animated GIF, which keeps
 playing sharp. Icons resolve in the Renderer. See [content parsing](../renderer/src/layout/node/content.rs).
+
+`capture` has no intrinsic size: without an explicit `width`/`height` it lays out at 0x0 and draws
+nothing. `capture.output` names a connector, matching `panel.monitor`'s spelling (e.g. `"DP-1"`). A
+name matching no connected output draws nothing and logs a warning once. `live = false` (the default)
+captures once, when the node appears and again whenever `output` changes; `live = true` keeps
+requesting the next frame as soon as the previous one arrives, at most one in flight. Capturing
+pauses while the node's surface is unmapped or the node leaves the scene, and resumes fresh on the
+next show. `paint_cursor` composites the pointer onto the captured frame; default `false`. Phase 1
+covers an output; a window source needs the `windows` capability's toplevel ids first (ADR-0248).
 
 A list calls `itemfn(element)` for every source element, including offscreen items.
 `key(element)` must return a unique sibling string; without it identity is positional.

@@ -21,6 +21,7 @@
 //! [`ImageCache::release_evicted`] frees textures at the next paint's start, never mid-frame.
 
 mod budget;
+pub mod capture;
 pub mod icons;
 mod svg;
 pub mod thumbnails;

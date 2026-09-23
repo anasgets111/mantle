@@ -16,9 +16,10 @@ mod toplevel;
 // Paint-only parsers are imported, not re-exported; `paint_style` is their sole caller (ADR-0068).
 use animate::parse_transition;
 use content::{
-    parse_elide, parse_fit, parse_font_family, parse_font_size, parse_foreground, parse_icon_name, parse_image_source,
-    parse_load, parse_mask_character, parse_max_lines, parse_optional_foreground, parse_placeholder, parse_retain,
-    parse_source_blur, parse_text_align, parse_wrap,
+    parse_capture_output, parse_elide, parse_fit, parse_font_family, parse_font_size, parse_foreground,
+    parse_icon_name, parse_image_source, parse_live, parse_load, parse_mask_character, parse_max_lines,
+    parse_optional_foreground, parse_paint_cursor, parse_placeholder, parse_retain, parse_source_blur,
+    parse_text_align, parse_wrap,
 };
 use spec::parse_secure_submit;
 use style::{parse_background, parse_border_color, parse_border_width, parse_clip, parse_radius};

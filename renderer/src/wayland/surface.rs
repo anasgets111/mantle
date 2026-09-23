@@ -113,9 +113,9 @@ pub(super) enum TrackedRole {
         spec: PopupSpec,
         /// The size the next open asks the positioner for, in logical pixels: the spec's declared
         /// numbers, with every `SizeMode::Content` axis replaced by what the resolved tree measured
-        /// on the pass this was written. The spec cannot hold it -- a `Content` axis has no number
-        /// until the tree is solved -- and the positioner cannot wait for it, since `get_popup`
-        /// consumes the whole positioner at creation.
+        /// on the pass this was written. The spec cannot hold it, since a `Content` axis has no
+        /// number until the tree is solved, and the positioner cannot wait for it, since
+        /// `get_popup` consumes the whole positioner at creation.
         ///
         /// Zero on an axis means nothing has been measured yet, which is what a hidden popup's
         /// frozen 0x0 tree reports (ADR-0124). [`App::show_popup`] declines to open on that rather
@@ -187,15 +187,15 @@ pub(super) enum PopupRefusal {
     /// `parent` names no shown surface, commonly a hidden parent window.
     HiddenParent,
     /// A `Content` axis with nothing measured on it yet, so there is no size to ask the positioner
-    /// for. Ordinarily impossible -- the pass that makes a popup visible is the pass that measures
-    /// it -- and a standing one means the tree resolves to nothing on that axis.
+    /// for. Ordinarily impossible, since the pass that makes a popup visible is the pass that
+    /// measures it, so a standing one means the tree resolves to nothing on that axis.
     Unmeasured,
     /// The compositor bound `xdg_popup` below version 3, which is where `reposition` was added, so
     /// an open popup cannot be resized or moved and keeps what it opened at until it closes.
     Unrepositionable,
 }
 /// Everything an `xdg_positioner` is told, as one value: the size to ask for and the five fields
-/// that place it. It exists so that what is sent and what is remembered cannot drift apart -- a
+/// that place it. It exists so that what is sent and what is remembered cannot drift apart: a
 /// popup repositions when this differs from what its live positioner was given, and a field added
 /// here is compared by the same edit that starts sending it.
 ///
@@ -213,7 +213,7 @@ pub(super) struct Placement {
 }
 
 impl Placement {
-    /// What `spec` asks for, with its `Content` axes resolved against `root` -- the box the layout
+    /// What `spec` asks for, with its `Content` axes resolved against `root`, the box the layout
     /// pass measured for this surface (see [`popup_requested_size`]).
     pub(super) fn of(spec: &PopupSpec, root: crate::text::snap::LogicalRect) -> Self {
         Self {
@@ -279,7 +279,7 @@ pub(super) struct TrackedSurface {
     ///
     /// Kept apart from clearing `last_painted` because that list is also the pin set
     /// `ImageCache::trim` reads. Dropping it unpinned every image a mapped surface was showing for
-    /// the width of one repaint, and a wallpaper mid-dissolve repaints every frame -- so `trim`
+    /// the width of one repaint, and a wallpaper mid-dissolve repaints every frame, so `trim`
     /// kept landing in that window, evicting a whole picker's thumbnails, which then re-decoded,
     /// landed, and unpinned everything again.
     pub(super) stale: Option<std::time::Instant>,
@@ -291,7 +291,7 @@ pub(super) struct TrackedSurface {
     /// does not diff, and says why: one `wl_region` round trip is cheaper than the repaint that
     /// follows it. That reasoning was about a handful of rectangles. A rounded card is a couple of
     /// dozen, several cards more, and a card that only fades has the same region on every frame of
-    /// the fade -- so this one compares.
+    /// the fade, so this one compares.
     pub(super) last_blur_region: Vec<crate::text::snap::PhysicalRect>,
 }
 impl TrackedSurface {
@@ -435,7 +435,7 @@ impl App {
             };
 
             // The solved root box, for a panel measuring an axis from its content. Zero without a
-            // tree, and zero while hidden -- an invisible root resolves to no geometry at all --
+            // tree, and zero while hidden (an invisible root resolves to no geometry at all),
             // which `create_panel` reads as "not measured yet".
             let measured = tree.as_ref().map_or(layout::LogicalSize::default(), |tree| layout::LogicalSize {
                 width: tree.rect.width,
@@ -553,7 +553,7 @@ impl App {
     /// A tick moves the trees it names and no others, so the rest hold the fields, region and
     /// visibility they were last pushed. Re-deriving those costs a role spec parse and a
     /// `wl_region` create/add/set/destroy per surface, and `apply_input_region` deliberately does
-    /// not diff -- a reasonable trade when a GPU repaint follows, which for a narrowed tick is
+    /// not diff, a reasonable trade when a GPU repaint follows, which for a narrowed tick is
     /// exactly what does not. Eighteen mapped surfaces at 60 Hz make that seventeen round trips a
     /// frame for surfaces nothing is going to paint.
     pub(super) fn apply_resolved_surface_state_for(&mut self, instance_ids: &[String]) {
@@ -595,7 +595,7 @@ impl App {
         let surface_id = self.surfaces[index].surface_id.clone();
         // `Scene::surface` lends its tree, so what the tree is read for is taken here and the
         // borrow ends with this block; the role updates below write through `&mut self`. Exactly
-        // one spec is parsed -- the one this surface's role calls for.
+        // one spec is parsed, the one this surface's role calls for.
         let (panel, window, popup, tree_rect, regions, visible, blur) = {
             let Some(tree) = self.client.scene().surface(&surface_id) else {
                 // Startup/apply failure or rollback (`Scene::apply` restores its prior state): keep
@@ -670,7 +670,7 @@ impl App {
     /// visible children means pass-through, a full child covers the surface, and intermediate
     /// content gets its visible geometry. Scale is `1.0` because no buffer scale is set. Do not
     /// diff against the last region: the following GPU repaint costs more than one `wl_region`
-    /// round trip. That holds because every caller is a surface about to paint -- see
+    /// round trip. That holds because every caller is a surface about to paint; see
     /// [`App::apply_resolved_surface_state_for`], which is what keeps a tick's frame from paying
     /// this for the surfaces it did not move. Skip a hidden window with no `wl_surface`; its first
     /// post-show re-resolve sets the region.
@@ -706,7 +706,7 @@ impl App {
     /// destroy for nothing.
     ///
     /// A compositor with no manager, or one whose `blur` capability is absent or withdrawn, gets
-    /// nothing pushed and the config sees no error -- an unavailable compositor feature is not a
+    /// nothing pushed and the config sees no error: an unavailable compositor feature is not a
     /// config mistake.
     fn apply_blur_region(&mut self, index: usize, regions: Vec<crate::text::snap::PhysicalRect>) {
         if !self.blur_supported {
@@ -759,7 +759,7 @@ impl App {
     /// *whole* snapshot of a closing surface that still carries a region (`CLayerFadeout`, and the
     /// same line in `CWindowFadeout`), which on the full-screen modal host is the whole output.
     /// [`App::apply_blur_region`] emptied it on this pass, but the region is double-buffered and
-    /// the `stale` repaint that would commit it never runs -- the unmap is next. The commit is the
+    /// the `stale` repaint that would commit it never runs; the unmap is next. The commit is the
     /// fix; null is only tidier than an empty region. Not `destroy`: that clears the compositor's
     /// `m_hasBackgroundEffect`, handing the surface back to any blanket `layerrule blur`.
     pub(super) fn release_blur_effect(&self, index: usize) {
@@ -976,7 +976,7 @@ impl App {
             // one, and a tween whose tick moved nothing visible would otherwise never get its
             // next (ADR-0145). What it does not have to do is draw the same pixels again. A
             // commit with no new buffer re-commits the state the surface already has, which is
-            // what makes the frame request below effective -- so a hold, a lead-in `delay`, or
+            // what makes the frame request below effective, so a hold, a lead-in `delay`, or
             // a step easing sitting on one value costs a commit instead of make-current, clear,
             // every draw call, and a swap.
             if animating && let Some(surface) = self.surfaces[index].role.wl_surface() {
@@ -1044,12 +1044,23 @@ impl App {
         }
 
         if let Some(painter) = self.text_painter.as_mut() {
+            // The context is current from `make_current` above: this is the one point a dma-buf
+            // texture may be imported (ADR-0039, ADR-0248 amendment), and it must run before
+            // `execute` reads `capture_cache` for this paint.
+            super::capture::import_ready_dmabufs(
+                &mut self.captures,
+                &mut self.capture_cache,
+                self.egl.as_ref(),
+                self.gl.as_ref(),
+                painter.canvas_mut(),
+            );
             // The context is current from `make_current` above, so a config shader can take a
             // cross this frame; without one every cross falls back to the dissolve (ADR-0184).
             let shaders = self.gl.as_ref().map(|gl| layout::paint::Shaders { gl, stage: &mut self.shader_stage });
             let (drawn, split) = layout::paint::execute(
                 painter,
                 &mut self.image_cache,
+                &mut self.capture_cache,
                 &list,
                 1.0,
                 (width as f32, height as f32),
@@ -1066,7 +1077,7 @@ impl App {
                 self.client.note_drawn_images(&surface_id, &drawn, std::time::Instant::now());
                 // Re-read: a dissolve that started in this very paint was not running when
                 // `animating` was taken above, and the frame callback below is the only thing that
-                // will ever advance it. Missing this is the tween-gate mistake again -- motion
+                // will ever advance it. Missing this is the tween-gate mistake again: motion
                 // begun where nothing was looking for it (ADR-0183).
                 animating |= self.client.scene().surface(&surface_id).is_some_and(layout::ResolvedNode::animating);
             }
@@ -1101,7 +1112,7 @@ impl App {
         // skip the paint the screen never received.
         self.surfaces[index].last_painted = Some(((width, height), list));
         // A request turned away for pool capacity recorded no slot, so asking again is the whole
-        // retry -- and only a repaint asks. Staying `stale` is what stops the next turn skipping
+        // retry, and only a repaint asks. Staying `stale` is what stops the next turn skipping
         // this surface on an unchanged list, and `repaint_mapped_surfaces_where` is what stops a
         // narrowed repaint passing it over (ADR-0185).
         self.surfaces[index].stale = deferred;
@@ -1119,6 +1130,24 @@ impl App {
             }
             pinned
         });
+        // Reconciles capture sources against what this turn's surfaces actually paint (ADR-0248):
+        // same spot as the trim above, for the same reason, right after a surface's own list
+        // settles into `last_painted`, which is what both read.
+        self.sync_captures();
+    }
+
+    /// Marks stale every surface whose last-painted list matches `stale_because`. Shared by
+    /// [`Self::forget_painted_lists_drawing`] and [`Self::mark_surfaces_stale_for_captures`], which
+    /// differ only in what a landed frame names.
+    fn mark_surfaces_stale_where(&mut self, stale_because: impl Fn(&layout::paint::DisplayList) -> bool) {
+        for surface in &mut self.surfaces {
+            if surface.last_painted.as_ref().is_some_and(|(_, list)| stale_because(list)) {
+                // Marked, not cleared: this surface still shows the old texture until it
+                // repaints, so its list has to keep pinning it (ADR-0182).
+                surface.stale = Some(std::time::Instant::now());
+                surface.dirty = true;
+            }
+        }
     }
 
     /// Repaint every mapped surface after a changed scene because ADR-0044 decision 2 has one
@@ -1126,14 +1155,14 @@ impl App {
     /// their own commit in [`App::apply_spec_change`]. A decoded image invalidates any list that
     /// draws its file (ADR-0122), making the next repaint upload the new texture.
     pub(super) fn forget_painted_lists_drawing(&mut self, files: &[std::path::PathBuf]) {
-        for surface in &mut self.surfaces {
-            if surface.last_painted.as_ref().is_some_and(|(_, list)| list.draws_any_of(files)) {
-                // Marked, not cleared: this surface still shows those images until it repaints, so
-                // its list has to keep pinning them (ADR-0182).
-                surface.stale = Some(std::time::Instant::now());
-                surface.dirty = true;
-            }
-        }
+        self.mark_surfaces_stale_where(|list| list.draws_any_of(files));
+    }
+
+    /// A landed capture frame changes no `Draw::Capture` field (ADR-0248), so the surface showing
+    /// it needs the same nudge a landed decode gets above: `list` still names the right node, the
+    /// texture behind it is just new.
+    pub(super) fn mark_surfaces_stale_for_captures(&mut self, nodes: &[layout::NodeId]) {
+        self.mark_surfaces_stale_where(|list| list.captures_any_of(nodes));
     }
 
     pub(super) fn repaint_mapped_surfaces(&mut self) {
@@ -1148,8 +1177,8 @@ impl App {
     /// copies its content and style runs, an image or icon its name. This is the same repaint,
     /// asked of the surfaces that can actually differ.
     ///
-    /// `stale` is exactly the flag that says a surface differs for a reason its tree cannot show
-    /// -- a decode turned away for capacity, whose retry *is* the next paint. Narrowing it out is
+    /// `stale` is exactly the flag that says a surface differs for a reason its tree cannot show,
+    /// a decode turned away for capacity, whose retry *is* the next paint. Narrowing it out is
     /// what made arming a frame callback insufficient (ADR-0185).
     pub(super) fn repaint_surfaces_with_instance_ids(&mut self, instance_ids: &[String]) {
         let stale: Vec<String> =

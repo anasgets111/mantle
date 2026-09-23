@@ -7,6 +7,7 @@ use std::time::{Duration, Instant};
 use femtovg::renderer::OpenGl;
 use femtovg::{Canvas, Color, ImageFlags, ImageId, Paint, Path, PixelFormat, RenderTarget, Solidity};
 
+use crate::image::capture::CaptureCache;
 use crate::image::{self, Fit, ImageCache, Load};
 use crate::layout::image_shader;
 use crate::layout::node::{self, BorderColor, EdgeInsets, Rgba};
@@ -39,8 +40,10 @@ pub fn paint_tree(painter: &mut TextPainter, images: &mut ImageCache, root: &Res
     let canvas = painter.canvas_mut();
     let (width, height) = (canvas.width(), canvas.height());
     canvas.clear_rect(0, 0, width, height, Color::rgbaf(0.0, 0.0, 0.0, 0.0));
-    // No GL context reaches this harness, so a config shader falls back to the dissolve.
-    let _ = execute(painter, images, &build(root, scale, None), scale, (0.0, 0.0), None);
+    // No GL context reaches this harness, so a config shader falls back to the dissolve. A fresh
+    // `CaptureCache` is fine here too: no test builds a tree with pixels already staged for one.
+    let mut captures = CaptureCache::default();
+    let _ = execute(painter, images, &mut captures, &build(root, scale, None), scale, (0.0, 0.0), None);
 }
 
 /// One `image` node's source that this paint had a texture for. `layout::scene` moves the node onto
@@ -70,6 +73,7 @@ pub struct Shaders<'a> {
 /// `run` and `draw_clipped` a wall of positional arguments.
 struct Walk<'a, 'g> {
     images: &'a mut ImageCache,
+    captures: &'a mut CaptureCache,
     scale: f32,
     /// Offscreen targets, with their sizes, held until [`execute`] flushes and returns them to
     /// `TextPainter`'s pool.
@@ -95,6 +99,7 @@ struct Frame {
 pub fn execute(
     painter: &mut TextPainter,
     images: &mut ImageCache,
+    captures: &mut CaptureCache,
     list: &DisplayList,
     scale: f32,
     target_size: (f32, f32),
@@ -104,8 +109,9 @@ pub fn execute(
     images.release_evicted(painter.canvas_mut());
     // Upload before any draw names the texture.
     images.upload_landed(painter.canvas_mut());
+    captures.upload_landed(painter.canvas_mut());
     let mut walk =
-        Walk { images, scale, scratch: Vec::new(), drawn: Vec::new(), shaders, split: PaintSplit::default() };
+        Walk { images, captures, scale, scratch: Vec::new(), drawn: Vec::new(), shaders, split: PaintSplit::default() };
     let frame = Frame { size: target_size, origin: (0.0, 0.0), transform: None };
     run(painter, &mut walk, &list.commands, RenderTarget::Screen, frame);
     painter.canvas_mut().reset_scissor();
@@ -275,6 +281,16 @@ fn run(painter: &mut TextPainter, walk: &mut Walk<'_, '_>, commands: &[DrawCmd],
                             draw_file(painter.canvas_mut(), walk.images, under, draw);
                         }
                     }
+                }
+            }
+            // `wayland::capture` staged this node's pixels, if any landed; `execute`'s
+            // `captures.upload_landed` above already put them on the GPU this turn. Nothing yet
+            // (unknown output, or no frame has arrived) draws nothing, matching `image`'s empty
+            // `source`.
+            Draw::Capture { node, fit, alpha, .. } => {
+                if let Some((id, width, height)) = walk.captures.get(*node) {
+                    let fitted = image::fitted_rect(rect, width as f32, height as f32, *fit);
+                    fill_image(painter.canvas_mut(), id, fitted, *alpha);
                 }
             }
             Draw::Clipped { radius, commands } => {
