@@ -138,21 +138,7 @@ pub struct Counters {
     dispatch_cpu: Duration,
     focus_turns: u64,
     focus_searched: u64,
-    focus_redundant: u64,
     focus_cpu: Duration,
-    focus_redundant_cpu: Duration,
-}
-
-impl Counters {
-    fn focus(&mut self, cpu: Duration, searched: bool, redundant: bool) {
-        self.focus_turns += 1;
-        self.focus_cpu += cpu;
-        self.focus_searched += u64::from(searched);
-        if redundant {
-            self.focus_redundant += 1;
-            self.focus_redundant_cpu += cpu;
-        }
-    }
 }
 
 /// CPU seconds for the whole process and this thread. Their gap is shaping, the socket thread, or
@@ -219,19 +205,13 @@ impl IdleProfile {
         self.counters.dispatch_cpu += cpu;
     }
 
-    /// Thread CPU spent in end-of-turn focus maintenance, split by how much of it a tighter gate
-    /// could remove.
-    ///
-    /// `searched` is a turn that reached the scope search rather than returning at
-    /// the `keyboard_focus`/armed-field guards.
-    ///
-    /// `redundant` narrows that to turns the candidate gate would have skipped: no re-resolve, no
-    /// `field_input_changed`, and an unchanged `App::focus_key`. Nothing gates on it yet, so this
-    /// measures the proposal rather than the result of adopting it. It runs slightly optimistic:
-    /// a reload that commits a tree whose follow-up resolve then fails also has to force arming,
-    /// and that case is not sampled here.
-    pub fn focus(&mut self, cpu: Duration, searched: bool, redundant: bool) {
-        self.counters.focus(cpu, searched, redundant);
+    /// Thread CPU spent in end-of-turn focus maintenance. `searched` is a turn that reached the
+    /// scope search rather than returning at the `keyboard_focus`/armed-field guards.
+    pub fn focus(&mut self, cpu: Duration, searched: bool) {
+        let c = &mut self.counters;
+        c.focus_turns += 1;
+        c.focus_cpu += cpu;
+        c.focus_searched += u64::from(searched);
     }
 
     /// Records one turn's work and prints the report when the window is up.
@@ -282,7 +262,7 @@ fn render(window: Duration, c: &Counters, cpu: Cpu) -> String {
         "idle {:.1}s: turns={} idle={} cpu proc={:.2}% main={:.2}% | wake wl={} wake={} both={} none={} \
          | work dispatch={} resolve={} tick={} type={} decode={} paint={} drawn={} \
          | ms resolve={:.1} (clone={:.1} list={:.1} props={:.1} solve={:.1}) surfstate={:.1} repaint={:.1} (build={:.1} gl={:.1} text={:.1} icon={:.1} box={:.1} flush={:.1} swap={:.1}) tick={:.1} dispatch={:.1} \
-         | focus turns={} searched={} redundant={} ms={:.1} redundant={:.1} ({:.2}% of a core){}",
+         | focus turns={} searched={} ms={:.1}{}",
         secs,
         c.turns,
         c.idle_turns,
@@ -317,10 +297,7 @@ fn render(window: Duration, c: &Counters, cpu: Cpu) -> String {
         c.dispatch_cpu.as_secs_f64() * 1000.0,
         c.focus_turns,
         c.focus_searched,
-        c.focus_redundant,
         c.focus_cpu.as_secs_f64() * 1000.0,
-        c.focus_redundant_cpu.as_secs_f64() * 1000.0,
-        percent(c.focus_redundant_cpu.as_secs_f64()),
         if spinning { " SPIN" } else { "" },
     )
 }
@@ -400,43 +377,17 @@ mod tests {
         assert!(phases.surface_state < Duration::from_millis(5), "{:?}", phases.surface_state);
     }
 
-    /// The caller classifies each turn; this is the split it gets. Every turn counts toward the
-    /// total whether or not it searched, and only a removable one is charged twice.
     #[test]
-    fn focus_cpu_is_split_between_every_turn_and_the_removable_ones() {
-        let mut c = Counters::default();
-        // Guards returned early: nothing was searched, so it is neither searched nor removable.
-        c.focus(Duration::from_micros(1), false, false);
-        // Searched, but the arming followed a re-resolve that may well have needed it.
-        c.focus(Duration::from_micros(200), true, false);
-        // Searched with nothing re-resolved: the candidate for a tighter gate.
-        c.focus(Duration::from_micros(300), true, true);
-
-        assert_eq!((c.focus_turns, c.focus_searched, c.focus_redundant), (3, 2, 1));
-        assert_eq!(c.focus_cpu, Duration::from_micros(501), "every turn's cost counts once");
-        assert_eq!(c.focus_redundant_cpu, Duration::from_micros(300), "only the removable turn's cost");
-    }
-
-    /// The report has to name the removable share as a percentage of a core, because that is the
-    /// number the threshold is stated in.
-    #[test]
-    fn the_focus_columns_report_the_removable_share_of_a_core() {
+    fn the_focus_columns_report_turns_searches_and_cpu() {
         let c = Counters {
             focus_turns: 40,
             focus_searched: 30,
-            focus_redundant: 25,
             focus_cpu: Duration::from_millis(60),
-            focus_redundant_cpu: Duration::from_millis(45),
             ..Counters::default()
         };
         let line = render(Duration::from_secs(30), &c, Cpu::default());
-        assert!(
-            // Includes the separator: a folded line continuation reads as a run of spaces here.
-            line.contains(
-                "dispatch=0.0 | focus turns=40 searched=30 redundant=25 ms=60.0 redundant=45.0 (0.15% of a core)"
-            ),
-            "{line}"
-        );
+        // Includes the separator: a folded line continuation reads as a run of spaces here.
+        assert!(line.contains("dispatch=0.0 | focus turns=40 searched=30 ms=60.0"), "{line}");
     }
 
     #[test]

@@ -188,12 +188,6 @@ pub struct App {
     /// keyboard focus (ADR-0050 decision 4). `None` means no frame; writes go through
     /// [`App::focus_secure_submit`].
     focused_secure_submit: Option<FocusedField>,
-    /// [`App::focus_key`] as end-of-turn arming last examined it, for the profiler's `redundant`
-    /// column. Written only under `--profile`; nothing gates on it yet.
-    ///
-    /// Starts as an empty dead scope rather than the first key observed, so the first focused turn
-    /// reads as a change and is not silently classed as removable.
-    last_focus_key: (Vec<String>, bool),
     /// Focused plain `textfield` and its draft, the unmasked half (ADR-0092). Only a
     /// press selects it; sole-field `enter` fallback cannot serve multiple reply boxes.
     ///
@@ -328,7 +322,6 @@ pub fn run(
         pointer_input_count: 0,
         reposition_token: 0,
         focused_secure_submit: None,
-        last_focus_key: (Vec::new(), false),
         focused_text_field: None,
         secure_buffer: shared::SecureBuffer::new(),
         shift_held: false,
@@ -572,15 +565,6 @@ pub fn run(
             // Sample after the cleanup above: clearing secure focus can enable a search. Failing
             // these guards excludes the turn from `searched`, not from `focus_turns` or its CPU.
             let searched = app.keyboard_focus.is_some() && app.focused_secure_submit.is_none();
-            // Shadow the candidate gate rather than apply it: sample what it would compare, before
-            // arming runs, and let the `redundant` column say how many turns it would have skipped.
-            // Sampling pre-arm is what makes the stored key mean "what maintenance examined".
-            let unchanged = focus_started.is_some_and(|_| {
-                let key = app.focus_key();
-                let same = key == app.last_focus_key;
-                app.last_focus_key = key;
-                same
-            });
             // Also arm fields that appeared under already-arrived keyboard focus. One walk serves
             // both: nothing between them moves focus or popups.
             if searched {
@@ -592,8 +576,7 @@ pub fn run(
                 && let Some(ended) = thread_cpu_time()
                 && let Some(profile) = profile.as_mut()
             {
-                let removable = searched && unchanged && !re_resolved && !typed;
-                profile.focus(ended.saturating_sub(started), searched, removable);
+                profile.focus(ended.saturating_sub(started), searched);
             }
         }
         if let Some(profile) = profile.as_mut() {

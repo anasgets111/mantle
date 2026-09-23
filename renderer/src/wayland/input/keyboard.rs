@@ -673,19 +673,6 @@ impl App {
         scope
     }
 
-    /// Shadow-gate key: the scope, in [`App::shown_popups_under`] order because
-    /// [`autofocus_field_in_scope`] takes the first match, plus whether the focused root still has
-    /// a live `wl_surface`.
-    ///
-    /// The liveness bit is separate because [`App::keyboard_focus_scope`] admits a tracked root
-    /// without one, while popup membership already requires `popup: Some(_)`. Without it, a root
-    /// whose surface died and returned reads as unchanged.
-    pub(in crate::wayland) fn focus_key(&self) -> (Vec<String>, bool) {
-        let scope = self.keyboard_focus_scope();
-        let root_live = scope.first().is_some_and(|id| self.surface_is_live(id));
-        (scope, root_live)
-    }
-
     fn scoped_trees<'a>(&'a self, scope: &'a [String]) -> Vec<(&'a str, &'a layout::ResolvedNode)> {
         scope.iter().filter_map(|id| self.client.scene().surface(id).map(|tree| (id.as_str(), tree))).collect()
     }
