@@ -989,7 +989,7 @@ enum Measure {
     /// Shaped extent; `wrap` and `max_lines` change geometry, not only paint.
     Text {
         content: std::sync::Arc<str>,
-        runs: Vec<StyleRun>,
+        runs: Vec<shaping::FontRun>,
         font_size: f32,
         /// The family the box is measured against, so the reserved width is the one the same
         /// family will paint into (ADR-0144).
@@ -1361,7 +1361,7 @@ fn measure_for(
             };
             Some(Measure::Text {
                 content: content.clone(),
-                runs: runs.clone(),
+                runs: node::font_runs(runs),
                 font_size: *font_size,
                 font: font.clone(),
                 wrap: *wrap,
@@ -1732,7 +1732,7 @@ fn solve(
                             font_size: *font_size,
                             line_height,
                             max_width,
-                            runs: node::font_runs(runs),
+                            runs: runs.clone(),
                             font: font.clone(),
                         });
                         let lines = max_lines.map_or(shaped.lines.len(), |cap| shaped.lines.len().min(cap));
