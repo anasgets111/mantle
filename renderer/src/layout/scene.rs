@@ -2993,7 +2993,7 @@ pub(super) mod tests {
 
     #[test]
     fn a_lingering_surface_keeps_its_card_tweening_through_the_close() {
-        // The panel host's shape: the root stays visible through `delay`, the card fades and lifts.
+        // The root stays visible through `delay` while the card fades and lifts.
         let mut scene = Scene::new();
         let shaping = ShapingHandle::spawn();
         let (lua, surface) = surface_from(
@@ -5824,18 +5824,18 @@ pub(super) mod tests {
     }
 
     /// taffy 0.14 adds a flex container's own margin to its children's minimum cross size when it
-    /// measures them (see `taffy_style`'s `min_size`). The card here is the panel host's: a column
+    /// measures them (see `taffy_style`'s `min_size`). The card here is a column
     /// with a left margin of most of the output, holding a body that wraps at the card's width.
     /// Its height has to be the wrapped body's, whatever the margin.
     #[test]
     fn a_containers_own_margin_does_not_widen_what_its_children_are_measured_at() {
-        let long = "have a look at this: https://github.com/anasgets111/mantle/pull/12 and tell me what you think about it all";
+        let long = "have a look at this: https://example.com/project/mantle/pull/12345 and tell me what you think about it all";
         let heights = |margin: u32| {
             let src = format!(
                 r#"panel {{ id = "bar", child = column {{ width = "Fill", height = "Fill", children = {{
                 column {{ width = 392, margin = {{ left = {margin}, top = 4 }}, padding = {{ top = 7, right = 7, bottom = 7, left = 7 }}, children = {{
                     column {{ width = "Fill", children = {{
-                        text {{ content = "Anas", font_size = 14 }},
+                        text {{ content = "Sender", font_size = 14 }},
                         text {{ content = "{long}", font_size = 12, wrap = "Word", width = "Fill" }},
                     }} }},
                 }} }},

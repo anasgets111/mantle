@@ -12,7 +12,7 @@ use crate::text::snap::{LogicalRect, PhysicalRect, snap_to_physical};
 /// A visible node claims its whole box when it is *solid*: it paints something (a box with a
 /// background or a border, or any text, icon, image or field), or it is a `button` with a pointer
 /// handler (`on_click`, `on_drag`, `on_wheel`), which is invisible by design but still pressable
-/// (the panel host's click-outside catcher). Transparent containers claim nothing and are walked
+/// (a full-surface click-outside catcher). Transparent containers claim nothing and are walked
 /// into, so a full-surface `column` holding two cards yields the cards. Everything else is
 /// click-through and, under focus-follows-mouse, focus-through; the popup's empty space below its
 /// cards therefore takes neither clicks nor keyboard focus.

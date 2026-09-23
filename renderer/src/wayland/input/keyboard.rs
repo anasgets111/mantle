@@ -1533,9 +1533,9 @@ mod tests {
 
     #[test]
     fn an_armed_password_prompt_takes_the_keys_away_from_a_plain_field_that_was_typing() {
-        // The two focuses are independent and `apply_key` offers a key to both. The panel host
-        // reveals its network prompt while a notification reply may already be typing, so without
-        // this every character of that password would also arrive at the reply field's `on_change`.
+        // The two focuses are independent and `apply_key` offers a key to both. A password prompt
+        // can appear while a plain reply field is already typing, so without this every character
+        // of that password would also arrive at the reply field's `on_change`.
         assert!(plain_field_takes_keys(true, true, false));
         assert!(!plain_field_takes_keys(true, true, true), "the password is not also typed into the reply box");
         // Unchanged either way: a field no press chose, and one on a surface the keyboard left.
@@ -1545,11 +1545,10 @@ mod tests {
 
     #[test]
     fn a_hidden_secure_submit_field_neither_takes_the_keyboard_nor_hides_the_shown_one() {
-        // The single-tree panel host declares one prompt per panel body and shows one at a time.
-        // The walk used to ignore `visible`, so the network password field -- invisible, and only
-        // ever revealed by `password_ssid` -- was the scope's sole destination whenever that
-        // surface held the keyboard: it swallowed keys meant for the panel that was open, and an
-        // `autofocus` plain field beside it never armed at all.
+        // A surface can declare several prompts and show one at a time. A hidden secure field, such
+        // as a network password field waiting on `password_ssid`, must not be the scope's sole
+        // destination: it would swallow keys meant for what is shown and keep an `autofocus` plain
+        // field beside it from arming.
         let lua = Lua::new();
         let mut hidden = textfield(&lua, Some(secure_submit_table(&lua, "network", "connect")));
         hidden.visible = false;

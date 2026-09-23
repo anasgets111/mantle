@@ -487,9 +487,7 @@ pub(crate) mod tests {
     fn a_non_node_in_the_surface_list_names_which_element_and_what_it_was() {
         let loader = test_loader();
         let err = loader
-            .evaluate(
-                r#"return { panel { id = "bar", layer = "Top" }, "/home/me/.config/mantle/modules/global/lock.lua" }"#,
-            )
+            .evaluate(r#"return { panel { id = "bar", layer = "Top" }, "/home/me/.config/mantle/widgets/lock.lua" }"#)
             .unwrap_err();
 
         assert!(
