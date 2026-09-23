@@ -10,16 +10,13 @@ use serde::Deserialize;
 use shared::{debug, error};
 use tokio::sync::mpsc::UnboundedSender;
 
-use crate::compositor::{
-    CompositorKind, hyprland_command, hyprland_request, hyprland_socket_path, niri_action, niri_event_stream,
-};
+use crate::compositor::{hyprland_command, hyprland_request, hyprland_socket_path, niri_action, niri_event_stream};
 
 use super::controller::{KeyboardSignal, KeyboardState};
 
 /// `switch_layout` is synchronous fire-and-forget; state returns through the implementor's event
 /// stream. It is not `async fn` to preserve `Box<dyn CompositorLink>` object safety.
 pub trait CompositorLink: Send + Sync {
-    fn kind(&self) -> CompositorKind;
     fn switch_layout(&self, index: usize);
 }
 
@@ -73,10 +70,6 @@ impl NiriLink {
 }
 
 impl CompositorLink for NiriLink {
-    fn kind(&self) -> CompositorKind {
-        CompositorKind::Niri
-    }
-
     fn switch_layout(&self, index: usize) {
         // A command supplies an unbounded u64, while niri's wire protocol takes u8. Reject overflow
         // instead of truncating 256 to 0.
@@ -197,10 +190,6 @@ impl HyprlandLink {
 }
 
 impl CompositorLink for HyprlandLink {
-    fn kind(&self) -> CompositorKind {
-        CompositorKind::Hyprland
-    }
-
     /// `main` is also Hyprland's device target for that keyboard, so no device name is tracked here.
     ///
     /// ponytail: one OS thread per switch, for one blocking round trip, unbounded if a config calls

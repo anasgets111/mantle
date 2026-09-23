@@ -109,9 +109,6 @@ impl KeyboardController {
                 None
             }
         };
-        if let Some(link) = &layout {
-            debug!("detected {:?} for layout tracking", link.kind());
-        }
         Self { state, backlight: Arc::new(backlight), layout: Arc::new(layout), system_bus, events: events_tx }
     }
 
