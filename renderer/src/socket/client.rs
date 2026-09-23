@@ -129,17 +129,16 @@ impl RendererClient {
         let config_dir = shell_lua_path.parent().ok_or("shell.lua's path has no parent directory")?.to_path_buf();
         let loader =
             Loader::new(dirty.clone(), &config_dir).map_err(|err| format!("failed to start the Lua loader: {err}"))?;
-        let process_registry = ProcessRegistry::new(generation_id, outbound_tx.clone());
+        // Capability commands and `process` all use this write path.
+        let commands = CommandSender::new(generation_id, outbound_tx);
+        let process_registry = ProcessRegistry::new(commands.clone());
         loader
             .register_process(process_registry.clone())
             .map_err(|err| format!("failed to register the process global: {err}"))?;
-        // `ProcessRegistry` uses the same id, so `process.kill` cannot cross generations.
         let palette_registry = PaletteRegistry::new(Some(waker));
         loader
             .register_palette(palette_registry.clone())
             .map_err(|err| format!("failed to register the palette global: {err}"))?;
-        // Capability commands all use this write path.
-        let commands = CommandSender::new(generation_id, outbound_tx);
         let client = Self::new(loader, shell_lua_path, shaping, commands, process_registry, palette_registry, dirty)
             .map_err(|err| format!("failed to build the `mantle` namespace: {err}"))?;
         Ok(client)
@@ -794,11 +793,11 @@ mod tests {
         let (outbound_tx, outbound_rx) = mpsc::unbounded_channel();
         let dirty = DirtyFlag::new();
         let loader = Loader::new(dirty.clone(), shell_lua_path.parent().unwrap()).unwrap();
-        let process_registry = ProcessRegistry::new(0, outbound_tx.clone());
+        let commands = CommandSender::new(0, outbound_tx);
+        let process_registry = ProcessRegistry::new(commands.clone());
         loader.register_process(process_registry.clone()).unwrap();
         let palette_registry = PaletteRegistry::new(None);
         loader.register_palette(palette_registry.clone()).unwrap();
-        let commands = CommandSender::new(0, outbound_tx);
         let client = RendererClient::new(
             loader,
             shell_lua_path.to_path_buf(),

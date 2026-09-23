@@ -539,9 +539,9 @@ pub(crate) mod tests {
         let dirty = signal::DirtyFlag::new();
         let loader = Loader::new(dirty.clone(), dir.path()).unwrap();
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-        loader.register_process(process::ProcessRegistry::new(0, tx.clone())).unwrap();
-        loader.register_palette(palette::PaletteRegistry::new(None)).unwrap();
         let commands = capability::CommandSender::new(0, tx);
+        loader.register_process(process::ProcessRegistry::new(commands.clone())).unwrap();
+        loader.register_palette(palette::PaletteRegistry::new(None)).unwrap();
         namespace::build(&loader, &dirty, &commands, &dir.path().join("shell.lua")).unwrap();
 
         let keys = |table: Table| -> std::collections::BTreeSet<String> {

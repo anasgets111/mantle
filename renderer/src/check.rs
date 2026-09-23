@@ -46,8 +46,8 @@ pub fn run(config_dir: &Path) -> Result<String, String> {
     // Correct for a checker that evaluates, but does not start, a config. Nothing polls
     // `palette.quantize` here either.
     let (outbound_tx, _outbound_rx) = tokio::sync::mpsc::unbounded_channel();
-    let commands = CommandSender::new(0, outbound_tx.clone());
-    loader.register_process(ProcessRegistry::new(0, outbound_tx)).map_err(|err| err.to_string())?;
+    let commands = CommandSender::new(0, outbound_tx);
+    loader.register_process(ProcessRegistry::new(commands.clone())).map_err(|err| err.to_string())?;
     loader.register_palette(PaletteRegistry::new(None)).map_err(|err| err.to_string())?;
     namespace::build(&loader, &dirty, &commands, &shell_lua).map_err(|err| err.to_string())?;
 

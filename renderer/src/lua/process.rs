@@ -2,8 +2,7 @@
 //!
 //! `process.run(cmd, args, out_cb, exit_cb)` runs on the Wayland dispatch thread during Lua
 //! evaluation, with no socket in scope. [`ProcessRegistry`] queues the outbound `"process"`/`"run"`
-//! envelope on the shared `mpsc::UnboundedSender<RendererFrame>` drained by the socket thread's
-//! `pump` (ADR-0039).
+//! envelope through the generation's [`CommandSender`] (ADR-0039).
 //!
 //! `Rc<RefCell<_>>` is correct because the registry and Lua closures stay on that thread.
 //!
@@ -16,8 +15,9 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use mlua::{Function, Lua, UserData, UserDataMethods};
-use shared::{CommandEnvelope, CommandParams, ProcessStream, RendererFrame, debug, error};
-use tokio::sync::mpsc::UnboundedSender;
+use shared::{ProcessStream, debug};
+
+use super::capability::CommandSender;
 
 /// One `process.run` callback pair, retained until matching `SupervisorFrame::ProcessExited`.
 struct PendingProcess {
@@ -28,58 +28,23 @@ struct PendingProcess {
 /// Retains callbacks, assigns `CommandEnvelope.id` in the Renderer (ADR-0026), and queues
 /// outbound `"process"` commands. Renderer assignment permits synchronous `ProcessHandle` return.
 #[derive(Clone)]
-pub struct ProcessRegistry(Rc<RefCell<Inner>>);
-
-struct Inner {
-    generation_id: u32,
-    next_id: u64,
-    pending: HashMap<u64, PendingProcess>,
-    outbound_tx: UnboundedSender<RendererFrame>,
-}
-
-fn process_command(generation_id: u32, action: &str, arguments: Vec<serde_json::Value>, id: u64) -> CommandEnvelope {
-    CommandEnvelope {
-        params: CommandParams {
-            generation_id,
-            capability: "process".to_string(),
-            action: action.to_string(),
-            arguments,
-            expected_revision: 0,
-        },
-        id,
-    }
+pub struct ProcessRegistry {
+    pending: Rc<RefCell<HashMap<u64, PendingProcess>>>,
+    commands: CommandSender,
 }
 
 impl ProcessRegistry {
-    /// `MANTLE_GENERATION_ID`, stamped into every envelope; `outbound_tx` is the frame channel
-    /// drained by the socket thread's `pump`.
-    pub fn new(generation_id: u32, outbound_tx: UnboundedSender<RendererFrame>) -> Self {
-        ProcessRegistry(Rc::new(RefCell::new(Inner {
-            generation_id,
-            next_id: 0,
-            pending: HashMap::new(),
-            outbound_tx,
-        })))
-    }
-
-    fn allocate_id(&self) -> u64 {
-        let mut inner = self.0.borrow_mut();
-        let id = inner.next_id;
-        inner.next_id += 1;
-        id
+    pub fn new(commands: CommandSender) -> Self {
+        ProcessRegistry { pending: Rc::default(), commands }
     }
 
     fn send(&self, action: &str, arguments: Vec<serde_json::Value>, id: u64) {
-        let generation_id = self.0.borrow().generation_id;
-        let envelope = process_command(generation_id, action, arguments, id);
-        if self.0.borrow().outbound_tx.send(RendererFrame::Command(envelope)).is_err() {
-            error!("process.{action}(id={id}): failed to queue request, the control-socket writer is gone");
-        }
+        self.commands.send_as(id, "process", action, arguments, 0);
     }
 
     fn run(&self, cmd: String, args: Vec<String>, out_cb: Function, exit_cb: Function) -> ProcessHandle {
-        let id = self.allocate_id();
-        self.0.borrow_mut().pending.insert(id, PendingProcess { out_cb, exit_cb });
+        let id = self.commands.next_id();
+        self.pending.borrow_mut().insert(id, PendingProcess { out_cb, exit_cb });
         self.send("run", vec![serde_json::json!(cmd), serde_json::json!(args)], id);
         ProcessHandle { id, registry: self.clone() }
     }
@@ -88,8 +53,7 @@ impl ProcessRegistry {
     /// output and no exit code to deliver, so there is no pending pair to leak (ADR-0188). The
     /// envelope still carries an id because every command does; nothing ever answers it.
     fn detach(&self, cmd: String, args: Vec<String>) {
-        let id = self.allocate_id();
-        self.send("detach", vec![serde_json::json!(cmd), serde_json::json!(args)], id);
+        self.commands.send("process", "detach", vec![serde_json::json!(cmd), serde_json::json!(args)], 0);
     }
 
     fn kill(&self, id: u64) {
@@ -99,7 +63,7 @@ impl ProcessRegistry {
     /// Dispatches `SupervisorFrame::ProcessOutput` to `id`'s `out_cb`. Stale/unknown ids, including
     /// forgotten generations or wire desyncs, are ignored.
     pub fn dispatch_output(&self, id: u64, stream: ProcessStream, line: String) {
-        let out_cb = self.0.borrow().pending.get(&id).map(|p| p.out_cb.clone());
+        let out_cb = self.pending.borrow().get(&id).map(|p| p.out_cb.clone());
         let Some(out_cb) = out_cb else { return };
         if let Err(err) = out_cb.call::<()>((line, stream_name(stream))) {
             debug!("process.run(id={id}): out_cb raised an error: {err}");
@@ -109,7 +73,7 @@ impl ProcessRegistry {
     /// Dispatches `SupervisorFrame::ProcessExited`, invokes `exit_cb`, then forgets the id
     /// (ADR-0026).
     pub fn dispatch_exit(&self, id: u64, code: Option<i32>) {
-        let exit_cb = self.0.borrow_mut().pending.remove(&id).map(|p| p.exit_cb);
+        let exit_cb = self.pending.borrow_mut().remove(&id).map(|p| p.exit_cb);
         let Some(exit_cb) = exit_cb else { return };
         if let Err(err) = exit_cb.call::<()>(code) {
             debug!("process.run(id={id}): exit_cb raised an error: {err}");
@@ -162,6 +126,7 @@ pub fn register(lua: &Lua, registry: ProcessRegistry) -> mlua::Result<()> {
 
 #[cfg(test)]
 mod tests {
+    use shared::RendererFrame;
     use tokio::sync::mpsc;
 
     use super::*;
@@ -170,7 +135,7 @@ mod tests {
     fn lua_with_process(generation_id: u32) -> (Lua, ProcessRegistry, mpsc::UnboundedReceiver<RendererFrame>) {
         let lua = Lua::new();
         let (tx, rx) = mpsc::unbounded_channel();
-        let registry = ProcessRegistry::new(generation_id, tx);
+        let registry = ProcessRegistry::new(CommandSender::new(generation_id, tx));
         register(&lua, registry.clone()).unwrap();
         (lua, registry, rx)
     }
@@ -207,7 +172,7 @@ mod tests {
         assert_eq!(envelope.params.generation_id, 7);
         assert_eq!(envelope.params.arguments, vec![serde_json::json!("kate"), serde_json::json!(["notes.md"])]);
         assert!(
-            registry.0.borrow().pending.is_empty(),
+            registry.pending.borrow().is_empty(),
             "nothing may be retained for a process that will never report an exit"
         );
     }

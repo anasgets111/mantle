@@ -47,8 +47,7 @@ pub struct CommandSender {
 }
 
 impl CommandSender {
-    /// `generation_id` comes from `socket::generation_id_from_env`, the value `ProcessRegistry`
-    /// stamps into every command envelope.
+    /// `generation_id` comes from `socket::generation_id_from_env`.
     pub fn new(generation_id: u32, outbound_tx: UnboundedSender<RendererFrame>) -> Self {
         CommandSender {
             generation_id,
@@ -103,8 +102,25 @@ impl CommandSender {
         arguments: Vec<serde_json::Value>,
         expected_revision: u32,
     ) {
+        self.send_as(self.next_id(), capability, action, arguments, expected_revision);
+    }
+
+    /// A fresh JSON-RPC request id, for a caller that names a later command by it (`process`).
+    pub(crate) fn next_id(&self) -> u64 {
         let id = self.next_id.get();
         self.next_id.set(id + 1);
+        id
+    }
+
+    /// [`Self::send`] under an id the caller already holds.
+    pub(crate) fn send_as(
+        &self,
+        id: u64,
+        capability: &str,
+        action: &str,
+        arguments: Vec<serde_json::Value>,
+        expected_revision: u32,
+    ) {
         let envelope = CommandEnvelope {
             params: CommandParams {
                 generation_id: self.generation_id,
