@@ -48,10 +48,7 @@ pub enum AudioAction {
 /// `play_sound(sound)` and `set_event_sounds_enabled(en)` are not actions: they'd need a sound
 /// player, event-sound theme, and toggle storage, none of which exists.
 pub fn dispatch(commands: &AudioCommandSender, envelope: &shared::CommandEnvelope) {
-    let Some(action) = crate::parse_action::<AudioAction>(&envelope.params) else {
-        shared::debug!("unknown action: {}", envelope.params.action);
-        return;
-    };
+    let Some(action) = crate::parse_action::<AudioAction>(&envelope.params) else { return };
     let command = match action {
         AudioAction::SetVolume { volume } => AudioCommand::SetMasterVolume(volume),
         AudioAction::SetMuted { muted } => AudioCommand::SetMasterMuted(muted),

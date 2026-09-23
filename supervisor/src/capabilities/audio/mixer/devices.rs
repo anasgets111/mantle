@@ -179,14 +179,10 @@ pub(super) fn device_list(
     list
 }
 
-/// The display name: `node.description`, then `node.nick`, then `node.name`. Live `pw-dump` shows
-/// the first two absent on streams and present on every sink/source.
+/// The display name: `node.description`, then `node.nick`; [`DeviceNames::display`] falls back to
+/// `node.name`. Live `pw-dump` shows both absent on streams and present on every sink/source.
 pub(super) fn device_display_name(props: &impl PropsLookup) -> Option<String> {
-    props
-        .get_prop(*keys::NODE_DESCRIPTION)
-        .or_else(|| props.get_prop(*keys::NODE_NICK))
-        .or_else(|| props.get_prop(*keys::NODE_NAME))
-        .map(str::to_string)
+    props.get_prop(*keys::NODE_DESCRIPTION).or_else(|| props.get_prop(*keys::NODE_NICK)).map(str::to_string)
 }
 
 /// Reads [`DeviceNames`] from `global` or `info` props; `None` if `node.name` is absent.
@@ -215,23 +211,17 @@ mod tests {
     }
 
     #[test]
-    fn device_display_name_prefers_the_description_over_the_nick_and_the_node_name() {
+    fn device_display_name_prefers_the_description_over_the_nick() {
         assert_eq!(device_display_name(&analog_sink_props()), Some("Built-in Audio Analog Stereo".to_string()));
     }
 
     #[test]
-    fn device_display_name_falls_back_through_nick_to_node_name() {
+    fn device_display_name_falls_back_to_the_nick_and_leaves_the_node_name_to_display() {
         let mut props = analog_sink_props();
         props.remove("node.description");
         assert_eq!(device_display_name(&props), Some("ALC256 Analog".to_string()));
 
         props.remove("node.nick");
-        assert_eq!(device_display_name(&props), Some("alsa_output.pci-0000_00_1f.3.analog-stereo".to_string()));
-    }
-
-    #[test]
-    fn device_display_name_is_none_for_a_node_with_no_name_at_all() {
-        let props = HashMap::from([("media.class".to_string(), "Audio/Sink".to_string())]);
         assert_eq!(device_display_name(&props), None);
     }
 
