@@ -59,8 +59,11 @@ pub enum SysinfoSignal {
 #[derive(Debug, serde::Deserialize)]
 #[cfg_attr(test, derive(schemars::JsonSchema))]
 pub struct SysinfoConfigure {
+    /// Seconds between CPU usage reads. Zero suspends them.
     pub cpu_interval: Option<u64>,
+    /// Seconds between memory reads. Zero suspends them.
     pub ram_interval: Option<u64>,
+    /// Seconds between temperature reads. Zero suspends them.
     pub temp_interval: Option<u64>,
 }
 

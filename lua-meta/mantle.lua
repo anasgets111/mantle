@@ -288,9 +288,9 @@
 ---@class SysinfoConfigure
 ---`sysinfo:configure`'s table (ADR-0035). Present keys override intervals; absent keys stay
 ---unchanged, and one wrong-typed key drops the whole call.
----@field cpu_interval? integer
----@field ram_interval? integer
----@field temp_interval? integer
+---@field cpu_interval? integer Seconds between CPU usage reads. Zero suspends them.
+---@field ram_interval? integer Seconds between memory reads. Zero suspends them.
+---@field temp_interval? integer Seconds between temperature reads. Zero suspends them.
 
 ---@class TrayItem
 ---@field attention_icon_name? string `NeedsAttention` artwork, resolved like `icon_name`/`icon_path`; draw it instead of the base pair when `status == "NeedsAttention"`. Both are `nil` when undeclared.
