@@ -16,7 +16,7 @@ use std::collections::HashMap;
 
 use mlua::{Lua, ObjectLike, Table, Value};
 
-use crate::lua::signal::{Signal, from_userdata};
+use super::store::{capability, index_entry_signals};
 
 /// Handles keyed by declared name, so two declarations of one program share a table and its
 /// signals. Survives VM re-evaluation (ADR-0044 decision 4), so a reload hands back the same one.
@@ -37,7 +37,7 @@ pub fn register(lua: &Lua) -> mlua::Result<()> {
             }
             let stop_signal: Value = spec.get("stop_signal")?;
 
-            let processes = processes_capability(lua)?;
+            let processes = capability(lua, "session_process", "processes")?;
             // Sent every evaluation, like `storage:open`: the Supervisor keeps the entry it has
             // and takes the newer stop signal, so editing that lands on reload without disturbing
             // a program already up.
@@ -52,15 +52,6 @@ pub fn register(lua: &Lua) -> mlua::Result<()> {
             Ok(handle)
         })?,
     )
-}
-
-/// `mantle.processes` through namespace `__index`, so the read starts the capability
-/// (ADR-0070 decision 1).
-fn processes_capability(lua: &Lua) -> mlua::Result<mlua::AnyUserData> {
-    let mantle: Table = lua.globals().get("mantle").map_err(|_| {
-        mlua::Error::runtime("session_process: the `mantle` namespace is not built yet on this Lua state")
-    })?;
-    mantle.get("processes")
 }
 
 /// Config table: real `start`/`signal`/`stop` fields; `__index` answers other keys with signals.
@@ -92,34 +83,6 @@ fn build_handle(lua: &Lua, name: &str, processes: mlua::AnyUserData) -> mlua::Re
         lua.create_function(move |_, _handle: Table| owner.call_method::<()>("invoke", ("stop", program.clone())))?,
     )?;
 
-    let metatable = lua.create_table()?;
-    let signal = from_userdata(&processes)
-        .ok_or_else(|| mlua::Error::runtime("session_process: mantle.processes is not a signal"))?;
-    let program = name.to_string();
-    metatable.set(
-        "__index",
-        lua.create_function(move |lua, (handle, key): (Table, String)| {
-            let field = field_signal(lua, &signal, &program, &key)?;
-            // Cache on the table: later reads are plain and each field has one signal.
-            handle.raw_set(key.as_str(), field.clone())?;
-            Ok(field)
-        })?,
-    )?;
-    handle.set_metatable(Some(metatable))?;
+    index_entry_signals(lua, &handle, &processes, "sessions", name)?;
     Ok(handle)
-}
-
-/// One field of one declared program, mapped over `mantle.processes`. `nil` before the first push
-/// and for a name the Supervisor has not answered for yet, matching the property's documented
-/// default.
-fn field_signal(lua: &Lua, processes: &Signal, name: &str, key: &str) -> mlua::Result<mlua::AnyUserData> {
-    let name = name.to_string();
-    let key = key.to_string();
-    let read = lua.create_function(move |_, payload: Value| {
-        let Value::Table(payload) = payload else { return Ok(Value::Nil) };
-        let Value::Table(sessions) = payload.get::<Value>("sessions")? else { return Ok(Value::Nil) };
-        let Value::Table(session) = sessions.get::<Value>(name.as_str())? else { return Ok(Value::Nil) };
-        session.get::<Value>(key.as_str())
-    })?;
-    Signal::mapped(lua, lua.create_userdata(processes.clone())?, read)
 }

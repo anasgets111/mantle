@@ -11,7 +11,7 @@
 
 use std::collections::HashMap;
 
-use mlua::{Lua, ObjectLike, Table, Value};
+use mlua::{AnyUserData, Lua, ObjectLike, Table, Value};
 
 use crate::lua::signal::{Signal, from_userdata};
 
@@ -31,7 +31,7 @@ pub fn register(lua: &Lua) -> mlua::Result<()> {
             let defaults: Value = spec.get("defaults")?;
             let file = join(&path, &name)?;
 
-            let storage = storage_capability(lua)?;
+            let storage = capability(lua, "persistent_table", "storage")?;
             // Send every evaluation: the Supervisor merges defaults (ADR-0136 decision 4), so
             // edited defaults land on reload without reverting user values.
             let defaults = match defaults {
@@ -67,18 +67,52 @@ fn join(path: &str, name: &str) -> mlua::Result<String> {
     Ok(format!("{}/{name}", path.trim_end_matches('/')))
 }
 
-/// `mantle.storage` through namespace `__index`, so the read starts the capability
-/// (ADR-0070 decision 1).
-fn storage_capability(lua: &Lua) -> mlua::Result<mlua::AnyUserData> {
+/// `mantle.<name>` through namespace `__index`, so the read starts the capability
+/// (ADR-0070 decision 1). `caller` names the global in the error.
+pub(super) fn capability(lua: &Lua, caller: &str, name: &str) -> mlua::Result<AnyUserData> {
     let mantle: Table = lua.globals().get("mantle").map_err(|_| {
-        mlua::Error::runtime("persistent_table: the `mantle` namespace is not built yet on this Lua state")
+        mlua::Error::runtime(format!("{caller}: the `mantle` namespace is not built yet on this Lua state"))
     })?;
-    mantle.get("storage")
+    mantle.get(name)
+}
+
+/// Answers every key `table` lacks with `payload[section][entry][key]` mapped over `capability`,
+/// cached with `rawset` so later reads are plain and each key has one signal. `nil` before the
+/// first push and for an absent entry or key, matching the property's documented default.
+pub(super) fn index_entry_signals(
+    lua: &Lua,
+    table: &Table,
+    capability: &AnyUserData,
+    section: &'static str,
+    entry: &str,
+) -> mlua::Result<()> {
+    let signal = from_userdata(capability)
+        .ok_or_else(|| mlua::Error::runtime(format!("the `{section}` owner is not a signal")))?;
+    let entry = entry.to_string();
+    let metatable = lua.create_table()?;
+    metatable.set(
+        "__index",
+        lua.create_function(move |lua, (table, key): (Table, String)| {
+            let entry = entry.clone();
+            let field = key.clone();
+            let read = lua.create_function(move |_, payload: Value| {
+                let Value::Table(payload) = payload else { return Ok(Value::Nil) };
+                let Value::Table(entries) = payload.get::<Value>(section)? else { return Ok(Value::Nil) };
+                let Value::Table(stored) = entries.get::<Value>(entry.as_str())? else { return Ok(Value::Nil) };
+                stored.get::<Value>(field.as_str())
+            })?;
+            let key_signal = Signal::mapped(lua, lua.create_userdata(signal.clone())?, read)?;
+            table.raw_set(key, key_signal.clone())?;
+            Ok(key_signal)
+        })?,
+    )?;
+    table.set_metatable(Some(metatable))
 }
 
 /// Config table: real `set` field; `__index` answers other keys with per-file signals.
 fn build_store(lua: &Lua, file: &str, storage: mlua::AnyUserData) -> mlua::Result<Table> {
     let store = lua.create_table()?;
+    index_entry_signals(lua, &store, &storage, "files", file)?;
     let path = file.to_string();
     store.set(
         "set",
@@ -86,37 +120,7 @@ fn build_store(lua: &Lua, file: &str, storage: mlua::AnyUserData) -> mlua::Resul
             storage.call_method::<()>("invoke", ("set", path.clone(), key, value))
         })?,
     )?;
-
-    let metatable = lua.create_table()?;
-    let signal_source: mlua::AnyUserData = lua.globals().get::<Table>("mantle")?.get("storage")?;
-    let signal = from_userdata(&signal_source)
-        .ok_or_else(|| mlua::Error::runtime("persistent_table: mantle.storage is not a signal"))?;
-    let path = file.to_string();
-    metatable.set(
-        "__index",
-        lua.create_function(move |lua, (store, key): (Table, String)| {
-            let key_signal = key_signal(lua, &signal, &path, &key)?;
-            // Cache on the table: later reads are plain and each key has one signal.
-            store.raw_set(key.as_str(), key_signal.clone())?;
-            Ok(key_signal)
-        })?,
-    )?;
-    store.set_metatable(Some(metatable))?;
     Ok(store)
-}
-
-/// One file key mapped over `mantle.storage`. `nil` before first push and for absent keys,
-/// matching the property's documented default.
-fn key_signal(lua: &Lua, storage: &Signal, file: &str, key: &str) -> mlua::Result<mlua::AnyUserData> {
-    let file = file.to_string();
-    let key = key.to_string();
-    let read = lua.create_function(move |_, payload: Value| {
-        let Value::Table(payload) = payload else { return Ok(Value::Nil) };
-        let Value::Table(files) = payload.get::<Value>("files")? else { return Ok(Value::Nil) };
-        let Value::Table(stored) = files.get::<Value>(file.as_str())? else { return Ok(Value::Nil) };
-        stored.get::<Value>(key.as_str())
-    })?;
-    Signal::mapped(lua, lua.create_userdata(storage.clone())?, read)
 }
 
 #[cfg(test)]
