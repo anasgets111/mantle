@@ -1,6 +1,6 @@
-//! Raw EGL/GLES entry points ADR-0248's dmabuf amendment needs beyond what `khronos-egl` 6.0
-//! wraps: device query, dma-buf import modifier queries, and `glEGLImageTargetTexture2DOES`.
-//! Loaded once via `eglGetProcAddress`.
+//! Raw EGL/GLES entry points beyond what `khronos-egl` 6.0 wraps: ADR-0248's dmabuf amendment's
+//! device query, dma-buf import modifier queries and `glEGLImageTargetTexture2DOES`, and
+//! swap-with-damage (ADR-0063 amendment). Loaded once via `eglGetProcAddress`.
 
 use std::ffi::{CStr, c_char, c_void};
 use std::os::unix::io::RawFd;
@@ -54,6 +54,24 @@ fn load<T>(instance: &egl::Instance<egl::Static>, name: &str) -> Option<T> {
     // SAFETY: `name` names a fixed EGL/GLES extension whose C signature matches `T`; a non-null
     // `eglGetProcAddress` return is valid for the process's lifetime.
     Some(unsafe { std::mem::transmute_copy::<extern "system" fn(), T>(&addr) })
+}
+
+pub type SwapBuffersWithDamage =
+    unsafe extern "system" fn(egl::EGLDisplay, egl::EGLSurface, *const egl::Int, egl::Int) -> egl::Boolean;
+
+/// `EGL_KHR_swap_buffers_with_damage`, else its identical EXT twin. Checked against the display's
+/// extension string, since `eglGetProcAddress` can answer for an extension the display lacks.
+pub fn swap_buffers_with_damage(
+    instance: &egl::Instance<egl::Static>,
+    display: egl::Display,
+) -> Option<SwapBuffersWithDamage> {
+    let extensions = instance.query_string(Some(display), egl::EXTENSIONS).ok()?.to_string_lossy();
+    ["KHR", "EXT"].into_iter().find_map(|vendor| {
+        extensions
+            .split_whitespace()
+            .any(|name| name == format!("EGL_{vendor}_swap_buffers_with_damage"))
+            .then(|| load(instance, &format!("eglSwapBuffersWithDamage{vendor}")))?
+    })
 }
 
 /// The entry points a dma-buf import needs, resolved once against the live EGL display.

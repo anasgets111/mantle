@@ -1411,6 +1411,13 @@ Measured 25-second A/B: Renderer CPU 0.80% to 0.60%, niri 0.52% to 0.36%; wallpa
 from 2.23/s to zero. Resolution and cloning still visit every surface on each dirty push. Skipping
 invisible resolution remained separate because config maps could have side effects.
 
+**Amendment: swap damage.** A repaint still redraws the whole buffer but reports only what changed,
+through `EGL_KHR`/`EXT_swap_buffers_with_damage`: the bounds of the commands outside the old and
+new lists' common prefix and suffix, as one rect. Full-surface damage made Hyprland re-blur a
+3440x1440 layer every frame, 9-24 ms per 165 Hz frame callback against 6-7.5 ms without blur.
+The whole surface is still damaged with no prior list, on a resize, while `stale` or a field is
+focused, and for a transform nested in another transform.
+
 ## 0064. A masked field draws from a count the tree never holds
 
 1. Pass secure character count beside the scene into painting, never as a retained property. Count

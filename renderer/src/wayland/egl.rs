@@ -34,6 +34,8 @@ pub struct EglState {
     pub display: egl::Display,
     pub config: egl::Config,
     pub context: egl::Context,
+    /// `None` swaps with plain `eglSwapBuffers`, which damages the whole surface.
+    pub swap_with_damage: Option<super::egl_ext::SwapBuffersWithDamage>,
 }
 
 /// Initializes EGL against Wayland and picks the first candidate that satisfies
@@ -90,7 +92,8 @@ pub fn init(connection: &wayland_client::Connection) -> Result<EglState, String>
         .create_context(display, config, None, &context_attribs)
         .map_err(|e| format!("eglCreateContext (GLES3) failed: {e}"))?;
 
-    Ok(EglState { instance, display, config, context })
+    let swap_with_damage = super::egl_ext::swap_buffers_with_damage(&instance, display);
+    Ok(EglState { instance, display, config, context, swap_with_damage })
 }
 
 fn query_config_attribs(

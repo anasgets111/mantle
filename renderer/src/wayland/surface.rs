@@ -986,6 +986,22 @@ impl App {
             return;
         }
 
+        // What the compositor re-blurs and recomposites behind this surface; `None` is the whole
+        // surface, for every case where pixels change that the list does not name (ADR-0063
+        // amendment): a landed decode or capture, an animated image, a caret.
+        let damage = match &self.surfaces[index].last_painted {
+            Some((size, painted))
+                if *size == (width, height)
+                    && self.surfaces[index].stale.is_none()
+                    && self.field_focus_for(&surface_id).is_none() =>
+            {
+                list.damage_since(painted)
+            }
+            _ => None,
+        };
+        let surface_rect = crate::text::snap::PhysicalRect { x0: 0, y0: 0, x1: width as i32, y1: height as i32 };
+        let damage = damage.map(|rect| rect.intersect(surface_rect)).filter(|r| r.x1 > r.x0 && r.y1 > r.y0);
+
         let t_gl = timing.then(Instant::now);
         let Some(egl) = self.egl.as_ref() else {
             return;
@@ -1095,10 +1111,18 @@ impl App {
         // ponytail: only the swap is guarded; khronos-egl's other wrappers (make_current etc.) still unwrap (upstream #25).
         use khronos_egl::api::EGL1_0;
         let t_swap = timing.then(Instant::now);
-        // SAFETY: `egl_surface` was made current on `egl.display` above.
-        if unsafe { khronos_egl::Static.eglSwapBuffers(egl.display.as_ptr(), egl_surface.as_ptr()) }
-            == khronos_egl::FALSE
-        {
+        let swapped = match (egl.swap_with_damage, damage) {
+            (Some(swap), Some(r)) => {
+                // Buffer coordinates, origin bottom-left.
+                let rect = [r.x0, height as i32 - r.y1, r.x1 - r.x0, r.y1 - r.y0];
+                // SAFETY: `egl_surface` was made current on `egl.display` above; `rect` holds the
+                // one `x, y, w, h` quadruple `n_rects = 1` promises.
+                unsafe { swap(egl.display.as_ptr(), egl_surface.as_ptr(), rect.as_ptr(), 1) }
+            }
+            // SAFETY: `egl_surface` was made current on `egl.display` above.
+            _ => unsafe { khronos_egl::Static.eglSwapBuffers(egl.display.as_ptr(), egl_surface.as_ptr()) },
+        };
+        if swapped == khronos_egl::FALSE {
             // SAFETY: reads this thread's last EGL error.
             let error = unsafe { khronos_egl::Static.eglGetError() };
             log_bind_failure(&surface_id, "eglSwapBuffers", format!("EGL error {error:#x}"));

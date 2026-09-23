@@ -198,6 +198,56 @@ impl DisplayList {
         }
         walk(&self.commands, out)
     }
+
+    /// The pixels that can differ from `previous`, `None` if none can. Commands outside the
+    /// common prefix and suffix are the only ones that differ, so their bounds, old and new, cover
+    /// every changed pixel.
+    /// ponytail: one rect, so two changes at opposite corners damage everything between. Upgrade
+    /// path is a rect per changed command, capped, for `eglSwapBuffersWithDamage`.
+    pub fn damage_since(&self, previous: &DisplayList) -> Option<PhysicalRect> {
+        let (old, new) = (&previous.commands, &self.commands);
+        let prefix = old.iter().zip(new).take_while(|(a, b)| a == b).count();
+        let (old, new) = (&old[prefix..], &new[prefix..]);
+        let suffix = old.iter().rev().zip(new.iter().rev()).take_while(|(a, b)| a == b).count();
+        old[..old.len() - suffix].iter().chain(&new[..new.len() - suffix]).map(command_bounds).reduce(|a, b| {
+            PhysicalRect { x0: a.x0.min(b.x0), y0: a.y0.min(b.y0), x1: a.x1.max(b.x1), y1: a.y1.max(b.y1) }
+        })
+    }
+}
+
+/// Every pixel `command` can touch. `execute` scissors each draw to its `clip`, and a transformed
+/// group's scissors follow its matrix, so the clip's mapped corners bound it. A nested transform
+/// composes and can outgrow that, so it counts as unbounded. Padded because femtovg's scissor
+/// edge is antialiased.
+fn command_bounds(command: &DrawCmd) -> PhysicalRect {
+    const PAD: i32 = 2;
+    fn nests_transform(commands: &[DrawCmd]) -> bool {
+        commands.iter().any(|command| match &command.draw {
+            Draw::Transformed { .. } => true,
+            Draw::Clipped { commands, .. } => nests_transform(commands),
+            _ => false,
+        })
+    }
+    let clip = command.clip;
+    let clip = match &command.draw {
+        Draw::Transformed { matrix, commands }
+            if matrix.iter().all(|n| n.is_finite()) && !nests_transform(commands) =>
+        {
+            let corners = [(clip.x0, clip.y0), (clip.x1, clip.y0), (clip.x0, clip.y1), (clip.x1, clip.y1)]
+                .map(|(x, y)| node::apply_affine(*matrix, x as f32, y as f32));
+            let (x0, y0) = corners.iter().fold((f32::MAX, f32::MAX), |(x, y), c| (x.min(c.0), y.min(c.1)));
+            let (x1, y1) = corners.iter().fold((f32::MIN, f32::MIN), |(x, y), c| (x.max(c.0), y.max(c.1)));
+            snap_to_physical(LogicalRect { x: x0, y: y0, width: x1 - x0, height: y1 - y0 }, 1.0)
+        }
+        Draw::Transformed { .. } => UNCLIPPED,
+        _ => clip,
+    };
+    PhysicalRect {
+        x0: clip.x0.saturating_sub(PAD),
+        y0: clip.y0.saturating_sub(PAD),
+        x1: clip.x1.saturating_add(PAD),
+        y1: clip.y1.saturating_add(PAD),
+    }
 }
 
 /// Identity clip before any scissor is pushed.
@@ -1285,5 +1335,33 @@ mod tests {
         let boxed = build(&resolved_surface(&Lua::new(), &src("Box"), size), 1.0, None);
         let rounded = build(&resolved_surface(&Lua::new(), &src("Rounded"), size), 1.0, None);
         assert_ne!(boxed, rounded);
+    }
+
+    #[test]
+    fn damage_is_the_changed_commands_old_and_new_bounds_and_nothing_when_unchanged() {
+        let cmd = |x: f32| {
+            let rect = LogicalRect { x, y: 10.0, width: 20.0, height: 20.0 };
+            let draw = Draw::Box {
+                background: Some(Rgba { r: 1.0, g: 1.0, b: 1.0, a: 1.0 }),
+                radius: 0.0,
+                colors: BorderColor::default(),
+                widths: EdgeInsets::default(),
+            };
+            DrawCmd { rect, clip: snap_to_physical(rect, 1.0), draw }
+        };
+        let before = DisplayList { commands: vec![cmd(0.0), cmd(100.0), cmd(500.0)] };
+        let after = DisplayList { commands: vec![cmd(0.0), cmd(140.0), cmd(500.0)] };
+        assert_eq!(after.damage_since(&before), Some(PhysicalRect { x0: 98, y0: 8, x1: 162, y1: 32 }));
+        assert_eq!(before.damage_since(&before), None);
+        let transformed = |scale: f32| DisplayList {
+            commands: vec![DrawCmd {
+                draw: Draw::Transformed { matrix: [scale, 0.0, 0.0, scale, 0.0, 0.0], commands: vec![cmd(100.0)] },
+                ..cmd(100.0)
+            }],
+        };
+        assert_eq!(
+            transformed(2.0).damage_since(&transformed(1.0)),
+            Some(PhysicalRect { x0: 98, y0: 8, x1: 242, y1: 62 })
+        );
     }
 }
