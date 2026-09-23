@@ -49,6 +49,8 @@ pub struct TextPainter {
     /// femtovg's id for each face, keyed by the id cosmic-text's glyphs name it by, with the face
     /// itself for its variation axes (ADR-0211).
     faces: HashMap<fontdb::ID, (FontId, FontFace)>,
+    /// [`FontFace::coords`] per face and weight: deriving them parses the font's tables.
+    coords: HashMap<(fontdb::ID, u16), Vec<i16>>,
     /// The shaping worker's face-set generation this was built from, so [`TextPainter::sync`] can
     /// tell in one atomic load whether femtovg's registry is behind.
     generation: u64,
@@ -184,6 +186,7 @@ impl TextPainter {
         Ok(Self {
             canvas,
             faces,
+            coords: HashMap::new(),
             generation,
             text_context,
             registered,
@@ -234,6 +237,7 @@ impl TextPainter {
         }
         debug!("syncing fonts to generation {generation}");
         self.faces = register(&self.text_context, &mut self.registered, font_chain);
+        self.coords.clear();
         self.generation = generation;
         self.lines_cache.clear();
         self.lines_cache_len = 0;
@@ -369,16 +373,16 @@ impl TextPainter {
     /// Draws `glyphs` in `face` at `weight`; a face femtovg never registered draws nothing.
     fn fill_run(
         &mut self,
-        (face, weight, tint): (fontdb::ID, u16, Rgba),
+        (id, weight, tint): (fontdb::ID, u16, Rgba),
         glyphs: impl IntoIterator<Item = PositionedGlyph>,
         font_size: f32,
     ) {
-        let Some((font, face)) = self.faces.get(&face) else { return };
+        let Some((font, face)) = self.faces.get(&id) else { return };
         // A variable family's bold is an instance of one face, which cosmic-text shaped at `weight`.
-        let (font, coords) = (*font, face.coords(weight));
+        let coords = self.coords.entry((id, weight)).or_insert_with(|| face.coords(weight));
         let mut paint = Paint::color(Color::rgbaf(tint.r, tint.g, tint.b, tint.a));
         paint.set_font_size(font_size);
-        let _ = self.canvas.fill_glyph_run(font, &coords, glyphs, &paint);
+        let _ = self.canvas.fill_glyph_run(*font, coords, glyphs, &paint);
     }
 }
 
