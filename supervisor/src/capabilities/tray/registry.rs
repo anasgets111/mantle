@@ -149,9 +149,23 @@ pub(super) async fn register_item(
 /// `fetch_tray_item_base` reads properties only and leaves `menu` unset, so the menu has to move
 /// across; assigning `refreshed` on its own blanks the menu on every title or icon change.
 ///
+/// Deletes a spooled PNG the refreshed item no longer names; departure only reaps current paths.
+///
 /// Returns whether the item changed. A pixmap icon always counts: its PNG keeps its path when the
 /// pixels change, and the push is what makes the renderer read it again.
 fn keep_menu_across(entry: &mut ItemEntry, mut refreshed: TrayItem) -> bool {
+    let old = &entry.last_known;
+    for (old, new) in [
+        (&old.icon_path, &refreshed.icon_path),
+        (&old.attention_icon_path, &refreshed.attention_icon_path),
+        (&old.overlay_icon_path, &refreshed.overlay_icon_path),
+    ] {
+        if let Some(old) = old
+            && Some(old) != new.as_ref()
+        {
+            shm_icons::remove_png(SPOOL_SUBDIR, old);
+        }
+    }
     let menu = entry.last_known.menu.take();
     let changed = refreshed != entry.last_known
         || [&refreshed.icon_path, &refreshed.attention_icon_path, &refreshed.overlay_icon_path]
