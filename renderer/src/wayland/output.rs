@@ -188,14 +188,16 @@ impl App {
         self.client.set_instances(reconcile.instances);
         self.create_surfaces(qh, &specs, &reconcile.added);
         if self.client.reevaluate() {
-            self.apply_pending(qh);
+            self.apply_pending(qh, departing);
         }
     }
 
     /// Applies a successful re-evaluation (ADR-0216). The fresh instances reach the scene before
     /// the apply, which refuses an instance of a removed declaration; protocol objects change only
     /// once it succeeds, and an unchanged surface set reconciles to no change.
-    pub(super) fn apply_pending(&mut self, qh: &QueueHandle<App>) {
+    ///
+    /// `departing` is still in SCTK's list; expanding against it re-creates its instances.
+    pub(super) fn apply_pending(&mut self, qh: &QueueHandle<App>, departing: Option<&wl_output::WlOutput>) {
         let Some((specs, rebuilt)) = self.client.pending_surfaces() else {
             return;
         };
@@ -210,7 +212,7 @@ impl App {
             crate::lua::timer::discard(self.client.lua());
             return;
         }
-        let outputs = geometries_from(&self.screens(None));
+        let outputs = geometries_from(&self.screens(departing));
         warn_unmatched_monitors(&specs, &outputs);
         let fresh = expand_instances(&specs, &outputs);
         let reconcile = reconcile_instances(self.client.instances(), &fresh, &rebuilt);

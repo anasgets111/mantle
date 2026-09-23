@@ -410,7 +410,7 @@ pub fn run(
             };
             match app.client.handle_frame(frame) {
                 FrameOutcome::Handled => {}
-                FrameOutcome::ApplyPending => app.apply_pending(&qh),
+                FrameOutcome::ApplyPending => app.apply_pending(&qh, None),
                 // Service immediately: lock declaration is tracked-surface state, not a
                 // capability-push result (ADR-0052 decision 3), and deferring weakens "secure now".
                 FrameOutcome::SetSessionLock(locked) => {
