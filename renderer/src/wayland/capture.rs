@@ -317,7 +317,7 @@ impl CaptureRegistry {
 impl App {
     /// Reconciles capture sources against this pass's `capture` nodes: drops ones no surface
     /// currently paints, creates ones newly appearing, and requests a frame for any idle source
-    /// that wants one. Called beside `image_cache.trim`, after every paint.
+    /// that wants one. Called after a repaint that drew, once `last_painted` has settled.
     pub(super) fn sync_captures(&mut self) {
         let mut wanted: HashMap<NodeId, CaptureNode> = HashMap::new();
         for surface in &self.surfaces {

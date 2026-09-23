@@ -538,6 +538,7 @@ impl App {
             bound.native_window.resize(width.max(1) as i32, height.max(1) as i32, 0, 0);
         }
         self.paint_surface(index);
+        self.sync_captures();
     }
 
     /// Apply resolved state to every tracked surface after a changed scene; ADR-0044 decision 2
@@ -1155,10 +1156,6 @@ impl App {
             }
             pinned
         });
-        // Reconciles capture sources against what this turn's surfaces actually paint (ADR-0248):
-        // same spot as the trim above, for the same reason, right after a surface's own list
-        // settles into `last_painted`, which is what both read.
-        self.sync_captures();
     }
 
     /// Marks stale every surface whose last-painted list matches `stale_because`. Shared by
@@ -1237,6 +1234,7 @@ impl App {
     }
 
     fn repaint_mapped_surfaces_where(&mut self, wanted: impl Fn(&str) -> bool) {
+        let drawn = self.surfaces_drawn;
         for index in 0..self.surfaces.len() {
             if self.surfaces[index].map_state != MapState::Mapped {
                 continue;
@@ -1255,6 +1253,10 @@ impl App {
             if self.exit {
                 return;
             }
+        }
+        // Once per repaint rather than per surface: each call walks every surface's list.
+        if self.surfaces_drawn != drawn {
+            self.sync_captures();
         }
     }
 
