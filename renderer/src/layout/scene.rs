@@ -2122,10 +2122,11 @@ fn publish_geometry(node: &ResolvedNode, origin_x: f32, origin_y: f32, lua: &Lua
 }
 
 #[cfg(test)]
-mod flow_kind_tests {
+pub(super) mod tests {
     use super::*;
+    use crate::lua::nodes::{deserialize_lua_table, register_node_constructors};
 
-    fn props(lua: &mlua::Lua, direction: Option<&str>) -> PropMap {
+    fn direction_props(lua: &mlua::Lua, direction: Option<&str>) -> PropMap {
         let mut properties = PropMap::default();
         if let Some(direction) = direction {
             properties.insert("direction", Value::String(lua.create_string(direction).unwrap()));
@@ -2137,14 +2138,14 @@ mod flow_kind_tests {
     fn a_list_lays_out_as_a_column_unless_it_says_otherwise() {
         // The default is what every config written before `direction` existed relies on.
         let lua = mlua::Lua::new();
-        assert_eq!(flow_kind("list", &props(&lua, None)).unwrap(), "column");
-        assert_eq!(flow_kind("list", &props(&lua, Some("Vertical"))).unwrap(), "column");
+        assert_eq!(flow_kind("list", &direction_props(&lua, None)).unwrap(), "column");
+        assert_eq!(flow_kind("list", &direction_props(&lua, Some("Vertical"))).unwrap(), "column");
     }
 
     #[test]
     fn a_horizontal_list_lays_out_as_a_row() {
         let lua = mlua::Lua::new();
-        assert_eq!(flow_kind("list", &props(&lua, Some("Horizontal"))).unwrap(), "row");
+        assert_eq!(flow_kind("list", &direction_props(&lua, Some("Horizontal"))).unwrap(), "row");
     }
 
     #[test]
@@ -2152,23 +2153,17 @@ mod flow_kind_tests {
         // `row` and `column` already say which way they go in their own name, so a `direction` on
         // one is a config confusing itself, not a second way to spell the kind.
         let lua = mlua::Lua::new();
-        assert_eq!(flow_kind("column", &props(&lua, Some("Horizontal"))).unwrap(), "column");
-        assert_eq!(flow_kind("row", &props(&lua, Some("Vertical"))).unwrap(), "row");
+        assert_eq!(flow_kind("column", &direction_props(&lua, Some("Horizontal"))).unwrap(), "column");
+        assert_eq!(flow_kind("row", &direction_props(&lua, Some("Vertical"))).unwrap(), "row");
     }
 
     #[test]
     fn an_unknown_direction_is_refused_by_name() {
         let lua = mlua::Lua::new();
-        let err = flow_kind("list", &props(&lua, Some("sideways"))).unwrap_err().to_string();
+        let err = flow_kind("list", &direction_props(&lua, Some("sideways"))).unwrap_err().to_string();
         assert!(err.contains("sideways"), "the message has to name what was written: {err}");
         assert!(err.contains("Horizontal"), "and what was expected: {err}");
     }
-}
-
-#[cfg(test)]
-pub(super) mod tests {
-    use super::*;
-    use crate::lua::nodes::{deserialize_lua_table, register_node_constructors};
 
     #[test]
     fn a_closed_timing_span_accumulates_and_reopens_for_the_next_region() {
