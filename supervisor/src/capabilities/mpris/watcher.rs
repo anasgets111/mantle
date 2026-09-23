@@ -1,5 +1,4 @@
-//! Discovery: which session-bus names `mantle.mpris` tracks. Split from `dbus::mpris`; see
-//! `dbus/mpris/mod.rs`.
+//! Discovery: which session-bus names `mantle.mpris` tracks.
 //!
 //! Players never register; scan `ListNames` once, then watch `NameOwnerChanged` for arrivals and
 //! departures under the same prefix (ADR-0036).

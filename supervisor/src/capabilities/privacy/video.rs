@@ -1,7 +1,7 @@
 //! Kernel half of `mantle.privacy` (ADR-0034): scan `/proc/*/fd/*` symlinks for processes holding
 //! `/dev/videoN`, then rescan on device-node inotify `OPEN`/`CLOSE`. Live testing confirmed
 //! `/dev/video0` emits `IN_OPEN`/`IN_CLOSE_NOWRITE`, a VFS mechanism unlike the unreliable sysfs
-//! attribute notifications used by keyboard lock LEDs (see `hardware::keyboard::locks`).
+//! attribute notifications used by keyboard lock LEDs (see `keyboard::locks`).
 //!
 //! Do not use ADR-0034's `/sys/class/video4linux/video<n>/streaming` fast path: this real UVC
 //! webcam lacks it despite running past the "6.3+" threshold, so it cannot be verified live. The

@@ -1,5 +1,5 @@
 //! Pure `Metadata` (`a{sv}`) parsing, album-art trust checks, and track identity comparison
-//! (ADR-0036). Split from `dbus::mpris`; see `dbus/mpris/mod.rs`.
+//! (ADR-0036).
 
 use std::os::unix::ffi::OsStringExt;
 use std::path::PathBuf;
@@ -96,10 +96,8 @@ pub(super) fn resolve_album_art_path(art_url: Option<&str>) -> String {
 /// A `file://` URL as a filesystem path: percent-decoded, with RFC 8089's optional `localhost`
 /// authority dropped.
 ///
-/// `strip_prefix("file://")` alone treated the URL as if it were already a path, so artwork named
-/// `cover art.png` arrived as `cover%20art.png` and was never found, and `file://localhost/tmp/a`
-/// became the relative path `localhost/tmp/a`. Decoding is byte-wise because a path is bytes on
-/// Unix, not UTF-8: a filename the shell can open is not necessarily one `String` accepts.
+/// Decoding is byte-wise because a path is bytes on Unix, not UTF-8: a filename the shell can
+/// open is not necessarily one `String` accepts.
 fn file_url_to_path(art_url: &str) -> Option<PathBuf> {
     let rest = art_url.strip_prefix("file://")?;
     let encoded = rest.strip_prefix("localhost").filter(|tail| tail.starts_with('/')).unwrap_or(rest);
@@ -141,7 +139,7 @@ mod file_url_tests {
 
     #[test]
     fn a_percent_escape_becomes_the_byte_it_encodes() {
-        // A cover named "cover art.png" arrives as `cover%20art.png` and was looked up literally.
+        // A cover named "cover art.png" arrives as `cover%20art.png`.
         assert_eq!(file_url_to_path("file:///tmp/cover%20art.png"), Some(PathBuf::from("/tmp/cover art.png")));
     }
 

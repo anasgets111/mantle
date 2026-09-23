@@ -1,5 +1,4 @@
 //! Hand-written proxies for `org.mpris.MediaPlayer2`/`Player`; no maintained zbus MPRIS crate.
-//! Split from `dbus::mpris`; see `dbus/mpris/mod.rs`.
 //!
 //! Every player uses fixed `/org/mpris/MediaPlayer2` (the freedesktop spec disallows otherwise),
 //! while `destination` varies. Declare `default_path` only; binders take the bus name explicitly.

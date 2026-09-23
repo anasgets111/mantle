@@ -1,5 +1,5 @@
 //! Per-player registry: bind a discovered MPRIS name, hydrate one live [`PlayerState`] entry,
-//! and maintain it in a resync loop. Split from `dbus::mpris`; see `dbus/mpris/mod.rs`.
+//! and maintain it in a resync loop.
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -86,12 +86,12 @@ pub(super) fn ordered_players(registry: &PlayerRegistry) -> Vec<PlayerState> {
     entries.into_iter().map(|entry| entry.last_known.clone()).collect()
 }
 
-/// Cross-process-comparable `CLOCK_MONOTONIC` microseconds, matching the IDL's timestamp field;
-/// opaque `std::time::Instant` would not. Known gap (ADR-0036): `system.time` is
-/// 1Hz, too coarse for this resolution.
 /// How long after a `PlaybackStatus` change to read `Position` again.
 const POSITION_RECHECK_DELAY: std::time::Duration = std::time::Duration::from_millis(100);
 
+/// Cross-process-comparable `CLOCK_MONOTONIC` microseconds, matching the IDL's timestamp field;
+/// opaque `std::time::Instant` would not. Known gap (ADR-0036): `system.time` is
+/// 1Hz, too coarse for this resolution.
 pub(super) fn monotonic_micros() -> i64 {
     let now: std::time::Duration = nix::time::clock_gettime(nix::time::ClockId::CLOCK_MONOTONIC)
         .map(std::time::Duration::from)
@@ -99,9 +99,6 @@ pub(super) fn monotonic_micros() -> i64 {
     i64::try_from(now.as_micros()).unwrap_or(i64::MAX)
 }
 
-/// Re-reads every `PlayerState` field from `player`/`root`, folding in `previous` for track
-/// identity caching (`album_art_path`/`length`, ADR-0036). Always succeeds; failed properties
-/// retain their previous values.
 struct Resynced {
     state: PlayerState,
     identity: TrackIdentity,
@@ -163,6 +160,9 @@ fn resolve_position(
     }
 }
 
+/// Re-reads every `PlayerState` field from `player`/`root`, folding in `previous` for track
+/// identity caching (`album_art_path`/`length`, ADR-0036). Always succeeds; failed properties
+/// retain their previous values.
 async fn resync(
     bus_name: &str,
     player: &MprisPlayerProxy<'static>,

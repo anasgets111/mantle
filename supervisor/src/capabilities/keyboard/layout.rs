@@ -106,7 +106,7 @@ struct HyprlandKeyboard {
 
 /// `0` for an absent, null or out-of-range `active_layout_index`. `#[serde(default)]` covers only
 /// an absent key, and `parse_hyprland_devices` drops an entry that fails to deserialize, so one bad
-/// value costs the whole layout rather than one field. Same tolerance as `fullscreen_flag`.
+/// value costs the whole layout rather than one field. Same tolerance as `workspaces::hyprland::fullscreen_mode`.
 fn layout_index<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<u32, D::Error> {
     Ok(serde_json::Value::deserialize(deserializer)?.as_u64().and_then(|index| u32::try_from(index).ok()).unwrap_or(0))
 }

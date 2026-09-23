@@ -41,7 +41,7 @@ pub struct InstallStep {
 }
 
 /// Privileged upgrade command. Backends use `pkexec`, routing the prompt to Mantle's polkit agent
-/// (`dbus::polkit`) instead of a terminal.
+/// (`crate::polkit`) instead of a terminal.
 pub struct InstallCommand {
     pub program: String,
     pub arguments: Vec<String>,

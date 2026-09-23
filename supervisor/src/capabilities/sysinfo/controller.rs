@@ -133,7 +133,7 @@ impl SysinfoController {
 ///
 /// Every send hydrates a `StateSnapshot`, which marks the scene dirty and costs a whole re-resolve
 /// (ADR-0044 decision 2). A machine at rest reports the same rounded percentage and the same whole
-/// Celsius for minutes together, so the unconditional send was buying a re-resolve per tick for no
+/// Celsius for minutes together, so an unconditional send would buy a re-resolve per tick for no
 /// new information. The sample itself is still taken and still stored: `cpu_percent` needs the
 /// counters for the next delta whether or not the rounded result moved.
 fn publish_if_changed(

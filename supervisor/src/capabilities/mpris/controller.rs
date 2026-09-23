@@ -1,5 +1,4 @@
-//! [`MprisController`]: `mantle.mpris`'s write dispatcher and state owner. Split from
-//! `dbus::mpris`; see `dbus/mpris/mod.rs`.
+//! [`MprisController`]: `mantle.mpris`'s write dispatcher and state owner.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -110,9 +109,8 @@ impl MprisController {
     }
 
     /// Converts an absolute `target` into the relative `Seek` a player without a usable trackid
-    /// needs. Refuses rather than inventing an origin: `unwrap_or(0)` here turned an unknown
-    /// position into "seek to `target` from the start", and `-1` from a never-read position made
-    /// the subtraction overflow for a large target.
+    /// needs. Refuses rather than inventing an origin: an unknown position read as `0` seeks to
+    /// `target` from the start, and a never-read `-1` overflows the subtraction for a large target.
     async fn seek_by_difference(
         &self,
         id: &str,
@@ -194,8 +192,7 @@ impl MprisController {
     }
 }
 
-/// [`MprisController::find_seek_context`]'s named return instead of a four-element tuple, so
-/// `seek` reads fields by name.
+/// [`MprisController::find_seek_context`]'s answer.
 struct SeekContext {
     bus_name: String,
     player: super::proxies::MprisPlayerProxy<'static>,

@@ -2,10 +2,6 @@
 //!
 //! The only file naming `niri_ipc`. `controller.rs` owns payload, reduction, and publish in terms
 //! of `WorkspaceRow`/`FocusedWindow`; this maps niri types and drives the loop.
-//!
-//! ADR-0056 decision 1 still applies: one implementor needs no trait. A second compositor is a
-//! sibling plus two `WorkspacesController` arms, inheriting `derive_state`, `StatePublisher`, and
-//! their tests instead of predicting the payload from one implementation.
 
 use std::collections::HashMap;
 

@@ -15,9 +15,9 @@ pub struct LockController {
     state: Arc<Mutex<LockState>>,
     commands_tx: UnboundedSender<shared::SetSessionLock>,
     /// Milliseconds [`LockController::unlock_after_animation`] waits before releasing, clamped to
-    /// [`MAX_UNLOCK_ANIMATION`] by the setter. Zero, and so unchanged from before ADR-0190, until a
-    /// config sets it. An atomic rather than a second mutex: it is written once at config load and
-    /// read once per unlock, and it has no invariant tying it to the lock state beside it.
+    /// [`MAX_UNLOCK_ANIMATION`] by the setter. Zero until a config sets it. An atomic rather than a
+    /// second mutex: it is written once at config load and read once per unlock, and it has no
+    /// invariant tying it to the lock state beside it.
     unlock_animation_ms: AtomicU64,
 }
 

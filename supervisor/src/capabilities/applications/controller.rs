@@ -13,7 +13,7 @@ use super::scan::{AppSummary, LaunchTarget, scan};
 /// `mantle.applications`'s payload (ADR-0061 decision 2).
 ///
 /// `by_app_id` repeats summaries instead of indexing `entries`: Lua arrays start at one while the
-/// serialized JSON array starts at zero. Repeating three small fields for a few hundred entries
+/// serialized JSON array starts at zero. Repeating a small summary for a few hundred entries
 /// avoids an invisible off-by-one.
 #[derive(Debug, Clone, Default, PartialEq, serde::Serialize)]
 #[cfg_attr(test, derive(schemars::JsonSchema))]

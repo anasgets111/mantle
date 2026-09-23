@@ -177,7 +177,7 @@ async fn run_brightness_task(
     }
 }
 
-/// Builds the `backlight` udev watch, like `battery::controller::build_power_supply_watch`.
+/// Builds the `backlight` udev watch.
 ///
 /// inotify misses sysfs attribute writes. `udevadm monitor --udev --subsystem-match=backlight`
 /// confirmed that brightness changes emit a `change` uevent on the `backlight` subsystem instead.
