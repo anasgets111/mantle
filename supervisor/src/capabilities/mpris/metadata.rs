@@ -56,14 +56,14 @@ pub(super) struct ParsedMetadata {
 }
 
 pub(super) fn parse_metadata(metadata: &std::collections::HashMap<String, OwnedValue>) -> ParsedMetadata {
-    let get = |key: &str| metadata.get(key).map(|v| Value::from(v.clone()));
+    let get = |key: &str| metadata.get(key).map(|value| &**value);
     ParsedMetadata {
-        title: get("xesam:title").as_ref().and_then(value_as_str).unwrap_or_default().to_string(),
-        artist: get("xesam:artist").as_ref().and_then(value_as_str_or_joined_array).unwrap_or_default(),
-        art_url: get("mpris:artUrl").as_ref().and_then(value_as_str).map(str::to_string),
-        length_us: get("mpris:length").as_ref().and_then(value_as_i64),
-        trackid: get("mpris:trackid").as_ref().and_then(value_as_trackid),
-        url: get("xesam:url").as_ref().and_then(value_as_str).map(str::to_string),
+        title: get("xesam:title").and_then(value_as_str).unwrap_or_default().to_string(),
+        artist: get("xesam:artist").and_then(value_as_str_or_joined_array).unwrap_or_default(),
+        art_url: get("mpris:artUrl").and_then(value_as_str).map(str::to_string),
+        length_us: get("mpris:length").and_then(value_as_i64),
+        trackid: get("mpris:trackid").and_then(value_as_trackid),
+        url: get("xesam:url").and_then(value_as_str).map(str::to_string),
     }
 }
 
