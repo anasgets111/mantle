@@ -263,8 +263,8 @@ fn window_rows(
         .collect()
 }
 
-/// Event names that trigger a state read: prefix before `>>`, with `v2` removed because each v2
-/// ships beside v1. Excludes `activelayout`, `submap`, `screencast`, and similar events that do
+/// Event names that trigger a state read: prefix before `>>`. Only v1 names match, because each v2
+/// ships beside its v1 and a second read would return the same state. Excludes `activelayout`, `submap`, `screencast`, and similar events that do
 /// not move workspaces; `keyboard` already handles its own state.
 const TRIGGERS: &[&str] = &[
     "workspace",
@@ -287,7 +287,6 @@ const TRIGGERS: &[&str] = &[
 
 fn is_trigger(line: &str) -> bool {
     let name = line.split_once(">>").map_or(line, |(name, _)| name);
-    let name = name.strip_suffix("v2").unwrap_or(name);
     TRIGGERS.contains(&name)
 }
 
@@ -656,10 +655,10 @@ mod tests {
     }
 
     #[test]
-    fn a_trigger_is_matched_by_event_name_with_or_without_its_v2_suffix() {
+    fn a_trigger_is_matched_by_its_v1_event_name_only() {
         assert!(is_trigger("workspace>>3"));
-        assert!(is_trigger("workspacev2>>3,3"));
-        assert!(is_trigger("activewindowv2>>55d1c0a3b2c0"));
+        assert!(!is_trigger("workspacev2>>3,3"));
+        assert!(!is_trigger("activewindowv2>>55d1c0a3b2c0"));
         assert!(is_trigger("openwindow>>55d1c0a3b2c0,3,kitty,~"));
         assert!(!is_trigger("activelayout>>at-translated-set-2-keyboard,English (US)"));
         assert!(!is_trigger("submap>>resize"));
@@ -671,7 +670,6 @@ mod tests {
     #[test]
     fn a_fullscreen_or_maximize_change_is_a_trigger() {
         assert!(is_trigger("fullscreen>>1"));
-        assert!(is_trigger("fullscreenv2>>0,1"));
     }
 
     #[test]
