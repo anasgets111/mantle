@@ -152,8 +152,8 @@ mod file_url_tests {
 
     #[test]
     fn an_ordinary_path_is_unchanged() {
-        let zen = "file:///home/anas/.config/zen/firefox-mpris/3909426_4.png";
-        assert_eq!(file_url_to_path(zen), Some(PathBuf::from("/home/anas/.config/zen/firefox-mpris/3909426_4.png")));
+        let url = "file:///home/someone/.cache/player/art_4.png";
+        assert_eq!(file_url_to_path(url), Some(PathBuf::from("/home/someone/.cache/player/art_4.png")));
     }
 
     #[test]
@@ -186,7 +186,7 @@ mod tests {
         let mut map = HashMap::new();
         map.insert("xesam:title".to_string(), owned(Value::Str(Str::from("Track Title"))));
         map.insert("xesam:artist".to_string(), owned(Value::Array(artists)));
-        map.insert("mpris:artUrl".to_string(), owned(Value::Str(Str::from("file:///home/anas/art.png"))));
+        map.insert("mpris:artUrl".to_string(), owned(Value::Str(Str::from("file:///home/someone/art.png"))));
         map.insert("mpris:length".to_string(), owned(Value::I64(1_302_000_000)));
         map.insert(
             "mpris:trackid".to_string(),
@@ -201,7 +201,7 @@ mod tests {
         let parsed = parse_metadata(&real_metadata());
         assert_eq!(parsed.title, "Track Title");
         assert_eq!(parsed.artist, "Ahmed Ebrahim");
-        assert_eq!(parsed.art_url.as_deref(), Some("file:///home/anas/art.png"));
+        assert_eq!(parsed.art_url.as_deref(), Some("file:///home/someone/art.png"));
         assert_eq!(parsed.length_us, Some(1_302_000_000));
         assert_eq!(parsed.trackid.as_deref(), Some("/org/mpris/MediaPlayer2/firefox"));
         assert_eq!(parsed.url.as_deref(), Some("https://example.com/watch"));

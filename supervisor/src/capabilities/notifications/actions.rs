@@ -114,7 +114,7 @@ mod tests {
         let parsed = parse_actions(&flat(&[("mail-archive", "")]), true);
         assert_eq!(parsed.actions[0].icon_name.as_deref(), Some("mail-archive"));
 
-        let parsed = parse_actions(&flat(&[("/home/anas/.ssh/id_ed25519", "Archive")]), true);
+        let parsed = parse_actions(&flat(&[("/home/someone/.ssh/id_ed25519", "Archive")]), true);
         assert_eq!(parsed.actions[0].icon_name, None, "a path must not be carried as an icon name");
 
         let parsed = parse_actions(&flat(&[("mail-archive", "")]), false);
