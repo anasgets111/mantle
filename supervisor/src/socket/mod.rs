@@ -280,7 +280,7 @@ pub fn spawn_listener(
                     if live_connections.fetch_add(1, Ordering::Relaxed) >= MAX_CONNECTIONS {
                         live_connections.fetch_sub(1, Ordering::Relaxed);
                         warn!(
-                            "control-socket: {MAX_CONNECTIONS} connections are already open, so this one was closed \
+                            "{MAX_CONNECTIONS} connections are already open, so this one was closed \
                              without being read"
                         );
                         drop(stream);
@@ -332,10 +332,7 @@ async fn handle_connection(
         match tokio::time::timeout(HANDSHAKE_TIMEOUT, framing::read_json_frame(&mut read_half)).await {
             Ok(handshake) => handshake?,
             Err(_) => {
-                debug!(
-                    "control-socket: a peer sent no handshake within {}s and was disconnected",
-                    HANDSHAKE_TIMEOUT.as_secs()
-                );
+                debug!("a peer sent no handshake within {}s and was disconnected", HANDSHAKE_TIMEOUT.as_secs());
                 return Ok(());
             }
         };
@@ -351,20 +348,20 @@ async fn handle_connection(
         // and a detailed answer only tells a prober which generation ids are live.
         let Some(pid) = peer_pid else {
             debug!(
-                "control-socket: refusing a claim on generation {generation_id} from a peer whose \
+                "refusing a claim on generation {generation_id} from a peer whose \
                  credentials could not be read"
             );
             return Ok(());
         };
         if !registry.await_claim(generation_id, pid).await {
             debug!(
-                "control-socket: refusing pid {pid}'s claim on generation {generation_id}; \
+                "refusing pid {pid}'s claim on generation {generation_id}; \
                  that generation belongs to another process, and accepting would hand this \
                  connection its capability pushes"
             );
             return Ok(());
         }
-        debug!("control-socket: renderer generation {generation_id} (pid {pid}) registered");
+        debug!("renderer generation {generation_id} (pid {pid}) registered");
     }
     // Ids this connection waits on, dropped with it. Shared: the read loop fills it, cleanup drains.
     let opened: Arc<Mutex<Vec<u64>>> = Arc::new(Mutex::new(Vec::new()));
@@ -391,7 +388,7 @@ async fn handle_connection(
             match framing::read_json_frame::<_, RendererFrame>(&mut read_half).await {
                 Ok(mut frame) => {
                     if let Some(refusal) = refuse_frame(control_client, generation_id, &frame) {
-                        debug!("control-socket: dropped a frame from generation {generation_id}: {refusal}");
+                        debug!("dropped a frame from generation {generation_id}: {refusal}");
                         continue;
                     }
                     // Stamped here because this is where the waiting peer's write half is; `main`
@@ -399,7 +396,7 @@ async fn handle_connection(
                     if let RendererFrame::Call(call) = &mut frame {
                         let Some(id) = routes.open(reply_tx.clone()) else {
                             debug!(
-                                "control-socket: refusing `mantle call {}`; {MAX_PENDING_CALLS} calls are already \
+                                "refusing `mantle call {}`; {MAX_PENDING_CALLS} calls are already \
                                  waiting",
                                 call.name
                             );
@@ -434,7 +431,7 @@ async fn handle_connection(
     tokio::select! {
         () = &mut read_loop => {}
         () = hangup.notified() => {
-            info!("control-socket: hanging up on generation {generation_id} so it exits and can be respawned");
+            info!("hanging up on generation {generation_id} so it exits and can be respawned");
         }
     }
 

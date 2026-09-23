@@ -37,12 +37,10 @@ fn a_runtime_diagnostic_takes_a_level_rather_than_going_straight_to_stderr() {
             if CLI_ONLY.contains(&relative.to_string_lossy().as_ref()) {
                 continue;
             }
-            // Everything from the first `#[cfg(test)]` on is scaffolding, where `eprintln!` is std's
-            // again (both crate roots take `shared`'s only `cfg(not(test))`) and prints to the
-            // harness rather than to the shell's log.
+            // Test scaffolding's `eprintln!` is std's again (both crate roots take `shared`'s only
+            // `cfg(not(test))`) and prints to the harness rather than to the shell's log.
             let source = std::fs::read_to_string(&path).expect("readable source");
-            let runtime = source.split("#[cfg(test)]").next().unwrap_or(&source);
-            for (offset, line) in runtime.lines().enumerate() {
+            for (offset, line) in runtime_lines(&source) {
                 if line.contains("eprintln!(") || line.contains("eprint!(") {
                     offences.push(format!("{}:{}: {}", relative.display(), offset + 1, line.trim()));
                 }
@@ -53,14 +51,17 @@ fn a_runtime_diagnostic_takes_a_level_rather_than_going_straight_to_stderr() {
     assert!(offences.is_empty(), "a runtime diagnostic takes a level (ADR-0229):\n{}", offences.join("\n"));
 }
 
-/// A message must not open with the subsystem the logger already prints in front of it (ADR-0229).
+/// A message must not open with the subsystem the logger already prints in front of it, nor with
+/// another subsystem's name, which `MANTLE_LOG` cannot filter by (ADR-0229).
 ///
 /// Containment rather than equality, ignoring case and separators, because the spellings that drift
 /// are the near ones: `pam worker` against `pam_worker`, `config watcher` against `watcher`.
 #[test]
 fn a_message_does_not_repeat_the_subsystem_the_logger_puts_in_front_of_it() {
     let workspace = Path::new(env!("CARGO_MANIFEST_DIR")).parent().expect("shared sits inside the workspace");
-    let mut offences = Vec::new();
+    let flatten = |text: &str| text.to_lowercase().replace([' ', '-', '_'], "");
+    let mut subsystems = std::collections::HashSet::new();
+    let mut prefixes = Vec::new();
 
     for (krate, crate_src) in [("mantle_renderer", "renderer/src"), ("mantle", "supervisor/src")] {
         let mut paths = vec![workspace.join(crate_src)];
@@ -81,26 +82,59 @@ fn a_message_does_not_repeat_the_subsystem_the_logger_puts_in_front_of_it() {
             // that contains them, and for a crate root's `main.rs` that is the crate itself.
             module.retain(|segment| segment != "mod" && segment != "main");
             let subsystem = shared::log::subsystem(&module.join("::")).to_string();
+            subsystems.insert(flatten(&subsystem));
 
             let source = std::fs::read_to_string(&path).expect("readable source");
-            for (offset, line) in source.split("#[cfg(test)]").next().unwrap_or("").lines().enumerate() {
-                let Some(prefix) = opening_prefix(line) else { continue };
+            let lines = runtime_lines(&source);
+            for (index, &(offset, line)) in lines.iter().enumerate() {
+                // A call rustfmt split puts its message on the next line.
+                let joined = match lines.get(index + 1) {
+                    Some((_, next)) if line.trim_end().ends_with("!(") => {
+                        format!("{}{}", line.trim_end(), next.trim_start())
+                    }
+                    _ => line.to_string(),
+                };
+                let Some(prefix) = opening_prefix(&joined) else { continue };
                 if ACTION_NAMES.contains(&prefix.as_str()) {
                     continue;
                 }
-                let flatten = |text: &str| text.to_lowercase().replace([' ', '-', '_'], "");
-                if flatten(&prefix).contains(&flatten(&subsystem)) || flatten(&subsystem).contains(&flatten(&prefix)) {
-                    offences.push(format!(
-                        "{}:{}: {subsystem:?} is already printed, but the message opens {prefix:?}",
-                        relative.display(),
-                        offset + 1
-                    ));
-                }
+                prefixes.push((format!("{}:{}", relative.display(), offset + 1), subsystem.clone(), prefix));
             }
         }
     }
 
+    let offences: Vec<_> = prefixes
+        .into_iter()
+        .filter(|(_, subsystem, prefix)| {
+            let (subsystem, prefix) = (flatten(subsystem), flatten(prefix));
+            prefix.contains(&subsystem) || subsystem.contains(&prefix) || subsystems.contains(&prefix)
+        })
+        .map(|(at, subsystem, prefix)| format!("{at}: logged as {subsystem:?}, but the message opens {prefix:?}"))
+        .collect();
     assert!(offences.is_empty(), "the logger prints the subsystem (ADR-0229):\n{}", offences.join("\n"));
+}
+
+/// `source`'s lines, numbered from zero, minus every `#[cfg(test)]` item.
+///
+/// ponytail: counts braces without lexing, so a lone `{` or `}` in a test's string literal ends the
+/// skip early or late. Upgrade to `syn` if that ever misreads a file.
+fn runtime_lines(source: &str) -> Vec<(usize, &str)> {
+    let mut kept = Vec::new();
+    let mut lines = source.lines().enumerate();
+    while let Some((offset, line)) = lines.next() {
+        if line.trim() != "#[cfg(test)]" {
+            kept.push((offset, line));
+            continue;
+        }
+        let mut depth = 0i32;
+        for (_, item) in lines.by_ref() {
+            depth += item.matches('{').count() as i32 - item.matches('}').count() as i32;
+            if depth == 0 && (item.trim_end().ends_with(';') || item.trim_end().ends_with('}')) {
+                break;
+            }
+        }
+    }
+    kept
 }
 
 /// The lowercase word a levelled message opens with, before its first `": "`. Bounded in length and

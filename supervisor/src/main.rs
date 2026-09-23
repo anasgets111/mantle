@@ -440,7 +440,7 @@ async fn run_supervisor(
                 // round when a Renderer was replaced mid-call.
                 RendererFrame::CallResult(result) => {
                     if let Err(why) = call_routes.answer(inbound.generation_id, &result) {
-                        warn!("control-socket: dropped an `mantle call` answer: {why}");
+                        warn!("dropped a `mantle call` answer: {why}");
                     }
                 }
                 RendererFrame::SecureSubmit(mut submit) if submit.capability == Capability::Polkit && submit.action == "authenticate" => {
@@ -466,7 +466,7 @@ async fn run_supervisor(
                     if let Some(acquisition) = supervisor.lock.try_begin_authentication() {
                         // Pairs with `record_pam_outcome`'s answer. Without both, a worker that
                         // never reports is indistinguishable from a submit that never arrived.
-                        info!("lock: starting pam for acquisition {acquisition}");
+                        info!("starting pam for lock acquisition {acquisition}");
                         supervisor.push_lock_state();
                         // `mem::take` gives plaintext to `run_authentication`, which zeroizes on
                         // panic and shutdown cancellation too. Spawn instead of await: Enter is

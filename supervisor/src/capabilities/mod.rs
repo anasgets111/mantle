@@ -544,9 +544,7 @@ impl Capabilities {
                     self.tray = Some(match with_call_timeout(zbus::connection::Builder::session()).await {
                         Ok(bus) => TrayController::new(bus, self.senders.tray.clone()).await,
                         Err(err) => {
-                            error!(
-                                "tray: failed to connect to the session bus; tray host disabled for this run: {err}"
-                            );
+                            error!("failed to connect to the session bus; tray host disabled for this run: {err}");
                             TrayController::inert(self.senders.tray.clone())
                         }
                     });
@@ -564,7 +562,7 @@ impl Capabilities {
                         }
                         Err(err) => {
                             error!(
-                                "notifications: failed to connect to the session bus; notifications server disabled for this run: {err}"
+                                "failed to connect to the session bus; notifications server disabled for this run: {err}"
                             );
                             NotificationsController::inert(self.senders.notifications.clone(), self.sound_tx.clone())
                         }
@@ -579,7 +577,7 @@ impl Capabilities {
                         Ok(bus) => MprisController::new(bus, self.senders.mpris.clone()),
                         Err(err) => {
                             error!(
-                                "mpris: failed to connect to the session bus; player discovery disabled for this run: {err}"
+                                "failed to connect to the session bus; player discovery disabled for this run: {err}"
                             );
                             MprisController::inert()
                         }
@@ -725,7 +723,7 @@ impl Capabilities {
                         .await
                         .inspect_err(|err| {
                             error!(
-                                "idle: failed to connect to the session bus; org.freedesktop.ScreenSaver inhibits are unavailable for this run: {err}"
+                                "failed to connect to the session bus; org.freedesktop.ScreenSaver inhibits are unavailable for this run: {err}"
                             )
                         })
                         .ok();

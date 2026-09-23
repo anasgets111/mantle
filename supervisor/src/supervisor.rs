@@ -208,7 +208,7 @@ impl Supervisor {
     pub(crate) fn record_polkit_outcome(&mut self, cookie: String, outcome: shared::PamOutcome) {
         match self.polkit.record_outcome(&cookie, outcome) {
             Answer::Stale => {
-                debug!("polkit: dropping an outcome for {cookie:?}, which is no longer the challenge on screen")
+                debug!("dropping a polkit outcome for {cookie:?}, which is no longer the challenge on screen")
             }
             Answer::Failed => self.push_polkit_state(),
             Answer::Succeeded { reply } => {
@@ -358,7 +358,7 @@ impl Supervisor {
     /// idle timer may change locks. `loginctl lock-session` (ADR-0138) arrives as logind's `Lock`
     /// signal, uses the same lock path and already-locked guard as `lock:invoke("lock")`.
     pub(crate) fn lock_requested_by_logind(&mut self) {
-        info!("lock: logind asked for a lock (loginctl lock-session)");
+        info!("logind asked for a lock (loginctl lock-session)");
         self.lock.lock();
         self.push_lock_state();
     }
@@ -368,11 +368,11 @@ impl Supervisor {
         // Every answer, not only the refusals below. A wrong password logged nothing at all, so a
         // lock screen that would not open read the same in the log whether PAM said no or the
         // attempt never arrived.
-        info!("lock: pam answered {outcome:?} for acquisition {acquisition}");
+        info!("pam answered {outcome:?} for lock acquisition {acquisition}");
         if !self.lock.record_authentication(acquisition, outcome) {
             // No push: refusal changed no state; `push_lock_state` would bump the revision anyway.
             debug!(
-                "lock: dropping a pam outcome for acquisition {acquisition}, which is no longer the lock on the glass"
+                "dropping a pam outcome for lock acquisition {acquisition}, which is no longer the lock on the glass"
             );
         } else {
             // Push before scheduling: `unlocking` is now true, and the config cannot animate a
