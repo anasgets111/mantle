@@ -5374,6 +5374,10 @@ per registration, and `wayland_inhibited`'s pairing (ADR-0160) keys listeners by
 The gate's `idled` set keeps the cancelled `(generation, threshold)` until the generation is reaped,
 which replays an `Idled` to no callback: bounded by distinct durations, and a no-op when it lands.
 
+Amendment: wlroots, Smithay and Hyprland start a new listener's timer at creation, so none fires
+at once, and the shared timer counting from last input is the contract. The missed `idled` is
+caught up in the Renderer: a registration joining an idled duration runs `on_idle` at once.
+
 ## 0233. An animated GIF plays from its cache slot, paced by a repaint the cache asks for
 
 `image { source = "cat.gif" }` did not decode at all: the `image` crate was built without its `gif`

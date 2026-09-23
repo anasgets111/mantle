@@ -567,7 +567,7 @@
 local BatteryCapability = {}
 
 ---@class IdleCapability: ReadOnlyCapability<IdleState>
----@field register_threshold fun(self: IdleCapability, seconds: integer, on_idle: fun(), on_resume: fun()): integer Runs `on_idle` after `seconds` without input on the seat, and `on_resume` when input returns. Returns a handle for `cancel_threshold`. Registrations do not survive a config reload, so register at the top level rather than inside a callback that fires more than once.
+---@field register_threshold fun(self: IdleCapability, seconds: integer, on_idle: fun(), on_resume: fun()): integer Runs `on_idle` after `seconds` without input on the seat, and `on_resume` when input returns. Returns a handle for `cancel_threshold`. Joining a duration the seat is already idle past runs `on_idle` at once. Registrations do not survive a config reload, so register at the top level rather than inside a callback that fires more than once.
 ---@field cancel_threshold fun(self: IdleCapability, handle: integer) Drops one registration by the handle `register_threshold` returned. An unknown handle is a no-op. The listener behind a duration goes once its last registration does, so a later one at the same duration starts its timer then.
 ---@field inhibit fun(self: IdleCapability, reason: string) Holds off idle actions system-wide (logind `Inhibit`, `what="idle"`) until a matching `release_inhibit`. Counted, so two holders need two releases. While any hold is out -- this one or another application's -- no threshold fires and `inhibited` says so.
 ---@field release_inhibit fun(self: IdleCapability) Releases one `inhibit` hold. A release with no matching `inhibit` is a no-op.

@@ -26,11 +26,11 @@
 //! tenth reload of a screen-dimming config dims ten times. That drop also sends
 //! `forget_thresholds`, so the Supervisor's fan-out entries go with the callbacks they fed
 //! (ADR-0158). What remains is the new tree's registrations, sent behind it on the same socket.
-//! The listener itself stays: a reload re-registers the same durations, and one recreated past
-//! its timeout would fire `idled` at once (ADR-0159). Only reaping the generation destroys it.
+//! The listener itself stays: a reload re-registers the same durations, and a recreated one
+//! restarts its timer and fires `idled` again (ADR-0159). Only reaping the generation destroys it.
 
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 use mlua::{Function, UserData, UserDataMethods};
@@ -57,13 +57,19 @@ pub struct IdleRegistry {
 struct Inner {
     /// Keyed by seconds, the only field `shared::IdleEvent` carries for matching.
     thresholds: HashMap<u64, Vec<Threshold>>,
+    /// Durations whose last event was `Idled`. The shared listener never resends it, so a later
+    /// registration there catches up from this.
+    idled: HashSet<u64>,
     /// Never reused, so a handle cancelled twice cannot reach a later registration.
     next_id: u64,
 }
 
 impl IdleRegistry {
     pub fn new(state: Capability) -> Self {
-        IdleRegistry { inner: Rc::new(RefCell::new(Inner { thresholds: HashMap::new(), next_id: 1 })), state }
+        IdleRegistry {
+            inner: Rc::new(RefCell::new(Inner { thresholds: HashMap::new(), idled: HashSet::new(), next_id: 1 })),
+            state,
+        }
     }
 
     /// Read half for the wrapper's `get`/`map` and `signal::from_userdata`.
@@ -79,16 +85,23 @@ impl IdleRegistry {
     /// acknowledgement. Without `ext_idle_notifier_v1` (ADR-0032), the inert notify half never
     /// fires, which is indistinguishable from a user who never went idle.
     fn register_threshold(&self, sec: u64, on_idle: Function, on_resume: Function) -> u64 {
-        let id = {
+        let (id, catch_up) = {
             let mut inner = self.inner.borrow_mut();
             let id = inner.next_id;
             inner.next_id += 1;
+            let catch_up = inner.idled.contains(&sec).then(|| on_idle.clone());
             inner.thresholds.entry(sec).or_default().push(Threshold { id, on_idle, on_resume });
-            id
+            (id, catch_up)
         };
         debug!("registered threshold at {sec}s with handle {id}");
         self.state.commands().start_capability("idle");
         self.state.commands().send("idle", "register", vec![serde_json::json!(sec)], 0);
+        // The seat has been idle past `sec` already: run now, as the event it joined late would have.
+        if let Some(on_idle) = catch_up
+            && let Err(err) = on_idle.call::<()>(())
+        {
+            debug!("mantle.idle:register_threshold({sec}): on_idle raised an error: {err}");
+        }
         id
     }
 
@@ -104,7 +117,11 @@ impl IdleRegistry {
             entries.is_empty().then_some(sec)
         };
         let Some(sec) = emptied else { return };
-        self.inner.borrow_mut().thresholds.remove(&sec);
+        let mut inner = self.inner.borrow_mut();
+        inner.thresholds.remove(&sec);
+        // The Supervisor destroys this listener, so a later registration's fresh one says `idled`.
+        inner.idled.remove(&sec);
+        drop(inner);
         self.state.commands().send("idle", "cancel", vec![serde_json::json!(sec)], 0);
     }
 
@@ -127,15 +144,20 @@ impl IdleRegistry {
     /// the borrow being walked.
     pub fn dispatch_event(&self, threshold_sec: u64, state: shared::IdleState) {
         let callbacks: Vec<Function> = {
-            let inner = self.inner.borrow();
+            let mut inner = self.inner.borrow_mut();
             let Some(entries) = inner.thresholds.get(&threshold_sec) else { return };
-            entries
+            let callbacks = entries
                 .iter()
                 .map(|entry| match state {
                     shared::IdleState::Idled => entry.on_idle.clone(),
                     shared::IdleState::Resumed => entry.on_resume.clone(),
                 })
-                .collect()
+                .collect();
+            match state {
+                shared::IdleState::Idled => inner.idled.insert(threshold_sec),
+                shared::IdleState::Resumed => inner.idled.remove(&threshold_sec),
+            };
+            callbacks
         };
         for callback in callbacks {
             if let Err(err) = callback.call::<()>(()) {
@@ -161,6 +183,9 @@ impl IdleRegistry {
             return;
         }
         inner.thresholds.clear();
+        // A reload's registrations reuse the listener and must not re-run `on_idle` (ADR-0159).
+        // ponytail: a later registration in this idle period misses its catch-up; keep the set if needed.
+        inner.idled.clear();
         drop(inner);
         self.state.commands().send("idle", "forget_thresholds", Vec::new(), 0);
     }
@@ -427,6 +452,29 @@ mod tests {
         registry.dispatch_event(60, IdleState::Idled);
 
         assert_eq!(lua.load("return count").eval::<i64>().unwrap(), 11);
+    }
+
+    /// The shared listener sends `idled` once per idle period, so a registration joining after it
+    /// runs `on_idle` itself. Not after a resume, a reload, or a cancel that destroyed the listener.
+    #[test]
+    fn a_registration_joining_an_idled_duration_runs_on_idle_at_once() {
+        let late_runs = |between: &dyn Fn(&Lua, &IdleRegistry)| {
+            let (lua, registry, _rx) = lua_with_idle(0);
+            lua.load("late = 0; first = idle:register_threshold(60, function() end, function() end)").exec().unwrap();
+            registry.dispatch_event(60, IdleState::Idled);
+            between(&lua, &registry);
+            lua.load("idle:register_threshold(60, function() late = late + 1 end, function() end)").exec().unwrap();
+            lua.load("return late").eval::<i64>().unwrap()
+        };
+
+        assert_eq!(late_runs(&|_, _| {}), 1, "joined an idled duration");
+        assert_eq!(late_runs(&|_, registry| registry.dispatch_event(60, IdleState::Resumed)), 0, "seat in use");
+        assert_eq!(late_runs(&|_, registry| registry.forget_thresholds()), 0, "a reload reuses the listener");
+        assert_eq!(
+            late_runs(&|lua, _| lua.load("idle:cancel_threshold(first)").exec().unwrap()),
+            0,
+            "a fresh listener says idled itself"
+        );
     }
 
     #[test]

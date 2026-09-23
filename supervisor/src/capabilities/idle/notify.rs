@@ -83,8 +83,8 @@ pub fn cleanup_generation_thresholds(fanout: &mut HashMap<Duration, Vec<u32>>, g
 /// Forgets the durations nothing is registered at any more and hands their listeners back for the
 /// caller to destroy at the Wayland boundary.
 ///
-/// Reap-only. A listener recreated past its timeout fires `idled` at once on the wlroots family,
-/// so doing this on an in-place reload re-runs `on_idle` on an already-dimmed screen -- ADR-0159's
+/// Reap-only. A recreated listener restarts its timer and fires `idled` again, so doing this on an
+/// in-place reload re-runs `on_idle` on an already-dimmed screen -- ADR-0159's
 /// reverted `rearm_listeners`.
 pub(crate) fn take_unused_listeners<T>(
     fanout: &mut HashMap<Duration, Vec<u32>>,

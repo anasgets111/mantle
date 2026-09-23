@@ -12,11 +12,6 @@ lacks is not an engine gap.
 Correctness before features. Each of these is a defect or a missing piece a config cannot work
 around.
 
-- **Idle registrations share one listener per duration.** `cancel_threshold` releases a duration's
-  listener once its last registration goes (ADR-0232), but two registrations at the same duration
-  still share one: the later one inherits a partly elapsed timer, or misses an `idled` the listener
-  already sent. Needs a listener per registration, which the pairing in `wayland_inhibited`
-  (ADR-0160) currently keys by duration.
 - **`expected_revision` is unchecked.** The socket drops a frame naming another generation, but
   nothing reads the revision it claims, so it is not an authorization guarantee (services.md § 13).
   Settle stale-revision semantics before anything relies on them.
@@ -30,19 +25,19 @@ Wanted, but each needs a consumer or a decision first.
 
 | Area | Open question |
 | :--- | :--- |
-| Multi-prompt PAM | One password is supplied before the transaction and replayed for every masked prompt, and an echo-on prompt is a hard error (`pam_worker.rs`). Fingerprint, 2FA and an expired password fail on the lock screen today, so this stands on its own merits |
+| Multi-prompt PAM | The worker relays every masked prompt (ADR-0241), but `LockState` and `secure_submit` carry one password, so the Supervisor answers each prompt with it. Fingerprint, 2FA and an expired password fail on the lock screen until a second prompt reaches the config. Echo-on prompts stay refused by design |
 | Greeter | greetd keeps PAM and root, so Mantle would be a client on its JSON socket, launched under cage or sway. Needs the multi-prompt contract above and a session-launch command |
 | Drawing | No config-facing paths, gradients or shadows, and clipping is limited to a box's own corner shape. Add the smallest set a real component needs; SVG already covers static artwork |
 | Large lists | Every item is constructed: 0.25 ms at 12 rows, 10.9 ms at 500 (ADR-0219). Virtualization would have to *require* `key`, which a config can be told but not made to supply (ADR-0191) |
-| Window and output actions | Screens are read-only and no window actions exist (ADR-0119). Pick the actions, then settle niri/Hyprland differences and revert behaviour |
-| Service depth | MPRIS lacks stop, shuffle, repeat, rate and volume; PipeWire collapses per-channel volume to one scalar and has no peak metering; UPower reads only `DisplayDevice`. Extend for concrete controls, not upstream parity |
+| Output actions | `windows` focuses, closes, fullscreens, minimizes and maximizes (ADR-0247), but screens are read-only (ADR-0119). Pick the actions, then settle niri/Hyprland differences and revert behaviour |
+| Service depth | MPRIS lacks stop, shuffle, repeat, rate and volume; PipeWire exposes volume and balance, not per-channel levels, and has no peak metering; UPower reads only `DisplayDevice`. Extend for concrete controls, not upstream parity |
 | External IPC | `set` and `toggle` are one-way; `call` answers, but only what the config chose to return (ADR-0197). No generic state read and no subscription. Does an integration need either? |
 | Process control | `run`, `detach` (ADR-0188) and `session_process` (ADR-0175) cover start, stream and signal. Does anything need to write a child's stdin, or set its cwd and env? |
 | Move transitions | A sibling closing a gap does not animate. Needs the solver's old and new rects for every sibling, so add it against a demonstrated consumer |
 | Text field editing | A plain field has a caret, grapheme-wise motion and deletion, click-to-position and drag or Shift selection (ADR-0064, ADR-0092, ADR-0102, ADR-0236). No undo, no paste and no IME composition, and the secure path is still append and backspace. Paste needs a Wayland selection read, which nothing has asked for |
 | Fonts and localization | `text.font` is per-node over the global chain (ADR-0144). No translation API, and `Name`/`GenericName`/`Keywords` are read unlocalized (ADR-0112) |
 | Wayland and input extras | No shortcut inhibition, per-surface idle inhibition, touch gestures or cross-app drag and drop. Pick the protocol and a consumer; logind and screensaver inhibition already work |
-| Window capture | `capture` covers an output (ADR-0248); a window source needs the `windows` capability's toplevel ids first |
+| Window capture | `capture` covers an output (ADR-0248). A window source would take `windows` ids (ADR-0247), and needs a consumer first |
 | Native I/O | No HTTP, sockets or arbitrary watched file contents; JSON storage and folder watching exist. Subprocess helpers first, native only for a measured latency or volume need |
 | KDE Connect | No device or plugin model. A Supervisor capability or a helper streaming state, but not unrestricted D-Bus for parity |
 | Dynamic topology | A reload rebuilds only what changed (ADR-0216). Keep the current rules unless dynamic windows need a different lifetime model |
