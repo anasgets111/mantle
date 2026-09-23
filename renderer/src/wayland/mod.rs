@@ -664,7 +664,6 @@ pub fn run(
             // running, and trim exactly once when settling into idle.
             if was_active && timeout == nix::poll::PollTimeout::NONE {
                 let _ = app.client.lua().gc_collect();
-                app.shaping.trim_cache();
                 // SAFETY: plain one-integer FFI. `malloc_trim` locks the arenas itself and only
                 // `madvise`s pages the allocator already holds free, never live chunks.
                 unsafe {

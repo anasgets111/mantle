@@ -403,8 +403,8 @@ impl ShapingHandle {
     /// byte it starts at (ADR-0211). Lines end where cosmic-text ends them, so paint draws the rows
     /// measurement counted.
     ///
-    /// ponytail: paint asks every frame -- a memo hit that still allocates each line's key, and blocks on
-    /// the worker after the memo clears. Upgrade path: carry the glyphs in the display list.
+    /// ponytail: hit-testing asks per pointer event -- a memo hit that still allocates each line's
+    /// key. Paint reads `TextPainter`'s own lines cache. Upgrade path: carry the glyphs in the display list.
     pub fn shape_lines(
         &self,
         text: &str,
@@ -514,15 +514,6 @@ impl ShapingHandle {
             .send(Request::SetChain(chain.to_vec(), reply_tx))
             .expect("mantle-text-shaping worker thread died");
         let _ = reply_rx.recv();
-    }
-
-    /// Drops cached measurements when settling into idle.
-    pub fn trim_cache(&self) {
-        let mut cache = self.cache.lock().unwrap_or_else(PoisonError::into_inner);
-        if !cache.is_empty() {
-            cache.clear();
-            cache.shrink_to_fit();
-        }
     }
 
     /// How many measurements are memoized. Test-only: exposing this in production would invite a
@@ -1726,16 +1717,5 @@ mod tests {
         });
         assert!(wrapped.height > unconstrained.height, "wrapping onto more lines must grow the measured height");
         assert!(wrapped.width <= unconstrained.width, "a wrapped line can't be wider than the unconstrained text");
-    }
-
-    #[test]
-    fn trim_cache_drops_entries_when_idle() {
-        let handle = ShapingHandle::spawn();
-        for i in 0..10 {
-            let _ = handle.shape(req(&format!("small text {i}"), 14.0));
-        }
-        assert_eq!(handle.cached_len(), 10);
-        handle.trim_cache();
-        assert_eq!(handle.cached_len(), 0, "entries cleared while idle");
     }
 }
