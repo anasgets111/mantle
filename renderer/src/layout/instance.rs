@@ -251,7 +251,7 @@ mod tests {
             },
             keyboard_interactivity: KeyboardInteractivity::None,
             exclusive: crate::layout::node::Exclusive::Respect,
-            margin: crate::layout::EdgeInsets::default(),
+            margin: crate::layout::node::EdgeInsets::default(),
             width: SizeMode::Fill,
             height: SizeMode::Content,
         })
