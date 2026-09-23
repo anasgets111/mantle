@@ -96,13 +96,23 @@ fn config_dir_from(
         return Ok(PathBuf::from(dir));
     }
 
-    if let Some(xdg_config_home) = xdg_config_home {
-        return Ok(PathBuf::from(xdg_config_home).join("mantle"));
-    }
+    xdg_dir_from(xdg_config_home, home, ".config")
+        .map(|dir| dir.join("mantle"))
+        .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "neither XDG_CONFIG_HOME nor HOME is set"))
+}
 
-    let home =
-        home.ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "neither XDG_CONFIG_HOME nor HOME is set"))?;
-    Ok(PathBuf::from(home).join(".config").join("mantle"))
+/// An XDG base directory: `$var`, else `$HOME/<home_relative>`. The spec says to ignore an empty or
+/// relative `$var`.
+pub fn xdg_dir(var: &str, home_relative: &str) -> Option<PathBuf> {
+    xdg_dir_from(std::env::var_os(var), std::env::var_os("HOME"), home_relative)
+}
+
+/// [`xdg_dir`] with its lookups passed as parameters.
+fn xdg_dir_from(value: Option<OsString>, home: Option<OsString>, home_relative: &str) -> Option<PathBuf> {
+    value
+        .map(PathBuf::from)
+        .filter(|dir| dir.is_absolute())
+        .or_else(|| home.filter(|home| !home.is_empty()).map(|home| PathBuf::from(home).join(home_relative)))
 }
 
 /// `config_dir()` joined with the real config entry point, `shell.lua`.
@@ -138,6 +148,16 @@ mod tests {
             config_dir_from(None, None, Some("/home/someone".into())).unwrap(),
             PathBuf::from("/home/someone/.config/mantle")
         );
+    }
+
+    #[test]
+    fn an_empty_or_relative_xdg_value_falls_back_to_home() {
+        let home = || Some("/home/someone".into());
+        let resolve = |value: &str| xdg_dir_from(Some(value.into()), home(), ".cache");
+        assert_eq!(resolve("/var/cache"), Some(PathBuf::from("/var/cache")));
+        assert_eq!(resolve(""), Some(PathBuf::from("/home/someone/.cache")));
+        assert_eq!(resolve("cache"), Some(PathBuf::from("/home/someone/.cache")));
+        assert_eq!(xdg_dir_from(None, Some("".into()), ".cache"), None);
     }
 
     /// No variables means an error rather than a guess.

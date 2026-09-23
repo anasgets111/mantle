@@ -13,14 +13,12 @@ use super::markup::parse_markup;
 use super::{MAX_APP_ICON_NAME_BYTES, MAX_BODY_BYTES, MAX_IMAGE_DIMENSION, NotificationSpan};
 use crate::capabilities::truncate_utf8_bytes;
 
-/// ADR-0033's trusted icon roots, with `$HOME` resolved at runtime. Tests inject fixture roots.
+/// ADR-0033's trusted icon roots, with `$XDG_DATA_HOME` and `$HOME` resolved at runtime. Tests
+/// inject fixture roots.
 pub(super) fn default_trusted_icon_roots() -> Vec<PathBuf> {
     let mut roots = vec![PathBuf::from("/usr/share/icons"), PathBuf::from("/usr/share/pixmaps")];
-    if let Some(home) = std::env::var_os("HOME") {
-        let home = PathBuf::from(home);
-        roots.push(home.join(".local/share/icons"));
-        roots.push(home.join(".icons"));
-    }
+    roots.extend(shared::xdg_dir("XDG_DATA_HOME", ".local/share").map(|dir| dir.join("icons")));
+    roots.extend(std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".icons")));
     roots
 }
 

@@ -59,16 +59,16 @@ pub struct ScanResult {
 
 /// Applications directories in XDG precedence order.
 ///
-/// Applies both defaults: plain login shells often unset `XDG_DATA_HOME` and `XDG_DATA_DIRS`, and
-/// skipping `/usr/share` in that case finds nothing on a normal system.
+/// `data_home` is [`shared::xdg_dir`]'s. Applies the `XDG_DATA_DIRS` default: plain login shells
+/// often unset it, and skipping `/usr/share` in that case finds nothing on a normal system.
 ///
 /// Injected, like `SystemController::new`, so precedence is testable without changing the process
 /// environment.
-pub fn application_dirs(data_home: Option<PathBuf>, data_dirs: Option<String>, home: &Path) -> Vec<PathBuf> {
-    let home_dir = data_home.unwrap_or_else(|| home.join(".local/share"));
+pub fn application_dirs(data_home: Option<PathBuf>, data_dirs: Option<String>) -> Vec<PathBuf> {
     let dirs = data_dirs.filter(|value| !value.is_empty()).unwrap_or_else(|| "/usr/local/share:/usr/share".to_string());
-    std::iter::once(home_dir)
-        .chain(dirs.split(':').filter(|part| !part.is_empty()).map(PathBuf::from))
+    data_home
+        .into_iter()
+        .chain(dirs.split(':').filter(|part| Path::new(part).is_absolute()).map(PathBuf::from))
         .map(|dir| dir.join("applications"))
         .collect()
 }
@@ -218,28 +218,19 @@ mod tests {
         format!("[Desktop Entry]\nType=Application\nName={name}\nExec=/usr/bin/{name}\n{extra}")
     }
 
-    /// Both XDG defaults matter: a plain login shell may set neither, and skipping `/usr/share`
-    /// when `XDG_DATA_DIRS` is unset finds nothing on a normal system.
+    /// Skipping `/usr/share` when `XDG_DATA_DIRS` is unset finds nothing on a normal system.
     #[test]
-    fn application_dirs_applies_both_xdg_defaults_when_the_environment_is_bare() {
-        let dirs = application_dirs(None, None, Path::new("/home/someone"));
+    fn application_dirs_applies_the_xdg_data_dirs_default_when_it_is_unset() {
+        let dirs = application_dirs(None, None);
         assert_eq!(
             dirs,
-            vec![
-                PathBuf::from("/home/someone/.local/share/applications"),
-                PathBuf::from("/usr/local/share/applications"),
-                PathBuf::from("/usr/share/applications"),
-            ]
+            vec![PathBuf::from("/usr/local/share/applications"), PathBuf::from("/usr/share/applications")]
         );
     }
 
     #[test]
     fn application_dirs_puts_the_users_own_directory_first_so_an_override_wins() {
-        let dirs = application_dirs(
-            Some(PathBuf::from("/custom/data")),
-            Some("/a:/b".to_string()),
-            Path::new("/home/someone"),
-        );
+        let dirs = application_dirs(Some(PathBuf::from("/custom/data")), Some("/a:relative:/b".to_string()));
         assert_eq!(
             dirs,
             vec![
@@ -252,7 +243,7 @@ mod tests {
 
     #[test]
     fn application_dirs_treats_an_empty_data_dirs_as_unset_rather_than_as_no_directories() {
-        let dirs = application_dirs(None, Some(String::new()), Path::new("/home/someone"));
+        let dirs = application_dirs(None, Some(String::new()));
         assert!(
             dirs.contains(&PathBuf::from("/usr/share/applications")),
             "an empty XDG_DATA_DIRS must fall back to the default"

@@ -686,9 +686,8 @@ impl Capabilities {
                 if self.applications.is_none() {
                     self.applications = Some(ApplicationsController::new(
                         applications::application_dirs(
-                            std::env::var_os("XDG_DATA_HOME").map(PathBuf::from),
+                            shared::xdg_dir("XDG_DATA_HOME", ".local/share"),
                             std::env::var("XDG_DATA_DIRS").ok(),
-                            Path::new(&std::env::var_os("HOME").unwrap_or_else(|| std::ffi::OsString::from("/"))),
                         ),
                         self.senders.applications.clone(),
                     ));

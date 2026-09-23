@@ -48,12 +48,9 @@ fn packaged_stub_dir_from(exe_dir: &Path) -> Option<PathBuf> {
 /// Embedded-stub destination without a package: `$XDG_DATA_HOME/mantle/lua-meta`, then
 /// `$HOME/.local/share`. It stays outside the config directory; see its call site.
 fn user_stub_dir() -> io::Result<PathBuf> {
-    if let Some(data_home) = std::env::var_os("XDG_DATA_HOME") {
-        return Ok(PathBuf::from(data_home).join("mantle").join("lua-meta"));
-    }
-    let home = std::env::var_os("HOME")
-        .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "neither XDG_DATA_HOME nor HOME is set"))?;
-    Ok(PathBuf::from(home).join(".local").join("share").join("mantle").join("lua-meta"))
+    shared::xdg_dir("XDG_DATA_HOME", ".local/share")
+        .map(|dir| dir.join("mantle").join("lua-meta"))
+        .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "neither XDG_DATA_HOME nor HOME is set"))
 }
 
 /// Writes `path` unless present; `force` overwrites. Reports the result.

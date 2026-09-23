@@ -23,10 +23,7 @@ const MAX_SOUND_SECONDS: usize = 30;
 /// Roots for `set_sound`, `sound-file` and `sound-name`, apart from the icon roots so `image-path`
 /// never reaches `/opt`. Apps ship sounds under `/usr/share/<app>/`; the decode caps bound the rest.
 pub(super) fn default_trusted_sound_roots() -> Vec<PathBuf> {
-    let data_home = std::env::var_os("XDG_DATA_HOME")
-        .map(PathBuf::from)
-        .filter(|path| path.is_absolute())
-        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".local/share")));
+    let data_home = shared::xdg_dir("XDG_DATA_HOME", ".local/share");
     ["/usr/share", "/usr/local/share", "/opt"].into_iter().map(PathBuf::from).chain(data_home).collect()
 }
 

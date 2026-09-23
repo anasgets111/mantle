@@ -22,10 +22,7 @@ pub fn size_for(box_px: (u32, u32)) -> Option<(&'static str, u32)> {
 
 /// `$XDG_CACHE_HOME`, then `$HOME/.cache`, else nothing. Without it every decode is full.
 pub fn cache_dir() -> Option<PathBuf> {
-    if let Some(xdg) = std::env::var_os("XDG_CACHE_HOME").filter(|value| !value.is_empty()) {
-        return Some(PathBuf::from(xdg));
-    }
-    std::env::var_os("HOME").filter(|value| !value.is_empty()).map(|home| PathBuf::from(home).join(".cache"))
+    shared::xdg_dir("XDG_CACHE_HOME", ".cache")
 }
 
 /// `file://` plus GLib `g_filename_to_uri` escaping, matching existing thumbnail hashes:

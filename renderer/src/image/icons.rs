@@ -101,9 +101,7 @@ fn theme() -> &'static str {
 /// `hicolor`, drawing app icons but almost no status icons. Upgrade: another `find_map` arm; not
 /// built because Plasma is untested and a second untested parser is worse than this gap.
 pub(crate) fn gtk_setting(key: &str) -> Option<String> {
-    let config = std::env::var_os("XDG_CONFIG_HOME")
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".config")))?;
+    let config = shared::xdg_dir("XDG_CONFIG_HOME", ".config")?;
     ["gtk-4.0", "gtk-3.0"].into_iter().find_map(|version| {
         let text = std::fs::read_to_string(config.join(version).join("settings.ini")).ok()?;
         setting_from_ini(&text, key)
