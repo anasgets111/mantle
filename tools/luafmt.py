@@ -10,8 +10,8 @@ The Lua half of this repo is the larger half by file count and had no formatting
 which is one packaged binary and one `--check` flag. It was the wrong one: an editor pointed at
 `lua-language-server` (Zed's default for Lua, and this repo's own `just types` dependency) formats on
 save with EmmyLuaCodeStyle, and the two disagree. They disagree loudly on `align_continuous_assign
-_statement`, which lines up runs of assignments and table fields -- the style every token table in
-`config/` is written in. A stylua gate would have flattened those columns on every `just fmt` and an
+_statement`, which lines up runs of assignments and table fields, the style Lua token tables are
+written in. A stylua gate would have flattened those columns on every `just fmt` and an
 editor would have put them back on every save.
 
 So the gate runs the formatter the editor runs. Nothing is bundled or vendored here: this drives the
@@ -46,8 +46,8 @@ REPLY_TIMEOUT = 30.0
 
 # How many times a file is re-formatted before its output is taken as final.
 #
-# One pass is not a fixed point. On a file with aligned assignments *and* trailing comments --
-# `config/icons.lua` is the one here -- the first pass collapses each comment to one space after the
+# One pass is not a fixed point. On a file with aligned assignments *and* trailing comments, the
+# first pass collapses each comment to one space after the
 # value and the second re-aligns the comments into their own column, after which it is stable. A
 # formatter that disagrees with its own output makes `just fmt` and `just fmt-check` disagree too:
 # the sweep wrote pass one, the gate then asked for pass two, and `just check` was red on a tree

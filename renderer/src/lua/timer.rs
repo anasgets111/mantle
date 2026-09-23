@@ -123,8 +123,6 @@ pub fn next_deadline(lua: &Lua) -> Option<Instant> {
 
 /// Runs every timer due at `now`, each under its own CPU budget.
 ///
-/// Batch cost is quadratic in the number due, per `TimerRegistry`'s ceiling.
-///
 /// The due prefix moves into the registry's `firing` list, and each callback is taken out of it
 /// immediately before it runs rather than all of them up front. That is what lets one callback
 /// cancel another in the same batch: `cancel` empties the slot and its turn finds nothing. A

@@ -23,7 +23,6 @@ const CPU_CAP: Duration = Duration::from_millis(5);
 /// Whole-`Scene::apply` cap, not per getter. It must exceed legitimate passes that run every getter
 /// and block on shaping per text measurement. A 2000-sibling row (up to 4000) measured release
 /// 202ms/298ms and debug 550ms/1.10s; 2s is ~2x worst and ~300x ADR-0069's 6.14ms 500-row list.
-/// A 250ms cap refused that real config.
 ///
 /// Bounds damage, not performance: a spinning `margin` `__index` ran one `Scene::apply` for 26.10s,
 /// returned `Ok(())`, and blocked the thread that answers `configure` and runs Lua (ADR-0039). Now
@@ -80,11 +79,10 @@ const MAX_SIGNAL_NESTING_DEPTH: usize = 32;
 
 /// Shared error for hook and [`CpuBudget::check_not_exceeded`] gates.
 ///
-/// Deliberately names no construct. [`CpuBudget`] also wraps
-/// `capability::CapabilityHandle::notify_change`'s handlers, so the old "computed/map exceeded ..."
-/// wording made an `on_change` handler report itself as a `map` it never called. Each call site
-/// already prefixes what it was doing ("Signal getter failed: ...", "`on_change` handler raised,
-/// ignoring it: ..."), and the hook cannot tell which of them it interrupted.
+/// Deliberately names no construct: [`CpuBudget`] also wraps
+/// `capability::CapabilityHandle::notify_change`'s handlers, and the hook cannot tell which it
+/// interrupted. Each call site already prefixes what it was doing ("Signal getter failed: ...",
+/// "`on_change` handler raised, ignoring it: ...").
 const CPU_CAP_EXCEEDED: &str = "exceeded the 5ms CPU budget for one evaluation";
 
 /// Distinct pass-budget error so config knows which limit it hit. Plain `__index` without a signal
@@ -197,7 +195,7 @@ pub fn take_due_wake(lua: &Lua, now: Instant) -> bool {
 }
 
 impl SignalKind {
-    /// Name used in [`Signal::set`] refusal messages.
+    /// Name used in `:set()` refusal messages.
     fn describe(&self) -> &'static str {
         match self {
             SignalKind::Computed { .. } | SignalKind::Derived(_) => "a computed",
@@ -783,18 +781,9 @@ pub fn take_geometry_moved(lua: &Lua) -> Vec<CellId> {
     lua.app_data_mut::<GeometryMoved>().map(|mut moved| std::mem::take(&mut moved.0)).unwrap_or_default()
 }
 
-/// One `Computed`'s identity for [`EvaluationMemo`], counted rather than derived from where its
-/// dependencies happen to sit in memory.
-///
-/// The address of the `Rc<Vec<Signal>>` was the first key, on the reasoning that a fresh `Rc` per
-/// `computed()` and per [`Signal::mapped`] separates every distinct computed. It does, until one is
-/// dropped: the allocator hands the next same-sized `Rc` the address just freed, and the memo --
-/// which holds a raw pointer and so keeps nothing alive -- serves the dead computed's value to the
-/// live one. The memo's scope is a whole layout pass, and a pass builds and discards computeds
-/// constantly: every `:map` in a `list`'s `itemfn`, every one in a surface that rebuilds its tree.
-/// On 2026-09-08 that is what put `Integer(0)` into the lock screen's keyboard label and its
-/// wallpaper path, from two Lua functions that cannot return an integer at all (ADR-0170).
-///
+/// One `Computed`'s identity for [`EvaluationMemo`], counted rather than derived from an address.
+/// The memo keeps nothing alive, and a pass builds and discards computeds constantly, so an
+/// address freed by one would serve its value to the next computed allocated there (ADR-0170).
 /// A counter cannot be recycled. `Signal::clone` copies the id because a clone is the same computed
 /// with the same `func`, which is the one case that must share a memo entry.
 type MemoKey = u64;
@@ -913,9 +902,8 @@ fn add_unique(frame: &mut Vec<CellId>, cells: &[CellId]) {
 }
 
 /// One evaluation's memo, closing ADR-0044 decision 3's ceiling: without it a shared dependency is
-/// re-run once per path that reaches it, so a launcher ran its whole application filter twice for
-/// every row's `background` (once directly, once through a computed reading it), and a diamond of
-/// depth N evaluated its root 2^N times.
+/// re-run once per path that reaches it: a filter read by every row's `background` directly and
+/// through a computed runs twice per row, and a diamond of depth N evaluates its root 2^N times.
 ///
 /// Scoped to one layout pass, never across them: between two passes a `state`/`Live` cell may have
 /// changed, and nothing here observes that. Within the scope the memo also makes an impure closure
@@ -923,7 +911,7 @@ fn add_unique(frame: &mut Vec<CellId>, cells: &[CellId]) {
 /// dependency edge reached it.
 ///
 /// [`LayoutPassBudget`] opens the table, so one pass is the scope whenever a pass is running
-/// (ADR-0157): a shared `results` answers once for the pass rather than once for
+/// (ADR-0157): a shared computed answers once for the pass rather than once for
 /// `background`, once for `border_color`, and once for the label colour of every row. Outside a
 /// pass -- startup evaluation, a `capability::CapabilityHandle::notify_change` handler -- the
 /// outermost `Computed` still owns it, which is what keeps a handler that `:set()`s between its
@@ -1171,11 +1159,7 @@ pub fn is_signal(ud: &mlua::AnyUserData) -> bool {
     ud.is::<Signal>() || ud.is::<crate::lua::capability::Capability>() || ud.is::<crate::lua::idle::IdleMember>()
 }
 
-/// Registers `computed`, `delay` and `pulse` (ADR-0146, ADR-0153), `state` (ADR-0044 decision 5),
-/// `hover`, `hover_rect`, and `scroll`. Dependencies are signal-like userdata. Pass the shared
-/// dirty flag explicitly, not via `app_data`: a hidden coupling failing inside a config author's
-/// `state()` call is worse than threading one argument through. `set` marks the same flag
-/// `new_live` returns and The `ms` a `delay` or a `pulse` is given, as whole milliseconds.
+/// The `ms` a `delay` or a `pulse` is given, as whole milliseconds.
 ///
 /// Bounded on what the caller actually gets rather than on the number it wrote: `0.1` clears a
 /// bound written in floats and then rounds to nothing, leaving a `delay` that holds for no time
@@ -1188,7 +1172,11 @@ fn parse_hold(what: &str, millis: f64) -> Result<Duration, mlua::Error> {
     Ok(Duration::from_millis(rounded))
 }
 
-/// `RendererClient` drains.
+/// Registers `computed`, `delay` and `pulse` (ADR-0146, ADR-0153), `state` (ADR-0044 decision 5),
+/// `hover`, `hover_rect`, and `scroll`. Dependencies are signal-like userdata. Pass the shared
+/// dirty flag explicitly, not via `app_data`: a hidden coupling failing inside a config author's
+/// `state()` call is worse than threading one argument through. `set` marks the same flag
+/// `new_live` returns and `RendererClient` drains.
 pub fn register(lua: &Lua, dirty: DirtyFlag) -> mlua::Result<()> {
     // Before any config code runs, so every coroutine it ever creates inherits the hook.
     install_hook(lua)?;

@@ -359,9 +359,7 @@ enum Motion {
 /// IME, text-input-v3 emits no `commit_string`; a dormant binding could also let the compositor
 /// route an IME into the buffer and create two writers (ADR-0027 amendment). The ordinary
 /// Lua-readable `textfield` still needs IME composition. No IDL is added: secure
-/// bytes go to the native buffer and Supervisor (ADR-0005); misses are [`Ignore`]d.
-///
-/// [`Ignore`d]: KeyAction::Ignore
+/// bytes go to the native buffer and Supervisor (ADR-0005); misses are [`KeyAction::Ignore`].
 ///
 /// Filter control characters by text, not keysym: xkbcommon returns C0 text for Escape, Tab, and
 /// Return, and appending it would put an invisible ESC in a PAM password. Ignore repeated Enter;

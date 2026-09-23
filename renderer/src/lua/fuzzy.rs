@@ -231,8 +231,8 @@ fn score_multi_byte_match(
 ///
 /// ponytail: the port's own `fuzzyMatchUnicode`, ceiling included. Scores are not
 /// comparable with the DP's, so a list mixing ASCII and non-ASCII names orders the two groups by
-/// slightly different rules. Widening `fuzzy_match_v2` to `char` fixes it at the cost of an index
-/// map; nothing in this config has non-ASCII application names to make that pay.
+/// slightly different rules. Upgrade: widen `fuzzy_match_v2` to `char`, at the cost of an index
+/// map.
 fn fuzzy_match_unicode(case_sensitive: bool, input: &str, pattern: &str) -> Option<(i32, usize)> {
     // `start` is a byte offset into the unfolded haystack, as on the ASCII path; lowercasing can
     // turn one char into several.

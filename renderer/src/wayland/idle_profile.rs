@@ -222,7 +222,7 @@ impl IdleProfile {
     /// Thread CPU spent in end-of-turn focus maintenance, split by how much of it a tighter gate
     /// could remove.
     ///
-    /// `searched` is a turn that reached the tree-cloning scope search rather than returning at
+    /// `searched` is a turn that reached the scope search rather than returning at
     /// the `keyboard_focus`/armed-field guards.
     ///
     /// `redundant` narrows that to turns the candidate gate would have skipped: no re-resolve, no
@@ -405,7 +405,7 @@ mod tests {
     #[test]
     fn focus_cpu_is_split_between_every_turn_and_the_removable_ones() {
         let mut c = Counters::default();
-        // Guards returned early: no tree was cloned, so it is neither searched nor removable.
+        // Guards returned early: nothing was searched, so it is neither searched nor removable.
         c.focus(Duration::from_micros(1), false, false);
         // Searched, but the arming followed a re-resolve that may well have needed it.
         c.focus(Duration::from_micros(200), true, false);

@@ -418,13 +418,12 @@ impl App {
                 debug!(2; "instance {:?} has no matching declaration; skipping", instance.instance_id);
                 continue;
             };
-            // `Scene::surface` returns an owned tree, ending the client borrow before creation.
             let tree = self.client.scene().surface(&instance.instance_id);
-            let visible = starting_visible(tree.as_ref().map(|tree| tree.visible), roster);
+            let visible = starting_visible(tree.map(|tree| tree.visible), roster);
             // Use resolved properties, not the raw roster. For popups this is permanent: each
             // `PopupSpec` field is consumed by `get_popup`, and no `xdg_popup.reposition` exists,
             // so a raw signal placeholder (`DEFERRED_POPUP_EXTENT`, 1x1 at 0,0) lasts its life.
-            let spec = match tree.as_ref().map(|tree| resolved_surface_spec(roster, &tree.properties)) {
+            let spec = match tree.map(|tree| resolved_surface_spec(roster, &tree.properties)) {
                 Some((_, Ok(fresh))) => fresh,
                 Some((role, Err(err))) => {
                     log_invalid_re_resolve(&instance.instance_id, role, err);
@@ -436,7 +435,7 @@ impl App {
             // The solved root box, for a panel measuring an axis from its content. Zero without a
             // tree, and zero while hidden (an invisible root resolves to no geometry at all),
             // which `create_panel` reads as "not measured yet".
-            let measured = tree.as_ref().map_or(layout::LogicalSize::default(), |tree| layout::LogicalSize {
+            let measured = tree.map_or(layout::LogicalSize::default(), |tree| layout::LogicalSize {
                 width: tree.rect.width,
                 height: tree.rect.height,
             });
@@ -586,7 +585,7 @@ impl App {
     /// Push a resolved root's live protocol fields, input region, and visibility (ADR-0038 decision
     /// 2, ADR-0049 decisions 1-2). Window fields must come from the resolved `WindowSpec`: raw
     /// evaluation values would freeze signal-bound `title`s. The socket parser
-    /// [`crate::socket::surface_specs`] still reads unresolved properties, which is right for a
+    /// [`crate::lua::surfaces::surface_specs`] still reads unresolved properties, which is right for a
     /// panel's topology fields but wrong for a window's live fields. Push before
     /// `apply_visibility`, so a newly shown window uses this pass's spec; callers commit all staged
     /// state together, while create/destroy/map/unmap commit by definition.

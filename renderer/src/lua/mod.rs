@@ -164,9 +164,8 @@ impl Loader {
         self.evaluate_named(&source, &path.display().to_string())
     }
 
-    /// Names the chunk in config errors. Without it mlua names this Rust call site; a live session
-    /// reported a `shell.lua` typo as `renderer/src/lua/mod.rs:74:127`. Leading `@` marks a file
-    /// path (`lua_Debug.source`); without it Lua renders `[string "/mnt/.../dev-conf..."]` and
+    /// Names the chunk in config errors; without it mlua names this Rust call site. Leading `@`
+    /// marks a file path (`lua_Debug.source`); without it Lua renders `[string "..."]` and
     /// truncates the path before the filename.
     fn evaluate_named(&self, source: &str, name: &str) -> Result<LoadOutput, LoaderError> {
         self.forget_config_modules()?;

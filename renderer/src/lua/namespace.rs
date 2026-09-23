@@ -30,8 +30,7 @@ pub(crate) struct Namespace {
 ///
 /// **Roster names stay off the table.** `__index` moves each from a side table on first read and
 /// starts its controller (ADR-0070 decision 1). Before the first push, config reads a live `nil`
-/// signal
-/// (ADR-0037); an unread name costs only that `nil`, not the old D-Bus subscription. The unrelated
+/// signal (ADR-0037); an unread name costs only that `nil`. The unrelated
 /// unrostered `crate::socket` lazy path starts from `StateSnapshot`, not here.
 ///
 /// **One table, so typos raise.** The `lock` constructor owns global `lock`; a bare `lock` signal

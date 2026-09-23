@@ -554,8 +554,8 @@ pub fn run(
         }
         phases.mark_repaint();
         phases.mark_repaint_split(app.take_repaint_split());
-        // Skip focus maintenance on a truly idle turn (ADR-0124). It clones the focused tree to
-        // find fields; at 66 turns/s on an open picker, that was most of the process's work.
+        // Skip focus maintenance on a truly idle turn (ADR-0124): it walks the focused scope's trees
+        // for fields.
         let active = dispatched || re_resolved || typed || !landed.is_empty();
         if active {
             was_active = true;

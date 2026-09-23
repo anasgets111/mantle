@@ -663,11 +663,6 @@ impl RendererClient {
         }
     }
 
-    /// One animation frame (ADR-0145): advances every tween to `now` and relays out the instances
-    /// that carry one, without reading `shell.lua` or any signal. Returns whether any tree changed.
-    /// Called from the poll loop when a compositor frame callback lands, the same turn position
-    /// as [`Self::re_resolve_if_dirty`] and for the same downstream (surface state, hover,
-    /// repaint).
     /// The poll loop's only timeout: when the earliest pending `delay(signal, ms)` is due
     /// (ADR-0146) or the earliest open `pulse(signal, ms)` window closes (ADR-0153). `None` while
     /// nothing is pending, which is the idle case ADR-0124 keeps timeout-free.
@@ -694,7 +689,10 @@ impl RendererClient {
         }
     }
 
-    /// Returns the instance ids it advanced, so the caller repaints those surfaces and no others.
+    /// One animation frame (ADR-0145): advances every tween to `now` and relays out the instances
+    /// that carry one, without reading `shell.lua` or any signal. Called from the poll loop when a
+    /// compositor frame callback lands. Returns the instance ids it advanced, so the caller
+    /// repaints those surfaces and no others.
     pub fn tick_animations(&mut self, now: std::time::Instant) -> Vec<String> {
         self.scene.tick(&self.instances, &self.shaping, self.loader.lua(), now)
     }

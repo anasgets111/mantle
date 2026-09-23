@@ -46,8 +46,7 @@ const BOX_KINDS: [&str; 8] = ["rect", "row", "column", "button", "panel", "windo
 
 /// Every node kind, in constructor order, with its properties beyond the common and box lists. The
 /// last four rows are root roles (ADR-0040); declaring a `lock` does not lock (ADR-0052 decision 2).
-/// This rejects unknown keys; before it,
-/// misspelled `aling_v = "Center"` was copied, read by nothing, and silently failed to centre.
+/// A key in no list is refused, so a misspelled `aling_v` raises instead of being read by nothing.
 ///
 /// ponytail: hand-written because the schema is scattered `properties.get("...")` calls across
 /// `layout/node/`, `layout/scene.rs`, and `wayland/`, each with its own defaulting/coercion.
@@ -240,7 +239,6 @@ mod tests {
         assert_eq!(table.get::<String>("background").unwrap(), "#11111B");
     }
 
-    /// Previously `aling_v` was copied, read by nothing, and silently failed to centre.
     #[test]
     fn a_misspelled_property_is_refused_and_the_message_names_what_the_kind_takes() {
         let lua = lua_with_constructors();

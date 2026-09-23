@@ -37,8 +37,7 @@ pub struct ShapeRequest {
     pub text: String,
     pub font_size: f32,
     pub line_height: f32,
-    /// Logical-pixel width to wrap at. `None` measures the text unconstrained, on one line, which
-    /// is what every caller uses today.
+    /// Logical-pixel width to wrap at. `None` measures the text unconstrained, on one line.
     pub max_width: Option<f32>,
     /// The parts of `text` in another face than the regular one, in order, non-overlapping, on
     /// character boundaries -- `layout` builds them that way. Empty for plain text, which is every
