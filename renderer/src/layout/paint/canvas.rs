@@ -31,9 +31,7 @@ pub struct PaintSplit {
 }
 
 /// Test helper that paints a tree through [`build`] and [`execute`] at the caller's scale.
-/// The production caller is `wayland::App::paint_surface`: `socket/client.rs` keys a `Scene` by the `id` a
-/// config writes and `wayland::App` keys a `wl_surface` the same way, since ADR-0038 decision 1
-/// deleted the fixed Rust-owned role enum that had kept the two id spaces from overlapping.
+/// The production caller is `wayland::App::paint_surface`.
 #[cfg(test)]
 pub fn paint_tree(painter: &mut TextPainter, images: &mut ImageCache, root: &ResolvedNode, scale: f32) {
     // A live frame starts cleared (`wayland::App::paint_surface`); a pbuffer's buffers start undefined.
@@ -50,9 +48,8 @@ pub fn paint_tree(painter: &mut TextPainter, images: &mut ImageCache, root: &Res
 /// it, which is how a `retain` cover ends and a `transition` begins (ADR-0183).
 ///
 /// Reported from the draw rather than inferred from `ImageCache::poll`, because only the draw asks
-/// the cache with the node's exact key. The landing cue this replaces named a path: it fired for a
-/// decode that had *failed*, never fired at all when the source was already cached, and could not
-/// tell a thumbnail's landing from the full-size image's.
+/// the cache with the node's exact key: a path-keyed cue fires for a failed decode, never fires for
+/// an already-cached source, and cannot tell a thumbnail's landing from the full-size image's.
 #[derive(Debug, Clone, PartialEq)]
 pub struct DrawnImage {
     pub node: NodeId,
@@ -273,8 +270,7 @@ fn run(painter: &mut TextPainter, walk: &mut Walk<'_, '_>, commands: &[DrawCmd],
                     // The named source has no texture: still decoding, or a failure the cache has
                     // already logged once. Either way the node keeps its last picture rather than
                     // showing the surface behind it (ADR-0180). A cover that is itself gone --
-                    // evicted despite the pin, or deleted from disk -- draws nothing, which is the
-                    // old behaviour.
+                    // evicted despite the pin, or deleted from disk -- draws nothing.
                     None => {
                         if draw_file(painter.canvas_mut(), walk.images, std::path::Path::new(source), draw) {
                             walk.drawn.push(DrawnImage { node: *node, source: source.clone() });
@@ -366,9 +362,8 @@ fn draw_clipped(
     // scissors transform with it, so absolute command coordinates need no extra math.
     canvas.reset_transform();
     canvas.translate(-clip.x0 as f32, -clip.y0 as f32);
-    // The offscreen's own dimensions: a shader quad inside a rounded clip places itself in that
-    // target, not on the screen (ADR-0184).
-    // The offscreen's own size, its origin at the clip's corner, and no transform: `draw_clipped`
+    // The offscreen's own size (a shader quad inside a rounded clip places itself in that target,
+    // ADR-0184), its origin at the clip's corner, and no transform: `draw_clipped`
     // reset the canvas transform above, and composites the result under the outer one afterwards.
     let inner =
         Frame { size: (width as f32, height as f32), origin: (clip.x0 as f32, clip.y0 as f32), transform: None };
@@ -429,6 +424,10 @@ fn fill_image(canvas: &mut Canvas<OpenGl>, id: ImageId, fitted: LogicalRect, alp
     canvas.fill_path(&path, &Paint::image(id, fitted.x, fitted.y, fitted.width, fitted.height, 0.0, alpha));
 }
 
+/// Below this the two sides of a box count as equal (`box_path`): the 0.05 px band the sweep in
+/// its doc comment found clear of femtovg's bevel fold, and far above any layout rounding error.
+const HAIR: f32 = 0.05;
+
 /// The path a box with `radius` asks for: a rectangle, rounded rectangle, or stadium. femtovg
 /// clamps radius with `rad.min(halfw)`; near that clamp, `rounded_rect` fails in two bands. At
 /// exactly half, its zero-length straight segments collapse the fill to a square. Just below,
@@ -445,14 +444,14 @@ fn fill_image(canvas: &mut Canvas<OpenGl>, id: ImageId, fitted: LogicalRect, alp
 /// | 0.0001 to 0.01 px | 0             | 29             |
 /// | 0.05 px and more  | 0             | 0              |
 ///
-/// A shortfall clears both bands. A shipped `FILL_RADIUS_EPSILON` of 0.01 sat in the second; Qt's
-/// `qMin(w, h) * 0.4999f` (`qsgbasicinternalrectanglenode.cpp`) did too at every size. More
-/// epsilon is still a constant tuned to one tessellator, so this builds the shape instead.
+/// A shortfall clears both bands. An epsilon of 0.01 sits in the second, and so does Qt's
+/// `qMin(w, h) * 0.4999f` (`qsgbasicinternalrectanglenode.cpp`) at every size. Any epsilon is a
+/// constant tuned to one tessellator, so this builds the shape instead.
 ///
 /// Half the smaller side is how config spells a pill (`radius = side / 2`), and a radius scaled
-/// apart from the height can exceed half of it. Equal sides use femtovg's circle (four beziers, no straight segments); unequal
-/// sides use two semicircular caps joined by `|width - height|`. Both wind like `rounded_rect`
-/// (left, bottom, right, top), which controls the fill-fan inset.
+/// apart from the height can exceed half of it. Equal sides use femtovg's circle (four beziers,
+/// no straight segments); unequal sides use two semicircular caps joined by `|width - height|`.
+/// Both wind like `rounded_rect` (left, bottom, right, top), which controls the fill-fan inset.
 ///
 /// A box whose sides differ by a hair is a circle. A hair-length straight run between the two
 /// caps is worse than a bevel: for a box 2 µm narrower than it is tall, the vertical-cap path's
@@ -460,10 +459,6 @@ fn fill_image(canvas: &mut Canvas<OpenGl>, id: ImageId, fitted: LogicalRect, alp
 /// still_a_circle`). Tweens produce exactly that: a `width = "Fill"` circle inside a cell whose
 /// width and padding both ease lands a rounding error either side of its height on different
 /// frames, and the narrow frames flashed as squares.
-/// Below this the two sides of a box count as equal (`box_path`): the 0.05 px band the sweep in
-/// its doc comment found clear of femtovg's bevel fold, and far above any layout rounding error.
-const HAIR: f32 = 0.05;
-
 fn box_path(rect: LogicalRect, radius: f32) -> Path {
     let LogicalRect { x, y, width: w, height: h } = rect;
     let mut path = Path::new();
@@ -1519,8 +1514,7 @@ mod tests {
         assert_eq!(pixel_at(canvas, 50, 24), (255, 0, 0, 255), "the child ends at x = 38 and nothing extends it");
     }
 
-    /// The default is unchanged and costs nothing: no `clip` means square corners, which is what
-    /// every node did before this property existed.
+    /// The default costs nothing: no `clip` means square corners.
     #[test]
     fn without_the_property_a_radius_still_clips_square() {
         let Some(instance) = init_headless_egl(96, 48) else { return };

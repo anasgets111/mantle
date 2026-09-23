@@ -1722,10 +1722,9 @@ mod tests {
     }
 
     /// Every spring has to stop asking for frames, and every spring has to move. The second half
-    /// is what the extreme pairs are here for: a heavily overdamped one used to compute its near
-    /// root as the difference of two `f32` that agreed to the last bit, get exactly zero, and hold
-    /// its starting value for the full minute before snapping. Asserting only that it settles
-    /// passed that happily.
+    /// is what the extreme pairs are here for: a heavily overdamped one whose near root is the
+    /// difference of two `f32` that agree to the last bit gets exactly zero and holds its starting
+    /// value for the full minute before snapping, which a settles-only assertion passes.
     #[test]
     fn every_spring_settles_within_a_minute_and_none_settles_before_it_arrives() {
         for (stiffness, damping) in [
@@ -1836,8 +1835,8 @@ mod tests {
         }
     }
 
-    /// A pass that re-resolves for some unrelated signal keeps the running tween, and used to keep
-    /// it with the freshly parsed spec. For every other motion that is harmless -- the curve is
+    /// A pass that re-resolves for some unrelated signal keeps the running tween and its spec, not
+    /// the freshly parsed one. For every other motion that would be harmless -- the curve is
     /// the same curve -- but a spring's `velocity` is the rate the last retarget handed it rather
     /// than anything the config wrote, and parsing yields one at rest. Any unrelated change would
     /// stop a moving spring dead, which is the one thing the hand-over exists to prevent.
@@ -1949,7 +1948,7 @@ mod tests {
 
     /// The lead-in holds where the run opens. Every easing and every spring read elapsed zero as
     /// their own start, but a sequence opening on a jump plays that jump at zero, so the delay
-    /// used to be spent showing the value after it.
+    /// must not show the value after it.
     #[test]
     fn a_delay_before_a_sequence_holds_its_first_frame_rather_than_its_first_jump() {
         let lua = Lua::new();

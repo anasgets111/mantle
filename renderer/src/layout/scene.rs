@@ -85,8 +85,8 @@ impl ResolvedNode {
 }
 
 /// Geometry parsed once per node/pass. A resolved table's `__index` still runs on each access, so
-/// this is separate from reading a `Signal`: the old pass made 16 `__index` calls for one child's
-/// margin, measured a row at 18 wide, then placed its 10-wide child at 16..26. The parent parses a
+/// this is separate from reading a `Signal`: one read per field is what keeps a child's margin one
+/// answer for the measure and the placement. The parent parses a
 /// child before recursing because it needs the margin and size for the solver (ADR-0077); ignored
 /// fields are still validated so a later kind change cannot hide a malformed property (ADR-0068).
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -316,15 +316,14 @@ fn close(at: &mut Option<Instant>, total: &mut Duration) {
     }
 }
 
-/// Adds `node` and its descendants to the running node and property totals. Shared by
-/// [`Scene::census`] and [`Scene::census_by_surface`] so the per-surface figures always sum to the
-/// total the same report prints beside them.
-/// Nodes in one retained tree. [`Scene::census_by_surface`] wants only this half of
-/// [`census_walk`], and asking that one for it meant passing a counter in to throw away.
+/// Nodes in one retained tree: the half of [`census_walk`] [`Scene::census_by_surface`] wants.
 fn count_nodes(node: &ResolvedNode) -> usize {
     1 + node.children.iter().map(count_nodes).sum::<usize>()
 }
 
+/// Adds `node` and its descendants to the running node and property totals. Shared by
+/// [`Scene::census`] and [`Scene::census_by_surface`] so the per-surface figures always sum to the
+/// total the same report prints beside them.
 fn census_walk(node: &ResolvedNode, nodes: &mut usize, properties: &mut usize) {
     *nodes += 1;
     *properties += node.properties.len();
@@ -768,7 +767,7 @@ fn strip_tweens(node: &mut ResolvedNode) {
     node.children.iter_mut().for_each(strip_tweens);
 }
 
-/// A per-pass solver tree. Geometry stays fractional until `layout::text::snap` applies the
+/// A per-pass solver tree. Geometry stays fractional until `text::snap` applies the
 /// surface scale at paint; taffy otherwise rounds layouts to whole numbers.
 fn new_solver_tree() -> taffy::TaffyTree<Measure> {
     let mut tree = taffy::TaffyTree::new();
@@ -806,10 +805,9 @@ fn solve_instance(
 
 /// A `window` or `lock` root with no size of its own is its configured surface, on the `Content`
 /// axes only. `available` is the compositor's `xdg_toplevel` configure size, already converted by
-/// `set_instance_size`. A window's `Content` default used to give children a zero budget, so
-/// `child = column { width = "Fill" }` painted a 0x0 tree into niri's configured 1920x1168 tile. A
-/// lock has no width/height (`lock_spec` refuses both), so the same default produced a transparent
-/// buffer over a locked session, the passwordless black screen ADR-0052 decision 3 rejects.
+/// `set_instance_size`. A `Content` default would give children a zero budget: a 0x0 tree in a
+/// configured tile, and for a lock (no width/height, `lock_spec` refuses both) a transparent buffer
+/// over a locked session, the passwordless black screen ADR-0052 decision 3 rejects.
 fn forced_root_size(kind: &str, style: &LayoutStyle, available: LogicalSize) -> (Option<f32>, Option<f32>) {
     if matches!(kind, "window" | "lock") {
         (
@@ -1032,7 +1030,7 @@ struct PreparedNode {
 /// A node's paint re-read from the values it now displays, keeping the text it was fitted to.
 ///
 /// No pass measures a node this is called for, so the ellipsized prefix or the wrapped lines that
-/// `Scene::finish` wrote still describe the box the node has. Everything else about the paint is
+/// [`finish`] wrote still describe the box the node has. Everything else about the paint is
 /// re-read like any other node's, which is what lets a tween move a label's `foreground` rather
 /// than freeze it at the colour it last laid out with.
 fn repainted_keeping_fitted_text(old: Option<PaintStyle>, fresh: Option<PaintStyle>) -> Option<PaintStyle> {
@@ -1047,9 +1045,8 @@ fn repainted_keeping_fitted_text(old: Option<PaintStyle>, fresh: Option<PaintSty
 
 /// One frame of a tree whose every running tween is paint-only, advanced where it stands.
 ///
-/// The [`relayout_retained`] this replaces exists to answer one question -- what size is everything
-/// now -- and `node::is_paint_only` is the set of properties that cannot change the answer. So this
-/// walks the tree the tweens are already in, advances them, and re-derives the two things they do
+/// [`relayout_retained`] answers one question -- what size is everything now -- and
+/// `node::is_paint_only` is the set of properties that cannot change the answer. So this walks the tree the tweens are already in, advances them, and re-derives the two things they do
 /// change: the node's own `opacity` and its parsed paint. No clone, no solver tree, no measurement,
 /// and no geometry to publish, because no rect moved.
 fn advance_paint_only(node: &mut ResolvedNode, now: Instant, lua: &Lua) -> Result<(), LayoutError> {
@@ -1060,8 +1057,6 @@ fn advance_paint_only(node: &mut ResolvedNode, now: Instant, lua: &Lua) -> Resul
     }
     // Outside the tween gate below, and before it: a dissolve is the only motion on a node that
     // has no `animate` block at all, which is every `image` that declares one.
-    // It also writes nothing into the property map, so it needs none of the save-and-restore that
-    // makes advancing a tween all-or-nothing.
     node.dissolve = advanced_dissolve(node.dissolve.take(), now);
     // A played-out sequence rests on its last frame and moves nothing.
     if node.tweens.iter().any(|tween| !tween.resting) {
@@ -1073,23 +1068,23 @@ fn advance_paint_only(node: &mut ResolvedNode, now: Instant, lua: &Lua) -> Resul
     Ok(())
 }
 
-/// One node of [`advance_paint_only`], all-or-nothing.
-///
-/// `node::advance` writes into the retained map, and a value it writes can still be refused: a
-/// spring overshoots its target, and `parse_opacity` rejects anything outside `[0, 1]` rather than
-/// clamping it (ADR-0068). The tick this came from used to work on a clone, so a refusal cost
-/// nothing and the retained map never saw the value. In place it would, and the next pass would
-/// re-read it and fail too -- one refused frame becoming a scene that stops updating. So the
-/// values about to move are kept and put back on refusal. That is bounded by this node's tweens,
-/// not by the properties of its subtree, which is the whole point of not cloning.
 /// Advances a dissolve to `now` and drops it once it is over (ADR-0181). Unlike a tween it writes
-/// nothing into the property map and cannot be refused, so it needs none of the save-and-restore
-/// below: the only thing it moves is a number `layout::paint` reads.
+/// nothing into the property map and cannot be refused, so it needs none of
+/// [`advance_paint_only_node`]'s save-and-restore: the only thing it moves is a number
+/// `layout::paint` reads.
 fn advanced_dissolve(dissolve: Option<Box<Dissolve>>, now: Instant) -> Option<Box<Dissolve>> {
     let mut dissolve = dissolve?;
     dissolve.advance(now).then_some(dissolve)
 }
 
+/// One node of [`advance_paint_only`], all-or-nothing.
+///
+/// `node::advance` writes into the retained map, and a value it writes can still be refused: a
+/// spring overshoots its target, and `parse_opacity` rejects anything outside `[0, 1]` rather than
+/// clamping it (ADR-0068). A refused value left in the map would fail the next pass's re-read too,
+/// turning one refused frame into a scene that stops updating. So the values about to move are
+/// kept and put back on refusal, bounded by this node's tweens rather than its subtree's
+/// properties.
 fn advance_paint_only_node(node: &mut ResolvedNode, now: Instant, lua: &Lua) -> Result<(), LayoutError> {
     let restore: Vec<(&'static str, Value)> = node
         .tweens
@@ -1165,8 +1160,8 @@ fn item_align(align: Align) -> taffy::AlignSelf {
     }
 }
 
-/// `Align` as a flow container's packing. `Stretch` remains `Start`: the old pass kept the same
-/// main-axis cursor for both, and promoting it to a taffy distribution would change behavior.
+/// `Align` as a flow container's packing. `Stretch` packs as `Start`: a main axis has nothing to
+/// stretch into that `Fill` does not already claim.
 fn main_align(align: Align) -> taffy::JustifyContent {
     match align {
         Align::Start | Align::Stretch => taffy::JustifyContent::START,
@@ -1183,15 +1178,14 @@ fn taffy_style(
     style: &LayoutStyle,
     parent_axis: Option<MainAxis>,
 ) -> Result<taffy::Style, LayoutError> {
-    // Invisible nodes get no size, position, or spacing gap. The old pass resolved their geometry
-    // before declining to place them; all readers already filter on `visible`.
+    // Invisible nodes get no size, position, or spacing gap; all readers filter on `visible`.
     if !style.visible {
         return Ok(taffy::Style { display: taffy::Display::None, ..taffy::Style::DEFAULT });
     }
 
     let mut out = taffy::Style {
         // No shrink: fixed children keep their stated size, even when siblings overflow. Disable
-        // taffy's automatic minimum so a `Fill` item can collapse to zero as in the old pass.
+        // taffy's automatic minimum so a `Fill` item can collapse to zero.
         // On a flex cross axis, leave `min_size` as `auto`: taffy 0.14 otherwise adds the
         // container's margin to each child's minimum (`constants.margin` instead of `child.margin`
         // in `determine_flex_base_size`/`determine_container_main_size`). `Some(0) + margin` floors
@@ -1261,8 +1255,7 @@ fn taffy_style(
         None => out.display = taffy::Display::Grid,
     }
 
-    // Item half. `Fill` off the parent's flow axis means the whole slot and outranks alignment,
-    // matching the old pass's fill-then-align order.
+    // Item half. `Fill` off the parent's flow axis means the whole slot and outranks alignment.
     let fills_h = style.width_mode == SizeMode::Fill && parent_axis != Some(MainAxis::Horizontal);
     let fills_v = style.height_mode == SizeMode::Fill && parent_axis != Some(MainAxis::Vertical);
     let align_h = if fills_h { taffy::AlignItems::STRETCH } else { item_align(style.align_h) };
@@ -1276,7 +1269,7 @@ fn taffy_style(
     };
 
     // Taffy's `align-self: stretch` applies only to an `auto` cross size, so `height = 5` would
-    // normally win. The old pass overrode the size, and this engine keeps stretch precedence
+    // normally win. Stretch takes precedence here
     // (`row_child_stretch_alignment_fills_the_cross_axis`); blank the size to make taffy do that.
     if governed_h == Some(taffy::AlignItems::STRETCH) {
         out.size.width = taffy::Dimension::auto();
@@ -1439,8 +1432,8 @@ fn prepare(
     // ids, properties and last geometry, and none of their signals is read, no `list` item
     // function called, no text measured, until the node is visible again. `taffy_style` already
     // gave the node `Display::None`, so nothing below it could have reached the layout anyway,
-    // and `paint`, `hit` and `region` stop at a hidden node. Before this, a closed
-    // picker of fifty tiles was rebuilt on every push of every capability, the clock's included.
+    // and `paint`, `hit` and `region` stop at a hidden node. A closed picker of fifty tiles is not
+    // rebuilt on every capability push.
     let mut node = PreparedNode {
         id,
         kind,
@@ -1711,9 +1704,7 @@ fn solve(
                         // unconstrained measurement is the honest answer to that.
                         //
                         // `None` for a node that does not wrap, so it measures the one line it
-                        // will paint. Passing the box width regardless is what this used to do,
-                        // and it is why a fixed-width `text` reserved three lines of height to
-                        // draw one clipped one.
+                        // will paint, not the wrapped height of a box it draws one clipped line in.
                         let max_width = match wrap {
                             node::Wrap::None => None,
                             node::Wrap::Word => known.width.or(match offered.width {
@@ -1884,9 +1875,9 @@ fn fit_text_to_box(
 
 /// A `text`'s content being rebuilt to fit its box, with its styled runs following it (ADR-0104).
 ///
-/// Every rewrite here (joined lines, flattened remainder, ellipsis) used to edit `content` alone.
-/// Runs are byte ranges into that string, so this is the one place that appends source slices and
-/// re-bases the runs overlapping each slice.
+/// Runs are byte ranges into `content`, so every rewrite here (joined lines, flattened remainder,
+/// ellipsis) goes through this one place that appends source slices and re-bases the runs
+/// overlapping each slice.
 struct Fitted<'s> {
     source: &'s str,
     source_runs: &'s [StyleRun],
@@ -1953,9 +1944,8 @@ impl<'s> Fitted<'s> {
 /// reads as truncated rather than as a sentence that happens to stop.
 ///
 /// That remainder is the source from the last kept line's start to the end, with its paragraph
-/// breaks flattened to spaces. It used to be the dropped lines' texts joined back with spaces; the
-/// range form is what lets the runs follow, and differs only in keeping the source's own
-/// whitespace at the breaks.
+/// breaks flattened to spaces. A source range rather than the dropped lines rejoined, so the runs
+/// follow it and the source's own whitespace survives at the breaks.
 fn wrapped_to_fit<'s>(
     content: &'s str,
     runs: &'s [StyleRun],
@@ -2428,9 +2418,8 @@ pub(super) mod tests {
         scene.note_drawn_images("bar@TEST", &drew(&scene, "/tmp/b.png"), started);
         assert_eq!(node(&scene).dissolve.map(|d| d.from), Some("/tmp/a.png".to_string()), "unchanged, not restarted");
 
-        // A third source arriving mid-run leaves both endpoints alone. Before this the draw
-        // followed the node's latest `source`, so b vanished from the screen halfway across and
-        // took its cache pin with it (ADR-0183).
+        // A third source arriving mid-run leaves both endpoints alone, so b stays on screen and
+        // keeps its cache pin (ADR-0183).
         apply(&mut scene, "/tmp/c.png");
         let running = node(&scene).dissolve.expect("still crossing a to b");
         assert_eq!((running.from.as_str(), running.to.as_str()), ("/tmp/a.png", "/tmp/b.png"));
@@ -2844,9 +2833,8 @@ pub(super) mod tests {
         assert_eq!(flash.tweens[0].started, began, "the same run, not a new one");
     }
 
-    /// A re-delayed sequence used to carry the `resting` flag its last tick left, so `animating`
-    /// never asked for the frame that would have started it and it sat on its old last frame
-    /// forever. `delay` lives on the spec beside the motion, not in it, so the run still matches
+    /// A re-delayed sequence must drop the `resting` flag its last tick left, or `animating` never
+    /// asks for the frame that starts it and it sits on its old last frame forever. `delay` lives on the spec beside the motion, not in it, so the run still matches
     /// as "the same list going round again" and is carried across.
     #[test]
     fn a_played_out_sequence_handed_a_fresh_delay_stops_resting_and_asks_for_frames_again() {
@@ -3386,9 +3374,9 @@ pub(super) mod tests {
         );
     }
 
-    /// The measured defect this pass fixes. `width = "Fill"` used to resolve against the parent's
-    /// whole content width, per child, with no knowledge of siblings: in a 600px row a `Fill` child
-    /// took 600 and its fixed sibling was then placed at x=600, outside the row it belonged to.
+    /// `width = "Fill"` shares the main axis with its siblings: in a 600px row a `Fill` child
+    /// resolved against the whole content width would push its fixed sibling to x=600, outside
+    /// the row.
     #[test]
     fn a_fill_child_takes_only_the_room_its_siblings_leave() {
         let mut scene = Scene::new();
@@ -3538,8 +3526,7 @@ pub(super) mod tests {
         }
     }
 
-    /// Correct before this pass and pinned so it stays that way: a row's *cross* axis hands every
-    /// child the row's full height, because on that axis there is nothing to share.
+    /// A row's *cross* axis hands every child the row's full height, because on that axis there is nothing to share.
     #[test]
     fn fill_on_a_rows_cross_axis_is_still_the_whole_row() {
         let mut scene = Scene::new();
@@ -3555,7 +3542,7 @@ pub(super) mod tests {
         assert_eq!(row.children[0].rect.height, 200.0);
     }
 
-    /// Also correct before this pass and pinned: a stacking parent has no main axis, its children
+    /// A stacking parent has no main axis, its children
     /// may overlap by design (ADR-0023), and `Fill` there means the whole box.
     #[test]
     fn fill_under_a_stacking_parent_is_still_the_whole_box() {
@@ -3967,11 +3954,6 @@ pub(super) mod tests {
         assert!(matches!(err, LayoutError::UnsupportedNodeKind(k) if k == "banana"));
     }
 
-    /// The coverage ADR-0068 widened, pinned so it stays deliberate. `layout::paint::build_node`
-    /// returned before any parser on an invisible node, so this config used to boot fine and fail
-    /// only once something made the node visible.
-    /// ADR-0068's rule applied to the new property: a bad value fails the apply rather than being
-    /// clamped or defaulted, so `opacity = 50` meaning percent is heard about immediately.
     fn drawn_text(scene: &Scene) -> String {
         drawn_text_and_runs(scene).0
     }
@@ -4196,7 +4178,7 @@ pub(super) mod tests {
         assert_eq!(drawn, "short", "an ellipsis on a string that fits would be a lie about the content");
     }
 
-    /// The default. Without it the clip cuts mid-glyph, which is what every `text` did before this.
+    /// The default: no ellipsis, the clip cuts mid-glyph.
     #[test]
     fn a_text_that_does_not_ask_to_elide_keeps_its_whole_string() {
         let drawn = elided(&format!(r#"panel {{ id = "bar", child = text {{ width = 80, content = "{LONG}" }} }}"#));
@@ -4240,6 +4222,8 @@ pub(super) mod tests {
         assert!(matches!(&err, LayoutError::InvalidProperty { property, .. } if property == "elide"), "got {err:?}");
     }
 
+    /// ADR-0068: a bad value fails the apply rather than being clamped or defaulted, so
+    /// `opacity = 50` meaning percent is heard about immediately.
     #[test]
     fn an_opacity_outside_zero_to_one_fails_the_pass() {
         let shaping = ShapingHandle::spawn();
@@ -4273,6 +4257,8 @@ pub(super) mod tests {
         assert_eq!(scene.surface("bar@TEST").unwrap().children[0].opacity, 1.0);
     }
 
+    /// ADR-0068's coverage: paint properties parse on an invisible node too, so a bad one fails at
+    /// boot rather than once something makes the node visible.
     #[test]
     fn a_malformed_paint_property_on_an_invisible_node_still_fails_the_pass() {
         let mut scene = Scene::new();
@@ -4774,9 +4760,8 @@ pub(super) mod tests {
     /// reports a number rather than asserting one, and only a release build's number means
     /// anything.
     ///
-    /// It exists because the seam it measures used to rebuild the tree it was asked to read. On
-    /// this 162-node fixture that was 43.4us per read against 134ns once `Scene::surface` lent its
-    /// tree instead -- the evidence for that change, and the guard if a clone ever comes back.
+    /// `Scene::surface` lends its tree rather than rebuilding it: on this 162-node fixture a
+    /// rebuild costs 43.4us per read against 134ns lent. The guard if a clone ever comes back.
     /// `hit_path` stands in for the pointer path, which is what pays this per motion event.
     #[test]
     #[ignore]
@@ -5227,9 +5212,8 @@ pub(super) mod tests {
     }
 
     /// The shape resolving-once does not close: a plain Lua table with an `__index`, no `Signal`
-    /// anywhere. Every metamethod-aware
-    /// `Table::get` used to re-run the metamethod, so `margin` was parsed four separate times per
-    /// child per pass and the four answers were free to differ.
+    /// anywhere. Every metamethod-aware `Table::get` re-runs the metamethod, so `margin` must be
+    /// parsed once per child per pass or its answers are free to differ.
     fn surface_with_an_index_counting_margin(lua: &mlua::Lua) -> VirtualNode {
         register_node_constructors(lua).unwrap();
         crate::lua::signal::register(lua, crate::lua::signal::DirtyFlag::new()).unwrap();
@@ -5338,12 +5322,8 @@ pub(super) mod tests {
     /// The guarantee most likely to be lost by a later edit: every getter fires exactly once, in
     /// the order the config wrote it. An impure closure like this one is what can observe it.
     ///
-    /// This used to read `abBA`, and the difference is worth keeping in view. The `Fill` child is
-    /// declared first, and the hand-written pass recursed into it *last* so it could be sized from
-    /// what its siblings left, which forced resolution out of the recursion to keep the two
-    /// siblings in source order and left the grandchildren interleaved the other way. The solver
-    /// does its own sizing, so there is one walk again and it goes in declaration order: `aAbB`,
-    /// which is the tree read top to bottom. Same guarantee, and now it is the obvious one.
+    /// The `Fill` child is declared first and resolves first: the solver does its own sizing,
+    /// so there is one walk in declaration order, `aAbB`, the tree read top to bottom.
     #[test]
     fn every_getter_fires_exactly_once_in_the_order_the_config_wrote_it() {
         let mut scene = Scene::new();
@@ -5818,8 +5798,7 @@ pub(super) mod tests {
 
     /// The leak this closes: `apply` visits only the instances it is handed, so an instance that
     /// stops existing is never revisited and its tree is never dropped. Nothing but `forget`
-    /// removes one, which is why an unplugged output used to stay resident for the life of the
-    /// process.
+    /// removes one, or an unplugged output stays resident for the life of the process.
     #[test]
     fn a_departed_instance_is_forgotten_rather_than_left_resident() {
         let mut scene = Scene::new();

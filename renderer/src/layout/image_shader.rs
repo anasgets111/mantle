@@ -18,8 +18,7 @@
 //!
 //! A shader that will not compile or link is reported once per revision and that path is refused
 //! from then on, which drops the node back to `layout::paint`'s cross-dissolve for the rest of
-//! the run. That is a real fallback rather than a snap, and it is the reason the dissolve was built
-//! before this (ADR-0181).
+//! the run: a real fallback rather than a snap (ADR-0181).
 //!
 //! A shader that compiles and draws something ugly draws it: the engine cannot tell intent from
 //! mistake. A shader that hangs the GPU hangs the session, and nothing here promises otherwise --

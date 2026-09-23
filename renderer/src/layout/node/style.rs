@@ -368,10 +368,6 @@ pub fn parse_list_direction(properties: &PropMap) -> Result<&'static str, Layout
     content::parse_keyword(properties, "direction", "column", &[("Vertical", "column"), ("Horizontal", "row")])
 }
 
-/// `opacity` belongs to every kind, including non-painting lists, and is inherited by
-/// multiplication on `ResolvedNode`. It does not replace `visible`: a fully transparent node still
-/// lays out, occupies space, and hit-tests. Values outside `[0, 1]` error rather than clamp
-/// (ADR-0068).
 /// `blur`: ask the compositor to blur the desktop behind this node's box (ADR-0195). Opt-in per
 /// node and never inferred, because "translucent" is not "wants blur": a control may be
 /// deliberately invisible at `#00000000`, and a border-only or image-backed glass box has no
@@ -381,6 +377,10 @@ pub fn parse_blur(properties: &PropMap) -> Result<bool, LayoutError> {
     content::parse_bool(properties, "blur", false)
 }
 
+/// `opacity` belongs to every kind, including non-painting lists, and is inherited by
+/// multiplication on `ResolvedNode`. It does not replace `visible`: a fully transparent node still
+/// lays out, occupies space, and hit-tests. Values outside `[0, 1]` error rather than clamp
+/// (ADR-0068).
 pub fn parse_opacity(properties: &PropMap) -> Result<f32, LayoutError> {
     let Some(value) = properties.get("opacity") else {
         return Ok(1.0);

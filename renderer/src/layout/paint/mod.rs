@@ -23,7 +23,7 @@ use crate::layout::node::{self, BorderColor, ClipShape, EdgeInsets, PaintStyle, 
 use crate::layout::scene::{NodeId, ResolvedNode};
 use crate::text::snap::{LogicalRect, PhysicalRect, snap_to_physical};
 
-/// Typed draw data. `textfield` and unrecognised kinds contribute no [`DrawCmd`]. No Lua values are
+/// Typed draw data. A kind with no [`PaintStyle`] contributes no [`DrawCmd`]. No Lua values are
 /// kept: mlua table identity would make a signal-resolved table unequal every pass.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Draw {
@@ -116,8 +116,8 @@ pub struct CaptureNode {
     pub paint_cursor: bool,
 }
 
-/// One surface's draw order, flattened for equality. Before this, the single dirty flag repainted
-/// every mapped surface on every re-resolve (ADR-0044 decision 2). Float equality is safe because
+/// One surface's draw order, flattened for equality so a re-resolve repaints only the surfaces
+/// whose list changed (ADR-0044 decision 2). Float equality is safe because
 /// identical inputs produce identical bits; `NaN` repaints forever rather than leaving stale
 /// pixels.
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -773,8 +773,7 @@ mod tests {
         tree.children[0].displayed_source = Some("/tmp/new.png".to_string());
         assert_eq!(cover_of(&tree), Some(None));
 
-        // The same stale state without the property draws nothing while the source decodes, which
-        // is the behaviour every image had before this.
+        // The same stale state without the property draws nothing while the source decodes.
         let plain = r##"return panel { id = "bar", width = 200, height = 40,
             child = image { id = "wp", source = "/tmp/new.png", async = true,
                 width = "Fill", height = "Fill" } }"##;

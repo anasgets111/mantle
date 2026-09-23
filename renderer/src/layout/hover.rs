@@ -23,8 +23,7 @@ pub struct HoverWrite {
     pub rect: Option<LogicalRect>,
     /// The node's `on_hover`, to be called on the crossing this write reports and not on every
     /// motion event inside the node (ADR-0095). Rides on the same write as the signal because the
-    /// signal is what remembers the previous answer: a callback has no memory of its own, and a
-    /// `ResolvedNode` has no identity to hang one off.
+    /// signal is what remembers the previous answer: a callback has no memory of its own.
     pub on_hover: Option<Function>,
 }
 
@@ -60,8 +59,8 @@ pub fn hover_writes(tree: &ResolvedNode, point: Option<LogicalPoint>) -> Vec<Hov
 fn collect(node: &ResolvedNode, path: &[&ResolvedNode], writes: &mut Vec<HoverWrite>) {
     // ADR-0062 decision 3: the Wayland writer does not turn a non-hover value into a config error.
     if let Some(signal) = super::node::signal_at(&node.properties, "hover") {
-        // Both references index the same tree and `ResolvedNode` has no comparable id. The path
-        // is bounded by `scene::MAX_TREE_DEPTH`, so this scan is at most 64 comparisons.
+        // Both references index the same tree. The path is bounded by `scene::MAX_TREE_DEPTH`, so
+        // this scan is at most 64 comparisons.
         let depth = path.iter().position(|on_path| std::ptr::eq(*on_path, node));
         // The prefix turns this parent-relative rect into an absolute one (ADR-0050 decision 3).
         let rect = depth.and_then(|depth| hit::absolute_rect(&path[..=depth]));

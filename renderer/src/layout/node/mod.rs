@@ -187,7 +187,7 @@ pub(crate) fn invalid(property: &str, detail: impl Into<String>) -> LayoutError 
 ///
 /// ponytail: this bounds one node's fan-out, not the whole tree, so depth 64 times this is still
 /// far more nodes than any real config builds. A total per-pass node budget is the upgrade, and is
-/// what `capabilities::tray`'s `MAX_MENU_NODES` does for the one tree that already needed it.
+/// what the supervisor's `capabilities::tray::MAX_MENU_NODES` does for the one tree that already needed it.
 pub(crate) const MAX_ARRAY_ELEMENTS: usize = 10_000;
 
 /// Maximum rejected-value preview, separate from `marshal::MAX_STRING_BYTES`: 200 bytes bounds a
@@ -207,8 +207,8 @@ const MAX_ERROR_VALUE_PREVIEW_BYTES: usize = 200;
 /// | 20 MB | 23.96 ms | 0.0057 ms |
 /// | 100 MB | 93.88 ms | 0.0061 ms |
 ///
-/// Cost follows the cap, not input size: 23.96 ms exceeds one 60fps frame. Since paint no longer
-/// validates `background`/`radius` (ADR-0068), the cap bounds the `rescue` message, not a frame.
+/// Cost follows the cap, not input size: 23.96 ms exceeds one 60fps frame. Paint does not validate
+/// `background`/`radius` (ADR-0068), so the cap bounds the `rescue` message, not a frame.
 /// `oversized_string_property_error_still_names_type_and_shows_a_recognizable_prefix` guards this.
 pub(crate) fn preview_for_error(value: &Value) -> String {
     let Value::String(s) = value else {

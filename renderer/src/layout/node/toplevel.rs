@@ -681,9 +681,8 @@ mod tests {
 
     #[test]
     fn an_omitted_popup_width_or_height_is_measured_from_the_tree_rather_than_refused() {
-        // This used to be the error "required for `popup`", so every tooltip carried a
-        // hand-guessed pair of numbers and cut off any text longer than the one it was guessed for. An omitted axis is `Content` here as it is
-        // on every other node; `wayland::surface::popup_requested_size` turns it into the number
+        // An omitted axis is `Content` here as it is on every other node, so a tooltip needs no
+        // hand-guessed size; `wayland::surface::popup_requested_size` turns it into the number
         // the positioner needs, off the box the pass measured.
         let lua = mlua::Lua::new();
         for (present, omitted) in [("width", "height"), ("height", "width")] {

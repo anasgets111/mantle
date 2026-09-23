@@ -213,9 +213,7 @@ fn parse_optional_string(properties: &PropMap, property: &str) -> Result<String,
     }
 }
 
-/// `text.foreground` defaults to white; `layout::paint::paint_text` uses that same
-/// white when a present value is malformed. `TextAlign` places glyphs inside the node's
-/// box, unlike `align_h`, which places the node in its parent; it matters only when the box is
+/// `TextAlign` places glyphs inside the node's box, unlike `align_h`, which places the node in its parent; it matters only when the box is
 /// wider than the measured text.
 ///
 /// Its own type rather than reusing [`Align`](super::Align): that carries `Stretch`, which would
@@ -298,9 +296,8 @@ pub enum Wrap {
     Word,
 }
 
-/// `wrap` defaults to `None`. Before this, a fixed-width `text` measured its full wrapped height
-/// but painted one clipped line; making wrapping default would have drawn into that extra height
-/// everywhere. `None` now measures one line, keeping box and paint consistent.
+/// `wrap` defaults to `None`, which measures one line, so a fixed-width `text` reserves the height
+/// it paints.
 pub fn parse_wrap(properties: &PropMap) -> Result<Wrap, LayoutError> {
     parse_keyword(properties, "wrap", Wrap::None, &[("None", Wrap::None), ("Word", Wrap::Word)])
 }
@@ -321,8 +318,7 @@ pub fn parse_max_lines(properties: &PropMap) -> Result<Option<usize>, LayoutErro
     Ok((n >= 1.0).then_some(n as usize))
 }
 
-/// `text_align` defaults to `Start` and uses the same string boundary as `fit`, `layer`, `align_h`,
-/// and `on_click`. `Start`/`End` match `align_h`.
+/// `text_align` defaults to `Start`. `Start`/`End` match `align_h`.
 pub fn parse_text_align(properties: &PropMap) -> Result<TextAlign, LayoutError> {
     let choices = [("Start", TextAlign::Start), ("Center", TextAlign::Center), ("End", TextAlign::End)];
     parse_keyword(properties, "text_align", TextAlign::Start, &choices)
