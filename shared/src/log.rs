@@ -92,7 +92,7 @@ fn verbosity_level(count: u8) -> Level {
 /// Resolves the filter and `tag`, then routes panics through the same format.
 ///
 /// Called before anything else in `main`. A diagnostic that beats it still prints, unstamped; see
-/// [`write_to`]. `verbose` is the Supervisor's own `-v` count; the Renderer has no argv of its own
+/// `write_to`. `verbose` is the Supervisor's own `-v` count; the Renderer has no argv of its own
 /// to parse one from, so it reads what the Supervisor forwarded through [`crate::VERBOSE_ENV`] at
 /// spawn (ADR-0243) and passes that instead.
 pub fn init(tag: &'static str, verbose: u8) {
@@ -167,7 +167,7 @@ fn format_line(tag: &str, level: Level, target: &str, args: Arguments<'_>) -> St
     line
 }
 
-/// Paints one line of [`format_line`]'s output: dim clock, the level in its own colour, cyan
+/// Paints one line of `format_line`'s output: dim clock, the level in its own colour, cyan
 /// subsystem.
 ///
 /// Parses the line back rather than taking the parts, because the other caller is `mantle log`

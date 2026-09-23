@@ -6,13 +6,14 @@
 //! video hold arrives, and takes the same logind fd for it (ADR-0231).
 //!
 //! Notify becomes inert (silent no-op, logged once) if the protocol is absent, its connection
-//! fails, or setup exceeds [`IDLE_NOTIFY_SETUP_TIMEOUT`]. Background setup lets
+//! fails, or setup exceeds `IDLE_NOTIFY_SETUP_TIMEOUT`. Background setup lets
 //! [`IdleController::new`] return before a hung compositor. Inhibit rides the required system
 //! bus, so only its per-request `Inhibit` call can fail (see [`IdleController::inhibit`]).
 //!
-//! Pure seams hold the decisions: [`register_threshold_entry`]/[`cleanup_generation_thresholds`]
-//! for notify and [`apply_inhibit`]/[`apply_release_inhibit`]/[`cleanup_generation_inhibit`] for
-//! refcounts. [`IdleController`] wraps them with async/Wayland operations.
+//! Pure seams hold the decisions: [`notify::register_threshold_entry`] and
+//! [`notify::cleanup_generation_thresholds`] for notify, [`inhibit::apply_inhibit`],
+//! [`inhibit::apply_release_inhibit`] and [`inhibit::cleanup_generation_inhibit`] for refcounts.
+//! [`IdleController`] wraps them with async/Wayland operations.
 
 pub mod controller;
 pub mod gate;

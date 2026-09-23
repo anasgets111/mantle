@@ -1,6 +1,6 @@
 //! Leaf-node content parsers: text, icons, images, font/color properties, and identity strings.
 //! None affect the box model; geometry parsers live beside them rather than here.
-//! [`paint_style`](super::paint_style) runs them once per node per pass. `parse_string_property`
+//! [`paint_style`](super::paint_style()) runs them once per node per pass. `parse_string_property`
 //! is shared by `surface`/`toplevel`/`popup` parsers.
 
 use std::ops::Range;
@@ -216,7 +216,7 @@ fn parse_optional_string(properties: &PropMap, property: &str) -> Result<String,
 /// `TextAlign` places glyphs inside the node's box, unlike `align_h`, which places the node in its parent; it matters only when the box is
 /// wider than the measured text.
 ///
-/// Its own type rather than reusing [`Align`](super::Align): that carries `Stretch`, which would
+/// Its own type rather than reusing [`super::Align`]: that carries `Stretch`, which would
 /// be meaningless here since a run of glyphs has no size to force.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum TextAlign {

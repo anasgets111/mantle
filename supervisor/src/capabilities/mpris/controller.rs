@@ -44,7 +44,7 @@ pub enum PlayerCommand {
 
 /// No `events` field, unlike `TrayController` (ADR-0031): `control`/`seek`/`seek_relative` issue
 /// real D-Bus calls and never self-send a signal (ADR-0036); the next player event triggers the
-/// push. The channel belongs to [`watcher::spawn_discovery`] and is consumed at construction.
+/// push. The channel belongs to [`super::watcher::spawn_discovery`] and is consumed at construction.
 #[derive(Clone)]
 pub struct MprisController {
     registry: super::player::PlayerRegistry,

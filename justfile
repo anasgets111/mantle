@@ -52,23 +52,11 @@ test:
 lint:
     cargo clippy --workspace --all-targets -- -D warnings
 
-# Unresolved intra-doc links, which clippy does not check. Exact in both directions: over hides a
-# link that moved, under leaves room for the next regression to sit in unreported.
-[doc('Unresolved intra-doc links, against an exact per-crate baseline.')]
+# Rustdoc warnings, which clippy does not check. For a link to a private item, demote it to a plain
+# backtick path; never widen visibility for rustdoc.
+[doc('Rustdoc warnings, including unresolved intra-doc links.')]
 docs:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    out=$(cargo doc --workspace --no-deps 2>&1)
-    for pair in renderer:0 supervisor:7; do
-        crate=${pair%:*} baseline=${pair#*:}
-        count=$(echo "$out" | grep -A1 "unresolved link" | grep -cE "^\s*--> $crate/" || true)
-        if [ "$count" -ne "$baseline" ]; then
-            echo "$crate: $count unresolved doc links, baseline $baseline. Over: demote the link to a plain backtick path with the module prefix, never widen visibility for rustdoc. Under: lower the baseline here." >&2
-            echo "$out" | grep -B1 -A2 "unresolved link" >&2
-            exit 1
-        fi
-        echo "$crate: $count unresolved doc links (baseline $baseline)"
-    done
+    RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
 
 # `lua` proves a file parses; this proves `share/starter` agrees with `lua-meta`, through the
 # engine the author's editor uses (ADR-0081). `lua-meta` is checked alone too, because a library's
