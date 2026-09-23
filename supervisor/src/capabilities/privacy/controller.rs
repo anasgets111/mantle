@@ -47,18 +47,6 @@ pub enum PrivacySignal {
     Changed,
 }
 
-/// Deduplicated pids holding any `devices` open, from the expensive `/proc/*/fd/*` scan. One pass
-/// on this machine is ~370 `opendir`s, ~11,000 `readlink`s, and ~6 MiB allocation, 58% of boot
-/// allocations under DHAT. Only device open/close changes this set, so only inotify pays for it;
-/// [`name_camera_users`] remains separate.
-fn scan_camera_pids(proc_root: &Path, devices: &[PathBuf]) -> Vec<u32> {
-    let mut pids: Vec<u32> =
-        devices.iter().flat_map(|device| find_device_openers(proc_root, &device.to_string_lossy())).collect();
-    pids.sort_unstable();
-    pids.dedup();
-    pids
-}
-
 /// Names scanned opener pids against the latest PipeWire `Video/Source` snapshot. A matching
 /// PipeWire `app_name` wins, then `/proc/{pid}/comm`, then `pid {n}`; no opener is dropped. Pure
 /// and unit-testable.
@@ -103,7 +91,7 @@ fn name_capture_users(proc_root: &Path, apps: &[CaptureApp]) -> Vec<PrivacyUser>
 /// Test-only scan-plus-name convenience. Production calls the halves in sequence and retains pids.
 #[cfg(test)]
 fn resolve_camera_users(proc_root: &Path, devices: &[PathBuf], pipewire: &[VideoSourceApp]) -> Vec<PrivacyUser> {
-    name_camera_users(proc_root, &scan_camera_pids(proc_root, devices), pipewire)
+    name_camera_users(proc_root, &find_device_openers(proc_root, devices), pipewire)
 }
 
 pub struct PrivacyController {
@@ -151,7 +139,7 @@ async fn run_privacy_task(
     let mut pipewire = sources.borrow_and_update().clone();
 
     // Scan once: a camera may already be open at startup. The other lists await PipeWire.
-    let mut opener_pids = scan_camera_pids(&proc_root, &devices);
+    let mut opener_pids = find_device_openers(&proc_root, &devices);
     publish(&proc_root, &state, &opener_pids, &pipewire);
     if events.send(PrivacySignal::Changed).is_err() {
         return;
@@ -165,7 +153,7 @@ async fn run_privacy_task(
                     // a readlink of every fd in `/proc`, so it runs off the two async workers.
                     DeviceEvent::Opened => {
                         let (root, watched) = (proc_root.clone(), devices.clone());
-                        if let Ok(pids) = tokio::task::spawn_blocking(move || scan_camera_pids(&root, &watched)).await {
+                        if let Ok(pids) = tokio::task::spawn_blocking(move || find_device_openers(&root, &watched)).await {
                             opener_pids = pids;
                         }
                     }
