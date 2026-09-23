@@ -23,7 +23,7 @@
 use std::collections::{BTreeMap, HashMap};
 use std::io;
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime};
 
 use nix::errno::Errno;
 use nix::sys::signal::{Signal, kill};
@@ -32,6 +32,8 @@ use shared::{debug, error, warn};
 use tokio::process::Child;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 use tokio::task::JoinHandle;
+
+use crate::capabilities::system::controller::epoch_seconds;
 
 /// How long a stopping program has after its declared stop signal before `SIGKILL`.
 ///
@@ -64,7 +66,7 @@ pub struct SessionProcess {
     pub pid: Option<u32>,
     /// Unix seconds when the current or last run began; `nil` until the first `start`. Elapsed
     /// time is this subtracted from `mantle.system`'s clock, so nothing here needs a second timer.
-    pub started_at: Option<u64>,
+    pub started_at: Option<i64>,
     /// How the last finished run ended: its exit status, `nil` while running, before the first
     /// run, or when a signal ended it rather than an exit. Cleared by the next `start`.
     pub exit_code: Option<i32>,
@@ -161,7 +163,7 @@ impl ProcessesController {
                 let pid = child.id();
                 entry.public.running = true;
                 entry.public.pid = pid;
-                entry.public.started_at = Some(unix_seconds());
+                entry.public.started_at = Some(epoch_seconds(SystemTime::now()));
                 let (requests_tx, requests_rx) = unbounded_channel();
                 let task = tokio::spawn(supervise(
                     name.to_string(),
@@ -319,11 +321,6 @@ fn kill_best_effort(pid: Pid, signal: Signal) -> io::Result<()> {
         Ok(()) | Err(Errno::ESRCH) => Ok(()),
         Err(err) => Err(err.into()),
     }
-}
-
-/// Wall clock, matching `mantle.system`'s so a config can subtract the two.
-fn unix_seconds() -> u64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map(|since| since.as_secs()).unwrap_or_default()
 }
 
 #[cfg(test)]

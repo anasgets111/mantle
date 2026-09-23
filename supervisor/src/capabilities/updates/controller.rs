@@ -2,7 +2,7 @@
 
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 use shared::{debug, warn};
 use tokio::io::{AsyncBufReadExt, BufReader};
@@ -11,6 +11,7 @@ use tokio::sync::watch;
 
 use super::backend::{Backend, UpdateCandidate};
 use super::reboot::{REBOOT_MARKER, run_reboot_marker_task};
+use crate::capabilities::system::controller::epoch_seconds;
 use crate::process;
 
 /// `mantle.updates` payload. `check_error`/`install_error` are `None` when clear. While
@@ -262,7 +263,11 @@ async fn run_check_task(
             // (ADR-0113 amendment). Skip only when this process has a fresh check: the
             // controller outlives config generations, and an unconditional skip would let every
             // save reset the hour, so a day of editing would never check.
-            if !first_check_is_due(state.lock().expect("mutex poisoned").last_successful_check, now_unix(), interval) {
+            if !first_check_is_due(
+                state.lock().expect("mutex poisoned").last_successful_check,
+                epoch_seconds(SystemTime::now()),
+                interval,
+            ) {
                 ticker.tick().await;
             }
             loop {
@@ -309,7 +314,7 @@ async fn run_one_check(
             guard.count = report.packages.len() as u32;
             guard.packages = report.packages;
             guard.aur_error = report.aur_error;
-            guard.last_successful_check = Some(now_unix());
+            guard.last_successful_check = Some(epoch_seconds(SystemTime::now()));
             guard.check_error = None;
             guard.consecutive_check_failures = 0;
         }
@@ -327,10 +332,6 @@ async fn run_one_check(
 fn first_check_is_due(last_successful_check: Option<i64>, now: i64, interval: Duration) -> bool {
     let Some(last) = last_successful_check else { return true };
     now.saturating_sub(last) >= interval.as_secs() as i64
-}
-
-fn now_unix() -> i64 {
-    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0)
 }
 
 /// Assumes `state.installing` and its progress fields were set by `UpdatesController::install`'s
@@ -411,7 +412,7 @@ async fn run_install_with_child(
     }
     let mut guard = state.lock().expect("mutex poisoned");
     guard.installing = false;
-    guard.install_finished_at = Some(now_unix());
+    guard.install_finished_at = Some(epoch_seconds(SystemTime::now()));
     match status {
         // `None` means the process was killed by a signal.
         Ok(status) => {
