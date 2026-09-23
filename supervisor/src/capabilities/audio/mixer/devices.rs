@@ -157,16 +157,12 @@ pub(super) struct DeviceRoute {
     pub(super) profile_device: i32,
 }
 
-/// Builds a device array, ordered by registry id for deterministic publishes.
+/// Builds a device array with `active` marked, ordered by registry id for deterministic publishes.
 pub(super) fn device_list(
     entries: &HashMap<u32, DeviceEntry>,
     routes: &HashMap<(u32, i32), master::ActiveRoute>,
-    default_name: Option<&str>,
+    active: Option<u32>,
 ) -> Vec<AudioDevice> {
-    let active = master::resolve_default_device(
-        default_name,
-        entries.iter().map(|(&id, entry)| (id, entry.names.node_name.as_str())),
-    );
     let mut list: Vec<AudioDevice> = entries
         .iter()
         .map(|(&id, entry)| AudioDevice {
@@ -282,7 +278,7 @@ mod tests {
         entries.get_mut(&59).unwrap().route = Some(DeviceRoute { device_id: 51, profile_device: 3 });
         let routes = HashMap::from([((51, 3), master::ActiveRoute { index: 5, port: Some("hdmi".to_string()) })]);
 
-        let devices = device_list(&entries, &routes, Some("bluez_output.headset"));
+        let devices = device_list(&entries, &routes, Some(70));
 
         assert_eq!(
             devices,
@@ -302,7 +298,7 @@ mod tests {
     fn device_list_falls_back_to_the_node_name_when_no_description_was_seen() {
         let entries = tracked(&[(59, "alsa_output.analog", None)]);
 
-        let devices = device_list(&entries, &HashMap::new(), None);
+        let devices = device_list(&entries, &HashMap::new(), Some(59));
 
         assert_eq!(
             devices,
@@ -317,7 +313,7 @@ mod tests {
 
     #[test]
     fn device_list_is_empty_with_nothing_tracked() {
-        assert_eq!(device_list(&HashMap::new(), &HashMap::new(), Some("anything")), Vec::new());
+        assert_eq!(device_list(&HashMap::new(), &HashMap::new(), Some(1)), Vec::new());
     }
 
     #[test]

@@ -102,17 +102,6 @@ pub fn resolve_default_device<'a>(
     matched.or(lowest)
 }
 
-/// Combines default-name resolution with tracked [`RawSinkProps`]. `None` while resolution or
-/// `Props` is still missing; the maps update from separate PipeWire events. The raw props stay
-/// tracked because writes scale the current channels.
-pub fn compute_master<'a, 'p>(
-    default_name: Option<&str>,
-    names: impl Iterator<Item = (u32, &'a str)>,
-    props: impl Fn(u32) -> Option<&'p RawSinkProps>,
-) -> Option<MasterVolume> {
-    resolve_default_device(default_name, names).and_then(props).map(master_volume_from_props)
-}
-
 /// Inverse of [`master_volume_from_props`]'s cube root: scales `current` so its loudest channel
 /// reads `target`, clamped to `[0.0, max]`; all-silent channels spread evenly, having no balance to
 /// keep. PipeWire stores `channelVolumes` cubed, so skipping this wrote 30% as 67%, the read mistake
@@ -723,26 +712,5 @@ mod tests {
         let extracted = extract_sink_props(&value).expect("the round trip must still parse as sink props");
         assert!(extracted.mute);
         assert_eq!(extracted.channel_volumes, vec![0.027, 0.027]);
-    }
-
-    #[test]
-    fn compute_master_combines_resolution_and_lookup() {
-        let sinks = HashMap::from([(59, "alsa_output.pci-...analog-stereo".to_string())]);
-        let props = HashMap::from([(59, raw(&[0.027, 0.027], &[]))]);
-        let master = compute_master(Some("alsa_output.pci-...analog-stereo"), names(&sinks), |id| props.get(&id))
-            .expect("a resolved sink with Props has a volume");
-        assert!((master.volume - 0.3).abs() < 1e-6, "expected ~0.3, got {}", master.volume);
-        assert!(!master.muted);
-    }
-
-    #[test]
-    fn compute_master_is_none_when_the_resolved_sink_has_no_props_yet() {
-        let sinks = HashMap::from([(59, "alsa_output.pci-...analog-stereo".to_string())]);
-        assert_eq!(compute_master(Some("alsa_output.pci-...analog-stereo"), names(&sinks), |_| None), None);
-    }
-
-    #[test]
-    fn compute_master_is_none_with_nothing_tracked() {
-        assert_eq!(compute_master(None, names(&HashMap::new()), |_| None), None);
     }
 }

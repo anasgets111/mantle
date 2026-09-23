@@ -166,12 +166,14 @@ impl MixerState {
         }
     }
 
-    /// `node.name` selected by `default` metadata for one direction.
-    pub(super) fn default_name(&self, kind: DefaultDevice) -> Option<&str> {
-        match kind {
+    /// The node `default` metadata routes one direction to, per [`master::resolve_default_device`].
+    pub(super) fn default_node(&self, kind: DefaultDevice) -> Option<u32> {
+        let name = match kind {
             DefaultDevice::Sink => self.default_sink_name.as_deref(),
             DefaultDevice::Source => self.default_source_name.as_deref(),
-        }
+        };
+        let entries = self.device_entries(kind);
+        master::resolve_default_device(name, entries.iter().map(|(&id, entry)| (id, entry.names.node_name.as_str())))
     }
 
     /// Publishes even if the receiver is absent; that is startup or shutdown, not a tracking error.
@@ -181,16 +183,11 @@ impl MixerState {
         if !self.hydrated {
             return;
         }
-        let master = master::compute_master(
-            self.default_sink_name.as_deref(),
-            self.sinks.iter().map(|(&id, sink)| (id, sink.names.node_name.as_str())),
-            |id| self.sinks.get(&id).and_then(|sink| sink.props.as_ref()),
-        );
-        let source = master::compute_master(
-            self.default_source_name.as_deref(),
-            self.sources.iter().map(|(&id, source)| (id, source.names.node_name.as_str())),
-            |id| self.sources.get(&id).and_then(|source| source.props.as_ref()),
-        );
+        let (sink, source) = (self.default_node(DefaultDevice::Sink), self.default_node(DefaultDevice::Source));
+        let measured = |kind, id: Option<u32>| {
+            self.device_entries(kind).get(&id?)?.props.as_ref().map(master::master_volume_from_props)
+        };
+        let (master, source_master) = (measured(DefaultDevice::Sink, sink), measured(DefaultDevice::Source, source));
         // Join here: identity and volume arrive on unordered PipeWire `info` and `param` events;
         // folding volume in at info time could overwrite a reading already landed.
         let apps = self
@@ -206,10 +203,10 @@ impl MixerState {
             volume: master.map(|m| m.volume.min(master::SINK_MAX_VOLUME)),
             muted: master.is_some_and(|m| m.muted),
             balance: master.and_then(|m| m.balance),
-            source_volume: source.map(|s| s.volume),
-            source_muted: source.is_some_and(|s| s.muted),
-            sinks: device_list(&self.sinks, &self.device_routes, self.default_sink_name.as_deref()),
-            sources: device_list(&self.sources, &self.device_routes, self.default_source_name.as_deref()),
+            source_volume: source_master.map(|s| s.volume),
+            source_muted: source_master.is_some_and(|s| s.muted),
+            sinks: device_list(&self.sinks, &self.device_routes, sink),
+            sources: device_list(&self.sources, &self.device_routes, source),
             apps,
             bluetooth: bluetooth_codecs(&self.bluez_cards),
         };

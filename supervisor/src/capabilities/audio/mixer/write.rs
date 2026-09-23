@@ -83,7 +83,8 @@ pub(super) fn cap_default_sink(state: &Rc<RefCell<MixerState>>) {
 /// Sets or toggles one direction's mute. `None` toggles using resolved `Props`; a set needs no
 /// channel count because mute carries no `channelVolumes`.
 fn set_default_muted(state: &Rc<RefCell<MixerState>>, kind: DefaultDevice, muted: Option<bool>) {
-    let Some(node_id) = resolve_default_node(state, kind) else {
+    // A mute carries no `channelVolumes`, so an explicit set needs only the node, not its `Props`.
+    let Some(node_id) = state.borrow().default_node(kind) else {
         debug!("a {kind:?} mute has no resolved default device to write to; ignored");
         return;
     };
@@ -101,23 +102,11 @@ fn set_default_muted(state: &Rc<RefCell<MixerState>>, kind: DefaultDevice, muted
     write_device_volume(state, kind, node_id, None, Some(muted));
 }
 
-/// The default node id alone, without waiting for its `Props`. A mute carries no `channelVolumes`,
-/// so an explicit set needs only this; [`resolve_default`] is for the paths that read the current
-/// value.
-fn resolve_default_node(state: &Rc<RefCell<MixerState>>, kind: DefaultDevice) -> Option<u32> {
-    let state = state.borrow();
-    let entries = state.device_entries(kind);
-    master::resolve_default_device(
-        state.default_name(kind),
-        entries.iter().map(|(&id, entry)| (id, entry.names.node_name.as_str())),
-    )
-}
-
-/// One direction's node and last-read `Props`, `None` whenever [`master::compute_master`] is.
+/// One direction's default node and its last-read `Props`, for the writes that scale them.
 fn resolve_default(state: &Rc<RefCell<MixerState>>, kind: DefaultDevice) -> Option<(u32, master::RawSinkProps)> {
-    let node_id = resolve_default_node(state, kind)?;
-    let current = state.borrow().device_entries(kind).get(&node_id)?.props.clone()?;
-    Some((node_id, current))
+    let state = state.borrow();
+    let node_id = state.default_node(kind)?;
+    Some((node_id, state.device_entries(kind).get(&node_id)?.props.clone()?))
 }
 
 /// Writes through the owning object. A hardware sink's node `Props` accepts
