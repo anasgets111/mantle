@@ -8,8 +8,6 @@ use serde::Deserialize;
 use zbus::names::OwnedBusName;
 use zbus::zvariant::{Array, Dict, OwnedObjectPath, OwnedValue, Signature, Str, StructureBuilder, Type, Value};
 
-use super::{RawIconPixmap, RawToolTip};
-
 #[zbus::proxy(interface = "org.kde.StatusNotifierItem")]
 pub(super) trait StatusNotifierItem {
     #[zbus(name = "Activate")]
@@ -22,33 +20,11 @@ pub(super) trait StatusNotifierItem {
     #[zbus(name = "Scroll")]
     fn scroll(&self, delta: i32, orientation: &str) -> zbus::Result<()>;
 
-    #[zbus(property, name = "Id")]
-    fn id(&self) -> zbus::Result<String>;
+    // The rest of the properties arrive through one `GetAll` in `item::fetch_tray_item_base`.
     #[zbus(property, name = "Status")]
     fn status(&self) -> zbus::Result<String>;
-    #[zbus(property, name = "Title")]
-    fn title(&self) -> zbus::Result<String>;
-    #[zbus(property, name = "IconName")]
-    fn icon_name(&self) -> zbus::Result<String>;
-    #[zbus(property, name = "IconPixmap")]
-    fn icon_pixmap(&self) -> zbus::Result<Vec<RawIconPixmap>>;
-    #[zbus(property, name = "OverlayIconName")]
-    fn overlay_icon_name(&self) -> zbus::Result<String>;
-    #[zbus(property, name = "OverlayIconPixmap")]
-    fn overlay_icon_pixmap(&self) -> zbus::Result<Vec<RawIconPixmap>>;
-    #[zbus(property, name = "AttentionIconName")]
-    fn attention_icon_name(&self) -> zbus::Result<String>;
-    #[zbus(property, name = "AttentionIconPixmap")]
-    fn attention_icon_pixmap(&self) -> zbus::Result<Vec<RawIconPixmap>>;
-    #[zbus(property, name = "ToolTip")]
-    fn tool_tip(&self) -> zbus::Result<RawToolTip>;
-    #[zbus(property, name = "ItemIsMenu")]
-    fn item_is_menu(&self) -> zbus::Result<bool>;
     #[zbus(property, name = "Menu")]
     fn menu(&self) -> zbus::Result<OwnedObjectPath>;
-    /// Application icon directory, searched before the session theme.
-    #[zbus(property, name = "IconThemePath")]
-    fn icon_theme_path(&self) -> zbus::Result<String>;
 
     #[zbus(signal, name = "NewTitle")]
     fn new_title(&self);
@@ -135,16 +111,8 @@ pub(super) trait StatusNotifierWatcherClient {
 
 /// Binds to `destination`, not the item's unique name: Chromium answers only its registered
 /// well-known name (ADR-0072).
-/// Uncached, like `battery::controller`'s UPower proxy and for a sharper reason: an item announces
-/// a changed icon with SNI's own `NewIcon`, never `PropertiesChanged`, which is the only thing
-/// zbus's default lazy cache invalidates on. `registry::spawn_item_signal_forwarder` re-reads
-/// `IconName` when `NewIcon` fires, and with a cache it would be handed the value from bind time
-/// every time.
-///
-/// libayatana-appindicator is why this is not merely stale but broken: it renumbers its icon file
-/// on every update (`tray-icon-<app>-0.png` to `-1.png` ...) and unlinks the old one, so a cached
-/// name is a path that no longer exists and the item paints an empty square. Seen with
-/// `yerd-gui`, which rotates within a second of launch.
+/// Uncached: an item announces changes with SNI's own `NewX` signals, never `PropertiesChanged`,
+/// the only thing zbus's cache invalidates on.
 pub(super) async fn bind_item(
     connection: &zbus::Connection,
     destination: &OwnedBusName,

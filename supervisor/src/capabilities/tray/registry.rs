@@ -79,7 +79,7 @@ pub(super) async fn register_item(
         return Err(format!("{destination} exports no StatusNotifierItem at {object_path}: {err}"));
     }
 
-    let mut tray_item = fetch_tray_item_base(&item, &unique_name, &object_path).await;
+    let mut tray_item = fetch_tray_item_base(&item, &unique_name, &object_path, &TrayItem::default()).await;
 
     let menu_path = item.menu().await.ok();
     let menu = match &menu_path {
@@ -151,8 +151,7 @@ pub(super) async fn register_item(
 ///
 /// Deletes a spooled PNG the refreshed item no longer names; departure only reaps current paths.
 ///
-/// Returns whether the item changed. A pixmap icon always counts: its PNG keeps its path when the
-/// pixels change, and the push is what makes the renderer read it again.
+/// Returns whether the item changed, new pixels at an unchanged PNG path included.
 fn keep_menu_across(entry: &mut ItemEntry, mut refreshed: TrayItem) -> bool {
     let old = &entry.last_known;
     for (old, new) in [
@@ -167,10 +166,7 @@ fn keep_menu_across(entry: &mut ItemEntry, mut refreshed: TrayItem) -> bool {
         }
     }
     let menu = entry.last_known.menu.take();
-    let changed = refreshed != entry.last_known
-        || [&refreshed.icon_path, &refreshed.attention_icon_path, &refreshed.overlay_icon_path]
-            .iter()
-            .any(|path| path.is_some());
+    let changed = refreshed != entry.last_known;
     refreshed.menu = menu;
     entry.last_known = refreshed;
     changed
@@ -212,7 +208,11 @@ fn spawn_item_signal_forwarder(
                 break;
             }
 
-            let refreshed = fetch_tray_item_base(&item, &unique_name, &key.1).await;
+            let Some(previous) = registry.lock().expect("mutex poisoned").get(&key).map(|e| e.last_known.clone())
+            else {
+                break;
+            };
+            let refreshed = fetch_tray_item_base(&item, &unique_name, &key.1, &previous).await;
 
             let mut guard = registry.lock().expect("mutex poisoned");
             let Some(entry) = guard.get_mut(&key) else { break };
@@ -404,9 +404,15 @@ mod tests {
         assert!(!keep_menu_across(&mut entry, renamed.clone()), "an identical refresh is no change");
         assert!(entry.last_known.menu.is_some(), "an unchanged refresh must not blank the menu either");
 
-        let pixmap = TrayItem { icon_path: Some("/spool/item.png".to_string()), ..renamed };
+        let pixmap = TrayItem {
+            icon_path: Some("/spool/item.png".to_string()),
+            pixmap_digests: [Some(1), None, None],
+            ..renamed
+        };
         assert!(keep_menu_across(&mut entry, pixmap.clone()));
-        assert!(keep_menu_across(&mut entry, pixmap), "the same PNG path can hold new pixels");
+        assert!(!keep_menu_across(&mut entry, pixmap.clone()), "the same pixels are no change");
+        let repainted = TrayItem { pixmap_digests: [Some(2), None, None], ..pixmap };
+        assert!(keep_menu_across(&mut entry, repainted), "the same PNG path can hold new pixels");
     }
 
     /// In-place updates must not move an item.

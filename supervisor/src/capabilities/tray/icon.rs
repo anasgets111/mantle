@@ -9,7 +9,7 @@ use super::MAX_PIXMAP_DIMENSION;
 /// Instance-dir subdirectory for tray pixmaps, shared by writes and per-item deletion.
 pub(super) const SPOOL_SUBDIR: &str = "tray";
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Hash)]
 pub(super) struct IconPixmap {
     pub(super) width: i32,
     pub(super) height: i32,

@@ -1,18 +1,21 @@
 //! `TrayItem` hydration from `StatusNotifierItem` properties; `menu` is fetched separately.
 //! Split from `dbus::tray` -- see `dbus/tray/mod.rs` for the module-level doc.
 
+use std::collections::HashMap;
+use std::hash::{BuildHasher, BuildHasherDefault, DefaultHasher};
+
 use serde::Serialize;
 use shared::debug;
 use zbus::names::OwnedUniqueName;
-use zbus::zvariant::OwnedObjectPath;
+use zbus::zvariant::{OwnedObjectPath, OwnedValue};
 
-use super::MAX_TRAY_TEXT_BYTES;
 use super::icon::{
     IconPixmap, IconSource, icon_filename_stem, largest_valid_pixmap, resolve_icon_source, write_icon_png,
 };
 use super::menu::MenuItem;
 use super::proxies::StatusNotifierItemProxy;
 use super::registration::item_id;
+use super::{MAX_TRAY_TEXT_BYTES, RawIconPixmap, RawToolTip};
 use crate::capabilities::truncate_utf8_bytes;
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]
@@ -48,6 +51,10 @@ pub struct TrayItem {
     /// Top-level menu entries, or `nil` without `com.canonical.dbusmenu`. Fetched at registration
     /// and on layout updates.
     pub menu: Option<Vec<MenuItem>>,
+    /// Digests of the base, attention and overlay pixmaps behind the `*_path` PNGs, so new pixels
+    /// at an unchanged path still compare unequal and push.
+    #[serde(skip)]
+    pub(super) pixmap_digests: [Option<u64>; 3],
 }
 
 /// [`MAX_TRAY_TEXT_BYTES`] applied to one application-supplied property.
@@ -70,51 +77,60 @@ fn flatten_tooltip(title: &str, text: &str) -> Option<String> {
     }
 }
 
+/// `{X}IconName`, `{X}IconPixmap` and spool suffix for the base, attention and overlay variants, in
+/// [`TrayItem::pixmap_digests`] order. The suffixes keep the three PNGs distinct (ADR-0074).
+const VARIANTS: [(&str, &str, &str); 3] = [
+    ("IconName", "IconPixmap", ""),
+    ("AttentionIconName", "AttentionIconPixmap", "-attention"),
+    ("OverlayIconName", "OverlayIconPixmap", "-overlay"),
+];
+
+/// Removes `name` from a `GetAll` reply as `T`; absent or mistyped reads as `None`.
+fn take<T: TryFrom<OwnedValue>>(all: &mut HashMap<String, OwnedValue>, name: &str) -> Option<T> {
+    all.remove(name).and_then(|value| T::try_from(value).ok())
+}
+
+/// Every SNI property in one `GetAll` round trip. An item that refuses it reads as all defaults.
+async fn get_all(item: &StatusNotifierItemProxy<'static>) -> HashMap<String, OwnedValue> {
+    let proxy = item.inner();
+    let reply = async {
+        zbus::fdo::PropertiesProxy::builder(proxy.connection())
+            .destination(proxy.destination().clone())?
+            .path(proxy.path().clone())?
+            .cache_properties(zbus::proxy::CacheProperties::No)
+            .build()
+            .await?
+            .get_all(proxy.interface().clone())
+            .await
+            .map_err(zbus::Error::from)
+    };
+    reply.await.unwrap_or_else(|err| {
+        debug!("GetAll failed for {}: {err}", proxy.destination());
+        HashMap::new()
+    })
+}
+
 /// Reads every property `tray.items` needs except `menu`, which uses the caller's bound proxy via
-/// [`fetch_menu_via`]. A failed property read falls back to that property's empty/default value.
+/// [`fetch_menu_via`]. A missing property falls back to its empty/default value. `previous` is the
+/// item this refresh replaces; pixels it already spooled are not encoded again.
 pub(super) async fn fetch_tray_item_base(
     item: &StatusNotifierItemProxy<'static>,
     unique_name: &OwnedUniqueName,
     object_path: &OwnedObjectPath,
+    previous: &TrayItem,
 ) -> TrayItem {
-    let (
-        id_prop,
-        title,
-        status,
-        item_is_menu,
-        tooltip,
-        theme_path,
-        icon_name,
-        icon_pixmap,
-        attention_icon_name,
-        attention_icon_pixmap,
-        overlay_icon_name,
-        overlay_icon_pixmap,
-    ) = futures_util::join!(
-        item.id(),
-        item.title(),
-        item.status(),
-        item.item_is_menu(),
-        item.tool_tip(),
-        item.icon_theme_path(),
-        item.icon_name(),
-        item.icon_pixmap(),
-        item.attention_icon_name(),
-        item.attention_icon_pixmap(),
-        item.overlay_icon_name(),
-        item.overlay_icon_pixmap(),
-    );
+    let mut all = get_all(item).await;
     // Every string below is whatever application owns this item; cap each on the way in
     // (`MAX_TRAY_TEXT_BYTES`) rather than trusting SNI, which bounds none of them.
-    let id_prop = capped(id_prop.unwrap_or_default());
-    let title = capped(title.unwrap_or_default());
-    let status = capped(status.unwrap_or_default());
-    let item_is_menu = item_is_menu.unwrap_or(false);
-    let tooltip = tooltip.ok();
+    let id_prop = capped(take(&mut all, "Id").unwrap_or_default());
+    let title = capped(take(&mut all, "Title").unwrap_or_default());
+    let status = capped(take(&mut all, "Status").unwrap_or_default());
+    let item_is_menu = take(&mut all, "ItemIsMenu").unwrap_or(false);
+    let tooltip = take::<RawToolTip>(&mut all, "ToolTip");
     // Read once for all three icon variants; the directory belongs to the item (ADR-0074). Not
     // capped with the rest: a path cut short names a *different* directory rather than none, so
     // `theme_path_file` bounds it at `PATH_MAX` where it is used instead.
-    let theme_path = theme_path.unwrap_or_default();
+    let theme_path: String = take(&mut all, "IconThemePath").unwrap_or_default();
 
     let id = item_id(unique_name.as_str(), object_path.as_str());
     let stem = icon_filename_stem(&id);
@@ -122,22 +138,21 @@ pub(super) async fn fetch_tray_item_base(
     let tooltip_flat =
         tooltip.and_then(|(_, _, tt_title, tt_text)| flatten_tooltip(&capped(tt_title), &capped(tt_text)));
 
-    let (icon_name, icon_path) =
-        resolve_variant(icon_name.unwrap_or_default(), icon_pixmap.unwrap_or_default(), &theme_path, &stem, "");
-    let (attention_icon_name, attention_icon_path) = resolve_variant(
-        attention_icon_name.unwrap_or_default(),
-        attention_icon_pixmap.unwrap_or_default(),
-        &theme_path,
-        &stem,
-        "-attention",
-    );
-    let (overlay_icon_name, overlay_icon_path) = resolve_variant(
-        overlay_icon_name.unwrap_or_default(),
-        overlay_icon_pixmap.unwrap_or_default(),
-        &theme_path,
-        &stem,
-        "-overlay",
-    );
+    let previous_paths = [&previous.icon_path, &previous.attention_icon_path, &previous.overlay_icon_path];
+    let mut pixmap_digests = [None; 3];
+    let [(icon_name, icon_path), (attention_icon_name, attention_icon_path), (overlay_icon_name, overlay_icon_path)] =
+        std::array::from_fn(|index| {
+            let (name_key, pixmap_key, suffix) = VARIANTS[index];
+            let (resolved, digest) = resolve_variant(
+                take(&mut all, name_key).unwrap_or_default(),
+                take(&mut all, pixmap_key).unwrap_or_default(),
+                &theme_path,
+                &format!("{stem}{suffix}"),
+                previous_paths[index].as_deref().zip(previous.pixmap_digests[index]),
+            );
+            pixmap_digests[index] = digest;
+            resolved
+        });
 
     TrayItem {
         id,
@@ -152,37 +167,42 @@ pub(super) async fn fetch_tray_item_base(
         status,
         item_is_menu,
         menu: None,
+        pixmap_digests,
     }
 }
 
 /// One icon triple (`{X}IconName`, `{X}IconPixmap`, `IconThemePath`) resolved to the config's
-/// `(name, path)` pair (ADR-0074). `spool_suffix` keeps the three PNGs distinct; otherwise the last
-/// write to `{unique_name}.png` would win.
+/// `(name, path)` pair (ADR-0074), plus the digest of a spooled pixmap. `spooled` is the path and
+/// digest this variant spooled last time; the same pixels reuse that file.
 fn resolve_variant(
     icon_name_prop: String,
-    pixmaps_raw: Vec<(i32, i32, Vec<u8>)>,
+    pixmaps_raw: Vec<RawIconPixmap>,
     theme_path: &str,
-    stem: &str,
-    spool_suffix: &str,
-) -> (Option<String>, Option<String>) {
+    spool_stem: &str,
+    spooled: Option<(&str, u64)>,
+) -> ((Option<String>, Option<String>), Option<u64>) {
     let pixmaps: Vec<IconPixmap> =
         pixmaps_raw.into_iter().map(|(width, height, bytes)| IconPixmap { width, height, bytes }).collect();
     // Capped here rather than at the three call sites, so no `{X}IconName` can reach a `TrayItem`
     // uncapped by being passed in from a fourth one later.
     match resolve_icon_source(&capped(icon_name_prop), &pixmaps, theme_path) {
-        IconSource::ThemePathFile(path) => (None, Some(path)),
-        IconSource::Name(name) => (Some(name), None),
-        IconSource::Pixmap => match largest_valid_pixmap(&pixmaps) {
-            Some(pixmap) => match write_icon_png(&format!("{stem}{spool_suffix}"), pixmap) {
-                Ok(path) => (None, Some(path)),
+        IconSource::ThemePathFile(path) => ((None, Some(path)), None),
+        IconSource::Name(name) => ((Some(name), None), None),
+        IconSource::Pixmap => {
+            let Some(pixmap) = largest_valid_pixmap(&pixmaps) else { return ((None, None), None) };
+            let digest = BuildHasherDefault::<DefaultHasher>::default().hash_one(pixmap);
+            if let Some((path, _)) = spooled.filter(|&(_, last)| last == digest) {
+                return ((None, Some(path.to_string())), Some(digest));
+            }
+            match write_icon_png(spool_stem, pixmap) {
+                Ok(path) => ((None, Some(path)), Some(digest)),
                 Err(err) => {
-                    debug!("failed to spool icon PNG for {stem}{spool_suffix}: {err}");
-                    (None, None)
+                    debug!("failed to spool icon PNG for {spool_stem}: {err}");
+                    ((None, None), None)
                 }
-            },
-            None => (None, None),
-        },
-        IconSource::None => (None, None),
+            }
+        }
+        IconSource::None => ((None, None), None),
     }
 }
 
@@ -200,6 +220,20 @@ mod tests {
     #[test]
     fn resolve_display_name_falls_back_to_id_when_title_is_empty() {
         assert_eq!(resolve_display_name("", "discord"), "discord");
+    }
+
+    #[test]
+    fn unchanged_pixels_reuse_the_spooled_png_instead_of_encoding_again() {
+        let bytes = vec![0xff, 1, 2, 3];
+        let digest = BuildHasherDefault::<DefaultHasher>::default().hash_one(IconPixmap {
+            width: 1,
+            height: 1,
+            bytes: bytes.clone(),
+        });
+        assert_eq!(
+            resolve_variant(String::new(), vec![(1, 1, bytes)], "", "stem", Some(("/spool/stem.png", digest))),
+            ((None, Some("/spool/stem.png".to_string())), Some(digest))
+        );
     }
 
     // ---- flatten_tooltip ----
