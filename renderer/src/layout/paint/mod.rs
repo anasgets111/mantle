@@ -254,11 +254,9 @@ fn command_bounds(command: &DrawCmd) -> PhysicalRect {
     if !matrix.iter().all(|n| n.is_finite()) {
         return UNCLIPPED;
     }
-    let corners = [(inner.x0, inner.y0), (inner.x1, inner.y0), (inner.x0, inner.y1), (inner.x1, inner.y1)]
-        .map(|(x, y)| node::apply_affine(*matrix, x as f32, y as f32));
-    let (x0, y0) = corners.iter().fold((f32::MAX, f32::MAX), |(x, y), c| (x.min(c.0), y.min(c.1)));
-    let (x1, y1) = corners.iter().fold((f32::MIN, f32::MIN), |(x, y), c| (x.max(c.0), y.max(c.1)));
-    union(inner, snap_to_physical(LogicalRect { x: x0, y: y0, width: x1 - x0, height: y1 - y0 }, 1.0))
+    let (x, y) = (inner.x0 as f32, inner.y0 as f32);
+    let rect = LogicalRect { x, y, width: inner.x1 as f32 - x, height: inner.y1 as f32 - y };
+    union(inner, snap_to_physical(super::region::transformed_bounds(*matrix, rect), 1.0))
 }
 
 fn union(a: PhysicalRect, b: PhysicalRect) -> PhysicalRect {

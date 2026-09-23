@@ -85,7 +85,7 @@ fn compose_affine(outer: node::Affine, inner: node::Affine) -> node::Affine {
 }
 
 /// The axis-aligned bounds of `rect`'s four corners under `matrix`.
-fn transformed_bounds(matrix: node::Affine, rect: LogicalRect) -> LogicalRect {
+pub(super) fn transformed_bounds(matrix: node::Affine, rect: LogicalRect) -> LogicalRect {
     let corners = [
         node::apply_affine(matrix, rect.x, rect.y),
         node::apply_affine(matrix, rect.x + rect.width, rect.y),
