@@ -61,12 +61,12 @@ macro_rules! info {
 }
 
 /// See [`error!`]. `debug!(2; "...")` writes at verbosity 2 (`-vvv`); bare
-/// `debug!(...)` is verbosity 1. The `;` (not `,`) keeps a plain format string from ever parsing as
+/// `debug!(...)` is verbosity 1, and any other verbosity fails to compile. The `;` (not `,`) keeps a plain format string from ever parsing as
 /// a verbosity: `debug!("a, b")`'s first token is the whole string literal, not a bare integer.
 #[macro_export]
 macro_rules! debug {
-    ($verbosity:literal; $($arg:tt)*) => {
-        $crate::log::emit($crate::log::Level::Debug($verbosity), module_path!(), format_args!($($arg)*))
+    (2; $($arg:tt)*) => {
+        $crate::log::emit($crate::log::Level::Debug(2), module_path!(), format_args!($($arg)*))
     };
     ($($arg:tt)*) => {
         $crate::log::emit($crate::log::Level::Debug(1), module_path!(), format_args!($($arg)*))
