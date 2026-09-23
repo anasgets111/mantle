@@ -83,14 +83,11 @@ pub(super) fn table_number(property: &str, table: &mlua::Table, key: &str) -> Re
     }
 }
 
-/// `table.get` is metamethod-aware. This used to run once per consumer, producing 16 `__index`
-/// calls for one child's margin, a row measured 18 wide, and its 10-wide child at 16..26. Parsing
-/// each geometry property once per node/pass fixes that. The reads also escaped ADR-0021's 5ms
-/// getter budget: `CpuBudget` hooked `Signal::get_value` and dropped the hook on return, covering
-/// only a signal getter's body; a `__index` loop of 200 million iterations made `Scene::apply` take
-/// 26.10s and return `Ok(())` with no `Signal`, on the VM's thread (ADR-0039). `LayoutPassBudget`
-/// now holds the hook for the whole pass and refuses it in 2s with `PassBudgetExceeded`. Scalar
-/// shorthand is shared by `margin`/`padding`/`border_width`; only the last keeps a range check.
+/// Parsed once per node per pass: `table.get` is metamethod-aware, so every consumer reading it
+/// again would re-run `__index`, and two reads could disagree about one child's margin. Those reads
+/// are plain Lua outside any signal, so `LayoutPassBudget`, not ADR-0021's per-getter cap, bounds
+/// them. Scalar shorthand is shared by `margin`/`padding`/`border_width`; only the last keeps a
+/// range check.
 pub fn parse_edge_insets(properties: &PropMap, property: &str) -> Result<EdgeInsets, LayoutError> {
     // Deferred on the evaluation pass: a panel root's `margin` is the live layer-shell anchor
     // offset (`set_margin`, ADR-0038 decision 2), so zero is the absent-key placeholder.

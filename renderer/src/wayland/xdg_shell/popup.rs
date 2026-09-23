@@ -182,9 +182,8 @@ impl App {
         else {
             return;
         };
-        // An open popup whose placement has moved since its positioner was given one. `Nothing`
-        // used to be the whole of the already-open case, which is why a popup kept the size it
-        // opened at for as long as it stayed open.
+        // An open popup whose placement has moved since its positioner was given one, so an open
+        // popup follows its size instead of keeping the one it opened at.
         let moved = (visible && popup.is_some())
             .then(|| Placement { size: *requested, ..Placement::of(spec, LogicalRect::default()) })
             .filter(|placement| placement.is_measured() && Some(*placement) != *positioned);

@@ -66,8 +66,8 @@ pub enum PaintStyle {
     /// `capture` (ADR-0248): an output's live contents. `output` empty or naming nothing connected
     /// draws nothing, the same answer `image`'s empty `source` gets.
     Capture { output: String, fit: Fit, live: bool, paint_cursor: bool },
-    /// `target` is `None` when no `secure_submit` is declared. Malformed targets fail here instead
-    /// of being skipped until the press path (`layout::secure_submit` used to do that).
+    /// `target` is `None` when no `secure_submit` is declared. Malformed targets fail here, not at
+    /// the press path.
     TextField {
         target: Option<SecureSubmitTarget>,
         placeholder: String,

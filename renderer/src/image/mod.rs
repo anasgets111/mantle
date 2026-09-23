@@ -1304,10 +1304,8 @@ pub(super) fn decode_within_limits<'a>(
     reader.limits(limits);
     let decoder = reader.into_decoder().map_err(|err| err.to_string())?;
     let need = ::image::ImageDecoder::total_bytes(&decoder);
-    // One decode may have the whole pool but not more than it, which is what keeps the ceiling a
-    // ceiling now that it is no longer divided by [`MAX_DECODE_WORKERS`]. Without this an
-    // 8192x8192 16-bit source would be admitted alone at 512 MiB, twice what the four workers
-    // could reach before.
+    // One decode may have the whole pool but not more than it, which keeps the pool a ceiling:
+    // an 8192x8192 16-bit source would otherwise be admitted alone at 512 MiB.
     if need > DECODE_POOL_BYTES {
         return Err(format!("decodes to {need} bytes, past the {DECODE_POOL_BYTES}-byte pool budget"));
     }
