@@ -210,34 +210,8 @@ fn contains(rect: LogicalRect, point: LogicalPoint) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::layout::node::PropMap;
     use crate::layout::node::{StyleRun, TextAlign};
     use crate::text::shaping::ShapeRequest;
-
-    fn node(
-        kind: &'static str,
-        (x, y, width, height): (f32, f32, f32, f32),
-        children: Vec<ResolvedNode>,
-    ) -> ResolvedNode {
-        ResolvedNode {
-            displayed_source: None,
-            dissolve: None,
-            tweens: Vec::new(),
-            leaving: false,
-            blur: false,
-            transform: crate::layout::node::Transform::default(),
-            margin: crate::layout::node::EdgeInsets::default(),
-            id: crate::layout::scene::NodeId::test(0),
-            kind,
-            rect: LogicalRect { x, y, width, height },
-            visible: true,
-            opacity: 1.0,
-            properties: PropMap::default(),
-            paint: None,
-            children,
-            text_memo: None,
-        }
-    }
 
     // ---- cursor_under (ADR-0107) ----
 
@@ -255,18 +229,22 @@ mod tests {
     /// through the same inverse.
     #[test]
     fn a_scaled_node_takes_the_pointer_where_it_is_painted() {
-        let mut scaled = node("button", (100.0, 100.0, 20.0, 20.0), vec![node("rect", (0.0, 0.0, 10.0, 20.0), vec![])]);
+        let mut scaled = ResolvedNode::test(
+            "button",
+            (100.0, 100.0, 20.0, 20.0),
+            vec![ResolvedNode::test("rect", (0.0, 0.0, 10.0, 20.0), vec![])],
+        );
         scaled.transform.scale = (2.0, 2.0);
-        let tree = node("panel", (0.0, 0.0, 400.0, 400.0), vec![scaled]);
+        let tree = ResolvedNode::test("panel", (0.0, 0.0, 400.0, 400.0), vec![scaled]);
         // Inside the painted box (90..130), outside the laid-out one (100..120).
         let path = hit_path(&tree, LogicalPoint { x: 92.0, y: 95.0 });
         assert_eq!(path.len(), 3, "the button and its left child, which paints over 90..110");
         assert_eq!(path[2].kind, "rect");
         assert_eq!(hit_path(&tree, LogicalPoint { x: 125.0, y: 105.0 }).len(), 2, "the right half has no child");
         assert_eq!(hit_path(&tree, LogicalPoint { x: 135.0, y: 105.0 }).len(), 1, "past the painted box");
-        let mut flat = node("button", (100.0, 100.0, 20.0, 20.0), vec![]);
+        let mut flat = ResolvedNode::test("button", (100.0, 100.0, 20.0, 20.0), vec![]);
         flat.transform.scale = (0.0, 1.0);
-        let tree = node("panel", (0.0, 0.0, 400.0, 400.0), vec![flat]);
+        let tree = ResolvedNode::test("panel", (0.0, 0.0, 400.0, 400.0), vec![flat]);
         assert_eq!(hit_path(&tree, LogicalPoint { x: 110.0, y: 110.0 }).len(), 1, "a zero scale takes nothing");
     }
 
@@ -274,16 +252,20 @@ mod tests {
     fn a_button_with_a_handler_is_a_pointer_and_one_without_is_the_arrow() {
         let shaping = ShapingHandle::spawn();
         let lua = mlua::Lua::new();
-        let handled = node(
+        let handled = ResolvedNode::test(
             "row",
             (0.0, 0.0, 100.0, 20.0),
             vec![
                 with(
-                    node("button", (0.0, 0.0, 50.0, 20.0), vec![node("text", (0.0, 0.0, 30.0, 20.0), vec![])]),
+                    ResolvedNode::test(
+                        "button",
+                        (0.0, 0.0, 50.0, 20.0),
+                        vec![ResolvedNode::test("text", (0.0, 0.0, 30.0, 20.0), vec![])],
+                    ),
                     "on_click",
                     function(&lua),
                 ),
-                node("button", (50.0, 0.0, 50.0, 20.0), vec![]),
+                ResolvedNode::test("button", (50.0, 0.0, 50.0, 20.0), vec![]),
             ],
         );
         let point = LogicalPoint { x: 10.0, y: 10.0 };
@@ -292,10 +274,10 @@ mod tests {
         assert_eq!(cursor_under(&hit_path(&handled, point), point, &shaping), CursorIcon::Default);
         assert_eq!(cursor_under(&[], point, &shaping), CursorIcon::Default, "off every node");
 
-        let submit = with(node("button", (0.0, 0.0, 50.0, 20.0), vec![]), "submit", Value::Boolean(true));
+        let submit = with(ResolvedNode::test("button", (0.0, 0.0, 50.0, 20.0), vec![]), "submit", Value::Boolean(true));
         let point = LogicalPoint { x: 10.0, y: 10.0 };
         assert_eq!(cursor_under(&hit_path(&submit, point), point, &shaping), CursorIcon::Pointer, "submit = true");
-        let wheel = with(node("button", (0.0, 0.0, 50.0, 20.0), vec![]), "on_wheel", function(&lua));
+        let wheel = with(ResolvedNode::test("button", (0.0, 0.0, 50.0, 20.0), vec![]), "on_wheel", function(&lua));
         assert_eq!(cursor_under(&hit_path(&wheel, point), point, &shaping), CursorIcon::Pointer, "on_wheel only");
     }
 
@@ -304,13 +286,17 @@ mod tests {
         let shaping = ShapingHandle::spawn();
         let lua = mlua::Lua::new();
         let disabled = with(
-            with(node("button", (0.0, 0.0, 50.0, 20.0), vec![]), "on_click", function(&lua)),
+            with(ResolvedNode::test("button", (0.0, 0.0, 50.0, 20.0), vec![]), "on_click", function(&lua)),
             "cursor",
             Value::String(lua.create_string("not-allowed").unwrap()),
         );
-        let field = node("textfield", (0.0, 0.0, 50.0, 20.0), vec![]);
+        let field = ResolvedNode::test("textfield", (0.0, 0.0, 50.0, 20.0), vec![]);
         let handle = with(
-            node("row", (0.0, 0.0, 100.0, 20.0), vec![disabled, node("row", (50.0, 0.0, 50.0, 20.0), vec![field])]),
+            ResolvedNode::test(
+                "row",
+                (0.0, 0.0, 100.0, 20.0),
+                vec![disabled, ResolvedNode::test("row", (50.0, 0.0, 50.0, 20.0), vec![field])],
+            ),
             "cursor",
             Value::String(lua.create_string("grab").unwrap()),
         );
@@ -333,7 +319,7 @@ mod tests {
             "on_link",
             function(&lua),
         );
-        let card = node("button", (0.0, 0.0, 300.0, 60.0), vec![text]);
+        let card = ResolvedNode::test("button", (0.0, 0.0, 300.0, 60.0), vec![text]);
         let plain = LogicalPoint { x: 2.0, y: 5.0 };
         assert_eq!(
             cursor_under(&hit_path(&card, plain), plain, &shaping),
@@ -347,7 +333,7 @@ mod tests {
     // ---- link_under (ADR-0106) ----
 
     fn styled_text(content: &str, runs: Vec<StyleRun>, align: TextAlign, width: f32) -> ResolvedNode {
-        let mut node = node("text", (0.0, 0.0, width, 60.0), Vec::new());
+        let mut node = ResolvedNode::test("text", (0.0, 0.0, width, 60.0), Vec::new());
         node.paint = Some(PaintStyle::Text {
             content: content.into(),
             runs,
@@ -385,7 +371,7 @@ mod tests {
     fn a_press_puts_the_caret_on_the_boundary_nearest_it() {
         let shaping = ShapingHandle::spawn();
         let text = "hello";
-        let mut field = node("textfield", (10.0, 0.0, 200.0, 28.0), Vec::new());
+        let mut field = ResolvedNode::test("textfield", (10.0, 0.0, 200.0, 28.0), Vec::new());
         field.paint = Some(PaintStyle::TextField {
             target: None,
             placeholder: String::new(),
@@ -415,7 +401,7 @@ mod tests {
     #[test]
     fn an_empty_draft_still_answers_with_a_caret() {
         let shaping = ShapingHandle::spawn();
-        let mut field = node("textfield", (10.0, 0.0, 200.0, 28.0), Vec::new());
+        let mut field = ResolvedNode::test("textfield", (10.0, 0.0, 200.0, 28.0), Vec::new());
         field.paint = Some(PaintStyle::TextField {
             target: None,
             placeholder: "reply".to_string(),
@@ -515,24 +501,32 @@ mod tests {
 
     #[test]
     fn a_point_outside_the_root_hits_nothing_at_all() {
-        let root = node("panel", (0.0, 0.0, 100.0, 32.0), vec![]);
+        let root = ResolvedNode::test("panel", (0.0, 0.0, 100.0, 32.0), vec![]);
         assert!(hit_path(&root, LogicalPoint { x: 50.0, y: 40.0 }).is_empty());
         assert!(hit_path(&root, LogicalPoint { x: -1.0, y: 10.0 }).is_empty());
     }
 
     #[test]
     fn a_point_inside_the_root_but_in_no_child_yields_the_root_alone() {
-        let root = node("panel", (0.0, 0.0, 100.0, 32.0), vec![node("button", (10.0, 4.0, 20.0, 24.0), vec![])]);
+        let root = ResolvedNode::test(
+            "panel",
+            (0.0, 0.0, 100.0, 32.0),
+            vec![ResolvedNode::test("button", (10.0, 4.0, 20.0, 24.0), vec![])],
+        );
         let path = hit_path(&root, LogicalPoint { x: 80.0, y: 16.0 });
         assert_eq!(kinds(&path), ["panel"]);
     }
 
     #[test]
     fn the_deepest_containing_node_is_last_and_the_root_is_first() {
-        let root = node(
+        let root = ResolvedNode::test(
             "panel",
             (0.0, 0.0, 100.0, 32.0),
-            vec![node("row", (0.0, 0.0, 100.0, 32.0), vec![node("button", (10.0, 4.0, 20.0, 24.0), vec![])])],
+            vec![ResolvedNode::test(
+                "row",
+                (0.0, 0.0, 100.0, 32.0),
+                vec![ResolvedNode::test("button", (10.0, 4.0, 20.0, 24.0), vec![])],
+            )],
         );
         let path = hit_path(&root, LogicalPoint { x: 15.0, y: 10.0 });
         assert_eq!(kinds(&path), ["panel", "row", "button"]);
@@ -540,10 +534,14 @@ mod tests {
 
     #[test]
     fn a_childs_rect_is_read_relative_to_its_parent_not_to_the_surface() {
-        let root = node(
+        let root = ResolvedNode::test(
             "panel",
             (0.0, 0.0, 100.0, 32.0),
-            vec![node("row", (40.0, 0.0, 60.0, 32.0), vec![node("button", (10.0, 4.0, 20.0, 24.0), vec![])])],
+            vec![ResolvedNode::test(
+                "row",
+                (40.0, 0.0, 60.0, 32.0),
+                vec![ResolvedNode::test("button", (10.0, 4.0, 20.0, 24.0), vec![])],
+            )],
         );
         assert_eq!(kinds(&hit_path(&root, LogicalPoint { x: 55.0, y: 10.0 })), ["panel", "row", "button"]);
         assert_eq!(kinds(&hit_path(&root, LogicalPoint { x: 15.0, y: 10.0 })), ["panel"]);
@@ -551,10 +549,14 @@ mod tests {
 
     #[test]
     fn absolute_rect_sums_the_origins_the_walk_descended_through() {
-        let root = node(
+        let root = ResolvedNode::test(
             "panel",
             (0.0, 0.0, 100.0, 32.0),
-            vec![node("row", (40.0, 2.0, 60.0, 30.0), vec![node("button", (10.0, 4.0, 20.0, 24.0), vec![])])],
+            vec![ResolvedNode::test(
+                "row",
+                (40.0, 2.0, 60.0, 30.0),
+                vec![ResolvedNode::test("button", (10.0, 4.0, 20.0, 24.0), vec![])],
+            )],
         );
         let path = hit_path(&root, LogicalPoint { x: 55.0, y: 10.0 });
         assert_eq!(absolute_rect(&path), Some(LogicalRect { x: 50.0, y: 6.0, width: 20.0, height: 24.0 }));
@@ -564,28 +566,38 @@ mod tests {
 
     #[test]
     fn an_invisible_node_takes_its_whole_visible_subtree_out_of_the_path() {
-        let mut hidden = node("row", (0.0, 0.0, 100.0, 32.0), vec![node("button", (10.0, 4.0, 20.0, 24.0), vec![])]);
+        let mut hidden = ResolvedNode::test(
+            "row",
+            (0.0, 0.0, 100.0, 32.0),
+            vec![ResolvedNode::test("button", (10.0, 4.0, 20.0, 24.0), vec![])],
+        );
         hidden.visible = false;
-        let root = node("panel", (0.0, 0.0, 100.0, 32.0), vec![hidden]);
+        let root = ResolvedNode::test("panel", (0.0, 0.0, 100.0, 32.0), vec![hidden]);
         assert_eq!(kinds(&hit_path(&root, LogicalPoint { x: 15.0, y: 10.0 })), ["panel"]);
     }
 
     #[test]
     fn two_overlapping_siblings_resolve_to_the_later_declared_one() {
-        let root = node(
+        let root = ResolvedNode::test(
             "panel",
             (0.0, 0.0, 100.0, 32.0),
-            vec![node("under", (0.0, 0.0, 50.0, 32.0), vec![]), node("over", (0.0, 0.0, 50.0, 32.0), vec![])],
+            vec![
+                ResolvedNode::test("under", (0.0, 0.0, 50.0, 32.0), vec![]),
+                ResolvedNode::test("over", (0.0, 0.0, 50.0, 32.0), vec![]),
+            ],
         );
         assert_eq!(kinds(&hit_path(&root, LogicalPoint { x: 25.0, y: 16.0 })), ["panel", "over"]);
     }
 
     #[test]
     fn a_shared_edge_belongs_to_exactly_one_of_two_adjacent_rects() {
-        let root = node(
+        let root = ResolvedNode::test(
             "panel",
             (0.0, 0.0, 100.0, 32.0),
-            vec![node("left", (0.0, 0.0, 50.0, 32.0), vec![]), node("right", (50.0, 0.0, 50.0, 32.0), vec![])],
+            vec![
+                ResolvedNode::test("left", (0.0, 0.0, 50.0, 32.0), vec![]),
+                ResolvedNode::test("right", (50.0, 0.0, 50.0, 32.0), vec![]),
+            ],
         );
         assert_eq!(kinds(&hit_path(&root, LogicalPoint { x: 49.9, y: 16.0 })), ["panel", "left"]);
         assert_eq!(kinds(&hit_path(&root, LogicalPoint { x: 50.0, y: 16.0 })), ["panel", "right"]);
@@ -593,10 +605,13 @@ mod tests {
 
     #[test]
     fn a_zero_area_rect_contains_nothing_not_even_its_own_origin() {
-        let root = node(
+        let root = ResolvedNode::test(
             "panel",
             (0.0, 0.0, 100.0, 32.0),
-            vec![node("empty", (10.0, 10.0, 0.0, 12.0), vec![]), node("flat", (30.0, 10.0, 12.0, 0.0), vec![])],
+            vec![
+                ResolvedNode::test("empty", (10.0, 10.0, 0.0, 12.0), vec![]),
+                ResolvedNode::test("flat", (30.0, 10.0, 12.0, 0.0), vec![]),
+            ],
         );
         assert_eq!(kinds(&hit_path(&root, LogicalPoint { x: 10.0, y: 10.0 })), ["panel"]);
         assert_eq!(kinds(&hit_path(&root, LogicalPoint { x: 30.0, y: 10.0 })), ["panel"]);
@@ -604,10 +619,14 @@ mod tests {
 
     #[test]
     fn a_text_inside_a_button_still_leaves_the_button_findable_from_the_deep_end() {
-        let root = node(
+        let root = ResolvedNode::test(
             "panel",
             (0.0, 0.0, 100.0, 32.0),
-            vec![node("button", (10.0, 4.0, 40.0, 24.0), vec![node("text", (6.0, 5.0, 28.0, 14.0), vec![])])],
+            vec![ResolvedNode::test(
+                "button",
+                (10.0, 4.0, 40.0, 24.0),
+                vec![ResolvedNode::test("text", (6.0, 5.0, 28.0, 14.0), vec![])],
+            )],
         );
         let path = hit_path(&root, LogicalPoint { x: 20.0, y: 12.0 });
         assert_eq!(kinds(&path), ["panel", "button", "text"]);

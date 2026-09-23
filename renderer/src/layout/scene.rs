@@ -55,6 +55,35 @@ impl NodeId {
     }
 }
 
+#[cfg(test)]
+impl ResolvedNode {
+    /// A visible, unpainted node built by hand in a test, id 0; the test sets any other field.
+    pub(crate) fn test(
+        kind: &'static str,
+        (x, y, width, height): (f32, f32, f32, f32),
+        children: Vec<ResolvedNode>,
+    ) -> Self {
+        ResolvedNode {
+            id: NodeId::test(0),
+            kind,
+            rect: LogicalRect { x, y, width, height },
+            margin: EdgeInsets::default(),
+            visible: true,
+            opacity: 1.0,
+            transform: node::Transform::default(),
+            blur: false,
+            properties: PropMap::default(),
+            paint: None,
+            displayed_source: None,
+            dissolve: None,
+            children,
+            tweens: Vec::new(),
+            leaving: false,
+            text_memo: None,
+        }
+    }
+}
+
 /// Geometry parsed once per node/pass. A resolved table's `__index` still runs on each access, so
 /// this is separate from reading a `Signal`: the old pass made 16 `__index` calls for one child's
 /// margin, measured a row at 18 wide, then placed its 10-wide child at 16..26. The parent parses a

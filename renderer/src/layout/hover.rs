@@ -90,7 +90,6 @@ mod tests {
     use super::*;
     use crate::layout::node::PropMap;
     use crate::lua::signal::DirtyFlag;
-    use crate::text::snap::LogicalRect;
     use mlua::Lua;
 
     fn hover_userdata(lua: &Lua) -> (Signal, Value) {
@@ -116,24 +115,7 @@ mod tests {
         if let Some(on_hover) = on_hover {
             properties.insert("on_hover", on_hover);
         }
-        ResolvedNode {
-            displayed_source: None,
-            dissolve: None,
-            tweens: Vec::new(),
-            leaving: false,
-            blur: false,
-            transform: crate::layout::node::Transform::default(),
-            margin: crate::layout::node::EdgeInsets::default(),
-            id: crate::layout::scene::NodeId::test(0),
-            kind: "row",
-            rect: LogicalRect { x: rect.0, y: rect.1, width: rect.2, height: rect.3 },
-            visible: true,
-            opacity: 1.0,
-            properties,
-            paint: None,
-            children,
-            text_memo: None,
-        }
+        ResolvedNode { properties, ..ResolvedNode::test("row", rect, children) }
     }
 
     fn at(x: f32, y: f32) -> Option<LogicalPoint> {

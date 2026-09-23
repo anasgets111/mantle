@@ -186,24 +186,12 @@ mod tests {
             properties.insert("on_click", Value::Function(lua.create_function(|_, ()| Ok(())).unwrap()));
         }
         layout::ResolvedNode {
-            displayed_source: None,
-            dissolve: None,
-            tweens: Vec::new(),
-            leaving: false,
-            blur: false,
-            transform: crate::layout::node::Transform::default(),
-            margin: crate::layout::node::EdgeInsets::default(),
-            // Distinct per node, since `focused_field` now reads an identity off one of these and
-            // a shared id would make every hand-built field the same field.
+            // Distinct per node: `focused_field` reads an identity off one of these, and a shared id
+            // would make every hand-built field the same field.
             id: layout::scene::NodeId::test(NEXT_TEST_NODE_ID.fetch_add(1, Ordering::Relaxed)),
-            kind,
             paint: node::paint_style(kind, &properties).unwrap(),
-            rect: LogicalRect { x, y, width, height },
-            visible: true,
-            opacity: 1.0,
             properties,
-            children: Vec::new(),
-            text_memo: None,
+            ..layout::ResolvedNode::test(kind, (x, y, width, height), Vec::new())
         }
     }
 }

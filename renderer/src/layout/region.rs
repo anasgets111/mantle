@@ -294,24 +294,7 @@ mod tests {
         paint: Option<PaintStyle>,
         children: Vec<ResolvedNode>,
     ) -> ResolvedNode {
-        ResolvedNode {
-            displayed_source: None,
-            dissolve: None,
-            tweens: Vec::new(),
-            leaving: false,
-            blur: false,
-            transform: node::Transform::default(),
-            margin: crate::layout::node::EdgeInsets::default(),
-            id: NodeId::test(id),
-            kind,
-            rect: LogicalRect { x: rect.0, y: rect.1, width: rect.2, height: rect.3 },
-            visible: true,
-            opacity: 1.0,
-            properties: PropMap::default(),
-            paint,
-            children,
-            text_memo: None,
-        }
+        ResolvedNode { id: NodeId::test(id), paint, ..ResolvedNode::test(kind, rect, children) }
     }
 
     /// A box no bigger than its own rounding still has pixels, and every rectangle handed to
