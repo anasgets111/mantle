@@ -22,7 +22,7 @@ mod supervisor;
 mod watcher;
 
 use std::error::Error;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use capabilities::Capabilities;
@@ -309,7 +309,13 @@ async fn run_supervisor(
 
     // Generation 0 is boot-spawned by the Supervisor (ADR-0025); without it there is no shell, so
     // failure is fatal.
-    let renderer = Renderer::new(renderer_binary_path()?, &dir, &config_dir, profile, verbose);
+    // A user's own glvnd choice wins.
+    let egl_vendor = ["__EGL_VENDOR_LIBRARY_DIRS", generation::EGL_VENDOR_ENV]
+        .iter()
+        .all(|name| std::env::var_os(name).is_none())
+        .then(|| generation::nvidia_egl_vendor(Path::new("/sys"), Path::new("/usr/share/glvnd/egl_vendor.d")))
+        .flatten();
+    let renderer = Renderer::new(renderer_binary_path()?, &dir, &config_dir, profile, verbose, egl_vendor);
     let boot_child = renderer.spawn(0)?;
     // Immediately, and before the child can have finished starting: generation 0 belongs to this
     // pid, and the listener refuses any other process claiming it (`socket::GenerationRegistry`).

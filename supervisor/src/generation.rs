@@ -31,6 +31,32 @@ pub(crate) fn renderer_binary_path() -> io::Result<PathBuf> {
     Ok(exe.with_file_name(RENDERER_BINARY))
 }
 
+/// glvnd loads every EGL vendor it finds, so without this a machine that renders only on NVIDIA
+/// also maps Mesa's libgallium and libLLVM into the Renderer (7.5 MB PSS measured).
+pub(crate) const EGL_VENDOR_ENV: &str = "__EGL_VENDOR_LIBRARY_FILENAMES";
+
+/// NVIDIA's EGL vendor file in `vendor_dir` when every render node under `sys_root` is bound to the
+/// `nvidia` driver. `None` on a hybrid or non-NVIDIA machine, which needs Mesa.
+///
+/// ponytail: reads one vendor directory, not `/etc/glvnd/egl_vendor.d` too; a vendor file only
+/// there leaves glvnd loading every vendor, as it does without this.
+pub(crate) fn nvidia_egl_vendor(sys_root: &Path, vendor_dir: &Path) -> Option<PathBuf> {
+    let drivers = std::fs::read_dir(sys_root.join("class/drm"))
+        .ok()?
+        .filter_map(Result::ok)
+        .filter(|node| node.file_name().to_string_lossy().starts_with("renderD"))
+        .map(|node| std::fs::read_link(node.path().join("device/driver")))
+        .collect::<io::Result<Vec<_>>>()
+        .ok()?;
+    if drivers.is_empty() || !drivers.iter().all(|driver| driver.file_name().is_some_and(|name| name == "nvidia")) {
+        return None;
+    }
+    std::fs::read_dir(vendor_dir).ok()?.filter_map(Result::ok).map(|entry| entry.path()).find(|path| {
+        path.extension().is_some_and(|ext| ext == "json")
+            && path.file_name().is_some_and(|name| name.to_string_lossy().contains("nvidia"))
+    })
+}
+
 /// The Renderer binary and what every generation is told. Passed on each spawn, never set on the
 /// Supervisor, so what the shell launches inherits only the Supervisor's own environment.
 pub(crate) struct Renderer {
@@ -45,10 +71,12 @@ impl Renderer {
         config_dir: &Path,
         profile: Option<u64>,
         verbose: u8,
+        egl_vendor: Option<PathBuf>,
     ) -> Self {
         let mut env =
             vec![(shared::INSTANCE_DIR_ENV, instance_dir.into()), (shared::CONFIG_DIR_ENV, config_dir.into())];
         env.extend(profile.map(|secs| (shared::PROFILE_ENV, secs.to_string().into())));
+        env.extend(egl_vendor.map(|path| (EGL_VENDOR_ENV, path.into())));
         // Sent only when it says something: an absent `MANTLE_VERBOSE` and a `0` both read back as
         // no `-v` at all.
         if verbose > 0 {
@@ -148,9 +176,29 @@ mod tests {
     use super::*;
 
     #[test]
+    fn only_a_machine_whose_every_render_node_is_nvidia_gets_the_nvidia_egl_vendor() {
+        let root = tempfile::tempdir().unwrap();
+        let (sys, vendors) = (root.path().join("sys"), root.path().join("egl_vendor.d"));
+        std::fs::create_dir_all(&vendors).unwrap();
+        std::fs::write(vendors.join("10_nvidia.json"), "{}").unwrap();
+        std::fs::write(vendors.join("50_mesa.json"), "{}").unwrap();
+        let node = |name: &str, driver: &str| {
+            let device = sys.join("class/drm").join(name).join("device");
+            std::fs::create_dir_all(&device).unwrap();
+            std::os::unix::fs::symlink(format!("../../../bus/pci/drivers/{driver}"), device.join("driver")).unwrap();
+        };
+
+        assert_eq!(nvidia_egl_vendor(&sys, &vendors), None, "no render node");
+        node("renderD128", "nvidia");
+        assert_eq!(nvidia_egl_vendor(&sys, &vendors), Some(vendors.join("10_nvidia.json")));
+        node("renderD129", "i915");
+        assert_eq!(nvidia_egl_vendor(&sys, &vendors), None, "a hybrid machine needs Mesa");
+    }
+
+    #[test]
     fn a_renderer_is_told_its_instance_config_profile_and_verbosity_explicitly() {
         let env = |profile, verbose| {
-            Renderer::new(PathBuf::new(), Path::new("/instance"), Path::new("/cfg"), profile, verbose).env
+            Renderer::new(PathBuf::new(), Path::new("/instance"), Path::new("/cfg"), profile, verbose, None).env
         };
         let told = [(shared::INSTANCE_DIR_ENV, "/instance".into()), (shared::CONFIG_DIR_ENV, "/cfg".into())];
         assert_eq!(env(None, 0), told, "no profile, no -v: neither optional entry is sent");
