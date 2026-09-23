@@ -21,7 +21,6 @@ futures-util = "0.3.34"
 hound = "3.5.1"
 inotify = "0.11.5"
 lewton = "0.10.2"
-# One `malloc_trim` call after the update check (`memory.rs`). Already in the tree through `nix`.
 libc.workspace = true
 niri-ipc = "26.4.0"
 nix = { workspace = true, features = ["process", "signal", "time", "user"] }
