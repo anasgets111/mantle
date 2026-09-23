@@ -16,8 +16,10 @@ pub(super) struct Screen {
     width: i32,
     height: i32,
     scale: i32,
+    fractional_scale: f64,
     /// Hz; `wl_output::mode` reports millihertz, so conversion happens once here.
     refresh: f64,
+    orientation: &'static str,
     model: String,
     description: Option<String>,
 }
@@ -31,6 +33,8 @@ struct OutputFacts {
     /// The current `Mode`'s `(dimensions, refresh_rate)`, or `None`; the pair stays coherent.
     current_mode: Option<((i32, i32), i32)>,
     scale_factor: i32,
+    /// `wl_output::geometry`'s transform.
+    transform: wl_output::Transform,
     model: String,
     description: Option<String>,
 }
@@ -76,12 +80,46 @@ fn screen_entry(index: usize, facts: &OutputFacts) -> Option<Screen> {
         width,
         height,
         scale: facts.scale_factor,
+        fractional_scale: fractional_scale(facts),
         // `Mode` allows zero when an output has no correct refresh rate, such as a virtual output.
         refresh: facts.current_mode.map_or(0.0, |(_, rate)| f64::from(rate) / 1000.0),
+        orientation: orientation_str(facts.transform),
         model: facts.model.clone(),
         description: facts.description.clone(),
     })
 }
+
+/// Falls back to the integer scale without a mode or a logical size.
+fn fractional_scale(facts: &OutputFacts) -> f64 {
+    use wl_output::Transform;
+    let fallback = f64::from(facts.scale_factor);
+    let (Some(((mode_width, mode_height), _)), Some((logical_width, _))) = (facts.current_mode, facts.logical_size)
+    else {
+        return fallback;
+    };
+    if logical_width == 0 {
+        return fallback;
+    }
+    // A mode is measured before rotation; a logical size after it.
+    let quarter_turn =
+        matches!(facts.transform, Transform::_90 | Transform::_270 | Transform::Flipped90 | Transform::Flipped270);
+    f64::from(if quarter_turn { mode_height } else { mode_width }) / f64::from(logical_width)
+}
+
+fn orientation_str(transform: wl_output::Transform) -> &'static str {
+    use wl_output::Transform;
+    match transform {
+        Transform::_90 => "90",
+        Transform::_180 => "180",
+        Transform::_270 => "270",
+        Transform::Flipped => "flipped",
+        Transform::Flipped90 => "flipped_90",
+        Transform::Flipped180 => "flipped_180",
+        Transform::Flipped270 => "flipped_270",
+        _ => "normal",
+    }
+}
+
 /// Per-output fields as a JSON array, pushed through the same `Loader::to_lua_value` as
 /// capability `StateSnapshot`s (ADR-0041 decision 2).
 pub(super) fn screens_payload(screens: &[Screen]) -> serde_json::Value {
@@ -96,7 +134,9 @@ pub(super) fn screens_payload(screens: &[Screen]) -> serde_json::Value {
                     "width": screen.width,
                     "height": screen.height,
                     "scale": screen.scale,
+                    "fractional_scale": screen.fractional_scale,
                     "refresh": screen.refresh,
+                    "orientation": screen.orientation,
                     "model": screen.model,
                     "description": screen.description,
                 })
@@ -138,6 +178,7 @@ impl App {
                     .find(|mode| mode.current)
                     .map(|mode| (mode.dimensions, mode.refresh_rate)),
                 scale_factor: info.scale_factor,
+                transform: info.transform,
                 model: info.model.clone(),
                 description: info.description.clone(),
             };
@@ -311,6 +352,7 @@ mod tests {
             logical_size: Some((1920, 1080)),
             current_mode: Some(((1920, 1080), 60_000)),
             scale_factor: 1,
+            transform: wl_output::Transform::Normal,
             model: "TEST".to_string(),
             description: None,
         }
@@ -328,7 +370,9 @@ mod tests {
             width,
             height,
             scale,
+            fractional_scale: 1.0,
             refresh: 60.0,
+            orientation: "normal",
             model: "TEST".to_string(),
             description: None,
         };
@@ -426,12 +470,54 @@ mod tests {
         assert_eq!(
             screens_payload(&screens),
             serde_json::json!([
-                { "name": "eDP-1", "x": 0, "y": 0, "width": 1920, "height": 1080, "scale": 1, "refresh": 60.0,
+                { "name": "eDP-1", "x": 0, "y": 0, "width": 1920, "height": 1080, "scale": 1,
+                  "fractional_scale": 1.0, "refresh": 60.0, "orientation": "normal",
                   "model": "TEST", "description": null },
-                { "name": "DP-1", "x": 1920, "y": 0, "width": 1920, "height": 1080, "scale": 1, "refresh": 60.0,
+                { "name": "DP-1", "x": 1920, "y": 0, "width": 1920, "height": 1080, "scale": 1,
+                  "fractional_scale": 1.0, "refresh": 60.0, "orientation": "normal",
                   "model": "TEST", "description": "Dell Inc. DELL U2720Q 1234 (DP-1)" },
             ])
         );
+    }
+
+    #[test]
+    fn fractional_scale_is_derived_from_the_current_mode_over_the_logical_size() {
+        let mut facts = facts(Some("eDP-1"));
+        facts.current_mode = Some(((2880, 1620), 60_000));
+        facts.logical_size = Some((1920, 1080));
+
+        assert_eq!(screen_entry(0, &facts).unwrap().fractional_scale, 1.5);
+    }
+
+    #[test]
+    fn fractional_scale_accounts_for_a_rotated_transform_swapping_mode_dimensions() {
+        // xdg-output-unstable-v1's own worked example: a 1920x1080 mode turned 90 degrees reports
+        // a logical size of 1080x1920, so the ratio must compare like axes, not raw width to width.
+        let mut facts = facts(Some("eDP-1"));
+        facts.current_mode = Some(((1920, 1080), 60_000));
+        facts.logical_size = Some((1080, 1920));
+        facts.transform = wl_output::Transform::_90;
+
+        assert_eq!(screen_entry(0, &facts).unwrap().fractional_scale, 1.0);
+    }
+
+    #[test]
+    fn fractional_scale_falls_back_to_the_integer_scale_factor_without_a_mode_or_logical_size() {
+        let mut no_mode = facts(Some("eDP-1"));
+        no_mode.current_mode = None;
+        no_mode.scale_factor = 2;
+        assert_eq!(screen_entry(0, &no_mode).unwrap().fractional_scale, 2.0);
+
+        let mut no_logical = facts(Some("eDP-1"));
+        no_logical.logical_size = None;
+        no_logical.scale_factor = 2;
+        assert_eq!(screen_entry(0, &no_logical).unwrap().fractional_scale, 2.0);
+
+        // Pathological: a compositor reporting a zero-width logical size can't divide either.
+        let mut zero_width = facts(Some("eDP-1"));
+        zero_width.logical_size = Some((0, 1080));
+        zero_width.scale_factor = 3;
+        assert_eq!(fractional_scale(&zero_width), 3.0);
     }
 
     #[test]

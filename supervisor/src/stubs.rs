@@ -492,9 +492,21 @@ const RENDERER_SOURCED: &str = r#"
 ---@field width integer Logical pixels, already divided by `scale`. Not the mode's pixel count.
 ---@field height integer Logical pixels, on the same terms as `width`.
 ---@field scale integer The compositor's integer scale factor for this output, `1` on an ordinary display and `2` on a HiDPI one. Not a divisor: `width` and `height` above are already logical. Read it to pick sizes.
+---@field fractional_scale number The compositor's real scale, such as `1.5`, where `scale` rounds to a whole number. It equals `scale` on an output with no mode.
 ---@field refresh number Hz. `0` for an output with no current mode, such as a virtual one.
+---@field orientation Orientation The output's `wl_output` transform, such as `"90"` on a monitor turned a quarter turn. `width` and `height` already reflect it.
 ---@field model string The monitor model the compositor advertises, e.g. `"DELL U2720Q"`. Survives a connector rename when a dock or GPU change turns `DP-3` into `DP-5`.
 ---@field description? string The compositor's label for people. Its format varies by compositor. Hyprland's includes the serial, which tells two identical monitors apart. Absent below `wl_output` v4.
+
+---@alias Orientation
+---| "normal" # No transform.
+---| "90" # Rotated 90 degrees counter-clockwise.
+---| "180" # Rotated 180 degrees.
+---| "270" # Rotated 270 degrees counter-clockwise.
+---| "flipped" # Mirrored around a vertical axis, no rotation.
+---| "flipped_90" # Mirrored, then rotated 90 degrees counter-clockwise.
+---| "flipped_180" # Mirrored, then rotated 180 degrees.
+---| "flipped_270" # Mirrored, then rotated 270 degrees counter-clockwise.
 
 ---@class RescueState
 ---@field is_rescue boolean A reload failed and the scene from before the edit is still on screen. Covers reloads only: a config that fails its very first evaluation has no tree to render a banner through (ADR-0046).
