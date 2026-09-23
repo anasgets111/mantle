@@ -114,7 +114,7 @@ impl StatusNotifierWatcher {
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use std::collections::HashMap;
 
     use zbus::zvariant::OwnedObjectPath;
@@ -144,7 +144,7 @@ mod tests {
     /// Stub for the properties `register_item` reads. A bare p2p peer never replies, so the real
     /// calls hang; without this, the accepts test hung until SIGKILL. `Menu` returns `/`, skipping
     /// DBusMenu/GetLayout.
-    struct StubStatusNotifierItem;
+    pub(in super::super) struct StubStatusNotifierItem;
 
     #[zbus::interface(name = "org.kde.StatusNotifierItem")]
     impl StubStatusNotifierItem {
@@ -182,11 +182,21 @@ mod tests {
         }
     }
 
-    /// Stub for `NameHasOwner`, which the pre-insert liveness check calls on a p2p connection.
-    struct StubDBusDaemon;
+    /// Answers the daemon calls registration and adoption make on a p2p connection: the name list
+    /// adoption walks, the owner lookup `resolve_registration` performs for a well-known name, and
+    /// the liveness check `register_item` runs before inserting.
+    pub(in super::super) struct StubDBusDaemon;
 
     #[zbus::interface(name = "org.freedesktop.DBus")]
     impl StubDBusDaemon {
+        #[zbus(name = "ListNames")]
+        fn list_names(&self) -> Vec<String> {
+            vec![":1.5".to_string(), "org.freedesktop.StatusNotifierItem-4242-1".to_string()]
+        }
+        #[zbus(name = "GetNameOwner")]
+        fn get_name_owner(&self, _name: String) -> String {
+            ":1.5".to_string()
+        }
         #[zbus(name = "NameHasOwner")]
         fn name_has_owner(&self, _name: String) -> bool {
             true

@@ -303,69 +303,9 @@ async fn adopt_existing_items(
 
 #[cfg(test)]
 mod tests {
+    use super::super::watcher::tests::{StubDBusDaemon, StubStatusNotifierItem};
     use super::*;
     use crate::capabilities::test_support::p2p_pair_serving;
-
-    /// Answers the three daemon calls adoption makes: the name list it walks, the owner lookup
-    /// `resolve_registration` performs for a well-known name, and the liveness check
-    /// `register_item` runs before inserting.
-    struct StubDBusDaemon;
-
-    #[zbus::interface(name = "org.freedesktop.DBus")]
-    impl StubDBusDaemon {
-        #[zbus(name = "ListNames")]
-        fn list_names(&self) -> Vec<String> {
-            vec![":1.5".to_string(), "org.freedesktop.StatusNotifierItem-4242-1".to_string()]
-        }
-        #[zbus(name = "GetNameOwner")]
-        fn get_name_owner(&self, _name: String) -> String {
-            ":1.5".to_string()
-        }
-        #[zbus(name = "NameHasOwner")]
-        fn name_has_owner(&self, _name: String) -> bool {
-            true
-        }
-    }
-
-    /// A Chromium-shaped item: it exports nothing at the spec's default path, only at
-    /// `/StatusNotifierItem/1`.
-    struct StubChromiumItem;
-
-    #[zbus::interface(name = "org.kde.StatusNotifierItem")]
-    impl StubChromiumItem {
-        #[zbus(property, name = "Id")]
-        fn id(&self) -> String {
-            "chromium-item".to_string()
-        }
-        #[zbus(property, name = "Title")]
-        fn title(&self) -> String {
-            "Chromium Item".to_string()
-        }
-        #[zbus(property, name = "IconName")]
-        fn icon_name(&self) -> String {
-            String::new()
-        }
-        #[zbus(property, name = "IconPixmap")]
-        fn icon_pixmap(&self) -> Vec<super::super::RawIconPixmap> {
-            Vec::new()
-        }
-        #[zbus(property, name = "Status")]
-        fn status(&self) -> String {
-            "Active".to_string()
-        }
-        #[zbus(property, name = "ItemIsMenu")]
-        fn item_is_menu(&self) -> bool {
-            false
-        }
-        #[zbus(property, name = "ToolTip")]
-        fn tool_tip(&self) -> super::super::RawToolTip {
-            (String::new(), Vec::new(), String::new(), String::new())
-        }
-        #[zbus(property, name = "Menu")]
-        fn menu(&self) -> OwnedObjectPath {
-            OwnedObjectPath::try_from("/").expect("\"/\" is a valid object path")
-        }
-    }
 
     /// Adoption has no registration argument to read, so it guessed the spec default and stopped
     /// there, which is no path at all for a Chromium application, and cost Slack its icon on
@@ -378,7 +318,8 @@ mod tests {
     #[tokio::test]
     async fn adoption_finds_an_item_that_exports_only_the_chromium_path() {
         let (connection, _peer) = p2p_pair_serving(|peer| {
-            peer.serve_at("/StatusNotifierItem/1", StubChromiumItem)?.serve_at("/org/freedesktop/DBus", StubDBusDaemon)
+            peer.serve_at("/StatusNotifierItem/1", StubStatusNotifierItem)?
+                .serve_at("/org/freedesktop/DBus", StubDBusDaemon)
         })
         .await;
 
