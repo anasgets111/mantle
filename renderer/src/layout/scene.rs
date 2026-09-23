@@ -1034,7 +1034,8 @@ fn advance_paint_only(node: &mut ResolvedNode, now: Instant, lua: &Lua) -> Resul
     // It also writes nothing into the property map, so it needs none of the save-and-restore that
     // makes advancing a tween all-or-nothing.
     node.dissolve = advanced_dissolve(node.dissolve.take(), now);
-    if !node.tweens.is_empty() {
+    // A played-out sequence rests on its last frame and moves nothing.
+    if node.tweens.iter().any(|tween| !tween.resting) {
         advance_paint_only_node(node, now, lua)?;
     }
     for child in &mut node.children {
