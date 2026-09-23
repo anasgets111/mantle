@@ -42,7 +42,9 @@ use wayland_protocols::xdg::shell::client::{xdg_positioner, xdg_surface};
 
 use crate::image::ImageCache;
 use crate::layout;
-use crate::layout::instance::{OutputGeometry, SurfaceInstance, expand_instances, is_instance_of, reconcile_instances};
+use crate::layout::instance::{
+    OutputGeometry, SurfaceInstance, expand_instances, is_instance_of, reconcile_instances, warn_unmatched_monitors,
+};
 use crate::layout::node::{
     self, ConstraintAdjustment, LayerKind, PanelSpec, PopupAnchor, PopupSpec, SizeHint, SizeMode, SurfaceSpec,
     WindowSpec,
@@ -336,21 +338,7 @@ pub fn run(
     // A family a node names by hand is not resolved here: it lands on first sight (ADR-0144).
     app.shaping.set_chain(&crate::lua::fonts::declared_chain(app.client.lua()));
     let instances = expand_instances(&specs, &outputs);
-    for spec in &specs {
-        let SurfaceSpec::Panel(panel) = spec else {
-            // Only a `panel` names a monitor; toplevels are compositor-placed and popups use
-            // a parent.
-            continue;
-        };
-        if panel.topology.monitor != "All" && !outputs.iter().any(|output| output.name == panel.topology.monitor) {
-            // `expand_instances` returns nothing for a miss; log against the real startup output
-            // list so an unplugged monitor is explained once.
-            warn!(
-                "surface {:?} targets monitor {:?}, which is not connected; no surface created for it",
-                panel.topology.id, panel.topology.monitor
-            );
-        }
-    }
+    warn_unmatched_monitors(&specs, &outputs);
     app.client.set_instances(instances.clone());
     // The first resolve validates only: it runs before any surface binds, so instances use output
     // logical sizes and are never painted. Evaluation/apply already log and

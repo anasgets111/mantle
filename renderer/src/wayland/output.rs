@@ -191,7 +191,9 @@ impl App {
             crate::lua::timer::discard(self.client.lua());
             return;
         }
-        let fresh = expand_instances(&specs, &geometries_from(&self.screens(None)));
+        let outputs = geometries_from(&self.screens(None));
+        warn_unmatched_monitors(&specs, &outputs);
+        let fresh = expand_instances(&specs, &outputs);
         let reconcile = reconcile_instances(self.client.instances(), &fresh, &rebuilt);
         let previous = self.client.instances().to_vec();
         self.client.set_instances(reconcile.instances);

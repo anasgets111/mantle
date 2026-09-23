@@ -9,6 +9,7 @@
 
 use crate::layout::node::{SizeMode, SurfaceSpec};
 use crate::layout::scene::LogicalSize;
+use shared::warn;
 
 /// One `(panel, output)` pair (`CONTEXT.md`, Surface instance). `instance_id` is the shared id
 /// space for Lua, the retained scene and Wayland (ADR-0038).
@@ -154,6 +155,22 @@ pub fn expand_instances(specs: &[SurfaceSpec], outputs: &[OutputGeometry]) -> Ve
 /// `SurfaceInstance`'s `declared_id` on `TrackedSurface` instead of re-deriving it here.
 pub fn is_instance_of(instance_id: &str, declared_id: &str) -> bool {
     instance_id == declared_id || instance_id.strip_prefix(declared_id).is_some_and(|rest| rest.starts_with('@'))
+}
+
+/// Logs each `panel` whose `monitor` names no connected output. Called at apply rather than in
+/// [`expand_instances`], which a hotplug runs twice.
+pub fn warn_unmatched_monitors(specs: &[SurfaceSpec], outputs: &[OutputGeometry]) {
+    let connected: Vec<&str> = outputs.iter().map(|output| output.name.as_str()).collect();
+    for spec in specs {
+        let SurfaceSpec::Panel(panel) = spec else { continue };
+        let monitor = panel.topology.monitor.as_str();
+        if monitor != "All" && !connected.contains(&monitor) {
+            warn!(
+                "surface {:?} targets monitor {monitor:?}, which is not connected (connected: {connected:?}); no surface created for it",
+                panel.topology.id
+            );
+        }
+    }
 }
 
 /// What one output change does to a live generation's surface instances (ADR-0038 decision 3:
