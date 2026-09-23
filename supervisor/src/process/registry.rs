@@ -34,6 +34,8 @@ pub(crate) async fn dispatch(
 ) {
     let generation_id = envelope.params.generation_id;
     let id = envelope.id;
+    let exited =
+        |code| send_frame_logged(registry, generation_id, &SupervisorFrame::ProcessExited(ProcessExited { id, code }));
     match envelope.params.action.as_str() {
         "run" => match process_run_args(&envelope.params.arguments) {
             Some((cmd, args)) => match spawn_and_register_process(processes, generation_id, id, &cmd, &args) {
@@ -46,13 +48,7 @@ pub(crate) async fn dispatch(
                         let _ = task_done_tx.send((generation_id, id));
                     });
                 }
-                None => {
-                    send_frame_logged(
-                        registry,
-                        generation_id,
-                        &SupervisorFrame::ProcessExited(ProcessExited { id, code: None }),
-                    );
-                }
+                None => exited(None),
             },
             None => {
                 debug!(
@@ -61,11 +57,7 @@ pub(crate) async fn dispatch(
                 );
                 // Lua's ProcessHandle already awaits `id`'s exit_cb; this prevents a callback pair
                 // leak when no process spawned.
-                send_frame_logged(
-                    registry,
-                    generation_id,
-                    &SupervisorFrame::ProcessExited(ProcessExited { id, code: None }),
-                );
+                exited(None);
             }
         },
         // No registry entry, no handle, no callbacks: a detached program is not this shell's to
@@ -84,7 +76,7 @@ pub(crate) async fn dispatch(
         },
         "kill" => {
             if let Some(code) = kill_registered_process(processes, generation_id, id).await {
-                send_frame_logged(registry, generation_id, &SupervisorFrame::ProcessExited(ProcessExited { id, code }));
+                exited(code);
             }
         }
         _ => debug!("unknown action {:?} from generation {generation_id}", envelope.params.action),
