@@ -2,7 +2,7 @@
 //!
 //! Watches the whole config directory tree (`~/.config/mantle/` by default), not just `shell.lua`,
 //! for `.lua` changes. Coalesces save bursts
-//! (`CREATE`+`MODIFY`+`CLOSE_WRITE`, or atomic-save `MOVED_TO`) and triggers after the debounce
+//! (`CREATE`+`CLOSE_WRITE`, or atomic-save `MOVED_TO`) and triggers after the debounce
 //! window since the last relevant event. Watches directories, not inodes, because atomic-save
 //! editors unlink/recreate files.
 //!
@@ -30,15 +30,11 @@ use inotify::{EventMask, Inotify, WatchDescriptor, WatchMask, Watches};
 use shared::{debug, warn};
 use tokio::sync::mpsc;
 
-/// Handled inotify kinds: create, modify, atomic-save rename in/out (including delete-via-rename),
-/// delete, and completed write. Read events (`ACCESS`, `OPEN`, ...) are not requested.
+/// Handled inotify kinds: create, atomic-save rename in/out (including delete-via-rename),
+/// delete, and completed write. `MODIFY` fires per `write()` and would hash half-written files;
+/// `CLOSE_WRITE` follows it with the whole file.
 fn watch_mask() -> WatchMask {
-    WatchMask::CREATE
-        | WatchMask::MODIFY
-        | WatchMask::MOVED_TO
-        | WatchMask::MOVED_FROM
-        | WatchMask::DELETE
-        | WatchMask::CLOSE_WRITE
+    WatchMask::CREATE | WatchMask::MOVED_TO | WatchMask::MOVED_FROM | WatchMask::DELETE | WatchMask::CLOSE_WRITE
 }
 
 /// Watches `dir` and recursively covers current subdirectories, including later directories walked
@@ -439,7 +435,7 @@ mod tests {
         assert!(recv_within(&mut rx, WAIT).await.is_some(), "the first write must fire a trigger");
         assert!(recv_within(&mut rx, SHORT_DEBOUNCE * 3).await.is_none(), "must settle before the next write");
 
-        // Write-truncate-rewrite with identical bytes emits MODIFY/CLOSE_WRITE but is no change.
+        // Write-truncate-rewrite with identical bytes emits CLOSE_WRITE but is no change.
         std::fs::write(&path, "return {}").unwrap();
 
         assert!(
