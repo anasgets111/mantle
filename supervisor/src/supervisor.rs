@@ -255,8 +255,13 @@ impl Supervisor {
             return;
         }
         debug!("hydrating generation {generation_id} with {} snapshots", self.last_snapshots.len());
-        for snapshot in self.last_snapshots.values() {
-            send_frame_logged(&self.registry, generation_id, &SupervisorFrame::StateSnapshot(snapshot.clone()));
+        // Moved through each frame and back, as in `push_snapshot`, rather than deep-cloned.
+        for (capability, snapshot) in std::mem::take(&mut self.last_snapshots) {
+            let frame = SupervisorFrame::StateSnapshot(snapshot);
+            send_frame_logged(&self.registry, generation_id, &frame);
+            if let SupervisorFrame::StateSnapshot(snapshot) = frame {
+                self.last_snapshots.insert(capability, snapshot);
+            }
         }
         // ADR-0058 decision 4: replay before relock, or one default frame looks like a broken
         // shell. No Supervisor-side auth-capability check here; Renderer reports Refused if its
