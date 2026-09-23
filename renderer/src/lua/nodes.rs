@@ -9,27 +9,6 @@ use mlua::{Lua, Table, Value};
 
 use crate::layout::node::PropMap;
 
-/// Nine geometric nodes plus four root roles: `panel`, `window`, `popup`, `lock`
-/// (ADR-0040). `lock` joined under ADR-0052 decision 2: declaration location is separate from
-/// Wayland object lifetime (ADR-0049); `window`/`popup` wait for `visible`, `lock` for compositor
-/// `locked`.
-const NODE_KINDS: [&str; 14] = [
-    "rect",
-    "row",
-    "column",
-    "text",
-    "icon",
-    "image",
-    "capture",
-    "button",
-    "list",
-    "textfield",
-    "panel",
-    "window",
-    "popup",
-    "lock",
-];
-
 /// Properties every kind, including surface roles, takes: geometry, identity, and two flags.
 /// `layout::scene` reads them without checking kind.
 const COMMON_PROPERTIES: &[&str] = &[
@@ -65,7 +44,9 @@ const BOX_PROPERTIES: &[&str] =
 /// Which kinds that arm covers.
 const BOX_KINDS: [&str; 8] = ["rect", "row", "column", "button", "panel", "window", "popup", "lock"];
 
-/// Per-kind properties beyond the common and box lists. This rejects unknown keys; before it,
+/// Every node kind, in constructor order, with its properties beyond the common and box lists. The
+/// last four rows are root roles (ADR-0040); declaring a `lock` does not lock (ADR-0052 decision 2).
+/// This rejects unknown keys; before it,
 /// misspelled `aling_v = "Center"` was copied, read by nothing, and silently failed to centre.
 ///
 /// ponytail: hand-written because the schema is scattered `properties.get("...")` calls across
@@ -123,6 +104,11 @@ const NODE_PROPERTIES: &[(&str, &[&str])] = &[
     ("lock", &["child"]),
 ];
 
+/// The node kinds, one global constructor each.
+fn node_kinds() -> impl Iterator<Item = &'static str> {
+    NODE_PROPERTIES.iter().map(|(kind, _)| *kind)
+}
+
 /// The vocabulary's own `&'static str` for `kind` and the lists it draws its properties from, or
 /// `None` if it is not a node kind.
 fn accepted_lists(kind: &str) -> Option<(&'static str, &'static [&'static str], bool)> {
@@ -178,9 +164,9 @@ pub enum DeserializeError {
     UnsupportedKind(String),
 }
 
-/// Registers each [`NODE_KINDS`] entry as a constructor that tags its props table with `kind`.
+/// Registers each [`node_kinds`] entry as a constructor that tags its props table with `kind`.
 pub fn register_node_constructors(lua: &Lua) -> mlua::Result<()> {
-    for kind in NODE_KINDS {
+    for kind in node_kinds() {
         lua.globals().set(
             kind,
             lua.create_function(move |_, props: Table| {
@@ -354,13 +340,9 @@ mod tests {
     #[test]
     fn every_node_kind_constructs_and_tags_correctly() {
         let lua = lua_with_constructors();
-        for kind in NODE_KINDS {
+        for kind in node_kinds() {
             let table: Table = lua.load(format!("return {kind} {{}}")).eval().unwrap();
             assert_eq!(table.get::<String>("kind").unwrap(), kind);
-            assert!(
-                accepted_lists(kind).is_some(),
-                "`{kind}` has no NODE_PROPERTIES row, so its own tables are refused"
-            );
         }
     }
 
@@ -368,7 +350,6 @@ mod tests {
     fn window_and_popup_are_constructors_a_config_can_call() {
         // Explicitly named; the loop would pass whatever the array contains.
         let lua = lua_with_constructors();
-        assert!(NODE_KINDS.contains(&"window") && NODE_KINDS.contains(&"popup"));
         let table: Table = lua.load(r#"return popup { id = "menu", parent = "bar" }"#).eval().unwrap();
         assert_eq!(table.get::<String>("kind").unwrap(), "popup");
         assert_eq!(table.get::<String>("parent").unwrap(), "bar");
@@ -379,7 +360,6 @@ mod tests {
         // Pin by name (ADR-0054 decision 3); the loop could pass after this entry was dropped,
         // silently removing wallpaper support.
         let lua = lua_with_constructors();
-        assert!(NODE_KINDS.contains(&"image"));
         let table: Table = lua.load(r#"return image { source = "/tmp/wall.png", fit = "cover" }"#).eval().unwrap();
         assert_eq!(table.get::<String>("kind").unwrap(), "image");
         assert_eq!(table.get::<String>("source").unwrap(), "/tmp/wall.png");
@@ -390,7 +370,6 @@ mod tests {
     fn lock_is_a_constructor_a_config_can_call_because_declaring_one_is_not_locking() {
         // Pin by name (ADR-0052 decision 2); the loop could pass after this entry was dropped.
         let lua = lua_with_constructors();
-        assert!(NODE_KINDS.contains(&"lock"));
         let table: Table = lua.load(r#"return lock { id = "screen-lock" }"#).eval().unwrap();
         assert_eq!(table.get::<String>("kind").unwrap(), "lock");
         assert_eq!(table.get::<String>("id").unwrap(), "screen-lock");
@@ -422,8 +401,8 @@ mod meta_stub_tests {
         let source = meta("nodes.lua") + &meta("surfaces.lua");
         let declared: BTreeSet<&str> =
             source.lines().filter_map(|line| line.strip_prefix("function ")?.split('(').next()).collect();
-        let expected: BTreeSet<&str> = super::NODE_KINDS.iter().copied().collect();
-        assert_eq!(declared, expected, "lua-meta is out of step with NODE_KINDS");
+        let expected: BTreeSet<&str> = super::node_kinds().collect();
+        assert_eq!(declared, expected, "lua-meta is out of step with NODE_PROPERTIES");
     }
 
     /// Every kind's inherited `---@field` set matches [`super::accepted_properties`]. Editor
@@ -434,7 +413,7 @@ mod meta_stub_tests {
     fn the_stubs_declare_the_same_properties_the_engine_accepts() {
         let source = meta("nodes.lua") + &meta("surfaces.lua");
         let classes = parse_classes(&source);
-        for kind in super::NODE_KINDS {
+        for kind in super::node_kinds() {
             let class = format!("{}Props", capitalize(kind));
             let declared = fields_of(&classes, &class);
             let expected: BTreeSet<String> = super::accepted_properties(kind).into_iter().map(str::to_string).collect();
@@ -447,7 +426,7 @@ mod meta_stub_tests {
     #[test]
     fn every_property_a_parser_reads_is_accepted_by_some_kind() {
         let accepted: BTreeSet<String> =
-            super::NODE_KINDS.iter().flat_map(|kind| super::accepted_properties(kind)).map(str::to_string).collect();
+            super::node_kinds().flat_map(super::accepted_properties).map(str::to_string).collect();
         let mut read = BTreeSet::new();
         for source in rust_sources(Path::new(env!("CARGO_MANIFEST_DIR")).join("src")) {
             let text = std::fs::read_to_string(&source).expect("a source file this build compiled is readable");
@@ -586,7 +565,7 @@ mod meta_stub_tests {
             .collect();
 
         let mut report = Report::default();
-        for kind in super::NODE_KINDS {
+        for kind in super::node_kinds() {
             let class = format!("{}Props", capitalize(kind));
             let fields = typed_fields(&classes, &class);
             let mut required: Vec<(String, String)> = Vec::new();
