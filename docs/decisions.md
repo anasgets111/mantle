@@ -5977,3 +5977,12 @@ mid-session needs a Supervisor restart.
 3. **A config's `log.*` writes as `config`.** As `lua`, it shared a name with `renderer::lua::*`.
 
 **Amends ADR-0243 and ADR-0245.**
+
+## 0252. `by_app_id` maps each key to an index into `entries`
+
+1. **Each key holds the entry's 1-based position in `entries`.** Lua reads
+   `entries[by_app_id[app_id]]`. The value is a Lua index, not a JSON one, so no caller converts.
+2. **One summary per app on the wire.** Repeated summaries sent each app up to five times and made
+   `applications` the largest snapshot.
+
+**Amends ADR-0061 decision 2.**

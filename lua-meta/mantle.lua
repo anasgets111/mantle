@@ -348,12 +348,8 @@
 ---@field populated boolean Whether a window sits here (ADR-0117); strips dim empty workspaces.
 
 ---@class ApplicationsState
----`mantle.applications`'s payload (ADR-0061 decision 2).
----
----`by_app_id` repeats summaries instead of indexing `entries`: Lua arrays start at one while the
----serialized JSON array starts at zero. Repeating a small summary for a few hundred entries
----avoids an invisible off-by-one.
----@field by_app_id table<string, AppSummary> The same entries keyed by a window's `app_id`, for callers holding `workspaces.active_client.class` rather than a desktop id. Exact `StartupWMClass` and desktop id win over case-folded and last-dot-segment spellings; exact keys are never displaced. A miss is only a heuristic miss, not proof that the app is uninstalled.
+---`mantle.applications`'s payload (ADR-0061 decision 2, amended by ADR-0252).
+---@field by_app_id table<string, integer> A window's `app_id` to its entry's index in `entries`: `entries[by_app_id[app_id]]`. For callers holding `workspaces.active_client.class` rather than a desktop id. Exact `StartupWMClass` and desktop id win over case-folded and last-dot-segment spellings; exact keys are never displaced. A miss is only a heuristic miss, not proof that the app is uninstalled.
 ---@field entries AppSummary[] Visible, launchable installed entries, sorted by name. Rebuilt by `:invoke("refresh")`; directories are not watched, so mid-session installs wait for it.
 
 ---@class AudioState

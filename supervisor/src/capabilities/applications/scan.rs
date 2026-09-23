@@ -51,9 +51,9 @@ pub struct LaunchTarget {
 pub struct ScanResult {
     /// Entries sorted by display name. Sorting in Lua would repeat work on every reload.
     pub entries: Vec<AppSummary>,
-    /// `app_id` to entry, for callers holding `workspaces.active_client.class` or a tray item
-    /// with no icon of its own rather than a desktop id.
-    pub by_app_id: BTreeMap<String, AppSummary>,
+    /// `app_id` to the entry's 1-based position in `entries`, for callers holding
+    /// `workspaces.active_client.class` or a tray item with no icon of its own rather than a desktop id.
+    pub by_app_id: BTreeMap<String, usize>,
     pub launch: HashMap<String, LaunchTarget>,
 }
 
@@ -151,33 +151,35 @@ pub fn scan(dirs: &[PathBuf]) -> ScanResult {
 ///
 /// The last-segment rule covers bare ids: niri reports Nautilus as `org.gnome.Nautilus`, and
 /// Files ships that exact filename, but many apps report `nautilus` against a reverse-DNS name.
-fn build_app_id_map(entries: &[AppSummary], wm_classes: &[(String, Option<String>)]) -> BTreeMap<String, AppSummary> {
-    let by_id: HashMap<&str, &AppSummary> = entries.iter().map(|entry| (entry.id.as_str(), entry)).collect();
-    let mut map: BTreeMap<String, AppSummary> = BTreeMap::new();
+fn build_app_id_map(entries: &[AppSummary], wm_classes: &[(String, Option<String>)]) -> BTreeMap<String, usize> {
+    // 1-based: the value indexes `entries` from Lua, where the JSON array lands as a sequence.
+    let by_id: HashMap<&str, usize> =
+        entries.iter().zip(1..).map(|(entry, index)| (entry.id.as_str(), index)).collect();
+    let mut map: BTreeMap<String, usize> = BTreeMap::new();
 
     // Pass 1, exact: `StartupWMClass` is the specification's key for this question, so it outranks
     // the filename even when they usually agree.
     for (id, wm_class) in wm_classes {
-        let Some(entry) = by_id.get(id.as_str()) else { continue };
+        let Some(&index) = by_id.get(id.as_str()) else { continue };
         if let Some(class) = wm_class.as_deref().filter(|class| !class.is_empty()) {
-            map.entry(class.to_string()).or_insert_with(|| (*entry).clone());
+            map.entry(class.to_string()).or_insert(index);
         }
     }
-    for entry in entries {
-        map.entry(entry.id.clone()).or_insert_with(|| entry.clone());
+    for (entry, index) in entries.iter().zip(1..) {
+        map.entry(entry.id.clone()).or_insert(index);
     }
 
     // Pass 2, case-folded and shortened. These are guesses and cannot displace exact keys.
     for (id, wm_class) in wm_classes {
-        let Some(entry) = by_id.get(id.as_str()) else { continue };
+        let Some(&index) = by_id.get(id.as_str()) else { continue };
         if let Some(class) = wm_class.as_deref().filter(|class| !class.is_empty()) {
-            map.entry(class.to_lowercase()).or_insert_with(|| (*entry).clone());
+            map.entry(class.to_lowercase()).or_insert(index);
         }
     }
-    for entry in entries {
-        map.entry(entry.id.to_lowercase()).or_insert_with(|| entry.clone());
+    for (entry, index) in entries.iter().zip(1..) {
+        map.entry(entry.id.to_lowercase()).or_insert(index);
         if let Some(last) = entry.id.rsplit('.').next().filter(|last| *last != entry.id) {
-            map.entry(last.to_lowercase()).or_insert_with(|| entry.clone());
+            map.entry(last.to_lowercase()).or_insert(index);
         }
     }
     map
@@ -333,9 +335,10 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         write_entry(dir.path(), "org.gnome.Nautilus.desktop", &application("Files", ""));
 
-        let map = scan(&[dir.path().to_path_buf()]).by_app_id;
+        let result = scan(&[dir.path().to_path_buf()]);
+        let name = |key: &str| result.by_app_id.get(key).map(|&index| result.entries[index - 1].name.as_str());
 
-        assert_eq!(map.get("org.gnome.Nautilus").map(|e| e.name.as_str()), Some("Files"));
+        assert_eq!(name("org.gnome.Nautilus"), Some("Files"));
     }
 
     /// Common mismatch: a toplevel reports `nautilus` while the file is
@@ -345,9 +348,10 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         write_entry(dir.path(), "org.gnome.Nautilus.desktop", &application("Files", ""));
 
-        let map = scan(&[dir.path().to_path_buf()]).by_app_id;
+        let result = scan(&[dir.path().to_path_buf()]);
+        let name = |key: &str| result.by_app_id.get(key).map(|&index| result.entries[index - 1].name.as_str());
 
-        assert_eq!(map.get("nautilus").map(|e| e.name.as_str()), Some("Files"));
+        assert_eq!(name("nautilus"), Some("Files"));
     }
 
     #[test]
@@ -355,9 +359,10 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         write_entry(dir.path(), "tg.desktop", &application("Telegram", "StartupWMClass=TelegramDesktop\n"));
 
-        let map = scan(&[dir.path().to_path_buf()]).by_app_id;
+        let result = scan(&[dir.path().to_path_buf()]);
+        let name = |key: &str| result.by_app_id.get(key).map(|&index| result.entries[index - 1].name.as_str());
 
-        assert_eq!(map.get("TelegramDesktop").map(|e| e.name.as_str()), Some("Telegram"));
+        assert_eq!(name("TelegramDesktop"), Some("Telegram"));
     }
 
     /// Two passes prevent one entry's case-folded guess from displacing another's exact filename;
@@ -369,18 +374,11 @@ mod tests {
         write_entry(dir.path(), "aaa.desktop", &application("Impostor", "StartupWMClass=Zed\n"));
         write_entry(dir.path(), "zed.desktop", &application("Zed Editor", ""));
 
-        let map = scan(&[dir.path().to_path_buf()]).by_app_id;
+        let result = scan(&[dir.path().to_path_buf()]);
+        let name = |key: &str| result.by_app_id.get(key).map(|&index| result.entries[index - 1].name.as_str());
 
-        assert_eq!(
-            map.get("zed").map(|e| e.name.as_str()),
-            Some("Zed Editor"),
-            "an exact desktop file id outranks a lowercased WM class"
-        );
-        assert_eq!(
-            map.get("Zed").map(|e| e.name.as_str()),
-            Some("Impostor"),
-            "the exact WM class still resolves to the entry declaring it"
-        );
+        assert_eq!(name("zed"), Some("Zed Editor"), "an exact desktop file id outranks a lowercased WM class");
+        assert_eq!(name("Zed"), Some("Impostor"), "the exact WM class still resolves to the entry declaring it");
     }
 
     #[test]
