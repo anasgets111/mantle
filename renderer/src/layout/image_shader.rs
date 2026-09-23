@@ -390,8 +390,8 @@ impl ShaderStage {
             gl.bind_vertex_array(Some(vao));
             gl.bind_buffer(glow::ARRAY_BUFFER, Some(buffer));
             let vertices = quad_corners(run.rect, (width, height), run.transform, run.target_size, run.target_origin);
-            let bytes = std::slice::from_raw_parts(vertices.as_ptr().cast::<u8>(), std::mem::size_of_val(&vertices));
-            gl.buffer_data_u8_slice(glow::ARRAY_BUFFER, bytes, glow::STREAM_DRAW);
+            let bytes: Vec<u8> = vertices.as_flattened().iter().flat_map(|value| value.to_ne_bytes()).collect();
+            gl.buffer_data_u8_slice(glow::ARRAY_BUFFER, &bytes, glow::STREAM_DRAW);
 
             gl.active_texture(glow::TEXTURE0);
             gl.bind_texture(glow::TEXTURE_2D, Some(from));
