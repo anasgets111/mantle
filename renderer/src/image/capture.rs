@@ -39,16 +39,21 @@ fn union(rects: &[DamageRect]) -> Option<DamageRect> {
     })
 }
 
-/// Rects to upload: each one under [`MERGE_ABOVE`], their union past it, or `full` when none were
-/// reported.
+/// Rects to upload, clipped to `full` because the compositor reports them: each one under
+/// [`MERGE_ABOVE`], their union past it, or `full` when none were reported.
 pub(crate) fn upload_plan(rects: &[DamageRect], full: DamageRect) -> Vec<DamageRect> {
     if rects.is_empty() {
         return vec![full];
     }
+    let rects: Vec<DamageRect> = rects
+        .iter()
+        .filter(|r| r.x < full.width && r.y < full.height)
+        .map(|r| DamageRect { width: r.width.min(full.width - r.x), height: r.height.min(full.height - r.y), ..*r })
+        .collect();
     if rects.len() > MERGE_ABOVE {
-        return union(rects).into_iter().collect();
+        return union(&rects).into_iter().collect();
     }
-    rects.to_vec()
+    rects
 }
 
 /// Whether `bytes` fits the shared texture budget (ADR-0182, ADR-0248 decision 6). An empty pool
@@ -258,6 +263,17 @@ mod tests {
             (0..=MERGE_ABOVE).map(|i| DamageRect { x: i as u32, y: 0, width: 1, height: 1 }).collect();
         let plan = upload_plan(&rects, full);
         assert_eq!(plan, vec![DamageRect { x: 0, y: 0, width: MERGE_ABOVE as u32 + 1, height: 1 }]);
+    }
+
+    #[test]
+    fn rects_past_the_frame_are_clipped_to_it() {
+        let full = DamageRect::full(200, 100);
+        let rects = vec![
+            DamageRect { x: 190, y: 90, width: 50, height: 50 },
+            DamageRect { x: 200, y: 0, width: 1, height: 1 },
+            DamageRect { x: 0, y: u32::MAX, width: u32::MAX, height: u32::MAX },
+        ];
+        assert_eq!(upload_plan(&rects, full), vec![DamageRect { x: 190, y: 90, width: 10, height: 10 }]);
     }
 
     #[test]

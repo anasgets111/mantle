@@ -624,7 +624,7 @@ fn negotiate_buffer(
     {
         return existing;
     }
-    let mut pool = SlotPool::new((stride * height).max(1) as usize, shm).ok()?;
+    let mut pool = SlotPool::new((stride as usize * height as usize).max(1), shm).ok()?;
     let (buffer, _canvas) = pool.create_buffer(width as i32, height as i32, stride as i32, format).ok()?;
     Some(NegotiatedBuffer { pool, buffer, width, height, stride, format })
 }
@@ -640,7 +640,7 @@ fn stage_landed(cache: &mut CaptureCache, id: NodeId, negotiated: &mut Negotiate
         (0, height)
     } else {
         let lo = damage.iter().map(|r| r.y).min().unwrap_or(0).min(height);
-        let hi = damage.iter().map(|r| (r.y + r.height).min(height)).max().unwrap_or(height).max(lo);
+        let hi = damage.iter().map(|r| r.y.saturating_add(r.height).min(height)).max().unwrap_or(height).max(lo);
         (lo, hi)
     };
     let row_bytes = width as usize * 4;
