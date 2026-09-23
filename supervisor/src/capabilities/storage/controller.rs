@@ -82,7 +82,7 @@ impl StorageController {
                             .keys()
                             .map(PathBuf::from)
                             .filter(|path| event.name.is_none() || path.file_name() == event.name.as_deref());
-                        for path in named.collect::<Vec<_>>() {
+                        for path in named {
                             let (stores, signal_tx) = (Arc::clone(&stores), signal_tx.clone());
                             tokio::task::spawn_blocking(move || sync(&stores, &path, false, &signal_tx));
                         }
