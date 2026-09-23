@@ -482,10 +482,8 @@ pub fn run(
         phases.mark_resolve();
         phases.mark_resolve_split(app.client.take_resolve_split());
         // A frame callback is the tween clock (ADR-0145). Taken every turn so a callback that
-        // arrives with a push is answered by this repaint, not repeated next turn. A turn that
-        // re-resolved skips the tick: the pass's `retarget` already advanced every visible tween
-        // to its own instant, and the repaint asks for the next callback either way.
-        let ticked = if std::mem::take(&mut app.animation_frame_due) && !passed {
+        // arrives with a push is answered by this repaint, not repeated next turn.
+        let ticked = if std::mem::take(&mut app.animation_frame_due) {
             app.client.tick_animations(std::time::Instant::now())
         } else {
             Vec::new()
@@ -524,7 +522,7 @@ pub fn run(
             turn::StateScope::Everything => app.apply_resolved_surface_state(),
             turn::StateScope::Targeted => {
                 if let Some(ref ids) = targeted_instances {
-                    app.apply_resolved_surface_state_for(ids);
+                    app.apply_resolved_surface_state_for(&[ids.as_slice(), &ticked].concat());
                 }
             }
             turn::StateScope::Ticked => app.apply_resolved_surface_state_for(&ticked),

@@ -4256,6 +4256,9 @@ A re-resolving turn does not tick. With any `stale` surface, the narrowed arm th
 empty tick list, repainted only the stale surface, and hid the panel, window or rewritten surface
 changed by the pass until another repaint reason appeared.
 
+Amendment: every turn with a due frame callback ticks, pass or not. A narrowed pass retargets only
+its own instances, so skipping the tick froze every other surface's tween mid-flight.
+
 The meanings now have two names. Pure, tabulated `repaint_for_turn` makes `passed`, `typed` and
 `landed` scene-wide; `ticked` and `stale` narrow the set; nothing owed paints nothing. It sits beside
 `narrowed_repaint_targets` because the decision needs no `TrackedSurface` and has been wrong twice.

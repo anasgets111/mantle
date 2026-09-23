@@ -24,7 +24,7 @@ pub(super) struct TurnChanges {
     pub(super) passed: bool,
     /// Whether the pass was narrowed to targeted instances, rather than whole-scene.
     pub(super) targeted: bool,
-    /// A tween tick advanced at least one instance. Never true on the same turn as `passed`.
+    /// A tween tick advanced at least one instance.
     pub(super) ticked: bool,
     /// Some mapped surface owes a repaint its tree cannot ask for (ADR-0185).
     pub(super) stale: bool,
@@ -138,8 +138,8 @@ mod tests {
     }
 
     /// The narrowing above is only ever right for a turn that did not re-resolve. A pass can
-    /// change any tree, and it does not tick, so its `ticked` list is empty: narrowing by it
-    /// repaints the stale surface and drops the surface the pass actually changed.
+    /// change any tree its `ticked` list does not name: narrowing by it repaints the stale surface
+    /// and drops the surface the pass actually changed.
     #[test]
     fn a_pass_repaints_everything_even_when_something_else_is_stale() {
         let turn = |passed, ticked, stale, typed, landed| {
