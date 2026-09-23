@@ -44,9 +44,6 @@ pub(super) fn parse_actions(actions: &[String], action_icons: bool) -> ParsedAct
         let icon_name = (action_icons && !key.contains('/')).then(|| key.clone());
         let label = pair.get(1).map(String::as_str).unwrap_or_default().trim();
         let label = if label.is_empty() && icon_name.is_none() { key.as_str() } else { label };
-        if label.is_empty() && icon_name.is_none() {
-            continue;
-        }
         parsed.actions.push(NotificationAction {
             key: key.clone(),
             label: truncate_utf8_bytes(label, MAX_ACTION_LABEL_BYTES),

@@ -99,9 +99,6 @@ impl NotificationsController {
         events: UnboundedSender<NotificationsSignal>,
         sound_tx: SoundSender,
     ) -> Self {
-        let state = Arc::new(Mutex::new(NotificationsQueueState::new()));
-        let trusted_roots = Arc::new(default_trusted_icon_roots());
-
         let live_connection = match connection
             .request_name_with_flags(NOTIFICATIONS_BUS_NAME, RequestNameFlags::DoNotQueue.into())
             .await
@@ -120,15 +117,7 @@ impl NotificationsController {
             }
         };
 
-        let controller = Self {
-            connection: live_connection.clone(),
-            state,
-            events,
-            sound_tx,
-            trusted_roots,
-            sound_roots: Arc::new(default_trusted_sound_roots()),
-            expiry_hold: watch::Sender::new(None),
-        };
+        let controller = Self { connection: live_connection.clone(), ..Self::inert(events, sound_tx) };
 
         if let Some(live_connection) = &live_connection
             && let Err(err) = live_connection.object_server().at(NOTIFICATIONS_OBJECT_PATH, controller.clone()).await
@@ -153,37 +142,28 @@ impl NotificationsController {
         }
     }
 
+    /// The emitter for this daemon's signals, or `None` without the bus name. The path is a valid
+    /// constant, so `SignalEmitter::new` cannot fail.
+    fn emitter(&self) -> Option<zbus::object_server::SignalEmitter<'_>> {
+        zbus::object_server::SignalEmitter::new(self.connection.as_ref()?, NOTIFICATIONS_OBJECT_PATH).ok()
+    }
+
     async fn emit_notification_closed(&self, id: u32, reason: CloseReason) {
-        let Some(connection) = &self.connection else { return };
-        match zbus::object_server::SignalEmitter::new(connection, NOTIFICATIONS_OBJECT_PATH) {
-            Ok(emitter) => {
-                let _ = Self::notification_closed(&emitter, id, reason.into()).await;
-            }
-            Err(err) => debug!("failed to build a signal emitter for NotificationClosed({id}, {reason:?}): {err}"),
+        if let Some(emitter) = self.emitter() {
+            let _ = Self::notification_closed(&emitter, id, reason.into()).await;
         }
     }
 
     async fn emit_action_invoked(&self, id: u32, action_key: String) {
-        let Some(connection) = &self.connection else { return };
-        match zbus::object_server::SignalEmitter::new(connection, NOTIFICATIONS_OBJECT_PATH) {
-            Ok(emitter) => {
-                let _ = Self::action_invoked(&emitter, id, action_key).await;
-            }
-            Err(err) => debug!("failed to build a signal emitter for ActionInvoked({id}, {action_key:?}): {err}"),
+        if let Some(emitter) = self.emitter() {
+            let _ = Self::action_invoked(&emitter, id, action_key).await;
         }
     }
 
-    /// The reply half of [`NotificationsController::emit_action_invoked`]. The text stays out of
-    /// the log: it is the user's message to someone, and the id is enough to place a failure.
+    /// The reply half of [`NotificationsController::emit_action_invoked`].
     async fn emit_notification_replied(&self, id: u32, text: String) {
-        let Some(connection) = &self.connection else { return };
-        match zbus::object_server::SignalEmitter::new(connection, NOTIFICATIONS_OBJECT_PATH) {
-            Ok(emitter) => {
-                let _ = Self::notification_replied(&emitter, id, text).await;
-            }
-            Err(err) => {
-                debug!("failed to build a signal emitter for NotificationReplied({id}): {err}")
-            }
+        if let Some(emitter) = self.emitter() {
+            let _ = Self::notification_replied(&emitter, id, text).await;
         }
     }
 
