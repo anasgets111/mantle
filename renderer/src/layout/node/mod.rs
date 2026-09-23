@@ -353,7 +353,10 @@ pub fn resolve_properties(mut properties: PropMap, kind: &str, lua: &Lua) -> Res
         keys.sort_unstable();
         for property in keys {
             if is_structural_property(kind, property) {
-                if let Some(Value::UserData(ud)) = properties.get(property)
+                // The writer of a `geometry` rect is not its reader: a moved rect re-resolves only
+                // the nodes that read it.
+                if property != "geometry"
+                    && let Some(Value::UserData(ud)) = properties.get(property)
                     && let Some(cell) = signal::from_userdata(ud).and_then(|s| s.cell_id())
                 {
                     signal::note_read(lua, cell);

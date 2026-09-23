@@ -2101,7 +2101,7 @@ fn publish_geometry(node: &ResolvedNode, origin_x: f32, origin_y: f32, lua: &Lua
     }
     let (x, y) = (origin_x + node.rect.x, origin_y + node.rect.y);
     if let Some(Value::UserData(ud)) = node.properties.get("geometry")
-        && let Some(cell) = crate::lua::signal::from_userdata(ud).and_then(|signal| signal.geometry_cell())
+        && let Some((id, cell)) = crate::lua::signal::from_userdata(ud).and_then(|signal| signal.geometry_cell())
     {
         const KEYS: [&str; 4] = ["x", "y", "width", "height"];
         let fresh = [x, y, node.rect.width, node.rect.height];
@@ -2116,7 +2116,7 @@ fn publish_geometry(node: &ResolvedNode, origin_x: f32, origin_y: f32, lua: &Lua
             }
             *cell.borrow_mut() = Value::Table(rect);
             if !quiet {
-                crate::lua::signal::note_geometry_moved(lua);
+                crate::lua::signal::note_geometry_moved(lua, id);
             }
         }
     }
@@ -3011,9 +3011,9 @@ pub(super) mod tests {
         let (x, y, h): (f32, f32, f32) = lua.load("local r = g:get() return r.x, r.y, r.height").eval().unwrap();
         assert_eq!((x, y, h), (10.0, 5.0, 20.0));
         assert!(!dirty.take(), "the pass itself does not dirty; the client decides on one follow-up");
-        assert!(crate::lua::signal::take_geometry_moved(&lua), "the first measurement is a change");
+        assert!(!crate::lua::signal::take_geometry_moved(&lua).is_empty(), "the first measurement is a change");
         apply_at(&mut scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
-        assert!(!crate::lua::signal::take_geometry_moved(&lua), "an unchanged rect notes nothing");
+        assert!(crate::lua::signal::take_geometry_moved(&lua).is_empty(), "an unchanged rect notes nothing");
         let err = lua.load("g:set(1)").exec().unwrap_err().to_string();
         assert!(err.contains("a geometry"), "{err}");
     }

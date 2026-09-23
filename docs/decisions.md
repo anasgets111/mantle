@@ -2639,6 +2639,7 @@ ms of open and gone within two close frames. Lua needed the measured height.
 2. A tick writes quietly, so moving a card does not run Lua every frame (ADR-0131). A changed pass
    write earns exactly one follow-up (same-day amendment): a growing section's switched panel
    `height` cannot leave the card one pass behind. One, not two, prevents a self-measurement loop.
+   The follow-up re-resolves the instances that read the moved rect; the writer is not a reader.
 3. Not a `hover_rect` extension: it is written only while the pointer is on the node and names an
    input region. Measuring must not change hit-testing.
 

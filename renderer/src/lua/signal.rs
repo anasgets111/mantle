@@ -142,7 +142,7 @@ enum SignalKind {
     /// and `hover_rect` report. Written by the layout pass and by a tween tick, never by Lua, and
     /// written quietly: a read sees the last layout, and a binding on it settles one pass later
     /// rather than dirtying the scene it was measured in.
-    Geometry(Rc<RefCell<Value>>),
+    Geometry(CellId, Rc<RefCell<Value>>),
     /// `delay(signal, ms)` (ADR-0146): follows `source` once it has held a new value for `hold`.
     /// Pull-based like everything else here: a read notes the pending value and its due time,
     /// arms the poll loop's one timeout through [`WakeDeadline`], and keeps answering the held
@@ -214,7 +214,7 @@ impl SignalKind {
             SignalKind::State { .. } => "a state",
             SignalKind::Delayed { .. } => "a delayed",
             SignalKind::Pulse { .. } => "a pulse",
-            SignalKind::Geometry(_) => "a geometry",
+            SignalKind::Geometry(..) => "a geometry",
         }
     }
 }
@@ -367,8 +367,8 @@ impl Signal {
 
     /// Geometry write end for `layout::scene`; `None` for other kinds, so `geometry = hover(...)`
     /// or a state signal is inert rather than overwritten.
-    pub(crate) fn geometry_cell(&self) -> Option<Rc<RefCell<Value>>> {
-        if let SignalKind::Geometry(cell) = &self.0 { Some(Rc::clone(cell)) } else { None }
+    pub(crate) fn geometry_cell(&self) -> Option<(CellId, Rc<RefCell<Value>>)> {
+        if let SignalKind::Geometry(id, cell) = &self.0 { Some((*id, Rc::clone(cell))) } else { None }
     }
 
     /// Hover write end for `crate::wayland`; `None` for other kinds by design.
@@ -391,7 +391,8 @@ impl Signal {
             SignalKind::Live { id, .. }
             | SignalKind::Hover { id, .. }
             | SignalKind::Scroll { id, .. }
-            | SignalKind::State { id, .. } => Some(*id),
+            | SignalKind::State { id, .. }
+            | SignalKind::Geometry(id, _) => Some(*id),
             _ => None,
         }
     }
@@ -414,11 +415,11 @@ impl Signal {
             SignalKind::Live { id, cell }
             | SignalKind::Hover { id, cell, .. }
             | SignalKind::Scroll { id, cell, .. }
-            | SignalKind::State { id, cell, .. } => {
+            | SignalKind::State { id, cell, .. }
+            | SignalKind::Geometry(id, cell) => {
                 note_read(lua, *id);
                 Ok(cell.borrow().clone())
             }
-            SignalKind::Geometry(cell) => Ok(cell.borrow().clone()),
             SignalKind::Computed { .. } | SignalKind::Delayed { .. } | SignalKind::Pulse { .. } => Err(
                 mlua::Error::runtime("a derived signal was read without the userdata holding its function and sources"),
             ),
@@ -783,19 +784,23 @@ struct ScrollRegistry(HashMap<String, Signal>);
 #[derive(Default)]
 struct GeometryRegistry(HashMap<String, Signal>);
 
-/// Set when a pass's geometry write changed a rect (ADR-0147 amendment); the client turns it into
-/// one follow-up pass so a binding on the measurement settles, and only one, so a binding that
-/// feeds its own measurement cannot spin the loop.
+/// The cells a pass's geometry write changed (ADR-0147 amendment); the client turns them into one
+/// follow-up pass over their readers so a binding on the measurement settles, and only one, so a
+/// binding that feeds its own measurement cannot spin the loop.
 #[derive(Default)]
-struct GeometryMoved(bool);
+struct GeometryMoved(Vec<CellId>);
 
-pub(crate) fn note_geometry_moved(lua: &Lua) {
-    lua.set_app_data(GeometryMoved(true));
+pub(crate) fn note_geometry_moved(lua: &Lua, id: CellId) {
+    if let Some(mut moved) = lua.app_data_mut::<GeometryMoved>() {
+        moved.0.push(id);
+        return;
+    }
+    lua.set_app_data(GeometryMoved(vec![id]));
 }
 
-/// Whether a pass write moved a rect since the last take.
-pub fn take_geometry_moved(lua: &Lua) -> bool {
-    lua.app_data_mut::<GeometryMoved>().is_some_and(|mut moved| std::mem::take(&mut moved.0))
+/// The cells a pass write moved since the last take.
+pub fn take_geometry_moved(lua: &Lua) -> Vec<CellId> {
+    lua.app_data_mut::<GeometryMoved>().map(|mut moved| std::mem::take(&mut moved.0)).unwrap_or_default()
 }
 
 /// One `Computed`'s identity for [`EvaluationMemo`], counted rather than derived from where its
@@ -1327,7 +1332,7 @@ pub fn register(lua: &Lua, dirty: DirtyFlag) -> mlua::Result<()> {
             for key in ["x", "y", "width", "height"] {
                 zero.set(key, 0.0)?;
             }
-            let signal = Signal(SignalKind::Geometry(Rc::new(RefCell::new(Value::Table(zero)))));
+            let signal = Signal(SignalKind::Geometry(next_cell_id(), Rc::new(RefCell::new(Value::Table(zero)))));
             lua.app_data_mut::<GeometryRegistry>()
                 .expect("just ensured the registry exists")
                 .0

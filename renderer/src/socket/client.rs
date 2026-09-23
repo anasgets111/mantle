@@ -607,7 +607,11 @@ impl RendererClient {
             self.dirty.take_scope(self.loader.lua())
         };
         let (resolved_scope, instances) = match scope {
-            crate::lua::signal::DirtyScope::Clean => return false,
+            // Also a follow-up whose moved rects nobody reads, which ends the chain.
+            crate::lua::signal::DirtyScope::Clean => {
+                self.geometry_follow_up = false;
+                return false;
+            }
             crate::lua::signal::DirtyScope::All => (None, self.instances.clone()),
             crate::lua::signal::DirtyScope::Instances(ids) => {
                 let filtered: Vec<SurfaceInstance> = self
@@ -646,13 +650,16 @@ impl RendererClient {
         true
     }
 
-    /// One follow-up pass when a pass moved a `geometry(name)` rect, so a property bound to the
-    /// measurement lays out from it before anything else happens; never two in a row.
+    /// One follow-up pass over the readers of each `geometry(name)` rect a pass moved, so a
+    /// property bound to the measurement lays out from it before anything else happens; never two
+    /// in a row.
     fn settle_geometry(&mut self) {
         let moved = crate::lua::signal::take_geometry_moved(self.loader.lua());
-        self.geometry_follow_up = moved && !self.geometry_follow_up;
+        self.geometry_follow_up = !moved.is_empty() && !self.geometry_follow_up;
         if self.geometry_follow_up {
-            self.dirty.mark();
+            for id in moved {
+                self.dirty.mark_cell(id);
+            }
         }
     }
 
@@ -2479,6 +2486,39 @@ mod tests {
 
         assert!(client.re_resolve_if_dirty());
         assert_eq!(client.take_last_resolved(), Some(vec!["modal@TEST".to_string()]));
+    }
+
+    /// ADR-0147 amendment: the follow-up a moved rect earns re-resolves the instances that read
+    /// it, not the scene, and a follow-up nobody reads leaves the next move its own.
+    #[test]
+    fn a_moved_geometry_re_resolves_only_its_readers() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_shell_lua(
+            dir.path(),
+            r#"
+            g = geometry("card")
+            w = state("w", 30)
+            return {
+                panel { id = "bar", layer = "Top", child = rect { width = w, height = 20, geometry = g } },
+                panel { id = "reader", layer = "Top", child = rect { width = g:map(function(r) return r.width end), height = 1 } },
+                panel { id = "other", layer = "Top" },
+            }
+            "#,
+        );
+        let (mut client, _outbound_rx) = test_client(&path);
+        assert!(run_startup(&mut client));
+
+        assert!(client.re_resolve_if_dirty(), "the first measurement earns a follow-up");
+        assert_eq!(client.take_last_resolved(), Some(vec!["reader@TEST".to_string()]));
+        assert!(!client.re_resolve_if_dirty(), "and only one");
+
+        client.loader.lua().load("w:set(40)").exec().unwrap();
+        assert!(client.re_resolve_if_dirty());
+        assert_eq!(client.take_last_resolved(), Some(vec!["bar@TEST".to_string()]));
+        assert!(client.re_resolve_if_dirty(), "a later move earns its own follow-up");
+        assert_eq!(client.take_last_resolved(), Some(vec!["reader@TEST".to_string()]));
+        let reader = client.scene.surface("reader@TEST").unwrap();
+        assert_eq!(reader.children[0].rect.width, 40.0, "the reader laid out from the moved rect");
     }
 
     #[test]
