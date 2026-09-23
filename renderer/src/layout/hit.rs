@@ -354,7 +354,7 @@ mod tests {
     fn styled_text(content: &str, runs: Vec<StyleRun>, align: TextAlign, width: f32) -> ResolvedNode {
         let mut node = node("text", (0.0, 0.0, width, 60.0), Vec::new());
         node.paint = Some(PaintStyle::Text {
-            content: content.to_string(),
+            content: content.into(),
             runs,
             font_size: 14.0,
             font: None,

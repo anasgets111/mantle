@@ -30,7 +30,7 @@ pub enum Draw {
     /// Box fill, then border, for containers and all surface roles.
     Box { background: Option<Rgba>, radius: f32, colors: BorderColor, widths: EdgeInsets },
     Text {
-        content: String,
+        content: std::sync::Arc<str>,
         /// Byte ranges drawn in another face, underlined, or recoloured (ADR-0104).
         runs: Vec<StyleRun>,
         font_size: f32,
@@ -556,7 +556,7 @@ fn draw_for(
             // An empty field with no placeholder still draws, for the caret alone (ADR-0135
             // decision 2).
             (!content.is_empty() || caret.is_some()).then_some(Draw::Text {
-                content,
+                content: content.into(),
                 runs: Vec::new(),
                 font_size: *font_size,
                 // A `textfield` draws its placeholder and its masked content in the declared
@@ -1003,7 +1003,7 @@ mod tests {
                    children = { text { content = "hidden", foreground = "#ffffffff" } } } }"##;
         let list = build(&resolved_surface(&lua, src, LogicalSize { width: 200.0, height: 40.0 }), 1.0, None);
         assert!(
-            !list.commands.iter().any(|c| matches!(&c.draw, Draw::Text { content, .. } if content == "hidden")),
+            !list.commands.iter().any(|c| matches!(&c.draw, Draw::Text { content, .. } if &**content == "hidden")),
             "an invisible node's child reached the list: {list:?}"
         );
     }
@@ -1070,7 +1070,7 @@ mod tests {
                 children = { text { content = "offscreen", foreground = "#ffffffff" } } } }"##;
         let list = build(&resolved_surface(&lua, src, LogicalSize { width: 200.0, height: 40.0 }), 1.0, None);
         assert!(
-            !list.commands.iter().any(|c| matches!(&c.draw, Draw::Text { content, .. } if content == "offscreen")),
+            !list.commands.iter().any(|c| matches!(&c.draw, Draw::Text { content, .. } if &**content == "offscreen")),
             "a zero-area parent clips its child to nothing, so neither belongs in the list: {list:?}"
         );
     }
@@ -1094,7 +1094,7 @@ mod tests {
         list.commands
             .iter()
             .filter_map(|c| match &c.draw {
-                Draw::Text { content, .. } => Some(content.clone()),
+                Draw::Text { content, .. } => Some(content.to_string()),
                 _ => None,
             })
             .collect()

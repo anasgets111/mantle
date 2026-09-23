@@ -959,7 +959,7 @@ pub(crate) fn main_axis_of(kind: &str, properties: &PropMap) -> Result<Option<Ma
 enum Measure {
     /// Shaped extent; `wrap` and `max_lines` change geometry, not only paint.
     Text {
-        content: String,
+        content: std::sync::Arc<str>,
         runs: Vec<StyleRun>,
         font_size: f32,
         /// The family the box is measured against, so the reserved width is the one the same
@@ -1715,7 +1715,7 @@ fn solve(
                         }
                         let line_height = shaping::line_height(*font_size);
                         let shaped = shaping.shape(ShapeRequest {
-                            text: content.clone(),
+                            text: content.to_string(),
                             font_size: *font_size,
                             line_height,
                             max_width,
@@ -1880,7 +1880,7 @@ fn fit_text_to_box(
         }
     };
     if let Some((text, styled)) = fitted {
-        *content = text;
+        *content = text.into();
         *runs = styled;
     }
 }
@@ -2636,7 +2636,7 @@ pub(super) mod tests {
         let leaver = &scene.surface("bar@TEST").unwrap().children[0].children[0];
         let Some(PaintStyle::Text { content, color, .. }) = leaver.paint.as_ref() else { panic!("{leaver:?}") };
         assert!(content.ends_with('\u{2026}'), "still the string it was fitted to, got {content:?}");
-        assert_ne!(content, source, "not the one the config wrote, re-read from the properties");
+        assert_ne!(&**content, source, "not the one the config wrote, re-read from the properties");
         assert!((color.r - 0.5).abs() < 0.05 && color.g < 0.05, "halfway to red, got {color:?}");
     }
 
@@ -2931,7 +2931,7 @@ pub(super) mod tests {
         let Some(PaintStyle::Text { content, color, .. }) = &label.paint else {
             panic!("a text paints text, got {:?}", label.paint)
         };
-        assert_eq!(content, "abc", "the string it was fitted to survives a tick that never measured it");
+        assert_eq!(&**content, "abc", "the string it was fitted to survives a tick that never measured it");
         assert!((color.r - 0.5).abs() < 0.02, "the label's colour moved too, got {}", color.r);
         assert_eq!(block.rect, before, "nothing a paint-only tick writes can move a rect");
     }
@@ -3989,7 +3989,7 @@ pub(super) mod tests {
     fn drawn_text_and_runs(scene: &Scene) -> (String, Vec<StyleRun>) {
         fn find(node: &ResolvedNode) -> Option<(String, Vec<StyleRun>)> {
             if let Some(PaintStyle::Text { content, runs, .. }) = &node.paint {
-                return Some((content.clone(), runs.clone()));
+                return Some((content.to_string(), runs.clone()));
             }
             node.children.iter().find_map(find)
         }

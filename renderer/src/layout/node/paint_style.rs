@@ -26,7 +26,7 @@ pub enum PaintStyle {
     /// wrapped lines joined by `\n`; display-list paint may therefore receive `\n`-joined lines.
     /// `elide`, `wrap`, and `max_lines` survive for that rewrite but are dead to `layout::paint`.
     Text {
-        content: String,
+        content: Arc<str>,
         /// Styled stretches of `content`, remapped when the scene rewrites it (ADR-0104).
         runs: Vec<StyleRun>,
         font_size: f32,
@@ -92,7 +92,7 @@ pub fn paint_style(kind: &str, properties: &PropMap) -> Result<Option<PaintStyle
         "text" => {
             let (content, runs) = parse_content(properties)?;
             PaintStyle::Text {
-                content,
+                content: content.into(),
                 runs,
                 font_size: parse_font_size(properties)?,
                 font: parse_font_family(properties)?,
