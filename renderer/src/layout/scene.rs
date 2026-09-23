@@ -1576,74 +1576,58 @@ fn finish(
 
     // Frozen children come back as they were (see `prepare`): no scroll offset applied again to
     // rects that already carry one, no text refitted to a box that was not laid out.
-    if !style.visible {
-        return Ok(ResolvedNode {
-            id,
-            kind,
-            rect: LogicalRect { x: layout.location.x, y: layout.location.y, width: size.width, height: size.height },
-            margin: style.margin,
-            visible: style.visible,
-            opacity: style.opacity,
-            transform: style.transform,
-            blur: style.blur,
-            properties,
-            paint,
-            displayed_source,
-            dissolve,
-            children: frozen,
-            tweens,
-            leaving: false,
-            text_memo: None,
-        });
-    }
+    let (children, text_memo) = if style.visible {
+        let mut children: Vec<ResolvedNode> =
+            children.into_iter().map(|child| finish(tree, child, shaping)).collect::<Result<_, _>>()?;
 
-    let mut children: Vec<ResolvedNode> =
-        children.into_iter().map(|child| finish(tree, child, shaping)).collect::<Result<_, _>>()?;
-
-    // ADR-0069 decision 4. Subtracted from every child's main coordinate, so a scrolled child sits
-    // before the content box and the clip `layout::paint` computes per node cuts it. Summed here
-    // rather than read off taffy's `scrollable_overflow_rect`, since the two disagree: CSS
-    // scrollable overflow is the union of the children's border boxes, while this engine's
-    // `spacing`-and-margin footprint is what `Fill` was sized against, which the tests pin.
-    if let Some(axis) = main_axis_of(kind, &properties)? {
-        let padding = style.padding;
-        let (content_main, total_main) = match axis {
-            MainAxis::Horizontal => (
-                (size.width - padding.horizontal()).max(0.0),
-                extent_along(&children, MainAxis::Horizontal, style.spacing),
-            ),
-            MainAxis::Vertical => (
-                (size.height - padding.vertical()).max(0.0),
-                extent_along(&children, MainAxis::Vertical, style.spacing),
-            ),
-        };
-        let padding_start = match axis {
-            MainAxis::Horizontal => padding.left,
-            MainAxis::Vertical => padding.top,
-        };
-        reveal_child(&properties, &children, axis, padding_start, content_main);
-        let offset = scroll_offset(&properties, content_main, total_main);
-        if offset != 0.0 {
-            for child in &mut children {
-                match axis {
-                    MainAxis::Horizontal => child.rect.x -= offset,
-                    MainAxis::Vertical => child.rect.y -= offset,
+        // ADR-0069 decision 4. Subtracted from every child's main coordinate, so a scrolled child sits
+        // before the content box and the clip `layout::paint` computes per node cuts it. Summed here
+        // rather than read off taffy's `scrollable_overflow_rect`, since the two disagree: CSS
+        // scrollable overflow is the union of the children's border boxes, while this engine's
+        // `spacing`-and-margin footprint is what `Fill` was sized against, which the tests pin.
+        if let Some(axis) = main_axis_of(kind, &properties)? {
+            let padding = style.padding;
+            let (content_main, total_main) = match axis {
+                MainAxis::Horizontal => (
+                    (size.width - padding.horizontal()).max(0.0),
+                    extent_along(&children, MainAxis::Horizontal, style.spacing),
+                ),
+                MainAxis::Vertical => (
+                    (size.height - padding.vertical()).max(0.0),
+                    extent_along(&children, MainAxis::Vertical, style.spacing),
+                ),
+            };
+            let padding_start = match axis {
+                MainAxis::Horizontal => padding.left,
+                MainAxis::Vertical => padding.top,
+            };
+            reveal_child(&properties, &children, axis, padding_start, content_main);
+            let offset = scroll_offset(&properties, content_main, total_main);
+            if offset != 0.0 {
+                for child in &mut children {
+                    match axis {
+                        MainAxis::Horizontal => child.rect.x -= offset,
+                        MainAxis::Vertical => child.rect.y -= offset,
+                    }
                 }
             }
         }
-    }
 
-    // After sizing, because the width it fits into is this node's own, and before the node is
-    // built, because what it rewrites is the string the display list will carry.
-    fit_text_to_box(&mut paint, (size.width - style.padding.horizontal()).max(0.0), unconstrained_width, shaping);
+        // After sizing, because the width it fits into is this node's own, and before the node is
+        // built, because what it rewrites is the string the display list will carry.
+        fit_text_to_box(&mut paint, (size.width - style.padding.horizontal()).max(0.0), unconstrained_width, shaping);
 
-    // Last, so an exit paints over what took its place -- and after the scroll loop above, which
-    // is why a leaving child keeps the offset it was dropped at rather than travelling with the
-    // list.
-    // ponytail: a reader who scrolls during a 150 ms exit sees the leaver drift out of place. The
-    // upgrade is to carry the offset each leaver was dropped at on the node and subtract the
-    // difference here; nothing has asked for it, and lists here scroll far slower than they fade.
-    children.extend(leaving);
+        // Last, so an exit paints over what took its place -- and after the scroll loop above, which
+        // is why a leaving child keeps the offset it was dropped at rather than travelling with the
+        // list.
+        // ponytail: a reader who scrolls during a 150 ms exit sees the leaver drift out of place. The
+        // upgrade is to carry the offset each leaver was dropped at on the node and subtract the
+        // difference here; nothing has asked for it, and lists here scroll far slower than they fade.
+        children.extend(leaving);
+        (children, text_memo)
+    } else {
+        (frozen, None)
+    };
 
     Ok(ResolvedNode {
         id,
