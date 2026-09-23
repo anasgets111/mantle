@@ -99,11 +99,9 @@ impl MprisController {
 
     /// `mpris:seek_relative(id, off)`: MPRIS `Seek`, which is relative already.
     ///
-    /// This used to read a live `Position` and convert the offset into an absolute `SetPosition`.
-    /// That read is the one place `resolve_position`'s protection does not reach, and Firefox
-    /// answers `Position` with `0` for seconds after any seek, so "forward five seconds" from
-    /// 5:40 became `SetPosition(5s)` -- a jump to the start of the track rather than a step.
-    /// Handing the offset to the player removes both the round trip and the invented origin.
+    /// Never a live `Position` plus `SetPosition`: `resolve_position`'s protection does not reach
+    /// that read, and Firefox answers `Position` with `0` for seconds after any seek, so "forward
+    /// five seconds" would jump to the start of the track.
     ///
     /// No clamping: the player owns its own endpoints, and MPRIS lets a `Seek` past the end move
     /// to the next track. Clamping here would need a length we may not have (ADR-0036) and would

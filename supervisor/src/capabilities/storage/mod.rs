@@ -2,7 +2,7 @@
 //! reads/writes, sibling to `files`/`system`, with no D-Bus proxy or hardware thread.
 //!
 //! The config chooses each path, name, and defaults; "settings", "state", and "cache" are not
-//! Supervisor concepts. This replaced `system:write_state` and its hardcoded `state.json`.
+//! Supervisor concepts.
 
 pub mod controller;
 

@@ -39,8 +39,7 @@ impl CompositorKind {
 
 /// Env vars each compositor sets for every process in its session, in probe order.
 ///
-/// A table replaces the old `if`/`else` chain: a third compositor is one data line and precedence
-/// is explicit. Order breaks ties if two vars are set; that case is unlikely and harmless because
+/// A table, so a third compositor is one data line and precedence is explicit. Order breaks ties if two vars are set; that case is unlikely and harmless because
 /// real sessions run one compositor.
 ///
 /// Entries are vars set *because the compositor is running*. `$XDG_CURRENT_DESKTOP` is only a name
@@ -201,8 +200,6 @@ mod tests {
         );
     }
 
-    /// The old test had to set `$XDG_RUNTIME_DIR` to run, leaving the missing-variable fallback
-    /// unasserted.
     #[test]
     fn a_missing_runtime_dir_falls_back_to_tmp() {
         assert_eq!(

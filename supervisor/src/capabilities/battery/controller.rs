@@ -159,9 +159,8 @@ fn from_properties(all: &HashMap<String, OwnedValue>) -> BatteryState {
 /// One `org.freedesktop.DBus.Properties` subscription covers the object. It batches a percentage
 /// move and state flip into one message.
 ///
-/// **No timer, per ADR-0080.** The replaced sysfs reader missed capacity changes the kernel did not
-/// announce: on this machine a plug event arrived, then `capacity` fell 69 to 65 with zero
-/// `power_supply` uevents. UPower already polls and emits refreshes for other clients.
+/// **No timer, per ADR-0080.** sysfs misses capacity changes the kernel does not announce: a plug
+/// event can arrive, then `capacity` fall 69 to 65 with zero `power_supply` uevents. UPower already polls and emits refreshes for other clients.
 /// UPower also emitted a spurious mains `Percentage` of 0 for one push, emptying the pill. After a
 /// nonzero reading, retain a mains zero while
 /// not draining. A real on-battery zero is indistinguishable from the glitch and passes through.
@@ -229,7 +228,7 @@ async fn run_battery_task(
 mod tests {
     use super::*;
 
-    /// Each state is distinct to a user; the old `charging` boolean collapsed the middle rows.
+    /// Each state is distinct to a user; a `charging` boolean would collapse the middle rows.
     #[test]
     fn every_upower_state_maps_to_its_own_name() {
         for (reported, expected) in [

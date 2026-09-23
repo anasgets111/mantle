@@ -134,10 +134,9 @@ pub(super) enum Expiry {
     Removed { image_path: Option<String> },
 }
 
-/// Expiry decision for [`NotificationsController::expire`] (ADR-0100): expiry used to remove an
-/// entry, making history show what was still popped up rather than what had happened. Retire
-/// ordinary entries for history and let `dismiss` remove them; remove `transient` entries as
-/// before.
+/// Expiry decision for [`NotificationsController::expire`] (ADR-0100): an ordinary entry retires
+/// into history and only `dismiss` removes it, so history shows what happened; a `transient` entry
+/// is removed.
 /// `None` covers stale/missing or already-expired entries, preventing duplicate close signals.
 pub(super) fn expire_entry(queue: &mut VecDeque<Notification>, id: u32, incarnation: u64) -> Option<Expiry> {
     let index = find_expiring_entry(queue, id, incarnation)?;

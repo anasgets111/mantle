@@ -268,7 +268,7 @@ mod tests {
 
     #[test]
     fn a_keyboard_entry_survives_an_index_hyprland_sends_in_an_unexpected_shape() {
-        // `#[serde(default)]` covers an absent key only, so a null or negative value used to fail
+        // `#[serde(default)]` covers an absent key only; a null or negative value must not fail
         // the whole entry and leave `KeyboardState` with no layout at all.
         for index in ["null", "-1", "1.5", "\"1\""] {
             let json = format!(

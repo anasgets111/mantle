@@ -180,7 +180,7 @@
 ---Queued `notifications.feed[]` object (ADR-0033, ADR-0090). `expire_timeout` and
 ---`replaces_id` affect processing but are not feed data.
 ---@field actions NotificationAction[] Offered buttons in sender order, excluding `default` and `inline-reply`; often empty.
----@field app_icon? string Application icon: theme name (for example `"firefox"`) or trusted absolute path; `nil` if neither was supplied. Feeds `icon { name = ... }` (ADR-0054 decision 2). ADR-0091 fixed the former bug that sent theme names through absolute-path validation, leaving nearly every notification with the generic fallback.
+---@field app_icon? string Application icon: theme name (for example `"firefox"`) or trusted absolute path; `nil` if neither was supplied. Feeds `icon { name = ... }` (ADR-0054 decision 2, ADR-0091).
 ---@field app_name string Sending application, truncated to 64 bytes at a character boundary.
 ---@field body NotificationSpan[] Body spans, truncated to 512 bytes before parsing. Text carries bold/italic/underline/href; images carry trusted paths, so config draws without parsing markup.
 ---@field desktop_entry? string `hints["desktop-entry"]` id, e.g. `"org.telegram.desktop"`, used by `mantle.applications.by_app_id` instead of the mutable/non-unique `app_name`. `nil` when absent; slashed values are dropped (ADR-0101).
@@ -188,7 +188,7 @@
 ---@field has_default_action boolean Whether the card is activatable via `:invoke("invoke_action", id, "default")`; separate from `actions` because `default` is not a button.
 ---@field has_reply boolean Whether the sender offered inline reply; `:invoke("reply", id, text)` requires it.
 ---@field id integer Server id, starting at `1`; used by dismiss/reply/action and reused by replacement.
----@field image_path? string Attached picture (album art/avatar/thumbnail) as an existing absolute path: decoded image spooled to runtime storage or a trusted sender path. `nil` when absent; never a theme name (ADR-0091). Formerly shared `icon_path` with the application icon; now separate.
+---@field image_path? string Attached picture (album art/avatar/thumbnail) as an existing absolute path: decoded image spooled to runtime storage or a trusted sender path. `nil` when absent; never a theme name (ADR-0091).
 ---@field reply_placeholder? string `hints["x-kde-reply-placeholder-text"]`: what the sender wants an empty reply field to say, "Reply to Alice" rather than a generic "Reply"; capped at 64 bytes, `nil` if absent, and meaningless without `Notification::has_reply` (ADR-0101).
 ---@field summary string Plain-text title, truncated to 128 bytes at a character boundary; markup is parsed out.
 ---@field timestamp integer Arrival time in Unix epoch seconds, matching `mantle.system.time`; age is `system.time - timestamp`. Replacements get fresh timestamps; carried because configs cannot recover history inside ADR-0021 side-effect-free `computed`s.

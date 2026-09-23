@@ -322,9 +322,8 @@ impl<T> Drop for ReportOnDrop<T> {
 /// The magic link, not `current_exe()`, and the difference is a session that cannot be unlocked.
 /// `current_exe()` *reads* the link into a pathname, and the kernel appends " (deleted)" once the
 /// binary is replaced, so the spawn fails with `ENOENT`. Executing the link resolves to the inode
-/// this process already pins, which Linux supports after unlinking. A `pacman -Syu` over a locked
-/// session used to strand it behind "could not start authentication"; seen twice here, once with
-/// the session locked, from `cargo build` doing the same thing to the same inode.
+/// this process already pins, which Linux supports after unlinking. A `pacman -Syu` or `cargo build`
+/// over a locked session would otherwise strand it behind "could not start authentication".
 ///
 /// Not `renderer_binary_path()`'s problem: that one calls `with_file_name`, which drops the whole
 /// " (deleted)" filename and rebuilds a real sibling path.

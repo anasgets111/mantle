@@ -259,9 +259,9 @@ async fn run_check_task(
             // ticks; `Delay` resumes after the check.
             ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
             // `interval` ticks immediately, so an hourly schedule checks now, not in an hour
-            // (ADR-0113 amendment). Skip only when this process has a fresh check; the
-            // controller outlives config generations; under the old unconditional consume,
-            // every save reset the hour and a day of editing never checked at all.
+            // (ADR-0113 amendment). Skip only when this process has a fresh check: the
+            // controller outlives config generations, and an unconditional skip would let every
+            // save reset the hour, so a day of editing would never check.
             if !first_check_is_due(state.lock().expect("mutex poisoned").last_successful_check, now_unix(), interval) {
                 ticker.tick().await;
             }

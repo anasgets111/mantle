@@ -1,7 +1,6 @@
 //! `mantle.system` provides reactive wall-clock time.
 //!
-//! Read-only. ADR-0136 moved the former persisted `state.json` and `system:write_state` to
-//! `mantle.storage`, where config names the file.
+//! Read-only. Persisted state lives in `mantle.storage`, where config names the file (ADR-0136).
 //!
 //! `system:find_icon` remains an undispatched IDL row because nothing calls it yet.
 

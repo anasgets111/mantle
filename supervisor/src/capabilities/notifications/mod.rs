@@ -256,7 +256,7 @@ impl<'de> serde::de::Visitor<'de> for HintsVisitor {
     fn visit_map<A: serde::de::MapAccess<'de>>(self, mut map: A) -> Result<Self::Value, A::Error> {
         let mut hints = Hints::default();
         while let Some(key) = map.next_key::<&str>()? {
-            // A repeated key keeps the last, which is what the `HashMap` this replaced did.
+            // A repeated key keeps the last, as a `HashMap` would.
             match key {
                 "urgency" => hints.urgency = map.next_value_seed(Hint::new())?,
                 "action-icons" => hints.action_icons = map.next_value_seed(Hint::new())?,
@@ -343,12 +343,10 @@ pub struct Notification {
     pub body: Vec<NotificationSpan>,
     /// Attached picture (album art/avatar/thumbnail) as an existing absolute path: decoded image
     /// spooled to runtime storage or a trusted sender path. `nil` when absent; never a theme name
-    /// (ADR-0091). Formerly shared `icon_path` with the application icon; now separate.
+    /// (ADR-0091).
     pub image_path: Option<String>,
     /// Application icon: theme name (for example `"firefox"`) or trusted absolute path; `nil` if
-    /// neither was supplied. Feeds `icon { name = ... }` (ADR-0054 decision 2). ADR-0091 fixed
-    /// the former bug that sent theme names through absolute-path validation, leaving nearly every
-    /// notification with the generic fallback.
+    /// neither was supplied. Feeds `icon { name = ... }` (ADR-0054 decision 2, ADR-0091).
     pub app_icon: Option<String>,
     /// `"low"`, `"normal"`, or `"critical"`; missing hint means `"normal"`. Critical bypasses DND
     /// and never expires.

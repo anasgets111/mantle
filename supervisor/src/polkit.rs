@@ -259,8 +259,7 @@ mod tests {
         assert!(calls_rx.try_recv().is_err(), "the second register must be a no-op");
     }
 
-    /// Replaces the old env-mutating test: parallel tests could set `$XDG_SESSION_ID` to `c1`, so
-    /// read-back raced. Testing [`session_subject`] keeps the assertion without environment state.
+    /// Tests [`session_subject`] rather than `$XDG_SESSION_ID`, which parallel tests would race on.
     #[test]
     fn a_session_id_becomes_a_unix_session_subject() {
         let subject = session_subject("test-session-42".to_string());

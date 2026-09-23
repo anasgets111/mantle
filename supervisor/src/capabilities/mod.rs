@@ -9,9 +9,8 @@
 //! static calls; this module moves that dispatch here.
 //!
 //! **One flat child module per roster entry.** Shared names cover `shared::Capability`,
-//! `mantle.<name>`, and command `capability`; the former four-level `dbus/`/`hardware/` grouping
-//! split `battery` and `power` without benefit. [`read_attr`] moved here,
-//! `polkit` to `crate::polkit`, and `shm_icons` beside its two consumers (ADR-0076).
+//! `mantle.<name>`, and command `capability`. [`read_attr`] lives here, `polkit` in
+//! `crate::polkit`, and `shm_icons` beside its two consumers (ADR-0076).
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};

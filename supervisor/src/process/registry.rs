@@ -146,9 +146,8 @@ const MAX_LINE_BYTES: u64 = 64 * 1024;
 /// here means a cancelled call resumes into the same buffer on the next one, which is what makes
 /// this usable in a `select!` at all.
 ///
-/// Unlike `Lines` this decodes lossily rather than failing the stream on invalid UTF-8. A child
-/// that wrote one stray byte used to end its own output reporting; a replacement character is the
-/// better answer for a diagnostic feed.
+/// Unlike `Lines` this decodes lossily rather than failing the stream on invalid UTF-8, so one stray
+/// byte does not end a child's output reporting.
 struct BoundedLines<R> {
     reader: tokio::io::BufReader<R>,
     /// The line being accumulated, never longer than [`MAX_LINE_BYTES`]. See the type docs: this

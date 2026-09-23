@@ -116,8 +116,8 @@ pub(super) fn delete_icon_file(path: &str) {
 /// Attached-picture precedence: `image-data`/`image_data` > `image-path`/`image_path` >
 /// `icon_data`.
 ///
-/// The three spellings accumulated across spec versions. `app_icon` no longer competes with this
-/// picture chain (ADR-0091); [`resolve_app_icon`] owns the application's icon.
+/// The three spellings accumulated across spec versions. [`resolve_app_icon`] owns the
+/// application's icon, outside this picture chain (ADR-0091).
 #[derive(Debug, Clone, PartialEq)]
 pub(super) enum ImageInput {
     ImageData(RawImageData),

@@ -40,8 +40,8 @@ mod write;
 pub use registry::{AudioCommandSender, command_channel, run};
 pub use state::{AudioCommand, PrivacySources};
 pub use streams::{CaptureApp, VideoSourceApp};
-// `main.rs` names this on `ensure_mixer_thread`'s sender: lazy start (ADR-0070) leaves the
-// channel alive beyond thread construction, so `run` no longer supplies the item type.
+// `main.rs` names this for `ensure_mixer_thread`'s sender, which lazy start (ADR-0070) keeps
+// alive beyond thread construction.
 pub use state::AudioState;
 
 use std::collections::HashMap;

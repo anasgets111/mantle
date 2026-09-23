@@ -133,11 +133,10 @@ pub(crate) fn run_check_worker() -> Result<(), Box<dyn std::error::Error>> {
 /// the real db (ADR-0034, amended ADR-0113). Only tempdir `sync/` is written.
 ///
 /// Uses a symlink like `checkupdates` (`ln -s "${DBPath}/local" "$CHECKUPDATES_DB"`): `local/` is
-/// read-only installed metadata. The replaced copy walked ~1,500 package directories on every
-/// check; the throwaway prototype that proved no `fakeroot` was needed copied the whole tree
+/// read-only installed metadata, and a copy would walk ~1,500 package directories per check
 /// (ADR-0034).
 ///
-/// ponytail: unlike the old snapshot copy, the symlink can observe a concurrent install mid-write,
+/// ponytail: unlike a copy, the symlink can observe a concurrent install mid-write,
 /// causing a transient `check_error`. This matches `checkupdates` and self-heals next check.
 fn check_against_a_throwaway_copy(conf_path: &Path, db_root: &Path, aur: bool) -> Result<CheckReport, String> {
     let throwaway = tempfile::tempdir().map_err(|err| format!("failed to create a throwaway temp dir: {err}"))?;

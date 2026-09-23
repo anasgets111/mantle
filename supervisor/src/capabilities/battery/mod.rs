@@ -1,8 +1,8 @@
 //! `mantle.battery` reports presence, percentage, charge state, and time estimates from UPower's
 //! `DisplayDevice`. Read-only, with no `dispatch`.
 //!
-//! The former `/sys/class/power_supply` udev watch missed capacity changes on this hardware and
-//! could not distinguish a reached charge limit from running on battery (ADR-0080).
+//! Not a `/sys/class/power_supply` udev watch: it misses capacity changes the kernel does not
+//! announce and cannot tell a reached charge limit from running on battery (ADR-0080).
 
 pub mod controller;
 
