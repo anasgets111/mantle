@@ -30,8 +30,6 @@ pub(super) struct TurnChanges {
     pub(super) stale: bool,
     /// A keystroke reached a field, moving a caret `field_focus_for` draws.
     pub(super) typed: bool,
-    /// A decode landed, invalidating by file across every list that draws it.
-    pub(super) landed: bool,
 }
 
 /// How wide this turn's repaint has to be.
@@ -44,12 +42,13 @@ pub(super) enum Repaint {
 }
 
 /// A turn that only ticked or typed owes the screen only the surfaces it affected. Whole-scene
-/// repaints are reserved for untargeted passes and landed decodes that invalidate by file.
+/// repaints are reserved for untargeted passes. A landed decode needs none: it marks the surfaces
+/// drawing its file `stale`.
 ///
 /// A surface left `stale` by a decode turned away for capacity owes a repaint that no tree and no
 /// landing can ask for, so it is its own reason to reach one (ADR-0185).
 pub(super) fn repaint_for_turn(changes: TurnChanges) -> Repaint {
-    if (changes.passed && !changes.targeted) || changes.landed {
+    if changes.passed && !changes.targeted {
         Repaint::Everything
     } else if (changes.passed && changes.targeted) || changes.ticked || changes.typed || changes.stale {
         Repaint::Narrowed
@@ -142,39 +141,32 @@ mod tests {
     /// and drops the surface the pass actually changed.
     #[test]
     fn a_pass_repaints_everything_even_when_something_else_is_stale() {
-        let turn = |passed, ticked, stale, typed, landed| {
-            repaint_for_turn(TurnChanges { passed, targeted: false, ticked, stale, typed, landed })
+        let turn = |passed, ticked, stale, typed| {
+            repaint_for_turn(TurnChanges { passed, targeted: false, ticked, stale, typed })
         };
 
         // The bug: a pass changed a panel while a wallpaper waited on a refused decode. The
         // narrowed repaint covers the wallpaper and the panel never reaches the screen.
-        assert_eq!(turn(true, false, true, false, false), Repaint::Everything);
-        assert_eq!(turn(true, false, false, false, false), Repaint::Everything);
+        assert_eq!(turn(true, false, true, false), Repaint::Everything);
+        assert_eq!(turn(true, false, false, false), Repaint::Everything);
 
-        // A targeted pass repaints narrowed when neither typed nor landed.
+        // A targeted pass repaints narrowed.
         assert_eq!(
-            repaint_for_turn(TurnChanges {
-                passed: true,
-                targeted: true,
-                ticked: false,
-                stale: false,
-                typed: false,
-                landed: false,
-            }),
+            repaint_for_turn(TurnChanges { passed: true, targeted: true, ticked: false, stale: false, typed: false }),
             Repaint::Narrowed
         );
 
         // A tween frame is what narrowing exists for, stale surface or not (ADR-0178, ADR-0185).
-        assert_eq!(turn(false, true, false, false, false), Repaint::Narrowed);
-        assert_eq!(turn(false, false, true, false, false), Repaint::Narrowed);
+        // A landed decode reaches here as `stale`.
+        assert_eq!(turn(false, true, false, false), Repaint::Narrowed);
+        assert_eq!(turn(false, false, true, false), Repaint::Narrowed);
 
-        // A caret repaints narrowed to the typed surface; a landed decode is scene-wide.
-        assert_eq!(turn(false, true, false, true, false), Repaint::Narrowed);
-        assert_eq!(turn(false, false, false, true, false), Repaint::Narrowed);
-        assert_eq!(turn(false, true, false, false, true), Repaint::Everything);
+        // A caret repaints narrowed to the typed surface.
+        assert_eq!(turn(false, true, false, true), Repaint::Narrowed);
+        assert_eq!(turn(false, false, false, true), Repaint::Narrowed);
 
         // An idle turn paints nothing and stays timeout-free (ADR-0124).
-        assert_eq!(turn(false, false, false, false, false), Repaint::Nothing);
+        assert_eq!(turn(false, false, false, false), Repaint::Nothing);
     }
 
     /// The protocol-state half of the same turn. Narrowing it to the ticked instances is the

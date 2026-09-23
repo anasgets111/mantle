@@ -543,7 +543,6 @@ pub fn run(
             ticked: !ticked.is_empty(),
             stale: app.has_stale_surfaces(),
             typed,
-            landed: !landed.is_empty(),
         }) {
             turn::Repaint::Narrowed => {
                 let mut targets = targeted_instances.unwrap_or_default();
