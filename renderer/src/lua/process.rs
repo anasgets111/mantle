@@ -167,13 +167,7 @@ mod tests {
     use tokio::sync::mpsc;
 
     use super::*;
-
-    fn queued_command(rx: &mut mpsc::UnboundedReceiver<RendererFrame>) -> Option<CommandEnvelope> {
-        match rx.try_recv().ok()? {
-            RendererFrame::Command(envelope) => Some(envelope),
-            other => panic!("process commands must be queued as RendererFrame::Command, got {other:?}"),
-        }
-    }
+    use crate::lua::capability::tests::queued_command;
 
     fn lua_with_process(generation_id: u32) -> (Lua, ProcessRegistry, mpsc::UnboundedReceiver<RendererFrame>) {
         let lua = Lua::new();

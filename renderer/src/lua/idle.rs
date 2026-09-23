@@ -254,10 +254,11 @@ impl UserData for IdleMember {
 #[cfg(test)]
 mod tests {
     use mlua::Lua;
-    use shared::{CommandEnvelope, IdleState, RendererFrame};
+    use shared::{IdleState, RendererFrame};
     use tokio::sync::mpsc;
 
     use super::*;
+    use crate::lua::capability::tests::queued_command;
 
     fn lua_with_idle(generation_id: u32) -> (Lua, IdleRegistry, mpsc::UnboundedReceiver<RendererFrame>) {
         let lua = Lua::new();
@@ -271,16 +272,6 @@ mod tests {
     }
 
     /// Next command, skipping the `idle` start every method queues first (ADR-0070).
-    fn queued_command(rx: &mut mpsc::UnboundedReceiver<RendererFrame>) -> Option<CommandEnvelope> {
-        loop {
-            match rx.try_recv().ok()? {
-                RendererFrame::Command(envelope) => return Some(envelope),
-                RendererFrame::StartCapability { .. } => continue,
-                other => panic!("idle commands must be queued as RendererFrame::Command, got {other:?}"),
-            }
-        }
-    }
-
     /// ADR-0070 decision 1: `idle` is off the roster, so methods must start it themselves or the
     /// Supervisor never builds `IdleController` and `register` lands on nothing.
     #[test]

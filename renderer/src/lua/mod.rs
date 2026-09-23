@@ -315,12 +315,12 @@ fn not_a_surface(kind: &str) -> LoaderError {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     /// Minimal loader for tests that do not `require`; evaluates `setup` above a `panel` and reads
     /// back a global. A node would reject a probe key not in `nodes::NODE_PROPERTIES`.
-    fn probe<T: mlua::FromLua>(loader: &Loader, setup: &str, name: &str) -> T {
+    pub(crate) fn probe<T: mlua::FromLua>(loader: &Loader, setup: &str, name: &str) -> T {
         loader.evaluate(&format!("{setup}\nreturn panel {{ id = \"bar\", layer = \"Top\" }}")).unwrap();
         loader.lua().globals().get(name).unwrap()
     }

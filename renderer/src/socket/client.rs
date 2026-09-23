@@ -773,18 +773,12 @@ mod tests {
     use super::*;
     use crate::layout::instance::{OutputGeometry, expand_instances};
     use crate::lua::surfaces::surface_specs;
+    use crate::lua::tests::probe;
 
     fn write_shell_lua(dir: &std::path::Path, contents: &str) -> std::path::PathBuf {
         let path = dir.join("shell.lua");
         std::fs::write(&path, contents).unwrap();
         path
-    }
-
-    /// Evaluates `setup` above a minimal `panel`, then reads a global. A global avoids smuggling a
-    /// value onto the node, which rejects keys absent from `lua::nodes::NODE_PROPERTIES`.
-    fn probe<T: mlua::FromLua>(loader: &Loader, setup: &str, name: &str) -> T {
-        loader.evaluate(&format!("{setup}\nreturn panel {{ id = \"_probe\", layer = \"Top\" }}")).unwrap();
-        loader.lua().globals().get(name).unwrap()
     }
 
     /// Reads `rescue:get()` by probe script; `CapabilityHandle` has no getter, so this is the

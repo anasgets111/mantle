@@ -276,7 +276,7 @@ impl UserData for Capability {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use mlua::{Lua, Value};
     use tokio::sync::mpsc;
 
@@ -293,10 +293,14 @@ mod tests {
         (lua, handle, rx)
     }
 
-    fn queued_command(rx: &mut mpsc::UnboundedReceiver<RendererFrame>) -> Option<CommandEnvelope> {
-        match rx.try_recv().ok()? {
-            RendererFrame::Command(envelope) => Some(envelope),
-            other => panic!("a capability write must be queued as RendererFrame::Command, got {other:?}"),
+    /// The next queued command, skipping the capability starts that precede it.
+    pub(crate) fn queued_command(rx: &mut mpsc::UnboundedReceiver<RendererFrame>) -> Option<CommandEnvelope> {
+        loop {
+            match rx.try_recv().ok()? {
+                RendererFrame::Command(envelope) => return Some(envelope),
+                RendererFrame::StartCapability { .. } => continue,
+                other => panic!("a command must be queued as RendererFrame::Command, got {other:?}"),
+            }
         }
     }
 
