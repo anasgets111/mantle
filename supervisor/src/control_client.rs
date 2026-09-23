@@ -27,18 +27,24 @@ use tokio::net::UnixStream;
 /// happened" -- the call may well have run.
 const CALL_TIMEOUT: Duration = Duration::from_secs(5);
 
+/// Connects, handshakes as the control client, and sends `frame`.
+async fn connect(instance_dir: &Path, frame: RendererFrame) -> Result<UnixStream, Box<dyn Error>> {
+    let path = shared::control_socket_path(instance_dir);
+    let mut stream = UnixStream::connect(&path)
+        .await
+        .map_err(|err| format!("cannot reach the shell at {}: {err} (is mantle running?)", path.display()))?;
+    write_json_frame(&mut stream, &ConnectionHandshake { generation_id: CONTROL_CLIENT_GENERATION }).await?;
+    write_json_frame(&mut stream, &frame).await?;
+    Ok(stream)
+}
+
 /// Delivers `set` to the shell or reports connection failure. The Supervisor forwards it to the
 /// onscreen generation, which applies or refuses it by name on its stderr. No reply returns here:
 /// keybinds have nowhere to show one, and this process can only observe that the shell is absent.
 pub fn send(set: SetState, instance_dir: &Path) -> Result<(), Box<dyn Error>> {
-    let path = shared::control_socket_path(instance_dir);
     let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build()?;
     runtime.block_on(async {
-        let mut stream = UnixStream::connect(&path)
-            .await
-            .map_err(|err| format!("cannot reach the shell at {}: {err} (is mantle running?)", path.display()))?;
-        write_json_frame(&mut stream, &ConnectionHandshake { generation_id: CONTROL_CLIENT_GENERATION }).await?;
-        write_json_frame(&mut stream, &RendererFrame::SetState(set)).await?;
+        let mut stream = connect(instance_dir, RendererFrame::SetState(set)).await?;
         stream.shutdown().await?;
         Ok(())
     })
@@ -49,14 +55,10 @@ pub fn send(set: SetState, instance_dir: &Path) -> Result<(), Box<dyn Error>> {
 /// The `id` sent is zero and is overwritten by the Supervisor, which owns the pending table; a
 /// client-chosen id would let one peer collect another's answer.
 pub fn call(name: String, arguments: Vec<serde_json::Value>, instance_dir: &Path) -> Result<(), Box<dyn Error>> {
-    let path = shared::control_socket_path(instance_dir);
     let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build()?;
     runtime.block_on(async {
-        let mut stream = UnixStream::connect(&path)
-            .await
-            .map_err(|err| format!("cannot reach the shell at {}: {err} (is mantle running?)", path.display()))?;
-        write_json_frame(&mut stream, &ConnectionHandshake { generation_id: CONTROL_CLIENT_GENERATION }).await?;
-        write_json_frame(&mut stream, &RendererFrame::Call(Call { id: 0, name: name.clone(), arguments })).await?;
+        let mut stream =
+            connect(instance_dir, RendererFrame::Call(Call { id: 0, name: name.clone(), arguments })).await?;
 
         let answer = tokio::time::timeout(CALL_TIMEOUT, read_json_frame::<_, SupervisorFrame>(&mut stream))
             .await
