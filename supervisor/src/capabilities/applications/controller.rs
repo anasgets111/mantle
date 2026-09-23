@@ -91,7 +91,7 @@ pub struct ApplicationsController {
 /// The argv `launch` spawns for an entry and `$TERMINAL`.
 ///
 /// Split from [`ApplicationsController::launch`] so `Terminal=true` is testable without mutating
-/// the environment, as `system::should_emit` and `layer::exclusive_zone_for` do. Empty
+/// the environment, as `layer::exclusive_zone_for` does. Empty
 /// `$TERMINAL` counts as unset, as with a shell-exported blank variable.
 fn command_line(terminal: Option<String>, target: LaunchTarget) -> Result<(String, Vec<String>), LaunchError> {
     if !target.terminal {
