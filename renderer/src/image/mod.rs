@@ -374,25 +374,20 @@ pub struct ImageCache {
     cancelled: Vec<PathBuf>,
 }
 
-impl Default for ImageCache {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 impl ImageCache {
     /// Test cache: its pool wakes nobody; tests poll for landings.
+    #[cfg(test)]
     pub fn new() -> Self {
         Self::build(None)
     }
 
-    /// Holds idle textures to `budget` bytes from here on (ADR-0182). Called whenever the outputs
-    /// change, which is the only thing that changes the answer.
     /// What one animated source may hold, scaled by the displays (ADR-0182, ADR-0233).
     fn animation_bytes(&self) -> usize {
         self.texture_budget * ANIMATION_BUDGETS
     }
 
+    /// Holds idle textures to `budget` bytes from here on (ADR-0182). Called whenever the outputs
+    /// change, which is the only thing that changes the answer.
     pub fn set_texture_budget(&mut self, budget: usize) {
         self.texture_budget = budget;
     }

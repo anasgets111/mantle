@@ -303,7 +303,7 @@ pub fn run(
         session_lock: None,
         egl: None,
         gl: None,
-        conn: conn.clone(),
+        conn,
         shaping,
         text_painter: None,
         image_cache: ImageCache::with_waker(waker.clone()),

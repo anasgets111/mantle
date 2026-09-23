@@ -40,7 +40,6 @@ impl std::ops::AddAssign for RepaintSplit {
 
 pub(super) struct BoundSurface {
     pub(super) egl_surface: EglSurface,
-    #[allow(dead_code)]
     native_window: WlEglSurface,
 }
 /// Logs a bind-time failure; `surface_id` is `"{id}@{output}"` (ADR-0038).
