@@ -226,7 +226,13 @@ fn edit_plain_buffer(
             let next = (if shift { anchor } else { moved_to }, moved_to);
             let moved = next != *selection;
             *selection = next;
-            PlainEdit { moved, ..PlainEdit::NONE }
+            // An arrow the caret cannot take goes to the config, so a grid under the field can use it.
+            let navigated = match motion {
+                Motion::Left if !moved && !shift => Some("left"),
+                Motion::Right if !moved && !shift => Some("right"),
+                _ => None,
+            };
+            PlainEdit { moved, navigated, ..PlainEdit::NONE }
         }
         KeyAction::SelectAll => {
             let next = (0, buffer.len());
@@ -1828,6 +1834,18 @@ mod tests {
         let mut selection = (3, 9);
         edit_plain_buffer(&mut buffer, &mut selection, KeyAction::Move(Motion::Left), false, false);
         assert_eq!((buffer.as_str(), selection), ("on my way", (3, 3)), "the arrow lands on the near edge");
+    }
+
+    #[test]
+    fn an_arrow_the_caret_cannot_take_navigates() {
+        let mut buffer = "ab".to_string();
+        let right = edit_at_end(&mut buffer, KeyAction::Move(Motion::Right), false);
+        assert_eq!(right, PlainEdit { navigated: Some("right"), ..PlainEdit::NONE });
+        let left = edit_at_end(&mut buffer, KeyAction::Move(Motion::Left), false);
+        assert_eq!(left, PlainEdit { moved: true, ..PlainEdit::NONE }, "the caret takes it");
+        let mut selection = (0, 0);
+        let shifted = edit_plain_buffer(&mut buffer, &mut selection, KeyAction::Move(Motion::Left), true, false);
+        assert_eq!(shifted, PlainEdit::NONE, "Shift at the start is a no-op, not navigation");
     }
 
     #[test]
