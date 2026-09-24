@@ -130,6 +130,10 @@ two markers inside the page and leaves the rest alone:
 A page links to the table's anchors, not to rows. Prose about a property goes around the table, or
 into its row if every page showing it should say it.
 
+A table a property takes, such as `Edges` or `Transition`, is declared with `lua_shape!` on the
+struct its parser fills (`renderer/src/lua/luacats.rs`): its `///` blocks are what `lua-meta` says
+about the shape and each key. The book describes it in prose on the page.
+
 ## Page shape
 
 One or two sentences on what the page is for, a small complete example, reference tables, a

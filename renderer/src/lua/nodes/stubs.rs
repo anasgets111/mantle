@@ -247,6 +247,11 @@ fn the_generated_node_stubs_match_what_is_checked_in() {
     shared::check_generated(&files);
 }
 
+// ponytail: the table aliases left here have no struct holding their keys. `Gradient`'s fold into
+// `GradientShape` and a `GradientStop` is a positional pair; `Mask` takes a gradient's keys flattened,
+// which `lua_shape!` cannot spell; `Easing` is a name, a positional list or `{ steps }`; `Animation`'s
+// keys resolve into one `Motion` variant, each refusing the others'; `Animations` and `Exit` are keyed
+// by property name. Upgrade: a struct `parse_gradient` fills, and a flatten form in `lua_shape!`.
 const NODES_HEADER: &str = r##"---@meta
 -- The eleven node kinds and their properties. Surface roles live in `surfaces.lua`.
 --
