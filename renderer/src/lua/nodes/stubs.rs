@@ -7,17 +7,20 @@
 
 use super::properties::{ALL, Absent, BOX, KINDS, Property, SURFACES, kind_doc, properties};
 use crate::layout::node::prop::Keyword;
-use crate::layout::node::{Align, Axes, BorderColor, EdgeInsets, Keyframe, PopupAnchor, Spring, TransitionSpec};
+use crate::layout::node::{
+    Align, Axes, BorderColor, EdgeInsets, Keyframe, PopupAnchor, Spring, TextRun, TransitionSpec,
+};
 use crate::lua::luacats::LuaType;
 use crate::text::snap::LogicalRect;
 
 /// The table shapes a header names as `{Name}`, each filled from its parser's struct.
-const SHAPES: [fn(String) -> String; 7] = [
+const SHAPES: [fn(String) -> String; 8] = [
     shape::<EdgeInsets>,
     shape::<BorderColor>,
     shape::<Axes>,
     shape::<Keyframe>,
     shape::<Spring>,
+    shape::<TextRun>,
     shape::<TransitionSpec>,
     shape::<LogicalRect>,
 ];
@@ -295,15 +298,7 @@ const NODES_HEADER: &str = r##"---@meta
 ---@class BoxBase
 {BoxBase}
 
----One styled stretch of `text.content` (ADR-0104). A notification body's text spans fit as-is;
----drop image spans, which have no `text` and are refused.
----@class TextRun
----@field text string Empty runs are skipped.
----@field bold? boolean Uses the family's bold face when fontconfig has one.
----@field italic? boolean Uses the family's italic face when fontconfig has one.
----@field underline? boolean Underline in the run's colour.
----@field color? Color Overrides the node's `foreground`.
----@field href? string Passed to the node's `on_link` when clicked; never opened by the engine (ADR-0106).
+{TextRun}
 
 {Transition}
 "##;

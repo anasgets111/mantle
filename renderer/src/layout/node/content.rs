@@ -12,6 +12,7 @@ use crate::text::snap::LogicalRect;
 
 use super::prop::keywords;
 use super::*;
+use crate::lua::luacats::lua_shape;
 
 /// A stretch of a `text`'s content drawn differently from the rest (ADR-0104): in the chain's
 /// bold and/or italic face, underlined, or in its own colour. Ranges are bytes into the node's
@@ -47,7 +48,27 @@ pub fn font_runs(runs: &[StyleRun]) -> Vec<FontRun> {
 /// `content` therefore renders an empty node; `mantle.rescue` covers the important failures.
 pub(crate) struct Content;
 
-spelled!(Content => format!("{}|TextRun[]", String::lua()));
+spelled!(Content => format!("{}|{}", String::lua(), Vec::<TextRun>::lua()));
+
+lua_shape! {
+    /// One styled stretch of `text.content` (ADR-0104). A notification body's text spans fit as-is;
+    /// drop image spans, which have no `text` and are refused.
+    #[class = "TextRun"]
+    pub(crate) struct TextRun {
+        /// Empty runs are skipped.
+        text: String,
+        /// Uses the family's bold face when fontconfig has one.
+        bold?: bool,
+        /// Uses the family's italic face when fontconfig has one.
+        italic?: bool,
+        /// Underline in the run's colour.
+        underline?: bool,
+        /// Overrides the node's `foreground`.
+        color: Option<Rgba>,
+        /// Passed to the node's `on_link` when clicked; never opened by the engine (ADR-0106).
+        href: Option<String>,
+    }
+}
 
 impl Prop for Content {
     type Out = (String, Vec<StyleRun>);
@@ -93,7 +114,7 @@ fn parse_runs(runs: &mlua::Table) -> Result<(String, Vec<StyleRun>), LayoutError
             Err(e) => return Err(invalid("content", format!("run {index}: {e}"))),
         };
         // After `text`, so an image span gets the message above. `kind` is a notification span's.
-        crate::lua::marshal::only_keys(&run, &["text", "bold", "italic", "underline", "color", "href", "kind"])
+        crate::lua::marshal::only_keys(&run, &[TextRun::KEYS, &["kind"]].concat())
             .map_err(|detail| invalid("content", format!("run {index}: {detail}")))?;
         let flag = |key: &str| -> Result<bool, LayoutError> {
             match run.get::<Value>(key) {
@@ -129,11 +150,13 @@ fn parse_runs(runs: &mlua::Table) -> Result<(String, Vec<StyleRun>), LayoutError
             }
             Err(e) => return Err(invalid("content", format!("run {index}: {e}"))),
         };
-        if text.is_empty() {
+        let run = TextRun { text, bold, italic, underline, color, href };
+        if run.text.is_empty() {
             continue;
         }
         let start = content.len();
-        content.push_str(&text);
+        content.push_str(&run.text);
+        let TextRun { bold, italic, underline, color, href, .. } = run;
         if bold || italic || underline || color.is_some() || href.is_some() {
             styles.push(StyleRun { range: start..content.len(), bold, italic, underline, color, href });
         }

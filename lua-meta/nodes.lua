@@ -94,6 +94,7 @@
 ---@field underline? boolean Underline in the run's colour.
 ---@field color? Color Overrides the node's `foreground`.
 ---@field href? string Passed to the node's `on_link` when clicked; never opened by the engine (ADR-0106).
+---@field [string] "no such property"
 
 ---`image.transition`. Unknown keys are refused.
 ---@class Transition
