@@ -6163,6 +6163,11 @@ wallpaper `image` frosts it while its text and border stay sharp.
 
    RTX 3080 (proprietary driver) / Mesa llvmpipe. The blur dominates: `filter_image` allocates a
    texture and a framebuffer per call (ADR-0254 decision 4).
+8. **Every flush queues a zero-area fill for the next.** femtovg 0.27 opens each flush on program 0
+   without setting that program's view, and any offscreen of another size leaves that view at its
+   own size, so the next frame's gradient ground drew off by up to 106 of 255. The fill switches
+   programs, which sets the view, and has no area, so it writes no pixel outside a partial update's
+   damage. `layout::paint::flush` replaces every `Canvas::flush` the walk and the shader stage make.
 
 Rejected: `glBlitFramebuffer`, which needs femtovg's private framebuffer for an offscreen; a CPU
 readback, a pipeline stall every frame; drawing everything under the node to a second target, which

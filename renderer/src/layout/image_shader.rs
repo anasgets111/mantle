@@ -248,7 +248,7 @@ impl ShaderStage {
 
         // Everything femtovg has recorded so far has to reach the framebuffer before this quad
         // does; `gl.flush()` would not, because the queue this drains is femtovg's own, on the CPU.
-        canvas.flush();
+        crate::layout::paint::flush(canvas);
 
         // SAFETY: caller's contract, and every value read here is put back below before femtovg
         // records another command. The restore runs on the failing path too: a run that gives up

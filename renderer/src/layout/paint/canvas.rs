@@ -137,7 +137,7 @@ pub fn execute(
     painter.canvas_mut().reset_scissor();
     let timing = crate::layout::scene::timing_on();
     let t_flush = timing.then(Instant::now);
-    painter.canvas_mut().flush();
+    flush(painter.canvas_mut());
     if let Some(t_flush) = t_flush {
         walk.split.flush += t_flush.elapsed();
     }
@@ -159,6 +159,21 @@ fn holds(commands: &[DrawCmd], layer: &DrawCmd) -> bool {
                 _ => false,
             }
     })
+}
+
+/// Flushes, then queues a fill so the next flush opens on a program switch (ADR-0256). Zero area,
+/// so it writes no pixel, in or out of a partial update's damage.
+/// ponytail: works around femtovg 0.27 opening each flush on program 0 without setting its view,
+/// stale after any offscreen of another size; drop it for `canvas.flush()` once upstream sets the
+/// view on reuse.
+pub fn flush(canvas: &mut Canvas<OpenGl>) {
+    canvas.flush();
+    canvas.save();
+    canvas.reset();
+    let mut nothing = Path::new();
+    nothing.rect(0.0, 0.0, 0.0, 0.0);
+    canvas.fill_path(&nothing, &Paint::color(Color::rgbaf(0.0, 0.0, 0.0, 0.0)).with_anti_alias(false));
+    canvas.restore();
 }
 
 /// Runs commands against `target`, recursively restoring parent images for nested clips. `scratch`
@@ -664,7 +679,7 @@ fn read_target(
     let copy = scratch(painter, walk, size)?;
     let canvas = painter.canvas_mut();
     let texture = canvas.get_native_texture(copy).ok()?;
-    canvas.flush();
+    flush(canvas);
     // SAFETY: `paint_surface` made this context current, the flush left the target bound, and
     // femtovg's next flush rebinds every texture unit it uses.
     unsafe {
@@ -2569,6 +2584,40 @@ mod tests {
             assert!(px[1..3].iter().all(|p| (40..=215).contains(&p.0) && (40..=215).contains(&p.2)), "blended, {case}");
             assert_eq!(px[4], (255, 0, 0, 255), "sharp outside the pill, {case}");
         }
+    }
+
+    /// ADR-0256. femtovg opens a flush on the program its last one ended on without setting that
+    /// program's view, which an offscreen of another size left at its own: a gradient ground
+    /// drifted between frames.
+    #[test]
+    fn a_gradient_over_an_offscreen_paints_the_same_every_frame() {
+        let src = r##"return panel { id = "bar", width = 96, height = 64, padding = 16,
+            background = { gradient = "Linear", angle = 90, stops = { { 0, "#FF0000FF" }, { 1, "#0000FFFF" } } },
+            child = rect { width = 40, height = 20, radius = 10, clip = "Rounded", children = {
+                rect { width = 40, height = 10,
+                    background = { gradient = "Linear", stops = { { 0, "#00FF00FF" }, { 1, "#000000FF" } } } },
+                rect { width = 40, height = 10, background = "#FFFFFFFF" } } } }"##;
+        let Some(instance) = init_headless_egl(96, 64) else { return };
+        let shaping = ShapingHandle::spawn();
+        let Some(mut painter) = text_painter(&instance, &shaping, 96, 64) else { return };
+        // SAFETY: `init_headless_egl` made this context current on this thread.
+        let gl = unsafe {
+            glow::Context::from_loader_function(|s| {
+                instance.get_proc_address(s).map_or(std::ptr::null(), |f| f as *const c_void)
+            })
+        };
+        let mut stage = image_shader::ShaderStage::default();
+        let list = surface_96x64(src);
+        let whole = PhysicalRect { x0: 0, y0: 0, x1: 96, y1: 64 };
+        let mut frames = Vec::new();
+        for _ in 0..2 {
+            let (images, captures) = (&mut ImageCache::new(), &mut CaptureCache::default());
+            let shaders = Some(Shaders { gl: &gl, stage: &mut stage });
+            let _ = execute("test", &mut painter, images, captures, &list, 1.0, (96.0, 64.0), &[whole], shaders);
+            frames.push(painter.canvas_mut().screenshot().expect("screenshot reads back the pbuffer"));
+        }
+        let worst = frames[0].buf().iter().zip(frames[1].buf()).map(|(a, b)| a.r.abs_diff(b.r).max(a.a.abs_diff(b.a)));
+        assert!(worst.max().unwrap() <= 2, "the second frame drifts from the first");
     }
 
     /// ADR-0258. A layer too big for the budget is dropped alone; older layers under it stay.
