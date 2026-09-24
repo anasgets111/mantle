@@ -19,6 +19,8 @@ use style::parse_radius;
 
 #[cfg(test)]
 pub use animate::Animatable;
+#[cfg(test)]
+pub(crate) use animate::easing_names;
 pub(crate) use animate::{Animations, Params};
 pub use animate::{Dissolve, ShaderParam, TransitionSpec, Tween, advance, depart, is_paint_only, retarget};
 pub(crate) use content::{Content, Font, Live, MaxLines, Region};

@@ -25,6 +25,12 @@ mod sequence;
 mod spring;
 mod transition;
 use easing::Easing;
+
+/// The named easings, the `EasingName` alias's members.
+#[cfg(test)]
+pub(crate) fn easing_names() -> impl Iterator<Item = &'static str> {
+    Easing::NAMES.iter().map(|(name, _)| *name)
+}
 use sequence::{Sequence, parse_sequence};
 use spring::{Spring, parse_spring};
 pub(crate) use transition::Params;
