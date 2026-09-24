@@ -26,6 +26,11 @@
 //! this is the config's own code, at the same trust level as the `process.run` it can already call,
 //! with a worse failure mode and no containment claimed.
 
+mod blur;
+mod state;
+
+pub use blur::BlurPass;
+
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
@@ -36,6 +41,8 @@ use shared::error;
 
 use crate::layout::node;
 use crate::text::snap::{LogicalRect, PhysicalRect};
+use blur::Blur;
+use state::State;
 
 /// Prepended to every config shader, and the whole of the contract a shader writes against
 /// (ADR-0184). Kept here rather than asked of the config so that a shader is a mask and not a
@@ -125,52 +132,6 @@ void main() {
 }
 "#;
 
-/// The engine's Gaussian, one axis a pass (ADR-0262). `u_step` is one source texel along that
-/// axis, and `u_extent` the source coordinate at the target's far corner; sigma `0` is one
-/// bilinear read, which halves or restores a size.
-const BLUR: &str = r#"#version 300 es
-precision highp float;
-in vec2 v_uv;
-out vec4 fragColor;
-uniform sampler2D u_source;
-uniform vec2 u_step;
-uniform vec2 u_extent;
-uniform float u_sigma;
-void main() {
-    vec2 uv = v_uv * u_extent;
-    vec4 sum = texture(u_source, uv);
-    float total = 1.0;
-    int taps = int(ceil(3.0 * u_sigma));
-    for (int i = 1; i <= taps; i++) {
-        float weight = exp(-0.5 * float(i * i) / (u_sigma * u_sigma));
-        vec2 offset = float(i) * u_step;
-        sum += weight * (texture(u_source, uv - offset) + texture(u_source, uv + offset));
-        total += 2.0 * weight;
-    }
-    fragColor = sum / total;
-}
-"#;
-
-/// One [`ShaderStage::blur`] pass: `source` up to `extent` of its size drawn over the whole of
-/// `target`, blurred by `sigma` source texels along `axis`, `[1, 0]` or `[0, 1]`.
-pub struct BlurPass {
-    pub source: ImageId,
-    pub target: ImageId,
-    pub extent: [f32; 2],
-    pub axis: [f32; 2],
-    pub sigma: f32,
-}
-
-/// [`BLUR`] linked, its uniforms, and the framebuffer its passes draw through.
-struct Blur {
-    program: glow::Program,
-    framebuffer: glow::Framebuffer,
-    source: Option<glow::UniformLocation>,
-    step: Option<glow::UniformLocation>,
-    extent: Option<glow::UniformLocation>,
-    sigma: Option<glow::UniformLocation>,
-}
-
 /// A compiled config shader and the uniform locations it turned out to have.
 struct Program {
     program: glow::Program,
@@ -242,7 +203,7 @@ pub struct ShaderStage {
     /// the node's transform.
     quad: Option<(glow::VertexArray, glow::Buffer)>,
     vertex: Option<glow::Shader>,
-    /// [`BLUR`], built on first use, in `fade`'s shape.
+    /// `blur::BLUR`, built on first use, in `fade`'s shape.
     blur: Option<Option<Blur>>,
 }
 
@@ -453,102 +414,6 @@ impl ShaderStage {
                 return None;
             }
             Some(program)
-        }
-    }
-
-    /// Runs `passes` in order, and answers `false`, drawing nothing, when [`BLUR`] will not build
-    /// or a texture is gone (ADR-0262). Every target is pooled, so a frame allocates nothing.
-    ///
-    /// # Safety
-    ///
-    /// As [`ShaderStage::draw`].
-    pub unsafe fn blur(&mut self, gl: &glow::Context, canvas: &mut Canvas<OpenGl>, passes: &[BlurPass]) -> bool {
-        // SAFETY: caller's contract.
-        let Some((vao, buffer)) = (unsafe { self.ensure_quad(gl) }) else { return false };
-        if self.blur.is_none() {
-            // SAFETY: caller's contract.
-            self.blur = Some(unsafe { self.build_blur(gl) });
-        }
-        let Some(Some(blur)) = &self.blur else { return false };
-        let textures: Option<Vec<_>> = passes
-            .iter()
-            .map(|pass| {
-                let source = canvas.get_native_texture(pass.source).ok()?;
-                let target = canvas.get_native_texture(pass.target).ok()?;
-                let (width, height) = canvas.image_size(pass.source).ok()?;
-                let (target_width, target_height) = canvas.image_size(pass.target).ok()?;
-                let step = [pass.axis[0] / width as f32, pass.axis[1] / height as f32];
-                Some((source, target, step, (target_width as i32, target_height as i32)))
-            })
-            .collect();
-        let Some(textures) = textures else { return false };
-        crate::layout::paint::flush(canvas);
-
-        // SAFETY: caller's contract. The framebuffer and viewport femtovg left are put back with
-        // the rest below, before it records another command.
-        unsafe {
-            let saved = State::capture(gl);
-            let framebuffer = gl.get_parameter_framebuffer(glow::FRAMEBUFFER_BINDING);
-            let mut viewport = [0; 4];
-            gl.get_parameter_i32_slice(glow::VIEWPORT, &mut viewport);
-            gl.use_program(Some(blur.program));
-            gl.bind_vertex_array(Some(vao));
-            gl.bind_buffer(glow::ARRAY_BUFFER, Some(buffer));
-            // The whole target reads the whole source; both keep GL's row order, so `FLIP_Y` is moot.
-            let corners: [f32; 16] =
-                [-1.0, -1.0, 0.0, 0.0, 1.0, -1.0, 1.0, 0.0, -1.0, 1.0, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0];
-            let bytes: Vec<u8> = corners.iter().flat_map(|value| value.to_ne_bytes()).collect();
-            gl.buffer_data_u8_slice(glow::ARRAY_BUFFER, &bytes, glow::STREAM_DRAW);
-            for slot in [glow::BLEND, glow::DEPTH_TEST, glow::STENCIL_TEST, glow::CULL_FACE, glow::SCISSOR_TEST] {
-                gl.disable(slot);
-            }
-            gl.bind_framebuffer(glow::FRAMEBUFFER, Some(blur.framebuffer));
-            gl.active_texture(glow::TEXTURE0);
-            gl.uniform_1_i32(blur.source.as_ref(), 0);
-            for (pass, (source, target, step, (width, height))) in passes.iter().zip(textures) {
-                gl.framebuffer_texture_2d(
-                    glow::FRAMEBUFFER,
-                    glow::COLOR_ATTACHMENT0,
-                    glow::TEXTURE_2D,
-                    Some(target),
-                    0,
-                );
-                gl.viewport(0, 0, width, height);
-                gl.bind_texture(glow::TEXTURE_2D, Some(source));
-                gl.uniform_2_f32(blur.step.as_ref(), step[0], step[1]);
-                gl.uniform_2_f32(blur.extent.as_ref(), pass.extent[0], pass.extent[1]);
-                gl.uniform_1_f32(blur.sigma.as_ref(), pass.sigma);
-                gl.draw_arrays(glow::TRIANGLE_STRIP, 0, 4);
-            }
-            // A deleted texture still attached to a framebuffer keeps its storage.
-            gl.framebuffer_texture_2d(glow::FRAMEBUFFER, glow::COLOR_ATTACHMENT0, glow::TEXTURE_2D, None, 0);
-            gl.bind_framebuffer(glow::FRAMEBUFFER, framebuffer);
-            gl.viewport(viewport[0], viewport[1], viewport[2], viewport[3]);
-            saved.restore(gl);
-        }
-        true
-    }
-
-    /// # Safety
-    ///
-    /// The context is current.
-    unsafe fn build_blur(&mut self, gl: &glow::Context) -> Option<Blur> {
-        // SAFETY: caller's contract.
-        unsafe {
-            let program = self.link(gl, Path::new("<engine blur>"), BLUR)?;
-            let Ok(framebuffer) = gl.create_framebuffer() else {
-                gl.delete_program(program);
-                return None;
-            };
-            let named = |name: &str| gl.get_uniform_location(program, name);
-            Some(Blur {
-                program,
-                framebuffer,
-                source: named("u_source"),
-                step: named("u_step"),
-                extent: named("u_extent"),
-                sigma: named("u_sigma"),
-            })
         }
     }
 
@@ -772,120 +637,6 @@ unsafe fn make_quad(gl: &glow::Context) -> Option<(glow::VertexArray, glow::Buff
         gl.bind_vertex_array(None);
         gl.bind_buffer(glow::ARRAY_BUFFER, None);
         Some((vao, buffer))
-    }
-}
-
-/// Every piece of GL state one run changes, read before and put back after.
-///
-/// femtovg keeps its own idea of what is bound and re-binds lazily, so anything left changed here
-/// is a draw it makes later against state it never set. The framebuffer bindings are deliberately
-/// absent: this draws into whichever target is already current, and never touches that. The scissor
-/// box *is* present, because this stage sets one: femtovg clips its own paths through a uniform its
-/// shader reads, so a quad drawn here is clipped by nothing unless GL scissors it.
-///
-/// The colour mask is absent too, and not by oversight. femtovg masks colour writes while it lays
-/// down a stencil and puts the mask back within the same operation (`renderer/opengl.rs`), so after
-/// the flush this run begins with, all four channels are on. Nothing here changes it, so there is
-/// nothing to put back -- and `glow` has no four-channel read for it, so querying would mean
-/// storing one channel's answer and restoring it to all four.
-struct State {
-    program: Option<glow::Program>,
-    scissor_box: [i32; 4],
-    vertex_array: Option<glow::VertexArray>,
-    array_buffer: Option<glow::Buffer>,
-    active_texture: u32,
-    texture_0: Option<glow::Texture>,
-    texture_1: Option<glow::Texture>,
-    blend: bool,
-    blend_src_rgb: i32,
-    blend_dst_rgb: i32,
-    blend_src_alpha: i32,
-    blend_dst_alpha: i32,
-    blend_equation_rgb: i32,
-    blend_equation_alpha: i32,
-    depth_test: bool,
-    stencil_test: bool,
-    cull_face: bool,
-    scissor_test: bool,
-}
-
-impl State {
-    /// # Safety
-    ///
-    /// The context is current.
-    unsafe fn capture(gl: &glow::Context) -> Self {
-        // SAFETY: caller's contract. Every query below is a plain `glGet` on the current context.
-        unsafe {
-            // Zero is GL's "nothing bound", and every `Native*` newtype wraps a `NonZeroU32`,
-            // so the check and the conversion are the same step.
-            let name = |slot: u32| std::num::NonZeroU32::new(gl.get_parameter_i32(slot) as u32);
-            let active_texture = gl.get_parameter_i32(glow::ACTIVE_TEXTURE) as u32;
-            gl.active_texture(glow::TEXTURE0);
-            let texture_0 = name(glow::TEXTURE_BINDING_2D).map(glow::NativeTexture);
-            gl.active_texture(glow::TEXTURE1);
-            let texture_1 = name(glow::TEXTURE_BINDING_2D).map(glow::NativeTexture);
-            gl.active_texture(active_texture);
-            let mut scissor_box = [0; 4];
-            gl.get_parameter_i32_slice(glow::SCISSOR_BOX, &mut scissor_box);
-            Self {
-                program: name(glow::CURRENT_PROGRAM).map(glow::NativeProgram),
-                scissor_box,
-                vertex_array: name(glow::VERTEX_ARRAY_BINDING).map(glow::NativeVertexArray),
-                array_buffer: name(glow::ARRAY_BUFFER_BINDING).map(glow::NativeBuffer),
-                active_texture,
-                texture_0,
-                texture_1,
-                blend: gl.is_enabled(glow::BLEND),
-                blend_src_rgb: gl.get_parameter_i32(glow::BLEND_SRC_RGB),
-                blend_dst_rgb: gl.get_parameter_i32(glow::BLEND_DST_RGB),
-                blend_src_alpha: gl.get_parameter_i32(glow::BLEND_SRC_ALPHA),
-                blend_dst_alpha: gl.get_parameter_i32(glow::BLEND_DST_ALPHA),
-                blend_equation_rgb: gl.get_parameter_i32(glow::BLEND_EQUATION_RGB),
-                blend_equation_alpha: gl.get_parameter_i32(glow::BLEND_EQUATION_ALPHA),
-                depth_test: gl.is_enabled(glow::DEPTH_TEST),
-                stencil_test: gl.is_enabled(glow::STENCIL_TEST),
-                cull_face: gl.is_enabled(glow::CULL_FACE),
-                scissor_test: gl.is_enabled(glow::SCISSOR_TEST),
-            }
-        }
-    }
-
-    /// # Safety
-    ///
-    /// The context is current and is the one [`State::capture`] read.
-    unsafe fn restore(self, gl: &glow::Context) {
-        // SAFETY: caller's contract.
-        unsafe {
-            gl.use_program(self.program);
-            gl.bind_vertex_array(self.vertex_array);
-            gl.bind_buffer(glow::ARRAY_BUFFER, self.array_buffer);
-            gl.active_texture(glow::TEXTURE1);
-            gl.bind_texture(glow::TEXTURE_2D, self.texture_1);
-            gl.active_texture(glow::TEXTURE0);
-            gl.bind_texture(glow::TEXTURE_2D, self.texture_0);
-            gl.active_texture(self.active_texture);
-            let toggle = |enabled: bool, slot: u32| {
-                if enabled {
-                    gl.enable(slot);
-                } else {
-                    gl.disable(slot);
-                }
-            };
-            toggle(self.blend, glow::BLEND);
-            gl.blend_func_separate(
-                self.blend_src_rgb as u32,
-                self.blend_dst_rgb as u32,
-                self.blend_src_alpha as u32,
-                self.blend_dst_alpha as u32,
-            );
-            gl.blend_equation_separate(self.blend_equation_rgb as u32, self.blend_equation_alpha as u32);
-            toggle(self.depth_test, glow::DEPTH_TEST);
-            toggle(self.stencil_test, glow::STENCIL_TEST);
-            toggle(self.cull_face, glow::CULL_FACE);
-            toggle(self.scissor_test, glow::SCISSOR_TEST);
-            let [x, y, width, height] = self.scissor_box;
-            gl.scissor(x, y, width, height);
-        }
     }
 }
 
