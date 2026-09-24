@@ -65,7 +65,7 @@ const BOX_KINDS: [&str; 8] = ["rect", "row", "column", "button", "panel", "windo
 /// A key in no list is refused, so a misspelled `aling_v` raises instead of being read by nothing.
 ///
 /// ponytail: hand-written because the schema is scattered `properties.get("...")` calls across
-/// `layout/node/`, `layout/scene.rs`, and `wayland/`, each with its own defaulting/coercion.
+/// `layout/node/`, `layout/scene/`, and `wayland/`, each with its own defaulting/coercion.
 /// Guards:
 /// `every_property_a_parser_reads_is_accepted`, `the_stubs_declare_the_same_properties`. Upgrade:
 /// per-kind props structs, which means rewriting the parsers.

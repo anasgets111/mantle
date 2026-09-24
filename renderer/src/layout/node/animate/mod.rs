@@ -1188,8 +1188,8 @@ pub fn retarget(
 }
 
 /// The properties a tween can move without asking the solver anything: what they change is what a
-/// node paints, never the box it was given. `layout::scene::taffy_style` reads none of them, and
-/// `layout::scene::measure_for` reads a text's content, size, family and wrapping but not its
+/// node paints, never the box it was given. `layout::scene::solver::taffy_style` reads none of them, and
+/// `layout::scene::solver::measure_for` reads a text's content, size, family and wrapping but not its
 /// colour, so a tick whose every running tween names one of these can re-derive the paint in place
 /// and leave the taffy pass out entirely (`layout::scene::Scene::tick`).
 ///

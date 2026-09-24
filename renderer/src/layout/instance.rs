@@ -39,7 +39,7 @@ pub struct SurfaceInstance {
     /// `output_size` field exists for the same reason on the other side of the same conflation.
     ///
     /// A `window` or `lock` root resolves a `Content` axis to `available` outright
-    /// (`scene::forced_root_size`), so its configure *is* its allocation and neither axis is ever
+    /// (`scene::pass::forced_root_size`), so its configure *is* its allocation and neither axis is ever
     /// measured. A `popup` seeds these here; a `panel` has them pushed by
     /// `RendererClient::set_measured_axes` instead, because only the *resolved* spec can tell an
     /// omitted extent from a signal-bound one (see `wayland::layer::measured_axes`).

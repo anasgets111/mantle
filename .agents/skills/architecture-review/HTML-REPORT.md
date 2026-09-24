@@ -190,7 +190,7 @@ Rules:
     </h3>
 
     <div class="files">
-      <div>renderer/src/layout/scene.rs</div>
+      <div>renderer/src/layout/scene/mod.rs</div>
       <div>renderer/src/layout/node/style.rs</div>
     </div>
 

@@ -567,7 +567,7 @@ impl ShapingHandle {
     ///
     /// Needed because measurement is not guaranteed. A `text` with an explicit width *and* height
     /// never reaches taffy's measure callback, and without `elide` or `wrap` never reaches
-    /// `layout::scene::fit_text_to_box`'s shaping either -- so its family would never be loaded and
+    /// `layout::scene::fit::fit_text_to_box`'s shaping either -- so its family would never be loaded and
     /// paint would fall back to the declared chain. `layout::scene` calls this for every named
     /// family it prepares.
     ///
