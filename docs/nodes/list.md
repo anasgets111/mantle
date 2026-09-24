@@ -7,7 +7,7 @@ simpler.
 
 A scrolling thumbnail grid: a vertical list of two-image rows, decoded off-thread.
 
-```lua
+```lua,shot
 local paths = state("wallpapers", { "/usr/share/backgrounds/a.jpg", "/usr/share/backgrounds/b.jpg",
     "/usr/share/backgrounds/c.jpg", "/usr/share/backgrounds/d.jpg" })
 
@@ -33,6 +33,8 @@ local grid = list {
         return row { spacing = 8, children = tiles }
     end,
 }
+
+return grid
 ```
 
 Keyed workspace buttons from a capability: [workspaces cookbook](../cookbook/workspaces.md).

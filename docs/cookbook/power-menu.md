@@ -4,7 +4,7 @@ A full-screen overlay with lock, suspend, log out, restart and power off. The la
 second click before they run, and a click outside the buttons closes the menu. A bar button opens
 it, and so does `mantle toggle power_menu_open` from a keybind.
 
-```lua
+```lua,shot
 local open = state("power_menu_open", false)
 local pending = state("power_menu_pending", "") -- the action waiting for its second click
 
@@ -124,6 +124,7 @@ return {
             width = "Fill",
             height = "Fill",
             background = "#11111bcc",
+            opacity = 1, -- `from` needs the property set
             animate = { opacity = { duration = 150, from = 0 } },
             children = {
                 button { width = "Fill", height = "Fill", on_click = close }, -- outside click

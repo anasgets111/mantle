@@ -4,7 +4,7 @@ A layer-shell surface (`zwlr_layer_surface_v1`) pinned to screen edges. Use it f
 part of the desktop rather than an application window: bars, docks, wallpapers, OSDs, launcher
 overlays and notification stacks. Rules every role shares are in [surfaces](index.md).
 
-```lua
+```lua,shot
 local clock = mantle.system:map(function(system)
     return system and os.date("%H:%M", system.time) or ""
 end)
@@ -239,7 +239,7 @@ animate the root's `translate`, not the surface ([animation](../guide/animation.
 
 Floating 8px above the bottom edge, with a fixed 56px zone because its own height is measured:
 
-```lua
+```lua,shot
 local dock = panel {
     id = "dock",
     layer = "Bottom",
@@ -248,7 +248,11 @@ local dock = panel {
     margin = { bottom = 8 },
     exclusive = 56,
     background = "#1e1e2e", radius = 12, padding = 8,
-    child = row { spacing = 8, children = { text { content = "Files" }, text { content = "Terminal" } } },
+    child = row { spacing = 8, children = {
+        icon { name = "web-browser", size = 32 },
+        icon { name = "folder", size = 32 },
+        icon { name = "utilities-terminal", size = 32 },
+    } },
 }
 
 return { dock }
@@ -294,7 +298,7 @@ card's own buttons or on nothing; it never reaches the catcher.
 
 Anchored to two edges, so both axes are measured and the panel grows with its cards:
 
-```lua
+```lua,shot
 local items = state("toasts", { "Build finished", "Battery at 20%" })
 
 local stack = panel {

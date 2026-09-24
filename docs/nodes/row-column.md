@@ -6,7 +6,7 @@ properties and differ only in their main axis. For children built from data, use
 
 A meter: a `"Fill"`-wide track with a percentage-wide fill that follows a signal.
 
-```lua
+```lua,shot
 local volume = state("volume", 0.45)
 
 local meter = row {
@@ -22,6 +22,8 @@ local meter = row {
         animate = { width = 150 },
     } },
 }
+
+return column { width = 240, children = { meter } }
 ```
 
 ## Properties

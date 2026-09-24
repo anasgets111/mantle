@@ -4,15 +4,15 @@ An `xdg_toplevel`: an ordinary application window the compositor places, tiles, 
 closes. Use it for a settings window or a dialog the user moves around; use a [panel](panel.md)
 for anything pinned to the desktop. Rules every role shares are in [surfaces](index.md).
 
-```lua
+```lua,shot
 local open = state("settings_open", false)
 local page = state("settings_page", "General")
 
 local function tab(name)
     return button {
         width = "Fill",
-        padding = 8,
-        radius = 6,
+        padding = { left = 12, right = 12, top = 8, bottom = 8 },
+        radius = 8,
         background = page:map(function(current) return current == name and "#313244" or "#00000000" end),
         on_click = function() page:set(name) end,
         children = { text { content = name, foreground = "#cdd6f4" } },
@@ -32,8 +32,8 @@ local settings = window {
         background = "#1e1e2e",
         children = {
             column { width = 160, height = "Fill", padding = 8, spacing = 4, background = "#181825",
-                children = { tab("General"), tab("Display") } },
-            column { width = "Fill", padding = 16,
+                children = { tab("General"), tab("Display"), tab("Sound"), tab("Power") } },
+            column { width = "Fill", padding = 24,
                 children = { text { content = page, font_size = 20, foreground = "#cdd6f4" } } },
         },
     },

@@ -7,7 +7,7 @@ can mix bold, italic, colour and links in one paragraph. For typing, use a [`tex
 A card with an icon and two lines: the title elides, the body wraps to two lines and elides the
 second.
 
-```lua
+```lua,shot
 local function card(icon_name, title, body)
     return row {
         width = "Fill",
@@ -16,7 +16,7 @@ local function card(icon_name, title, body)
         radius = 12,
         background = "#313244",
         children = {
-            icon { name = icon_name, size = 32, align_v = "Center" },
+            icon { name = icon_name, size = 32, foreground = "#CDD6F4", align_v = "Center" },
             column { width = "Fill", align_v = "Center", spacing = 2, children = {
                 text { content = title, width = "Fill", font_size = 14, elide = "End" },
                 text { content = body, width = "Fill", foreground = "#A6ADC8",
@@ -25,6 +25,11 @@ local function card(icon_name, title, body)
         },
     }
 end
+
+return column { width = 340, spacing = 8, children = {
+    card("dialog-information-symbolic", "Update ready", "3 packages can be installed. Restart to finish the kernel upgrade."),
+    card("battery-caution-symbolic", "Battery low", "12% left"),
+} }
 ```
 
 The middle column is `"Fill"` so the texts have a bounded width; the icon keeps its 32 px.

@@ -7,7 +7,7 @@ kind that takes these events; the rules for which button wins, cancelling and dr
 
 A volume chip: left click mutes, the wheel changes the level.
 
-```lua
+```lua,shot
 local muted = state("muted", false)
 local volume = state("volume", 0.5)
 
@@ -27,6 +27,8 @@ local mute_button = button {
                align_v = "Center" },
     } } },
 }
+
+return mute_button
 ```
 
 ## Properties

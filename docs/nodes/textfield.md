@@ -7,7 +7,7 @@ draft's lifetime and password fields are on [input](../guide/input.md#text-field
 A launcher: the field filters a list as the user types, the arrow keys move a selection, Enter
 launches.
 
-```lua
+```lua,shot
 local apps = { "Firefox", "Files", "Terminal", "Text Editor", "Settings" }
 local query = state("query", "")
 local selected = state("selected", 1)
@@ -21,25 +21,34 @@ local matches = query:map(function(q)
 end)
 
 local launcher = column { width = 320, padding = 12, spacing = 8, background = "#1E1E2E", radius = 12, children = {
-    textfield {
-        width = "Fill",
-        height = 32,
-        font_size = 14,
-        placeholder = "Search…",
-        autofocus = true,
-        on_change = function(text) query:set(text); selected:set(1) end,
-        on_navigate = function(key)
-            if key == "down" then selected:set(selected:get() + 1)
-            elseif key == "up" then selected:set(math.max(1, selected:get() - 1)) end
-        end,
-        on_submit = function() print("launch", matches:get()[selected:get()]) end,
-    },
+    rect { width = "Fill", padding = { left = 10, right = 10 }, radius = 8, background = "#313244", children = {
+        textfield {
+            width = "Fill",
+            height = 36,
+            font_size = 14,
+            foreground = "#CDD6F4",
+            placeholder = "Search…",
+            autofocus = true,
+            on_change = function(text) query:set(text); selected:set(1) end,
+            on_navigate = function(key)
+                if key == "down" then selected:set(math.min(#matches:get(), selected:get() + 1))
+                elseif key == "up" then selected:set(math.max(1, selected:get() - 1)) end
+            end,
+            on_submit = function() print("launch", matches:get()[selected:get()]) end,
+        },
+    } },
     list {
         width = "Fill",
         source = matches,
         key = function(name) return name end,
         itemfn = function(name)
-            return text { content = name, width = "Fill", padding = 6 }
+            return rect {
+                width = "Fill", padding = { left = 10, right = 10, top = 6, bottom = 6 }, radius = 8,
+                background = selected:map(function(index)
+                    return matches:get()[index] == name and "#45475A" or "#00000000"
+                end),
+                children = { text { content = name, foreground = "#CDD6F4" } },
+            }
         end,
     },
 } }

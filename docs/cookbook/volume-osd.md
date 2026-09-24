@@ -3,7 +3,8 @@
 A card near the bottom of the focused monitor that shows the volume for a moment whenever it
 changes, whether from a media key, `wpctl` or a mixer. It fades and slides in, then out.
 
-```lua
+<!-- shot: frames=0..210/30 -->
+```lua,shot
 -- The last change worth showing. A fresh table on every set, so each change counts as new.
 local osd = state("volume_osd", { volume = 0, muted = false })
 

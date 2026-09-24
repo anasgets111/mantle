@@ -4,7 +4,8 @@ Notification cards stacked in the top-right corner, newest first. Each card show
 summary, the formatted body and the sender's action buttons; clicking it runs the default action,
 the × dismisses it, and hovering the stack pauses every countdown.
 
-```lua
+<!-- shot: frames=0..210/30 -->
+```lua,shot
 local MAX_CARDS = 4
 local stack_hover = hover("notification_stack")
 
@@ -78,6 +79,8 @@ local function card(item)
         background = "#1e1e2ef2",
         border_width = 1,
         border_color = critical and "#f38ba8" or "#45475a",
+        opacity = 1, -- `from` needs the property set
+        translate = { x = 0 },
         animate = {
             opacity = { duration = 150, from = 0 },
             translate = { duration = 200, easing = "OutCubic", from = { x = 40 } },

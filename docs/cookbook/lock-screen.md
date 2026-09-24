@@ -4,7 +4,7 @@ A lock screen on every monitor with a large clock, the date and a password card 
 checking and wrong passwords. It fades in when the session locks and out after a correct password.
 It locks from a keybind (`mantle call lock`) and after five minutes idle.
 
-```lua
+```lua,shot
 local FADE_MS = 250
 
 mantle.lock:invoke("set_unlock_animation", FADE_MS)

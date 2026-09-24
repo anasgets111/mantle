@@ -8,7 +8,7 @@ motion on [animation](../guide/animation.md), clicks and typing on [input](../gu
 
 A bar with a left group, a centred clock and a right group:
 
-```lua
+```lua,shot
 local clock = state("clock", "12:00")
 
 local bar = panel {

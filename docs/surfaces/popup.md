@@ -5,7 +5,7 @@ relative to a rectangle in the parent, keeps it on screen and dismisses it on an
 which is why a dropdown, context menu or tooltip is a popup and not a second panel. No Wayland
 object exists while it is hidden. Rules every role shares are in [surfaces](index.md).
 
-```lua
+```lua,shot
 local menu_open = state("menu_open", false)
 local menu_anchor = state("menu_anchor", { x = 0, y = 0, width = 1, height = 1 })
 
@@ -41,7 +41,8 @@ local menu = popup {
     visible = menu_open,
     on_dismiss = function() menu_open:set(false) end,
     child = column {
-        padding = 8, spacing = 4, radius = 8, background = "#1e1e2e",
+        width = 160, padding = 12, spacing = 10, radius = 10, background = "#1e1e2e",
+        border_width = 1, border_color = "#45475a",
         children = {
             text { content = "Settings", foreground = "#cdd6f4" },
             text { content = "Log out", foreground = "#cdd6f4" },

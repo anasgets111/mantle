@@ -4,7 +4,7 @@ A centred search overlay for installed apps. Typing ranks desktop entries with f
 arrow keys move the selection, Enter or a click launches, and Escape or a click outside closes it.
 Open it from a compositor keybind with `mantle toggle launcher_open`.
 
-```lua
+```lua,shot
 local MAX_RESULTS = 50
 
 local open = state("launcher_open", false)

@@ -6,7 +6,7 @@ long as the compositor holds the session locked. Declaring a `lock` does not loc
 The lock's state (`active`, `authenticating`, `attempts`, `error`, `unlocking`) and actions are on
 the [lock capability](../capabilities/lock.md). Rules every role shares are in [surfaces](index.md).
 
-```lua
+```lua,shot
 mantle.lock:invoke("set_unlock_animation", 250)
 
 local up = mantle.lock:map(function(lock) return lock ~= nil and lock.active and not lock.unlocking end)

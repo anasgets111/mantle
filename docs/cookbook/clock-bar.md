@@ -3,7 +3,7 @@
 A bar across the top of every monitor with a clock in the centre. Clicking the clock switches
 between the time and the full date, and hovering it shows the date in a tooltip.
 
-```lua
+```lua,shot
 local show_date = state("clock_show_date", false)
 local clock_hover = hover("clock")
 

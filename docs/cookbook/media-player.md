@@ -4,7 +4,7 @@ A now-playing pill in the bar for any MPRIS player (Spotify, mpv, a browser tab)
 card with cover art, title, artist, a seekable progress bar and previous, play/pause and next
 buttons. It prefers whichever player is playing and hides when none runs.
 
-```lua
+```lua,shot
 local card_open = state("media_open", false)
 local card_anchor = state("media_anchor", { x = 0, y = 0, width = 1, height = 1 })
 -- Where `position` was last reported, in `mantle.system.monotonic` seconds.

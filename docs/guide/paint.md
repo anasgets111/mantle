@@ -5,7 +5,7 @@ blurs. Reach for this page once a layout is in place and you want it to look lik
 Layout and per-kind properties are on [Nodes](../nodes/index.md); easing any of these values is on
 [Animation](animation.md).
 
-```lua
+```lua,shot
 column {
     padding = 16,
     spacing = 8,
@@ -130,8 +130,15 @@ Name exactly one of `source` or a gradient. A masked box draws its subtree offsc
 and always cuts children to its box (to `radius` too under `clip = "Rounded"`), even with
 `clip = "None"`.
 
-```lua
-column {
+```lua,shot
+local items = {}
+for i = 1, 12 do
+    items[i] = rect { width = "Fill", padding = 10, radius = 8, background = "#313244",
+        children = { text { content = "Row " .. i, foreground = "#CDD6F4" } } }
+end
+
+return column {
+    width = 200,
     height = 240,
     spacing = 6,
     scroll = scroll("feed"),
@@ -208,7 +215,7 @@ panel {
 
 A bar whose 60% fill tints the compositor-blurred desktop behind it.
 
-```lua
+```lua,shot
 rect {
     width = 320,
     height = 180,
@@ -343,7 +350,7 @@ A radius past half the height makes the ends round whatever the label's width.
 
 ### Gradient border
 
-```lua
+```lua,shot
 rect {
     padding = 2,
     radius = 14,
@@ -364,7 +371,7 @@ rect {
 
 ### Circular avatar
 
-```lua
+```lua,shot
 rect {
     width = 64,
     height = 64,
@@ -380,11 +387,13 @@ rect {
 
 ### Dim the background behind a modal
 
-```lua
+```lua,shot
 panel {
     id = "modal",
     layer = "Overlay",
     anchor = { top = true, bottom = true, left = true, right = true },
+    width = "Fill",
+    height = "Fill",
     exclusive = "Ignore",
     keyboard_interactivity = "OnDemand",
     child = rect {
@@ -397,12 +406,16 @@ panel {
                 align_v = "Center",
                 width = 360,
                 padding = 24,
+                spacing = 8,
                 radius = 16,
                 background = "#1E1E2EE0",
                 blur = true,
                 shadow_color = "#00000080",
                 shadow_blur = 32,
-                children = { text { content = "Log out?", font_size = 18, foreground = "#CDD6F4" } },
+                children = {
+                    text { content = "Log out?", font_size = 18, foreground = "#CDD6F4" },
+                    text { content = "Unsaved work in open apps will be lost.", foreground = "#A6ADC8" },
+                },
             },
         },
     },

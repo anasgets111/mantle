@@ -4,7 +4,7 @@ Tray icons in the bar. A left click activates the app, a middle click sends its 
 the wheel scrolls it and a right click opens its menu in a dropdown. Submenus expand in place,
 check marks and radio dots follow the app, and disabled entries are drawn greyed out.
 
-```lua
+```lua,shot
 local menu_open = state("tray_menu_open", false)
 local menu_anchor = state("tray_menu_anchor", { x = 0, y = 0, width = 1, height = 1 })
 local menu_item = state("tray_menu_item", "") -- the tray item whose menu is open

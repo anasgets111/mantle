@@ -6,7 +6,7 @@ one node over another. Side by side needs a [`row` or `column`](row-column.md) i
 
 A bell icon with an unread badge in its top-right corner:
 
-```lua
+```lua,shot
 local unread = state("unread", 3)
 
 local bell = rect {
@@ -26,6 +26,8 @@ local bell = rect {
         },
     },
 }
+
+return bell
 ```
 
 The badge comes second, so it paints over the icon.

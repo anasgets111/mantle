@@ -7,7 +7,7 @@ ratio, use an [`image`](image.md).
 The focused window's icon and title. [`mantle.applications`](../capabilities/applications.md) maps a
 window's `app_id` to its desktop entry, whose `icon` is a theme name:
 
-```lua
+```lua,shot
 local focused_icon = computed({ mantle.applications, mantle.workspaces }, function(apps, workspaces)
     local client = workspaces and workspaces.active_client
     if apps == nil or client == nil then return "" end
@@ -15,12 +15,17 @@ local focused_icon = computed({ mantle.applications, mantle.workspaces }, functi
     return index and apps.entries[index].icon or ""
 end)
 
-local app_badge = row { spacing = 6, align_v = "Center", children = {
-    icon { name = focused_icon, size = 18, align_v = "Center" },
-    text { content = mantle.workspaces:map(function(w)
-        return w and w.active_client and w.active_client.title or ""
-    end), width = 200, elide = "End", align_v = "Center" },
-} }
+local app_badge = row {
+    spacing = 8, padding = { left = 8, right = 12, top = 6, bottom = 6 }, radius = 8, background = "#313244",
+    children = {
+        icon { name = focused_icon, size = 20, align_v = "Center" },
+        text { content = mantle.workspaces:map(function(w)
+            return w and w.active_client and w.active_client.title or ""
+        end), max_width = 200, elide = "End", align_v = "Center", foreground = "#CDD6F4" },
+    },
+}
+
+return app_badge
 ```
 
 ## Properties

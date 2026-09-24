@@ -168,7 +168,8 @@ owns the property: the value the pass resolves is ignored.
 To replay a finished run, take the entry away and put it back. [`pulse`](signals.md) does both in
 one expression: it reads `true` for a window after its source changes.
 
-```lua
+<!-- shot: frames=0..400/40 -->
+```lua,shot
 local taps = state("taps", 0)
 local BOUNCE = { scale = { duration = 400, easing = "OutQuad", keyframes = { 1, 1.25, 0.9, 1 } } }
 
@@ -176,6 +177,7 @@ return panel {
     id = "bar",
     layer = "Top",
     anchor = { top = true },
+    padding = 4, -- room for the overshoot: a scaled node paints past its box
     child = button {
         width = 32,
         height = 32,
@@ -184,14 +186,15 @@ return panel {
         on_click = function() taps:set(taps:get() + 1) end,
         -- pulse is true for 400 ms after each tap: the entry appears, plays once, then goes.
         animate = pulse(taps, 400):map(function(on) return on and BOUNCE or {} end),
-        children = { icon { name = "starred-symbolic", size = 16, align_h = "Center", align_v = "Center" } },
+        children = { icon { name = "starred-symbolic", size = 16, foreground = "#CDD6F4", align_h = "Center", align_v = "Center" } },
     },
 }
 ```
 
 An endless spinner needs no signal. A hidden spinner stops requesting frames by itself:
 
-```lua
+<!-- shot: frames=0..950/50 -->
+```lua,shot
 local busy = state("busy", true)
 local SPIN = { rotate = { duration = 1000, easing = "Linear", keyframes = { 0, 360 }, loops = "Infinite" } }
 
@@ -199,9 +202,11 @@ return panel {
     id = "bar",
     layer = "Top",
     anchor = { top = true },
+    padding = 4, -- room for the corners as it turns
     child = icon {
         name = "view-refresh-symbolic",
         size = 16,
+        foreground = "#CDD6F4",
         visible = busy,
         animate = SPIN,
     },
@@ -233,7 +238,8 @@ exit = { duration = 150, easing = "InQuad", opacity = 0, translate = { y = 16 } 
 Because hiding a surface skips the exit, drop the child from `children` and hold the surface open
 with [`delay`](signals.md) until the exit has played:
 
-```lua
+<!-- shot: frames=0..210/30 -->
+```lua,shot
 local shown = state("osd_shown", false)
 -- Keep the surface mapped 150 ms past `shown`, so the card's exit can play.
 local mapped = computed({ shown, delay(shown, 150) }, function(now, was)
@@ -247,6 +253,7 @@ local card = rect {
     background = "#1e1e2ee6",
     opacity = 1,
     translate = { y = 0 },
+    children = { text { content = "Volume 42%", align_h = "Center", align_v = "Center", foreground = "#CDD6F4" } },
     animate = {
         opacity = { duration = 200, from = 0 },
         translate = { duration = 200, easing = "OutCubic", from = { y = 16 } },
@@ -319,7 +326,8 @@ return {
 **Slide a notification out.** Removing an item from a keyed [`list`](../nodes/list.md) makes it
 leave. The remaining cards close up at once; only the leaving one moves.
 
-```lua
+<!-- shot: frames=0..210/30 -->
+```lua,shot
 local notes = state("notes", { "Battery low", "Update ready", "Download complete" })
 
 local function dismiss(title)
@@ -333,12 +341,14 @@ end
 local function card(title)
     return button {
         width = 280,
-        padding = 10,
-        radius = 8,
+        padding = 12,
+        radius = 12,
         background = "#1e1e2e",
+        border_width = 1,
+        border_color = "#45475a",
         on_click = function() dismiss(title) end,
         animate = { exit = { duration = 200, easing = "InCubic", opacity = 0, translate = { x = 300 } } },
-        children = { text { content = title } },
+        children = { text { content = title, foreground = "#cdd6f4" } },
     }
 end
 
