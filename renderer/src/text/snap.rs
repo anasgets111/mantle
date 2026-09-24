@@ -8,13 +8,16 @@
 //! outward makes it 2px. [`snap_border_band`] rounds each edge to the nearest pixel instead, so
 //! a border keeps the width the config asked for.
 
-/// A rectangle in logical (fractional, DPI-independent) pixel coordinates.
-#[derive(Debug, Clone, Copy, PartialEq, Default)]
-pub struct LogicalRect {
-    pub x: f32,
-    pub y: f32,
-    pub width: f32,
-    pub height: f32,
+crate::lua::luacats::lua_shape! {
+    /// A rectangle in logical (fractional, DPI-independent) pixel coordinates.
+    #[alias = "Rect"]
+    #[derive(Debug, Clone, Copy, PartialEq, Default)]
+    pub struct LogicalRect {
+        pub x: f32,
+        pub y: f32,
+        pub width: f32,
+        pub height: f32,
+    }
 }
 
 /// A rectangle snapped to physical (integer) pixel boundaries.

@@ -17,8 +17,8 @@ use crate::layout::node::prop::{
     Bound, Callback, Color, Field, Flag, Handle, Id, Name, Num, OneOf, Path, Pixels, Prop, Refused, Structural, Text,
 };
 use crate::layout::node::{
-    Align, Anchor, AnchorRect, Animations, Axes, BorderColor, Children, ClipShape, ConstraintAdjustment, Content,
-    CornerShape, Cursor, Direction, EdgeInsets, Elide, Exclusive, Fill, Font, Items, KeyboardInteractivity, LayerKind,
+    Align, Anchor, AnchorRect, Animations, Axes, Children, ClipShape, ConstraintAdjustment, Content, CornerShape,
+    Cursor, Direction, EdgeColors, Elide, Exclusive, Fill, Font, Insets, Items, KeyboardInteractivity, LayerKind,
     Limit, Live, Mask, MaxLines, Params, PopupAnchor, PopupExtent, PopupOffset, Region, Root, Scale,
     SecureSubmitTarget, ShadowMode, SizeHint, SizeMode, TextAlign, TransitionSpec, Wrap,
 };
@@ -193,11 +193,11 @@ props! {
         /// Outer spacing; a number sets all four edges. Not range-checked.
         ///
         /// Book: Outside the box; part of the room the node takes in its parent. A number sets all four edges; not range-checked ([spacing](#spacing-padding-and-margin))
-        margin: Bound<EdgeInsets> = absent(Number(0.0));
+        margin: Bound<Insets> = absent(Number(0.0));
         /// Inner spacing; a number sets all four edges. Not range-checked.
         ///
         /// Book: Inside the box, around its children or text. A number sets all four edges; not range-checked ([spacing](#spacing-padding-and-margin))
-        padding: Bound<EdgeInsets> = absent(Number(0.0));
+        padding: Bound<Insets> = absent(Number(0.0));
         /// Places the node in its parent: both axes under a stacking parent, only the cross axis under a `row`/`column`/`list`. On a `row` it also packs the children, which ignore their own (`"Stretch"` packs as `"Start"`). `"Stretch"` overrides a pixel size; `"Fill"` off the parent's flow axis overrides alignment.
         ///
         /// Book: See [alignment](#alignment)
@@ -273,9 +273,9 @@ props! {
         /// `"Scoop"` cuts each corner inward as a quarter circle centred on the corner point; fill, clip, glass, shadow and the `blur` region follow.
         corner_shape: Bound<OneOf<CornerShape>> = absent(Choice("Round"));
         /// A string sets all four edges; a missing edge has none. An edge draws only with both a colour and a width.
-        border_color: Bound<BorderColor>;
+        border_color: Bound<EdgeColors>;
         /// Px per edge; a number sets all four, a missing edge is `0`. Borders draw inside the box and take no layout space.
-        border_width: Bound<EdgeInsets> = range(0.0, 8192.0).absent(Number(0.0));
+        border_width: Bound<Insets> = range(0.0, 8192.0).absent(Number(0.0));
         /// Ask the compositor to blur the desktop behind this box, `ext-background-effect-v1` (ADR-0195). Never inferred from a translucent background. Silently nothing without compositor support; strength is the compositor's.
         ///
         /// Book: Ask the compositor to blur the desktop behind this box; see [Blurs](#blurs). Never inferred from a translucent background
@@ -481,7 +481,7 @@ props! {
         /// Book: Whether it takes the keyboard ([keyboard focus](#keyboard-focus))
         keyboard_interactivity: Bound<OneOf<KeyboardInteractivity>> = absent(Choice("None"));
         /// Offset from the anchored edges, not layout margin; one on an edge the panel is not anchored to does nothing.
-        margin: Bound<EdgeInsets> = absent(Number(0.0));
+        margin: Bound<Insets> = absent(Number(0.0));
         /// Hiding destroys the layer surface; showing recreates it (ADR-0088).
         visible: Bound<Flag> = absent(Bool(true));
     }

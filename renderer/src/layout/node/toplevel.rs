@@ -251,7 +251,7 @@ impl Prop for AnchorRect {
                 format!("expected an `{{ x, y, width, height }}` table, got {}", preview_for_error(value)),
             ));
         };
-        only_keys("anchor_rect", table, &["x", "y", "width", "height"])?;
+        only_keys("anchor_rect", table, LogicalRect::KEYS)?;
         let origin =
             |key: &str| -> Result<f32, LayoutError> { Ok(table_number("anchor_rect", table, key)?.unwrap_or(0.0)) };
         let extent = |key: &str| -> Result<f32, LayoutError> {

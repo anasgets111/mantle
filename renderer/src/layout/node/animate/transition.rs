@@ -7,27 +7,39 @@ use super::easing::Easing;
 use super::{parse_easing, parse_millis};
 use crate::layout::node::prop::Prop;
 use crate::layout::node::{LayoutError, invalid, only_keys, preview_for_error, value_as_f32};
-use crate::lua::luacats::spelled;
+use crate::lua::luacats::{lua_shape, spelled};
 use crate::lua::nodes::properties::Property;
 
-/// `image.transition` (ADR-0181): how a `retain`ing image crosses from the picture it is holding to
-/// the one that has just landed. Duration and easing, and nothing else yet -- a cross-dissolve is
-/// the whole of it until the masks arrive with a shader stage, and `effect` is the key that will
-/// name them.
-#[derive(Debug, Clone, PartialEq)]
-pub struct TransitionSpec {
-    pub duration: Duration,
-    pub easing: Easing,
-    /// A fragment shader to cross with, instead of the built-in dissolve (ADR-0184). The config's
-    /// own file: `layout::image_shader` compiles it and owns nothing about what it draws.
-    pub shader: Option<PathBuf>,
-    /// `params` as `(uniform name, value)`, sorted, so two runs of one shader compare equal when
-    /// they are the same. A name the compiled shader has no uniform for is ignored, because a
-    /// shader may declare one and never use it.
-    pub params: Vec<ShaderParam>,
+// ADR-0181: how a `retain`ing image crosses from the picture it is holding to the one that has
+// just landed.
+lua_shape! {
+    /// `image.transition`. Unknown keys are refused.
+    #[class = "Transition"]
+    #[derive(Debug, Clone, PartialEq)]
+    pub struct TransitionSpec {
+        /// Required, ms `[1, 60000]`.
+        pub duration: Duration,
+        /// Default `"InOutQuad"`; drives `u_progress`.
+        pub easing?: Easing,
+        // The config's own file: `layout::image_shader` compiles it and owns nothing about what it
+        // draws.
+        /// Absolute `.frag` path replacing the built-in dissolve, e.g. `mantle.config_dir .. "/shaders/wipe.frag"` (ADR-0184). Recompiled when the file changes.
+        ///
+        /// Shader contract. The engine prepends `#version 300 es`, `highp` precision, its declarations and `#line 1`; write `void main()`:
+        /// - `v_uv`: box coordinates `0..1`, top-left origin, y down.
+        /// - `u_progress`: eased progress, clamped to `0..1`. `u_size`: node size in logical px.
+        /// - `mantle_from(uv)`, `mantle_to(uv)`: outgoing and incoming pictures, premultiplied and already placed by `fit`; transparent outside the picture.
+        /// - `u_from_rect`, `u_to_rect`: each picture's `(x, y, w, h)` in box fractions (may exceed `0..1` under `"cover"`).
+        /// - Output: premultiplied RGBA in `fragColor`, same colour space as the inputs. The engine applies `opacity` after.
+        /// - Names starting `u_` or `mantle_` are reserved. A shader that fails to compile or link, or declares a uniform other than `float`/`vec2`-`vec4`, logs once and falls back to the dissolve. A shader that hangs the GPU hangs the session.
+        pub shader: Option<PathBuf>,
+        // Sorted by uniform name, so two runs of one shader compare equal when they are the same. A
+        // name the compiled shader has no uniform for is ignored: a shader may declare one and never
+        // use it.
+        /// Uniform values by name: a finite number for `float`, 2-4 numbers for `vec2`-`vec4`. Missing uniforms are `0`; unknown names are ignored. Refused without `shader`.
+        pub params?: Vec<ShaderParam> as Params,
+    }
 }
-
-spelled!(TransitionSpec => "Transition");
 
 /// `transition = { duration = 700, easing = "InOutCubic" }` on an `image`. The `duration` is
 /// required: a dissolve with no length is a snap, and `retain` on its own is already that.
@@ -46,7 +58,7 @@ fn parse_transition(value: Option<&Value>) -> Result<Option<TransitionSpec>, Lay
             format!("expected a table of transition fields, got {}", preview_for_error(value)),
         ));
     };
-    only_keys("transition", table, &["duration", "easing", "shader", "params"])?;
+    only_keys("transition", table, TransitionSpec::KEYS)?;
     let duration: Value = table.get("duration").map_err(|e| invalid("transition.duration", e.to_string()))?;
     let duration = parse_millis("transition.duration", "duration", &duration, 1)?
         .ok_or_else(|| invalid("transition", "a transition needs a `duration` in ms"))?;

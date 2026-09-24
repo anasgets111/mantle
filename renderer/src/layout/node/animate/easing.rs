@@ -56,6 +56,8 @@ pub enum Easing {
     Steps(u32),
 }
 
+crate::lua::luacats::spelled!(Easing => "Easing");
+
 impl Easing {
     pub(super) const NAMES: &[(&str, Easing)] = &[
         ("Linear", Easing::Linear),

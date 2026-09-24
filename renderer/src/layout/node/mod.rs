@@ -35,7 +35,7 @@ pub use style::{
     Affine, BorderColor, ClipShape, Effect, Fill, Gradient, GradientShape, Mask, MaskSource, Shadow, Transform,
     apply_affine, invert_affine, parse_effect, parse_transform,
 };
-pub(crate) use style::{Axes, CornerShape, Cursor, Direction, Scale, ShadowMode};
+pub(crate) use style::{Axes, CornerShape, Cursor, Direction, EdgeColors, Insets, Scale, ShadowMode};
 pub use surface::{Anchor, Exclusive, KeyboardInteractivity, LayerKind, PanelSpec, SurfaceTopology, panel_spec};
 pub(crate) use toplevel::{AnchorRect, PopupExtent};
 pub use toplevel::{
@@ -63,12 +63,16 @@ pub enum SizeMode {
     Fill,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Default)]
-pub struct EdgeInsets {
-    pub top: f32,
-    pub right: f32,
-    pub bottom: f32,
-    pub left: f32,
+crate::lua::luacats::lua_shape! {
+    /// Per-edge pixels; a missing edge is `0`.
+    #[alias = "Edges"]
+    #[derive(Debug, Clone, Copy, PartialEq, Default)]
+    pub struct EdgeInsets {
+        pub top?: f32,
+        pub right?: f32,
+        pub bottom?: f32,
+        pub left?: f32,
+    }
 }
 
 impl EdgeInsets {
@@ -101,6 +105,8 @@ pub struct Rgba {
     pub b: f32,
     pub a: f32,
 }
+
+spelled!(Rgba => prop::Color::lua());
 
 #[derive(Debug, thiserror::Error)]
 pub enum LayoutError {

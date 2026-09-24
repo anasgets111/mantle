@@ -16,7 +16,8 @@ use mlua::{Lua, Value};
 use super::prop::Prop;
 use super::style::{axis_default, parse_percent, range_of};
 use super::{
-    LayoutError, PropMap, Property, Rgba, fields, invalid, only_keys, parse_hex_color, preview_for_error, value_as_f32,
+    EdgeInsets, LayoutError, PropMap, Property, Rgba, fields, invalid, only_keys, parse_hex_color, preview_for_error,
+    value_as_f32,
 };
 use crate::lua::luacats::spelled;
 
@@ -375,7 +376,6 @@ pub enum Animatable {
     Fields { keys: &'static [&'static str], values: [f32; 4] },
 }
 
-const EDGES: &[&str] = &["top", "right", "bottom", "left"];
 const AXES: &[&str] = &["x", "y"];
 
 impl Animatable {
@@ -409,7 +409,7 @@ impl Animatable {
             }
             Value::Table(table) => {
                 let has = |key: &str| table.contains_key(key).unwrap_or(false);
-                let keys = if has("x") || has("y") { AXES } else { EDGES };
+                let keys = if has("x") || has("y") { AXES } else { EdgeInsets::KEYS };
                 // Any other key makes it another shape, such as a gradient (ADR-0255).
                 let known =
                     |key: &Value| matches!(key, Value::String(s) if keys.iter().any(|k| s.as_bytes() == k.as_bytes()));
@@ -961,7 +961,7 @@ mod tests {
             Animatable::from_value("margin", Some(&value)).unwrap().unwrap()
         };
         let mid = table("return { top = 10, left = -20 }").lerp(table("return { top = 20, right = 8 }"), 0.5, "margin");
-        assert_eq!(mid, Animatable::Fields { keys: EDGES, values: [15.0, 4.0, 0.0, -10.0] });
+        assert_eq!(mid, Animatable::Fields { keys: EdgeInsets::KEYS, values: [15.0, 4.0, 0.0, -10.0] });
         let Value::Table(back) = mid.to_value(&lua).unwrap() else { panic!("edges write back as a table") };
         assert_eq!(back.get::<f32>("left").unwrap(), -10.0);
         let colours: Value = lua.load(r##"return { top = "#ff0000" }"##).eval().unwrap();

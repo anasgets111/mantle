@@ -2,12 +2,25 @@
 //! the typed fields of `properties`, which the name check and the parsers read. The golden test
 //! below is the only caller: `just stubs` rewrites, a stale file fails `cargo test`.
 //!
-//! The aliases and the classes nothing else describes (`TextRun`, `Transition`) are hand-written in
-//! [`NODES_HEADER`]: they document shapes inside a property, which the table does not model.
+//! A table shape inside a property is the `lua_shape!` stub of the struct its parser fills, in its
+//! header's `{Name}` line ([`SHAPES`]). The shapes without one are hand-written in [`NODES_HEADER`].
 
 use super::properties::{ALL, Absent, BOX, KINDS, Property, SURFACES, kind_doc, properties};
 use crate::layout::node::prop::Keyword;
-use crate::layout::node::{Align, PopupAnchor};
+use crate::layout::node::{Align, BorderColor, EdgeInsets, PopupAnchor, TransitionSpec};
+use crate::lua::luacats::LuaType;
+use crate::text::snap::LogicalRect;
+
+/// The table shapes a header names as `{Name}`, each filled from its parser's struct.
+const SHAPES: [fn(String) -> String; 4] =
+    [shape::<EdgeInsets>, shape::<BorderColor>, shape::<TransitionSpec>, shape::<LogicalRect>];
+
+/// `header` with `T`'s stub in its `{Name}` line.
+fn shape<T: LuaType>(header: String) -> String {
+    let mut stub = Vec::new();
+    T::classes(&mut stub);
+    header.replace(&format!("{{{}}}\n", T::lua()), &stub.concat())
+}
 
 /// Choice sets the stubs name as an alias.
 const ALIASES: [(&str, &[&str]); 2] = [("Align", Align::NAMES), ("PopupAnchor", PopupAnchor::NAMES)];
@@ -140,6 +153,7 @@ fn nodes_lua() -> String {
     let mut header = NODES_HEADER.replace("{PERCENT}", &percent.join("|")).replace("{DOCS}", DOCS);
     header = header.replace("{ALIGN}", &union(Align::NAMES));
     header = header.replace("{EASING}", &union(&crate::layout::node::easing_names().collect::<Vec<_>>()));
+    header = SHAPES.iter().fold(header, |header, shape| shape(header));
     for (class, kinds) in [("NodeBase", ALL), ("BoxBase", BOX)] {
         let marker = format!("{{{class}}}");
         let fields: String = properties().filter(|row| row.kinds == kinds).map(field).collect();
@@ -150,7 +164,8 @@ fn nodes_lua() -> String {
 
 /// `lua-meta/surfaces.lua`.
 fn surfaces_lua() -> String {
-    render_stub(&SURFACES_HEADER.replace("{POPUP_ANCHOR}", &union(PopupAnchor::NAMES)), &KINDS[11..])
+    let header = SURFACES_HEADER.replace("{POPUP_ANCHOR}", &union(PopupAnchor::NAMES));
+    render_stub(&SHAPES.iter().fold(header, |header, shape| shape(header)), &KINDS[11..])
 }
 
 /// A doc string as a Markdown table cell: no `(ADR-NNNN)` pointers, which are history, and `|`
@@ -239,13 +254,13 @@ const NODES_HEADER: &str = r##"---@meta
 -- ponytail: copied from cursor-icon 1.2's `FromStr`, which exposes no list to derive it from; the
 -- stub probe catches a name it refuses, not one missing here. Upgrade: derive once the crate lists them.
 ---@alias Cursor "default"|"pointer"|"text"|"not-allowed"|"grab"|"grabbing"|"move"|"crosshair"|"wait"|"progress"|"help"|"context-menu"|"cell"|"vertical-text"|"alias"|"copy"|"no-drop"|"zoom-in"|"zoom-out"|"all-scroll"|"col-resize"|"row-resize"|"n-resize"|"e-resize"|"s-resize"|"w-resize"|"ne-resize"|"nw-resize"|"se-resize"|"sw-resize"|"ew-resize"|"ns-resize"|"nesw-resize"|"nwse-resize" CSS cursor name (same as `wp_cursor_shape_v1`).
----@alias Edges { top?: number, right?: number, bottom?: number, left?: number, [string]: "no such property" } Per-edge pixels; a missing edge is `0`.
+{Edges}
 -- ponytail: whole percents only, so a fraction (`"12.5%"`) or one above `"100%"`, which the engine
 -- accepts, is flagged. Upgrade: a pattern type, which LuaLS lacks.
 ---@alias Percent {PERCENT} `"NN%"` of the parent's box (the output's, on a panel).
 ---@alias Length number|"Fill"|Percent Pixels `[0, 8192]`, the remaining space, or a percent.
 ---@alias Color string `"#RRGGBB"` or `"#RRGGBBAA"`. No shorthand or names.
----@alias BorderColors { top?: Color, right?: Color, bottom?: Color, left?: Color, [string]: "no such property" } Per-edge colours; a signal inside is refused.
+{BorderColors}
 ---@alias Axes { x?: number, y?: number, [string]: "no such property" } A missing axis takes the property's default.
 ---@alias GradientStop [number, Color] Position `[0, 1]` and colour. Positions ascend.
 ---@alias Gradient { gradient: "Linear"|"Radial"|"Conic", angle?: number, stops: GradientStop[], [string]: "no such property" } At least 2 stops. `angle` is degrees clockwise from the top: Linear default `180`, Conic default `0`, Radial refuses it.
@@ -283,20 +298,7 @@ const NODES_HEADER: &str = r##"---@meta
 ---@field color? Color Overrides the node's `foreground`.
 ---@field href? string Passed to the node's `on_link` when clicked; never opened by the engine (ADR-0106).
 
----`image.transition`. Unknown keys are refused.
----@class Transition
----@field duration number Required, ms `[1, 60000]`.
----@field easing? Easing Default `"InOutQuad"`; drives `u_progress`.
----@field shader? string Absolute `.frag` path replacing the built-in dissolve, e.g. `mantle.config_dir .. "/shaders/wipe.frag"` (ADR-0184). Recompiled when the file changes.
---- Shader contract. The engine prepends `#version 300 es`, `highp` precision, its declarations and `#line 1`; write `void main()`:
---- - `v_uv`: box coordinates `0..1`, top-left origin, y down.
---- - `u_progress`: eased progress, clamped to `0..1`. `u_size`: node size in logical px.
---- - `mantle_from(uv)`, `mantle_to(uv)`: outgoing and incoming pictures, premultiplied and already placed by `fit`; transparent outside the picture.
---- - `u_from_rect`, `u_to_rect`: each picture's `(x, y, w, h)` in box fractions (may exceed `0..1` under `"cover"`).
---- - Output: premultiplied RGBA in `fragColor`, same colour space as the inputs. The engine applies `opacity` after.
---- - Names starting `u_` or `mantle_` are reserved. A shader that fails to compile or link, or declares a uniform other than `float`/`vec2`-`vec4`, logs once and falls back to the dissolve. A shader that hangs the GPU hangs the session.
----@field params? table<string, number|number[]> Uniform values by name: a finite number for `float`, 2-4 numbers for `vec2`-`vec4`. Missing uniforms are `0`; unknown names are ignored. Refused without `shader`.
----@field [string] "no such property"
+{Transition}
 "##;
 
 const SURFACES_HEADER: &str = r##"---@meta
@@ -307,6 +309,6 @@ const SURFACES_HEADER: &str = r##"---@meta
 -- `anchor`, `monitor`, `namespace`, a popup's `parent`), refuse a `Signal`: they are read once per
 -- evaluation (ADR-0216).
 
----@alias Rect { x: number, y: number, width: number, height: number, [string]: "no such property" }
+{Rect}
 ---@alias PopupAnchor {POPUP_ANCHOR}
 "##;

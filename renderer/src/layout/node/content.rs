@@ -180,7 +180,7 @@ impl Prop for Region {
             let got = preview_for_error(value);
             return Err(invalid("region", format!("expected an {{ x, y, width, height }} table, got {got}")));
         };
-        only_keys("region", table, &["x", "y", "width", "height"])?;
+        only_keys("region", table, LogicalRect::KEYS)?;
         let field = |key| {
             style::table_number("region", table, key)?
                 .ok_or_else(|| invalid("region", format!("`{key}` is required")))

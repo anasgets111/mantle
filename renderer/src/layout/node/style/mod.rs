@@ -6,6 +6,7 @@ use mlua::Value;
 
 use super::prop::{keywords, within as row_within};
 use super::*;
+use crate::lua::luacats::lua_shape;
 
 mod transform;
 pub use transform::{Affine, Transform, apply_affine, invert_affine, parse_transform};
@@ -73,14 +74,16 @@ pub(super) fn table_number(property: &str, table: &mlua::Table, key: &str) -> Re
     }
 }
 
-spelled!(EdgeInsets => format!("{}|Edges", f32::lua()));
-
 /// `margin`/`padding`/`border_width`: a number sets all four edges, a table each; an absent edge is
 /// 0, and a row with a range bounds every edge. Parsed once per node per pass: `table.get` is
 /// metamethod-aware, so every consumer reading it again would re-run `__index`, and two reads could
 /// disagree about one child's margin. Those reads are plain Lua outside any signal, so
 /// `LayoutPassBudget`, not ADR-0021's per-getter cap, bounds them.
-impl Prop for EdgeInsets {
+pub(crate) struct Insets;
+
+spelled!(Insets => format!("{}|{}", f32::lua(), EdgeInsets::lua()));
+
+impl Prop for Insets {
     type Out = EdgeInsets;
     fn read(row: &Property, value: Option<&Value>) -> Result<EdgeInsets, LayoutError> {
         let property = row.name;
@@ -96,7 +99,7 @@ impl Prop for EdgeInsets {
                     format!("expected a number or a table, got {}", preview_for_error(value)),
                 ));
             };
-            only_keys(property, table, &["top", "right", "bottom", "left"])?;
+            only_keys(property, table, EdgeInsets::KEYS)?;
             // An absent edge is 0; [`table_number`] rejects nested `Signal`s.
             let edge =
                 |key: &str| -> Result<f32, LayoutError> { Ok(table_number(property, table, key)?.unwrap_or(0.0)) };
@@ -383,22 +386,28 @@ keywords! {
     }
 }
 
-/// `rect.border_color`, one colour per edge. `None` means "not painted", the same
-/// absence [`Fill`] returns for a missing fill: an edge at width 0 needs no colour,
-/// and one with a colour at width 0 still paints nothing, so the drawing pass gets the same answer
-/// either way. The table form gives no per-edge default, so an absent edge takes `None`
-/// rather than an invented one.
-#[derive(Debug, Clone, Copy, PartialEq, Default)]
-pub struct BorderColor {
-    pub top: Option<Rgba>,
-    pub right: Option<Rgba>,
-    pub bottom: Option<Rgba>,
-    pub left: Option<Rgba>,
+// `None` means "not painted", the same absence [`Fill`] returns for a missing fill: an edge at
+// width 0 needs no colour, and one with a colour at width 0 still paints nothing, so the drawing
+// pass gets the same answer either way. The table form gives no per-edge default, so an absent edge
+// takes `None` rather than an invented one.
+lua_shape! {
+    /// Per-edge colours; a signal inside is refused.
+    #[alias = "BorderColors"]
+    #[derive(Debug, Clone, Copy, PartialEq, Default)]
+    pub struct BorderColor {
+        pub top: Option<Rgba>,
+        pub right: Option<Rgba>,
+        pub bottom: Option<Rgba>,
+        pub left: Option<Rgba>,
+    }
 }
 
-spelled!(BorderColor => "Color|BorderColors");
+/// `border_color`: one colour for every edge, or [`BorderColor`].
+pub(crate) struct EdgeColors;
 
-impl Prop for BorderColor {
+spelled!(EdgeColors => format!("{}|{}", Rgba::lua(), BorderColor::lua()));
+
+impl Prop for EdgeColors {
     type Out = BorderColor;
     fn read(row: &Property, value: Option<&Value>) -> Result<BorderColor, LayoutError> {
         let property = row.name;
@@ -412,7 +421,7 @@ impl Prop for BorderColor {
         let Value::Table(table) = value else {
             return Err(invalid(property, format!("expected a string or a table, got {}", preview_for_error(value))));
         };
-        only_keys(property, table, &["top", "right", "bottom", "left"])?;
+        only_keys(property, table, BorderColor::KEYS)?;
         // Metamethod-aware, but parsed once per node by `paint_style` (ADR-0068).
         let edge = |key: &str| -> Result<Option<Rgba>, LayoutError> {
             let v: Value = table.get(key).map_err(|e| invalid(property, e.to_string()))?;

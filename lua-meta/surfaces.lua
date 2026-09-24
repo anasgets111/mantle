@@ -6,7 +6,7 @@
 -- `anchor`, `monitor`, `namespace`, a popup's `parent`), refuse a `Signal`: they are read once per
 -- evaluation (ADR-0216).
 
----@alias Rect { x: number, y: number, width: number, height: number, [string]: "no such property" }
+---@alias Rect { x: number, y: number, width: number, height: number, [string]: "no such property" } A rectangle in logical (fractional, DPI-independent) pixel coordinates.
 ---@alias PopupAnchor "Top"|"Bottom"|"Left"|"Right"|"TopLeft"|"TopRight"|"BottomLeft"|"BottomRight"|"Center"
 
 ---@class PanelProps: NodeBase, BoxBase
