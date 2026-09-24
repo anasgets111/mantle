@@ -26,7 +26,10 @@ Trace the execution flow end-to-end before writing code, then stop at the first 
 5. Write the minimum code that works.
 
 - Fix the root cause, not the symptom. Grep every caller and fix the shared function once.
-- No new abstractions, dependencies, boilerplate, or files unless strictly required.
+- No new abstractions, dependencies, or boilerplate unless strictly required.
+- **File size.** Split a file past ~700 production lines into modules scoped by domain, the way
+  `layout/node/` is. Between ~500 and ~700, split only a clear second domain. Never add a file
+  without a domain of its own.
 - Boring over clever. Between similar approaches, choose the edge-case-correct one.
 - Mark deliberate simplifications with a `ponytail:` comment stating the ceiling and upgrade path.
 - Never skip problem analysis, trust-boundary validation, data integrity, security, accessibility, or
