@@ -43,7 +43,7 @@ flate2 = { version = "1.1", default-features = false, features = ["rust_backend"
 freedesktop-icons = "0.4.0"
 glow = "0.18.0"
 # femtovg declares `image` with `default-features = false` and turns no format on, so its own
-# `load_image_file` answers every PNG with `Unsupported(Exact(Png))`. `image::decode_raster` calls
+# `load_image_file` answers every PNG with `Unsupported(Exact(Png))`. `image::decode::decode_raster` calls
 # the crate directly instead, and this is where the formats it accepts are named. `webp` because a
 # wallpaper folder is full of them (ADR-0122). `gif` for animated sources (ADR-0233).
 image = { version = "0.25.10", default-features = false, features = ["gif", "jpeg", "png", "webp"] }

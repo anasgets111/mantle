@@ -2,7 +2,7 @@
 
 use std::path::Path;
 
-use super::{read_capped, take_capped};
+use super::decode::{read_capped, take_capped};
 use crate::layout::node::Rgba;
 
 /// Bytes an SVG source may occupy before it is refused unparsed. `usvg` parses the whole document

@@ -2,9 +2,10 @@
 
 use std::path::Path;
 
+use super::MAX_DECODE_EDGE;
 use super::budget::Charge;
+use super::decode::decode_within_limits;
 use super::thumbnails;
-use super::{MAX_DECODE_EDGE, decode_within_limits};
 
 type Rgb = [u8; 3];
 
