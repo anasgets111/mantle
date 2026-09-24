@@ -177,7 +177,7 @@ tables do not resolve, so derive the whole table instead.
 | `translate` | Paint-only `{ x, y }` shift in logical pixels, `[-8192, 8192]` each, applied after `scale` and `rotate` |
 | `origin` | `{ x, y }` fractions of the node's box that `scale` and `rotate` pivot on, `[0, 1]` each, refused outside; default its centre |
 | `shadow_color`, `shadow_blur`, `shadow_offset`, `shadow_spread` | Drop shadow (ADR-0254): colour default `"#000000"`, shows once blur, offset or spread is set. CSS `box-shadow` blur radius and spread in logical pixels, `{ x, y }` offset. Spread on non-box content scales the shadow about the box's centre |
-| `content_blur` | Live Gaussian blur of the node's painted subtree, CSS `filter: blur()` sigma in logical pixels (ADR-0254). Exact to sigma 8 physical pixels; the kernel stops at 24. Distinct from `blur` (the compositor's backdrop) and `image.source_blur` (once, at decode). Shadows and blur stop at the parent's box, so the parent needs padding |
+| `content_blur` | Live Gaussian blur of the node's painted subtree, CSS `filter: blur()` sigma in logical pixels (ADR-0254). Exact to sigma 8 physical pixels; the kernel stops at 24. Distinct from `blur` (the compositor's backdrop) and `image.source_blur` (once, at decode). Shadows and blur stop at the parent's box, so the parent needs padding or `clip = "None"` |
 
 Sizes and maximum sizes accept 0–8192 logical pixels. See
 [geometry parsing](../renderer/src/layout/node/style.rs).
@@ -246,7 +246,8 @@ run for `visible = false`; `delay(signal, ms)` holds a whole surface open instea
 Boxes, rows, columns, buttons and surface roots also accept `background`, `radius`,
 `border_color`, `border_width`, `blur`, `clip`, `corner_shape` and `mask`.
 Colours use `#RRGGBB` or `#RRGGBBAA`. Borders may specify per-edge colours/widths;
-an edge needs both. `clip = "Box"` is the default; `"Rounded"` clips children with the radius.
+an edge needs both. `clip = "Box"` is the default; `"Rounded"` clips children with the radius;
+`"None"` leaves them the parent's clip (ADR-0257).
 `corner_shape` is `"Round"` (default) or `"Scoop"`, which bends the radius inward, centred on each corner point.
 
 `background` also takes a gradient table, and `mask` fades the node and its subtree by a gradient

@@ -337,7 +337,7 @@ pub enum FieldFocus<'a> {
 /// Flattens `root` without touching a canvas or GL context.
 pub fn build(root: &ResolvedNode, scale: f32, focus: Option<&FieldFocus>) -> DisplayList {
     let mut commands = Vec::new();
-    build_node(root, 0.0, 0.0, scale, UNCLIPPED, 1.0, focus, &mut commands);
+    build_node(root, 0.0, 0.0, scale, (UNCLIPPED, root.rect), 1.0, focus, &mut commands);
     DisplayList { commands }
 }
 
@@ -350,7 +350,7 @@ fn build_node(
     origin_x: f32,
     origin_y: f32,
     scale: f32,
-    clip: PhysicalRect,
+    (clip, surface): (PhysicalRect, LogicalRect),
     inherited_opacity: f32,
     focus: Option<&FieldFocus>,
     out: &mut Vec<DrawCmd>,
@@ -372,6 +372,7 @@ fn build_node(
     // and a scoop's cut-out still takes the click and counts as input.
     // Upgrade path: hit testing should share this walk instead of a second copy of the rule.
     let (parent_clip, clip) = (clip, clip.intersect(snap_to_physical(rect, scale)));
+    let child_clip = if node.clips_children() { clip } else { parent_clip };
     let effect = node.effect;
     // ADR-0254 decision 2.
     let gradient = match (&node.paint, effect.shadow) {
@@ -385,7 +386,7 @@ fn build_node(
     let reach = match gradient {
         Some((shadow, _)) => snap_to_physical(grow(shadow_rect(rect, rect, shadow), 1.5 * shadow.blur), scale),
         None if effect.shadow.is_some() || effect.blur > 0.0 => layer_bounds(rect, effect, scale),
-        None => clip,
+        None => child_clip,
     };
     // A box just scrolled out still casts the shadow reaching back in.
     if is_empty(parent_clip.intersect(reach)) {
@@ -423,7 +424,7 @@ fn build_node(
             let (fill, border) = split_fill_and_border(draw);
             let mut inner: Vec<DrawCmd> = fill.map(|draw| DrawCmd { rect, clip, draw }).into_iter().collect();
             for child in &node.children {
-                build_node(child, x, y, scale, clip, opacity, focus, &mut inner);
+                build_node(child, x, y, scale, (clip, surface), opacity, focus, &mut inner);
             }
             inner.extend(border.map(|draw| DrawCmd { rect, clip, draw }));
             if !inner.is_empty() {
@@ -441,7 +442,7 @@ fn build_node(
                 out.push(DrawCmd { rect, clip, draw });
             }
             for child in &node.children {
-                build_node(child, x, y, scale, clip, opacity, focus, out);
+                build_node(child, x, y, scale, (child_clip, surface), opacity, focus, out);
             }
         }
         // Rounded order: fill, masked subtree, border. A child reaching the arc would
@@ -453,7 +454,7 @@ fn build_node(
             }
             let mut inner = Vec::new();
             for child in &node.children {
-                build_node(child, x, y, scale, clip, opacity, focus, &mut inner);
+                build_node(child, x, y, scale, (clip, surface), opacity, focus, &mut inner);
             }
             // A leaf has nothing to clip, so avoid the render target and composite.
             if !inner.is_empty() {
@@ -468,12 +469,22 @@ fn build_node(
         let commands: Vec<DrawCmd> = out.drain(start..).collect();
         // A transformed child overflowing the box keeps the overflow it has without the layer.
         let bounds = commands.iter().map(command_bounds).filter(|r| !is_empty(*r)).fold(reach, union);
-        out.push(DrawCmd { rect, clip: parent_clip.intersect(bounds), draw: Draw::Layer { effect, commands } });
+        // ponytail: a negative spread pulls in content from further out than this. Upgrade path:
+        // invert `shadow_rect` about the box.
+        let pad = effect.shadow.map_or(0.0, |shadow| {
+            self::reach(shadow.blur / 2.0, scale) + shadow.offset.0.abs().max(shadow.offset.1.abs())
+        });
+        let target = snap_to_physical(grow(surface, pad.max(self::reach(effect.blur, scale))), scale);
+        out.push(DrawCmd {
+            rect,
+            clip: parent_clip.intersect(bounds).intersect(target),
+            draw: Draw::Layer { effect, commands },
+        });
     }
     if !node.transform.is_identity() {
         let matrix = node.transform.matrix(rect);
         let commands: Vec<DrawCmd> = out.drain(start..).collect();
-        out.push(DrawCmd { rect, clip, draw: Draw::Transformed { matrix, commands } });
+        out.push(DrawCmd { rect, clip: child_clip, draw: Draw::Transformed { matrix, commands } });
     }
 }
 
@@ -1709,6 +1720,42 @@ mod tests {
         let shadow = list.commands.iter().find(|cmd| matches!(cmd.draw, Draw::Shadow { .. })).expect("a shadow");
         assert_eq!((shadow.clip.y0, shadow.clip.y1), (54, 60), "the part of it inside the parent");
         assert!(!list.commands.iter().any(|cmd| matches!(cmd.draw, Draw::Box { .. } if cmd.rect.y == 64.0)));
+    }
+
+    /// `clip = "None"` hands a node's children its parent's clip: a wrapper exactly its child's size
+    /// no longer cuts the child's shadow, nor a child laid out past it once the wrapper scrolls away.
+    #[test]
+    fn an_unclipped_wrapper_leaves_its_childs_shadow_and_overflow_whole() {
+        let wrapped = |clip: &str| {
+            effect_surface(&format!(
+                r##"column {{ clip = "{clip}", children = {{ rect {{ width = 40, height = 20, background = "#ffffff",
+                    shadow_blur = 8, shadow_offset = {{ y = 4 }} }} }} }}"##
+            ))
+        };
+        let shadow = |list: &DisplayList| {
+            list.commands.iter().find(|cmd| matches!(cmd.draw, Draw::Shadow { .. })).expect("a shadow").clip
+        };
+        assert_eq!(shadow(&wrapped("Box")), PhysicalRect { x0: 40, y0: 40, x1: 80, y1: 60 }, "cut to the wrapper");
+        assert_eq!(shadow(&wrapped("None")), PhysicalRect { x0: 28, y0: 32, x1: 92, y1: 76 });
+
+        let list = effect_surface(
+            r##"rect { width = 40, height = 20, clip = "None", children = { rect { width = 40, height = 20,
+                margin = { top = 24 }, background = "#ffffff" } } }"##,
+        );
+        assert!(list.commands.iter().any(|cmd| matches!(cmd.draw, Draw::Box { .. }) && cmd.rect.y == 64.0));
+    }
+
+    /// Under a chain of `clip = "None"` to the surface, a layer's offscreen stops at the surface
+    /// grown by what its blur and shadow reach back in from: 3 sigma plus the offset.
+    #[test]
+    fn a_layer_under_unclipped_ancestors_stops_near_the_surface() {
+        let src = r##"return panel { id = "bar", width = 200, height = 100, clip = "None", child = rect {
+            width = 40, height = 20, clip = "None", content_blur = 1,
+            shadow_blur = 4, shadow_offset = { x = 5 },
+            children = { rect { width = 8000, height = 8000, margin = { left = -4000 }, background = "#ffffff" } } } }"##;
+        let list = build(&resolved_surface(&Lua::new(), src, LogicalSize { width: 200.0, height: 100.0 }), 1.0, None);
+        let layer = list.commands.iter().find(|cmd| matches!(cmd.draw, Draw::Layer { .. })).expect("a layer");
+        assert_eq!(layer.clip, PhysicalRect { x0: -11, y0: -6, x1: 211, y1: 111 });
     }
 
     /// A child scaled past its layered parent's box keeps the overflow it would have without the

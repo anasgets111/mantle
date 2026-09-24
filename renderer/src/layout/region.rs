@@ -53,7 +53,8 @@ pub fn overlay_input_regions(surface_root: &ResolvedNode, scale: f32) -> Vec<Phy
 ///    walk that missed the ancestor's shift would blur where the card is not. Exact for the
 ///    translation every animation here uses; a rotated or scaled node contributes its bounding box.
 /// 2. **Ancestor clips intersect.** `layout::paint::build_node` clips every child to its parent's
-///    box, so a card scrolled out of a `max_height` list is not drawn and must not blur either.
+///    box unless the parent is `clip = "None"`, so a card scrolled out of a `max_height` list is not
+///    drawn and must not blur either.
 /// 3. **The surface root is included**, because a root may paint its own box.
 ///
 /// A claiming node does not stop the walk: a marked child inside a marked parent unions into it,
@@ -120,8 +121,9 @@ fn collect_blur_regions(
     // boxes before any transform and hands the whole group to the canvas under one matrix, so a
     // node's painted area is its ancestors' clip *and then* the composed transform. Intersecting
     // transformed boxes instead loses a child that its parent's translate carries back into view.
-    let clip = intersect_logical(clip, rect);
-    if clip.width <= 0.0 || clip.height <= 0.0 {
+    let (parent_clip, clip) = (clip, intersect_logical(clip, rect));
+    let child_clip = if node.clips_children() { clip } else { parent_clip };
+    if child_clip.width <= 0.0 || child_clip.height <= 0.0 {
         return;
     }
     if node.blur {
@@ -152,7 +154,7 @@ fn collect_blur_regions(
         }
     }
     for child in &node.children {
-        collect_blur_regions(child, rect.x, rect.y, scale, matrix, clip, opacity * node.opacity, out);
+        collect_blur_regions(child, rect.x, rect.y, scale, matrix, child_clip, opacity * node.opacity, out);
     }
 }
 
@@ -238,7 +240,9 @@ fn collect_input_regions(
         if bounds.width > 0.0 && bounds.height > 0.0 {
             out.push(snap_to_physical(bounds, scale));
         }
-        return;
+        if node.clips_children() {
+            return;
+        }
     }
     for child in &node.children {
         collect_input_regions(child, rect.x, rect.y, scale, paint_claims, out);
@@ -562,6 +566,20 @@ mod tests {
 
         root.children.clear();
         assert!(overlay_input_regions(&root, 1.0).is_empty());
+    }
+
+    /// `hit.rs` hits an unclipped box's overflowing child, so the region has to hold it too.
+    #[test]
+    fn an_unclipped_solid_box_still_claims_its_overflowing_child() {
+        let child = region_node(1, "rect", (60.0, 0.0, 10.0, 10.0), solid_paint(), Vec::new());
+        let mut parent = region_node(2, "rect", (0.0, 0.0, 50.0, 20.0), solid_paint(), vec![child]);
+        let Some(PaintStyle::Box { clip, .. }) = &mut parent.paint else { unreachable!() };
+        *clip = node::ClipShape::None;
+        let root = region_node(3, "panel", (0.0, 0.0, 100.0, 20.0), None, vec![parent]);
+        assert_eq!(
+            overlay_input_regions(&root, 1.0),
+            [PhysicalRect { x0: 0, y0: 0, x1: 50, y1: 20 }, PhysicalRect { x0: 60, y0: 0, x1: 70, y1: 10 }]
+        );
     }
 
     #[test]

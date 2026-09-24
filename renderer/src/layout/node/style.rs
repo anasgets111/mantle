@@ -420,6 +420,8 @@ pub enum ClipShape {
     Box,
     /// The node's rounded shape, using the same arc as its background fill.
     Rounded,
+    /// Nothing: children keep the parent's clip, so a wrapper does not cut their shadows.
+    None,
 }
 
 /// `rect.clip` defaults to [`ClipShape::Box`] and is opt-in because rounded clipping
@@ -429,7 +431,7 @@ pub fn parse_clip(properties: &PropMap) -> Result<ClipShape, LayoutError> {
         properties,
         "clip",
         ClipShape::Box,
-        &[("Box", ClipShape::Box), ("Rounded", ClipShape::Rounded)],
+        &[("Box", ClipShape::Box), ("Rounded", ClipShape::Rounded), ("None", ClipShape::None)],
     )
 }
 
@@ -1002,8 +1004,10 @@ mod tests {
     }
 
     #[test]
-    fn clip_reads_both_shapes() {
-        for (declared, expected) in [("Box", ClipShape::Box), ("Rounded", ClipShape::Rounded)] {
+    fn clip_reads_every_shape() {
+        for (declared, expected) in
+            [("Box", ClipShape::Box), ("Rounded", ClipShape::Rounded), ("None", ClipShape::None)]
+        {
             let lua = mlua::Lua::new();
             let src = format!(r#"return {{ kind = "rect", clip = "{declared}" }}"#);
             let table: mlua::Table = lua.load(&src).eval().unwrap();

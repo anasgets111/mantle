@@ -29,7 +29,7 @@ pub struct LogicalPoint {
 /// Three rules, all load-bearing:
 ///
 /// - **Containment gates descent.** A node whose rect does not hold the point is not entered and
-///   neither are its children. This makes the hittable region of an overflowing child exactly its
+///   neither are its children, unless it is `clip = "None"` (ADR-0257). This makes the hittable region of an overflowing child exactly its
 ///   intersection with every ancestor -- the same region `paint::canvas::run`'s `intersect_scissor`
 ///   chain draws it in, so hitting and painting agree on overflow without either walk carrying a
 ///   clip rect.
@@ -191,16 +191,16 @@ fn descend<'a>(
         let (px, py) = apply_affine(inverse, point.x, point.y);
         LogicalPoint { x: px, y: py }
     };
-    if !contains(LogicalRect { x, y, ..node.rect }, point) {
+    let inside = contains(LogicalRect { x, y, ..node.rect }, point);
+    if !inside && node.clips_children() {
         return false;
     }
     path.push(node);
-    for child in node.children.iter().rev() {
-        if descend(child, point, x, y, path) {
-            break;
-        }
+    let child_hit = node.children.iter().rev().any(|child| descend(child, point, x, y, path));
+    if !inside && !child_hit {
+        path.pop();
     }
-    true
+    inside || child_hit
 }
 
 fn contains(rect: LogicalRect, point: LogicalPoint) -> bool {
@@ -246,6 +246,30 @@ mod tests {
         flat.transform.scale = (0.0, 1.0);
         let tree = ResolvedNode::test("panel", (0.0, 0.0, 400.0, 400.0), vec![flat]);
         assert_eq!(hit_path(&tree, LogicalPoint { x: 110.0, y: 110.0 }).len(), 1, "a zero scale takes nothing");
+    }
+
+    /// A child laid out past a `clip = "None"` parent is painted there, so it is hit there, with the
+    /// parent still on its path for a handler to bubble to.
+    #[test]
+    fn a_child_overflowing_an_unclipped_parent_is_hit_where_it_paints() {
+        let overflowing = || vec![ResolvedNode::test("rect", (30.0, 0.0, 10.0, 10.0), vec![])];
+        let mut open = ResolvedNode::test("button", (0.0, 0.0, 20.0, 20.0), overflowing());
+        open.paint = Some(PaintStyle::Box {
+            background: None,
+            radius: 0.0,
+            colors: Default::default(),
+            widths: Default::default(),
+            clip: crate::layout::node::ClipShape::None,
+            mask: None,
+        });
+        let tree = ResolvedNode::test("panel", (0.0, 0.0, 400.0, 400.0), vec![open]);
+        let path = hit_path(&tree, LogicalPoint { x: 35.0, y: 5.0 });
+        assert_eq!(path.iter().map(|n| n.kind).collect::<Vec<_>>(), ["panel", "button", "rect"]);
+        assert_eq!(hit_path(&tree, LogicalPoint { x: 25.0, y: 5.0 }).len(), 1, "between them is nothing");
+
+        let clipped = ResolvedNode::test("button", (0.0, 0.0, 20.0, 20.0), overflowing());
+        let tree = ResolvedNode::test("panel", (0.0, 0.0, 400.0, 400.0), vec![clipped]);
+        assert_eq!(hit_path(&tree, LogicalPoint { x: 35.0, y: 5.0 }).len(), 1, "a clipping parent hides it");
     }
 
     #[test]

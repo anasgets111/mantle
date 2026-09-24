@@ -223,6 +223,11 @@ impl ResolvedNode {
         self.visible && !self.leaving
     }
 
+    /// `clip = "None"` hands children the parent's clip instead of cutting them to this box.
+    pub(super) fn clips_children(&self) -> bool {
+        !matches!(self.paint, Some(PaintStyle::Box { clip: node::ClipShape::None, .. }))
+    }
+
     /// A button with `submit = true` or a pointer handler (ADR-0214).
     pub fn takes_pointer(&self) -> bool {
         self.kind == "button"
