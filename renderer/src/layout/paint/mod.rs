@@ -12,6 +12,8 @@ mod build;
 mod canvas;
 
 pub use build::{FieldFocus, build};
+#[cfg(test)]
+pub(crate) use canvas::tests::{init_headless_egl, test_gl, text_painter};
 pub use canvas::{DrawnImage, Shaders, execute, flush};
 
 use crate::image::{self, Fit, Load};

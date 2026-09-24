@@ -40,6 +40,13 @@ pub struct ResolvedFonts {
     pub loaded_paths: HashSet<PathBuf>,
 }
 
+thread_local! {
+    /// A `fonts.conf` this thread's `fc-match` calls read instead of the system's, so the docs
+    /// screenshots render in pinned faces. Per thread, not the process environment: tests share one
+    /// process. Set by `ShapingHandle::spawn_with` on its worker.
+    pub(crate) static FONTCONFIG_FILE: std::cell::RefCell<Option<PathBuf>> = const { std::cell::RefCell::new(None) };
+}
+
 /// Resolves `chain` in order and loads every entry that hits into one `Database`.
 ///
 /// A chain entry that fontconfig can't honor (not installed, or genuinely absent) is skipped,
@@ -238,7 +245,11 @@ fn fc_match(name: &str) -> Option<(PathBuf, String)> {
 /// that the answer is a hit rather than fontconfig's substitution -- which [`load_covering`],
 /// asking by codepoint, has no family name to make.
 fn fc_match_raw(pattern: &str) -> Option<(PathBuf, String)> {
-    let output = Command::new("fc-match").args(["-f", "%{file}\t%{family}\n", pattern]).output().ok()?;
+    let mut command = Command::new("fc-match");
+    if let Some(file) = FONTCONFIG_FILE.with_borrow(Clone::clone) {
+        command.env("FONTCONFIG_FILE", file);
+    }
+    let output = command.args(["-f", "%{file}\t%{family}\n", pattern]).output().ok()?;
     if !output.status.success() {
         return None;
     }

@@ -6,3 +6,5 @@
 /dev-config
 # Agent worktrees, which `git add -A` would otherwise offer as an embedded repository.
 /.claude/worktrees
+# A docs screenshot that failed its check, left for review (`docs/development/documenting.md`).
+/docs/images/**/*.new.png

@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""mdBook preprocessor: a page's relative link out of `docs/` becomes a GitHub link.
+"""mdBook preprocessor: a page's relative link out of `docs/` becomes a GitHub link, and each
+```` ```lua,shot ```` block is followed by its screenshot, `images/<page>-<n>.png`.
 
 Pages link code as `../../renderer/...` so they read right on GitHub; the site serves only `docs/`,
 where those paths 404. A target that does not exist fails the build, which is the link check for
@@ -37,11 +38,18 @@ def main():
             kind = "tree" if os.path.isdir(full) else "blob"
             return f"]({REPO_URL}/{kind}/main/{path}{fragment})"
 
-        out, fenced = [], False
+        out, fenced, shot, shots = [], False, False, 0
+        stem = posixpath.splitext(page)[0]
+        up = "../" * page.count("/")
         for line in text.split("\n"):
-            if line.lstrip().startswith("```"):
+            fence = line.lstrip().startswith("```")
+            if fence:
                 fenced = not fenced
-            out.append(line if fenced else LINK.sub(replace, line))
+                shot = shot or line.strip() == "```lua,shot"
+            out.append(line if fenced or fence else LINK.sub(replace, line))
+            if fence and not fenced and shot:
+                shots, shot = shots + 1, False
+                out.append(f"\n![What the example above draws]({up}images/{stem}-{shots}.png)")
         return "\n".join(out)
 
     def walk(node):

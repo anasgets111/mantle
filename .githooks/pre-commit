@@ -2,9 +2,9 @@
 # The half of `just check` a commit can affect, picked from the staged paths:
 #
 # - Rust: anything the crates compile or their tests read. `lua-meta/` and `share/starter/shell.lua`
-#   are `include_str!`'d, and the doc tests read every `docs/**/*.md`. `pam_worker.rs` reads
-#   `packaging/pam.d`: that one subdirectory, not `packaging/` whole, which will hold files no test
-#   opens.
+#   are `include_str!`'d, and the doc tests read every `docs/**/*.md` and `docs/images/`.
+#   `pam_worker.rs` reads `packaging/pam.d`: that one subdirectory, not `packaging/` whole, which
+#   will hold files no test opens.
 # - Lua: any `.lua`, `.luarc.json`, `.editorconfig`, or the formatter.
 # - Everything else, this hook and the justfile included: nothing.
 #
@@ -21,7 +21,7 @@ cd "$(git rev-parse --show-toplevel)"
 staged="$(git diff --cached --name-only -z | tr '\0' '\n')"
 rust=false lua=false
 # Not `grep -q` after a pipe: it exits on the first match, and pipefail reads the SIGPIPE as no match.
-if grep -qE '^docs/.*\.md$' <<<"$staged" || grep -vE '\.md$' <<<"$staged" |
+if grep -qE '^docs/(.*\.md|images/.*)$' <<<"$staged" || grep -vE '\.md$' <<<"$staged" |
     grep -E '\.rs$|(^|/)Cargo\.(toml|lock)$|^rustfmt\.toml$|^\.cargo/|^(renderer|supervisor|shared|lua-meta)/|^packaging/pam\.d/|^share/starter/shell\.lua$' >/dev/null; then
     rust=true
 fi

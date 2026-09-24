@@ -1,0 +1,12 @@
+Fixtures for the docs screenshots (`renderer/src/check.rs`, `doc_examples`).
+
+| Path | Source | Licence |
+| --- | --- | --- |
+| fonts/NotoSans-*.ttf | Noto Sans 2.015, subset to Latin-1 and punctuation | SIL OFL 1.1, fonts/OFL.txt |
+| fonts/NotoSansSymbols2-Regular.ttf | Noto Sans Symbols 2 2.008, subset to ✓ and ●, the fallback for menu marks | SIL OFL 1.1, fonts/OFL.txt |
+| icons/*.svg | Adwaita icon theme 50 (GNOME), symbolic set, foreground fills changed to `currentColor` so `foreground` tints them | CC-BY-SA-3.0 or LGPL-3.0-only |
+| icons/*.png | AdwaitaLegacy 48x48 (GNOME) | CC-BY-SA-3.0 or LGPL-3.0-only |
+| icons/notification-symbolic.svg | Adwaita preferences-system-notifications-symbolic, renamed | CC-BY-SA-3.0 or LGPL-3.0-only |
+| images/* | Drawn for this repo | MIT, as the repo |
+
+Adwaita: https://gitlab.gnome.org/GNOME/adwaita-icon-theme

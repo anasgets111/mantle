@@ -12,7 +12,8 @@ it is history and may be stale, so cite an ADR only as a "why" pointer after the
 | `just docs` | Serves the book at `http://localhost:3000`, rebuilt on save |
 | `just book` | Builds the book as CI publishes it, then checks every link and anchor |
 | `just stubs` | Regenerates every `lua-meta/*.lua`, every `docs/capabilities/<name>.md` and the generated property tables |
-| `cargo test -p renderer doc_examples` | Runs every Lua block in `docs/` (part of `just check`) |
+| `cargo test -p renderer doc_examples` | Runs every Lua block in `docs/` and checks every screenshot (part of `just check`) |
+| `just shots` | Re-renders the screenshots that changed, deletes orphans, lists what moved |
 | `just rustdoc` | Rustdoc for the crates, warnings as errors. Not this book |
 
 ## Lua examples are tests
@@ -20,12 +21,13 @@ it is history and may be stale, so cite an ADR only as a "why" pointer after the
 Every fenced block whose info string is `lua` or starts `lua,` runs in `cargo test`. The test is
 `every_lua_block_in_the_docs_evaluates_and_lays_out` in `renderer/src/check.rs`. Each block goes
 through the same evaluation and layout as `mantle check`: no Wayland, no subprocesses, every
-capability `nil`, one 1920x1080 output. The test fails on a Lua error, a check error or a layout error, and names
-the block by `file:line`. Blocks inside `> ` quotes count too.
+capability `nil`, one 704x396 output named `DP-1`. The test fails on a Lua error, a check error or
+a layout error, and names the block by `file:line`. Blocks inside `> ` quotes count too.
 
 | Info string | The block |
 |---|---|
-| `lua` | Runs and lays out. It returns surfaces as `shell.lua` does, or returns one node, which the test mounts in a panel |
+| `lua` | Runs and lays out. It returns surfaces as `shell.lua` does, or returns one node, which the test mounts in a panel with 24 px of padding |
+| `lua,shot` | A `lua` block the book shows a screenshot of ([screenshots](#screenshots)) |
 | `lua,fragment` | Only parses. For a snippet that needs context the page has not given, like a `require` of another file |
 | `lua,must-fail` | Must fail to evaluate or lay out. For showing a mistake |
 | `lua,no-check` | Skipped. Put the reason in an HTML comment on the line above |
@@ -62,6 +64,35 @@ return { require("bar") }  -- fails
 local bar = require("bar")
 return { bar }             -- works
 ```
+
+## Screenshots
+
+A `lua,shot` block also renders, headless over EGL, and must match its committed image,
+`docs/images/<section>/<page>-<n>.png`, the page's n-th shot. `tools/book_links.py` puts the image
+under the block on the site, so a page never links it. Tag the example a reader wants to see; a
+block has to return a node or surfaces.
+
+| Part | Rule |
+|---|---|
+| Image | Every visible surface stacked top to bottom 8 px apart, each popup where its `anchor_rect`, `anchor`, `gravity`, `offset` and `SlideX` put it on its parent, at scale 1 over a checkerboard. Cropped to the painted pixels plus 16 px; a shot that paints nothing fails |
+| Still | Drawn with every tween finished |
+| `<!-- shot: frames=0..400/20 -->` on the line above | An animated PNG: one frame per time, in ms after the last tween started. `frames=0,50,120` lists them |
+| `docs/images/<section>/<page>.fakes.lua` | Runs before each shot on the page. `fakes = { battery = {...} }` is pushed as each capability's first push, `on_change` included. A `__after` function runs after the first layout, then the shot lays out again: that is how an OSD shows or a card leaves. A popup a click opens needs its anchor state set to the rect that click would pass |
+| Pinned | Fonts, icons and images come from `renderer/fixtures/shots`, `os.time()` is 2026-09-24 12:45 UTC and `os.date` reads UTC, `$USER` is `user` |
+
+A quoted absolute path whose file name is in `renderer/fixtures/shots/images` points at that file.
+An icon missing from `fixtures/shots/icons` fails the test with its name; copy it in from Adwaita
+and note it in `fixtures/shots/NOTICE`.
+
+| Failure | Fix |
+|---|---|
+| `<name>.png differs by up to N per channel` | The render moved. Compare `<name>.new.png` beside it. Intended: `just shots`. Not: fix the regression |
+| `is missing or a different size` | A new shot, or its size changed: `just shots`, then look at the image |
+| `no lua,shot block draws this image` | A shot was removed or renumbered: `just shots` deletes it |
+| An APNG passes on one GPU and differs by 100+ on another | A moving edge lands on exactly half a pixel in some frame, and drivers round that differently. Pick frame times that miss it, such as `0..210/30` over `0..200/20` |
+
+A render within 2 per channel of the committed image passes and is not rewritten, so another GPU
+driver never shows up in git. EGL is required: without it the test fails.
 
 ## Capability pages
 

@@ -245,6 +245,11 @@ impl ShapingHandle {
     /// Spawns the worker thread and its own `FontSystem`, created inside the spawned closure
     /// rather than moved into it, so this doesn't require `FontSystem: Send`.
     pub fn spawn() -> Self {
+        Self::spawn_with(None)
+    }
+
+    /// [`spawn`](Self::spawn), resolving fonts through `fontconfig` (a `fonts.conf`) when given.
+    pub(crate) fn spawn_with(fontconfig: Option<std::path::PathBuf>) -> Self {
         let (tx, rx) = mpsc::channel::<Request>();
         // Bumped by the worker whenever the loaded face set changes, read by the painter to know
         // its femtovg font registry is stale (ADR-0144). An atomic rather than another request:
@@ -257,6 +262,7 @@ impl ShapingHandle {
         thread::Builder::new()
             .name("mantle-text-shaping".into())
             .spawn(move || {
+                fonts::FONTCONFIG_FILE.set(fontconfig);
                 let mut fonts = WorkerFonts::new(fonts::DEFAULT_CHAIN);
                 while let Ok(request) = rx.recv() {
                     match request {

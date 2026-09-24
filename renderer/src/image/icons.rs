@@ -11,6 +11,14 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 
+#[cfg(test)]
+thread_local! {
+    /// A flat directory of `<name>.svg` or `.png` that replaces the icon theme on this thread, so
+    /// the docs screenshots draw the same icons on every machine. A name it lacks panics rather
+    /// than drawing nothing.
+    pub(crate) static FIXTURE_ICONS: std::cell::RefCell<Option<PathBuf>> = const { std::cell::RefCell::new(None) };
+}
+
 /// The file for `name` at `size` pixels, or `None` if the active theme chain has no match.
 ///
 /// An absolute `name` is returned directly. `.desktop` `Icon=` accepts either spelling, letting the
@@ -33,6 +41,11 @@ pub fn resolve(name: &str, size: u16) -> Option<PathBuf> {
     }
     if Path::new(name).is_absolute() {
         return Some(PathBuf::from(name));
+    }
+    #[cfg(test)]
+    if let Some(dir) = FIXTURE_ICONS.with_borrow(Clone::clone) {
+        let found = ["svg", "png"].iter().map(|ext| dir.join(format!("{name}.{ext}"))).find(|path| path.is_file());
+        return Some(found.unwrap_or_else(|| panic!("no fixture icon {name:?}: add {name}.svg to {}", dir.display())));
     }
     memoized(name, size, || {
         let found = freedesktop_icons::lookup(name).with_theme(theme()).with_size(size).with_cache().find();

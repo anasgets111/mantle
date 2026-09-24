@@ -582,7 +582,7 @@ fn fill_image(canvas: &mut Canvas<OpenGl>, id: ImageId, fitted: LogicalRect, alp
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::super::tests::resolved_surface;
     use super::*;
 
@@ -604,12 +604,12 @@ mod tests {
     /// `Drop` impl, so they need no further Rust-side ownership once `make_current` below has
     /// bound them to this thread; only `instance` is read again, for `get_proc_address` in
     /// [`text_painter`]. Binds a pbuffer surface current before returning.
-    pub(super) fn init_headless_egl(width: i32, height: i32) -> Option<egl::Instance<egl::Static>> {
+    pub(crate) fn init_headless_egl(width: i32, height: i32) -> Option<egl::Instance<egl::Static>> {
         init_headless_egl_two_surfaces(width, height).map(|(instance, ..)| instance)
     }
 
     /// A `glow` context over `instance`'s current one.
-    pub(super) fn test_gl(instance: &egl::Instance<egl::Static>) -> glow::Context {
+    pub(crate) fn test_gl(instance: &egl::Instance<egl::Static>) -> glow::Context {
         // SAFETY: the caller's `init_headless_egl` made this context current on this thread.
         unsafe {
             glow::Context::from_loader_function(|s| {
@@ -620,7 +620,7 @@ mod tests {
 
     /// Builds a `TextPainter` against `instance`'s already-current context, from the same
     /// `font_chain_data` `paint_surface` registers (ADR-0211).
-    pub(super) fn text_painter(
+    pub(crate) fn text_painter(
         instance: &egl::Instance<egl::Static>,
         shaping: &ShapingHandle,
         width: u32,

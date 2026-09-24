@@ -29,6 +29,7 @@ why behind behavior the code confirms. Where a doc disagrees with the code, fix 
 | `just book` | Build the docs site and check every link and anchor. `just docs` serves it |
 | `just fmt` | Format Rust and Lua |
 | `just stubs` | Regenerate every `lua-meta/*.lua`, `docs/capabilities/<name>.md` and the node and surface property tables |
+| `just shots` | Re-render the `lua,shot` docs screenshots in `docs/images/` that changed. Review each image before committing |
 | `just run [config]` | Build and run on `share/starter`. Not `cargo run -p supervisor`: it launches a stale renderer |
 | `just swap [args]` | Build the `swap` profile, replace the installed `mantle` pair under `~/.cargo/bin`, restart detached |
 | `just hooks` | Once per clone: pre-commit runs the relevant half of `check` on the staged tree and refuses a stale stub or generated page |

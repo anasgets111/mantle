@@ -130,6 +130,11 @@ stubs:
     UPDATE_STUBS=1 cargo test -p supervisor -p renderer the_generated_
     @git diff --stat -- lua-meta docs
 
+# Re-render the docs screenshots that moved past the tolerance, delete orphans, then show what moved.
+shots:
+    UPDATE_SHOTS=1 cargo test -p renderer every_lua_block_in_the_docs
+    @git status --short -- docs/images
+
 # Separate from `lint` because a diff and a warning fail differently, and folding them buries the
 # diff. 71266cb and c83e79e landed four unformatted files with `just check` green on both.
 [doc('rustfmt as a gate. `just fmt` fixes it.')]

@@ -14,13 +14,15 @@ use super::{
 use crate::layout::node::Rgba;
 
 impl Pool {
-    pub(super) fn spawn(waker: Option<crate::wake::Waker>) -> Self {
+    /// `max_workers` threads at most; zero decodes every request inline.
+    pub(super) fn spawn(waker: Option<crate::wake::Waker>, max_workers: usize) -> Self {
         let (jobs, job_rx) = std::sync::mpsc::sync_channel::<Job>(MAX_INFLIGHT_DECODES);
         let job_rx = Arc::new(Mutex::new(job_rx));
         let (result_tx, results) = std::sync::mpsc::channel();
         let wanted: Arc<Mutex<HashSet<CacheKey>>> = Arc::new(Mutex::new(HashSet::new()));
         let budget: Arc<Budget> = Arc::new(Budget::default());
-        let workers = std::thread::available_parallelism().map_or(1, |n| n.get()).clamp(1, MAX_DECODE_WORKERS);
+        let workers =
+            std::thread::available_parallelism().map_or(1, |n| n.get()).clamp(1, MAX_DECODE_WORKERS).min(max_workers);
         let cache_root = thumbnails::cache_dir();
         let mut started = 0;
         for index in 0..workers {

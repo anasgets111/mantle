@@ -319,7 +319,13 @@ impl ImageCache {
     /// Test cache: its pool wakes nobody; tests poll for landings.
     #[cfg(test)]
     pub fn new() -> Self {
-        Self::build(None)
+        Self::build(None, MAX_DECODE_WORKERS)
+    }
+
+    /// Test cache that decodes every request inline, so one paint shows every image.
+    #[cfg(test)]
+    pub fn inline() -> Self {
+        Self::build(None, 0)
     }
 
     /// What one animated source may hold, scaled by the displays (ADR-0182, ADR-0233).
@@ -335,10 +341,10 @@ impl ImageCache {
 
     /// Renderer cache: a landing wakes the Wayland poll (ADR-0124).
     pub fn with_waker(waker: crate::wake::Waker) -> Self {
-        Self::build(Some(waker))
+        Self::build(Some(waker), MAX_DECODE_WORKERS)
     }
 
-    fn build(waker: Option<crate::wake::Waker>) -> Self {
+    fn build(waker: Option<crate::wake::Waker>, max_workers: usize) -> Self {
         ImageCache {
             entries: HashMap::new(),
             evicted: Vec::new(),
@@ -351,7 +357,7 @@ impl ImageCache {
             cancelled: Vec::new(),
             tick: 0,
             texture_budget: STARTING_TEXTURE_BUDGET,
-            pool: Pool::spawn(waker),
+            pool: Pool::spawn(waker, max_workers),
             landed: Vec::new(),
         }
     }
