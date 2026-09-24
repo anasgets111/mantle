@@ -258,6 +258,15 @@ See [paint parsing](../renderer/src/layout/node/paint_style.rs).
 
 `backdrop_blur` is frosted glass over the surface's own pixels, CSS `backdrop-filter: blur()`; see ADR-0256 and `lua-meta/nodes.lua`.
 
+Four blurs, by what they blur and when they pay:
+
+| Property | Blurs | Cost | Pick it for |
+|---|---|---|---|
+| `blur = true` | The desktop behind the surface, by the compositor | The compositor's | A translucent panel over other windows |
+| `image.source_blur` | The image's own pixels, on the CPU, once at decode | Nothing per frame; its own texture, and a decode before first show | A static picture on a surface that repaints often |
+| `backdrop_blur` | What this surface already painted under the box, on the GPU | One blur of the box per repaint of it | Glass over pixels already resident, such as the wallpaper's texture; animated sources |
+| `content_blur` | The node's own subtree, on the GPU | One blur of the subtree per repaint of it | Blurring a node's own content, live or tweened |
+
 `shadow_mode` is `"Box"` (default, CSS `box-shadow`: the box's shape, knocked out under it) or `"Content"` (CSS `drop-shadow`: everything the node paints); see ADR-0260.
 
 ### 5.2 Node-specific properties
