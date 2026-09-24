@@ -1,11 +1,12 @@
 //! `capture` node protocol client (ADR-0248): ext-image-copy-capture-v1 first, wlr-screencopy
-//! fallback. Hand-dispatched beside SCTK, like ADR-0009's text-input-v3. dma-buf negotiation
+//! fallback or for a `region`. Hand-dispatched beside SCTK, like ADR-0009's text-input-v3. dma-buf negotiation
 //! (ADR-0248 amendment) lives in `wayland::dmabuf`; this module only decides when to attempt it.
 //!
-//! Only the dma-buf decision functions and `pick_format` are unit tested; the rest is thin
+//! Only the decision functions and teardown are unit tested; the rest is thin
 //! protocol translation a mock isn't worth writing.
 
 use std::collections::HashMap;
+use std::time::{Duration, Instant};
 
 use femtovg::ImageId;
 use khronos_egl as khr;
@@ -24,22 +25,58 @@ use wayland_protocols_wlr::screencopy::v1::client::{zwlr_screencopy_frame_v1, zw
 
 use shared::warn;
 
-use crate::image::capture::{CaptureCache, DamageRect, PendingFrame};
+use crate::image::capture::{CaptureCache, DamageRect, PendingFrame, crop_fraction};
 use crate::layout::paint::CaptureNode;
 use crate::layout::scene::NodeId;
+use crate::text::snap::LogicalRect;
 
 use super::App;
 use super::dmabuf::{self, DmabufBuffer, DmabufShape, DmabufSupport, DmabufSwapchain, FormatModifier};
 use super::egl::EglState;
 
-/// Which protocol this process captures through, chosen once at startup (ADR-0248 decision 1).
-enum Backend {
-    None,
-    Ext {
-        manager: ext_image_copy_capture_manager_v1::ExtImageCopyCaptureManagerV1,
-        sources: ext_output_image_capture_source_manager_v1::ExtOutputImageCaptureSourceManagerV1,
-    },
-    Wlr(zwlr_screencopy_manager_v1::ZwlrScreencopyManagerV1),
+/// The capture protocols this compositor offers, bound once at startup (ADR-0248 decision 1).
+struct Backend {
+    ext: Option<(
+        ext_image_copy_capture_manager_v1::ExtImageCopyCaptureManagerV1,
+        ext_output_image_capture_source_manager_v1::ExtOutputImageCaptureSourceManagerV1,
+    )>,
+    wlr: Option<zwlr_screencopy_manager_v1::ZwlrScreencopyManagerV1>,
+}
+
+/// Which protocol one source captures through.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Protocol {
+    Ext,
+    Wlr,
+}
+
+/// ext first (ADR-0248 decision 1), but a `region` prefers wlr, which crops at the source
+/// (ADR-0263).
+fn pick_protocol(region: bool, ext: bool, wlr: bool) -> Option<Protocol> {
+    match (ext, wlr) {
+        (_, true) if region || !ext => Some(Protocol::Wlr),
+        (true, _) => Some(Protocol::Ext),
+        _ => None,
+    }
+}
+
+/// When a live source may next request: `1 / fps` after its previous request, so the
+/// compositor's latency overlaps the wait instead of adding to it (ADR-0263). `None` is due now.
+fn next_request_at(last_request: Option<Instant>, fps: f32) -> Option<Instant> {
+    last_request.map(|last| last + Duration::from_secs_f32(1.0 / fps))
+}
+
+/// The grid slot a request made at `now` takes: its due time, so a late wake does not stretch the
+/// period, or `now` once over a period late, so a stall does not burst.
+fn request_slot(last_request: Option<Instant>, fps: f32, now: Instant) -> Instant {
+    let period = Duration::from_secs_f32(1.0 / fps);
+    next_request_at(last_request, fps).filter(|due| now.saturating_duration_since(*due) < period).unwrap_or(now)
+}
+
+/// The draw-time crop `region` needs on an ext source (ADR-0263), `None` on a rotated or flipped
+/// output, whose buffer its logical coordinates do not map onto.
+fn ext_crop(region: LogicalRect, output: (f32, f32), transform: wl_output::Transform) -> Option<LogicalRect> {
+    (transform == wl_output::Transform::Normal).then(|| crop_fraction(region, output))
 }
 
 /// A capture's negotiated shm buffer, reused across frames while size, stride and format match
@@ -88,6 +125,8 @@ struct ExtProto {
 /// wlr has no persistent session object; `buffer` is this source's own cross-frame state instead.
 #[derive(Default)]
 struct WlrProto {
+    /// Awaiting `Ready`/`Failed`, destroyed with the source.
+    frame: Option<zwlr_screencopy_frame_v1::ZwlrScreencopyFrameV1>,
     negotiating: Option<(u32, u32, u32, wl_shm::Format)>,
     buffer: Option<NegotiatedBuffer>,
     damage: Vec<DamageRect>,
@@ -106,11 +145,17 @@ enum Proto {
 
 struct CaptureSource {
     output: String,
-    live: bool,
+    /// Frames per second, `None` one-shot (ADR-0263).
+    live: Option<f32>,
     paint_cursor: bool,
+    region: Option<LogicalRect>,
+    protocol: Protocol,
     /// A frame requested and not yet `Ready`/`Failed`: `sync_captures` requests another only once
     /// this clears (ADR-0248 decision 3).
     in_flight: bool,
+    last_request: Option<Instant>,
+    /// Wants a frame its cap does not yet allow; `CaptureRegistry::next_request_deadline` wakes for it.
+    deferred: bool,
     /// Whether a frame has landed for the current `output`; a one-shot source reads this to want
     /// no more once it has one.
     captured: bool,
@@ -119,6 +164,7 @@ struct CaptureSource {
     /// output list changes, since that is when a failure is likely to have a different answer.
     failed: bool,
     warned_missing_output: bool,
+    warned_rotated: bool,
     /// This source's dma-buf double buffer (ADR-0248 amendment decision 3). Unused while
     /// `dmabuf_shape` is `None`.
     dmabuf: DmabufSwapchain,
@@ -131,16 +177,21 @@ struct CaptureSource {
 }
 
 impl CaptureSource {
-    fn new(output: String, live: bool, paint_cursor: bool) -> Self {
+    fn new(node: &CaptureNode, protocol: Protocol) -> Self {
         CaptureSource {
-            output,
-            live,
-            paint_cursor,
+            output: node.output.clone(),
+            live: node.live,
+            paint_cursor: node.paint_cursor,
+            region: node.region,
+            protocol,
             in_flight: false,
+            last_request: None,
+            deferred: false,
             captured: false,
             proto: None,
             failed: false,
             warned_missing_output: false,
+            warned_rotated: false,
             dmabuf: DmabufSwapchain::default(),
             dmabuf_shape: None,
             dmabuf_failed: false,
@@ -193,8 +244,7 @@ pub(super) struct CaptureRegistry {
 }
 
 impl CaptureRegistry {
-    /// Binds the ext globals if both are present, else the wlr fallback, else neither (ADR-0248
-    /// decision 1). `zwp_linux_dmabuf_v1` binds independently of that choice.
+    /// Binds each protocol the compositor offers; [`pick_protocol`] chooses per source.
     pub(super) fn bind(globals: &GlobalList, qh: &QueueHandle<App>) -> Self {
         let ext = globals
             .bind::<ext_image_copy_capture_manager_v1::ExtImageCopyCaptureManagerV1, _, _>(qh, 1..=1, ())
@@ -208,13 +258,8 @@ impl CaptureRegistry {
                     )
                     .ok(),
             );
-        let backend = match ext {
-            Some((manager, sources)) => Backend::Ext { manager, sources },
-            None => match globals.bind::<zwlr_screencopy_manager_v1::ZwlrScreencopyManagerV1, _, _>(qh, 1..=3, ()) {
-                Ok(manager) => Backend::Wlr(manager),
-                Err(_) => Backend::None,
-            },
-        };
+        let wlr = globals.bind::<zwlr_screencopy_manager_v1::ZwlrScreencopyManagerV1, _, _>(qh, 1..=3, ()).ok();
+        let backend = Backend { ext, wlr };
         let dmabuf_manager = globals.bind::<zwp_linux_dmabuf_v1::ZwpLinuxDmabufV1, _, _>(qh, 2..=2, ()).ok();
         CaptureRegistry {
             backend,
@@ -225,6 +270,15 @@ impl CaptureRegistry {
             pending_import: Vec::new(),
             pending_free: Vec::new(),
         }
+    }
+
+    /// The soonest a deferred source's cap allows its next request, for the loop's poll timeout.
+    pub(super) fn next_request_deadline(&self) -> Option<Instant> {
+        self.sources
+            .values()
+            .filter(|source| source.deferred)
+            .filter_map(|source| next_request_at(source.last_request, source.live?))
+            .min()
     }
 
     /// Gives a failed source another chance: an output topology change is the case decision 3's
@@ -334,12 +388,13 @@ impl App {
         for id in gone {
             if let Some(mut source) = self.captures.sources.remove(&id) {
                 self.captures.pending_free.extend(source.dmabuf.take_textures());
-                self.destroy_proto(source.proto);
+                destroy_proto(source.proto);
             }
             self.capture_cache.forget(id);
         }
 
-        if matches!(self.captures.backend, Backend::None) {
+        let (has_ext, has_wlr) = (self.captures.backend.ext.is_some(), self.captures.backend.wlr.is_some());
+        if !has_ext && !has_wlr {
             if !wanted.is_empty() && !self.captures.warned_no_backend {
                 warn!(
                     "a `capture` node is declared but this compositor offers no screencopy protocol; drawing nothing"
@@ -350,32 +405,65 @@ impl App {
         }
 
         for (id, node) in wanted {
-            let source = self
-                .captures
-                .sources
-                .entry(id)
-                .or_insert_with(|| CaptureSource::new(node.output.clone(), node.live, node.paint_cursor));
+            let Some(protocol) = pick_protocol(node.region.is_some(), has_ext, has_wlr) else { continue };
+            let source = self.captures.sources.entry(id).or_insert_with(|| CaptureSource::new(&node, protocol));
             source.live = node.live;
             source.paint_cursor = node.paint_cursor;
-            if source.output != node.output {
-                let mut stale =
-                    std::mem::replace(source, CaptureSource::new(node.output.clone(), node.live, node.paint_cursor));
+            source.region = node.region;
+            if source.output != node.output || source.protocol != protocol {
+                let mut stale = std::mem::replace(source, CaptureSource::new(&node, protocol));
                 self.captures.pending_free.extend(stale.dmabuf.take_textures());
-                self.destroy_proto(stale.proto);
+                destroy_proto(stale.proto);
                 self.capture_cache.forget(id);
             }
+            let info = self.wl_output_named(&node.output).and_then(|output| self.output_state.info(&output));
+            let crop = match (protocol, node.region, info) {
+                (Protocol::Ext, Some(region), Some(info)) => {
+                    let (width, height) = info.logical_size.unwrap_or_default();
+                    let crop = ext_crop(region, (width as f32, height as f32), info.transform);
+                    if crop.is_none()
+                        && let Some(source) = self.captures.sources.get_mut(&id)
+                        && !std::mem::replace(&mut source.warned_rotated, true)
+                    {
+                        warn!(
+                            "capture on `{}` cannot crop a rotated or flipped output; drawing all of it",
+                            node.output
+                        );
+                    }
+                    crop
+                }
+                _ => None,
+            };
+            self.capture_cache.set_crop(id, crop);
             let source = &self.captures.sources[&id];
-            if !source.failed && !source.in_flight && (node.live || !source.captured) {
-                self.request_frame(id);
+            if !source.failed && !source.in_flight && (node.live.is_some() || !source.captured) {
+                self.request_when_due(id);
             }
         }
     }
 
-    fn destroy_proto(&self, proto: Option<Proto>) {
-        if let Some(Proto::Ext(ext)) = proto
-            && let Some(session) = ext.session
-        {
-            session.destroy();
+    /// Requests `id`'s next frame now if its cap allows, else defers it to
+    /// [`CaptureRegistry::next_request_deadline`].
+    fn request_when_due(&mut self, id: NodeId) {
+        let Some(source) = self.captures.sources.get_mut(&id) else { return };
+        let fps = source.live.unwrap_or(f32::INFINITY);
+        source.deferred = next_request_at(source.last_request, fps).is_some_and(|at| at > Instant::now());
+        if !source.deferred {
+            self.request_frame(id);
+        }
+    }
+
+    /// Requests every deferred frame whose cap now allows it. Called once per loop turn.
+    pub(super) fn request_due_captures(&mut self) {
+        let deferred: Vec<NodeId> = self
+            .captures
+            .sources
+            .iter()
+            .filter(|(_, source)| source.deferred && source.live.is_some())
+            .map(|(id, _)| *id)
+            .collect();
+        for id in deferred {
+            self.request_when_due(id);
         }
     }
 
@@ -403,7 +491,9 @@ impl App {
         };
         let Some(source) = self.captures.sources.get_mut(&id) else { return };
         source.in_flight = true;
-        let paint_cursor = source.paint_cursor;
+        source.last_request =
+            Some(request_slot(source.last_request, source.live.unwrap_or(f32::INFINITY), Instant::now()));
+        let (paint_cursor, protocol, region) = (source.paint_cursor, source.protocol, source.region);
         // `in_flight` was false, so no frame holds the session being replaced.
         if matches!(&source.proto, Some(Proto::Ext(ext)) if ext.paint_cursor != paint_cursor)
             && let Some(Proto::Ext(ext)) = source.proto.take()
@@ -422,8 +512,8 @@ impl App {
             return;
         }
 
-        match &self.captures.backend {
-            Backend::Ext { manager, sources } => {
+        match (protocol, &self.captures.backend) {
+            (Protocol::Ext, Backend { ext: Some((manager, sources)), .. }) => {
                 let capture_source = sources.create_source(&output, &qh, id);
                 let options = if paint_cursor {
                     ext_image_copy_capture_manager_v1::Options::PaintCursors
@@ -437,18 +527,34 @@ impl App {
                         Some(Proto::Ext(ExtProto { session: Some(session), paint_cursor, ..Default::default() }));
                 }
             }
-            Backend::Wlr(manager) => {
+            (Protocol::Wlr, Backend { wlr: Some(manager), .. }) => {
                 let overlay_cursor = i32::from(paint_cursor);
-                let _frame = manager.capture_output(overlay_cursor, &output, &qh, id);
-                if let Some(source) = self.captures.sources.get_mut(&id)
-                    && !matches!(source.proto, Some(Proto::Wlr(_)))
-                {
+                let frame = match region {
+                    // Output-logical pixels; the compositor scales to buffer pixels and clips.
+                    Some(r) => manager.capture_output_region(
+                        overlay_cursor,
+                        &output,
+                        r.x.round() as i32,
+                        r.y.round() as i32,
+                        r.width.round().max(1.0) as i32,
+                        r.height.round().max(1.0) as i32,
+                        &qh,
+                        id,
+                    ),
+                    None => manager.capture_output(overlay_cursor, &output, &qh, id),
+                };
+                if let Some(source) = self.captures.sources.get_mut(&id) {
                     // A fresh `Proto::Wlr` only when none exists yet: overwriting it every
                     // request drops the negotiated buffer and reallocates its pool per frame.
-                    source.proto = Some(Proto::Wlr(WlrProto::default()));
+                    if !matches!(source.proto, Some(Proto::Wlr(_))) {
+                        source.proto = Some(Proto::Wlr(WlrProto::default()));
+                    }
+                    if let Some(Proto::Wlr(wlr)) = source.proto.as_mut() {
+                        wlr.frame = Some(frame);
+                    }
                 }
             }
-            Backend::None => {}
+            _ => {}
         }
     }
 
@@ -546,8 +652,8 @@ impl App {
     }
 
     fn request_next_if_live(&mut self, id: NodeId) {
-        if self.captures.sources.get(&id).is_some_and(|source| source.live) {
-            self.request_frame(id);
+        if self.captures.sources.get(&id).is_some_and(|source| source.live.is_some()) {
+            self.request_when_due(id);
         }
     }
 }
@@ -586,6 +692,19 @@ pub(super) fn import_ready_dmabufs(
             let shape = buffer.shape();
             capture_cache.install_texture(id, image, shape.width, shape.height);
         }
+    }
+}
+
+/// Destroys an outstanding frame before its session: left alive, its `Failed` would reach whatever
+/// source takes the same `NodeId` next.
+fn destroy_proto(proto: Option<Proto>) {
+    match proto {
+        Some(Proto::Ext(ext)) => {
+            ext.frame.iter().for_each(ext_image_copy_capture_frame_v1::ExtImageCopyCaptureFrameV1::destroy);
+            ext.session.iter().for_each(ext_image_copy_capture_session_v1::ExtImageCopyCaptureSessionV1::destroy);
+        }
+        Some(Proto::Wlr(wlr)) => wlr.frame.iter().for_each(zwlr_screencopy_frame_v1::ZwlrScreencopyFrameV1::destroy),
+        None => {}
     }
 }
 
@@ -800,7 +919,10 @@ fn fail_source(captures: &mut CaptureRegistry, id: &NodeId) {
             ext.frame = None;
             ext.pending_done = None;
         }
-        Some(Proto::Wlr(wlr)) => wlr.damage.clear(),
+        Some(Proto::Wlr(wlr)) => {
+            wlr.damage.clear();
+            wlr.frame = None;
+        }
         None => {}
     }
     source.in_flight = false;
@@ -928,6 +1050,9 @@ impl Dispatch<zwlr_screencopy_frame_v1::ZwlrScreencopyFrameV1, NodeId> for App {
             Event::Ready { .. } => {
                 proxy.destroy();
                 let Some(source) = state.captures.sources.get_mut(id) else { return };
+                if let Some(Proto::Wlr(wlr)) = source.proto.as_mut() {
+                    wlr.frame = None;
+                }
                 let used_dmabuf = matches!(&source.proto, Some(Proto::Wlr(wlr)) if wlr.dmabuf_active);
                 if used_dmabuf {
                     land_dmabuf_frame(&mut state.captures, &mut state.capture_cache, id);
@@ -954,6 +1079,96 @@ impl Dispatch<zwlr_screencopy_frame_v1::ZwlrScreencopyFrameV1, NodeId> for App {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A late wake keeps the request on the 1/fps grid; over a period late, the grid restarts at
+    /// the wake rather than bursting to catch up.
+    #[test]
+    fn a_capped_source_requests_on_a_fixed_grid() {
+        let t0 = Instant::now();
+        let period = Duration::from_secs_f32(1.0 / 60.0);
+        let ms = Duration::from_millis;
+        assert_eq!(request_slot(None, 60.0, t0), t0, "first request");
+        assert_eq!(request_slot(Some(t0), 60.0, t0 + period + ms(1)), t0 + period, "woke 1 ms late");
+        assert_eq!(request_slot(Some(t0), 60.0, t0 + period * 2 + ms(1)), t0 + period * 2 + ms(1), "reset");
+        assert_eq!(request_slot(Some(t0), f32::INFINITY, t0 + ms(3)), t0 + ms(3), "`true` has no grid");
+    }
+
+    #[derive(Default)]
+    struct Probe;
+    delegate_noop!(Probe: ignore wayland_client::protocol::wl_registry::WlRegistry);
+    delegate_noop!(Probe: ignore wl_output::WlOutput);
+    delegate_noop!(Probe: zwlr_screencopy_manager_v1::ZwlrScreencopyManagerV1);
+    delegate_noop!(Probe: ignore zwlr_screencopy_frame_v1::ZwlrScreencopyFrameV1);
+    delegate_noop!(Probe: ext_image_copy_capture_manager_v1::ExtImageCopyCaptureManagerV1);
+    delegate_noop!(Probe: ext_output_image_capture_source_manager_v1::ExtOutputImageCaptureSourceManagerV1);
+    delegate_noop!(Probe: ext_image_capture_source_v1::ExtImageCaptureSourceV1);
+    delegate_noop!(Probe: ignore ext_image_copy_capture_session_v1::ExtImageCopyCaptureSessionV1);
+    delegate_noop!(Probe: ignore ext_image_copy_capture_frame_v1::ExtImageCopyCaptureFrameV1);
+
+    /// A frame left alive after its source is replaced would deliver `Failed` to the new source
+    /// under the same `NodeId`. Reads the requests off the wire as `(object id, opcode)`.
+    #[test]
+    fn tearing_down_a_proto_destroys_its_outstanding_frames_before_the_session() {
+        use std::io::Read;
+        use wayland_client::Proxy;
+        let (client, mut server) = std::os::unix::net::UnixStream::pair().unwrap();
+        let conn = Connection::from_socket(client).unwrap();
+        let qh = conn.new_event_queue::<Probe>().handle();
+        let registry = conn.display().get_registry(&qh, ());
+        let output: wl_output::WlOutput = registry.bind(1, 1, &qh, ());
+        let wlr: zwlr_screencopy_manager_v1::ZwlrScreencopyManagerV1 = registry.bind(2, 1, &qh, ());
+        let ext: ext_image_copy_capture_manager_v1::ExtImageCopyCaptureManagerV1 = registry.bind(3, 1, &qh, ());
+        let sources: ext_output_image_capture_source_manager_v1::ExtOutputImageCaptureSourceManagerV1 =
+            registry.bind(4, 1, &qh, ());
+        let session = ext.create_session(
+            &sources.create_source(&output, &qh, ()),
+            ext_image_copy_capture_manager_v1::Options::empty(),
+            &qh,
+            (),
+        );
+        let ext_frame = session.create_frame(&qh, ());
+        let wlr_frame = wlr.capture_output(0, &output, &qh, ());
+        let (ext_frame_id, session_id, wlr_frame_id) =
+            (ext_frame.id().protocol_id(), session.id().protocol_id(), wlr_frame.id().protocol_id());
+        conn.flush().unwrap();
+        let mut sink = vec![0; 1 << 16];
+        server.set_nonblocking(true).unwrap();
+        let _ = server.read(&mut sink);
+
+        let ext_proto = ExtProto { session: Some(session), frame: Some(ext_frame), ..Default::default() };
+        destroy_proto(Some(Proto::Ext(ext_proto)));
+        destroy_proto(Some(Proto::Wlr(WlrProto { frame: Some(wlr_frame), ..Default::default() })));
+        conn.flush().unwrap();
+        let read = server.read(&mut sink).unwrap();
+        let mut sent = Vec::new();
+        let mut at = 0;
+        while at + 8 <= read {
+            let word = |i: usize| u32::from_ne_bytes(sink[i..i + 4].try_into().unwrap());
+            sent.push((word(at), word(at + 4) & 0xffff));
+            at += (word(at + 4) >> 16) as usize;
+        }
+        // ext frame `destroy` is opcode 0, session `destroy` 1, wlr frame `destroy` 1.
+        assert_eq!(sent, vec![(ext_frame_id, 0), (session_id, 1), (wlr_frame_id, 1)]);
+    }
+
+    #[test]
+    fn a_rotated_or_flipped_output_gets_no_ext_crop() {
+        let region = LogicalRect { x: 860.0, y: 360.0, width: 1720.0, height: 720.0 };
+        let crop = LogicalRect { x: 0.25, y: 0.25, width: 0.5, height: 0.5 };
+        assert_eq!(ext_crop(region, (3440.0, 1440.0), wl_output::Transform::Normal), Some(crop));
+        for transform in [wl_output::Transform::_90, wl_output::Transform::_180, wl_output::Transform::Flipped] {
+            assert_eq!(ext_crop(region, (1440.0, 3440.0), transform), None, "{transform:?}");
+        }
+    }
+
+    #[test]
+    fn a_region_prefers_the_protocol_that_crops_at_the_source() {
+        assert_eq!(pick_protocol(true, true, true), Some(Protocol::Wlr));
+        assert_eq!(pick_protocol(false, true, true), Some(Protocol::Ext));
+        assert_eq!(pick_protocol(true, true, false), Some(Protocol::Ext), "ext crops at draw time");
+        assert_eq!(pick_protocol(false, false, true), Some(Protocol::Wlr));
+        assert_eq!(pick_protocol(true, false, false), None);
+    }
 
     #[test]
     fn preferred_formats_are_tried_in_order() {

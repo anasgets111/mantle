@@ -165,7 +165,8 @@
 ---@class CaptureProps: NodeBase
 ---@field output? string|Bound A connector name, matching `panel.monitor`'s spelling (e.g. `"DP-1"`). A name matching no connected output draws nothing and logs a warning once.
 ---@field fit? "cover"|"contain"|"stretch"|Bound Default `"cover"`. Same meaning as `image.fit`.
----@field live? boolean|Bound Default `false`. `false` captures once, when the node appears and again whenever `output` changes. `true` keeps requesting the next frame as soon as the previous one arrives, at most one in flight. Paused while the node's surface is unmapped or the node leaves the scene, resuming on the next show.
+---@field live? boolean|number|Bound Default `false`. `false` captures once, when the node appears and again whenever `output` changes. `true` keeps requesting the next frame as soon as the previous one arrives, at most one in flight. A number in `(0, 1000]`, like `live = 60`, is at most that many frames per second: frames come only when the screen changes, so 60 on a 165 Hz output measured 46-48. Paused while the node's surface is unmapped or the node leaves the scene, resuming on the next show.
+---@field region? Rect|Bound Part of the output, in its logical pixels, placed by `fit` as if it were the whole frame. Every key required, `x` and `y` at least 0, the size positive, each at most 8192. The compositor copies only this part where wlr-screencopy is offered.
 ---@field paint_cursor? boolean|Bound Default `false`. Composite the pointer cursor onto the captured frame.
 
 --- A fragment shader your config owns, drawn over the node's box with no input textures (ADR-0253).

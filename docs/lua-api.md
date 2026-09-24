@@ -270,7 +270,7 @@ See [paint parsing](../renderer/src/layout/node/paint_style.rs).
 | `text` | `content`, `font`, `font_size`, `foreground`, `text_align`, `elide`, `wrap`, `max_lines`, `on_link` |
 | `icon` | `name`, `size`, `foreground`; name is a theme name or absolute image path |
 | `image` | `source`, `fit`, `async`, `retain`, `transition`, `source_blur`; fit is `"cover"` by default, `"contain"` or `"stretch"` |
-| `capture` | `output`, `fit`, `live`, `paint_cursor`; a live preview of one output |
+| `capture` | `output`, `fit`, `live`, `paint_cursor`, `region`; a live preview of one output |
 | `shader` | `source`, `progress`, `params`; a config fragment shader over the node's box |
 | `button` | `children`, `on_click`, `on_drag`, `on_wheel`, `submit` |
 | `list` | `source`, `itemfn`, optional `key`, `direction`, `spacing`, `scroll` |
@@ -298,9 +298,12 @@ playing sharp. Icons resolve in the Renderer. See [content parsing](../renderer/
 nothing. `capture.output` names a connector, matching `panel.monitor`'s spelling (e.g. `"DP-1"`). A
 name matching no connected output draws nothing and logs a warning once. `live = false` (the default)
 captures once, when the node appears and again whenever `output` changes; `live = true` keeps
-requesting the next frame as soon as the previous one arrives, at most one in flight. Capturing
-pauses while the node's surface is unmapped or the node leaves the scene, and resumes fresh on the
-next show. `paint_cursor` composites the pointer onto the captured frame; default `false`.
+requesting the next frame as soon as the previous one arrives, at most one in flight; `live = 60`
+is at most 60 frames per second, `(0, 1000]`: frames come only when the screen changes, so 60 on a
+165 Hz output measured 46-48 (ADR-0263). `region = { x, y, width, height }` shows
+part of the output, in its logical pixels, placed by `fit` as if it were the whole frame: every key
+required, `x` and `y` at least 0, the size positive, each at most 8192. Capturing pauses while the
+node's surface is unmapped or the node leaves the scene, and resumes fresh on the next show. `paint_cursor` composites the pointer onto the captured frame; default `false`.
 
 `shader` runs a config `.frag` over its box; it has no intrinsic size and takes no input (add a
 `button` for a hit area). Contract in `ShaderProps` (`lua-meta/nodes.lua`) and ADR-0253.

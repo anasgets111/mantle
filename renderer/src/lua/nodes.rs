@@ -80,7 +80,7 @@ const NODE_PROPERTIES: &[(&str, &[&str])] = &[
     ("image", &["async", "fit", "retain", "source", "source_blur", "transition"]),
     // A live output preview (ADR-0248): no `async`/`retain`/`transition`, which are about a decode
     // this node has none of.
-    ("capture", &["fit", "live", "output", "paint_cursor"]),
+    ("capture", &["fit", "live", "output", "paint_cursor", "region"]),
     // A config fragment shader with no input textures (ADR-0253).
     ("shader", &["params", "progress", "source"]),
     ("button", &["children", "on_click", "on_drag", "on_wheel", "submit"]),

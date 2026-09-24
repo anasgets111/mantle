@@ -398,6 +398,7 @@ pub fn run(
         // Before the turn reads `field_input_changed`, so a repeat lands in this turn's repaint
         // rather than waiting for the next wake.
         app.fire_due_repeat();
+        app.request_due_captures();
         // Drain every `SupervisorFrame` (ADR-0039), coalescing snapshot bursts into one wake. A
         // dead socket is distinct from an empty one (ADR-0059 decision 1), or the Renderer could
         // block in `poll` with no capability source.
@@ -628,6 +629,7 @@ pub fn run(
                 .chain(app.next_stale_deadline())
                 .chain(app.next_repeat_deadline())
                 .chain(app.next_caret_deadline())
+                .chain(app.captures.next_request_deadline())
                 .min();
             let timeout = deadline.map_or(nix::poll::PollTimeout::NONE, |due| {
                 // Rounded up: `as_millis` on the last fraction of a hold is 0, and a zero timeout

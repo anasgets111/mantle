@@ -87,7 +87,15 @@ pub enum Draw {
     /// An output's live contents (ADR-0248). `wayland::capture` owns the texture, keyed by `node`;
     /// this carries what a draw places it with and what the capture registry paces a source by,
     /// the same split `Draw::Image` makes between pixels and policy.
-    Capture { node: NodeId, output: String, fit: Fit, alpha: f32, live: bool, paint_cursor: bool },
+    Capture {
+        node: NodeId,
+        output: String,
+        fit: Fit,
+        alpha: f32,
+        live: Option<f32>,
+        paint_cursor: bool,
+        region: Option<LogicalRect>,
+    },
     /// A `shader` node (ADR-0253). `progress` in the list is what makes a tween repaint and damage it,
     /// and `version` is what makes an edited file reach the stage that recompiles it.
     Shader {
@@ -132,8 +140,9 @@ pub struct DrawCmd {
 pub struct CaptureNode {
     pub node: NodeId,
     pub output: String,
-    pub live: bool,
+    pub live: Option<f32>,
     pub paint_cursor: bool,
+    pub region: Option<LogicalRect>,
 }
 
 /// One surface's draw order, flattened for equality so a re-resolve repaints only the surfaces
@@ -199,12 +208,13 @@ impl DisplayList {
         fn walk(commands: &[DrawCmd], out: &mut Vec<CaptureNode>) {
             for command in commands {
                 match &command.draw {
-                    Draw::Capture { node, output, live, paint_cursor, .. } => {
+                    Draw::Capture { node, output, live, paint_cursor, region, .. } => {
                         out.push(CaptureNode {
                             node: *node,
                             output: output.clone(),
                             live: *live,
                             paint_cursor: *paint_cursor,
+                            region: *region,
                         });
                     }
                     Draw::Clipped { commands, .. }
@@ -816,14 +826,17 @@ fn draw_for(
 
         // `capture` (ADR-0248): empty `output` draws nothing, the same rule `image`'s empty
         // `source` follows.
-        PaintStyle::Capture { output, fit, live, paint_cursor } => (!output.is_empty()).then(|| Draw::Capture {
-            node: node_id,
-            output: output.clone(),
-            fit: *fit,
-            alpha: opacity,
-            live: *live,
-            paint_cursor: *paint_cursor,
-        }),
+        PaintStyle::Capture { output, fit, live, paint_cursor, region } => {
+            (!output.is_empty()).then(|| Draw::Capture {
+                node: node_id,
+                output: output.clone(),
+                fit: *fit,
+                alpha: opacity,
+                live: *live,
+                paint_cursor: *paint_cursor,
+                region: *region,
+            })
+        }
 
         PaintStyle::Shader { source, progress, params } => (!source.is_empty()).then(|| Draw::Shader {
             source: source.into(),

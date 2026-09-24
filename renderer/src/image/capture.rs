@@ -8,7 +8,9 @@ use femtovg::rgb::FromSlice;
 use femtovg::{Canvas, ImageFlags, ImageId, ImageSource};
 use shared::warn;
 
+use crate::image::{Fit, fitted_rect};
 use crate::layout::scene::NodeId;
+use crate::text::snap::LogicalRect;
 
 /// One damaged rectangle in physical buffer pixels.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -74,6 +76,45 @@ pub(crate) fn bgrx_to_rgba(pixels: &mut [u8]) {
     }
 }
 
+/// `region`, in an output's logical pixels, as fractions of that output's frame, clipped to it
+/// (ADR-0263). Fractions need no output scale: a HiDPI buffer multiplies them by its own size.
+/// Empty when the region misses the output or its size is unknown.
+pub(crate) fn crop_fraction(region: LogicalRect, output: (f32, f32)) -> LogicalRect {
+    if output.0 <= 0.0 || output.1 <= 0.0 {
+        return LogicalRect::default();
+    }
+    let x0 = (region.x / output.0).clamp(0.0, 1.0);
+    let y0 = (region.y / output.1).clamp(0.0, 1.0);
+    let x1 = ((region.x + region.width) / output.0).clamp(0.0, 1.0);
+    let y1 = ((region.y + region.height) / output.1).clamp(0.0, 1.0);
+    LogicalRect { x: x0, y: y0, width: x1 - x0, height: y1 - y0 }
+}
+
+/// Where a `width` x `height` frame draws in `box_rect`: the rect filled, and the rect the whole
+/// frame is patterned over so that only `crop` (fractions, `None` for all of it) shows, placed by
+/// `fit` as if it were the whole image (ADR-0263). `None` for an empty crop, which draws nothing.
+pub(crate) fn placement(
+    box_rect: LogicalRect,
+    width: u32,
+    height: u32,
+    crop: Option<LogicalRect>,
+    fit: Fit,
+) -> Option<(LogicalRect, LogicalRect)> {
+    let crop = crop.unwrap_or(LogicalRect { x: 0.0, y: 0.0, width: 1.0, height: 1.0 });
+    if crop.width <= 0.0 || crop.height <= 0.0 {
+        return None;
+    }
+    let fill = fitted_rect(box_rect, crop.width * width as f32, crop.height * height as f32, fit);
+    let (frame_width, frame_height) = (fill.width / crop.width, fill.height / crop.height);
+    let at = LogicalRect {
+        x: fill.x - crop.x * frame_width,
+        y: fill.y - crop.y * frame_height,
+        width: frame_width,
+        height: frame_height,
+    };
+    Some((fill, at))
+}
+
 /// Pixels a capture source landed, awaiting upload once a GL context is current (ADR-0039).
 /// `pixels` covers rows `[y_offset, y_offset + pixels.len() / (width * 4))`; the caller sends only
 /// the damaged band unless the size changed or nothing was reported, when it is the whole frame.
@@ -111,9 +152,26 @@ pub struct CaptureCache {
     /// Nodes [`Self::stage`] was called for since the last [`Self::poll`]: the repaint cue, since a
     /// staged frame changes no `Draw::Capture` field for `DisplayList` equality to notice.
     landed: Vec<NodeId>,
+    /// Draw-time crops as fractions of the frame, for a region the protocol cannot crop (ADR-0263).
+    crops: HashMap<NodeId, LogicalRect>,
 }
 
 impl CaptureCache {
+    /// A changed crop is a repaint cue, as a landed frame is.
+    pub(crate) fn set_crop(&mut self, node: NodeId, crop: Option<LogicalRect>) {
+        let old = match crop {
+            Some(crop) => self.crops.insert(node, crop),
+            None => self.crops.remove(&node),
+        };
+        if old != crop {
+            self.landed.push(node);
+        }
+    }
+
+    pub(crate) fn crop(&self, node: NodeId) -> Option<LogicalRect> {
+        self.crops.get(&node).copied()
+    }
+
     pub fn set_texture_budget(&mut self, budget: usize) {
         self.texture_budget = budget;
     }
@@ -171,6 +229,7 @@ impl CaptureCache {
     pub(crate) fn forget(&mut self, node: NodeId) {
         self.pending.remove(&node);
         self.over_budget_warned.remove(&node);
+        self.crops.remove(&node);
         if let Some(entry) = self.entries.remove(&node)
             && entry.owned
         {
@@ -304,6 +363,62 @@ mod tests {
         let mut pixels = vec![0x10, 0x20, 0x30, 0x00, 0xAA, 0xBB, 0xCC, 0x7F];
         bgrx_to_rgba(&mut pixels);
         assert_eq!(pixels, vec![0x30, 0x20, 0x10, 0xFF, 0xCC, 0xBB, 0xAA, 0xFF]);
+    }
+
+    fn rect(x: f32, y: f32, width: f32, height: f32) -> LogicalRect {
+        LogicalRect { x, y, width, height }
+    }
+
+    #[test]
+    fn a_region_becomes_fractions_of_the_output_clipped_to_it() {
+        let output = (3440.0, 1440.0);
+        assert_eq!(crop_fraction(rect(860.0, 360.0, 1720.0, 720.0), output), rect(0.25, 0.25, 0.5, 0.5));
+        assert_eq!(crop_fraction(rect(1720.0, 0.0, 9999.0, 1440.0), output), rect(0.5, 0.0, 0.5, 1.0));
+        assert_eq!(crop_fraction(rect(3440.0, 0.0, 10.0, 10.0), output).width, 0.0, "past the right edge");
+        assert_eq!(crop_fraction(rect(0.0, 0.0, 10.0, 10.0), (0.0, 0.0)).width, 0.0, "no logical size known");
+    }
+
+    #[test]
+    fn no_crop_patterns_the_frame_over_exactly_what_it_fills() {
+        let box_rect = rect(10.0, 20.0, 100.0, 50.0);
+        for fit in [Fit::Cover, Fit::Contain, Fit::Stretch] {
+            let fitted = fitted_rect(box_rect, 640.0, 480.0, fit);
+            assert_eq!(placement(box_rect, 640, 480, None, fit), Some((fitted, fitted)), "{fit:?}");
+        }
+    }
+
+    /// A 400x200 frame's top-left quarter (200x100) into a 100x100 box: the crop is placed as if it
+    /// were the image, and the whole frame is patterned twice its size, anchored at the fill.
+    #[test]
+    fn a_crop_is_placed_by_each_fit_as_if_it_were_the_whole_image() {
+        let box_rect = rect(10.0, 20.0, 100.0, 100.0);
+        let quarter = Some(rect(0.0, 0.0, 0.5, 0.5));
+        assert_eq!(
+            placement(box_rect, 400, 200, quarter, Fit::Contain),
+            Some((rect(10.0, 45.0, 100.0, 50.0), rect(10.0, 45.0, 200.0, 100.0)))
+        );
+        assert_eq!(
+            placement(box_rect, 400, 200, quarter, Fit::Cover),
+            Some((rect(-40.0, 20.0, 200.0, 100.0), rect(-40.0, 20.0, 400.0, 200.0)))
+        );
+        let right_half = Some(rect(0.5, 0.0, 0.5, 1.0));
+        assert_eq!(
+            placement(box_rect, 400, 200, right_half, Fit::Stretch),
+            Some((box_rect, rect(-90.0, 20.0, 200.0, 100.0)))
+        );
+        assert_eq!(placement(box_rect, 400, 200, Some(rect(1.0, 0.0, 0.0, 1.0)), Fit::Contain), None, "empty");
+    }
+
+    #[test]
+    fn a_hidpi_frame_places_a_crop_where_a_one_x_frame_does() {
+        let box_rect = rect(0.0, 0.0, 300.0, 200.0);
+        let crop = Some(rect(0.25, 0.25, 0.5, 0.5));
+        let corners = |(a, b): (LogicalRect, LogicalRect)| [a.x, a.y, a.width, a.height, b.x, b.y, b.width, b.height];
+        for fit in [Fit::Cover, Fit::Contain, Fit::Stretch] {
+            let one_x = corners(placement(box_rect, 3440, 1440, crop, fit).unwrap());
+            let one_and_a_half = corners(placement(box_rect, 5160, 2160, crop, fit).unwrap());
+            assert!(one_x.iter().zip(one_and_a_half).all(|(a, b)| (a - b).abs() < 1e-3), "{fit:?}");
+        }
     }
 
     #[test]

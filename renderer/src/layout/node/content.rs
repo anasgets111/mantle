@@ -10,6 +10,7 @@ use mlua::Value;
 
 use crate::image::{Fit, Load};
 use crate::text::shaping::FontRun;
+use crate::text::snap::LogicalRect;
 
 use super::*;
 
@@ -207,9 +208,42 @@ pub fn parse_progress(properties: &PropMap) -> Result<f32, LayoutError> {
     style::within("progress", parse_number(properties, "progress", 0.0)?)
 }
 
-/// `capture.live` (ADR-0248), default `false`: a one-shot capture versus a continuous stream.
-pub fn parse_live(properties: &PropMap) -> Result<bool, LayoutError> {
-    parse_bool(properties, "live", false)
+/// `capture.live` (ADR-0248, ADR-0263): frames per second in (0, 1000], `true` uncapped
+/// (infinite), `false` or absent one-shot (`None`).
+pub fn parse_live(properties: &PropMap) -> Result<Option<f32>, LayoutError> {
+    match properties.get("live") {
+        None | Some(Value::Boolean(false)) => Ok(None),
+        Some(Value::Boolean(true)) => Ok(Some(f32::INFINITY)),
+        Some(value) => match value_as_f32("live", value)? {
+            Some(fps) if fps > 0.0 && fps <= 1000.0 => Ok(Some(fps)),
+            _ => {
+                let got = preview_for_error(value);
+                Err(invalid("live", format!("expected a boolean or frames per second in (0, 1000], got {got}")))
+            }
+        },
+    }
+}
+
+/// `capture.region` (ADR-0263): `{ x, y, width, height }` in the output's logical pixels, every
+/// key required and within [`style::within`]'s range, the size positive.
+pub fn parse_region(properties: &PropMap) -> Result<Option<LogicalRect>, LayoutError> {
+    let Some(value) = properties.get("region") else {
+        return Ok(None);
+    };
+    let Value::Table(table) = value else {
+        let got = preview_for_error(value);
+        return Err(invalid("region", format!("expected an {{ x, y, width, height }} table, got {got}")));
+    };
+    let field = |key| {
+        style::table_number("region", table, key)?
+            .ok_or_else(|| invalid("region", format!("`{key}` is required")))
+            .and_then(|n| style::within("region", n))
+    };
+    let region = LogicalRect { x: field("x")?, y: field("y")?, width: field("width")?, height: field("height")? };
+    if region.width == 0.0 || region.height == 0.0 {
+        return Err(invalid("region", "`width` and `height` must be positive"));
+    }
+    Ok(Some(region))
 }
 
 /// `capture.paint_cursor` (ADR-0248), default `false`.
@@ -654,17 +688,57 @@ mod tests {
         let lua = mlua::Lua::new();
         let table: mlua::Table = lua.load(r#"return { kind = "capture" }"#).eval().unwrap();
         let props = props_from_table(&table);
-        assert!(!parse_live(&props).unwrap());
+        assert_eq!(parse_live(&props).unwrap(), None);
         assert!(!parse_paint_cursor(&props).unwrap());
 
         let table: mlua::Table =
             lua.load(r#"return { kind = "capture", live = true, paint_cursor = true }"#).eval().unwrap();
         let props = props_from_table(&table);
-        assert!(parse_live(&props).unwrap());
+        assert_eq!(parse_live(&props).unwrap(), Some(f32::INFINITY));
         assert!(parse_paint_cursor(&props).unwrap());
 
         let table: mlua::Table = lua.load(r#"return { kind = "capture", live = "yes" }"#).eval().unwrap();
         assert!(parse_live(&props_from_table(&table)).is_err());
+    }
+
+    /// ADR-0263: frames per second in (0, 1000].
+    #[test]
+    fn live_takes_frames_per_second() {
+        let lua = mlua::Lua::new();
+        let live = |src: &str| {
+            let table: mlua::Table = lua.load(format!("return {{ kind = 'capture', live = {src} }}")).eval().unwrap();
+            parse_live(&props_from_table(&table))
+        };
+        assert_eq!(live("false").unwrap(), None);
+        assert_eq!(live("60").unwrap(), Some(60.0));
+        assert_eq!(live("1000").unwrap(), Some(1000.0));
+        for refused in ["0", "-5", "1001"] {
+            assert!(live(refused).is_err(), "{refused}");
+        }
+    }
+
+    /// ADR-0263: every key required, `x`/`y` at least 0, the size positive.
+    #[test]
+    fn region_is_a_positive_rect() {
+        let lua = mlua::Lua::new();
+        let region = |src: &str| {
+            let table: mlua::Table = lua.load(format!("return {{ kind = 'capture', region = {src} }}")).eval().unwrap();
+            parse_region(&props_from_table(&table))
+        };
+        assert_eq!(
+            region("{ x = 10, y = 20.5, width = 300, height = 200 }").unwrap(),
+            Some(LogicalRect { x: 10.0, y: 20.5, width: 300.0, height: 200.0 })
+        );
+        for refused in [
+            "{ x = 0, y = 0, width = 0, height = 10 }",
+            "{ x = 0, y = 0, width = 10, height = -1 }",
+            "{ x = 0, y = 0, width = 10 }",
+            "{ x = -1, y = 0, width = 10, height = 10 }",
+            "{ x = 0, y = 0, width = 1/0, height = 10 }",
+            "5",
+        ] {
+            assert!(region(refused).is_err(), "{refused}");
+        }
     }
 
     #[test]

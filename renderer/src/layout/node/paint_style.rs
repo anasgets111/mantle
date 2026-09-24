@@ -10,6 +10,7 @@
 use std::sync::Arc;
 
 use crate::image::{Fit, Load};
+use crate::text::snap::LogicalRect;
 
 use super::*;
 
@@ -73,7 +74,7 @@ pub enum PaintStyle {
     },
     /// `capture` (ADR-0248): an output's live contents. `output` empty or naming nothing connected
     /// draws nothing, the same answer `image`'s empty `source` gets.
-    Capture { output: String, fit: Fit, live: bool, paint_cursor: bool },
+    Capture { output: String, fit: Fit, live: Option<f32>, paint_cursor: bool, region: Option<LogicalRect> },
     /// `shader` (ADR-0253): a config fragment shader with no inputs but `progress` and `params`.
     Shader { source: String, progress: f32, params: Vec<ShaderParam> },
     /// `target` is `None` when no `secure_submit` is declared. Malformed targets fail here, not at
@@ -135,6 +136,7 @@ pub fn paint_style(kind: &str, properties: &PropMap) -> Result<Option<PaintStyle
             fit: parse_fit(properties)?,
             live: parse_live(properties)?,
             paint_cursor: parse_paint_cursor(properties)?,
+            region: parse_region(properties)?,
         },
         "shader" => PaintStyle::Shader {
             source: parse_shader_source(properties)?,
@@ -244,7 +246,13 @@ mod tests {
         let parsed = style(&lua, r#"return { kind = "capture", output = "DP-1", live = true }"#).unwrap().unwrap();
         assert_eq!(
             parsed,
-            PaintStyle::Capture { output: "DP-1".to_string(), fit: Fit::Cover, live: true, paint_cursor: false }
+            PaintStyle::Capture {
+                output: "DP-1".to_string(),
+                fit: Fit::Cover,
+                live: Some(f32::INFINITY),
+                paint_cursor: false,
+                region: None,
+            }
         );
     }
 

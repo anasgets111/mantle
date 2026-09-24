@@ -18,7 +18,7 @@ use animate::{parse_shader_params, parse_transition};
 use content::{
     parse_capture_output, parse_elide, parse_fit, parse_font_family, parse_font_size, parse_foreground,
     parse_icon_name, parse_image_source, parse_live, parse_load, parse_mask_character, parse_max_lines,
-    parse_optional_foreground, parse_paint_cursor, parse_placeholder, parse_progress, parse_retain,
+    parse_optional_foreground, parse_paint_cursor, parse_placeholder, parse_progress, parse_region, parse_retain,
     parse_shader_source, parse_source_blur, parse_text_align, parse_wrap,
 };
 use spec::parse_secure_submit;

@@ -6381,3 +6381,60 @@ budget, once a surface's paint exceeds one.
 **Amends ADR-0254** (decision 4: no sigma cap, no per-call allocation; and its rejected downsampling)
 **and ADR-0256** (decision 7's cost, and its read area past 24 pixels) **and ADR-0217** (the pool
 never evicts the current paint's sizes).
+
+**and ADR-0256** (decision 7's cost, and its read area past 24 pixels).
+
+## 0263. `capture.live` takes a frame rate, and `capture.region` crops at the source where it can
+
+A live preview of the output it sits on loops at the refresh rate: its repaint damages the output,
+which lands the next frame, which repaints. Uncapped at 165 Hz it cost 18-23% of a Mantle core plus
+the compositor's copy.
+
+1. **`live` is a boolean or a cap of at most N frames per second, N in (0, 1000].** `true` stays
+   uncapped and `false` one-shot; anything else is a config error.
+2. **Requests sit on a fixed `1 / fps` grid, not `1 / fps` after the last arrival.** The
+   compositor's latency then overlaps the wait instead of adding to it, and a late wake or the
+   poll's whole-millisecond rounding does not stretch the period. Over a period late, the grid
+   restarts at the wake instead of bursting. Still one frame in flight. A frame landing early
+   defers the request to the loop's poll deadline, beside `delay` and the GIF clock; no thread, no
+   busy loop. N is a ceiling, not a rate: a request is answered only at the output's next repaint
+   with damage, so `live = 60` on 165 Hz delivered 46-48 fps here, set by the rest of the screen's
+   damage.
+3. **`true` gets no implicit cap.** The captured output's refresh already bounds it, since a
+   compositor answers once per repaint. A preview that should cost less says so with a number.
+4. **`region = { x, y, width, height }`, in the output's logical pixels.** Every key required, `x`
+   and `y` at least 0, the size positive, each at most 8192; past the output's edge it is clipped.
+   `fit` places the region as if it were the whole frame.
+5. **A region prefers wlr-screencopy; ext-image-copy-capture stays first otherwise.**
+
+   | Protocol | Region | Scaled-down buffer |
+   | :--- | :--- | :--- |
+   | ext-image-copy-capture-v1 | None: `buffer_size` is the whole source, and `damage_buffer` is a client damage hint, not a crop | None |
+   | wlr-screencopy-unstable-v1 | `capture_output_region`, logical pixels; the compositor scales to buffer pixels and clips | None: the `buffer` event names the size |
+
+   Hyprland 0.56 offers both, so both bind and each source picks. Toggling `region` switches a
+   source's protocol and recreates it, as an `output` change does.
+6. **On ext, the crop happens at draw time.** The region becomes fractions of the output's logical
+   size, so the buffer's scale, integer or fractional, cancels out. The draw fills the fitted crop
+   and patterns the whole texture around it. The compositor still copies the whole output.
+7. **A rotated or flipped output gets no ext crop.** Its buffer is untransformed, and the frame's
+   `transform` event is applied nowhere yet, so the region's logical coordinates do not map onto
+   it. The whole frame draws and a warning logs once per source.
+
+Measured on Hyprland 0.56.2, release build, dma-buf path: a 480x200 overlay previewing the
+3440x1440@165 output under it, 10 s windows, Hyprland's CPU above an interleaved baseline (7-10%).
+
+| Case | fps | Renderer | Hyprland |
+| :--- | :--- | :--- | :--- |
+| `live = true` | 140 | 3.8% | +10.0% |
+| `live = 60` | 46-48 | 1.7% | +5.3% |
+| `live = 60`, 560x280 region (wlr) | 50 | 1.5% | +3.6% |
+| `live = true`, 560x280 region (wlr) | 140 | 3.9% | +9.7% |
+
+On dma-buf the copy is a GPU blit, so the frame rate, not the region, drives Hyprland's cost.
+
+Rejected: an automatic cap at the drawing surface's refresh; downscaling on our side, which saves
+the compositor nothing.
+
+**Amends ADR-0248** (decision 1: both protocols bind, and a region picks wlr; decision 3: `live`
+paces; and its frame-callback pacing ponytail).

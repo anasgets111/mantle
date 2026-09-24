@@ -338,9 +338,14 @@ fn run(painter: &mut TextPainter, walk: &mut Walk<'_, '_>, commands: &[DrawCmd],
             // (unknown output, or no frame has arrived) draws nothing, matching `image`'s empty
             // `source`.
             Draw::Capture { node, fit, alpha, .. } => {
-                if let Some((id, width, height)) = walk.captures.get(*node) {
-                    let fitted = image::fitted_rect(rect, width as f32, height as f32, *fit);
-                    fill_image(painter.canvas_mut(), id, fitted, *alpha);
+                if let Some((id, width, height)) = walk.captures.get(*node)
+                    && let Some((fill, at)) =
+                        image::capture::placement(rect, width, height, walk.captures.crop(*node), *fit)
+                {
+                    let mut path = Path::new();
+                    path.rect(fill.x, fill.y, fill.width, fill.height);
+                    let paint = Paint::image(id, at.x, at.y, at.width, at.height, 0.0, *alpha);
+                    painter.canvas_mut().fill_path(&path, &paint);
                 }
             }
             Draw::Shader { source, progress, params, alpha, .. } => {
