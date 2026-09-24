@@ -39,6 +39,7 @@ const COMMON_PROPERTIES: &[&str] = &[
     "translate",
     "visible",
     "width",
+    "z",
 ];
 
 /// Box-paint properties beyond [`COMMON_PROPERTIES`]. `node::paint_style`'s first arm paints

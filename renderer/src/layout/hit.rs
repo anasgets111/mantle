@@ -33,8 +33,8 @@ pub struct LogicalPoint {
 ///   intersection with every ancestor -- the same region `paint::canvas::run`'s `intersect_scissor`
 ///   chain draws it in, so hitting and painting agree on overflow without either walk carrying a
 ///   clip rect.
-/// - **Children in reverse.** `run` paints in declaration order, so the last child is on
-///   top and is asked first; the first child that yields a hit wins.
+/// - **Children in reverse.** `run` paints in [`ResolvedNode::painted_children`] order, so the
+///   last is on top and is asked first; the first child that yields a hit wins.
 /// - **Half-open bounds**, `rect.x <= point.x < rect.x + rect.width`. Two buttons sharing an edge
 ///   must not both claim it, and a zero-area rect must contain nothing.
 ///
@@ -196,7 +196,7 @@ fn descend<'a>(
         return false;
     }
     path.push(node);
-    let child_hit = node.children.iter().rev().any(|child| descend(child, point, x, y, path));
+    let child_hit = node.painted_children().rev().any(|child| descend(child, point, x, y, path));
     if !inside && !child_hit {
         path.pop();
     }
@@ -246,6 +246,20 @@ mod tests {
         flat.transform.scale = (0.0, 1.0);
         let tree = ResolvedNode::test("panel", (0.0, 0.0, 400.0, 400.0), vec![flat]);
         assert_eq!(hit_path(&tree, LogicalPoint { x: 110.0, y: 110.0 }).len(), 1, "a zero scale takes nothing");
+    }
+
+    /// ADR-0259: the sibling painted on top takes the pointer where the two overlap.
+    #[test]
+    fn the_higher_z_sibling_takes_the_pointer_where_siblings_overlap() {
+        let tree = |z: f32| {
+            let mut first = ResolvedNode::test("button", (0.0, 0.0, 20.0, 20.0), vec![]);
+            first.z = z;
+            let second = ResolvedNode::test("rect", (10.0, 0.0, 20.0, 20.0), vec![]);
+            ResolvedNode::test("panel", (0.0, 0.0, 400.0, 400.0), vec![first, second])
+        };
+        let top = |tree: &ResolvedNode| hit_path(tree, LogicalPoint { x: 15.0, y: 5.0 }).last().unwrap().kind;
+        assert_eq!(top(&tree(0.0)), "rect", "equal z: the later sibling is on top");
+        assert_eq!(top(&tree(1.0)), "button");
     }
 
     /// A child laid out past a `clip = "None"` parent is painted there, so it is hit there, with the

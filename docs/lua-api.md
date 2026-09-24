@@ -165,6 +165,7 @@ tables do not resolve, so derive the whole table instead.
 | `align_h`, `align_v` | `"Start"`, `"Center"`, `"End"`, `"Stretch"` |
 | `visible` | Boolean; false removes the node from layout and paint but keeps its frozen subtree (ADR-0124). For one of several views, choose `children` with a signal instead of hiding siblings |
 | `opacity` | 0–1, default 1; inherited multiplicatively. Zero still occupies space and takes input |
+| `z` | Finite number, default 0: siblings paint and take the pointer in ascending `z`, declaration order among equals (ADR-0259). A parent stays below its children at any `z`. Layout and focus order ignore it; `animate` refuses it |
 | `id` | Optional identity unique among siblings; unidentified siblings match positionally |
 | `cursor` | CSS cursor name; innermost explicit/default cursor wins |
 | `hover` | Handle from `hover(name)` |
@@ -182,8 +183,8 @@ tables do not resolve, so derive the whole table instead.
 Sizes and maximum sizes accept 0–8192 logical pixels. See
 [geometry parsing](../renderer/src/layout/node/style.rs).
 
-`animate` may name any property the node has; a name the node does not accept is refused. What
-the value is decides whether it tweens: a number, a `"NN%"` size, a `#` colour and an edge table of
+`animate` may name any property the node has, except `z`, which is refused (ADR-0259); a name the
+node does not accept is refused. What the value is decides whether it tweens: a number, a `"NN%"` size, a `#` colour and an edge table of
 numbers each ease against a value of the same shape, and anything else (`"Fill"`, a boolean, a
 table of colours, a change of shape) snaps.
 Durations are `[1, 60000]` ms and an entry may hold the property still for a `delay` of

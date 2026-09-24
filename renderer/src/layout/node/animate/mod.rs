@@ -346,6 +346,9 @@ impl Sequence {
 /// The name an `animate` entry eases, refused if `kind` does not have it. `animate` itself is not
 /// one: a block cannot ease the block.
 fn animatable_name(kind: &str, property: &str, field: &str) -> Result<&'static str, LayoutError> {
+    if property == "z" {
+        return Err(invalid(field, "`z` snaps; it cannot animate"));
+    }
     crate::lua::nodes::accepted_name(kind, property)
         .filter(|name| *name != "animate")
         .ok_or_else(|| invalid(field, format!("`{property}` is not a property of a `{kind}` node")))

@@ -232,7 +232,7 @@ mod tests {
 
     #[test]
     fn the_topmost_of_two_overlapping_siblings_is_the_hovered_one() {
-        // `hit_path` asks children in reverse declaration order and stops at the first hit, so the
+        // `hit_path` asks children in reverse paint order (ADR-0259) and stops at the first hit, so the
         // one painted last wins. Hover has to agree with paint, or the highlight lands on the box
         // the user cannot see.
         let lua = Lua::new();

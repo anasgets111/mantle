@@ -450,7 +450,7 @@ pub fn build(root: &ResolvedNode, scale: f32, focus: Option<&FieldFocus>) -> Dis
     DisplayList { commands }
 }
 
-/// One node, then its children in tree order. Origins accumulate parent-relative rects to an
+/// One node, then its children in paint order. Origins accumulate parent-relative rects to an
 /// absolute position.
 // ponytail: keep the eight scalar/context arguments; a wrapper would only bag them for one caller.
 #[allow(clippy::too_many_arguments)]
@@ -543,7 +543,7 @@ fn build_node(
         radius if mask.is_some() => {
             let (fill, border) = split_fill_and_border(draw);
             let mut inner: Vec<DrawCmd> = fill.map(|draw| DrawCmd { rect, clip, draw }).into_iter().collect();
-            for child in &node.children {
+            for child in node.painted_children() {
                 build_node(child, x, y, scale, (clip, surface), opacity, focus, &mut inner);
             }
             inner.extend(border.map(|draw| DrawCmd { rect, clip, draw }));
@@ -561,7 +561,7 @@ fn build_node(
             if let Some(draw) = draw {
                 out.push(DrawCmd { rect, clip, draw });
             }
-            for child in &node.children {
+            for child in node.painted_children() {
                 build_node(child, x, y, scale, (child_clip, surface), opacity, focus, out);
             }
         }
@@ -573,7 +573,7 @@ fn build_node(
                 out.push(DrawCmd { rect, clip, draw: fill });
             }
             let mut inner = Vec::new();
-            for child in &node.children {
+            for child in node.painted_children() {
                 build_node(child, x, y, scale, (clip, surface), opacity, focus, &mut inner);
             }
             // A leaf has nothing to clip, so avoid the render target and composite.
@@ -1764,6 +1764,52 @@ mod tests {
             transformed(2.0).damage_since(&transformed(1.0), true),
             [PhysicalRect { x0: 98, y0: 8, x1: 244, y1: 64 }]
         );
+    }
+
+    /// Three overlapping 20px siblings, red channel 1, 2, 3, under a parent with `radius` and a
+    /// rounded clip; `zs` are their `z`, bound to a signal.
+    fn stacked(zs: [&str; 3], radius: f32) -> DisplayList {
+        let lua = Lua::new();
+        let sibling = |n: i32| {
+            format!(
+                r##"rect {{ width = 20, height = 20, background = "#0{n}0000", z = state("z{n}", {}) }}"##,
+                zs[n as usize - 1]
+            )
+        };
+        let src = format!(
+            r##"return panel {{ id = "bar", width = 200, height = 40, child = row {{ spacing = -10, radius = {radius},
+                clip = "Rounded", children = {{ {}, {}, {} }} }} }}"##,
+            sibling(1),
+            sibling(2),
+            sibling(3)
+        );
+        build(&resolved_surface(&lua, &src, LogicalSize { width: 200.0, height: 40.0 }), 1.0, None)
+    }
+
+    /// The red channels of every box fill in paint order, into groups.
+    fn fill_order(commands: &[DrawCmd]) -> Vec<u8> {
+        commands
+            .iter()
+            .flat_map(|c| match &c.draw {
+                Draw::Box { background: Some(Fill::Color(color)), .. } => vec![(color.r * 255.0).round() as u8],
+                Draw::Clipped { commands, .. } | Draw::Layer { commands, .. } | Draw::Transformed { commands, .. } => {
+                    fill_order(commands)
+                }
+                _ => Vec::new(),
+            })
+            .collect()
+    }
+
+    /// ADR-0259: ascending `z`, declaration order among equals, inside a rounded clip too.
+    #[test]
+    fn siblings_paint_in_ascending_z_and_declaration_order_among_equals() {
+        for radius in [0.0, 6.0] {
+            let order = |zs| fill_order(&stacked(zs, radius).commands);
+            assert_eq!(order(["0", "0", "0"]), [1, 2, 3], "radius {radius}");
+            assert_eq!(order(["1", "0", "0"]), [2, 3, 1], "radius {radius}");
+            assert_eq!(order(["0", "0", "-1"]), [3, 1, 2], "radius {radius}");
+            assert_eq!(order(["1", "0", "-0.0"]), [2, 3, 1], "-0.0 equals 0, radius {radius}");
+        }
     }
 
     fn effect_surface(child: &str) -> DisplayList {

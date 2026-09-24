@@ -592,6 +592,11 @@ pub fn parse_spacing(properties: &PropMap) -> Result<f32, LayoutError> {
     content::parse_number(properties, "spacing", 0.0)
 }
 
+pub fn parse_z(properties: &PropMap) -> Result<f32, LayoutError> {
+    // -0.0 would sort below its z = 0 siblings.
+    Ok(content::parse_number(properties, "z", 0.0)? + 0.0)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

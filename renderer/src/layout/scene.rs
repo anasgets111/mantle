@@ -70,6 +70,7 @@ impl ResolvedNode {
             margin: EdgeInsets::default(),
             visible: true,
             opacity: 1.0,
+            z: 0.0,
             transform: node::Transform::default(),
             blur: false,
             effect: node::Effect::default(),
@@ -107,6 +108,7 @@ struct LayoutStyle {
     spacing: f32,
     visible: bool,
     opacity: f32,
+    z: f32,
     transform: node::Transform,
     blur: bool,
     effect: node::Effect,
@@ -133,6 +135,7 @@ impl LayoutStyle {
             spacing: node::parse_spacing(properties)?,
             visible: node::parse_visible(properties)?,
             opacity: node::parse_opacity(properties)?,
+            z: node::parse_z(properties)?,
             transform: node::parse_transform(properties)?,
             blur: node::parse_blur(properties)?,
             effect: node::parse_effect(properties)?,
@@ -177,6 +180,8 @@ pub struct ResolvedNode {
     /// the chain descending, the same way it intersects a clip, so a panel fades with everything
     /// in it from one property. 1.0 is the default and contributes nothing.
     pub opacity: f32,
+    /// Paint and hit order among siblings (ADR-0259); [`Self::painted_children`] reads it.
+    pub z: f32,
     /// This node's own paint-only affine (ADR-0149), applied about its box after layout; `rect`
     /// and everything the solver produced are untransformed. `layout::paint` composes it down
     /// the subtree, `layout::hit` maps the pointer back through its inverse.
@@ -226,6 +231,15 @@ impl ResolvedNode {
     /// `clip = "None"` hands children the parent's clip instead of cutting them to this box.
     pub(super) fn clips_children(&self) -> bool {
         !matches!(self.paint, Some(PaintStyle::Box { clip: node::ClipShape::None, .. }))
+    }
+
+    /// Children bottom to top: ascending `z`, declaration order among equals (ADR-0259).
+    /// Allocates only when `z` reorders something.
+    pub(super) fn painted_children(&self) -> impl DoubleEndedIterator<Item = &ResolvedNode> {
+        let sorted = self.children.is_sorted_by(|a, b| a.z <= b.z);
+        let mut resorted: Vec<&ResolvedNode> = if sorted { Vec::new() } else { self.children.iter().collect() };
+        resorted.sort_by(|a, b| a.z.total_cmp(&b.z));
+        self.children.iter().filter(move |_| sorted).chain(resorted)
     }
 
     /// A button with `submit = true` or a pointer handler (ADR-0214).
@@ -1651,6 +1665,7 @@ fn finish(
         margin: style.margin,
         visible: style.visible,
         opacity: style.opacity,
+        z: style.z,
         transform: style.transform,
         blur: style.blur,
         effect: style.effect,
@@ -2640,6 +2655,41 @@ pub(super) mod tests {
         assert!(content.ends_with('\u{2026}'), "still the string it was fitted to, got {content:?}");
         assert_ne!(&**content, source, "not the one the config wrote, re-read from the properties");
         assert!((color.r - 0.5).abs() < 0.05 && color.g < 0.05, "halfway to red, got {color:?}");
+    }
+
+    /// ADR-0259: `z` reorders paint alone; the tree, and the focus order read off it, keep
+    /// declaration order, for literal and generated children alike.
+    #[test]
+    fn z_leaves_the_resolved_children_in_declaration_order() {
+        let mut scene = Scene::new();
+        let shaping = ShapingHandle::spawn();
+        let (lua, surface) = surface_from(
+            r#"return panel { id = "bar", child = row { children = {
+                   rect { id = "a", width = 10, height = 10, z = 2 },
+                   rect { id = "b", width = 10, height = 10, z = -1 },
+                   list { source = { "c", "d" }, itemfn = function(name)
+                       return rect { id = name, width = 10, height = 10, z = name == "c" and 5 or 0 }
+                   end } } } }"#,
+        );
+        apply_at(&mut scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
+        let row = &scene.surface("bar@TEST").unwrap().children[0];
+        let id = |c: &ResolvedNode| node::parse_node_id(&c.properties).unwrap().unwrap();
+        assert_eq!(row.children[..2].iter().map(id).collect::<Vec<_>>(), ["a", "b"]);
+        assert_eq!(row.children[2].children.iter().map(id).collect::<Vec<_>>(), ["c", "d"]);
+        assert_eq!((row.children[0].rect.x, row.children[1].rect.x), (0.0, 10.0), "layout ignores z");
+        assert_eq!(row.children[1].z, -1.0);
+    }
+
+    /// `z` snaps; a tween would reorder mid-flight at an arbitrary frame.
+    #[test]
+    fn animating_z_is_refused() {
+        let mut scene = Scene::new();
+        let shaping = ShapingHandle::spawn();
+        let (lua, surface) = surface_from(
+            r#"return panel { id = "bar", child = rect { width = 10, height = 10, z = 1, animate = { z = 100 } } }"#,
+        );
+        let err = apply_at(&mut scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap_err();
+        assert!(err.to_string().contains("`z`"), "{err}");
     }
 
     /// ADR-0150: a child the tree drops stays as a leaving node while its exit tweens run, out of

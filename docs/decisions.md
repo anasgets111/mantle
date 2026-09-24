@@ -6259,3 +6259,24 @@ blur's reach.
 
 **Amends ADR-0063** (the clear and the draw follow the damage, not only the swap) **and ADR-0254**
 (a static layer allocates and filters nothing per frame).
+
+## 0259. `z` orders siblings for paint and hit testing, not for layout or focus
+
+Overlapping siblings stacked in declaration order only, so a config reordered `children` to raise
+one, which also moved it in the flow and in focus order. QML `z` and CSS `z-index` separate the two.
+
+1. **Within the parent only.** Siblings paint in ascending `z`; a stable sort keeps declaration
+   order among equals. A parent paints below all its children, so a negative `z` sinks a child
+   under its siblings, never under its parent. A leaving node keeps its `z` and sorts after equals.
+2. **One sorted view.** `ResolvedNode::painted_children` feeds `paint::build_node` and
+   `hit::descend`, which asks children topmost first, so hover, the cursor, `link_under` and
+   `on_wheel`, which follow `hit_path`, follow `z` too. The tree keeps declaration order, so layout,
+   `list` generation, reconciliation by `id`, `geometry`, focus order, and the input and blur
+   regions, which are unions, are unchanged.
+3. **Groups inherit the order.** Rounded clips, masks and layers wrap the sorted children. A
+   `backdrop_blur` reads what the list has drawn before it, which is the new order.
+4. **Damage needs no rule.** A swap changes the display list, and `damage_since` covers the old and
+   new bounds of the reordered commands. A `z` change runs the ordinary pass, like any signal; the
+   solver ignores `z`, so no rect moves.
+5. **`animate = { z = ... }` is refused.** An order has no halfway state, so a tween would reorder
+   at an arbitrary frame.
