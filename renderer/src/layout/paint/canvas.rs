@@ -98,7 +98,7 @@ struct Frame {
 }
 
 /// Executes an already-built list; keeping canvas work separate makes the list comparable and
-/// [`build`](super::build) EGL-free. Clears and redraws `regions` alone, each grown by
+/// [`build`](super::build()) EGL-free. Clears and redraws `regions` alone, each grown by
 /// [`DisplayList::repaint_region`] and cut to the target here.
 #[allow(clippy::too_many_arguments)]
 pub fn execute(
