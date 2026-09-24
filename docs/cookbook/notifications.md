@@ -21,19 +21,18 @@ local cards = mantle.notifications:map(function(notifications)
     return out
 end)
 
--- Body spans become text runs; image spans are skipped.
+-- A text span is a text run as it is; links also get a colour. Image spans are skipped.
 local function body_runs(spans)
     local runs = {}
     for _, span in ipairs(spans) do
         if span.kind == "text" then
-            runs[#runs + 1] = {
-                text = span.text or "",
-                bold = span.bold,
-                italic = span.italic,
-                underline = span.underline or span.href ~= nil,
-                href = span.href,
-                color = span.href and "#89b4fa" or nil,
-            }
+            -- A copy: the span belongs to the pushed snapshot every other reader shares.
+            local run = {}
+            for field, value in pairs(span) do run[field] = value end
+            if run.href then
+                run.underline, run.color = true, "#89b4fa"
+            end
+            runs[#runs + 1] = run
         end
     end
     return runs
@@ -174,7 +173,7 @@ return {
 - `feed` is the newest 20, expired ones included; the map keeps the live ones and caps them ([notifications](../capabilities/notifications.md)).
 - `dnd` only mutes sounds, so hiding popups during it is the config's filter; critical ones still show.
 - `key` by `id` keeps each card's node when a newer one arrives above it, so only the new one animates in; a dismissed card fades out through `animate.exit` ([identity](../nodes/index.md#identity-and-reconciliation), [exit](../guide/animation.md#exit)).
-- Body spans map one to one onto `text` runs, links included; `on_link` hands a clicked `href` to the browser ([text runs](../nodes/text.md#runs), [applications](../capabilities/applications.md)).
+- A body's text spans pass to `text` as runs unchanged; `on_link` hands a clicked `href` to `open_url` ([text runs](../nodes/text.md#runs), [applications](../capabilities/applications.md)).
 - The × is a `button` inside the card's `button`: the innermost one with a handler takes the click ([pointer](../guide/input.md#pointer)).
 - `on_hover` on the stack calls `hold_expiry`, so a card cannot expire while being read ([hover](../guide/input.md#hover)).
 - The panel is anchored to two edges, so it measures its content and grows with the stack ([corner stack](../surfaces/panel.md#corner-stack)).

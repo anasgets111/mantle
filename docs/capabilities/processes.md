@@ -4,7 +4,9 @@
 
 Programs declared with `session_process`: running state, start time and last exit.
 
-Declare programs with [`session_process`](../guide/processes.md#session_process), which sends these actions for you.
+Declare programs with [`session_process`](../guide/processes.md#session_process): it sends these
+actions and exposes each field as a signal. Read `mantle.processes` directly to see every declared
+program in one table.
 
 ```lua
 text {
@@ -56,8 +58,9 @@ One of `"TERM"`, `"INT"`, `"HUP"`, `"QUIT"`, `"USR1"`, `"USR2"`, `"KILL"`, `"STO
 
 ## Backend
 
-One task per session process owns its child and is the only place that signals it, so a recycled
-pid is never hit. How `process.run`, `process.detach` (which application launches also use) and
-`session_process` spawn and end: [processes](../guide/processes.md#which-one-do-i-use).
+The Supervisor spawns and owns each program, so it outlives reloads and Renderer replacement. One
+task per program holds its child and sends every signal, so a signal never reaches a recycled pid.
+When to use `process.run` or `process.detach` instead:
+[processes](../guide/processes.md#which-one-do-i-use).
 
 Source: [`supervisor/src/capabilities/processes/`](../../supervisor/src/capabilities/processes/)

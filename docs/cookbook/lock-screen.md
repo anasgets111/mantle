@@ -65,7 +65,6 @@ local lock_screen = lock {
                             foreground = "#cdd6f4",
                             text_align = "Center",
                             placeholder = "Password",
-                            mask_character = "•",
                             secure_submit = { capability = "lock", action = "authenticate" },
                         },
                     },
@@ -100,4 +99,4 @@ return { lock_screen }
 | Blurred wallpaper | Add `source_blur = 24` to that `image` ([blurs](../guide/paint.md#blurs)) |
 | Unlock button | A `button { submit = true, ... }` beside the field sends it like Enter ([pointer](../guide/input.md#pointer)) |
 | Clock on one monitor only | `visible = output == "DP-1"` on the clock texts |
-| Lock before suspend | Invoke `lock` from your suspend keybind's `action`, then run `systemctl suspend` with [`process.detach`](../guide/processes.md#processdetach) |
+| Lock before suspend | An `action` that sets a `suspend_pending` state and invokes `lock`; a `mantle.lock:on_change` that sees `active` turn true with it set clears it and runs `systemctl suspend` through [`process.detach`](../guide/processes.md#processdetach). Suspending straight away can sleep before the lock draws |

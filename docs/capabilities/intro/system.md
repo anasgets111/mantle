@@ -10,14 +10,8 @@ text {
 
 ## Backend
 
-Ticks once a second, aligned to the wall-clock second at start only; an NTP step or resume is not
-re-aligned. `time` is epoch seconds; `monotonic` counts seconds from the capability's start and
-excludes suspend.
-
-## How do I…
-
-| Task | Answer |
-| :--- | :--- |
-| Show a clock | `os.date` over `mantle.system.time`, as in the example above |
+The Supervisor's own clocks; nothing external. The first push lands on the next wall-clock second,
+up to 1 s after the first read, then one push a second. That alignment happens once: after an NTP
+step or a resume, pushes land mid-second until the Supervisor restarts.
 
 See also: [Clock bar](../cookbook/clock-bar.md) recipe.

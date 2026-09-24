@@ -6,7 +6,8 @@ use mlua::{Lua, Value};
 use super::fit::fit_text_to_box;
 use super::scroll::{extent_along, reveal_child, scroll_offset};
 use super::solver::{
-    MainAxis, Measure, main_axis_of, measure_for, new_solver_node, solve, taffy_failed, text_measure_matches,
+    MainAxis, Measure, hold_leavers, main_axis_of, measure_for, new_solver_node, solve, taffy_failed,
+    text_measure_matches,
 };
 use super::tick::{advance_leaving, advanced_dissolve};
 use super::{
@@ -360,6 +361,7 @@ pub(super) fn prepare(
             node.leaving.push(child);
         }
     }
+    hold_leavers(tree, taffy_id, &node.style, &node.leaving)?;
 
     let child_ids: Vec<taffy::NodeId> = node.children.iter().map(|child| child.taffy).collect();
     tree.set_children(taffy_id, &child_ids).map_err(taffy_failed)?;

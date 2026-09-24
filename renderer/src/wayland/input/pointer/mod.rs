@@ -295,7 +295,7 @@ pub(in crate::wayland) fn rect_table(lua: &Lua, rect: LogicalRect) -> mlua::Resu
 /// The rect precedes the callback because a handler is documented to read `hover_rect(name)` for
 /// the crossing it was called for; writing it after would hand a per-item tooltip the rect of the
 /// item left behind, or the startup placeholder on a first hover.
-fn apply_hover_write(lua: &Lua, write: layout::hover::HoverWrite, fires_on_hover: bool, surface_id: &str) {
+pub(crate) fn apply_hover_write(lua: &Lua, write: layout::hover::HoverWrite, fires_on_hover: bool, surface_id: &str) {
     // Non-hover signals stay untouched, so `hover = mantle.network` cannot overwrite a
     // capability snapshot (ADR-0062 decision 2).
     let Some(handle) = write.signal.hover_handle() else {

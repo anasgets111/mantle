@@ -212,7 +212,7 @@ props! {
         visible: Bound<Flag> = absent(Bool(true));
         /// Multiplied down the tree. At `0` the node still takes space and input.
         opacity: Bound<Num> = range(0.0, 1.0).absent(Number(1.0));
-        /// Sibling paint and hit order. Higher paints later and hits first; ties keep declaration order. Layout and focus ignore it; cannot animate (ADR-0259).
+        /// Sibling paint and hit order. Higher paints later and hits first; ties keep declaration order. Layout and focus ignore it; `animate` refuses it (ADR-0259).
         z: Bound<Num> = absent(Number(0.0));
         /// About `origin`; a missing axis is `1`. Paint only: layout and `geometry` see the unscaled box; hit-testing follows the painted one (ADR-0149).
         scale: Bound<Scale> = range(0.0, 64.0).absent(Number(1.0));
@@ -230,7 +230,7 @@ props! {
         shadow_blur: Bound<Num> = range(0.0, 8192.0).absent(Number(0.0));
         /// Shadow offset in px per axis. Follows the node's transform.
         shadow_offset: Bound<Axes> = range(-8192.0, 8192.0).absent(Lua("{ x = 0, y = 0 }"));
-        /// Px the shadow grows (or shrinks) per side. On non-box content it scales the shadow about the box centre.
+        /// Px the shadow grows per side; negative shrinks it. On non-box content it scales the shadow about the box centre.
         shadow_spread: Bound<Num> = range(-8192.0, 8192.0).absent(Number(0.0));
         /// Gaussian sigma in px over this node's painted subtree, CSS `filter: blur()`. Clipped like a shadow (ADR-0254).
         ///
@@ -351,6 +351,8 @@ props! {
         /// Book: A file path (`mantle.config_dir .. "/img/a.png"`), never a theme name; `""` draws nothing. PNG, JPEG, WebP, GIF, SVG or SVGZ; animated GIFs loop
         source: Bound<Text> = absent(Lua(r#""""#));
         /// `"cover"` fills the box and crops, `"contain"` fits inside it, `"stretch"` distorts to it. No intrinsic size: set `width`/`height`.
+        ///
+        /// Book: `"cover"` fills the box and crops, `"contain"` fits inside it, `"stretch"` distorts to it
         fit: Bound<OneOf<Fit>> = absent(Choice("cover"));
         /// `false` decodes in the frame that first draws it. `true` decodes on a worker and draws nothing until ready (ADR-0122); use it for many or large images.
         r#async: Bound<Flag> = absent(Bool(false));
@@ -362,7 +364,7 @@ props! {
         transition: Bound<TransitionSpec>;
         /// Blur sigma in px (a fast box approximation), applied once at decode (ADR-0240). Runs on the decoding thread, so pair large images with `async`; under `async` a change blanks the image until the re-decode lands, and `retain` does not cover it (same `source`). Animated GIFs ignore it.
         ///
-        /// Book: Blur sigma in px, baked into the pixels once at decode (three box passes approximating a Gaussian); see [blurs](../guide/paint.md#blurs). Animated GIFs ignore it
+        /// Book: Blur sigma in px, baked into the pixels once at decode (three box passes approximating a Gaussian); see [blurs](../guide/paint.md#blurs). Animated GIFs ignore it. Under `async`, a change blanks the image until the re-decode lands; `retain` does not cover it
         source_blur: Bound<Num> = range(0.0, 8192.0).absent(Number(0.0));
     }
     /// Live preview of one output (ADR-0248). No intrinsic size: without `width`/`height` it draws nothing.
@@ -373,7 +375,7 @@ props! {
         ///
         /// Book: As on [`image`](image.md)
         fit: Bound<OneOf<Fit>> = absent(Choice("cover"));
-        /// `false`: capture on show and on each `output` change. `true`: every frame, one in flight. A number: at most that many fps, `(0, 1000]` (ADR-0263). Pauses while hidden or unmapped.
+        /// `false`: capture on show and on each `output` change. `true`: every frame, one in flight. A number: at most that many fps, `(0, 1000]` (ADR-0263). Hiding the node or unmapping its surface drops the capture; showing starts a fresh one.
         live: Bound<Live> = absent(Bool(false));
         /// Part of the output in its logical px, placed by `fit` as the whole frame. Every key is required and in that range; the size is non-zero.
         region: Bound<Region> = range(0.0, 8192.0).absent(Prose("the whole output"));
@@ -383,6 +385,8 @@ props! {
     /// A config fragment shader over the node's box, with no input textures (ADR-0253). No intrinsic size and no input; wrap it for clicks. Reads `v_uv`, `u_size` and `u_progress` as in `Transition.shader`, writes premultiplied `fragColor`; `opacity`, `shadow_*` and `content_blur` apply.
     mod shader(SHADER) {
         /// Absolute `.frag` path; relative is refused, `""` draws nothing. Saving the file recompiles it; one that fails to build logs once and draws nothing.
+        ///
+        /// Book: Absolute `.frag` path; relative is refused, `""` draws nothing. Compiling, errors and reloads: [the .frag file](#the-frag-file)
         source: Bound<Path> = absent(Lua(r#""""#));
         /// `u_progress`. There is no clock uniform: animate this for motion; the wide range lets a spring overshoot.
         ///
@@ -499,7 +503,7 @@ props! {
         app_id: Bound<Name> = absent(Lua(r#""mantle-{id}""#));
         /// Advisory; layout does not enforce it. Both keys required, `0` leaves an axis unconstrained. Also the opening size when the compositor leaves it to the client, else 640x480.
         ///
-        /// Book: Advisory hint to the compositor; layout does not enforce it. Both keys required, `0` leaves that axis unconstrained. Also the opening size ([size](#size))
+        /// Book: Advisory hint to the compositor; layout does not enforce it. Both keys required, `0` leaves that axis unconstrained. Also the opening size on an axis the compositor leaves to the client ([size](#size))
         min_size: Bound<SizeHint> = range(0.0, 8192.0);
         /// Advisory, as `min_size`. A non-zero axis below `min_size`'s is refused; also clamps the opening size.
         max_size: Bound<SizeHint> = range(0.0, 8192.0);

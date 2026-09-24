@@ -1,9 +1,8 @@
 # button
 
-A box that takes the pointer: clicks, left-button drags and the wheel. It stacks its children like a
-[`rect`](rect.md), so put a `row` inside for an icon and a label side by side. A `button` is the only
-kind that takes these events; the rules for which button wins, cancelling and drag end are on
-[input](../guide/input.md#pointer).
+A box that takes clicks, left-button drags and the wheel; no other kind has these handlers. It
+stacks its children like a [`rect`](rect.md), so put a `row` inside for an icon beside a label.
+Which button wins, when a click cancels and when a drag ends are on [input](../guide/input.md#pointer).
 
 A volume chip: left click mutes, the wheel changes the level.
 
@@ -47,9 +46,8 @@ properties, plus the ones below. `rect` in the callbacks is the button's surface
 | `submit` | `boolean\|Bound` | `false` | A click also submits the armed [secure field](../guide/input.md#secure-fields), like Enter. Works without `on_click` and runs before it |
 <!-- End of the generated table. -->
 
-A `button` with none of `on_click`, `on_drag`, `on_wheel` and `submit = true` does not take the
-pointer: clicks fall through to what is under it, and it sets no cursor. With one, the cursor defaults to
-`"pointer"`.
+A `button` with none of `on_click`, `on_drag`, `on_wheel` and `submit = true` ignores the pointer:
+clicks fall through to what is under it, and it sets no cursor.
 
 ## How do I…
 
@@ -58,7 +56,7 @@ pointer: clicks fall through to what is under it, and it sets no cursor. With on
 | Toggle something on click | The example above |
 | Open a menu on right click | Check `button == "right"` and open a [popup](../surfaces/popup.md) at `rect` ([input](../guide/input.md#how-do-i)) |
 | Make a slider | `on_drag` for the value, `on_wheel` for steps ([input](../guide/input.md#pointer)) |
-| Show press or hover feedback | Tween `scale` or `background` on a `hover` signal ([paint](../guide/paint.md#card-that-lifts-on-hover)) |
+| Show hover feedback | Bind `background` or `shadow_*` to a `hover` signal and tween it with `animate` ([paint](../guide/paint.md#card-that-lifts-on-hover)) |
 | Submit a password with a button | `submit = true` ([secure fields](../guide/input.md#secure-fields)) |
 | Change the cursor | `cursor = "grab"` or any [cursor name](index.md#cursor-names) |
 | Make a whole row clickable | Make the `button` the row's parent, `width = "Fill"`, with a `row` inside |

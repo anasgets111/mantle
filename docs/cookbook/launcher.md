@@ -158,7 +158,7 @@ return {
         height = "Fill",
         exclusive = "Ignore",
         visible = open,
-        keyboard_interactivity = open:map(function(is_open) return is_open and "Exclusive" or "None" end),
+        keyboard_interactivity = "Exclusive", -- hiding destroys the surface, so no binding needed
         child = rect {
             width = "Fill",
             height = "Fill",
@@ -204,7 +204,7 @@ launcher_open` on Hyprland or `Mod+Space { spawn "mantle" "toggle" "launcher_ope
 - `computed` joins the capability with the query, and a second one marks the selected row ([derived signals](../guide/signals.md#derived-signals)).
 - The `textfield` owns the typed text and reports it through `on_change`; `on_navigate` gets the arrow and Tab keys ([textfield](../nodes/textfield.md), [text fields](../guide/input.md#text-fields)).
 - `scroll(name):reveal(index)` keeps the selected row in view inside the `max_height` list ([scroll](../guide/input.md#scroll), [list](../nodes/list.md)).
-- `keyboard_interactivity` follows the same state as `visible`, so the field has the keyboard as soon as the panel maps ([keyboard focus](../surfaces/panel.md#keyboard-focus)).
+- `"Exclusive"` hands the panel the keyboard when it maps, and `autofocus` gives it to the field ([keyboard focus](../surfaces/panel.md#keyboard-focus)).
 - A full-size transparent `button` under the card closes it on an outside click ([close an overlay](../surfaces/panel.md#close-an-overlay-on-an-outside-click)).
 
 ## Variations

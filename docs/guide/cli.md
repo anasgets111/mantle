@@ -98,8 +98,9 @@ Flags and the command may come in any order. `-V` and `-h` win over anything aft
 | `-f`, `--follow` | `log` only | Follows the log until its shell exits |
 | `--pid <pid>`, `--pid=<pid>` | `set`, `toggle`, `call`, `log` | Addresses the shell with that pid, as `mantle list` shows it. Refused together with `-c` |
 
-A flag given to a command it does not apply to is an error, not ignored. `--detached` also
-parses: `-d` passes it to the copy it starts, and it runs in the foreground. Do not type it.
+A flag given to a command it does not apply to is an error, not ignored. `--detached` is the flag
+`-d` passes to the copy it starts; typed by hand, it is ignored and the shell runs in the
+foreground.
 
 Log levels for a run:
 
@@ -230,7 +231,7 @@ It starts no programs and writes no state. On failure it prints only the error, 
 | Code | When |
 | :--- | :--- |
 | 0 | Success. For `set` and `toggle`: the shell applied the write |
-| 1 | The command failed. It prints `Error: <reason>`: no shell running, no shell with that `--pid`, `XDG_RUNTIME_DIR` unset, the socket unreachable, no log this login, `check` found an error, `call` failed or timed out, `set` or `toggle` was refused or timed out, `-d` could not start the shell (not running within 5 s, or it exited), `init` could not write a file |
+| 1 | The command failed. It prints the reason on stderr: no shell running, no shell with that `--pid`, `XDG_RUNTIME_DIR` unset, the socket unreachable, no log this login, `check` found an error, `call` failed or timed out, `set` or `toggle` was refused or timed out, `-d` could not start the shell (not running within 5 s, or it exited), `init` could not write a file |
 | 2 | Bad arguments: unknown flag, missing name or value, a non-numeric `--pid`, `--profile=0`, a flag the command does not take, `--pid` with `-c`, `-c` with `list`. It prints `mantle: <reason>` and the help text. Also `mantle-renderer` run by hand |
 
 ## How do I…
@@ -239,26 +240,18 @@ It starts no programs and writes no state. On failure it prints only the error, 
 in the [example at the top](#cli). Use `set`/`toggle` to change what is shown, `call` to make the
 shell act. niri's `repeat=false` keeps a held key from toggling repeatedly.
 
-**…start the shell with the session?** Start it from the compositor, which gives it
-`XDG_RUNTIME_DIR` and the Wayland socket:
-
-```text
-# Hyprland (hyprland.conf)
-exec-once = mantle
-# niri (config.kdl)
-spawn-at-startup "mantle"
-```
-
-From a terminal, `mantle -d` starts it and gives the prompt back. Stop it with Ctrl-C in the
-foreground, or `kill <pid>` with the pid `mantle list` shows.
+**…start or stop the shell?** Start it from the compositor ([run the shell](installation.md#run-the-shell)),
+which gives it `XDG_RUNTIME_DIR` and the Wayland socket. From a terminal, `mantle -d` starts it
+and gives the prompt back. Stop it with Ctrl-C in the foreground, or `kill <pid>` with the pid
+`mantle list` shows.
 
 **…read the logs?** `mantle log` prints the whole log of the current shell. `mantle log -f` follows
 it. Errors raised in callbacks are warnings, so they show by default. For more detail, restart with
-`mantle -v` (info) or `mantle -vv` (debug). `mantle log | grep config` keeps only the config's own `log.*`
+`mantle -v` (info) or `mantle -vv` (debug). `mantle log | grep 'renderer/config: '` keeps only the config's own `log.*`
 lines.
 
 **…debug a reload that did nothing?** Run `mantle check`, then `mantle log`. The full sequence is
-in [runtime](runtime.md#how-do-i).
+in [runtime](runtime.md#find-out-why-a-reload-did-nothing).
 
 **…target one of two running shells?**
 
@@ -284,8 +277,7 @@ value, and a non-zero exit means it failed.
 **…see which node has the wrong size?** Run `MANTLE_DUMP_LAYOUT=bar@eDP-1 mantle -vvv` and read
 `mantle log`. The instance id is the surface `id`, `@`, and the output name.
 
-**…get completion and type checking in an editor?** Run `mantle init`, then open the config
-directory in an editor with lua-language-server.
+**…get completion and type checking in an editor?** [Set up a config](installation.md#set-up-a-config).
 
 ## Gotchas
 
@@ -298,7 +290,7 @@ directory in an editor with lua-language-server.
 | Two bars on screen | Two shells are running. `mantle list`, then stop one |
 | `mantle -c dir list` is refused | `list` shows every config's shells; drop `-c` |
 | `mantle log -f` exits at once | That shell has stopped. The command printed its last run |
-| A keybind prints `XDG_RUNTIME_DIR is not set` | The command runs in an environment without it. Start the compositor from a proper login session |
+| `XDG_RUNTIME_DIR is not set` | The command runs in an environment without it. Start the compositor from a proper login session |
 
 See also: [runtime](runtime.md) · [named state](signals.md#named-state) ·
 [action](scripting.md#action) · [capabilities](../capabilities/index.md) · [glossary](../glossary.md) for

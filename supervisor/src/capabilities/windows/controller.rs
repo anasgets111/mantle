@@ -35,7 +35,7 @@ pub struct WindowEntry {
     /// `WorkspaceEntry.id`; `nil` on wlr and on Hyprland special workspaces.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub workspace_id: Option<u64>,
-    /// Connector name; `nil` when unknown. On wlr, the first output the window entered.
+    /// Connector name; `nil` when unknown. On wlr, the earliest-entered output the window is still on.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub output: Option<String>,
     /// Whether the window has keyboard focus.

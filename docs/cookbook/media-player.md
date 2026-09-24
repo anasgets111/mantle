@@ -23,12 +23,16 @@ end
 
 local player = mantle.mpris:map(pick)
 
+local function report_key(current)
+    return current.id .. ":" .. current.position_updated_at
+end
+
 -- Positions are not polled: stamp each new report so the bar can add the time since.
 mantle.mpris:on_change(function(mpris)
     local current = pick(mpris)
     local system = mantle.system:get()
     if current and system then
-        local key = current.id .. ":" .. current.position_updated_at
+        local key = report_key(current)
         if key ~= position_mark:get().key then
             position_mark:set({ key = key, at = system.monotonic })
         end
@@ -41,7 +45,8 @@ local position = computed({ player, position_mark, mantle.system }, function(cur
         return -1
     end
     local elapsed = 0
-    if current.play_state == "Playing" and system then
+    -- An unstamped report, such as one before the first clock push, adds nothing.
+    if current.play_state == "Playing" and system and mark.key == report_key(current) then
         elapsed = (system.monotonic - mark.at) * 1000000
     end
     local now = current.position + elapsed
@@ -155,9 +160,7 @@ local card = column {
                             width = "Fill",
                             height = "Fill",
                             fit = "cover",
-                            source = player:map(function(current)
-                                return current and current.album_art_path ~= "" and current.album_art_path or nil
-                            end),
+                            source = player:map(function(current) return current and current.album_art_path or "" end),
                         },
                     },
                 },
@@ -245,17 +248,16 @@ return {
 ## How it works
 
 - `players` is longest-running first; the map prefers one that is playing ([mpris](../capabilities/mpris.md)).
-- Every action takes the player's `id`: `control` for play, pause and skip, `seek` in integer microseconds ([capabilities](../capabilities/index.md)).
 - `position` is a snapshot, not polled. `on_change` stamps each new report with `mantle.system.monotonic`, and a `computed` adds the seconds since ([system](../capabilities/system.md), [derived signals](../guide/signals.md#derived-signals)).
 - The fill is a `"NN%"` width in a rounded, clipped track; `on_drag` on the track seeks on release ([pointer](../guide/input.md#pointer), [clip](../guide/paint.md#clip)).
-- `album_art_path` is a local file or empty; mapping empty to `nil` leaves the `image` blank over its placeholder ([image](../nodes/image.md)).
+- `album_art_path` is a local file or `""`, and an `image` with `source = ""` draws nothing over the placeholder `rect` ([image](../nodes/image.md)).
 - The card is a grabbing [popup](../surfaces/popup.md) anchored to the pill's click rect; it also closes when the last player quits.
 
 ## Variations
 
 | Change | Edit |
 | :--- | :--- |
-| Always the first player | `local player = mantle.mpris:map(function(mpris) return mpris and mpris.players[1] end)` |
+| Always the first player | `pick` returns `mpris and mpris.players[1]` |
 | Seek 10 s back and forward | Two more buttons whose `on_click` invokes `seek_relative` with the player's `id` and `-10000000` or `10000000` |
 | Show the app icon | `icon { name = current.desktop_entry }` from the player's `desktop_entry` |
 | Hide browsers | Skip players whose `desktop_entry` is `"firefox"` or `"chromium"` in `pick` |

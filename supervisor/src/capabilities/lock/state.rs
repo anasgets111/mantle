@@ -8,8 +8,9 @@ pub struct LockState {
     pub authenticating: bool,
     /// Rejected passwords since this lock was confirmed; reset by the next lock.
     pub attempts: u32,
-    /// Last failure to draw: a rejected password (`"authentication failed"`) or a refused lock's
-    /// reason. Cleared by a correct password, `lock`, a confirmed lock, and unlock.
+    /// Last failure to draw: PAM's verdict (`"authentication failed"`, `"too many attempts"`, or a
+    /// PAM or worker error) or a refused lock's reason. Cleared by a correct password, `lock`, a
+    /// confirmed lock, and unlock.
     pub error: String,
     /// PAM said yes and the lock is still up: the window for an out-animation (ADR-0190).
     pub unlocking: bool,

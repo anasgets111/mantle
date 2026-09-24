@@ -99,22 +99,18 @@ Call as `mantle.workspaces:invoke("action", arguments...)`; `?` marks an argumen
 
 ## Backend
 
-The compositor is probed once, from `$HYPRLAND_INSTANCE_SIGNATURE` then `$NIRI_SOCKET`.
-`workspaces` and `windows` share one reader.
+The Supervisor picks the compositor once, from `$HYPRLAND_INSTANCE_SIGNATURE`, then `$NIRI_SOCKET`
+([`compositor.rs`](../../supervisor/src/compositor.rs)). One reader feeds both `workspaces` and
+[`windows`](windows.md).
 
-| Capability | niri | Hyprland | Other |
+| Capability | niri | Hyprland | Neither |
 | :--- | :--- | :--- | :--- |
-| `workspaces` | IPC event stream; `overview_open` | Event (`.socket2.sock`) and command (`.socket.sock`) sockets; special workspaces, `is_fullscreen` | `nil` |
-| `windows` | Same event stream | Same sockets | `zwlr_foreign_toplevel_management_v1` on its own connection (5 s setup limit); outputs bound once |
+| `workspaces` | IPC event stream | `.socket2.sock` events, then a re-read over `.socket.sock` | `nil` for the run |
+| `windows` | Same event stream | Same re-read | `zwlr_foreign_toplevel_manager_v1` on its own Wayland connection; `nil` if the protocol is missing or setup takes over 5 s |
 
-Each workspace action opens a fresh compositor socket. The probe is in
-[`compositor.rs`](../../supervisor/src/compositor.rs).
+Hyprland's refusal of a write logs at debug level only (`MANTLE_LOG=debug`); niri's is not logged.
 
 ## How do I…
-
-| Task | Answer |
-| :--- | :--- |
-| Give each monitor its own bar and workspaces | A function `child` gets the connector name; match it in `workspaces.outputs`, as in the example above |
 
 ### Draw workspace buttons
 
@@ -149,9 +145,10 @@ list {
 
 | Trap | Fix |
 | :--- | :--- |
-| Workspace labels show large or odd numbers on niri | `id` is opaque on niri; draw `idx` (niri: 1-based position per output; Hyprland: the workspace number, equal to `id`) |
-| Workspace strip differs between compositors | Hyprland lists no empty workspaces and `focus` on a missing number creates it; niri ignores unknown ids. `special` is `nil` on niri, `overview_open` `nil` on Hyprland. Branch on `workspaces.compositor` |
+| Labels show large or odd numbers on niri | Draw `idx`, send `id`. niri's `id` is opaque |
+| The strip differs between compositors | Hyprland lists no empty workspace but the active one, and `focus` on a missing number creates it; niri keeps its own empty workspace and ignores an unknown `id`. Branch on `compositor` |
+| Actions do nothing on Hyprland older than 0.56 | Writes use 0.56's Lua dispatch syntax; older versions refuse them while reads still work. Update Hyprland; `MANTLE_LOG=debug` shows the refusal |
 
-See also: [Workspaces](../cookbook/workspaces.md) recipe; [windows](windows.md) for every toplevel.
+See also: [Workspaces](../cookbook/workspaces.md) recipe.
 
 Source: [`supervisor/src/capabilities/workspaces/`](../../supervisor/src/capabilities/workspaces/)

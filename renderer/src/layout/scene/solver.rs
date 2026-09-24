@@ -246,6 +246,35 @@ pub(super) fn new_solver_node(
     .map_err(taffy_failed)
 }
 
+/// A content-sized axis of `id` grows to span its leavers' last rects (ADR-0150): they take no room
+/// in the flow, but a parent collapsing under a lone leaver would clip its exit away, and a
+/// content-sized surface with it. Fixed and `Fill` axes already had room for them.
+///
+/// Its own frame, like [`new_solver_node`], for the `taffy::Style` it clones.
+pub(super) fn hold_leavers(
+    tree: &mut taffy::TaffyTree<Measure>,
+    id: taffy::NodeId,
+    style: &LayoutStyle,
+    leaving: &[super::ResolvedNode],
+) -> Result<(), LayoutError> {
+    let content = (style.width_mode == SizeMode::Content, style.height_mode == SizeMode::Content);
+    if leaving.is_empty() || content == (false, false) {
+        return Ok(());
+    }
+    let (right, bottom) = leaving.iter().fold((0.0_f32, 0.0_f32), |(right, bottom), leaver| {
+        let rect = leaver.rect;
+        (right.max(rect.x + rect.width + leaver.margin.right), bottom.max(rect.y + rect.height + leaver.margin.bottom))
+    });
+    let mut solver_style = tree.style(id).map_err(taffy_failed)?.clone();
+    if content.0 {
+        solver_style.min_size.width = length(style.min_width.unwrap_or(0.0).max(right + style.padding.right));
+    }
+    if content.1 {
+        solver_style.min_size.height = length(style.min_height.unwrap_or(0.0).max(bottom + style.padding.bottom));
+    }
+    tree.set_style(id, solver_style).map_err(taffy_failed)
+}
+
 pub(super) const TEXT_MEASURE_KEYS: &[&str] = &["content", "font_size", "font", "wrap", "max_lines"];
 
 pub(super) fn text_measure_matches(fresh: &PropMap, retained: &PropMap) -> bool {

@@ -4,8 +4,8 @@ What runs a config: the Lua VM and its libraries, how `require` finds modules, w
 re-runs and what it keeps, and the limits the engine enforces. Read it before splitting a config
 into modules, when a reload does something unexpected, or when a log line names a budget.
 
-Only `shell.lua` is required; how you split the rest is up to you. One possible layout puts the
-bar in `bar.lua` and its clock in `widgets/clock.lua`:
+Only `shell.lua` is required. This layout puts the bar in `bar.lua` and its clock in
+`widgets/clock.lua`:
 
 ```lua,fragment
 -- shell.lua
@@ -113,7 +113,7 @@ on every reload.
 | :--- | :--- |
 | Evaluation | One run of `shell.lua` and whatever it `require`s. Its top level has no CPU budget |
 | Reload | An evaluation in the same VM, triggered by a saved file or an output change, then one apply to the live scene |
-| Apply | The new surface list is reconciled with the scene on screen. A surface whose [fingerprint](../surfaces/index.md) changed is rebuilt; everything else updates in place |
+| Apply | The engine reconciles the new surface list with the scene on screen. A surface whose [fingerprint](../surfaces/index.md#reload-and-structural-fields) changed is rebuilt; everything else updates in place |
 | Generation | One Renderer process and its VM. A reload never starts a new one. Only a crash does, when the Supervisor respawns the Renderer |
 
 What triggers a reload:
@@ -136,7 +136,7 @@ How each failure ends:
 | :--- | :--- |
 | Startup evaluation raises | No scene. Surfaces paint nothing. `mantle.rescue` is set as below. The next successful reload brings the shell up |
 | Startup evaluation succeeds but the scene rejects it | No scene. `mantle.rescue` is set |
-| Reload evaluation raises (syntax error, runtime error, bad top-level return) | The previous scene stays on screen. [`mantle.rescue`](../capabilities/index.md) becomes `{ is_rescue = true, error_log = "<the error>" }`. The error is logged |
+| Reload evaluation raises (syntax error, runtime error, bad top-level return) | The previous scene stays on screen. [`mantle.rescue`](../capabilities/index.md#renderer-members) becomes `{ is_rescue = true, error_log = "<the error>" }`. The error is logged |
 | Reload evaluates but the scene rejects it (bad property value, a map over budget) | The previous scene stays. `mantle.rescue` is set. The error is logged |
 | A live update fails later (a pushed value breaks a map) | The previous scene stays. `mantle.rescue` is set until a pass applies. Warning logged |
 | The session lock is refused, or the compositor ends it | `mantle.rescue` becomes `{ is_rescue = true, error_log = "<the reason>" }`. The error is logged ([lock](../surfaces/lock.md)) |
@@ -145,9 +145,9 @@ How each failure ends:
 | The compositor goes away | The Renderer exits with code 71 and the Supervisor shuts down instead of respawning |
 
 A failed reload keeps only the scene. The actions, timers, `on_change` handlers and idle
-thresholds registered by the evaluation that drew it are already gone (see the next table). A failed evaluation leaves none registered; a failed apply
-keeps the new evaluation's actions, handlers and thresholds but no timers. Fix and save to get
-them back.
+thresholds of the evaluation that drew it are already cleared ([what survives](#what-survives-a-reload)).
+A failed evaluation leaves none registered. A failed apply keeps the new evaluation's actions,
+handlers and thresholds but no timers. Fix and save to get them back.
 
 `mantle.rescue` clears when a reload applies. A rescue from a failed live update or startup apply
 also clears when a later pass over the same scene applies. A config can draw its own error banner:
@@ -242,7 +242,7 @@ started with `process.run`, whose output callback sets a `state`.
 | Call | Goes to |
 | :--- | :--- |
 | `print(...)` | The Renderer's stdout, unstamped |
-| `log.error/warn/info/debug(...)` | Stamped lines under the `config` subsystem, printed at every verbosity ([log](scripting.md#log)) |
+| `log.error/warn/info/debug(...)` | Stamped lines under the `config` subsystem ([log](scripting.md#log)) |
 | A raise from any callback: input handlers, `on_close`, `on_dismiss`, `on_change`, `timer`, `process.run`, `palette` or idle | A warning |
 | A `process.run` or `process.detach` that cannot spawn, a failing `mantle call` | A warning |
 | An icon name no theme has, an image that does not decode | A warning, once per name |
@@ -252,7 +252,19 @@ started `mantle` in the foreground also gets a copy.
 
 ## How do I…
 
-**…find out why a reload did nothing?** Work down this list:
+| Task | Answer |
+| :--- | :--- |
+| Find out why a reload did nothing | [Debug a reload](#find-out-why-a-reload-did-nothing) |
+| Split a config into files | Put modules beside `shell.lua` and bind each `require` to a local, as in the [example at the top](#runtime) |
+| Share values between modules | [Share values](#share-values-between-modules) |
+| Run something once, not on every reload | [Run once](#run-something-once-not-on-every-reload) |
+| Keep a program running across reloads | [`session_process`](processes.md#session_process). A reload kills every `process.run` child |
+| Do heavy work without blowing the 5 ms budget | Build tables at the top level and keep maps to an index and a format ([example](#limits-and-budgets)). Move anything slower into a program run with `process.run` |
+| Name a file shipped beside `shell.lua` | `mantle.config_dir .. "/shaders/wave.frag"`. `os.getenv("HOME")` and the rest of the shell's environment work too |
+| Guard code that needs a newer engine | Compare `mantle.version.major`, `.minor` and `.patch` ([renderer members](../capabilities/index.md#renderer-members)) |
+| See what `print` wrote | `mantle log`, or `mantle check`, which prints it above its report when the config evaluates |
+
+### Find out why a reload did nothing
 
 | Step | Command | Tells you |
 | :--- | :--- | :--- |
@@ -260,10 +272,9 @@ started `mantle` in the foreground also gets a copy.
 | 2 | `mantle log` | `shell.lua re-evaluation failed` (evaluation error) or `the re-evaluated config failed to apply` (layout error, previous scene kept), and errors raised in callbacks |
 | 3 | Draw `mantle.rescue` | The evaluation or apply error on screen, as in the [banner above](#evaluation-reload-and-generations) |
 
-**…split a config into files?** Put modules beside `shell.lua` and bind each `require` to a local,
-as in the [example at the top](#runtime).
+### Share values between modules
 
-**…share values between modules?** A module runs once per evaluation, and every later `require` of
+A module runs once per evaluation, and every later `require` of
 it returns the same table. For a value that changes, use a named `state`: the same name gives the
 same signal in any module.
 
@@ -293,7 +304,9 @@ return panel {
 }
 ```
 
-**…run something once, not on every reload?** Globals survive a reload, so a global guard runs
+### Run something once, not on every reload
+
+Globals survive a reload, so a global guard runs
 once per Renderer start:
 
 ```lua
@@ -314,22 +327,6 @@ return panel {
 
 Timers and actions cannot be guarded this way, because every reload clears them. Declare them at
 the top level every time.
-
-**…keep a program running across reloads?** Declare it with
-[`session_process`](processes.md#session_process). A reload kills every `process.run` child.
-
-**…do heavy work without blowing the 5 ms budget?** Build tables at the top level and keep maps to
-an index and a format ([example](#limits-and-budgets)). Move anything slower into a program run with
-`process.run`.
-
-**…name a file shipped beside `shell.lua`?** `mantle.config_dir .. "/shaders/wave.frag"`.
-`os.getenv("HOME")` and the other variables of the shell's environment work too.
-
-**…guard code that needs a newer engine?** Compare `mantle.version.major`, `.minor` and `.patch`
-([renderer members](../capabilities/index.md)).
-
-**…see what `print` wrote?** `mantle log`, or `mantle check`, which prints it above its report
-when the config evaluates.
 
 ## Gotchas
 
@@ -352,4 +349,4 @@ Source: [VM setup and `require`](../../renderer/src/lua/mod.rs),
 [reload](../../renderer/src/socket/client/mod.rs), [apply](../../renderer/src/socket/client/resolve.rs),
 [watcher](../../supervisor/src/watcher.rs), [budget](../../renderer/src/lua/signal/budget.rs),
 [scalar checks](../../renderer/src/lua/marshal.rs), [property ranges](../../renderer/src/layout/node/style/mod.rs),
-[respawn](../../supervisor/src/supervisor.rs).
+[respawn](../../supervisor/src/supervisor.rs), [respawn brake](../../supervisor/src/generation.rs).

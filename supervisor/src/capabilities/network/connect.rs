@@ -136,9 +136,8 @@ impl NetworkController {
 
     /// `network:cancel_connect()`: drops the pending intent and password prompt.
     ///
-    /// The prompt's way out. Escape in a `secure_submit` field only clears its text and stays in
-    /// the field (`wayland::input`'s `SecureKeyAction::Clear`), so without this a mis-click would
-    /// hold keyboard focus.
+    /// The prompt's way out. Escape in a `secure_submit` field clears its text and stays in the
+    /// field, then calls its `on_cancel`, so a config invokes this from there.
     ///
     /// An activation already in flight is left alone: closing a prompt should not undo a join the
     /// user started; [`abort_connect`](Self::abort_connect) is the explicit Cancel.

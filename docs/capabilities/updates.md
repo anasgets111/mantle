@@ -45,7 +45,7 @@ button {
 | `install_total_steps` | `integer` | Packages in the transaction; `0` until the first step line, so draw progress as indeterminate. |
 | `installing` | `boolean` | An install is running; the `install_*` fields describe the latest run. |
 | `last_successful_check?` | `integer` | Unix seconds of the last successful check (or the `checked_at` seed), else `nil`. |
-| `package_manager?` | `string` | Package manager, e.g. `"pacman"`, or `nil` when unsupported. Set from the first push. |
+| `package_manager?` | `string` | Package manager, e.g. `"pacman"`, from the first push, which comes at start; `nil` when none is supported, and then every action is ignored. |
 | `packages` | `UpdateCandidate[]` | Pending upgrades. A failed check keeps the last good list. |
 | `reboot_required` | `boolean` | `/run/mantle-reboot-required` exists, watched live. Mantle never writes it; anything you set up may, a pacman hook for example, and `/run` empties on reboot. |
 
@@ -70,7 +70,7 @@ Call as `mantle.updates:invoke("action", arguments...)`; `?` marks an argument y
 | --- | --- | --- |
 | `check` |  | Checks for upgrades now, even when dormant; ignored while `checking`. |
 | `configure` | `config: UpdatesConfigure` | Sets the check schedule and AUR use, and seeds a remembered check. |
-| `install` |  | Runs a full upgrade, `pkexec pacman -Syu --noconfirm` or `aur_helper` when `aur` is on; ignored while `installing`. |
+| `install` |  | Runs a full upgrade, `pkexec pacman -Syu --noconfirm` or `aur_helper` when `aur` is on; ignored while `installing`. Does not recheck afterwards. |
 
 ### `UpdatesConfigure`
 
@@ -85,9 +85,57 @@ Call as `mantle.updates:invoke("action", arguments...)`; `?` marks an argument y
 
 ## Backend
 
-libalpm syncs into a user-owned database; the AUR RPC covers foreign packages when `aur = true`.
-Installs run `pkexec pacman -Syu --noconfirm`, or paru/yay with `--sudo pkexec`, with progress
-parsed from their output. `/run/mantle-reboot-required` drives `reboot_required`. The
-[polkit rule](../guide/installation.md#install) keeps one approval per run for `wheel` users.
+| Part | Behaviour |
+| :--- | :--- |
+| Detection | `pacman` on `PATH` at start, and `paru`, else `yay`, as `aur_helper`. Without `pacman`, `package_manager` is `nil` and every action is ignored |
+| Check | A child process syncs the repo databases into `$XDG_RUNTIME_DIR/mantle/pacman`, against `/var/lib/pacman/local`; the system's own databases stay untouched. With `aur = true`, one `curl` POST to the AUR RPC (30 s timeout) covers the foreign packages |
+| Install | `pkexec pacman -Syu --noconfirm`, or `<aur_helper> -Syu --noconfirm --sudo pkexec` with `aur` on. `pkexec` asks the session's polkit agent. The [polkit rule](../guide/installation.md#install) makes that one approval per run for `wheel` users |
+| Progress | Parsed from pacman's `(2/5) upgrading name` lines. The download phase prints nothing, since pacman draws no progress without a tty |
+| Reboot | An inotify watch on `/run` mirrors `/run/mantle-reboot-required` into `reboot_required` |
+
+## How do I…
+
+### Remember the last check across restarts
+
+Save each successful check in a [`persistent_table`](../guide/scripting.md#persistent_table), and
+send `configure` only once the file has loaded, so its seed lands before the first scheduled check.
+
+```lua
+local dir = (os.getenv("HOME") or "") .. "/.local/state/myshell"
+local cache = persistent_table { path = dir, name = "updates.json" }
+local file = dir .. "/updates.json"
+
+mantle.storage:on_change(function(storage, previous)
+    local saved = storage.files[file]
+    if saved and not (previous and previous.files[file]) then
+        mantle.updates:invoke("configure", {
+            interval = 3600,
+            checked_at = saved.checked_at,
+            packages = saved.packages,
+        })
+    end
+end)
+
+mantle.updates:on_change(function(updates, previous)
+    local at = updates.last_successful_check
+    if at and at ~= (previous and previous.last_successful_check) then
+        cache:set("checked_at", at)
+        cache:set("packages", updates.packages)
+    end
+end)
+
+return text {
+    content = mantle.updates:map(function(updates)
+        return updates and tostring(updates.count) or ""
+    end),
+}
+```
+
+## Gotchas
+
+| Trap | Fix |
+| :--- | :--- |
+| `packages` still lists everything after a successful install | `install` does not recheck. Invoke `check` from `on_change` when `installing` falls with `install_exit_code == 0` |
+| `install` ends at once with `install_exit_code` `127` | No polkit agent answered `pkexec`. Read `mantle.polkit` and draw its prompt ([polkit](polkit.md)), or run another agent. `126` means the prompt was dismissed |
 
 Source: [`supervisor/src/capabilities/updates/`](../../supervisor/src/capabilities/updates/)

@@ -120,7 +120,7 @@ return {
 - `mantle.battery` is `nil` before its first push and reads `present = false` on a desktop; every map checks both ([battery](../capabilities/battery.md)).
 - `state` names UPower's charge state; `time_to_empty` and `time_to_full` are optional and need their own guard.
 - The icon is picked by name from the icon theme and tinted with `foreground` ([icon](../nodes/icon.md)).
-- `on_change` compares with the previous push to fire only on the downward crossing, and `process.detach` runs `notify-send` outside the shell ([capabilities](../capabilities/index.md), [process.detach](../guide/processes.md#processdetach)).
+- `on_change` compares with the previous push to fire only on the downward crossing ([on_change](../capabilities/index.md#reading-and-acting)); `process.detach` runs `notify-send` ([process.detach](../guide/processes.md#processdetach)).
 - The tooltip is a non-grabbing [popup](../surfaces/popup.md#tooltip) anchored to `hover_rect` ([hover](../guide/input.md#hover)).
 
 ## Variations

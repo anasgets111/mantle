@@ -3,15 +3,19 @@
 # Introduction
 
 Mantle runs a desktop shell written in Lua on Wayland. The engine evaluates your `shell.lua`,
-which returns the *surfaces* to show (bars, windows, popups, a lock screen). Each surface holds a
-tree of *nodes*, and any node property can be a live *signal* that updates itself when a
-*capability* (audio, workspaces, the clock) pushes new state.
+which returns the [surfaces](surfaces/index.md) to show (bars, windows, popups, a lock screen).
+Each surface holds a tree of [nodes](nodes/index.md), and any node property can be a live
+[signal](guide/signals.md) that updates itself when a [capability](capabilities/index.md) (audio,
+workspaces, the clock) pushes new state.
+
+<video src="https://github.com/user-attachments/assets/b4a56c2f-a946-44f9-9bfd-2c6046d7a72f" controls muted loop playsinline preload="metadata"></video>
 
 <video src="https://github.com/user-attachments/assets/038ee763-d7b6-4df9-9f79-2f131d4f0dcd" controls muted loop playsinline preload="metadata"></video>
 
-This page is the book's home: a first shell to build, the core concepts, then indexes by
-[topic](#topic-index) and by [task](#how-do-i). Terms are defined in the
-[glossary](glossary.md).
+<video src="https://github.com/user-attachments/assets/5533b578-1d9e-484e-bb18-4b4fae1da50d" controls muted loop playsinline preload="metadata"></video>
+
+Build the first shell below, then find the rest by [topic](#topic-index) or by
+[task](#how-do-i). The [glossary](glossary.md) defines every term.
 
 ## Your first shell
 
@@ -32,7 +36,7 @@ launcher button, the workspaces of the first output and a clock. The button and 
 one piece of [named state](guide/signals.md#named-state), `launcher_open`, which shows a second
 [panel](surfaces/panel.md).
 
-```lua
+```lua,shot
 local launcher_open = state("launcher_open", false)
 
 local clock = text {
@@ -75,6 +79,7 @@ return {
         layer = "Top",
         anchor = { top = true, left = true, right = true },
         exclusive = true,
+        width = "Fill",
         height = 32,
         background = "#1e1e2ee6",
         child = row {
@@ -105,7 +110,7 @@ return {
 | `system and system.time` | Capabilities read `nil` until their first push, so every map handles `nil` |
 | `list { source, itemfn, key }` | Rebuilds one button per workspace when the list changes ([list](nodes/list.md)) |
 | `:invoke("focus", id)` | Fire and forget; the new active workspace arrives in the next push ([actions](capabilities/index.md#actions)) |
-| `row { width = "Fill", align_v = "Center" }` | Spans the bar and centres itself in it; the `"Fill"` `rect` pushes the clock right ([alignment](nodes/index.md#alignment)) |
+| `width = "Fill"` on the panel and the `row` | The panel's root spans the anchored edges only when asked ([size](surfaces/panel.md#size)); the `"Fill"` `rect` then pushes the clock right ([alignment](nodes/index.md#alignment)) |
 | `visible = launcher_open` | The launcher panel maps and unmaps with the state |
 
 ### 3. Run it
@@ -148,106 +153,79 @@ Mod+A { spawn "mantle" "toggle" "launcher_open"; }
 `mantle set` writes any value, and `mantle call` runs an [`action`](guide/scripting.md#action)
 ([commands](guide/cli.md#commands)).
 
-## Core concepts
-
-| Concept | One line | Page |
-| :--- | :--- | :--- |
-| Surface | A top-level Wayland surface: `panel`, `window`, `popup` or `lock` | [surfaces](surfaces/index.md) |
-| Node | An element in a surface's tree: `row`, `text`, `button`, `list` and others | [nodes](nodes/index.md) |
-| Signal | A reactive value; pass it to a property to keep that property live | [signals](guide/signals.md) |
-| Named state | `state(name, initial)`: a writable signal that survives reloads and answers `mantle set`/`toggle` | [signals](guide/signals.md#named-state) |
-| Capability | `mantle.<name>`: a signal over one backend (audio, network, workspaces), `nil` until its first push | [capabilities](capabilities/index.md) |
-| Action | `mantle.<cap>:invoke(...)` asks a backend to act; `action(name, fn)` exposes Lua to `mantle call` | [capabilities](capabilities/index.md#actions), [scripting](guide/scripting.md#action) |
-| Reload / generation | A save re-evaluates in place; a new generation starts only when the Renderer process is replaced, such as after a crash | [runtime](guide/runtime.md#evaluation-reload-and-generations) |
-
-Every other term (Supervisor, Renderer, push, rescue, fingerprint): [glossary](glossary.md).
-
 ## Topic index
+
+The sidebar's order. Every guide, surface and node page ends with How do I… and Gotchas tables.
 
 | Page | For | Sections |
 | :--- | :--- | :--- |
-| [installation](guide/installation.md) | Requirements, install, first run | [Requirements](guide/installation.md#requirements) · [Install](guide/installation.md#install) · [Set up a config](guide/installation.md#set-up-a-config) · [Run the shell](guide/installation.md#run-the-shell) |
+| [installation](guide/installation.md) | Requirements, install, autostart | [Requirements](guide/installation.md#requirements) · [Install](guide/installation.md#install) · [Set up a config](guide/installation.md#set-up-a-config) · [Run the shell](guide/installation.md#run-the-shell) |
+| [cli](guide/cli.md) | The `mantle` binary and keybinds | [Commands](guide/cli.md#commands) · [Flags](guide/cli.md#flags) · [Environment variables](guide/cli.md#environment-variables) · [Binaries](guide/cli.md#binaries) · [Which config and which shell](guide/cli.md#which-config-and-which-shell) · [Values and arguments](guide/cli.md#values-and-arguments) · [What check covers](guide/cli.md#what-check-covers) · [Exit codes](guide/cli.md#exit-codes) |
 | [runtime](guide/runtime.md) | The VM, `require`, reloads, limits | [The VM](guide/runtime.md#the-vm) · [Modules and require](guide/runtime.md#modules-and-require) · [Evaluation, reload and generations](guide/runtime.md#evaluation-reload-and-generations) · [What survives a reload](guide/runtime.md#what-survives-a-reload) · [Limits and budgets](guide/runtime.md#limits-and-budgets) · [Output and logging](guide/runtime.md#output-and-logging) |
-| [cli](guide/cli.md) | The `mantle` binary | [Commands](guide/cli.md#commands) · [Flags](guide/cli.md#flags) · [Environment variables](guide/cli.md#environment-variables) · [Binaries](guide/cli.md#binaries) · [Which config and which shell](guide/cli.md#which-config-and-which-shell) · [Values and arguments](guide/cli.md#values-and-arguments) · [What check covers](guide/cli.md#what-check-covers) · [Exit codes](guide/cli.md#exit-codes) |
-| [signals](guide/signals.md) | Reactivity | [The one rule](guide/signals.md#the-one-rule) · [Reference](guide/signals.md#reference) · [Derived signals](guide/signals.md#derived-signals) · [Named state](guide/signals.md#named-state) · [How re-resolution works](guide/signals.md#how-re-resolution-works) · [Switching views](guide/signals.md#switching-views) |
-| [capabilities](capabilities/index.md) | `mantle.<cap>` state and actions | [Reading and acting](capabilities/index.md#reading-and-acting) · [Capability list](capabilities/index.md#capability-list) · [Renderer members](capabilities/index.md#renderer-members) · [applications](capabilities/applications.md) · [audio](capabilities/audio.md) · [battery](capabilities/battery.md) · [bluetooth](capabilities/bluetooth.md) · [brightness](capabilities/brightness.md) · [files](capabilities/files.md) · [idle](capabilities/idle.md) · [keyboard](capabilities/keyboard.md) · [lock](capabilities/lock.md) · [mpris](capabilities/mpris.md) · [network](capabilities/network.md) · [notifications](capabilities/notifications.md) · [polkit](capabilities/polkit.md) · [power](capabilities/power.md) · [privacy](capabilities/privacy.md) · [processes](capabilities/processes.md) · [storage](capabilities/storage.md) · [sysinfo](capabilities/sysinfo.md) · [system](capabilities/system.md) · [tray](capabilities/tray.md) · [updates](capabilities/updates.md) · [windows](capabilities/windows.md) · [workspaces](capabilities/workspaces.md) |
-| [processes](guide/processes.md) | Running other programs | [Which one do I use](guide/processes.md#which-one-do-i-use) · [process.run](guide/processes.md#processrun) · [process.detach](guide/processes.md#processdetach) · [session_process](guide/processes.md#session_process) |
-| [scripting](guide/scripting.md) | Storage, timers, actions, utilities | [Which one do I use](guide/scripting.md#which-one-do-i-use) · [persistent_table](guide/scripting.md#persistent_table) · [timer](guide/scripting.md#timer) · [action](guide/scripting.md#action) · [json.decode](guide/scripting.md#jsondecode) · [log](guide/scripting.md#log) · [fuzzy](guide/scripting.md#fuzzy) · [palette.quantize](guide/scripting.md#palettequantize) · [fonts](guide/scripting.md#fonts) |
-| [surfaces](surfaces/index.md) | Top-level surfaces | [Properties every role takes](surfaces/index.md#properties-every-role-takes) · [Per-output child](surfaces/index.md#per-output-child) · [Input region](surfaces/index.md#input-region) · [panel](surfaces/panel.md) · [window](surfaces/window.md) · [popup](surfaces/popup.md) · [lock](surfaces/lock.md) |
-| [nodes](nodes/index.md) | Layout and node kinds | [Layout model](nodes/index.md#layout-model) · [Common properties](nodes/index.md#common-properties) · [Identity](nodes/index.md#identity-and-reconciliation) · [Switching](nodes/index.md#showing-hiding-and-switching) · [rect](nodes/rect.md) · [row and column](nodes/row-column.md) · [button](nodes/button.md) · [text](nodes/text.md) · [icon](nodes/icon.md) · [image](nodes/image.md) · [capture](nodes/capture.md) · [shader](nodes/shader.md) · [list](nodes/list.md) · [textfield](nodes/textfield.md) |
-| [paint](guide/paint.md) | How a box is drawn | [Who takes what](guide/paint.md#who-takes-what) · [Colours](guide/paint.md#colours) · [Box properties](guide/paint.md#box-properties) · [Gradients](guide/paint.md#gradients) · [Clip](guide/paint.md#clip) · [Mask](guide/paint.md#mask) · [Shadows](guide/paint.md#shadows) · [Blurs](guide/paint.md#blurs) · [Combining effects](guide/paint.md#combining-effects) |
+| [signals](guide/signals.md) | Reactivity and named state | [The one rule](guide/signals.md#the-one-rule) · [Reference](guide/signals.md#reference) · [Derived signals](guide/signals.md#derived-signals) · [Named state](guide/signals.md#named-state) · [How re-resolution works](guide/signals.md#how-re-resolution-works) · [Switching views](guide/signals.md#switching-views) |
+| [surfaces](surfaces/index.md) | `panel`, `window`, `popup`, `lock` | [Properties every role takes](surfaces/index.md#properties-every-role-takes) · [Per-output child](surfaces/index.md#per-output-child) · [Input region](surfaces/index.md#input-region) |
+| [nodes](nodes/index.md) | Layout and the node kinds | [Layout model](nodes/index.md#layout-model) · [Common properties](nodes/index.md#common-properties) · [Identity](nodes/index.md#identity-and-reconciliation) · [Switching](nodes/index.md#showing-hiding-and-switching) |
+| [paint](guide/paint.md) | How a box is drawn | [Colours](guide/paint.md#colours) · [Box properties](guide/paint.md#box-properties) · [Gradients](guide/paint.md#gradients) · [Clip](guide/paint.md#clip) · [Mask](guide/paint.md#mask) · [Shadows](guide/paint.md#shadows) · [Blurs](guide/paint.md#blurs) |
 | [animation](guide/animation.md) | `animate` | [How a tween starts](guide/animation.md#how-a-tween-starts) · [Entry keys](guide/animation.md#entry-keys) · [Spring](guide/animation.md#spring) · [Keyframes](guide/animation.md#keyframes) · [Exit](guide/animation.md#exit) |
 | [input](guide/input.md) | Pointer and keyboard | [Hit testing](guide/input.md#hit-testing) · [Pointer](guide/input.md#pointer) · [Hover](guide/input.md#hover) · [Scroll](guide/input.md#scroll) · [Text fields](guide/input.md#text-fields) · [Secure fields](guide/input.md#secure-fields) |
-| [faq](guide/faq.md) | Troubleshooting | [First steps](guide/faq.md#first-steps-when-something-is-wrong) · [Nothing shows](guide/faq.md#nothing-shows) · [A save or a click does nothing](guide/faq.md#a-save-or-a-click-does-nothing) · [Values are wrong or stale](guide/faq.md#values-are-wrong-or-stale) · [Errors in the log](guide/faq.md#errors-in-the-log) · [Running processes](guide/faq.md#running-processes) · [Capabilities](guide/faq.md#capabilities) |
-| [cookbook](cookbook/index.md) | Complete widgets to copy | [Clock bar](cookbook/clock-bar.md) · [Workspaces](cookbook/workspaces.md) · [Volume OSD](cookbook/volume-osd.md) · [Notification popups](cookbook/notifications.md) · [App launcher](cookbook/launcher.md) · [Battery](cookbook/battery.md) · [Tray](cookbook/tray.md) · [Lock screen](cookbook/lock-screen.md) · [Media player](cookbook/media-player.md) · [Power menu](cookbook/power-menu.md) |
+| [processes](guide/processes.md) | Running other programs | [Which one do I use](guide/processes.md#which-one-do-i-use) · [process.run](guide/processes.md#processrun) · [process.detach](guide/processes.md#processdetach) · [session_process](guide/processes.md#session_process) |
+| [scripting](guide/scripting.md) | Storage, timers, actions, utilities | [persistent_table](guide/scripting.md#persistent_table) · [timer](guide/scripting.md#timer) · [action](guide/scripting.md#action) · [json.decode](guide/scripting.md#jsondecode) · [log](guide/scripting.md#log) · [fuzzy](guide/scripting.md#fuzzy) · [palette.quantize](guide/scripting.md#palettequantize) · [fonts](guide/scripting.md#fonts) |
+| [capabilities](capabilities/index.md) | `mantle.<name>` state and actions | [Reading and acting](capabilities/index.md#reading-and-acting) · [Capability list](capabilities/index.md#capability-list) · [Renderer members](capabilities/index.md#renderer-members) |
+| [cookbook](cookbook/index.md) | Complete widgets to copy | |
+| [faq](guide/faq.md) | A symptom whose cause lives on another page | [First steps](guide/faq.md#first-steps-when-something-is-wrong) · [Nothing shows](guide/faq.md#nothing-shows) · [A save or a click does nothing](guide/faq.md#a-save-or-a-click-does-nothing) · [Values are wrong or stale](guide/faq.md#values-are-wrong-or-stale) · [Errors in the log](guide/faq.md#errors-in-the-log) · [Running processes](guide/faq.md#running-processes) · [Capabilities](guide/faq.md#capabilities) |
+| [glossary](glossary.md) | Terms; engine-internal ones are in [`CONTEXT.md`](../CONTEXT.md) | |
+| [changelog](changelog.md) | Lua API and CLI changes | |
+| [roadmap](roadmap.md) | Gaps, proposed work, non-goals | |
+| [documenting](development/documenting.md) | Writing and testing a page of this book | |
 
-Every page has a Gotchas table (trap | fix). Symptoms whose cause lives on another page are in the
-[FAQ](guide/faq.md).
+Editor completion comes from the [`lua-meta/`](../lua-meta/) stubs that `mantle init` wires up;
+[`mantle.lua`](../lua-meta/mantle.lua) is generated from the Rust capability types.
+[`DECISIONS.md`](../DECISIONS.md) records why each contract is what it is, cited as ADR-NNNN.
 
 ## How do I…
 
 | Task | Answer |
 | :--- | :--- |
 | Install Mantle and start it with the session | [Install](guide/installation.md#install), [run the shell](guide/installation.md#run-the-shell) |
-| Copy a complete bar, launcher or lock screen | [Cookbook](cookbook/index.md) |
+| Open UI from a compositor keybind | [Bind a key](#6-bind-a-key), [drive UI from a keybind](guide/signals.md#drive-ui-from-a-keybind) |
+| Make a keybind run Lua and print a result | [action](guide/scripting.md#action) |
+| Show a reload error in the bar | [Error banner](guide/runtime.md#evaluation-reload-and-generations) |
+| Find why a reload or budget failed | [Limits and budgets](guide/runtime.md#limits-and-budgets), [output and logging](guide/runtime.md#output-and-logging) |
 | Show a live value from the system | [First bar](#2-a-first-bar), [one rule](guide/signals.md#the-one-rule) |
-| Handle a capability that has not pushed yet | [Reading and acting](capabilities/index.md#reading-and-acting) |
-| React to a capability change (OSD, sound) | [`on_change`](capabilities/index.md#reading-and-acting), [Volume OSD](cookbook/volume-osd.md) |
 | Combine two sources into one value | [Derive from two capabilities](guide/signals.md#derive-from-two-capabilities) |
 | Debounce a search or hold a value | [Debounce a search](guide/signals.md#debounce-a-search), [delay](guide/signals.md#delay-hold-a-value) |
 | Flash a node when a value changes | [pulse](guide/signals.md#pulse-mark-a-change) |
-| Open UI from a compositor keybind | [Bind a key](#6-bind-a-key), [drive UI from a keybind](guide/signals.md#drive-ui-from-a-keybind) |
-| Make a keybind run Lua and print a result | [action](guide/scripting.md#action) |
 | Switch between tabs or views | [Switching views](guide/signals.md#switching-views), [with ids](nodes/index.md#switching-views-with-ids) |
+| Draw different content per monitor | [Per-output content](surfaces/panel.md#per-output-content), [per-output child](surfaces/index.md#per-output-child) |
+| Type into a panel | [Keyboard focus](surfaces/panel.md#keyboard-focus), [text fields](guide/input.md#text-fields) |
+| Close an overlay or popup on an outside click | [Close an overlay](surfaces/panel.md#close-an-overlay-on-an-outside-click), [dismissal](surfaces/popup.md#dismissal) |
 | Show a dropdown under a button | [Anchor to a node's geometry](surfaces/popup.md#anchor-to-a-nodes-geometry), [nested menus](surfaces/popup.md#nested-menus) |
 | Show a tooltip on hover | [Tooltip](surfaces/popup.md#tooltip) |
-| Close a popup on outside click | [Dismissal](surfaces/popup.md#dismissal), [close an overlay](surfaces/panel.md#close-an-overlay-on-an-outside-click) |
-| Type into a panel | [Keyboard focus](surfaces/panel.md#keyboard-focus), [text fields](guide/input.md#text-fields) |
-| Draw different content per monitor | [Per-output content](surfaces/panel.md#per-output-content), [per-output child](surfaces/index.md#per-output-child) |
 | Build a lock screen | [lock](surfaces/lock.md), [secure fields](guide/input.md#secure-fields), [recipe](cookbook/lock-screen.md) |
-| Build a list from data | [list](nodes/list.md) |
-| Show an app's icon | [icon](nodes/icon.md#how-do-i) |
 | Centre or space out items | [Centre something](nodes/rect.md#centre-something), [alignment](nodes/index.md#alignment), [push items apart](nodes/row-column.md#push-items-apart) |
 | Draw a progress meter | [row and column](nodes/row-column.md#how-do-i) |
-| Make a slider or wheel control | [Pointer](guide/input.md#pointer) |
-| Scroll a long list | [Scroll a long list](nodes/list.md#scroll-a-long-list), [scroll](guide/input.md#scroll) |
-| Search a list as you type | [fuzzy](guide/scripting.md#fuzzy) |
+| Show an app's icon | [icon](nodes/icon.md#how-do-i) |
 | Crossfade a wallpaper | [transition](nodes/image.md#transition) |
+| Build a list from data | [list](nodes/list.md) |
+| Scroll a long list | [Scroll a long list](nodes/list.md#scroll-a-long-list), [scroll](guide/input.md#scroll) |
 | Write a shader effect | [shader](nodes/shader.md) |
-| Blur the desktop behind a bar | [Blurs](guide/paint.md#blurs) |
 | Round and clip content | [Round an image's corners](nodes/image.md#round-an-images-corners), [clip](guide/paint.md#clip) |
+| Blur the desktop behind a bar | [Blurs](guide/paint.md#blurs) |
 | Fade or slide a node | [animation](guide/animation.md), [spring](guide/animation.md#spring) |
-| Animate a node out before it goes | [Exit](guide/animation.md#exit) |
 | Show a spinner | [Keyframes](guide/animation.md#keyframes) |
+| Animate a node out before it goes | [Exit](guide/animation.md#exit) |
+| Make a slider or wheel control | [Pointer](guide/input.md#pointer) |
 | Run a command and read its output | [process.run](guide/processes.md#processrun) |
 | Launch an app that outlives the shell | [process.detach](guide/processes.md#processdetach) |
 | Keep a daemon running for the session | [session_process](guide/processes.md#session_process) |
-| Repeat something every few seconds | [timer](guide/scripting.md#timer) |
 | Remember a setting across restarts | [persistent_table](guide/scripting.md#persistent_table) |
+| Repeat something every few seconds | [timer](guide/scripting.md#timer) |
+| Search a list as you type | [fuzzy](guide/scripting.md#fuzzy) |
 | Theme from the wallpaper | [palette.quantize](guide/scripting.md#palettequantize) |
-| Show a reload error in the bar | [Error banner](guide/runtime.md#evaluation-reload-and-generations) |
-| Find why a reload or budget failed | [Limits and budgets](guide/runtime.md#limits-and-budgets), [output and logging](guide/runtime.md#output-and-logging) |
+| Handle a capability that has not pushed yet | [Reading and acting](capabilities/index.md#reading-and-acting) |
+| React to a capability change (OSD, sound) | [`on_change`](capabilities/index.md#reading-and-acting), [Volume OSD](cookbook/volume-osd.md) |
+| Copy a complete bar, launcher or lock screen | [Cookbook](cookbook/index.md) |
 | Find why something shows nothing or does nothing | [FAQ](guide/faq.md) |
-| Look up a term | [Glossary](glossary.md) |
-
-More recipes, per page: [runtime](guide/runtime.md#how-do-i), [cli](guide/cli.md#how-do-i),
-[signals](guide/signals.md#how-do-i), [processes](guide/processes.md#how-do-i),
-[scripting](guide/scripting.md#how-do-i), [capabilities](capabilities/index.md#how-do-i),
-[surfaces](surfaces/index.md#how-do-i), [nodes](nodes/index.md#how-do-i),
-[paint](guide/paint.md#how-do-i), [animation](guide/animation.md#how-do-i),
-[input](guide/input.md#how-do-i), [cookbook](cookbook/index.md).
-
-## Other references
-
-| For | Read |
-| :--- | :--- |
-| Editor completion and type checks | [`lua-meta/`](../lua-meta/) stubs, wired up by the `.luarc.json` that `mantle init` writes. [`mantle.lua`](../lua-meta/mantle.lua) is generated from the Rust capability types |
-| What each backend needs installed | [installation](guide/installation.md#requirements) |
-| Glossary | [glossary](glossary.md); engine-internal terms in [`CONTEXT.md`](../CONTEXT.md) |
-| Why a contract is what it is | [`DECISIONS.md`](../DECISIONS.md), cited as ADR-NNNN |
-| What changed | [changelog](changelog.md) |
-| Gaps and proposed work | [roadmap](roadmap.md) |
-| Writing or testing a page of this book | [documenting](development/documenting.md) |
 
 Source: [init](../supervisor/src/setup.rs), [starter](../share/starter/shell.lua),
 [CLI](../supervisor/src/cli.rs), [watcher](../supervisor/src/watcher.rs),

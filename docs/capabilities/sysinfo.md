@@ -21,7 +21,8 @@ text {
 
 `mantle.sysinfo:get()` returns `SysinfoState`, `nil` before the first push. A field marked `?` may be absent.
 
-`mantle.sysinfo`'s payload; `nil` until `configure` sets an interval and a reading lands.
+`mantle.sysinfo`'s payload; `nil` until `configure` sets an interval and a reading changes a field.
+Pushes only on a change.
 
 | Field | Type | Description |
 | --- | --- | --- |
@@ -51,21 +52,22 @@ Call as `mantle.sysinfo:invoke("action", arguments...)`; `?` marks an argument y
 
 ## Backend
 
-CPU from `/proc/stat`, RAM and swap from `/proc/meminfo`, temperatures from `/sys/class/hwmon/`
-chips chosen by name preference: `k10temp`, then `coretemp`, else `acpitz` for the CPU; `amdgpu`,
-`nouveau` or `nvidia` for the GPU. Each sample has its own interval; all are `0` (off) until `configure`. The
-first reading lands one interval later (CPU: two).
+| Field | Read from | Interval |
+| :--- | :--- | :--- |
+| `cpu_percent` | `/proc/stat`'s `cpu` line, the delta between two reads | `cpu_interval` |
+| `ram_percent`, `swap_percent` | `/proc/meminfo` | `ram_interval` |
+| `temp_cores` | hwmon `k10temp` `Tccd*` or `coretemp` `Core *` sensors, else that chip's first sensor, else `acpitz`'s | `temp_interval` |
+| `temp_gpu` | The first sensor of hwmon `amdgpu`, `nouveau` or `nvidia` | `temp_interval` |
 
-## How do I…
-
-| Task | Answer |
-| :--- | :--- |
-| Show CPU and memory use | `configure` once at top level, then map, as in the example above |
+The chips are picked once, when `sysinfo` starts; a driver loaded later needs a Supervisor
+restart. A reading pushes only when it changed a field. Intervals live in the Supervisor, so they
+outlast reloads until the next `configure`.
 
 ## Gotchas
 
 | Trap | Fix |
 | :--- | :--- |
-| `sysinfo` stays `nil` | It reads nothing until `mantle.sysinfo:invoke("configure", { cpu_interval = 2 })` |
+| `sysinfo` stays `nil` | Nothing is read until `configure`. With only `temp_interval` set on a machine without sensors, every reading equals the defaults and nothing pushes |
+| `ram_percent` stays `0` while `cpu_percent` moves | Each field updates on its own interval, and an unset one is `0` (off). Set `ram_interval` too |
 
 Source: [`supervisor/src/capabilities/sysinfo/`](../../supervisor/src/capabilities/sysinfo/)

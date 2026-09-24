@@ -286,7 +286,6 @@ fonts { "Inter", "Symbols Nerd Font", "Noto Color Emoji" }
 | `store.key:get()` right after `store:set` | Still the old value. The signal updates on the next push |
 | `store.key` is `nil` at startup | Every key reads `nil` until `mantle.storage` pushes, even with defaults. Handle `nil` in every map |
 | Storing a key named `set` | `store.set` is the method, so that key is unreadable |
-| `dofile` / `loadfile` to read a data file | They block the render thread on file I/O. Use `persistent_table`, or `process.run("cat", { path }, ...)` |
 
 See also: [processes](processes.md), [runtime](runtime.md) (reloads, budgets, logging),
 [signals](signals.md) (`state`, `delay`), [storage capability](../capabilities/storage.md)

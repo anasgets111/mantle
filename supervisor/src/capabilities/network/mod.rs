@@ -29,7 +29,7 @@ pub use controller::NetworkController;
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[cfg_attr(test, derive(schemars::JsonSchema))]
 pub struct AccessPointInfo {
-    /// Network name; one entry per SSID, from its strongest access point.
+    /// Network name, `""` for hidden networks; one entry per SSID, from its strongest access point.
     pub ssid: String,
     /// Signal strength, `0` to `100`.
     pub strength: u8,

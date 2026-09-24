@@ -18,7 +18,8 @@ use crate::process;
 #[derive(Debug, Clone, Default, PartialEq, serde::Serialize)]
 #[cfg_attr(test, derive(schemars::JsonSchema))]
 pub struct UpdatesState {
-    /// Package manager, e.g. `"pacman"`, or `nil` when unsupported. Set from the first push (ADR-0134).
+    /// Package manager, e.g. `"pacman"`, from the first push, which comes at start; `nil` when none is
+    /// supported, and then every action is ignored (ADR-0134).
     pub package_manager: Option<String>,
     /// AUR helper found at start, `"paru"` or `"yay"`, or `nil`; used only once `configure` sets
     /// `aur` (ADR-0250).

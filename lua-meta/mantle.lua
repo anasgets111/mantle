@@ -24,7 +24,7 @@
 ---@field band string `"2.4 GHz"`, `"5 GHz"`, `"6 GHz"`, or empty for a frequency outside those bands.
 ---@field saved boolean A saved NetworkManager profile names this SSID, so `connect` asks for no password.
 ---@field secure boolean Needs a key: WEP, WPA or RSN.
----@field ssid string Network name; one entry per SSID, from its strongest access point.
+---@field ssid string Network name, `""` for hidden networks; one entry per SSID, from its strongest access point.
 ---@field strength integer Signal strength, `0` to `100`.
 
 ---@class ActiveClient
@@ -279,7 +279,7 @@
 ---@field id string Opaque, backend-shaped id for `:invoke`; compare it, never parse it.
 ---@field maximized? boolean Whether the window is maximized; `nil` on niri.
 ---@field minimized? boolean Whether the window is minimized; `nil` except on wlr.
----@field output? string Connector name; `nil` when unknown. On wlr, the first output the window entered.
+---@field output? string Connector name; `nil` when unknown. On wlr, the earliest-entered output the window is still on.
 ---@field title string Window title; empty when unset.
 ---@field workspace_id? integer `WorkspaceEntry.id`; `nil` on wlr and on Hyprland special workspaces.
 
@@ -294,7 +294,7 @@
 ---@class ApplicationsState
 ---`mantle.applications` payload (ADR-0061, ADR-0252).
 ---@field by_app_id table<string, integer> Window `app_id` to its 1-based index: `entries[by_app_id[app_id]]`. Keys are exact `StartupWMClass` and desktop ids, then lowercased and last-dot-segment guesses.
----@field entries AppSummary[] Installed entries, sorted by `name` (byte order). Watched: a change under an applications directory rescans 250 ms after the last event.
+---@field entries AppSummary[] Installed entries, sorted by `name` (byte order). A change under an applications directory rescans 250 ms after the last event.
 
 ---@class AudioState
 ---`mantle.audio`'s payload (ADR-0053).
@@ -358,7 +358,7 @@
 ---@field active boolean The Renderer confirmed the session locked; a requested lock stays `false` until then.
 ---@field attempts integer Rejected passwords since this lock was confirmed; reset by the next lock.
 ---@field authenticating boolean A password is with PAM. A second submit is refused while true.
----@field error string Last failure to draw: a rejected password (`"authentication failed"`) or a refused lock's reason. Cleared by a correct password, `lock`, a confirmed lock, and unlock.
+---@field error string Last failure to draw: PAM's verdict (`"authentication failed"`, `"too many attempts"`, or a PAM or worker error) or a refused lock's reason. Cleared by a correct password, `lock`, a confirmed lock, and unlock.
 ---@field unlocking boolean PAM said yes and the lock is still up: the window for an out-animation (ADR-0190).
 
 ---@class MprisState
@@ -390,7 +390,7 @@
 
 ---@class PowerState
 ---`mantle.power`'s payload. Profile fields are `nil` without power-profiles-daemon, the rest without UPower;
----a failed read is also `nil`. With neither service the capability stays `nil`.
+---a failed read is also `nil`. With neither service the payload is an empty table.
 ---@field active_profile? string Active platform profile, e.g. `"balanced"`.
 ---@field energy_rate? number UPower's display-device `EnergyRate` in watts; direction is `mantle.battery.state`.
 ---@field on_battery? boolean UPower's `OnBattery`: running on battery rather than mains.
@@ -402,7 +402,8 @@
 ---@field screencast_users PrivacyUser[] Apps with a running PipeWire screen-capture stream, one per name (ADR-0137). wlr-screencopy tools such as `wf-recorder` and `grim` never appear.
 
 ---@class SysinfoState
----`mantle.sysinfo`'s payload; `nil` until `configure` sets an interval and a reading lands (ADR-0035).
+---`mantle.sysinfo`'s payload; `nil` until `configure` sets an interval and a reading changes a field.
+---Pushes only on a change (ADR-0035).
 ---@field cpu_percent integer CPU utilization across all cores, `0` to `100`, rounded down; `0` until two samples form a delta.
 ---@field ram_percent integer Physical memory in use (`MemTotal - MemAvailable`), `0` to `100`, rounded down.
 ---@field swap_percent integer Swap in use, `0` to `100`, rounded down; also `0` without swap.
@@ -425,7 +426,7 @@
 ---@field authenticating boolean A password is with PAM. A second submit is refused while true.
 ---@field error string Drawable reason for the last failure, e.g. `"authentication failed"`. The prompt stays open to retry.
 ---@field icon_name string Themed icon name, or empty when the caller set none.
----@field message string Translated prompt text, e.g. `"Authentication is required to ..."`.
+---@field message string The action's prompt, e.g. `"Authentication is required to ..."`, in `en_US`: the locale the agent registers with.
 
 ---@class TrayState
 ---@field items TrayItem[] Registered items in registration order, oldest first; updates never reorder them.
@@ -447,7 +448,7 @@
 ---@field install_total_steps integer Packages in the transaction; `0` until the first step line, so draw progress as indeterminate.
 ---@field installing boolean An install is running; the `install_*` fields describe the latest run.
 ---@field last_successful_check? integer Unix seconds of the last successful check (or the `checked_at` seed), else `nil`.
----@field package_manager? string Package manager, e.g. `"pacman"`, or `nil` when unsupported. Set from the first push (ADR-0134).
+---@field package_manager? string Package manager, e.g. `"pacman"`, from the first push, which comes at start; `nil` when none is supported, and then every action is ignored (ADR-0134).
 ---@field packages UpdateCandidate[] Pending upgrades. A failed check keeps the last good list.
 ---@field reboot_required boolean `/run/mantle-reboot-required` exists, watched live. Mantle never writes it; anything you set up may, a pacman hook for example, and `/run` empties on reboot.
 
@@ -470,7 +471,7 @@
 ---@class ApplicationsCapability: Capability<ApplicationsState>
 ---@field invoke fun(self: ApplicationsCapability, command: "refresh") Rescans installed desktop entries. The directories are watched, so only a failed watch (logged) needs this.
 ---@field invoke fun(self: ApplicationsCapability, command: "launch", id: string) Launches `entries[].id`, detached; `Terminal=true` entries run in `$TERMINAL`.
----@field invoke fun(self: ApplicationsCapability, command: "open_url", url: string) Opens an `http`, `https` or `mailto` URL (at most 2048 bytes) with `xdg-open` (ADR-0103).
+---@field invoke fun(self: ApplicationsCapability, command: "open_url", url: string) Opens an `http`, `https` or `mailto` URL with `xdg-open` (ADR-0103). One over 2048 bytes or holding whitespace or a control character is refused.
 
 ---[docs](https://anasgets111.github.io/mantle/capabilities/audio.html)
 ---@class AudioCapability: Capability<AudioState>
@@ -604,7 +605,7 @@ local SystemCapability = {}
 ---@class UpdatesCapability: Capability<UpdatesState>
 ---@field invoke fun(self: UpdatesCapability, command: "check") Checks for upgrades now, even when dormant; ignored while `checking`.
 ---@field invoke fun(self: UpdatesCapability, command: "configure", config: UpdatesConfigure) Sets the check schedule and AUR use, and seeds a remembered check.
----@field invoke fun(self: UpdatesCapability, command: "install") Runs a full upgrade, `pkexec pacman -Syu --noconfirm` or `aur_helper` when `aur` is on; ignored while `installing`.
+---@field invoke fun(self: UpdatesCapability, command: "install") Runs a full upgrade, `pkexec pacman -Syu --noconfirm` or `aur_helper` when `aur` is on; ignored while `installing`. Does not recheck afterwards.
 
 ---[docs](https://anasgets111.github.io/mantle/capabilities/workspaces.html)
 ---@class WorkspacesCapability: Capability<WorkspacesState>

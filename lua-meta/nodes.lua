@@ -53,7 +53,7 @@
 ---@field align_v? Align|Bound Default `"Start"`. As `align_h` with the axes swapped: packs a `column`'s children.
 ---@field visible? boolean|Bound Default `true`. `false` removes the node from layout, paint and spacing but keeps its subtree frozen in memory (ADR-0124); to switch views, bind the parent's `children`.
 ---@field opacity? number|Bound `[0, 1]`, default `1`. Multiplied down the tree. At `0` the node still takes space and input.
----@field z? number|Bound Default `0`. Sibling paint and hit order. Higher paints later and hits first; ties keep declaration order. Layout and focus ignore it; cannot animate (ADR-0259).
+---@field z? number|Bound Default `0`. Sibling paint and hit order. Higher paints later and hits first; ties keep declaration order. Layout and focus ignore it; `animate` refuses it (ADR-0259).
 ---@field scale? number|Axes|Bound `[0, 64]`, default `1`. About `origin`; a missing axis is `1`. Paint only: layout and `geometry` see the unscaled box; hit-testing follows the painted one (ADR-0149).
 ---@field rotate? number|Bound `[-8192, 8192]`, default `0`. Degrees clockwise about `origin`. Paint only.
 ---@field translate? Axes|Bound `[-8192, 8192]`, default `{ x = 0, y = 0 }`. Pixel offset per axis, a missing one `0`, applied after `scale` and `rotate`. Paint only.
@@ -61,7 +61,7 @@
 ---@field shadow_color? Color|Bound Default `"#000000"`. Draws when alpha > 0 and `shadow_blur`, `shadow_offset` or `shadow_spread` is set. Clipped at the parent's box: pad the parent or give it `clip = "None"` (ADR-0254).
 ---@field shadow_blur? number|Bound `[0, 8192]`, default `0`. CSS `box-shadow` blur radius in px (ADR-0262).
 ---@field shadow_offset? Axes|Bound `[-8192, 8192]`, default `{ x = 0, y = 0 }`. Shadow offset in px per axis. Follows the node's transform.
----@field shadow_spread? number|Bound `[-8192, 8192]`, default `0`. Px the shadow grows (or shrinks) per side. On non-box content it scales the shadow about the box centre.
+---@field shadow_spread? number|Bound `[-8192, 8192]`, default `0`. Px the shadow grows per side; negative shrinks it. On non-box content it scales the shadow about the box centre.
 ---@field content_blur? number|Bound `[0, 8192]`, default `0`. Gaussian sigma in px over this node's painted subtree, CSS `filter: blur()`. Clipped like a shadow (ADR-0254).
 ---@field animate? Animations|Bound Tween named properties to each newly resolved value without running Lua (ADR-0145). The `exit` key is an `Exit` block. Only a node already on screen animates, unless the entry has `from`.
 ---@field id? string Unique among siblings; matches this node across passes. Siblings without one match by position (ADR-0045).
@@ -152,7 +152,7 @@
 ---@class CaptureProps: NodeBase
 ---@field output? string|Bound Default `""`. Connector name, e.g. `"DP-1"`; `""` draws nothing. An unknown name draws nothing and warns once. Changing it starts a fresh capture.
 ---@field fit? "cover"|"contain"|"stretch"|Bound Default `"cover"`. As `image.fit`.
----@field live? boolean|number|Bound Default `false`. `false`: capture on show and on each `output` change. `true`: every frame, one in flight. A number: at most that many fps, `(0, 1000]` (ADR-0263). Pauses while hidden or unmapped.
+---@field live? boolean|number|Bound Default `false`. `false`: capture on show and on each `output` change. `true`: every frame, one in flight. A number: at most that many fps, `(0, 1000]` (ADR-0263). Hiding the node or unmapping its surface drops the capture; showing starts a fresh one.
 ---@field region? Rect|Bound `[0, 8192]`, default: the whole output. Part of the output in its logical px, placed by `fit` as the whole frame. Every key is required and in that range; the size is non-zero.
 ---@field paint_cursor? boolean|Bound Default `false`. Include the pointer in the frame.
 

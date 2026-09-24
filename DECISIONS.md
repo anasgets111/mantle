@@ -2708,6 +2708,11 @@ it, so `translate` slides it out while `margin` eases a number nothing draws, `w
 clipped subtree, and changing `text` keeps the string it was fitted to while colour and other
 paint continue moving. An absolute-positioned solver pass is the upgrade for reflow.
 
+Amendment: a content-sized axis of the parent grows to span its leavers' last rects
+(`solver::hold_leavers`). Decision 3 left a lone leaver's parent, and a content-sized surface
+around it, at `0x0`, clipping the whole exit. Siblings still close up at once; the parent lets go
+on the frame the last leaver drops.
+
 ## 0151. The easing set is QML's whole `Easing.Type` list plus CSS's cubic Bezier and steps, because eight curves is a menu and the ninth request is always the one missing
 
 `animate` shipped with eight easings (ADR-0145), matching the reference config. A fixed menu leaves

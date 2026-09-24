@@ -1,8 +1,8 @@
 # capture
 
-A live preview of one output (monitor), through the compositor's screen-capture protocol
-(`ext-image-copy-capture-v1`, or `wlr-screencopy`). Reach for it for an overview, a monitor picker
-or a screenshot preview. Without either protocol it draws nothing and logs one warning.
+A live preview of one output (monitor) through `ext-image-copy-capture-v1`, else `wlr-screencopy`.
+Reach for it for an overview, a monitor picker or a screenshot preview. Without either protocol it
+draws nothing and logs one warning.
 
 A rounded preview of the first screen at up to 30 frames per second:
 
@@ -34,14 +34,15 @@ local preview = rect {
 | :--- | :--- | :--- | :--- |
 | `output` | `string\|Bound` | `""` | Connector name, e.g. `"DP-1"`; `""` draws nothing. An unknown name draws nothing and warns once. Changing it starts a fresh capture |
 | `fit` | `"cover"\|"contain"\|"stretch"\|Bound` | `"cover"` | As on [`image`](image.md) |
-| `live` | `boolean\|number\|Bound` | `false` | `false`: capture on show and on each `output` change. `true`: every frame, one in flight. A number: at most that many fps, `(0, 1000]`. Pauses while hidden or unmapped |
+| `live` | `boolean\|number\|Bound` | `false` | `false`: capture on show and on each `output` change. `true`: every frame, one in flight. A number: at most that many fps, `(0, 1000]`. Hiding the node or unmapping its surface drops the capture; showing starts a fresh one |
 | `region` | `Rect\|Bound`, `[0, 8192]` | The whole output | Part of the output in its logical px, placed by `fit` as the whole frame. Every key is required and in that range; the size is non-zero |
 | `paint_cursor` | `boolean\|Bound` | `false` | Include the pointer in the frame |
 <!-- End of the generated table. -->
 
-It has no intrinsic size: without `width` and `height` it draws nothing. Capture pauses while the
-node is hidden or its surface unmapped, and starts fresh when it shows again. New frames arrive only
-when the screen changes. A capture that fails pauses until the output list changes.
+It has no intrinsic size: without `width` and `height` it draws nothing. A hidden node or unmapped
+surface drops its capture and starts a fresh one when it shows again. A live capture gets a new
+frame only when the screen changes. A capture that fails pauses, with one warning, until the output
+list changes.
 
 A `region` prefers `wlr-screencopy`, which crops at the source. Through `ext-image-copy-capture-v1`
 the engine crops instead, and on a rotated or flipped output it cannot: it draws the whole output

@@ -30,7 +30,8 @@ local function artwork(item)
     if path then
         return image { source = path, width = 16, height = 16, fit = "contain", align_v = "Center" }
     end
-    return icon { name = name or "application-x-executable", size = 16, align_v = "Center" }
+    -- `foreground` tints symbolic icons, which are dark by default; colour icons ignore it.
+    return icon { name = name or "application-x-executable", size = 16, foreground = "#cdd6f4", align_v = "Center" }
 end
 
 local tray_items = list {
@@ -141,7 +142,7 @@ local function menu_row(row_data)
                 width = "Fill",
                 spacing = 8,
                 children = {
-                    icon { name = entry.icon_name or "", size = 14, visible = entry.icon_name ~= nil, align_v = "Center" },
+                    icon { name = entry.icon_name or "", size = 14, foreground = "#cdd6f4", visible = entry.icon_name ~= nil, align_v = "Center" },
                     text { content = strip_mnemonic(entry.label), width = "Fill", elide = "End", foreground = "#cdd6f4" },
                     text { content = mark, visible = mark ~= "", foreground = "#a6adc8" },
                 },
@@ -202,7 +203,6 @@ return {
 - The popup grabs the pointer, so an outside click dismisses it and `on_dismiss` clears the state ([dismissal](../surfaces/popup.md#dismissal)).
 - The menu tree is flattened into one `list` with an indent per depth, so a submenu opens in place rather than in a second popup ([list](../nodes/list.md), [nested menus](../surfaces/popup.md#nested-menus) for the other way).
 - `menu_will_show` lets apps that fill submenus lazily send them before the row expands.
-- Tray actions take the item's opaque `id`; menu actions also take the entry's integer `id` ([capabilities](../capabilities/index.md)).
 
 ## Variations
 

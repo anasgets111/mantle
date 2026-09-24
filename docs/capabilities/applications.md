@@ -26,7 +26,7 @@ text {
 | Field | Type | Description |
 | --- | --- | --- |
 | `by_app_id` | `table<string, integer>` | Window `app_id` to its 1-based index: `entries[by_app_id[app_id]]`. Keys are exact `StartupWMClass` and desktop ids, then lowercased and last-dot-segment guesses. |
-| `entries` | `AppSummary[]` | Installed entries, sorted by `name` (byte order). Watched: a change under an applications directory rescans 250 ms after the last event. |
+| `entries` | `AppSummary[]` | Installed entries, sorted by `name` (byte order). A change under an applications directory rescans 250 ms after the last event. |
 
 ### `AppSummary`
 
@@ -49,20 +49,27 @@ Call as `mantle.applications:invoke("action", arguments...)`; `?` marks an argum
 | --- | --- | --- |
 | `refresh` |  | Rescans installed desktop entries. The directories are watched, so only a failed watch (logged) needs this. |
 | `launch` | `id: string` | Launches `entries[].id`, detached; `Terminal=true` entries run in `$TERMINAL`. |
-| `open_url` | `url: string` | Opens an `http`, `https` or `mailto` URL (at most 2048 bytes) with `xdg-open`. |
+| `open_url` | `url: string` | Opens an `http`, `https` or `mailto` URL with `xdg-open`. One over 2048 bytes or holding whitespace or a control character is refused. |
 
 ## Backend
 
-`.desktop` files under `$XDG_DATA_HOME` and `$XDG_DATA_DIRS` `applications/`; the first entry for an
-ID wins. Watched with inotify, subdirectories and later-created directories included: a change rescans
-250 ms after the last event. `launch` spawns detached (`Terminal=true` needs
-`$TERMINAL`); `open_url` hands `http`, `https` and `mailto` URLs (≤ 2048 bytes) to `xdg-open`.
+Reads `applications/` under `$XDG_DATA_HOME`, then each `$XDG_DATA_DIRS` entry (default
+`/usr/local/share:/usr/share`), subdirectories included. The first file for a desktop id wins, so a
+copy under `~/.local/share/applications` overrides the system one. `Type=Application` entries with
+`Name` and `Exec` are listed; `NoDisplay=true` and `Hidden=true` ones are not. inotify watches every
+directory, including ones created later.
 
 ## How do I…
 
 | Task | Answer |
 | :--- | :--- |
-| Name or iconify the focused app | `workspaces.active_client.class` through `applications.by_app_id`, as in the example above |
+| Hide an app from a launcher | Copy its `.desktop` file to `~/.local/share/applications` and add `NoDisplay=true`; the rescan drops it |
+
+## Gotchas
+
+| Trap | Fix |
+| :--- | :--- |
+| `launch` of a terminal app does nothing | `Terminal=true` needs `$TERMINAL` in the Supervisor's environment, not an interactive shell's. `mantle log` names the refusal |
 
 See also: [App launcher](../cookbook/launcher.md) recipe.
 

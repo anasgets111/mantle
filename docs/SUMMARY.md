@@ -2,18 +2,23 @@
 
 [Introduction](introduction.md)
 
-# Guide
+# Getting started
 
 - [Installation](guide/installation.md)
+- [CLI](guide/cli.md)
+
+# Concepts
+
 - [Runtime](guide/runtime.md)
 - [Signals](guide/signals.md)
-- [Scripting](guide/scripting.md)
-- [Processes](guide/processes.md)
-- [Animation](guide/animation.md)
-- [Input](guide/input.md)
-- [Paint](guide/paint.md)
-- [CLI](guide/cli.md)
-- [FAQ](guide/faq.md)
+
+# Surfaces
+
+- [Surfaces](surfaces/index.md)
+  - [panel](surfaces/panel.md)
+  - [window](surfaces/window.md)
+  - [popup](surfaces/popup.md)
+  - [lock](surfaces/lock.md)
 
 # Nodes
 
@@ -29,13 +34,13 @@
   - [list](nodes/list.md)
   - [textfield](nodes/textfield.md)
 
-# Surfaces
+# Guides
 
-- [Surfaces](surfaces/index.md)
-  - [panel](surfaces/panel.md)
-  - [window](surfaces/window.md)
-  - [popup](surfaces/popup.md)
-  - [lock](surfaces/lock.md)
+- [Paint](guide/paint.md)
+- [Animation](guide/animation.md)
+- [Input](guide/input.md)
+- [Processes](guide/processes.md)
+- [Scripting](guide/scripting.md)
 
 # Capabilities
 
@@ -68,19 +73,20 @@
 
 - [Cookbook](cookbook/index.md)
   - [Clock bar](cookbook/clock-bar.md)
-  - [Workspaces](cookbook/workspaces.md)
+  - [Battery indicator](cookbook/battery.md)
   - [Volume OSD](cookbook/volume-osd.md)
+  - [Workspaces](cookbook/workspaces.md)
+  - [Lock screen](cookbook/lock-screen.md)
+  - [Power menu](cookbook/power-menu.md)
   - [Notification popups](cookbook/notifications.md)
   - [App launcher](cookbook/launcher.md)
-  - [Battery indicator](cookbook/battery.md)
   - [System tray with menu](cookbook/tray.md)
-  - [Lock screen](cookbook/lock-screen.md)
   - [Media player](cookbook/media-player.md)
-  - [Power menu](cookbook/power-menu.md)
 
 # Reference
 
+- [FAQ](guide/faq.md)
 - [Glossary](glossary.md)
 - [Changelog](changelog.md)
-- [Documenting](development/documenting.md)
 - [Roadmap](roadmap.md)
+- [Documenting](development/documenting.md)

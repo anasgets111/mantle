@@ -39,9 +39,10 @@ fn submit_frame_for(
     target: Option<&node::SecureSubmitTarget>,
     buffer: &mut shared::SecureBuffer,
 ) -> Option<RendererFrame> {
-    // An empty buffer would spend a PAM attempt and `pam_unix` failure delay, so reject it before
-    // checking the destination.
-    let empty = buffer.is_empty();
+    // Empty joins an open network (ADR-0029); anywhere else it is no password, and to lock or
+    // polkit it would spend a PAM attempt and the `pam_unix` failure delay.
+    let empty = buffer.is_empty()
+        && target.is_none_or(|target| (&*target.capability, &*target.action) != ("network", "connect"));
     let Some(target) = target.filter(|_| !empty) else {
         match target {
             None => debug!(
@@ -418,6 +419,22 @@ mod tests {
         // an Enter that said nothing spends one of the user's counted attempts.
         let mut buffer = shared::SecureBuffer::new();
         assert_eq!(submit_frame_for(4, Some(&target("lock", "authenticate")), &mut buffer), None);
+    }
+
+    #[test]
+    fn an_enter_on_an_empty_network_prompt_joins_it_as_open() {
+        // ADR-0029: a hidden network's security is unknown, so it prompts; Enter with nothing typed
+        // is how an open one is joined.
+        let mut buffer = shared::SecureBuffer::new();
+        assert_eq!(
+            submit_frame_for(4, Some(&target("network", "connect")), &mut buffer),
+            Some(RendererFrame::SecureSubmit(SecureSubmit {
+                generation_id: 4,
+                capability: shared::Capability::Network,
+                action: "connect".to_string(),
+                secret: Vec::new(),
+            }))
+        );
     }
 
     #[test]

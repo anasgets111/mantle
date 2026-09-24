@@ -14,7 +14,10 @@ all four roles share; each role has its own page.
 An *instance* is one mapped copy of a declared surface; its id keys the retained scene and names
 the surface in `mantle log` ([glossary](../glossary.md#surfaces)).
 
-```lua
+A 32 px bar on every output that pushes windows down by its height and prints the output's
+connector name:
+
+```lua,shot
 local bar = panel {
     id = "bar",
     layer = "Top",
@@ -22,12 +25,12 @@ local bar = panel {
     height = 32,
     exclusive = true,
     width = "Fill",
-    background = "#1e1e2e",
     child = function(output)
         return row {
             width = "Fill",
             height = "Fill",
             padding = { left = 12, right = 12 },
+            background = "#1e1e2e",
             children = { text { content = output, foreground = "#cdd6f4", align_v = "Center" } },
         }
     end,
@@ -36,15 +39,12 @@ local bar = panel {
 return { bar }
 ```
 
-A 32px bar on every output that pushes windows down by its height and prints the output's
-connector name.
-
 ## Properties every role takes
 
 Every surface takes `id` (required) and one `child` node. The root is itself a box node, so it
 also takes the [common and box node properties](../nodes/index.md): its own `background`, `radius`,
-`padding`, `border_*`, [paint](../guide/paint.md) and [`animate`](../guide/animation.md). A key no
-list names is refused with the list of accepted keys.
+`padding`, `border_*`, [paint](../guide/paint.md) and [`animate`](../guide/animation.md). Any other
+key is refused, and the error lists the accepted ones.
 
 | Property | Values | Default | Behaviour |
 | :--- | :--- | :--- | :--- |

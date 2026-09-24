@@ -119,7 +119,6 @@ return {
         height = "Fill",
         exclusive = "Ignore",
         visible = open,
-        keyboard_interactivity = open:map(function(is_open) return is_open and "OnDemand" or "None" end),
         child = rect {
             width = "Fill",
             height = "Fill",

@@ -5,7 +5,8 @@ use shared::debug;
 
 use super::pass::{publish_geometry, solve_instance};
 use super::solver::{
-    MainAxis, Measure, TEXT_MEASURE_KEYS, main_axis_of, measure_for, new_solver_node, new_solver_tree, taffy_failed,
+    MainAxis, Measure, TEXT_MEASURE_KEYS, hold_leavers, main_axis_of, measure_for, new_solver_node, new_solver_tree,
+    taffy_failed,
 };
 use super::{LayoutStyle, LogicalSize, PreparedNode, ResolvedNode, Scene};
 use crate::layout::instance::SurfaceInstance;
@@ -152,6 +153,7 @@ fn prepare_retained(
             node.children.push(prepare_retained(tree, child, own_axis, lua, now)?);
         }
     }
+    hold_leavers(tree, taffy_id, &node.style, &node.leaving)?;
     let child_ids: Vec<taffy::NodeId> = node.children.iter().map(|child| child.taffy).collect();
     tree.set_children(taffy_id, &child_ids).map_err(taffy_failed)?;
     Ok(node)
@@ -494,6 +496,36 @@ mod tests {
         scene.tick(&instances, &shaping, &lua, started + std::time::Duration::from_millis(100));
         assert_eq!(scene.surface("bar@TEST").unwrap().children[0].children.len(), 1, "a is gone");
         assert!(!scene.surface("bar@TEST").unwrap().animating());
+    }
+
+    /// A lone leaver in a content-sized parent: the parent holds the leaver's last rect for the
+    /// exit, so neither it nor the surface collapses to 0x0 and clips the exit away, then lets go.
+    #[test]
+    fn a_content_sized_parent_holds_its_lone_leavers_rect_until_the_exit_ends() {
+        let mut scene = Scene::new();
+        let shaping = ShapingHandle::spawn();
+        let (lua, surface) = surface_from(
+            r##"local card = rect { id = "card", width = 40, height = 20, margin = { bottom = 2 },
+                   animate = { exit = { duration = 100, easing = "Linear", opacity = 0 } } }
+               return panel { id = "bar", child = column { padding = 4, children = state("kids", { card }) } }"##,
+        );
+        apply_at(&mut scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
+
+        lua.load(r#"state("kids", {}):set({})"#).exec().unwrap();
+        apply_at(&mut scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
+        let column = &scene.surface("bar@TEST").unwrap().children[0];
+        assert!(column.children[0].leaving);
+        assert_eq!((column.rect.width, column.rect.height), (48.0, 30.0), "4 + 40 + 4 by 4 + 20 + 2 + 4");
+
+        let started = column.children[0].tweens[0].started;
+        let instances = [instance_at(&surface, full())];
+        scene.tick(&instances, &shaping, &lua, started + std::time::Duration::from_millis(50));
+        let column = &scene.surface("bar@TEST").unwrap().children[0];
+        assert_eq!((column.rect.width, column.rect.height), (48.0, 30.0), "held through the exit");
+
+        scene.tick(&instances, &shaping, &lua, started + std::time::Duration::from_millis(100));
+        let column = &scene.surface("bar@TEST").unwrap().children[0];
+        assert_eq!((column.rect.width, column.rect.height), (8.0, 8.0), "only its padding once the card is gone");
     }
 
     /// ADR-0150: an exit block runs when the tree drops the node, not when it hides one. A hidden

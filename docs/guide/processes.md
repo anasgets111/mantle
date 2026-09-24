@@ -1,15 +1,14 @@
 # Processes
 
 Run other programs from Lua: read a command's output, launch an app the user keeps, or hold a
-long-running program across reloads. Call them from event handlers (`on_click`, `on_change`,
-a `timer`) or a module's top level. Storage, timers, actions and the utilities are on
-[scripting](scripting.md).
-
-Terms used below (*Supervisor*, *Renderer*, *generation*, *push*) are in the
+long-running program across reloads. Call them from event handlers (`on_click`, `on_change`, a
+`timer`) or a module's top level. Storage, timers, actions and the utilities are on
+[scripting](scripting.md); *Supervisor*, *Renderer* and *push* are in the
 [glossary](../glossary.md).
 
-A clickable temperature read from an HTTP API. It needs `process.run`, [`json`](scripting.md#jsondecode),
-[`log`](scripting.md#log) and a [named state](signals.md#named-state):
+A temperature from an HTTP API that refreshes on click, with `process.run`,
+[`json`](scripting.md#jsondecode), [`log`](scripting.md#log) and a
+[named state](signals.md#named-state):
 
 ```lua
 local temperature = state("temperature", "--")
@@ -26,7 +25,7 @@ local function refresh()
             if type(data) == "table" and data.current_weather then
                 temperature:set(string.format("%.0f°", data.current_weather.temperature))
             else
-                log.warn("weather: curl exited", code)
+                log.warn("weather: no reading; curl exited with", code)
             end
         end)
 end
@@ -40,7 +39,6 @@ return panel {
     },
 }
 ```
-
 
 ## Which one do I use
 
@@ -56,11 +54,11 @@ return panel {
 | Typical uses | `curl`, `getent`, a poll every N seconds, a `--follow` stream | A screen recorder, a daemon the shell owns | Apps, `xdg-open`, a terminal |
 
 - Need the output or the exit code: `process.run`. A long-running one, like `tail -f` or a
-  subscribe loop, restarts with each save; that is the intended way to follow a stream.
+  subscribe loop, restarts with each save, which is how to follow a stream.
 - One instance that must outlive a save or a crash: `session_process`.
 - A program the user keeps after the shell: `process.detach`.
 
-The rest of the shell's state across a reload, a crash and a stop: [runtime](runtime.md#what-survives-a-reload).
+What else survives a reload, a crash and a stop: [runtime](runtime.md#what-survives-a-reload).
 
 ## process.run
 
@@ -239,7 +237,7 @@ return panel {
 | `process.run("ls ~/*.png", {})` or `process.run("ls", { "~/*.png" })` | No shell parses anything, so `~`, globs and pipes stay literal. Split the arguments yourself, or run `"sh", { "-c", "..." }` explicitly |
 | Calling `json.decode(line)` in `out_cb` | Output arrives one line at a time. Collect lines and decode once in `exit_cb` |
 | Treating `kill()` as cancel | `exit_cb` still fires, usually with `nil`. Tag requests with a counter and ignore stale ones |
-| `exit_cb` never arrives | It waits for stdout and stderr to close. A backgrounded grandchild holding the pipes delays it; redirect its output |
+| `exit_cb` never arrives | It waits for stdout and stderr to close, and a backgrounded grandchild holding the pipes keeps them open. Redirect the grandchild's output |
 | A `process.run` child that must outlive a save | A reload kills it. Use [`session_process`](#session_process) |
 | A failure logged on every save | A reload's kill calls `exit_cb(nil)`. Report only a non-zero `code` |
 | Invalid `stop_signal` | The Supervisor refuses the declaration with a warning, and `start` then does nothing. Use a name from the list above |

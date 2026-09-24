@@ -54,7 +54,7 @@ One scanned network in `available_networks`.
 | `band` | `string` | `"2.4 GHz"`, `"5 GHz"`, `"6 GHz"`, or empty for a frequency outside those bands. |
 | `saved` | `boolean` | A saved NetworkManager profile names this SSID, so `connect` asks for no password. |
 | `secure` | `boolean` | Needs a key: WEP, WPA or RSN. |
-| `ssid` | `string` | Network name; one entry per SSID, from its strongest access point. |
+| `ssid` | `string` | Network name, `""` for hidden networks; one entry per SSID, from its strongest access point. |
 | `strength` | `integer` | Signal strength, `0` to `100`. |
 
 ### `JoinError`
@@ -86,19 +86,50 @@ Call as `mantle.network:invoke("action", arguments...)`; `?` marks an argument y
 
 | Contract | Behavior |
 | :--- | :--- |
-| Events | Manager, device list, device state, wireless APs, active AP and saved-profile changes rebuild state. A hotplugged device rescans the set |
-| Devices | Only the first Wi-Fi device is tracked |
-| Toggles | Networking via `Enable`; Wi-Fi via `WirelessEnabled`. Ethernet off disconnects wired devices; on activates each one's first autoconnect profile |
-| Scan | `RequestScan`; duplicate SSIDs merge. Keeps the connected AP, then saved networks, then the strongest, capped at 20. Band from frequency |
-| Connect | Saved profiles reactivate. A secured join takes its key through `secure_submit`, never Lua. An aborted join deletes the profile it created. 45 s backstop on activation |
-| Disconnect | `Device.Disconnect`; NetworkManager then skips autoconnect until the user joins again |
-| Missing | Stays `nil`; the next generation's start retries |
+| Updates | Every manager, device-list, device-state, access-point, association and saved-profile change re-reads the whole state from NetworkManager. A hotplugged adapter rescans the device set |
+| Devices | Only the first Wi-Fi device is tracked. Wired fields describe the first activated wired device |
+| Toggles | Networking through `Enable`, Wi-Fi through `WirelessEnabled` |
+| Scan | `RequestScan`. `scanning` turns `true` on the call and `false` when `LastScan` moves or NetworkManager refuses |
+| Connect | A saved profile or an open network in range joins at once. Anything else sets `password_ssid` and waits for the key from a `secure_submit = { capability = "network", action = "connect" }` field ([secure fields](../guide/input.md#secure-fields)); the key never reaches Lua |
+| Join verdict | Watched for up to 45 s. A rejected key sets `password_ssid` again. A new network's profile, key included, is saved when the join starts and stays after a rejection; a key retyped for a saved profile reaches disk only once NetworkManager accepts it |
+| Abort | `abort_connect` deletes a profile the join created, else deactivates the join |
+| Missing | Stays `nil`. The next generation's first read retries |
 
 ## How do I…
 
+### Ask for a Wi-Fi password
+
+Show the field while `password_ssid` is set. Escape clears a secure field and keeps it armed, then
+calls its `on_cancel`, the place to invoke `cancel_connect`:
+
+```lua
+local asking = mantle.network:map(function(network)
+    return network ~= nil and network.password_ssid ~= nil
+end)
+
+return column {
+    visible = asking,
+    spacing = 6,
+    children = {
+        text {
+            content = mantle.network:map(function(network)
+                return network and network.password_ssid and ("Password for " .. network.password_ssid) or ""
+            end),
+        },
+        textfield {
+            width = 240,
+            height = 24,
+            placeholder = "Password",
+            secure_submit = { capability = "network", action = "connect" },
+            on_cancel = function() mantle.network:invoke("cancel_connect") end,
+        },
+    },
+}
+```
+
 ### Know whether a join worked
 
-`invoke` returns nothing, so a failed `connect` shows up in state instead:
+A failed `connect` lands in `connect_error`:
 
 ```lua
 text {
@@ -109,5 +140,12 @@ text {
     end),
 }
 ```
+
+## Gotchas
+
+| Trap | Fix |
+| :--- | :--- |
+| `available_networks` has a row with `ssid == ""` | Hidden networks broadcast no name; they merge into one nameless row. Skip it and join hidden networks with `connect(ssid, true)` |
+| A hidden network asks for a password even when open | Its security is unknown until it answers. Enter on the empty field joins it as open |
 
 Source: [`supervisor/src/capabilities/network/`](../../supervisor/src/capabilities/network/)

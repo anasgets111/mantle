@@ -1,10 +1,10 @@
 # Nodes
 
-Nodes are the UI tree inside a [surface](../surfaces/index.md): boxes, rows, text, icons, images,
-lists and shaders. Each constructor (`row { ... }`, `text { ... }`) takes a property table and
-returns it tagged with its kind. Read this page for how nodes are placed and what every kind shares;
-each kind has its own page for what it adds. How a box looks is on [paint](../guide/paint.md),
-motion on [animation](../guide/animation.md), clicks and typing on [input](../guide/input.md).
+Nodes are the UI tree inside a [surface](../surfaces/index.md). Each constructor (`row { ... }`,
+`text { ... }`) takes a property table and returns it tagged with its kind. This page covers layout
+and the properties every kind shares; each kind's page covers what it adds. How a box looks is on
+[paint](../guide/paint.md), motion on [animation](../guide/animation.md), clicks and typing on
+[input](../guide/input.md).
 
 A bar with a left group, a centred clock and a right group:
 
@@ -38,14 +38,14 @@ local bar = panel {
 return { bar }
 ```
 
-The two side rows are `"Fill"`, so they split what the clock leaves over equally, which puts the
-clock at the exact centre whatever its width. The right row packs its children at its end.
+The two side rows are `"Fill"`, so they split what the clock leaves equally, and the clock sits at
+the exact centre whatever its width. The right row packs its children at its end.
 
 ## Kinds
 
 Every kind accepts the [common properties](#common-properties). Box kinds also accept the
-[box properties](#box-properties). Any other name raises an error that lists what the kind accepts,
-so a typo such as `aling_v` fails loudly.
+[box properties](#box-properties). Any other key raises an error listing what the kind accepts, so
+a typo such as `aling_v` fails.
 
 | Kind | Page | Box | Children | Own properties |
 | :--- | :--- | :---: | :--- | :--- |
@@ -68,14 +68,14 @@ and box properties and stack their one `child` ([surfaces](../surfaces/index.md)
 | Rule | Detail |
 | :--- | :--- |
 | Types | A property table's Type column is the editor stubs' LuaCATS type. `Bound` means it also takes a signal; `Length` is a [size](#sizes); `Edges` is `{ top, right, bottom, left }` with missing edges 0; `Axes` is `{ x, y }` with a missing axis at the property's default; `Color` is a colour; `Animations` is per-property [tweens](../guide/animation.md). A range after the type is checked |
-| Signals | Any property can hold a [signal](../guide/signals.md) except `id` and callbacks. `hover`, `scroll` and `geometry` take the signal handle itself. A signal nested inside a property table is not resolved, and is refused: derive the whole table |
-| `nil` | A property whose signal reads `nil` is absent, so it takes its default. Capabilities read `nil` until their first push, so a bare capability binding never fails layout |
+| Signals | A property whose Type includes `Bound` takes a [signal](../guide/signals.md); `id` and callbacks do not. `hover`, `scroll` and `geometry` take the signal handle itself. A signal inside a table property is refused: derive the whole table |
+| `nil` | A signal reading `nil` leaves its property absent, at its default. Capabilities read `nil` until their first push, so binding one never fails layout |
 | Numbers | Finite. A value outside a property's range is an error, not a clamp |
 | Colours | `"#RRGGBB"` or `"#RRGGBBAA"` ([colours](../guide/paint.md#colours)) |
 | Strings | Capped at 64 KB |
 | Arrays | `children`, `list.source` and `text` runs take at most 10000 elements. A `nil` hole in `children` is an error; in `list.source` and runs it ends the array |
 | Tables | A table property (`padding`, `anchor`, `shadow_offset`, `transition`, an `animate` entry, a run, ...) refuses a key it does not take, so `{ topp = 4 }` names `topp` |
-| Callbacks and flags | Every `on_*` must be a function, and `submit` and `autofocus` booleans. `on_click = "x"` or `submit = 1` is an error. For a conditional handler write `cond and fn or nil`, since `false` is refused too |
+| Callbacks and booleans | Every `on_*` takes only a function, and every `boolean` property (`visible`, `submit`, ...) only `true` or `false`. `on_click = "x"` or `submit = 1` is an error. For a conditional handler write `cond and fn or nil`: `false` is refused too |
 
 ## Layout model
 
@@ -95,8 +95,8 @@ container either **flows** its children along one axis or **stacks** them on top
 A stacking parent's content size is the union of its children, so a `rect` is how you layer a badge
 over an icon or a label over an image.
 
-Of the leaves, only `text` and `icon` measure themselves. `image`, `capture`, `shader` and `textfield` have no
-intrinsic size: without `width` and `height` they are 0 × 0 and draw nothing.
+Of the leaves, only `text` and `icon` measure themselves. `image`, `capture`, `shader` and
+`textfield` have no intrinsic size: without `width` and `height` they are 0 × 0 and draw nothing.
 
 ### Sizes
 
@@ -104,22 +104,22 @@ intrinsic size: without `width` and `height` they are 0 × 0 and draw nothing.
 
 | Value | Size |
 | :--- | :--- |
-| Omitted | Content: text and icons measure themselves, containers wrap their children, other leaves are 0 |
+| Omitted | Content: `text` and `icon` measure themselves, containers wrap their children, other leaves are 0 |
 | Number | Pixels, `[0, 8192]` |
 | `"Fill"` | Along the parent's main axis: an equal share of the space the fixed and content-sized siblings leave. Across it, or in a stacking parent: the whole slot, whatever `align_h`/`align_v` say |
 | `"NN%"` (`"50%"`, `"12.5%"`) | A fraction of the parent's content box (inside its padding). It needs a parent with a definite size on that axis |
 
 There is no `"Content"` literal; omit the property instead.
 
-Children never shrink. When fixed and content-sized children overflow a row, they keep their sizes
-and spill out (clipped by the parent's `clip`), and `"Fill"` siblings get 0. A `"Fill"` child
-along the main axis of a content-sized parent also gets 0: there is no remainder to share. Across
-the axis, `"Fill"` in a content-sized parent takes the widest sibling's size.
+Children never shrink. Fixed and content-sized children that overflow a row keep their sizes and
+spill out, cut by the parent's `clip`, and `"Fill"` siblings get 0. A `"Fill"` child along the main
+axis of a content-sized parent also gets 0: there is no remainder to share. Across the axis,
+`"Fill"` in a content-sized parent takes the largest sibling's size.
 
 `min_width`, `min_height`, `max_width` and `max_height` are pixels `[0, 8192]` (not `"Fill"` or
-percents). They clamp every size, content, fixed and `"Fill"` alike, as CSS does: a `"Fill"` capped
-by `max_width` gives the rest to its `"Fill"` siblings. A floor above a ceiling wins. Content past a
-ceiling overflows, and a `scroll` on the same node scrolls it ([scroll](../guide/input.md#scroll)).
+percents). They clamp every size, content, fixed and `"Fill"` alike, as in CSS: a `"Fill"` capped
+by `max_width` leaves the rest to its `"Fill"` siblings. A floor above a ceiling wins. Content past
+a ceiling overflows; a `scroll` on the same node scrolls it ([scroll](../guide/input.md#scroll)).
 
 ### Spacing, padding and margin
 
@@ -134,8 +134,8 @@ missing edges 0. Neither is range-checked, so negatives are accepted. A hidden c
 
 ### Alignment
 
-`align_h` and `align_v` take `"Start"`, `"Center"`, `"End"` or `"Stretch"`, default `"Start"`. What
-they do depends on the axis.
+`align_h` and `align_v` take `"Start"`, `"Center"`, `"End"` or `"Stretch"`, default `"Start"`, and
+act by axis:
 
 | Where | `align_h` / `align_v` does |
 | :--- | :--- |
@@ -147,8 +147,8 @@ they do depends on the axis.
 `"Stretch"` across an axis fills the slot and overrides a fixed size on that axis. To space items
 out along a row, use `"Fill"` children as spacers.
 
-`text_align` on [`text`](text.md) and [`textfield`](textfield.md) is a different thing: it places
-lines inside the node's own box, and matters only when that box is wider than the text.
+`text_align` on [`text`](text.md) and [`textfield`](textfield.md) is separate: it places lines
+inside the node's own box, and matters only when that box is wider than the text.
 
 ## Common properties
 
@@ -167,7 +167,7 @@ lines inside the node's own box, and matters only when that box is wider than th
 | `align_v` | `"Start"\|"Center"\|"End"\|"Stretch"\|Bound` | `"Start"` | See [alignment](#alignment) |
 | `visible` | `boolean\|Bound` | `true` | `false` removes the node from layout, paint and spacing and freezes its subtree ([showing and hiding](#showing-hiding-and-switching)) |
 | `opacity` | `number\|Bound`, `[0, 1]` | `1` | Multiplied down the tree. At `0` the node still takes space and input |
-| `z` | `number\|Bound` | `0` | Sibling paint and hit order. Higher paints later and hits first; ties keep declaration order. Layout and focus ignore it; cannot animate |
+| `z` | `number\|Bound` | `0` | Sibling paint and hit order. Higher paints later and hits first; ties keep declaration order. Layout and focus ignore it; `animate` refuses it |
 | `scale` | `number\|Axes\|Bound`, `[0, 64]` | `1` | About `origin`; a missing axis is `1`. Paint only: layout and `geometry` see the unscaled box; hit-testing follows the painted one |
 | `rotate` | `number\|Bound`, `[-8192, 8192]` | `0` | Degrees clockwise about `origin`. Paint only |
 | `translate` | `Axes\|Bound`, `[-8192, 8192]` | `{ x = 0, y = 0 }` | Pixel offset per axis, a missing one `0`, applied after `scale` and `rotate`. Paint only |
@@ -175,7 +175,7 @@ lines inside the node's own box, and matters only when that box is wider than th
 | `shadow_color` | `Color\|Bound` | `"#000000"` | A drop shadow ([shadows](../guide/paint.md#shadows)). Draws when alpha > 0 and `shadow_blur`, `shadow_offset` or `shadow_spread` is set |
 | `shadow_blur` | `number\|Bound`, `[0, 8192]` | `0` | CSS `box-shadow` blur radius in px |
 | `shadow_offset` | `Axes\|Bound`, `[-8192, 8192]` | `{ x = 0, y = 0 }` | Shadow offset in px per axis. Follows the node's transform |
-| `shadow_spread` | `number\|Bound`, `[-8192, 8192]` | `0` | Px the shadow grows (or shrinks) per side. On non-box content it scales the shadow about the box centre |
+| `shadow_spread` | `number\|Bound`, `[-8192, 8192]` | `0` | Px the shadow grows per side; negative shrinks it. On non-box content it scales the shadow about the box centre |
 | `content_blur` | `number\|Bound`, `[0, 8192]` | `0` | Gaussian sigma in px over this node's painted subtree, CSS `filter: blur()` ([blurs](../guide/paint.md#blurs)). Clipped like a shadow |
 | `animate` | `Animations\|Bound` | None | Per-property tweens and an `exit` block ([animation](../guide/animation.md)). Only a node already on screen animates, unless the entry has `from` |
 | `id` | `string` | None | Unique among siblings; matches this node across passes ([identity](#identity-and-reconciliation)). Never a signal |
@@ -185,10 +185,9 @@ lines inside the node's own box, and matters only when that box is wider than th
 | `on_hover` | `fun(hovered: boolean)` | None | Called on each hover edge from pointer Enter, Motion or Leave; layout changes under a still pointer do not call it. Refused without `hover` on the same node |
 <!-- End of the generated table. -->
 
-`scale`, `rotate` and `translate` are paint-only, like CSS `transform`: the node and its subtree
-draw moved, but layout, siblings and `geometry` see the untransformed box. Hit-testing follows the
-painted box; a node scaled to 0 takes no input. Tween them for motion that does not re-lay out the
-surface.
+`scale`, `rotate` and `translate` act like CSS `transform`: the subtree draws moved, while layout,
+siblings and `geometry` see the untransformed box. A node scaled to 0 takes no input. Tween them for
+motion that skips re-layout.
 
 ### Cursor names
 
@@ -214,10 +213,10 @@ take none of them: wrap one in a `rect` for a background, border or rounded clip
 
 ## Identity and reconciliation
 
-The tree is rebuilt from Lua on every pass, then matched against the nodes already on screen, one
-parent at a time. A matched node keeps its state: running tweens, a held image, a capture stream, a
-text field's draft. An unmatched old node is removed, and plays its `animate.exit` first
-if it has one ([exit](../guide/animation.md#exit)).
+Each pass rebuilds the tree from Lua, then matches it against the nodes on screen, one parent at a
+time. A matched node keeps its state: running tweens, a held image, a capture stream, a text field's
+draft. An unmatched old node is removed, after its `animate.exit` if it has one
+([exit](../guide/animation.md#exit)).
 
 | Child | Matches |
 | :--- | :--- |
@@ -230,32 +229,32 @@ signal. In a `list`, `key` supplies it. Give a node a stable `id` when:
 
 - Siblings before it come and go. A position shift pairs it with the wrong old node.
 - It holds state across changes: an `image` with `retain` or `transition`, a `capture`, a `textfield`.
-- It replaces another node of the same kind and should not reuse it. When switched views are both a
-  `column` without ids, the new view is the old node with new properties, so no exit or entry
-  plays. Distinct ids make it a real replacement.
+- It replaces another node of the same kind. Two switched views that are both id-less `column`s
+  match each other: the new view is the old node with new properties, so no exit or entry plays.
 
 ## Showing, hiding and switching
 
 `visible = false` takes a node out of layout, paint and input, with no gap. Its subtree stays in
 memory, [frozen](../guide/signals.md#how-re-resolution-works) until it shows again. Use it for a
-section you toggle in place. For views that replace each other, bind the parent's `children`
-([switching views](../guide/signals.md#switching-views)).
-
-`opacity = 0` is different: the node still takes space and still takes input.
+section toggled in place; for views that replace each other, bind the parent's `children`
+([switching views](../guide/signals.md#switching-views)). `opacity = 0` still takes space and
+input.
 
 ### Switching views with ids
 
-Views swapped through a `children` signal, each with its own `id` so the outgoing one fades out
+Views swapped through a `children` signal, each with its own `id`, so the outgoing one fades out
 while the incoming one fades in. The parent is a `rect`, so the two overlap during the swap instead
-of stacking in a column.
+of stacking. The shot switches `tab` to `"bluetooth"`:
 
-```lua
+<!-- shot: frames=0..150/30 -->
+```lua,shot
 local tab = state("tab", "wifi")
 
 local function page(name, label)
     return column {
-        id = name, -- a new id per view: the old view leaves (and fades) instead of being reused
+        id = name, -- a new id per view: the old view leaves and fades instead of being reused
         padding = 12,
+        opacity = 1, -- `from` needs the property set
         animate = { opacity = { duration = 150, from = 0 }, exit = { duration = 150, opacity = 0 } },
         children = { text { content = label } },
     }
@@ -270,6 +269,8 @@ local body = rect {
     width = 300,
     children = tab:map(function(current) return { views[current]() } end),
 }
+
+return body
 ```
 
 ## How do I…
@@ -306,7 +307,7 @@ local body = rect {
 | A signal inside a table property (`padding = { top = sig }`) raises an error | Map the whole table: `padding = sig:map(function(v) return { top = v } end)` |
 | `on_click = cond and fn` raises `expected a function` | A false `cond` yields `false`: write `cond and fn or nil` |
 | `children = { a, cond and b, c }` raises `expected a node table at index 2` | A false or nil entry is a hole. Build the array with `table.insert`, or a signal of the whole array |
-| `opacity = 0` hides a node but it still eats clicks | Use `visible = false` |
+| `opacity = 0` hides a node but it still takes clicks | Use `visible = false` |
 
 See also: [surfaces](../surfaces/index.md) (where a tree lives), [signals](../guide/signals.md)
 (live properties), [paint](../guide/paint.md), [animation](../guide/animation.md),

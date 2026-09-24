@@ -158,13 +158,17 @@ mod doc_examples {
 
     use crate::image::ImageCache;
     use crate::image::capture::CaptureCache;
+    use crate::layout::hit::LogicalPoint;
+    use crate::layout::hover::hover_writes;
     use crate::layout::image_shader::ShaderStage;
+    use crate::layout::instance::SurfaceInstance;
     use crate::layout::node::{PopupAnchor, PopupSpec, SurfaceSpec, popup_spec};
     use crate::layout::paint::{Shaders, build, execute, init_headless_egl, test_gl, text_painter};
-    use crate::layout::scene::{LogicalSize, ResolvedNode};
+    use crate::layout::scene::{LogicalSize, ResolvedNode, Scene};
     use crate::text::atlas::TextPainter;
     use crate::text::shaping::ShapingHandle;
     use crate::text::snap::PhysicalRect;
+    use crate::wayland::apply_hover_write;
 
     /// Narrow enough that a full-width bar and its [`MARGIN`]s fit the book's 750 px column unscaled.
     const OUTPUT: LogicalSize = LogicalSize { width: 704.0, height: 396.0 };
@@ -201,10 +205,8 @@ mod doc_examples {
         line
     }
 
-    /// `(1-based fence line, info string, body, the line above the fence)` for each fence whose
-    /// info string is `lua` or starts `lua,`. Other fences are tracked only so their bodies are not
-    /// read as fences.
-    fn lua_blocks(markdown: &str) -> Vec<(usize, String, String, String)> {
+    /// `(1-based fence line, info string, body, the line above the fence)` for each fence.
+    fn blocks(markdown: &str) -> Vec<(usize, String, String, String)> {
         let mut blocks = Vec::new();
         let mut open: Option<(usize, String, String, String)> = None;
         let mut above = "";
@@ -212,9 +214,7 @@ mod doc_examples {
             let line = unquoted(raw);
             let fence = line.trim_start().strip_prefix("```").map(str::trim);
             match (&mut open, fence) {
-                (Some(_), Some("")) => {
-                    blocks.extend(open.take().filter(|(_, info, ..)| info == "lua" || info.starts_with("lua,")))
-                }
+                (Some(_), Some("")) => blocks.extend(open.take()),
                 (Some((_, _, body, _)), _) => body.extend([line, "\n"]),
                 (None, Some(info)) => open = Some((index + 1, info.to_string(), String::new(), above.to_string())),
                 (None, None) => {}
@@ -356,11 +356,23 @@ os.getenv = function(name) return ({{ USER = "user", HOME = "/home/user" }})[nam
     /// every tween finished.
     ///
     /// A `fakes` global table the page's fakes set, `{ battery = {...} }`, is pushed into those
-    /// capabilities before layout. A `__after` function runs after the first layout, and the scene
-    /// lays out again: that is how a shot shows a change, like an OSD appearing.
-    fn shoot(source: &str, shaping: &ShapingHandle, gpu: &mut Gpu, frames: &[u64]) -> Result<Shot, String> {
+    /// capabilities before layout. After the first layout a `__pointer` table rests the pointer
+    /// (see [`rest_pointer`]), a `__after` function runs, and the scene lays out again: that is how
+    /// a shot shows a change, like an OSD appearing.
+    fn shoot(
+        source: &str,
+        files: &[(&str, &str)],
+        shaping: &ShapingHandle,
+        gpu: &mut Gpu,
+        frames: &[u64],
+    ) -> Result<Shot, String> {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("shell.lua"), source).unwrap();
+        for (name, body) in files {
+            let path = dir.path().join(name);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, body).unwrap();
+        }
         let (output, specs, namespace, loader) = super::evaluate(dir.path())?;
         let lua = loader.lua();
         // The first push, as the Supervisor's would arrive: `on_change` runs too, once every fake
@@ -378,11 +390,18 @@ os.getenv = function(name) return ({{ USER = "user", HOME = "/home/user" }})[nam
             }
         }
         let (mut scene, instances) = super::lay_out(&output, &specs, &loader, shaping, OUTPUT)?;
-        if let Ok(after) = lua.globals().get::<mlua::Function>("__after") {
-            // Settle the first layout's tweens, so the frames count from `__after`'s alone rather
+        let pointer = lua.globals().get::<mlua::Table>("__pointer").ok();
+        let after = lua.globals().get::<mlua::Function>("__after").ok();
+        if pointer.is_some() || after.is_some() {
+            // Settle the first layout's tweens, so the frames count from these changes alone rather
             // than from however long the first pass took.
             scene.tick(&instances, shaping, lua, Instant::now() + Duration::from_secs(10));
-            after.call::<()>(()).map_err(|err| format!("__after: {err}"))?;
+            if let Some(pointer) = pointer {
+                rest_pointer(&pointer, &scene, &instances, lua)?;
+            }
+            if let Some(after) = after {
+                after.call::<()>(()).map_err(|err| format!("__after: {err}"))?;
+            }
             scene
                 .apply_locked(&output.surfaces, &instances, shaping, lua, false)
                 .map_err(|err| format!("layout: {err}"))?;
@@ -427,6 +446,29 @@ os.getenv = function(name) return ({{ USER = "user", HOME = "/home/user" }})[nam
             placed.push(parts.into_iter().map(|(_, part)| part).collect::<Vec<_>>());
         }
         crop(&placed)
+    }
+
+    /// `__pointer = { surface = "bar", x = 40, y = 12 }`: the pointer resting at that point of the
+    /// surface, in its logical px, through the same hover writes a Wayland motion makes, so every
+    /// `hover` on the path, its rect and its `on_hover` answer. `surface` defaults to the first.
+    fn rest_pointer(
+        pointer: &mlua::Table,
+        scene: &Scene,
+        instances: &[SurfaceInstance],
+        lua: &mlua::Lua,
+    ) -> Result<(), String> {
+        let field = |err: mlua::Error| format!("__pointer: {err}");
+        let surface: Option<String> = pointer.get("surface").map_err(field)?;
+        let point = LogicalPoint { x: pointer.get("x").map_err(field)?, y: pointer.get("y").map_err(field)? };
+        let (instance, tree) = instances
+            .iter()
+            .filter(|instance| surface.as_ref().is_none_or(|surface| *surface == instance.declared_id))
+            .find_map(|instance| Some((instance, scene.surface(&instance.instance_id)?)))
+            .ok_or(format!("__pointer: no surface `{}`", surface.unwrap_or_default()))?;
+        for write in hover_writes(tree, Some(point)) {
+            apply_hover_write(lua, write, true, &instance.instance_id);
+        }
+        Ok(())
     }
 
     /// Where an `xdg_positioner` puts a `size` popup in its parent: the `anchor` point of
@@ -606,24 +648,36 @@ os.getenv = function(name) return ({{ USER = "user", HOME = "/home/user" }})[nam
             let fakes_path = image_dir.join(format!("{}.fakes.lua", page.file_name().unwrap().to_string_lossy()));
             let fakes = std::fs::read_to_string(&fakes_path).unwrap_or_default();
             let mut shots = 0;
-            for (line, info, source, above) in lua_blocks(&std::fs::read_to_string(path).unwrap()) {
+            let blocks = blocks(&std::fs::read_to_string(path).unwrap());
+            // A block under `<!-- file: shaders/glow.frag -->` is that file in every shot's config
+            // directory, so a page's example files are the ones its shots load.
+            let page_files: Vec<(&str, &str)> = blocks
+                .iter()
+                .filter_map(|(.., body, above)| {
+                    Some((above.trim().strip_prefix("<!-- file:")?.strip_suffix("-->")?.trim(), body.as_str()))
+                })
+                .collect();
+            for (line, info, source, above) in &blocks {
+                if info != "lua" && !info.starts_with("lua,") {
+                    continue;
+                }
                 let at = format!("docs/{}:{line}", page.with_extension("md").display());
                 let outcome = match info.as_str() {
-                    "lua" | "lua,must-fail" => lay_out(&source, &shaping).map(drop),
+                    "lua" | "lua,must-fail" => lay_out(source, &shaping).map(drop),
                     "lua,shot" => {
                         shots += 1;
                         let image =
                             image_dir.join(format!("{}-{shots}.png", page.file_name().unwrap().to_string_lossy()));
                         images.insert(image.clone());
                         let gpu = gpu.get_or_insert_with(|| Gpu::new(&shaping));
-                        frames(&above).and_then(|times| {
-                            let lua = with_fixture_images(pinned(&fakes) + &shell(&source), &fixtures.join("images"));
-                            let shot = shoot(&lua, &shaping, gpu, &times)?;
+                        frames(above).and_then(|times| {
+                            let lua = with_fixture_images(pinned(&fakes) + &shell(source), &fixtures.join("images"));
+                            let shot = shoot(&lua, &page_files, &shaping, gpu, &times)?;
                             compare(&shot, &times, &image, update)
                         })
                     }
                     "lua,fragment" => {
-                        mlua::Lua::new().load(&source).into_function().map(drop).map_err(|err| err.to_string())
+                        mlua::Lua::new().load(source).into_function().map(drop).map_err(|err| err.to_string())
                     }
                     "lua,no-check" => continue,
                     _ => Err(format!("unknown fence tag `{info}`")),
@@ -651,6 +705,30 @@ os.getenv = function(name) return ({{ USER = "user", HOME = "/home/user" }})[nam
             }
         }
         assert!(failures.is_empty(), "{} doc block(s) failed:\n{}", failures.len(), failures.join("\n"));
+    }
+
+    #[test]
+    fn a_resting_pointer_hovers_the_node_under_it_and_not_its_sibling() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = r#"
+under, beside = hover("under"), hover("beside")
+return panel { id = "bar", layer = "Top", height = 20, child = row { children = {
+    rect { width = 40, height = 20, hover = under },
+    rect { width = 40, height = 20, hover = beside },
+} } }
+"#;
+        std::fs::write(dir.path().join("shell.lua"), source).unwrap();
+        let (output, specs, _, loader) = super::evaluate(dir.path()).unwrap();
+        let shaping = ShapingHandle::spawn_with(None);
+        let (scene, instances) = super::lay_out(&output, &specs, &loader, &shaping, OUTPUT).unwrap();
+        let lua = loader.lua();
+        let pointer: mlua::Table = lua.load("{ surface = 'bar', x = 10, y = 10 }").eval().unwrap();
+
+        rest_pointer(&pointer, &scene, &instances, lua).unwrap();
+
+        let hovered = |name: &str| lua.load(format!("return {name}:get()")).eval::<bool>().unwrap();
+        assert!(hovered("under"));
+        assert!(!hovered("beside"));
     }
 
     fn lay_out(block: &str, shaping: &ShapingHandle) -> Result<(), String> {

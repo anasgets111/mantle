@@ -28,16 +28,21 @@ button {
 
 | Contract | Behavior |
 | :--- | :--- |
-| Discovery | `ListNames` once, then `NameOwnerChanged` for `org.mpris.MediaPlayer2.*`, excluding `playerctld` |
-| Refresh | `PlaybackStatus` and `Metadata` changes and `Seeked` refresh the cache; a status change also re-reads `Position` once 100 ms later |
-| Position | Sampled with a `CLOCK_MONOTONIC` timestamp for the config to extrapolate; nothing polls |
-| Controls | Play, pause, play/pause, next, previous |
-| Seek | Absolute seek is `SetPosition` with the cached track id, else a relative `Seek` from the last known position. |
+| Discovery | Session bus `ListNames` once, then `NameOwnerChanged` for `org.mpris.MediaPlayer2.*`. Skips `playerctld` and any player reporting `CanControl = false` |
+| Pushes | On a `PlaybackStatus` or `Metadata` change and on `Seeked`. A status change re-reads `Position` 100 ms later. Nothing polls |
+| Seek | `seek` calls `SetPosition` with the cached `mpris:trackid`. A player without one gets a relative `Seek` from a live `Position` read |
 
 ## How do I…
 
 | Task | Answer |
 | :--- | :--- |
-| Play or pause whatever is playing | `control` on `players[1].id`, as in the example above |
+| Show a live progress bar | Stamp each new `position_updated_at` with `mantle.system.monotonic` in `on_change`, then add the seconds since: [Media player](../cookbook/media-player.md) |
+
+## Gotchas
+
+| Trap | Fix |
+| :--- | :--- |
+| `position` stands still while playing | It is the offset at `position_updated_at`, not polled. Extrapolate, as above |
+| `position_updated_at` compared with `mantle.system.monotonic` gives nonsense | Different clocks and units: `CLOCK_MONOTONIC` microseconds against seconds since `system` started. Only compare it with itself |
 
 See also: [Media player](../cookbook/media-player.md) recipe.

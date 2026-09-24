@@ -1,9 +1,9 @@
 # popup
 
-An `xdg_popup` attached to a shown `panel`, `window` or another `popup`. The compositor positions it
-relative to a rectangle in the parent, keeps it on screen and dismisses it on an outside click,
-which is why a dropdown, context menu or tooltip is a popup and not a second panel. No Wayland
-object exists while it is hidden. Rules every role shares are in [surfaces](index.md).
+An `xdg_popup` on a shown `panel`, `window` or `popup`: a dropdown, context menu or tooltip. The
+compositor places it against a rectangle in the parent, keeps it on screen and, with a
+[grab](#grab), dismisses it on an outside click, which a second panel cannot do. A hidden popup has
+no Wayland object. Rules every role shares are in [surfaces](index.md).
 
 ```lua,shot
 local menu_open = state("menu_open", false)
@@ -54,13 +54,13 @@ return { bar, menu }
 ```
 
 A dropdown under a bar button. `on_click`'s `rect` is the button in its surface's coordinates,
-exactly what `anchor_rect` wants ([pointer input](../guide/input.md#pointer)). An outside click
+which is what `anchor_rect` takes ([pointer input](../guide/input.md#pointer)). An outside click
 dismisses it and `on_dismiss` clears the state.
 
 ## Properties
 
-Beyond the [shared properties](index.md#properties-every-role-takes). All fields but `parent` are
-live.
+Beyond the [shared properties](index.md#properties-every-role-takes). Every field but `id`, `parent`
+and `on_dismiss` takes a signal.
 
 <!-- Generated from renderer/src/lua/nodes/properties.rs by `just stubs`: edit the table there. -->
 | Property | Type | Default | Behaviour |
@@ -82,28 +82,24 @@ live.
 
 ## Placement
 
-While a popup is open, a change to its measured size or any positioner field moves it through
-`xdg_popup.reposition`. On a compositor with `xdg_popup` below version 3 it keeps the size and
-place it opened at until it closes, with a warning.
-
-When `parent` names a per-output panel, the popup opens on the instance the arming click landed
-on, else the first instance. A popup whose parent is hidden does not open; hiding the parent closes
-it.
+While a popup is open, a change to its measured size or to any positioner field moves it through
+`xdg_popup.reposition`. Below `xdg_popup` version 3 it keeps the size and place it opened at until
+it closes, and logs a warning.
 
 ## Grab
 
-A grab needs a pointer press or release in the same turn: open a grabbing popup from `on_click`.
-Without one the popup is not opened and a warning is logged. A compositor that denies the grab
-dismisses the popup.
+A grab needs a left, right or middle press or release on one of the shell's surfaces in the same
+turn, so open a grabbing popup from `on_click`. Without one the popup stays closed and a warning
+is logged. A compositor that denies the grab dismisses the popup, and `on_dismiss` runs.
 
 ## Dismissal
 
 A compositor dismissal destroys the popup but leaves your `visible` signal `true`. The engine
-latches it shut until the next pointer press or release, then opens it again. Clear your state in
-`on_dismiss`, as the example at the top does.
+latches it shut until the next pointer press or release on the shell, then opens it again. Clear
+your state in `on_dismiss`, as the example at the top does.
 
-Hiding or dismissing a popup also destroys the popups open under it and latches them as if
-dismissed, so each reopens on the next pointer press while its own `visible` stays true.
+Hiding or dismissing a popup also closes the popups open under it and latches them the same way,
+so each one whose `visible` stays true reopens on the next press.
 
 ## How do I…
 
@@ -122,8 +118,8 @@ dismissed, so each reopens on the next pointer press while its own `visible` sta
 
 ### Nested menus
 
-A popup can parent another popup. Here the submenu hangs off the right edge of the clicked row and
-flips left near the screen edge:
+A popup can parent another popup. The submenu hangs off the right edge of the clicked row and flips
+left near the screen edge:
 
 ```lua
 local sub_open = state("sub_open", false)
@@ -183,7 +179,7 @@ local tooltip = popup {
 ### Anchor to a node's geometry
 
 Bind [`geometry`](../guide/signals.md#geometry-read-a-nodes-laid-out-rect). It reads zero before
-the first layout, so map it to a 1×1 fallback:
+the first layout, so map it to a 1×1 fallback. With no click to open it, it needs `grab = false`:
 
 ```lua
 local battery = text { content = "87%", padding = 8, geometry = geometry("battery") }
@@ -196,6 +192,7 @@ local details = popup {
     end),
     anchor = "Bottom",
     gravity = "Bottom",
+    grab = false,
     visible = state("battery_open", false),
     child = text { content = "2 h 10 min left" },
 }
@@ -207,7 +204,7 @@ local details = popup {
 | :--- | :--- |
 | `anchor_rect` with a zero `width` or `height` is refused (a `geometry` before first layout, a hand-built rect) | Fall back to `{ x = 0, y = 0, width = 1, height = 1 }` |
 | A dropdown reopens on the next click after an outside click closed it | Set its `visible` state to `false` in `on_dismiss` |
-| A popup with `visible` bound to startup-true state never opens | `grab = true` needs a click; open it from `on_click`, or set `grab = false` |
+| A popup that is `visible` at startup, or opened from a keybind, never opens | `grab = true` needs a click; open it from `on_click`, or set `grab = false` |
 | A popup whose parent is hidden does not open | Show the parent first; the popup opens on the next pass |
 | A submenu reopens after its menu closed | Clear the submenu's state wherever the menu closes, `on_dismiss` included |
 | `width = "Fill"` or `"50%"` is refused | px, or omit it to size to the content |

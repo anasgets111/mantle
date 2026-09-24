@@ -1,8 +1,8 @@
 # window
 
-An `xdg_toplevel`: an ordinary application window the compositor places, tiles, decorates and
-closes. Use it for a settings window or a dialog the user moves around; use a [panel](panel.md)
-for anything pinned to the desktop. Rules every role shares are in [surfaces](index.md).
+An `xdg_toplevel`: an application window the compositor places, tiles, decorates and closes. Use it
+for a settings window or a dialog; use a [panel](panel.md) for anything pinned to the desktop.
+Rules every role shares are in [surfaces](index.md).
 
 ```lua,shot
 local open = state("settings_open", false)
@@ -47,9 +47,9 @@ return { settings }
 
 ## Properties
 
-Beyond the [shared properties](index.md#properties-every-role-takes). Every field here is live: a
-signal updates the open window in place. A change made while the window is closed applies when it
-next opens.
+Beyond the [shared properties](index.md#properties-every-role-takes). Every field but `id` and
+`on_close` takes a signal and updates the open window in place; a change while it is closed applies when it next
+opens.
 
 <!-- Generated from renderer/src/lua/nodes/properties.rs by `just stubs`: edit the table there. -->
 | Property | Type | Default | Behaviour |
@@ -57,7 +57,7 @@ next opens.
 | `id` | `string` | Required | The surface's identity across reloads, unique among surfaces. A `panel`'s or `lock`'s per-output instances are `"{id}@{output}"`; `monitor = "Active"` keeps the bare `id` |
 | `title` | `string\|Bound` | `""` | The window title |
 | `app_id` | `string\|Bound` | `"mantle-{id}"` | What compositor window rules match |
-| `min_size` | `{ width: number, height: number }\|Bound`, `[0, 8192]` | None | Advisory hint to the compositor; layout does not enforce it. Both keys required, `0` leaves that axis unconstrained. Also the opening size ([size](#size)) |
+| `min_size` | `{ width: number, height: number }\|Bound`, `[0, 8192]` | None | Advisory hint to the compositor; layout does not enforce it. Both keys required, `0` leaves that axis unconstrained. Also the opening size on an axis the compositor leaves to the client ([size](#size)) |
 | `max_size` | `{ width: number, height: number }\|Bound`, `[0, 8192]` | None | Advisory, as `min_size`. A non-zero axis below `min_size`'s is refused; also clamps the opening size |
 | `on_close` | `fun()` | None | The user asked to close. The window stays open until the config sets `visible = false`; without a handler a close request does nothing |
 | `visible` | `boolean\|Bound` | `true` | Opens and closes the window; state and `id` survive |
@@ -77,7 +77,7 @@ The window's size is the compositor's configure. The root fills it on each axis 
 | Compositor | Opening size |
 | :--- | :--- |
 | Tiling (niri, a tiled Hyprland window) | The tile the compositor sends |
-| Floating, leaving an axis to the client | `min_size` on that axis, else 640×480, clamped by a non-zero `max_size` |
+| Floating, leaving an axis to the client | A non-zero `min_size` on that axis, else 640×480, clamped by a non-zero `max_size` |
 
 To set a floating window's size or position, use compositor rules on `app_id`, or `min_size` for
 the opening size.

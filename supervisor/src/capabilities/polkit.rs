@@ -15,7 +15,8 @@ use crate::polkit::{AgentError, BeginAuthenticationCall, first_unix_user_uid};
 pub struct PolkitState {
     /// polkitd is waiting for the user to authenticate.
     pub active: bool,
-    /// Translated prompt text, e.g. `"Authentication is required to ..."`.
+    /// The action's prompt, e.g. `"Authentication is required to ..."`, in `en_US`: the locale the
+    /// agent registers with.
     pub message: String,
     /// Action being authorized, e.g. `org.freedesktop.systemd1.manage-units`.
     pub action_id: String,

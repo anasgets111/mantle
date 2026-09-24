@@ -139,6 +139,7 @@ async fn run_privacy_task(
         return;
     }
 
+    let mut mixer_alive = true;
     loop {
         tokio::select! {
             event = next_device_event(&mut inotify_stream) => {
@@ -162,10 +163,13 @@ async fn run_privacy_task(
                     }
                 }
             }
-            changed = sources.changed() => {
+            changed = sources.changed(), if mixer_alive => {
                 // Name camera users and rebuild the other lists from the same pid set.
                 if changed.is_err() {
-                    break; // the mixer thread is gone -- no more updates coming.
+                    // The mixer thread is gone (it logs why); the PipeWire lists freeze, the camera
+                    // watch stays.
+                    mixer_alive = false;
+                    continue;
                 }
                 pipewire = sources.borrow_and_update().clone();
             }
@@ -409,6 +413,29 @@ mod tests {
             "must still announce an empty state when no camera hardware exists"
         );
         assert!(controller.snapshot().camera_users.is_empty());
+    }
+
+    #[tokio::test]
+    async fn the_mixer_exiting_leaves_the_camera_watched() {
+        let device = tempfile::NamedTempFile::new().unwrap();
+        let proc_root = tempfile::tempdir().unwrap();
+        let (privacy_tx, sources) = watch::channel(PrivacySources::default());
+        let (events_tx, mut events_rx) = tokio::sync::mpsc::unbounded_channel();
+        let state = Arc::new(Mutex::new(PrivacyState::default()));
+        let devices = vec![device.path().to_path_buf()];
+        tokio::spawn(run_privacy_task(proc_root.path().to_path_buf(), devices, Arc::clone(&state), sources, events_tx));
+        assert_eq!(events_rx.recv().await, Some(PrivacySignal::Changed), "the empty seed");
+
+        drop(privacy_tx);
+        tokio::task::yield_now().await;
+        let fd_dir = proc_root.path().join("1234/fd");
+        std::fs::create_dir_all(&fd_dir).unwrap();
+        std::os::unix::fs::symlink(device.path(), fd_dir.join("5")).unwrap();
+        std::fs::File::open(device.path()).unwrap();
+
+        let signal = tokio::time::timeout(std::time::Duration::from_secs(2), events_rx.recv()).await;
+        assert_eq!(signal, Ok(Some(PrivacySignal::Changed)));
+        assert_eq!(state.lock().unwrap().camera_users, vec![PrivacyUser { app_name: "pid 1234".to_string() }]);
     }
 
     /// ADR-0137 regression: no webcam used to end the task, taking microphone and screencast down.

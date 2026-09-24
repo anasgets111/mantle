@@ -26,7 +26,8 @@ pub enum ApplicationsAction {
     Refresh,
     /// Launches `entries[].id`, detached; `Terminal=true` entries run in `$TERMINAL`.
     Launch { id: String },
-    /// Opens an `http`, `https` or `mailto` URL (at most 2048 bytes) with `xdg-open` (ADR-0103).
+    /// Opens an `http`, `https` or `mailto` URL with `xdg-open` (ADR-0103). One over 2048 bytes or
+    /// holding whitespace or a control character is refused.
     OpenUrl { url: String },
 }
 

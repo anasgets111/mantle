@@ -19,7 +19,7 @@ pub enum UpdatesAction {
     /// Sets the check schedule and AUR use, and seeds a remembered check.
     Configure { config: controller::UpdatesConfigure },
     /// Runs a full upgrade, `pkexec pacman -Syu --noconfirm` or `aur_helper` when `aur` is on;
-    /// ignored while `installing`.
+    /// ignored while `installing`. Does not recheck afterwards.
     Install,
 }
 

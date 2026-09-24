@@ -50,8 +50,11 @@ None: read-only, so an `invoke` raises.
 
 ## Backend
 
-UPower's `DisplayDevice`, read-only. Without UPower it reads `present = false` and `state`
-`"Unknown"`.
+| Contract | Behavior |
+| :--- | :--- |
+| Source | UPower's `DisplayDevice`, the composite of every battery |
+| Updates | Re-reads every field on each `PropertiesChanged`; no timer, since UPower already polls the hardware |
+| No battery or no UPower | `present = false`, `percent = 0`, `state = "Unknown"`, no time estimates |
 
 ## How do I…
 

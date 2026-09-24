@@ -65,17 +65,18 @@ How the container packs its children:
 
 A `"Fill"` child takes the space its siblings leave, so a bare `rect` makes a spacer:
 
-```lua
+```lua,shot
 local header = row {
     width = 300,
-    align_v = "Center",
     spacing = 8,
     children = {
-        text { content = "Wi-Fi", font_size = 14 },
+        text { content = "Wi-Fi", font_size = 14, foreground = "#CDD6F4", align_v = "Center" },
         rect { width = "Fill" }, -- takes the space left over, pushing what follows to the end
-        text { content = "Connected", foreground = "#A6ADC8" },
+        text { content = "Connected", foreground = "#A6ADC8", align_v = "Center" },
     },
 }
+
+return header
 ```
 
 ## Gotchas
@@ -83,6 +84,7 @@ local header = row {
 | Trap | Fix |
 | :--- | :--- |
 | `align_h = "Center"` on a child of a `row` does nothing | The row packs its main axis: set `align_h` on the row, or use `"Fill"` spacers |
+| `align_v = "Center"` on a `row` leaves its children at the top | A row's own `align_v` places the row in its parent. Set `align_v` on each child, as in [push items apart](#push-items-apart) |
 | A `"Fill"` child of a content-sized row is 0 wide | The row has no leftover space to share. Give the row a `width` or `"Fill"` |
 | `direction = "Horizontal"` on a `column` is refused | `direction` is a [`list`](list.md) property. Use a `row` |
 | A `scroll` row or column never scrolls | Its size on the main axis is content-sized, so nothing overflows. Set `width`/`height` or a `max_*` |

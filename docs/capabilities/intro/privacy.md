@@ -16,14 +16,17 @@ rect {
 
 | Source | Feeds |
 | :--- | :--- |
-| `Stream/Input/Audio`, minus monitor captures | `privacy` microphone users |
-| `Stream/Output/Video` | `privacy` screencast users; wlr-screencopy clients are invisible |
-| `/proc/*/fd` holders of `/dev/videoN`, rescanned on inotify open/close | `privacy` camera users; `Video/Source` nodes only enrich names. Devices are enumerated once |
+| Running `Stream/Input/Audio` PipeWire nodes | `microphone_users` |
+| Running `Stream/Output/Video` PipeWire nodes | `screencast_users` |
+| `/proc/*/fd` links to a `/dev/videoN`, rescanned on each inotify open or close of the device | `camera_users`. A PipeWire `Video/Source` from the same pid only supplies the name |
 
-The PipeWire sources share [`audio`'s thread](audio.md#backend), and its failure mode.
+The PipeWire half shares [`audio`'s thread](audio.md#backend). `privacy` pushes its first `/proc`
+scan as soon as it starts. Without PipeWire the microphone and screencast lists
+stay empty and `camera_users` keeps its first scan: the update loop ends with the PipeWire thread.
 
-## How do I…
+## Gotchas
 
-| Task | Answer |
+| Trap | Fix |
 | :--- | :--- |
-| Show a microphone or camera indicator | Map `microphone_users` and `camera_users`, as in the example above |
+| A webcam plugged in after `privacy` started never shows | The device list is read once at start. Restart the Supervisor |
+| `grim` or `wf-recorder` never shows in `screencast_users` | wlr-screencopy bypasses PipeWire; only portal screen captures appear |

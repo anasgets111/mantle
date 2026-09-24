@@ -1,9 +1,8 @@
 # Paint
 
 How a node looks: fills, gradients, corners, borders, clipping, masks, shadows and the four
-blurs. Reach for this page once a layout is in place and you want it to look like something.
-Layout and per-kind properties are on [Nodes](../nodes/index.md); easing any of these values is on
-[Animation](animation.md).
+blurs. Layout and per-kind properties are on [Nodes](../nodes/index.md); easing any of these
+values is on [Animation](animation.md).
 
 ```lua,shot
 column {
@@ -23,16 +22,16 @@ column {
 }
 ```
 
-A card: a translucent rounded fill, a hairline border, and a soft shadow that falls below it.
+A card: a translucent rounded fill, a hairline border and a soft shadow below it.
 
 ## Terms
 
 | Term | Meaning |
 | :--- | :--- |
 | Box kind | A node that paints a box: `rect`, `row`, `column`, `button` and the four [surface](../surfaces/index.md) roles (`panel`, `window`, `popup`, `lock`) |
-| Repaint | Mantle redraws the changed part of a surface's buffer after a change; unchanged surfaces are not redrawn |
+| Repaint | Mantle redraws the changed part of a surface's buffer; an unchanged surface is not redrawn |
 | Offscreen pass | The subtree is drawn into a temporary texture, filtered or masked, then composited back. Costs a texture and an extra draw |
-| Layer | The offscreen pass that `content_blur` and some shadows use; unlike other offscreen passes it is kept and reused while it doesn't change |
+| Layer | The offscreen pass that `content_blur` and some shadows use. Unlike other offscreen passes, Mantle keeps it and reuses it while the subtree does not change |
 | Glass | A box with `backdrop_blur` |
 | Sigma | A Gaussian blur's standard deviation in logical px. The blur reaches about 3 sigma |
 
@@ -74,10 +73,26 @@ colours and no short `#RGB` form.
 | `clip` | `"Box"\|"Rounded"\|"None"\|Bound` | `"Box"` | `"Box"` cuts children to the rectangle, `"Rounded"` also to `radius`, `"None"` leaves them on the parent's clip. See [Clip](#clip) |
 <!-- End of the generated table. -->
 
-Borders draw inside the box and take no layout space, so give the box padding at least as wide
-as the border. An edge draws only when it has both a colour and a width. A uniform border (same
-width and colour on all four edges) follows `radius`; anything else is drawn as four straight
-rectangles with square corners.
+A uniform border (same width and colour on all four edges) on a round corner follows `radius`.
+A per-edge border, or any border on a scoop, draws as four straight rectangles with square corners:
+
+```lua,shot
+local function tile(label, props)
+    props.width, props.height, props.radius = 88, 56, 14
+    props.background = "#313244"
+    props.children = { text { content = label, foreground = "#CDD6F4", align_h = "Center", align_v = "Center" } }
+    return rect(props)
+end
+
+return row {
+    spacing = 12,
+    children = {
+        tile("Round", { border_width = 2, border_color = "#89B4FA" }),
+        tile("Scoop", { corner_shape = "Scoop", border_width = 2, border_color = "#89B4FA" }),
+        tile("Per-edge", { border_width = { bottom = 3 }, border_color = "#89B4FA" }),
+    },
+}
+```
 
 ## Gradients
 
@@ -102,6 +117,29 @@ background = {
 | `Linear` | Along `angle` through the centre, long enough that the corners take the end stops (CSS) |
 | `Radial` | An ellipse from the centre out to the box's edges, not its corners |
 | `Conic` | A turn around the centre, starting at `angle` |
+
+```lua,shot
+local stops = { { 0, "#CBA6F7" }, { 0.5, "#F38BA8" }, { 1, "#89B4FA" } }
+
+local function swatch(label, fill)
+    return column {
+        spacing = 6,
+        children = {
+            rect { width = 96, height = 64, radius = 8, background = fill },
+            text { content = label, foreground = "#A6ADC8" },
+        },
+    }
+end
+
+return row {
+    spacing = 12,
+    children = {
+        swatch("Linear, 90", { gradient = "Linear", angle = 90, stops = stops }),
+        swatch("Radial", { gradient = "Radial", stops = stops }),
+        swatch("Conic", { gradient = "Conic", stops = stops }),
+    },
+}
+```
 
 ## Clip
 
@@ -166,11 +204,37 @@ A shadow draws when `shadow_color` has alpha above 0 and at least one of `shadow
 | `shadow_mode` | Box kinds only. `"Box"`: CSS `box-shadow`, cast by the box's shape and cut out under the box. `"Content"`: CSS `drop-shadow`, cast by everything the node and its subtree paint | `"Box"` |
 
 Non-box nodes (`text`, `icon`, `image`, ...) have no box to cast, so their shadow is always the
-content's: text gets a glyph-shaped shadow.
+content's: text gets a glyph-shaped shadow. The same unfilled, bordered box in each mode:
+
+```lua,shot
+local function card(mode)
+    return column {
+        padding = 14,
+        radius = 12,
+        border_width = 1,
+        border_color = "#89B4FA",
+        shadow_mode = mode,
+        shadow_color = "#000000",
+        shadow_blur = 4,
+        shadow_offset = { x = 5, y = 6 },
+        children = { text { content = mode, font_size = 20, foreground = "#CDD6F4" } },
+    }
+end
+
+return row {
+    padding = 24,
+    spacing = 24,
+    background = "#585B70",
+    children = { card("Box"), card("Content") },
+}
+```
+
+`"Box"` casts the rounded box and cuts the shadow out under it; `"Content"` casts the border ring
+and the glyphs.
 
 | Case | How it draws |
 | :--- | :--- |
-| Box mode, `radius >= 0`, any fill | One gradient quad around the box, cheap. On a translucent box it is cut out under the box, so it never shows through the fill |
+| Box mode on a round box, any fill | One gradient quad around the box. On a translucent box it is cut out under the box, so it never shows through the fill |
 | An opaque box (solid colour fill with alpha 1, no mask, no `content_blur`, `opacity` 1), either mode | The same gradient quad; the box covers what is under it |
 | Content mode on anything else, any non-box node, an opaque scoop | An offscreen layer: the subtree is drawn, blurred and tinted `shadow_color` |
 | Box mode on a translucent scoop | A layer of the scoop's silhouette, cut out under the box |
@@ -387,7 +451,7 @@ rect {
 
 ### Dim the background behind a modal
 
-```lua,shot
+```lua
 panel {
     id = "modal",
     layer = "Overlay",

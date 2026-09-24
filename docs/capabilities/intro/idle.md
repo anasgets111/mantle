@@ -1,6 +1,6 @@
-`mantle.idle` reads like the others (`:get`, `:map`, `:on_change`; state is `{ inhibited,
-inhibitors }`) but has no `:invoke`. Instead it takes callbacks, which cannot cross the wire: see
-[methods](#methods).
+`mantle.idle` reads like the others (`:get`, `:map`, `:on_change`) but has no `:invoke`. Its
+thresholds take Lua callbacks, which cannot cross to the Supervisor, so it has [methods](#methods)
+instead. Any method, `:get` included, starts it.
 
 ```lua
 local dimmed = state("dimmed", false)
@@ -14,37 +14,35 @@ end)
 
 <!-- reference -->
 
-## Backend
-
-| Contract | Behavior |
-| :--- | :--- |
-| Notifier | A dedicated Wayland connection to `ext_idle_notifier_v1`. Inert if the protocol is missing or setup exceeds 5 s |
-| Listeners | Two per distinct duration, shared by every generation: `get_idle_notification` and its input-only twin; comparing them reveals a Wayland surface inhibitor. Each generation is one fan-out entry per duration |
-| Registrations | An in-place reload drops the generation's entries, then re-registers; a duration still asked for keeps its listener and timer. Cancelling the last callback at a duration destroys its listeners. Inhibit holds survive the reload |
-| Inhibit | `inhibit`/`release_inhibit` refcount one logind `Inhibit("idle", "block")` fd |
-| ScreenSaver | Hosts `org.freedesktop.ScreenSaver` at `/org/freedesktop/ScreenSaver` and `/ScreenSaver`, requested with `DoNotQueue`; its clients share the same fd, and a client that leaves the bus loses its holds. A browser's video hold lands here, directly or via xdg-desktop-portal |
-| Gate | While `BlockInhibited` names `idle`, threshold events stop and idled thresholds get `resumed`; on release, still-idle ones get `idled` again. Mantle, not logind, acts on idle, so it honours inhibitors itself |
-| State | `inhibited` covers logind, ScreenSaver and compositor surface holds. `inhibitors` lists every holder but this shell: block-mode logind holders, ScreenSaver clients, and the compositor's hold with an empty `who` |
-
 ## Methods
 
 | Method | Contract |
 | :--- | :--- |
-| `:register_threshold(seconds, on_idle, on_resume)` | `on_idle` after `seconds` without input, `on_resume` when input returns. Returns an integer handle. No threshold fires while `inhibited` is `true`. If another registration at the same `seconds` already saw this idle period, `on_idle` runs at once |
-| `:cancel_threshold(handle)` | Drops one registration; an unknown or already-cancelled handle is a no-op |
-| `:inhibit(reason)` | Takes one logind idle inhibit hold. Counted: two calls need two releases |
+| `:register_threshold(seconds, on_idle, on_resume)` | Runs `on_idle` after `seconds` without input and `on_resume` when input returns. Returns an integer handle. If this idle period already passed `seconds` for another registration, `on_idle` runs at once |
+| `:cancel_threshold(handle)` | Drops one registration. An unknown or cancelled handle is a no-op |
+| `:inhibit(reason)` | Takes one hold on a logind `idle` block inhibitor. Counted: two calls need two releases |
 | `:release_inhibit()` | Releases one hold; with none held, a no-op |
 
-| Across a reload | Across a Renderer replacement |
+| Event | Thresholds | Inhibit holds |
+| :--- | :--- | :--- |
+| In-place reload | Dropped before the config evaluates again; top-level `register_threshold` calls re-register. The same `seconds` keeps its timer and does not re-run `on_idle` this idle period | Kept |
+| Renderer replacement | Dropped | Dropped |
+
+## Backend
+
+| Part | Behaviour |
 | :--- | :--- |
-| Thresholds are dropped before the config re-evaluates; register again at top level. Re-registering the same `seconds` does not re-run `on_idle` for the current idle period | Thresholds and holds of the old generation are dropped |
-| Inhibit holds survive, so a `state` that records "I hold one" stays true | |
+| Thresholds | `ext_idle_notifier_v1` on the Supervisor's own Wayland connection. Missing protocol, or setup over 5 s: thresholds never fire, logged once |
+| Inhibit | Every hold, from any generation, shares one logind `Inhibit("idle", "block")` fd, closed when the last hold goes |
+| ScreenSaver | Hosts `org.freedesktop.ScreenSaver` when the name is free. A browser's video hold arrives here, directly or through xdg-desktop-portal, and takes the same fd. A client that leaves the bus loses its holds |
+| Gate | Mantle, not logind, acts on idle, so it honours inhibitors itself. While logind's `BlockInhibited` names `idle`, idled thresholds get `on_resume` and none fire; on release, ones still idle get `on_idle` again |
+| Compositor holds | A Wayland idle inhibitor shows when the shortest threshold's input-only twin fires and the normal notification does not, so it needs a registered threshold and an idle seat. It sets `inhibited` and adds one holder with an empty `who` |
 
 ## How do I…
 
 ### Keep the screen awake (caffeine)
 
-The hold survives reloads, so the flag records it in [named state](../guide/signals.md#named-state):
+The hold survives reloads, so [named state](../guide/signals.md#named-state) records it:
 
 ```lua
 local caffeine = state("caffeine", false)
@@ -77,7 +75,8 @@ button {
 
 | Trap | Fix |
 | :--- | :--- |
-| `register_threshold` inside `on_change`, a timer or a click handler | Each call adds another registration until the next reload. Register once at top level, or keep the handle and `cancel_threshold` it |
-| An `inhibit` hold that never ends | Holds survive reloads and are counted. Record the hold in a `state` and release exactly once per `inhibit` |
+| `register_threshold` inside `on_change`, a timer or a click handler | Each call adds a registration that lives until the next reload. Register once at top level, or keep the handle and `cancel_threshold` it |
+| An `inhibit` hold that never ends | Holds survive reloads and are counted. Record the hold in a `state` and release once per `inhibit` |
+| A threshold never fires while a video plays | Something holds idle off and `inhibited` is `true`. Draw `inhibitors` to show who |
 
 See also: [Lock screen](../cookbook/lock-screen.md) recipe, which locks after an idle threshold.

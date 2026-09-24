@@ -89,7 +89,7 @@ their own `align_h`.
 | Children of a `rect` sit on top of each other | That is stacking. Use a `row` or `column` to lay them out side by side |
 | An empty `rect` draws nothing | With no children and no size it is 0 × 0. Give it `width` and `height` |
 | A `rect` takes no clicks | Only a [`button`](button.md) does |
-| `background = "#00000000"` and no `background` differ | Absent draws nothing; a transparent colour is an explicit fill ([paint](../guide/paint.md#box-properties)) |
+| A `background` tween snaps in instead of fading | An absent `background` has no colour to tween from. Start from a transparent one, such as `"#89B4FA00"` ([animation](../guide/animation.md#what-can-animate)) |
 
 See also: [row and column](row-column.md), [button](button.md), [paint](../guide/paint.md).
 

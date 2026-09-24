@@ -1,12 +1,10 @@
 # Input
 
-This page covers everything the user does to a shell: clicks, drags and the wheel on a `button`,
-hover, scrolling containers, and typing into a `textfield`, including password fields whose keys
-never reach Lua. Reach for it when a widget must respond to the pointer or keyboard. There is no
-key-handler property and no touch input: keys reach a config only through a focused `textfield`.
-Handlers run in Lua and usually write a [named state](signals.md#named-state); the next *pass*
-(re-resolution of the surfaces that read it, see [signals](signals.md#how-re-resolution-works))
-shows the result.
+Pointer and keyboard input: clicks, drags and the wheel on a `button`, hover, scrolling
+containers, and typing into a `textfield`, including password fields whose keys never reach Lua.
+There is no key-handler property and no touch input; keys reach a config only through a focused
+`textfield`. A handler usually writes a [named state](signals.md#named-state), and the next
+[pass](signals.md#how-re-resolution-works) shows the result.
 
 ```lua
 local clicks = state("clicks", 0)
@@ -69,7 +67,7 @@ click (if the button also has `on_click`) after it; a leave ends the drag and ca
 notch's 39 px. Horizontal motion never reaches `on_wheel`. The innermost `on_wheel` button or
 [scroll container](#scroll) under the pointer takes the whole event, with no chaining to a parent.
 
-```lua
+```lua,shot
 local level = state("level", 0.5)
 local function clamp(value) return math.max(0, math.min(1, value)) end
 
@@ -276,7 +274,7 @@ secret or its length.
 | :--- | :--- |
 | Arming | When the surface gains keyboard focus, the sole visible secure field in it (and in popups shown under it) is armed with no click. With two or more, a press picks one. A field revealed later under existing focus arms if none is armed |
 | Keys | Typed text appends, Backspace removes one character, Escape clears the buffer, stays armed and calls the field's `on_cancel(cleared)`. There is no caret, selection or `on_navigate`; `on_change` and `on_submit` never fire |
-| Sending | Enter, or a click on a `submit = true` button, sends the buffer and wipes it. An empty buffer is not sent |
+| Sending | Enter, or a click on a `submit = true` button, sends the buffer and wipes it. An empty buffer is sent only to `network`/`connect`, where it joins an open network |
 | Focus | A click on anything but a field keeps the field armed, so a submit button works. Focusing another field, plain or secure, or the keyboard leaving the surface, disarms it and wipes the buffer |
 | Priority | While a secure field is armed, plain fields in the same focus take no keys |
 | `mask_character` | Drawn once per typed character. Default `"•"`; only the first character counts; `""` draws nothing and hides the length. Only secure fields draw it. An empty field shows its `placeholder` |
@@ -328,7 +326,7 @@ return lock {
 take its grab. The menu hangs from the button, not the click point: no handler reports the pointer
 position of a click.
 
-```lua
+```lua,shot
 local menu_open = state("context_open", false)
 local menu_at = state("context_at", { x = 0, y = 0, width = 1, height = 1 })
 

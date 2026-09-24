@@ -11,7 +11,7 @@ use tokio::sync::mpsc::UnboundedSender;
 use zbus::zvariant::OwnedValue;
 
 /// `mantle.power`'s payload. Profile fields are `nil` without power-profiles-daemon, the rest without UPower;
-/// a failed read is also `nil`. With neither service the capability stays `nil`.
+/// a failed read is also `nil`. With neither service the payload is an empty table.
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]
 #[cfg_attr(test, derive(schemars::JsonSchema))]
 pub struct PowerState {
@@ -185,8 +185,10 @@ async fn next_change<S: Stream + Unpin>(stream: &mut Option<S>) -> Option<S::Ite
 /// Reads once, pushes, then follows all three property streams. Every wake re-reads the payload
 /// instead of patching one field.
 ///
-/// With neither service, no signal is sent, `mantle.power` stays `nil` (ADR-0037), and the task
-/// exits instead of parking on a dead stream.
+/// The UPower proxies build without contacting the bus (zbus's lazy property cache), so a host
+/// without UPower still pushes, every UPower field absent. Only when every proxy fails to build
+/// is no signal sent: `mantle.power` stays `nil` (ADR-0037) and the task exits instead of parking
+/// on a dead stream.
 async fn run_power_task(
     system_bus: zbus::Connection,
     state: Arc<Mutex<PowerState>>,

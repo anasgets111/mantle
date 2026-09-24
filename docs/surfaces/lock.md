@@ -71,28 +71,27 @@ the ones the protocol owns.
 | `visible` | `nil` | None | Refused: the session lock decides when it shows |
 <!-- End of the generated table. -->
 
-`monitor` and `anchor` are refused too: the protocol owns coverage and lifetime. The root fills the
-output whatever its common properties say; give children `"Fill"` to cover it. A rename of `id` is
-refused while the session is locked (a warning in `mantle log`); save again after unlocking. A
-config declares at most one `lock`; two are refused at evaluation.
+`monitor` and `anchor` are refused too: the protocol owns coverage and lifetime. The root is the
+output's size; give children `"Fill"` to cover it. A reload that renames `id` while the session is
+locked is refused with a warning in `mantle log`. A config declares at most one `lock`; a second
+is refused at evaluation.
 
 ## When a lock is refused
 
-`mantle.lock:invoke("lock")` checks the lock screen before asking the compositor, because the
-compositor does not unlock when the client dies: a lock screen with no way to type a password
-leaves only a VT switch. A refusal leaves the session unlocked and puts the reason in
-`mantle.lock`'s `error` and in [`mantle.rescue`](../capabilities/index.md#renderer-members).
+The compositor keeps the session locked if the shell dies, so a lock screen with no way to type a
+password leaves only a VT switch. `mantle.lock:invoke("lock")` checks the lock screen before it
+asks the compositor. A refusal leaves the session unlocked and puts the reason in `mantle.lock`'s
+`error` and in [`mantle.rescue`](../capabilities/index.md#renderer-members).
 
 | Condition | Result |
 | :--- | :--- |
 | The config declares no `lock` | Refused |
-| No lock instance holds exactly one shown `textfield` with `secure_submit = { capability = "lock", action = "authenticate" }` (none, two, or hidden) | Refused |
-| Another client already holds the session lock | The compositor denies it; reported in `error` |
+| No lock instance holds exactly one shown [secure field](../guide/input.md#secure-fields), with `secure_submit = { capability = "lock", action = "authenticate" }` | Refused. A hidden field does not count; a second shown secure field of any target refuses too |
+| Another client already holds the session lock | The compositor denies it; reported in `error` and `mantle.rescue` |
 | While locked, a reload leaves no lock instance with that single field | The reload is refused and the lock screen on screen stays |
 | The compositor ends a held lock by its own mechanism | The session is unlocked; the reason goes to `mantle.rescue` only |
 
-The password never reaches Lua: the field's keystrokes go straight to PAM. Give it no `on_change`
-or `on_submit`. See [secure fields](../guide/input.md#secure-fields).
+The field's keystrokes go to PAM and never reach Lua.
 
 ## How do I…
 
@@ -113,12 +112,11 @@ or `on_submit`. See [secure fields](../guide/input.md#secure-fields).
 | Trap | Fix |
 | :--- | :--- |
 | `mantle call lock` does nothing | Read `mantle.lock`'s `error`: the config declares no `lock`, or its tree lacks exactly one shown secure field |
-| Two secure fields in one lock tree make the lock refuse | One shown field per output instance; hide the others |
+| Two secure fields in one lock tree make the lock refuse | One shown secure field per lock tree; hide the others |
 | A reload while locked is ignored | It removed the lock's password field; the running lock screen stays. Fix the file |
-| Renaming the lock's `id` while locked is refused | Save again after unlocking |
+| Renaming the lock's `id` while locked is refused | Save the rename again after unlocking |
 | `visible`, `width`, `height`, `monitor` or `anchor` on a `lock` is refused | Remove them; the lock always covers every output |
 | The card's exit animation is cut off | The session unlocks when the `set_unlock_animation` time ends; make it at least the animation's length |
-| A second `lock` declaration is refused | A config has at most one |
 
 See also: [lock capability](../capabilities/lock.md), [secure fields](../guide/input.md#secure-fields),
 [surfaces](index.md), [animation](../guide/animation.md).

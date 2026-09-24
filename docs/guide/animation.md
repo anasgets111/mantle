@@ -1,11 +1,10 @@
 # Animation
 
-`animate` makes a node's properties ease to a new value instead of snapping. Add it whenever a
-signal-driven change (a hover, a level, a toggle) should move rather than jump, when a node should
-fade in or out as the tree gains or drops it, or when something loops, like a spinner. The engine
-runs every tween on compositor frames; no Lua runs between the pass that starts a tween and its
-last frame. A *tween* is one property moving from the value on screen to the value a new
-[pass](../nodes/index.md) resolves.
+`animate` makes a node's properties move to a new value instead of snapping: on a hover, a level
+or a toggle, as a node enters or leaves the tree, or in a loop like a spinner. A *tween* is one
+property moving from the value on screen to the value a new [pass](../nodes/index.md) resolves.
+The engine runs every tween on compositor frames; no Lua runs between the pass that starts a tween
+and its last frame.
 
 ```lua
 local open = hover("tray")
@@ -68,14 +67,17 @@ An `image` crossfading between sources uses its own `transition` property, not `
 
 Every frame's value is clamped to the property's [range](runtime.md#limits-and-budgets), which
 catches overshoot from `Back`, `Elastic`, a Bezier with `y` outside `[0, 1]`, or a spring. Only
-`margin`, `translate`, `rotate`, `progress`, `shadow_offset` and `shadow_spread` may go negative;
-`padding`, `spacing` and icon `size`, unbounded as plain values, tween within `[0, 8192]`.
+`margin`, `translate`, `rotate`, `progress`, `shadow_offset` and `shadow_spread` may go negative.
+`padding`, `spacing` and icon `size` have no range as plain values but tween within `[0, 8192]`.
 
-**Cost.** `opacity`, colours (`background`, `border_color`, `foreground`, `shadow_color`),
-`radius`, `translate`, `scale`, `rotate`, `origin`, `progress`, the `shadow_*` numbers,
-`content_blur` and `backdrop_blur` move without a layout pass. Tweening `width`, `height`,
-`margin`, `padding` or `spacing` lays the surface out again on every frame, so slide with
-`translate` rather than `margin`.
+### Layout cost
+
+| Tween on | Each frame |
+| :--- | :--- |
+| `opacity`, colours, `radius`, `translate`, `scale`, `rotate`, `origin`, `progress`, `shadow_*`, `content_blur`, `backdrop_blur` | Repaints; no layout pass |
+| Anything else: `width`, `height`, `margin`, `padding`, `spacing`, `font_size`, … | Lays the surface out again |
+
+Slide with `translate`, not `margin`.
 
 ## Entry keys
 
@@ -104,20 +106,55 @@ A `duration` or `delay` that is not a number (`"200"`) is refused rather than re
 | Sine, Expo, Circ | `InSine`, `OutSine`, `InOutSine`, `InExpo`, `OutExpo`, `InOutExpo`, `InCirc`, `OutCirc`, `InOutCirc` |
 | Back, Elastic, Bounce | `InBack`, `OutBack`, `InOutBack`, `InElastic`, `OutElastic`, `InOutElastic`, `InBounce`, `OutBounce`, `InOutBounce` |
 
-`In` starts slow, `Out` ends slow, `InOut` does both.
-`Back` and `Elastic` overshoot, and the range clamp above catches it; `Bounce` stays inside the range.
+`In` starts slow, `Out` ends slow, `InOut` does both. `Back` and `Elastic` overshoot, and the
+range clamp above catches it; `Bounce` stays inside the range.
 
 | Table easing | Meaning |
 | :--- | :--- |
 | `{ x1, y1, x2, y2 }` | CSS `cubic-bezier`. `x1` and `x2` in `[0, 1]`; `y` is free, so a curve may overshoot |
 | `{ steps = n }` | `n` equal jumps, whole `n` in `[1, 1000]`, like CSS `steps(n, end)`: the target lands only at the end |
 
+The same 600 ms width change under six easings. `OutBack` passes the target and comes back:
+
+<!-- shot: frames=0..630/35 -->
+```lua,shot
+local go = state("go", false)
+
+local function race(label, easing)
+    return row {
+        spacing = 8,
+        children = {
+            text { content = label, width = 80, font_size = 12, foreground = "#a6adc8" },
+            rect {
+                height = 12,
+                radius = 6,
+                background = "#89b4fa",
+                width = go:map(function(on) return on and 200 or 12 end),
+                animate = { width = { duration = 600, easing = easing } },
+            },
+        },
+    }
+end
+
+return column {
+    spacing = 6,
+    children = {
+        race("Linear", "Linear"),
+        race("InOutQuad", "InOutQuad"),
+        race("OutCubic", "OutCubic"),
+        race("OutBack", "OutBack"),
+        race("OutBounce", "OutBounce"),
+        race("steps = 4", { steps = 4 }),
+    },
+}
+```
+
 ## Spring
 
-A spring has no duration: `stiffness` and `damping` decide how it settles. Its real advantage is
-retargeting. When the value changes mid-flight (a held volume key, a pointer-following highlight),
-the spring carries its current velocity into the new motion, while an eased tween restarts from a
-standstill and lags behind. A spring that replaces an eased tween starts at rest.
+A spring has no duration: `stiffness` and `damping` decide how it settles. Use one for a target
+that changes mid-flight, like a held volume key or a pointer-following highlight. The spring
+carries its velocity into the new motion; an eased tween restarts from a standstill and lags
+behind. A spring that replaces an eased tween starts at rest.
 
 | Damping | Behaviour |
 | :--- | :--- |
@@ -128,24 +165,44 @@ standstill and lags behind. A spring that replaces an eased tween starts at rest
 There is no `mass`: it would only rescale the other two. A spring stops within a thousandth of its
 travel and never runs longer than 60 s.
 
-```lua
-local hovered = hover("launch")
+The same `translate` change on three springs of `stiffness = 400`, where critical damping is 40.
+The underdamped knob passes the others' resting point and swings back:
 
-return panel {
-    id = "bar",
-    layer = "Top",
-    anchor = { top = true },
-    child = button {
-        width = 40,
-        height = 40,
-        radius = 10,
-        background = "#313244",
-        hover = hovered,
-        on_click = function() process.detach("fuzzel", {}) end,
-        scale = hovered:map(function(on) return on and 1.1 or 1 end),
-        -- 2 * sqrt(400) = 40: critical damping, fast with no overshoot.
-        animate = { scale = { spring = { stiffness = 400, damping = 40 } } },
-        children = { icon { name = "system-search-symbolic", size = 16, align_h = "Center", align_v = "Center" } },
+<!-- shot: frames=0..1200/40 -->
+```lua,shot
+local go = state("go", false)
+
+local function knob(label, damping)
+    return row {
+        spacing = 8,
+        children = {
+            text { content = label, width = 130, font_size = 12, foreground = "#a6adc8" },
+            rect {
+                width = 176,
+                height = 16,
+                radius = 8,
+                background = "#313244",
+                children = {
+                    rect {
+                        width = 16,
+                        height = 16,
+                        radius = 8,
+                        background = "#cba6f7",
+                        translate = go:map(function(on) return { x = on and 100 or 0 } end),
+                        animate = { translate = { spring = { stiffness = 400, damping = damping } } },
+                    },
+                },
+            },
+        },
+    }
+end
+
+return column {
+    spacing = 8,
+    children = {
+        knob("damping = 12, rings", 12),
+        knob("damping = 40, critical", 40),
+        knob("damping = 120, crawls", 120),
     },
 }
 ```
@@ -165,13 +222,14 @@ owns the property: the value the pass resolves is ignored.
 | End | A counted run holds its last frame as long as the entry stays. An `"Infinite"` run never ends |
 | Continuity | The same list on the next pass is the same run; any change to the frames, timing or `loops` starts a new run from the first frame |
 
-To replay a finished run, take the entry away and put it back. [`pulse`](signals.md) does both in
+To replay a finished run, take the entry away and put it back. [`pulse`](signals.md#pulse-mark-a-change) does both in
 one expression: it reads `true` for a window after its source changes.
 
-<!-- shot: frames=0..400/40 -->
+<!-- shot: frames=0..360/30 -->
 ```lua,shot
 local taps = state("taps", 0)
-local BOUNCE = { scale = { duration = 400, easing = "OutQuad", keyframes = { 1, 1.25, 0.9, 1 } } }
+-- Three 120 ms segments: `duration` times each one, so the run takes 360 ms.
+local BOUNCE = { scale = { duration = 120, easing = "OutQuad", keyframes = { 1, 1.25, 0.9, 1 } } }
 
 return panel {
     id = "bar",
@@ -216,8 +274,8 @@ return panel {
 ## Exit
 
 `animate.exit` animates a child after its parent stops returning it: a notification removed from a
-`list`, or a card dropped from `children`. The block holds one shared timing and the values to
-ease to.
+`list`, or a card dropped from `children`. The block holds one timing for every property, and the
+values to ease to.
 
 ```lua
 exit = { duration = 150, easing = "InQuad", opacity = 0, translate = { y = 16 } }
@@ -230,13 +288,14 @@ exit = { duration = 150, easing = "InQuad", opacity = 0, translate = { y = 16 } 
 | Start value | The value on screen. A property never set starts at its identity: `1` for `opacity` and `scale`, `0.5` for `origin`, `"0%"` for a percent, the target colour at alpha 0 for a colour, `0` otherwise |
 | Running tweens | Stop where they are. The exit block alone decides how long the node lives |
 | What moves | Everything painted: `opacity`, colours, `radius`, `translate`, `scale`, `rotate`, `origin`, `shadow_*`, blurs, `progress`, and pixel `width`/`height`. `margin`, `padding` and `spacing` change nothing visible |
-| While leaving | Painted at its last rect and scroll offset, above live siblings of the same `z`. It takes no space (siblings close up at once), no pointer or keyboard input and no `geometry` writes. Its subtree is frozen: a resized box does not reflow its children, and text keeps the string it was fitted to |
+| While leaving | Painted at its last rect and scroll offset, above live siblings of the same `z`. It takes no space in the flow (siblings close up at once), though a content-sized parent keeps room for its last rect until it is gone. It takes no pointer or keyboard input and no `geometry` writes. Its subtree is frozen: a resized box does not reflow its children, and text keeps the string it was fitted to |
 | Identity | A leaving node is never matched again. Returning the same `id` builds a new node beside it |
 | Scope | Only the dropped child runs its block; descendants leave with it and their own blocks never run |
 | Not triggered by | `visible = false`, a surface closing, or a child dropped while an ancestor was hidden |
 
-Because hiding a surface skips the exit, drop the child from `children` and hold the surface open
-with [`delay`](signals.md) until the exit has played:
+Hiding a surface skips the exit, so drop the child from `children` and hold the surface open with
+[`delay`](signals.md#delay-hold-a-value) until the exit has played. The card below slides up and
+fades in on show; the shot plays the hide, down and out over 150 ms:
 
 <!-- shot: frames=0..210/30 -->
 ```lua,shot
@@ -265,10 +324,11 @@ return panel {
     id = "osd",
     layer = "Overlay",
     anchor = { bottom = true },
-    width = 240, -- fixed: a leaving card takes no space
-    height = 64,
+    width = 240,
+    height = 64, -- room for the exit's 16 px slide
     visible = mapped,
     child = column {
+        height = "Fill",
         children = shown:map(function(on) return on and { card } or {} end),
     },
 }
@@ -278,16 +338,18 @@ return panel {
 
 | Task | Answer |
 | :--- | :--- |
-| Grow a button on hover | The [spring](#spring) example |
+| Grow a button on hover | `scale = hover("b"):map(function(on) return on and 1.1 or 1 end)`, `hover = hover("b")` and `animate = { scale = { spring = { stiffness = 400, damping = 40 } } }` |
 | Show a loading spinner | The spinner under [keyframes](#keyframes) |
 | Bounce on click | The `pulse` example under [keyframes](#keyframes) |
 | Slide an on-screen display in and out | The example under [exit](#exit) |
-| Fade a popup in and out | Below |
-| Slide a notification out when dismissed | Below |
+| Fade a popup in and out | [Fade a tooltip](#fade-a-tooltip-popup-in-and-out) |
+| Stagger a list's entrance | [Stagger](#stagger-a-lists-entrance) |
+| Slide a notification out when dismissed | [Slide out](#slide-a-notification-out) |
 
-**Fade a tooltip popup in and out.** A [popup](../surfaces/popup.md) closing skips the exit, so the
-card is switched out of `children` and `delay` holds the popup open while it fades. The popup has a
-fixed size because the leaving card takes no space.
+### Fade a tooltip popup in and out
+
+A [popup](../surfaces/popup.md) closing skips the exit, so
+switch the card out of `children` and let `delay` hold the popup open while it fades.
 
 ```lua
 local over = hover("clock")
@@ -315,15 +377,56 @@ return {
         anchor = "Bottom",
         gravity = "Bottom",
         grab = false,
-        width = 180, -- fixed: the leaving card takes no space
-        height = 32,
         visible = mapped,
-        child = rect { children = over:map(function(on) return on and { card } or {} end) },
+        child = rect {
+            children = over:map(function(on) return on and { card } or {} end),
+        },
     },
 }
 ```
 
-**Slide a notification out.** Removing an item from a keyed [`list`](../nodes/list.md) makes it
+### Stagger a list's entrance
+
+Give each item a `delay` that grows with its index. `delay` holds
+the `from` value, so a card waits invisible for its turn.
+
+<!-- shot: frames=0..420/30 -->
+```lua,shot
+local go = state("go", false)
+local titles = { "Battery low", "Update ready", "Download complete" }
+
+local function card(index, title)
+    local wait = (index - 1) * 80
+    return rect {
+        width = 200,
+        padding = 10,
+        radius = 8,
+        background = "#1e1e2e",
+        opacity = 1,
+        translate = { x = 0 },
+        animate = {
+            opacity = { duration = 200, delay = wait, from = 0 },
+            translate = { duration = 200, delay = wait, easing = "OutCubic", from = { x = -24 } },
+        },
+        children = { text { content = title, foreground = "#cdd6f4" } },
+    }
+end
+
+return column {
+    spacing = 6,
+    children = go:map(function(on)
+        local cards = {}
+        for index, title in ipairs(on and titles or {}) do
+            cards[index] = card(index, title)
+        end
+        return cards
+    end),
+}
+```
+
+### Slide a notification out
+
+Removing an item from a keyed [`list`](../nodes/list.md) makes it
 leave. The remaining cards close up at once; only the leaving one moves.
 
 <!-- shot: frames=0..210/30 -->
@@ -369,10 +472,10 @@ return panel {
 | A node's first value snaps; nothing fades in | Give the entry `from` |
 | `from` does nothing | The node must set the property too: `opacity = 1` beside `opacity = { from = 0, ... }` |
 | An exit never plays | Exit runs only when the parent stops returning the child. Switch `children`, and keep the surface up with `delay` |
-| A content-sized surface collapses while its child exits | A leaving node takes no space. Give the surface a fixed size |
 | A held key makes an eased value trail behind | Use a `spring`; it keeps its velocity through each new target |
 | A keyframe run plays once and never again | Same list, same run. Toggle the entry off and on, for example with `pulse` |
-| A `pulse`-driven run is cut short, or a second click does not replay it | Removing the entry snaps the property, so make the window at least `delay + duration × loops`. A click inside the window only extends it; the entry never leaves, so the run does not restart |
+| A `pulse`-driven run is cut short | Removing the entry snaps the property. Make the window at least `delay` plus every segment's `duration` times `loops` |
+| A second click inside the `pulse` window does not replay the run | The click only extends the window; the entry never leaves, so the run does not restart |
 | Sliding with `margin` stutters on a large surface | Tween `translate`: it skips layout |
 | `width` will not overshoot below `0` with `OutBack` | The property's range clamps every frame. Use `margin` or `translate` for motion that must go negative |
 

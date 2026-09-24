@@ -1,8 +1,9 @@
 # panel
 
-A layer-shell surface (`zwlr_layer_surface_v1`) pinned to screen edges. Use it for anything that is
-part of the desktop rather than an application window: bars, docks, wallpapers, OSDs, launcher
-overlays and notification stacks. Rules every role shares are in [surfaces](index.md).
+A layer-shell surface (`zwlr_layer_surface_v1`) pinned to screen edges: bars, docks, wallpapers,
+OSDs, launcher overlays, notification stacks. Rules every role shares are in [surfaces](index.md).
+
+A 32 px bar across the top of every output, reserving its height so windows start below it:
 
 ```lua,shot
 local clock = mantle.system:map(function(system)
@@ -34,8 +35,7 @@ local bar = panel {
 return { bar }
 ```
 
-A 32px bar across the top of every output, reserving its height so windows start below it. The
-panel's `width = "Fill"` makes the root node as wide as the surface ([size](#size)), and the two
+The panel's `width = "Fill"` makes the root node as wide as the surface ([size](#size)), and the two
 `"Fill"` spacers centre the clock. The background sits on the `row`, not the panel, so the whole
 bar takes clicks ([input region](index.md#input-region)).
 
@@ -99,13 +99,16 @@ the space they leave is clipped by the compositor.
 | Positive integer | That many px whatever the surface's size; for a tall surface whose top strip is the bar | No |
 | `"Ignore"` | Nothing | Yes |
 
-`0`, `-1` and fractional numbers are refused; spell them `false` and `"Ignore"`.
+The zone counts from the output edge, so it includes the panel's `margin` on that edge.
 
 ## Keyboard focus
 
-`keyboard_interactivity` is live, so bind it to the same signal that shows the panel:
+Hiding a panel destroys its layer surface and showing creates a fresh one, so a constant
+`keyboard_interactivity` applies at every show. Bind it to a signal only to change the mode while
+the panel stays shown. This launcher opens on `mantle toggle launcher_open` from a compositor
+keybind, on the output the compositor picks, and closes on Escape:
 
-```lua
+```lua,shot
 local open = state("launcher_open", false)
 
 local launcher = panel {
@@ -137,9 +140,7 @@ local launcher = panel {
 return { launcher }
 ```
 
-`mantle toggle launcher_open` from a compositor keybind opens it on the output the compositor
-picks; Escape closes it. See [named state](../guide/signals.md#named-state) and
-[text fields](../guide/input.md#text-fields).
+See [named state](../guide/signals.md#named-state) and [text fields](../guide/input.md#text-fields).
 
 | Mode | Behaviour |
 | :--- | :--- |
@@ -149,9 +150,9 @@ picks; Escape closes it. See [named state](../guide/signals.md#named-state) and
 
 | Compositor behaviour | What the engine does or you do |
 | :--- | :--- |
-| Hyprland refocuses the last window, onto its workspace, when a still-mapped panel drops to `"None"` | The engine skips layer requests for a panel being hidden in the same pass. Change `visible` and `keyboard_interactivity` together |
+| Hyprland refocuses the last window, onto its workspace, when a still-mapped panel drops to `"None"` | The engine sends no layer requests for a panel hidden in the same pass, so hiding one never drops it to `"None"` first. Hide it with `visible`, not by lowering the mode |
 | niri hands an `xdg_popup` the keyboard only if its parent held it when the popup mapped | The engine routes keys that arrive on the parent to the text field in a popup shown under it |
-| niri dismissed a grabbing popup when its parent's `keyboard_interactivity` changed | Raise the parent's mode before opening the popup, not from inside it |
+| niri dismisses a grabbing popup when its parent's `keyboard_interactivity` changes | Raise the parent's mode before opening the popup, not from inside it |
 
 ## Per-output content
 
@@ -181,10 +182,10 @@ with a handler takes input ([input region](index.md#input-region)), so the deskt
 
 ## OSD
 
-A card bottom-centre on the output the compositor picks that shows for 1.5 s after the level
+A card bottom-centre on the output the compositor picks, shown for 1.5 s after the level
 changes. No `left`/`right` anchor, so the width is measured and the protocol centres it:
 
-```lua
+```lua,shot
 local level = state("osd_level", 0.5)
 
 local osd = panel {
@@ -237,7 +238,8 @@ animate the root's `translate`, not the surface ([animation](../guide/animation.
 
 ### Dock on one output
 
-Floating 8px above the bottom edge, with a fixed 56px zone because its own height is measured:
+Floating 8 px above the bottom edge. The zone is the dock's 48 px plus its 8 px margin;
+`exclusive = true` would reserve only the 48 px ([exclusive zones](#exclusive-zones)):
 
 ```lua,shot
 local dock = panel {
@@ -321,7 +323,7 @@ local stack = panel {
 return { stack }
 ```
 
-An empty list measures 0×0; hide the panel with `visible` when there is nothing to show.
+An empty list still maps a 1×1 px surface; bind `visible` to whether the list has items.
 
 ## Gotchas
 
@@ -331,7 +333,7 @@ An empty list measures 0×0; hide the panel with `visible` when there is nothing
 | `"Fill"` on an axis with only one edge anchored leaves the panel hidden with a warning in `mantle log` | Anchor both edges of that axis, or give a size |
 | `height = "50%"` or a function `child` on a `monitor = "Active"` panel is refused | Use `"Fill"` with anchors and margins, or px |
 | `exclusive = true` on a corner-anchored panel reserves nothing | Anchor one edge, alone or with both perpendicular edges, or give a px count |
-| `exclusive = 0` is refused | `false` |
+| `exclusive = 0`, `-1` or `32.5` is refused | `false`, `"Ignore"`, or a whole px count |
 | `margin = { top = 8 }` on a bottom-anchored panel does nothing | The offset applies only to anchored edges |
 | Clicks on the bar's empty background reach the window below | The panel's own `background` claims no input; put it on a `"Fill"` child of a `"Fill"` panel ([input region](index.md#input-region)) |
 | On Hyprland, other surfaces stop taking clicks while an `"Exclusive"` panel is mapped | Use `"OnDemand"` unless the panel must hold every key; it still takes focus when it maps |

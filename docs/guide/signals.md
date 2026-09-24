@@ -1,9 +1,8 @@
 # Signals
 
-A config builds its node tree once. Signals are how that tree changes afterwards. Any node or
-surface property can hold a signal in place of a plain value. The engine reads the signal while it
-lays out, and a write to it re-resolves only the surfaces that read it. Read this page before
-you bind anything to a capability, a click or a clock.
+A config builds its node tree once; signals change it afterwards. Any node or surface property can
+hold a signal in place of a plain value. The engine reads the signal while it lays out, and a write
+to it re-resolves only the surfaces that read it.
 
 ## The one rule
 
@@ -229,11 +228,10 @@ nothing.
 
 ## Switching views
 
-A hidden subtree stays in the tree, frozen. That suits a section you show and hide in place. For
-views that replace each other, bind the parent's `children` to a signal that returns only the
-current view: the old view leaves the tree (its `animate.exit` plays) and the new one builds
-fresh. Give each view a distinct `id`, or two id-less views of the same kind are matched and
-reused. Example: [switching views with ids](../nodes/index.md).
+`visible = false` keeps a subtree in the tree, frozen: right for a section shown and hidden in
+place. For views that replace each other, bind the parent's `children` to a signal that returns
+only the current view. The old view leaves the tree, playing its `animate.exit`, and the new one
+builds fresh. Give each view its own `id`: [switching views with ids](../nodes/index.md#switching-views-with-ids).
 
 ## How do I…
 
@@ -247,7 +245,7 @@ reused. Example: [switching views with ids](../nodes/index.md).
 | Keep a popup mapped while its exit plays | [delay](#delay-hold-a-value) |
 | Flash a node when a value changes | [pulse](#pulse-mark-a-change) |
 | Open or close UI from a compositor keybind | [Below](#drive-ui-from-a-keybind) |
-| Switch tabs | [Switching views](#switching-views) |
+| Switch tabs | [Switching views with ids](../nodes/index.md#switching-views-with-ids) |
 | Size one node from another's layout | [geometry](#geometry-read-a-nodes-laid-out-rect) |
 | Keep a toggle across shell restarts | Named state is lost with the Renderer; use `persistent_table` ([scripting](scripting.md)) |
 | Run a side effect when a capability changes | `on_change` ([capabilities](../capabilities/index.md)), never a map |

@@ -111,20 +111,24 @@ Call as `mantle.audio:invoke("action", arguments...)`; `?` marks an argument you
 
 ## Backend
 
-| Source | Feeds |
-| :--- | :--- |
-| Sinks, sources, default routing | `audio` devices, master and input volume/mute, balance |
-| `Stream/Output/Audio`, `Stream/Input/Audio` with an `application.process.id` | `audio.apps` per-app volume/mute by node ID; excludes pid-less (portal) streams, notification sounds, peak meters and monitor captures |
+PipeWire's native API, on one thread shared with [`privacy`](privacy.md#backend).
 
-`audio` and [`privacy`](privacy.md#backend) share one PipeWire thread. An unreachable PipeWire is
-logged and the thread exits; nothing reconnects.
+| PipeWire object | Feeds |
+| :--- | :--- |
+| `Audio/Sink`, `Audio/Source` nodes and the `default` metadata's `default.audio.sink`/`source` | `sinks`, `sources`, `volume`, `muted`, `balance`, `source_volume`, `source_muted` |
+| `Stream/Output/Audio`, `Stream/Input/Audio` nodes | `apps`, minus the streams its field lists |
+| `bluez_card.*` devices and their profiles | `bluetooth` |
+
+The first push waits until PipeWire has reported every object and its volume, so a machine with no
+audio hardware still gets one push of empty lists. An unreachable PipeWire is logged and `audio`
+stays `nil`. Nothing reconnects: a PipeWire restart freezes `audio` at its last push until the
+Supervisor restarts.
 
 ## How do I…
 
 ### Change volume on the scroll wheel, mute on middle click
 
-`:get()` inside a handler is the right read: it wants the value now, not a binding. Input handlers
-are covered in [input](../guide/input.md).
+A handler reads with `:get()`: it needs the value now, not a binding ([input](../guide/input.md)).
 
 ```lua
 button {
@@ -155,9 +159,8 @@ button {
 
 ### Show an OSD when volume changes
 
-`on_change` reacts to a push rather than drawing it, so it writes
-[named state](../guide/signals.md#named-state) that a panel binds; [`timer`](../guide/scripting.md#timer)
-hides it again:
+`on_change` writes [named state](../guide/signals.md#named-state) that a panel binds, and a
+[`timer`](../guide/scripting.md#timer) hides the panel again:
 
 ```lua
 local osd_text = state("osd_text", "")

@@ -95,7 +95,7 @@ Bind the volume keys to anything that changes the default sink, for example
 
 ## How it works
 
-- `on_change` reacts to each audio push and skips the first one, which is learned state ([capabilities](../capabilities/index.md), [audio](../capabilities/audio.md)).
+- `on_change` reacts to each audio push and skips the first one, which is learned state ([on_change](../capabilities/index.md#reading-and-acting), [audio](../capabilities/audio.md)).
 - It writes a fresh table into a [named state](../guide/signals.md#named-state); `pulse` reads `true` for a while after each change ([pulse](../guide/signals.md#pulse-mark-a-change)).
 - A longer second `pulse` keeps the surface mapped while the card fades, since hiding a surface plays no exit ([delay](../guide/signals.md#delay-hold-a-value) is the general form).
 - `monitor = "Active"` shows it on the output the compositor picks, usually the focused one, and a bottom-only anchor centres it ([panel monitor](../surfaces/panel.md#monitor), [OSD](../surfaces/panel.md#osd)).
@@ -107,7 +107,7 @@ Bind the volume keys to anything that changes the default sink, for example
 | Change | Edit |
 | :--- | :--- |
 | Brightness too | A second `on_change` on `mantle.brightness` writing `{ volume = brightness.percent / 100, muted = false }` into the same state |
-| Show above 100% | Drop `math.min(entry.volume, 1)` and give the track `width = 300` with the fill at `entry.volume / 1.5` |
+| Show above 100% | Drop `math.min` from `percent`, and size the fill `math.floor(entry.volume / 1.5 * 100) .. "%"`: the track is then 150% |
 | Top of the screen | `anchor = { top = true }`, `margin = { top = 80 }` and `from = { y = -12 }` |
 | Every monitor | Remove `monitor = "Active"` |
 | Longer on screen | `pulse(osd, 3000)` and `pulse(osd, 3200)` |

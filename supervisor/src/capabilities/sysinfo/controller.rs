@@ -5,7 +5,8 @@ use std::time::Duration;
 
 use shared::debug;
 
-/// `mantle.sysinfo`'s payload; `nil` until `configure` sets an interval and a reading lands (ADR-0035).
+/// `mantle.sysinfo`'s payload; `nil` until `configure` sets an interval and a reading changes a field.
+/// Pushes only on a change (ADR-0035).
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 #[cfg_attr(test, derive(schemars::JsonSchema))]
 pub struct SysinfoState {

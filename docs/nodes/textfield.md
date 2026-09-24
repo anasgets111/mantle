@@ -79,12 +79,13 @@ The panel needs `keyboard_interactivity` for the field to get keys ([panel](../s
 | `mask_character` | `string\|Bound` | `"•"` | Drawn per typed character in a `secure_submit` field. Only the first character counts; `""` hides the length |
 <!-- End of the generated table. -->
 
-The field has no intrinsic size, so give it `width` and `height`. The text is vertically centred in
-the box and drawn in the [`fonts`](../guide/scripting.md#fonts) chain (there is no `font` property).
-It reads `wl_keyboard`, not an input method, so there is no CJK composition and no dead keys.
+The field has no intrinsic size: give it `width` and `height`. It draws one line of text and a
+caret, vertically centred, in the [`fonts`](../guide/scripting.md#fonts) chain; there is no `font`
+property. It reads `wl_keyboard`, not an input method, so there is no CJK composition and no dead
+keys.
 
-A field with none of `on_change`, `on_submit` and `secure_submit` never takes focus. Give a field a
-stable `id` when siblings before it come and go, or its draft may attach to another node
+A field with none of `on_change`, `on_submit` and `secure_submit` never takes focus. The draft
+follows the node, so give the field a stable `id` when siblings before it come and go
 ([identity](index.md#identity-and-reconciliation)).
 
 ## How do I…

@@ -140,8 +140,8 @@ return {
 
 | Change | Edit |
 | :--- | :--- |
-| Always show workspaces 1–5 on Hyprland | Pad `items` with `{ id = n, label = tostring(n), active = false, populated = false }` for missing numbers; `focus` creates them |
-| App icons instead of numbers | Carry `app_id = workspace.app_id` into `items`, then draw `icon { name = item.app_id or "", size = 14 }` |
+| Always show workspaces 1 to 5 on Hyprland | Pad `items` with `{ id = n, label = tostring(n), active = false, populated = false }` for missing numbers; `focus` creates them |
+| App icons instead of numbers | Carry `app_id = workspace.app_id` into `items` and draw `icon { name = item.app_id or "", size = 14 }`. Where the icon name differs from the `app_id`, read `entries[by_app_id[app_id]].icon` from `mantle.applications` |
 | Named workspaces | `label = workspace.name or tostring(workspace.idx)`, with `min_width` and side `padding` instead of a fixed `width` |
 | Dots only | Drop the `text` and set `width = item.active and 20 or 8, height = 8` |
 | Show the focused window's title | Add `text { content = mantle.workspaces:map(function(workspaces) return workspaces and workspaces.active_client and workspaces.active_client.title or "" end), elide = "End", max_width = 400 }` |

@@ -61,6 +61,8 @@ mod dmabuf;
 mod egl_ext;
 mod idle_profile;
 mod input;
+#[cfg(test)]
+pub(crate) use input::apply_hover_write;
 pub(crate) use input::{DragPhase, MouseButton, NavigateKey};
 mod layer;
 mod lock;

@@ -1,9 +1,11 @@
-Use [`persistent_table`](../guide/scripting.md#persistent_table), which sends these actions for you.
+Declare files with [`persistent_table`](../guide/scripting.md#persistent_table): it sends these
+actions and exposes each key as a signal. Saving, outside edits and a broken file are covered
+there.
 
 <!-- reference -->
 
 ## Backend
 
-A write pushes at once. Another writer's change, another shell's included, refills missing defaults
-and pushes. A relative path is refused. Saving, outside edits and a broken file:
-[`persistent_table`](../guide/scripting.md#persistent_table).
+Plain JSON files at absolute paths, watched with inotify. A `set` pushes at once; the save follows
+1 s later. Another writer's change, another shell's included, gets missing defaults refilled and
+pushes.

@@ -34,23 +34,18 @@ return { panel {
 | Property | Type | Default | Behaviour |
 | :--- | :--- | :--- | :--- |
 | `source` | `string\|Bound` | `""` | A file path (`mantle.config_dir .. "/img/a.png"`), never a theme name; `""` draws nothing. PNG, JPEG, WebP, GIF, SVG or SVGZ; animated GIFs loop |
-| `fit` | `"cover"\|"contain"\|"stretch"\|Bound` | `"cover"` | `"cover"` fills the box and crops, `"contain"` fits inside it, `"stretch"` distorts to it. No intrinsic size: set `width`/`height` |
+| `fit` | `"cover"\|"contain"\|"stretch"\|Bound` | `"cover"` | `"cover"` fills the box and crops, `"contain"` fits inside it, `"stretch"` distorts to it |
 | `async` | `boolean\|Bound` | `false` | `false` decodes in the frame that first draws it. `true` decodes on a worker and draws nothing until ready; use it for many or large images |
 | `retain` | `boolean\|Bound` | `false` | Keep drawing the last picture while a new `source` decodes, and on a failed decode. Needs `async = true` and a stable `id` |
 | `transition` | `Transition\|Bound` | None | Cross from the held picture to each newly decoded `source`. Implies `retain`; needs `async = true` and a stable `id`. Unknown keys are refused. See [transition](#transition) |
-| `source_blur` | `number\|Bound`, `[0, 8192]` | `0` | Blur sigma in px, baked into the pixels once at decode (three box passes approximating a Gaussian); see [blurs](../guide/paint.md#blurs). Animated GIFs ignore it |
+| `source_blur` | `number\|Bound`, `[0, 8192]` | `0` | Blur sigma in px, baked into the pixels once at decode (three box passes approximating a Gaussian); see [blurs](../guide/paint.md#blurs). Animated GIFs ignore it. Under `async`, a change blanks the image until the re-decode lands; `retain` does not cover it |
 <!-- End of the generated table. -->
-
-An image has no intrinsic size: without `width` and `height` it is 0 × 0. Use `async` for large
-files or many thumbnails, since an inline decode runs on the thread that draws the shell.
-`source_blur` runs on the decoding thread too; under `async`, changing it blanks the image until the
-re-decode lands, and `retain` does not cover that (the `source` is the same).
 
 ### transition
 
 | Field | Values | Default | Behaviour |
 | :--- | :--- | :--- | :--- |
-| `duration` | ms, `[1, 60000]`, required | — | Length of the cross |
+| `duration` | ms, `[1, 60000]` | Required | Length of the cross |
 | `easing` | An [easing](../guide/animation.md) | `"InOutQuad"` | Drives `u_progress` |
 | `shader` | Absolute `.frag` path | Built-in cross-dissolve | Replaces the dissolve. Recompiled when the file changes |
 | `params` | `{ name = number \| { 2 to 4 numbers } }` | `{}` | Uniforms for that shader, as on a [shader node](shader.md). Refused without `shader` |

@@ -1,11 +1,11 @@
 # text
 
-A run of text in the [`fonts`](../guide/scripting.md#fonts) chain or a family you name: labels,
+One paragraph drawn in the [`fonts`](../guide/scripting.md#fonts) chain or a named family: labels,
 clocks, notification bodies. It sizes to its content, wraps and elides inside a bounded width, and
-can mix bold, italic, colour and links in one paragraph. For typing, use a [`textfield`](textfield.md).
+mixes bold, italic, colour and links through [runs](#runs). For typing, use a [`textfield`](textfield.md).
 
-A card with an icon and two lines: the title elides, the body wraps to two lines and elides the
-second.
+Two notification cards. In the first, the title elides and the body wraps to two lines, eliding the
+second; the second card's short texts fit.
 
 ```lua,shot
 local function card(icon_name, title, body)
@@ -27,7 +27,8 @@ local function card(icon_name, title, body)
 end
 
 return column { width = 340, spacing = 8, children = {
-    card("dialog-information-symbolic", "Update ready", "3 packages can be installed. Restart to finish the kernel upgrade."),
+    card("dialog-information-symbolic", "Firmware update ready for the USB-C dock",
+        "3 packages can be installed. Restart to finish the kernel upgrade and load the new graphics driver."),
     card("battery-caution-symbolic", "Battery low", "12% left"),
 } }
 ```
@@ -58,15 +59,15 @@ Each run in a `content` array is a table:
 
 | Field | Values | Default | Behaviour |
 | :--- | :--- | :--- | :--- |
-| `text` | String, required | — | Empty runs are skipped. A run without `text` is refused |
+| `text` | String | Required | A run without it is refused; an empty one is skipped |
 | `bold`, `italic` | Boolean | `false` | Uses the family's bold or italic face when one exists |
 | `underline` | Boolean | `false` | Underline in the run's colour |
-| `color` | Colour | The node's `foreground` | |
+| `color` | [Colour](../guide/paint.md#colours) | The node's `foreground` | |
 | `href` | String | None | Handed to `on_link` on click; the pointer shows `"pointer"` over it. `""` is no link |
 
-A run also takes `kind = "text"`, so text spans from the
-[notifications](../capabilities/notifications.md) capability pass through as they are; drop image
-spans, which have no `text`.
+A run also takes `kind = "text"`, so a [notification](../capabilities/notifications.md) body's
+text spans pass through unchanged. Drop its image spans, which have no `text`. A `nil` hole ends the
+array.
 
 ```lua
 local body = text {
@@ -78,7 +79,7 @@ local body = text {
         { text = " can be installed. " },
         { text = "Release notes", underline = true, color = "#89B4FA", href = "https://example.org/notes" },
     },
-    on_link = function(href) process.detach({ "xdg-open", href }) end,
+    on_link = function(href) process.detach("xdg-open", { href }) end,
 }
 ```
 

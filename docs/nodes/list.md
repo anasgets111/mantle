@@ -59,10 +59,10 @@ Keyed workspace buttons from a capability: [workspaces cookbook](../cookbook/wor
 A `list` packs and aligns exactly like the `row` or `column` its `direction` names: its own
 `align_v` (vertical) or `align_h` (horizontal) packs the items.
 
-A list builds every item it is given on every pass that re-resolves it, including items scrolled
-out of view. `key` makes matching cheap and keeps each item's state (tweens, a held image, a text
-field's draft) across reorders; it does not skip `itemfn`. Bound long lists with `limit` (a launcher
-showing the top 50 matches), or hide them while closed so they freeze.
+Every pass that re-resolves the list calls `itemfn` for every item, scrolled out of view or not.
+`key` keeps each item's state (tweens, a held image, a text field's draft) across reorders; it does
+not skip `itemfn`. Cap a long list with `limit` (a launcher's top 50 matches), or hide it while
+closed so it freezes.
 
 ## How do I…
 
@@ -73,8 +73,8 @@ showing the top 50 matches), or hide them while closed so they freeze.
 | Keep items' animations when the order changes | Give `key` a stable per-element string (an id from the data) |
 | Show only the top N matches | `limit = 50` |
 | Lay items out horizontally | `direction = "Horizontal"` |
-| Filter as the user types | Bind `source` to a `computed` of the query ([textfield](textfield.md)) |
-| Show an empty state | Bind a sibling's `visible` to `#items == 0` |
+| Filter as the user types | Bind `source` to a `map` of the query, as the [textfield](textfield.md) example does |
+| Show an empty state | A sibling with `visible = items:map(function(all) return not all or #all == 0 end)` |
 
 ### Scroll a long list
 

@@ -79,19 +79,24 @@ Call as `mantle.tray:invoke("action", arguments...)`; `?` marks an argument you 
 
 ## Backend
 
-Hosts the watcher at `/StatusNotifierWatcher` and registers itself as a host. The name is requested
-without `DoNotQueue`: if another host owns it, Mantle queues for it. At start it adopts items
-already on the bus at `/StatusNotifierItem`, `/StatusNotifierItem/1` and
-`/org/chromium/StatusNotifierItem/1`. Items are dropped, and their spooled PNGs deleted, on
-`NameOwnerChanged`.
+Mantle hosts `org.kde.StatusNotifierWatcher` at `/StatusNotifierWatcher` on the session bus and
+registers itself as a host.
 
 | Contract | Behavior |
 | :--- | :--- |
-| Icon | `IconName` found in the item's `IconThemePath`, then `IconName` as a theme name, then the largest valid pixmap |
-| Pixmap | Square, 1–128 px, exactly `w × h × 4` ARGB bytes; spooled as PNG under `tray/` |
+| Name | Requested without `DoNotQueue`: if another watcher owns it, Mantle queues behind it |
+| Adoption | At start, adopts items already on the bus at `/StatusNotifierItem`, `/StatusNotifierItem/1` or `/org/chromium/StatusNotifierItem/1`, for apps that never re-register |
+| Removal | An item leaves, and its spooled PNGs are deleted, when its bus name loses its owner |
+| Icon | `IconName` found in the item's `IconThemePath`, then `IconName` as a theme name, then the largest valid pixmap: square, 1 to 128 px, exactly `w × h × 4` ARGB bytes, spooled as a PNG under `tray/` |
 | Bounds | Strings 256 bytes; menus 1024 nodes, depth 32 |
-| Activation | `ItemIsMenu` items get no `Activate`; secondary activate and scroll are unrestricted |
-| Menus | `com.canonical.dbusmenu` layout; `menu_will_show` sends `AboutToShow`, `activate_menu_item` sends `Event("clicked")` |
+| Menus | `com.canonical.dbusmenu`. `menu_will_show` sends `AboutToShow`, `activate_menu_item` sends `Event("clicked")` |
+
+## Gotchas
+
+| Trap | Fix |
+| :--- | :--- |
+| `activate` does nothing on some items | The item set `item_is_menu`, and Mantle skips `Activate` for it. Open `menu` on left click |
+| A submenu is empty | Some apps fill submenus only after `AboutToShow`. Send `menu_will_show` with the submenu's `id` before drawing it |
 
 See also: [System tray with menu](../cookbook/tray.md) recipe.
 
