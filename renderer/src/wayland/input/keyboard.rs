@@ -55,6 +55,27 @@ pub(super) fn focused_field(path: &[&layout::ResolvedNode]) -> Option<FieldTarge
     })
 }
 
+/// `on_cancel` of the reachable field addressing `target`. Escape reaches Lua; the secret never does
+/// (ADR-0005).
+fn secure_on_cancel(tree: &layout::ResolvedNode, target: &node::SecureSubmitTarget) -> Option<Function> {
+    let mut stack = vec![tree];
+    while let Some(node) = stack.pop() {
+        if !node.visible || node.leaving {
+            continue;
+        }
+        if let Some(node::PaintStyle::TextField { target: Some(found), .. }) = &node.paint
+            && found == target
+        {
+            return match node.properties.get("on_cancel") {
+                Some(Value::Function(f)) => Some(f.clone()),
+                _ => None,
+            };
+        }
+        stack.extend(node.children.iter().rev());
+    }
+    None
+}
+
 /// First plain `autofocus = true` field in scope document order (ADR-0112). Skip masked fields and
 /// fields without callbacks; unlike two `secure_submit` fields, duplicate search boxes are a config
 /// mistake, so deterministic order beats refusing both. A hidden subtree is skipped whole: it is
@@ -874,11 +895,22 @@ impl App {
                 self.secure_buffer.pop_grapheme();
             }
             KeyAction::Erase(_) => {}
-            // Use the transition seam to scrub, then re-arm the same field for retyping.
+            // Scrub through the transition seam, then re-arm: `on_cancel` may keep the prompt open.
             KeyAction::Clear => {
+                let cleared = !self.secure_buffer.is_empty();
                 let field = self.focused_secure_submit.clone();
                 self.focus_secure_submit(None);
-                self.focus_secure_submit(field);
+                self.focus_secure_submit(field.clone());
+                if let Some(field) = field
+                    && let Some(on_cancel) = self
+                        .client
+                        .scene()
+                        .surface(&field.surface_id)
+                        .and_then(|tree| secure_on_cancel(tree, &field.target))
+                    && let Err(e) = on_cancel.call::<()>(cleared)
+                {
+                    warn!("{}: on_cancel raised, ignoring it: {e}", field.surface_id);
+                }
             }
             KeyAction::Submit => self.finish_secure_submit(),
             // Password prompts have no navigation, and a masked field has no caret to move: a
@@ -1286,6 +1318,22 @@ mod tests {
             }
             other => panic!("expected a plain field, got {}", if other.is_some() { "masked" } else { "nothing" }),
         }
+    }
+
+    #[test]
+    fn a_secure_fields_on_cancel_is_found_by_its_destination_while_reachable() {
+        let lua = Lua::new();
+        let polkit = node::SecureSubmitTarget { capability: "polkit".to_string(), action: "authenticate".to_string() };
+        let mut field = textfield(&lua, Some(secure_submit_table(&lua, "polkit", "authenticate")));
+        let on_cancel = lua.create_function(|_, _cleared: bool| Ok(())).unwrap();
+        field.properties.insert("on_cancel", Value::Function(on_cancel));
+        let mut root = hit_node(&lua, "panel", (0.0, 0.0, 100.0, 32.0), false);
+        root.children.push(field);
+        assert!(secure_on_cancel(&root, &polkit).is_some());
+        let other = node::SecureSubmitTarget { capability: "lock".to_string(), action: "authenticate".to_string() };
+        assert!(secure_on_cancel(&root, &other).is_none(), "another destination's field");
+        root.children[0].visible = false;
+        assert!(secure_on_cancel(&root, &polkit).is_none(), "a hidden prompt was not the one dismissed");
     }
 
     /// A `secure_submit` beats a callback on the same node, and it has to: the masked path is the
