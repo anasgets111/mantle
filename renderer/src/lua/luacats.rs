@@ -478,21 +478,23 @@ pub(crate) use lua_record;
 
 /// A struct a parser reads a Lua table into, key for key: `KEYS` for `only_keys`, and its stub from
 /// its fields and `///` blocks. `#[alias = "Name"]` spells it as an inline table, which LuaLS checks
-/// inside a union where a class admits any table; `#[class = "Name"]` as a class whose fields carry
-/// their own words. `key?: T` is a key Lua may leave out that Rust holds defaulted, and
-/// `key: T as S` one Lua spells as `S`.
+/// inside a union where a class admits any table, and `| T` puts a bare `T` before it;
+/// `#[class = "Name"]` as a class whose fields carry their own words. `key?: T` is a key Lua may
+/// leave out that Rust holds defaulted, `key: T as S` one Lua spells as `S`, and fields after a `;`
+/// are not keys.
 macro_rules! lua_shape {
-    ($(#[doc = $doc:literal])* #[alias = $name:literal] $($rest:tt)*) => {
-        $crate::lua::luacats::lua_shape!(@struct [$($doc)*] false $name $($rest)*);
+    ($(#[doc = $doc:literal])* #[alias = $name:literal $(| $bare:ty)?] $($rest:tt)*) => {
+        $crate::lua::luacats::lua_shape!(@struct [$($doc)*] false $name [$($bare)?] $($rest)*);
     };
     ($(#[doc = $doc:literal])* #[class = $name:literal] $($rest:tt)*) => {
-        $crate::lua::luacats::lua_shape!(@struct [$($doc)*] true $name $($rest)*);
+        $crate::lua::luacats::lua_shape!(@struct [$($doc)*] true $name [] $($rest)*);
     };
     // `$q` never matches: it gives the `?` a metavariable to repeat by.
-    (@struct [$($doc:literal)*] $class:literal $name:literal $(#[$attr:meta])* $vis:vis struct $ty:ident {
+    (@struct [$($doc:literal)*] $class:literal $name:literal [$($bare:ty)?] $(#[$attr:meta])* $vis:vis struct $ty:ident {
         $($(#[doc = $field_doc:literal])* $field_vis:vis $field:ident $(? $([$q:tt])?)?: $field_ty:ty $(as $lua:ty)?),+ $(,)?
+        $(; $($extra:tt)*)?
     }) => {
-        $(#[doc = $doc])* $(#[$attr])* $vis struct $ty { $($(#[doc = $field_doc])* $field_vis $field: $field_ty),+ }
+        $(#[doc = $doc])* $(#[$attr])* $vis struct $ty { $($(#[doc = $field_doc])* $field_vis $field: $field_ty,)+ $($($extra)*)? }
 
         impl $ty {
             pub(crate) const KEYS: &'static [&'static str] = &[$(stringify!($field)),+];
@@ -513,7 +515,8 @@ macro_rules! lua_shape {
                     <$crate::lua::luacats::lua_shape!(@lua $field_ty $(, $lua)?) as $crate::lua::luacats::LuaType>::lua(),
                     concat!($($field_doc, "\n",)* ""),
                 )),+];
-                out.push($crate::lua::luacats::shape($class, $name, concat!($($doc, "\n",)* ""), &keys));
+                let bare = String::new() $(+ &<$bare as $crate::lua::luacats::LuaType>::lua() + "|")?;
+                out.push($crate::lua::luacats::shape($class, $name, &bare, concat!($($doc, "\n",)* ""), &keys));
             }
         }
     };
@@ -531,16 +534,16 @@ fn paragraphs(doc: &str) -> (String, String) {
     (one_line(first), rest.lines().map(|line| format!("---{line}\n")).collect())
 }
 
-/// A [`lua_shape!`]'s stub: `---@alias Name { key: T, ... } words`, or its doc and a `---@class`
+/// A [`lua_shape!`]'s stub: `---@alias Name bare{ key: T, ... } words`, or its doc and a `---@class`
 /// of `---@field`s. `keys` holds each key's name (`?` when optional), type and `///` block. An
 /// unknown key is a type error, as the parser refuses it.
 #[cfg(test)]
-pub(crate) fn shape(class: bool, name: &str, doc: &str, keys: &[(String, String, &str)]) -> String {
+pub(crate) fn shape(class: bool, name: &str, bare: &str, doc: &str, keys: &[(String, String, &str)]) -> String {
     const UNKNOWN: &str = r#""no such property""#;
     if !class {
         let (words, more) = paragraphs(doc);
         let keys: String = keys.iter().map(|(key, ty, _)| format!("{key}: {ty}, ")).collect();
-        return format!("---@alias {name} {{ {keys}[string]: {UNKNOWN} }} {words}\n{more}");
+        return format!("---@alias {name} {bare}{{ {keys}[string]: {UNKNOWN} }} {words}\n{more}");
     }
     let mut out = format!("{}---@class {name}\n", comment(doc));
     for (key, ty, doc) in keys {

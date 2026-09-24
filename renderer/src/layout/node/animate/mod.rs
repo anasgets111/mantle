@@ -16,8 +16,8 @@ use mlua::{Lua, Value};
 use super::prop::Prop;
 use super::style::{axis_default, parse_percent, range_of};
 use super::{
-    EdgeInsets, LayoutError, PropMap, Property, Rgba, fields, invalid, only_keys, parse_hex_color, preview_for_error,
-    value_as_f32,
+    Axes, EdgeInsets, LayoutError, PropMap, Property, Rgba, fields, invalid, only_keys, parse_hex_color,
+    preview_for_error, value_as_f32,
 };
 use crate::lua::luacats::spelled;
 
@@ -32,8 +32,11 @@ use easing::Easing;
 pub(crate) fn easing_names() -> impl Iterator<Item = &'static str> {
     Easing::NAMES.iter().map(|(name, _)| *name)
 }
+#[cfg(test)]
+pub(crate) use sequence::Keyframe;
 use sequence::{Sequence, parse_sequence};
-use spring::{Spring, parse_spring};
+pub(crate) use spring::Spring;
+use spring::parse_spring;
 pub(crate) use transition::Params;
 pub use transition::{Dissolve, ShaderParam, TransitionSpec};
 
@@ -376,7 +379,7 @@ pub enum Animatable {
     Fields { keys: &'static [&'static str], values: [f32; 4] },
 }
 
-const AXES: &[&str] = &["x", "y"];
+spelled!(Animatable => format!("{}|{}|{}|{}", f32::lua(), String::lua(), EdgeInsets::lua(), Axes::lua()));
 
 impl Animatable {
     /// `property`'s value when it is not set, in this value's shape: `1` for `opacity` and
@@ -409,7 +412,7 @@ impl Animatable {
             }
             Value::Table(table) => {
                 let has = |key: &str| table.contains_key(key).unwrap_or(false);
-                let keys = if has("x") || has("y") { AXES } else { EdgeInsets::KEYS };
+                let keys = if Axes::KEYS.iter().any(|key| has(key)) { Axes::KEYS } else { EdgeInsets::KEYS };
                 // Any other key makes it another shape, such as a gradient (ADR-0255).
                 let known =
                     |key: &Value| matches!(key, Value::String(s) if keys.iter().any(|k| s.as_bytes() == k.as_bytes()));
@@ -982,7 +985,7 @@ mod tests {
             Animatable::from_value(property, Some(&value)).unwrap().unwrap()
         };
         let mid = table("return { x = 1 }", "scale").lerp(table("return { x = 2, y = 3 }", "scale"), 0.5, "scale");
-        assert_eq!(mid, Animatable::Fields { keys: AXES, values: [1.5, 2.0, 1.0, 1.0] });
+        assert_eq!(mid, Animatable::Fields { keys: Axes::KEYS, values: [1.5, 2.0, 1.0, 1.0] });
         let Value::Table(back) = mid.to_value(&lua).unwrap() else { panic!("axes write back as a table") };
         assert_eq!((back.get::<f32>("x").unwrap(), back.get::<f32>("y").unwrap()), (1.5, 2.0));
         assert!(!back.contains_key("top").unwrap());

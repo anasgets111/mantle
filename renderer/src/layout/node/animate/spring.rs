@@ -4,6 +4,7 @@ use mlua::Value;
 
 use super::{Animatable, Motion, Tween};
 use crate::layout::node::{LayoutError, invalid, only_keys, preview_for_error, value_as_f32};
+use crate::lua::luacats::lua_shape;
 
 /// Which closed-form solution a spring's constants put it in. Underdamped rings past the target,
 /// overdamped crawls in without reaching it, and the boundary between them is its own formula
@@ -17,32 +18,36 @@ enum Regime {
     Critical,
 }
 
-/// A mass on a spring, in units of the displacement it has left to cross: it starts one
-/// displacement from the target and settles on it, so one scalar drives a number, a percent, a
-/// colour and an edge table alike, and the rest threshold below is dimensionless rather than
-/// needing to know pixels from opacity.
-///
-/// Solved in closed form rather than integrated per frame. [`Tween::at`] has to be a pure
-/// function of elapsed time -- a pass and a tick both call it, and the value carries no state
-/// across reconciliation (ADR-0152) -- so stepping a velocity forward per frame would be a
-/// second source of truth and would drift with the frame rate. The closed form also hands over
-/// an exact rate when the target moves, which is the whole reason a spring is here.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct Spring {
-    /// The pull toward the target, `k/m`, per second squared.
-    pub stiffness: f32,
-    /// The drag on the way, `c/m`, per second. `2 * sqrt(stiffness)` is critical damping: below
-    /// it the spring overshoots and rings, above it it crawls in without ever crossing.
-    pub damping: f32,
-    /// Where the displacement is already heading when this run begins, as a fraction of that
-    /// displacement per second. Zero for a spring starting at rest; a retarget hands the running
-    /// spring's own rate over here, which is how the motion keeps its velocity through a change
-    /// of target instead of restarting from still.
-    pub velocity: f32,
-    /// When the displacement is inside [`Spring::REST`] for good, computed once at parse from a
-    /// bound on the envelope. Conservative on purpose: too long only keeps a tween that is
-    /// already sitting on its target, while too short would drop it mid-flight.
-    settles: Duration,
+// A mass on a spring, in units of the displacement it has left to cross: it starts one
+// displacement from the target and settles on it, so one scalar drives a number, a percent, a
+// colour and an edge table alike, and the rest threshold below is dimensionless rather than
+// needing to know pixels from opacity.
+//
+// Solved in closed form rather than integrated per frame. `Tween::at` has to be a pure function
+// of elapsed time -- a pass and a tick both call it, and the value carries no state across
+// reconciliation (ADR-0152) -- so stepping a velocity forward per frame would be a second source
+// of truth and would drift with the frame rate. The closed form also hands over an exact rate when
+// the target moves, which is the whole reason a spring is here.
+lua_shape! {
+    /// Both required: `stiffness` `(0, 100000]`, `damping` `(0, 10000]`; `2 * math.sqrt(stiffness)` is critical damping. Keeps its velocity when the target changes (ADR-0154).
+    #[alias = "Spring"]
+    #[derive(Debug, Clone, Copy, PartialEq)]
+    pub struct Spring {
+        /// The pull toward the target, `k/m`, per second squared.
+        pub stiffness: f32,
+        /// The drag on the way, `c/m`, per second. `2 * sqrt(stiffness)` is critical damping: below
+        /// it the spring overshoots and rings, above it it crawls in without ever crossing.
+        pub damping: f32;
+        /// Where the displacement is already heading when this run begins, as a fraction of that
+        /// displacement per second. Zero for a spring starting at rest; a retarget hands the running
+        /// spring's own rate over here, which is how the motion keeps its velocity through a change
+        /// of target instead of restarting from still.
+        pub velocity: f32,
+        /// When the displacement is inside [`Spring::REST`] for good, computed once at parse from a
+        /// bound on the envelope. Conservative on purpose: too long only keeps a tween that is
+        /// already sitting on its target, while too short would drop it mid-flight.
+        settles: Duration,
+    }
 }
 
 impl Spring {
@@ -237,7 +242,7 @@ pub(super) fn parse_spring(field: &str, spec: &mlua::Table) -> Result<Option<Spr
             )),
         };
     };
-    only_keys(&format!("{field}.spring"), &spring, &["stiffness", "damping"])?;
+    only_keys(&format!("{field}.spring"), &spring, Spring::KEYS)?;
     let read = |name: &str, highest: f32| -> Result<f32, LayoutError> {
         let at = format!("{field}.spring.{name}");
         let value: Value = spring.get(name).map_err(|e| invalid(&at, e.to_string()))?;

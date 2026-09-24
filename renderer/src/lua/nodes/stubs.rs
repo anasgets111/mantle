@@ -7,13 +7,20 @@
 
 use super::properties::{ALL, Absent, BOX, KINDS, Property, SURFACES, kind_doc, properties};
 use crate::layout::node::prop::Keyword;
-use crate::layout::node::{Align, BorderColor, EdgeInsets, PopupAnchor, TransitionSpec};
+use crate::layout::node::{Align, Axes, BorderColor, EdgeInsets, Keyframe, PopupAnchor, Spring, TransitionSpec};
 use crate::lua::luacats::LuaType;
 use crate::text::snap::LogicalRect;
 
 /// The table shapes a header names as `{Name}`, each filled from its parser's struct.
-const SHAPES: [fn(String) -> String; 4] =
-    [shape::<EdgeInsets>, shape::<BorderColor>, shape::<TransitionSpec>, shape::<LogicalRect>];
+const SHAPES: [fn(String) -> String; 7] = [
+    shape::<EdgeInsets>,
+    shape::<BorderColor>,
+    shape::<Axes>,
+    shape::<Keyframe>,
+    shape::<Spring>,
+    shape::<TransitionSpec>,
+    shape::<LogicalRect>,
+];
 
 /// `header` with `T`'s stub in its `{Name}` line.
 fn shape<T: LuaType>(header: String) -> String {
@@ -261,14 +268,14 @@ const NODES_HEADER: &str = r##"---@meta
 ---@alias Length number|"Fill"|Percent Pixels `[0, 8192]`, the remaining space, or a percent.
 ---@alias Color string `"#RRGGBB"` or `"#RRGGBBAA"`. No shorthand or names.
 {BorderColors}
----@alias Axes { x?: number, y?: number, [string]: "no such property" } A missing axis takes the property's default.
+{Axes}
 ---@alias GradientStop [number, Color] Position `[0, 1]` and colour. Positions ascend.
 ---@alias Gradient { gradient: "Linear"|"Radial"|"Conic", angle?: number, stops: GradientStop[], [string]: "no such property" } At least 2 stops. `angle` is degrees clockwise from the top: Linear default `180`, Conic default `0`, Radial refuses it.
 ---@alias Mask { gradient?: "Linear"|"Radial"|"Conic", angle?: number, stops?: GradientStop[], source?: string, invert?: boolean, [string]: "no such property" } Exactly one of a `Gradient` or an image `source` path (alpha only, stretched over the box). `invert` swaps kept and cut.
 ---@alias EasingName {EASING} `Back` and `Elastic` overshoot, as does a Bezier `y` outside `[0, 1]`; the property's range clamps them.
 ---@alias Easing EasingName|[number, number, number, number]|{ steps: integer } A name, CSS `cubic-bezier` `{ x1, y1, x2, y2 }` with `x1`, `x2` in `[0, 1]`, or `{ steps = n }`, `n` in `[1, 1000]` (ADR-0151).
----@alias Keyframe number|string|Edges|Axes|{ value: number|string|Edges|Axes, duration?: number, easing?: Easing, [string]: "no such property" } A bare value, or a frame with its own timing. `duration = 0` jumps; repeating the previous value holds.
----@alias Spring { stiffness: number, damping: number, [string]: "no such property" } Both required: `stiffness` `(0, 100000]`, `damping` `(0, 10000]`; `2 * math.sqrt(stiffness)` is critical damping. Keeps its velocity when the target changes (ADR-0154).
+{Keyframe}
+{Spring}
 ---@alias Animation number|{ duration?: number, delay?: number, easing?: Easing, from?: number|string|Edges|Axes, spring?: Spring, keyframes?: Keyframe[], loops?: integer|"Infinite" } A bare number is `duration`.
 --- - `duration`: ms `[1, 60000]`, required unless `spring`. `easing` defaults to `"InOutQuad"`.
 --- - `delay`: ms `[0, 60000]` before it starts; offsets a sequence once, not per loop (ADR-0153).

@@ -334,15 +334,21 @@ fn xy(row: &Property, value: &Value) -> Result<(f32, f32), LayoutError> {
     let Value::Table(table) = value else {
         return Err(invalid(property, format!("expected an {{ x, y }} table, got {}", preview_for_error(value))));
     };
-    only_keys(property, table, &["x", "y"])?;
+    only_keys(property, table, Axes::KEYS)?;
     let axis = |key| table_number(property, table, key).map(|n| n.unwrap_or(axis_default(property)));
-    Ok((row_within(row, axis("x")?)?, row_within(row, axis("y")?)?))
+    let Axes { x, y } = Axes { x: row_within(row, axis("x")?)?, y: row_within(row, axis("y")?)? };
+    Ok((x, y))
 }
 
-/// `translate`, `origin`, `shadow_offset`: a per-axis pair.
-pub(crate) struct Axes;
-
-spelled!(Axes => "Axes");
+// `translate`, `origin`, `shadow_offset`: a per-axis pair, read as `(x, y)`.
+lua_shape! {
+    /// A missing axis takes the property's default.
+    #[alias = "Axes"]
+    pub(crate) struct Axes {
+        x?: f32,
+        y?: f32,
+    }
+}
 
 impl Prop for Axes {
     type Out = (f32, f32);
