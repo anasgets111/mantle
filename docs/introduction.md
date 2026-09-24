@@ -1,3 +1,5 @@
+<p class="wordmark"><img src="theme/m.png" alt="M">antle</p>
+
 # Introduction
 
 Mantle runs a desktop shell written in Lua on Wayland. The engine evaluates your `shell.lua`,
