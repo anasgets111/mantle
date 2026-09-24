@@ -94,12 +94,15 @@ pub struct TextPainter {
 }
 
 /// The sizes to delete to bring a scratch pool back to [`SCRATCH_SIZES`]: those asked for longest
-/// ago. Pure so the policy is testable without the GL context `delete_image` needs.
-fn stalest(scratch: &HashMap<(usize, usize), (u64, Vec<ImageId>)>) -> Vec<(usize, usize)> {
+/// ago, never one the paint `now` asked for (ADR-0262). Pure so the policy is testable without the
+/// GL context `delete_image` needs.
+/// ponytail: the pool's ceiling is the larger of 16 sizes and one paint's, which a surface of many
+/// glasses at sigma 32 or more puts past 16. Upgrade path: a byte budget, once one exceeds it.
+fn stalest(scratch: &HashMap<(usize, usize), (u64, Vec<ImageId>)>, now: u64) -> Vec<(usize, usize)> {
     let mut by_age: Vec<_> = scratch.iter().map(|(size, (asked, _))| (*asked, *size)).collect();
     by_age.sort_unstable();
     by_age.truncate(scratch.len().saturating_sub(SCRATCH_SIZES));
-    by_age.into_iter().map(|(_, size)| size).collect()
+    by_age.into_iter().filter(|(asked, _)| *asked != now).map(|(_, size)| size).collect()
 }
 
 /// What [`TextPainter::draw_text`] draws, apart from where: one `Draw::Text` command's worth,
@@ -275,7 +278,7 @@ impl TextPainter {
             entry.0 = self.paints;
             entry.1.push(id);
         }
-        for size in stalest(&self.scratch) {
+        for size in stalest(&self.scratch, self.paints) {
             for id in self.scratch.remove(&size).into_iter().flat_map(|(_, free)| free) {
                 self.canvas.delete_image(id);
             }
@@ -453,11 +456,25 @@ mod tests {
         // holds one target per pixel of travel for the rest of the session.
         let pool =
             |sizes: std::ops::Range<usize>| sizes.map(|n| ((n, 40), (n as u64, Vec::new()))).collect::<HashMap<_, _>>();
-        assert!(stalest(&pool(0..SCRATCH_SIZES)).is_empty(), "a pool at capacity deletes nothing");
+        let now = 100;
+        assert!(stalest(&pool(0..SCRATCH_SIZES), now).is_empty(), "a pool at capacity deletes nothing");
 
-        let evicted = stalest(&pool(0..SCRATCH_SIZES + 3));
+        let evicted = stalest(&pool(0..SCRATCH_SIZES + 3), now);
         assert_eq!(evicted.len(), 3, "only the overflow goes");
         assert_eq!(evicted, vec![(0, 40), (1, 40), (2, 40)], "asked for longest ago, not largest or newest");
+    }
+
+    /// ADR-0262. A paint asking for more sizes than the cap keeps them all, or the next frame
+    /// allocates its blurs' chains again.
+    #[test]
+    fn a_paint_keeps_every_size_it_asked_for() {
+        let pool = |asked: fn(usize) -> u64| {
+            (0..SCRATCH_SIZES + 3).map(|n| ((n, 40), (asked(n), Vec::new()))).collect::<HashMap<_, _>>()
+        };
+        let evicted = stalest(&pool(|n| 7 + (n % 2) as u64), 8);
+        assert_eq!(evicted.len(), 3);
+        assert!(evicted.iter().all(|(n, _)| n % 2 == 0), "only the older paint's: {evicted:?}");
+        assert!(stalest(&pool(|_| 8), 8).is_empty());
     }
 
     /// A run bidi splits around other text is drawn piece by piece, never across the text between

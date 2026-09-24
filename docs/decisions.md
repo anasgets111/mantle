@@ -6341,3 +6341,43 @@ Paint-only 1.0 µs against 53 µs relayout; regions 1.3 µs.
 
 **Amends ADR-0145** (decision 3: a transform tween skips the relayout) **and ADR-0149** (the
 transform re-derives on the paint-only tick).
+
+## 0262. The engine blurs with its own separable Gaussian into pooled targets, at any sigma
+
+Three blurs a frame at sigma 6 cost 19% of a core at 166 Hz. femtovg's `filter_image` allocated and
+freed a texture and a framebuffer per call, 1.25 of its 1.27 ms; its draws cost almost nothing.
+
+1. **Two passes of the shader stage's quad** (ADR-0184): across into a pooled scratch, then down
+   into the pooled result, through one framebuffer the stage keeps. The walk flushes femtovg once
+   per blur, and the stage restores the framebuffer and viewport with the rest of its state.
+2. **From sigma 8, at a power-of-two fraction of the size.** The factor keeps the kernel within 4
+   to 8 texels: 2 from sigma 8, 4 from 16, 8 from 32. Each halving is one bilinear read of a whole
+   2x2 block, the last past an odd edge, so a low texel spans exactly `f` pixels at any size; the
+   result is stretched back by one more read. The blur there is `sqrt(sigma^2 - (3f^2 - 1) / 12) /
+   f`, removing the box's and the stretch's variance. On a 250x250 target, against femtovg's
+   reference Gaussian at sigma 2, 6 and 8 and its own full-size pass at 16 and 32, it is within 3
+   of 255, PSNR 53 dB or more. A grid stretched to the size instead misses by 7 at sigma 16.
+3. **The reach is 3 sigma at any sigma.** The layer's offscreen, a glass's read area and so its
+   repaint growth (ADR-0256, ADR-0258) widen with it, cut to the parent's clip as before.
+4. **The pool keeps every size the current paint asked for**, past ADR-0217's cap of 16, since a
+   blur at factor `f` holds `log2(f) + 1` of them: five glasses at sigma 32 hold 20. Evicting
+   one would allocate it again next frame.
+
+CPU ms per frame, headless RTX 3080 (proprietary driver), best of 7 x 200 frames with `glFinish`,
+runs interleaved: a 240x110 glass pane, a 200x56 glass pill and a 200x56 `content_blur` pill,
+recoloured each frame.
+
+| Blur | sigma 0 | sigma 6 | Of it, the three blurs | sigma 16 | sigma 32 |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| femtovg `filter_image` | 0.21 | 1.58 | 1.27 | as sigma 8 | as sigma 8 |
+| This | 0.18 | 0.40 | 0.11 | 0.56 | 0.44 |
+
+Rejected: femtovg's own draws for the passes, which cannot weigh taps; Kawase's dual filter, which
+only approximates a Gaussian's sigma; one full-size pass at any sigma, whose taps grow with it.
+
+ponytail: the pool's ceiling is the larger of 16 sizes and one paint's. Upgrade path: a byte
+budget, once a surface's paint exceeds one.
+
+**Amends ADR-0254** (decision 4: no sigma cap, no per-call allocation; and its rejected downsampling)
+**and ADR-0256** (decision 7's cost, and its read area past 24 pixels) **and ADR-0217** (the pool
+never evicts the current paint's sizes).

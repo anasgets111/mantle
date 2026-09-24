@@ -6,8 +6,7 @@ use std::time::{Duration, Instant};
 
 use femtovg::renderer::OpenGl;
 use femtovg::{
-    Canvas, Color, CompositeOperation, ImageFilter, ImageFlags, ImageId, Paint, Path, PixelFormat, RenderTarget,
-    Solidity,
+    Canvas, Color, CompositeOperation, ImageFlags, ImageId, Paint, Path, PixelFormat, RenderTarget, Solidity,
 };
 use glow::HasContext;
 
@@ -561,7 +560,7 @@ fn knocked_out(rect: LogicalRect, radius: f32, outside: LogicalRect) -> Path {
     path
 }
 
-/// A subtree under its own shadow and `content_blur` (ADR-0254). Both are femtovg filters over
+/// A subtree under its own shadow and `content_blur` (ADR-0254). Both are blurs into
 /// pooled targets, and an unchanged layer composites what it last finished (ADR-0258).
 fn draw_layer(
     painter: &mut TextPainter,
@@ -622,7 +621,7 @@ fn draw_layer(
     }
 }
 
-/// femtovg's blur divides by sigma, and its own shadow skips one below this.
+/// `image_shader`'s blur divides by `u_sigma`.
 const MIN_SIGMA: f32 = 0.01;
 
 fn blurred(
@@ -636,8 +635,53 @@ fn blurred(
         return None;
     }
     let image = scratch(painter, walk, size)?;
-    painter.canvas_mut().filter_image(image, ImageFilter::GaussianBlur { sigma }, source);
-    Some(image)
+    // A power of two keeps the kernel within 4 to 8 texels at any sigma.
+    let factor = 1 << (sigma / 4.0).log2().max(0.0) as u32;
+    gaussian(painter, walk, source, image, size, sigma, factor).then_some(image)
+}
+
+/// Blurs `source` into `target`, both `size`, at `1 / factor` of that size: halved, blurred
+/// across and down, and stretched back (ADR-0262). `false` without a GL context or a target.
+fn gaussian(
+    painter: &mut TextPainter,
+    walk: &mut Walk<'_, '_>,
+    source: ImageId,
+    target: ImageId,
+    size: (usize, usize),
+    sigma: f32,
+    factor: usize,
+) -> bool {
+    use image_shader::BlurPass;
+    if walk.shaders.is_none() {
+        return false;
+    }
+    // Each halving reads whole 2x2 blocks, the last one past an odd edge, so a low texel spans
+    // exactly `factor` pixels.
+    let (mut passes, mut from, mut at) = (Vec::new(), (source, size), 1);
+    while at < factor {
+        at *= 2;
+        let half = (from.1.0.div_ceil(2), from.1.1.div_ceil(2));
+        let Some(image) = scratch(painter, walk, half) else { return false };
+        let extent = [(2 * half.0) as f32 / from.1.0 as f32, (2 * half.1) as f32 / from.1.1 as f32];
+        passes.push(BlurPass { source: from.0, target: image, extent, axis: [0.0; 2], sigma: 0.0 });
+        from = (image, half);
+    }
+    let (from, low) = from;
+    let Some(across) = scratch(painter, walk, low) else { return false };
+    // The halvings add a `factor`-wide box's variance and the stretch a tent's.
+    let f = factor as f32;
+    let spread = if factor == 1 { 0.0 } else { (3.0 * f * f - 1.0) / 12.0 };
+    let sigma = (sigma * sigma - spread).max(0.0).sqrt() / f;
+    let down = if factor == 1 { target } else { from };
+    passes.push(BlurPass { source: from, target: across, extent: [1.0; 2], axis: [1.0, 0.0], sigma });
+    passes.push(BlurPass { source: across, target: down, extent: [1.0; 2], axis: [0.0, 1.0], sigma });
+    if factor > 1 {
+        let extent = [size.0 as f32 / (factor * low.0) as f32, size.1 as f32 / (factor * low.1) as f32];
+        passes.push(BlurPass { source: down, target, extent, axis: [0.0; 2], sigma: 0.0 });
+    }
+    let Some(Shaders { gl, stage }) = walk.shaders.as_mut() else { return false };
+    // SAFETY: `paint_surface` made this context current, and the canvas shares it.
+    unsafe { stage.blur(gl, painter.canvas_mut(), &passes) }
 }
 
 /// `content` blurred, then recoloured by `SourceIn` keeping each pixel's alpha (ADR-0254).
@@ -650,7 +694,8 @@ fn cast_shadow(
     target: RenderTarget,
 ) -> Option<ImageId> {
     let sigma = shadow.blur / 2.0 * walk.scale;
-    let cast = blurred(painter, walk, content, size, sigma).or_else(|| scratch(painter, walk, size))?;
+    let blurred = blurred(painter, walk, content, size, sigma);
+    let cast = blurred.or_else(|| scratch(painter, walk, size))?;
     let (width, height) = (size.0 as f32, size.1 as f32);
     let mut whole = Path::new();
     whole.rect(0.0, 0.0, width, height);
@@ -659,7 +704,7 @@ fn cast_shadow(
     canvas.reset_transform();
     canvas.reset_scissor();
     canvas.set_render_target(RenderTarget::Image(cast));
-    if sigma < MIN_SIGMA {
+    if blurred.is_none() {
         canvas.clear_rect(0, 0, size.0 as u32, size.1 as u32, Color::rgbaf(0.0, 0.0, 0.0, 0.0));
         fill_image(canvas, content, LogicalRect { x: 0.0, y: 0.0, width, height }, 1.0);
     }
@@ -1038,6 +1083,16 @@ mod tests {
     /// [`text_painter`]. Binds a pbuffer surface current before returning.
     fn init_headless_egl(width: i32, height: i32) -> Option<egl::Instance<egl::Static>> {
         init_headless_egl_two_surfaces(width, height).map(|(instance, ..)| instance)
+    }
+
+    /// A `glow` context over `instance`'s current one.
+    fn test_gl(instance: &egl::Instance<egl::Static>) -> glow::Context {
+        // SAFETY: the caller's `init_headless_egl` made this context current on this thread.
+        unsafe {
+            glow::Context::from_loader_function(|s| {
+                instance.get_proc_address(s).map_or(std::ptr::null(), |f| f as *const c_void)
+            })
+        }
     }
 
     /// Builds a `TextPainter` against `instance`'s already-current context, from the same
@@ -2161,17 +2216,11 @@ mod tests {
     }
 
     fn paint_effect_at(effect: &str, points: &[(usize, usize)]) -> Option<Vec<(u8, u8, u8, u8)>> {
-        let instance = init_headless_egl(64, 96)?;
-        let shaping = ShapingHandle::spawn();
-        let mut painter = text_painter(&instance, &shaping, 64, 96)?;
         let src = format!(
             r##"return panel {{ id = "bar", width = 64, height = 96, background = "#FFFFFFFF",
                 padding = {{ top = 16, left = 16 }}, child = rect {{ width = 32, height = 32, {effect} }} }}"##
         );
-        let root = resolved_surface(&Lua::new(), &src, LogicalSize { width: 64.0, height: 96.0 });
-        paint_tree(&mut painter, &mut ImageCache::new(), &root, 1.0);
-        let canvas = painter.canvas_mut();
-        Some(points.iter().map(|&(x, y)| pixel_at(canvas, x, y)).collect())
+        paint_with_gl(&src, (64, 96), points)
     }
 
     fn near(actual: (u8, u8, u8, u8), expected: (u8, u8, u8)) -> bool {
@@ -2367,12 +2416,7 @@ mod tests {
         let shaping = ShapingHandle::spawn();
         let mut painter = text_painter(&instance, &shaping, size.0, size.1)?;
         let root = resolved_surface(&Lua::new(), src, LogicalSize { width: size.0 as f32, height: size.1 as f32 });
-        // SAFETY: `init_headless_egl` made this context current on this thread.
-        let gl = unsafe {
-            glow::Context::from_loader_function(|s| {
-                instance.get_proc_address(s).map_or(std::ptr::null(), |f| f as *const c_void)
-            })
-        };
+        let gl = test_gl(&instance);
         let mut stage = image_shader::ShaderStage::default();
         let shaders = Some(Shaders { gl: &gl, stage: &mut stage });
         let list = build(&root, 1.0, None);
@@ -2390,12 +2434,7 @@ mod tests {
         let Some((instance, display, context, _, partial)) = init_headless_egl_two_surfaces(96, 64) else { return };
         let shaping = ShapingHandle::spawn();
         let Some(mut painter) = text_painter(&instance, &shaping, 96, 64) else { return };
-        // SAFETY: `init_headless_egl_two_surfaces` made this context current on this thread.
-        let gl = unsafe {
-            glow::Context::from_loader_function(|s| {
-                instance.get_proc_address(s).map_or(std::ptr::null(), |f| f as *const c_void)
-            })
-        };
+        let gl = test_gl(&instance);
         let mut stage = image_shader::ShaderStage::default();
         let mut paint = |painter: &mut TextPainter, list: &DisplayList, regions: &[PhysicalRect]| {
             let (images, captures) = (&mut ImageCache::new(), &mut CaptureCache::default());
@@ -2502,9 +2541,11 @@ mod tests {
                 r##"return panel {{ id = "bar", width = 96, height = 64, padding = 16, child = {child} }}"##
             ))
         };
-        let paint = |painter: &mut TextPainter, surface: &str, list: &DisplayList, region: PhysicalRect| {
+        let (gl, mut stage) = (test_gl(&instance), image_shader::ShaderStage::default());
+        let mut paint = |painter: &mut TextPainter, surface: &str, list: &DisplayList, region: PhysicalRect| {
             let (images, captures) = (&mut ImageCache::new(), &mut CaptureCache::default());
-            let _ = execute(surface, painter, images, captures, list, 1.0, (96.0, 64.0), &[region], None);
+            let shaders = Some(Shaders { gl: &gl, stage: &mut stage });
+            let _ = execute(surface, painter, images, captures, list, 1.0, (96.0, 64.0), &[region], shaders);
         };
         let whole = PhysicalRect { x0: 0, y0: 0, x1: 96, y1: 64 };
         let blurred = list(r##"rect { width = 32, height = 32, background = "#FF0000FF", content_blur = 2 }"##);
@@ -2711,12 +2752,7 @@ mod tests {
         let Some(instance) = init_headless_egl(96, 64) else { return };
         let shaping = ShapingHandle::spawn();
         let Some(mut painter) = text_painter(&instance, &shaping, 96, 64) else { return };
-        // SAFETY: `init_headless_egl` made this context current on this thread.
-        let gl = unsafe {
-            glow::Context::from_loader_function(|s| {
-                instance.get_proc_address(s).map_or(std::ptr::null(), |f| f as *const c_void)
-            })
-        };
+        let gl = test_gl(&instance);
         let mut stage = image_shader::ShaderStage::default();
         let list = surface_96x64(src);
         let whole = PhysicalRect { x0: 0, y0: 0, x1: 96, y1: 64 };
@@ -2729,6 +2765,112 @@ mod tests {
         }
         let worst = frames[0].buf().iter().zip(frames[1].buf()).map(|(a, b)| a.r.abs_diff(b.r).max(a.a.abs_diff(b.a)));
         assert!(worst.max().unwrap() <= 2, "the second frame drifts from the first");
+    }
+
+    /// ADR-0262. The engine's blur, run at a fraction of the size from sigma 8, stays within
+    /// 3 of 255 of the reference Gaussian: femtovg's up to sigma 8, its own at full size past it.
+    /// 250 is no multiple of the factors, so the halvings read past an odd edge.
+    #[test]
+    fn the_engines_blur_matches_the_reference_gaussian() {
+        let Some(instance) = init_headless_egl(250, 250) else { return };
+        let shaping = ShapingHandle::spawn();
+        let Some(mut painter) = text_painter(&instance, &shaping, 250, 250) else { return };
+        let gl = test_gl(&instance);
+        let mut stage = image_shader::ShaderStage::default();
+        let (images, captures) = (&mut ImageCache::new(), &mut CaptureCache::default());
+        let shaders = Some(Shaders { gl: &gl, stage: &mut stage });
+        let (drawn, split) = (Vec::new(), PaintSplit::default());
+        let mut walk = Walk { images, captures, scale: 1.0, scratch: Vec::new(), drawn, shaders, split, surface: "t" };
+        let size = (250, 250);
+        // A 64px red square striped blue every 8px, in the middle of a transparent target.
+        let source = scratch(&mut painter, &mut walk, size).unwrap();
+        let canvas = painter.canvas_mut();
+        canvas.set_render_target(RenderTarget::Image(source));
+        canvas.clear_rect(0, 0, 250, 250, Color::rgbaf(0.0, 0.0, 0.0, 0.0));
+        let colour = |r, b| Fill::Color(Rgba { r, g: 0.0, b, a: 1.0 });
+        fill_rect(canvas, LogicalRect { x: 96.0, y: 96.0, width: 64.0, height: 64.0 }, 0.0, &colour(1.0, 0.0));
+        for x in (96..160).step_by(8) {
+            let stripe = LogicalRect { x: x as f32, y: 96.0, width: 4.0, height: 64.0 };
+            fill_rect(canvas, stripe, 0.0, &colour(0.0, 1.0));
+        }
+        canvas.set_render_target(RenderTarget::Screen);
+        let read = |painter: &mut TextPainter, image: ImageId| {
+            let canvas = painter.canvas_mut();
+            canvas.clear_rect(0, 0, 250, 250, Color::rgbaf(0.0, 0.0, 0.0, 0.0));
+            fill_image(canvas, image, LogicalRect { x: 0.0, y: 0.0, width: 250.0, height: 250.0 }, 1.0);
+            flush(canvas);
+            canvas.screenshot().expect("screenshot reads back the pbuffer")
+        };
+        for sigma in [2.0, 6.0, 8.0, 16.0, 32.0] {
+            let engine = blurred(&mut painter, &mut walk, source, size, sigma).unwrap();
+            let engine = read(&mut painter, engine);
+            let reference = scratch(&mut painter, &mut walk, size).unwrap();
+            if sigma <= 8.0 {
+                painter.canvas_mut().filter_image(reference, femtovg::ImageFilter::GaussianBlur { sigma }, source);
+            } else {
+                assert!(gaussian(&mut painter, &mut walk, source, reference, size, sigma, 1));
+            }
+            let reference = read(&mut painter, reference);
+            let diffs = engine
+                .buf()
+                .iter()
+                .zip(reference.buf())
+                .flat_map(|(a, b)| [a.r.abs_diff(b.r), a.g.abs_diff(b.g), a.b.abs_diff(b.b), a.a.abs_diff(b.a)]);
+            let (worst, squares) = diffs.fold((0, 0.0), |(worst, sum), d| (worst.max(d), sum + f64::from(d).powi(2)));
+            let psnr = 10.0 * (255.0_f64.powi(2) / (squares / (250.0 * 250.0 * 4.0))).log10();
+            assert!(worst <= 3 && psnr >= 53.0, "sigma {sigma}: worst {worst}, PSNR {psnr:.1} dB");
+        }
+    }
+
+    /// ADR-0262. Past sigma 8 a blur keeps widening: 20px outside a black box at sigma 16 is
+    /// about a tenth dark, where femtovg's capped kernel left it white.
+    #[test]
+    fn a_blur_past_sigma_8_keeps_widening() {
+        let src = r##"return panel { id = "bar", width = 200, height = 160, padding = { left = 68, top = 48 },
+            background = "#FFFFFFFF", child = rect { width = 64, height = 64, background = "#000000FF",
+                content_blur = 16 } }"##;
+        let Some(px) = paint_with_gl(src, (200, 160), &[(152, 80)]) else { return };
+        assert!((210..=240).contains(&px[0].0), "{px:?}");
+    }
+
+    /// ADR-0262. A frame that blurs again allocates no texture, even when its blurs' chains
+    /// outnumber the pool's sizes: a probe image created after ten frames takes the slot and
+    /// version the probe before them freed, as nothing else was created in between.
+    #[test]
+    fn repainting_a_blur_allocates_no_texture() {
+        let glass = |width: u32| format!("rect {{ width = {width}, height = 30, backdrop_blur = 32 }},");
+        let src = format!(
+            r##"return panel {{ id = "bar", width = 800, height = 300, padding = 110, background = "#FF0000FF",
+                child = row {{ spacing = 10, children = {{ {} rect {{ width = 30, height = 30, backdrop_blur = 2 }} }} }} }}"##,
+            [10, 20, 30, 40, 50].map(glass).concat()
+        );
+        let Some(instance) = init_headless_egl(800, 300) else { return };
+        let shaping = ShapingHandle::spawn();
+        let Some(mut painter) = text_painter(&instance, &shaping, 800, 300) else { return };
+        let gl = test_gl(&instance);
+        let mut stage = image_shader::ShaderStage::default();
+        let list = build(&resolved_surface(&Lua::new(), &src, LogicalSize { width: 800.0, height: 300.0 }), 1.0, None);
+        let whole = PhysicalRect { x0: 0, y0: 0, x1: 800, y1: 300 };
+        let mut paint = |painter: &mut TextPainter| {
+            let (images, captures) = (&mut ImageCache::new(), &mut CaptureCache::default());
+            let shaders = Some(Shaders { gl: &gl, stage: &mut stage });
+            let _ = execute("test", painter, images, captures, &list, 1.0, (800.0, 300.0), &[whole], shaders);
+        };
+        let probe = |painter: &mut TextPainter| {
+            let canvas = painter.canvas_mut();
+            let id = canvas.create_image_empty(1, 1, PixelFormat::Rgba8, ImageFlags::empty()).unwrap();
+            canvas.delete_image(id);
+            format!("{id:?}")
+        };
+        paint(&mut painter);
+        let (first, second) = (probe(&mut painter), probe(&mut painter));
+        for _ in 0..10 {
+            paint(&mut painter);
+        }
+        let third = probe(&mut painter);
+        // Slot map keys print as `index v version`; each create and delete moves the version by 2.
+        let version = |key: &str| key.trim_end_matches(')').rsplit('v').next().unwrap().parse::<u32>().unwrap();
+        assert_eq!(version(&third) - version(&second), version(&second) - version(&first), "{first} {second} {third}");
     }
 
     /// ADR-0258. A layer too big for the budget is dropped alone; older layers under it stay.

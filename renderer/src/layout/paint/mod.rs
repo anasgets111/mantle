@@ -484,7 +484,7 @@ fn build_node(
     let (parent_clip, clip) = (clip, clip.intersect(snap_to_physical(rect, scale)));
     let child_clip = if node.clips_children() { clip } else { parent_clip };
     let effect = node.effect;
-    let read = snap_to_physical(grow(rect, reach(effect.backdrop, scale)), scale);
+    let read = snap_to_physical(grow(rect, reach(effect.backdrop)), scale);
     let opacity = inherited_opacity * node.opacity;
     // ADR-0254 decision 2, ADR-0260. An opaque box draws as it did in either mode.
     let (radius, opaque, boxed) = match &node.paint {
@@ -611,10 +611,10 @@ fn build_node(
         let bounds = commands.iter().map(command_bounds).filter(|r| !is_empty(*r)).fold(own, union);
         // ponytail: a negative spread pulls in content from further out than this. Upgrade path:
         // invert `shadow_rect` about the box.
-        let pad = layered.shadow.map_or(0.0, |shadow| {
-            self::reach(shadow.blur / 2.0, scale) + shadow.offset.0.abs().max(shadow.offset.1.abs())
-        });
-        let target = snap_to_physical(grow(surface, pad.max(self::reach(layered.blur, scale))), scale);
+        let pad = layered
+            .shadow
+            .map_or(0.0, |shadow| self::reach(shadow.blur / 2.0) + shadow.offset.0.abs().max(shadow.offset.1.abs()));
+        let target = snap_to_physical(grow(surface, pad.max(self::reach(layered.blur))), scale);
         out.push(DrawCmd {
             rect,
             clip: parent_clip.intersect(bounds).intersect(target),
@@ -853,10 +853,9 @@ fn physical_blur(logical: f32, scale: f32) -> u32 {
     (logical * scale).round() as u32
 }
 
-/// How far a Gaussian of `sigma` logical pixels spreads: 3 sigma, up to femtovg's kernel, which
-/// clamps sigma to 8 physical pixels and samples 3 of them (`render_gaussian_blur`).
-fn reach(sigma: f32, scale: f32) -> f32 {
-    (3.0 * sigma).min(24.0 / scale)
+/// How far a Gaussian of `sigma` spreads: the 3 sigma its kernel samples (ADR-0262).
+fn reach(sigma: f32) -> f32 {
+    3.0 * sigma
 }
 
 fn grow(rect: LogicalRect, by: f32) -> LogicalRect {
@@ -880,8 +879,8 @@ fn shadow_rect(rect: LogicalRect, area: LogicalRect, shadow: node::Shadow) -> Lo
 /// A layer's offscreen: the box padded for the further-reaching blur, and where that padded box
 /// lands as the shadow.
 fn layer_bounds(rect: LogicalRect, effect: node::Effect, scale: f32) -> PhysicalRect {
-    let shadow_reach = effect.shadow.map_or(0.0, |shadow| reach(shadow.blur / 2.0, scale));
-    let padded = grow(rect, shadow_reach.max(reach(effect.blur, scale)));
+    let shadow_reach = effect.shadow.map_or(0.0, |shadow| reach(shadow.blur / 2.0));
+    let padded = grow(rect, shadow_reach.max(reach(effect.blur)));
     let own = snap_to_physical(padded, scale);
     effect.shadow.map_or(own, |shadow| union(own, snap_to_physical(shadow_rect(rect, padded, shadow), scale)))
 }
@@ -1935,11 +1934,11 @@ mod tests {
         assert!(list.commands[2..].iter().any(|cmd| matches!(cmd.draw, Draw::Text { .. })), "the label outside it");
     }
 
-    /// ADR-0254. `content_blur` spreads the subtree's pixels 3 sigma past its box, and femtovg's
-    /// kernel stops at 24 physical pixels whatever sigma asks.
+    /// ADR-0254, ADR-0262. `content_blur` spreads the subtree's pixels 3 sigma past its box, at
+    /// any sigma.
     #[test]
-    fn a_content_blur_groups_the_subtree_and_reaches_three_sigma_up_to_the_kernel() {
-        for (blur, reach) in [(2, 6), (20, 24)] {
+    fn a_content_blur_groups_the_subtree_and_reaches_three_sigma() {
+        for (blur, reach) in [(2, 6), (12, 36)] {
             let list = effect_surface(&format!(
                 r##"rect {{ width = 40, height = 20, background = "#ffffff", content_blur = {blur} }}"##
             ));
