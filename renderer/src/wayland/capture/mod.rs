@@ -10,10 +10,9 @@ use std::time::{Duration, Instant};
 
 use femtovg::ImageId;
 use khronos_egl as khr;
-use smithay_client_toolkit::shm::slot::{Buffer, SlotPool};
 use wayland_client::globals::GlobalList;
 use wayland_client::protocol::{wl_output, wl_shm};
-use wayland_client::{Connection, Dispatch, QueueHandle, WEnum, delegate_noop};
+use wayland_client::{Connection, QueueHandle, delegate_noop};
 use wayland_protocols::ext::image_capture_source::v1::client::{
     ext_image_capture_source_v1, ext_output_image_capture_source_manager_v1,
 };
@@ -25,7 +24,7 @@ use wayland_protocols_wlr::screencopy::v1::client::{zwlr_screencopy_frame_v1, zw
 
 use shared::warn;
 
-use crate::image::capture::{CaptureCache, DamageRect, PendingFrame, crop_fraction};
+use crate::image::capture::{CaptureCache, DamageRect, crop_fraction};
 use crate::layout::paint::CaptureNode;
 use crate::layout::scene::NodeId;
 use crate::text::snap::LogicalRect;
@@ -33,6 +32,12 @@ use crate::text::snap::LogicalRect;
 use super::App;
 use super::dmabuf::{self, DmabufBuffer, DmabufShape, DmabufSupport, DmabufSwapchain, FormatModifier};
 use super::egl::EglState;
+
+mod ext;
+mod shm;
+mod wlr;
+
+use shm::NegotiatedBuffer;
 
 /// The capture protocols this compositor offers, bound once at startup (ADR-0248 decision 1).
 struct Backend {
@@ -77,20 +82,6 @@ fn request_slot(last_request: Option<Instant>, fps: f32, now: Instant) -> Instan
 /// output, whose buffer its logical coordinates do not map onto.
 fn ext_crop(region: LogicalRect, output: (f32, f32), transform: wl_output::Transform) -> Option<LogicalRect> {
     (transform == wl_output::Transform::Normal).then(|| crop_fraction(region, output))
-}
-
-/// A capture's negotiated shm buffer, reused across frames while size, stride and format match
-/// (ADR-0248 decision 3).
-///
-/// ponytail: one buffer, not a double-buffer swapchain; correct only because pacing admits one
-/// frame in flight per source. Upgrade if a later phase allows more.
-struct NegotiatedBuffer {
-    pool: SlotPool,
-    buffer: Buffer,
-    width: u32,
-    height: u32,
-    stride: u32,
-    format: wl_shm::Format,
 }
 
 /// One `Done` batch, held while a frame is outstanding (ADR-0248 amendment decision 6).
@@ -558,99 +549,6 @@ impl App {
         }
     }
 
-    /// Re-issues a frame on an already-negotiated ext session, skipping renegotiation. Attaches
-    /// the source's dma-buf back slot when one is active, else the shm buffer (ADR-0248
-    /// amendment). A frame already outstanding on this session refuses rather than issuing a
-    /// second: the protocol's `duplicate_frame` error.
-    fn create_ext_frame(
-        &mut self,
-        id: NodeId,
-        session: &ext_image_copy_capture_session_v1::ExtImageCopyCaptureSessionV1,
-    ) {
-        if self
-            .captures
-            .sources
-            .get(&id)
-            .is_some_and(|source| matches!(&source.proto, Some(Proto::Ext(ext)) if ext.frame.is_some()))
-        {
-            return;
-        }
-        let qh = self.queue_handle.clone();
-        let frame = session.create_frame(&qh, id);
-        let has_dmabuf_shape = self.captures.sources.get(&id).is_some_and(|source| source.dmabuf_shape.is_some());
-        let use_dmabuf = has_dmabuf_shape && self.captures.ensure_dmabuf_back(&qh, id);
-        let Some(source) = self.captures.sources.get_mut(&id) else {
-            frame.destroy();
-            return;
-        };
-        if use_dmabuf {
-            let Some(buffer) = source.dmabuf.back() else {
-                frame.destroy();
-                source.in_flight = false;
-                return;
-            };
-            let shape = buffer.shape();
-            frame.attach_buffer(buffer.wl_buffer());
-            frame.damage_buffer(0, 0, shape.width as i32, shape.height as i32);
-            frame.capture();
-            if let Some(Proto::Ext(ext)) = source.proto.as_mut() {
-                ext.frame = Some(frame);
-            }
-            return;
-        }
-        let Some(Proto::Ext(ext)) = source.proto.as_mut() else {
-            frame.destroy();
-            source.in_flight = false;
-            return;
-        };
-        // After a dma-buf failure there is no shm buffer yet; build it from the cached offer.
-        if ext.buffer.is_none()
-            && let Some((width, height, format)) = ext.shm_negotiated
-        {
-            ext.buffer = negotiate_buffer(&self.shm, None, width, height, width * 4, format);
-        }
-        let Some(negotiated) = ext.buffer.as_ref() else {
-            // The first `Done` has not landed; it creates the frame once it does.
-            frame.destroy();
-            source.in_flight = false;
-            return;
-        };
-        frame.attach_buffer(negotiated.buffer.wl_buffer());
-        frame.damage_buffer(0, 0, negotiated.width as i32, negotiated.height as i32);
-        frame.capture();
-        ext.frame = Some(frame);
-    }
-
-    /// Negotiates and, if nothing is in flight, requests a frame from one `Done` batch (ADR-0248
-    /// amendment decision 1). Called directly for a fresh session's first `Done`, and from
-    /// `Ready`/`Failed` for one deferred while a frame was outstanding.
-    fn apply_ext_done(&mut self, id: NodeId, offer: DoneOffer) {
-        let DoneOffer { width, height, shm_format, dmabuf_formats } = offer;
-        let qh = self.queue_handle.clone();
-        let negotiation = DmabufOffer { id, width, height, offered: &dmabuf_formats };
-        let used_dmabuf = self.captures.negotiate_dmabuf(self.egl.as_ref(), &qh, negotiation);
-        {
-            let Some(source) = self.captures.sources.get_mut(&id) else { return };
-            let Some(Proto::Ext(ext)) = source.proto.as_mut() else { return };
-            if let Some(format) = shm_format {
-                ext.shm_negotiated = Some((width, height, format));
-            }
-            if used_dmabuf {
-                ext.buffer = None;
-            } else if let Some((width, height, format)) = ext.shm_negotiated {
-                let existing = ext.buffer.take();
-                ext.buffer = negotiate_buffer(&self.shm, existing, width, height, width * 4, format);
-            }
-        }
-        let session = self.captures.sources.get(&id).and_then(|s| match &s.proto {
-            Some(Proto::Ext(ext)) => ext.session.clone(),
-            _ => None,
-        });
-        if let Some(session) = session {
-            self.create_ext_frame(id, &session);
-        }
-    }
-
     fn request_next_if_live(&mut self, id: NodeId) {
         if self.captures.sources.get(&id).is_some_and(|source| source.live.is_some()) {
             self.request_when_due(id);
@@ -708,206 +606,10 @@ fn destroy_proto(proto: Option<Proto>) {
     }
 }
 
-/// Preferred shm formats: both are wl_shm-mandatory.
-fn pick_format(candidates: &[wl_shm::Format]) -> Option<wl_shm::Format> {
-    [wl_shm::Format::Xrgb8888, wl_shm::Format::Argb8888].into_iter().find(|preferred| candidates.contains(preferred))
-}
-
-/// One `ShmFormat` event's contribution to a negotiation batch: last-event-wins would let a later
-/// unsupported format overwrite an earlier supported pick with `None`, so `current` wins once it
-/// is `Some`.
-fn keep_first_supported(current: Option<wl_shm::Format>, offered: wl_shm::Format) -> Option<wl_shm::Format> {
-    current.or_else(|| pick_format(&[offered]))
-}
-
-/// wlr-screencopy's `Buffer` event, checked before it is trusted: an unsupported format would
-/// silently corrupt colours (`bgrx_to_rgba` assumes BGRX), and a stride narrower than the copy
-/// assumes (`width * 4`) would panic slicing `stage_landed`'s rows.
-fn wlr_buffer_valid(format: wl_shm::Format, width: u32, stride: u32) -> bool {
-    pick_format(&[format]).is_some() && stride >= width.saturating_mul(4)
-}
-
-fn negotiate_buffer(
-    shm: &smithay_client_toolkit::shm::Shm,
-    existing: Option<NegotiatedBuffer>,
-    width: u32,
-    height: u32,
-    stride: u32,
-    format: wl_shm::Format,
-) -> Option<NegotiatedBuffer> {
-    if let Some(buf) = &existing
-        && buf.width == width
-        && buf.height == height
-        && buf.stride == stride
-        && buf.format == format
-    {
-        return existing;
-    }
-    let mut pool = SlotPool::new((stride as usize * height as usize).max(1), shm).ok()?;
-    let (buffer, _canvas) = pool.create_buffer(width as i32, height as i32, stride as i32, format).ok()?;
-    Some(NegotiatedBuffer { pool, buffer, width, height, stride, format })
-}
-
-/// Reads `negotiated`'s pool memory and stages it for the next canvas-current upload. Copies only
-/// the damaged rows unless the size changed or nothing was reported, when the whole buffer is
-/// needed anyway.
-fn stage_landed(cache: &mut CaptureCache, id: NodeId, negotiated: &mut NegotiatedBuffer, damage: Vec<DamageRect>) {
-    let (width, height, stride) = (negotiated.width, negotiated.height, negotiated.stride as usize);
-    let Some(buffer) = negotiated.pool.canvas(&negotiated.buffer) else { return };
-    let resized = cache.get(id).is_none_or(|(_, w, h)| (w, h) != (width, height));
-    let (y0, y1) = if resized || damage.is_empty() {
-        (0, height)
-    } else {
-        let lo = damage.iter().map(|r| r.y).min().unwrap_or(0).min(height);
-        let hi = damage.iter().map(|r| r.y.saturating_add(r.height).min(height)).max().unwrap_or(height).max(lo);
-        (lo, hi)
-    };
-    let row_bytes = width as usize * 4;
-    let mut pixels = Vec::with_capacity(row_bytes * (y1 - y0) as usize);
-    for row in y0..y1 {
-        let start = row as usize * stride;
-        pixels.extend_from_slice(&buffer[start..start + row_bytes]);
-    }
-    cache.stage(id, PendingFrame { width, height, y_offset: y0, pixels, damage });
-}
-
 // The three manager globals have no events of their own; request-only.
 delegate_noop!(App: ext_image_copy_capture_manager_v1::ExtImageCopyCaptureManagerV1);
 delegate_noop!(App: ext_output_image_capture_source_manager_v1::ExtOutputImageCaptureSourceManagerV1);
 delegate_noop!(App: zwlr_screencopy_manager_v1::ZwlrScreencopyManagerV1);
-
-impl Dispatch<ext_image_capture_source_v1::ExtImageCaptureSourceV1, NodeId> for App {
-    fn event(
-        _: &mut Self,
-        _: &ext_image_capture_source_v1::ExtImageCaptureSourceV1,
-        _: ext_image_capture_source_v1::Event,
-        _: &NodeId,
-        _: &Connection,
-        _: &QueueHandle<Self>,
-    ) {
-        // No events; its `NodeId` user data rules out `delegate_noop!`.
-    }
-}
-
-impl Dispatch<ext_image_copy_capture_session_v1::ExtImageCopyCaptureSessionV1, NodeId> for App {
-    fn event(
-        state: &mut Self,
-        _proxy: &ext_image_copy_capture_session_v1::ExtImageCopyCaptureSessionV1,
-        event: ext_image_copy_capture_session_v1::Event,
-        id: &NodeId,
-        _: &Connection,
-        _: &QueueHandle<Self>,
-    ) {
-        use ext_image_copy_capture_session_v1::Event;
-        let Some(CaptureSource { proto: Some(Proto::Ext(ext)), .. }) = state.captures.sources.get_mut(id) else {
-            return;
-        };
-        match event {
-            Event::BufferSize { width, height } => {
-                let format = ext.negotiating.and_then(|(_, _, format)| format);
-                ext.negotiating = Some((width, height, format));
-            }
-            Event::ShmFormat { format: WEnum::Value(format) } => {
-                let (width, height, current) = ext.negotiating.unwrap_or((0, 0, None));
-                ext.negotiating = Some((width, height, keep_first_supported(current, format)));
-            }
-            Event::ShmFormat { format: WEnum::Unknown(_) } => {}
-            Event::DmabufFormat { format, modifiers } => {
-                ext.dmabuf_formats.extend(
-                    modifiers
-                        .as_chunks::<8>()
-                        .0
-                        .iter()
-                        .map(|chunk| FormatModifier { fourcc: format, modifier: u64::from_ne_bytes(*chunk) }),
-                );
-            }
-            Event::Done => {
-                let Some((width, height, shm_format)) = ext.negotiating.take() else {
-                    return;
-                };
-                let dmabuf_formats = std::mem::take(&mut ext.dmabuf_formats);
-                let frame_outstanding = ext.frame.is_some();
-                let offer = DoneOffer { width, height, shm_format, dmabuf_formats };
-                if frame_outstanding {
-                    if let Some(source) = state.captures.sources.get_mut(id)
-                        && let Some(Proto::Ext(ext)) = source.proto.as_mut()
-                    {
-                        ext.pending_done = Some(offer);
-                    }
-                    return;
-                }
-                state.apply_ext_done(*id, offer);
-            }
-            Event::Stopped => {
-                if let Some(source) = state.captures.sources.get_mut(id) {
-                    if let Some(Proto::Ext(ext)) = source.proto.take()
-                        && let Some(session) = ext.session
-                    {
-                        session.destroy();
-                    }
-                    source.in_flight = false;
-                }
-            }
-            _ => {}
-        }
-    }
-}
-
-impl Dispatch<ext_image_copy_capture_frame_v1::ExtImageCopyCaptureFrameV1, NodeId> for App {
-    fn event(
-        state: &mut Self,
-        proxy: &ext_image_copy_capture_frame_v1::ExtImageCopyCaptureFrameV1,
-        event: ext_image_copy_capture_frame_v1::Event,
-        id: &NodeId,
-        _: &Connection,
-        _: &QueueHandle<Self>,
-    ) {
-        use ext_image_copy_capture_frame_v1::Event;
-        match event {
-            Event::Damage { x, y, width, height } => {
-                if let Some(CaptureSource { proto: Some(Proto::Ext(ext)), .. }) = state.captures.sources.get_mut(id) {
-                    ext.damage.push(DamageRect {
-                        x: x.max(0) as u32,
-                        y: y.max(0) as u32,
-                        width: width.max(0) as u32,
-                        height: height.max(0) as u32,
-                    });
-                }
-            }
-            Event::Ready => {
-                proxy.destroy();
-                let Some(source) = state.captures.sources.get_mut(id) else { return };
-                if let Some(Proto::Ext(ext)) = source.proto.as_mut() {
-                    ext.frame = None;
-                }
-                if source.dmabuf_shape.is_some() {
-                    land_dmabuf_frame(&mut state.captures, &mut state.capture_cache, id);
-                } else {
-                    let Some(Proto::Ext(ext)) = source.proto.as_mut() else { return };
-                    let damage = std::mem::take(&mut ext.damage);
-                    if let Some(negotiated) = ext.buffer.as_mut() {
-                        stage_landed(&mut state.capture_cache, *id, negotiated, damage);
-                    }
-                    source.captured = true;
-                    source.in_flight = false;
-                }
-                let pending = state.captures.sources.get_mut(id).and_then(|source| match source.proto.as_mut() {
-                    Some(Proto::Ext(ext)) => ext.pending_done.take(),
-                    _ => None,
-                });
-                match pending {
-                    Some(offer) => state.apply_ext_done(*id, offer),
-                    None => state.request_next_if_live(*id),
-                }
-            }
-            Event::Failed { .. } => {
-                proxy.destroy();
-                fail_source(&mut state.captures, id);
-            }
-            _ => {}
-        }
-    }
-}
 
 /// Marks `id`'s source failed (ADR-0248 decision 3's backoff): idle, warned once, no retry short
 /// of the output list changing. Shared by the ext and wlr `Failed` handlers.
@@ -954,125 +656,6 @@ fn land_dmabuf_frame(captures: &mut CaptureRegistry, capture_cache: &mut Capture
             capture_cache.install_texture(*id, image, shape.width, shape.height);
         }
         None => captures.pending_import.push(*id),
-    }
-}
-
-impl Dispatch<zwlr_screencopy_frame_v1::ZwlrScreencopyFrameV1, NodeId> for App {
-    fn event(
-        state: &mut Self,
-        proxy: &zwlr_screencopy_frame_v1::ZwlrScreencopyFrameV1,
-        event: zwlr_screencopy_frame_v1::Event,
-        id: &NodeId,
-        _: &Connection,
-        _: &QueueHandle<Self>,
-    ) {
-        use zwlr_screencopy_frame_v1::Event;
-        match event {
-            Event::Buffer { format: WEnum::Value(format), width, height, stride } => {
-                let valid = wlr_buffer_valid(format, width, stride);
-                if let Some(CaptureSource { proto: Some(Proto::Wlr(wlr)), .. }) = state.captures.sources.get_mut(id) {
-                    wlr.negotiating = valid.then_some((width, height, stride, format));
-                }
-            }
-            Event::LinuxDmabuf { format, width, height } => {
-                if let Some(CaptureSource { proto: Some(Proto::Wlr(wlr)), .. }) = state.captures.sources.get_mut(id) {
-                    wlr.dmabuf_format = Some((width, height, format));
-                }
-            }
-            Event::BufferDone => {
-                let Some(CaptureSource { proto: Some(Proto::Wlr(wlr)), .. }) = state.captures.sources.get_mut(id)
-                else {
-                    return;
-                };
-                let shm_negotiating = wlr.negotiating.take();
-                let dmabuf_offer = wlr.dmabuf_format.take();
-                let qh = state.queue_handle.clone();
-                let used_dmabuf = dmabuf_offer.is_some_and(|(width, height, fourcc)| {
-                    let cached = state.captures.sources.get(id).and_then(|s| s.dmabuf_shape);
-                    let unchanged = cached.is_some_and(|shape| {
-                        shape.width == width && shape.height == height && shape.format.fourcc == fourcc
-                    });
-                    if unchanged {
-                        state.captures.ensure_dmabuf_back(&qh, *id)
-                    } else {
-                        // wlr-screencopy names one fourcc with no modifier list (unlike ext's
-                        // `dmabuf_format`): trust EGL's own importable set for it instead, the
-                        // same "or EGL's own" allowance amendment decision 1 makes for a device.
-                        state.captures.ensure_probed(state.egl.as_ref());
-                        let offered: Vec<FormatModifier> = match (state.captures.support(), state.egl.as_ref()) {
-                            (Some(support), Some(egl)) => support.importable_modifiers(egl, fourcc),
-                            _ => Vec::new(),
-                        };
-                        let offer = DmabufOffer { id: *id, width, height, offered: &offered };
-                        state.captures.negotiate_dmabuf(state.egl.as_ref(), &qh, offer)
-                    }
-                });
-
-                if used_dmabuf {
-                    let Some(source) = state.captures.sources.get_mut(id) else { return };
-                    if let Some(Proto::Wlr(wlr)) = source.proto.as_mut() {
-                        wlr.dmabuf_active = true;
-                    }
-                    let Some(buffer) = source.dmabuf.back() else {
-                        proxy.destroy();
-                        fail_source(&mut state.captures, id);
-                        return;
-                    };
-                    proxy.copy_with_damage(buffer.wl_buffer());
-                    return;
-                }
-
-                let Some(CaptureSource { proto: Some(Proto::Wlr(wlr)), .. }) = state.captures.sources.get_mut(id)
-                else {
-                    return;
-                };
-                wlr.dmabuf_active = false;
-                // No usable shm offer fails the source: retrying would get the same offer back.
-                let Some((width, height, stride, format)) = shm_negotiating else {
-                    proxy.destroy();
-                    fail_source(&mut state.captures, id);
-                    return;
-                };
-                let existing = wlr.buffer.take();
-                wlr.buffer = negotiate_buffer(&state.shm, existing, width, height, stride, format);
-                let Some(negotiated) = wlr.buffer.as_ref() else {
-                    proxy.destroy();
-                    fail_source(&mut state.captures, id);
-                    return;
-                };
-                proxy.copy_with_damage(negotiated.buffer.wl_buffer());
-            }
-            Event::Damage { x, y, width, height } => {
-                if let Some(CaptureSource { proto: Some(Proto::Wlr(wlr)), .. }) = state.captures.sources.get_mut(id) {
-                    wlr.damage.push(DamageRect { x, y, width, height });
-                }
-            }
-            Event::Ready { .. } => {
-                proxy.destroy();
-                let Some(source) = state.captures.sources.get_mut(id) else { return };
-                if let Some(Proto::Wlr(wlr)) = source.proto.as_mut() {
-                    wlr.frame = None;
-                }
-                let used_dmabuf = matches!(&source.proto, Some(Proto::Wlr(wlr)) if wlr.dmabuf_active);
-                if used_dmabuf {
-                    land_dmabuf_frame(&mut state.captures, &mut state.capture_cache, id);
-                } else {
-                    let Some(Proto::Wlr(wlr)) = source.proto.as_mut() else { return };
-                    let damage = std::mem::take(&mut wlr.damage);
-                    if let Some(negotiated) = wlr.buffer.as_mut() {
-                        stage_landed(&mut state.capture_cache, *id, negotiated, damage);
-                    }
-                    source.captured = true;
-                    source.in_flight = false;
-                }
-                state.request_next_if_live(*id);
-            }
-            Event::Failed => {
-                proxy.destroy();
-                fail_source(&mut state.captures, id);
-            }
-            _ => {}
-        }
     }
 }
 
@@ -1168,34 +751,5 @@ mod tests {
         assert_eq!(pick_protocol(true, true, false), Some(Protocol::Ext), "ext crops at draw time");
         assert_eq!(pick_protocol(false, false, true), Some(Protocol::Wlr));
         assert_eq!(pick_protocol(true, false, false), None);
-    }
-
-    #[test]
-    fn preferred_formats_are_tried_in_order() {
-        assert_eq!(pick_format(&[wl_shm::Format::Argb8888]), Some(wl_shm::Format::Argb8888));
-        assert_eq!(pick_format(&[wl_shm::Format::Xrgb8888, wl_shm::Format::Argb8888]), Some(wl_shm::Format::Xrgb8888));
-        assert_eq!(pick_format(&[wl_shm::Format::Bgr888]), None);
-    }
-
-    #[test]
-    fn a_later_unsupported_shm_format_does_not_overwrite_an_earlier_supported_one() {
-        let first = keep_first_supported(None, wl_shm::Format::Xrgb8888);
-        assert_eq!(first, Some(wl_shm::Format::Xrgb8888));
-        assert_eq!(keep_first_supported(first, wl_shm::Format::Bgr888), Some(wl_shm::Format::Xrgb8888));
-    }
-
-    #[test]
-    fn an_unsupported_first_format_still_lets_a_later_supported_one_through() {
-        let first = keep_first_supported(None, wl_shm::Format::Bgr888);
-        assert_eq!(first, None);
-        assert_eq!(keep_first_supported(first, wl_shm::Format::Argb8888), Some(wl_shm::Format::Argb8888));
-    }
-
-    #[test]
-    fn a_wlr_buffer_offer_needs_a_supported_format_and_a_wide_enough_stride() {
-        assert!(wlr_buffer_valid(wl_shm::Format::Xrgb8888, 100, 400));
-        assert!(wlr_buffer_valid(wl_shm::Format::Xrgb8888, 100, 512), "padded stride is still fine");
-        assert!(!wlr_buffer_valid(wl_shm::Format::Xrgb8888, 100, 399), "narrower than width * 4 would panic the copy");
-        assert!(!wlr_buffer_valid(wl_shm::Format::Bgr888, 100, 400), "unsupported format, whatever the stride");
     }
 }
