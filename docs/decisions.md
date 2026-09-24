@@ -6018,6 +6018,56 @@ Still rejected: a shader over an arbitrary subtree, or as a persistent filter.
 
 **Amends ADR-0184 decisions 4, 5 and 7 and the rejected shader node, and ADR-0047 decision 3.**
 
+## 0254. `shadow_*` and `content_blur` filter a node's own painted subtree
+
+Qt `MultiEffect`'s shadow and blur, as far as femtovg 0.27 delivers them.
+
+1. **Five flat properties, every kind.** `shadow_color` (default `#000000`, Qt's), `shadow_blur`
+   (CSS `box-shadow` radius, sigma is half), `shadow_offset` (`{ x, y }`), `shadow_spread`, and
+   `content_blur` (CSS `filter: blur()` sigma), all logical pixels. Flat because `animate` tweens a
+   number, a colour or an `{ x, y }` table, never a mixed table. All five are paint-only ticks.
+   A shadow exists once blur, offset or spread is non-zero.
+2. **Two paths, chosen in `build_node`.**
+
+   | Path | Taken by | Cost per frame, 400x300 box |
+   | :--- | :--- | :--- |
+   | `Draw::Shadow`: one `Paint::box_gradient` quad under the fill | an opaque colour-filled box, unscooped, unmasked, with no `content_blur` | +0 ms |
+   | `Draw::Layer`: subtree to a pooled offscreen, shadow blurred then recoloured by `SourceIn`, composited under it | everything else | +0.11 ms sharp, +0.76 ms at `shadow_blur = 16`, +0.73 ms at `content_blur = 8` |
+
+   Measured headless on Mesa Iris, 800x600 target, 100 frames each. An opaque box's silhouette is
+   its own shape, so the gradient is exact there, except for children poking past a rounded corner
+   without `clip = "Rounded"`.
+3. **Not femtovg's canvas shadow (`set_shadow_*`).** It allocates and deletes two textures per
+   shadowed fill per frame; the layer draws from `TextPainter`'s pool (ADR-0217). Not its colour
+   matrix for the recolour: each filter pass flips the texture, and the matrix is one pass.
+4. **femtovg's limits stand.** Its blur clamps sigma at 8 physical pixels and samples 3 sigma, so
+   no blur reaches past 24. `content_blur` is exact to sigma 8, a layer's `shadow_blur` to 16. The
+   gradient fades linearly across 3 sigma centred on the spread edge: within 14/255 of the layer's
+   Gaussian on the same box, where matching the Gaussian's slope (2.5 sigma) is off by 22. Its
+   radius is clamped to half the spread box, and a square box's stays square, as in CSS. Each
+   `filter_image` allocates and frees one intermediate texture.
+5. **Spread is CSS's on a box, Qt's `shadowScale` elsewhere.** femtovg has no dilation, so the layer
+   scales the shadow about the box's centre until the box has grown by `spread` a side.
+6. **Opacity is not applied twice.** The gradient's colour fades with the node; a layer's shadow is
+   cast by already-faded pixels.
+7. **A command's clip covers its effect's reach**, the parent's clip intersected with it, so
+   `damage_since` repaints where a shadow was and where it lands. A box just outside its parent
+   still casts the shadow reaching in, and a layer also covers its commands' own bounds, so a
+   scaled child keeps its overflow. Like any paint, the effect stops at the parent's box.
+8. **A raw-GL quad inside a layer works as inside `clip = "Rounded"`**: `offscreen` hands `run` the
+   target's own `Frame`, and the quad flushes femtovg before drawing (ADR-0184, ADR-0253). A mask
+   (ADR-0255) applies inside the layer, so the shadow is cast by what the mask keeps.
+
+Rejected: a nested `shadow = { ... }` table, which `animate` cannot tween; downsampling for sigma
+above 8, until a consumer needs a wider blur; rounding scratch sizes to 32 px buckets, since a
+layer whose blur changes every frame measured 0.643 ms a frame against 0.652 ms static (headless
+Iris, best of 7 x 100 frames), so exact-size pool misses cost nothing measurable.
+
+ponytail: the pool matches exact sizes, so a tweening blur, offset or spread reallocates its layer
+every frame. Upgrade path is ADR-0217's size classes, once a driver shows the cost.
+
+**Amends the roadmap's Drawing and shader rows.**
+
 ## 0255. Gradients fill a box, and a `mask` multiplies a subtree's alpha in the clip's offscreen
 
 femtovg 0.27 draws linear, elliptical and conic gradients with any number of stops, and

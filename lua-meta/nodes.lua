@@ -65,6 +65,11 @@
 ---@field rotate? number|Bound Degrees clockwise about `origin`, paint-only.
 ---@field translate? Axes|Bound `{ x, y }` logical pixels the painted node is shifted by, after `scale` and `rotate`. Paint-only.
 ---@field origin? Axes|Bound Where `scale` and `rotate` pivot, as fractions of the node's box; default `{ x = 0.5, y = 0.5 }`, its centre.
+---@field shadow_color? Color|Bound The drop shadow's colour, default `"#000000"` (ADR-0254). Shows once `shadow_blur`, `shadow_offset` or `shadow_spread` is set. Like `content_blur`, it stops at the parent's box, so give the parent padding.
+---@field shadow_blur? number|Bound CSS `box-shadow` blur radius in logical pixels, default `0`. An opaque box fades linearly across `1.5 * shadow_blur` centred on its edge; anything else takes a Gaussian of sigma `shadow_blur / 2`, exact up to 16 physical pixels, past which the kernel stops at 24.
+---@field shadow_offset? Axes|Bound `{ x, y }` logical pixels the shadow is shifted by, `[-8192, 8192]` each. Rotates and scales with the node.
+---@field shadow_spread? number|Bound Logical pixels the shadow's box grows (or, negative, shrinks) a side before blurring. On content other than a box it scales the shadow about the box's centre, Qt's `shadowScale`.
+---@field content_blur? number|Bound Gaussian blur of this node's own painted subtree, CSS `filter: blur()`'s sigma in logical pixels, default `0`, live every frame (ADR-0254). Not `blur`, which asks the compositor to blur the desktop behind the node, nor `image.source_blur`, a one-off blur at decode. Exact up to sigma 8 physical pixels; past that the kernel stops at 24, so it widens no further.
 ---@field animate? Animations|Bound When a pass resolves a new value for a named property, the node eases from what it shows to the new value over the duration instead of snapping, and keeps easing between passes without running any Lua (ADR-0145). Only a node that already exists animates; a first value is taken as it is. Naming a property no tween carries is refused. The key `exit` is an `Exit` block rather than a duration: it is what the node eases to on its way out, kept painted but out of the layout until the tweens finish (ADR-0150).
 ---@field id? string Reconciliation hint, unique among siblings. Not addressable from Lua and has no effect on layout or paint (ADR-0045).
 ---@field hover? Bound The signal `hover(name)` returned. Marks this node's box as that slot's region.
@@ -163,7 +168,7 @@
 --- A fragment shader your config owns, drawn over the node's box with no input textures (ADR-0253).
 --- Has no intrinsic size. The shader reads `v_uv` (0..1 across the box), `u_size` (logical px) and
 --- `u_progress`, writes premultiplied `fragColor`, and gets the node's `opacity` applied after it.
---- No engine shadow: draw one in the shader, as an SDF. Takes no input: add a `button` or `rect` for a hit area.
+--- `shadow_*` and `content_blur` apply to the quad (ADR-0254). Takes no input: add a `button` or `rect` for a hit area.
 ---@class ShaderProps: NodeBase
 ---@field source? string|Bound Absolute path to a `.frag` file. A file that will not build logs once and draws nothing. Saving a `.frag` under the config directory reloads the config, which recompiles it.
 ---@field progress? number|Bound Default `0`. `u_progress`. The property to `animate`: a tween or spring on it repaints every frame with no Lua, may overshoot, and retargets mid-flight.

@@ -27,7 +27,7 @@ Wanted, but each needs a consumer or a decision first.
 | :--- | :--- |
 | Multi-prompt PAM | The worker relays every masked prompt (ADR-0241), but `LockState` and `secure_submit` carry one password, so the Supervisor answers each prompt with it. Fingerprint, 2FA and an expired password fail on the lock screen until a second prompt reaches the config. Echo-on prompts stay refused by design |
 | Greeter | greetd keeps PAM and root, so Mantle would be a client on its JSON socket, launched under cage or sway. Needs the multi-prompt contract above and a session-launch command |
-| Drawing | No config-facing paths or shadows. Gradients fill a box and `mask` fades a subtree by a gradient or an image's alpha (ADR-0255), but no node can mask another. Add the smallest set a real component needs; SVG already covers static artwork |
+| Drawing | No config-facing paths. Gradients fill a box, `mask` fades a subtree by a gradient or an image's alpha (ADR-0255), and `shadow_*` and `content_blur` filter a subtree (ADR-0254), but no node can mask another. Add the smallest set a real component needs; SVG already covers static artwork |
 | Large lists | Every item is constructed: 0.25 ms at 12 rows, 10.9 ms at 500 (ADR-0219). Virtualization would have to *require* `key`, which a config can be told but not made to supply (ADR-0191) |
 | Output actions | `windows` focuses, closes, fullscreens, minimizes and maximizes (ADR-0247), but screens are read-only (ADR-0119). Pick the actions, then settle niri/Hyprland differences and revert behaviour |
 | Service depth | MPRIS lacks stop, shuffle, repeat, rate and volume; PipeWire exposes volume and balance, not per-channel levels, and has no peak metering; UPower reads only `DisplayDevice`. Extend for concrete controls, not upstream parity |
@@ -56,6 +56,6 @@ Wanted, but each needs a consumer or a decision first.
 | A framework-owned settings schema | `persistent_table` with config-declared files |
 | Dedicated IPC commands per panel | `mantle set` and `mantle toggle` |
 | A loader to defer surface creation | Wayland objects are created when shown. The 5 ms cap guards one outermost signal resolve, not a whole config evaluation (ADR-0157) |
-| Shaders over an arbitrary subtree, or as a persistent filter | `image.transition` between two endpoints (ADR-0184), and the `shader` leaf with no inputs but `progress` and `params` (ADR-0253). Both keep a stable contract; an arbitrary subtree does not |
+| Shaders over an arbitrary subtree, or as a persistent filter | `image.transition` between two endpoints (ADR-0184), and the `shader` leaf with no inputs but `progress` and `params` (ADR-0253). Both keep a stable contract; an arbitrary subtree does not. A fixed shadow or blur over a subtree is `shadow_*` and `content_blur` (ADR-0254) |
 | Being the display manager: PAM as root, session opening, seat management | greetd already does it, and a PAM stack with no root can only run the `auth` chain anyway. See Greeter above |
 | X11 or i3 | The target is a Wayland session shell |

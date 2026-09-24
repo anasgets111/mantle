@@ -1197,7 +1197,19 @@ pub fn retarget(
 /// ADR-0149 maps the pointer back through a node's inverse transform, so moving one changes what
 /// the pointer hits, and the input regions have to be rebuilt with it. They stay on the layout
 /// path until something rebuilds those regions without a full pass.
-const PAINT_ONLY: &[&str] = &["opacity", "background", "border_color", "foreground", "progress", "radius"];
+const PAINT_ONLY: &[&str] = &[
+    "opacity",
+    "background",
+    "border_color",
+    "foreground",
+    "progress",
+    "radius",
+    "shadow_color",
+    "shadow_blur",
+    "shadow_offset",
+    "shadow_spread",
+    "content_blur",
+];
 
 /// Whether a tween on `property` can be advanced by a paint-only tick; see [`PAINT_ONLY`].
 pub fn is_paint_only(property: &str) -> bool {

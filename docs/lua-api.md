@@ -176,6 +176,8 @@ tables do not resolve, so derive the whole table instead.
 | `rotate` | Paint-only rotation in degrees, clockwise, about `origin`; `[-8192, 8192]` like every geometry number |
 | `translate` | Paint-only `{ x, y }` shift in logical pixels, `[-8192, 8192]` each, applied after `scale` and `rotate` |
 | `origin` | `{ x, y }` fractions of the node's box that `scale` and `rotate` pivot on, `[0, 1]` each, refused outside; default its centre |
+| `shadow_color`, `shadow_blur`, `shadow_offset`, `shadow_spread` | Drop shadow (ADR-0254): colour default `"#000000"`, shows once blur, offset or spread is set. CSS `box-shadow` blur radius and spread in logical pixels, `{ x, y }` offset. Spread on non-box content scales the shadow about the box's centre |
+| `content_blur` | Live Gaussian blur of the node's painted subtree, CSS `filter: blur()` sigma in logical pixels (ADR-0254). Exact to sigma 8 physical pixels; the kernel stops at 24. Distinct from `blur` (the compositor's backdrop) and `image.source_blur` (once, at decode). Shadows and blur stop at the parent's box, so the parent needs padding |
 
 Sizes and maximum sizes accept 0–8192 logical pixels. See
 [geometry parsing](../renderer/src/layout/node/style.rs).

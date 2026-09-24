@@ -104,6 +104,12 @@ pub enum Draw {
     /// The subtree of a node with a `scale`/`rotate`/`translate` (ADR-0149), drawn under its
     /// affine. Coordinates inside are the untransformed absolute ones.
     Transformed { matrix: node::Affine, commands: Vec<DrawCmd> },
+    /// An opaque box's shadow as one gradient quad under its fill (ADR-0254). `shadow.color`
+    /// carries the inherited opacity.
+    Shadow { shadow: node::Shadow, radius: f32 },
+    /// A subtree drawn offscreen, then composited over its own shadow and through `content_blur`
+    /// (ADR-0254). `rect` is the node's box; `clip` covers everything the effect reaches.
+    Layer { effect: node::Effect, commands: Vec<DrawCmd> },
 }
 
 /// One drawable node: what, where, and its precomputed ancestor clip. Intersections are axis
@@ -135,14 +141,14 @@ pub struct DisplayList {
     pub commands: Vec<DrawCmd>,
 }
 
-/// Walks `commands` for a draw `matches`, a group before its `Clipped`/`Transformed` subtree.
+/// Walks `commands` for a draw `matches`, a group before its `Clipped`/`Transformed`/`Layer` subtree.
 /// Shared by [`DisplayList::draws_any_of`] and [`DisplayList::captures_any_of`], which differ only
 /// in which `Draw` variant and field they compare.
 fn any_draw_matches(commands: &[DrawCmd], matches: impl Fn(&Draw) -> bool + Copy) -> bool {
     commands.iter().any(|command| {
         matches(&command.draw)
             || match &command.draw {
-                Draw::Clipped { commands, .. } | Draw::Transformed { commands, .. } => {
+                Draw::Clipped { commands, .. } | Draw::Transformed { commands, .. } | Draw::Layer { commands, .. } => {
                     any_draw_matches(commands, matches)
                 }
                 _ => false,
@@ -191,7 +197,9 @@ impl DisplayList {
                             paint_cursor: *paint_cursor,
                         });
                     }
-                    Draw::Clipped { commands, .. } | Draw::Transformed { commands, .. } => walk(commands, out),
+                    Draw::Clipped { commands, .. }
+                    | Draw::Transformed { commands, .. }
+                    | Draw::Layer { commands, .. } => walk(commands, out),
                     _ => {}
                 }
             }
@@ -225,7 +233,7 @@ impl DisplayList {
                         }
                         walk(commands, out)
                     }
-                    Draw::Transformed { commands, .. } => walk(commands, out),
+                    Draw::Transformed { commands, .. } | Draw::Layer { commands, .. } => walk(commands, out),
                     _ => {}
                 }
             }
@@ -363,17 +371,33 @@ fn build_node(
     // pill's corner is outside its fill yet still takes a click (four pixels on a 34px control),
     // and a scoop's cut-out still takes the click and counts as input.
     // Upgrade path: hit testing should share this walk instead of a second copy of the rule.
-    let clip = clip.intersect(snap_to_physical(rect, scale));
-    // Fully clipped children cannot draw.
-    if is_empty(clip) {
+    let (parent_clip, clip) = (clip, clip.intersect(snap_to_physical(rect, scale)));
+    let effect = node.effect;
+    // ADR-0254 decision 2.
+    let gradient = match (&node.paint, effect.shadow) {
+        (Some(PaintStyle::Box { background: Some(node::Fill::Color(fill)), radius, mask: None, .. }), Some(shadow))
+            if fill.a >= 1.0 && *radius >= 0.0 && effect.blur == 0.0 =>
+        {
+            Some((shadow, *radius))
+        }
+        _ => None,
+    };
+    let reach = match gradient {
+        Some((shadow, _)) => snap_to_physical(grow(shadow_rect(rect, rect, shadow), 1.5 * shadow.blur), scale),
+        None if effect.shadow.is_some() || effect.blur > 0.0 => layer_bounds(rect, effect, scale),
+        None => clip,
+    };
+    // A box just scrolled out still casts the shadow reaching back in.
+    if is_empty(parent_clip.intersect(reach)) {
         return;
     }
 
     // `node::paint_style` already decided the draw. An unrecognised kind stays transparent, which
     // avoids the passwordless black lock screen ADR-0052 decision 3 rejects. Opacity is baked into
     // the list because ADR-0063 skips unchanged lists; applying it in `execute` would be invisible.
+    // A fully clipped node draws nothing, and its children cut to its box return on their own.
     let opacity = inherited_opacity * node.opacity;
-    let draw = draw_for(node, rect, scale, opacity, focus);
+    let draw = if is_empty(clip) { None } else { draw_for(node, rect, scale, opacity, focus) };
 
     // A transformed node paints itself and its subtree as one group under its matrix
     // (ADR-0149), so the group is built into `out` and lifted out of it afterwards. Coordinates
@@ -389,6 +413,10 @@ fn build_node(
         Some(PaintStyle::Box { mask: Some(mask), .. }) => Some(mask),
         _ => None,
     };
+    if let Some((shadow, radius)) = gradient {
+        let shadow = node::Shadow { color: fade(shadow.color, opacity), ..shadow };
+        out.push(DrawCmd { rect, clip: parent_clip.intersect(reach), draw: Draw::Shadow { shadow, radius } });
+    }
     match rounded_clip(node) {
         // A mask covers the node's own paint too, as Qt's `OpacityMask` covers its item (ADR-0255).
         radius if mask.is_some() => {
@@ -435,6 +463,12 @@ fn build_node(
                 out.push(DrawCmd { rect, clip, draw: border });
             }
         }
+    }
+    if gradient.is_none() && (effect.shadow.is_some() || effect.blur > 0.0) && out.len() > start {
+        let commands: Vec<DrawCmd> = out.drain(start..).collect();
+        // A transformed child overflowing the box keeps the overflow it has without the layer.
+        let bounds = commands.iter().map(command_bounds).filter(|r| !is_empty(*r)).fold(reach, union);
+        out.push(DrawCmd { rect, clip: parent_clip.intersect(bounds), draw: Draw::Layer { effect, commands } });
     }
     if !node.transform.is_identity() {
         let matrix = node.transform.matrix(rect);
@@ -666,6 +700,39 @@ fn physical_edge(logical: f32, scale: f32) -> u32 {
 /// `physical_edge` there is no out-of-range input here to clamp.
 fn physical_blur(logical: f32, scale: f32) -> u32 {
     (logical * scale).round() as u32
+}
+
+/// How far a Gaussian of `sigma` logical pixels spreads: 3 sigma, up to femtovg's kernel, which
+/// clamps sigma to 8 physical pixels and samples 3 of them (`render_gaussian_blur`).
+fn reach(sigma: f32, scale: f32) -> f32 {
+    (3.0 * sigma).min(24.0 / scale)
+}
+
+fn grow(rect: LogicalRect, by: f32) -> LogicalRect {
+    LogicalRect { x: rect.x - by, y: rect.y - by, width: rect.width + 2.0 * by, height: rect.height + 2.0 * by }
+}
+
+/// Where `area`, painted around a node's box `rect`, lands as that node's shadow: offset, and
+/// scaled about the box's centre until the box has grown by `spread` a side. For a box that is
+/// CSS's spread; for other content it is Qt's `shadowScale` (ADR-0254).
+fn shadow_rect(rect: LogicalRect, area: LogicalRect, shadow: node::Shadow) -> LogicalRect {
+    let axis = |start: f32, size: f32, from: f32, span: f32, offset: f32| {
+        let k = if size > 0.0 { ((size + 2.0 * shadow.spread) / size).max(0.0) } else { 1.0 };
+        let centre = start + size / 2.0;
+        (centre + (from - centre) * k + offset, span * k)
+    };
+    let (x, width) = axis(rect.x, rect.width, area.x, area.width, shadow.offset.0);
+    let (y, height) = axis(rect.y, rect.height, area.y, area.height, shadow.offset.1);
+    LogicalRect { x, y, width, height }
+}
+
+/// A layer's offscreen: the box padded for the further-reaching blur, and where that padded box
+/// lands as the shadow.
+fn layer_bounds(rect: LogicalRect, effect: node::Effect, scale: f32) -> PhysicalRect {
+    let shadow_reach = effect.shadow.map_or(0.0, |shadow| reach(shadow.blur / 2.0, scale));
+    let padded = grow(rect, shadow_reach.max(reach(effect.blur, scale)));
+    let own = snap_to_physical(padded, scale);
+    effect.shadow.map_or(own, |shadow| union(own, snap_to_physical(shadow_rect(rect, padded, shadow), scale)))
 }
 
 #[cfg(test)]
@@ -1562,5 +1629,113 @@ mod tests {
             }],
         };
         assert_eq!(transformed(2.0).damage_since(&transformed(1.0)), [PhysicalRect { x0: 98, y0: 8, x1: 244, y1: 64 }]);
+    }
+
+    fn effect_surface(child: &str) -> DisplayList {
+        let src =
+            format!(r##"return panel {{ id = "bar", width = 200, height = 100, padding = 40, child = {child} }}"##);
+        build(&resolved_surface(&Lua::new(), &src, LogicalSize { width: 200.0, height: 100.0 }), 1.0, None)
+    }
+
+    /// ADR-0254. An opaque box's silhouette is its own shape, so its shadow is one gradient quad
+    /// drawn first, faded with the node, and clipped to its offset, spread and blurred extent
+    /// rather than to the box.
+    #[test]
+    fn an_opaque_box_casts_its_shadow_as_one_gradient_under_its_fill() {
+        let list = effect_surface(
+            r##"rect { width = 40, height = 20, radius = 6, background = "#ffffff", opacity = 0.5,
+                shadow_color = "#00000080", shadow_blur = 8, shadow_offset = { y = 4 }, shadow_spread = 2 }"##,
+        );
+        let at = list.commands.iter().position(|cmd| matches!(cmd.draw, Draw::Shadow { .. })).expect("a shadow");
+        let Draw::Shadow { shadow, radius } = list.commands[at].draw else { unreachable!() };
+        assert_eq!(radius, 6.0);
+        assert!((shadow.color.a - 0.5 * 128.0 / 255.0).abs() < 1e-6, "faded with the node: {shadow:?}");
+        assert!(matches!(list.commands[at + 1].draw, Draw::Box { .. }), "the fill covers the shadow");
+        // The box is 40..80 x 40..60; the shadow's box is 38..82 x 42..66, blurred 3 sigma, 12, further out.
+        assert_eq!(list.commands[at].clip, PhysicalRect { x0: 26, y0: 30, x1: 94, y1: 78 });
+        assert!(!list.commands.iter().any(|cmd| matches!(cmd.draw, Draw::Layer { .. })), "no offscreen");
+    }
+
+    /// ADR-0254. Anything but an opaque box casts the shadow of its pixels, so its subtree goes
+    /// offscreen as one group. Its content already carries the opacity, so the shadow colour
+    /// does not fade twice.
+    #[test]
+    fn text_or_a_translucent_box_casts_its_shadow_through_one_offscreen_layer() {
+        for child in [
+            r##"text { content = "hi", opacity = 0.5, shadow_blur = 4, shadow_offset = { x = 3 } }"##,
+            r##"rect { width = 40, height = 20, background = "#ffffff80", opacity = 0.5, shadow_blur = 4,
+                shadow_offset = { x = 3 }, children = { text { content = "hi" } } }"##,
+        ] {
+            let list = effect_surface(child);
+            let layer = list.commands.last().unwrap();
+            let Draw::Layer { effect: node::Effect { shadow: Some(shadow), blur }, commands } = &layer.draw else {
+                panic!("{child}: expected a layer, got {:?}", layer.draw)
+            };
+            assert_eq!((shadow.color.a, *blur), (1.0, 0.0), "{child}");
+            assert!(commands.iter().any(|cmd| matches!(cmd.draw, Draw::Text { .. })), "{child}");
+            // The blur reaches 3 sigma, 6px, around the box, and the offset shifts its right edge 3.
+            let node = snap_to_physical(layer.rect, 1.0);
+            assert_eq!((layer.clip.x0, layer.clip.y0), (node.x0 - 6, node.y0 - 6), "{child}");
+            assert_eq!((layer.clip.x1, layer.clip.y1), (node.x1 + 9, node.y1 + 6), "{child}");
+        }
+    }
+
+    /// ADR-0254. `content_blur` spreads the subtree's pixels 3 sigma past its box, and femtovg's
+    /// kernel stops at 24 physical pixels whatever sigma asks.
+    #[test]
+    fn a_content_blur_groups_the_subtree_and_reaches_three_sigma_up_to_the_kernel() {
+        for (blur, reach) in [(2, 6), (20, 24)] {
+            let list = effect_surface(&format!(
+                r##"rect {{ width = 40, height = 20, background = "#ffffff", content_blur = {blur} }}"##
+            ));
+            let layer = list.commands.last().unwrap();
+            assert!(
+                matches!(layer.draw, Draw::Layer { effect: node::Effect { shadow: None, .. }, .. }),
+                "got {:?}",
+                layer.draw
+            );
+            assert_eq!(layer.clip, PhysicalRect { x0: 40 - reach, y0: 40 - reach, x1: 80 + reach, y1: 60 + reach });
+        }
+    }
+
+    /// A box scrolled just out of its parent still casts the shadow that reaches back in, rather
+    /// than popping it in once its own edge crosses back.
+    #[test]
+    fn a_box_just_outside_its_parent_still_casts_the_shadow_reaching_in() {
+        let list = effect_surface(
+            r##"rect { width = 40, height = 20, children = { rect { width = 40, height = 20, margin = { top = 24 },
+                background = "#ffffff", shadow_offset = { y = -10 } } } }"##,
+        );
+        let shadow = list.commands.iter().find(|cmd| matches!(cmd.draw, Draw::Shadow { .. })).expect("a shadow");
+        assert_eq!((shadow.clip.y0, shadow.clip.y1), (54, 60), "the part of it inside the parent");
+        assert!(!list.commands.iter().any(|cmd| matches!(cmd.draw, Draw::Box { .. } if cmd.rect.y == 64.0)));
+    }
+
+    /// A child scaled past its layered parent's box keeps the overflow it would have without the
+    /// layer.
+    #[test]
+    fn a_layer_covers_a_transformed_child_overflowing_its_box() {
+        let list = effect_surface(
+            r##"rect { width = 40, height = 20, content_blur = 1,
+                children = { rect { width = 40, height = 20, background = "#ffffff", scale = 2 } } }"##,
+        );
+        let layer = list.commands.last().unwrap();
+        assert!(matches!(layer.draw, Draw::Layer { .. }));
+        assert!(layer.clip.x0 <= 20 && layer.clip.x1 >= 100, "the child's scaled box: {:?}", layer.clip);
+    }
+
+    /// A shadow moving repaints where it was and where it lands, not only the node's box.
+    #[test]
+    fn a_moved_shadow_damages_both_its_old_and_new_extent() {
+        let at = |y: i32| {
+            effect_surface(&format!(
+                r##"rect {{ width = 40, height = 20, background = "#ffffff", shadow_offset = {{ y = {y} }} }}"##
+            ))
+        };
+        let damage = at(30).damage_since(&at(10));
+        assert!(
+            damage.iter().any(|r| r.y0 <= 50 && r.y1 >= 90 && r.x0 <= 40 && r.x1 >= 80),
+            "the old shadow at 50..70 and the new one at 70..90: {damage:?}"
+        );
     }
 }

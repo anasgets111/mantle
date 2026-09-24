@@ -72,6 +72,7 @@ impl ResolvedNode {
             opacity: 1.0,
             transform: node::Transform::default(),
             blur: false,
+            effect: node::Effect::default(),
             properties: PropMap::default(),
             paint: None,
             displayed_source: None,
@@ -108,6 +109,7 @@ struct LayoutStyle {
     opacity: f32,
     transform: node::Transform,
     blur: bool,
+    effect: node::Effect,
 }
 
 impl LayoutStyle {
@@ -133,6 +135,7 @@ impl LayoutStyle {
             opacity: node::parse_opacity(properties)?,
             transform: node::parse_transform(properties)?,
             blur: node::parse_blur(properties)?,
+            effect: node::parse_effect(properties)?,
         })
     }
 }
@@ -183,6 +186,8 @@ pub struct ResolvedNode {
     /// compositor is given; nothing else reads it, and a compositor without the protocol ignores the
     /// lot.
     pub blur: bool,
+    /// This node's own `shadow_*` and `content_blur` (ADR-0254), over its whole painted subtree.
+    pub effect: node::Effect,
     pub properties: PropMap,
     /// This node's paint properties, parsed here rather than by `layout::paint` on every frame
     /// (`node::paint_style`'s module doc comment says why). `None` for a kind that draws nothing.
@@ -1094,14 +1099,20 @@ fn advance_paint_only_node(node: &mut ResolvedNode, now: Instant, lua: &Lua) -> 
         .filter_map(|tween| node.properties.get_key_value(tween.property))
         .map(|(property, value)| (*property, value.clone()))
         .collect();
-    // Nothing is assigned to the node until all three have succeeded, so a refusal leaves its
-    // `opacity` and `paint` describing the same frame its properties do.
-    let advanced = node::advance(&mut node.tweens, &mut node.properties, now, lua)
-        .and_then(|()| node::parse_opacity(&node.properties))
-        .and_then(|opacity| Ok((opacity, node::paint_style(node.kind, &node.properties)?)));
+    // Nothing is assigned to the node until every step has succeeded, so a refusal leaves its
+    // `opacity`, `effect` and `paint` describing the same frame its properties do.
+    let advanced = node::advance(&mut node.tweens, &mut node.properties, now, lua).and_then(|()| {
+        let properties = &node.properties;
+        Ok((
+            node::parse_opacity(properties)?,
+            node::parse_effect(properties)?,
+            node::paint_style(node.kind, properties)?,
+        ))
+    });
     match advanced {
-        Ok((opacity, fresh)) => {
+        Ok((opacity, effect, fresh)) => {
             node.opacity = opacity;
+            node.effect = effect;
             node.paint = repainted_keeping_fitted_text(node.paint.take(), fresh);
             Ok(())
         }
@@ -1131,6 +1142,7 @@ fn advance_leaving(mut node: ResolvedNode, now: Instant, lua: &Lua) -> Result<Op
     node.paint = repainted_keeping_fitted_text(node.paint.take(), fresh);
     node.opacity = style.opacity;
     node.transform = style.transform;
+    node.effect = style.effect;
     node.margin = style.margin;
     if let SizeMode::Pixels(width) = style.width_mode {
         node.rect.width = width;
@@ -1636,6 +1648,7 @@ fn finish(
         opacity: style.opacity,
         transform: style.transform,
         blur: style.blur,
+        effect: style.effect,
         properties,
         paint,
         displayed_source,
@@ -2917,6 +2930,35 @@ pub(super) mod tests {
         assert_eq!(&**content, "abc", "the string it was fitted to survives a tick that never measured it");
         assert!((color.r - 0.5).abs() < 0.02, "the label's colour moved too, got {}", color.r);
         assert_eq!(block.rect, before, "nothing a paint-only tick writes can move a rect");
+    }
+
+    /// ADR-0254: a shadow and a content blur tween on the paint-only tick, and the tick re-derives
+    /// the node's `effect` from the values it wrote.
+    #[test]
+    fn a_shadow_and_a_content_blur_tween_on_the_paint_only_tick() {
+        let mut scene = Scene::new();
+        let shaping = ShapingHandle::spawn();
+        let (lua, surface) = surface_from(
+            r##"local up = state("up", false)
+            return panel { id = "bar", child = rect { width = 10, height = 10, background = "#ffffff",
+                shadow_color = "#000000", shadow_blur = up:map(function(u) return u and 8 or 0 end),
+                shadow_offset = up:map(function(u) return u and { x = 0, y = 4 } or { x = 0, y = 0 } end),
+                content_blur = up:map(function(u) return u and 2 or 0 end),
+                animate = { shadow_blur = { duration = 100, easing = "Linear" },
+                            shadow_offset = { duration = 100, easing = "Linear" },
+                            content_blur = { duration = 100, easing = "Linear" } } } }"##,
+        );
+        apply_at(&mut scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
+        lua.load(r#"state("up", false):set(true)"#).exec().unwrap();
+        apply_at(&mut scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
+        let root = scene.surface("bar@TEST").unwrap();
+        assert!(root.tick_is_paint_only(), "an effect asks the solver nothing");
+        let started = root.children[0].tweens[0].started;
+        scene.tick(&[instance_at(&surface, full())], &shaping, &lua, started + std::time::Duration::from_millis(50));
+        let effect = scene.surface("bar@TEST").unwrap().children[0].effect;
+        let shadow = effect.shadow.expect("halfway, the shadow shows");
+        assert!((shadow.blur - 4.0).abs() < 0.01 && (shadow.offset.1 - 2.0).abs() < 0.01, "got {shadow:?}");
+        assert!((effect.blur - 1.0).abs() < 0.01, "got {}", effect.blur);
     }
 
     /// `width` is not paint-only, so a tree carrying one has to take the relayout path even when

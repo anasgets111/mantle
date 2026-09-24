@@ -248,6 +248,17 @@ fn parse_gradient(property: &str, table: &mlua::Table) -> Result<Gradient, Layou
     Ok(Gradient { shape, stops })
 }
 
+fn parse_color(properties: &PropMap, property: &str) -> Result<Option<Rgba>, LayoutError> {
+    let Some(value) = properties.get(property) else {
+        return Ok(None);
+    };
+    let Value::String(s) = value else {
+        return Err(invalid(property, format!("expected a string, got {}", preview_for_error(value))));
+    };
+    let s = checked_string(property, s)?;
+    Ok(Some(parse_hex_color(property, &s)?))
+}
+
 /// `rect.radius`, defaulting to 0, negated under `corner_shape = "Scoop"`: a quarter circle cut in,
 /// centred on the box's corner point, CSS's `corner-shape` name.
 pub fn parse_radius(properties: &PropMap) -> Result<f32, LayoutError> {
@@ -329,8 +340,6 @@ pub fn invert_affine([a, b, c, d, e, f]: Affine) -> Option<Affine> {
 /// is a layout the solver absorbs, not a crash, and `snap_to_physical` bounds the coordinates
 /// that reach `wl_region`. Add a parser bound only where a consumer refuses the value.
 ///
-/// `margin`, `translate` and `rotate` accept a negative; nothing else does.
-///
 /// `radius` and `border_width` share the `8192` ceiling with `width`/`height`. It is
 /// femtovg 0.26's: above roughly 8.4e6 `curve_divisions` (`path/cache.rs:911`) divides by
 /// `acos(1.0) == 0.0`, and `inf as u32` becomes `u32::MAX`, so billions of iterations and tens of
@@ -349,7 +358,7 @@ pub(super) fn range_of(property: &str) -> (f32, f32) {
         "scale" => (0.0, 64.0),
         "font_size" => (1.0, 8192.0),
         // `progress` so a spring may undershoot its start.
-        "margin" | "translate" | "rotate" | "progress" => (-8192.0, 8192.0),
+        "margin" | "translate" | "rotate" | "progress" | "shadow_offset" | "shadow_spread" => (-8192.0, 8192.0),
         _ => (0.0, 8192.0),
     }
 }
@@ -506,6 +515,38 @@ pub fn parse_list_direction(properties: &PropMap) -> Result<&'static str, Layout
 /// nothing, which is what every other unavailable compositor feature already does here.
 pub fn parse_blur(properties: &PropMap) -> Result<bool, LayoutError> {
     content::parse_bool(properties, "blur", false)
+}
+
+/// A drop shadow in logical pixels, CSS `box-shadow`'s terms: `blur` is the radius (sigma is half
+/// of it), `spread` grows the shape before blurring (ADR-0254).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Shadow {
+    pub color: Rgba,
+    pub blur: f32,
+    pub offset: (f32, f32),
+    pub spread: f32,
+}
+
+/// What a node's own painted output is filtered by (ADR-0254). `blur` is `content_blur`, CSS
+/// `filter: blur()`'s sigma; `0` is off.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct Effect {
+    pub shadow: Option<Shadow>,
+    pub blur: f32,
+}
+
+/// `shadow_*` and `content_blur`, every kind. `None` when the shadow would draw nothing, so paint
+/// never opens an offscreen for it.
+pub fn parse_effect(properties: &PropMap) -> Result<Effect, LayoutError> {
+    let color = parse_color(properties, "shadow_color")?.unwrap_or(Rgba { r: 0.0, g: 0.0, b: 0.0, a: 1.0 });
+    let offset = properties.get("shadow_offset").map_or(Ok((0.0, 0.0)), |value| xy("shadow_offset", value))?;
+    let blur = within("shadow_blur", content::parse_number(properties, "shadow_blur", 0.0)?)?;
+    let spread = within("shadow_spread", content::parse_number(properties, "shadow_spread", 0.0)?)?;
+    let shows = color.a > 0.0 && (blur > 0.0 || spread != 0.0 || offset != (0.0, 0.0));
+    Ok(Effect {
+        shadow: shows.then_some(Shadow { color, blur, offset, spread }),
+        blur: within("content_blur", content::parse_number(properties, "content_blur", 0.0)?)?,
+    })
 }
 
 /// `opacity` belongs to every kind, including non-painting lists, and is inherited by
@@ -1253,5 +1294,32 @@ mod tests {
             }))
             .is_none()
         );
+    }
+
+    /// Qt's `MultiEffect` defaults: a shadow is opaque black until coloured, and is absent until
+    /// a blur, an offset or a spread would show it.
+    #[test]
+    fn a_shadow_is_black_until_coloured_and_absent_until_it_would_show() {
+        let lua = Lua::new();
+        let parse = |src: &str| parse_effect(&rect_props(&lua, src));
+        assert_eq!(parse("return {}").unwrap(), Effect::default());
+        assert_eq!(parse(r##"return { shadow_color = "#ff000080" }"##).unwrap().shadow, None);
+        let black = Rgba { r: 0.0, g: 0.0, b: 0.0, a: 1.0 };
+        assert_eq!(
+            parse("return { shadow_blur = 8, shadow_offset = { y = -2 }, shadow_spread = -1 }").unwrap().shadow,
+            Some(Shadow { color: black, blur: 8.0, offset: (0.0, -2.0), spread: -1.0 })
+        );
+        assert_eq!(parse("return { content_blur = 3 }").unwrap(), Effect { shadow: None, blur: 3.0 });
+        for (src, property) in [
+            ("return { content_blur = -1 }", "content_blur"),
+            ("return { shadow_blur = -1 }", "shadow_blur"),
+            ("return { shadow_color = 3, shadow_blur = 1 }", "shadow_color"),
+        ] {
+            let err = parse(src).unwrap_err();
+            assert!(
+                matches!(&err, LayoutError::InvalidProperty { property: p, .. } if p == property),
+                "{src}: {err:?}"
+            );
+        }
     }
 }

@@ -6,7 +6,8 @@ use std::time::{Duration, Instant};
 
 use femtovg::renderer::OpenGl;
 use femtovg::{
-    Canvas, Color, CompositeOperation, ImageFlags, ImageId, Paint, Path, PixelFormat, RenderTarget, Solidity,
+    Canvas, Color, CompositeOperation, ImageFilter, ImageFlags, ImageId, Paint, Path, PixelFormat, RenderTarget,
+    Solidity,
 };
 
 use crate::image::capture::CaptureCache;
@@ -317,6 +318,11 @@ fn run(painter: &mut TextPainter, walk: &mut Walk<'_, '_>, commands: &[DrawCmd],
                 painter.canvas_mut().restore();
                 current_clip = None;
             }
+            Draw::Shadow { shadow, radius } => paint_shadow(painter.canvas_mut(), rect, *shadow, *radius),
+            Draw::Layer { effect, commands } => {
+                draw_layer(painter, walk, rect, clip, *effect, commands, target, frame);
+                current_clip = None;
+            }
         }
     }
 }
@@ -345,30 +351,54 @@ fn draw_clipped(
     target: RenderTarget,
     frame: Frame,
 ) {
+    let Some(image) = offscreen(painter, walk, rect, clip, mask, commands, target, frame) else { return };
+    let path = box_path(rect, radius);
+    let (width, height) = ((clip.x1 - clip.x0) as f32, (clip.y1 - clip.y0) as f32);
+    let paint = Paint::image(image, clip.x0 as f32, clip.y0 as f32, width, height, 0.0, 1.0);
+    painter.canvas_mut().fill_path(&path, &paint);
+}
+
+/// A pooled render target of `size`, held until [`execute`] flushes; `None` when out of texture
+/// memory.
+fn scratch(painter: &mut TextPainter, walk: &mut Walk<'_, '_>, size: (usize, usize)) -> Option<ImageId> {
+    // `PREMULTIPLIED` prevents a second alpha multiplication; `FLIP_Y` maps canvas y=0 to the last
+    // GL texture row. Both match femtovg 0.27's drop-shadow flags (`src/lib.rs`).
+    let flags = ImageFlags::PREMULTIPLIED | ImageFlags::FLIP_Y;
+    let image = match painter.take_scratch(size) {
+        Some(image) => image,
+        None => painter.canvas_mut().create_image_empty(size.0, size.1, PixelFormat::Rgba8, flags).ok()?,
+    };
+    walk.scratch.push((image, size));
+    Some(image)
+}
+
+/// Draws `commands` into a scratch target covering `clip`, masked over the node's box `rect`,
+/// returned for the caller to composite at `clip`. `None` when there is nothing to composite.
+#[allow(clippy::too_many_arguments)]
+fn offscreen(
+    painter: &mut TextPainter,
+    walk: &mut Walk<'_, '_>,
+    rect: LogicalRect,
+    clip: PhysicalRect,
+    mask: Option<&(node::Mask, (u32, u32))>,
+    commands: &[DrawCmd],
+    target: RenderTarget,
+    frame: Frame,
+) -> Option<ImageId> {
     let (width, height) = ((clip.x1 - clip.x0) as usize, (clip.y1 - clip.y0) as usize);
     // A box with no area shows nothing, and asking for a 0xN render target leaves GL with an
     // incomplete framebuffer that the next composite on this canvas paints as a full square. A
     // cell tweening its width through zero hits this on its first and last frame.
     if width == 0 || height == 0 {
-        return;
+        return None;
     }
-    // `PREMULTIPLIED` prevents a second alpha multiplication; `FLIP_Y` maps canvas y=0 to the last
-    // GL texture row. Both match femtovg 0.26.0's drop-shadow flags (`src/lib.rs`).
-    let flags = ImageFlags::PREMULTIPLIED | ImageFlags::FLIP_Y;
-    let image = match painter.take_scratch((width, height)) {
-        Some(image) => image,
-        None => {
-            let Ok(image) = painter.canvas_mut().create_image_empty(width, height, PixelFormat::Rgba8, flags) else {
-                // Out of texture memory: preserve the subtree unmasked rather than drop it.
-                // Into the parent's target, so it keeps the parent's frame: the clip this could not
-                // allocate is not where these commands are going.
-                run(painter, walk, commands, target, frame);
-                return;
-            };
-            image
-        }
+    let Some(image) = scratch(painter, walk, (width, height)) else {
+        // Out of texture memory: preserve the subtree unmasked rather than drop it.
+        // Into the parent's target, so it keeps the parent's frame: the clip this could not
+        // allocate is not where these commands are going.
+        run(painter, walk, commands, target, frame);
+        return None;
     };
-    walk.scratch.push((image, (width, height)));
 
     let canvas = painter.canvas_mut();
     canvas.save();
@@ -413,9 +443,101 @@ fn draw_clipped(
     let canvas = painter.canvas_mut();
     canvas.restore();
     canvas.set_render_target(target);
-    let path = box_path(rect, radius);
-    let paint = Paint::image(image, clip.x0 as f32, clip.y0 as f32, width as f32, height as f32, 0.0, 1.0);
+    Some(image)
+}
+
+/// An opaque box's shadow (ADR-0254): femtovg's box gradient fades from the colour to nothing
+/// across 3 sigma centred on the spread box's edge, one quad and no render target.
+fn paint_shadow(canvas: &mut Canvas<OpenGl>, rect: LogicalRect, shadow: node::Shadow, radius: f32) {
+    let LogicalRect { x, y, width, height } = super::shadow_rect(rect, rect, shadow);
+    let Rgba { r, g, b, a } = shadow.color;
+    // A ramp across 3 sigma is within 14/255 of the layer path's Gaussian; matching its slope
+    // instead, 22. Floored at NanoVG's 1, since the gradient divides by it.
+    let feather = (1.5 * shadow.blur).max(1.0);
+    // CSS: a square corner stays square under spread. A signed distance past half the box is
+    // positive everywhere, so the gradient would paint nothing.
+    let radius = if radius > 0.0 { (radius + shadow.spread).clamp(0.0, width.min(height) / 2.0) } else { 0.0 };
+    let color = Color::rgbaf(r, g, b, a);
+    let paint = Paint::box_gradient(x, y, width, height, radius, feather, color, Color::rgbaf(r, g, b, 0.0));
+    let reach = super::grow(LogicalRect { x, y, width, height }, feather / 2.0);
+    let mut path = Path::new();
+    path.rect(reach.x, reach.y, reach.width, reach.height);
     canvas.fill_path(&path, &paint);
+}
+
+/// A subtree under its own shadow and `content_blur` (ADR-0254). Both are femtovg filters over
+/// pooled targets, so a static layer allocates nothing per frame but the blur's own intermediate.
+#[allow(clippy::too_many_arguments)]
+fn draw_layer(
+    painter: &mut TextPainter,
+    walk: &mut Walk<'_, '_>,
+    rect: LogicalRect,
+    clip: PhysicalRect,
+    node::Effect { shadow, blur }: node::Effect,
+    commands: &[DrawCmd],
+    target: RenderTarget,
+    frame: Frame,
+) {
+    let Some(content) = offscreen(painter, walk, rect, clip, None, commands, target, frame) else { return };
+    let size = ((clip.x1 - clip.x0) as usize, (clip.y1 - clip.y0) as usize);
+    let area = LogicalRect { x: clip.x0 as f32, y: clip.y0 as f32, width: size.0 as f32, height: size.1 as f32 };
+    if let Some(shadow) = shadow
+        && let Some(cast) = cast_shadow(painter, walk, content, size, shadow, target)
+    {
+        fill_image(painter.canvas_mut(), cast, super::shadow_rect(rect, area, shadow), 1.0);
+    }
+    let content = match blur * walk.scale {
+        sigma if sigma >= MIN_SIGMA => blurred(painter, walk, content, size, sigma).unwrap_or(content),
+        _ => content,
+    };
+    fill_image(painter.canvas_mut(), content, area, 1.0);
+}
+
+/// femtovg's blur divides by sigma, and its own shadow skips one below this.
+const MIN_SIGMA: f32 = 0.01;
+
+fn blurred(
+    painter: &mut TextPainter,
+    walk: &mut Walk<'_, '_>,
+    source: ImageId,
+    size: (usize, usize),
+    sigma: f32,
+) -> Option<ImageId> {
+    let image = scratch(painter, walk, size)?;
+    painter.canvas_mut().filter_image(image, ImageFilter::GaussianBlur { sigma }, source);
+    Some(image)
+}
+
+/// `content` blurred, then recoloured by `SourceIn` keeping each pixel's alpha (ADR-0254).
+fn cast_shadow(
+    painter: &mut TextPainter,
+    walk: &mut Walk<'_, '_>,
+    content: ImageId,
+    size: (usize, usize),
+    shadow: node::Shadow,
+    target: RenderTarget,
+) -> Option<ImageId> {
+    let sigma = shadow.blur / 2.0 * walk.scale;
+    let cast =
+        if sigma >= MIN_SIGMA { blurred(painter, walk, content, size, sigma)? } else { scratch(painter, walk, size)? };
+    let (width, height) = (size.0 as f32, size.1 as f32);
+    let mut whole = Path::new();
+    whole.rect(0.0, 0.0, width, height);
+    let canvas = painter.canvas_mut();
+    canvas.save();
+    canvas.reset_transform();
+    canvas.reset_scissor();
+    canvas.set_render_target(RenderTarget::Image(cast));
+    if sigma < MIN_SIGMA {
+        canvas.clear_rect(0, 0, size.0 as u32, size.1 as u32, Color::rgbaf(0.0, 0.0, 0.0, 0.0));
+        fill_image(canvas, content, LogicalRect { x: 0.0, y: 0.0, width, height }, 1.0);
+    }
+    let Rgba { r, g, b, a } = shadow.color;
+    canvas.global_composite_operation(CompositeOperation::SourceIn);
+    canvas.fill_path(&whole, &Paint::color(Color::rgbaf(r, g, b, a)));
+    canvas.restore();
+    canvas.set_render_target(target);
+    Some(cast)
 }
 
 /// File-draw parameters shared by icon and image commands.
@@ -1834,5 +1956,162 @@ mod tests {
         assert_eq!(pixel_at(canvas, 60, 24), (0, 0, 255, 255), "inside the pill and inside the parent");
         assert_eq!(pixel_at(canvas, 50, 10), (255, 0, 0, 255), "the pill's left cap still rounds");
         assert_eq!(pixel_at(canvas, 72, 24), (255, 0, 0, 255), "and the parent's box still ends at x = 68");
+    }
+
+    /// A 32px box at (16, 16) on a white 64x96 panel, painted with `effect` properties and read
+    /// down its middle column.
+    fn paint_effect(effect: &str) -> Option<[(u8, u8, u8, u8); 8]> {
+        let px = paint_effect_at(effect, &[8, 20, 32, 40, 50, 56, 64, 76].map(|y| (32, y)))?;
+        Some(std::array::from_fn(|i| px[i]))
+    }
+
+    fn paint_effect_at(effect: &str, points: &[(usize, usize)]) -> Option<Vec<(u8, u8, u8, u8)>> {
+        let instance = init_headless_egl(64, 96)?;
+        let shaping = ShapingHandle::spawn();
+        let mut painter = text_painter(&instance, &shaping, 64, 96)?;
+        let src = format!(
+            r##"return panel {{ id = "bar", width = 64, height = 96, background = "#FFFFFFFF",
+                padding = {{ top = 16, left = 16 }}, child = rect {{ width = 32, height = 32, {effect} }} }}"##
+        );
+        let root = resolved_surface(&Lua::new(), &src, LogicalSize { width: 64.0, height: 96.0 });
+        paint_tree(&mut painter, &mut ImageCache::new(), &root, 1.0);
+        let canvas = painter.canvas_mut();
+        Some(points.iter().map(|&(x, y)| pixel_at(canvas, x, y)).collect())
+    }
+
+    fn near(actual: (u8, u8, u8, u8), expected: (u8, u8, u8)) -> bool {
+        let close = |a: u8, e: u8| a.abs_diff(e) <= 3;
+        close(actual.0, expected.0) && close(actual.1, expected.1) && close(actual.2, expected.2)
+    }
+
+    /// ADR-0254's gradient path: an opaque box's shadow lands offset under it, sharp without a
+    /// blur and fading over `shadow_blur` either side of its edge with one.
+    #[test]
+    fn an_opaque_boxs_shadow_is_painted_offset_under_it() {
+        let Some(px) = paint_effect(r##"background = "#FF0000FF", shadow_offset = { y = 16 }"##) else { return };
+        assert!(near(px[0], (255, 255, 255)) && near(px[1], (255, 0, 0)), "{px:?}");
+        assert!(near(px[5], (0, 0, 0)), "the shadow shows below the box: {px:?}");
+        assert!(near(px[7], (255, 255, 255)), "and ends 16px below it: {px:?}");
+
+        let Some(px) = paint_effect(r##"background = "#FF0000FF", shadow_offset = { y = 16 }, shadow_blur = 8"##)
+        else {
+            return;
+        };
+        assert!((90..170).contains(&px[6].0), "half dark at the shadow's edge: {px:?}");
+        assert!(near(px[7], (255, 255, 255)), "and gone `shadow_blur` past it: {px:?}");
+    }
+
+    /// A radius past half the box is a circle, and its shadow is that circle's, not nothing.
+    #[test]
+    fn a_circle_past_its_half_radius_still_casts_a_shadow() {
+        let effect = r##"background = "#FF0000FF", radius = 999, shadow_offset = { y = 16 }"##;
+        let Some(px) = paint_effect(effect) else { return };
+        assert!(near(px[5], (0, 0, 0)), "the circle's shadow below it: {px:?}");
+    }
+
+    /// CSS: a square box's spread shadow keeps square corners.
+    #[test]
+    fn a_square_boxs_spread_shadow_keeps_square_corners() {
+        let effect = r##"background = "#FF0000FF", shadow_offset = { y = 16 }, shadow_spread = 4"##;
+        let Some(px) = paint_effect_at(effect, &[(12, 67)]) else { return };
+        assert!(near(px[0], (0, 0, 0)), "the spread shadow's corner pixel: {px:?}");
+    }
+
+    /// Switching paths, as a background alpha tween reaching 1 does, keeps the shadow's softness.
+    #[test]
+    fn the_gradient_and_the_layer_cast_the_same_blurred_shadow() {
+        let column = [58, 60, 62, 64, 66, 68, 70].map(|y| (32, y));
+        let shadow = r##"shadow_offset = { y = 16 }, shadow_blur = 8"##;
+        let Some(gradient) = paint_effect_at(&format!(r##"background = "#FF0000FF", {shadow}"##), &column) else {
+            return;
+        };
+        let Some(layer) = paint_effect_at(&format!(r##"background = "#FF0000FE", {shadow}"##), &column) else {
+            return;
+        };
+        let worst = gradient.iter().zip(&layer).map(|(g, l)| g.0.abs_diff(l.0)).max().unwrap();
+        assert!(worst <= 14, "gradient {gradient:?} against layer {layer:?}");
+    }
+
+    /// ADR-0254's layer path: a half-transparent box casts a half-strength shadow, and the box
+    /// composites over it rather than beside it.
+    #[test]
+    fn a_translucent_box_casts_a_shadow_at_its_own_alpha_under_itself() {
+        let Some(px) = paint_effect(r##"background = "#FF000080", shadow_offset = { y = 16 }"##) else { return };
+        assert!(near(px[0], (255, 255, 255)), "{px:?}");
+        assert!(near(px[1], (255, 127, 127)), "the box alone: {px:?}");
+        assert!(near(px[3], (191, 63, 63)), "the box over its shadow: {px:?}");
+        assert!(near(px[5], (127, 127, 127)), "the shadow alone, at the box's alpha: {px:?}");
+        assert!(near(px[7], (255, 255, 255)), "{px:?}");
+
+        let Some(px) = paint_effect(r##"background = "#FF000080", shadow_offset = { y = 16 }, shadow_blur = 8"##)
+        else {
+            return;
+        };
+        assert!((180..205).contains(&px[6].0), "a quarter dark at the blurred shadow's edge: {px:?}");
+        assert!(px[7].0 >= 250, "and gone 3 sigma past it: {px:?}");
+    }
+
+    /// ADR-0254: `content_blur` spreads the box past its edge, premultiplied: a red edge fades to
+    /// pink over white, never through a dark fringe.
+    #[test]
+    fn a_content_blur_spreads_the_box_past_its_edge_without_darkening_it() {
+        let Some(px) = paint_effect(r##"background = "#FF0000FF", content_blur = 4"##) else { return };
+        assert!(near(px[2], (255, 0, 0)), "the middle stays red: {px:?}");
+        assert!(px[4].1 > 30 && px[4].1 < 240, "2px past the edge is pink: {px:?}");
+        assert!(near(px[7], (255, 255, 255)), "and 3 sigma past it is white: {px:?}");
+        assert!(px.iter().all(|p| p.0 >= 250), "no pixel darkens: {px:?}");
+    }
+
+    /// A mask cuts the pixels the shadow is cast from: the masked-away half casts nothing.
+    #[test]
+    fn a_masked_box_casts_the_shadow_of_what_its_mask_keeps() {
+        let effect = r##"background = "#FF0000FF", shadow_offset = { y = 16 },
+            mask = { gradient = "Linear", angle = 90,
+                stops = { { 0, "#FFFFFFFF" }, { 0.5, "#FFFFFFFF" }, { 0.5, "#FFFFFF00" }, { 1, "#FFFFFF00" } } }"##;
+        let Some(px) = paint_effect_at(effect, &[(20, 30), (44, 30), (20, 56), (44, 56)]) else { return };
+        assert!(near(px[0], (255, 0, 0)) && near(px[1], (255, 255, 255)), "the mask keeps the left half: {px:?}");
+        assert!(near(px[2], (0, 0, 0)) && near(px[3], (255, 255, 255)), "and only it casts: {px:?}");
+    }
+
+    /// A raw-GL `shader` quad inside a layer lands in the offscreen, and casts its shadow from it.
+    #[test]
+    fn a_shader_nodes_quad_casts_a_shadow_through_the_layer() {
+        let Some(instance) = init_headless_egl(64, 96) else { return };
+        let shaping = ShapingHandle::spawn();
+        let Some(mut painter) = text_painter(&instance, &shaping, 64, 96) else { return };
+        let dir = tempfile::tempdir().unwrap();
+        let frag = dir.path().join("blue.frag");
+        std::fs::write(&frag, "void main() { fragColor = vec4(0.0, 0.0, 1.0, 1.0); }").unwrap();
+        let src = format!(
+            r##"return panel {{ id = "bar", width = 64, height = 96, background = "#FFFFFFFF",
+                padding = {{ top = 16, left = 16 }}, child = shader {{ width = 32, height = 32,
+                source = "{}", shadow_offset = {{ y = 16 }} }} }}"##,
+            frag.display()
+        );
+        let root = resolved_surface(&Lua::new(), &src, LogicalSize { width: 64.0, height: 96.0 });
+        // SAFETY: `init_headless_egl` made this context current on this thread.
+        let gl = unsafe {
+            glow::Context::from_loader_function(|s| {
+                instance.get_proc_address(s).map_or(std::ptr::null(), |f| f as *const c_void)
+            })
+        };
+        let mut stage = image_shader::ShaderStage::default();
+        let canvas = painter.canvas_mut();
+        canvas.clear_rect(0, 0, 64, 96, Color::rgbaf(0.0, 0.0, 0.0, 0.0));
+        let shaders = Some(Shaders { gl: &gl, stage: &mut stage });
+        let list = build(&root, 1.0, None);
+        let _ = execute(
+            &mut painter,
+            &mut ImageCache::new(),
+            &mut CaptureCache::default(),
+            &list,
+            1.0,
+            (64.0, 96.0),
+            shaders,
+        );
+        let canvas = painter.canvas_mut();
+        assert_eq!(pixel_at(canvas, 32, 32), (0, 0, 255, 255), "the quad lands where the node is");
+        assert_eq!(pixel_at(canvas, 32, 56), (0, 0, 0, 255), "and casts its shadow below");
+        assert_eq!(pixel_at(canvas, 32, 76), (255, 255, 255, 255));
     }
 }
