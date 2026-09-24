@@ -24,7 +24,7 @@ use crate::layout::node::{
     SecureSubmitTarget, ShadowMode, SizeHint, SizeMode, TextAlign, TransitionSpec, Wrap,
 };
 use crate::lua::VirtualNode;
-use crate::lua::luacats::{LuaType, Spelling, fun, spelled};
+use crate::lua::luacats::{LuaType, Spelling, fun, spelling};
 use crate::text::snap::LogicalRect;
 use crate::wayland::{DragPhase, MouseButton, NavigateKey};
 use mlua::Value;
@@ -109,7 +109,7 @@ macro_rules! props {
     ) => {
         pub(crate) const $name: Field<Callback> = Field::new(
             Property {
-                ty: || fun(&[$((stringify!($param), spelled::<$param_ty>)),*], props!(@ret $($ret)?)),
+                ty: || fun(&[$((stringify!($param), spelling::<$param_ty>)),*], props!(@ret $($ret)?)),
                 ..row::<Callback>(stringify!($name), $kinds, concat!($($doc, "\n",)* ""))
             } $($(.$meta($($arg),*))+)?
         );

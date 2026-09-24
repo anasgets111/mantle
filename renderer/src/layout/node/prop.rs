@@ -11,7 +11,7 @@ use super::{
     LayoutError, PropMap, Rgba, checked_string, invalid, parse_hex_color, preview_for_error,
     reject_signal_in_structural_field, value_as_f32,
 };
-use crate::lua::luacats::LuaType;
+use crate::lua::luacats::{LuaType, spelled};
 use crate::lua::nodes::properties::{Absent, Property, kind_of};
 use crate::lua::signal::{self, is_signal};
 
@@ -99,11 +99,7 @@ impl<T: Prop> Prop for Structural<T> {
 /// (`scroll`); any other value is inert, since the handles refuse every kind they must not write.
 pub(crate) struct Handle;
 
-impl LuaType for Handle {
-    fn lua() -> String {
-        "Bound".to_string()
-    }
-}
+spelled!(Handle => "Bound");
 
 impl Prop for Handle {
     type Out = Option<signal::Signal>;
@@ -119,11 +115,7 @@ impl Prop for Handle {
 /// A number, the row's default when absent and within its range when it has one.
 pub(crate) struct Num;
 
-impl LuaType for Num {
-    fn lua() -> String {
-        f32::lua()
-    }
-}
+spelled!(Num => f32::lua());
 
 impl Prop for Num {
     type Out = f32;
@@ -135,11 +127,7 @@ impl Prop for Num {
 /// [`Num`], refused as `expected degrees`.
 pub(crate) struct Degrees;
 
-impl LuaType for Degrees {
-    fn lua() -> String {
-        f32::lua()
-    }
-}
+spelled!(Degrees => f32::lua());
 
 impl Prop for Degrees {
     type Out = f32;
@@ -163,11 +151,7 @@ fn number(row: &Property, value: Option<&Value>, what: &str) -> Result<f32, Layo
 /// meaning beyond a fixed size.
 pub(crate) struct Pixels;
 
-impl LuaType for Pixels {
-    fn lua() -> String {
-        f32::lua()
-    }
-}
+spelled!(Pixels => f32::lua());
 
 impl Prop for Pixels {
     type Out = Option<f32>;
@@ -193,11 +177,7 @@ pub(crate) fn within(row: &Property, n: f32) -> Result<f32, LayoutError> {
 /// A boolean, the row's default when absent.
 pub(crate) struct Flag;
 
-impl LuaType for Flag {
-    fn lua() -> String {
-        bool::lua()
-    }
-}
+spelled!(Flag => bool::lua());
 
 impl Prop for Flag {
     type Out = bool;
@@ -226,11 +206,7 @@ fn literal(row: &Property) -> &'static str {
 /// until its first snapshot.
 pub(crate) struct Text;
 
-impl LuaType for Text {
-    fn lua() -> String {
-        String::lua()
-    }
-}
+spelled!(Text => String::lua());
 
 impl Prop for Text {
     type Out = String;
@@ -247,11 +223,7 @@ impl Prop for Text {
 /// whatever directory the Renderer started in.
 pub(crate) struct Path;
 
-impl LuaType for Path {
-    fn lua() -> String {
-        String::lua()
-    }
-}
+spelled!(Path => String::lua());
 
 impl Prop for Path {
     type Out = String;
@@ -269,11 +241,7 @@ impl Prop for Path {
 /// required. Not capped like [`Text`]: these name things, and a name is compared whole.
 pub(crate) struct Name;
 
-impl LuaType for Name {
-    fn lua() -> String {
-        String::lua()
-    }
-}
+spelled!(Name => String::lua());
 
 impl Prop for Name {
     type Out = String;
@@ -296,11 +264,7 @@ impl Prop for Name {
 /// could claim the wrong counterpart. Scoping and duplicates are the pairing's to check.
 pub(crate) struct Id;
 
-impl LuaType for Id {
-    fn lua() -> String {
-        String::lua()
-    }
-}
+spelled!(Id => String::lua());
 
 impl Prop for Id {
     type Out = Option<String>;
@@ -321,11 +285,7 @@ impl Prop for Id {
 /// `"#RRGGBB"` or `"#RRGGBBAA"`; absent, the row's literal default or `None`.
 pub(crate) struct Color;
 
-impl LuaType for Color {
-    fn lua() -> String {
-        "Color".to_string()
-    }
-}
+spelled!(Color => "Color");
 
 impl Prop for Color {
     type Out = Option<Rgba>;
@@ -420,11 +380,7 @@ pub(crate) use keywords;
 /// A function the engine calls; its signature is the row's (`props!`'s `name(param: Type)` form).
 pub(crate) struct Callback;
 
-impl LuaType for Callback {
-    fn lua() -> String {
-        Function::lua()
-    }
-}
+spelled!(Callback => Function::lua());
 
 impl Prop for Callback {
     type Out = Option<Function>;
@@ -445,11 +401,7 @@ impl Prop for Callback {
 /// decision 2). A silent no-op is still an error, and a signal is refused like a literal.
 pub(crate) struct Refused;
 
-impl LuaType for Refused {
-    fn lua() -> String {
-        "nil".to_string()
-    }
-}
+spelled!(Refused => "nil");
 
 impl Prop for Refused {
     type Out = ();

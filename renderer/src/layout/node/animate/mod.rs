@@ -18,7 +18,7 @@ use super::style::{axis_default, parse_percent, range_of};
 use super::{
     LayoutError, PropMap, Property, Rgba, fields, invalid, only_keys, parse_hex_color, preview_for_error, value_as_f32,
 };
-use crate::lua::luacats::LuaType;
+use crate::lua::luacats::spelled;
 
 mod easing;
 mod sequence;
@@ -129,11 +129,7 @@ pub fn parse_animate(kind: &str, properties: &PropMap) -> Result<BTreeMap<&'stat
 /// node's kind.
 pub(crate) struct Animations;
 
-impl LuaType for Animations {
-    fn lua() -> String {
-        "Animations".to_string()
-    }
-}
+spelled!(Animations => "Animations");
 
 impl Prop for Animations {
     type Out = Option<mlua::Table>;

@@ -22,28 +22,30 @@ pub(crate) trait LuaType {
     fn classes(_out: &mut Vec<String>) {}
 }
 
+/// Implements [`LuaType`] for each type as `lua`, a spelling.
 macro_rules! spelled {
-    ($lua:literal: $($ty:ty),+) => {
-        $(impl LuaType for $ty {
+    ($($ty:ty),+ => $lua:expr) => {
+        $(impl $crate::lua::luacats::LuaType for $ty {
             fn lua() -> String {
-                $lua.to_string()
+                ($lua).to_string()
             }
         })+
     };
 }
+pub(crate) use spelled;
 
-spelled!("boolean": bool);
-spelled!("number": f32, f64);
-spelled!("integer": i32, i64, u32, u64, usize);
-spelled!("string": String, LuaString);
-spelled!("any": Value);
-spelled!("table": Table);
-spelled!("function": Function);
-spelled!("userdata": AnyUserData);
-spelled!("": ());
-spelled!("Rect": crate::text::snap::LogicalRect);
-spelled!("{ x: number, y: number }": crate::layout::hit::LogicalPoint);
-spelled!("Node": super::VirtualNode);
+spelled!(bool => "boolean");
+spelled!(f32, f64 => "number");
+spelled!(i32, i64, u32, u64, usize => "integer");
+spelled!(String, LuaString => "string");
+spelled!(Value => "any");
+spelled!(Table => "table");
+spelled!(Function => "function");
+spelled!(AnyUserData => "userdata");
+spelled!(() => "");
+spelled!(crate::text::snap::LogicalRect => "Rect");
+spelled!(crate::layout::hit::LogicalPoint => "{ x: number, y: number }");
+spelled!(super::VirtualNode => "Node");
 
 impl<T: LuaType> LuaType for Option<T> {
     fn lua() -> String {
@@ -58,7 +60,7 @@ impl<T: LuaType> LuaType for Option<T> {
 
 impl<T: LuaType> LuaType for Vec<T> {
     fn lua() -> String {
-        let item = spelled::<T>();
+        let item = spelling::<T>();
         if item.contains('|') { format!("({item})[]") } else { format!("{item}[]") }
     }
     const GENERIC: bool = T::GENERIC;
@@ -75,7 +77,7 @@ impl<T: LuaType> LuaType for Variadic<T> {
 }
 
 /// `T`'s spelling with its `?`, for a type inside another.
-pub(crate) fn spelled<T: LuaType>() -> String {
+pub(crate) fn spelling<T: LuaType>() -> String {
     if T::OPTIONAL { format!("{}?", T::lua()) } else { T::lua() }
 }
 
@@ -106,7 +108,7 @@ impl<T, S> SignalOf<T, S> {
 
 impl<T: LuaType, S> LuaType for SignalOf<T, S> {
     fn lua() -> String {
-        format!("Signal<{}>", spelled::<T>())
+        format!("Signal<{}>", spelling::<T>())
     }
     const GENERIC: bool = T::GENERIC;
 }
@@ -128,7 +130,7 @@ pub(crate) struct Or<A, B>(PhantomData<(A, B)>);
 
 impl<A: LuaType, B: LuaType> LuaType for Or<A, B> {
     fn lua() -> String {
-        format!("{}|{}", spelled::<A>(), spelled::<B>())
+        format!("{}|{}", spelling::<A>(), spelling::<B>())
     }
 }
 
@@ -337,7 +339,7 @@ macro_rules! lua_fn {
                 [$($doc)*],
                 $crate::lua::luacats::Fun,
                 || $crate::lua::luacats::fun(
-                    &[$(($crate::lua::luacats::param_name::<$arg_ty>(stringify!($arg)), $crate::lua::luacats::spelled::<$arg_ty>)),*],
+                    &[$(($crate::lua::luacats::param_name::<$arg_ty>(stringify!($arg)), $crate::lua::luacats::spelling::<$arg_ty>)),*],
                     $crate::lua::luacats::lua_fn!(@ret $($ret)?),
                 ),
                 |_out| { $(<$arg_ty as $crate::lua::luacats::LuaType>::classes(_out);)* $(<$ret as $crate::lua::luacats::LuaType>::classes(_out);)? }

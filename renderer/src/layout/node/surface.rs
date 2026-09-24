@@ -92,11 +92,7 @@ pub enum Exclusive {
     Ignore,
 }
 
-impl LuaType for Exclusive {
-    fn lua() -> String {
-        format!("{}|{}|\"Ignore\"", bool::lua(), i32::lua())
-    }
-}
+spelled!(Exclusive => format!("{}|{}|\"Ignore\"", bool::lua(), i32::lua()));
 
 /// `exclusive`: booleans preserve their meanings, and `"Ignore"` adds the third protocol
 /// answer. It defaults to [`Exclusive::Respect`], so an undeclared panel floats over what is behind

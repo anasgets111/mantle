@@ -162,11 +162,7 @@ impl Default for ConstraintAdjustment {
     }
 }
 
-impl LuaType for ConstraintAdjustment {
-    fn lua() -> String {
-        Vec::<Adjustment>::lua()
-    }
-}
+spelled!(ConstraintAdjustment => Vec::<Adjustment>::lua());
 
 impl Prop for ConstraintAdjustment {
     type Out = ConstraintAdjustment;
@@ -248,11 +244,7 @@ const DEFERRED_POPUP_EXTENT: f32 = 1.0;
 /// leaves the positioner incomplete and raises `invalid_positioner` at `get_popup`.
 pub(crate) struct AnchorRect;
 
-impl LuaType for AnchorRect {
-    fn lua() -> String {
-        LogicalRect::lua()
-    }
-}
+spelled!(AnchorRect => LogicalRect::lua());
 
 impl Prop for AnchorRect {
     type Out = LogicalRect;
@@ -305,11 +297,7 @@ impl Prop for AnchorRect {
 /// to be in `(0, 8192]`: `set_size` raises `invalid_input` on a zero or negative size.
 pub(crate) struct PopupExtent;
 
-impl LuaType for PopupExtent {
-    fn lua() -> String {
-        f32::lua()
-    }
-}
+spelled!(PopupExtent => f32::lua());
 
 impl Prop for PopupExtent {
     type Out = SizeMode;

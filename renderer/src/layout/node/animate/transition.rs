@@ -7,7 +7,7 @@ use super::easing::Easing;
 use super::{parse_easing, parse_millis};
 use crate::layout::node::prop::Prop;
 use crate::layout::node::{LayoutError, invalid, only_keys, preview_for_error, value_as_f32};
-use crate::lua::luacats::LuaType;
+use crate::lua::luacats::spelled;
 use crate::lua::nodes::properties::Property;
 
 /// `image.transition` (ADR-0181): how a `retain`ing image crosses from the picture it is holding to
@@ -27,11 +27,7 @@ pub struct TransitionSpec {
     pub params: Vec<ShaderParam>,
 }
 
-impl LuaType for TransitionSpec {
-    fn lua() -> String {
-        "Transition".to_string()
-    }
-}
+spelled!(TransitionSpec => "Transition");
 
 /// `transition = { duration = 700, easing = "InOutCubic" }` on an `image`. The `duration` is
 /// required: a dissolve with no length is a snap, and `retain` on its own is already that.
@@ -91,11 +87,7 @@ pub type ShaderParam = (String, [f32; 4], usize);
 /// A `shader`'s `params`, and a `transition`'s: [`parse_shader_params`].
 pub(crate) struct Params;
 
-impl LuaType for Params {
-    fn lua() -> String {
-        format!("table<{}, {}|{}>", String::lua(), f32::lua(), Vec::<f32>::lua())
-    }
-}
+spelled!(Params => format!("table<{}, {}|{}>", String::lua(), f32::lua(), Vec::<f32>::lua()));
 
 impl Prop for Params {
     type Out = Vec<ShaderParam>;

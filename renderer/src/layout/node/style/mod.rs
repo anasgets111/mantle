@@ -28,11 +28,7 @@ pub(super) fn parse_percent(s: &str) -> Option<f32> {
     digits.parse::<f32>().ok().map(|n| n / 100.0)
 }
 
-impl LuaType for SizeMode {
-    fn lua() -> String {
-        "Length".to_string()
-    }
-}
+spelled!(SizeMode => "Length");
 
 /// `width`/`height`: pixels within the row's range (ADR-0021), `"Fill"`, or `"NN%"`. The map is a
 /// [`resolve_properties`] result, so absent covers both omission and a signal resolving to `nil`.
@@ -77,11 +73,7 @@ pub(super) fn table_number(property: &str, table: &mlua::Table, key: &str) -> Re
     }
 }
 
-impl LuaType for EdgeInsets {
-    fn lua() -> String {
-        format!("{}|Edges", f32::lua())
-    }
-}
+spelled!(EdgeInsets => format!("{}|Edges", f32::lua()));
 
 /// `margin`/`padding`/`border_width`: a number sets all four edges, a table each; an absent edge is
 /// 0, and a row with a range bounds every edge. Parsed once per node per pass: `table.get` is
@@ -158,11 +150,7 @@ pub enum MaskSource {
     Image(String),
 }
 
-impl LuaType for Fill {
-    fn lua() -> String {
-        "Color|Gradient".to_string()
-    }
-}
+spelled!(Fill => "Color|Gradient");
 
 /// `background`. Absent is `None`, not transparent black: `fill_rect` skips it, while
 /// `#RRGGBBAA` with `AA = 00` remains an explicit transparent fill.
@@ -187,11 +175,7 @@ impl Prop for Fill {
     }
 }
 
-impl LuaType for Mask {
-    fn lua() -> String {
-        "Mask".to_string()
-    }
-}
+spelled!(Mask => "Mask");
 
 /// `mask = { gradient = ..., stops = ... }` or `mask = { source = path }`, either with `invert`.
 impl Prop for Mask {
@@ -355,11 +339,7 @@ fn xy(row: &Property, value: &Value) -> Result<(f32, f32), LayoutError> {
 /// `translate`, `origin`, `shadow_offset`: a per-axis pair.
 pub(crate) struct Axes;
 
-impl LuaType for Axes {
-    fn lua() -> String {
-        "Axes".to_string()
-    }
-}
+spelled!(Axes => "Axes");
 
 impl Prop for Axes {
     type Out = (f32, f32);
@@ -372,11 +352,7 @@ impl Prop for Axes {
 /// `scale`: one factor for both axes, or [`Axes`].
 pub(crate) struct Scale;
 
-impl LuaType for Scale {
-    fn lua() -> String {
-        format!("{}|{}", f32::lua(), Axes::lua())
-    }
-}
+spelled!(Scale => format!("{}|{}", f32::lua(), Axes::lua()));
 
 impl Prop for Scale {
     type Out = (f32, f32);
@@ -420,11 +396,7 @@ pub struct BorderColor {
     pub left: Option<Rgba>,
 }
 
-impl LuaType for BorderColor {
-    fn lua() -> String {
-        "Color|BorderColors".to_string()
-    }
-}
+spelled!(BorderColor => "Color|BorderColors");
 
 impl Prop for BorderColor {
     type Out = BorderColor;
@@ -542,11 +514,7 @@ pub fn parse_effect(properties: &PropMap) -> Result<Effect, LayoutError> {
 /// `wp_cursor_shape_v1` use the same names, so the compositor reads the config string directly.
 pub(crate) struct Cursor;
 
-impl LuaType for Cursor {
-    fn lua() -> String {
-        "Cursor".to_string()
-    }
-}
+spelled!(Cursor => "Cursor");
 
 impl Prop for Cursor {
     type Out = Option<CursorIcon>;

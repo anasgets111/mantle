@@ -16,7 +16,7 @@ use std::collections::HashMap;
 
 use mlua::{IntoLua, Lua, ObjectLike, Table, Value};
 
-use super::luacats::{As, LuaType, lua_fn};
+use super::luacats::{As, LuaType, lua_fn, spelled};
 use super::store::{capability, index_entry_signals};
 
 /// Handles keyed by declared name, so two declarations of one program share a table and its
@@ -69,11 +69,7 @@ pub fn register(lua: &Lua) -> mlua::Result<()> {
 /// `session_process`'s `spec`, checked key by key with messages naming the call.
 struct Spec;
 
-impl LuaType for Spec {
-    fn lua() -> String {
-        format!("{{ name: {}, stop_signal?: SignalName }}", String::lua())
-    }
-}
+spelled!(Spec => format!("{{ name: {}, stop_signal?: SignalName }}", String::lua()));
 
 /// What `session_process` returns: [`build_handle`]'s table, whose real fields are the methods and
 /// whose other keys are signals over the program's `mantle.processes` entry. The capability's entry

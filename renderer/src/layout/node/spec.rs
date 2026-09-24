@@ -120,11 +120,7 @@ impl Prop for Root {
 /// An array-of-nodes `children` property.
 pub(crate) struct Children;
 
-impl LuaType for Children {
-    fn lua() -> String {
-        Vec::<VirtualNode>::lua()
-    }
-}
+spelled!(Children => Vec::<VirtualNode>::lua());
 
 impl Prop for Children {
     type Out = Vec<VirtualNode>;
@@ -161,11 +157,7 @@ impl Prop for Children {
 /// list.
 pub(crate) struct Items;
 
-impl LuaType for Items {
-    fn lua() -> String {
-        Vec::<Value>::lua()
-    }
-}
+spelled!(Items => Vec::<Value>::lua());
 
 impl Prop for Items {
     type Out = Option<mlua::Table>;
@@ -182,11 +174,7 @@ impl Prop for Items {
 /// search and launchers; viewport windowing is the upgrade (ADR-0191).
 pub(crate) struct Limit;
 
-impl LuaType for Limit {
-    fn lua() -> String {
-        i64::lua()
-    }
-}
+spelled!(Limit => i64::lua());
 
 impl Prop for Limit {
     type Out = Option<usize>;

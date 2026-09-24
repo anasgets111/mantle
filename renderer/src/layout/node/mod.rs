@@ -49,7 +49,7 @@ pub type PropMap = rustc_hash::FxHashMap<&'static str, Value>;
 
 use mlua::{Lua, Value};
 
-use crate::lua::luacats::LuaType;
+use crate::lua::luacats::{LuaType, spelled};
 use crate::lua::marshal;
 pub(crate) use crate::lua::nodes::properties::{self as fields, Property};
 use crate::lua::signal;

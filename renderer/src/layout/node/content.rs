@@ -47,11 +47,7 @@ pub fn font_runs(runs: &[StyleRun]) -> Vec<FontRun> {
 /// `content` therefore renders an empty node; `mantle.rescue` covers the important failures.
 pub(crate) struct Content;
 
-impl LuaType for Content {
-    fn lua() -> String {
-        format!("{}|TextRun[]", String::lua())
-    }
-}
+spelled!(Content => format!("{}|TextRun[]", String::lua()));
 
 impl Prop for Content {
     type Out = (String, Vec<StyleRun>);
@@ -149,11 +145,7 @@ fn parse_runs(runs: &mlua::Table) -> Result<(String, Vec<StyleRun>), LayoutError
 /// (infinite), `false` or absent one-shot (`None`).
 pub(crate) struct Live;
 
-impl LuaType for Live {
-    fn lua() -> String {
-        format!("{}|{}", bool::lua(), f32::lua())
-    }
-}
+spelled!(Live => format!("{}|{}", bool::lua(), f32::lua()));
 
 impl Prop for Live {
     type Out = Option<f32>;
@@ -176,11 +168,7 @@ impl Prop for Live {
 /// key required and within the row's range, the size positive.
 pub(crate) struct Region;
 
-impl LuaType for Region {
-    fn lua() -> String {
-        LogicalRect::lua()
-    }
-}
+spelled!(Region => LogicalRect::lua());
 
 impl Prop for Region {
     type Out = Option<LogicalRect>;
@@ -250,11 +238,7 @@ impl TextAlign {
 /// makes for a chain entry nothing on the system answers.
 pub(crate) struct Font;
 
-impl LuaType for Font {
-    fn lua() -> String {
-        String::lua()
-    }
-}
+spelled!(Font => String::lua());
 
 impl Prop for Font {
     type Out = Option<Arc<str>>;
@@ -309,11 +293,7 @@ keywords! {
 /// unconditionally is safe.
 pub(crate) struct MaxLines;
 
-impl LuaType for MaxLines {
-    fn lua() -> String {
-        f32::lua()
-    }
-}
+spelled!(MaxLines => f32::lua());
 
 impl Prop for MaxLines {
     type Out = Option<usize>;
