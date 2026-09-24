@@ -168,15 +168,15 @@ mod doc_examples {
 
     /// Narrow enough that a full-width bar and its [`MARGIN`]s fit the book's 750 px column unscaled.
     const OUTPUT: LogicalSize = LogicalSize { width: 704.0, height: 396.0 };
-    /// Checkerboard around what a shot paints, px.
+    /// [`BACKDROP`] around what a shot paints, px.
     const MARGIN: usize = 16;
     /// The largest surface a shot paints, and the pbuffer it paints into.
     const MAX_EDGE: u32 = 2048;
     /// Per channel. NVIDIA and llvmpipe differ by at most 2; 1 px of padding, spacing or radius, or
     /// any colour change, moves some pixel further.
     const TOLERANCE: u8 = 2;
-    /// Transparent pixels show as a checkerboard of these two greys, in cells this many px wide.
-    const CHECKER: (u8, u8, usize) = (0x3a, 0x46, 8);
+    /// Transparent pixels show as Catppuccin Mocha base, the book's own background.
+    const BACKDROP: [u8; 3] = [0x1e, 0x1e, 0x2e];
     /// 2026-09-24 12:45:00 UTC: what `os.time()` returns in a shot.
     const EPOCH: u64 = 1_790_253_900;
 
@@ -510,15 +510,17 @@ os.getenv = function(name) return ({{ USER = "user", HOME = "/home/user" }})[nam
         Ok(((out_width as u32, out_height as u32), frames))
     }
 
-    /// Premultiplied RGBA over the checkerboard, as opaque RGB.
-    fn over_checker(rgba: &[u8], width: u32) -> Vec<u8> {
-        let (light, dark, cell) = CHECKER;
+    /// Premultiplied RGBA over [`BACKDROP`], as opaque RGB.
+    fn over_backdrop(rgba: &[u8]) -> Vec<u8> {
         let mut out = Vec::with_capacity(rgba.len() / 4 * 3);
-        for (index, px) in rgba.as_chunks::<4>().0.iter().enumerate() {
-            let (x, y) = (index % width as usize, index / width as usize);
-            let ground = if (x / cell + y / cell) % 2 == 0 { light } else { dark } as u32;
+        for px in rgba.as_chunks::<4>().0 {
             let under = 255 - px[3] as u32;
-            out.extend(px[..3].iter().map(|&channel| (channel as u32 + (ground * under + 127) / 255).min(255) as u8));
+            out.extend(
+                px[..3]
+                    .iter()
+                    .zip(BACKDROP)
+                    .map(|(&channel, ground)| (channel as u32 + (ground as u32 * under + 127) / 255).min(255) as u8),
+            );
         }
         out
     }
@@ -537,14 +539,14 @@ os.getenv = function(name) return ({{ USER = "user", HOME = "/home/user" }})[nam
         }
         let mut writer = encoder.write_header().unwrap();
         if frames.len() > 1 {
-            writer.write_image_data(&over_checker(frames.last().unwrap(), *width)).unwrap();
+            writer.write_image_data(&over_backdrop(frames.last().unwrap())).unwrap();
         }
         for (index, frame) in frames.iter().enumerate() {
             if frames.len() > 1 {
                 let hold = times.get(index + 1).map_or(1000, |next| next - times[index]);
                 writer.set_frame_delay(hold as u16, 1000).unwrap();
             }
-            writer.write_image_data(&over_checker(frame, *width)).unwrap();
+            writer.write_image_data(&over_backdrop(frame)).unwrap();
         }
         writer.finish().unwrap();
     }
@@ -574,7 +576,7 @@ os.getenv = function(name) return ({{ USER = "user", HOME = "/home/user" }})[nam
         if size != shot.0 || frames.len() != shot.1.len() {
             return None;
         }
-        let rendered = shot.1.iter().map(|frame| over_checker(frame, size.0));
+        let rendered = shot.1.iter().map(|frame| over_backdrop(frame));
         Some(
             rendered
                 .zip(&frames)

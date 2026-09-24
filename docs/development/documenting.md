@@ -74,7 +74,7 @@ block has to return a node or surfaces.
 
 | Part | Rule |
 |---|---|
-| Image | Every visible surface stacked top to bottom 8 px apart, each popup where its `anchor_rect`, `anchor`, `gravity`, `offset` and `SlideX` put it on its parent, at scale 1 over a checkerboard. Cropped to the painted pixels plus 16 px; a shot that paints nothing fails |
+| Image | Every visible surface stacked top to bottom 8 px apart, each popup where its `anchor_rect`, `anchor`, `gravity`, `offset` and `SlideX` put it on its parent, at scale 1 over Catppuccin Mocha base `#1e1e2e`. Cropped to the painted pixels plus 16 px; a shot that paints nothing fails |
 | Still | Drawn with every tween finished |
 | `<!-- shot: frames=0..400/20 -->` on the line above | An animated PNG: one frame per time, in ms after the last tween started. `frames=0,50,120` lists them |
 | `docs/images/<section>/<page>.fakes.lua` | Runs before each shot on the page. `fakes = { battery = {...} }` is pushed as each capability's first push, `on_change` included. A `__after` function runs after the first layout, then the shot lays out again: that is how an OSD shows or a card leaves. A popup a click opens needs its anchor state set to the rect that click would pass |
