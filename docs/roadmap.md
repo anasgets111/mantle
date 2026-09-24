@@ -15,7 +15,7 @@ Defects or missing pieces a config cannot work around.
 | Keyboard focus and accessibility | Only `textfield` holds focus; Tab reaches the config as `on_navigate("tab")`. Needs focusable controls, keyboard activation and an accessibility tree | — |
 | Blocking `dofile` / `loadfile` | The base library keeps both, and they read files on the Wayland thread outside the CPU budget, against ADR-0048's intent. Remove them or route them through `require`'s resolver | 0048 |
 | HiDPI | Paint scale is fixed at `1.0`, so every surface on a scaled output is upscaled and soft. Needs `set_buffer_scale` (or fractional-scale plus viewporter) with a matching EGL resize and glyph raster scale | — |
-| Silent failures | `warn()` prints nothing; an invalid `stop_signal` is dropped with a log line; `mantle set` on a `state` a reload removed still passes. Each should reach the author | — |
+| Silent failures | An invalid `stop_signal` is dropped with a log line; `mantle set` on a `state` a reload removed still passes. Each should reach the author | — |
 | Hyprland layout switch | `keyboard/layout.rs` sends `switchxkblayout`, which Hyprland 0.56's Lua socket likely rejects; the other Hyprland writes already use `hl.dsp.*` | — |
 | Multi-prompt PAM | The worker relays every masked prompt, but `LockState` and `secure_submit` carry one password, answered to every prompt. Fingerprint, 2FA and expired passwords fail. Echo-on prompts stay refused | 0241 |
 

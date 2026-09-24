@@ -49,7 +49,7 @@ on every monitor, so the blocking parts of the standard library are removed (ADR
 
 | Library | Available | Missing |
 | :--- | :--- | :--- |
-| Base | `assert`, `collectgarbage`, `dofile`, `error`, `getmetatable`, `ipairs`, `load`, `loadfile`, `next`, `pairs`, `pcall`, `print`, `rawequal`, `rawget`, `rawlen`, `rawset`, `require`, `select`, `setmetatable`, `tonumber`, `tostring`, `type`, `warn`, `xpcall`, `_G`, `_VERSION` (`"Lua 5.4"`) | None. `warn` is accepted but prints nothing, even after `warn("@on")` |
+| Base | `assert`, `collectgarbage`, `dofile`, `error`, `getmetatable`, `ipairs`, `load`, `loadfile`, `next`, `pairs`, `pcall`, `print`, `rawequal`, `rawget`, `rawlen`, `rawset`, `require`, `select`, `setmetatable`, `tonumber`, `tostring`, `type`, `warn`, `xpcall`, `_G`, `_VERSION` (`"Lua 5.4"`) | None. `warn` logs like `log.warn`, on by default; `warn("@off")` / `warn("@on")` toggle it |
 | `coroutine` | `close`, `create`, `isyieldable`, `resume`, `running`, `status`, `wrap`, `yield` | None |
 | `string` | `byte`, `char`, `dump`, `find`, `format`, `gmatch`, `gsub`, `len`, `lower`, `match`, `pack`, `packsize`, `rep`, `reverse`, `sub`, `unpack`, `upper`. Strings have the usual `("x"):upper()` metatable | None |
 | `table` | `concat`, `insert`, `move`, `pack`, `remove`, `sort`, `unpack` | None |

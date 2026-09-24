@@ -25,6 +25,7 @@ so everything since the rename from Obelisk sits under Unreleased.
 
 ### Changed
 
+- Lua's `warn` now logs at warn level like `log.warn`, on by default; before, it printed nothing.
 - A callback (`on_*`) that is not a function (write `cond and fn or nil`), a `submit` or
   `autofocus` that is not a boolean, and a `nil` or `false` entry in `children`, which dropped
   every child after it, fail the pass instead of being ignored.
