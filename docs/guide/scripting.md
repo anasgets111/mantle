@@ -273,13 +273,9 @@ fonts { "Inter", "Symbols Nerd Font", "Noto Color Emoji" }
 
 | Task | Answer |
 | :--- | :--- |
-| Fetch JSON over HTTP | [processes](processes.md#processes) |
+| Fetch JSON over HTTP | `curl` through [`process.run`](processes.md#processrun), then [`json.decode`](#jsondecode) the output |
 | Poll a command every N seconds | [processes](processes.md#poll-a-command-every-n-seconds) |
-| Persist a toggle or setting | [persistent_table](#persistent_table) |
-| Bind a key to Lua code | [action](#action), then `mantle call <name>` from the compositor |
-| Retry with backoff | [timer](#timer) |
 | Search as you type | [fuzzy](#fuzzy); for a slow source, debounce the query with [`delay`](signals.md#delay-hold-a-value) |
-| Theme from the wallpaper | [palette.quantize](#palettequantize) |
 
 ## Gotchas
 
