@@ -7,10 +7,11 @@ takes the session down, and saving a `.lua` file reloads in place, keeping signa
 Mantle ships no shell of its own. [`share/starter`](share/starter) is a one-clock bar;
 [anasgets111/dotfiles](https://github.com/anasgets111/dotfiles) is a full shell built on it:
 
-
 https://github.com/user-attachments/assets/b4a56c2f-a946-44f9-9bfd-2c6046d7a72f
 
 https://github.com/user-attachments/assets/038ee763-d7b6-4df9-9f79-2f131d4f0dcd
+
+https://github.com/user-attachments/assets/5533b578-1d9e-484e-bb18-4b4fae1da50d
 
 Status: pre-release. The Lua API changes without notice; the [changelog](docs/changelog.md) lists what moved.
 
