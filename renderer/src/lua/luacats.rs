@@ -78,7 +78,12 @@ impl<T: LuaType> LuaType for Variadic<T> {
 
 /// `T`'s spelling with its `?`, for a type inside another.
 pub(crate) fn spelling<T: LuaType>() -> String {
-    if T::OPTIONAL { format!("{}?", T::lua()) } else { T::lua() }
+    optional(T::lua(), T::OPTIONAL)
+}
+
+/// `text?` when `optional`: a name or a type that may be `nil`.
+pub(crate) fn optional(text: String, optional: bool) -> String {
+    if optional { text + "?" } else { text }
 }
 
 /// A Lua value whose type the caller picks, `T` in the stub: `state`'s `initial`, `delay`'s source.
@@ -134,9 +139,9 @@ impl<A: LuaType, B: LuaType> LuaType for Or<A, B> {
     }
 }
 
-/// A parameter read as `R` and declared as `S`: its own parser checks what the Rust type `R`
-/// cannot say, with messages of its own.
-pub(crate) struct As<R, S>(pub R, PhantomData<S>);
+/// A value read or handed back as `R` and declared as `S`: a parameter's own parser checks what the
+/// Rust type `R` cannot say, with messages of its own.
+pub(crate) struct As<R, S>(pub R, pub PhantomData<S>);
 
 impl<R, S: LuaType> LuaType for As<R, S> {
     fn lua() -> String {
@@ -155,15 +160,14 @@ impl<R: FromLua, S> FromLua for As<R, S> {
     }
 }
 
-/// A Lua function a global takes, whose signature the declaring macro spells.
-pub(crate) struct Fun(pub Function);
-
-/// Only reached for `OPTIONAL` and `classes`: the macro spells a [`Fun`]'s signature itself.
-impl LuaType for Fun {
-    fn lua() -> String {
-        Function::lua()
+impl<R: IntoLua, S> IntoLua for As<R, S> {
+    fn into_lua(self, lua: &Lua) -> mlua::Result<Value> {
+        self.0.into_lua(lua)
     }
 }
+
+/// A Lua function a global takes, whose signature the declaring macro spells.
+pub(crate) struct Fun(pub Function);
 
 impl FromLua for Fun {
     fn from_lua(value: Value, lua: &Lua) -> mlua::Result<Self> {
@@ -174,7 +178,7 @@ impl FromLua for Fun {
 /// `fun(name: T, ...): R`.
 pub(crate) fn fun(params: &[(&str, Spelling)], ret: Option<(Spelling, bool)>) -> String {
     let params: Vec<String> = params.iter().map(|(name, ty)| format!("{name}: {}", ty())).collect();
-    let ret = ret.map_or_else(String::new, |(ty, optional)| format!(": {}{}", ty(), if optional { "?" } else { "" }));
+    let ret = ret.map_or_else(String::new, |(ty, nil)| format!(": {}", optional(ty(), nil)));
     format!("fun({}){ret}", params.join(", "))
 }
 
@@ -217,6 +221,12 @@ pub(crate) fn lines(doc: &str) -> impl Iterator<Item = &str> {
     doc.lines().map(|line| line.strip_prefix(' ').unwrap_or(line)).skip_while(|line| line.is_empty())
 }
 
+/// A `///` block as `---` comment lines.
+#[cfg(test)]
+pub(crate) fn comment(doc: &str) -> String {
+    lines(doc).map(|line| format!("---{line}\n")).collect()
+}
+
 /// A `///` block joined onto one line, for a `---@param` or `---@return`.
 #[cfg(test)]
 pub(crate) fn one_line(doc: &str) -> String {
@@ -235,7 +245,7 @@ impl Signature {
     /// The `---` block above the declaration: the doc's lines, `---@generic T` when a type names
     /// it, then each `@param` and `@return`.
     pub(crate) fn stub(&self) -> String {
-        let mut out: String = lines(self.doc).map(|line| format!("---{line}\n")).collect();
+        let mut out = comment(self.doc);
         if self.params.iter().chain(self.returns).any(|param| param.generic) {
             out += "---@generic T\n";
         }
@@ -244,11 +254,11 @@ impl Signature {
             words => format!(" {words}"),
         };
         for param in self.params {
-            let name = if param.optional { format!("{}?", param.name) } else { param.name.to_string() };
+            let name = optional(param.name.to_string(), param.optional);
             out += &format!("---@param {name} {}{}\n", (param.ty)(), words(param.doc));
         }
         for ret in self.returns {
-            let ty = format!("{}{}", (ret.ty)(), if ret.optional { "?" } else { "" });
+            let ty = optional((ret.ty)(), ret.optional);
             out += &match (ret.name, one_line(ret.doc)) {
                 ("", doc) if doc.is_empty() => format!("---@return {ty}\n"),
                 ("", doc) => format!("---@return {ty} # {doc}\n"),
@@ -337,7 +347,7 @@ macro_rules! lua_fn {
             $crate::lua::luacats::param!(
                 stringify!($name),
                 [$($doc)*],
-                $crate::lua::luacats::Fun,
+                mlua::Function,
                 || $crate::lua::luacats::fun(
                     &[$(($crate::lua::luacats::param_name::<$arg_ty>(stringify!($arg)), $crate::lua::luacats::spelling::<$arg_ty>)),*],
                     $crate::lua::luacats::lua_fn!(@ret $($ret)?),
@@ -425,7 +435,7 @@ macro_rules! lua_class {
                     params: &[$($crate::lua::luacats::param!(stringify!($param), [$($param_doc)*], $param_ty, <$param_ty as $crate::lua::luacats::LuaType>::lua)),*],
                     returns: &[],
                 })),*];
-                $crate::lua::luacats::class(out, stringify!($class), concat!($($doc, "\n",)* ""), METHODS);
+                $crate::lua::luacats::class(out, stringify!($class), concat!($($doc, "\n",)* ""), "", METHODS);
             }
         }
     };
@@ -450,58 +460,29 @@ macro_rules! lua_record {
             fn lua() -> String {
                 stringify!($name).to_string()
             }
-            #[cfg_attr(not(test), allow(unused_variables))]
+            #[cfg(test)]
             fn classes(out: &mut Vec<String>) {
-                #[cfg(test)]
-                {
-                    let mut class = format!("---@class {}\n", stringify!($name));
-                    for line in $crate::lua::luacats::lines(concat!($($doc, "\n",)* "")) {
-                        class += &format!("---{line}\n");
-                    }
-                    $(class += &format!(
-                        "---@field {} {} {}\n",
-                        $crate::lua::luacats::optional_name::<$ty>(stringify!($field)),
-                        <$ty as $crate::lua::luacats::LuaType>::lua(),
-                        $crate::lua::luacats::one_line(concat!($($field_doc, "\n",)* "")),
-                    );)+
-                    if !out.contains(&class) {
-                        out.push(class);
-                    }
-                }
+                let fields = [$(format!(
+                    "---@field {} {} {}\n",
+                    $crate::lua::luacats::optional(stringify!($field).to_string(), <$ty as $crate::lua::luacats::LuaType>::OPTIONAL),
+                    <$ty as $crate::lua::luacats::LuaType>::lua(),
+                    $crate::lua::luacats::one_line(concat!($($field_doc, "\n",)* "")),
+                )),+].concat();
+                $crate::lua::luacats::class(out, stringify!($name), concat!($($doc, "\n",)* ""), &fields, &[]);
             }
         }
     };
 }
 pub(crate) use lua_record;
 
-/// `name?` for an `Option` field or parameter.
+/// Pushes a `---@class` block, its `fields`, then for a handle `local Name = {}` and one stub per
+/// method, unless `out` already holds it.
 #[cfg(test)]
-pub(crate) fn optional_name<T: LuaType>(name: &str) -> String {
-    if T::OPTIONAL { format!("{name}?") } else { name.to_string() }
-}
-
-/// A `"#RRGGBB"` string: `Color` in the stub.
-pub(crate) struct Hex(pub String);
-
-impl LuaType for Hex {
-    fn lua() -> String {
-        "Color".to_string()
+pub(crate) fn class(out: &mut Vec<String>, name: &str, doc: &str, fields: &str, methods: &[(&str, Signature)]) {
+    let mut class = format!("---@class {name}\n{}{fields}", comment(doc));
+    if !methods.is_empty() {
+        class += &format!("local {name} = {{}}\n");
     }
-}
-
-impl IntoLua for Hex {
-    fn into_lua(self, lua: &Lua) -> mlua::Result<Value> {
-        self.0.into_lua(lua)
-    }
-}
-
-/// Pushes a handle's `---@class` block, `local Name = {}` and one stub per method, unless `out`
-/// already holds it.
-#[cfg(test)]
-pub(crate) fn class(out: &mut Vec<String>, name: &str, doc: &str, methods: &[(&str, Signature)]) {
-    let mut class = format!("---@class {name}\n");
-    class += &lines(doc).map(|line| format!("---{line}\n")).collect::<String>();
-    class += &format!("local {name} = {{}}\n");
     for (method, signature) in methods {
         class += &format!("\n{}function {name}:{method}({}) end\n", signature.stub(), signature.names());
     }

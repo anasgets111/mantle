@@ -3,13 +3,14 @@
 
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::marker::PhantomData;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::mpsc::{Receiver, Sender};
 
 use mlua::{Function, Lua, Table};
 
-use super::luacats::{As, Hex, LuaType, lua_class, lua_fn, lua_record};
+use super::luacats::{As, LuaType, lua_class, lua_fn, lua_record};
 use shared::warn;
 
 use crate::image::quantize::quantize_file;
@@ -26,7 +27,7 @@ type PaletteResult = (u64, Option<Vec<PaletteSwatch>>);
 lua_record! {
     struct PaletteSwatch {
         /// `#RRGGBB`.
-        color: Hex,
+        color: As<String, crate::layout::node::prop::Color>,
         /// Fraction of the counted (non-transparent) pixels, 0 to 1.
         share: f64,
     }
@@ -88,7 +89,7 @@ impl PaletteRegistry {
                         buckets
                             .into_iter()
                             .map(|(count, [r, g, b])| PaletteSwatch {
-                                color: Hex(format!("#{r:02X}{g:02X}{b:02X}")),
+                                color: As(format!("#{r:02X}{g:02X}{b:02X}"), PhantomData),
                                 share: f64::from(count) / f64::from(total),
                             })
                             .collect(),

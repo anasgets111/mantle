@@ -634,7 +634,7 @@ pub(crate) mod tests {
             for (path, stub) in stubs {
                 rendered += &match stub {
                     Stub::Table { doc, class } => {
-                        let doc: String = luacats::lines(doc).map(|line| format!("---{line}\n")).collect();
+                        let doc = luacats::comment(doc);
                         let class = class.map(|class| format!("---@class {class}\n")).unwrap_or_default();
                         format!("\n{doc}{class}{path} = {{}}\n")
                     }
