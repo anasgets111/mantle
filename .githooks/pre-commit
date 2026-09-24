@@ -2,9 +2,11 @@
 # The half of `just check` a commit can affect, picked from the staged paths:
 #
 # - Rust: anything the crates compile or their tests read. `lua-meta/` and `share/starter/shell.lua`
-#   are `include_str!`'d, and the doc tests read every `docs/**/*.md` and `docs/images/`.
+#   are `include_str!`'d.
 #   `pam_worker.rs` reads `packaging/pam.d`: that one subdirectory, not `packaging/` whole, which
 #   will hold files no test opens.
+# - Docs: `docs/**/*.md` and `docs/images/` are read only by the stub goldens and the docs-example
+#   test, so a docs-only commit runs those two, not the whole suite.
 # - Lua: any `.lua`, `.luarc.json`, `.editorconfig`, or the formatter.
 # - Everything else, this hook and the justfile included: nothing.
 #
@@ -19,16 +21,17 @@ cd "$(git rev-parse --show-toplevel)"
 
 # Deletions stay in: removing a Lua file a component `require`s is what the Lua tests are for.
 staged="$(git diff --cached --name-only -z | tr '\0' '\n')"
-rust=false lua=false
+rust=false docs=false lua=false
+grep -qE '^docs/(.*\.md|images/.*)$' <<<"$staged" && docs=true
 # Not `grep -q` after a pipe: it exits on the first match, and pipefail reads the SIGPIPE as no match.
-if grep -qE '^docs/(.*\.md|images/.*)$' <<<"$staged" || grep -vE '\.md$' <<<"$staged" |
+if grep -vE '\.md$' <<<"$staged" |
     grep -E '\.rs$|(^|/)Cargo\.(toml|lock)$|^rustfmt\.toml$|^\.cargo/|^(renderer|supervisor|shared|lua-meta)/|^packaging/pam\.d/|^share/starter/shell\.lua$' >/dev/null; then
     rust=true
 fi
 if grep -qE '\.lua$|(^|/)\.luarc\.json$|^\.editorconfig$|^tools/luafmt\.py$' <<<"$staged"; then
     lua=true
 fi
-$rust || $lua || exit 0
+$rust || $docs || $lua || exit 0
 
 if ! command -v cargo >/dev/null || ! command -v just >/dev/null; then
     echo "pre-commit: cargo or just missing, skipping the checks" >&2
@@ -44,7 +47,7 @@ fail() {
     exit 1
 }
 
-if $rust; then
+if $rust || $docs; then
     # The docs pages with a generated property table are among `docs/**/*.md`.
     generated() { cat lua-meta/*.lua docs/*/*.md | git hash-object --stdin; }
     before="$(generated)"
@@ -56,8 +59,12 @@ if $rust; then
         echo "pre-commit: generated stubs or pages were stale and have been regenerated. Review them, then: git add lua-meta docs" >&2
         exit 1
     fi
+fi
+if $rust; then
     just fmt-check || fail "cargo fmt --check"
     just test lint rustdoc || fail "the Rust checks"
+elif $docs; then
+    cargo test --quiet -p renderer every_lua_block_in_the_docs || fail "the docs examples"
 fi
 
 if $lua; then
