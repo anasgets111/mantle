@@ -67,6 +67,17 @@ lua_shape! {
         color: Option<Rgba>,
         /// Passed to the node's `on_link` when clicked; never opened by the engine (ADR-0106).
         href: Option<String>,
+        /// A notification text span's, so one passes through; not read.
+        kind?: () as SpanKind,
+    }
+}
+
+keywords! {
+    /// A [`TextRun`]'s `kind`: the notification span it may be.
+    #[derive(Clone, Copy, PartialEq)]
+    #[cfg_attr(not(test), expect(dead_code, reason = "spelled by the stubs, a test"))]
+    pub(crate) enum SpanKind {
+        Text = "text",
     }
 }
 
@@ -113,8 +124,8 @@ fn parse_runs(runs: &mlua::Table) -> Result<(String, Vec<StyleRun>), LayoutError
             }
             Err(e) => return Err(invalid("content", format!("run {index}: {e}"))),
         };
-        // After `text`, so an image span gets the message above. `kind` is a notification span's.
-        crate::lua::marshal::only_keys(&run, &[TextRun::KEYS, &["kind"]].concat())
+        // After `text`, so an image span gets the message above.
+        crate::lua::marshal::only_keys(&run, TextRun::KEYS)
             .map_err(|detail| invalid("content", format!("run {index}: {detail}")))?;
         let flag = |key: &str| -> Result<bool, LayoutError> {
             match run.get::<Value>(key) {
@@ -150,13 +161,13 @@ fn parse_runs(runs: &mlua::Table) -> Result<(String, Vec<StyleRun>), LayoutError
             }
             Err(e) => return Err(invalid("content", format!("run {index}: {e}"))),
         };
-        let run = TextRun { text, bold, italic, underline, color, href };
+        let run = TextRun { text, bold, italic, underline, color, href, kind: () };
         if run.text.is_empty() {
             continue;
         }
         let start = content.len();
         content.push_str(&run.text);
-        let TextRun { bold, italic, underline, color, href, .. } = run;
+        let TextRun { bold, italic, underline, color, href, kind: (), .. } = run;
         if bold || italic || underline || color.is_some() || href.is_some() {
             styles.push(StyleRun { range: start..content.len(), bold, italic, underline, color, href });
         }

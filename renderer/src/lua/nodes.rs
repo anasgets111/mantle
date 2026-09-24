@@ -474,10 +474,12 @@ mod meta_stub_tests {
             .ty;
         let steps = shape_field(&aliases, &easing, "steps").expect("Easing declares `{ steps }`");
         let loops = shape_field(&aliases, "Animation", "loops").expect("Animation declares `loops`");
+        let span = typed_fields(&classes, "TextRun").into_iter().find(|f| f.name == "kind").expect("TextRun.kind").ty;
         for (kind, field, ty, around) in [
             ("image", "transition", easing.as_str(), "{ duration = 400, easing = @ }"),
             ("image", "transition", steps, "{ duration = 400, easing = { steps = @ } }"),
             ("rect", "animate", loops, "{ opacity = { duration = 200, keyframes = { 0, 1 }, loops = @ } }"),
+            ("text", "content", span.as_str(), "{ { text = \"a\", kind = @ } }"),
         ] {
             probe(&aliases, kind, &[], field, ty, &|literal| around.replace('@', literal), &mut report);
         }
@@ -499,8 +501,9 @@ mod meta_stub_tests {
 
     /// Literal sets refused without a keyword list, so checked one way only: `cursor`
     /// parses `cursor_icon`'s names, which it cannot enumerate; the rest mix one keyword into a
-    /// number (`"Fill"`, `"Ignore"`, `animate`'s `loops = "Infinite"`).
-    const ONE_WAY: [&str; 5] = ["animate", "cursor", "exclusive", "height", "width"];
+    /// number (`"Fill"`, `"Ignore"`, `animate`'s `loops = "Infinite"`). A `content` run's `kind` is
+    /// accepted and never read.
+    const ONE_WAY: [&str; 6] = ["animate", "content", "cursor", "exclusive", "height", "width"];
 
     #[derive(Default)]
     struct Report {
