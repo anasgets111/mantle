@@ -5,6 +5,8 @@ which returns the *surfaces* to show (bars, windows, popups, a lock screen). Eac
 tree of *nodes*, and any node property can be a live *signal* that updates itself when a
 *capability* (audio, workspaces, the clock) pushes new state.
 
+<video src="https://github.com/user-attachments/assets/038ee763-d7b6-4df9-9f79-2f131d4f0dcd" controls muted loop playsinline preload="metadata"></video>
+
 This page is the book's home: a first shell to build, the core concepts, then indexes by
 [topic](#topic-index) and by [task](#how-do-i). Terms are defined in the
 [glossary](glossary.md).

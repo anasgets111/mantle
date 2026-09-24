@@ -14,6 +14,9 @@ command = "python3 ../tools/book_links.py"
 site-url = "/mantle/"
 git-repository-url = "https://github.com/anasgets111/mantle"
 edit-url-template = "https://github.com/anasgets111/mantle/edit/main/docs/{path}"
+default-theme = "light"
+preferred-dark-theme = "coal"
+additional-css = ["theme/catppuccin.css"]
 
 [output.html.search]
 enable = true
