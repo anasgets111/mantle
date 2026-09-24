@@ -35,7 +35,7 @@ pub struct LogicalSize {
 }
 
 /// [`prepare`] admits 64 levels and refuses the next, matching
-/// `lua::signal::MAX_SIGNAL_NESTING_DEPTH`'s boundary. This catches literal cycles and
+/// `lua::signal::budget::MAX_SIGNAL_NESTING_DEPTH`'s boundary. This catches literal cycles and
 /// depth-generating `children` signals; the two limits are sized together because each node can
 /// nest signal evaluation.
 ///

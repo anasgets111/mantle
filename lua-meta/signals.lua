@@ -2,7 +2,7 @@
 -- The reactive layer: `Signal` and the globals that make or read one.
 --
 -- HAND-WRITTEN, like `globals.lua`: `lua::tests::the_stubs_declare_every_engine_global` checks
--- names; types drift from `renderer/src/lua/signal.rs` only as a `just types` diagnostic.
+-- names; types drift from `renderer/src/lua/signal/globals.rs` only as a `just types` diagnostic.
 --
 -- These stubs serve lua-language-server only; the engine never loads this directory. They live
 -- outside the config tree because `supervisor/src/watcher.rs` reloads on any config-tree `.lua`

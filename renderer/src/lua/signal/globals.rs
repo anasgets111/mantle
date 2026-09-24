@@ -1,0 +1,454 @@
+use std::cell::RefCell;
+use std::collections::HashMap;
+use std::rc::Rc;
+use std::time::Duration;
+
+use mlua::{Function, Lua, Table, Value};
+
+use super::budget::install_hook;
+use super::tracking::next_computed_id;
+use super::{
+    CellId, DirtyFlag, HELD_SLOT, Signal, SignalKind, from_userdata, is_signal, literal_was_edited, new_derived,
+    next_cell_id,
+};
+
+/// Applies an `mantle set`/`toggle` to named `state` (ADR-0112), using `set`'s marshalling and
+/// dirty checks. Refuses missing state or non-boolean toggle values, the two keybind/config
+/// mismatches.
+pub fn write_state(lua: &Lua, set: &shared::SetState) -> Result<(), String> {
+    let (signal, initial) = lua
+        .app_data_ref::<StateRegistry>()
+        .and_then(|registry| registry.0.get(&set.name).cloned())
+        .ok_or_else(|| format!("this config declares no state({:?}, ...)", set.name))?;
+    let value = match &set.write {
+        shared::StateWrite::Set(json) => {
+            crate::lua::json::to_lua(lua, json).map_err(|err| format!("the value does not convert to Lua: {err}"))?
+        }
+        shared::StateWrite::Toggle => match signal.get_value(lua) {
+            Ok(Value::Boolean(current)) => Value::Boolean(!current),
+            Ok(other) => return Err(format!("it holds {}, and only a boolean toggles", other.type_name())),
+            Err(err) => return Err(format!("its value could not be read: {err}")),
+        },
+        // Back to the declared initial when it already holds the value: the scalar comparison
+        // `literal_was_edited` makes, so `1` and `1.0` are the same value and a table never is.
+        shared::StateWrite::ToggleTo(json) => {
+            let wanted = crate::lua::json::to_lua(lua, json)
+                .map_err(|err| format!("the value does not convert to Lua: {err}"))?;
+            let current = signal.get_value(lua).map_err(|err| format!("its value could not be read: {err}"))?;
+            if literal_was_edited(&current, &wanted) == Some(false) { initial } else { wanted }
+        }
+    };
+    signal.reseed(value).map_err(|err| format!("refused at the marshalling boundary: {err}"))
+}
+
+/// Whether config called `hover(name)`. `crate::wayland` checks first, so configs without tooltip
+/// or hover expansion pay no tree clone, walk, or signal writes at pointer-report rate.
+pub fn any_hover_registered(lua: &Lua) -> bool {
+    lua.app_data_ref::<HoverRegistry>().is_some_and(|registry| !registry.0.is_empty())
+}
+
+/// ADR-0044 decision 5 state registry: name preserves last-click values across in-place reloads;
+/// the stored literal detects an edited initial, which wins over live state (the wallpaper case).
+/// In `Lua::set_app_data`, so ADR-0044 decision 4's persistent VM preserves it and a replaced
+/// Renderer starts without it.
+#[derive(Default)]
+struct StateRegistry(HashMap<String, (Signal, Value)>);
+
+/// `hover(name)` registry (ADR-0062 decision 2), name-keyed across reloads so a tooltip stays open
+/// through
+/// config edits. Separate from [`StateRegistry`], or `state("volume", 0)` and
+/// `hover("volume")` would collide and confuse `signal:set()`.
+#[derive(Default)]
+struct HoverRegistry(HashMap<String, (Signal, Signal)>);
+
+/// Name-keyed `scroll(name)` registry; reload preserves the user's offset and avoids jumping an
+/// open panel to top (ADR-0069 decision 2).
+#[derive(Default)]
+struct ScrollRegistry(HashMap<String, Signal>);
+
+/// Name-keyed `geometry(name)` registry, so a reload keeps the last measured rect instead of
+/// answering zero until the next pass.
+#[derive(Default)]
+struct GeometryRegistry(HashMap<String, Signal>);
+
+/// The cells a pass's geometry write changed (ADR-0147 amendment); the client turns them into one
+/// follow-up pass over their readers so a binding on the measurement settles, and only one, so a
+/// binding that feeds its own measurement cannot spin the loop.
+#[derive(Default)]
+struct GeometryMoved(Vec<CellId>);
+
+pub(crate) fn note_geometry_moved(lua: &Lua, id: CellId) {
+    if let Some(mut moved) = lua.app_data_mut::<GeometryMoved>() {
+        moved.0.push(id);
+        return;
+    }
+    lua.set_app_data(GeometryMoved(vec![id]));
+}
+
+/// The cells a pass write moved since the last take.
+pub fn take_geometry_moved(lua: &Lua) -> Vec<CellId> {
+    lua.app_data_mut::<GeometryMoved>().map(|mut moved| std::mem::take(&mut moved.0)).unwrap_or_default()
+}
+
+/// The `ms` a `delay` or a `pulse` is given, as whole milliseconds.
+///
+/// Bounded on what the caller actually gets rather than on the number it wrote: `0.1` clears a
+/// bound written in floats and then rounds to nothing, leaving a `delay` that holds for no time
+/// and a `pulse` that is never true, both of them silently.
+fn parse_hold(what: &str, millis: f64) -> Result<Duration, mlua::Error> {
+    let rounded = millis.round() as u64;
+    if !(millis > 0.0 && millis <= 60_000.0) || rounded == 0 {
+        return Err(mlua::Error::runtime(format!("{what} must be within [1, 60000] ms, got {millis}")));
+    }
+    Ok(Duration::from_millis(rounded))
+}
+
+/// Registers `computed`, `delay` and `pulse` (ADR-0146, ADR-0153), `state` (ADR-0044 decision 5),
+/// `hover`, `hover_rect`, and `scroll`. Dependencies are signal-like userdata. Pass the shared
+/// dirty flag explicitly, not via `app_data`: a hidden coupling failing inside a config author's
+/// `state()` call is worse than threading one argument through. `set` marks the same flag
+/// `new_live` returns and `RendererClient` drains.
+pub fn register(lua: &Lua, dirty: DirtyFlag) -> mlua::Result<()> {
+    // Before any config code runs, so every coroutine it ever creates inherits the hook.
+    install_hook(lua)?;
+    let hover_dirty = dirty.clone();
+    let rect_dirty = dirty.clone();
+    let scroll_dirty = dirty.clone();
+    lua.globals().set(
+        "computed",
+        lua.create_function(|lua, (deps, func): (Table, Function)| {
+            let collected = deps
+                .sequence_values::<mlua::AnyUserData>()
+                .map(|dep| {
+                    let dep = dep?;
+                    // Name the expected type; `borrow`'s error does not.
+                    if !is_signal(&dep) {
+                        return Err(mlua::Error::runtime(
+                            "computed() dependencies must be Signals or `mantle` capabilities",
+                        ));
+                    }
+                    Ok(dep)
+                })
+                .collect::<mlua::Result<Vec<_>>>()?;
+            let kind = SignalKind::Computed { id: next_computed_id(), arity: collected.len() };
+            new_derived(lua, kind, Some(func), collected)
+        })?,
+    )?;
+    lua.globals().set(
+        "delay",
+        lua.create_function(|lua, (source_ud, millis): (mlua::AnyUserData, f64)| {
+            let source = from_userdata(&source_ud)
+                .ok_or_else(|| mlua::Error::runtime("delay() takes a Signal or an `mantle` capability first"))?;
+            let hold = parse_hold("delay() hold", millis)?;
+            let held = source.get_value(lua)?;
+            let ud = new_derived(lua, SignalKind::Delayed { hold, due: Rc::default() }, None, vec![source_ud])?;
+            ud.set_nth_user_value(HELD_SLOT, held)?;
+            Ok(ud)
+        })?,
+    )?;
+    lua.globals().set(
+        "pulse",
+        lua.create_function(|lua, (source_ud, millis): (mlua::AnyUserData, f64)| {
+            let source = from_userdata(&source_ud)
+                .ok_or_else(|| mlua::Error::runtime("pulse() takes a Signal or an `mantle` capability first"))?;
+            let hold = parse_hold("pulse() window", millis)?;
+            let seen = source.get_value(lua)?;
+            let ud = new_derived(lua, SignalKind::Pulse { hold, until: Rc::default() }, None, vec![source_ud])?;
+            ud.set_nth_user_value(HELD_SLOT, seen)?;
+            Ok(ud)
+        })?,
+    )?;
+    lua.globals().set(
+        "state",
+        lua.create_function(move |lua, (name, initial): (String, Value)| {
+            let existing = crate::lua::app_data_or_default::<StateRegistry>(lua).0.get(&name).cloned();
+            if let Some((signal, seeded)) = existing {
+                // Existing name wins across reload; an edited `initial` is later than `set` and
+                // reseeds it (ADR-0044 decision 5 amendment).
+                if literal_was_edited(&initial, &seeded) == Some(true) {
+                    signal.reseed(initial.clone()).map_err(|err| {
+                        mlua::Error::runtime(format!(
+                            "state(\"{name}\", ...) refused its new initial value at the marshalling boundary: {err}"
+                        ))
+                    })?;
+                    crate::lua::app_data_or_default::<StateRegistry>(lua).0.insert(name, (signal.clone(), initial));
+                }
+                return Ok(signal);
+            }
+            let signal = Signal::new_state(initial.clone(), dirty.clone()).map_err(|err| {
+                mlua::Error::runtime(format!(
+                    "state(\"{name}\", ...) refused its initial value at the marshalling boundary: {err}"
+                ))
+            })?;
+            crate::lua::app_data_or_default::<StateRegistry>(lua).0.insert(name, (signal.clone(), initial));
+            Ok(signal)
+        })?,
+    )?;
+    lua.globals()
+        .set("hover", lua.create_function(move |lua, name: String| Ok(hover_slot(lua, &hover_dirty, name)?.0))?)?;
+    lua.globals()
+        .set("hover_rect", lua.create_function(move |lua, name: String| Ok(hover_slot(lua, &rect_dirty, name)?.1))?)?;
+    lua.globals().set(
+        "geometry",
+        lua.create_function(|lua, name: String| {
+            let existing = crate::lua::app_data_or_default::<GeometryRegistry>(lua).0.get(&name).cloned();
+            if let Some(signal) = existing {
+                return Ok(signal);
+            }
+            let zero = lua.create_table()?;
+            for key in ["x", "y", "width", "height"] {
+                zero.set(key, 0.0)?;
+            }
+            let signal = Signal(SignalKind::Geometry(next_cell_id(), Rc::new(RefCell::new(Value::Table(zero)))));
+            crate::lua::app_data_or_default::<GeometryRegistry>(lua).0.insert(name, signal.clone());
+            Ok(signal)
+        })?,
+    )?;
+    lua.globals().set(
+        "scroll",
+        lua.create_function(move |lua, name: String| {
+            Ok(crate::lua::app_data_or_default::<ScrollRegistry>(lua)
+                .0
+                .entry(name)
+                .or_insert_with(|| Signal::new_scroll(scroll_dirty.clone()))
+                .clone())
+        })?,
+    )
+}
+
+/// Name-keyed hover slot: boolean from `hover(name)`, rect from `hover_rect(name)`
+/// (ADR-0062 decision 2).
+/// Either global creates the pair, and reloads share it. No marshalling: pointer handler owns both
+/// values, not Lua.
+fn hover_slot(lua: &Lua, dirty: &DirtyFlag, name: String) -> mlua::Result<(Signal, Signal)> {
+    let existing = crate::lua::app_data_or_default::<HoverRegistry>(lua).0.get(&name).cloned();
+    if let Some(slot) = existing {
+        return Ok(slot);
+    }
+    let slot = Signal::new_hover(dirty.clone(), Value::Table(unhovered_rect(lua)?));
+    crate::lua::app_data_or_default::<HoverRegistry>(lua).0.insert(name, slot.clone());
+    Ok(slot)
+}
+
+/// Pre-pointer `hover_rect(name)`: real 1x1 origin table. Non-zero because zero `anchor_rect` is
+/// rejected; `visible = hover(name)` stays false, so a tooltip waits invisibly at origin until
+/// the pointer event supplies the real rect.
+fn unhovered_rect(lua: &Lua) -> mlua::Result<mlua::Table> {
+    let rect = lua.create_table()?;
+    rect.set("x", 0.0)?;
+    rect.set("y", 0.0)?;
+    rect.set("width", 1.0)?;
+    rect.set("height", 1.0)?;
+    Ok(rect)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::tests::lua_with_state;
+    use super::super::*;
+    use super::*;
+
+    #[test]
+    fn hover_returns_a_read_only_boolean_signal_that_starts_false() {
+        // ADR-0062 decision 2: engine-written hover starts false, not nil; `visible` treats nil as
+        // absent
+        // (ADR-0044 decision 1 amendment).
+        let (lua, _dirty) = lua_with_state();
+        let started: bool = lua.load(r#"return hover("volume"):get()"#).eval().unwrap();
+        assert!(!started);
+    }
+
+    #[test]
+    fn hover_hands_the_same_name_the_same_signal_so_an_in_place_reload_keeps_it_open() {
+        // Name is identity across reload (ADR-0044 decision 5, ADR-0062 decision 2), so the signal
+        // is reused, not reset false. Check storage, not userdata `==`, which compares object
+        // identity.
+        let (lua, _dirty) = lua_with_state();
+        lua.load(r#"first = hover("volume") second = hover("volume") other = hover("battery")"#).exec().unwrap();
+
+        let first: mlua::AnyUserData = lua.globals().get("first").unwrap();
+        from_userdata(&first).unwrap().hover_handle().unwrap().set(Value::Boolean(true));
+
+        assert!(lua.load("return second:get()").eval::<bool>().unwrap(), "one name is one slot");
+        assert!(!lua.load("return other:get()").eval::<bool>().unwrap(), "a different name is a different slot");
+    }
+
+    #[test]
+    fn hover_rect_reads_a_real_non_zero_rect_before_anything_has_been_hovered() {
+        // Live-session bug: nil rect means absent (ADR-0044 decision 1 amendment), while tooltip
+        // `anchor_rect` must be non-zero, so from the first frame each capability push made
+        // every resolve refuse the popup until something hovered.
+        let (lua, _dirty) = lua_with_state();
+        let rect: mlua::Table = lua.load(r#"return hover_rect("volume"):get()"#).eval().unwrap();
+
+        assert!(rect.get::<f32>("width").unwrap() > 0.0, "a zero-width anchor_rect is refused by the protocol");
+        assert!(rect.get::<f32>("height").unwrap() > 0.0, "and so is a zero-height one");
+        assert_eq!(rect.get::<f32>("x").unwrap(), 0.0);
+        assert_eq!(rect.get::<f32>("y").unwrap(), 0.0);
+    }
+
+    #[test]
+    fn state_returns_a_signal_reading_back_the_initial_value_it_was_given() {
+        let (lua, _dirty) = lua_with_state();
+        let result: i64 = lua.load(r#"return state("count", 7):get()"#).eval().unwrap();
+        assert_eq!(result, 7);
+    }
+
+    #[test]
+    fn the_same_state_name_and_the_same_initial_keeps_the_value_written_since() {
+        // ADR-0044 decision 5: reload preserves the user's last click, not the literal.
+        let (lua, _dirty) = lua_with_state();
+        let result: i64 = lua
+            .load(
+                r#"
+                state("open", 0):set(5)
+                return state("open", 0):get()
+                "#,
+            )
+            .eval()
+            .unwrap();
+        assert_eq!(result, 5, "an unedited literal must keep the current value, not reset to the initial");
+    }
+
+    #[test]
+    fn a_changed_initial_re_seeds_the_signal_and_marks_dirty() {
+        // D5 amendment: changed literal is a later write than `set`; this is the wallpaper path.
+        let (lua, dirty) = lua_with_state();
+        let result: i64 = lua
+            .load(
+                r#"
+                state("open", 0):set(5)
+                return state("open", 99):get()
+                "#,
+            )
+            .eval()
+            .unwrap();
+        assert_eq!(result, 99, "an edited literal must win over the value `:set()` left behind");
+        assert!(dirty.take(), "a re-seed must mark the scene dirty, or nothing repaints from it");
+    }
+
+    #[test]
+    fn re_seeding_twice_from_the_same_edited_literal_only_happens_once() {
+        // Remember the new literal; the old one would re-seed every later evaluation and clobber
+        // `set` forever.
+        let (lua, _dirty) = lua_with_state();
+        let result: i64 = lua
+            .load(
+                r#"
+                state("open", 0)
+                state("open", 99)
+                state("open", 99):set(7)
+                return state("open", 99):get()
+                "#,
+            )
+            .eval()
+            .unwrap();
+        assert_eq!(result, 7, "the second evaluation of an already-adopted literal is not another edit");
+    }
+
+    #[test]
+    fn a_table_initial_never_counts_as_edited() {
+        // A popup's anchor rect: fresh table pointers would make every reload an edit and snap the
+        // popup to the corner.
+        let (lua, _dirty) = lua_with_state();
+        let result: i64 = lua
+            .load(
+                r#"
+                state("anchor", { x = 0 }):set(5)
+                return state("anchor", { x = 0 }):get()
+                "#,
+            )
+            .eval()
+            .unwrap();
+        assert_eq!(result, 5, "a table literal must keep the live value, since it cannot be compared");
+    }
+
+    #[test]
+    fn rewriting_an_integer_literal_as_a_float_is_not_an_edit() {
+        // Lua `==` says `0 == 0.0`; reformatting a number is not an edit.
+        let (lua, _dirty) = lua_with_state();
+        let result: i64 = lua
+            .load(
+                r#"
+                state("count", 0):set(5)
+                return state("count", 0.0):get()
+                "#,
+            )
+            .eval()
+            .unwrap();
+        assert_eq!(result, 5, "0 and 0.0 are the same literal");
+    }
+
+    #[test]
+    fn changing_a_literals_type_is_an_edit() {
+        let (lua, _dirty) = lua_with_state();
+        let result: String = lua
+            .load(
+                r#"
+                state("kind", false):set("clicked")
+                return state("kind", "waiting"):get()
+                "#,
+            )
+            .eval()
+            .unwrap();
+        assert_eq!(result, "waiting", "two scalars of different types are a different literal");
+    }
+
+    #[test]
+    fn two_state_names_are_two_independent_signals() {
+        let (lua, _dirty) = lua_with_state();
+        let (a, b): (i64, i64) = lua
+            .load(
+                r#"
+                state("a", 1):set(10)
+                return state("a", 1):get(), state("b", 2):get()
+                "#,
+            )
+            .eval()
+            .unwrap();
+        assert_eq!((a, b), (10, 2), "the map is keyed by name, so a write to one name must not reach another");
+    }
+
+    /// ADR-0112: keybind writes target config state; refuse missing names and non-boolean toggles.
+    #[test]
+    fn a_control_clients_write_reaches_a_declared_state_and_is_refused_otherwise() {
+        let lua = Lua::new();
+        let dirty = DirtyFlag::new();
+        register(&lua, dirty.clone()).unwrap();
+        lua.load(r#"OPEN = state("launcher_open", false); KIND = state("panel_kind", "none")"#).exec().unwrap();
+        dirty.take();
+
+        write_state(&lua, &shared::SetState { name: "launcher_open".into(), write: shared::StateWrite::Toggle })
+            .unwrap();
+        assert!(dirty.take(), "a write from outside re-resolves the scene like any other");
+        assert!(lua.load("return OPEN:get()").eval::<bool>().unwrap());
+
+        let set = shared::StateWrite::Set(serde_json::json!("notifications"));
+        write_state(&lua, &shared::SetState { name: "panel_kind".into(), write: set }).unwrap();
+        assert_eq!(lua.load("return KIND:get()").eval::<String>().unwrap(), "notifications");
+        dirty.take();
+
+        let missing = write_state(&lua, &shared::SetState { name: "nope".into(), write: shared::StateWrite::Toggle });
+        assert!(missing.unwrap_err().contains("declares no state"));
+        let not_bool =
+            write_state(&lua, &shared::SetState { name: "panel_kind".into(), write: shared::StateWrite::Toggle });
+        assert!(not_bool.unwrap_err().contains("only a boolean toggles"));
+        assert!(!dirty.take(), "a refused write changes nothing");
+
+        // `toggle <name> <value>`: to the value, then back to the declared initial.
+        let to_launcher = || shared::StateWrite::ToggleTo(serde_json::json!("launcher"));
+        write_state(&lua, &shared::SetState { name: "panel_kind".into(), write: to_launcher() }).unwrap();
+        assert_eq!(lua.load("return KIND:get()").eval::<String>().unwrap(), "launcher");
+        write_state(&lua, &shared::SetState { name: "panel_kind".into(), write: to_launcher() }).unwrap();
+        assert_eq!(lua.load("return KIND:get()").eval::<String>().unwrap(), "none", "already it: back to the initial");
+        assert!(dirty.take());
+    }
+
+    #[test]
+    fn state_refuses_an_initial_value_that_fails_the_marshalling_boundary() {
+        // Lua-authored `state` initial crosses `marshal.rs`.
+        let (lua, _dirty) = lua_with_state();
+        let err = lua.load(r#"return state("bad", 0/0)"#).eval::<Value>().unwrap_err();
+        assert!(err.to_string().contains("finite"), "a NaN initial must be refused by name: {err}");
+    }
+}

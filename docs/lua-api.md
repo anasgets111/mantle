@@ -25,7 +25,7 @@ Lua-authored scalar signals reject nonfinite numbers, integers outside `[-(2^53-
 over 64 KiB. These are scalar checks, not recursive validation of every table.
 Node properties and command arguments have their own parsers.
 See [VM setup](../renderer/src/lua/mod.rs), [JSON conversion](../renderer/src/lua/json.rs),
-[scalar checks](../renderer/src/lua/marshal.rs) and [signal validation](../renderer/src/lua/signal.rs).
+[scalar checks](../renderer/src/lua/marshal.rs) and [signal validation](../renderer/src/lua/signal/mod.rs).
 
 ### 1.2 Reactivity
 
