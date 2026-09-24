@@ -1528,13 +1528,13 @@ mod tests {
     }
 
     #[test]
-    fn a_list_with_no_source_is_a_layout_error_naming_source() {
+    fn a_list_with_no_source_lays_out_empty() {
         let mut scene = Scene::new();
         let shaping = ShapingHandle::spawn();
         let (lua, surface) =
             surface_from(r#"panel { id = "bar", child = list { itemfn = function(item) return rect {} end } }"#);
-        let err = apply_at(&mut scene, &[surface], full(), &shaping, &lua).unwrap_err();
-        assert!(matches!(&err, LayoutError::InvalidProperty { property, .. } if property == "source"), "{err:?}");
+        apply_at(&mut scene, &[surface], full(), &shaping, &lua).unwrap();
+        assert!(scene.surface("bar@TEST").unwrap().children[0].children.is_empty());
     }
 
     #[test]

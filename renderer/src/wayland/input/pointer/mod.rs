@@ -49,7 +49,7 @@ pub(in crate::wayland) struct ArmedSerial {
 
 /// Innermost `button` with callable `on_click` in a hit path (ADR-0050 decision 1). Scan inward:
 /// the deepest node is normally the button's `text` child. A button without a handler is
-/// transparent, and only `Value::Function` counts; `layout::node` leaves the key opaque.
+/// transparent; `layout::node::resolve_properties` refuses an `on_click` that is not a function.
 fn clickable_button<'a>(path: &[&'a layout::ResolvedNode]) -> Option<(LogicalRect, Option<&'a Function>, bool)> {
     path.iter().enumerate().rev().find_map(|(depth, node)| {
         if node.kind != "button" {
@@ -760,20 +760,6 @@ mod tests {
         assert_eq!(path.len(), 3, "the inner button is still on the path");
         let (rect, ..) = clickable_button(&path).expect("the outer button carries the on_click");
         assert_eq!(rect, LogicalRect { x: 10.0, y: 4.0, width: 40.0, height: 24.0 });
-    }
-
-    #[test]
-    fn an_on_click_that_is_not_a_function_is_not_a_click_handler() {
-        // Nothing in `layout::node` parses this key (it stays opaque), so a config writing
-        // `on_click = "quit"` reaches here as a string and must simply not fire.
-        let lua = Lua::new();
-        let mut button = hit_node(&lua, "button", (0.0, 0.0, 40.0, 24.0), false);
-        button.properties.insert("on_click", Value::String(lua.create_string("quit").unwrap()));
-        let mut root = hit_node(&lua, "panel", (0.0, 0.0, 100.0, 32.0), false);
-        root.children.push(button);
-
-        let path = layout::hit::hit_path(&root, layout::hit::LogicalPoint { x: 20.0, y: 12.0 });
-        assert!(clickable_button(&path).is_none());
     }
 
     #[test]

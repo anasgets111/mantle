@@ -373,12 +373,13 @@ async fn run_supervisor(
                     }
                 }
                 // ADR-0112: send `mantle set`/`toggle` to the onscreen generation. The Renderer
-                // applies or refuses it by name; only this process knows that generation.
-                RendererFrame::SetState(set) => send_frame_logged(
-                    &supervisor.registry,
-                    supervisor.authoritative.generation_id,
-                    &SupervisorFrame::SetState(set),
-                ),
+                // applies or refuses it by name and answers like a call; only this process knows
+                // that generation.
+                RendererFrame::SetState { id, set } => {
+                    let generation_id = supervisor.authoritative.generation_id;
+                    call_routes.dispatched(id, generation_id);
+                    send_frame_logged(&supervisor.registry, generation_id, &SupervisorFrame::SetState { id, set });
+                }
                 // ADR-0197: `mantle call`, to the same generation `SetState` goes to. The id was
                 // stamped by the connection that is holding its socket open for the answer.
                 RendererFrame::Call(call) => {

@@ -71,9 +71,9 @@ fn write_unless_present(path: &Path, contents: &str, force: bool) -> io::Result<
 /// mirrors the engine's `package.path`; `runtime.builtin` removes libraries ADR-0048 cut, so the
 /// editor rejects `io.open` and `os.execute` like the VM.
 ///
-/// The two `diagnostics` blocks matter: mismatch diagnostics default to **Hint**, so `--check` at
-/// `Warning` (the `just types` and editor level) filters every stub error. Promoting them makes a
-/// wrong payload property a red squiggle instead of a frozen shell.
+/// The `diagnostics` blocks matter: the `type-check` group runs only on opened files, so `--check`
+/// (the `just types` level) skips every stub error, and `unused-local` is only a Hint. Raising
+/// them makes a wrong payload property or a dead `require` a squiggle instead of a frozen shell.
 fn luarc_json(stub_dir: &Path) -> String {
     format!(
         r#"{{
@@ -90,19 +90,19 @@ fn luarc_json(stub_dir: &Path) -> String {
   }},
   "workspace.library": ["{}"],
   "workspace.checkThirdParty": false,
-  "diagnostics.severity": {{
-    "param-type-mismatch": "Warning",
-    "assign-type-mismatch": "Warning",
-    "return-type-mismatch": "Warning",
-    "cast-local-type": "Warning",
-    "undefined-field": "Warning"
+  "diagnostics.severity": {{ "unused-local": "Warning" }},
+  "diagnostics.neededFileStatus": {{ "unused-local": "Any" }},
+  "diagnostics.groupSeverity": {{
+    "type-check": "Warning",
+    "unbalanced": "Warning",
+    "strict": "Warning",
+    "global": "Warning"
   }},
-  "diagnostics.neededFileStatus": {{
-    "param-type-mismatch": "Any",
-    "assign-type-mismatch": "Any",
-    "return-type-mismatch": "Any",
-    "cast-local-type": "Any",
-    "undefined-field": "Any"
+  "diagnostics.groupFileStatus": {{
+    "type-check": "Any",
+    "unbalanced": "Any",
+    "strict": "Any",
+    "global": "Any"
   }}
 }}
 "#,
@@ -110,7 +110,7 @@ fn luarc_json(stub_dir: &Path) -> String {
     )
 }
 
-/// `mantle check`: evaluates the config and reports its declarations.
+/// `mantle check`: evaluates and lays out the config and reports its declarations.
 ///
 /// Re-execs the Renderer because the Supervisor has no `mlua` or loader; only real evaluation
 /// catches `require` and property errors. Check and boot share this path.
@@ -122,12 +122,26 @@ pub fn check(config_dir: &Path) -> Result<String, String> {
         .env(shared::CONFIG_DIR_ENV, config_dir)
         .output()
         .map_err(|err| format!("cannot run {}: {err}", renderer.display()))?;
-    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+    // A package upgrades its own stubs; only the ones `init` wrote go stale.
+    // Returned, not printed: the caller owns stdout and stderr.
+    let notice = packaged_stub_dir()
+        .is_none()
+        .then(|| user_stub_dir().ok().and_then(|dir| stale_stub_notice(&dir)))
+        .flatten()
+        .map(|notice| format!("{notice}\n"))
+        .unwrap_or_default();
     if output.status.success() {
-        Ok(stdout)
+        Ok(format!("{}{notice}", String::from_utf8_lossy(&output.stdout)))
     } else {
-        Err(String::from_utf8_lossy(&output.stderr).trim_end().to_string())
+        Err(format!("{}\n{notice}", String::from_utf8_lossy(&output.stderr).trim_end()).trim_end().to_string())
     }
+}
+
+/// One line asking for `mantle init` when the stubs in `dir` are stale. No `dir` means the user
+/// never set up an editor, so nothing to say.
+fn stale_stub_notice(dir: &Path) -> Option<String> {
+    (dir.is_dir() && stale_stubs(dir).next().is_some())
+        .then(|| format!("{}: stubs differ from this mantle; run `mantle init` to refresh them", dir.display()))
 }
 
 pub fn run(config_dir: &Path, force: bool) -> Result<(), Box<dyn std::error::Error>> {
@@ -217,14 +231,17 @@ mod tests {
         let data = tempfile::tempdir().unwrap();
         let config = tempfile::tempdir().unwrap();
         let stubs = data.path().join("mantle/lua-meta");
+        assert_eq!(stale_stub_notice(&stubs), None, "no stub directory means no editor setup to nag about");
         run_into(config.path(), false, Some(&stubs)).unwrap();
 
         let nodes_lua = stubs.join("nodes.lua");
         std::fs::write(&nodes_lua, "---@meta\n-- hand-written, once\n").unwrap();
         assert!(stale_stubs(&stubs).any(|(name, _)| *name == "nodes.lua"));
+        assert!(stale_stub_notice(&stubs).is_some_and(|notice| notice.contains("mantle init")));
 
         run_into(config.path(), false, Some(&stubs)).unwrap();
         assert_eq!(stale_stubs(&stubs).count(), 0, "every stub must match the embedded copy again");
+        assert_eq!(stale_stub_notice(&stubs), None);
     }
 
     /// Without adjacent packaged stubs, return `None` instead of an editor path that completes

@@ -4,7 +4,7 @@ use std::time::{Duration, Instant};
 use femtovg::renderer::OpenGl;
 use femtovg::rgb::FromSlice;
 use femtovg::{Canvas, ErrorKind, ImageFlags, ImageId, ImageSource};
-use shared::debug;
+use shared::warn;
 
 use super::decode::premultiply;
 use super::{CacheKey, Decoded, GifDelta, ImageCache, Slot};
@@ -22,7 +22,7 @@ pub(super) struct Animation {
     current: usize,
 }
 
-/// Uploads a decode or logs the failure once when filling its slot; `Failed` stops the next frame
+/// Uploads a decode or warns once per path when filling its slot; `Failed` stops the next frame
 /// asking again.
 pub(super) fn upload_or_log(canvas: &mut Canvas<OpenGl>, path: &Path, decoded: Result<Decoded, String>) -> Slot {
     let result = decoded.and_then(|decoded| {
@@ -35,7 +35,9 @@ pub(super) fn upload_or_log(canvas: &mut Canvas<OpenGl>, path: &Path, decoded: R
     match result {
         Ok(slot) => slot,
         Err(err) => {
-            debug!("{}: {err}", path.display());
+            if super::first_failure(&path.to_string_lossy()) {
+                warn!("{}: {err}", path.display());
+            }
             Slot::Failed
         }
     }

@@ -36,9 +36,38 @@ pub fn check_string(value: &str) -> Result<&str, MarshalError> {
     if value.len() <= MAX_STRING_BYTES { Ok(value) } else { Err(MarshalError::StringTooLong { len: value.len() }) }
 }
 
+/// Refuses a key of a config sub-table (`padding`, `anchor`, a `session_process` spec, ...) that
+/// is not in `keys`: nothing would read it, so a typo there did nothing, silently. The error names
+/// the lowest-sorting unknown key, so two typos always report the same one; the caller adds whose
+/// table it is.
+pub(crate) fn only_keys(table: &mlua::Table, keys: &[&str]) -> Result<(), String> {
+    let mut unknown: Vec<String> = Vec::new();
+    for pair in table.pairs::<mlua::Value, mlua::Value>() {
+        match pair.map_err(|e| e.to_string())?.0 {
+            mlua::Value::String(key) if keys.iter().any(|known| key.as_bytes() == known.as_bytes()) => {}
+            mlua::Value::String(key) => unknown.push(format!("`{}`", key.to_string_lossy())),
+            other => unknown.push(format!("{other:?}")),
+        }
+    }
+    let Some(first) = unknown.into_iter().min() else { return Ok(()) };
+    let keys: Vec<String> = keys.iter().map(|key| format!("`{key}`")).collect();
+    Err(format!("unknown key {first}; it takes {}", keys.join(", ")))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_keys_names_the_first_unknown_key_and_what_the_table_takes() {
+        let lua = mlua::Lua::new();
+        let table: mlua::Table = lua.load("return { top = 1, topp = 2, bottum = 3 }").eval().unwrap();
+        assert_eq!(
+            only_keys(&table, &["top", "bottom"]).unwrap_err(),
+            "unknown key `bottum`; it takes `top`, `bottom`"
+        );
+        assert_eq!(only_keys(&table, &["top", "topp", "bottum"]), Ok(()));
+    }
 
     #[test]
     fn check_number_rejects_nan_and_infinity() {

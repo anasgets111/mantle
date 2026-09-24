@@ -66,7 +66,7 @@ pub(crate) async fn dispatch(
         "detach" => match process_run_args(&envelope.params.arguments) {
             Some((cmd, args)) => {
                 if let Err(err) = crate::process::spawn_detached(&cmd, &args) {
-                    debug!("process.detach: spawning {cmd:?} failed: {err}");
+                    warn!("process.detach: spawning {cmd:?} failed: {err}");
                 }
             }
             None => debug!(
@@ -100,7 +100,7 @@ pub(crate) fn spawn_and_register_process(
             Some((stdout, stderr))
         }
         Err(err) => {
-            debug!("process.run({cmd:?}, {args:?}) failed to spawn: {err}");
+            warn!("process.run({cmd:?}, {args:?}) failed to spawn: {err}");
             None
         }
     }

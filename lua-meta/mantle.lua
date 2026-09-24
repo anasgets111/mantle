@@ -646,7 +646,7 @@ local SystemCapability = {}
 ---| "flipped_270" # Mirrored, then rotated 270 degrees counter-clockwise.
 
 ---@class RescueState
----@field is_rescue boolean The last evaluation or the startup apply failed, or the session lock was refused or ended; the previous scene stays up (ADR-0046). The next successful one clears it.
+---@field is_rescue boolean The last evaluation, apply or live update failed, or the session lock was refused or ended; the previous scene stays up (ADR-0046). The next reload that applies clears it.
 ---@field error_log string The Lua error, ready to draw; empty while `is_rescue` is false.
 
 ---@class MantleVersion
@@ -679,7 +679,7 @@ local SystemCapability = {}
 ---@field processes ProcessesCapability Programs declared with `session_process`: running state, start time and last exit.
 ---@field windows WindowsCapability Open toplevel windows with title, app ID, workspace, output and state flags.
 ---@field screens ReadOnlyCapability<Screen[]> Connected outputs from the Renderer. `{}` rather than `nil` at first evaluation (ADR-0041). [docs](https://anasgets111.github.io/mantle/capabilities/index.html#renderer-members)
----@field rescue ReadOnlyCapability<RescueState> Whether the last evaluation, the startup apply or the session lock failed; the previous scene stays up (ADR-0046). [docs](https://anasgets111.github.io/mantle/capabilities/index.html#renderer-members)
+---@field rescue ReadOnlyCapability<RescueState> Whether the last evaluation, apply, live update or the session lock failed; the previous scene stays up (ADR-0046). [docs](https://anasgets111.github.io/mantle/capabilities/index.html#renderer-members)
 ---@field version MantleVersion The engine's version. Not a signal. [docs](https://anasgets111.github.io/mantle/capabilities/index.html#renderer-members)
 ---@field config_dir string Directory `shell.lua` was loaded from, for naming files shipped beside it. Not a signal. [docs](https://anasgets111.github.io/mantle/capabilities/index.html#renderer-members)
 mantle = {}

@@ -251,7 +251,10 @@ impl App {
                 && rebuilt.iter().any(|id| id == spec.declared_id())
         });
         if renames_lock && self.session_lock.is_some() {
-            warn!("this reload renames the lock surface; refused while locked, save again after unlock");
+            const RENAMES_LOCK: &str =
+                "this reload renames the lock surface; refused while locked, save again after unlock";
+            warn!("{RENAMES_LOCK}");
+            self.client.set_rescue_state(true, RENAMES_LOCK);
             crate::lua::timer::discard(self.client.lua());
             return;
         }

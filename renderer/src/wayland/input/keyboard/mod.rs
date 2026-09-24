@@ -490,7 +490,7 @@ mod tests {
         // Same deep-end scan `clickable_button` makes, and for the same reason (ADR-0050
         // decision 1): one traversal, two questions.
         let lua = Lua::new();
-        let outer = textfield(&lua, Some(secure_submit_table(&lua, "outer", "ignored")));
+        let outer = textfield(&lua, Some(secure_submit_table(&lua, "network", "connect")));
         let inner = textfield(&lua, Some(secure_submit_table(&lua, "polkit", "authenticate")));
         let root = hit_node(&lua, "panel", (0.0, 0.0, 100.0, 32.0), false);
 

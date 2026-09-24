@@ -926,7 +926,7 @@ pub(super) mod tests {
         apply_at(&mut scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
         assert_eq!(scene.surface("bar@TEST").unwrap().children[0].rect.width, 40.0);
 
-        lua.load(r#"state("w", 0):set(90)"#).exec().unwrap();
+        lua.load(r#"state("w", 40):set(90)"#).exec().unwrap();
         apply_at(&mut scene, &[surface], full(), &shaping, &lua).unwrap();
         assert_eq!(
             scene.surface("bar@TEST").unwrap().children[0].rect.width,

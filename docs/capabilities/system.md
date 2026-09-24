@@ -25,7 +25,7 @@ text {
 
 ## Actions
 
-None: read-only, so an `invoke` is logged and dropped.
+None: read-only, so an `invoke` raises.
 
 ## Backend
 

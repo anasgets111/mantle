@@ -31,7 +31,7 @@ local meter = row {
 
 | Property | Values | Default | Behaviour |
 | :--- | :--- | :--- | :--- |
-| `children` | Array of node tables, up to 10000; a `nil` hole ends it | None | Laid out in order along the main axis. Bind a signal of an array to [switch views](index.md#switching-views-with-ids) |
+| `children` | Array of node tables, up to 10000; a `nil` or `false` entry is an error | None | Laid out in order along the main axis. Bind a signal of an array to [switch views](index.md#switching-views-with-ids) |
 | `spacing` | Pixels, any finite number | 0 | Gap between visible children. Negative values overlap them. A hidden child adds no gap |
 | `scroll` | A `scroll(name)` signal | None | Makes the node a scrolling viewport along its main axis ([scroll](../guide/input.md#scroll)) |
 

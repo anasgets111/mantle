@@ -100,6 +100,7 @@ pub fn parse_edge_insets(properties: &PropMap, property: &str) -> Result<EdgeIns
     let Value::Table(table) = value else {
         return Err(invalid(property, format!("expected a number or a table, got {}", preview_for_error(value))));
     };
+    only_keys(property, table, &["top", "right", "bottom", "left"])?;
     // An absent edge is 0; [`table_number`] rejects nested `Signal`s.
     let edge = |key: &str| -> Result<f32, LayoutError> { Ok(table_number(property, table, key)?.unwrap_or(0.0)) };
     Ok(EdgeInsets { top: edge("top")?, right: edge("right")?, bottom: edge("bottom")?, left: edge("left")? })
@@ -154,7 +155,10 @@ pub fn parse_background(properties: &PropMap) -> Result<Option<Fill>, LayoutErro
     };
     match value {
         Value::String(s) => Ok(Some(Fill::Color(parse_hex_color("background", &checked_string("background", s)?)?))),
-        Value::Table(table) => Ok(Some(Fill::Gradient(parse_gradient("background", table)?))),
+        Value::Table(table) => {
+            only_keys("background", table, &["gradient", "angle", "stops"])?;
+            Ok(Some(Fill::Gradient(parse_gradient("background", table)?)))
+        }
         _ => Err(invalid(
             "background",
             format!("expected a hex colour or a gradient table, got {}", preview_for_error(value)),
@@ -170,6 +174,7 @@ pub fn parse_mask(properties: &PropMap) -> Result<Option<Mask>, LayoutError> {
     let Value::Table(table) = value else {
         return Err(invalid("mask", format!("expected a table, got {}", preview_for_error(value))));
     };
+    only_keys("mask", table, &["gradient", "angle", "stops", "source", "invert"])?;
     let field = |key: &str| table_field("mask", table, key);
     let invert = match field("invert")? {
         Value::Nil => false,
@@ -317,6 +322,7 @@ fn xy(property: &str, value: &Value) -> Result<(f32, f32), LayoutError> {
     let Value::Table(table) = value else {
         return Err(invalid(property, format!("expected an {{ x, y }} table, got {}", preview_for_error(value))));
     };
+    only_keys(property, table, &["x", "y"])?;
     let axis = |key| table_number(property, table, key).map(|n| n.unwrap_or(axis_default(property)));
     Ok((within(property, axis("x")?)?, within(property, axis("y")?)?))
 }
@@ -377,6 +383,7 @@ pub fn parse_border_color(properties: &PropMap) -> Result<BorderColor, LayoutErr
     let Value::Table(table) = value else {
         return Err(invalid("border_color", format!("expected a string or a table, got {}", preview_for_error(value))));
     };
+    only_keys("border_color", table, &["top", "right", "bottom", "left"])?;
     // Metamethod-aware, but parsed once per node by `paint_style` (ADR-0068).
     let edge = |key: &str| -> Result<Option<Rgba>, LayoutError> {
         let v: Value = table.get(key).map_err(|e| invalid("border_color", e.to_string()))?;

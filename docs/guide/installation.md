@@ -77,7 +77,9 @@ keeps an existing file unless given `--force`.
 The `.luarc.json` points lua-language-server at the [`lua-meta/`](../../lua-meta) stubs, which give
 completion and type checks for every node, surface and capability. A package installs them under
 `$PREFIX/share/mantle/lua-meta`; otherwise `init` writes the copy embedded in the binary to
-`$XDG_DATA_HOME/mantle/lua-meta` and rewrites it whenever the binary's copy differs.
+`$XDG_DATA_HOME/mantle/lua-meta` and rewrites it whenever the binary's copy differs; `mantle check`
+says when it does. It also raises LuaLS's `type-check`, `unbalanced`, `strict` and `global` groups
+and `unused-local` to warnings in every file, so a wrong type or a dead `require` shows up.
 
 ## Run the shell
 

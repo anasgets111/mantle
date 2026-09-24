@@ -114,13 +114,20 @@ pub fn parse_children(properties: &PropMap) -> Result<Vec<VirtualNode>, LayoutEr
     // A config controls `#children`, and a sparse table's border can be enormous, so the hint is
     // capped at what the loop below accepts.
     let mut children = Vec::with_capacity(table.raw_len().min(MAX_ARRAY_ELEMENTS));
-    for entry in table.sequence_values::<mlua::Table>() {
+    // By index to `#children`, not `sequence_values`: that stopped at the first nil, silently
+    // dropping every child after it.
+    for index in 1..=table.raw_len() {
         if children.len() == MAX_ARRAY_ELEMENTS {
             return Err(invalid("children", format!("more than {MAX_ARRAY_ELEMENTS} children in one node")));
         }
-        let entry = entry.map_err(|e| invalid("children", e.to_string()))?;
-        let node = deserialize_child(&entry, "children")?;
-        children.push(node);
+        let entry: Value = table.raw_get(index).map_err(|e| invalid("children", e.to_string()))?;
+        let Value::Table(entry) = entry else {
+            return Err(invalid(
+                "children",
+                format!("expected a node table at index {index}, got {}", preview_for_error(&entry)),
+            ));
+        };
+        children.push(deserialize_child(&entry, "children")?);
     }
     Ok(children)
 }
@@ -138,9 +145,13 @@ pub fn parse_children(properties: &PropMap) -> Result<Vec<VirtualNode>, LayoutEr
 /// pass (ADR-0132); the whole of it is a viewport, measured at 22us a row by
 /// `layout::scene::tests::list_pass_cost` and designed in ADR-0191.
 pub fn parse_list_children(properties: &PropMap) -> Result<Vec<VirtualNode>, LayoutError> {
-    let source_value = properties.get("source").ok_or_else(|| invalid("source", "required for `list`, got nothing"))?;
-    let Value::Table(source) = source_value else {
-        return Err(invalid("source", format!("expected an array table, got {}", preview_for_error(source_value))));
+    // Absent, or a signal still reading nil before its first push, is an empty list.
+    let source = match properties.get("source") {
+        None => None,
+        Some(Value::Table(source)) => Some(source),
+        Some(other) => {
+            return Err(invalid("source", format!("expected an array table, got {}", preview_for_error(other))));
+        }
     };
 
     let itemfn = match properties.get("itemfn") {
@@ -165,6 +176,9 @@ pub fn parse_list_children(properties: &PropMap) -> Result<Vec<VirtualNode>, Lay
         None => None,
     };
 
+    let Some(source) = source else {
+        return Ok(Vec::new());
+    };
     let mut children = Vec::with_capacity(source.raw_len().min(limit.unwrap_or(MAX_ARRAY_ELEMENTS)));
     let mut seen_keys: HashSet<String> = HashSet::new();
     for element in source.sequence_values::<Value>() {
@@ -232,6 +246,7 @@ pub fn parse_secure_submit(properties: &PropMap) -> Result<Option<SecureSubmitTa
     let Value::Table(table) = value else {
         return Err(invalid("secure_submit", format!("expected a table, got {}", preview_for_error(value))));
     };
+    only_keys("secure_submit", table, &["capability", "action"])?;
     let field = |key: &str| -> Result<String, LayoutError> {
         let v: Value = table.get(key).map_err(|e| invalid("secure_submit", e.to_string()))?;
         let s = match v {
@@ -257,8 +272,21 @@ pub fn parse_secure_submit(properties: &PropMap) -> Result<Option<SecureSubmitTa
         }
         Ok(s)
     };
-    Ok(Some(SecureSubmitTarget { capability: field("capability")?, action: field("action")? }))
+    let (capability, action) = (field("capability")?, field("action")?);
+    if !SECURE_SUBMIT_TARGETS.contains(&(capability.as_str(), action.as_str())) {
+        let known: Vec<String> = SECURE_SUBMIT_TARGETS.iter().map(|(c, a)| format!("`{c}`/`{a}`")).collect();
+        return Err(invalid(
+            "secure_submit",
+            format!("`{capability}`/`{action}` receives no password; it takes {}", known.join(", ")),
+        ));
+    }
+    Ok(Some(SecureSubmitTarget { capability, action }))
 }
+
+/// The pairs `supervisor/src/main.rs` routes a secret to; its fallback arm drops any other one, so
+/// a password typed into a field aimed elsewhere would vanish.
+const SECURE_SUBMIT_TARGETS: [(&str, &str); 3] =
+    [("lock", "authenticate"), ("network", "connect"), ("polkit", "authenticate")];
 
 #[cfg(test)]
 mod tests {
@@ -291,6 +319,29 @@ mod tests {
     fn parse_single_child_absent_is_none() {
         let props = PropMap::default();
         assert!(parse_single_child(&props).unwrap().is_none());
+    }
+
+    #[test]
+    fn secure_submit_refuses_an_unrouted_pair_and_an_unknown_key() {
+        let lua = mlua::Lua::new();
+        for (source, expected) in [
+            (
+                r#"{ capability = "lock", action = "connect" }"#,
+                "`lock`/`connect` receives no password; it takes `lock`/`authenticate`, `network`/`connect`, `polkit`/`authenticate`",
+            ),
+            (
+                r#"{ capability = "lock", action = "authenticate", acton = "x" }"#,
+                "unknown key `acton`; it takes `capability`, `action`",
+            ),
+        ] {
+            let table: mlua::Table =
+                lua.load(format!("return {{ kind = \"textfield\", secure_submit = {source} }}")).eval().unwrap();
+            let err = parse_secure_submit(&props_from_table(&table)).unwrap_err();
+            assert!(
+                matches!(&err, LayoutError::InvalidProperty { property, detail } if property == "secure_submit" && detail == expected),
+                "{err}"
+            );
+        }
     }
 
     #[test]
@@ -546,5 +597,25 @@ mod tests {
             eval("return list { source = { 1 }, limit = -1, itemfn = function() return rect {} end }").unwrap_err(),
             LayoutError::InvalidProperty { property, .. } if property == "limit"
         ));
+        assert_eq!(eval("return list { itemfn = function() return rect {} end }").unwrap(), 0, "no source is empty");
+        assert!(matches!(
+            eval("return list { source = {} }").unwrap_err(),
+            LayoutError::InvalidProperty { property, .. } if property == "itemfn"
+        ));
+    }
+
+    /// `sequence_values` stopped at the hole and dropped `b` without a word.
+    #[test]
+    fn a_nil_hole_in_children_is_refused_by_index() {
+        let lua = mlua::Lua::new();
+        let table: mlua::Table = lua
+            .load(r#"return { kind = "row", children = { { kind = "rect" }, nil, { kind = "rect" } } }"#)
+            .eval()
+            .unwrap();
+        let err = parse_children(&props_from_table(&table)).unwrap_err();
+        assert!(
+            matches!(&err, LayoutError::InvalidProperty { property, detail } if property == "children" && detail == "expected a node table at index 2, got Nil"),
+            "{err}"
+        );
     }
 }

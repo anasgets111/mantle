@@ -47,6 +47,18 @@ use shared::{debug, error};
 
 use crate::text::snap::LogicalRect;
 
+/// Whether this is the first failure seen for `key`, an icon name or image path, so one drawn every
+/// frame warns once. ponytail: cleared wholesale at 1024 keys, like the icon memo, so a stream of
+/// novel failing names can repeat a warning; an LRU is the upgrade if that ever floods the log.
+pub(crate) fn first_failure(key: &str) -> bool {
+    static WARNED: std::sync::OnceLock<Mutex<HashSet<String>>> = std::sync::OnceLock::new();
+    let mut warned = WARNED.get_or_init(Default::default).lock().expect("warned set poisoned");
+    if warned.len() >= 1024 {
+        warned.clear();
+    }
+    warned.insert(key.to_string())
+}
+
 /// Maximum map entries, including `Failed` and `Pending`. The texture budget bounds bytes; this
 /// keeps a config cycling through a thousand failing paths from growing the map without bound.
 const CACHE_CAPACITY: usize = 128;
@@ -703,6 +715,12 @@ mod tests {
 
     fn box_rect() -> LogicalRect {
         LogicalRect { x: 10.0, y: 20.0, width: 100.0, height: 50.0 }
+    }
+
+    #[test]
+    fn a_failing_name_warns_once() {
+        assert!(first_failure("a-failing-name-warns-once"));
+        assert!(!first_failure("a-failing-name-warns-once"), "the second frame drawing it must stay quiet");
     }
 
     #[test]

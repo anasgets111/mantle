@@ -15,7 +15,7 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use mlua::{Function, Lua, UserData, UserDataMethods};
-use shared::{ProcessStream, debug};
+use shared::{ProcessStream, warn};
 
 use super::capability::CommandSender;
 
@@ -66,7 +66,7 @@ impl ProcessRegistry {
         let out_cb = self.pending.borrow().get(&id).map(|p| p.out_cb.clone());
         let Some(out_cb) = out_cb else { return };
         if let Err(err) = out_cb.call::<()>((line, stream_name(stream))) {
-            debug!("process.run(id={id}): out_cb raised an error: {err}");
+            warn!("process.run(id={id}): out_cb raised an error: {err}");
         }
     }
 
@@ -76,7 +76,7 @@ impl ProcessRegistry {
         let exit_cb = self.pending.borrow_mut().remove(&id).map(|p| p.exit_cb);
         let Some(exit_cb) = exit_cb else { return };
         if let Err(err) = exit_cb.call::<()>(code) {
-            debug!("process.run(id={id}): exit_cb raised an error: {err}");
+            warn!("process.run(id={id}): exit_cb raised an error: {err}");
         }
     }
 }

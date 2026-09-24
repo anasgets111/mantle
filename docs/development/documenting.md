@@ -19,9 +19,8 @@ it is history and may be stale, so cite an ADR only as a "why" pointer after the
 
 Every fenced block whose info string is `lua` or starts `lua,` runs in `cargo test`. The test is
 `every_lua_block_in_the_docs_evaluates_and_lays_out` in `renderer/src/check.rs`. Each block goes
-through the same evaluation as `mantle check`: no Wayland, no subprocesses, every capability `nil`.
-Then its surfaces are laid out with the real layout code on one 1920x1080 output, which
-`mantle check` never does. The test fails on a Lua error, a check error or a layout error, and names
+through the same evaluation and layout as `mantle check`: no Wayland, no subprocesses, every
+capability `nil`, one 1920x1080 output. The test fails on a Lua error, a check error or a layout error, and names
 the block by `file:line`. Blocks inside `> ` quotes count too.
 
 | Info string | The block |
@@ -44,7 +43,7 @@ button {
 }
 ```
 
-`mantle check` accepts this width, but layout refuses it:
+Evaluation accepts this width, but layout refuses it:
 
 ```lua,must-fail
 rect { width = "Wide", height = 10 }

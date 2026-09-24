@@ -67,11 +67,10 @@ Spawns a helper, streams its output line by line, and reports its exit.
 | stdio | stdin `/dev/null`, so a prompt fails instead of hanging; stdout and stderr piped |
 | Environment | Inherited from the shell. The working directory is the shell's and unspecified: use absolute paths |
 | Lifetime | The generation. A reload keeps the child and its callbacks; a Renderer replacement or shell exit reaps its group without calling `exit_cb` |
-| Limits | A line over 64 KiB is cut there and the rest of that line dropped, with one warning per stream. Callbacks run outside the [CPU budget](runtime.md#limits-and-budgets). A raise in either callback is logged only at debug level: start with `mantle -vv` or `MANTLE_LOG=lua=debug` to see it |
+| Limits | A line over 64 KiB is cut there and the rest of that line dropped, with one warning per stream. Callbacks run outside the [CPU budget](runtime.md#limits-and-budgets). A raise in either callback is logged as a warning |
 
 The call returns immediately. A spawn failure (command not on `PATH`) reaches Lua only as
-`exit_cb(nil)` with no output; the reason is logged at debug level (`-vv` or
-`MANTLE_LOG=process=debug`).
+`exit_cb(nil)` with no output; the reason is logged as a warning.
 
 ## process.detach
 
@@ -95,7 +94,7 @@ return panel {
 | :--- | :--- |
 | Signature | `process.detach(cmd, args)` → nothing |
 | `cmd`, `args` | As `process.run` |
-| Output, exit code | None. A failed spawn is logged at debug level (`-vv`) and otherwise silent |
+| Output, exit code | None. A failed spawn is logged as a warning and otherwise silent |
 
 ## session_process
 
@@ -136,7 +135,7 @@ return panel {
 
 `session_process { name, stop_signal? }` returns a handle. `name` must be non-empty; declaring
 the same name again, on reload or from another module, returns the same handle and re-reads only
-`stop_signal`. `stop_signal` defaults to `"TERM"`.
+`stop_signal`. `stop_signal` defaults to `"TERM"`. Any other key raises.
 
 Signal names drop the `SIG` prefix: `TERM`, `INT`, `HUP`, `QUIT`, `USR1`, `USR2`, `KILL`, `STOP`,
 `CONT`.
@@ -234,7 +233,6 @@ return panel {
 | `exit_cb` never arrives | It waits for stdout and stderr to close. A backgrounded grandchild holding the pipes delays it; redirect its output |
 | Callbacks from before a reload | `process.run` callbacks run the old closures after a reload. Keep what they touch in named state |
 | `timer` re-armed from `exit_cb` | A child in flight across a reload arms a second chain beside the one the top level restarts. Arm the timer outside the callback ([poll recipe](#poll-a-command-every-n-seconds)) |
-| A callback "does nothing" | Raises in `process.run` callbacks log only at debug level. Run `mantle -vv`, or wrap the body in `pcall` and `log.warn` the error |
 | Invalid `stop_signal` | The Supervisor refuses the declaration with a warning, and `start` then does nothing. Use a name from the list above |
 
 See also: [scripting](scripting.md) (`timer`, `json`, `log`, `persistent_table`), [runtime](runtime.md)

@@ -26,6 +26,8 @@ pub fn register(lua: &Lua) -> mlua::Result<()> {
     lua.globals().set(
         "persistent_table",
         lua.create_function(|lua, spec: Table| {
+            super::marshal::only_keys(&spec, &["path", "name", "defaults"])
+                .map_err(|detail| mlua::Error::runtime(format!("persistent_table: {detail}")))?;
             let path: String = spec.get("path")?;
             let name: String = spec.get("name")?;
             let defaults: Value = spec.get("defaults")?;

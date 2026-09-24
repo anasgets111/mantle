@@ -74,10 +74,10 @@ In a terminal, `mantle call volume.up 0.1` prints the handler's return value, su
 | `mantle` | Starts the shell in the foreground. Stops on Ctrl-C or `SIGTERM` |
 | `mantle -d` | Starts the shell in its own session with no terminal, waits until it is running (up to 5 s), prints its pid and returns. Its output goes to `mantle log` |
 | `mantle init [--force]` | Creates the config directory. Writes `.luarc.json` and a starter `shell.lua`, keeping any that exist unless `--force`. Points lua-language-server at the type stubs: an installed package's, else writes current stubs to `$XDG_DATA_HOME/mantle/lua-meta` |
-| `mantle check` | Evaluates the config once without Wayland and exits. See [What check covers](#what-check-covers) |
+| `mantle check` | Evaluates and lays out the config once without Wayland and exits. See [What check covers](#what-check-covers) |
 | `mantle log [-f]` | Prints a shell's stdout and stderr. `-f` keeps printing until that shell exits |
 | `mantle list` | Prints running shells, oldest first: `PID`, `UPTIME`, `DIR` (the instance directory) and `CONFIG` |
-| `mantle set <name> <value>` | Writes the running config's `state(name, ...)` |
+| `mantle set <name> <value>` | Writes the running config's `state(name, ...)` and waits for the shell to accept it |
 | `mantle toggle <name>` | Flips that state. It must hold a boolean |
 | `mantle toggle <name> <value>` | Sets the state to `value`. If it already holds `value`, restores the `initial` its `state(name, initial)` declares |
 | `mantle call <name> [args...]` | Runs the config's `action(name, fn)` with `args`, waits for it and prints what it returned |
@@ -107,7 +107,7 @@ Log levels for a run:
 | :--- | :--- |
 | none | Errors, warnings, and start, reload, respawn and stop notices |
 | `-v` | Also info |
-| `-vv` | Also debug. Errors raised in `on_change`, `timer`, `process.run`, `palette` and idle callbacks appear here |
+| `-vv` | Also debug |
 | `-vvv` | Also the noisiest debug lines. More `v`s change nothing |
 
 `MANTLE_LOG` overrides the default level: `MANTLE_LOG=debug`, or per subsystem,
@@ -195,27 +195,32 @@ prints one.
 
 The handler contract is in [action](scripting.md#action).
 
-`set` and `toggle` do not wait for an answer. They exit 0 once the shell has the request. The
-shell refuses a write to an undeclared name, a bare `toggle` on a non-boolean, or a value that
-fails the [scalar checks](runtime.md#limits-and-budgets). A refusal is a warning in `mantle log`,
-not an exit code. What `toggle <name> <value>` compares and restores follows
+`set` and `toggle` wait for the shell to apply the write, up to 5 s like `call`. The shell refuses
+a write to an undeclared name, a bare `toggle` on a non-boolean, or a value that fails the
+[scalar checks](runtime.md#limits-and-budgets). A refusal prints `` state `name` refused: <reason> ``
+on stderr, exits 1 and is also a warning in `mantle log`. What `toggle <name> <value>` compares and restores follows
 [named state](signals.md#named-state): scalars compare by value (`1` equals `1.0`), and a table
 never equals, so toggling to a table always sets it.
 
 ## What check covers
 
 `mantle check` evaluates `shell.lua` and its `require`s exactly as a start does, with no
-Wayland, no GPU, and every capability reading `nil`. It prints `<path>: ok, N surface(s)` and one
-`<role> <id>` line per surface, preceded by anything the config `print`ed.
+Wayland, no GPU, and every capability reading `nil`. Then it lays every surface out once with the
+real layout code, on one 1920x1080 output plus one per `monitor` name a panel pins. It prints
+`<path>: ok, N surface(s)` and one `<role> <id>` line per surface, preceded by anything the config
+`print`ed. A layout error prints as `<path>: layout: <error>` and exits 1.
 
 | Caught | Not caught |
 | :--- | :--- |
-| Lua syntax errors, in any required module | Anything inside a surface's `child`: unknown node properties, wrong value types, bad colours, out-of-range sizes |
-| Runtime errors at the top level of `shell.lua` and its modules | Errors inside `:map` and `computed` functions, list `itemfn`s and function `child` builders. Nothing is laid out, so they never run |
-| A top-level return that is not surfaces, including `require`'s second value | Handler errors: `on_click`, `on_change`, `action`, `timer` never fire |
-| Unknown property names on the surface itself, and its topology (`id`, `layer`, `anchor`, `monitor`, ...) | `process.run` output: commands are queued and never run |
-| More than one `lock` | Anything that depends on capability data, since every capability is `nil` |
-| A missing `shell.lua` | Fonts, images, shaders and the compositor's response |
+| Lua syntax errors, in any required module | Handler errors: `on_click`, `on_change`, `action`, `timer` never fire |
+| Runtime errors at the top level of `shell.lua` and its modules | Branches that only show with capability data, since every capability is `nil` |
+| A top-level return that is not surfaces, including `require`'s second value | `process.run` output: commands are queued and never run |
+| Surface and node properties: unknown names, wrong value types, bad colours, out-of-range sizes | Fonts, images, shaders and the compositor's response |
+| Errors in `:map`, `computed`, list `itemfn`s and function `child` builders, as laid out with `nil` capabilities | Sizes that only fail on a smaller or scaled output |
+| More than one `lock`, and a missing `shell.lua` | |
+
+When the stubs `mantle init` wrote differ from this `mantle`, `check` also prints one line asking
+you to run `mantle init` again.
 
 It starts no programs and writes no state. On failure it prints only the error, not the config's
 `print` output.
@@ -224,8 +229,8 @@ It starts no programs and writes no state. On failure it prints only the error, 
 
 | Code | When |
 | :--- | :--- |
-| 0 | Success. For `set` and `toggle`: the request reached the shell |
-| 1 | The command failed. It prints `Error: <reason>`: no shell running, no shell with that `--pid`, `XDG_RUNTIME_DIR` unset, the socket unreachable, no log this login, `check` found an error, `call` failed or timed out, `-d` could not start the shell (not running within 5 s, or it exited), `init` could not write a file |
+| 0 | Success. For `set` and `toggle`: the shell applied the write |
+| 1 | The command failed. It prints `Error: <reason>`: no shell running, no shell with that `--pid`, `XDG_RUNTIME_DIR` unset, the socket unreachable, no log this login, `check` found an error, `call` failed or timed out, `set` or `toggle` was refused or timed out, `-d` could not start the shell (not running within 5 s, or it exited), `init` could not write a file |
 | 2 | Bad arguments: unknown flag, missing name or value, a non-numeric `--pid`, `--profile=0`, a flag the command does not take, `--pid` with `-c`, `-c` with `list`. It prints `mantle: <reason>` and the help text. Also `mantle-renderer` run by hand |
 
 ## How do I…
@@ -248,8 +253,8 @@ From a terminal, `mantle -d` starts it and gives the prompt back. Stop it with C
 foreground, or `kill <pid>` with the pid `mantle list` shows.
 
 **…read the logs?** `mantle log` prints the whole log of the current shell. `mantle log -f` follows
-it. For more detail, restart with `mantle -v` (info) or `mantle -vv` (debug, including errors from
-`on_change` and `timer` callbacks). `mantle log | grep config` keeps only the config's own `log.*`
+it. Errors raised in callbacks are warnings, so they show by default. For more detail, restart with
+`mantle -v` (info) or `mantle -vv` (debug). `mantle log | grep config` keeps only the config's own `log.*`
 lines.
 
 **…debug a reload that did nothing?** Run `mantle check`, then `mantle log`. The full sequence is
@@ -287,10 +292,10 @@ directory in an editor with lua-language-server.
 | Trap | Fix |
 | :--- | :--- |
 | `mantle set label true` stores a boolean, `mantle set count 3` a number | Quote JSON strings: `mantle set label '"true"'` |
-| A keybind does nothing and the terminal shows no error | `set`/`toggle` refusals go to the log. Run `mantle log` and look for `asked to write state` |
+| A keybind does nothing and the terminal shows no error | The compositor discards the command's stderr. Run it in a terminal, or `mantle log` and look for `asked to write state` |
 | `mantle toggle modal` does nothing on a string state | A bare toggle needs a boolean. Pass the value: `mantle toggle modal settings` |
 | `mantle call x` says no action exists after a broken save | A failed reload clears actions. Fix the config and save ([runtime](runtime.md#evaluation-reload-and-generations)) |
-| `mantle check` passes, the shell shows nothing | `check` does not lay out node trees. Read `mantle log` for the layout warning |
+| `mantle check` passes, the shell shows nothing | `check` lays out with every capability `nil`, so a branch that needs data went unchecked. Read `mantle log` for the layout warning |
 | Two bars on screen | Two shells are running. `mantle list`, then stop one |
 | `mantle -c dir list` is refused | `list` shows every config's shells; drop `-c` |
 | `mantle log -f` exits at once | That shell has stopped. The command printed its last run |

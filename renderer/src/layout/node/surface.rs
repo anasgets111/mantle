@@ -47,6 +47,7 @@ pub fn parse_anchor(properties: &PropMap) -> Result<Anchor, LayoutError> {
     let Value::Table(table) = value else {
         return Err(invalid("anchor", format!("expected a table, got {}", preview_for_error(value))));
     };
+    only_keys("anchor", table, &["top", "right", "bottom", "left"])?;
     let edge = |key: &str| -> Result<bool, LayoutError> {
         let v: Value = table.get(key).map_err(|e| invalid("anchor", e.to_string()))?;
         match v {

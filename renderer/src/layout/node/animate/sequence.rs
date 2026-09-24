@@ -5,7 +5,7 @@ use mlua::Value;
 
 use super::easing::Easing;
 use super::{Animatable, parse_easing, parse_millis};
-use crate::layout::node::{LayoutError, invalid, preview_for_error, value_as_f32};
+use crate::layout::node::{LayoutError, invalid, only_keys, preview_for_error, value_as_f32};
 
 /// One stop in a keyframe list: a value, and how the segment arriving at it is timed. The first
 /// frame's own `duration` and `easing` are never read -- nothing eases into a beginning.
@@ -101,6 +101,7 @@ pub(super) fn parse_sequence(
             // A frame that names nothing of its own is still a table when the value is one, so an
             // explicit `value` key is what tells the two apart.
             Value::Table(table) if table.contains_key("value").unwrap_or(false) => {
+                only_keys(&at, &table, &["value", "duration", "easing"])?;
                 let value: Value = table.get("value").map_err(|e| invalid(&at, e.to_string()))?;
                 let own: Value = table.get("duration").map_err(|e| invalid(&at, e.to_string()))?;
                 // Absent takes the entry's. Zero is allowed where the entry's own is not: a

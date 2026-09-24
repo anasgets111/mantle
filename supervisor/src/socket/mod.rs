@@ -393,16 +393,17 @@ async fn handle_connection(
                     }
                     // Stamped here because this is where the waiting peer's write half is; `main`
                     // sees frames, not the connections they arrived on.
-                    if let RendererFrame::Call(call) = &mut frame {
+                    let waiting = match &mut frame {
+                        RendererFrame::Call(call) => Some((&mut call.id, &call.name)),
+                        RendererFrame::SetState { id, set } => Some((id, &set.name)),
+                        _ => None,
+                    };
+                    if let Some((slot, name)) = waiting {
                         let Some(id) = routes.open(reply_tx.clone()) else {
-                            debug!(
-                                "refusing `mantle call {}`; {MAX_PENDING_CALLS} calls are already \
-                                 waiting",
-                                call.name
-                            );
+                            debug!("refusing `mantle` on {name}; {MAX_PENDING_CALLS} calls are already waiting");
                             continue;
                         };
-                        call.id = id;
+                        *slot = id;
                         let mut outstanding = opened.lock().expect("opened calls mutex poisoned");
                         // Answered ids are already gone from the routing table, so this list is
                         // only the ones cleanup still has to drop. Pruning here bounds a long-lived
@@ -459,7 +460,7 @@ async fn handle_connection(
 fn refuse_frame(control_client: bool, generation_id: u32, frame: &RendererFrame) -> Option<String> {
     if control_client {
         return match frame {
-            RendererFrame::SetState(_) | RendererFrame::Call(_) => None,
+            RendererFrame::SetState { .. } | RendererFrame::Call(_) => None,
             // `RendererFrame` derives `Debug` and `SecureSubmit` redacts its own secret, so this
             // cannot print a password.
             other => Some(format!("a control client may only send SetState or Call, not {other:?}")),
@@ -510,10 +511,10 @@ mod tests {
     fn a_control_client_may_send_only_the_frame_the_cli_actually_sends() {
         // Otherwise `mantle set`'s socket is also a way to submit to PAM or drive capability
         // commands as though it were the shell.
-        let set_state = RendererFrame::SetState(shared::SetState {
-            name: "launcher_open".to_string(),
-            write: shared::StateWrite::Toggle,
-        });
+        let set_state = RendererFrame::SetState {
+            id: 0,
+            set: shared::SetState { name: "launcher_open".to_string(), write: shared::StateWrite::Toggle },
+        };
         assert!(refuse_frame(true, shared::CONTROL_CLIENT_GENERATION, &set_state).is_none());
         let call = RendererFrame::Call(shared::Call { id: 0, name: "rec.toggle".into(), arguments: Vec::new() });
         assert!(refuse_frame(true, shared::CONTROL_CLIENT_GENERATION, &call).is_none());
@@ -725,6 +726,30 @@ mod tests {
 
         assert_eq!(received.generation_id, 5);
         assert_eq!(received.frame, frame);
+    }
+
+    /// `mantle set`'s exit code rides on this: its write is routed like a call, so the refusal the
+    /// Renderer answers with reaches the waiting client.
+    #[tokio::test]
+    async fn a_control_clients_state_write_is_answered_like_a_call() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("control.sock");
+        let (_registry, routes, mut inbound, _connected) = spawn_listener(&path).unwrap();
+
+        let mut client = UnixStream::connect(&path).await.unwrap();
+        let handshake = ConnectionHandshake { generation_id: shared::CONTROL_CLIENT_GENERATION };
+        framing::write_json_frame(&mut client, &handshake).await.unwrap();
+        let set = shared::SetState { name: "nope".into(), write: shared::StateWrite::Toggle };
+        framing::write_json_frame(&mut client, &RendererFrame::SetState { id: 0, set }).await.unwrap();
+
+        let received = inbound.recv().await.expect("the write is forwarded");
+        let RendererFrame::SetState { id, .. } = received.frame else { panic!("{:?}", received.frame) };
+        assert!(routes.is_pending(id), "the listener stamps a routed id, not the client's zero");
+        routes.dispatched(id, 0);
+        let refusal = shared::CallResult { id, outcome: shared::CallOutcome::Failed("no state".into()) };
+        routes.answer(0, &refusal).unwrap();
+        let answer: shared::SupervisorFrame = framing::read_json_frame(&mut client).await.unwrap();
+        assert_eq!(answer, shared::SupervisorFrame::CallResult(refusal));
     }
 
     /// ADR-0070 decision 3: an unknown capability name is dropped, and the connection lives on.

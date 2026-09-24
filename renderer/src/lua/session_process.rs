@@ -29,6 +29,8 @@ pub fn register(lua: &Lua) -> mlua::Result<()> {
     lua.globals().set(
         "session_process",
         lua.create_function(|lua, spec: Table| {
+            super::marshal::only_keys(&spec, &["name", "stop_signal"])
+                .map_err(|detail| mlua::Error::runtime(format!("session_process: {detail}")))?;
             let name: String = spec.get("name")?;
             if name.is_empty() {
                 return Err(mlua::Error::runtime(

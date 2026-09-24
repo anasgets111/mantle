@@ -481,7 +481,7 @@ fn render_page(capability: &str, payload: &Schema, actions: Option<&Schema>, int
                 }
             }
         }
-        None => out.push_str("None: read-only, so an `invoke` is logged and dropped.\n"),
+        None => out.push_str("None: read-only, so an `invoke` raises.\n"),
     }
     let outro = outro.trim();
     if !outro.is_empty() {
@@ -613,7 +613,7 @@ const RENDERER_SOURCED: &str = r#"
 ---| "flipped_270" # Mirrored, then rotated 270 degrees counter-clockwise.
 
 ---@class RescueState
----@field is_rescue boolean The last evaluation or the startup apply failed, or the session lock was refused or ended; the previous scene stays up (ADR-0046). The next successful one clears it.
+---@field is_rescue boolean The last evaluation, apply or live update failed, or the session lock was refused or ended; the previous scene stays up (ADR-0046). The next reload that applies clears it.
 ---@field error_log string The Lua error, ready to draw; empty while `is_rescue` is false.
 
 ---@class MantleVersion
@@ -623,7 +623,7 @@ const RENDERER_SOURCED: &str = r#"
 "#;
 
 const MANTLE_TAIL: &str = r#"---@field screens ReadOnlyCapability<Screen[]> Connected outputs from the Renderer. `{}` rather than `nil` at first evaluation (ADR-0041). [docs]({DOCS}capabilities/index.html#renderer-members)
----@field rescue ReadOnlyCapability<RescueState> Whether the last evaluation, the startup apply or the session lock failed; the previous scene stays up (ADR-0046). [docs]({DOCS}capabilities/index.html#renderer-members)
+---@field rescue ReadOnlyCapability<RescueState> Whether the last evaluation, apply, live update or the session lock failed; the previous scene stays up (ADR-0046). [docs]({DOCS}capabilities/index.html#renderer-members)
 ---@field version MantleVersion The engine's version. Not a signal. [docs]({DOCS}capabilities/index.html#renderer-members)
 ---@field config_dir string Directory `shell.lua` was loaded from, for naming files shipped beside it. Not a signal. [docs]({DOCS}capabilities/index.html#renderer-members)
 mantle = {}
@@ -674,7 +674,7 @@ mod tests {
         );
     }
 
-    /// The supervisor drops a read-only capability's commands, so `invoke` type-checks a no-op.
+    /// A read-only capability's `invoke` raises in the Renderer, so its class must not offer one.
     #[test]
     fn read_only_classes_offer_no_invoke() {
         let generated = super::render();
@@ -702,5 +702,19 @@ mod tests {
         let declared: BTreeSet<&str> = super::capability_schemas().into_iter().map(|(name, ..)| name).collect();
         let expected: BTreeSet<&str> = shared::Capability::ALL.iter().map(|c| c.as_str()).collect();
         assert_eq!(declared, expected, "capability_schemas is out of step with shared::Capability::ALL");
+    }
+
+    /// The Renderer refuses an `invoke` name off `shared::Capability::actions`, so each list must be
+    /// exactly its serde action enum's variants.
+    #[test]
+    fn the_renderer_action_names_are_the_serde_variants() {
+        for (capability, _, actions) in super::capability_schemas() {
+            let variants: Vec<String> = actions.map_or_else(Vec::new, |actions| {
+                let actions = serde_json::to_value(actions).expect("a schema serializes");
+                super::action_list(&actions).into_iter().map(|(name, ..)| name).collect()
+            });
+            let listed = shared::Capability::from_name(capability).expect("a roster name").actions();
+            assert_eq!(variants, listed, "shared::Capability::actions for {capability}");
+        }
     }
 }

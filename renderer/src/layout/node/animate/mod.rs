@@ -14,7 +14,7 @@ use std::time::{Duration, Instant};
 use mlua::{Lua, Value};
 
 use super::style::{axis_default, parse_percent, range_of};
-use super::{LayoutError, PropMap, Rgba, invalid, parse_hex_color, preview_for_error, value_as_f32};
+use super::{LayoutError, PropMap, Rgba, invalid, only_keys, parse_hex_color, preview_for_error, value_as_f32};
 
 mod easing;
 mod sequence;
@@ -109,6 +109,13 @@ pub fn parse_animate(kind: &str, properties: &PropMap) -> Result<BTreeMap<&'stat
             continue;
         }
         let name = animatable_name(kind, &property, "animate")?;
+        if let Value::Table(spec) = &entry {
+            only_keys(
+                &format!("animate.{name}"),
+                spec,
+                &["duration", "delay", "easing", "from", "keyframes", "loops", "spring"],
+            )?;
+        }
         out.insert(name, parse_spec(name, &entry)?);
     }
     Ok(out)
@@ -231,6 +238,7 @@ fn parse_easing(field: &str, value: &Value) -> Result<Easing, LayoutError> {
         Value::Table(table) => {
             let steps: Value = table.get("steps").map_err(|e| invalid(field, e.to_string()))?;
             if !steps.is_nil() {
+                only_keys(field, table, &["steps"])?;
                 let steps = value_as_f32(field, &steps)?
                     .ok_or_else(|| invalid(field, format!("`steps` is a count, got {}", preview_for_error(&steps))))?;
                 if steps < 1.0 || steps > 1000.0 || steps.fract() != 0.0 {

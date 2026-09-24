@@ -37,7 +37,7 @@ properties, plus:
 
 | Property | Values | Default | Behaviour |
 | :--- | :--- | :--- | :--- |
-| `children` | Array of node tables, up to 10000; a `nil` hole ends it | None | Stacked in order: later children paint over earlier ones. Bind a signal of an array to [switch views](index.md#switching-views-with-ids) |
+| `children` | Array of node tables, up to 10000; a `nil` or `false` entry is an error | None | Stacked in order: later children paint over earlier ones. Bind a signal of an array to [switch views](index.md#switching-views-with-ids) |
 
 Without `width` and `height`, a `rect` is the union of its children, and 0 × 0 with none.
 

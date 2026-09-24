@@ -146,6 +146,78 @@ impl Capability {
     }
 }
 
+impl Capability {
+    /// The `invoke` action names, empty for a read-only capability. The Renderer refuses any other
+    /// name at call time; the Supervisor still validates arguments. `supervisor/src/stubs.rs` pins
+    /// each list to its serde action enum.
+    pub const fn actions(self) -> &'static [&'static str] {
+        match self {
+            Capability::Applications => &["refresh", "launch", "open_url"],
+            Capability::Audio => &[
+                "set_volume",
+                "set_muted",
+                "toggle_mute",
+                "set_balance",
+                "set_default_sink",
+                "set_default_source",
+                "set_source_volume",
+                "set_source_muted",
+                "toggle_source_mute",
+                "set_app_volume",
+                "set_app_muted",
+                "set_bluetooth_profile",
+            ],
+            Capability::Bluetooth => &[
+                "set_enabled",
+                "set_discoverable",
+                "start_discovery",
+                "stop_discovery",
+                "pair",
+                "connect",
+                "disconnect",
+                "forget",
+                "answer_pairing",
+            ],
+            Capability::Brightness => &["set"],
+            Capability::Files => &["watch", "unwatch"],
+            Capability::Processes => &["declare", "start", "signal", "stop"],
+            Capability::Keyboard => &["set_backlight", "switch_layout"],
+            Capability::Lock => &["lock", "set_unlock_animation"],
+            Capability::Mpris => &["control", "seek", "seek_relative"],
+            Capability::Network => &[
+                "set_networking_enabled",
+                "set_wifi_enabled",
+                "set_ethernet_enabled",
+                "scan",
+                "connect",
+                "cancel_connect",
+                "abort_connect",
+                "forget",
+                "disconnect_wifi",
+            ],
+            Capability::Notifications => &[
+                "dismiss",
+                "invoke_action",
+                "reply",
+                "set_sound",
+                "set_dnd",
+                "set_quiet",
+                "set_app_muted",
+                "hold_expiry",
+            ],
+            Capability::Power => &["set_profile"],
+            Capability::Sysinfo => &["configure"],
+            Capability::Storage => &["open", "set"],
+            Capability::Polkit => &["cancel"],
+            Capability::Tray => &["activate", "secondary_activate", "scroll", "activate_menu_item", "menu_will_show"],
+            Capability::Updates => &["check", "configure", "install"],
+            Capability::Workspaces => &["focus", "toggle_special"],
+            Capability::Windows => &["focus", "close", "set_fullscreen", "set_minimized", "set_maximized"],
+            Capability::Battery | Capability::Idle | Capability::Privacy | Capability::System => &[],
+        }
+    }
+}
+
 impl std::fmt::Display for Capability {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(self.as_str())
@@ -372,7 +444,11 @@ pub enum SupervisorFrame {
     IdleEvent(IdleEvent),
     SetSessionLock(SetSessionLock),
     /// A control client's `state` write, forwarded to the authoritative generation (ADR-0112).
-    SetState(SetState),
+    /// Answered by a [`CallResult`] with this `id`: `Returned(null)` or the refusal.
+    SetState {
+        id: u64,
+        set: SetState,
+    },
     /// A control client's `mantle call`, forwarded to the authoritative generation (ADR-0197).
     Call(Call),
     /// That call's answer, routed back to the waiting control client (ADR-0197).
@@ -390,9 +466,12 @@ pub enum RendererFrame {
     /// Control-client frame, not a Renderer frame: `mantle set`/`mantle toggle` uses
     /// [`CONTROL_CLIENT_GENERATION`] (ADR-0112). It stays in this enum because the listener has one
     /// decoder for every peer; a separate peer type would duplicate it.
-    SetState(SetState),
-    /// Control-client frame like [`Self::SetState`]: `mantle call` (ADR-0197). Its `id` is zero on
-    /// the way in; the Supervisor assigns the real one when it forwards.
+    SetState {
+        id: u64,
+        set: SetState,
+    },
+    /// Control-client frame like [`Self::SetState`]: `mantle call` (ADR-0197). Its `id`, like
+    /// `SetState`'s, is zero on the way in; the Supervisor assigns the real one when it forwards.
     Call(Call),
     /// A generation answering a forwarded [`Call`] (ADR-0197).
     CallResult(CallResult),

@@ -270,7 +270,7 @@ secret or its length.
 | `{ capability = "lock", action = "authenticate" }` | Checked by PAM; success unlocks the session. A `lock` surface needs exactly one reachable field with this target ([lock](../surfaces/lock.md)) |
 | `{ capability = "polkit", action = "authenticate" }` | Answers the current polkit request ([polkit](../capabilities/polkit.md)) |
 | `{ capability = "network", action = "connect" }` | The password for the network being joined ([network](../capabilities/network.md)) |
-| Any other pair of non-empty strings | Accepted by the field, then dropped and wiped by the Supervisor |
+| Any other pair | Refused when the field is laid out, so no password is typed into nowhere |
 
 | Rule | Detail |
 | :--- | :--- |

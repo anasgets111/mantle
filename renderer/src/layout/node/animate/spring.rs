@@ -3,7 +3,7 @@ use std::time::{Duration, Instant};
 use mlua::Value;
 
 use super::{Animatable, Motion, Tween};
-use crate::layout::node::{LayoutError, invalid, preview_for_error, value_as_f32};
+use crate::layout::node::{LayoutError, invalid, only_keys, preview_for_error, value_as_f32};
 
 /// Which closed-form solution a spring's constants put it in. Underdamped rings past the target,
 /// overdamped crawls in without reaching it, and the boundary between them is its own formula
@@ -237,6 +237,7 @@ pub(super) fn parse_spring(field: &str, spec: &mlua::Table) -> Result<Option<Spr
             )),
         };
     };
+    only_keys(&format!("{field}.spring"), &spring, &["stiffness", "damping"])?;
     let read = |name: &str, highest: f32| -> Result<f32, LayoutError> {
         let at = format!("{field}.spring.{name}");
         let value: Value = spring.get(name).map_err(|e| invalid(&at, e.to_string()))?;

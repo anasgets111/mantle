@@ -17,7 +17,7 @@ use std::collections::HashSet;
 use std::rc::Rc;
 
 use mlua::{Function, Lua, LuaSerdeExt, MultiValue, UserData, UserDataMethods, Value};
-use shared::{CommandEnvelope, CommandParams, RendererFrame, debug, error};
+use shared::{CommandEnvelope, CommandParams, RendererFrame, debug, error, warn};
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::lua::signal::{CpuBudget, DirtyFlag, LiveSignalHandle, Signal};
@@ -245,7 +245,7 @@ impl CapabilityHandle {
                 budget.check_not_exceeded()
             });
             if let Err(err) = outcome {
-                debug!("mantle.{}:on_change handler raised, ignoring it: {err}", self.name);
+                warn!("mantle.{}:on_change handler raised, ignoring it: {err}", self.name);
             }
         }
     }
@@ -270,6 +270,18 @@ impl UserData for Capability {
         });
         // No `set`: capability state is read-only (ADR-0044 decision 5); use `invoke`.
         methods.add_method("invoke", |lua, this, (action, args): (String, MultiValue)| {
+            // Names only: the Supervisor's serde enums own argument checks (`supervisor/src/action.rs`).
+            let actions = shared::Capability::from_name(&this.name).map_or(&[][..], shared::Capability::actions);
+            if actions.is_empty() {
+                return Err(mlua::Error::runtime(format!("mantle.{} is read-only and has no actions", this.name)));
+            }
+            if !actions.contains(&action.as_str()) {
+                return Err(mlua::Error::runtime(format!(
+                    "mantle.{}:invoke(\"{action}\"): unknown action; it takes {}",
+                    this.name,
+                    actions.join(", ")
+                )));
+            }
             let mut arguments = Vec::with_capacity(args.len());
             for (index, value) in args.into_iter().enumerate() {
                 // Reject here instead of dropping the slot; a config error naming argument 3 is
@@ -296,11 +308,11 @@ pub(crate) mod tests {
 
     use super::*;
 
-    /// Test VM with an unowned `mantle.probe`; the roster name is irrelevant to the write path.
+    /// Test VM with `audio` bound at `mantle.probe`; `invoke` checks the roster name's actions.
     fn lua_with_capability(generation_id: u32) -> (Lua, CapabilityHandle, mpsc::UnboundedReceiver<RendererFrame>) {
         let lua = Lua::new();
         let (tx, rx) = mpsc::unbounded_channel();
-        let (capability, handle) = Capability::new("probe", DirtyFlag::new(), CommandSender::new(generation_id, tx));
+        let (capability, handle) = Capability::new("audio", DirtyFlag::new(), CommandSender::new(generation_id, tx));
         let table = lua.create_table().unwrap();
         table.set("probe", capability).unwrap();
         lua.globals().set("mantle", table).unwrap();
@@ -337,7 +349,7 @@ pub(crate) mod tests {
 
         let envelope = queued_command(&mut rx).expect("invoke must queue a command");
         assert_eq!(envelope.params.generation_id, 4);
-        assert_eq!(envelope.params.capability, "probe");
+        assert_eq!(envelope.params.capability, "audio");
         assert_eq!(envelope.params.action, "set_volume");
         assert_eq!(envelope.params.arguments, vec![serde_json::json!(0.75)]);
         // No snapshot is hydrated; `bump_revision` starts at 1, so `0` is correct.
@@ -362,7 +374,7 @@ pub(crate) mod tests {
         // `null` would not deserialize into `Vec<serde_json::Value>`.
         let (lua, _handle, mut rx) = lua_with_capability(0);
 
-        lua.load(r#"mantle.probe:invoke("lock")"#).exec().unwrap();
+        lua.load(r#"mantle.probe:invoke("toggle_mute")"#).exec().unwrap();
 
         assert_eq!(queued_command(&mut rx).unwrap().params.arguments, Vec::<serde_json::Value>::new());
     }
@@ -371,7 +383,7 @@ pub(crate) mod tests {
     fn each_invoke_gets_a_distinct_json_rpc_id() {
         let (lua, _handle, mut rx) = lua_with_capability(0);
 
-        lua.load(r#"mantle.probe:invoke("a"); mantle.probe:invoke("b")"#).exec().unwrap();
+        lua.load(r#"mantle.probe:invoke("toggle_mute"); mantle.probe:invoke("toggle_mute")"#).exec().unwrap();
 
         assert_eq!(queued_command(&mut rx).unwrap().id, 0);
         assert_eq!(queued_command(&mut rx).unwrap().id, 1);
@@ -381,10 +393,24 @@ pub(crate) mod tests {
     fn an_unmarshallable_argument_is_a_config_error_naming_its_slot_and_queues_nothing() {
         let (lua, _handle, mut rx) = lua_with_capability(0);
 
-        let err = lua.load(r#"mantle.probe:invoke("connect", "ssid", function() end)"#).exec().unwrap_err();
+        let err = lua.load(r#"mantle.probe:invoke("set_app_volume", "firefox", function() end)"#).exec().unwrap_err();
 
         assert!(err.to_string().contains("argument 2"), "the error must name the offending slot: {err}");
         assert!(rx.try_recv().is_err(), "a refused argument must not queue a half-built command");
+    }
+
+    #[test]
+    fn an_unknown_or_read_only_action_is_a_config_error_and_queues_nothing() {
+        let (lua, _handle, mut rx) = lua_with_capability(0);
+        let err = lua.load(r#"mantle.probe:invoke("set_volumee", 1)"#).exec().unwrap_err();
+        assert!(err.to_string().contains("unknown action; it takes set_volume,"), "{err}");
+
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let (battery, _) = Capability::new("battery", DirtyFlag::new(), CommandSender::new(0, tx));
+        lua.globals().get::<mlua::Table>("mantle").unwrap().set("battery", battery).unwrap();
+        let err = lua.load(r#"mantle.battery:invoke("refresh")"#).exec().unwrap_err();
+        assert!(err.to_string().contains("mantle.battery is read-only"), "{err}");
+        assert!(queued_command(&mut rx).is_none(), "a refused name must not reach the Supervisor");
     }
 
     #[test]

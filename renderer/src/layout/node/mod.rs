@@ -162,6 +162,11 @@ impl LayoutError {
     }
 }
 
+/// [`marshal::only_keys`] for a property's sub-table, naming the property.
+pub(crate) fn only_keys(property: &str, table: &mlua::Table, keys: &[&str]) -> Result<(), LayoutError> {
+    marshal::only_keys(table, keys).map_err(|detail| invalid(property, detail))
+}
+
 /// The `Signal` held unresolved in `property`, or `None` for any other value. A structural slot
 /// (`hover`, `scroll`, `geometry`) holding something else is inert rather than an error: the
 /// engine's write handles refuse every kind it must not write.
@@ -397,6 +402,25 @@ pub fn resolve_properties(mut properties: PropMap, kind: &str, lua: &Lua) -> Res
             }
         }
     }
+    // Callbacks and the two input flags have no parser: the input handlers read them where they
+    // fire, where a wrong type could only be ignored. Sorted like the loop above.
+    let mut typed: Vec<&'static str> = properties
+        .keys()
+        .copied()
+        .filter(|property| property.starts_with("on_") || matches!(*property, "submit" | "autofocus"))
+        .collect();
+    typed.sort_unstable();
+    for property in typed {
+        let value = &properties[property];
+        let (ok, expected) = if property.starts_with("on_") {
+            (matches!(value, Value::Function(_)), "a function")
+        } else {
+            (matches!(value, Value::Boolean(_)), "a boolean")
+        };
+        if !ok {
+            return Err(invalid(property, format!("expected {expected}, got {}", preview_for_error(value))));
+        }
+    }
     // `on_hover` fires on the crossing its node's own `hover` signal reports, so that signal is
     // where the "was it hovered last pass" memory lives and there is no second one (ADR-0095).
     // Without a slot the callback is unreachable, and this is the kind of silence
@@ -579,6 +603,23 @@ mod tests {
 
         assert!(matches!(resolve_properties(node.properties, "rect", &lua).unwrap_err(),
                 LayoutError::InvalidProperty { property, .. } if property == "on_hover"));
+    }
+
+    #[test]
+    fn a_wrong_typed_callback_or_input_flag_is_refused_by_name() {
+        let lua = mlua::Lua::new();
+        for (source, property, expected) in [
+            (r#"{ kind = "button", on_click = "quit" }"#, "on_click", "expected a function, got String(\"quit\")"),
+            (r#"{ kind = "button", submit = 1 }"#, "submit", "expected a boolean, got Integer(1)"),
+            (r#"{ kind = "textfield", autofocus = "yes" }"#, "autofocus", "expected a boolean, got String(\"yes\")"),
+        ] {
+            let table: mlua::Table = lua.load(format!("return {source}")).eval().unwrap();
+            let err = resolve_properties(props_from_table(&table), "button", &lua).unwrap_err();
+            assert!(
+                matches!(&err, LayoutError::InvalidProperty { property: p, detail } if p == property && detail == expected),
+                "{source}: {err}"
+            );
+        }
     }
 
     #[test]

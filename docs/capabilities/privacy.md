@@ -36,7 +36,7 @@ One app using a camera, microphone or screen capture.
 
 ## Actions
 
-None: read-only, so an `invoke` is logged and dropped.
+None: read-only, so an `invoke` raises.
 
 ## Backend
 

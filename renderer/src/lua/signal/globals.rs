@@ -1,5 +1,5 @@
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 use std::time::Duration;
 
@@ -50,9 +50,17 @@ pub fn any_hover_registered(lua: &Lua) -> bool {
 /// ADR-0044 decision 5 state registry: name preserves last-click values across in-place reloads;
 /// the stored literal detects an edited initial, which wins over live state (the wallpaper case).
 /// In `Lua::set_app_data`, so ADR-0044 decision 4's persistent VM preserves it and a replaced
-/// Renderer starts without it.
+/// Renderer starts without it. The set is the names declared since [`begin_evaluation`].
 #[derive(Default)]
-struct StateRegistry(HashMap<String, (Signal, Value)>);
+struct StateRegistry(HashMap<String, (Signal, Value)>, HashSet<String>);
+
+/// Called by `Loader` before each evaluation: only a second, different seed within one evaluation
+/// is a conflict, while one differing from the last evaluation's is an edit.
+pub fn begin_evaluation(lua: &Lua) {
+    if let Some(mut registry) = lua.app_data_mut::<StateRegistry>() {
+        registry.1.clear();
+    }
+}
 
 /// `hover(name)` registry (ADR-0062 decision 2), name-keyed across reloads so a tooltip stays open
 /// through
@@ -161,11 +169,20 @@ pub fn register(lua: &Lua, dirty: DirtyFlag) -> mlua::Result<()> {
     lua.globals().set(
         "state",
         lua.create_function(move |lua, (name, initial): (String, Value)| {
-            let existing = crate::lua::app_data_or_default::<StateRegistry>(lua).0.get(&name).cloned();
+            let (existing, repeated) = {
+                let mut registry = crate::lua::app_data_or_default::<StateRegistry>(lua);
+                (registry.0.get(&name).cloned(), !registry.1.insert(name.clone()))
+            };
             if let Some((signal, seeded)) = existing {
                 // Existing name wins across reload; an edited `initial` is later than `set` and
-                // reseeds it (ADR-0044 decision 5 amendment).
+                // reseeds it (ADR-0044 decision 5 amendment). Within one evaluation, two modules
+                // disagreeing would reseed on every reload, so that is refused.
                 if literal_was_edited(&initial, &seeded) == Some(true) {
+                    if repeated {
+                        return Err(mlua::Error::runtime(format!(
+                            "state(\"{name}\", ...) is declared twice in this evaluation with different initial values, {seeded:?} then {initial:?}; expected one seed per name"
+                        )));
+                    }
                     signal.reseed(initial.clone()).map_err(|err| {
                         mlua::Error::runtime(format!(
                             "state(\"{name}\", ...) refused its new initial value at the marshalling boundary: {err}"
@@ -314,15 +331,9 @@ mod tests {
     fn a_changed_initial_re_seeds_the_signal_and_marks_dirty() {
         // D5 amendment: changed literal is a later write than `set`; this is the wallpaper path.
         let (lua, dirty) = lua_with_state();
-        let result: i64 = lua
-            .load(
-                r#"
-                state("open", 0):set(5)
-                return state("open", 99):get()
-                "#,
-            )
-            .eval()
-            .unwrap();
+        lua.load(r#"state("open", 0):set(5)"#).exec().unwrap();
+        begin_evaluation(&lua);
+        let result: i64 = lua.load(r#"return state("open", 99):get()"#).eval().unwrap();
         assert_eq!(result, 99, "an edited literal must win over the value `:set()` left behind");
         assert!(dirty.take(), "a re-seed must mark the scene dirty, or nothing repaints from it");
     }
@@ -332,18 +343,24 @@ mod tests {
         // Remember the new literal; the old one would re-seed every later evaluation and clobber
         // `set` forever.
         let (lua, _dirty) = lua_with_state();
-        let result: i64 = lua
-            .load(
-                r#"
-                state("open", 0)
-                state("open", 99)
-                state("open", 99):set(7)
-                return state("open", 99):get()
-                "#,
-            )
-            .eval()
-            .unwrap();
+        lua.load(r#"state("open", 0)"#).exec().unwrap();
+        for _ in 0..2 {
+            begin_evaluation(&lua);
+            lua.load(r#"state("open", 99):set(7)"#).exec().unwrap();
+        }
+        let result: i64 = lua.load(r#"return state("open", 99):get()"#).eval().unwrap();
         assert_eq!(result, 7, "the second evaluation of an already-adopted literal is not another edit");
+    }
+
+    /// Two modules seeding one name differently would reseed it on every reload, each one
+    /// clobbering the other's value.
+    #[test]
+    fn two_different_seeds_for_one_name_in_one_evaluation_are_refused() {
+        let (lua, _dirty) = lua_with_state();
+        let err = lua.load(r#"state("mode", 1) state("mode", "s")"#).exec().unwrap_err().to_string();
+        assert!(err.contains(r#"state("mode", ...) is declared twice in this evaluation"#), "{err}");
+        begin_evaluation(&lua);
+        lua.load(r#"state("mode", "s") state("mode", "s")"#).exec().expect("the same seed twice agrees");
     }
 
     #[test]
@@ -382,15 +399,9 @@ mod tests {
     #[test]
     fn changing_a_literals_type_is_an_edit() {
         let (lua, _dirty) = lua_with_state();
-        let result: String = lua
-            .load(
-                r#"
-                state("kind", false):set("clicked")
-                return state("kind", "waiting"):get()
-                "#,
-            )
-            .eval()
-            .unwrap();
+        lua.load(r#"state("kind", false):set("clicked")"#).exec().unwrap();
+        begin_evaluation(&lua);
+        let result: String = lua.load(r#"return state("kind", "waiting"):get()"#).eval().unwrap();
         assert_eq!(result, "waiting", "two scalars of different types are a different literal");
     }
 

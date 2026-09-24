@@ -96,6 +96,9 @@ pub struct RendererClient {
     screens_payload: serde_json::Value,
     /// `rescue_handle`'s mirror for [`Self::set_rescue_state`] no-op detection.
     rescue_state: (bool, String),
+    /// The rescue is `applied_output`'s own apply failure, so a re-resolve that applies clears it.
+    /// Any other rescue waits for the next applied evaluation.
+    rescue_is_applied_output: bool,
     process_registry: ProcessRegistry,
     palette_registry: PaletteRegistry,
     /// Renderer-sourced `mantle.idle` threshold callbacks (ADR-0032).
@@ -172,6 +175,7 @@ impl RendererClient {
             screens_payload: namespace.screens_payload,
             // Matches `lua::namespace::build`'s initial rescue signal.
             rescue_state: (false, String::new()),
+            rescue_is_applied_output: false,
             process_registry,
             palette_registry,
             idle_registry: namespace.idle,
@@ -198,6 +202,7 @@ impl RendererClient {
     /// `crate::wayland::App`'s `SessionLockHandler` (ADR-0052 decision 4), used for refused locks
     /// and both `finished` cases, the only user-facing path there.
     pub fn set_rescue_state(&mut self, is_rescue: bool, error_log: &str) {
+        self.rescue_is_applied_output = false;
         if self.rescue_state.0 == is_rescue && self.rescue_state.1 == error_log {
             return;
         }
@@ -459,17 +464,30 @@ impl RendererClient {
             SupervisorFrame::IdleEvent(IdleEvent { generation_id: _, threshold_sec, state }) => {
                 self.idle_registry.dispatch_event(threshold_sec, state);
             }
-            // ADR-0112: `mantle set`/`mantle toggle`. Refuse by name to stderr, the only place a
-            // keybind mistake can be reported; the write dirties the scene.
-            SupervisorFrame::SetState(set) => {
-                if let Err(why) = lua::signal::write_state(self.lua(), &set) {
-                    warn!("`mantle` asked to write state {:?} and was refused: {why}", set.name);
+            // ADR-0112: `mantle set`/`mantle toggle`. The refusal goes to the log and back to the
+            // waiting client, which exits non-zero with it; the write dirties the scene.
+            SupervisorFrame::SetState { id, set } => {
+                let outcome = match lua::signal::write_state(self.lua(), &set) {
+                    Ok(()) => shared::CallOutcome::Returned(serde_json::Value::Null),
+                    Err(why) => {
+                        warn!("`mantle` asked to write state {:?} and was refused: {why}", set.name);
+                        shared::CallOutcome::Failed(why)
+                    }
+                };
+                if let Err(err) =
+                    self.commands.frames().send(RendererFrame::CallResult(shared::CallResult { id, outcome }))
+                {
+                    error!("failed to answer the write to state {:?}: {err}", set.name);
                 }
             }
             // ADR-0197: `mantle call`. Runs outside layout, like an `on_change` handler, and
             // always answers -- a caller is holding its socket open for this.
             SupervisorFrame::Call(call) => {
                 let outcome = lua::action::dispatch(self.lua(), &call.name, &call.arguments);
+                // A keybind's caller discards stderr, so the log is where a failure stays visible.
+                if let shared::CallOutcome::Failed(why) = &outcome {
+                    warn!("`mantle call {}` failed: {why}", call.name);
+                }
                 let result = shared::CallResult { id: call.id, outcome };
                 if let Err(err) = self.commands.frames().send(RendererFrame::CallResult(result)) {
                     error!("failed to answer `mantle call {}`: {err}", call.name);
@@ -490,7 +508,6 @@ impl RendererClient {
         match evaluate_and_specs(&self.loader, &self.shell_lua_path) {
             Ok((output, specs)) => {
                 debug!("shell.lua evaluated; applying it");
-                self.set_rescue_state(false, "");
                 self.state.pending = Some((output, specs));
                 true
             }
@@ -551,6 +568,12 @@ mod tests {
     pub(super) fn rescue_state(loader: &Loader) -> (bool, String) {
         let setup = "is_rescue, error_log = mantle.rescue:get().is_rescue, mantle.rescue:get().error_log";
         (probe(loader, setup, "is_rescue"), probe(loader, setup, "error_log"))
+    }
+
+    /// Pushes `mantle.workspace`, which is off the roster, so any payload hydrates it.
+    pub(super) fn push_workspace(client: &mut RendererClient, revision: u32, payload: serde_json::Value) {
+        let snapshot = StateSnapshot { capability: "workspace".to_string(), revision, payload };
+        client.apply_state_snapshot(snapshot).unwrap();
     }
 
     /// Client with a real outbound channel; return its receiver for queued socket frames.
@@ -2070,42 +2093,29 @@ mod tests {
     }
 
     #[test]
-    fn a_push_that_makes_a_property_invalid_keeps_the_prior_scene_and_does_not_enter_rescue() {
+    fn a_push_that_makes_a_property_invalid_keeps_the_prior_scene_in_rescue_until_a_pass_applies() {
         let dir = tempfile::tempdir().unwrap();
         let path =
             write_shell_lua(dir.path(), r#"return panel { id = "bar", layer = "Top", visible = mantle.workspace }"#);
         let (mut client, _outbound_rx) = test_client(&path);
-        client
-            .apply_state_snapshot(StateSnapshot {
-                capability: "workspace".to_string(),
-                revision: 1,
-                payload: serde_json::json!(true),
-            })
-            .unwrap();
+        push_workspace(&mut client, 1, serde_json::json!(true));
         run_startup(&mut client);
-        assert!(client.scene.surface("bar@TEST").unwrap().visible);
         assert_eq!(rescue_state(&client.loader), (false, String::new()));
 
         // `visible` requires boolean; a table makes re-resolve fail.
-        client
-            .apply_state_snapshot(StateSnapshot {
-                capability: "workspace".to_string(),
-                revision: 2,
-                payload: serde_json::json!({ "not": "a boolean" }),
-            })
-            .unwrap();
-
-        client.re_resolve_if_dirty();
+        push_workspace(&mut client, 2, serde_json::json!({ "not": "a boolean" }));
+        assert!(!client.re_resolve_if_dirty());
 
         assert!(
             client.scene.surface("bar@TEST").unwrap().visible,
             "Scene::apply rolls back to its pre-call state on error, so the prior good scene must survive"
         );
-        assert_eq!(
-            rescue_state(&client.loader),
-            (false, String::new()),
-            "a rejected pushed value is not a shell.lua evaluation failure and must not enter rescue"
-        );
+        let (is_rescue, error_log) = rescue_state(&client.loader);
+        assert!(is_rescue && error_log.contains("visible"), "a failed re-resolve must reach rescue: {error_log}");
+
+        push_workspace(&mut client, 3, serde_json::json!(false));
+        assert!(client.re_resolve_if_dirty());
+        assert_eq!(rescue_state(&client.loader), (false, String::new()), "the pass that applies clears it");
     }
 
     #[test]

@@ -34,7 +34,13 @@ pub fn resolve(name: &str, size: u16) -> Option<PathBuf> {
     if Path::new(name).is_absolute() {
         return Some(PathBuf::from(name));
     }
-    memoized(name, size, || freedesktop_icons::lookup(name).with_theme(theme()).with_size(size).with_cache().find())
+    memoized(name, size, || {
+        let found = freedesktop_icons::lookup(name).with_theme(theme()).with_size(size).with_cache().find();
+        if found.is_none() && super::first_failure(name) {
+            shared::warn!("icon {name:?} is in neither the {:?} theme nor its fallbacks", theme());
+        }
+        found
+    })
 }
 
 /// [`resolve`]'s memo, with the filesystem walk injected so tests can count it. A correct answer

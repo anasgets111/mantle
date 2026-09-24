@@ -8,7 +8,7 @@ use std::rc::Rc;
 use std::sync::mpsc::{Receiver, Sender};
 
 use mlua::{Function, IntoLua, Lua, Table, UserData, UserDataMethods, Value};
-use shared::{debug, warn};
+use shared::warn;
 
 use crate::image::quantize::quantize_file;
 use crate::image::thumbnails;
@@ -106,7 +106,7 @@ impl PaletteRegistry {
         for (id, swatches) in results {
             let Some(cb) = self.0.borrow_mut().pending.remove(&id) else { continue };
             if let Err(err) = cb.call::<()>(swatches) {
-                debug!("palette.quantize(id={id}): callback raised an error: {err}");
+                warn!("palette.quantize(id={id}): callback raised an error: {err}");
             }
         }
     }
@@ -139,6 +139,10 @@ pub fn register(lua: &Lua, registry: PaletteRegistry) -> mlua::Result<()> {
     table.set(
         "quantize",
         lua.create_function(move |_, (path, opts, cb): (String, Option<Table>, Function)| {
+            if let Some(opts) = &opts {
+                super::marshal::only_keys(opts, &["depth", "rescale"])
+                    .map_err(|detail| mlua::Error::runtime(format!("palette.quantize: options: {detail}")))?;
+            }
             let depth = opt(&opts, "depth", DEFAULT_DEPTH)?;
             let rescale = opt(&opts, "rescale", DEFAULT_RESCALE)?;
             let (Ok(depth @ 0..=8), Ok(rescale)) = (u8::try_from(depth), u32::try_from(rescale)) else {

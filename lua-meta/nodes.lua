@@ -164,7 +164,7 @@
 ---@field on_wheel? fun(rect: Rect, steps: number) Vertical wheel in notches, positive away from the user, fractional on touchpads (ADR-0116). The innermost handler or scroll container wins.
 
 ---@class ListProps: NodeBase
----@field source any[]|Bound Required array; bind a signal to rebuild on change. More than 10000 items without `limit` is an error.
+---@field source? any[]|Bound Array; bind a signal to rebuild on change. Missing or `nil` is an empty list. More than 10000 items without `limit` is an error.
 ---@field itemfn fun(item: any): Node Required. Builds a node for every built item, visible or not.
 ---@field key? fun(item: any): string Unique UTF-8 key per item; replaces the node's `id`. Duplicates are refused. Without it items match by position.
 ---@field limit? integer|Bound Build at most this many items, capped at 10000.

@@ -27,7 +27,7 @@ snapshot whenever its state changes, and the config never writes it.
 | :--- | :--- |
 | `:get()` | Snapshot of the last push; `nil` before the first |
 | `:map(fn)` | Derived signal; `fn` must handle `nil`. Capabilities also work as `computed` dependencies |
-| `:on_change(fn)` | `fn(current, previous)` once per pushed snapshot, after the push; `previous` is `nil` on the first. Runs under the 5 ms callback budget and may `:invoke`, `process.run` or write state. A raise is logged at debug (`-vv`) and the next handler still runs. Cleared before every evaluation |
+| `:on_change(fn)` | `fn(current, previous)` once per pushed snapshot, after the push; `previous` is `nil` on the first. Runs under the 5 ms callback budget and may `:invoke`, `process.run` or write state. A raise is logged as a warning and the next handler still runs. Cleared before every evaluation |
 | `:invoke(action, ...)` | Queues one command and returns nothing. Observe state for the outcome |
 
 There is no `:set`: capability state is read-only.
@@ -48,9 +48,10 @@ There is no `:set`: capability state is read-only.
 | Unknown name | `mantle.audioo` is plain `nil`, so the next `:get()` raises on that line |
 
 **Invoke.** Arguments are positional and must be JSON-shaped (numbers, strings, booleans, tables).
-A function or userdata argument raises at the call, naming its slot. Everything else is checked by
-the Supervisor: an unknown action, a wrong type or a wrong argument count is logged (`mantle log`)
-and dropped. A trailing `nil` counts as omitted.
+A function or userdata argument raises at the call, naming its slot, and so does an action name the
+capability does not have, listing the ones it does. Arguments are checked by the Supervisor: a
+wrong type or a wrong argument count is logged (`mantle log`) and dropped. A trailing `nil` counts
+as omitted.
 
 | Convention | Rule |
 | :--- | :--- |
@@ -71,8 +72,8 @@ fields, and typing `mantle.audio:invoke("` offers every action with its argument
 
 Each page holds what the capability is for, an example, its state (the table `:get()` returns,
 with every nested record type), every action, then recipes and gotchas. Actions are called as
-`mantle.<name>:invoke("action", args...)`, positionally in the order shown. A no-op or refused call
-is logged, never returned.
+`mantle.<name>:invoke("action", args...)`, positionally in the order shown. An unknown action name
+raises; a no-op or refused call is logged, never returned.
 
 | Name | What it gives you | Some actions (all on its page) | Backend | Notes |
 | :--- | :--- | :--- | :--- | :--- |
@@ -100,7 +101,7 @@ is logged, never returned.
 | [`storage`](storage.md) | Each `persistent_table` file | `open`, `set` | JSON files the config declares | Use `persistent_table` rather than invoking directly |
 | [`idle`](idle.md) | Whether anything holds the session awake, and who | none; [methods](idle.md#methods) instead | `ext_idle_notifier_v1`, logind inhibit, hosts `org.freedesktop.ScreenSaver` (session bus) | |
 
-`battery`, `privacy` and `system` have no actions: an `invoke` on them is logged and dropped.
+`battery`, `privacy` and `system` have no actions: an `invoke` on them raises.
 
 ### Renderer members
 
@@ -109,7 +110,7 @@ Four members come from the Renderer, not a backend, so they are never `nil` and 
 | Member | Kind | Contract |
 | :--- | :--- | :--- |
 | `mantle.screens` | Signal | Connected outputs (`name`, `x`, `y`, `width`, `height`, `scale`, ...). Seeded `{}`, so a loop runs zero times before the first output arrives |
-| `mantle.rescue` | Signal | `{ is_rescue, error_log }`. `is_rescue` turns `true` when an evaluation (startup or reload) raises, the startup scene fails to apply, or the session lock is refused or ends; `error_log` holds the drawable reason. The next successful evaluation clears it. A reload that evaluates but fails to apply only logs and leaves it `false` |
+| `mantle.rescue` | Signal | `{ is_rescue, error_log }`. `is_rescue` turns `true` when an evaluation (startup or reload) raises, its scene fails to apply, a live update fails, or the session lock is refused or ends; `error_log` holds the drawable reason. The next reload that applies clears it, and so does a later pass after a failed startup apply or live update |
 | `mantle.version` | Plain table | `{ major, minor, patch }` integers, for guarding newer API |
 | `mantle.config_dir` | Plain string | Directory `shell.lua` was loaded from, for naming files shipped beside it |
 
@@ -172,6 +173,7 @@ Each `mantle.screens` entry:
 | `attempt to index a nil value` in a `:map` at startup | Every capability is `nil` until its first push, and some stay `nil` (no backend). Guard the whole payload first |
 | Optional field missing | A JSON `null` arrives as an absent key. Fields marked `?` in `lua-meta/mantle.lua` need their own guard (`audio.volume` is `nil` with no default sink) |
 | `local ok = mantle.audio:invoke(...)` is always `nil` | `invoke` is fire-and-forget. Bind the state it changes; read `mantle log` for dropped commands |
+| `unknown action; it takes ...` | A typo in the action name. Pick one from the list the error prints |
 | An action silently does nothing | Wrong argument type or count, often a float where an `integer` goes (`brightness:invoke("set", 50.0)`). Round with `math.floor`, check `mantle log` |
 | `on_change` fires at startup with `previous == nil` | That push is learned state, not a change; return early. A replacement Renderer gets every snapshot replayed the same way. An in-place reload keeps the last value, so its next push has a real `previous` |
 | `on_change` fires with nothing visibly changed | It runs per push, and a push carries the whole snapshot. Compare the fields you care about |

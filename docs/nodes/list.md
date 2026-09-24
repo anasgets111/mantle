@@ -44,7 +44,7 @@ Keyed workspace buttons from a capability: [workspaces cookbook](../cookbook/wor
 
 | Property | Values | Default | Behaviour |
 | :--- | :--- | :--- | :--- |
-| `source` | Array, required. Bind a signal to rebuild on change | — | One item per element, in order; a `nil` hole ends it. More than 10000 elements is refused unless `limit` caps it |
+| `source` | Array. Bind a signal to rebuild on change | Empty | One item per element, in order; a `nil` hole ends it. Missing or `nil` (a capability before its first push) builds no items. More than 10000 elements is refused unless `limit` caps it |
 | `itemfn(item)` | Function, required | — | Returns one node table for an element |
 | `key(item)` | Function returning a UTF-8 string | None | Called with the element; the result becomes that item's `id`, replacing any `id` `itemfn` set. Duplicates are refused. Without it, items match by position |
 | `limit` | Non-negative integer | None | Build at most this many items. Values above 10000 act as 10000. `0` builds none |
@@ -103,7 +103,6 @@ local items = list {
 | `key` returning a number is refused | Return a string: `tostring(item.id)` |
 | Items lose their state when one is added at the top | Without `key` they match by position. Add `key` |
 | `background` on a `list` is refused | A list is not a box. Wrap it |
-| `source = nil` before data arrives raises | `source` is required; map `nil` to `{}` |
 
 See also: [row and column](row-column.md), [signals](../guide/signals.md), [input: scroll](../guide/input.md#scroll).
 

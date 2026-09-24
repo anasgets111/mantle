@@ -25,6 +25,27 @@ so everything since the rename from Obelisk sits under Unreleased.
 
 ### Changed
 
+- A callback (`on_*`) that is not a function, or a `submit` or `autofocus` that is not a boolean,
+  fails the pass instead of being ignored: write `cond and fn or nil`.
+- A `nil` or `false` entry in `children` fails the pass instead of dropping every child after it.
+- A table property (`padding`, `anchor`, `shadow_offset`, `min_size`, `anchor_rect`, an `animate`
+  entry, a text run, `secure_submit`, ...) and the `session_process`, `persistent_table` and
+  `palette.quantize` option tables refuse a key they do not take.
+- `secure_submit` takes only `lock`/`authenticate`, `polkit`/`authenticate` and `network`/`connect`.
+- Two surfaces with one `id`, or two different scalar seeds for one `state` name in one
+  evaluation, fail the evaluation.
+- A `list` without `source` builds no items instead of raising.
+- `mantle.<name>:invoke` raises on an action name the capability does not have, listing the
+  ones it has, and on a capability with no actions, instead of logging and dropping the command.
+- `mantle set` and `mantle toggle` wait for the shell and exit 1 with its reason when it refuses
+  the write ([CLI](guide/cli.md#values-and-arguments)).
+- `mantle check` lays the config out on stand-in outputs and fails on a layout error, and says
+  when the stubs `mantle init` wrote are out of date.
+- The `.luarc.json` from `mantle init` warns on unused locals and on the `type-check`,
+  `unbalanced`, `strict` and `global` diagnostic groups in every file.
+- `mantle.rescue` is set when a reload, or a live update, fails to apply, and clears only when a
+  scene applies. Errors raised in callbacks, failed spawns and failed `mantle call`s are warnings,
+  and a missing icon or undecodable image warns once per name.
 - `translate`, `scale`, `rotate` and `origin` tweens repaint without relayout.
 - Hover callbacks fire on pointer entry.
 - An equal capability snapshot is not pushed again, except `tray` and `notifications`.

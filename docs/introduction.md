@@ -108,12 +108,12 @@ return {
 
 | Command | Does |
 | :--- | :--- |
-| `mantle check` | Evaluates the config with no Wayland and every capability `nil`, then exits; 1 on error. Run after every edit |
+| `mantle check` | Evaluates and lays out the config with no Wayland and every capability `nil`, then exits; 1 on error. Run after every edit |
 | `mantle -d` | Starts the shell detached and prints its pid |
 | `mantle log -f` | Follows the running shell's output, `print` included |
 | `mantle` | Runs it in the foreground instead |
 
-`mantle check` stops at evaluation: it does not resolve maps or lay out nodes
+`mantle check` lays out once with every capability `nil`, so data-dependent branches go unchecked
 ([what check covers](guide/cli.md#what-check-covers)).
 
 ### 4. Edit it live

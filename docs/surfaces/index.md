@@ -125,10 +125,10 @@ on_click = ... }` there ([click outside to close](panel.md#close-an-overlay-on-a
 
 | Trap | Fix |
 | :--- | :--- |
-| `mantle check` passes but a surface never appears | `check` validates surface fields only. It builds no node tree (unknown child properties pass), runs no function `child` and has no outputs for size and anchor checks. Read `mantle log` after a reload |
+| `mantle check` passes but a surface never appears | `check` lays out once with every capability `nil` on stand-in 1920x1080 outputs, so data-dependent branches and real output sizes go unchecked. Read `mantle log` after a reload |
 | `layer = state(...)` or a signal `anchor` is refused | Structural fields take literals; switch between two declared panels, or edit the file |
 | A click on a panel's or window's background reaches the window behind it | The root's own `background` claims no input. Put the background on a `width = "Fill", height = "Fill"` child; on a panel, make the panel `"Fill"` on those axes too |
-| Two surfaces with the same `id` misbehave | Ids are not checked for duplicates; keep them unique |
+| `two surfaces declare` an id | Surface ids are unique across every role; rename one |
 | `margin` or `align_h` on a `window` or `popup` root does nothing | Set it on the child |
 | A function `child` on a `window` or `popup` is refused | Only `panel` (not `monitor = "Active"`) and `lock` have an output to pass |
 

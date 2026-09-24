@@ -7,17 +7,16 @@ follow the link for the fix. Traps that stay within one topic are in that page's
 
 | Step | Command | Tells you |
 | :--- | :--- | :--- |
-| 1 | `mantle check` | Syntax and top-level errors, with file and line. It never lays out nodes ([what check covers](cli.md#what-check-covers)) |
-| 2 | `mantle log` | Evaluation errors, layout errors and refused `mantle set`/`toggle` writes ([output and logging](runtime.md#output-and-logging)) |
-| 3 | Restart with `mantle -vv`, then `mantle log -f` | Errors raised inside callbacks, which print only at debug level ([log levels](cli.md#flags)) |
-| 4 | `MANTLE_DUMP_LAYOUT=<id>@<output> mantle -vvv` | Every visible node's kind and rect on that surface after each pass ([how do I](cli.md#how-do-i)) |
+| 1 | `mantle check` | Syntax and top-level errors, with file and line. Node and layout errors as laid out with every capability `nil` ([what check covers](cli.md#what-check-covers)) |
+| 2 | `mantle log` | Evaluation errors, layout errors, errors raised in callbacks, failed `mantle call`s and refused `mantle set`/`toggle` writes ([output and logging](runtime.md#output-and-logging)) |
+| 3 | `MANTLE_DUMP_LAYOUT=<id>@<output> mantle -vvv` | Every visible node's kind and rect on that surface after each pass ([how do I](cli.md#how-do-i)) |
 
 ## Nothing shows
 
 | Symptom | Cause | Fix |
 | :--- | :--- | :--- |
 | No surface appears at all after starting | The startup evaluation raised, so there is no scene. The error is in the log | [Evaluation, reload and generations](runtime.md#evaluation-reload-and-generations) |
-| `mantle check` passes, but a surface is empty or lays out wrong | `check` evaluates `shell.lua` and checks each surface's own fields. It never builds the node tree, so node property errors, map errors and sizes are not checked. The running shell reports them in `mantle log` | [What check covers](cli.md#what-check-covers), then the [layout dump](cli.md#how-do-i) and the [layout model](../nodes/index.md) |
+| `mantle check` passes, but a surface is empty or lays out wrong | `check` lays out once with every capability `nil` on a 1920x1080 output, so a branch that needs capability data, or a smaller output, went unchecked. The running shell reports those in `mantle log` | [What check covers](cli.md#what-check-covers), then the [layout dump](cli.md#how-do-i) and the [layout model](../nodes/index.md) |
 | An `image`, `capture`, `shader` or `textfield` is invisible | They have no intrinsic size | [nodes](../nodes/index.md) |
 | A `"Fill"` child or a `"50%"` size is 0 | The parent is content-sized on that axis | [nodes](../nodes/index.md) |
 | A bar anchored to both edges paints its background only behind its content | The surface spans the edges, but its root node is content-sized | [panel](../surfaces/panel.md) |
@@ -31,11 +30,11 @@ follow the link for the fix. Traps that stay within one topic are in that page's
 
 | Symptom | Cause | Fix |
 | :--- | :--- | :--- |
-| Saving a file leaves the old UI on screen | The reload failed. An evaluation error keeps the previous scene and sets `mantle.rescue`; a layout error keeps it and only logs a warning | [Find out why a reload did nothing](runtime.md#how-do-i) |
-| The bar shows an old version and `mantle.rescue.is_rescue` is `true` (rescue mode) | Set by a failed evaluation, a failed startup apply, or a refused or lost session lock. The scene on screen is the last one that applied. The next successful evaluation clears it | [Evaluation, reload and generations](runtime.md#evaluation-reload-and-generations) (error banner), [renderer members](../capabilities/index.md) |
+| Saving a file leaves the old UI on screen | The reload failed. An evaluation or layout error keeps the previous scene, sets `mantle.rescue` and logs the error | [Find out why a reload did nothing](runtime.md#how-do-i) |
+| The bar shows an old version and `mantle.rescue.is_rescue` is `true` (rescue mode) | Set by a failed evaluation, apply or live update, or a refused or lost session lock. The scene on screen is the last one that applied. The next reload that applies clears it | [Evaluation, reload and generations](runtime.md#evaluation-reload-and-generations) (error banner), [renderer members](../capabilities/index.md) |
 | After a broken save, `mantle call` says the action does not exist, timers stop and `on_change` goes quiet | A failed reload drops every action, timer, handler and idle threshold the last evaluation registered | [Evaluation, reload and generations](runtime.md#evaluation-reload-and-generations) |
-| An `on_change`, `timer`, `process.run`, `palette` or idle callback does nothing and nothing is logged | Its error, a blown CPU budget included, is logged at debug level only. Restart with `mantle -vv` or `MANTLE_LOG=lua=debug`, then read `mantle log`. Errors in `on_click` and other input handlers are warnings, visible by default | [Output and logging](runtime.md#output-and-logging) |
-| `process.run` prints nothing and `exit_cb` gets `nil` | The spawn failed, usually a command not on `PATH`. The reason is logged at debug level only | [process.run](processes.md#processrun) |
+| An `on_change`, `timer`, `process.run`, `palette` or idle callback does nothing | Its error, a blown CPU budget included, is a warning. Read `mantle log` | [Output and logging](runtime.md#output-and-logging) |
+| `process.run` prints nothing and `exit_cb` gets `nil` | The spawn failed, usually a command not on `PATH`. `mantle log` has the reason | [process.run](processes.md#processrun) |
 | `mantle.<cap>:invoke(...)` returns `nil` and nothing changes | `invoke` is fire and forget; a wrong argument type or count is dropped with a log line | [actions](../capabilities/index.md#actions) |
 | A keybind running `mantle set` or `mantle toggle` does nothing | Refusals (an undeclared name, a bare `toggle` on a non-boolean) go to `mantle log`, not the exit code | [cli gotchas](cli.md#gotchas) |
 | Saving a `.json` or an image beside `shell.lua` does not reload | Only `.lua` and `.frag` changes reload; a byte-identical save and an unreadable directory (`changes inside it will not reload`) do not either | [Evaluation, reload and generations](runtime.md#evaluation-reload-and-generations) |

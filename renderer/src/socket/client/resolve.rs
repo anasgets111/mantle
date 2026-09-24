@@ -28,7 +28,7 @@ impl RendererClient {
             Ok(()) => {
                 log_applied_surfaces(&self.scene, &self.instances);
                 start_secure_submit_capabilities(&self.scene, &self.instances, &self.commands);
-                self.set_rescue_state(false, "");
+                self.rescue_applied_output(None);
                 // Consume `set_screens`'s pre-evaluation seed (ADR-0041 decision 2) only after
                 // success; a failed apply leaves it for the next one.
                 self.dirty.take();
@@ -38,7 +38,7 @@ impl RendererClient {
             }
             Err(err) => {
                 error!("startup shell.lua evaluated but failed to apply to the scene: {err}");
-                self.set_rescue_state(true, &err.to_string());
+                self.rescue_applied_output(Some(&err.to_string()));
                 false
             }
         }
@@ -60,6 +60,7 @@ impl RendererClient {
                 notice!("shell reloaded");
                 log_applied_surfaces(&self.scene, &self.instances);
                 start_secure_submit_capabilities(&self.scene, &self.instances, &self.commands);
+                self.set_rescue_state(false, "");
                 self.state.applied_specs = specs;
                 // ADR-0044 decision 2 re-resolve target.
                 self.state.applied_output = Some(output);
@@ -73,7 +74,10 @@ impl RendererClient {
             }
             Err(err) => {
                 lua::timer::discard(self.loader.lua());
-                warn!("the re-evaluated config failed to apply: {err}");
+                error!("the re-evaluated config failed to apply, keeping the prior scene: {err}");
+                // Not `rescue_applied_output`: this failure is the pending evaluation's, which a
+                // re-resolve of the prior scene cannot clear.
+                self.set_rescue_state(true, &err.to_string());
                 false
             }
         }
@@ -140,19 +144,32 @@ impl RendererClient {
             self.holds_session_lock,
         );
         if let Err(err) = applied {
-            // Rollback keeps the prior scene. Do not set rescue: that is for `shell.lua`
-            // evaluation, not a rejected capability push. ponytail: logging forever, nothing
-            // user-visible. Upgrade: rescue-adjacent channel for rejected pushed values.
+            // Rollback keeps the prior scene; the rescue lasts until a pass applies.
             warn!("dirty-scene re-resolve failed, keeping the prior scene: {err}");
+            self.rescue_applied_output(Some(&err.to_string()));
             self.dirty.mark();
             crate::lua::signal::reset_read_tracker(self.loader.lua());
             return false;
         }
         self.last_resolved = resolved_scope;
         start_secure_submit_capabilities(&self.scene, &instances, &self.commands);
+        self.rescue_applied_output(None);
         self.settle_geometry();
         dump_layout_if_asked(&self.scene);
         true
+    }
+
+    /// Sets rescue for a failure to apply `applied_output`, or clears one when it applies. Any other
+    /// rescue describes a file or lock the prior scene's success says nothing about.
+    fn rescue_applied_output(&mut self, failed: Option<&str>) {
+        match failed {
+            Some(err) => {
+                self.set_rescue_state(true, err);
+                self.rescue_is_applied_output = true;
+            }
+            None if self.rescue_is_applied_output => self.set_rescue_state(false, ""),
+            None => {}
+        }
     }
 
     /// One follow-up pass over the readers of each `geometry(name)` rect a pass moved, so a
@@ -247,7 +264,9 @@ fn log_applied_surfaces(scene: &Scene, instances: &[SurfaceInstance]) {
 
 #[cfg(test)]
 mod tests {
-    use super::super::tests::{instances_for, queued_starts, rescue_state, run_startup, test_client, write_shell_lua};
+    use super::super::tests::{
+        instances_for, push_workspace, queued_starts, rescue_state, run_startup, test_client, write_shell_lua,
+    };
     use super::super::*;
 
     /// ADR-0070 decision 5: polkit has no roster entry or `mantle.polkit`, so only a
@@ -311,6 +330,71 @@ mod tests {
             queued_starts(&mut outbound_rx).contains(&"polkit".to_string()),
             "the re-resolve that revealed the field must start the capability it names"
         );
+    }
+
+    /// A boot apply failure is `applied_output`'s own, so the first pass that applies clears it.
+    #[test]
+    fn a_boot_apply_failure_clears_when_a_re_resolve_applies() {
+        let dir = tempfile::tempdir().unwrap();
+        let path =
+            write_shell_lua(dir.path(), r#"return panel { id = "bar", layer = "Top", visible = mantle.workspace }"#);
+        let (mut client, _outbound_rx) = test_client(&path);
+        push_workspace(&mut client, 1, serde_json::json!("not a boolean"));
+        assert!(!run_startup(&mut client));
+        assert!(rescue_state(&client.loader).0);
+
+        push_workspace(&mut client, 2, serde_json::json!(true));
+        assert!(client.re_resolve_if_dirty());
+        assert_eq!(rescue_state(&client.loader), (false, String::new()));
+    }
+
+    /// A reload that evaluates but fails to apply is in rescue until a reload applies; a pass over
+    /// the prior scene says nothing about the new file.
+    #[test]
+    fn a_reload_apply_failure_stays_in_rescue_until_a_reload_applies() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_shell_lua(dir.path(), r#"return panel { id = "bar", layer = "Top" }"#);
+        let (mut client, _outbound_rx) = test_client(&path);
+        push_workspace(&mut client, 1, serde_json::json!("not a boolean"));
+        assert!(run_startup(&mut client));
+
+        write_shell_lua(dir.path(), r#"return panel { id = "bar", layer = "Top", visible = mantle.workspace }"#);
+        assert!(client.reevaluate());
+        assert!(!client.handle_apply_pending());
+        assert!(rescue_state(&client.loader).0, "an evaluation that fails to apply must reach rescue");
+
+        client.dirty.mark();
+        assert!(client.re_resolve_if_dirty());
+        assert!(rescue_state(&client.loader).0, "a pass over the prior scene must not clear it");
+
+        write_shell_lua(dir.path(), r#"return panel { id = "bar", layer = "Top" }"#);
+        assert!(client.reevaluate() && client.handle_apply_pending());
+        assert_eq!(rescue_state(&client.loader), (false, String::new()));
+    }
+
+    /// Evaluation success alone is not the truth: the banner clears only when the scene takes it.
+    #[test]
+    fn an_evaluation_rescue_survives_re_resolves_and_clears_on_an_applied_reload() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_shell_lua(
+            dir.path(),
+            r#"w = state("w", 1)
+            return panel { id = "bar", layer = "Top", child = rect { width = w, height = 1 } }"#,
+        );
+        let (mut client, _outbound_rx) = test_client(&path);
+        assert!(run_startup(&mut client));
+
+        std::fs::write(&path, "this is not lua").unwrap();
+        assert!(!client.reevaluate());
+        client.loader.lua().load("w:set(2)").exec().unwrap();
+        assert!(client.re_resolve_if_dirty());
+        assert!(rescue_state(&client.loader).0, "the file is still broken");
+
+        write_shell_lua(dir.path(), r#"return panel { id = "bar", layer = "Top" }"#);
+        assert!(client.reevaluate());
+        assert!(rescue_state(&client.loader).0, "not cleared before the apply");
+        assert!(client.handle_apply_pending());
+        assert_eq!(rescue_state(&client.loader), (false, String::new()));
     }
 
     #[test]

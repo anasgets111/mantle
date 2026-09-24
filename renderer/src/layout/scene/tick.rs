@@ -319,7 +319,7 @@ mod tests {
         assert_eq!(child_width(&scene), 40.0);
         assert!(!scene.surface("bar@TEST").unwrap().animating(), "a first value is taken as it is");
 
-        lua.load(r#"state("w", 0):set(90)"#).exec().unwrap();
+        lua.load(r#"state("w", 40):set(90)"#).exec().unwrap();
         apply_at(&mut scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
         assert!((child_width(&scene) - 40.0).abs() < 0.5, "the pass paints from where the node was");
         let tween = child_tween(&scene);
@@ -349,7 +349,7 @@ mod tests {
                     rect { width = state("w", 40), height = 10, animate = { width = 100 } } } } }"#,
         );
         apply_at(&mut scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
-        lua.load(r#"state("w", 0):set(90) state("open", true):set(false)"#).exec().unwrap();
+        lua.load(r#"state("w", 40):set(90) state("open", true):set(false)"#).exec().unwrap();
         apply_at(&mut scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
         assert!(!scene.surface("bar@TEST").unwrap().animating());
         assert!(scene.tick(&[instance_at(&surface, full())], &shaping, &lua, Instant::now()).is_empty());
@@ -373,7 +373,7 @@ mod tests {
             return panel { id = "bar", child = rect { width = state("w", 40), height = 10, margin = m, animate = { width = 100 } } }"#,
         );
         apply_at(&mut scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
-        lua.load(r#"state("w", 0):set(90)"#).exec().unwrap();
+        lua.load(r#"state("w", 40):set(90)"#).exec().unwrap();
         apply_at(&mut scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
         let started = child_tween(&scene).started;
         lua.load("hang = true").exec().unwrap();
@@ -800,7 +800,7 @@ mod tests {
     fn a_pass_that_does_not_move_the_target_keeps_the_running_tween() {
         let (mut scene, lua, surface) = animated_width("Linear");
         let shaping = ShapingHandle::spawn();
-        lua.load(r#"state("w", 0):set(90)"#).exec().unwrap();
+        lua.load(r#"state("w", 40):set(90)"#).exec().unwrap();
         apply_at(&mut scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
         let started = child_tween(&scene).started;
         // An unrelated re-resolve (any signal write dirties the whole scene) must not restart it.
@@ -812,7 +812,7 @@ mod tests {
     fn a_retarget_mid_flight_starts_from_the_displayed_value_not_the_old_target() {
         let (mut scene, lua, surface) = animated_width("Linear");
         let shaping = ShapingHandle::spawn();
-        lua.load(r#"state("w", 0):set(90)"#).exec().unwrap();
+        lua.load(r#"state("w", 40):set(90)"#).exec().unwrap();
         apply_at(&mut scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
         let first = child_tween(&scene);
         let instances = [instance_at(&surface, full())];
@@ -820,7 +820,7 @@ mod tests {
         assert_eq!(child_width(&scene), 65.0);
 
         // The pointer left: back to 40, from wherever the box is now.
-        lua.load(r#"state("w", 0):set(40)"#).exec().unwrap();
+        lua.load(r#"state("w", 40):set(40)"#).exec().unwrap();
         apply_at(&mut scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
         let second = child_tween(&scene);
         assert_eq!(second.to, node::Animatable::Number(40.0));
@@ -837,7 +837,7 @@ mod tests {
                     animate = { background = { duration = 100, easing = "Linear" } } } }"##,
         );
         apply_at(&mut scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
-        lua.load(r##"state("bg", ""):set("#ffffff")"##).exec().unwrap();
+        lua.load(r##"state("bg", "#000000"):set("#ffffff")"##).exec().unwrap();
         apply_at(&mut scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
         let started = child_tween(&scene).started;
         scene.tick(&[instance_at(&surface, full())], &shaping, &lua, started + std::time::Duration::from_millis(50));
@@ -930,7 +930,7 @@ mod tests {
                     animate = { width = 100 } } }"#,
         );
         apply_at(&mut scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
-        lua.load(r#"state("w", 0):set("Fill")"#).exec().unwrap();
+        lua.load(r#"state("w", 40):set("Fill")"#).exec().unwrap();
         apply_at(&mut scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
         // `Fill` under a content-sized panel is zero (see
         // `a_fill_child_of_a_content_sized_row_...`);

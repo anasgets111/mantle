@@ -42,6 +42,13 @@ pub(crate) fn surface_specs(output: &LoadOutput) -> Result<Vec<SurfaceSpec>, Loa
             other => return Err(LoaderError::InvalidTopology(format!("`{other}` is not a surface role"))),
         });
     }
+    // Instances are keyed `id@output`, so a second surface with one id shadowed the first.
+    let mut ids = std::collections::HashSet::new();
+    if let Some(duplicate) = specs.iter().map(SurfaceSpec::declared_id).find(|id| !ids.insert(*id)) {
+        return Err(LoaderError::InvalidTopology(format!(
+            "invalid value for `id`: two surfaces declare `{duplicate}`, expected each surface id to be unique"
+        )));
+    }
     // **At most one `lock`, checked here on startup and `Reevaluate`.** This is the only place
     // that can enforce it: every declaration passes through this function on both paths. Other
     // roles may repeat.
@@ -72,4 +79,21 @@ pub(crate) fn evaluate_and_specs(
     let output = loader.evaluate_file(shell_lua_path)?;
     let specs = surface_specs(&output)?;
     Ok((output, specs))
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn two_surfaces_with_one_id_are_refused_by_name() {
+        let lua = mlua::Lua::new();
+        crate::lua::nodes::register_node_constructors(&lua).unwrap();
+        let tables: Vec<mlua::Table> = lua
+            .load(r#"return { panel { id = "bar", layer = "Top" }, panel { id = "bar", layer = "Bottom" } }"#)
+            .eval()
+            .unwrap();
+        let surfaces = tables.iter().map(|table| crate::lua::nodes::deserialize_lua_table(table).unwrap()).collect();
+
+        let err = super::surface_specs(&crate::lua::LoadOutput { surfaces }).unwrap_err().to_string();
+        assert!(err.contains("two surfaces declare `bar`"), "{err}");
+    }
 }

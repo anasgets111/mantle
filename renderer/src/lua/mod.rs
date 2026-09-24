@@ -173,6 +173,7 @@ impl Loader {
         if let Some(idle) = self.idle.borrow().as_ref() {
             idle.forget_thresholds();
         }
+        signal::begin_evaluation(&self.lua);
         let value: Value = self.lua.load(source).set_name(format!("@{name}")).eval()?;
         Ok(LoadOutput { surfaces: collect_surfaces(value)? })
     }

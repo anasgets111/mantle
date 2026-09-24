@@ -1,19 +1,23 @@
-//! `mantle check`: evaluate config, report declared surfaces, and exit through the Renderer's Lua
-//! loader. The Supervisor has no `mlua` runtime, so it re-execs this binary with
+//! `mantle check`: evaluate config, lay it out, report declared surfaces, and exit through the
+//! Renderer's Lua loader. The Supervisor has no `mlua` runtime, so it re-execs this binary with
 //! `shared::CHECK_ENV` and forwards the exit code.
 //!
-//! No Wayland, surfaces, or GPU. Matches pre-first-`StateSnapshot` evaluation: every capability
-//! signal reads `nil` (ADR-0044).
+//! No Wayland, surfaces, or GPU: layout runs through the production `Scene` apply on stand-in
+//! outputs. Matches pre-first-`StateSnapshot` evaluation: every capability signal reads `nil`
+//! (ADR-0044).
 
 use std::path::Path;
 
+use crate::layout::instance::{OutputGeometry, expand_instances};
 use crate::layout::node::SurfaceSpec;
+use crate::layout::scene::{LogicalSize, Scene};
 use crate::lua::LoadOutput;
 use crate::lua::capability::CommandSender;
 use crate::lua::palette::PaletteRegistry;
 use crate::lua::process::ProcessRegistry;
 use crate::lua::signal::DirtyFlag;
 use crate::lua::{Loader, namespace, surfaces::evaluate_and_specs};
+use crate::text::shaping::ShapingHandle;
 
 fn role_of(spec: &SurfaceSpec) -> &'static str {
     match spec {
@@ -24,16 +28,37 @@ fn role_of(spec: &SurfaceSpec) -> &'static str {
     }
 }
 
-/// Evaluates `shell.lua` under `config_dir` and returns the report, or the error a config author
-/// needs to read.
+/// Evaluates and lays out `shell.lua` under `config_dir` and returns the report, or the error a
+/// config author needs to read.
 pub fn run(config_dir: &Path) -> Result<String, String> {
     let shell_lua = config_dir.join("shell.lua");
-    let (_output, specs, _loader) = evaluate(config_dir)?;
+    let (output, specs, loader) = evaluate(config_dir)?;
+    lay_out(&output, &specs, &loader, &ShapingHandle::spawn())
+        .map_err(|err| format!("{}: {err}", shell_lua.display()))?;
     let mut report = format!("{}: ok, {} surface(s)\n", shell_lua.display(), specs.len());
     for spec in &specs {
         report.push_str(&format!("  {:<7} {}\n", role_of(spec), spec.declared_id()));
     }
     Ok(report)
+}
+
+/// Lays the evaluated scene out through the production `Scene::apply_locked` on one 1920x1080
+/// output, plus one per distinct `monitor` a panel names, so a monitor-pinned panel is laid out too.
+fn lay_out(output: &LoadOutput, specs: &[SurfaceSpec], loader: &Loader, shaping: &ShapingHandle) -> Result<(), String> {
+    let size = LogicalSize { width: 1920.0, height: 1080.0 };
+    let mut outputs = vec![OutputGeometry { name: "CHECK".into(), size }];
+    for spec in specs {
+        if let SurfaceSpec::Panel(panel) = spec
+            && !matches!(panel.topology.monitor.as_str(), "All" | "Active")
+            && outputs.iter().all(|output| output.name != panel.topology.monitor)
+        {
+            outputs.push(OutputGeometry { name: panel.topology.monitor.clone(), size });
+        }
+    }
+    let instances = expand_instances(specs, &outputs);
+    Scene::new()
+        .apply_locked(&output.surfaces, &instances, shaping, loader.lua(), false)
+        .map_err(|err| format!("layout: {err}"))
 }
 
 /// `run`'s evaluation, returning the `Loader` last: the node tables in `LoadOutput` live in its
@@ -98,17 +123,27 @@ mod tests {
         let err = super::run(dir.path()).unwrap_err();
         assert!(err.contains("shell.lua"), "the error must name the file: {err}");
     }
+
+    /// A panel pinned to a named monitor still lays out, so its errors are caught too.
+    #[test]
+    fn a_layout_error_on_a_monitor_pinned_panel_fails_the_check() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("shell.lua"),
+            "return { panel { id = \"bar\", layer = \"Top\", monitor = \"DP-1\", child = rect { width = \"Wide\", height = 10 } } }\n",
+        )
+        .unwrap();
+        let err = super::run(dir.path()).unwrap_err();
+        assert!(err.contains("shell.lua: layout:"), "{err}");
+    }
 }
 
-/// Every ```` ```lua ```` block under `docs/` evaluates as `mantle check` does, then lays out on one
-/// 1920x1080 output through the real `Scene::apply`, which `mantle check` never reaches. The fence
+/// Every ```` ```lua ```` block under `docs/` evaluates and lays out as `mantle check` does. The fence
 /// tags are documented in `docs/development/documenting.md`.
 #[cfg(test)]
 mod doc_examples {
     use std::path::{Path, PathBuf};
 
-    use crate::layout::instance::{OutputGeometry, expand_instances};
-    use crate::layout::scene::{LogicalSize, Scene};
     use crate::text::shaping::ShapingHandle;
 
     fn pages(dir: &Path, out: &mut Vec<PathBuf>) {
@@ -169,12 +204,11 @@ return root
         )
     }
 
-    fn lay_out(block: &str, shaping: &ShapingHandle, outputs: &[OutputGeometry]) -> Result<(), String> {
+    fn lay_out(block: &str, shaping: &ShapingHandle) -> Result<(), String> {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("shell.lua"), shell(block)).unwrap();
         let (output, specs, loader) = super::evaluate(dir.path())?;
-        let instances = expand_instances(&specs, outputs);
-        Scene::new().apply(&output.surfaces, &instances, shaping, loader.lua()).map_err(|err| format!("layout: {err}"))
+        super::lay_out(&output, &specs, &loader, shaping)
     }
 
     #[test]
@@ -184,12 +218,11 @@ return root
         pages(&docs, &mut paths);
         paths.sort();
         let shaping = ShapingHandle::spawn();
-        let outputs = [OutputGeometry { name: "TEST".into(), size: LogicalSize { width: 1920.0, height: 1080.0 } }];
         let mut failures = Vec::new();
         for path in &paths {
             for (line, info, source) in lua_blocks(&std::fs::read_to_string(path).unwrap()) {
                 let outcome = match info.as_str() {
-                    "lua" | "lua,must-fail" => lay_out(&source, &shaping, &outputs),
+                    "lua" | "lua,must-fail" => lay_out(&source, &shaping),
                     "lua,fragment" => {
                         mlua::Lua::new().load(&source).into_function().map(drop).map_err(|err| err.to_string())
                     }

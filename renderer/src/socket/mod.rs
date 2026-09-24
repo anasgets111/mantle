@@ -165,7 +165,7 @@ fn frame_label(frame: &RendererFrame) -> &'static str {
         RendererFrame::StartCapability { .. } => "StartCapability",
         RendererFrame::CallResult(_) => "CallResult",
         // Never sent here (ADR-0112, ADR-0197), but a wildcard could hide a new unnamed variant.
-        RendererFrame::SetState(_) => "SetState",
+        RendererFrame::SetState { .. } => "SetState",
         RendererFrame::Call(_) => "Call",
     }
 }

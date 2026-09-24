@@ -72,8 +72,9 @@ and box properties and stack their one `child` ([surfaces](../surfaces/index.md)
 | Numbers | Finite. A value outside a property's range is an error, not a clamp |
 | Colours | `"#RRGGBB"` or `"#RRGGBBAA"` ([colours](../guide/paint.md#colours)) |
 | Strings | Capped at 64 KB |
-| Arrays | `children`, `list.source` and `text` runs take at most 10000 elements. A `nil` hole ends the array |
-| Callbacks and flags | Read only when they hold a function or `true`: `on_click = "x"` or `submit = 1` is silently nothing |
+| Arrays | `children`, `list.source` and `text` runs take at most 10000 elements. A `nil` hole in `children` is an error; in `list.source` and runs it ends the array |
+| Tables | A table property (`padding`, `anchor`, `shadow_offset`, `transition`, an `animate` entry, a run, ...) refuses a key it does not take, so `{ topp = 4 }` names `topp` |
+| Callbacks and flags | Every `on_*` must be a function, and `submit` and `autofocus` booleans. `on_click = "x"` or `submit = 1` is an error. For a conditional handler write `cond and fn or nil`, since `false` is refused too |
 
 ## Layout model
 
@@ -284,7 +285,6 @@ local body = rect {
 | Trap | Fix |
 | :--- | :--- |
 | `width = "Content"` is refused | Omit the property; content size is the default |
-| `mantle check` passes a tree with a misspelled or malformed node property | `check` evaluates the config and validates each surface's own properties, but never lays out, so nothing under `child` is parsed. Node errors appear when the running shell lays the tree out (in the bar or `mantle log`) ([cli](../guide/cli.md)) |
 | An `image`, `capture`, `shader` or `textfield` does not appear | They have no intrinsic size. Give `width` and `height`, or `"Fill"` in a sized parent |
 | A `"Fill"` child is 0 wide | Its parent is content-sized along that axis, or fixed siblings already overflow. Size the parent |
 | `"50%"` resolves to 0 | The parent has no definite size on that axis |
@@ -292,7 +292,8 @@ local body = rect {
 | A switched view snaps in without its entry or exit animation | Same kind at the same position is reused, not replaced. Give each view its own `id` |
 | `duplicate id` error | Sibling ids, and `list` keys, must be unique |
 | A signal inside a table property (`padding = { top = sig }`) raises an error | Map the whole table: `padding = sig:map(function(v) return { top = v } end)` |
-| `on_click = "handler"` or `submit = 1` does nothing, silently | Only a function and `true` count |
+| `on_click = cond and fn` raises `expected a function` | A false `cond` yields `false`: write `cond and fn or nil` |
+| `children = { a, cond and b, c }` raises `expected a node table at index 2` | A false or nil entry is a hole. Build the array with `table.insert`, or a signal of the whole array |
 | `opacity = 0` hides a node but it still eats clicks | Use `visible = false` |
 
 See also: [surfaces](../surfaces/index.md) (where a tree lives), [signals](../guide/signals.md)

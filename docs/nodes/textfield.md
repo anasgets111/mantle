@@ -65,7 +65,7 @@ The panel needs `keyboard_interactivity` for the field to get keys ([panel](../s
 | `on_submit(text)` | Function | None | Enter, with the whole draft; the draft then clears and the field keeps focus. Never fires on a `secure_submit` field |
 | `on_cancel(cleared)` | Function | None | Escape; `cleared` says whether text was removed. Without it, Escape clears and keeps focus |
 | `on_navigate(key)` | Function; `key` is `"up"`, `"down"`, `"left"`, `"right"`, `"page_up"`, `"page_down"`, `"tab"` or `"backtab"` | None | Keys the field does not use; repeats while held. `"left"`/`"right"` only when the caret cannot move that way and Shift is up |
-| `secure_submit` | `{ capability, action }`, both non-empty UTF-8 strings | None | Makes the field masked; keys never reach Lua. `lock`/`authenticate`, `polkit`/`authenticate` and `network`/`connect` are handled; any other pair is accepted and its secret discarded ([secure fields](../guide/input.md#secure-fields)) |
+| `secure_submit` | `{ capability, action }`, both non-empty UTF-8 strings | None | Makes the field masked; keys never reach Lua. Only `lock`/`authenticate`, `polkit`/`authenticate` and `network`/`connect`; any other pair or key is an error ([secure fields](../guide/input.md#secure-fields)) |
 | `mask_character` | String | `"•"` | Drawn once per typed character in a `secure_submit` field. Only the first character counts; `""` hides the length |
 
 The field has no intrinsic size, so give it `width` and `height`. The text is vertically centred in

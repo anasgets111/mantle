@@ -11,7 +11,7 @@ scope, capability roster) lives in [`CONTEXT.md`](../CONTEXT.md).
 | **Renderer** | The `mantle-renderer` process: the Lua VM, the scene, the Wayland client and painting. One per generation. See [runtime](guide/runtime.md#the-vm). |
 | **Generation** | One Renderer process and its Lua VM. Only a Renderer replacement (after a crash) starts a new one; a reload does not. |
 | **Instance directory** | `$XDG_RUNTIME_DIR/mantle/<pid>-<start ms>/`, one per running `mantle`: control socket, log, lock file, icon spools. `mantle list`, `log`, `set`, `toggle` and `call` pick one. See [which shell](guide/cli.md#which-config-and-which-shell). |
-| **Check mode** | `mantle check`: evaluates the config with no Wayland, no subprocesses and no state writes; every capability reads `nil`. See [what check covers](guide/cli.md#what-check-covers). |
+| **Check mode** | `mantle check`: evaluates and lays out the config with no Wayland, no subprocesses and no state writes; every capability reads `nil`. See [what check covers](guide/cli.md#what-check-covers). |
 | **Session process** | A [`session_process`](guide/processes.md#session_process) program the Supervisor owns. Survives reloads and Renderer replacement; stopped at shutdown with its declared signal, then SIGKILL after 5 s. A `process.run` child, by contrast, dies with its generation. |
 
 ## Reloads
@@ -23,7 +23,7 @@ scope, capability roster) lives in [`CONTEXT.md`](../CONTEXT.md).
 | **Surface fingerprint** | A declaration's creation-time fields (panel: `id`, `layer`, `anchor`, `monitor`, `namespace`; other roles: `id`). A change rebuilds that surface; other edits update it live. |
 | **Evaluation-scoped registration** | `action`, `on_change` and idle-threshold callbacks, cleared before each evaluation because they close over its locals. The `timer`s an evaluation arms go live only when its result applies. See [what survives a reload](guide/runtime.md#what-survives-a-reload). |
 | **Rollback** | A failed evaluation or apply keeps the previous scene and surfaces. A failed evaluation drops the timers, actions and change handlers it registered; a failed apply drops only its timers. |
-| **Rescue** | [`mantle.rescue`](capabilities/index.md#renderer-members), `{ is_rescue, error_log }`: set by a failed evaluation, a failed startup apply, or a refused or lost session lock; cleared by the next successful evaluation. A failed reload apply only logs. |
+| **Rescue** | [`mantle.rescue`](capabilities/index.md#renderer-members), `{ is_rescue, error_log }`: set by a failed evaluation, apply or live update, or a refused or lost session lock; cleared by the next reload that applies. A failed startup apply or live update also clears when a later pass applies. |
 
 ## Surfaces
 

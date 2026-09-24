@@ -87,6 +87,9 @@ fn parse_runs(runs: &mlua::Table) -> Result<(String, Vec<StyleRun>), LayoutError
             }
             Err(e) => return Err(invalid("content", format!("run {index}: {e}"))),
         };
+        // After `text`, so an image span gets the message above. `kind` is a notification span's.
+        crate::lua::marshal::only_keys(&run, &["text", "bold", "italic", "underline", "color", "href", "kind"])
+            .map_err(|detail| invalid("content", format!("run {index}: {detail}")))?;
         let flag = |key: &str| -> Result<bool, LayoutError> {
             match run.get::<Value>(key) {
                 Ok(Value::Nil) => Ok(false),
@@ -234,6 +237,7 @@ pub fn parse_region(properties: &PropMap) -> Result<Option<LogicalRect>, LayoutE
         let got = preview_for_error(value);
         return Err(invalid("region", format!("expected an {{ x, y, width, height }} table, got {got}")));
     };
+    only_keys("region", table, &["x", "y", "width", "height"])?;
     let field = |key| {
         style::table_number("region", table, key)?
             .ok_or_else(|| invalid("region", format!("`{key}` is required")))
@@ -589,6 +593,17 @@ mod tests {
         assert_eq!(runs_content(&lua, "{}").unwrap(), (String::new(), Vec::new()));
         let (content, runs) = runs_content(&lua, r#"{ { text = "", bold = true }, { text = "a" } }"#).unwrap();
         assert_eq!((content.as_str(), runs.len()), ("a", 0));
+    }
+
+    #[test]
+    fn a_misspelled_run_field_is_refused_naming_the_run() {
+        let lua = mlua::Lua::new();
+        let err = runs_content(&lua, r##"{ { kind = "text", text = "a", colour = "#ffffff" } }"##).unwrap_err();
+        assert!(
+            matches!(&err, LayoutError::InvalidProperty { property, detail }
+            if property == "content" && detail.starts_with("run 1: unknown key `colour`")),
+            "{err}"
+        );
     }
 
     /// A notification body span of `kind = "image"` has no `text`. It is refused with a message

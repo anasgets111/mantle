@@ -215,9 +215,8 @@ impl App {
 
     /// Logs, rescues, and reports a refused lock (ADR-0052 decision 4). Refusal leaves the normal
     /// scene visible, so `rescue` can display the message; wrong passwords reach `mantle.lock`
-    /// while lock surfaces are mapped and everything else is hidden. A later successful
-    /// `RendererClient::reevaluate`
-    /// clears rescue.
+    /// while lock surfaces are mapped and everything else is hidden. The next reload that applies
+    /// (`RendererClient::handle_apply_pending`) clears rescue.
     fn refuse_lock(&mut self, reason: &str) {
         error!("the session lock was refused: {reason}");
         self.client.set_rescue_state(true, reason);

@@ -5,7 +5,7 @@ use mlua::Value;
 
 use super::easing::Easing;
 use super::{parse_easing, parse_millis};
-use crate::layout::node::{LayoutError, PropMap, invalid, preview_for_error, value_as_f32};
+use crate::layout::node::{LayoutError, PropMap, invalid, only_keys, preview_for_error, value_as_f32};
 
 /// `image.transition` (ADR-0181): how a `retain`ing image crosses from the picture it is holding to
 /// the one that has just landed. Duration and easing, and nothing else yet -- a cross-dissolve is
@@ -26,9 +26,6 @@ pub struct TransitionSpec {
 
 /// `transition = { duration = 700, easing = "InOutCubic" }` on an `image`. The `duration` is
 /// required: a dissolve with no length is a snap, and `retain` on its own is already that.
-///
-/// Unknown keys are refused rather than ignored, so a typo in a field name is an error the config
-/// sees rather than a setting that silently does nothing.
 pub fn parse_transition(properties: &PropMap) -> Result<Option<TransitionSpec>, LayoutError> {
     let Some(value) = properties.get("transition") else { return Ok(None) };
     let Value::Table(table) = value else {
@@ -37,19 +34,7 @@ pub fn parse_transition(properties: &PropMap) -> Result<Option<TransitionSpec>, 
             format!("expected a table of transition fields, got {}", preview_for_error(value)),
         ));
     };
-    for pair in table.pairs::<Value, Value>() {
-        let (key, _) = pair.map_err(|e| invalid("transition", e.to_string()))?;
-        let Value::String(key) = key else {
-            return Err(invalid("transition", format!("keys are field names, got {}", preview_for_error(&key))));
-        };
-        let key = key.to_str().map_err(|e| invalid("transition", e.to_string()))?;
-        if !matches!(&*key, "duration" | "easing" | "shader" | "params") {
-            return Err(invalid(
-                "transition",
-                format!("`{key}` is not a field of a transition; it takes `duration`, `easing`, `shader` and `params`"),
-            ));
-        }
-    }
+    only_keys("transition", table, &["duration", "easing", "shader", "params"])?;
     let duration: Value = table.get("duration").map_err(|e| invalid("transition.duration", e.to_string()))?;
     let duration = parse_millis("transition.duration", "duration", &duration, 1)?
         .ok_or_else(|| invalid("transition", "a transition needs a `duration` in ms"))?;

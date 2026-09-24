@@ -31,7 +31,7 @@ function TimerHandle:cancel() end
 ---a discarded handle still fires.
 ---[docs](https://anasgets111.github.io/mantle/guide/scripting.html#timer)
 ---@param ms integer `[1, 86400000]`; outside raises.
----@param callback fun() A raise is logged at debug (`-vv`).
+---@param callback fun() A raise is logged as a warning.
 ---@return TimerHandle
 function timer(ms, callback) end
 
@@ -105,7 +105,7 @@ function ProcessHandle:kill() end
 
 ---Spawns `cmd` with stdout and stderr piped and stdin on `/dev/null`, without blocking (ADR-0026).
 ---The process belongs to the generation: its group is reaped when the Renderer is replaced.
----Callbacks run unbudgeted; a raise is logged at debug (`-vv`).
+---Callbacks run unbudgeted; a raise is logged as a warning.
 ---[docs](https://anasgets111.github.io/mantle/guide/processes.html#processrun)
 ---@param cmd string Looked up on `PATH`; no shell, so no globbing, pipes or quoting.
 ---@param args string[] Already split: `"a b"` is one argument.

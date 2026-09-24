@@ -52,6 +52,7 @@ fn parse_size_hint(properties: &PropMap, property: &str) -> Result<Option<SizeHi
             format!("expected a `{{ width, height }}` table, got {}", preview_for_error(value)),
         ));
     };
+    only_keys(property, table, &["width", "height"])?;
     let axis = |key: &str| -> Result<f32, LayoutError> {
         let n = table_number(property, table, key)?.ok_or_else(|| {
             invalid(
@@ -229,6 +230,7 @@ pub fn parse_popup_offset(properties: &PropMap) -> Result<PopupOffset, LayoutErr
     let Value::Table(table) = value else {
         return Err(invalid("offset", format!("expected an `{{ x, y }}` table, got {}", preview_for_error(value))));
     };
+    only_keys("offset", table, &["x", "y"])?;
     let axis = |key: &str| -> Result<f32, LayoutError> { Ok(table_number("offset", table, key)?.unwrap_or(0.0)) };
     Ok(PopupOffset { x: axis("x")?, y: axis("y")? })
 }
@@ -257,6 +259,7 @@ pub fn parse_anchor_rect(properties: &PropMap) -> Result<LogicalRect, LayoutErro
             format!("expected an `{{ x, y, width, height }}` table, got {}", preview_for_error(value)),
         ));
     };
+    only_keys("anchor_rect", table, &["x", "y", "width", "height"])?;
     let origin =
         |key: &str| -> Result<f32, LayoutError> { Ok(table_number("anchor_rect", table, key)?.unwrap_or(0.0)) };
     let extent = |key: &str| -> Result<f32, LayoutError> {

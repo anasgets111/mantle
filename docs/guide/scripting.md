@@ -57,7 +57,7 @@ return panel {
 
 | Part | Contract |
 | :--- | :--- |
-| Signature | `persistent_table { path, name, defaults? }` → store |
+| Signature | `persistent_table { path, name, defaults? }` → store. Another key raises |
 | `path` | Absolute directory; relative raises. Created if missing. Build it from `os.getenv` or `mantle.config_dir` |
 | `name` | One file name, no `/`; empty raises |
 | `defaults` | Fills missing top-level keys; stored values win. Nested tables are one value and do not merge. Re-sent every evaluation, so a new default lands on reload |
@@ -112,7 +112,7 @@ tick()
 | :--- | :--- |
 | Signature | `timer(ms, fn)` → handle |
 | `ms` | `1` to `86400000` (one day), monotonic clock; outside raises |
-| `fn` | Called with no arguments under the 5 ms CPU budget. A raise or blown budget is logged only at debug level (`mantle -vv` or `MANTLE_LOG=lua=debug`) |
+| `fn` | Called with no arguments under the 5 ms CPU budget. A raise or blown budget is logged as a warning |
 | Handle | `handle:cancel()` disarms it. A no-op once fired or cancelled. Dropping the handle does not disarm |
 | Order | Timers due at the same moment fire in the order they were armed; one may cancel another in the same batch |
 | Lifetime | Every evaluation clears all timers, including chains armed from callbacks. Timers armed during an evaluation start only once its result is applied |
@@ -246,8 +246,9 @@ return panel {
 | Signature | `palette.quantize(path, opts?, cb)` → handle |
 | `path` | Local raster image; no SVG or URL |
 | `opts.depth` | `0` to `8`, default `3`: up to `2^depth` colours, fewer when the image has fewer. Out of range raises |
+| `opts` | Only `depth` and `rescale`; another key raises |
 | `opts.rescale` | Longest edge in px before counting, default `128`; `0` is full size. Negative raises. A cached freedesktop thumbnail that covers it is used instead of decoding |
-| `cb(swatches)` | `{ color = "#RRGGBB", share = 0..1 }` entries, most common first. `share` counts only non-transparent pixels. `nil` on failure, with a logged warning. Runs outside the CPU budget; a raise is logged only at debug level (`-vv`) |
+| `cb(swatches)` | `{ color = "#RRGGBB", share = 0..1 }` entries, most common first. `share` counts only non-transparent pixels. `nil` on failure, with a logged warning. Runs outside the CPU budget; a raise is logged as a warning |
 | Handle | `handle:cancel()` drops the callback; the work still finishes |
 
 ## fonts
@@ -286,7 +287,6 @@ fonts { "Inter", "Symbols Nerd Font", "Noto Color Emoji" }
 | :--- | :--- |
 | Callbacks from before a reload | `palette` callbacks run the old closures after a reload. Keep what they touch in named state |
 | `timer` or `action` declared only inside a callback | Every evaluation clears both, so they vanish on the next save. Declare actions at the top level; start timer chains from the top level too |
-| A callback "does nothing" | Raises in `timer` and `palette` callbacks log only at debug level. Run `mantle -vv`, or wrap the body in `pcall` and `log.warn` the error |
 | Two modules declare the same action | Raises. Pick unique names |
 | `store.key:get()` right after `store:set` | Still the old value. The signal updates on the next push |
 | `store.key` is `nil` at startup | Every key reads `nil` until `mantle.storage` pushes, even with defaults. Handle `nil` in every map |

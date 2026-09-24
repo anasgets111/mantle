@@ -137,10 +137,10 @@ How each failure ends:
 | Startup evaluation raises | No scene. Surfaces paint nothing. `mantle.rescue` is set as below. The next successful reload brings the shell up |
 | Startup evaluation succeeds but the scene rejects it | No scene. `mantle.rescue` is set |
 | Reload evaluation raises (syntax error, runtime error, bad top-level return) | The previous scene stays on screen. [`mantle.rescue`](../capabilities/index.md) becomes `{ is_rescue = true, error_log = "<the error>" }`. The error is logged |
-| Reload evaluates but the scene rejects it (bad property value, a map over budget) | The previous scene stays. The error is logged as a warning. `mantle.rescue` stays false |
-| A live update fails later (a pushed value breaks a map) | The previous scene stays. Warning logged |
+| Reload evaluates but the scene rejects it (bad property value, a map over budget) | The previous scene stays. `mantle.rescue` is set. The error is logged |
+| A live update fails later (a pushed value breaks a map) | The previous scene stays. `mantle.rescue` is set until a pass applies. Warning logged |
 | The session lock is refused, or the compositor ends it | `mantle.rescue` becomes `{ is_rescue = true, error_log = "<the reason>" }`. The error is logged ([lock](../surfaces/lock.md)) |
-| A reload would recreate the lock surface while locked | Refused with a warning; save again after unlocking |
+| A reload would recreate the lock surface while locked | Refused with a warning and `mantle.rescue`; save again after unlocking |
 | The Renderer crashes | The Supervisor starts a new generation. After three crashes within 60 s, it waits 30 s before the next respawn |
 | The compositor goes away | The Renderer exits with code 71 and the Supervisor shuts down instead of respawning |
 
@@ -149,7 +149,8 @@ thresholds registered by the evaluation that drew it are already gone (see the n
 keeps the new evaluation's actions, handlers and thresholds but no timers. Fix and save to get
 them back.
 
-The next successful evaluation clears `mantle.rescue`. A config can draw its own error banner:
+`mantle.rescue` clears when a reload applies. A rescue from a failed live update or startup apply
+also clears when a later pass over the same scene applies. A config can draw its own error banner:
 
 ```lua
 local rescue = mantle.rescue
@@ -202,7 +203,7 @@ it.
 | Signal nesting | 32 levels | Signal reads nested inside other signal reads (a `map` of a `map` of ..., a computed reading itself) | Raises `signal nesting exceeded its maximum depth of 32 levels` |
 | Layout pass | 2 s | One whole pass over the scene, including list `itemfn`s and function `child` builders | The pass fails and the previous scene stays |
 | Tree depth | 64 levels | Nested nodes in one surface | The pass fails |
-| Scalar values | Numbers finite, integers within ±(2^53 − 1), strings at most 64 KiB | `state` seeds, `:set()`, `mantle set`, and number or string node properties. Tables are not checked | `state` and `:set` raise. `mantle set` is refused with a warning. A node property fails the pass |
+| Scalar values | Numbers finite, integers within ±(2^53 − 1), strings at most 64 KiB | `state` seeds, `:set()`, `mantle set`, and number or string node properties. Tables are not checked | `state` and `:set` raise. `mantle set` is refused: it exits 1 and logs a warning. A node property fails the pass |
 | Numeric properties | `[0, 8192]` logical px for most sizes. `[-8192, 8192]` for `translate`, `rotate`, shader `progress`, shadow offset and spread. `opacity` and `origin` `[0, 1]`, `scale` `[0, 64]`, `font_size` `[1, 8192]`. `margin`, `padding`, `spacing` and icon `size` are unbounded (a tween still clamps them) | Node and surface properties ([nodes](../nodes/index.md)) | The pass fails, naming the property |
 | Array length | 10,000 | `children` of one node, items of one `list` (`source`, and `limit` is clamped to it), runs in one `text` `content` | The pass fails |
 | `delay`, `pulse` duration | `[1, 60000]` ms | `delay(signal, ms)`, `pulse(signal, ms)` ([signals](signals.md)) | Raises at the call |
@@ -243,8 +244,9 @@ started with `process.run`, whose output callback sets a `state`.
 | :--- | :--- |
 | `print(...)` | The Renderer's stdout, unstamped |
 | `log.error/warn/info/debug(...)` | Stamped lines under the `config` subsystem, printed at every verbosity ([log](scripting.md#log)) |
-| A raise from an input handler, `on_close` or `on_dismiss` | A warning |
-| A raise from `on_change`, `timer`, `process.run`, `palette` or idle callbacks | A debug line: visible only with `mantle -vv` |
+| A raise from any callback: input handlers, `on_close`, `on_dismiss`, `on_change`, `timer`, `process.run`, `palette` or idle | A warning |
+| A `process.run` or `process.detach` that cannot spawn, a failing `mantle call` | A warning |
+| An icon name no theme has, an image that does not decode | A warning, once per name |
 
 Both streams land in the shell's log file. Read it with [`mantle log`](cli.md). A terminal that
 started `mantle` in the foreground also gets a copy.
@@ -255,10 +257,9 @@ started `mantle` in the foreground also gets a copy.
 
 | Step | Command | Tells you |
 | :--- | :--- | :--- |
-| 1 | `mantle check` | Syntax and top-level errors, with file and line. It does not lay out nodes ([what check covers](cli.md#what-check-covers)) |
-| 2 | `mantle log` | `shell.lua re-evaluation failed` (evaluation error, rescue set) or `the re-evaluated config failed to apply` (layout error, previous scene kept) |
-| 3 | `mantle -vv`, then `mantle log -f` | Errors raised in `on_change`, `timer`, `process.run`, `palette` and idle callbacks |
-| 4 | Draw `mantle.rescue` | The evaluation error on screen, as in the [banner above](#evaluation-reload-and-generations) |
+| 1 | `mantle check` | Syntax and top-level errors, with file and line. Node and layout errors as laid out with every capability `nil` ([what check covers](cli.md#what-check-covers)) |
+| 2 | `mantle log` | `shell.lua re-evaluation failed` (evaluation error) or `the re-evaluated config failed to apply` (layout error, previous scene kept), and errors raised in callbacks |
+| 3 | Draw `mantle.rescue` | The evaluation or apply error on screen, as in the [banner above](#evaluation-reload-and-generations) |
 
 **…split a config into files?** Put modules beside `shell.lua` and bind each `require` to a local,
 as in the [example at the top](#runtime).
@@ -342,9 +343,7 @@ when the config evaluates.
 | `dofile("/big/file")` stutters every frame it runs | Read files through `process.run` or `persistent_table` |
 | A global counter keeps growing across reloads | Globals live in the VM, and a reload reuses the VM. Use `local`, or `state` when it should persist on purpose |
 | After a broken save, `mantle call` says no action exists | A failed reload clears actions, timers and handlers. Fix the error and save again |
-| An `on_change` or `timer` callback silently does nothing | Its error is logged at debug level. Run `mantle -vv` and read `mantle log` |
 | A config edit to `fonts { ... }` does nothing | The font chain is read when the Renderer starts. Restart the shell |
-| A reload that fails in layout shows no rescue banner | `mantle.rescue` covers evaluation errors, a failed startup apply and the session lock, not a reload's apply. Check `mantle log` for the warning |
 | Saving a `.json` or an image beside `shell.lua` does not reload | Only `.lua` and `.frag` changes trigger a reload |
 
 See also: [cli](cli.md) · [signals](signals.md) · [processes](processes.md) · [scripting](scripting.md) ·
