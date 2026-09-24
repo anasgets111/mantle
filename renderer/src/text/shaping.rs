@@ -493,7 +493,7 @@ impl ShapingHandle {
     /// measurement cache, since every entry was measured against the faces this call replaces.
     /// Called once, after startup evaluation, with whatever chain the config declared. Works by
     /// ordering, not respawn: `ShapingHandle::spawn` runs before any Lua has been read
-    /// (`wayland/mod.rs`), and `TextPainter` is built lazily on a surface's first paint, after, so
+    /// (`renderer/src/wayland/main_loop.rs`), and `TextPainter` is built lazily on a surface's first paint, after, so
     /// femtovg picks up the new faces once the caller drops any painter it already built.
     ///
     /// A no-op for an empty chain: a config declaring no fonts keeps [`fonts::DEFAULT_CHAIN`],

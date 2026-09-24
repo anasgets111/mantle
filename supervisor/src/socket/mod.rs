@@ -160,7 +160,7 @@ impl GenerationRegistry {
             // Removing the entry only stops new frames queueing; the connection task has to be told
             // to stop, or its writer sits blocked writing to a peer that is not reading. Closing
             // the socket makes the Renderer's own loop see its Supervisor go away, and it exits
-            // (`renderer/src/wayland/mod.rs`, `EXIT_SUPERVISOR_GONE`), which is the departure this
+            // (`renderer/src/wayland/main_loop.rs`, `EXIT_SUPERVISOR_GONE`), which is the departure this
             // Supervisor already knows how to respawn from.
             hangup.notify_one();
         }
