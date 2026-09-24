@@ -7,6 +7,15 @@ tree of *nodes*, and any node property can be a live *signal* that updates itsel
 
 <video src="https://github.com/user-attachments/assets/038ee763-d7b6-4df9-9f79-2f131d4f0dcd" controls muted loop playsinline preload="metadata"></video>
 
+<div class="shots">
+<a href="cookbook/launcher.html"><img src="images/cookbook/launcher-1.png" alt="">App launcher</a>
+<a href="cookbook/power-menu.html"><img src="images/cookbook/power-menu-1.png" alt="">Power menu</a>
+<a href="cookbook/lock-screen.html"><img src="images/cookbook/lock-screen-1.png" alt="">Lock screen</a>
+<a href="cookbook/media-player.html"><img src="images/cookbook/media-player-1.png" alt="">Media player</a>
+<a href="cookbook/notifications.html"><img src="images/cookbook/notifications-1.png" alt="">Notification popups</a>
+<a href="cookbook/tray.html"><img src="images/cookbook/tray-1.png" alt="" style="object-position: right">System tray with menu</a>
+</div>
+
 This page is the book's home: a first shell to build, the core concepts, then indexes by
 [topic](#topic-index) and by [task](#how-do-i). Terms are defined in the
 [glossary](glossary.md).

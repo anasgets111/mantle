@@ -80,3 +80,10 @@ pre > code { border-radius: 8px; }
 
 /* On-this-page links nested under the current chapter */
 .on-this-page { margin-inline-start: 14px; border-inline-start-width: 2px; font-size: 0.93em; }
+
+/* Introduction: cookbook screenshots, each linking to its recipe */
+.shots { display: grid; grid-template-columns: repeat(2, 1fr); gap: 1.2em; margin-block: 1.5em; }
+.content .shots a { display: flex; flex-direction: column; gap: 0.4em; color: var(--subtext); font-size: 0.92em; }
+.content .shots img { margin: 0; width: 100%; aspect-ratio: 736 / 428; object-fit: cover; }
+.content .shots a:hover img { border-color: var(--accent); }
+@media (max-width: 600px) { .shots { grid-template-columns: 1fr; } }
