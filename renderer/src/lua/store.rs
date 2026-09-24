@@ -13,7 +13,7 @@ use std::collections::HashMap;
 
 use mlua::{AnyUserData, IntoLua, Lua, ObjectLike, Table, Value};
 
-use crate::lua::luacats::{As, LuaType, lua_fn};
+use crate::lua::luacats::{As, LuaType, lua_fn, spelled};
 use crate::lua::signal::{Signal, from_userdata};
 
 /// Stores keyed by joined absolute path: two calls naming one file share one table/signals. It
@@ -65,12 +65,7 @@ pub fn register(lua: &Lua) -> mlua::Result<()> {
 /// `persistent_table`'s `spec`, checked key by key with messages naming the call.
 struct Spec;
 
-impl LuaType for Spec {
-    fn lua() -> String {
-        let name = String::lua();
-        format!("{{ path: {name}, name: {name}, defaults?: {} }}", Table::lua())
-    }
-}
+spelled!(Spec => "{ path: string, name: string, defaults?: table }");
 
 /// What `persistent_table` returns: [`build_store`]'s table, whose `set` is real and whose other
 /// keys are signals of the file's JSON values, whatever keys it holds; so the class block is written

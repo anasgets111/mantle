@@ -20,12 +20,7 @@ pub struct SizeHint {
     pub height: f32,
 }
 
-impl LuaType for SizeHint {
-    fn lua() -> String {
-        let axis = f32::lua();
-        format!("{{ width: {axis}, height: {axis}, [string]: \"no such property\" }}")
-    }
-}
+spelled!(SizeHint => r#"{ width: number, height: number, [string]: "no such property" }"#);
 
 /// `None` means no request; `Some(0, 0)` sends an unconstrained request. A present hint must name
 /// both axes; use `0` for an unconstrained axis.
@@ -212,12 +207,7 @@ pub struct PopupOffset {
     pub y: f32,
 }
 
-impl LuaType for PopupOffset {
-    fn lua() -> String {
-        let axis = f32::lua();
-        format!("{{ x?: {axis}, y?: {axis}, [string]: \"no such property\" }}")
-    }
-}
+spelled!(PopupOffset => r#"{ x?: number, y?: number, [string]: "no such property" }"#);
 
 impl Prop for PopupOffset {
     type Out = PopupOffset;

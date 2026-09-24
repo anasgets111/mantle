@@ -10,7 +10,7 @@ use std::sync::mpsc::{Receiver, Sender};
 
 use mlua::{Function, Lua, Table};
 
-use super::luacats::{As, LuaType, lua_class, lua_fn, lua_record};
+use super::luacats::{As, lua_class, lua_fn, lua_record, spelled};
 use shared::warn;
 
 use crate::image::quantize::quantize_file;
@@ -36,12 +36,7 @@ lua_record! {
 /// `palette.quantize`'s `opts`, read field by field against its own ranges.
 struct Options;
 
-impl LuaType for Options {
-    fn lua() -> String {
-        let integer = i64::lua();
-        format!("{{ depth?: {integer}, rescale?: {integer} }}")
-    }
-}
+spelled!(Options => "{ depth?: integer, rescale?: integer }");
 
 #[derive(Clone)]
 pub struct PaletteRegistry(Rc<RefCell<Inner>>);

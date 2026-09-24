@@ -29,12 +29,7 @@ pub struct Anchor {
     pub left: bool,
 }
 
-impl LuaType for Anchor {
-    fn lua() -> String {
-        let edge = bool::lua();
-        format!("{{ top?: {edge}, bottom?: {edge}, left?: {edge}, right?: {edge}, [string]: \"no such property\" }}")
-    }
-}
+spelled!(Anchor => r#"{ top?: boolean, bottom?: boolean, left?: boolean, right?: boolean, [string]: "no such property" }"#);
 
 impl Prop for Anchor {
     type Out = Anchor;

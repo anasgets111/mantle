@@ -267,12 +267,7 @@ pub struct SecureSubmitTarget {
     pub action: String,
 }
 
-impl LuaType for SecureSubmitTarget {
-    fn lua() -> String {
-        let name = String::lua();
-        format!("{{ capability: {name}, action: {name}, [string]: \"no such property\" }}")
-    }
-}
+spelled!(SecureSubmitTarget => r#"{ capability: string, action: string, [string]: "no such property" }"#);
 
 /// `secure_submit` is optional because an unread mask is unreadable from Lua, and it
 /// is non-structural, so signal-bound values arrive resolved. `capability`/`action` reject
