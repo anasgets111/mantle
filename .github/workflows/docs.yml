@@ -1,5 +1,5 @@
-# The docs site. A PR builds the book and checks its links; a push to main also runs the tests
-# (the doc examples among them) and deploys to GitHub Pages.
+# The docs site. A PR builds the book and checks its links; a push to main also deploys it to GitHub
+# Pages. The tests, doc examples included, run in the pre-commit hook, not here.
 name: docs
 
 on:
@@ -16,32 +16,22 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  # Arch, not Ubuntu: the `updates` capability links libalpm.
-  test:
-    if: github.event_name != 'pull_request'
-    runs-on: ubuntu-latest
-    container: archlinux:base-devel
-    steps:
-      - run: pacman -Syu --noconfirm --needed git rust clang pipewire mesa libxkbcommon wayland fontconfig ttf-dejavu
-      - uses: actions/checkout@v4
-      - run: cargo test --workspace --locked
-
   book:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: taiki-e/install-action@v2
         with:
           tool: just,mdbook,lychee
       - run: just book
       - if: github.event_name != 'pull_request'
-        uses: actions/upload-pages-artifact@v3
+        uses: actions/upload-pages-artifact@v4
         with:
           path: target/book
 
   deploy:
     if: github.event_name != 'pull_request'
-    needs: [test, book]
+    needs: book
     runs-on: ubuntu-latest
     permissions:
       pages: write
