@@ -345,7 +345,7 @@ impl Supervisor {
     /// Handles a PAM lock answer (ADR-0042). `acquisition` rejects stale answers: PAM normally
     /// takes a second, or `PAM_EXCHANGE_TIMEOUT`'s 30 seconds when wedged, while the compositor or
     /// idle timer may change locks. `loginctl lock-session` (ADR-0138) arrives as logind's `Lock`
-    /// signal, uses the same lock path and already-locked guard as `lock:invoke("lock")`.
+    /// signal, uses the same lock path and already-locked guard as `mantle.lock:lock()`.
     pub(crate) fn lock_requested_by_logind(&mut self) {
         info!("logind asked for a lock (loginctl lock-session)");
         self.lock.lock();

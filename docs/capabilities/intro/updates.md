@@ -1,8 +1,8 @@
 ```lua
-mantle.updates:invoke("configure", { interval = 3600 })
+mantle.updates:configure({ interval = 3600 })
 
 button {
-    on_click = function() mantle.updates:invoke("check") end,
+    on_click = function() mantle.updates:check() end,
     children = {
         text {
             content = mantle.updates:map(function(updates)
@@ -43,7 +43,7 @@ local file = dir .. "/updates.json"
 mantle.storage:on_change(function(storage, previous)
     local saved = storage.files[file]
     if saved and not (previous and previous.files[file]) then
-        mantle.updates:invoke("configure", {
+        mantle.updates:configure({
             interval = 3600,
             checked_at = saved.checked_at,
             packages = saved.packages,

@@ -90,7 +90,7 @@ One workspace. Draw `idx`, send `id`.
 
 ## Actions
 
-Call as `mantle.workspaces:invoke("action", arguments...)`; `?` marks an argument you may omit.
+Call each as `mantle.workspaces:<action>(arguments...)`; `?` marks an argument you may omit.
 
 | Action | Arguments | Description |
 | --- | --- | --- |
@@ -134,7 +134,7 @@ list {
             padding = { left = 8, right = 8 },
             radius = 6,
             background = active:map(function(is_active) return is_active and "#89B4FA" or "#313244" end),
-            on_click = function() mantle.workspaces:invoke("focus", workspace.id) end,
+            on_click = function() mantle.workspaces:focus(workspace.id) end,
             children = { text { content = tostring(workspace.idx) } },
         }
     end,

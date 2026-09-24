@@ -9,7 +9,7 @@ button {
     on_click = function()
         local notifications = mantle.notifications:get()
         if notifications then
-            mantle.notifications:invoke("set_dnd", not notifications.dnd)
+            mantle.notifications:set_dnd(not notifications.dnd)
         end
     end,
     children = {
@@ -46,7 +46,7 @@ One `notifications.feed` entry.
 | `desktop_entry?` | `string` | Sender's desktop id, e.g. `"org.telegram.desktop"`, for `mantle.applications.by_app_id`; `nil` when absent or containing `/`. |
 | `expired` | `boolean` | The timeout ran out: drop it from popups, keep it in history until dismissed. Never true for critical or `expire_timeout = 0`; a replacement resets it. |
 | `has_default_action` | `boolean` | Clicking the card may `:invoke("invoke_action", id, "default")`. |
-| `has_reply` | `boolean` | The sender accepts `:invoke("reply", id, text)`. |
+| `has_reply` | `boolean` | The sender accepts `mantle.notifications:reply(id, text)`. |
 | `id` | `integer` | Server id, from `1`; a replacement keeps the id it replaces. |
 | `image_path?` | `string` | Attached picture (album art, avatar) as an existing absolute path, or `nil`. Never a theme name. |
 | `reply_placeholder?` | `string` | Placeholder for an empty reply field, e.g. `"Reply to Alice"`, capped at 64 bytes; `nil` when unset. |
@@ -87,7 +87,7 @@ One of `"low"`, `"normal"`, `"critical"`.
 
 ## Actions
 
-Call as `mantle.notifications:invoke("action", arguments...)`; `?` marks an argument you may omit.
+Call each as `mantle.notifications:<action>(arguments...)`; `?` marks an argument you may omit.
 
 | Action | Arguments | Description |
 | --- | --- | --- |
@@ -131,7 +131,7 @@ list {
             padding = 8,
             radius = 8,
             background = "#1E1E2E",
-            on_click = function() mantle.notifications:invoke("dismiss", item.id) end,
+            on_click = function() mantle.notifications:dismiss(item.id) end,
             children = {
                 column {
                     children = {

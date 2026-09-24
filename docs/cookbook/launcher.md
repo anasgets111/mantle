@@ -60,7 +60,7 @@ end)
 
 local function launch(entry)
     if entry then
-        mantle.applications:invoke("launch", entry.id)
+        mantle.applications:launch(entry.id)
     end
     close()
 end

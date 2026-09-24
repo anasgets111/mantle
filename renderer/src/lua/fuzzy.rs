@@ -299,7 +299,7 @@ pub fn score(haystack: &str, needle: &str) -> Option<(i32, usize)> {
     fuzzy_match_unicode(case_sensitive, haystack, needle)
 }
 
-/// A bare global rather than a capability: a capability is an async invoke answered by a payload,
+/// A bare global rather than a capability: a capability is an async action answered by a payload,
 /// and this is read inside `computed`s, which must be pure and synchronous (ADR-0021).
 ///
 /// Bytes that are not UTF-8 score as no match rather than raising, since a desktop entry's name is

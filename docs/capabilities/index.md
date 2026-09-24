@@ -1,16 +1,16 @@
 # Capabilities
 
 `mantle.<name>` reads one slice of the system (audio, network, battery, workspaces and the rest) as
-a read-only signal, and `:invoke` asks its backend to act. This page holds the rules every
+a read-only signal, and its action methods ask its backend to act. This page holds the rules every
 capability shares; each capability's page holds its state, actions and backend.
 
 ```lua
 button {
-    on_click = function() mantle.audio:invoke("toggle_mute") end,
+    on_click = function() mantle.audio:toggle_mute() end,
     on_wheel = function(_, steps)
         local audio = mantle.audio:get()
         if audio and audio.volume then
-            mantle.audio:invoke("set_volume", audio.volume + steps * 0.05) -- clamped to [0, 1.5]
+            mantle.audio:set_volume(audio.volume + steps * 0.05) -- clamped to [0, 1.5]
         end
     end,
     children = {
@@ -35,10 +35,10 @@ a property and the property stays live. Each push replaces the whole snapshot.
 | :--- | :--- |
 | `:get()` | The last pushed snapshot; `nil` before the first |
 | `:map(fn)` | Derived signal; `fn` must handle `nil`. A capability also works as a `computed` dependency |
-| `:on_change(fn)` | `fn(current, previous)` once per push, after it lands; `previous` is `nil` on the first. Runs under the 5 ms callback budget and may `:invoke`, `process.run` or write state. A raise logs a warning and the next handler still runs. Every evaluation clears them before `shell.lua` registers its own |
-| `:invoke(action, ...)` | Queues one command and returns nothing. Read the state it changes for the outcome |
+| `:on_change(fn)` | `fn(current, previous)` once per push, after it lands; `previous` is `nil` on the first. Runs under the 5 ms callback budget and may call actions, `process.run` or write state. A raise logs a warning and the next handler still runs. Every evaluation clears them before `shell.lua` registers its own |
+| `:<action>(...)` | One method per action on the capability's page, e.g. `mantle.audio:set_volume(0.5)`. Queues one command and returns nothing. Read the state it changes for the outcome. Call it with `:`; a `.` call raises |
 
-There is no `:set`. `mantle.idle` has no `:invoke`; it takes [methods](idle.md#methods) instead.
+There is no `:set` on the state; `mantle.brightness:set` and `mantle.storage:set` are actions. `mantle.idle` has no actions; it takes [methods](idle.md#methods) instead.
 
 ### Lifecycle
 
@@ -55,9 +55,7 @@ There is no `:set`. `mantle.idle` has no `:invoke`; it takes [methods](idle.md#m
 | Built at boot | `lock`, so the session can relock after a Renderer dies. The `polkit` controller also exists at boot, but its agent registers on the first read of `mantle.polkit` or a `secure_submit` naming it |
 | Unknown name | `mantle.audioo` is plain `nil`, so the `:get()` after it raises on that line |
 
-<a id="actions"></a>
-
-### Invoke
+### Actions
 
 Arguments are positional, in the order each page's Actions table lists them, and JSON-shaped:
 numbers, strings, booleans and tables. The Renderer checks the action name and marshalling; the
@@ -65,12 +63,12 @@ Supervisor checks types and count.
 
 | Mistake | Result |
 | :--- | :--- |
-| Unknown action name | Raises at the call, listing the actions the capability takes |
-| `invoke` on `battery`, `privacy` or `system` | Raises: they have no actions |
+| Unknown action name, or a state field read off the capability (`mantle.audio.volume`) | Raises at the read, listing the actions the capability takes |
+| Any method but `get`, `map` and `on_change` on `battery`, `privacy` or `system` | Raises: they have no actions |
 | A function or userdata argument | Raises at the call, naming its slot |
 | Wrong type or argument count | Logged (`mantle log`) and dropped |
 | A float where an `integer` goes | Dropped: `5.0` is refused, `5` works. `math.floor(x + 0.5)` returns an integer |
-| Arguments to an action that takes none | Dropped: `invoke("scan", 1)` is refused |
+| Arguments to an action that takes none | Dropped: `mantle.network:scan(1)` is refused |
 
 A trailing `nil` counts as omitted, so an optional last argument can be passed as `nil`.
 
@@ -83,7 +81,7 @@ A trailing `nil` counts as omitted, so an optional last argument can be passed a
 
 [`lua-meta/mantle.lua`](../../lua-meta/mantle.lua) is generated from the same Rust types as the
 pages. On the LuaLS library path, `mantle.audio:get().` completes fields and
-`mantle.audio:invoke("` offers every action with its arguments.
+`mantle.audio:` offers every action, and a wrong argument type is a warning.
 
 ## Capability list
 
@@ -104,8 +102,8 @@ pages. On the LuaLS library path, `mantle.audio:get().` completes fields and
 | [`polkit`](polkit.md) | The pending authentication request | Mantle is the polkit agent; the password goes through `secure_submit` |
 | [`power`](power.md) | Power profiles, on battery, power draw | |
 | [`privacy`](privacy.md) | Apps using the camera, microphone or screen capture | |
-| [`processes`](processes.md) | Programs declared with `session_process` | Use [`session_process`](../guide/processes.md#session_process), not `invoke` |
-| [`storage`](storage.md) | Each `persistent_table` file | Use [`persistent_table`](../guide/scripting.md#persistent_table), not `invoke` |
+| [`processes`](processes.md) | Programs declared with `session_process` | Use [`session_process`](../guide/processes.md#session_process), not its actions |
+| [`storage`](storage.md) | Each `persistent_table` file | Use [`persistent_table`](../guide/scripting.md#persistent_table), not its actions |
 | [`sysinfo`](sysinfo.md) | CPU, memory, swap, temperatures | `nil` until `configure` |
 | [`system`](system.md) | Wall and monotonic clocks, once a second | |
 | [`tray`](tray.md) | Tray items, artwork, menus | Mantle hosts the StatusNotifierWatcher |
@@ -154,7 +152,7 @@ Four members come from the Renderer, not a backend, so they are never `nil` and 
 | Task | Answer |
 | :--- | :--- |
 | Show a value that may not have arrived yet | Guard `nil` in the map: [battery label](battery.md#how-do-i) |
-| Change volume or brightness with the wheel | `on_wheel` plus `:get()` and `:invoke`, as in the example above; [brightness](brightness.md) |
+| Change volume or brightness with the wheel | `on_wheel` plus `:get()` and an action, as in the example above; [brightness](brightness.md) |
 | Show an OSD when volume changes | `:on_change` writing state: [Volume OSD](../cookbook/volume-osd.md) |
 | Show a clock | `os.date` over `mantle.system.time`: [system](system.md) |
 | Give each monitor its own bar and workspaces | A function `child` gets the connector name; match it in `workspaces.outputs`: [workspaces](workspaces.md) |
@@ -171,8 +169,8 @@ Four members come from the Renderer, not a backend, so they are never `nil` and 
 | :--- | :--- |
 | `attempt to index a nil value` in a `:map` at startup | Guard the whole payload before its fields |
 | An optional field is `nil` | A JSON `null` arrives as an absent key. Fields marked `?` need their own guard (`audio.volume` with no default sink) |
-| `local ok = mantle.audio:invoke(...)` is always `nil` | Bind the state the action changes; read `mantle log` for dropped commands |
-| An action silently does nothing | Wrong argument type or count, often a float where an `integer` goes (`brightness:invoke("set", 50.0)`). Check `mantle log` |
+| `local ok = mantle.audio:set_volume(...)` is always `nil` | Bind the state the action changes; read `mantle log` for dropped commands |
+| An action silently does nothing | Wrong argument type or count, often a float where an `integer` goes (`brightness:set(50.0)`). Check `mantle log` |
 | `on_change` fires at startup with `previous == nil` | That push is learned state, not a change; return early. A replacement Renderer gets every snapshot replayed the same way. An in-place reload keeps the last value, so its next push has a real `previous` |
 | `on_change` fires with nothing visibly changed | Every push carries the whole snapshot. Compare the fields you care about |
 

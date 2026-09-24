@@ -25,7 +25,7 @@ text {
 
 ## Actions
 
-None: read-only, so an `invoke` raises.
+None: read-only, so any method but `get`, `map` and `on_change` raises.
 
 ## Backend
 

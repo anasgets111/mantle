@@ -3,7 +3,7 @@ session and reports the password attempt.
 
 ```lua
 button {
-    on_click = function() mantle.lock:invoke("lock") end,
+    on_click = function() mantle.lock:lock() end,
     children = { text { content = "Lock" } },
 }
 ```

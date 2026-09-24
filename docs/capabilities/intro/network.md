@@ -33,7 +33,7 @@ text {
 ### Ask for a Wi-Fi password
 
 Show the field while `password_ssid` is set. Escape clears a secure field and keeps it armed, then
-calls its `on_cancel`, the place to invoke `cancel_connect`:
+calls its `on_cancel`, the place to call `cancel_connect`:
 
 ```lua
 local asking = mantle.network:map(function(network)
@@ -54,7 +54,7 @@ return column {
             height = 24,
             placeholder = "Password",
             secure_submit = { capability = "network", action = "connect" },
-            on_cancel = function() mantle.network:invoke("cancel_connect") end,
+            on_cancel = function() mantle.network:cancel_connect() end,
         },
     },
 }

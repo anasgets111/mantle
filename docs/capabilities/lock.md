@@ -9,7 +9,7 @@ session and reports the password attempt.
 
 ```lua
 button {
-    on_click = function() mantle.lock:invoke("lock") end,
+    on_click = function() mantle.lock:lock() end,
     children = { text { content = "Lock" } },
 }
 ```
@@ -30,7 +30,7 @@ button {
 
 ## Actions
 
-Call as `mantle.lock:invoke("action", arguments...)`; `?` marks an argument you may omit.
+Call each as `mantle.lock:<action>(arguments...)`; `?` marks an argument you may omit.
 
 `mantle.lock` actions. There is no `unlock`; only a correct password unlocks.
 

@@ -28,7 +28,7 @@ Use these exact terms. Do not substitute with "component," "service," "API," or 
 
 ```text
 ┌─────────────────────┐
-│   Small Interface   │ ← Minimal methods/params (e.g., `invoke("connect")`)
+│   Small Interface   │ ← Minimal methods/params (e.g., `connect(ssid)`)
 ├─────────────────────┤
 │                     │
 │ Deep Implementation │ ← Retries, logging, payload mapping hidden

@@ -10,7 +10,7 @@
 //!
 //! Commands work the same way: `#[derive(Deserialize, JsonSchema)]` action enums sit beside
 //! `dispatch`, socket-boundary `parse_action` decodes `(action, arguments)` into their variants,
-//! and each variant's fields become one typed `invoke` overload. Mismatches fail the build rather
+//! and each variant becomes one typed method on its capability class. Mismatches fail the build rather
 //! than the golden test.
 
 use std::collections::BTreeMap;
@@ -19,7 +19,7 @@ use schemars::{Schema, schema_for};
 
 /// The sole capability-to-payload/action mapping. `push_snapshot` takes `&impl Serialize`, so
 /// payload types are inferred at each call site; action enums are named only by their `dispatch`.
-/// `every_capability_has_a_schema` checks `shared::Capability::ALL`. `None` means no `invoke`.
+/// `every_capability_has_a_schema` checks `shared::Capability::ALL`. `None` means no actions.
 fn capability_schemas() -> Vec<(&'static str, Schema, Option<Schema>)> {
     vec![
         (
@@ -331,12 +331,12 @@ fn fields(body: &serde_json::Value) -> BTreeMap<String, (String, bool, String)> 
     fields
 }
 
-/// One `---@field invoke` per action, which LuaLS reads as overloads.
-fn render_invoke(class: &str, actions: &serde_json::Value, out: &mut String) {
+/// One `---@field <action>` method per action, so LuaLS checks each action's own arguments.
+fn render_actions(class: &str, actions: &serde_json::Value, out: &mut String) {
     append_description(actions, out);
     for (name, arguments, description) in action_list(actions) {
         let arguments: String = arguments.iter().map(|argument| format!(", {argument}")).collect();
-        out.push_str(&format!("---@field invoke fun(self: {class}, command: \"{name}\"{arguments}){description}\n"));
+        out.push_str(&format!("---@field {name} fun(self: {class}{arguments}){description}\n"));
     }
 }
 
@@ -414,7 +414,7 @@ pub fn render() -> String {
         ));
         out.push_str(hand_written_methods(capability));
         match actions {
-            Some(actions) => render_invoke(&class, actions.as_value(), &mut out),
+            Some(actions) => render_actions(&class, actions.as_value(), &mut out),
             None => out.push_str(&format!("local {class} = {{}}\n")),
         }
     }
@@ -463,7 +463,7 @@ fn render_page(capability: &str, payload: &Schema, actions: Option<&Schema>, int
     match &actions {
         Some(actions) => {
             out.push_str(&format!(
-                "Call as `mantle.{capability}:invoke(\"action\", arguments...)`; `?` marks an argument you may omit.\n"
+                "Call each as `mantle.{capability}:<action>(arguments...)`; `?` marks an argument you may omit.\n"
             ));
             if let Some(description) = actions.get("description").and_then(|d| d.as_str()) {
                 out.push_str(&format!("\n{}\n", prose(description)));
@@ -481,7 +481,7 @@ fn render_page(capability: &str, payload: &Schema, actions: Option<&Schema>, int
                 }
             }
         }
-        None => out.push_str("None: read-only, so an `invoke` raises.\n"),
+        None => out.push_str("None: read-only, so any method but `get`, `map` and `on_change` raises.\n"),
     }
     let outro = outro.trim();
     if !outro.is_empty() {
@@ -558,7 +558,7 @@ const GENERATED_HEADER: &str = r#"---@meta
 ---@class ReadOnlyCapability<T>: Signal<T>
 ---`:get()` and `:map()` read the pushed payload; `:set()` is refused. `:on_change(handler)` runs once
 ---per push with the new and previous payload (`nil` on the first), under the 5ms `map` budget, and
----may `invoke` or write state (ADR-0115).
+---may call actions or write state (ADR-0115).
 ---@field on_change fun(self: ReadOnlyCapability<T>, handler: fun(current: T, previous: T?))
 
 ---@class Capability<T>: ReadOnlyCapability<T>
@@ -569,7 +569,7 @@ const GENERATED_HEADER: &str = r#"---@meta
 /// ADR-0141). Its actions stay `None`: `register` without the local callbacks fires into nothing,
 /// and `forget_thresholds` would drop the config's own thresholds (ADR-0158).
 ///
-/// Use `---@field`, not `function IdleCapability:...`: a class with `---@field invoke` has no local
+/// Use `---@field`, not `function IdleCapability:...`: a class of `---@field` methods has no local
 /// binding for a later function, so calls read `undefined-field`. The first version did this;
 /// `just types` caught it.
 ///
@@ -649,29 +649,6 @@ mod tests {
         shared::check_generated(&files);
     }
 
-    /// A read-only capability's `invoke` raises in the Renderer, so its class must not offer one.
-    #[test]
-    fn read_only_classes_offer_no_invoke() {
-        let generated = super::render();
-        for (capability, schema, actions) in super::capability_schemas() {
-            if actions.is_some() {
-                continue;
-            }
-            let header = format!(
-                "---@class {}: ReadOnlyCapability<{}>",
-                super::capability_class(capability),
-                super::payload_class(&schema)
-            );
-            let class: Vec<&str> = generated
-                .lines()
-                .skip_while(|line| *line != header)
-                .take_while(|line| line.starts_with("---"))
-                .collect();
-            assert!(!class.is_empty(), "{header} is missing");
-            assert!(!class.iter().any(|line| line.contains("invoke")), "{class:#?}");
-        }
-    }
-
     #[test]
     fn every_capability_has_a_schema() {
         let declared: BTreeSet<&str> = super::capability_schemas().into_iter().map(|(name, ..)| name).collect();
@@ -679,8 +656,8 @@ mod tests {
         assert_eq!(declared, expected, "capability_schemas is out of step with shared::Capability::ALL");
     }
 
-    /// The Renderer refuses an `invoke` name off `shared::Capability::actions`, so each list must be
-    /// exactly its serde action enum's variants.
+    /// The Renderer's methods are `shared::Capability::actions`, so each list must be exactly its
+    /// serde action enum's variants.
     #[test]
     fn the_renderer_action_names_are_the_serde_variants() {
         for (capability, _, actions) in super::capability_schemas() {

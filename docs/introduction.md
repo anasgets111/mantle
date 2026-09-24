@@ -59,7 +59,7 @@ local workspaces = list {
             radius = 4,
             background = workspace.populated and "#45475a" or "#00000000",
             on_click = function()
-                mantle.workspaces:invoke("focus", workspace.id)
+                mantle.workspaces:focus(workspace.id)
             end,
             children = { text { content = tostring(workspace.idx), foreground = "#cdd6f4" } },
         }
@@ -109,7 +109,7 @@ return {
 | `mantle.system:map(...)` | A [derived signal](guide/signals.md#derived-signals); `content` re-resolves on every push (once a second). `:get()` would freeze it |
 | `system and system.time` | Capabilities read `nil` until their first push, so every map handles `nil` |
 | `list { source, itemfn, key }` | Rebuilds one button per workspace when the list changes ([list](nodes/list.md)) |
-| `:invoke("focus", id)` | Fire and forget; the new active workspace arrives in the next push ([actions](capabilities/index.md#actions)) |
+| `:focus(id)` | Fire and forget; the new active workspace arrives in the next push ([actions](capabilities/index.md#actions)) |
 | `width = "Fill"` on the panel and the `row` | The panel's root spans the anchored edges only when asked ([size](surfaces/panel.md#size)); the `"Fill"` `rect` then pushes the clock right ([alignment](nodes/index.md#alignment)) |
 | `visible = launcher_open` | The launcher panel maps and unmaps with the state |
 

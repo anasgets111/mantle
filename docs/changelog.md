@@ -45,8 +45,12 @@ so everything since the rename from Obelisk sits under Unreleased.
 - Two surfaces with one `id`, or two different scalar seeds for one `state` name in one
   evaluation, fail the evaluation.
 - A `list` without `source` builds no items instead of raising.
-- `mantle.<name>:invoke` raises on an action name the capability does not have, listing the
-  ones it has, and on a capability with no actions, instead of logging and dropping the command.
+- **Breaking:** each capability action is a method, and `:invoke` is gone:
+  `mantle.audio:set_volume(0.5)` replaces `mantle.audio:invoke("set_volume", 0.5)`. The editor
+  stubs type each action's own arguments, so `mantle.audio:set_muted(0.5)` is flagged. An unknown
+  name raises, listing the actions the capability has, as does any action on a capability with
+  none; a `.` call in place of `:` raises instead of sending a wrong argument
+  ([actions](capabilities/index.md#actions)).
 - `mantle set` and `mantle toggle` wait for the shell and exit 1 with its reason when it refuses
   the write ([CLI](guide/cli.md#values-and-arguments)).
 - `mantle check` lays the config out on stand-in outputs and fails on a layout error, and says

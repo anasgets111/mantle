@@ -128,7 +128,7 @@ return {
 | Change | Edit |
 | :--- | :--- |
 | Charge as a bar instead of an icon | A 24 × 10 `rect` track with a child `rect { width = battery.percent .. "%", height = "Fill" }` ([sizes](../nodes/index.md#sizes)) |
-| Cycle the power profile on click | Make the pill a `button` whose `on_click` picks the next entry of `mantle.power:get().profiles` and invokes `set_profile` ([power](../capabilities/power.md)) |
+| Cycle the power profile on click | Make the pill a `button` whose `on_click` picks the next entry of `mantle.power:get().profiles` and calls `set_profile` ([power](../capabilities/power.md)) |
 | Show the wattage | Add `text { content = mantle.power:map(function(power) return power and power.energy_rate and string.format("%.1f W", power.energy_rate) or "" end) }` |
 | Different threshold | `LOW = 20` |
 | Hide the pill on mains at full charge | `visible` returns `battery ~= nil and battery.present and battery.state ~= "FullyCharged"` |

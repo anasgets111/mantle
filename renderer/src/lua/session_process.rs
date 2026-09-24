@@ -53,7 +53,7 @@ pub fn register(lua: &Lua) -> mlua::Result<()> {
             // Sent every evaluation, like `storage:open`: the Supervisor keeps the entry it has
             // and takes the newer stop signal, so editing that lands on reload without disturbing
             // a program already up.
-            processes.call_method::<()>("invoke", ("declare", name.clone(), stop_signal))?;
+            processes.call_method::<()>("declare", (name.clone(), stop_signal))?;
 
             if let Some(existing) = super::app_data_or_default::<SessionRegistry>(lua).0.get(&name).cloned() {
                 return Ok(SessionProcessHandle(existing));
@@ -126,7 +126,7 @@ fn build_handle(lua: &Lua, name: &str, processes: mlua::AnyUserData) -> mlua::Re
     handle.set(
         "start",
         lua.create_function(move |_, (_handle, cmd, args): (Table, String, Option<Vec<String>>)| {
-            owner.call_method::<()>("invoke", ("start", program.clone(), cmd, args.unwrap_or_default()))
+            owner.call_method::<()>("start", (program.clone(), cmd, args.unwrap_or_default()))
         })?,
     )?;
 
@@ -135,16 +135,14 @@ fn build_handle(lua: &Lua, name: &str, processes: mlua::AnyUserData) -> mlua::Re
     handle.set(
         "signal",
         lua.create_function(move |_, (_handle, signal): (Table, String)| {
-            owner.call_method::<()>("invoke", ("signal", program.clone(), signal))
+            owner.call_method::<()>("signal", (program.clone(), signal))
         })?,
     )?;
 
     let owner = processes.clone();
     let program = name.to_string();
-    handle.set(
-        "stop",
-        lua.create_function(move |_, _handle: Table| owner.call_method::<()>("invoke", ("stop", program.clone())))?,
-    )?;
+    handle
+        .set("stop", lua.create_function(move |_, _handle: Table| owner.call_method::<()>("stop", program.clone()))?)?;
 
     index_entry_signals(lua, &handle, &processes, "sessions", name)?;
     Ok(handle)

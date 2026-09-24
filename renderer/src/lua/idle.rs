@@ -8,7 +8,7 @@
 //!
 //! `mantle.idle` is now a `Capability`'s read half (`get`, `map`, `on_change`, hydrated by
 //! `StateSnapshot`) wrapped in userdata that adds the three callbacks that cannot cross the wire.
-//! No `invoke`: `register` needs those callbacks, and `forget_thresholds` is the reload path's.
+//! No actions: `register` needs those callbacks, and `forget_thresholds` is the reload path's.
 //! The wrapper sits directly on `mantle`, outside `__index`, so every method sends
 //! `start_capability` by hand; its read never passes through the index.
 //!

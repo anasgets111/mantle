@@ -6,7 +6,7 @@ list {
     key = function(window) return window.id end,
     itemfn = function(window)
         return button {
-            on_click = function() mantle.windows:invoke("focus", window.id) end,
+            on_click = function() mantle.windows:focus(window.id) end,
             children = {
                 text { content = window.title, foreground = window.focused and "#89B4FA" or "#CDD6F4" },
             },

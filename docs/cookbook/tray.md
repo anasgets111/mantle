@@ -56,13 +56,13 @@ local tray_items = list {
                 if item.menu and (which == "right" or item.item_is_menu) then
                     open_menu(item, rect)
                 elseif which == "left" then
-                    mantle.tray:invoke("activate", item.id, 0, 0)
+                    mantle.tray:activate(item.id, 0, 0)
                 elseif which == "middle" then
-                    mantle.tray:invoke("secondary_activate", item.id, 0, 0)
+                    mantle.tray:secondary_activate(item.id, 0, 0)
                 end
             end,
             on_wheel = function(_, steps)
-                mantle.tray:invoke("scroll", item.id, steps > 0 and 1 or -1, "vertical")
+                mantle.tray:scroll(item.id, steps > 0 and 1 or -1, "vertical")
             end,
             children = { artwork(item) },
         }
@@ -130,10 +130,10 @@ local function menu_row(row_data)
                 open[key] = not open[key] or nil
                 expanded:set(open)
                 if open[key] then
-                    mantle.tray:invoke("menu_will_show", menu_item:get(), entry.id)
+                    mantle.tray:menu_will_show(menu_item:get(), entry.id)
                 end
             elseif entry.enabled then
-                mantle.tray:invoke("activate_menu_item", menu_item:get(), entry.id)
+                mantle.tray:activate_menu_item(menu_item:get(), entry.id)
                 close_menu()
             end
         end,

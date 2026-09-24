@@ -5,7 +5,7 @@
 CPU, memory and swap use, CPU and GPU temperatures. `nil` until `configure` sets intervals.
 
 ```lua
-mantle.sysinfo:invoke("configure", { cpu_interval = 2, ram_interval = 5 })
+mantle.sysinfo:configure({ cpu_interval = 2, ram_interval = 5 })
 
 text {
     content = mantle.sysinfo:map(function(sysinfo)
@@ -34,7 +34,7 @@ Pushes only on a change.
 
 ## Actions
 
-Call as `mantle.sysinfo:invoke("action", arguments...)`; `?` marks an argument you may omit.
+Call each as `mantle.sysinfo:<action>(arguments...)`; `?` marks an argument you may omit.
 
 | Action | Arguments | Description |
 | --- | --- | --- |

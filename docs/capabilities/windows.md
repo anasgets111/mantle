@@ -12,7 +12,7 @@ list {
     key = function(window) return window.id end,
     itemfn = function(window)
         return button {
-            on_click = function() mantle.windows:invoke("focus", window.id) end,
+            on_click = function() mantle.windows:focus(window.id) end,
             children = {
                 text { content = window.title, foreground = window.focused and "#89B4FA" or "#CDD6F4" },
             },
@@ -42,7 +42,7 @@ One toplevel window. `nil` optional fields are ones the backend does not report.
 | `floating?` | `boolean` | Whether the window floats rather than tiles; `nil` on wlr. |
 | `focused` | `boolean` | Whether the window has keyboard focus. |
 | `fullscreen?` | `boolean` | Whether the window is fullscreen; `nil` on niri. |
-| `id` | `string` | Opaque, backend-shaped id for `:invoke`; compare it, never parse it. |
+| `id` | `string` | Opaque, backend-shaped id for the `windows` actions; compare it, never parse it. |
 | `maximized?` | `boolean` | Whether the window is maximized; `nil` on niri. |
 | `minimized?` | `boolean` | Whether the window is minimized; `nil` except on wlr. |
 | `output?` | `string` | Connector name; `nil` when unknown. On wlr, the earliest-entered output the window is still on. |
@@ -51,7 +51,7 @@ One toplevel window. `nil` optional fields are ones the backend does not report.
 
 ## Actions
 
-Call as `mantle.windows:invoke("action", arguments...)`; `?` marks an argument you may omit.
+Call each as `mantle.windows:<action>(arguments...)`; `?` marks an argument you may omit.
 
 | Action | Arguments | Description |
 | --- | --- | --- |

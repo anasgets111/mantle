@@ -13,7 +13,7 @@ button {
     on_click = function()
         local current = player:get()
         if current then
-            mantle.mpris:invoke("control", current.id, "play_pause")
+            mantle.mpris:control(current.id, "play_pause")
         end
     end,
     children = {
@@ -54,7 +54,7 @@ button {
 
 ## Actions
 
-Call as `mantle.mpris:invoke("action", arguments...)`; `?` marks an argument you may omit.
+Call each as `mantle.mpris:<action>(arguments...)`; `?` marks an argument you may omit.
 
 | Action | Arguments | Description |
 | --- | --- | --- |

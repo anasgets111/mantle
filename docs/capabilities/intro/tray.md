@@ -10,7 +10,7 @@ list {
         return button {
             on_click = function(_, which)
                 if which == "left" and not item.item_is_menu then
-                    mantle.tray:invoke("activate", item.id, 0, 0) -- screen x, y; most apps ignore them
+                    mantle.tray:activate(item.id, 0, 0) -- screen x, y; most apps ignore them
                 end
             end,
             children = { icon { name = item.icon_name or item.icon_path or "", size = 16 } },

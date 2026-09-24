@@ -3,7 +3,7 @@ button {
     on_click = function()
         local notifications = mantle.notifications:get()
         if notifications then
-            mantle.notifications:invoke("set_dnd", not notifications.dnd)
+            mantle.notifications:set_dnd(not notifications.dnd)
         end
     end,
     children = {
@@ -49,7 +49,7 @@ list {
             padding = 8,
             radius = 8,
             background = "#1E1E2E",
-            on_click = function() mantle.notifications:invoke("dismiss", item.id) end,
+            on_click = function() mantle.notifications:dismiss(item.id) end,
             children = {
                 column {
                     children = {

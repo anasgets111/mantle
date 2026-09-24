@@ -20,7 +20,7 @@ there.
 
 ## Actions
 
-Call as `mantle.storage:invoke("action", arguments...)`; `?` marks an argument you may omit.
+Call each as `mantle.storage:<action>(arguments...)`; `?` marks an argument you may omit.
 
 | Action | Arguments | Description |
 | --- | --- | --- |

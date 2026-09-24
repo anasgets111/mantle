@@ -7,7 +7,7 @@ button {
     on_click = function()
         local current = player:get()
         if current then
-            mantle.mpris:invoke("control", current.id, "play_pause")
+            mantle.mpris:control(current.id, "play_pause")
         end
     end,
     children = {

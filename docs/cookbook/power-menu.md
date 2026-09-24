@@ -25,7 +25,7 @@ end
 
 local ACTIONS = {
     { key = "lock", label = "Lock", glyph = "system-lock-screen-symbolic",
-      run = function() mantle.lock:invoke("lock") end },
+      run = function() mantle.lock:lock() end },
     { key = "suspend", label = "Suspend", glyph = "weather-clear-night-symbolic",
       run = function() process.detach("systemctl", { "suspend" }) end },
     { key = "logout", label = "Log out", glyph = "system-log-out-symbolic", confirm = true, run = log_out },

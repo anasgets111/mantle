@@ -33,7 +33,7 @@ column {
             end),
         },
         button {
-            on_click = function() mantle.polkit:invoke("cancel") end,
+            on_click = function() mantle.polkit:cancel() end,
             children = { text { content = "Cancel" } },
         },
     },
@@ -57,7 +57,7 @@ column {
 
 ## Actions
 
-Call as `mantle.polkit:invoke("action", arguments...)`; `?` marks an argument you may omit.
+Call each as `mantle.polkit:<action>(arguments...)`; `?` marks an argument you may omit.
 
 | Action | Arguments | Description |
 | --- | --- | --- |

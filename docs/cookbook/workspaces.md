@@ -23,7 +23,7 @@ local function focus_step(name, step)
         if workspace.id == output.active_workspace then
             local target = output.workspaces[index + step]
             if target then
-                mantle.workspaces:invoke("focus", target.id)
+                mantle.workspaces:focus(target.id)
             end
             return
         end
@@ -61,7 +61,7 @@ local function strip(name)
                         radius = 10,
                         background = item.active and "#89b4fa" or (item.populated and "#45475a" or "#313244"),
                         animate = { width = { duration = 180, easing = "OutCubic" }, background = 180 },
-                        on_click = function() mantle.workspaces:invoke("focus", item.id) end,
+                        on_click = function() mantle.workspaces:focus(item.id) end,
                         children = {
                             text {
                                 content = item.label,
@@ -93,7 +93,7 @@ local specials = list {
             padding = { left = 8, right = 8, top = 2, bottom = 2 },
             radius = 10,
             background = special.shown_on and "#f9e2af" or "#313244",
-            on_click = function() mantle.workspaces:invoke("toggle_special", special.name) end,
+            on_click = function() mantle.workspaces:toggle_special(special.name) end,
             children = {
                 text {
                     content = short ~= "" and short or "special",

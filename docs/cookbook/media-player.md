@@ -61,7 +61,7 @@ end
 local function control(command)
     local current = player:get()
     if current then
-        mantle.mpris:invoke("control", current.id, command)
+        mantle.mpris:control(current.id, command)
     end
 end
 
@@ -125,7 +125,7 @@ local progress = button {
         local current = player:get()
         if phase == "end" and current and current.length > 0 then
             local fraction = math.max(0, math.min(1, pointer.x / rect.width))
-            mantle.mpris:invoke("seek", current.id, math.floor(fraction * current.length))
+            mantle.mpris:seek(current.id, math.floor(fraction * current.length))
         end
     end,
     children = {
@@ -258,7 +258,7 @@ return {
 | Change | Edit |
 | :--- | :--- |
 | Always the first player | `pick` returns `mpris and mpris.players[1]` |
-| Seek 10 s back and forward | Two more buttons whose `on_click` invokes `seek_relative` with the player's `id` and `-10000000` or `10000000` |
+| Seek 10 s back and forward | Two more buttons whose `on_click` calls `seek_relative` with the player's `id` and `-10000000` or `10000000` |
 | Show the app icon | `icon { name = current.desktop_entry }` from the player's `desktop_entry` |
 | Hide browsers | Skip players whose `desktop_entry` is `"firefox"` or `"chromium"` in `pick` |
 | No popup, controls in the bar | Put the three `control_button`s in the bar row and drop the popup |

@@ -2,12 +2,12 @@
 
 The session lock screen: one `ext_session_lock_surface_v1` per connected output, covering it for as
 long as the compositor holds the session locked. Declaring a `lock` does not lock;
-`mantle.lock:invoke("lock")` does, and only a correct password typed into its secure field unlocks.
+`mantle.lock:lock()` does, and only a correct password typed into its secure field unlocks.
 The lock's state (`active`, `authenticating`, `attempts`, `error`, `unlocking`) and actions are on
 the [lock capability](../capabilities/lock.md). Rules every role shares are in [surfaces](index.md).
 
 ```lua,shot
-mantle.lock:invoke("set_unlock_animation", 250)
+mantle.lock:set_unlock_animation(250)
 
 local up = mantle.lock:map(function(lock) return lock ~= nil and lock.active and not lock.unlocking end)
 
@@ -46,7 +46,7 @@ local lock_screen = lock {
     end,
 }
 
-action("lock", function() mantle.lock:invoke("lock") end)
+action("lock", function() mantle.lock:lock() end)
 
 return { lock_screen }
 ```
@@ -79,7 +79,7 @@ is refused at evaluation.
 ## When a lock is refused
 
 The compositor keeps the session locked if the shell dies, so a lock screen with no way to type a
-password leaves only a VT switch. `mantle.lock:invoke("lock")` checks the lock screen before it
+password leaves only a VT switch. `mantle.lock:lock()` checks the lock screen before it
 asks the compositor. A refusal leaves the session unlocked and puts the reason in `mantle.lock`'s
 `error` and in [`mantle.rescue`](../capabilities/index.md#renderer-members).
 

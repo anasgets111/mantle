@@ -349,7 +349,7 @@ pub struct Notification {
     /// Sender's desktop id, e.g. `"org.telegram.desktop"`, for `mantle.applications.by_app_id`;
     /// `nil` when absent or containing `/` (ADR-0101).
     pub desktop_entry: Option<String>,
-    /// The sender accepts `:invoke("reply", id, text)`.
+    /// The sender accepts `mantle.notifications:reply(id, text)`.
     pub has_reply: bool,
     /// Placeholder for an empty reply field, e.g. `"Reply to Alice"`, capped at 64 bytes; `nil`
     /// when unset (ADR-0101).

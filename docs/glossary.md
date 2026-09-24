@@ -78,7 +78,7 @@ scope, capability roster) lives in [`CONTEXT.md`](../CONTEXT.md).
 | **Snapshot** | A capability's full state, pushed on change. An equal payload is not pushed again, except for `tray` and `notifications`, whose icon files change in place. |
 | **Push** | A capability sending a new snapshot. Every property reading that capability re-resolves. |
 | **Hydration** | The Supervisor replaying its last snapshots to a new generation. Before its first snapshot a capability reads `nil`. |
-| **Action** | `mantle.<cap>:invoke(name, ...)`, fire and forget; or `action(name, fn)`, which exposes Lua to [`mantle call`](guide/scripting.md#action). |
+| **Action** | A capability method such as `mantle.audio:set_volume(0.5)`, fire and forget; or `action(name, fn)`, which exposes Lua to [`mantle call`](guide/scripting.md#action). |
 | **Mantle namespace** | The `mantle` table: capabilities, plus the Renderer's `screens`, `rescue`, `version` and `config_dir`. |
 | **Secure submit** | A secret text field sending its buffer straight to a capability action, never through Lua. See [secure fields](guide/input.md#secure-fields). |
 | **Toplevel window** | Another application's window, listed by the [`windows`](capabilities/windows.md) capability. Not the `window` surface role. |

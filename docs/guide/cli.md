@@ -20,7 +20,7 @@ action("volume.up", function(step)
         error("no default output yet")
     end
     local volume = math.min(1.0, audio.volume + (step or 0.05))
-    mantle.audio:invoke("set_volume", volume)
+    mantle.audio:set_volume(volume)
     return string.format("%d%%", math.floor(volume * 100 + 0.5))
 end)
 

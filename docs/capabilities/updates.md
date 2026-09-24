@@ -5,10 +5,10 @@
 Pending package upgrades (pacman, optionally AUR), install progress and whether a reboot is due.
 
 ```lua
-mantle.updates:invoke("configure", { interval = 3600 })
+mantle.updates:configure({ interval = 3600 })
 
 button {
-    on_click = function() mantle.updates:invoke("check") end,
+    on_click = function() mantle.updates:check() end,
     children = {
         text {
             content = mantle.updates:map(function(updates)
@@ -64,7 +64,7 @@ One installed package with a newer version.
 
 ## Actions
 
-Call as `mantle.updates:invoke("action", arguments...)`; `?` marks an argument you may omit.
+Call each as `mantle.updates:<action>(arguments...)`; `?` marks an argument you may omit.
 
 | Action | Arguments | Description |
 | --- | --- | --- |
@@ -108,7 +108,7 @@ local file = dir .. "/updates.json"
 mantle.storage:on_change(function(storage, previous)
     local saved = storage.files[file]
     if saved and not (previous and previous.files[file]) then
-        mantle.updates:invoke("configure", {
+        mantle.updates:configure({
             interval = 3600,
             checked_at = saved.checked_at,
             packages = saved.packages,

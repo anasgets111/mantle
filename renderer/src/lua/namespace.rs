@@ -44,7 +44,7 @@ pub(crate) fn build(
     let table = loader.create_table()?;
     let mut capabilities = HashMap::new();
     let pending = loader.create_table()?;
-    // `idle` alone bypasses `pending`: its three callbacks cannot cross the wire as `:invoke`, so
+    // `idle` alone bypasses `pending`: its three callbacks cannot cross the wire as actions, so
     // `lua::idle` wraps it directly (ADR-0141). Its handle remains in `capabilities`, letting an
     // `idle` `StateSnapshot` hydrate the signal the wrapper reads.
     let mut idle_member = None;

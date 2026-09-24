@@ -220,7 +220,7 @@ impl RendererClient {
     /// the lazy `capabilities` registration.
     fn apply_state_snapshot(&self, snapshot: StateSnapshot) -> mlua::Result<()> {
         let value = self.loader.to_lua_value(&snapshot.payload)?;
-        // Revision stamped into later `mantle.<name>:invoke(...)`; advisory because dispatch does
+        // Revision stamped into later `mantle.<name>:<action>(...)`; advisory because dispatch does
         // not enforce it.
         let handle = self.capability_handle(&snapshot.capability)?;
         let previous = handle.hydrate(value, snapshot.revision);
@@ -1460,7 +1460,7 @@ mod tests {
         let missing = std::path::PathBuf::from("/no/such/shell.lua");
         let (client, mut outbound_rx) = test_client(&missing);
 
-        client.loader.lua().load(r#"mantle.lock:invoke("lock")"#).exec().unwrap();
+        client.loader.lua().load(r#"mantle.lock:lock()"#).exec().unwrap();
 
         let RendererFrame::Command(envelope) = queued_frame(&mut outbound_rx) else {
             panic!("a capability write must be queued as RendererFrame::Command");

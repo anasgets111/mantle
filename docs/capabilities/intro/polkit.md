@@ -27,7 +27,7 @@ column {
             end),
         },
         button {
-            on_click = function() mantle.polkit:invoke("cancel") end,
+            on_click = function() mantle.polkit:cancel() end,
             children = { text { content = "Cancel" } },
         },
     },

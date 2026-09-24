@@ -6444,3 +6444,33 @@ the compositor nothing.
 
 **Amends ADR-0248** (decision 1: both protocols bind, and a region picks wlr; decision 3: `live`
 paces; and its frame-callback pacing ponytail).
+
+## 0264. Each capability action is a method, and `:invoke` is gone
+
+`mantle.lua` declared one `---@field invoke fun(self, command: "<name>", ...)` per action. LuaLS
+3.18.1 merges those fields instead of picking the overload by the literal, so
+`mantle.audio:invoke("set_muted", 0.5)` type-checked; only the Supervisor's `parse_action` refused
+it, as a log line after the click.
+
+1. **`mantle.audio:set_volume(0.5)`.** The capability userdata's `__index` answers each name in
+   `shared::Capability::actions` with a function; the stub generator writes one
+   `---@field <action> fun(self: XCapability, ...)` per serde variant. Both lists stay pinned to
+   the enums by `the_renderer_action_names_are_the_serde_variants`.
+2. **No `invoke`.** Nothing needs dynamic dispatch: Renderer callers (`session_process`,
+   `persistent_table`) name the action in Rust, and `call_method` resolves through the same
+   `__index`. Keeping it would be a second spelling the stubs cannot type.
+3. **A `.` call raises.** Each method checks its receiver is its own capability, so
+   `mantle.audio.set_volume(0.5)` names the `:` form instead of sending `0.5` as the receiver.
+   This retires the ponytail that kept `invoke` because an `__index` could not tell the two apart.
+4. **An unknown key raises**, listing the actions, rather than reading `nil`: `mantle.audio.volume`
+   (a missing `:get()`) fails on its line.
+5. **Built-ins win.** mlua resolves `get`, `map` and `on_change` before `__index`, so an action by
+   one of those names would never run; `every_roster_action_is_a_method_no_builtin_shadows` calls
+   every roster action through its method. No current action collides. `brightness:set` and
+   `storage:set` stay: the capability userdata has no `set`, and `Signal<T>` declares none.
+
+Rejected: keeping `invoke` beside the methods (decision 2); named-argument tables, which ADR-0215
+already rejected.
+
+**Amends ADR-0052** (decision 1: actions are methods, not a generic `invoke`) **and ADR-0215**
+(decision 3: one typed method per variant).

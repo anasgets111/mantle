@@ -10,7 +10,7 @@ list {
             background = mantle.power:map(function(power)
                 return (power and power.active_profile == name) and "#89B4FA" or "#313244"
             end),
-            on_click = function() mantle.power:invoke("set_profile", name) end,
+            on_click = function() mantle.power:set_profile(name) end,
             children = { text { content = name } },
         }
     end,

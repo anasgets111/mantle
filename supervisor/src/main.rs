@@ -56,12 +56,12 @@ fn frame_may_dispatch(frame: &RendererFrame, generation_id: u32, authoritative_g
 }
 
 /// Logs a command for a controller never built (ADR-0070). A config cannot reach this: reading
-/// `mantle.<name>` sends the start before its `invoke` on the same socket. This is a buggy Renderer
+/// `mantle.<name>` sends the start before its first action on the same socket. This is a buggy Renderer
 /// or hand-written frame, so name the capability instead of staying silent.
 pub(crate) fn log_unstarted(envelope: &shared::CommandEnvelope) {
     let params = &envelope.params;
     warn!(
-        "generation {}'s mantle.{}:invoke({:?}) arrived before anything started {}; dropping",
+        "generation {}'s mantle.{}:{}() arrived before anything started {}; dropping",
         params.generation_id, params.capability, params.action, params.capability
     );
 }

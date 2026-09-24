@@ -132,7 +132,7 @@ action("volume.up", function(step)
         return "no output device"
     end
     local volume = math.min(1.5, audio.volume + (tonumber(step) or 0.05))
-    mantle.audio:invoke("set_volume", volume)
+    mantle.audio:set_volume(volume)
     return string.format("%d%%", math.floor(volume * 100 + 0.5))
 end)
 ```

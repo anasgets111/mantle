@@ -44,7 +44,7 @@ property counts as absent and takes the property's default.
 | `sig:map(fn)` | signal | `fn(value)`, run again on every read. Works on capabilities |
 | `sig:set(value)` | nothing | State signals only; see [who writes each kind](#who-writes-each-kind) |
 | `sig:reveal(index)` | nothing | `scroll` signals only; scrolls the `index`-th child into view ([input](input.md)) |
-| `cap:on_change(fn)`, `cap:invoke(action, ...)` | nothing | Capabilities only ([capabilities](../capabilities/index.md)) |
+| `cap:on_change(fn)`, `cap:<action>(...)` | nothing | Capabilities only ([capabilities](../capabilities/index.md)) |
 | `computed({ a, b, ... }, fn)` | signal | `fn(a_value, b_value, ...)`: the values in list order, not the signals. Each entry must be a signal or capability, or the call raises |
 | `state(name, initial)` | state signal | Writable [named state](#named-state), written with `:set(value)` |
 | `delay(sig, ms)` | signal | `sig`'s value once a new value has held for `ms`, and the old value until then. A change that reverts sooner is dropped |

@@ -7,9 +7,9 @@ It locks from a keybind (`mantle call lock`) and after five minutes idle.
 ```lua,shot
 local FADE_MS = 250
 
-mantle.lock:invoke("set_unlock_animation", FADE_MS)
-mantle.idle:register_threshold(300, function() mantle.lock:invoke("lock") end, function() end)
-action("lock", function() mantle.lock:invoke("lock") end)
+mantle.lock:set_unlock_animation(FADE_MS)
+mantle.idle:register_threshold(300, function() mantle.lock:lock() end, function() end)
+action("lock", function() mantle.lock:lock() end)
 
 -- Up while locked and not yet unlocking: drives the fade both ways.
 local up = mantle.lock:map(function(lock) return lock ~= nil and lock.active and not lock.unlocking end)
@@ -84,7 +84,7 @@ return { lock_screen }
 
 ## How it works
 
-- Declaring a `lock` does not lock; `mantle.lock:invoke("lock")` does, and only a correct password in the one secure field unlocks ([lock surface](../surfaces/lock.md), [lock capability](../capabilities/lock.md)).
+- Declaring a `lock` does not lock; `mantle.lock:lock()` does, and only a correct password in the one secure field unlocks ([lock surface](../surfaces/lock.md), [lock capability](../capabilities/lock.md)).
 - `secure_submit` sends keystrokes straight to PAM; Lua never sees the password, so the field has no `on_change` or `on_submit` ([secure fields](../guide/input.md#secure-fields)).
 - `child = function(output)` gives every monitor its own copy ([per-output child](../surfaces/index.md#per-output-child)).
 - `set_unlock_animation` keeps the lock up for `FADE_MS` after success, while `unlocking` fades the card out ([animation](../guide/animation.md)).
@@ -99,4 +99,4 @@ return { lock_screen }
 | Blurred wallpaper | Add `source_blur = 24` to that `image` ([blurs](../guide/paint.md#blurs)) |
 | Unlock button | A `button { submit = true, ... }` beside the field sends it like Enter ([pointer](../guide/input.md#pointer)) |
 | Clock on one monitor only | `visible = output == "DP-1"` on the clock texts |
-| Lock before suspend | An `action` that sets a `suspend_pending` state and invokes `lock`; a `mantle.lock:on_change` that sees `active` turn true with it set clears it and runs `systemctl suspend` through [`process.detach`](../guide/processes.md#processdetach). Suspending straight away can sleep before the lock draws |
+| Lock before suspend | An `action` that sets a `suspend_pending` state and calls `mantle.lock:lock()`; a `mantle.lock:on_change` that sees `active` turn true with it set clears it and runs `systemctl suspend` through [`process.detach`](../guide/processes.md#processdetach). Suspending straight away can sleep before the lock draws |

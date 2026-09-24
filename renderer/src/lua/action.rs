@@ -86,7 +86,7 @@ pub fn dispatch(lua: &Lua, name: &str, arguments: &[serde_json::Value]) -> share
     });
     match returned {
         // `nil` and no return at all are the same value here, because Lua cannot tell them apart.
-        // `from_value`, as `capability::invoke` marshals its arguments: one conversion for both
+        // `from_value`, as a capability action marshals its arguments: one conversion for both
         // directions across this boundary.
         Ok(value) => match lua.from_value::<serde_json::Value>(value) {
             Ok(json) => match serde_json::to_vec(&json).map(|bytes| bytes.len()) {

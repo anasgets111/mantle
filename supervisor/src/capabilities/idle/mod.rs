@@ -25,7 +25,7 @@ pub use controller::IdleController;
 pub use state::IdleState;
 
 /// Actions accepted on an `idle` `CommandEnvelope`; exhaustive dispatch keeps variants and arms in
-/// sync. `mantle.idle` has no `invoke`; only its methods and the reload path send these.
+/// sync. `mantle.idle` has no actions; only its methods and the reload path send these.
 #[derive(Debug, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum IdleAction {

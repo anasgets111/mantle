@@ -8,7 +8,7 @@ list {
         return button {
             padding = 6,
             background = sink.active and "#45475A" or "#1E1E2E",
-            on_click = function() mantle.audio:invoke("set_default_sink", sink.id) end,
+            on_click = function() mantle.audio:set_default_sink(sink.id) end,
             children = { text { content = sink.name } },
         }
     end,
@@ -45,11 +45,11 @@ button {
         if audio == nil or audio.volume == nil then
             return
         end
-        mantle.audio:invoke("set_volume", math.max(0, math.min(1, audio.volume + steps * 0.05)))
+        mantle.audio:set_volume(math.max(0, math.min(1, audio.volume + steps * 0.05)))
     end,
     on_click = function(_, which)
         if which == "middle" then
-            mantle.audio:invoke("toggle_mute")
+            mantle.audio:toggle_mute()
         end
     end,
     children = {

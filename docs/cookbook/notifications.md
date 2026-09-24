@@ -59,7 +59,7 @@ local function action_buttons(item)
             padding = 6,
             radius = 6,
             background = "#313244",
-            on_click = function() mantle.notifications:invoke("invoke_action", item.id, action.key) end,
+            on_click = function() mantle.notifications:invoke_action(item.id, action.key) end,
             children = {
                 text { content = action.label, align_h = "Center", elide = "End", foreground = "#cdd6f4" },
             },
@@ -87,9 +87,9 @@ local function card(item)
         },
         on_click = function()
             if item.has_default_action then
-                mantle.notifications:invoke("invoke_action", item.id, "default")
+                mantle.notifications:invoke_action(item.id, "default")
             else
-                mantle.notifications:invoke("dismiss", item.id)
+                mantle.notifications:dismiss(item.id)
             end
         end,
         children = {
@@ -110,7 +110,7 @@ local function card(item)
                                     button {
                                         padding = { left = 4, right = 4 },
                                         radius = 4,
-                                        on_click = function() mantle.notifications:invoke("dismiss", item.id) end,
+                                        on_click = function() mantle.notifications:dismiss(item.id) end,
                                         children = { text { content = "×", font_size = 14, foreground = "#a6adc8" } },
                                     },
                                 },
@@ -130,7 +130,7 @@ local function card(item)
                                 max_lines = 4,
                                 elide = "End",
                                 foreground = "#bac2de",
-                                on_link = function(href) mantle.applications:invoke("open_url", href) end,
+                                on_link = function(href) mantle.applications:open_url(href) end,
                             },
                             action_buttons(item),
                         },
@@ -153,7 +153,7 @@ return {
             width = "Fill",
             hover = stack_hover,
             -- Pause every countdown while the pointer is over the stack.
-            on_hover = function(inside) mantle.notifications:invoke("hold_expiry", inside and 300 or 0) end,
+            on_hover = function(inside) mantle.notifications:hold_expiry(inside and 300 or 0) end,
             children = {
                 list {
                     width = "Fill",
@@ -182,8 +182,8 @@ return {
 
 | Change | Edit |
 | :--- | :--- |
-| Play sounds | Once at top level: `mantle.notifications:invoke("set_sound", "normal", "/usr/share/sounds/freedesktop/stereo/message.oga")` |
+| Play sounds | Once at top level: `mantle.notifications:set_sound("normal", "/usr/share/sounds/freedesktop/stereo/message.oga")` |
 | Bottom-right corner | `anchor = { bottom = true, right = true }`, `margin = { bottom = 8, right = 8 }` |
 | Hide everything under do-not-disturb | `local quiet = notifications.dnd` |
 | Relative time | Add `text { content = mantle.system:map(function(system) return system and math.floor((system.time - item.timestamp) / 60) .. " min ago" or "" end) }` |
-| Mute one app | `mantle.notifications:invoke("set_app_muted", "discord", true)` |
+| Mute one app | `mantle.notifications:set_app_muted("discord", true)` |

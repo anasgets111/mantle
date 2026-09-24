@@ -6,7 +6,7 @@ Live file listings of watched folders.
 
 ```lua
 local folder = (os.getenv("HOME") or "") .. "/Pictures/Wallpapers"
-mantle.files:invoke("watch", folder, { "jpg", "png" })
+mantle.files:watch(folder, { "jpg", "png" })
 
 list {
     source = mantle.files:map(function(files)
@@ -48,7 +48,7 @@ list {
 
 ## Actions
 
-Call as `mantle.files:invoke("action", arguments...)`; `?` marks an argument you may omit.
+Call each as `mantle.files:<action>(arguments...)`; `?` marks an argument you may omit.
 
 | Action | Arguments | Description |
 | --- | --- | --- |

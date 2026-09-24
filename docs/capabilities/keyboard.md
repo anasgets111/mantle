@@ -9,7 +9,7 @@ button {
     on_click = function()
         local keyboard = mantle.keyboard:get()
         if keyboard and keyboard.layout_count > 1 then
-            mantle.keyboard:invoke("switch_layout", (keyboard.active_layout_index + 1) % keyboard.layout_count)
+            mantle.keyboard:switch_layout((keyboard.active_layout_index + 1) % keyboard.layout_count)
         end
     end,
     children = {
@@ -43,7 +43,7 @@ button {
 
 ## Actions
 
-Call as `mantle.keyboard:invoke("action", arguments...)`; `?` marks an argument you may omit.
+Call each as `mantle.keyboard:<action>(arguments...)`; `?` marks an argument you may omit.
 
 | Action | Arguments | Description |
 | --- | --- | --- |

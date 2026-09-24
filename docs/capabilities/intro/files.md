@@ -1,6 +1,6 @@
 ```lua
 local folder = (os.getenv("HOME") or "") .. "/Pictures/Wallpapers"
-mantle.files:invoke("watch", folder, { "jpg", "png" })
+mantle.files:watch(folder, { "jpg", "png" })
 
 list {
     source = mantle.files:map(function(files)

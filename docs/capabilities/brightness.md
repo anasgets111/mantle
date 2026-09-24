@@ -12,7 +12,7 @@ button {
         local brightness = mantle.brightness:get()
         if brightness then
             local percent = brightness.percent + math.floor(steps * 5) -- math.floor returns an integer
-            mantle.brightness:invoke("set", math.max(1, math.min(100, percent)))
+            mantle.brightness:set(math.max(1, math.min(100, percent)))
         end
     end,
     children = {
@@ -37,7 +37,7 @@ button {
 
 ## Actions
 
-Call as `mantle.brightness:invoke("action", arguments...)`; `?` marks an argument you may omit.
+Call each as `mantle.brightness:<action>(arguments...)`; `?` marks an argument you may omit.
 
 | Action | Arguments | Description |
 | --- | --- | --- |

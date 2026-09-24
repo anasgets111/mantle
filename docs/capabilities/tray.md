@@ -16,7 +16,7 @@ list {
         return button {
             on_click = function(_, which)
                 if which == "left" and not item.item_is_menu then
-                    mantle.tray:invoke("activate", item.id, 0, 0) -- screen x, y; most apps ignore them
+                    mantle.tray:activate(item.id, 0, 0) -- screen x, y; most apps ignore them
                 end
             end,
             children = { icon { name = item.icon_name or item.icon_path or "", size = 16 } },
@@ -67,7 +67,7 @@ One `tray.items[].menu` entry.
 
 ## Actions
 
-Call as `mantle.tray:invoke("action", arguments...)`; `?` marks an argument you may omit.
+Call each as `mantle.tray:<action>(arguments...)`; `?` marks an argument you may omit.
 
 | Action | Arguments | Description |
 | --- | --- | --- |

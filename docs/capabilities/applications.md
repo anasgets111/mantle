@@ -43,7 +43,7 @@ One visible `Type=Application` desktop entry; display data only, argv stays priv
 
 ## Actions
 
-Call as `mantle.applications:invoke("action", arguments...)`; `?` marks an argument you may omit.
+Call each as `mantle.applications:<action>(arguments...)`; `?` marks an argument you may omit.
 
 | Action | Arguments | Description |
 | --- | --- | --- |

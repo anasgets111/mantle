@@ -41,7 +41,7 @@ One declared program: its current run, or what is left of its last one.
 
 ## Actions
 
-Call as `mantle.processes:invoke("action", arguments...)`; `?` marks an argument you may omit.
+Call each as `mantle.processes:<action>(arguments...)`; `?` marks an argument you may omit.
 
 | Action | Arguments | Description |
 | --- | --- | --- |

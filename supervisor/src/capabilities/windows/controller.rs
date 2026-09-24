@@ -26,7 +26,7 @@ pub struct WindowsState {
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[cfg_attr(test, derive(schemars::JsonSchema))]
 pub struct WindowEntry {
-    /// Opaque, backend-shaped id for `:invoke`; compare it, never parse it.
+    /// Opaque, backend-shaped id for the `windows` actions; compare it, never parse it.
     pub id: String,
     /// Window title; empty when unset.
     pub title: String,

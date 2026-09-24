@@ -1,5 +1,5 @@
 ```lua
-mantle.sysinfo:invoke("configure", { cpu_interval = 2, ram_interval = 5 })
+mantle.sysinfo:configure({ cpu_interval = 2, ram_interval = 5 })
 
 text {
     content = mantle.sysinfo:map(function(sysinfo)

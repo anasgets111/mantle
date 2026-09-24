@@ -13,7 +13,7 @@ list {
     itemfn = function(device)
         local battery = device.battery >= 0 and string.format(" %d%%", device.battery) or ""
         return button {
-            on_click = function() mantle.bluetooth:invoke("disconnect", device.mac) end,
+            on_click = function() mantle.bluetooth:disconnect(device.mac) end,
             children = { text { content = device.name .. battery } },
         }
     end,
@@ -90,7 +90,7 @@ What the pairing agent is asking the user.
 
 ## Actions
 
-Call as `mantle.bluetooth:invoke("action", arguments...)`; `?` marks an argument you may omit.
+Call each as `mantle.bluetooth:<action>(arguments...)`; `?` marks an argument you may omit.
 
 | Action | Arguments | Description |
 | --- | --- | --- |

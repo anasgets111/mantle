@@ -1,4 +1,4 @@
-`mantle.idle` reads like the others (`:get`, `:map`, `:on_change`) but has no `:invoke`. Its
+`mantle.idle` reads like the others (`:get`, `:map`, `:on_change`) but has no actions. Its
 thresholds take Lua callbacks, which cannot cross to the Supervisor, so it has [methods](#methods)
 instead. Any method, `:get` included, starts it.
 

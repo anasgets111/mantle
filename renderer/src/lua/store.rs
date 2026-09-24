@@ -49,7 +49,7 @@ pub fn register(lua: &Lua) -> mlua::Result<()> {
                 Value::Nil => Value::Table(lua.create_table()?),
                 defaults => defaults,
             };
-            storage.call_method::<()>("invoke", ("open", file.clone(), defaults))?;
+            storage.call_method::<()>("open", (file.clone(), defaults))?;
 
             if let Some(existing) = super::app_data_or_default::<StoreRegistry>(lua).0.get(&file).cloned() {
                 return Ok(PersistentTable(existing));
@@ -161,7 +161,7 @@ fn build_store(lua: &Lua, file: &str, storage: mlua::AnyUserData) -> mlua::Resul
     store.set(
         "set",
         lua.create_function(move |_, (_store, key, value): (Table, String, Value)| {
-            storage.call_method::<()>("invoke", ("set", path.clone(), key, value))
+            storage.call_method::<()>("set", (path.clone(), key, value))
         })?,
     )?;
     Ok(store)
