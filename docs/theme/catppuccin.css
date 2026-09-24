@@ -1,12 +1,11 @@
-/* Catppuccin Latte for the light themes, Mocha for the dark ones; mdBook's variables map onto it once. */
+/* Catppuccin Latte for the light themes, Mocha for the dark ones; mdBook's variables map onto it once. Mauve is the accent; syntax colours avoid it. */
 .light, .rust, html:not(.js) {
     --base: #eff1f5; --mantle: #e6e9ef; --crust: #dce0e8; --text: #4c4f69; --subtext: #6c6f85;
     --overlay: #7c7f93; --surface0: #ccd0da; --surface1: #bcc0cc;
     --blue: #1e66f5; --sapphire: #209fb5; --sky: #04a5e5; --lavender: #7287fd; --mauve: #8839ef;
     --green: #40a02b; --peach: #fe640b; --yellow: #df8e1d; --red: #d20f39; --maroon: #e64553; --pink: #ea76cb;
-    --accent: var(--blue);
     --copy-button-filter: invert(50%);
-    --copy-button-filter-hover: invert(30%) sepia(90%) saturate(3000%) hue-rotate(215deg);
+    --copy-button-filter-hover: invert(30%) sepia(90%) saturate(3000%) hue-rotate(250deg);
     --color-scheme: light;
 }
 .coal, .navy, .ayu {
@@ -14,16 +13,15 @@
     --overlay: #9399b2; --surface0: #313244; --surface1: #45475a;
     --blue: #89b4fa; --sapphire: #74c7ec; --sky: #89dceb; --lavender: #b4befe; --mauve: #cba6f7;
     --green: #a6e3a1; --peach: #fab387; --yellow: #f9e2af; --red: #f38ba8; --maroon: #eba0ac; --pink: #f5c2e7;
-    --accent: var(--sapphire);
     --copy-button-filter: invert(65%);
-    --copy-button-filter-hover: invert(80%) sepia(30%) saturate(600%) hue-rotate(160deg);
+    --copy-button-filter-hover: invert(75%) sepia(40%) saturate(900%) hue-rotate(220deg);
     --color-scheme: dark;
 }
 .light, .rust, .coal, .navy, .ayu, html:not(.js) {
-    --bg: var(--base); --fg: var(--text);
+    --accent: var(--mauve); --bg: var(--base); --fg: var(--text);
     --sidebar-bg: var(--mantle); --sidebar-fg: var(--subtext); --sidebar-non-existant: var(--overlay);
     --sidebar-active: var(--accent); --sidebar-spacer: var(--surface0); --sidebar-header-border-color: var(--surface1);
-    --scrollbar: var(--surface1); --icons: var(--overlay); --icons-hover: var(--text); --links: var(--blue);
+    --scrollbar: var(--surface1); --icons: var(--overlay); --icons-hover: var(--text); --links: var(--accent);
     --inline-code-color: var(--text);
     --theme-popup-bg: var(--mantle); --theme-popup-border: var(--surface1); --theme-hover: var(--surface0);
     --quote-bg: var(--mantle); --quote-border: var(--surface0); --warning-border: var(--peach);
@@ -33,8 +31,8 @@
     --searchresults-border-color: var(--surface0); --searchresults-li-bg: var(--surface0);
     --search-mark-bg: color-mix(in srgb, var(--yellow) 45%, transparent);
     --footnote-highlight: var(--lavender); --overlay-bg: color-mix(in srgb, var(--crust) 60%, transparent);
-    --blockquote-note-color: var(--blue); --blockquote-tip-color: var(--green);
-    --blockquote-important-color: var(--mauve); --blockquote-warning-color: var(--peach);
+    --blockquote-note-color: var(--accent); --blockquote-tip-color: var(--green);
+    --blockquote-important-color: var(--lavender); --blockquote-warning-color: var(--peach);
     --blockquote-caution-color: var(--red);
     --content-max-width: 780px;
 }
@@ -47,9 +45,11 @@
 .content p, .content ol, .content ul { line-height: inherit; }
 .content h1, .content h2, .content h3 { line-height: 1.25; letter-spacing: -0.01em; }
 .content h1 { font-size: 2.3em; margin-block: 0.4em 0.8em; }
-.content h2 { margin-block: 2.2em 0.7em; padding-block-end: 0.3em; border-block-end: 1px solid var(--surface0); }
+.content h2 { margin-block: 2.2em 0.7em; padding-block-end: 0.3em; border-block-end: 1px solid color-mix(in srgb, var(--accent) 35%, transparent); }
 .content h3 { margin-block: 1.8em 0.5em; }
 .content a:hover { text-decoration-color: color-mix(in srgb, var(--links) 50%, transparent); text-underline-offset: 3px; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.content :target::before { color: var(--accent); }
 
 /* Code */
 .content :not(pre) > code { padding: 0.1em 0.35em; border-radius: 4px; background: var(--surface0); }
@@ -57,11 +57,11 @@ pre > code.hljs, .hljs { background: var(--mantle); color: var(--text); }
 pre { border: 1px solid var(--surface0); border-radius: 8px; }
 pre > code { border-radius: 8px; }
 .hljs-comment, .hljs-quote { color: var(--overlay); font-style: italic; }
-.hljs-keyword, .hljs-selector-tag { color: var(--mauve); }
+.hljs-keyword, .hljs-selector-tag { color: var(--blue); }
 .hljs-string, .hljs-addition { color: var(--green); }
 .hljs-number, .hljs-literal { color: var(--peach); }
 .hljs-built_in, .hljs-deletion, .hljs-variable.language_ { color: var(--red); }
-.hljs-title, .hljs-title.function_, .hljs-section, .hljs-attr, .hljs-property { color: var(--blue); }
+.hljs-title, .hljs-title.function_, .hljs-section, .hljs-attr, .hljs-property { color: var(--sapphire); }
 .hljs-type, .hljs-title.class_, .hljs-class .hljs-title { color: var(--yellow); }
 .hljs-meta, .hljs-symbol, .hljs-template-variable { color: var(--pink); }
 .hljs-params, .hljs-variable, .hljs-subst { color: var(--maroon); }
