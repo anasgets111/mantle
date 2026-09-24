@@ -136,7 +136,7 @@ pub struct SurfaceTopology {
 
 pub fn surface_topology(properties: &PropMap) -> Result<SurfaceTopology, LayoutError> {
     let id = fields::surface::id.read(properties)?;
-    let namespace = panel::namespace.read(properties)?.replace("{id}", &id);
+    let namespace = panel::namespace.read_with_id(properties, &id)?;
     Ok(SurfaceTopology {
         id,
         layer: panel::layer.read(properties)?,
@@ -245,7 +245,7 @@ mod tests {
     fn surface_topology_combines_id_layer_anchor_monitor_and_namespace() {
         let lua = mlua::Lua::new();
         let table: mlua::Table = lua
-                .load(r#"return { kind = "panel", id = "bar", layer = "Top", anchor = { top = true }, monitor = "eDP-1", namespace = "my-bar" }"#)
+                .load(r#"return { kind = "panel", id = "bar", layer = "Top", anchor = { top = true }, monitor = "eDP-1", namespace = "my-{id}" }"#)
                 .eval()
                 .unwrap();
         let props = props_from_table(&table);
@@ -257,7 +257,7 @@ mod tests {
                 layer: LayerKind::Top,
                 anchor: Anchor { top: true, right: false, bottom: false, left: false },
                 monitor: "eDP-1".to_string(),
-                namespace: "my-bar".to_string(),
+                namespace: "my-{id}".to_string(),
             }
         );
     }
@@ -268,10 +268,7 @@ mod tests {
         let table: mlua::Table =
             lua.load(r#"return { kind = "panel", id = "launcher", layer = "Overlay" }"#).eval().unwrap();
         let props = props_from_table(&table);
-        assert_eq!(
-            fields::panel::namespace.read(&props).map(|namespace| namespace.replace("{id}", "launcher")).unwrap(),
-            "mantle-launcher"
-        );
+        assert_eq!(fields::panel::namespace.read_with_id(&props, "launcher").unwrap(), "mantle-launcher");
         assert_eq!(surface_topology(&props).unwrap().namespace, "mantle-launcher");
     }
 
@@ -290,7 +287,7 @@ mod tests {
         let props = props_from_table(&table);
         let resolved = resolve_properties(props, "panel", &lua).unwrap();
         assert!(
-            matches!(fields::panel::namespace.read(&resolved).map(|namespace| namespace.replace("{id}", "bar")).unwrap_err(), LayoutError::UnsupportedSignalProperty(p) if p == "namespace")
+            matches!(fields::panel::namespace.read_with_id(&resolved, "bar").unwrap_err(), LayoutError::UnsupportedSignalProperty(p) if p == "namespace")
         );
     }
 

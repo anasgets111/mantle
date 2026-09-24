@@ -98,7 +98,7 @@ pub struct WindowSpec {
 
 pub fn window_spec(properties: &PropMap) -> Result<WindowSpec, LayoutError> {
     let id = fields::surface::id.read(properties)?;
-    let app_id = window::app_id.read(properties)?.replace("{id}", &id);
+    let app_id = window::app_id.read_with_id(properties, &id)?;
     let min_size = window::min_size.read(properties)?;
     let max_size = window::max_size.read(properties)?;
     check_max_size_above_min(min_size, max_size)?;
@@ -388,7 +388,7 @@ mod tests {
         let lua = mlua::Lua::new();
         let table: mlua::Table = lua
             .load(
-                r#"return { kind = "window", id = "settings", title = "Mantle Settings", app_id = "mantle.settings",
+                r#"return { kind = "window", id = "settings", title = "Mantle Settings", app_id = "mantle.{id}",
                                 min_size = { width = 320, height = 240 }, max_size = { width = 1280, height = 960 } }"#,
             )
             .eval()
@@ -399,7 +399,7 @@ mod tests {
             WindowSpec {
                 id: "settings".to_string(),
                 title: "Mantle Settings".to_string(),
-                app_id: "mantle.settings".to_string(),
+                app_id: "mantle.{id}".to_string(),
                 min_size: Some(SizeHint { width: 320.0, height: 240.0 }),
                 max_size: Some(SizeHint { width: 1280.0, height: 960.0 }),
             }

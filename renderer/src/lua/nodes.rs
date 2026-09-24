@@ -399,11 +399,11 @@ mod meta_stub_tests {
             .map(|(name, _)| name.to_string())
             .filter(|name| name.chars().all(|c| c.is_ascii_lowercase() || c == '_'))
             .collect();
-        // A typed field's read, `image::source.read(properties)`.
+        // A typed field's read, `image::source.read(properties)` or `.read_with_id(`.
         for (index, _) in text.match_indices("::") {
             let rest = text[index + 2..].trim_start_matches("r#");
             let name: String = rest.chars().take_while(|c| c.is_ascii_lowercase() || *c == '_').collect();
-            if !name.is_empty() && rest[name.len()..].starts_with(".read(") {
+            if !name.is_empty() && rest[name.len()..].starts_with(".read") {
                 names.insert(name);
             }
         }

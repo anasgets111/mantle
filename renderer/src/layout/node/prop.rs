@@ -50,6 +50,18 @@ impl<T: Prop> Field<T> {
     }
 }
 
+impl<T: Prop<Out = String>> Field<T> {
+    /// A [`Name`] whose default spells the surface's `id` as `{id}`: only the default (also the
+    /// placeholder for a signal) is formatted; a written string is taken as written.
+    pub(crate) fn read_with_id(&self, properties: &PropMap, id: &str) -> Result<String, LayoutError> {
+        let name = self.read(properties)?;
+        Ok(match properties.get(self.row.name) {
+            Some(Value::String(_)) => name,
+            _ => name.replace("{id}", id),
+        })
+    }
+}
+
 /// `T`, or a signal of one, resolved once per pass (ADR-0044). The stubs spell it `T|Bound`.
 pub(crate) struct Bound<T>(PhantomData<T>);
 
