@@ -86,7 +86,7 @@ names inside that directory only.
 | Rule | Detail |
 | :--- | :--- |
 | Search path | `<config>/?.lua;<config>/?/init.lua`, nothing else. No system Lua paths, no `./` |
-| Names | Dots are directories: `require("widgets.clock")` loads `widgets/clock.lua`. `require("widgets")` also finds `widgets/init.lua` |
+| Names | Each `.` in a module name is a `/`: `require("widgets.clock")` loads `widgets/clock.lua`. `require("widgets")` also finds `widgets/init.lua` |
 | Cache | `package.loaded` behaves as usual within one evaluation. Every reload drops the config's own modules first, so an edited module is re-read. Standard modules stay |
 | Second value | Lua 5.4's `require` returns the module and its file path. In the last position of a table constructor both land in the table |
 | Symlinks | A symlinked subdirectory is followed, both by `require` and by the reload watcher |
