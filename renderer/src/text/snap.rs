@@ -9,7 +9,7 @@
 //! a border keeps the width the config asked for.
 
 crate::lua::luacats::lua_shape! {
-    /// A rectangle in logical (fractional, DPI-independent) pixel coordinates.
+    /// A rectangle in logical pixels.
     #[alias = "Rect"]
     #[derive(Debug, Clone, Copy, PartialEq, Default)]
     pub struct LogicalRect {

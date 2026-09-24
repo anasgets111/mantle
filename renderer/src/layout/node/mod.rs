@@ -2,7 +2,7 @@
 //! once per node/pass (ADR-0044 decision 1); `SurfaceTopology`'s five fields and every node's
 //! optional `id` stay raw and reject signals. A `panel`'s other properties are live fields, not
 //! exceptions. Plain tables remain metamethod-backed, so each `table.get` can still run `__index`;
-//! see `EdgeInsets`'s read. A signal resolving to another signal errors rather than
+//! see `NumberOrEdges`'s read. A signal resolving to another signal errors rather than
 //! reading again, while `MAX_TREE_DEPTH` bounds recursive tree construction.
 
 mod animate;
@@ -22,7 +22,7 @@ pub use animate::Animatable;
 pub(crate) use animate::{Animations, Params};
 pub use animate::{Dissolve, ShaderParam, TransitionSpec, Tween, advance, depart, is_paint_only, retarget};
 #[cfg(test)]
-pub(crate) use animate::{Keyframe, Spring, easing_names};
+pub(crate) use animate::{Keyframe, SpringConstants, easing_names};
 #[cfg(test)]
 pub(crate) use content::TextRun;
 pub(crate) use content::{Content, Font, Live, MaxLines, Region};
@@ -37,7 +37,7 @@ pub use style::{
     Affine, BorderColor, ClipShape, Effect, Fill, Gradient, GradientShape, Mask, MaskSource, Shadow, Transform,
     apply_affine, invert_affine, parse_effect, parse_transform,
 };
-pub(crate) use style::{Axes, CornerShape, Cursor, Direction, EdgeColors, Insets, Scale, ShadowMode};
+pub(crate) use style::{Axes, ColorOrEdges, CornerShape, Cursor, Direction, NumberOrEdges, Scale, ShadowMode};
 pub use surface::{Anchor, Exclusive, KeyboardInteractivity, LayerKind, PanelSpec, SurfaceTopology, panel_spec};
 pub(crate) use toplevel::{AnchorRect, PopupExtent};
 pub use toplevel::{
@@ -70,10 +70,10 @@ crate::lua::luacats::lua_shape! {
     #[alias = "Edges"]
     #[derive(Debug, Clone, Copy, PartialEq, Default)]
     pub struct EdgeInsets {
-        pub top?: f32,
-        pub right?: f32,
-        pub bottom?: f32,
-        pub left?: f32,
+        pub top: f32 as Option<f32>,
+        pub right: f32 as Option<f32>,
+        pub bottom: f32 as Option<f32>,
+        pub left: f32 as Option<f32>,
     }
 }
 
@@ -321,7 +321,7 @@ pub(crate) fn is_structural_property(kind: &str, property: &str) -> bool {
 /// read per property makes the resolved tree a snapshot of one pass and stops ADR-0021's
 /// per-`get_value` 5ms budget being paid four times over for one property. The snapshot covers the
 /// *signals* only: a plain table with an `__index` metamethod is copied through as-is, and each
-/// `table.get` a parser makes still runs it again; see [`EdgeInsets`]'s read. Nor is
+/// `table.get` a parser makes still runs it again; see `NumberOrEdges`'s read. Nor is
 /// this ADR-0044 decision 3's rejected memoization, which caches *across* pushes and needs an
 /// invalidation rule no push has. Per entry: a key [`is_structural_property`] names for this node's
 /// `kind` is copied through raw, signal and all. A `Value::UserData` holding a `Signal` is read

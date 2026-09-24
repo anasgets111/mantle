@@ -79,11 +79,11 @@ pub(super) fn table_number(property: &str, table: &mlua::Table, key: &str) -> Re
 /// metamethod-aware, so every consumer reading it again would re-run `__index`, and two reads could
 /// disagree about one child's margin. Those reads are plain Lua outside any signal, so
 /// `LayoutPassBudget`, not ADR-0021's per-getter cap, bounds them.
-pub(crate) struct Insets;
+pub(crate) struct NumberOrEdges;
 
-spelled!(Insets => format!("{}|{}", f32::lua(), EdgeInsets::lua()));
+spelled!(NumberOrEdges => format!("{}|{}", f32::lua(), EdgeInsets::lua()));
 
-impl Prop for Insets {
+impl Prop for NumberOrEdges {
     type Out = EdgeInsets;
     fn read(row: &Property, value: Option<&Value>) -> Result<EdgeInsets, LayoutError> {
         let property = row.name;
@@ -336,17 +336,17 @@ fn xy(row: &Property, value: &Value) -> Result<(f32, f32), LayoutError> {
     };
     only_keys(property, table, Axes::KEYS)?;
     let axis = |key| table_number(property, table, key).map(|n| n.unwrap_or(axis_default(property)));
-    let Axes { x, y } = Axes { x: row_within(row, axis("x")?)?, y: row_within(row, axis("y")?)? };
-    Ok((x, y))
+    Ok((row_within(row, axis("x")?)?, row_within(row, axis("y")?)?))
 }
 
-// `translate`, `origin`, `shadow_offset`: a per-axis pair, read as `(x, y)`.
+// `translate`, `origin`, `shadow_offset`: a per-axis pair, which `xy` reads as `(x, y)`.
 lua_shape! {
     /// A missing axis takes the property's default.
     #[alias = "Axes"]
+    #[expect(dead_code, reason = "the keys `xy` reads, declared for `KEYS` and the stub")]
     pub(crate) struct Axes {
-        x?: f32,
-        y?: f32,
+        x: f32 as Option<f32>,
+        y: f32 as Option<f32>,
     }
 }
 
@@ -392,7 +392,7 @@ keywords! {
     }
 }
 
-// `None` means "not painted", the same absence [`Fill`] returns for a missing fill: an edge at
+// `None` means "not painted", the same absence `Fill` returns for a missing fill: an edge at
 // width 0 needs no colour, and one with a colour at width 0 still paints nothing, so the drawing
 // pass gets the same answer either way. The table form gives no per-edge default, so an absent edge
 // takes `None` rather than an invented one.
@@ -409,11 +409,11 @@ lua_shape! {
 }
 
 /// `border_color`: one colour for every edge, or [`BorderColor`].
-pub(crate) struct EdgeColors;
+pub(crate) struct ColorOrEdges;
 
-spelled!(EdgeColors => format!("{}|{}", Rgba::lua(), BorderColor::lua()));
+spelled!(ColorOrEdges => format!("{}|{}", Rgba::lua(), BorderColor::lua()));
 
-impl Prop for EdgeColors {
+impl Prop for ColorOrEdges {
     type Out = BorderColor;
     fn read(row: &Property, value: Option<&Value>) -> Result<BorderColor, LayoutError> {
         let property = row.name;

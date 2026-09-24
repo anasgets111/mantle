@@ -3,14 +3,13 @@
 
 use std::cell::RefCell;
 use std::collections::HashMap;
-use std::marker::PhantomData;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::mpsc::{Receiver, Sender};
 
 use mlua::{Function, Lua, Table};
 
-use super::luacats::{As, lua_class, lua_fn, lua_record, spelled};
+use super::luacats::{As, lua_class, lua_fn, lua_shape, spelled};
 use shared::warn;
 
 use crate::image::quantize::quantize_file;
@@ -24,10 +23,11 @@ const DEFAULT_RESCALE: i64 = 128;
 type PaletteResult = (u64, Option<Vec<PaletteSwatch>>);
 
 // `share` is the fraction of counted pixels, so a config can weigh colourfulness against coverage.
-lua_record! {
+lua_shape! {
+    #[record = "PaletteSwatch"]
     struct PaletteSwatch {
         /// `#RRGGBB`.
-        color: As<String, crate::layout::node::prop::Color>,
+        color: String as crate::layout::node::prop::Color,
         /// Fraction of the counted (non-transparent) pixels, 0 to 1.
         share: f64,
     }
@@ -84,7 +84,7 @@ impl PaletteRegistry {
                         buckets
                             .into_iter()
                             .map(|(count, [r, g, b])| PaletteSwatch {
-                                color: As(format!("#{r:02X}{g:02X}{b:02X}"), PhantomData),
+                                color: format!("#{r:02X}{g:02X}{b:02X}"),
                                 share: f64::from(count) / f64::from(total),
                             })
                             .collect(),

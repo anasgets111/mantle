@@ -64,9 +64,9 @@ Each run in a `content` array is a table:
 | `color` | Colour | The node's `foreground` | |
 | `href` | String | None | Handed to `on_link` on click; the pointer shows `"pointer"` over it. `""` is no link |
 
-The run shape is a notification body span without its `kind`, so text spans from the
-[notifications](../capabilities/notifications.md) capability can be passed through; drop image spans,
-which have no `text`.
+A run also takes `kind = "text"`, so text spans from the
+[notifications](../capabilities/notifications.md) capability pass through as they are; drop image
+spans, which have no `text`.
 
 ```lua
 local body = text {

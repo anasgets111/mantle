@@ -501,9 +501,8 @@ mod meta_stub_tests {
 
     /// Literal sets refused without a keyword list, so checked one way only: `cursor`
     /// parses `cursor_icon`'s names, which it cannot enumerate; the rest mix one keyword into a
-    /// number (`"Fill"`, `"Ignore"`, `animate`'s `loops = "Infinite"`). A `content` run's `kind` is
-    /// accepted and never read.
-    const ONE_WAY: [&str; 6] = ["animate", "content", "cursor", "exclusive", "height", "width"];
+    /// number (`"Fill"`, `"Ignore"`, `animate`'s `loops = "Infinite"`).
+    const ONE_WAY: [&str; 5] = ["animate", "cursor", "exclusive", "height", "width"];
 
     #[derive(Default)]
     struct Report {

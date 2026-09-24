@@ -10,7 +10,7 @@ use mlua::Value;
 use crate::text::shaping::FontRun;
 use crate::text::snap::LogicalRect;
 
-use super::prop::keywords;
+use super::prop::{Keyword, keywords};
 use super::*;
 use crate::lua::luacats::lua_shape;
 
@@ -54,28 +54,28 @@ lua_shape! {
     /// One styled stretch of `text.content` (ADR-0104). A notification body's text spans fit as-is;
     /// drop image spans, which have no `text` and are refused.
     #[class = "TextRun"]
+    #[expect(dead_code, reason = "the keys `parse_runs` reads, declared for `KEYS` and the stub")]
     pub(crate) struct TextRun {
         /// Empty runs are skipped.
         text: String,
         /// Uses the family's bold face when fontconfig has one.
-        bold?: bool,
+        bold: bool as Option<bool>,
         /// Uses the family's italic face when fontconfig has one.
-        italic?: bool,
+        italic: bool as Option<bool>,
         /// Underline in the run's colour.
-        underline?: bool,
+        underline: bool as Option<bool>,
         /// Overrides the node's `foreground`.
         color: Option<Rgba>,
         /// Passed to the node's `on_link` when clicked; never opened by the engine (ADR-0106).
         href: Option<String>,
-        /// A notification text span's, so one passes through; not read.
-        kind?: () as SpanKind,
+        /// A notification text span's, so one passes through.
+        kind: Option<SpanKind>,
     }
 }
 
 keywords! {
     /// A [`TextRun`]'s `kind`: the notification span it may be.
     #[derive(Clone, Copy, PartialEq)]
-    #[cfg_attr(not(test), expect(dead_code, reason = "spelled by the stubs, a test"))]
     pub(crate) enum SpanKind {
         Text = "text",
     }
@@ -161,13 +161,24 @@ fn parse_runs(runs: &mlua::Table) -> Result<(String, Vec<StyleRun>), LayoutError
             }
             Err(e) => return Err(invalid("content", format!("run {index}: {e}"))),
         };
-        let run = TextRun { text, bold, italic, underline, color, href, kind: () };
-        if run.text.is_empty() {
+        match run.get::<Value>("kind") {
+            Ok(Value::String(s)) if SpanKind::NAMES.iter().any(|name| s.as_bytes() == name.as_bytes()) => {}
+            Ok(Value::Nil) => {}
+            Ok(other) => {
+                let names: Vec<String> = SpanKind::NAMES.iter().map(|name| format!("`{name}`")).collect();
+                let got = preview_for_error(&other);
+                return Err(invalid(
+                    "content",
+                    format!("run {index}: `kind`: expected one of {}, got {got}", names.join(", ")),
+                ));
+            }
+            Err(e) => return Err(invalid("content", format!("run {index}: {e}"))),
+        }
+        if text.is_empty() {
             continue;
         }
         let start = content.len();
-        content.push_str(&run.text);
-        let TextRun { bold, italic, underline, color, href, kind: (), .. } = run;
+        content.push_str(&text);
         if bold || italic || underline || color.is_some() || href.is_some() {
             styles.push(StyleRun { range: start..content.len(), bold, italic, underline, color, href });
         }

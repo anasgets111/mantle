@@ -2,34 +2,39 @@
 //! the typed fields of `properties`, which the name check and the parsers read. The golden test
 //! below is the only caller: `just stubs` rewrites, a stale file fails `cargo test`.
 //!
-//! A table shape inside a property is the `lua_shape!` stub of the struct its parser fills, in its
-//! header's `{Name}` line ([`SHAPES`]). The shapes without one are hand-written in [`NODES_HEADER`].
+//! A table shape inside a property is the `lua_shape!` stub of the struct its parser reads it as, in
+//! its header's `{Name}` placeholder ([`NODE_SHAPES`], [`SURFACE_SHAPES`]). The shapes without one
+//! are hand-written in [`NODES_HEADER`].
 
 use super::properties::{ALL, Absent, BOX, KINDS, Property, SURFACES, kind_doc, properties};
 use crate::layout::node::prop::Keyword;
 use crate::layout::node::{
-    Align, Axes, BorderColor, EdgeInsets, Keyframe, PopupAnchor, Spring, TextRun, TransitionSpec,
+    Align, Animatable, Axes, BorderColor, EdgeInsets, Keyframe, PopupAnchor, SpringConstants, TextRun, TransitionSpec,
 };
 use crate::lua::luacats::LuaType;
 use crate::text::snap::LogicalRect;
 
-/// The table shapes a header names as `{Name}`, each filled from its parser's struct.
-const SHAPES: [fn(String) -> String; 8] = [
-    shape::<EdgeInsets>,
-    shape::<BorderColor>,
-    shape::<Axes>,
-    shape::<Keyframe>,
-    shape::<Spring>,
-    shape::<TextRun>,
-    shape::<TransitionSpec>,
-    shape::<LogicalRect>,
+/// The table shapes [`NODES_HEADER`] names as `{Name}`, each its parser's struct.
+const NODE_SHAPES: [fn(String) -> String; 7] = [
+    fill::<EdgeInsets>,
+    fill::<BorderColor>,
+    fill::<Axes>,
+    fill::<Keyframe>,
+    fill::<SpringConstants>,
+    fill::<TextRun>,
+    fill::<TransitionSpec>,
 ];
 
-/// `header` with `T`'s stub in its `{Name}` line.
-fn shape<T: LuaType>(header: String) -> String {
+/// As [`NODE_SHAPES`], for [`SURFACES_HEADER`].
+const SURFACE_SHAPES: [fn(String) -> String; 1] = [fill::<LogicalRect>];
+
+/// `header` with `T`'s stub at its `{Name}`, which must be there.
+fn fill<T: LuaType>(header: String) -> String {
+    let at = format!("{{{}}}\n", T::lua());
+    assert!(header.contains(&at), "the header has no `{at}` for its stub");
     let mut stub = Vec::new();
     T::classes(&mut stub);
-    header.replace(&format!("{{{}}}\n", T::lua()), &stub.concat())
+    header.replace(&at, &stub.concat())
 }
 
 /// Choice sets the stubs name as an alias.
@@ -163,7 +168,8 @@ fn nodes_lua() -> String {
     let mut header = NODES_HEADER.replace("{PERCENT}", &percent.join("|")).replace("{DOCS}", DOCS);
     header = header.replace("{ALIGN}", &union(Align::NAMES));
     header = header.replace("{EASING}", &union(&crate::layout::node::easing_names().collect::<Vec<_>>()));
-    header = SHAPES.iter().fold(header, |header, shape| shape(header));
+    header = header.replace("{ANIMATABLE}", &Animatable::lua());
+    header = NODE_SHAPES.iter().fold(header, |header, fill| fill(header));
     for (class, kinds) in [("NodeBase", ALL), ("BoxBase", BOX)] {
         let marker = format!("{{{class}}}");
         let fields: String = properties().filter(|row| row.kinds == kinds).map(field).collect();
@@ -175,7 +181,7 @@ fn nodes_lua() -> String {
 /// `lua-meta/surfaces.lua`.
 fn surfaces_lua() -> String {
     let header = SURFACES_HEADER.replace("{POPUP_ANCHOR}", &union(PopupAnchor::NAMES));
-    render_stub(&SHAPES.iter().fold(header, |header, shape| shape(header)), &KINDS[11..])
+    render_stub(&SURFACE_SHAPES.iter().fold(header, |header, fill| fill(header)), &KINDS[11..])
 }
 
 /// A doc string as a Markdown table cell: no `(ADR-NNNN)` pointers, which are history, and `|`
@@ -247,11 +253,8 @@ fn the_generated_node_stubs_match_what_is_checked_in() {
     shared::check_generated(&files);
 }
 
-// ponytail: the table aliases left here have no struct holding their keys. `Gradient`'s fold into
-// `GradientShape` and a `GradientStop` is a positional pair; `Mask` takes a gradient's keys flattened,
-// which `lua_shape!` cannot spell; `Easing` is a name, a positional list or `{ steps }`; `Animation`'s
-// keys resolve into one `Motion` variant, each refusing the others'; `Animations` and `Exit` are keyed
-// by property name. Upgrade: a struct `parse_gradient` fills, and a flatten form in `lua_shape!`.
+// ponytail: `Gradient`, `GradientStop`, `Mask`, `Easing`, `Animation`, `Animations` and `Exit` are
+// hand-written, as no struct holds their keys. Upgrade: a struct each parser fills, then `lua_shape!`.
 const NODES_HEADER: &str = r##"---@meta
 -- The eleven node kinds and their properties. Surface roles live in `surfaces.lua`.
 --
@@ -269,21 +272,21 @@ const NODES_HEADER: &str = r##"---@meta
 -- ponytail: copied from cursor-icon 1.2's `FromStr`, which exposes no list to derive it from; the
 -- stub probe catches a name it refuses, not one missing here. Upgrade: derive once the crate lists them.
 ---@alias Cursor "default"|"pointer"|"text"|"not-allowed"|"grab"|"grabbing"|"move"|"crosshair"|"wait"|"progress"|"help"|"context-menu"|"cell"|"vertical-text"|"alias"|"copy"|"no-drop"|"zoom-in"|"zoom-out"|"all-scroll"|"col-resize"|"row-resize"|"n-resize"|"e-resize"|"s-resize"|"w-resize"|"ne-resize"|"nw-resize"|"se-resize"|"sw-resize"|"ew-resize"|"ns-resize"|"nesw-resize"|"nwse-resize" CSS cursor name (same as `wp_cursor_shape_v1`).
-{Edges}
+---@alias Edges {Edges}
 -- ponytail: whole percents only, so a fraction (`"12.5%"`) or one above `"100%"`, which the engine
 -- accepts, is flagged. Upgrade: a pattern type, which LuaLS lacks.
 ---@alias Percent {PERCENT} `"NN%"` of the parent's box (the output's, on a panel).
 ---@alias Length number|"Fill"|Percent Pixels `[0, 8192]`, the remaining space, or a percent.
 ---@alias Color string `"#RRGGBB"` or `"#RRGGBBAA"`. No shorthand or names.
-{BorderColors}
-{Axes}
+---@alias BorderColors {BorderColors}
+---@alias Axes {Axes}
 ---@alias GradientStop [number, Color] Position `[0, 1]` and colour. Positions ascend.
 ---@alias Gradient { gradient: "Linear"|"Radial"|"Conic", angle?: number, stops: GradientStop[], [string]: "no such property" } At least 2 stops. `angle` is degrees clockwise from the top: Linear default `180`, Conic default `0`, Radial refuses it.
 ---@alias Mask { gradient?: "Linear"|"Radial"|"Conic", angle?: number, stops?: GradientStop[], source?: string, invert?: boolean, [string]: "no such property" } Exactly one of a `Gradient` or an image `source` path (alpha only, stretched over the box). `invert` swaps kept and cut.
 ---@alias EasingName {EASING} `Back` and `Elastic` overshoot, as does a Bezier `y` outside `[0, 1]`; the property's range clamps them.
 ---@alias Easing EasingName|[number, number, number, number]|{ steps: integer } A name, CSS `cubic-bezier` `{ x1, y1, x2, y2 }` with `x1`, `x2` in `[0, 1]`, or `{ steps = n }`, `n` in `[1, 1000]` (ADR-0151).
-{Keyframe}
-{Spring}
+---@alias Keyframe {ANIMATABLE}|{Keyframe}
+---@alias Spring {Spring}
 ---@alias Animation number|{ duration?: number, delay?: number, easing?: Easing, from?: number|string|Edges|Axes, spring?: Spring, keyframes?: Keyframe[], loops?: integer|"Infinite" } A bare number is `duration`.
 --- - `duration`: ms `[1, 60000]`, required unless `spring`. `easing` defaults to `"InOutQuad"`.
 --- - `delay`: ms `[0, 60000]` before it starts; offsets a sequence once, not per loop (ADR-0153).
@@ -316,6 +319,6 @@ const SURFACES_HEADER: &str = r##"---@meta
 -- `anchor`, `monitor`, `namespace`, a popup's `parent`), refuse a `Signal`: they are read once per
 -- evaluation (ADR-0216).
 
-{Rect}
+---@alias Rect {Rect}
 ---@alias PopupAnchor {POPUP_ANCHOR}
 "##;

@@ -131,8 +131,11 @@ A page links to the table's anchors, not to rows. Prose about a property goes ar
 into its row if every page showing it should say it.
 
 A table a property takes, such as `Edges` or `Transition`, is declared with `lua_shape!` on the
-struct its parser fills (`renderer/src/lua/luacats.rs`): its `///` blocks are what `lua-meta` says
-about the shape and each key. The book describes it in prose on the page.
+struct its parser reads it as (`renderer/src/lua/luacats.rs`): its `///` blocks are what `lua-meta`
+says about the shape and each key. The struct fixes the key names and field types; which keys are
+optional and how Lua spells one (`as Option<T>`, `as S`) are marked by hand beside them. One struct
+has one shape, so `anchor_rect`, whose `x` and `y` may be left out, is declared as `region`'s `Rect`
+with every key required. The book describes a shape in prose on the page.
 
 ## Page shape
 

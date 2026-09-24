@@ -35,8 +35,9 @@ pub(crate) fn easing_names() -> impl Iterator<Item = &'static str> {
 #[cfg(test)]
 pub(crate) use sequence::Keyframe;
 use sequence::{Sequence, parse_sequence};
-pub(crate) use spring::Spring;
-use spring::parse_spring;
+#[cfg(test)]
+pub(crate) use spring::SpringConstants;
+use spring::{Spring, parse_spring};
 pub(crate) use transition::Params;
 pub use transition::{Dissolve, ShaderParam, TransitionSpec};
 
@@ -641,7 +642,7 @@ pub fn retarget(
                     spec.delay = running.spec.delay;
                 }
                 if let (Motion::Spring(fresh), Motion::Spring(prior)) = (&spec.motion, &running.spec.motion)
-                    && fresh.constants() == prior.constants()
+                    && fresh.constants == prior.constants
                 {
                     spec.motion = Motion::Spring(*prior);
                 }

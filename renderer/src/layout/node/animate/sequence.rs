@@ -12,12 +12,12 @@ use crate::lua::luacats::lua_shape;
 // frame's own `duration` and `easing` are never read -- nothing eases into a beginning.
 lua_shape! {
     /// A bare value, or a frame with its own timing. `duration = 0` jumps; repeating the previous value holds.
-    #[alias = "Keyframe" | Animatable]
+    #[alias = "Keyframe"]
     #[derive(Debug, Clone, PartialEq)]
     pub struct Keyframe {
         pub value: Animatable,
-        pub duration?: Duration,
-        pub easing?: Easing,
+        pub duration: Duration as Option<Duration>,
+        pub easing: Easing as Option<Easing>,
     }
 }
 

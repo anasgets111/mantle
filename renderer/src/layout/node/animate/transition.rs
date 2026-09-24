@@ -20,7 +20,7 @@ lua_shape! {
         /// Required, ms `[1, 60000]`.
         pub duration: Duration,
         /// Default `"InOutQuad"`; drives `u_progress`.
-        pub easing?: Easing,
+        pub easing: Easing as Option<Easing>,
         // The config's own file: `layout::image_shader` compiles it and owns nothing about what it
         // draws.
         /// Absolute `.frag` path replacing the built-in dissolve, e.g. `mantle.config_dir .. "/shaders/wipe.frag"` (ADR-0184). Recompiled when the file changes.
@@ -37,7 +37,7 @@ lua_shape! {
         // name the compiled shader has no uniform for is ignored: a shader may declare one and never
         // use it.
         /// Uniform values by name: a finite number for `float`, 2-4 numbers for `vec2`-`vec4`. Missing uniforms are `0`; unknown names are ignored. Refused without `shader`.
-        pub params?: Vec<ShaderParam> as Params,
+        pub params: Vec<ShaderParam> as Option<Params>,
     }
 }
 

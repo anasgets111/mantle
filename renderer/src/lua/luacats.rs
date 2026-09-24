@@ -443,62 +443,30 @@ macro_rules! lua_class {
 }
 pub(crate) use lua_class;
 
-/// A struct handed to Lua as a table of its fields, and its `---@class` stub from theirs.
-macro_rules! lua_record {
-    ($(#[doc = $doc:literal])* $vis:vis struct $name:ident { $($(#[doc = $field_doc:literal])* $field:ident: $ty:ty),+ $(,)? }) => {
-        $(#[doc = $doc])*
-        $vis struct $name { $($(#[doc = $field_doc])* $field: $ty),+ }
-
-        impl mlua::IntoLua for $name {
-            fn into_lua(self, lua: &mlua::Lua) -> mlua::Result<mlua::Value> {
-                let table = lua.create_table()?;
-                $(table.set(stringify!($field), self.$field)?;)+
-                Ok(mlua::Value::Table(table))
-            }
-        }
-
-        impl $crate::lua::luacats::LuaType for $name {
-            fn lua() -> String {
-                stringify!($name).to_string()
-            }
-            #[cfg(test)]
-            fn classes(out: &mut Vec<String>) {
-                let fields = [$(format!(
-                    "---@field {} {} {}\n",
-                    $crate::lua::luacats::optional(stringify!($field).to_string(), <$ty as $crate::lua::luacats::LuaType>::OPTIONAL),
-                    <$ty as $crate::lua::luacats::LuaType>::lua(),
-                    $crate::lua::luacats::one_line(concat!($($field_doc, "\n",)* "")),
-                )),+].concat();
-                $crate::lua::luacats::class(out, stringify!($name), concat!($($doc, "\n",)* ""), &fields, &[]);
-            }
-        }
-    };
-}
-pub(crate) use lua_record;
-
-/// A struct a parser reads a Lua table into, key for key: `KEYS` for `only_keys`, and its stub from
-/// its fields and `///` blocks. `#[alias = "Name"]` spells it as an inline table, which LuaLS checks
-/// inside a union where a class admits any table, and `| T` puts a bare `T` before it;
-/// `#[class = "Name"]` as a class whose fields carry their own words. `key?: T` is a key Lua may
-/// leave out that Rust holds defaulted, `key: T as S` one Lua spells as `S`, and fields after a `;`
-/// are not keys.
+/// A struct whose fields are the keys of a Lua table, and its stub from their types and `///`
+/// blocks, which are Lua-facing words. `#[alias = "Name"]` is a table a parser reads, spelled inline
+/// for a header's `---@alias Name {Name}` line: LuaLS checks it inside a union, where a class admits
+/// any table, and it has no place for a field's words. `#[class = "Name"]` is one read as a
+/// `---@class` whose fields carry their words. Both refuse an unknown key, and `KEYS` is what the
+/// parser's `only_keys` accepts. `#[record = "Name"]` is a class handed to Lua, a table of its
+/// fields. `key: T as S` is a key Lua spells as `S`, as `Option<T>` for one Lua may leave out that
+/// Rust holds defaulted.
 macro_rules! lua_shape {
-    ($(#[doc = $doc:literal])* #[alias = $name:literal $(| $bare:ty)?] $($rest:tt)*) => {
-        $crate::lua::luacats::lua_shape!(@struct [$($doc)*] false $name [$($bare)?] $($rest)*);
+    ($(#[doc = $doc:literal])* #[alias = $name:literal] $($rest:tt)*) => {
+        $crate::lua::luacats::lua_shape!(@struct alias [$($doc)*] $name $($rest)*);
     };
     ($(#[doc = $doc:literal])* #[class = $name:literal] $($rest:tt)*) => {
-        $crate::lua::luacats::lua_shape!(@struct [$($doc)*] true $name [] $($rest)*);
+        $crate::lua::luacats::lua_shape!(@struct class [$($doc)*] $name $($rest)*);
     };
-    // `$q` never matches: it gives the `?` a metavariable to repeat by.
-    (@struct [$($doc:literal)*] $class:literal $name:literal [$($bare:ty)?] $(#[$attr:meta])* $vis:vis struct $ty:ident {
-        $($(#[doc = $field_doc:literal])* $field_vis:vis $field:ident $(? $([$q:tt])?)?: $field_ty:ty $(as $lua:ty)?),+ $(,)?
-        $(; $($extra:tt)*)?
+    ($(#[doc = $doc:literal])* #[record = $name:literal] $($rest:tt)*) => {
+        $crate::lua::luacats::lua_shape!(@struct record [$($doc)*] $name $($rest)*);
+    };
+    (@struct $form:ident [$($doc:literal)*] $name:literal $(#[$attr:meta])* $vis:vis struct $ty:ident {
+        $($(#[doc = $field_doc:literal])* $field_vis:vis $field:ident: $field_ty:ty $(as $lua:ty)?),+ $(,)?
     }) => {
-        $(#[doc = $doc])* $(#[$attr])* $vis struct $ty { $($(#[doc = $field_doc])* $field_vis $field: $field_ty,)+ $($($extra)*)? }
+        $(#[doc = $doc])* $(#[$attr])* $vis struct $ty { $($(#[doc = $field_doc])* $field_vis $field: $field_ty),+ }
 
-        impl $ty {
-            pub(crate) const KEYS: &'static [&'static str] = &[$(stringify!($field)),+];
-        }
+        $crate::lua::luacats::lua_shape!(@$form $ty $($field)+);
 
         impl $crate::lua::luacats::LuaType for $ty {
             fn lua() -> String {
@@ -507,50 +475,74 @@ macro_rules! lua_shape {
             #[cfg(test)]
             fn classes(out: &mut Vec<String>) {
                 let keys = [$((
-                    $crate::lua::luacats::optional(
-                        stringify!($field).to_string(),
-                        $crate::lua::luacats::lua_shape!(@optional $(? $([$q])?)?)
-                            || <$crate::lua::luacats::lua_shape!(@lua $field_ty $(, $lua)?) as $crate::lua::luacats::LuaType>::OPTIONAL,
-                    ),
+                    stringify!($field),
+                    <$crate::lua::luacats::lua_shape!(@lua $field_ty $(, $lua)?) as $crate::lua::luacats::LuaType>::OPTIONAL,
                     <$crate::lua::luacats::lua_shape!(@lua $field_ty $(, $lua)?) as $crate::lua::luacats::LuaType>::lua(),
                     concat!($($field_doc, "\n",)* ""),
                 )),+];
-                let bare = String::new() $(+ &<$bare as $crate::lua::luacats::LuaType>::lua() + "|")?;
-                out.push($crate::lua::luacats::shape($class, $name, &bare, concat!($($doc, "\n",)* ""), &keys));
+                let stub = $crate::lua::luacats::shape_stub(stringify!($form), $name, concat!($($doc, "\n",)* ""), &keys);
+                if !out.contains(&stub) {
+                    out.push(stub);
+                }
             }
         }
     };
-    (@optional) => { false };
-    (@optional ?) => { true };
+    (@alias $ty:ident $($field:ident)+) => { $crate::lua::luacats::lua_shape!(@class $ty $($field)+); };
+    (@class $ty:ident $($field:ident)+) => {
+        impl $ty {
+            pub(crate) const KEYS: &'static [&'static str] = &[$(stringify!($field)),+];
+        }
+    };
+    (@record $ty:ident $($field:ident)+) => {
+        impl mlua::IntoLua for $ty {
+            fn into_lua(self, lua: &mlua::Lua) -> mlua::Result<mlua::Value> {
+                let table = lua.create_table()?;
+                $(table.set(stringify!($field), self.$field)?;)+
+                Ok(mlua::Value::Table(table))
+            }
+        }
+    };
     (@lua $ty:ty) => { $ty };
     (@lua $ty:ty, $lua:ty) => { $lua };
 }
 pub(crate) use lua_shape;
 
-/// A `///` block's first paragraph on one line, then each later line as its own `---` line.
+/// A `///` block's first paragraph on one line after a space, then each later line as its own `---`
+/// line.
 #[cfg(test)]
 fn paragraphs(doc: &str) -> (String, String) {
     let (first, rest) = doc.split_once("\n\n").unwrap_or((doc, ""));
-    (one_line(first), rest.lines().map(|line| format!("---{line}\n")).collect())
+    let words = one_line(first);
+    let words = if words.is_empty() { words } else { format!(" {words}") };
+    (words, rest.lines().map(|line| format!("---{line}\n")).collect())
 }
 
-/// A [`lua_shape!`]'s stub: `---@alias Name bare{ key: T, ... } words`, or its doc and a `---@class`
-/// of `---@field`s. `keys` holds each key's name (`?` when optional), type and `///` block. An
-/// unknown key is a type error, as the parser refuses it.
+/// A [`lua_shape!`]'s stub, from each key's name, `Option`-ness, type and `///` block: an alias's
+/// `{ key: T, ... } words`, or a class's doc and `---@class` of `---@field`s. An alias or a class
+/// declares an unknown key a type error, as the parser refuses it.
 #[cfg(test)]
-pub(crate) fn shape(class: bool, name: &str, bare: &str, doc: &str, keys: &[(String, String, &str)]) -> String {
+pub(crate) fn shape_stub(form: &str, name: &str, doc: &str, keys: &[(&str, bool, String, &str)]) -> String {
     const UNKNOWN: &str = r#""no such property""#;
-    if !class {
-        let (words, more) = paragraphs(doc);
-        let keys: String = keys.iter().map(|(key, ty, _)| format!("{key}: {ty}, ")).collect();
-        return format!("---@alias {name} {bare}{{ {keys}[string]: {UNKNOWN} }} {words}\n{more}");
+    let (words, more) = paragraphs(doc);
+    if form == "alias" {
+        let keys: String = keys
+            .iter()
+            .map(|(key, nil, ty, doc)| {
+                assert!(doc.is_empty(), "alias {name} has no place for `{key}`'s words");
+                format!("{}: {ty}, ", optional(key.to_string(), *nil))
+            })
+            .collect();
+        return format!("{{ {keys}[string]: {UNKNOWN} }}{words}\n{more}");
     }
     let mut out = format!("{}---@class {name}\n", comment(doc));
-    for (key, ty, doc) in keys {
+    for (key, nil, ty, doc) in keys {
         let (words, more) = paragraphs(doc);
-        out += &format!("---@field {key} {ty} {words}\n{more}");
+        out += &format!("---@field {} {ty}{words}\n{more}", optional(key.to_string(), *nil));
     }
-    out + &format!("---@field [string] {UNKNOWN}\n")
+    if form == "class" {
+        out += &format!("---@field [string] {UNKNOWN}\n");
+    }
+    out
 }
 
 /// Pushes a `---@class` block, its `fields`, then for a handle `local Name = {}` and one stub per

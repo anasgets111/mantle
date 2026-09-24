@@ -18,36 +18,43 @@ enum Regime {
     Critical,
 }
 
-// A mass on a spring, in units of the displacement it has left to cross: it starts one
-// displacement from the target and settles on it, so one scalar drives a number, a percent, a
-// colour and an edge table alike, and the rest threshold below is dimensionless rather than
-// needing to know pixels from opacity.
-//
-// Solved in closed form rather than integrated per frame. `Tween::at` has to be a pure function
-// of elapsed time -- a pass and a tick both call it, and the value carries no state across
-// reconciliation (ADR-0152) -- so stepping a velocity forward per frame would be a second source
-// of truth and would drift with the frame rate. The closed form also hands over an exact rate when
-// the target moves, which is the whole reason a spring is here.
+// `k/m` per second squared and `c/m` per second: the pull toward the target and the drag on the
+// way. Below critical damping the spring overshoots and rings, above it it crawls in without ever
+// crossing.
 lua_shape! {
     /// Both required: `stiffness` `(0, 100000]`, `damping` `(0, 10000]`; `2 * math.sqrt(stiffness)` is critical damping. Keeps its velocity when the target changes (ADR-0154).
     #[alias = "Spring"]
     #[derive(Debug, Clone, Copy, PartialEq)]
-    pub struct Spring {
-        /// The pull toward the target, `k/m`, per second squared.
+    pub struct SpringConstants {
         pub stiffness: f32,
-        /// The drag on the way, `c/m`, per second. `2 * sqrt(stiffness)` is critical damping: below
-        /// it the spring overshoots and rings, above it it crawls in without ever crossing.
-        pub damping: f32;
-        /// Where the displacement is already heading when this run begins, as a fraction of that
-        /// displacement per second. Zero for a spring starting at rest; a retarget hands the running
-        /// spring's own rate over here, which is how the motion keeps its velocity through a change
-        /// of target instead of restarting from still.
-        pub velocity: f32,
-        /// When the displacement is inside [`Spring::REST`] for good, computed once at parse from a
-        /// bound on the envelope. Conservative on purpose: too long only keeps a tween that is
-        /// already sitting on its target, while too short would drop it mid-flight.
-        settles: Duration,
+        pub damping: f32,
     }
+}
+
+/// A mass on a spring, in units of the displacement it has left to cross: it starts one
+/// displacement from the target and settles on it, so one scalar drives a number, a percent, a
+/// colour and an edge table alike, and the rest threshold below is dimensionless rather than
+/// needing to know pixels from opacity.
+///
+/// Solved in closed form rather than integrated per frame. [`Tween::at`] has to be a pure
+/// function of elapsed time -- a pass and a tick both call it, and the value carries no state
+/// across reconciliation (ADR-0152) -- so stepping a velocity forward per frame would be a
+/// second source of truth and would drift with the frame rate. The closed form also hands over
+/// an exact rate when the target moves, which is the whole reason a spring is here.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Spring {
+    /// The pair a config wrote. Two springs agreeing here are the same spring at different points
+    /// of the same motion.
+    pub constants: SpringConstants,
+    /// Where the displacement is already heading when this run begins, as a fraction of that
+    /// displacement per second. Zero for a spring starting at rest; a retarget hands the running
+    /// spring's own rate over here, which is how the motion keeps its velocity through a change
+    /// of target instead of restarting from still.
+    pub velocity: f32,
+    /// When the displacement is inside [`Spring::REST`] for good, computed once at parse from a
+    /// bound on the envelope. Conservative on purpose: too long only keeps a tween that is
+    /// already sitting on its target, while too short would drop it mid-flight.
+    settles: Duration,
 }
 
 impl Spring {
@@ -65,7 +72,7 @@ impl Spring {
     const FASTEST: f32 = 100.0;
 
     pub fn new(stiffness: f32, damping: f32, velocity: f32) -> Self {
-        let mut spring = Self { stiffness, damping, velocity, settles: Duration::ZERO };
+        let mut spring = Self { constants: SpringConstants { stiffness, damping }, velocity, settles: Duration::ZERO };
         spring.settles = Duration::from_secs_f32(spring.settle_time());
         spring
     }
@@ -74,8 +81,8 @@ impl Spring {
     /// sign says which of the three solutions applies. Both fall out of `damping` and `stiffness`
     /// alone, so every arm below reads them rather than recomputing the algebra.
     fn decay_and_gap(&self) -> (f32, f32) {
-        let half_damping = self.damping / 2.0;
-        (half_damping, self.stiffness - half_damping * half_damping)
+        let half_damping = self.constants.damping / 2.0;
+        (half_damping, self.constants.stiffness - half_damping * half_damping)
     }
 
     /// Displacement left, as a fraction of the original: `1` when the run begins and `0` on the
@@ -122,7 +129,7 @@ impl Spring {
     /// rather than a fixed number because `gap` is in units of stiffness: an absolute threshold
     /// would call a soft spring critical and a stiff one never.
     fn regime(&self, gap: f32) -> Regime {
-        if gap.abs() <= self.stiffness * 1e-6 {
+        if gap.abs() <= self.constants.stiffness * 1e-6 {
             return Regime::Critical;
         }
         if gap > 0.0 {
@@ -137,7 +144,7 @@ impl Spring {
         // a minute and then jump. The roots multiply to `stiffness`, so the near one comes from
         // the far one instead of from a subtraction.
         let far = -decay - spread;
-        Regime::Crawling(far, self.stiffness / far)
+        Regime::Crawling(far, self.constants.stiffness / far)
     }
 
     /// How the starting displacement and rate split between those two rates.
@@ -188,12 +195,6 @@ impl Spring {
         elapsed >= self.settles
     }
 
-    /// The pair a config wrote, apart from the velocity a retarget handed this one. Two springs
-    /// agreeing here are the same spring at different points of the same motion.
-    pub(super) fn constants(&self) -> (f32, f32) {
-        (self.stiffness, self.damping)
-    }
-
     /// This spring's constants, started at the rate `running` had reached rather than at rest.
     ///
     /// Both runs read `value = to + s * (from - to)`, so the value's own rate is `s'` times the
@@ -223,7 +224,7 @@ impl Spring {
         // positive, hence the sign. Bounded so that a hand-over onto a displacement of almost
         // nothing cannot fling the next run across the screen.
         let carried = -prior.rate(running.progressed(now).as_secs_f32()) * projected;
-        Self::new(self.stiffness, self.damping, carried.clamp(-Self::FASTEST, Self::FASTEST))
+        Self::new(self.constants.stiffness, self.constants.damping, carried.clamp(-Self::FASTEST, Self::FASTEST))
     }
 }
 
@@ -242,7 +243,7 @@ pub(super) fn parse_spring(field: &str, spec: &mlua::Table) -> Result<Option<Spr
             )),
         };
     };
-    only_keys(&format!("{field}.spring"), &spring, Spring::KEYS)?;
+    only_keys(&format!("{field}.spring"), &spring, SpringConstants::KEYS)?;
     let read = |name: &str, highest: f32| -> Result<f32, LayoutError> {
         let at = format!("{field}.spring.{name}");
         let value: Value = spring.get(name).map_err(|e| invalid(&at, e.to_string()))?;
@@ -480,7 +481,7 @@ mod tests {
         let mut properties = rect_props(&lua, stiffer);
         let tweens = retarget("rect", Some((&running[..], &shown)), &mut properties, now, &lua).unwrap();
         let Motion::Spring(fresh) = tweens[0].spec.motion else { panic!("still a spring") };
-        assert_eq!((fresh.stiffness, fresh.velocity), (400.0, 0.0), "an edited constant is a new spring");
+        assert_eq!((fresh.constants.stiffness, fresh.velocity), (400.0, 0.0), "an edited constant is a new spring");
         assert_eq!(tweens[0].started, started, "carried by the run already going");
         assert_eq!(tweens[0].from, Animatable::Number(0.0), "which keeps the value it set out from");
     }
@@ -494,7 +495,7 @@ mod tests {
         else {
             panic!("expected a spring")
         };
-        assert_eq!((spring.stiffness, spring.damping, spring.velocity), (220.0, 26.0, 0.0));
+        assert_eq!((spring.constants.stiffness, spring.constants.damping, spring.velocity), (220.0, 26.0, 0.0));
 
         let cases: [(&str, &[&str]); 6] = [
             ("duration = 10, spring = { stiffness = 1, damping = 1 }", &["has no `duration`"]),
