@@ -136,7 +136,7 @@ local ProcessHandle = {}
 function ProcessHandle:kill() end
 
 ---Spawns `cmd` with stdout and stderr piped and stdin on `/dev/null`, without blocking (ADR-0026).
----The process belongs to the generation: its group is reaped when the Renderer is replaced.
+---The process belongs to the evaluation: a reload kills its group and calls `exit_cb(nil)`.
 ---Callbacks run unbudgeted; a raise is logged as a warning.
 ---[docs](https://anasgets111.github.io/mantle/guide/processes.html#processrun)
 ---@param cmd string Looked up on `PATH`; no shell, so no globbing, pipes or quoting.

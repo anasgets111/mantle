@@ -11,7 +11,7 @@
 //! `shared::ProcessStream`; `exit_cb(code)` receives an integer or `nil` via `Option<i32>`.
 
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 use std::rc::Rc;
 
 use mlua::{Function, Lua};
@@ -32,7 +32,7 @@ struct PendingProcess {
 /// outbound `"process"` commands. Renderer assignment permits synchronous `ProcessHandle` return.
 #[derive(Clone)]
 pub struct ProcessRegistry {
-    pending: Rc<RefCell<HashMap<u64, PendingProcess>>>,
+    pending: Rc<RefCell<BTreeMap<u64, PendingProcess>>>,
     commands: CommandSender,
 }
 
@@ -61,6 +61,18 @@ impl ProcessRegistry {
 
     fn kill(&self, id: u64) {
         self.send("kill", Vec::new(), id);
+    }
+
+    /// Kills every child the last evaluation started and runs each `exit_cb(nil)` now, in start
+    /// order, so a guard an exit resets is clear before the next evaluation's top level reads it.
+    /// Forgetting the ids drops the output still in flight and the Supervisor's later exit frames.
+    /// One pass: a child an `exit_cb` starts here outlives this reload, so a retry chain cannot spin.
+    pub fn kill_all(&self) {
+        let ids: Vec<u64> = self.pending.borrow().keys().copied().collect();
+        for id in ids {
+            self.kill(id);
+            self.dispatch_exit(id, None);
+        }
     }
 
     /// Dispatches `SupervisorFrame::ProcessOutput` to `id`'s `out_cb`. Stale/unknown ids, including
@@ -125,7 +137,7 @@ pub fn register(lua: &Lua, registry: ProcessRegistry) -> mlua::Result<()> {
     lua_fn!(
         lua,
         /// Spawns `cmd` with stdout and stderr piped and stdin on `/dev/null`, without blocking (ADR-0026).
-        /// The process belongs to the generation: its group is reaped when the Renderer is replaced.
+        /// The process belongs to the evaluation: a reload kills its group and calls `exit_cb(nil)`.
         /// Callbacks run unbudgeted; a raise is logged as a warning.
         /// [docs](https://anasgets111.github.io/mantle/guide/processes.html#processrun)
         fn process.run(

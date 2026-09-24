@@ -12,7 +12,7 @@ scope, capability roster) lives in [`CONTEXT.md`](../CONTEXT.md).
 | **Generation** | One Renderer process and its Lua VM. Only a Renderer replacement (after a crash) starts a new one; a reload does not. |
 | **Instance directory** | `$XDG_RUNTIME_DIR/mantle/<pid>-<start ms>/`, one per running `mantle`: control socket, log, lock file, icon spools. `mantle list`, `log`, `set`, `toggle` and `call` pick one. See [which shell](guide/cli.md#which-config-and-which-shell). |
 | **Check mode** | `mantle check`: evaluates and lays out the config with no Wayland, no subprocesses and no state writes; every capability reads `nil`. See [what check covers](guide/cli.md#what-check-covers). |
-| **Session process** | A [`session_process`](guide/processes.md#session_process) program the Supervisor owns. Survives reloads and Renderer replacement; stopped at shutdown with its declared signal, then SIGKILL after 5 s. A `process.run` child, by contrast, dies with its generation. |
+| **Session process** | A [`session_process`](guide/processes.md#session_process) program the Supervisor owns. Survives reloads and Renderer replacement; stopped at shutdown with its declared signal, then SIGKILL after 5 s. A `process.run` child, by contrast, dies at the next reload. |
 
 ## Reloads
 

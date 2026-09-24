@@ -71,7 +71,7 @@ follow the link for the fix. Traps that stay within one topic are in that page's
 
 | Symptom | Cause | Fix |
 | :--- | :--- | :--- |
-| A program runs twice after a save | A top-level `process.run` starts again on every reload beside the old child | [session_process](processes.md#session_process), [What survives a reload](runtime.md#what-survives-a-reload) |
+| A program runs twice after a save | A top-level `process.detach` launches again on every reload | [session_process](processes.md#session_process), [What survives a reload](runtime.md#what-survives-a-reload) |
 | `~`, globs or pipes in a command do nothing | `process.run` runs no shell | [process.run](processes.md#processrun) |
 | A poll loop speeds up after a few saves | The timer was re-armed from `exit_cb` of a child that outlived the reload | [Poll a command every N seconds](processes.md#poll-a-command-every-n-seconds) |
 

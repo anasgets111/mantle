@@ -230,9 +230,10 @@ impl RendererClient {
         Ok(())
     }
 
-    /// Before each `shell.lua` evaluation, clear what the last one registered: `on_change` handlers
-    /// (ADR-0115) and `action` exports (ADR-0197). Evaluation registers both afresh; retaining them
-    /// doubles side effects after a config save, and both are closures over locals that evaluation
+    /// Before each `shell.lua` evaluation, clear what the last one registered: `process.run` children,
+    /// whose `exit_cb(nil)` runs first so anything it arms is cleared too, `on_change` handlers
+    /// (ADR-0115) and `action` exports (ADR-0197). Evaluation registers them afresh; retaining them
+    /// doubles side effects after a config save, and all are closures over locals that evaluation
     /// is about to replace.
     ///
     /// Run again when an evaluation *fails*, because clearing first is not enough: `shell.lua` may
@@ -240,6 +241,7 @@ impl RendererClient {
     /// config answering `mantle call` is worse than none, and the scene still on screen is the
     /// previous evaluation's, whose registrations this already dropped.
     fn clear_change_handlers(&self) {
+        self.process_registry.kill_all();
         for handle in self.capabilities.borrow().values().chain([&self.rescue_handle, &self.screens_handle]) {
             handle.clear_handlers();
         }
@@ -2430,6 +2432,46 @@ mod tests {
         );
         write_shell_lua(dir.path(), "this is not lua");
         assert_eq!(client.handle_frame(SupervisorFrame::Reevaluate), FrameOutcome::Handled);
+    }
+
+    /// A reload kills what the last evaluation started and runs each `exit_cb(nil)` once, before the
+    /// new top level; the Supervisor's output and exit frames still in flight reach no callback.
+    #[test]
+    fn a_reload_kills_the_last_evaluations_process_run_children() {
+        use crate::lua::capability::tests::queued_command;
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_shell_lua(
+            dir.path(),
+            r#"lines, exits = lines or 0, exits or 0
+            exits_at_top = exits
+            process.run("tail", { "-f", "log" }, function() lines = lines + 1 end,
+                function(code) exits, last_code = exits + 1, code end)
+            return panel { id = "bar", layer = "Top" }"#,
+        );
+        let (mut client, mut rx) = test_client(&path);
+        assert!(run_startup(&mut client));
+        let run = queued_command(&mut rx).expect("the top level ran a child");
+        let output = |id| {
+            SupervisorFrame::ProcessOutput(ProcessOutputLine {
+                id,
+                stream: shared::ProcessStream::Stdout,
+                line: "x".into(),
+            })
+        };
+        let _ = client.handle_frame(output(run.id));
+
+        assert_eq!(client.handle_frame(SupervisorFrame::Reevaluate), FrameOutcome::ApplyPending);
+        let kill = queued_command(&mut rx).expect("the reload killed the child");
+        assert_eq!((kill.id, kill.params.action.as_str()), (run.id, "kill"));
+        assert_eq!(queued_command(&mut rx).expect("the new evaluation ran its own").params.action, "run");
+        let _ = client.handle_frame(output(run.id));
+        let _ = client.handle_frame(SupervisorFrame::ProcessExited(ProcessExited { id: run.id, code: Some(0) }));
+
+        let globals = client.lua().globals();
+        assert_eq!(globals.get::<i64>("lines").unwrap(), 1, "no out_cb after the kill");
+        assert_eq!(globals.get::<i64>("exits").unwrap(), 1, "exit_cb fires once");
+        assert_eq!(globals.get::<i64>("exits_at_top").unwrap(), 1, "and before the new top level");
+        assert!(globals.get::<mlua::Value>("last_code").unwrap().is_nil(), "with nil");
     }
 
     #[test]

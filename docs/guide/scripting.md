@@ -89,7 +89,6 @@ local function check(attempt)
         if code == 0 then
             status:set("online")
         elseif BACKOFF_MS[attempt] then
-            -- Bounded, so a chain doubled by a reload mid-request ends on its own.
             status:set("retrying")
             timer(BACKOFF_MS[attempt], function() check(attempt + 1) end)
         else

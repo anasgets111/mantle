@@ -179,7 +179,7 @@ return panel {
 | Derived signals (`:map`, `computed`, `delay`, `pulse`) | Rebuilt. A pending `delay` or open `pulse` resets | Rebuilt | Lost |
 | `persistent_table` (by file) | Same table | Same file, new table | On disk |
 | `session_process` (by name) | Keeps running, same table | Keeps running (the Supervisor holds it) | Stopped |
-| `process.run` child | Keeps running. Its callbacks still fire, into the old evaluation's closures | Killed with its process group | Killed |
+| `process.run` child | Killed with its process group, failed reloads included. Its `exit_cb(nil)` runs before the new evaluation; no `out_cb` follows | Killed with its process group | Killed |
 | `process.detach` program | Unaffected | Unaffected | Unaffected |
 | `timer` | Cleared. The new evaluation's timers start when its result is applied | Cleared | Gone |
 | `action`, `mantle.<cap>:on_change` | Cleared, re-registered by the new evaluation | Cleared | Gone |
@@ -187,10 +187,9 @@ return panel {
 | `fonts { ... }` chain | Not re-read | Re-read | Gone |
 | Capability state (`mantle.<cap>`) | Unchanged | Replayed from the Supervisor's last snapshot | Gone |
 
-Top-level side effects run again on every reload. A top-level `timer` chain is restarted, not
-doubled, because the old timers are cleared. A long-running `process.run` started at the top level
-is doubled: the old child keeps running beside the new one. Declare such a program with
-`session_process` instead ([processes](processes.md#session_process)).
+Top-level side effects run again on every reload. A top-level `timer` chain or long-running
+`process.run` is restarted, not doubled, because the old ones are cleared first. To keep a program
+running through a save, declare it with `session_process` ([processes](processes.md#which-one-do-i-use)).
 
 ## Limits and budgets
 
@@ -317,8 +316,7 @@ Timers and actions cannot be guarded this way, because every reload clears them.
 the top level every time.
 
 **…keep a program running across reloads?** Declare it with
-[`session_process`](processes.md#session_process). A top-level `process.run` starts a second copy
-on every reload.
+[`session_process`](processes.md#session_process). A reload kills every `process.run` child.
 
 **…do heavy work without blowing the 5 ms budget?** Build tables at the top level and keep maps to
 an index and a format ([example](#limits-and-budgets)). Move anything slower into a program run with

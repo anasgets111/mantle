@@ -66,7 +66,7 @@ Spawns a helper, streams its output line by line, and reports its exit.
 | Handle | `handle:kill()`: `SIGTERM` to the whole process group, `SIGKILL` 100 ms later. `exit_cb` still fires. A no-op after exit |
 | stdio | stdin `/dev/null`, so a prompt fails instead of hanging; stdout and stderr piped |
 | Environment | Inherited from the shell. The working directory is the shell's and unspecified: use absolute paths |
-| Lifetime | The generation. A reload keeps the child and its callbacks; a Renderer replacement or shell exit reaps its group without calling `exit_cb` |
+| Lifetime | Until the next reload, failed ones included, which kills its group as `kill()` does and calls `exit_cb(nil)` at once, before the new evaluation runs; no `out_cb` follows. A Renderer replacement or shell exit reaps its group without calling `exit_cb` |
 | Limits | A line over 64 KiB is cut there and the rest of that line dropped, with one warning per stream. Callbacks run outside the [CPU budget](runtime.md#limits-and-budgets). A raise in either callback is logged as a warning |
 
 The call returns immediately. A spawn failure (command not on `PATH`) reaches Lua only as
@@ -169,14 +169,14 @@ The whole state is also readable as `mantle.processes` ([capabilities](../capabi
 | Poll a command every N seconds | [Below](#poll-a-command-every-n-seconds) |
 | Follow a long-running command's output | [Below](#follow-a-long-running-commands-output) |
 | Run a recorder that survives reloads | [session_process](#session_process) |
+| Stop a child | `handle:kill()`, or save: a reload kills them all |
 | Open an app or URL | [process.detach](#processdetach) |
 | Read a file | `process.run("cat", { path }, ...)`, collecting lines, or [persistent_table](scripting.md#persistent_table) for JSON settings |
 
 ### Poll a command every N seconds
 
-Let the timer own the loop and keep `exit_cb` to updating state. A reload clears the timer and
-the top-level call starts one fresh chain. Re-arming from `exit_cb` instead would let a child
-still running across a reload arm a second chain.
+A reload kills the `df` in flight and clears the timer, and the top-level call starts one fresh
+chain.
 
 ```lua
 local disk = state("disk_usage", "")
@@ -200,21 +200,21 @@ return panel {
 
 ### Follow a long-running command's output
 
-A `process.run` child that never exits keeps calling `out_cb`. It survives reloads, so guard the
-start with named state, which survives them too. When it exits, the next reload starts it again.
+A `process.run` child that never exits keeps calling `out_cb`. Start it at the top level: each
+save kills the old one and starts one fresh. The retry below runs after the child exits on its
+own; the one a reload's `exit_cb(nil)` arms is cleared with the old timers.
 
 ```lua
 local title = state("now_playing", "")
-local following = state("now_playing_following", false)
 
-if not following:get() then
-    following:set(true)
+local function follow()
     process.run("playerctl", { "--follow", "metadata", "--format", "{{artist}} - {{title}}" },
         function(line, stream)
             if stream == "stdout" then title:set(line) end
         end,
-        function() following:set(false) end)
+        function() timer(5000, follow) end)
 end
+follow()
 
 return panel {
     id = "media", layer = "Top", anchor = { top = true },
@@ -228,11 +228,10 @@ return panel {
 | :--- | :--- |
 | `process.run("ls ~/*.png", {})` or `process.run("ls", { "~/*.png" })` | No shell parses anything, so `~`, globs and pipes stay literal. Split the arguments yourself, or run `"sh", { "-c", "..." }` explicitly |
 | Calling `json.decode(line)` in `out_cb` | Output arrives one line at a time. Collect lines and decode once in `exit_cb` |
-| `process.run` at a module's top level | It runs again on every reload, next to the child still running from the last one. Start it from a handler, or guard it with [named state](signals.md#named-state) |
 | Treating `kill()` as cancel | `exit_cb` still fires, usually with `nil`. Tag requests with a counter and ignore stale ones |
 | `exit_cb` never arrives | It waits for stdout and stderr to close. A backgrounded grandchild holding the pipes delays it; redirect its output |
-| Callbacks from before a reload | `process.run` callbacks run the old closures after a reload. Keep what they touch in named state |
-| `timer` re-armed from `exit_cb` | A child in flight across a reload arms a second chain beside the one the top level restarts. Arm the timer outside the callback ([poll recipe](#poll-a-command-every-n-seconds)) |
+| A `process.run` child that must outlive a save | A reload kills it. Use [`session_process`](#session_process) |
+| A failure logged on every save | A reload's kill calls `exit_cb(nil)`. Report only a non-zero `code` |
 | Invalid `stop_signal` | The Supervisor refuses the declaration with a warning, and `start` then does nothing. Use a name from the list above |
 
 See also: [scripting](scripting.md) (`timer`, `json`, `log`, `persistent_table`), [runtime](runtime.md)
