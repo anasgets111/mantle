@@ -4,8 +4,8 @@ What runs a config: the Lua VM and its libraries, how `require` finds modules, w
 re-runs and what it keeps, and the limits the engine enforces. Read it before splitting a config
 into modules, when a reload does something unexpected, or when a log line names a budget.
 
-A config split into modules. The config directory holds `shell.lua`, `bar.lua` and
-`widgets/clock.lua`:
+Only `shell.lua` is required; how you split the rest is up to you. One possible layout puts the
+bar in `bar.lua` and its clock in `widgets/clock.lua`:
 
 ```lua,fragment
 -- shell.lua

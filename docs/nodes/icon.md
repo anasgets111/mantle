@@ -38,8 +38,8 @@ local app_badge = row { spacing = 6, align_v = "Center", children = {
 An explicit `width` or `height` overrides that axis of the square; the icon draws at the shorter
 side, centred.
 
-The theme is `gtk-icon-theme-name` from `~/.config/gtk-4.0/settings.ini`, else
-`~/.config/gtk-3.0/settings.ini`, else `hicolor`. It is read once per Renderer process, so a theme
+The theme is `gtk-icon-theme-name` from `$XDG_CONFIG_HOME/gtk-4.0/settings.ini`, else
+`gtk-3.0/settings.ini`, else `hicolor`. It is read once per Renderer process, so a theme
 change shows after a shell restart, not a reload. Files load as PNG, JPEG, WebP, GIF, SVG or SVGZ.
 
 ## How do I…

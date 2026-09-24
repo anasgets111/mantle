@@ -449,7 +449,7 @@
 ---@field last_successful_check? integer Unix seconds of the last successful check (or the `checked_at` seed), else `nil`.
 ---@field package_manager? string Package manager, e.g. `"pacman"`, or `nil` when unsupported. Set from the first push (ADR-0134).
 ---@field packages UpdateCandidate[] Pending upgrades. A failed check keeps the last good list.
----@field reboot_required boolean `/run/mantle-reboot-required` exists, watched live. Mantle never writes it: a user-installed pacman hook must, and `/run` empties on reboot.
+---@field reboot_required boolean `/run/mantle-reboot-required` exists, watched live. Mantle never writes it; anything you set up may, a pacman hook for example, and `/run` empties on reboot.
 
 ---@class WorkspacesState
 ---`mantle.workspaces` payload; `nil` without niri or Hyprland.

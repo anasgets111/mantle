@@ -1,7 +1,7 @@
 //! The `mantle.idle` inhibit gate (ADR-0139): how a held logind inhibitor affects threshold events.
 //!
-//! Mantle is the idle daemon here. With `IdleAction=ignore` in `logind.conf`, this shell alone acts
-//! on idleness, so it must honor inhibitors rather than logind.
+//! Mantle is the idle daemon here: idleness comes from the compositor (`ext_idle_notifier_v1`), and
+//! nothing sets logind's `IdleHint`, so logind never acts on it. This shell must honor inhibitors itself.
 //!
 //! ADR-0032 gave `mantle.idle` `inhibit`/`release_inhibit` writes but no read half. A config could
 //! ask logind to prevent idle and still receive `on_idle`; external `systemd-inhibit

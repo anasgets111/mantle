@@ -58,8 +58,8 @@ pub struct UpdatesState {
     /// Why the package manager could not be run or waited on, or `nil`. Its own failures are
     /// `install_exit_code`.
     pub install_error: Option<String>,
-    /// `/run/mantle-reboot-required` exists, watched live. Mantle never writes it: a user-installed
-    /// pacman hook must, and `/run` empties on reboot.
+    /// `/run/mantle-reboot-required` exists, watched live. Mantle never writes it; anything you set up
+    /// may, a pacman hook for example, and `/run` empties on reboot.
     pub reboot_required: bool,
 }
 

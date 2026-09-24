@@ -5,8 +5,8 @@ Complete widgets to copy. Each recipe is a whole `shell.lua`: save it in a confi
 in place. Every page ends with how it works, linking the reference pages, and a few one-line
 variations.
 
-To combine recipes, keep one `panel` with `id = "bar"` and put each recipe's bar widgets in its
-row. Every other surface can be copied across as it is.
+To combine recipes, keep one bar `panel` and put each recipe's bar widgets in its row. Every other
+surface can be copied across as it is.
 
 | Recipe | Builds |
 | :--- | :--- |

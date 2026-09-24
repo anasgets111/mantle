@@ -39,7 +39,7 @@ in `mantle log`.
 | `lock` | `ext_session_lock_v1`; logind session; PAM stack `mantle` ([below](#install)) | No lock protocol: the Renderer reports `Refused`. No `mantle` stack: authenticates against `login` |
 | `polkit` | polkitd on the system bus, `$XDG_SESSION_ID`, the socket-activated helper at `/run/polkit/agent-helper.socket`, and no other agent registered | No session id or another agent: logged, agent off for the run; prompts go to the other agent or nowhere |
 | `workspaces`, `windows` | niri (`$NIRI_SOCKET`) or Hyprland (`$HYPRLAND_INSTANCE_SIGNATURE`); else `zwlr_foreign_toplevel_management_v1` for `windows` | `workspaces` `nil`; `windows` `nil` without the wlr protocol |
-| `sysinfo` | `/proc`; hwmon chips `k10temp` or `coretemp` (CPU) and `amdgpu`, `nouveau` or `nvidia` (GPU) | Missing chip: that temperature is absent |
+| `sysinfo` | `/proc`; hwmon `k10temp`, `coretemp` or `acpitz` (CPU); `amdgpu`, `nouveau` or `nvidia` (GPU) | Missing chip: that temperature is absent |
 | `system` | Nothing | Always ticks |
 | `battery` | UPower | No UPower or no battery: `present = false`, `state` `"Unknown"` without UPower |
 | `power` | UPower and/or power-profiles-daemon | Missing half: its fields absent; `set_profile` without the daemon is ignored |
@@ -101,7 +101,6 @@ save reloads in place ([runtime](runtime.md#evaluation-reload-and-generations)).
 | :--- | :--- |
 | `cargo run -p supervisor` runs a stale Renderer and reports the mismatch as a config error | `just run`, which builds both binaries |
 | Another notification daemon, tray host or polkit agent is running | Stop it: Mantle takes over those names only when they are free ([FAQ](faq.md#capabilities)) |
-| `logind` also acts on idle | Set `IdleAction=ignore` in `logind.conf`; Mantle is the idle daemon |
 
 See also: [introduction](../introduction.md), [CLI](cli.md), [FAQ](faq.md).
 

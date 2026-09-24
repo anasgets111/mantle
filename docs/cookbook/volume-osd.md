@@ -97,7 +97,7 @@ Bind the volume keys to anything that changes the default sink, for example
 - `on_change` reacts to each audio push and skips the first one, which is learned state ([capabilities](../capabilities/index.md), [audio](../capabilities/audio.md)).
 - It writes a fresh table into a [named state](../guide/signals.md#named-state); `pulse` reads `true` for a while after each change ([pulse](../guide/signals.md#pulse-mark-a-change)).
 - A longer second `pulse` keeps the surface mapped while the card fades, since hiding a surface plays no exit ([delay](../guide/signals.md#delay-hold-a-value) is the general form).
-- `monitor = "Active"` shows it on the focused output, and a bottom-only anchor centres it ([panel monitor](../surfaces/panel.md#monitor), [OSD](../surfaces/panel.md#osd)).
+- `monitor = "Active"` shows it on the output the compositor picks, usually the focused one, and a bottom-only anchor centres it ([panel monitor](../surfaces/panel.md#monitor), [OSD](../surfaces/panel.md#osd)).
 - The fill is a `"NN%"` width inside a fixed track ([sizes](../nodes/index.md#sizes)); `translate` and `opacity` animate without re-laying out ([animation](../guide/animation.md)).
 - The glyph comes from the icon theme by name ([icon](../nodes/icon.md)).
 

@@ -16,8 +16,8 @@ text {
 ## Backend
 
 CPU from `/proc/stat`, RAM and swap from `/proc/meminfo`, temperatures from `/sys/class/hwmon/`
-chips chosen by name preference: `k10temp` or `coretemp` for the CPU, `amdgpu`, `nouveau` or
-`nvidia` for the GPU. Each sample has its own interval; all are `0` (off) until `configure`. The
+chips chosen by name preference: `k10temp`, then `coretemp`, else `acpitz` for the CPU; `amdgpu`,
+`nouveau` or `nvidia` for the GPU. Each sample has its own interval; all are `0` (off) until `configure`. The
 first reading lands one interval later (CPU: two).
 
 ## How do I…

@@ -10,7 +10,7 @@ use tokio::sync::mpsc::UnboundedSender;
 
 use super::controller::{UpdatesSignal, UpdatesState};
 
-/// Marker file for [`UpdatesState::reboot_required`], written by a pacman hook.
+/// Marker file for [`UpdatesState::reboot_required`]; anything may write it, a pacman hook for example.
 pub(super) const REBOOT_MARKER: &str = "/run/mantle-reboot-required";
 
 /// Mirrors `marker`'s existence into [`UpdatesState::reboot_required`] until the controller drops.

@@ -51,7 +51,7 @@ None: read-only, so an `invoke` raises.
 | Registrations | An in-place reload drops the generation's entries, then re-registers; a duration still asked for keeps its listener and timer. Cancelling the last callback at a duration destroys its listeners. Inhibit holds survive the reload |
 | Inhibit | `inhibit`/`release_inhibit` refcount one logind `Inhibit("idle", "block")` fd |
 | ScreenSaver | Hosts `org.freedesktop.ScreenSaver` at `/org/freedesktop/ScreenSaver` and `/ScreenSaver`, requested with `DoNotQueue`; its clients share the same fd, and a client that leaves the bus loses its holds. A browser's video hold lands here, directly or via xdg-desktop-portal |
-| Gate | While `BlockInhibited` names `idle`, threshold events stop and idled thresholds get `resumed`; on release, still-idle ones get `idled` again. Mantle is the idle daemon; pair it with `IdleAction=ignore` |
+| Gate | While `BlockInhibited` names `idle`, threshold events stop and idled thresholds get `resumed`; on release, still-idle ones get `idled` again. Mantle, not logind, acts on idle, so it honours inhibitors itself |
 | State | `inhibited` covers logind, ScreenSaver and compositor surface holds. `inhibitors` lists every holder but this shell: block-mode logind holders, ScreenSaver clients, and the compositor's hold with an empty `who` |
 
 ## Methods

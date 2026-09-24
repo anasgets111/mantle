@@ -47,7 +47,7 @@ button {
 | `last_successful_check?` | `integer` | Unix seconds of the last successful check (or the `checked_at` seed), else `nil`. |
 | `package_manager?` | `string` | Package manager, e.g. `"pacman"`, or `nil` when unsupported. Set from the first push. |
 | `packages` | `UpdateCandidate[]` | Pending upgrades. A failed check keeps the last good list. |
-| `reboot_required` | `boolean` | `/run/mantle-reboot-required` exists, watched live. Mantle never writes it: a user-installed pacman hook must, and `/run` empties on reboot. |
+| `reboot_required` | `boolean` | `/run/mantle-reboot-required` exists, watched live. Mantle never writes it; anything you set up may, a pacman hook for example, and `/run` empties on reboot. |
 
 ### `UpdateCandidate`
 

@@ -233,7 +233,7 @@ animate the root's `translate`, not the surface ([animation](../guide/animation.
 | Draw over fullscreen windows | `layer = "Overlay"` |
 | Hide the bar from a keybind | `visible = state("bar_visible", true)`, then `mantle toggle bar_visible` |
 | Reserve only the bar's strip of a taller surface | `exclusive = 32` ([exclusive zones](#exclusive-zones)) |
-| Match the panel in compositor rules | `namespace = "my-bar"`, then a Hyprland `layerrule` or niri `layer-rule` on it |
+| Match the panel in compositor rules | `mantle-{id}` or `namespace` in a Hyprland `layerrule` or niri `layer-rule` |
 
 ### Dock on one output
 
