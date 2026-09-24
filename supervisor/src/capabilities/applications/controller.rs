@@ -7,14 +7,17 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use tokio::sync::mpsc::UnboundedSender;
+use tokio::task::JoinHandle;
 
 use super::scan::{AppSummary, LaunchTarget, scan};
+use super::watch;
 
 /// `mantle.applications` payload (ADR-0061, ADR-0252).
 #[derive(Debug, Clone, Default, PartialEq, serde::Serialize)]
 #[cfg_attr(test, derive(schemars::JsonSchema))]
 pub struct ApplicationsState {
-    /// Installed entries, sorted by `name` (byte order). Not watched: `"refresh"` rescans.
+    /// Installed entries, sorted by `name` (byte order). Watched: a change under an applications
+    /// directory rescans 250 ms after the last event.
     pub entries: Vec<AppSummary>,
     /// Window `app_id` to its 1-based index: `entries[by_app_id[app_id]]`. Keys are exact
     /// `StartupWMClass` and desktop ids, then lowercased and last-dot-segment guesses.
@@ -70,15 +73,22 @@ pub enum LaunchError {
     Spawn(String),
 }
 
-/// `Arc`-backed fields, so `refresh` hands the blocking scan task its own handles without
-/// cloning the controller; nothing clones the whole thing.
 pub struct ApplicationsController {
     state: Arc<Mutex<ApplicationsState>>,
     /// Not in the snapshot: exposing argv would let config rewrite it before `launch` (ADR-0061
     /// decision 3).
     launch_targets: Arc<Mutex<HashMap<String, LaunchTarget>>>,
-    dirs: Arc<Vec<PathBuf>>,
-    events: UnboundedSender<ApplicationsSignal>,
+    /// The blocking scan behind `refresh` and the directory watch. Pushes only on change: every
+    /// `StateSnapshot` dirties the Renderer and triggers a full re-resolve/repaint (ADR-0044), and
+    /// a launcher-open `refresh` would otherwise repaint an identical list.
+    rescan: Arc<dyn Fn() + Send + Sync>,
+    watch: JoinHandle<()>,
+}
+
+impl Drop for ApplicationsController {
+    fn drop(&mut self) {
+        self.watch.abort();
+    }
 }
 
 /// The argv `launch` spawns for an entry and `$TERMINAL`.
@@ -97,20 +107,32 @@ fn command_line(terminal: Option<String>, target: LaunchTarget) -> Result<(Strin
 }
 
 impl ApplicationsController {
-    /// Builds an empty controller and starts the first scan in the background.
+    /// Builds an empty controller and starts the directory watch, which runs the first scan.
     ///
     /// The scan stays off `main`'s startup path: reading a few hundred `.desktop` files from a
     /// cold page cache costs real milliseconds before the first surface. Lua reads `nil` until it
     /// lands, as every capability does (`shared::Capability::ALL`), so no extra branch is needed.
     pub fn new(dirs: Vec<PathBuf>, events: UnboundedSender<ApplicationsSignal>) -> Self {
-        let controller = ApplicationsController {
-            state: Arc::new(Mutex::new(ApplicationsState::default())),
-            launch_targets: Arc::new(Mutex::new(HashMap::new())),
-            dirs: Arc::new(dirs),
-            events,
+        let state = Arc::new(Mutex::new(ApplicationsState::default()));
+        let launch_targets = Arc::new(Mutex::new(HashMap::new()));
+        let dirs = Arc::new(dirs);
+        let rescan: Arc<dyn Fn() + Send + Sync> = {
+            let (state, launch_targets, dirs) = (Arc::clone(&state), Arc::clone(&launch_targets), Arc::clone(&dirs));
+            Arc::new(move || {
+                let result = scan(&dirs);
+                let next = ApplicationsState { entries: result.entries, by_app_id: result.by_app_id };
+                *launch_targets.lock().expect("applications launch map mutex poisoned") = result.launch;
+                let mut current = state.lock().expect("applications state mutex poisoned");
+                if *current == next {
+                    return;
+                }
+                *current = next;
+                drop(current);
+                let _ = events.send(ApplicationsSignal::Changed);
+            })
         };
-        controller.refresh();
-        controller
+        let watch = tokio::spawn(watch::run(dirs, Arc::clone(&rescan)));
+        ApplicationsController { state, launch_targets, rescan, watch }
     }
 
     pub fn snapshot(&self) -> ApplicationsState {
@@ -121,27 +143,9 @@ impl ApplicationsController {
     ///
     /// `spawn_blocking` is required for `read_dir` plus one `read_to_string` per entry: blocking
     /// filesystem work must not run on a Tokio worker thread.
-    ///
-    /// Pushes only on change. Every `StateSnapshot` dirties the Renderer and triggers a full
-    /// re-resolve/repaint (ADR-0044); launcher-open `refresh` would otherwise repaint an identical
-    /// list.
     pub fn refresh(&self) {
-        let state = Arc::clone(&self.state);
-        let launch_targets = Arc::clone(&self.launch_targets);
-        let dirs = Arc::clone(&self.dirs);
-        let events = self.events.clone();
-        tokio::task::spawn_blocking(move || {
-            let result = scan(&dirs);
-            let next = ApplicationsState { entries: result.entries, by_app_id: result.by_app_id };
-            *launch_targets.lock().expect("applications launch map mutex poisoned") = result.launch;
-            let mut current = state.lock().expect("applications state mutex poisoned");
-            if *current == next {
-                return;
-            }
-            *current = next;
-            drop(current);
-            let _ = events.send(ApplicationsSignal::Changed);
-        });
+        let rescan = Arc::clone(&self.rescan);
+        tokio::task::spawn_blocking(move || rescan());
     }
 
     /// Runs the application named by `id`, detached.
@@ -357,5 +361,54 @@ mod tests {
             .expect("a changed scan must push")
             .unwrap();
         assert_eq!(controller.snapshot().entries.len(), 2);
+    }
+
+    /// Waits for the watch's rescan to push `name`; the inotify round trip has no completion to await.
+    async fn wait_for_entry(
+        controller: &ApplicationsController,
+        rx: &mut tokio::sync::mpsc::UnboundedReceiver<ApplicationsSignal>,
+        name: &str,
+    ) {
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            while !controller.snapshot().entries.iter().any(|entry| entry.name == name) {
+                rx.recv().await.unwrap();
+            }
+        })
+        .await
+        .unwrap_or_else(|_| panic!("the watch never rescanned {name}"));
+    }
+
+    #[tokio::test]
+    async fn an_entry_written_into_a_watched_directory_appears_without_refresh() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.desktop"), runnable("A", "/bin/true")).unwrap();
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let controller = ApplicationsController::new(vec![dir.path().to_path_buf()], tx);
+        wait_for_entry(&controller, &mut rx, "A").await;
+
+        std::fs::create_dir(dir.path().join("sub")).unwrap();
+        std::fs::write(dir.path().join("sub/b.desktop"), runnable("B", "/bin/true")).unwrap();
+
+        wait_for_entry(&controller, &mut rx, "B").await;
+    }
+
+    /// `~/.local/share/applications` often appears only when the first user entry is installed.
+    #[tokio::test]
+    async fn a_directory_created_after_startup_is_watched_once_it_exists() {
+        let root = tempfile::tempdir().unwrap();
+        let late = root.path().join("share/applications");
+        let early = root.path().join("early");
+        std::fs::create_dir(&early).unwrap();
+        std::fs::write(early.join("a.desktop"), runnable("A", "/bin/true")).unwrap();
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let controller = ApplicationsController::new(vec![late.clone(), early], tx);
+        wait_for_entry(&controller, &mut rx, "A").await; // the watches are in place before this scan.
+
+        std::fs::create_dir_all(&late).unwrap();
+        // Past the debounce, so the file lands only after the watches are rebuilt around `late`.
+        tokio::time::sleep(std::time::Duration::from_millis(600)).await;
+        std::fs::write(late.join("b.desktop"), runnable("B", "/bin/true")).unwrap();
+
+        wait_for_entry(&controller, &mut rx, "B").await;
     }
 }

@@ -26,7 +26,7 @@ text {
 | Field | Type | Description |
 | --- | --- | --- |
 | `by_app_id` | `table<string, integer>` | Window `app_id` to its 1-based index: `entries[by_app_id[app_id]]`. Keys are exact `StartupWMClass` and desktop ids, then lowercased and last-dot-segment guesses. |
-| `entries` | `AppSummary[]` | Installed entries, sorted by `name` (byte order). Not watched: `"refresh"` rescans. |
+| `entries` | `AppSummary[]` | Installed entries, sorted by `name` (byte order). Watched: a change under an applications directory rescans 250 ms after the last event. |
 
 ### `AppSummary`
 
@@ -47,14 +47,15 @@ Call as `mantle.applications:invoke("action", arguments...)`; `?` marks an argum
 
 | Action | Arguments | Description |
 | --- | --- | --- |
-| `refresh` |  | Rescans installed desktop entries. |
+| `refresh` |  | Rescans installed desktop entries. The directories are watched, so only a failed watch (logged) needs this. |
 | `launch` | `id: string` | Launches `entries[].id`, detached; `Terminal=true` entries run in `$TERMINAL`. |
 | `open_url` | `url: string` | Opens an `http`, `https` or `mailto` URL (at most 2048 bytes) with `xdg-open`. |
 
 ## Backend
 
 `.desktop` files under `$XDG_DATA_HOME` and `$XDG_DATA_DIRS` `applications/`; the first entry for an
-ID wins. Not watched: `refresh` rescans. `launch` spawns detached (`Terminal=true` needs
+ID wins. Watched with inotify, subdirectories and later-created directories included: a change rescans
+250 ms after the last event. `launch` spawns detached (`Terminal=true` needs
 `$TERMINAL`); `open_url` hands `http`, `https` and `mailto` URLs (≤ 2048 bytes) to `xdg-open`.
 
 ## How do I…

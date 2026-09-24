@@ -199,7 +199,7 @@ launcher_open` on Hyprland or `Mod+Space { spawn "mantle" "toggle" "launcher_ope
 
 ## How it works
 
-- `applications.entries` holds every visible desktop entry; `launch` takes its `id` and runs it detached ([applications](../capabilities/applications.md)).
+- `applications.entries` holds every visible desktop entry and follows installs and removals; `launch` takes its `id` and runs it detached ([applications](../capabilities/applications.md)).
 - `fuzzy` scores one candidate; ranking, the tiebreak and the cap stay in Lua ([fuzzy](../guide/scripting.md#fuzzy)).
 - `computed` joins the capability with the query, and a second one marks the selected row ([derived signals](../guide/signals.md#derived-signals)).
 - The `textfield` owns the typed text and reports it through `on_change`; `on_navigate` gets the arrow and Tab keys ([textfield](../nodes/textfield.md), [text fields](../guide/input.md#text-fields)).
@@ -211,7 +211,6 @@ launcher_open` on Hyprland or `Mod+Space { spawn "mantle" "toggle" "launcher_ope
 
 | Change | Edit |
 | :--- | :--- |
-| Pick up newly installed apps | `mantle.applications:invoke("refresh")` in an `action("launcher", ...)` that also opens it; bind `mantle call launcher` |
 | Pointer focus on Hyprland | `"OnDemand"` instead of `"Exclusive"`, so other surfaces keep taking clicks ([panel gotchas](../surfaces/panel.md#gotchas)) |
 | Fewer rows | `MAX_RESULTS = 8` and drop `max_height` |
 | Debounce typing | Rank against `delay(query, 80)` instead of `query` ([debounce a search](../guide/signals.md#debounce-a-search)) |

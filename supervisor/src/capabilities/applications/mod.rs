@@ -10,6 +10,7 @@
 pub mod controller;
 pub mod entry;
 pub mod scan;
+mod watch;
 
 use shared::warn;
 
@@ -20,7 +21,8 @@ pub use scan::application_dirs;
 #[cfg_attr(test, derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum ApplicationsAction {
-    /// Rescans installed desktop entries.
+    /// Rescans installed desktop entries. The directories are watched, so only a failed watch
+    /// (logged) needs this.
     Refresh,
     /// Launches `entries[].id`, detached; `Terminal=true` entries run in `$TERMINAL`.
     Launch { id: String },

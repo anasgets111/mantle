@@ -25,6 +25,8 @@ so everything since the rename from Obelisk sits under Unreleased.
 
 ### Changed
 
+- `mantle.applications` watches its directories and rescans after a change, so installs and
+  removals appear without `refresh` ([applications](capabilities/applications.md)).
 - A reload kills every `process.run` child and calls its `exit_cb(nil)` before the new evaluation
   runs, so a top-level follower restarts instead of doubling ([processes](guide/processes.md#which-one-do-i-use)).
 - Lua's `warn` now logs at warn level like `log.warn`, on by default; before, it printed nothing.

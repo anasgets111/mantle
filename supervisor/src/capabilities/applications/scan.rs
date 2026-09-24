@@ -80,7 +80,7 @@ pub fn scan(dirs: &[PathBuf]) -> ScanResult {
 
     for dir in dirs {
         let mut files = Vec::new();
-        collect_desktop_files(dir, 0, &mut files);
+        walk(dir, 0, &mut Vec::new(), &mut files);
         // Filesystem directory order is unspecified; sort so duplicate ids have a stable winner.
         files.sort();
         for path in files {
@@ -179,20 +179,22 @@ fn build_app_id_map(entries: &[AppSummary], wm_classes: &[(String, Option<String
     map
 }
 
-/// Every depth-capped `.desktop` file under `dir`. A missing directory contributes nothing; most
+/// Every depth-capped readable directory and `.desktop` file under `dir`, `dir` included; the scan
+/// reads the files, the watch the directories. A missing directory contributes nothing; most
 /// systems lack `/usr/local/share/applications`.
-fn collect_desktop_files(dir: &Path, depth: usize, out: &mut Vec<PathBuf>) {
+pub(super) fn walk(dir: &Path, depth: usize, dirs: &mut Vec<PathBuf>, out: &mut Vec<PathBuf>) {
     if depth > MAX_DEPTH {
         return;
     }
     let Ok(read) = std::fs::read_dir(dir) else { return };
+    dirs.push(dir.to_path_buf());
     for entry in read.flatten() {
         let path = entry.path();
         // Use `metadata` so symlinked entries are followed; packaged application trees such as
         // Flatpak exports commonly link entries from elsewhere.
         let Ok(meta) = path.metadata() else { continue };
         if meta.is_dir() {
-            collect_desktop_files(&path, depth + 1, out);
+            walk(&path, depth + 1, dirs, out);
         } else if path.extension().is_some_and(|ext| ext == "desktop") {
             out.push(path);
         }

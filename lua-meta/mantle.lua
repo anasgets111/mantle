@@ -294,7 +294,7 @@
 ---@class ApplicationsState
 ---`mantle.applications` payload (ADR-0061, ADR-0252).
 ---@field by_app_id table<string, integer> Window `app_id` to its 1-based index: `entries[by_app_id[app_id]]`. Keys are exact `StartupWMClass` and desktop ids, then lowercased and last-dot-segment guesses.
----@field entries AppSummary[] Installed entries, sorted by `name` (byte order). Not watched: `"refresh"` rescans.
+---@field entries AppSummary[] Installed entries, sorted by `name` (byte order). Watched: a change under an applications directory rescans 250 ms after the last event.
 
 ---@class AudioState
 ---`mantle.audio`'s payload (ADR-0053).
@@ -468,7 +468,7 @@
 
 ---[docs](https://anasgets111.github.io/mantle/capabilities/applications.html)
 ---@class ApplicationsCapability: Capability<ApplicationsState>
----@field invoke fun(self: ApplicationsCapability, command: "refresh") Rescans installed desktop entries.
+---@field invoke fun(self: ApplicationsCapability, command: "refresh") Rescans installed desktop entries. The directories are watched, so only a failed watch (logged) needs this.
 ---@field invoke fun(self: ApplicationsCapability, command: "launch", id: string) Launches `entries[].id`, detached; `Terminal=true` entries run in `$TERMINAL`.
 ---@field invoke fun(self: ApplicationsCapability, command: "open_url", url: string) Opens an `http`, `https` or `mailto` URL (at most 2048 bytes) with `xdg-open` (ADR-0103).
 

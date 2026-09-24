@@ -93,7 +93,7 @@ raises; a no-op or refused call is logged, never returned.
 | [`system`](system.md) | Wall clock and monotonic seconds, pushed once a second | none | Supervisor clock | Read-only |
 | [`sysinfo`](sysinfo.md) | CPU, memory, swap, temperatures | `configure` | `/proc/stat`, `/proc/meminfo`, `/sys/class/hwmon/` | Stays `nil` until `configure` sets an interval |
 | [`updates`](updates.md) | Pending packages, install progress, reboot needed | `configure`, `check`, `install` | libalpm, AUR RPC, `pkexec` | No schedule until `configure`; `check` works regardless |
-| [`applications`](applications.md) | Desktop entries, window `app_id` index | `launch`, `refresh`, `open_url` | XDG `.desktop` files | Not watched; `refresh` rescans |
+| [`applications`](applications.md) | Desktop entries, window `app_id` index | `launch`, `refresh`, `open_url` | XDG `.desktop` files, inotify | |
 | [`files`](files.md) | Listings of watched folders | `watch`, `unwatch` | inotify | Absolute paths only |
 | [`lock`](lock.md) | Lock held, authentication progress, last failure | `lock`, `set_unlock_animation` | logind, PAM worker; the Renderer holds `ext_session_lock_v1` | No `unlock`: only a correct password unlocks |
 | [`polkit`](polkit.md) | The pending authentication request | `cancel` | `org.freedesktop.PolicyKit1` authentication agent (system bus), polkit's agent helper | Password goes through `secure_submit` |
