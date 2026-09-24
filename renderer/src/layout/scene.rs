@@ -677,7 +677,7 @@ impl Scene {
 fn ensure_supported_kind(kind: &str) -> Result<(), LayoutError> {
     match kind {
         "panel" | "window" | "popup" | "lock" | "rect" | "row" | "column" | "text" | "icon" | "image" | "capture"
-        | "button" | "list" | "textfield" => Ok(()),
+        | "shader" | "button" | "list" | "textfield" => Ok(()),
         other => Err(LayoutError::UnsupportedNodeKind(other.to_string())),
     }
 }
@@ -706,7 +706,7 @@ fn children_of(kind: &str, properties: &PropMap) -> Result<Vec<VirtualNode>, Lay
         "rect" | "row" | "column" | "button" => node::parse_children(properties),
         // ADR-0045 decision 3: list children are generated from `source`, not a literal table.
         "list" => node::parse_list_children(properties),
-        "text" | "icon" | "image" | "capture" | "textfield" => Ok(Vec::new()),
+        "text" | "icon" | "image" | "capture" | "shader" | "textfield" => Ok(Vec::new()),
         other => unreachable!("ensure_supported_kind already rejected `{other}`"),
     }
 }
@@ -3051,6 +3051,47 @@ pub(super) mod tests {
             panic!("a rect paints a box")
         };
         assert!((grey.r - 0.5).abs() < 0.01, "halfway from black to white is mid grey, got {grey:?}");
+    }
+
+    /// ADR-0253. A `progress` tween re-derives the paint without a relayout, and the list it
+    /// changes damages the shader's box and nothing else.
+    #[test]
+    fn a_progress_tween_repaints_only_the_shader_box() {
+        let mut scene = Scene::new();
+        let shaping = ShapingHandle::spawn();
+        let (lua, surface) = surface_from(
+            r##"panel { id = "bar", child = row { width = 200, height = 40, children = {
+                  rect { width = 50, height = 20, background = "#ffffff" },
+                  shader { width = 40, height = 30, source = "/s.frag", progress = state("p", 0),
+                           animate = { progress = { duration = 100, easing = "Linear" } } } } } }"##,
+        );
+        apply_at(&mut scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
+        lua.load(r#"state("p", 0):set(1)"#).exec().unwrap();
+        apply_at(&mut scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
+
+        let root = scene.surface("bar@TEST").unwrap();
+        assert!(root.tick_is_paint_only(), "`progress` asks the solver nothing");
+        let before = crate::layout::paint::build(root, 1.0, None);
+        let node = &root.children[0].children[1];
+        let (rect, started) = (node.rect, node.tweens[0].started);
+        let instances = [instance_at(&surface, full())];
+        scene.tick(&instances, &shaping, &lua, started + std::time::Duration::from_millis(50));
+
+        let root = scene.surface("bar@TEST").unwrap();
+        let node = &root.children[0].children[1];
+        assert_eq!(node.rect, rect, "a paint-only tick moves no rect");
+        let Some(PaintStyle::Shader { progress, .. }) = node.paint else { panic!("got {:?}", node.paint) };
+        assert!((progress - 0.5).abs() < 0.01, "halfway from 0 to 1, got {progress}");
+        let after = crate::layout::paint::build(root, 1.0, None);
+        assert_ne!(after, before);
+        let clip = crate::text::snap::snap_to_physical(rect, 1.0);
+        let damage = after.damage_since(&before);
+        assert_eq!(damage.len(), 1, "{damage:?}");
+        let [d] = damage[..] else { unreachable!() };
+        assert!(
+            d.x0 >= clip.x0 - 2 && d.x1 <= clip.x1 + 2 && d.y0 >= clip.y0 - 2 && d.y1 <= clip.y1 + 2,
+            "damage {d:?} outside the shader's box {clip:?}"
+        );
     }
 
     #[test]

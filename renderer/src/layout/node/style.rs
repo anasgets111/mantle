@@ -218,7 +218,8 @@ pub(super) fn range_of(property: &str) -> (f32, f32) {
         "opacity" | "origin" => (0.0, 1.0),
         "scale" => (0.0, 64.0),
         "font_size" => (1.0, 8192.0),
-        "margin" | "translate" | "rotate" => (-8192.0, 8192.0),
+        // `progress` so a spring may undershoot its start.
+        "margin" | "translate" | "rotate" | "progress" => (-8192.0, 8192.0),
         _ => (0.0, 8192.0),
     }
 }

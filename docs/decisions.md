@@ -5986,3 +5986,34 @@ mid-session needs a Supervisor restart.
    `applications` the largest snapshot.
 
 **Amends ADR-0061 decision 2.**
+
+## 0253. `shader` is a leaf node running a config fragment shader with no input textures
+
+ADR-0184 rejected a shader over an arbitrary subtree for three costs: offscreen targets, clip
+interaction and undefined inputs. A leaf with no inputs pays none of them. It draws one quad into
+the current target through the ADR-0184 stage, under the same scissor and `draw_clipped` offscreen
+an `image` transition already uses, and its inputs are `u_size`, `u_progress` and `params`.
+
+1. **`shader { source, progress, params }`.** `source` is absolute, as `transition.shader` is. No
+   intrinsic size.
+2. **The prelude splits.** A `shader` node compiles without the samplers, `mantle_from`/`mantle_to`
+   and the rects. Programs are keyed by path and that flag, so one file can serve both.
+3. **`progress` is a top-level, paint-only property.** `animate` tweens or springs it on the render
+   thread with no Lua and no relayout; the changed `Draw::Shader` damages only the node's box. Its
+   range is ±8192 so a spring can overshoot.
+4. **`params` take a number or a list of 2-4**, bound as `float` or `vec2`-`vec4` by the compiled
+   uniform's type. Transition `params` gain the same. Other lengths fail the pass. A count that
+   differs from the uniform's is padded or truncated and logged once per revision, not failed:
+   only the draw knows the uniform.
+5. **A failed build draws nothing.** There is no dissolve to fall back to.
+6. **An edited `.frag` reaches the screen.** The Watcher counts `.frag` as a config file, so a save
+   runs an in-place reload, and `Draw::Shader` carries the file's version, so that reload's list
+   differs and the stage recompiles. Without the version the list compares equal and the paint is
+   skipped (ADR-0063).
+7. **No engine shadow.** The config draws its own SDF shadow inside the shader.
+8. **No input region.** Its alpha is only known on the GPU, so the box claims no input; a config
+   adds a `button` or `rect` for a hit area.
+
+Still rejected: a shader over an arbitrary subtree, or as a persistent filter.
+
+**Amends ADR-0184 decisions 4, 5 and 7 and the rejected shader node, and ADR-0047 decision 3.**

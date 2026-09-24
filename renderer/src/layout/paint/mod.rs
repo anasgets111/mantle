@@ -79,7 +79,7 @@ pub enum Draw {
         dissolve: Option<f32>,
         /// The config shader this cross is drawn with and the `params` it is given (ADR-0184).
         /// `None` is the built-in dissolve, and so is a shader that would not build.
-        shader: Option<(std::path::PathBuf, Vec<(String, f32)>)>,
+        shader: Option<(std::path::PathBuf, Vec<node::ShaderParam>)>,
         /// `image.source_blur` in physical pixels (ADR-0240). `0` for no blur, which `ImageCache`
         /// never distinguishes from a request it decided not to run.
         blur_px: u32,
@@ -88,6 +88,15 @@ pub enum Draw {
     /// this carries what a draw places it with and what the capture registry paces a source by,
     /// the same split `Draw::Image` makes between pixels and policy.
     Capture { node: NodeId, output: String, fit: Fit, alpha: f32, live: bool, paint_cursor: bool },
+    /// A `shader` node (ADR-0253). `progress` in the list is what makes a tween repaint and damage it,
+    /// and `version` is what makes an edited file reach the stage that recompiles it.
+    Shader {
+        source: std::path::PathBuf,
+        version: crate::image::FileVersion,
+        progress: f32,
+        params: Vec<node::ShaderParam>,
+        alpha: f32,
+    },
     /// A subtree masked by the declaring node's rounded arc. Rectangular clips flatten into each
     /// command; rounded clips stay grouped for [`execute`].
     Clipped { radius: f32, commands: Vec<DrawCmd> },
@@ -577,6 +586,14 @@ fn draw_for(
             alpha: opacity,
             live: *live,
             paint_cursor: *paint_cursor,
+        }),
+
+        PaintStyle::Shader { source, progress, params } => (!source.is_empty()).then(|| Draw::Shader {
+            source: source.into(),
+            version: crate::image::FileVersion::read(source.as_ref()),
+            progress: *progress,
+            params: params.clone(),
+            alpha: opacity,
         }),
     }
 }
@@ -1380,6 +1397,26 @@ mod tests {
         let boxed = build(&resolved_surface(&Lua::new(), &src("Box"), size), 1.0, None);
         let rounded = build(&resolved_surface(&Lua::new(), &src("Rounded"), size), 1.0, None);
         assert_ne!(boxed, rounded);
+    }
+
+    /// ADR-0253. The stage recompiles on a new file version, but only a paint reaches it, and a
+    /// list naming the path alone compares equal after the edit and skips that paint.
+    #[test]
+    fn editing_a_shader_file_changes_the_display_list() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("s.frag");
+        std::fs::write(&path, "void main() {}").unwrap();
+        let src = format!(
+            r#"return panel {{ id = "bar", child = shader {{ width = 10, height = 10, source = "{}" }} }}"#,
+            path.display()
+        );
+        let size = LogicalSize { width: 100.0, height: 100.0 };
+        let lua = Lua::new();
+        let tree = resolved_surface(&lua, &src, size);
+        let before = build(&tree, 1.0, None);
+        assert_eq!(build(&tree, 1.0, None), before, "an untouched file repaints nothing");
+        std::fs::write(&path, "void main() { fragColor = vec4(1.0); }").unwrap();
+        assert_ne!(build(&tree, 1.0, None), before);
     }
 
     #[test]

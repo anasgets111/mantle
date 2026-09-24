@@ -156,6 +156,15 @@
 ---@field live? boolean|Bound Default `false`. `false` captures once, when the node appears and again whenever `output` changes. `true` keeps requesting the next frame as soon as the previous one arrives, at most one in flight. Paused while the node's surface is unmapped or the node leaves the scene, resuming on the next show.
 ---@field paint_cursor? boolean|Bound Default `false`. Composite the pointer cursor onto the captured frame.
 
+--- A fragment shader your config owns, drawn over the node's box with no input textures (ADR-0253).
+--- Has no intrinsic size. The shader reads `v_uv` (0..1 across the box), `u_size` (logical px) and
+--- `u_progress`, writes premultiplied `fragColor`, and gets the node's `opacity` applied after it.
+--- No engine shadow: draw one in the shader, as an SDF. Takes no input: add a `button` or `rect` for a hit area.
+---@class ShaderProps: NodeBase
+---@field source? string|Bound Absolute path to a `.frag` file. A file that will not build logs once and draws nothing. Saving a `.frag` under the config directory reloads the config, which recompiles it.
+---@field progress? number|Bound Default `0`. `u_progress`. The property to `animate`: a tween or spring on it repaints every frame with no Lua, may overshoot, and retargets mid-flight.
+---@field params? table<string, number|number[]>|Bound Uniforms by name: a number for a `float`, a list of two to four for a `vec2`-`vec4`. A uniform left out reads zero. Not tweened; drive motion through `progress`.
+
 ---@class ButtonProps: NodeBase, BoxBase
 ---@field children? Node[] Drawn in order. A hole in the array truncates it, since `#` is undefined on a sparse table.
 ---@field submit? boolean|Bound A click also sends the surface's armed `secure_submit` field, as Enter would (ADR-0114). The one way a button reaches a password, since no callback may; clickable with or without `on_click`.
@@ -226,6 +235,10 @@ function image(props) end
 ---@param props CaptureProps
 ---@return Node
 function capture(props) end
+
+---@param props ShaderProps
+---@return Node
+function shader(props) end
 
 ---@param props ButtonProps
 ---@return Node

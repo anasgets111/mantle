@@ -66,6 +66,8 @@ pub enum PaintStyle {
     /// `capture` (ADR-0248): an output's live contents. `output` empty or naming nothing connected
     /// draws nothing, the same answer `image`'s empty `source` gets.
     Capture { output: String, fit: Fit, live: bool, paint_cursor: bool },
+    /// `shader` (ADR-0253): a config fragment shader with no inputs but `progress` and `params`.
+    Shader { source: String, progress: f32, params: Vec<ShaderParam> },
     /// `target` is `None` when no `secure_submit` is declared. Malformed targets fail here, not at
     /// the press path.
     TextField {
@@ -124,6 +126,11 @@ pub fn paint_style(kind: &str, properties: &PropMap) -> Result<Option<PaintStyle
             fit: parse_fit(properties)?,
             live: parse_live(properties)?,
             paint_cursor: parse_paint_cursor(properties)?,
+        },
+        "shader" => PaintStyle::Shader {
+            source: parse_shader_source(properties)?,
+            progress: parse_progress(properties)?,
+            params: parse_shader_params("params", properties.get("params").unwrap_or(&Value::Nil))?,
         },
         "textfield" => PaintStyle::TextField {
             target: parse_secure_submit(properties)?,
@@ -230,6 +237,39 @@ mod tests {
             parsed,
             PaintStyle::Capture { output: "DP-1".to_string(), fit: Fit::Cover, live: true, paint_cursor: false }
         );
+    }
+
+    /// ADR-0253. A param is a number or a list of two to four, padded to a `vec4` and keeping its
+    /// count; `progress` may sit below zero so a spring can undershoot. `source` is absolute or
+    /// empty: a relative path would resolve against the Renderer's working directory.
+    #[test]
+    fn shader_parses_progress_and_float_or_vector_params() {
+        let lua = Lua::new();
+        let parsed = style(
+            &lua,
+            r#"return { kind = "shader", source = "/s.frag", progress = -0.1, params = { a = 2, b = { 1, 2, 3 } } }"#,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            parsed,
+            PaintStyle::Shader {
+                source: "/s.frag".to_string(),
+                progress: -0.1,
+                params: vec![("a".to_string(), [2.0, 0.0, 0.0, 0.0], 1), ("b".to_string(), [1.0, 2.0, 3.0, 0.0], 3)],
+            }
+        );
+        for bad in ["{ 1, 2, 3, 4, 5 }", "{ 1 }", "{}", r#"{ 1, "a" }"#, "{ 1, 0/0 }"] {
+            let src = format!(r#"return {{ kind = "shader", params = {{ v = {bad} }} }}"#);
+            let err = style(&lua, &src).unwrap_err();
+            assert!(
+                matches!(&err, LayoutError::InvalidProperty { property, .. } if property == "params.v"),
+                "{bad}: {err:?}"
+            );
+        }
+        let err = style(&lua, r#"return { kind = "shader", source = "s.frag" }"#).unwrap_err();
+        assert!(matches!(&err, LayoutError::InvalidProperty { property, .. } if property == "source"), "{err:?}");
+        assert!(style(&lua, r#"return { kind = "shader", source = "" }"#).is_ok());
     }
 
     #[test]

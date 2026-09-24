@@ -1,6 +1,6 @@
 //! Runs a config-supplied fragment shader over an `image` node's two transition endpoints
-//! (ADR-0184), which is what makes a wipe, a disc or a pixelate a config's to write rather than a
-//! name this engine has to ship.
+//! (ADR-0184), or over a `shader` node's box with no endpoints (ADR-0253), which is what makes a
+//! wipe, a disc or a pixelate a config's to write rather than a name this engine has to ship.
 //!
 //! A `Wipe` arm in a Rust match would be the mistake ADR-0055 already ruled on for the wallpaper
 //! itself, one layer down. This module is that ruling applied to effects: the engine owns
@@ -18,7 +18,8 @@
 //!
 //! A shader that will not compile or link is reported once per revision and that path is refused
 //! from then on, which drops the node back to `layout::paint`'s cross-dissolve for the rest of
-//! the run: a real fallback rather than a snap (ADR-0181).
+//! the run: a real fallback rather than a snap (ADR-0181). A `shader` node has no fallback and
+//! draws nothing (ADR-0253).
 //!
 //! A shader that compiles and draws something ugly draws it: the engine cannot tell intent from
 //! mistake. A shader that hangs the GPU hangs the session, and nothing here promises otherwise --
@@ -39,26 +40,30 @@ use crate::text::snap::{LogicalRect, PhysicalRect};
 /// Prepended to every config shader, and the whole of the contract a shader writes against
 /// (ADR-0184). Kept here rather than asked of the config so that a shader is a mask and not a
 /// pile of boilerplate, and so the sampling convention cannot drift between two of them.
+const PRELUDE: &str = r#"#version 300 es
+precision highp float;
+
+in vec2 v_uv;
+out vec4 fragColor;
+
+uniform float u_progress;
+uniform vec2 u_size;
+uniform float mantle_opacity;
+"#;
+
+/// The transition's half of the contract, between [`PRELUDE`] and [`RENAME`].
 ///
 /// `mantle_from`/`mantle_to` return the endpoint's colour at a node-space coordinate, or
 /// `u_fill` outside the picture -- the engine has already applied each endpoint's `fit`, so a
 /// shader never repeats that arithmetic and never disagrees with how the same image draws
 /// ordinarily.
-const PRELUDE: &str = r#"#version 300 es
-precision highp float;
+const SAMPLERS: &str = r#"
 precision highp sampler2D;
-
-in vec2 v_uv;
-out vec4 fragColor;
-
 uniform sampler2D u_from;
 uniform sampler2D u_to;
-uniform float u_progress;
-uniform vec2 u_size;
 uniform vec4 u_from_rect;
 uniform vec4 u_to_rect;
 uniform vec4 u_fill;
-uniform float mantle_opacity;
 
 vec4 mantle_sample(sampler2D tex, vec4 rect, vec2 uv) {
     vec2 local = (uv - rect.xy) / rect.zw;
@@ -70,7 +75,9 @@ vec4 mantle_sample(sampler2D tex, vec4 rect, vec2 uv) {
 
 vec4 mantle_from(vec2 uv) { return mantle_sample(u_from, u_from_rect, uv); }
 vec4 mantle_to(vec2 uv) { return mantle_sample(u_to, u_to_rect, uv); }
+"#;
 
+const RENAME: &str = r#"
 #define main mantle_effect
 #line 1
 "#;
@@ -131,18 +138,25 @@ struct Program {
     opacity: Option<glow::UniformLocation>,
     /// Every other active uniform, by the name a config's `params` key has to match. A shader may
     /// declare one and never use it, in which case the compiler drops it and it is absent here;
-    /// supplying a value for it is not an error.
-    params: HashMap<String, glow::UniformLocation>,
+    /// supplying a value for it is not an error. Carries its component count, and whether a
+    /// `params` entry of another count has been logged for this revision.
+    params: HashMap<String, (glow::UniformLocation, usize, std::cell::Cell<bool>)>,
 }
 
-/// What one run draws: the two endpoint textures, where each sits inside the node's box after its
-/// `fit`, and how far across the run is.
-pub struct Run<'a> {
+/// A transition's two endpoint textures, and where each sits inside the node's box after its
+/// `fit`.
+pub struct Cross {
     pub from: ImageId,
     pub to: ImageId,
     /// Fitted rects, absolute like `rect`; the prelude reads them as fractions of it.
     pub from_rect: LogicalRect,
     pub to_rect: LogicalRect,
+}
+
+/// What one run draws: the endpoints if it is a transition, and how far across the run is.
+pub struct Run<'a> {
+    /// `None` for a `shader` node (ADR-0253), compiled without [`SAMPLERS`].
+    pub cross: Option<Cross>,
     /// The node's box, absolute in the surface.
     pub rect: LogicalRect,
     /// The node's paint-only affine (ADR-0149), about its own origin, or `None` for no transform.
@@ -160,7 +174,7 @@ pub struct Run<'a> {
     /// What the node inherited, applied by [`EPILOGUE`] after the config's `main`.
     pub opacity: f32,
     pub progress: f32,
-    pub params: &'a [(String, f32)],
+    pub params: &'a [node::ShaderParam],
 }
 
 /// Compiled config shaders for this GL context, and the one quad they all draw.
@@ -171,7 +185,9 @@ pub struct ShaderStage {
     /// it is not tried again until the bytes change. Keying on the path alone left a config editing
     /// its own effect looking at a program compiled minutes ago, with no way to reach it short of
     /// restarting the shell.
-    programs: HashMap<PathBuf, (crate::image::FileVersion, Option<Program>)>,
+    /// The flag is whether it was built with [`SAMPLERS`]: one file may be both a transition and a
+    /// `shader` node, and the two assemble differently.
+    programs: HashMap<(PathBuf, bool), (crate::image::FileVersion, Option<Program>)>,
     /// [`FADE`], compiled on first use. `None` until then; `Some(None)` if the engine's own shader
     /// would not build, which is not tried again -- the same shape `programs` uses, and the point
     /// where a node drops back to the two-draw approximation.
@@ -203,17 +219,25 @@ impl ShaderStage {
         effect: Option<&Path>,
         run: &Run,
     ) -> bool {
-        let (Ok(from), Ok(to)) = (canvas.get_native_texture(run.from), canvas.get_native_texture(run.to)) else {
-            return false;
+        let cross = match &run.cross {
+            Some(cross) => match (canvas.get_native_texture(cross.from), canvas.get_native_texture(cross.to)) {
+                (Ok(from), Ok(to)) => Some((from, to, cross)),
+                _ => return false,
+            },
+            None => None,
         };
         // Before the program is borrowed, because this needs `self` mutably and that borrow would
         // still be live.
         // SAFETY: caller's contract.
         let Some(quad) = (unsafe { self.ensure_quad(gl) }) else { return false };
         // SAFETY: caller's contract.
-        let chosen = effect.filter(|path| unsafe { self.ensure_program(gl, path) });
+        let chosen = effect.filter(|path| unsafe { self.ensure_program(gl, path, run.cross.is_some()) });
         let program = match chosen {
-            Some(path) => self.programs.get(path).and_then(|(_, program)| program.as_ref()),
+            Some(path) => {
+                self.programs.get(&(path.to_path_buf(), run.cross.is_some())).and_then(|(_, program)| program.as_ref())
+            }
+            // A `shader` node has nothing to fall back to.
+            None if run.cross.is_none() => return false,
             None => {
                 // SAFETY: caller's contract.
                 unsafe { self.ensure_fade(gl) };
@@ -231,7 +255,7 @@ impl ShaderStage {
         // inside `render` has already changed state.
         unsafe {
             let saved = State::capture(gl);
-            let drew = Self::render(gl, program, quad, from, to, run);
+            let drew = Self::render(gl, program, quad, cross, run);
             saved.restore(gl);
             drew
         }
@@ -248,7 +272,7 @@ impl ShaderStage {
             return;
         }
         // SAFETY: caller's contract.
-        let built = unsafe { self.build(gl, Path::new("<engine cross-dissolve>"), FADE) };
+        let built = unsafe { self.build(gl, Path::new("<engine cross-dissolve>"), FADE, true) };
         self.fade = Some(built);
     }
 
@@ -271,36 +295,37 @@ impl ShaderStage {
     /// # Safety
     ///
     /// The context is current.
-    unsafe fn ensure_program(&mut self, gl: &glow::Context, path: &Path) -> bool {
+    unsafe fn ensure_program(&mut self, gl: &glow::Context, path: &Path, textured: bool) -> bool {
         let version = crate::image::FileVersion::read(path);
-        if let Some((known, program)) = self.programs.get(path)
+        let key = (path.to_path_buf(), textured);
+        if let Some((known, program)) = self.programs.get(&key)
             && *known == version
         {
             return program.is_some();
         }
         // A superseded program is deleted here, while the context is current, rather than left for
         // teardown: a config iterating on an effect would otherwise leak one program per save.
-        if let Some((_, Some(stale))) = self.programs.remove(path) {
+        if let Some((_, Some(stale))) = self.programs.remove(&key) {
             // SAFETY: caller's contract.
             unsafe { gl.delete_program(stale.program) };
         }
         let built = match std::fs::read_to_string(path) {
             // SAFETY: caller's contract.
-            Ok(source) => unsafe { self.build(gl, path, &source) },
+            Ok(source) => unsafe { self.build(gl, path, &source, textured) },
             Err(err) => {
                 error!("{}: {err}", path.display());
                 None
             }
         };
         let ready = built.is_some();
-        self.programs.insert(path.to_path_buf(), (version, built));
+        self.programs.insert(key, (version, built));
         ready
     }
 
     /// # Safety
     ///
     /// The context is current.
-    unsafe fn build(&mut self, gl: &glow::Context, path: &Path, source: &str) -> Option<Program> {
+    unsafe fn build(&mut self, gl: &glow::Context, path: &Path, source: &str, textured: bool) -> Option<Program> {
         // SAFETY: caller's contract. Every object created here is deleted on the paths that fail
         // after creating it, and by `destroy` at teardown.
         unsafe {
@@ -312,7 +337,7 @@ impl ShaderStage {
                     vertex
                 }
             };
-            let fragment = compile(gl, glow::FRAGMENT_SHADER, &assemble(source), path)?;
+            let fragment = compile(gl, glow::FRAGMENT_SHADER, &assemble(source, textured), path)?;
             let Ok(program) = gl.create_program() else {
                 gl.delete_shader(fragment);
                 return None;
@@ -336,17 +361,23 @@ impl ShaderStage {
                 if uniform.name.starts_with("u_") || uniform.name.starts_with("mantle_") {
                     continue;
                 }
-                if uniform.utype != glow::FLOAT {
-                    error!(
-                        "{}: `{}` is not a `float`, and `params` carries numbers only",
-                        path.display(),
-                        uniform.name
-                    );
-                    gl.delete_program(program);
-                    return None;
-                }
+                let count = match uniform.utype {
+                    glow::FLOAT => 1,
+                    glow::FLOAT_VEC2 => 2,
+                    glow::FLOAT_VEC3 => 3,
+                    glow::FLOAT_VEC4 => 4,
+                    _ => {
+                        error!(
+                            "{}: `{}` is not a `float` or `vec2`-`vec4`, which is all `params` carries",
+                            path.display(),
+                            uniform.name
+                        );
+                        gl.delete_program(program);
+                        return None;
+                    }
+                };
                 if let Some(location) = gl.get_uniform_location(program, &uniform.name) {
-                    params.insert(uniform.name, location);
+                    params.insert(uniform.name, (location, count, std::cell::Cell::new(false)));
                 }
             }
             Some(Program {
@@ -375,8 +406,7 @@ impl ShaderStage {
         gl: &glow::Context,
         program: &Program,
         quad: (glow::VertexArray, glow::Buffer),
-        from: glow::Texture,
-        to: glow::Texture,
+        cross: Option<(glow::Texture, glow::Texture, &Cross)>,
         run: &Run,
     ) -> bool {
         let (vao, buffer) = quad;
@@ -393,34 +423,49 @@ impl ShaderStage {
             let bytes: Vec<u8> = vertices.as_flattened().iter().flat_map(|value| value.to_ne_bytes()).collect();
             gl.buffer_data_u8_slice(glow::ARRAY_BUFFER, &bytes, glow::STREAM_DRAW);
 
-            gl.active_texture(glow::TEXTURE0);
-            gl.bind_texture(glow::TEXTURE_2D, Some(from));
-            gl.active_texture(glow::TEXTURE1);
-            gl.bind_texture(glow::TEXTURE_2D, Some(to));
-            gl.uniform_1_i32(program.from.as_ref(), 0);
-            gl.uniform_1_i32(program.to.as_ref(), 1);
+            if let Some((from, to, cross)) = cross {
+                gl.active_texture(glow::TEXTURE0);
+                gl.bind_texture(glow::TEXTURE_2D, Some(from));
+                gl.active_texture(glow::TEXTURE1);
+                gl.bind_texture(glow::TEXTURE_2D, Some(to));
+                gl.uniform_1_i32(program.from.as_ref(), 0);
+                gl.uniform_1_i32(program.to.as_ref(), 1);
+                let relative = |inner: LogicalRect| {
+                    [
+                        (inner.x - run.rect.x) / width,
+                        (inner.y - run.rect.y) / height,
+                        inner.width / width,
+                        inner.height / height,
+                    ]
+                };
+                gl.uniform_4_f32_slice(program.from_rect.as_ref(), &relative(cross.from_rect));
+                gl.uniform_4_f32_slice(program.to_rect.as_ref(), &relative(cross.to_rect));
+                gl.uniform_4_f32(program.fill.as_ref(), 0.0, 0.0, 0.0, 0.0);
+            }
 
             gl.uniform_1_f32(program.progress.as_ref(), run.progress);
             gl.uniform_1_f32(program.opacity.as_ref(), run.opacity);
             gl.uniform_2_f32(program.size.as_ref(), width, height);
-            let relative = |inner: LogicalRect| {
-                [
-                    (inner.x - run.rect.x) / width,
-                    (inner.y - run.rect.y) / height,
-                    inner.width / width,
-                    inner.height / height,
-                ]
-            };
-            gl.uniform_4_f32_slice(program.from_rect.as_ref(), &relative(run.from_rect));
-            gl.uniform_4_f32_slice(program.to_rect.as_ref(), &relative(run.to_rect));
-            gl.uniform_4_f32(program.fill.as_ref(), 0.0, 0.0, 0.0, 0.0);
 
             // Every param the program has, not only the ones this node supplied. A uniform holds
             // its value in the program, and two nodes sharing one shader would otherwise inherit
             // each other's: the one that omits `softness` would get whatever the other last set.
-            for (name, location) in &program.params {
-                let value = run.params.iter().find(|(param, _)| param == name).map_or(0.0, |(_, value)| *value);
-                gl.uniform_1_f32(Some(location), value);
+            for (name, (location, count, warned)) in &program.params {
+                let (value, given) = run
+                    .params
+                    .iter()
+                    .find(|(param, ..)| param == name)
+                    .map_or(([0.0; 4], *count), |(_, value, given)| (*value, *given));
+                // Logged, not refused: the mismatch is only knowable here, after the pass.
+                if given != *count && !warned.replace(true) {
+                    error!("`params.{name}` has {given} numbers for a uniform of {count}; padded or truncated");
+                }
+                match count {
+                    2 => gl.uniform_2_f32_slice(Some(location), &value[..2]),
+                    3 => gl.uniform_3_f32_slice(Some(location), &value[..3]),
+                    4 => gl.uniform_4_f32_slice(Some(location), &value),
+                    _ => gl.uniform_1_f32(Some(location), value[0]),
+                }
             }
 
             // Premultiplied source-over, and `FUNC_ADD` set rather than inherited: nothing in
@@ -484,8 +529,9 @@ impl ShaderStage {
 
 /// The whole source a config's file is compiled as: the contract, then the file at line 1, then the
 /// engine's own `main`. Split out so a test can read it without a GL context.
-fn assemble(source: &str) -> String {
-    format!("{PRELUDE}{source}{EPILOGUE}")
+fn assemble(source: &str, textured: bool) -> String {
+    let samplers = if textured { SAMPLERS } else { "" };
+    format!("{PRELUDE}{samplers}{RENAME}{source}{EPILOGUE}")
 }
 
 /// A finite, positive dimension, or `None`. Sizes below one are legitimate and must not be clamped
@@ -690,7 +736,7 @@ mod tests {
     /// line at line 1 so a compiler error names a line the config can find.
     #[test]
     fn a_config_shader_is_wrapped_so_the_engine_owns_the_last_operation() {
-        let assembled = assemble("void main() { fragColor = mantle_to(v_uv); }\n");
+        let assembled = assemble("void main() { fragColor = mantle_to(v_uv); }\n", true);
 
         let effect = assembled.find("#define main mantle_effect").expect("the rename");
         let user = assembled.find("void main() { fragColor").expect("the config's own source");
@@ -704,6 +750,23 @@ mod tests {
         // its own however long the prelude grows.
         let prelude = &assembled[..user];
         assert!(prelude.trim_end().ends_with("#line 1"), "got: {:?}", prelude.trim_end().rsplit('\n').next());
+    }
+
+    /// ADR-0253. A `shader` node binds no textures, so its prelude declares none: an unbound
+    /// `sampler2D` would read unit 0, whatever femtovg left there.
+    #[test]
+    fn a_shader_node_is_assembled_without_samplers() {
+        let assembled = assemble("void main() { fragColor = vec4(u_progress); }\n", false);
+        let user = assembled.find("void main() { fragColor").expect("the config's own source");
+        let prelude = &assembled[..user];
+        for absent in ["sampler2D", "mantle_from", "mantle_to", "u_fill"] {
+            assert!(!prelude.contains(absent), "`{absent}` in {prelude}");
+        }
+        for present in ["uniform float u_progress;", "uniform vec2 u_size;", "#define main mantle_effect"] {
+            assert!(prelude.contains(present), "`{present}` missing from {prelude}");
+        }
+        assert!(prelude.trim_end().ends_with("#line 1"));
+        assert!(assembled.ends_with(EPILOGUE));
     }
 
     /// A box smaller than one logical pixel is legitimate -- a tween passes through it -- and must

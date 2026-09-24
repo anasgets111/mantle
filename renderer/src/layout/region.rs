@@ -265,8 +265,9 @@ fn takes_input_as_a_box(node: &ResolvedNode, paint_claims: bool) -> bool {
             Some(PaintStyle::Box { background, widths, .. }) => {
                 background.is_some() || [widths.top, widths.right, widths.bottom, widths.left].iter().any(|w| *w > 0.0)
             }
+            // Its alpha is the GPU's to know; a config adds a `button` for a hit area (ADR-0253).
+            Some(PaintStyle::Shader { .. }) | None => false,
             Some(_) => true,
-            None => false,
         };
     paints || node.takes_pointer()
 }
@@ -295,6 +296,14 @@ mod tests {
         children: Vec<ResolvedNode>,
     ) -> ResolvedNode {
         ResolvedNode { id: NodeId::test(id), paint, ..ResolvedNode::test(kind, rect, children) }
+    }
+
+    /// ADR-0253. A shader's alpha is unknown on the CPU, so its box claims no input; a morph drawn
+    /// inside its fully open box would otherwise swallow clicks meant for what is behind it.
+    #[test]
+    fn a_shader_node_claims_no_input() {
+        let paint = Some(PaintStyle::Shader { source: "/s.frag".into(), progress: 0.0, params: Vec::new() });
+        assert!(!takes_input_as_a_box(&region_node(1, "shader", (0.0, 0.0, 10.0, 10.0), paint, Vec::new()), true));
     }
 
     /// A box no bigger than its own rounding still has pixels, and every rectangle handed to

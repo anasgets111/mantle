@@ -193,6 +193,20 @@ pub fn parse_capture_output(properties: &PropMap) -> Result<String, LayoutError>
     parse_optional_string(properties, "output")
 }
 
+/// `shader.source` (ADR-0253): absolute like `transition.shader`, or empty for nothing drawn.
+pub fn parse_shader_source(properties: &PropMap) -> Result<String, LayoutError> {
+    let path = parse_optional_string(properties, "source")?;
+    if !path.is_empty() && !path.starts_with('/') {
+        return Err(invalid("source", format!("expected an absolute path, got `{path}`")));
+    }
+    Ok(path)
+}
+
+/// `shader.progress` (ADR-0253), default `0`: the shader's `u_progress`, and what `animate` drives.
+pub fn parse_progress(properties: &PropMap) -> Result<f32, LayoutError> {
+    style::within("progress", parse_number(properties, "progress", 0.0)?)
+}
+
 /// `capture.live` (ADR-0248), default `false`: a one-shot capture versus a continuous stream.
 pub fn parse_live(properties: &PropMap) -> Result<bool, LayoutError> {
     parse_bool(properties, "live", false)

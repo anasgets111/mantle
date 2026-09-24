@@ -14,19 +14,19 @@ mod surface;
 mod toplevel;
 
 // Paint-only parsers are imported, not re-exported; `paint_style` is their sole caller (ADR-0068).
-use animate::parse_transition;
+use animate::{parse_shader_params, parse_transition};
 use content::{
     parse_capture_output, parse_elide, parse_fit, parse_font_family, parse_font_size, parse_foreground,
     parse_icon_name, parse_image_source, parse_live, parse_load, parse_mask_character, parse_max_lines,
-    parse_optional_foreground, parse_paint_cursor, parse_placeholder, parse_retain, parse_source_blur,
-    parse_text_align, parse_wrap,
+    parse_optional_foreground, parse_paint_cursor, parse_placeholder, parse_progress, parse_retain,
+    parse_shader_source, parse_source_blur, parse_text_align, parse_wrap,
 };
 use spec::parse_secure_submit;
 use style::{parse_background, parse_border_color, parse_border_width, parse_clip, parse_radius};
 
 #[cfg(test)]
 pub use animate::Animatable;
-pub use animate::{Dissolve, TransitionSpec, Tween, advance, depart, is_paint_only, retarget};
+pub use animate::{Dissolve, ShaderParam, TransitionSpec, Tween, advance, depart, is_paint_only, retarget};
 pub use content::{
     Elide, StyleRun, TextAlign, Wrap, font_runs, parse_content, parse_icon_size, parse_node_id, parse_surface_id,
 };

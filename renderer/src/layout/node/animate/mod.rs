@@ -483,7 +483,7 @@ pub struct TransitionSpec {
     /// `params` as `(uniform name, value)`, sorted, so two runs of one shader compare equal when
     /// they are the same. A name the compiled shader has no uniform for is ignored, because a
     /// shader may declare one and never use it.
-    pub params: Vec<(String, f32)>,
+    pub params: Vec<ShaderParam>,
 }
 
 /// `transition = { duration = 700, easing = "InOutCubic" }` on an `image`. The `duration` is
@@ -538,41 +538,64 @@ pub fn parse_transition(properties: &PropMap) -> Result<Option<TransitionSpec>, 
         }
     };
     let params: Value = table.get("params").map_err(|e| invalid("transition.params", e.to_string()))?;
-    let params = parse_shader_params(&params)?;
+    let params = parse_shader_params("transition.params", &params)?;
     if shader.is_none() && !params.is_empty() {
         return Err(invalid("transition.params", "there is no `shader` for these to reach"));
     }
     Ok(Some(TransitionSpec { duration, easing, shader, params }))
 }
 
-/// `params = { softness = 0.1 }`: uniform names to numbers, which is every type a config can hand a
-/// shader (ADR-0184). Sorted, so the list is a value two runs can compare.
-fn parse_shader_params(value: &Value) -> Result<Vec<(String, f32)>, LayoutError> {
+/// A uniform name, its value zero-padded to four, and how many the config wrote; the compiled
+/// uniform's type decides how many reach the shader, and a different count is logged.
+pub type ShaderParam = (String, [f32; 4], usize);
+
+/// `params = { softness = 0.1, tint = { 1, 0.5, 0, 1 } }`: uniform names to a number or a list of
+/// two to four (ADR-0184, vectors ADR-0253). Sorted, so the list is a value two runs can compare.
+pub(in crate::layout::node) fn parse_shader_params(what: &str, value: &Value) -> Result<Vec<ShaderParam>, LayoutError> {
     let table = match value {
         Value::Nil => return Ok(Vec::new()),
         Value::Table(table) => table,
         other => {
             return Err(invalid(
-                "transition.params",
-                format!("expected a table of uniform names to numbers, got {}", preview_for_error(other)),
+                what,
+                format!(
+                    "expected a table of uniform names to a number or a list of two to four, got {}",
+                    preview_for_error(other)
+                ),
             ));
         }
     };
     let mut out = Vec::new();
     for pair in table.pairs::<Value, Value>() {
-        let (key, value) = pair.map_err(|e| invalid("transition.params", e.to_string()))?;
+        let (key, value) = pair.map_err(|e| invalid(what, e.to_string()))?;
         let Value::String(key) = key else {
-            return Err(invalid(
-                "transition.params",
-                format!("keys are uniform names, got {}", preview_for_error(&key)),
-            ));
+            return Err(invalid(what, format!("keys are uniform names, got {}", preview_for_error(&key))));
         };
-        let name = key.to_str().map_err(|e| invalid("transition.params", e.to_string()))?.to_string();
-        let field = format!("transition.params.{name}");
-        let number = value_as_f32(&field, &value)?
-            .filter(|number| number.is_finite())
-            .ok_or_else(|| invalid(&field, format!("expected a finite number, got {}", preview_for_error(&value))))?;
-        out.push((name, number));
+        let name = key.to_str().map_err(|e| invalid(what, e.to_string()))?.to_string();
+        let field = format!("{what}.{name}");
+        let finite = |value: &Value| {
+            value_as_f32(&field, value)?
+                .filter(|number| number.is_finite())
+                .ok_or_else(|| invalid(&field, format!("expected a finite number, got {}", preview_for_error(value))))
+        };
+        let mut components = [0.0; 4];
+        let count = match &value {
+            Value::Table(list) => {
+                let len = list.raw_len();
+                if !(2..=4).contains(&len) {
+                    return Err(invalid(&field, format!("expected two to four numbers, got {len}")));
+                }
+                for (slot, index) in components.iter_mut().zip(1..=len) {
+                    *slot = finite(&list.raw_get(index).map_err(|e| invalid(&field, e.to_string()))?)?;
+                }
+                len
+            }
+            scalar => {
+                components[0] = finite(scalar)?;
+                1
+            }
+        };
+        out.push((name, components, count));
     }
     out.sort_by(|a, b| a.0.cmp(&b.0));
     Ok(out)
@@ -1168,7 +1191,7 @@ pub fn retarget(
 /// ADR-0149 maps the pointer back through a node's inverse transform, so moving one changes what
 /// the pointer hits, and the input regions have to be rebuilt with it. They stay on the layout
 /// path until something rebuilds those regions without a full pass.
-const PAINT_ONLY: &[&str] = &["opacity", "background", "border_color", "foreground", "radius"];
+const PAINT_ONLY: &[&str] = &["opacity", "background", "border_color", "foreground", "progress", "radius"];
 
 /// Whether a tween on `property` can be advanced by a paint-only tick; see [`PAINT_ONLY`].
 pub fn is_paint_only(property: &str) -> bool {

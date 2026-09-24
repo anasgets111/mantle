@@ -56,6 +56,6 @@ Wanted, but each needs a consumer or a decision first.
 | A framework-owned settings schema | `persistent_table` with config-declared files |
 | Dedicated IPC commands per panel | `mantle set` and `mantle toggle` |
 | A loader to defer surface creation | Wayland objects are created when shown. The 5 ms cap guards one outermost signal resolve, not a whole config evaluation (ADR-0157) |
-| Shaders over an arbitrary subtree, or as a persistent filter | `image.transition` between two endpoints (ADR-0184), the engine's own cross-dissolve being one of those shaders (ADR-0186). Two endpoints and a progress number keep a stable contract; an arbitrary subtree does not |
+| Shaders over an arbitrary subtree, or as a persistent filter | `image.transition` between two endpoints (ADR-0184), and the `shader` leaf with no inputs but `progress` and `params` (ADR-0253). Both keep a stable contract; an arbitrary subtree does not |
 | Being the display manager: PAM as root, session opening, seat management | greetd already does it, and a PAM stack with no root can only run the `auth` chain anyway. See Greeter above |
 | X11 or i3 | The target is a Wayland session shell |

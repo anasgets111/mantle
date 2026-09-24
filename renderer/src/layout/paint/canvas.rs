@@ -226,13 +226,9 @@ fn run(painter: &mut TextPainter, walk: &mut Walk<'_, '_>, commands: &[DrawCmd],
                         // the frame, which is why they were built first and why they stay.
                         let crossed = match (walk.shaders.as_mut(), from, to) {
                             (Some(shaders), Some((from, from_rect)), Some((to, to_rect))) => {
-                                let params: &[(String, f32)] =
-                                    shader.as_ref().map_or(&[], |(_, params)| params.as_slice());
+                                let params = shader.as_ref().map_or(&[][..], |(_, params)| params.as_slice());
                                 let run = image_shader::Run {
-                                    from,
-                                    to,
-                                    from_rect,
-                                    to_rect,
+                                    cross: Some(image_shader::Cross { from, to, from_rect, to_rect }),
                                     rect,
                                     transform: frame.transform,
                                     clip,
@@ -288,6 +284,23 @@ fn run(painter: &mut TextPainter, walk: &mut Walk<'_, '_>, commands: &[DrawCmd],
                 if let Some((id, width, height)) = walk.captures.get(*node) {
                     let fitted = image::fitted_rect(rect, width as f32, height as f32, *fit);
                     fill_image(painter.canvas_mut(), id, fitted, *alpha);
+                }
+            }
+            Draw::Shader { source, progress, params, alpha, .. } => {
+                if let Some(shaders) = walk.shaders.as_mut() {
+                    let run = image_shader::Run {
+                        cross: None,
+                        rect,
+                        transform: frame.transform,
+                        clip,
+                        target_size: frame.size,
+                        target_origin: frame.origin,
+                        opacity: *alpha,
+                        progress: *progress,
+                        params,
+                    };
+                    // SAFETY: as for `Draw::Image` above.
+                    unsafe { shaders.stage.draw(shaders.gl, painter.canvas_mut(), Some(source), &run) };
                 }
             }
             Draw::Clipped { radius, commands } => {
