@@ -77,7 +77,7 @@ cited as ADR-NNNN for the why behind behavior the code confirms.
 | **Capability roster** | The `shared::Capability` enum: every capability with snapshot state, `idle` included (ADR-0076). `process` is addressable but off-roster. |
 | **Capabilities** | The Supervisor's `Capabilities` struct of controllers and channels. Not the `GenerationRegistry`, which tracks Renderer connections. |
 | **Revision** | A capability's snapshot counter, stamped on commands as `expected_revision`. Nothing checks it (ADR-0004). |
-| **IDL** | The typed engine contract in `lua-meta/`, generated from Rust: capability payloads and actions from their types; node and surface properties from the typed fields the parsers read, their Rust types and `///` docs; globals from their Rust signatures and `///` docs. |
+| **IDL** | The typed engine contract in `lua-meta/`, generated from Rust: capability payloads and actions from their types; node and surface properties from the typed fields the parsers read, their Rust types and `///` docs; globals from their Rust signatures and `///` docs. Still hand-written: the nested shapes in the `nodes.lua` and `surfaces.lua` headers (`Edges`, `Axes`, `Gradient`, `Mask`, `Cursor`, `Easing`, `Keyframe`, `Spring`, `Animation`, `Exit`, `Rect`, the `TextRun` and `Transition` classes; `Align`, `Percent`, `EasingName` and `PopupAnchor` are filled from Rust) and the `StateSignal`, `ScrollSignal`, `PersistentTable` and `SessionProcessHandle` classes, which LuaLS models with generics or dynamic keys. |
 
 ## Capability domains
 

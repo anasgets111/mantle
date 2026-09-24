@@ -41,6 +41,7 @@ Wanted, but each needs a consumer or a decision first.
 | Window capture | `capture` takes an output. A window source would take `windows` ids | 0247, 0248 |
 | Native I/O | No HTTP, sockets, watched file contents or `json.encode`; JSON storage and folder watching exist. Native only for a measured latency or volume need | — |
 | KDE Connect | No device or plugin model. A capability or a streaming helper, not unrestricted D-Bus | — |
+| Derived nested stub shapes | `lua-meta`'s nested table shapes (`Edges`, `Gradient`, `Mask`, `Easing`, `Animation`, `TextRun`, `Transition`...) are hand-written beside the parsers that read them, so a parser change can leave its stub stale. Derive them from the parsers' types like the properties | — |
 | Dynamic topology | A reload rebuilds only what changed. Revisit only if dynamic windows need a different lifetime | 0216 |
 
 ## Won't do
