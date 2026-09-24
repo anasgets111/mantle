@@ -194,7 +194,7 @@ fn system_fallback(chain: &[&str]) -> ResolvedFonts {
 
 /// The family to shape the fallback database against: its sans serif, else any face it holds.
 ///
-/// `None` is a machine with no font files, which `text::shaping::shape` answers by measuring every
+/// `None` is a machine with no font files, which `text::shaping::worker::shape` answers by measuring every
 /// string as empty -- the shell draws its chrome without text rather than losing the render thread.
 fn system_primary(db: &Database) -> Option<String> {
     let query = Query { families: &[Family::SansSerif], ..Default::default() };

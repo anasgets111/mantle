@@ -14,7 +14,7 @@ path = "src/main.rs"
 workspace = true
 
 [dependencies]
-# cosmic-text is reached only from `text/shaping.rs` and `text/fonts.rs`, for shaping and
+# cosmic-text is reached only from `text/shaping/` and `text/fonts.rs`, for shaping and
 # measurement; its default features drag in a rasterizer nothing here calls. 157 to 151. No
 # `fontconfig` either: fonts resolve through `fc-match` (`text/fonts.rs`), not fontconfig's XML.
 cosmic-text = { version = "0.19.0", default-features = false, features = ["std"] }
