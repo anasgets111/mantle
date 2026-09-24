@@ -3136,7 +3136,7 @@ pub(super) mod tests {
         let after = crate::layout::paint::build(root, 1.0, None);
         assert_ne!(after, before);
         let clip = crate::text::snap::snap_to_physical(rect, 1.0);
-        let damage = after.damage_since(&before);
+        let damage = after.damage_since(&before, true);
         assert_eq!(damage.len(), 1, "{damage:?}");
         let [d] = damage[..] else { unreachable!() };
         assert!(

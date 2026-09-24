@@ -8,6 +8,7 @@ use shared::{debug, error, warn};
 
 use super::*;
 use crate::layout::node::PropMap;
+use crate::text::snap::PhysicalRect;
 
 /// A surface bound to shared EGL after its first configure. Field order is load-bearing:
 /// wayland-egl requires `WlEglSurface` to outlive the EGL surface, and Rust drops top to bottom;
@@ -42,6 +43,32 @@ pub(super) struct BoundSurface {
     pub(super) egl_surface: EglSurface,
     native_window: WlEglSurface,
 }
+
+/// The pixels a back buffer `age` frames old lacks (ADR-0258): `frame`, this paint's damage, and
+/// the `age - 1` frames before it. `None` repaints the whole surface.
+fn repaint_bounds(
+    age: usize,
+    frame: Option<&[PhysicalRect]>,
+    history: &[Option<Vec<PhysicalRect>>],
+) -> Option<Vec<PhysicalRect>> {
+    let older = history.get(..age.checked_sub(1)?)?.iter().map(Option::as_deref);
+    std::iter::once(frame).chain(older).try_fold(Vec::new(), |mut rects, frame| {
+        rects.extend_from_slice(frame?);
+        Some(rects)
+    })
+}
+
+/// When this surface next owes a paint (ADR-0233). A paint it did not owe may have skipped an
+/// animated image outside its region, so the deadline that image left stands.
+fn next_stale(owed: bool, stale: Option<Instant>, deferred: Option<Instant>) -> Option<Instant> {
+    if owed { deferred } else { stale.into_iter().chain(deferred).min() }
+}
+
+/// EGL's bottom-left `x, y, w, h` quadruples for `rects` on a surface `height` tall.
+fn egl_rects(rects: &[PhysicalRect], height: u32) -> Vec<i32> {
+    rects.iter().flat_map(|r| [r.x0, height as i32 - r.y1, r.x1 - r.x0, r.y1 - r.y0]).collect()
+}
+
 /// Logs a bind-time failure; `surface_id` is `"{id}@{output}"` (ADR-0038).
 pub(super) fn log_bind_failure(surface_id: &str, stage: &str, err: impl std::fmt::Display) {
     error!("{surface_id}: {stage} failed: {err}");
@@ -270,6 +297,9 @@ pub(super) struct TrackedSurface {
     /// buffers; clear on rebind or any branch that cannot prove the pixels still match, or a stale
     /// frame can remain with no redraw trigger.
     pub(super) last_painted: Option<((u32, u32), layout::paint::DisplayList)>,
+    /// Damage of the frames presented before, newest first, `None` for the whole surface: what a
+    /// reused back buffer lacks (ADR-0258).
+    pub(super) damage_history: Vec<Option<Vec<PhysicalRect>>>,
     pub(super) dirty: bool,
     /// When the pixels on screen go stale although `last_painted` still describes them, so a paint
     /// must run even against an identical list (ADR-0182). Set when a decode lands for a file this
@@ -302,6 +332,7 @@ impl TrackedSurface {
             map_state: MapState::Unmapped,
             configured_size: (0, 0),
             last_painted: None,
+            damage_history: Vec::new(),
             dirty: true,
             stale: None,
             blur_effect: None,
@@ -914,10 +945,9 @@ impl App {
         true
     }
 
-    /// Paint a bound surface's whole display list and swap. One `TextPainter` and EGL context serve
-    /// all surfaces; GL objects stay valid across framebuffers, while viewport size is per surface.
-    /// One canvas per surface is the fallback, not a redesign, if a live run shows this assumption
-    /// wrong.
+    /// Paint a bound surface's display list where its back buffer lacks it (ADR-0258), and swap. One
+    /// `TextPainter` and EGL context serve all surfaces: GL objects stay valid across framebuffers,
+    /// viewport size is per surface, and one canvas per surface is the fallback if that proves wrong.
     /// An absent tree still clears/swaps, or the compositor keeps the last frame.
     /// ponytail: paint scale is hardcoded `1.0`, so HiDPI outputs are upscaled. Upgrade:
     /// `set_buffer_scale` and matching `WlEglSurface::resize` together.
@@ -961,48 +991,41 @@ impl App {
             let focus = self.field_focus_for(&surface_id);
             tree.as_ref().map(|tree| layout::paint::build(tree, 1.0, focus.as_ref())).unwrap_or_default()
         };
-        let unchanged = !self.surfaces[index].owes_a_paint()
-            && self.surfaces[index]
-                .last_painted
-                .as_ref()
-                .is_some_and(|(painted_size, painted)| *painted_size == (width, height) && *painted == list);
+        // What the compositor re-blurs and recomposites behind this surface; `None` is the whole
+        // surface (ADR-0063 amendment).
+        let owed = self.surfaces[index].owes_a_paint();
+        let surface_rect = PhysicalRect { x0: 0, y0: 0, x1: width as i32, y1: height as i32 };
+        let damage = match &self.surfaces[index].last_painted {
+            Some((size, painted)) if *size == (width, height) => Some(
+                list.damage_since(painted, owed)
+                    .into_iter()
+                    .map(|rect| rect.intersect(surface_rect))
+                    .collect::<Vec<_>>(),
+            ),
+            _ => None,
+        };
+        let damage = damage.map(layout::paint::coalesce);
         if let Some(t_build) = t_build {
             self.repaint_split.build += t_build.elapsed();
         }
-        if unchanged {
-            self.surfaces[index].dirty = false;
-            // A mid-tween surface still has to commit: a frame callback is only answered after
-            // one, and a tween whose tick moved nothing visible would otherwise never get its
-            // next (ADR-0145). What it does not have to do is draw the same pixels again. A
-            // commit with no new buffer re-commits the state the surface already has, which is
-            // what makes the frame request below effective, so a hold, a lead-in `delay`, or
-            // a step easing sitting on one value costs a commit instead of make-current, clear,
-            // every draw call, and a swap.
-            if animating && let Some(surface) = self.surfaces[index].role.wl_surface() {
+        if damage.as_ref().is_some_and(Vec::is_empty) {
+            // An unchanged list, or a change with nothing in view (ADR-0258). A mid-tween surface
+            // still has to commit: a frame callback is only answered after one, and a tween whose
+            // tick moved nothing visible would otherwise never get its next (ADR-0145). What it
+            // does not have to do is draw the same pixels again. A commit with no new buffer
+            // re-commits the state the surface already has, which is what makes the frame request
+            // below effective, so a hold, a lead-in `delay`, or a step easing sitting on one value
+            // costs a commit instead of make-current, clear, every draw call, and a swap.
+            let tracked = &mut self.surfaces[index];
+            tracked.dirty = false;
+            tracked.stale = next_stale(owed, tracked.stale, None);
+            tracked.last_painted = Some(((width, height), list));
+            if animating && let Some(surface) = tracked.role.wl_surface() {
                 surface.frame(&self.queue_handle, FrameCallbackData(surface.clone()));
                 surface.commit();
             }
             return;
         }
-
-        // What the compositor re-blurs and recomposites behind this surface, as EGL's bottom-left
-        // `x, y, w, h` quadruples; `None` is the whole surface (ADR-0063 amendment).
-        let damage = match &self.surfaces[index].last_painted {
-            Some((size, painted)) if *size == (width, height) => {
-                let surface_rect =
-                    crate::text::snap::PhysicalRect { x0: 0, y0: 0, x1: width as i32, y1: height as i32 };
-                let rects: Vec<i32> = list
-                    .damage_since(painted)
-                    .into_iter()
-                    .map(|rect| rect.intersect(surface_rect))
-                    .filter(|r| r.x1 > r.x0 && r.y1 > r.y0)
-                    .flat_map(|r| [r.x0, height as i32 - r.y1, r.x1 - r.x0, r.y1 - r.y0])
-                    .collect();
-                // ponytail: past this many rects a compositor merges them anyway.
-                (!rects.is_empty() && rects.len() <= 4 * 32).then_some(rects)
-            }
-            _ => None,
-        };
 
         let t_gl = timing.then(Instant::now);
         let Some(egl) = self.egl.as_ref() else {
@@ -1021,14 +1044,23 @@ impl App {
             self.current_egl_surface = Some(egl_surface);
         }
 
-        if let Some(gl) = self.gl.as_ref() {
-            // SAFETY: the context was made current above and has not switched since.
-            unsafe {
-                use glow::HasContext;
-                gl.clear_color(0.0, 0.0, 0.0, 0.0);
-                // femtovg's stencil fills and strokes assume the buffer starts at zero.
-                gl.clear(glow::COLOR_BUFFER_BIT | glow::STENCIL_BUFFER_BIT);
+        // 0, unknown, where the driver has no buffer age.
+        let age = egl.instance.query_surface(egl.display, egl_surface, super::egl_ext::EGL_BUFFER_AGE_EXT).unwrap_or(0);
+        let history = &self.surfaces[index].damage_history;
+        let regions = match repaint_bounds(usize::try_from(age).unwrap_or(0), damage.as_deref(), history) {
+            Some(rects) => {
+                let grown = rects.into_iter().map(|rect| list.repaint_region(rect).intersect(surface_rect));
+                layout::paint::coalesce(grown.collect())
             }
+            None => vec![surface_rect],
+        };
+        if let Some(set_damage_region) = egl.set_damage_region {
+            let rects = egl_rects(&regions, height);
+            // SAFETY: `egl_surface` is current on `egl.display` and its age was queried this frame,
+            // as `EGL_KHR_partial_update` requires; `rects` holds `regions.len()` whole quadruples.
+            unsafe {
+                set_damage_region(egl.display.as_ptr(), egl_surface.as_ptr(), rects.as_ptr(), rects.len() as i32 / 4)
+            };
         }
 
         if self.text_painter.is_none() {
@@ -1074,12 +1106,14 @@ impl App {
             // cross this frame; without one every cross falls back to the dissolve (ADR-0184).
             let shaders = self.gl.as_ref().map(|gl| layout::paint::Shaders { gl, stage: &mut self.shader_stage });
             let (drawn, split) = layout::paint::execute(
+                &surface_id,
                 painter,
                 &mut self.image_cache,
                 &mut self.capture_cache,
                 &list,
                 1.0,
                 (width as f32, height as f32),
+                &regions,
                 shaders,
             );
             self.repaint_split.text += split.text;
@@ -1111,8 +1145,9 @@ impl App {
         // ponytail: only the swap is guarded; khronos-egl's other wrappers (make_current etc.) still unwrap (upstream #25).
         use khronos_egl::api::EGL1_0;
         let t_swap = timing.then(Instant::now);
-        let swapped = match (egl.swap_with_damage, damage) {
+        let swapped = match (egl.swap_with_damage, &damage) {
             (Some(swap), Some(rects)) => {
+                let rects = egl_rects(rects, height);
                 // SAFETY: `egl_surface` was made current on `egl.display` above; `rects` holds the
                 // `n_rects` whole quadruples it promises.
                 unsafe { swap(egl.display.as_ptr(), egl_surface.as_ptr(), rects.as_ptr(), (rects.len() / 4) as i32) }
@@ -1133,11 +1168,16 @@ impl App {
         // Record only after swap; otherwise an unpresented frame could make the next identical list
         // skip the paint the screen never received.
         self.surfaces[index].last_painted = Some(((width, height), list));
+        let history = &mut self.surfaces[index].damage_history;
+        history.insert(0, damage);
+        // ponytail: an age past 4 repaints whole; Mesa's Wayland platform cycles at most 4 buffers.
+        // Upgrade path: keep history to the largest age seen.
+        history.truncate(3);
         // A request turned away for pool capacity recorded no slot, so asking again is the whole
         // retry, and only a repaint asks. Staying `stale` is what stops the next turn skipping
         // this surface on an unchanged list, and `repaint_mapped_surfaces_where` is what stops a
         // narrowed repaint passing it over (ADR-0185).
-        self.surfaces[index].stale = deferred;
+        self.surfaces[index].stale = next_stale(owed, self.surfaces[index].stale, deferred);
         self.surfaces[index].dirty = false;
         self.surfaces_drawn += 1;
         // Images absent from every current list are idle (ADR-0123); queue eviction for the next
@@ -1403,6 +1443,34 @@ mod tests {
             min_size: None,
             max_size: None,
         }
+    }
+
+    /// ADR-0258. A GIF's next-frame deadline outlives a paint that did not owe it: that paint's
+    /// region may have skipped the GIF, which then deferred nothing. A paint it owed draws the GIF,
+    /// so what that paint deferred replaces the deadline.
+    #[test]
+    fn a_paint_that_owed_no_texture_keeps_the_gifs_deadline() {
+        let now = Instant::now();
+        let (gif, sooner) = (now + Duration::from_millis(100), now + Duration::from_millis(10));
+        assert_eq!(next_stale(false, Some(gif), None), Some(gif), "a shader elsewhere repainted");
+        assert_eq!(next_stale(false, Some(gif), Some(sooner)), Some(sooner));
+        assert_eq!(next_stale(true, Some(now), Some(gif)), Some(gif), "the GIF drew and deferred its next");
+        assert_eq!(next_stale(true, Some(now), None), None);
+    }
+
+    /// ADR-0258. A back buffer `age` frames old lacks this frame's damage and the `age - 1` before
+    /// it. An unknown age, a history too short, or a whole-surface frame in that window repaints all.
+    #[test]
+    fn a_repaint_covers_the_damage_since_the_back_buffer_was_drawn() {
+        let rect = |x0| PhysicalRect { x0, y0: 0, x1: x0 + 10, y1: 10 };
+        let history = [Some(vec![rect(20)]), Some(vec![rect(40), rect(60)]), None];
+        let frame = Some(&[rect(0)][..]);
+        assert_eq!(repaint_bounds(1, frame, &history), Some(vec![rect(0)]));
+        assert_eq!(repaint_bounds(3, frame, &history), Some(vec![rect(0), rect(20), rect(40), rect(60)]));
+        assert_eq!(repaint_bounds(0, frame, &history), None, "unknown age");
+        assert_eq!(repaint_bounds(4, frame, &history), None, "a whole-surface frame in the window");
+        assert_eq!(repaint_bounds(5, frame, &history), None, "older than the history");
+        assert_eq!(repaint_bounds(1, None, &history), None);
     }
 
     #[test]

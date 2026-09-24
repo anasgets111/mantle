@@ -16,6 +16,7 @@ use femtovg::{Canvas, Color, FontId, ImageId, Paint, Path, PositionedGlyph, Text
 use shared::debug;
 
 use crate::layout::node::{Rgba, StyleRun, TextAlign, font_runs};
+use crate::layout::paint::DrawCmd;
 use crate::text::shaping::{
     FontFace, FontRun, Glyph, ShapeResult, ShapingHandle, caret_thickness, caret_visible_left, caret_x,
 };
@@ -25,6 +26,16 @@ use super::snap::{LogicalRect, snap_to_physical};
 /// Distinct offscreen sizes [`TextPainter`] keeps between paints (ADR-0217): a clip tweening its
 /// width asks for a new one every frame and reuses none.
 const SCRATCH_SIZES: usize = 16;
+
+/// Paints, by any surface, a finished layer outlives the last paint of its own surface's list that
+/// held it, and the bytes all of them may hold, least recently held first (ADR-0258). The age
+/// only frees a gone surface's layers: every paint of a live one sweeps its own.
+pub(crate) const LAYER_PAINTS: u64 = 1000;
+const LAYER_BYTES: usize = 64 << 20;
+
+/// A layer's shadow, if it casts one, and content, finished at `size` on one surface for the
+/// command that drew them, with the paint that last held it.
+type KeptLayer = (String, DrawCmd, (Option<ImageId>, ImageId), (usize, usize), u64);
 
 /// Cache key for shaped lines in [`TextPainter`].
 struct TextLineKey {
@@ -74,6 +85,9 @@ pub struct TextPainter {
     /// What [`TextPainter::recycle_scratch`] ages by. Not a timer: a size goes stale because other
     /// sizes were asked for since, not because seconds passed.
     paints: u64,
+    /// `layout::paint::canvas::draw_layer`'s finished images, kept here beside `scratch` for the
+    /// same reason (ADR-0258).
+    layers: Vec<KeptLayer>,
     /// Warm cache of shaped lines to bypass re-shaping and glyph vector clones on static text frames.
     lines_cache: HashMap<u64, Vec<CachedLineEntry>>,
     lines_cache_len: usize,
@@ -193,6 +207,7 @@ impl TextPainter {
             shaping,
             scratch: HashMap::new(),
             paints: 0,
+            layers: Vec::new(),
             lines_cache: HashMap::new(),
             lines_cache_len: 0,
         })
@@ -208,6 +223,48 @@ impl TextPainter {
     /// a reused target still holds the last paint's pixels.
     pub fn take_scratch(&mut self, size: (usize, usize)) -> Option<ImageId> {
         self.scratch.get_mut(&size)?.1.pop()
+    }
+
+    /// What `command` last finished into on `surface`.
+    pub fn layer(&self, surface: &str, command: &DrawCmd) -> Option<(Option<ImageId>, ImageId)> {
+        self.layers.iter().find(|(on, kept, ..)| on == surface && kept == command).map(|(_, _, images, ..)| *images)
+    }
+
+    pub fn keep_layer(
+        &mut self,
+        surface: &str,
+        command: &DrawCmd,
+        images: (Option<ImageId>, ImageId),
+        size: (usize, usize),
+    ) {
+        self.layers.push((surface.to_owned(), command.clone(), images, size, self.paints));
+    }
+
+    /// Frees `surface`'s layers its list no longer `holds`, then any past [`LAYER_PAINTS`] or
+    /// [`LAYER_BYTES`], answering their images for the pool. A held layer lives on while
+    /// the region skips it.
+    pub fn sweep_layers(&mut self, surface: &str, holds: impl Fn(&DrawCmd) -> bool) -> Vec<(ImageId, (usize, usize))> {
+        for (on, kept, .., held) in &mut self.layers {
+            if on == surface && holds(kept) {
+                *held = self.paints;
+            }
+        }
+        self.layers.sort_unstable_by_key(|(.., held)| std::cmp::Reverse(*held));
+        let (paints, mut bytes) = (self.paints, 0);
+        let (kept, retired): (Vec<_>, Vec<_>) =
+            std::mem::take(&mut self.layers).into_iter().partition(|(on, _, (cast, _), (width, height), held)| {
+                let live = if on == surface { *held == paints } else { paints - held <= LAYER_PAINTS };
+                let size = (1 + usize::from(cast.is_some())) * width * height * 4;
+                live && bytes + size <= LAYER_BYTES && {
+                    bytes += size;
+                    true
+                }
+            });
+        self.layers = kept;
+        retired
+            .into_iter()
+            .flat_map(|(.., (cast, content), size, _)| cast.into_iter().chain([content]).map(move |id| (id, size)))
+            .collect()
     }
 
     /// Returns one paint's offscreens to the pool and deletes whatever that pushes over capacity.

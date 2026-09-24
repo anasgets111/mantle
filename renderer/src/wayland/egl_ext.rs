@@ -59,23 +59,44 @@ unsafe fn load<T>(instance: &egl::Instance<egl::Static>, name: &str) -> Option<T
     Some(unsafe { std::mem::transmute_copy::<extern "system" fn(), T>(&addr) })
 }
 
+/// `EGL_EXT_buffer_age`'s attribute, which `EGL_KHR_partial_update` names `EGL_BUFFER_AGE_KHR`.
+pub const EGL_BUFFER_AGE_EXT: egl::Int = 0x313D;
+
+/// `eglSwapBuffersWithDamage{KHR,EXT}` and `eglSetDamageRegionKHR` share this prototype.
 pub type SwapBuffersWithDamage =
     unsafe extern "system" fn(egl::EGLDisplay, egl::EGLSurface, *const egl::Int, egl::Int) -> egl::Boolean;
 
-/// `EGL_KHR_swap_buffers_with_damage`, else its identical EXT twin. Checked against the display's
-/// extension string, since `eglGetProcAddress` can answer for an extension the display lacks.
+/// Loads `function` if the display names `extension`. Checked against the display's extension
+/// string, since `eglGetProcAddress` can answer for an extension the display lacks.
+fn load_if(
+    instance: &egl::Instance<egl::Static>,
+    display: egl::Display,
+    extension: &str,
+    function: &str,
+) -> Option<SwapBuffersWithDamage> {
+    let extensions = instance.query_string(Some(display), egl::EXTENSIONS).ok()?.to_string_lossy();
+    // SAFETY: both callers name a function of the `SwapBuffersWithDamage` prototype.
+    extensions.split_whitespace().any(|name| name == extension).then(|| unsafe { load(instance, function) })?
+}
+
+/// `EGL_KHR_swap_buffers_with_damage`, else its identical EXT twin.
 pub fn swap_buffers_with_damage(
     instance: &egl::Instance<egl::Static>,
     display: egl::Display,
 ) -> Option<SwapBuffersWithDamage> {
-    let extensions = instance.query_string(Some(display), egl::EXTENSIONS).ok()?.to_string_lossy();
     ["KHR", "EXT"].into_iter().find_map(|vendor| {
-        extensions
-            .split_whitespace()
-            .any(|name| name == format!("EGL_{vendor}_swap_buffers_with_damage"))
-            // SAFETY: `SwapBuffersWithDamage` is both vendors' shared prototype.
-            .then(|| unsafe { load(instance, &format!("eglSwapBuffersWithDamage{vendor}")) })?
+        let (extension, function) =
+            (format!("EGL_{vendor}_swap_buffers_with_damage"), format!("eglSwapBuffersWithDamage{vendor}"));
+        load_if(instance, display, &extension, &function)
     })
+}
+
+/// `EGL_KHR_partial_update`'s `eglSetDamageRegionKHR` (ADR-0258).
+pub fn set_damage_region(
+    instance: &egl::Instance<egl::Static>,
+    display: egl::Display,
+) -> Option<SwapBuffersWithDamage> {
+    load_if(instance, display, "EGL_KHR_partial_update", "eglSetDamageRegionKHR")
 }
 
 /// The entry points a dma-buf import needs, resolved once against the live EGL display.

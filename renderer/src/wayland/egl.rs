@@ -36,6 +36,8 @@ pub struct EglState {
     pub context: egl::Context,
     /// `None` swaps with plain `eglSwapBuffers`, which damages the whole surface.
     pub swap_with_damage: Option<super::egl_ext::SwapBuffersWithDamage>,
+    /// Tells a tiling GPU what a partial repaint redraws, so it reloads only the rest (ADR-0258).
+    pub set_damage_region: Option<super::egl_ext::SwapBuffersWithDamage>,
     /// Keeps alive the `wl_display` EGL holds a raw pointer to.
     _connection: wayland_client::Connection,
 }
@@ -96,7 +98,9 @@ pub fn init(connection: &wayland_client::Connection) -> Result<EglState, String>
         .map_err(|e| format!("eglCreateContext (GLES3) failed: {e}"))?;
 
     let swap_with_damage = super::egl_ext::swap_buffers_with_damage(&instance, display);
-    Ok(EglState { instance, display, config, context, swap_with_damage, _connection: connection.clone() })
+    let set_damage_region = super::egl_ext::set_damage_region(&instance, display);
+    let _connection = connection.clone();
+    Ok(EglState { instance, display, config, context, swap_with_damage, set_damage_region, _connection })
 }
 
 fn query_config_attribs(

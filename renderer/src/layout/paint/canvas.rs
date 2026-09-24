@@ -38,14 +38,13 @@ pub struct PaintSplit {
 /// The production caller is `wayland::App::paint_surface`.
 #[cfg(test)]
 pub fn paint_tree(painter: &mut TextPainter, images: &mut ImageCache, root: &ResolvedNode, scale: f32) {
-    // A live frame starts cleared (`wayland::App::paint_surface`); a pbuffer's buffers start undefined.
     let canvas = painter.canvas_mut();
-    let (width, height) = (canvas.width(), canvas.height());
-    canvas.clear_rect(0, 0, width, height, Color::rgbaf(0.0, 0.0, 0.0, 0.0));
+    let whole = PhysicalRect { x0: 0, y0: 0, x1: canvas.width() as i32, y1: canvas.height() as i32 };
     // No GL context reaches this harness, so a config shader falls back to the dissolve. A fresh
     // `CaptureCache` is fine here too: no test builds a tree with pixels already staged for one.
     let mut captures = CaptureCache::default();
-    let _ = execute(painter, images, &mut captures, &build(root, scale, None), scale, (0.0, 0.0), None);
+    let size = (whole.x1 as f32, whole.y1 as f32);
+    let _ = execute("test", painter, images, &mut captures, &build(root, scale, None), scale, size, &[whole], None);
 }
 
 /// One `image` node's source that this paint had a texture for. `layout::scene` moves the node onto
@@ -82,6 +81,8 @@ struct Walk<'a, 'g> {
     drawn: Vec<DrawnImage>,
     shaders: Option<Shaders<'g>>,
     split: PaintSplit,
+    /// Whose kept layers this walk reads and sweeps (ADR-0258).
+    surface: &'a str,
 }
 
 /// The framebuffer a walk is drawing into and the transform in force there. Both are the screen's
@@ -93,17 +94,23 @@ struct Frame {
     size: (f32, f32),
     origin: (f32, f32),
     transform: Option<node::Affine>,
+    /// What this paint redraws, in surface pixels (ADR-0258); nothing outside it is touched.
+    region: PhysicalRect,
 }
 
 /// Executes an already-built list; keeping canvas work separate makes the list comparable and
-/// [`build`](super::build) EGL-free.
+/// [`build`](super::build) EGL-free. Clears and redraws `regions` alone, each grown by
+/// [`DisplayList::repaint_region`] and cut to the target here.
+#[allow(clippy::too_many_arguments)]
 pub fn execute(
+    surface: &str,
     painter: &mut TextPainter,
     images: &mut ImageCache,
     captures: &mut CaptureCache,
     list: &DisplayList,
     scale: f32,
     target_size: (f32, f32),
+    regions: &[PhysicalRect],
     shaders: Option<Shaders<'_>>,
 ) -> (Vec<DrawnImage>, PaintSplit) {
     // Before recording draws, after the previous flush: evicted textures cannot be queued draws.
@@ -111,10 +118,22 @@ pub fn execute(
     // Upload before any draw names the texture.
     images.upload_landed(painter.canvas_mut());
     captures.upload_landed(painter.canvas_mut());
-    let mut walk =
-        Walk { images, captures, scale, scratch: Vec::new(), drawn: Vec::new(), shaders, split: PaintSplit::default() };
-    let frame = Frame { size: target_size, origin: (0.0, 0.0), transform: None };
-    run(painter, &mut walk, &list.commands, RenderTarget::Screen, frame);
+    let (scratch, drawn, split) = (Vec::new(), Vec::new(), PaintSplit::default());
+    let mut walk = Walk { images, captures, scale, scratch, drawn, shaders, split, surface };
+    let (width, height) = target_size;
+    for region in regions {
+        let region = region.intersect(PhysicalRect { x0: 0, y0: 0, x1: width as i32, y1: height as i32 });
+        if super::is_empty(region) {
+            continue;
+        }
+        let PhysicalRect { x0, y0, x1, y1 } = region;
+        // femtovg's stencil fills and strokes assume the buffer starts at zero, and a reused back
+        // buffer's stencil is undefined.
+        let (x, y, w, h) = (x0 as u32, y0 as u32, (x1 - x0) as u32, (y1 - y0) as u32);
+        painter.canvas_mut().clear_rect(x, y, w, h, Color::rgbaf(0.0, 0.0, 0.0, 0.0));
+        let frame = Frame { size: target_size, origin: (0.0, 0.0), transform: None, region };
+        run(painter, &mut walk, &list.commands, RenderTarget::Screen, frame);
+    }
     painter.canvas_mut().reset_scissor();
     let timing = crate::layout::scene::timing_on();
     let t_flush = timing.then(Instant::now);
@@ -124,8 +143,22 @@ pub fn execute(
     }
     // Recycle scratch targets only after flush; femtovg still executes queued calls at flush, as
     // `release_shadow_images` does for drop-shadow targets.
-    painter.recycle_scratch(std::mem::take(&mut walk.scratch));
+    let retired = painter.sweep_layers(surface, |kept| holds(&list.commands, kept));
+    painter.recycle_scratch(walk.scratch.drain(..).chain(retired));
     (walk.drawn, walk.split)
+}
+
+/// Whether `layer` is in `commands`, at any depth.
+fn holds(commands: &[DrawCmd], layer: &DrawCmd) -> bool {
+    commands.iter().any(|command| {
+        command == layer
+            || match &command.draw {
+                Draw::Clipped { commands, .. } | Draw::Transformed { commands, .. } | Draw::Layer { commands, .. } => {
+                    holds(commands, layer)
+                }
+                _ => false,
+            }
+    })
 }
 
 /// Runs commands against `target`, recursively restoring parent images for nested clips. `scratch`
@@ -137,14 +170,20 @@ fn run(painter: &mut TextPainter, walk: &mut Walk<'_, '_>, commands: &[DrawCmd],
     for command in commands {
         // `command.clip` already contains every ancestor intersection, so set the final scissor.
         let clip = command.clip;
-        if current_clip != Some(clip) {
+        let scissor = clip.intersect(frame.region);
+        // A transform's clip is untransformed; `repaint_region` took its drawn bounds whole or not at all.
+        let bounds = if let Draw::Transformed { .. } = command.draw { super::command_bounds(command) } else { scissor };
+        if super::is_empty(bounds.intersect(frame.region)) {
+            continue;
+        }
+        if current_clip != Some(scissor) {
             painter.canvas_mut().scissor(
-                clip.x0 as f32,
-                clip.y0 as f32,
-                (clip.x1 - clip.x0) as f32,
-                (clip.y1 - clip.y0) as f32,
+                scissor.x0 as f32,
+                scissor.y0 as f32,
+                (scissor.x1 - scissor.x0) as f32,
+                (scissor.y1 - scissor.y0) as f32,
             );
-            current_clip = Some(clip);
+            current_clip = Some(scissor);
         }
         let rect = command.rect;
         match &command.draw {
@@ -235,7 +274,7 @@ fn run(painter: &mut TextPainter, walk: &mut Walk<'_, '_>, commands: &[DrawCmd],
                                     cross: Some(image_shader::Cross { from, to, from_rect, to_rect }),
                                     rect,
                                     transform: frame.transform,
-                                    clip,
+                                    clip: scissor,
                                     target_size: frame.size,
                                     target_origin: frame.origin,
                                     opacity: *alpha,
@@ -296,7 +335,7 @@ fn run(painter: &mut TextPainter, walk: &mut Walk<'_, '_>, commands: &[DrawCmd],
                         cross: None,
                         rect,
                         transform: frame.transform,
-                        clip,
+                        clip: scissor,
                         target_size: frame.size,
                         target_origin: frame.origin,
                         opacity: *alpha,
@@ -315,13 +354,14 @@ fn run(painter: &mut TextPainter, walk: &mut Walk<'_, '_>, commands: &[DrawCmd],
                 let canvas = painter.canvas_mut();
                 canvas.save();
                 canvas.set_transform(&femtovg::Transform2D(*matrix));
-                run(painter, walk, commands, target, Frame { transform: Some(*matrix), ..frame });
+                let inner = Frame { transform: Some(*matrix), region: super::UNCLIPPED, ..frame };
+                run(painter, walk, commands, target, inner);
                 painter.canvas_mut().restore();
                 current_clip = None;
             }
             Draw::Shadow { shadow, radius } => paint_shadow(painter.canvas_mut(), rect, *shadow, *radius),
             Draw::Layer { effect, commands } => {
-                draw_layer(painter, walk, rect, clip, *effect, commands, target, frame);
+                draw_layer(painter, walk, command, *effect, commands, target, frame);
                 current_clip = None;
             }
             Draw::Backdrop { sigma, radius, alpha } => {
@@ -360,7 +400,9 @@ fn draw_clipped(
     let glass = mask.is_none() && super::any_draw_matches(commands, |draw| matches!(draw, Draw::Backdrop { .. }));
     let seed = if glass { read_target(painter, walk, clip) } else { None };
     let under = seed.as_ref().map(|(copy, _, paint)| paint(*copy, 1.0));
-    let Some(image) = offscreen(painter, walk, rect, clip, mask, under, commands, target, frame) else { return };
+    let Some(image) = offscreen(painter, walk, rect, clip, mask, under, commands, target, frame, frame.region) else {
+        return;
+    };
     let path = box_path(rect, radius);
     let (width, height) = ((clip.x1 - clip.x0) as f32, (clip.y1 - clip.y0) as f32);
     let paint = Paint::image(image, clip.x0 as f32, clip.y0 as f32, width, height, 0.0, 1.0);
@@ -387,6 +429,7 @@ fn scratch(painter: &mut TextPainter, walk: &mut Walk<'_, '_>, size: (usize, usi
 /// Draws `commands` into a scratch target covering `clip` over `under`, masked over the node's box
 /// `rect`, returned for the caller to composite at `clip`. `None` when there is nothing to
 /// composite.
+/// Draws only `region` of the commands, and cuts nothing when that is `UNCLIPPED`.
 #[allow(clippy::too_many_arguments)]
 fn offscreen(
     painter: &mut TextPainter,
@@ -398,6 +441,7 @@ fn offscreen(
     commands: &[DrawCmd],
     target: RenderTarget,
     frame: Frame,
+    region: PhysicalRect,
 ) -> Option<ImageId> {
     let (width, height) = ((clip.x1 - clip.x0) as usize, (clip.y1 - clip.y0) as usize);
     // A box with no area shows nothing, and asking for a 0xN render target leaves GL with an
@@ -431,8 +475,12 @@ fn offscreen(
     // The offscreen's own size (a shader quad inside a rounded clip places itself in that target,
     // ADR-0184), its origin at the clip's corner, and no transform: `draw_clipped`
     // reset the canvas transform above, and composites the result under the outer one afterwards.
-    let inner =
-        Frame { size: (width as f32, height as f32), origin: (clip.x0 as f32, clip.y0 as f32), transform: None };
+    let inner = Frame {
+        size: (width as f32, height as f32),
+        origin: (clip.x0 as f32, clip.y0 as f32),
+        transform: None,
+        region,
+    };
     run(painter, walk, commands, RenderTarget::Image(image), inner);
 
     // Multiplying alpha keeps the target premultiplied, and so masks a shader quad drawn into it
@@ -484,27 +532,49 @@ fn paint_shadow(canvas: &mut Canvas<OpenGl>, rect: LogicalRect, shadow: node::Sh
 }
 
 /// A subtree under its own shadow and `content_blur` (ADR-0254). Both are femtovg filters over
-/// pooled targets, so a static layer allocates nothing per frame but the blur's own intermediate.
-#[allow(clippy::too_many_arguments)]
+/// pooled targets, and an unchanged layer composites what it last finished (ADR-0258).
 fn draw_layer(
     painter: &mut TextPainter,
     walk: &mut Walk<'_, '_>,
-    rect: LogicalRect,
-    clip: PhysicalRect,
+    command: &DrawCmd,
     node::Effect { shadow, blur, .. }: node::Effect,
     commands: &[DrawCmd],
     target: RenderTarget,
     frame: Frame,
 ) {
-    let Some(content) = offscreen(painter, walk, rect, clip, None, None, commands, target, frame) else { return };
+    let (rect, clip) = (command.rect, command.clip);
     let size = ((clip.x1 - clip.x0) as usize, (clip.y1 - clip.y0) as usize);
     let area = LogicalRect { x: clip.x0 as f32, y: clip.y0 as f32, width: size.0 as f32, height: size.1 as f32 };
-    if let Some(shadow) = shadow
-        && let Some(cast) = cast_shadow(painter, walk, content, size, shadow, target)
-    {
+    let (cast, content) = match painter.layer(walk.surface, command) {
+        Some(kept) => kept,
+        None => {
+            // Whole: the blur and the shadow read past the repaint's edge.
+            let Some(content) =
+                offscreen(painter, walk, rect, clip, None, None, commands, target, frame, super::UNCLIPPED)
+            else {
+                return;
+            };
+            let cast = shadow.and_then(|shadow| cast_shadow(painter, walk, content, size, shadow, target));
+            let sharp = blur * walk.scale < MIN_SIGMA;
+            let blurred = blurred(painter, walk, content, size, blur * walk.scale);
+            // A filter a full pool refused leaves this frame unfiltered, not every frame after.
+            let filtered = shadow.is_none() == cast.is_none() && sharp == blurred.is_none();
+            let content = blurred.unwrap_or(content);
+            // A glass reads what is under the layer's box, which this command does not name.
+            if filtered
+                && !super::any_draw_matches(commands, |draw| {
+                    super::volatile(draw) || matches!(draw, Draw::Backdrop { .. })
+                })
+            {
+                walk.scratch.retain(|(id, _)| Some(*id) != cast && *id != content);
+                painter.keep_layer(walk.surface, command, (cast, content), size);
+            }
+            (cast, content)
+        }
+    };
+    if let (Some(shadow), Some(cast)) = (shadow, cast) {
         fill_image(painter.canvas_mut(), cast, super::shadow_rect(rect, area, shadow), 1.0);
     }
-    let content = blurred(painter, walk, content, size, blur * walk.scale).unwrap_or(content);
     fill_image(painter.canvas_mut(), content, area, 1.0);
 }
 
@@ -2168,17 +2238,187 @@ mod tests {
             })
         };
         let mut stage = image_shader::ShaderStage::default();
-        painter.canvas_mut().clear_rect(0, 0, size.0, size.1, Color::rgbaf(0.0, 0.0, 0.0, 0.0));
         let shaders = Some(Shaders { gl: &gl, stage: &mut stage });
         let list = build(&root, 1.0, None);
-        let target = (size.0 as f32, size.1 as f32);
-        let _ =
-            execute(&mut painter, &mut ImageCache::new(), &mut CaptureCache::default(), &list, 1.0, target, shaders);
+        let (target, whole) =
+            ((size.0 as f32, size.1 as f32), PhysicalRect { x0: 0, y0: 0, x1: size.0 as i32, y1: size.1 as i32 });
+        let (images, captures) = (&mut ImageCache::new(), &mut CaptureCache::default());
+        let _ = execute("test", &mut painter, images, captures, &list, 1.0, target, &[whole], shaders);
         let canvas = painter.canvas_mut();
         Some(points.iter().map(|&(x, y)| pixel_at(canvas, x, y)).collect())
     }
 
-    /// A raw-GL `shader` quad inside a layer lands in the offscreen, and casts its shadow from it.
+    /// Paints `after` whole on one 96x64 pbuffer, and `before` whole then `after` in `region` on
+    /// another, and asserts the second matches the first inside `region` and `before` outside it.
+    fn assert_partial_repaint_matches(before: &DisplayList, after: &DisplayList, regions: &[PhysicalRect]) {
+        let Some((instance, display, context, _, partial)) = init_headless_egl_two_surfaces(96, 64) else { return };
+        let shaping = ShapingHandle::spawn();
+        let Some(mut painter) = text_painter(&instance, &shaping, 96, 64) else { return };
+        // SAFETY: `init_headless_egl_two_surfaces` made this context current on this thread.
+        let gl = unsafe {
+            glow::Context::from_loader_function(|s| {
+                instance.get_proc_address(s).map_or(std::ptr::null(), |f| f as *const c_void)
+            })
+        };
+        let mut stage = image_shader::ShaderStage::default();
+        let mut paint = |painter: &mut TextPainter, list: &DisplayList, regions: &[PhysicalRect]| {
+            let (images, captures) = (&mut ImageCache::new(), &mut CaptureCache::default());
+            let shaders = Some(Shaders { gl: &gl, stage: &mut stage });
+            let _ = execute("test", painter, images, captures, list, 1.0, (96.0, 64.0), regions, shaders);
+            painter.canvas_mut().screenshot().expect("screenshot reads back the pbuffer's own framebuffer")
+        };
+        let whole = PhysicalRect { x0: 0, y0: 0, x1: 96, y1: 64 };
+        let expected = paint(&mut painter, after, &[whole]);
+        instance
+            .make_current(display, Some(partial), Some(partial), Some(context))
+            .expect("switching the draw surface");
+        let previous = paint(&mut painter, before, &[whole]);
+        let repainted = paint(&mut painter, after, regions);
+        for (x, y) in (0..64usize).flat_map(|y| (0..96usize).map(move |x| (x, y))) {
+            let (x_, y_) = (x as i32, y as i32);
+            let inside = regions.iter().any(|r| (r.x0..r.x1).contains(&x_) && (r.y0..r.y1).contains(&y_));
+            let want = if inside { expected[(x, y)] } else { previous[(x, y)] };
+            assert_eq!(repainted[(x, y)], want, "({x}, {y}), inside the region: {inside}");
+        }
+    }
+
+    fn surface_96x64(src: &str) -> DisplayList {
+        build(&resolved_surface(&Lua::new(), src, LogicalSize { width: 96.0, height: 64.0 }), 1.0, None)
+    }
+
+    /// ADR-0258. A partial repaint rewrites its region alone: through a masked group, a shader quad
+    /// and a blurred box it cuts across, it matches a whole paint, and outside it the last frame
+    /// stays.
+    #[test]
+    fn a_partial_repaint_matches_a_whole_one_inside_its_region_and_keeps_the_last_frame_outside() {
+        let dir = tempfile::tempdir().unwrap();
+        let frag = dir.path().join("tint.frag");
+        std::fs::write(&frag, "uniform vec4 tint; void main() { fragColor = tint; }").unwrap();
+        let list = |ground: &str, corner: &str, tint: &str| {
+            surface_96x64(&format!(
+                r##"return panel {{ id = "bar", width = 96, height = 64, background = "{ground}", padding = 8,
+                    child = row {{ spacing = 8, children = {{
+                        rect {{ width = 24, height = 48, background = "#FF0000FF", mask = {{ gradient = "Linear",
+                            angle = 90, stops = {{ {{ 0, "#FFFFFFFF" }}, {{ 1, "#FFFFFF40" }} }} }},
+                            children = {{ rect {{ width = 16, height = 16, background = "{corner}" }} }} }},
+                        shader {{ width = 20, height = 48, source = "{}", params = {{ tint = {{ {tint} }} }} }},
+                        rect {{ width = 20, height = 20, background = "#0000FFFF", radius = 6, content_blur = 3 }} }} }} }}"##,
+                frag.display()
+            ))
+        };
+        let after = list("#FFFFFFFF", "#FFFF00FF", "0.5, 0, 0, 0.5");
+        // Into the blurred box's 3-sigma reach, which starts at 59.
+        let region = PhysicalRect { x0: 20, y0: 12, x1: 64, y1: 20 };
+        assert_eq!(after.repaint_region(region), region);
+        let before = list("#00FF00FF", "#000000FF", "0, 0, 0.5, 0.5");
+        assert_partial_repaint_matches(&before, &after, &[region]);
+        // Two apart, one of them through the blurred box's composite alone.
+        assert_partial_repaint_matches(
+            &before,
+            &after,
+            &[PhysicalRect { x0: 2, y0: 2, x1: 12, y1: 60 }, PhysicalRect { x0: 70, y0: 30, x1: 94, y1: 50 }],
+        );
+    }
+
+    /// ADR-0258. A box changing within a frosted pill's reach, on the screen and inside a rounded
+    /// card that seeds its offscreen from the screen, grows the repaint over the pill's whole read,
+    /// so the pill blurs this frame's pixels only.
+    #[test]
+    fn a_partial_repaint_beside_a_frosted_pill_matches_a_whole_one() {
+        // Solid grounds: a gradient's femtovg texture does not survive a glass's mid-frame flush
+        // into the next paint, which is ADR-0256's to fix.
+        let pair = |colour: &str| {
+            format!(
+                r##"row {{ spacing = 2, children = {{ rect {{ width = 10, height = 20, background = "{colour}" }},
+                    rect {{ width = 40, height = 20, radius = 10, backdrop_blur = 4 }},
+                    rect {{ width = 10, height = 20, background = "#0000FFFF" }} }} }}"##
+            )
+        };
+        let list = |colour: &str| {
+            surface_96x64(&format!(
+                r##"return panel {{ id = "bar", width = 96, height = 64, padding = 4, background = "#FF0000FF",
+                    child = column {{ spacing = 4, children = {{ {},
+                        rect {{ width = 88, height = 32, radius = 8, clip = "Rounded", padding = 4,
+                            background = "#FFFFFF40", children = {{ {} }} }} }} }} }}"##,
+                pair(colour),
+                pair(colour)
+            ))
+        };
+        let (before, after) = (list("#00FF00FF"), list("#FFFF00FF"));
+        // Both changed boxes, as a buffer-age union hands them over, before any backdrop growth.
+        let damage = PhysicalRect { x0: 4, y0: 4, x1: 22, y1: 56 };
+        let region = after.repaint_region(damage).intersect(PhysicalRect { x0: 0, y0: 0, x1: 96, y1: 64 });
+        assert!(region.x1 > 60, "grown over the pills' reads: {region:?}");
+        assert_partial_repaint_matches(&before, &after, &[region]);
+    }
+
+    /// ADR-0258. An unchanged layer composites what it last finished, per surface. It stays kept
+    /// while its surface's list holds it, however long the region skips it, and goes on the first
+    /// paint that no longer holds it. One drawing a texture or a glass is never kept: either can
+    /// change under its list.
+    #[test]
+    fn an_unchanged_layer_composites_what_it_last_finished() {
+        let Some(instance) = init_headless_egl(96, 64) else { return };
+        let shaping = ShapingHandle::spawn();
+        let Some(mut painter) = text_painter(&instance, &shaping, 96, 64) else { return };
+        let list = |child: &str| {
+            surface_96x64(&format!(
+                r##"return panel {{ id = "bar", width = 96, height = 64, padding = 16, child = {child} }}"##
+            ))
+        };
+        let paint = |painter: &mut TextPainter, surface: &str, list: &DisplayList, region: PhysicalRect| {
+            let (images, captures) = (&mut ImageCache::new(), &mut CaptureCache::default());
+            let _ = execute(surface, painter, images, captures, list, 1.0, (96.0, 64.0), &[region], None);
+        };
+        let whole = PhysicalRect { x0: 0, y0: 0, x1: 96, y1: 64 };
+        let blurred = list(r##"rect { width = 32, height = 32, background = "#FF0000FF", content_blur = 2 }"##);
+        let red = list(r##"rect { width = 32, height = 32, background = "#FF0000FE", content_blur = 2 }"##);
+        let layer = blurred.commands.last().unwrap();
+        paint(&mut painter, "a", &blurred, whole);
+        paint(&mut painter, "b", &red, whole);
+        let (_, content) = painter.layer("a", layer).expect("a layer with no texture is kept");
+        assert!(painter.layer("b", red.commands.last().unwrap()).is_some(), "the other surface's, in the same place");
+        // Only a composite of the kept image could show this.
+        let canvas = painter.canvas_mut();
+        canvas.set_render_target(RenderTarget::Image(content));
+        let (width, height) = ((layer.clip.x1 - layer.clip.x0) as u32, (layer.clip.y1 - layer.clip.y0) as u32);
+        canvas.clear_rect(0, 0, width, height, Color::rgbaf(0.0, 0.0, 1.0, 1.0));
+        canvas.set_render_target(RenderTarget::Screen);
+        paint(&mut painter, "a", &blurred, whole);
+        assert_eq!(pixel_at(painter.canvas_mut(), 20, 20), (0, 0, 255, 255));
+
+        let corner = PhysicalRect { x0: 90, y0: 0, x1: 96, y1: 4 };
+        for _ in 0..=crate::text::atlas::LAYER_PAINTS {
+            paint(&mut painter, "a", &blurred, corner);
+        }
+        assert!(painter.layer("a", layer).is_some(), "held by its list while the region skips it");
+        paint(&mut painter, "a", &DisplayList::default(), whole);
+        assert!(painter.layer("a", layer).is_none(), "gone once its list drops it");
+
+        let textured = list(r#"image { source = "/nonexistent.png", width = 32, height = 32, content_blur = 2 }"#);
+        paint(&mut painter, "a", &textured, whole);
+        assert!(painter.layer("a", textured.commands.last().unwrap()).is_none());
+
+        // A glass inside reads what is under it, which the layer's command does not name (ADR-0256).
+        let glass = list(
+            r#"rect { width = 32, height = 32, content_blur = 2, children = { rect { width = 16, height = 16, backdrop_blur = 2 } } }"#,
+        );
+        paint(&mut painter, "a", &glass, whole);
+        assert!(painter.layer("a", glass.commands.last().unwrap()).is_none(), "{glass:?}");
+    }
+
+    /// ADR-0258. A region past the surface's edge still clears and redraws the part inside it.
+    #[test]
+    fn a_region_past_the_surfaces_edge_repaints_the_part_inside() {
+        let list = |colour: &str| {
+            surface_96x64(&format!(
+                r##"return panel {{ id = "bar", width = 96, height = 64, background = "{colour}" }}"##
+            ))
+        };
+        let region = PhysicalRect { x0: -8, y0: -8, x1: 40, y1: 30 };
+        assert_partial_repaint_matches(&list("#00FF0080"), &list("#FF000080"), &[region]);
+    }
+
     #[test]
     fn a_shader_nodes_quad_casts_a_shadow_through_the_layer() {
         let dir = tempfile::tempdir().unwrap();
@@ -2329,5 +2569,27 @@ mod tests {
             assert!(px[1..3].iter().all(|p| (40..=215).contains(&p.0) && (40..=215).contains(&p.2)), "blended, {case}");
             assert_eq!(px[4], (255, 0, 0, 255), "sharp outside the pill, {case}");
         }
+    }
+
+    /// ADR-0258. A layer too big for the budget is dropped alone; older layers under it stay.
+    #[test]
+    fn a_layer_over_the_budget_evicts_only_itself() {
+        let Some(instance) = init_headless_egl(8, 8) else { return };
+        let shaping = ShapingHandle::spawn();
+        let Some(mut painter) = text_painter(&instance, &shaping, 8, 8) else { return };
+        let command = |colour: &str| {
+            let src = format!(r#"return panel {{ id = "bar", width = 96, height = 64, background = "{colour}" }}"#);
+            surface_96x64(&src).commands[0].clone()
+        };
+        let (small, big) = (command("#FF0000FF"), command("#0000FFFF"));
+        let mut image =
+            || painter.canvas_mut().create_image_empty(1, 1, PixelFormat::Rgba8, ImageFlags::empty()).unwrap();
+        let (small_id, big_id) = (image(), image());
+        painter.keep_layer("other", &small, (None, small_id), (8, 8));
+        painter.recycle_scratch([]);
+        painter.keep_layer("test", &big, (None, big_id), (5000, 5000));
+        let retired = painter.sweep_layers("test", |_| true);
+        assert_eq!(retired, [(big_id, (5000, 5000))]);
+        assert!(painter.layer("other", &small).is_some());
     }
 }

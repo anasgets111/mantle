@@ -159,6 +159,12 @@ fn any_draw_matches(commands: &[DrawCmd], matches: impl Fn(&Draw) -> bool + Copy
     })
 }
 
+/// Whether `draw`'s pixels can change under an unchanged command: a decode or capture landing, a
+/// GIF frame (ADR-0258).
+fn volatile(draw: &Draw) -> bool {
+    matches!(draw, Draw::Image { .. } | Draw::Icon { .. } | Draw::Capture { .. }) || mask_file(draw).is_some()
+}
+
 /// The file an image `mask` reads, which changes under an unchanged list as an `image`'s does.
 fn mask_file(draw: &Draw) -> Option<&str> {
     match draw {
@@ -247,34 +253,71 @@ impl DisplayList {
     /// The pixels that can differ from `previous`, empty if none can. Commands outside the common
     /// prefix and suffix are the only ones whose list entry differs, so their bounds, old and new,
     /// cover those. A texture changes under an unchanged entry (a decode or capture landing, a GIF
-    /// frame), so every command drawing one adds its own bounds too.
-    /// ponytail: the changed commands merge into one rect, so two changes at opposite corners
-    /// damage everything between. Upgrade path is a rect per changed command, capped.
-    pub fn damage_since(&self, previous: &DisplayList) -> Vec<PhysicalRect> {
-        let (old, new) = (&previous.commands, &self.commands);
-        let prefix = old.iter().zip(new).take_while(|(a, b)| a == b).count();
-        let (old, new) = (&old[prefix..], &new[prefix..]);
-        let suffix = old.iter().rev().zip(new.iter().rev()).take_while(|(a, b)| a == b).count();
-        let changed = old[..old.len() - suffix].iter().chain(&new[..new.len() - suffix]).map(command_bounds);
-        let textured = self
-            .commands
-            .iter()
-            .filter(|command| {
-                any_draw_matches(std::slice::from_ref(command), |draw| {
-                    matches!(draw, Draw::Image { .. } | Draw::Icon { .. } | Draw::Capture { .. })
-                        || mask_file(draw).is_some()
-                })
-            })
-            .map(command_bounds);
-        let mut damage: Vec<PhysicalRect> = changed
-            .filter(|rect| !is_empty(*rect))
-            .reduce(union)
-            .into_iter()
-            .chain(textured)
-            .filter(|r| !is_empty(*r))
-            .collect();
+    /// frame) only on a paint its surface owes for that (ADR-0182, ADR-0233), and then `textures`
+    /// adds the bounds of every command drawing one. A rounded clip whose own fields match
+    /// composites pixel for pixel, so both look inside it (ADR-0258). One rect per changed
+    /// command, and one for a run whose length changed.
+    pub fn damage_since(&self, previous: &DisplayList, textures: bool) -> Vec<PhysicalRect> {
+        fn merged(rects: impl Iterator<Item = PhysicalRect>) -> Option<PhysicalRect> {
+            rects.filter(|rect| !is_empty(*rect)).reduce(union)
+        }
+        fn changed(old: &[DrawCmd], new: &[DrawCmd], out: &mut Vec<PhysicalRect>) {
+            let prefix = old.iter().zip(new).take_while(|(a, b)| a == b).count();
+            let (old, new) = (&old[prefix..], &new[prefix..]);
+            let suffix = old.iter().rev().zip(new.iter().rev()).take_while(|(a, b)| a == b).count();
+            let (old, new) = (&old[..old.len() - suffix], &new[..new.len() - suffix]);
+            if old.len() != new.len() {
+                out.extend(merged(old.iter().chain(new).map(command_bounds)));
+                return;
+            }
+            for (a, b) in old.iter().zip(new).filter(|(a, b)| a != b) {
+                match (&a.draw, &b.draw) {
+                    (
+                        Draw::Clipped { radius, mask, commands },
+                        Draw::Clipped { radius: r, mask: m, commands: other },
+                    ) if (a.rect, a.clip, radius, mask) == (b.rect, b.clip, r, m) => changed(commands, other, out),
+                    _ => out.extend(merged([a, b].into_iter().map(command_bounds))),
+                }
+            }
+        }
+        fn textured(commands: &[DrawCmd], out: &mut Vec<PhysicalRect>) {
+            for command in commands {
+                match &command.draw {
+                    Draw::Clipped { commands, .. } if mask_file(&command.draw).is_none() => textured(commands, out),
+                    _ if any_draw_matches(std::slice::from_ref(command), volatile) => out.push(command_bounds(command)),
+                    _ => {}
+                }
+            }
+        }
+        let mut damage = Vec::new();
+        changed(&previous.commands, &self.commands, &mut damage);
+        if textures {
+            textured(&self.commands, &mut damage);
+        }
+        damage.retain(|r| !is_empty(*r));
         self.expand_backdrops(&mut damage);
         damage
+    }
+
+    /// `damage` grown over every transformed group it touches (ADR-0258): their scissors follow
+    /// their matrix, so they draw whole. Rounded clips and masks draw in part, so the walk goes
+    /// into them.
+    pub fn repaint_region(&self, damage: PhysicalRect) -> PhysicalRect {
+        fn grow(commands: &[DrawCmd], region: PhysicalRect) -> PhysicalRect {
+            commands.iter().fold(region, |region, command| match &command.draw {
+                Draw::Clipped { commands, .. } => grow(commands, region),
+                Draw::Transformed { .. } => {
+                    let bounds = command_bounds(command);
+                    if is_empty(bounds.intersect(region)) { region } else { union(region, bounds) }
+                }
+                _ => region,
+            })
+        }
+        // Grown until stable: a transform may reach a backdrop and a read area a transform.
+        let mut grown = vec![grow(&self.commands, damage)];
+        self.expand_backdrops(&mut grown);
+        let grown = grown.into_iter().reduce(union).unwrap_or(damage);
+        if grown == damage { damage } else { self.repaint_region(grown) }
     }
 
     /// Adds every backdrop's read area that `damage` reaches, until none is left, so a repainted
@@ -303,6 +346,33 @@ impl DisplayList {
                 && damage.iter().any(|rect| !is_empty(rect.intersect(*read)))
         }) {
             damage.push(pending.swap_remove(at));
+        }
+    }
+}
+
+/// The most rects one paint repaints apart (ADR-0258); past it the cheapest pairs merge.
+const MAX_REGIONS: usize = 4;
+
+/// `rects` merged wherever a pair's union covers under 1.5x their summed area, which takes every
+/// overlap, then pairwise, cheapest first, down to [`MAX_REGIONS`] (ADR-0258).
+pub fn coalesce(mut rects: Vec<PhysicalRect>) -> Vec<PhysicalRect> {
+    rects.retain(|rect| !is_empty(*rect));
+    // A relayout damages every command; the pairing below is quadratic per merge.
+    if rects.len() > 32 {
+        return rects.into_iter().reduce(union).into_iter().collect();
+    }
+    let area = |r: PhysicalRect| i64::from(r.x1 - r.x0) * i64::from(r.y1 - r.y0);
+    loop {
+        let pairs = (0..rects.len()).flat_map(|i| (i + 1..rects.len()).map(move |j| (i, j)));
+        let cost = |&(i, j): &(usize, usize)| {
+            area(union(rects[i], rects[j])) as f64 / (area(rects[i]) + area(rects[j])) as f64
+        };
+        match pairs.map(|pair| (cost(&pair), pair)).min_by(|a, b| a.0.total_cmp(&b.0)) {
+            Some((cost, (i, j))) if cost < 1.5 || rects.len() > MAX_REGIONS => {
+                rects[i] = union(rects[i], rects[j]);
+                rects.swap_remove(j);
+            }
+            _ => return rects,
         }
     }
 }
@@ -339,7 +409,7 @@ pub(crate) fn transformed(matrix: node::Affine, rect: PhysicalRect) -> PhysicalR
     snap_to_physical(super::region::transformed_bounds(matrix, rect), 1.0)
 }
 
-fn union(a: PhysicalRect, b: PhysicalRect) -> PhysicalRect {
+pub(crate) fn union(a: PhysicalRect, b: PhysicalRect) -> PhysicalRect {
     PhysicalRect { x0: a.x0.min(b.x0), y0: a.y0.min(b.y0), x1: a.x1.max(b.x1), y1: a.y1.max(b.y1) }
 }
 
@@ -1664,7 +1734,8 @@ mod tests {
         assert_eq!(pinned, [(std::path::PathBuf::from("/tmp/m.png"), (80, 32))]);
         assert!(list.draws_any_of(&[std::path::PathBuf::from("/tmp/m.png")]));
         assert!(!list.draws_any_of(&[std::path::PathBuf::from("/tmp/other.png")]));
-        assert_eq!(list.damage_since(&list), [PhysicalRect { x0: -2, y0: -2, x1: 82, y1: 34 }]);
+        assert_eq!(list.damage_since(&list, true), [PhysicalRect { x0: -2, y0: -2, x1: 82, y1: 34 }]);
+        assert!(list.damage_since(&list, false).is_empty(), "no texture moved: the surface owes no paint");
     }
 
     #[test]
@@ -1681,15 +1752,18 @@ mod tests {
         };
         let before = DisplayList { commands: vec![cmd(0.0), cmd(100.0), cmd(500.0)] };
         let after = DisplayList { commands: vec![cmd(0.0), cmd(140.0), cmd(500.0)] };
-        assert_eq!(after.damage_since(&before), [PhysicalRect { x0: 98, y0: 8, x1: 162, y1: 32 }]);
-        assert!(before.damage_since(&before).is_empty());
+        assert_eq!(after.damage_since(&before, true), [PhysicalRect { x0: 98, y0: 8, x1: 162, y1: 32 }]);
+        assert!(before.damage_since(&before, true).is_empty());
         let transformed = |scale: f32| DisplayList {
             commands: vec![DrawCmd {
                 draw: Draw::Transformed { matrix: [scale, 0.0, 0.0, scale, 0.0, 0.0], commands: vec![cmd(100.0)] },
                 ..cmd(100.0)
             }],
         };
-        assert_eq!(transformed(2.0).damage_since(&transformed(1.0)), [PhysicalRect { x0: 98, y0: 8, x1: 244, y1: 64 }]);
+        assert_eq!(
+            transformed(2.0).damage_since(&transformed(1.0), true),
+            [PhysicalRect { x0: 98, y0: 8, x1: 244, y1: 64 }]
+        );
     }
 
     fn effect_surface(child: &str) -> DisplayList {
@@ -1848,7 +1922,7 @@ mod tests {
             ))
         };
         for (spacing, reached) in [(4, true), (30, false)] {
-            let damage = surface(spacing, "#ff0000").damage_since(&surface(spacing, "#00ff00"));
+            let damage = surface(spacing, "#ff0000").damage_since(&surface(spacing, "#00ff00"), true);
             let frosted = 50 + spacing + 40;
             assert_eq!(damage.iter().any(|r| r.x1 >= frosted), reached, "spacing {spacing}: {damage:?}");
         }
@@ -1891,6 +1965,78 @@ mod tests {
         assert!(!list.commands.iter().any(|cmd| matches!(cmd.draw, Draw::Backdrop { .. })), "{list:?}");
     }
 
+    /// ADR-0258. Rects merge where their union costs under 1.5x their summed area, overlapping
+    /// ones always, and the cheapest pairs merge until at most four are left.
+    #[test]
+    fn repaint_rects_merge_when_cheap_and_down_to_four() {
+        let rect = |x0, y0, side| PhysicalRect { x0, y0, x1: x0 + side, y1: y0 + side };
+        let (shader, clock) = (rect(10, 10, 100), rect(1300, 10, 20));
+        assert_eq!(coalesce(vec![shader, clock]), [shader, clock], "far apart stay apart");
+        assert_eq!(coalesce(vec![shader, rect(50, 50, 100)]), [rect(10, 10, 140)], "overlapping merge");
+        assert_eq!(coalesce(vec![rect(0, 0, 10), rect(10, 0, 10)]), [PhysicalRect { x0: 0, y0: 0, x1: 20, y1: 10 }]);
+        let five: Vec<_> = (0..5).map(|i| rect(i * 300, 0, 10)).collect();
+        let merged = coalesce(five);
+        assert_eq!(merged.len(), 4, "{merged:?}");
+    }
+
+    /// ADR-0258. Each changed command damages its own bounds, so a shader at one end and a clock at
+    /// the other are two rects, not the panel between them.
+    #[test]
+    fn two_far_changes_damage_two_rects() {
+        let list = |colour: &str| {
+            effect_surface(&format!(
+                r##"row {{ spacing = 60, children = {{ rect {{ width = 10, height = 10, background = "{colour}" }},
+                    rect {{ width = 10, height = 10, background = "#ffffff" }},
+                    rect {{ width = 10, height = 10, background = "{colour}" }} }} }}"##
+            ))
+        };
+        let damage = list("#ff0000").damage_since(&list("#00ff00"), true);
+        assert_eq!(damage.len(), 2, "{damage:?}");
+    }
+
+    /// ADR-0258. A rounded clip composites pixel for pixel, so a change or a texture inside one
+    /// damages that child alone rather than the whole group.
+    #[test]
+    fn a_change_inside_a_rounded_clip_damages_that_child_alone() {
+        let list = |color: &str| {
+            effect_surface(&format!(
+                r##"rect {{ width = 120, height = 40, radius = 8, clip = "Rounded", children = {{ row {{ children = {{
+                    rect {{ width = 20, height = 20, background = "{color}" }},
+                    rect {{ width = 20, height = 20, background = "#ffffff" }},
+                    image {{ source = "/tmp/i.png", width = 20, height = 20 }} }} }} }} }}"##
+            ))
+        };
+        let damage = list("#ff0000").damage_since(&list("#00ff00"), true);
+        assert_eq!(
+            damage,
+            [PhysicalRect { x0: 38, y0: 38, x1: 62, y1: 62 }, PhysicalRect { x0: 78, y0: 38, x1: 102, y1: 62 }]
+        );
+    }
+
+    /// ADR-0258. A repaint touching a transformed group grows to take it whole, inside a rounded
+    /// clip too, and on through whatever that growth then touches. A layer draws its offscreen
+    /// whole anyway, so it only clips the repaint, as a plain box does.
+    #[test]
+    fn a_repaint_takes_every_transformed_group_it_touches_whole() {
+        let list = effect_surface(
+            r##"row { spacing = 4, children = {
+                rect { width = 20, height = 20, background = "#ffffff", content_blur = 1 },
+                rect { width = 30, height = 20, radius = 4, clip = "Rounded", children = {
+                    rect { width = 20, height = 20, background = "#ffffff", scale = 2 } } },
+                rect { width = 20, height = 20, background = "#ffffff", scale = 2 } } }"##,
+        );
+        let clipped = list.commands.iter().find(|c| matches!(c.draw, Draw::Clipped { .. })).unwrap();
+        let Draw::Clipped { commands, .. } = &clipped.draw else { unreachable!() };
+        let inner = command_bounds(&commands[0]);
+        let outer = command_bounds(list.commands.last().unwrap());
+        assert!(!is_empty(inner.intersect(outer)), "the two scaled boxes overlap: {inner:?} {outer:?}");
+        let blurred = PhysicalRect { x0: 44, y0: 44, x1: 48, y1: 48 };
+        assert_eq!(list.repaint_region(blurred), blurred);
+        // Past the clipped one in list order, so only a second pass reaches it.
+        let touching = PhysicalRect { x0: 125, y0: 44, x1: 127, y1: 48 };
+        assert_eq!(list.repaint_region(touching), union(inner, outer));
+    }
+
     /// A shadow moving repaints where it was and where it lands, not only the node's box.
     #[test]
     fn a_moved_shadow_damages_both_its_old_and_new_extent() {
@@ -1899,7 +2045,7 @@ mod tests {
                 r##"rect {{ width = 40, height = 20, background = "#ffffff", shadow_offset = {{ y = {y} }} }}"##
             ))
         };
-        let damage = at(30).damage_since(&at(10));
+        let damage = at(30).damage_since(&at(10), true);
         assert!(
             damage.iter().any(|r| r.y0 <= 50 && r.y1 >= 90 && r.x0 <= 40 && r.x1 >= 80),
             "the old shadow at 50..70 and the new one at 70..90: {damage:?}"

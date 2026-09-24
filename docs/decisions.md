@@ -6189,3 +6189,68 @@ child's own rectangle. CSS and Qt let ink overflow unless the parent opts in to 
 3. **A `mask` still cuts to the box**, because the mask is composited through the box's shape.
 
 **Amends ADR-0079.**
+
+## 0258. A frame repaints only what its back buffer lacks, and an unchanged layer is not redrawn
+
+A looping 298x150 `shader` on a 1420x560 panel cost 1.8 ms of CPU a frame at 165 Hz, 76% of it in
+femtovg's `flush`. Every frame cleared the buffer and re-ran every command and offscreen; only the
+swap was told the damage (ADR-0063 amendment).
+
+1. **Buffer age picks the regions.** `EGL_BUFFER_AGE_EXT` says how many frames old the back
+   buffer is. Each surface keeps the damage rects of its last 3 presented frames. The regions are
+   this frame's rects and the `age - 1` frames' before them, merged wherever a pair's union covers
+   under 1.5x their summed area, overlaps always, then cheapest first down to 4. Age 0, an age past
+   4, a resize, a rebind, or a whole-surface frame in that window repaints everything. Where the
+   display has `EGL_KHR_partial_update`, `eglSetDamageRegionKHR` gets the regions after the age
+   query: its spec keeps the whole buffer only alongside `EGL_EXT_buffer_age`, and a tiling GPU
+   then reloads only the rest.
+2. **`execute` clears and scissors each region**, cut to the target. It clears colour and stencil
+   inside it, cuts every scissor to it, the shader stage's GL scissor included, and skips a
+   command outside it. Outside, a reused buffer's stencil is undefined, and femtovg's scissor
+   zeroes a fill's colour there. All regions share one flush.
+3. **A transformed group and a glass's read draw whole.** A transform's scissors follow its
+   matrix, and `glCopyTexSubImage2D` ignores the scissor (ADR-0256). So `repaint_region` grows a
+   region over every transformed group and every backdrop read area it touches, to a fixpoint,
+   walking into rounded clips; `expand_backdrops` supplies the reads.
+4. **A rounded clip draws in part; a layer's offscreen draws whole.** A clip's offscreen draws the
+   region alone and composites through it. A blur or shadow reads past any edge, so a layer renders
+   its whole offscreen and only its composite is cut.
+5. **Damage is one rect per changed command, and looks inside a rounded clip** whose rect, clip,
+   radius and mask match: it composites pixel for pixel. A change with nothing in view damages
+   nothing, and the surface commits without a buffer, as an unchanged list does.
+6. **A textured draw adds damage only on a paint its surface owes** (ADR-0182, ADR-0233): only
+   then has a decode, capture or GIF frame moved its texture. A paint the surface did not owe
+   keeps its animated image's deadline, since the regions may have skipped the image.
+7. **An unchanged layer composites what it last finished.** `TextPainter` keeps a layer's shadow
+   and content images, keyed by surface and the whole `Draw::Layer` command. Each paint frees that
+   surface's layers its list no longer holds, and keeps those it holds however long the regions
+   skip them. A gone surface's layers go after 1000 paints of the others; all of them past 64 MiB,
+   least recently held first. Never kept: a layer drawing a `volatile` draw, whose pixels change
+   under an unchanged command; one holding a glass, which reads under its box; one whose shadow
+   or blur a full pool refused.
+
+CPU ms per frame, GPU finish in brackets. Headless Mesa Iris, 400 frames: a 1420x560 rounded root
+holding 12 rounded cells, 8 text lines, a blurred shadowed card and a looping 298x150 shader.
+
+| Case | Before | After |
+| :--- | :--- | :--- |
+| Steady animation, age 1 | 2.1 (2.3) | 0.09 (0.20) |
+| The card within the shader's damage | 2.1 (2.3) | 0.09 (0.20) |
+| Plus a text changing at the far end | 2.1 (2.3) | 0.14 (0.30); one bounding rect: 0.72 (0.98) |
+| Whole repaint: age 0, resize | 2.1 (2.3) | 0.75 (1.00) |
+| The shader inside a blurred root | 3.1 (3.2) | 3.1 (3.2) |
+
+A rounded clip holding a glass seeds its offscreen from the parent's whole clip. Outside the
+region those pixels are stale but never composited, and the glass reads only its own area, which
+point 3 keeps inside the region. A glass is not `volatile`: `expand_backdrops` covers its damage,
+and always damaging it would only widen every region.
+
+Rejected: keeping rounded clips' offscreens, since they already draw only the region and a whole
+repaint is rare.
+
+ponytail: a layer whose subtree changes redraws its whole offscreen, so a child animating under
+`content_blur` gains nothing. Upgrade path: keep the offscreen and redraw the damage grown by the
+blur's reach.
+
+**Amends ADR-0063** (the clear and the draw follow the damage, not only the swap) **and ADR-0254**
+(a static layer allocates and filters nothing per frame).
