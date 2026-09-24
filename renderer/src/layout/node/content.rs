@@ -8,7 +8,6 @@ use std::sync::Arc;
 
 use mlua::Value;
 
-use crate::image::{Fit, Load};
 use crate::text::shaping::FontRun;
 use crate::text::snap::LogicalRect;
 
@@ -136,12 +135,6 @@ fn parse_runs(runs: &mlua::Table) -> Result<(String, Vec<StyleRun>), LayoutError
     Ok((content, styles))
 }
 
-/// `icon.name` is a theme name or absolute path; `image::icons::resolve` tells them
-/// apart. It defaults to `""` for the same pre-first-push nil rule as `content` (ADR-0044).
-pub fn parse_icon_name(properties: &PropMap) -> Result<String, LayoutError> {
-    parse_optional_string(properties, "name")
-}
-
 /// `textfield.placeholder` is empty by default. `image.source` is an absolute path,
 /// never an icon theme name (ADR-0054 decision 3).
 pub fn parse_placeholder(properties: &PropMap) -> Result<String, LayoutError> {
@@ -156,48 +149,6 @@ pub fn parse_mask_character(properties: &PropMap) -> Result<String, LayoutError>
         return Ok("\u{2022}".to_string());
     }
     Ok(declared.chars().next().map(String::from).unwrap_or_default())
-}
-
-pub fn parse_image_source(properties: &PropMap) -> Result<String, LayoutError> {
-    parse_optional_string(properties, "source")
-}
-
-/// `image.fit` (ADR-0055 decision 3) defaults to `cover`; an unrecognised string errors rather
-/// than silently selecting a fit.
-pub fn parse_fit(properties: &PropMap) -> Result<Fit, LayoutError> {
-    parse_keyword(
-        properties.get("fit"),
-        "fit",
-        &[("cover", Fit::Cover), ("contain", Fit::Contain), ("stretch", Fit::Stretch)],
-    )
-}
-
-/// `image.async` (ADR-0122): absent/`false` decodes in the frame; `true` uses the pool and draws
-/// nothing until the result lands. A signal resolving to `nil` arrives as an absent key.
-pub fn parse_load(properties: &PropMap) -> Result<Load, LayoutError> {
-    Ok(if parse_bool(properties, "async")? { Load::Background } else { Load::Inline })
-}
-
-/// `image.retain` (ADR-0180): while a new `source` decodes, keep drawing the one this node last
-/// had pixels for instead of nothing. Inert without `async = true`, because an inline decode is
-/// finished by the time the draw asks for it and never leaves a gap to cover.
-pub fn parse_retain(properties: &PropMap) -> Result<bool, LayoutError> {
-    parse_bool(properties, "retain")
-}
-
-/// `image.source_blur` (ADR-0240): logical pixels, `0.0` (off) by default, capped at 8192 like
-/// every property `style::range_of` has no bound of its own for.
-pub fn parse_source_blur(properties: &PropMap) -> Result<f32, LayoutError> {
-    style::within("source_blur", parse_number(properties, "source_blur")?)
-}
-
-/// `capture.output` (ADR-0248): a connector name, matching `panel.monitor`'s spelling
-/// (`surface::parse_monitor`). Unlike `monitor`, this is an ordinary resolved property, not
-/// structural: a config may rebind a capture node to a different output at runtime. Absent
-/// resolves to `""`, the same "unknown output, draw nothing" answer a name matching no connected
-/// output gets, so a config racing capability data against startup fails the same way either way.
-pub fn parse_capture_output(properties: &PropMap) -> Result<String, LayoutError> {
-    parse_optional_string(properties, "output")
 }
 
 /// `shader.source` (ADR-0253): absolute like `transition.shader`, or empty for nothing drawn.
@@ -216,46 +167,63 @@ pub fn parse_progress(properties: &PropMap) -> Result<f32, LayoutError> {
 
 /// `capture.live` (ADR-0248, ADR-0263): frames per second in (0, 1000], `true` uncapped
 /// (infinite), `false` or absent one-shot (`None`).
-pub fn parse_live(properties: &PropMap) -> Result<Option<f32>, LayoutError> {
-    match properties.get("live") {
-        None | Some(Value::Boolean(false)) => Ok(None),
-        Some(Value::Boolean(true)) => Ok(Some(f32::INFINITY)),
-        Some(value) => match value_as_f32("live", value)? {
-            Some(fps) if fps > 0.0 && fps <= 1000.0 => Ok(Some(fps)),
-            _ => {
-                let got = preview_for_error(value);
-                Err(invalid("live", format!("expected a boolean or frames per second in (0, 1000], got {got}")))
-            }
-        },
+pub(crate) struct Live;
+
+impl LuaType for Live {
+    fn lua() -> String {
+        format!("{}|{}", bool::lua(), f32::lua())
+    }
+}
+
+impl Prop for Live {
+    type Out = Option<f32>;
+    fn read(_: &Property, value: Option<&Value>) -> Result<Option<f32>, LayoutError> {
+        match value {
+            None | Some(Value::Boolean(false)) => Ok(None),
+            Some(Value::Boolean(true)) => Ok(Some(f32::INFINITY)),
+            Some(value) => match value_as_f32("live", value)? {
+                Some(fps) if fps > 0.0 && fps <= 1000.0 => Ok(Some(fps)),
+                _ => {
+                    let got = preview_for_error(value);
+                    Err(invalid("live", format!("expected a boolean or frames per second in (0, 1000], got {got}")))
+                }
+            },
+        }
     }
 }
 
 /// `capture.region` (ADR-0263): `{ x, y, width, height }` in the output's logical pixels, every
-/// key required and within [`style::within`]'s range, the size positive.
-pub fn parse_region(properties: &PropMap) -> Result<Option<LogicalRect>, LayoutError> {
-    let Some(value) = properties.get("region") else {
-        return Ok(None);
-    };
-    let Value::Table(table) = value else {
-        let got = preview_for_error(value);
-        return Err(invalid("region", format!("expected an {{ x, y, width, height }} table, got {got}")));
-    };
-    only_keys("region", table, &["x", "y", "width", "height"])?;
-    let field = |key| {
-        style::table_number("region", table, key)?
-            .ok_or_else(|| invalid("region", format!("`{key}` is required")))
-            .and_then(|n| style::within("region", n))
-    };
-    let region = LogicalRect { x: field("x")?, y: field("y")?, width: field("width")?, height: field("height")? };
-    if region.width == 0.0 || region.height == 0.0 {
-        return Err(invalid("region", "`width` and `height` must be positive"));
+/// key required and within the row's range, the size positive.
+pub(crate) struct Region;
+
+impl LuaType for Region {
+    fn lua() -> String {
+        LogicalRect::lua()
     }
-    Ok(Some(region))
 }
 
-/// `capture.paint_cursor` (ADR-0248), default `false`.
-pub fn parse_paint_cursor(properties: &PropMap) -> Result<bool, LayoutError> {
-    parse_bool(properties, "paint_cursor")
+impl Prop for Region {
+    type Out = Option<LogicalRect>;
+    fn read(row: &Property, value: Option<&Value>) -> Result<Option<LogicalRect>, LayoutError> {
+        let Some(value) = value else {
+            return Ok(None);
+        };
+        let Value::Table(table) = value else {
+            let got = preview_for_error(value);
+            return Err(invalid("region", format!("expected an {{ x, y, width, height }} table, got {got}")));
+        };
+        only_keys("region", table, &["x", "y", "width", "height"])?;
+        let field = |key| {
+            style::table_number("region", table, key)?
+                .ok_or_else(|| invalid("region", format!("`{key}` is required")))
+                .and_then(|n| prop::within(row, n))
+        };
+        let region = LogicalRect { x: field("x")?, y: field("y")?, width: field("width")?, height: field("height")? };
+        if region.width == 0.0 || region.height == 0.0 {
+            return Err(invalid("region", "`width` and `height` must be positive"));
+        }
+        Ok(Some(region))
+    }
 }
 
 fn parse_optional_string(properties: &PropMap, property: &str) -> Result<String, LayoutError> {
@@ -382,15 +350,6 @@ pub fn parse_text_align(properties: &PropMap) -> Result<TextAlign, LayoutError> 
     )
 }
 
-/// The declared `foreground`, or `None` when absent. Icons preserve their file colours unless
-/// a `currentColor` fill uses this value (ADR-0072).
-pub fn parse_optional_foreground(properties: &PropMap) -> Result<Option<Rgba>, LayoutError> {
-    if !properties.contains_key("foreground") {
-        return Ok(None);
-    }
-    parse_foreground(properties).map(Some)
-}
-
 pub fn parse_foreground(properties: &PropMap) -> Result<Rgba, LayoutError> {
     let Some(value) = properties.get("foreground") else {
         return Ok(Rgba { r: 1.0, g: 1.0, b: 1.0, a: 1.0 });
@@ -406,13 +365,7 @@ pub fn parse_font_size(properties: &PropMap) -> Result<f32, LayoutError> {
     style::within("font_size", parse_number(properties, "font_size")?)
 }
 
-/// Absent `size` defaults to 12.0, matching [`parse_font_size`] and ADR-0044's nil rule, so text
-/// and icons share the same default visual scale.
-pub fn parse_icon_size(properties: &PropMap) -> Result<f32, LayoutError> {
-    parse_number(properties, "size")
-}
-
-/// Shared boolean parser behind [`parse_load`], [`parse_retain`], `style::parse_blur` and
+/// Shared boolean parser behind `style::parse_blur` and
 /// `style::parse_visible`, the way [`parse_string_property`] is shared by the string ones. An
 /// absent key takes the property table's default; anything that is not a boolean is an error
 /// naming the property.
@@ -446,7 +399,7 @@ pub(super) fn parse_keyword<T: Copy>(
     })
 }
 
-/// Shared number parser behind [`parse_font_size`], [`parse_icon_size`] and `style::parse_spacing`,
+/// Shared number parser behind [`parse_font_size`] and `style::parse_spacing`,
 /// the table's default when absent. Range-checking is the caller's: only `font_size` has a bound its
 /// consumer requires.
 pub(super) fn parse_number(properties: &PropMap, property: &str) -> Result<f32, LayoutError> {
@@ -516,6 +469,7 @@ pub fn parse_node_id(properties: &PropMap) -> Result<Option<String>, LayoutError
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::image::Fit;
     use crate::lua::nodes::deserialize_lua_table;
 
     /// `Start` and `End` are the line's own reading direction (ADR-0211); `Center` is either way, and
@@ -669,42 +623,42 @@ mod tests {
         for (spelling, expected) in [("cover", Fit::Cover), ("contain", Fit::Contain), ("stretch", Fit::Stretch)] {
             let table: mlua::Table =
                 lua.load(format!(r#"return {{ kind = "image", fit = "{spelling}" }}"#)).eval().unwrap();
-            assert_eq!(parse_fit(&props_from_table(&table)).unwrap(), expected);
+            assert_eq!(fields::image::fit.read(&props_from_table(&table)).unwrap(), expected);
         }
         let table: mlua::Table = lua.load(r#"return { kind = "image" }"#).eval().unwrap();
-        assert_eq!(parse_fit(&props_from_table(&table)).unwrap(), Fit::Cover, "an absent `fit` covers");
+        assert_eq!(fields::image::fit.read(&props_from_table(&table)).unwrap(), Fit::Cover, "an absent `fit` covers");
         // Case matters: `Cover` is not a spelling.
         let table: mlua::Table = lua.load(r#"return { kind = "image", fit = "Cover" }"#).eval().unwrap();
-        assert!(parse_fit(&props_from_table(&table)).is_err());
+        assert!(fields::image::fit.read(&props_from_table(&table)).is_err());
     }
 
     #[test]
     fn fit_rejects_a_mode_that_does_not_exist_rather_than_covering_silently() {
         let lua = mlua::Lua::new();
         let table: mlua::Table = lua.load(r#"return { kind = "image", fit = "fill" }"#).eval().unwrap();
-        let err = parse_fit(&props_from_table(&table)).unwrap_err();
+        let err = fields::image::fit.read(&props_from_table(&table)).unwrap_err();
         assert!(format!("{err}").contains("cover"), "the error should name the modes that do exist, got {err}");
 
         let table: mlua::Table = lua.load(r#"return { kind = "image", fit = 3 }"#).eval().unwrap();
-        assert!(parse_fit(&props_from_table(&table)).is_err());
+        assert!(fields::image::fit.read(&props_from_table(&table)).is_err());
     }
 
     #[test]
     fn an_image_source_that_is_not_a_string_is_rejected() {
         let lua = mlua::Lua::new();
         let table: mlua::Table = lua.load(r#"return { kind = "image", source = 5 }"#).eval().unwrap();
-        assert!(parse_image_source(&props_from_table(&table)).is_err());
+        assert!(fields::image::source.read(&props_from_table(&table)).is_err());
         let table: mlua::Table = lua.load(r#"return { kind = "image", source = "/tmp/w.png" }"#).eval().unwrap();
-        assert_eq!(parse_image_source(&props_from_table(&table)).unwrap(), "/tmp/w.png");
+        assert_eq!(fields::image::source.read(&props_from_table(&table)).unwrap(), "/tmp/w.png");
     }
 
     #[test]
     fn capture_output_defaults_to_empty_and_reads_a_connector_name() {
         let lua = mlua::Lua::new();
         let table: mlua::Table = lua.load(r#"return { kind = "capture" }"#).eval().unwrap();
-        assert_eq!(parse_capture_output(&props_from_table(&table)).unwrap(), "");
+        assert_eq!(fields::capture::output.read(&props_from_table(&table)).unwrap(), "");
         let table: mlua::Table = lua.load(r#"return { kind = "capture", output = "DP-1" }"#).eval().unwrap();
-        assert_eq!(parse_capture_output(&props_from_table(&table)).unwrap(), "DP-1");
+        assert_eq!(fields::capture::output.read(&props_from_table(&table)).unwrap(), "DP-1");
     }
 
     #[test]
@@ -712,17 +666,17 @@ mod tests {
         let lua = mlua::Lua::new();
         let table: mlua::Table = lua.load(r#"return { kind = "capture" }"#).eval().unwrap();
         let props = props_from_table(&table);
-        assert_eq!(parse_live(&props).unwrap(), None);
-        assert!(!parse_paint_cursor(&props).unwrap());
+        assert_eq!(fields::capture::live.read(&props).unwrap(), None);
+        assert!(!fields::capture::paint_cursor.read(&props).unwrap());
 
         let table: mlua::Table =
             lua.load(r#"return { kind = "capture", live = true, paint_cursor = true }"#).eval().unwrap();
         let props = props_from_table(&table);
-        assert_eq!(parse_live(&props).unwrap(), Some(f32::INFINITY));
-        assert!(parse_paint_cursor(&props).unwrap());
+        assert_eq!(fields::capture::live.read(&props).unwrap(), Some(f32::INFINITY));
+        assert!(fields::capture::paint_cursor.read(&props).unwrap());
 
         let table: mlua::Table = lua.load(r#"return { kind = "capture", live = "yes" }"#).eval().unwrap();
-        assert!(parse_live(&props_from_table(&table)).is_err());
+        assert!(fields::capture::live.read(&props_from_table(&table)).is_err());
     }
 
     /// ADR-0263: frames per second in (0, 1000].
@@ -731,7 +685,7 @@ mod tests {
         let lua = mlua::Lua::new();
         let live = |src: &str| {
             let table: mlua::Table = lua.load(format!("return {{ kind = 'capture', live = {src} }}")).eval().unwrap();
-            parse_live(&props_from_table(&table))
+            fields::capture::live.read(&props_from_table(&table))
         };
         assert_eq!(live("false").unwrap(), None);
         assert_eq!(live("60").unwrap(), Some(60.0));
@@ -747,7 +701,7 @@ mod tests {
         let lua = mlua::Lua::new();
         let region = |src: &str| {
             let table: mlua::Table = lua.load(format!("return {{ kind = 'capture', region = {src} }}")).eval().unwrap();
-            parse_region(&props_from_table(&table))
+            fields::capture::region.read(&props_from_table(&table))
         };
         assert_eq!(
             region("{ x = 10, y = 20.5, width = 300, height = 200 }").unwrap(),
@@ -769,14 +723,14 @@ mod tests {
     fn source_blur_defaults_to_zero_and_rejects_negative() {
         let lua = mlua::Lua::new();
         let table: mlua::Table = lua.load(r#"return { kind = "image", source = "/tmp/w.png" }"#).eval().unwrap();
-        assert_eq!(parse_source_blur(&props_from_table(&table)).unwrap(), 0.0);
+        assert_eq!(fields::image::source_blur.read(&props_from_table(&table)).unwrap(), 0.0);
 
         let table: mlua::Table = lua.load(r#"return { kind = "image", source_blur = 12 }"#).eval().unwrap();
-        assert_eq!(parse_source_blur(&props_from_table(&table)).unwrap(), 12.0);
+        assert_eq!(fields::image::source_blur.read(&props_from_table(&table)).unwrap(), 12.0);
 
         let table: mlua::Table = lua.load(r#"return { kind = "image", source_blur = -1 }"#).eval().unwrap();
         assert!(matches!(
-            parse_source_blur(&props_from_table(&table)).unwrap_err(),
+            fields::image::source_blur.read(&props_from_table(&table)).unwrap_err(),
             LayoutError::InvalidProperty { property, .. } if property == "source_blur"
         ));
     }
@@ -865,7 +819,7 @@ mod tests {
     #[test]
     fn icon_size_absent_defaults_to_twelve() {
         let props = PropMap::default();
-        assert_eq!(parse_icon_size(&props).unwrap(), 12.0);
+        assert_eq!(fields::icon::size.read(&props).unwrap(), 12.0);
     }
 
     #[test]

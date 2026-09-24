@@ -171,16 +171,18 @@ impl FileVersion {
     }
 }
 
-/// How an image fills its layout box (ADR-0055 decision 3).
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
-pub enum Fit {
-    /// Covers the box and crops overflow. Default because it alone cannot leave wallpaper bars.
-    #[default]
-    Cover,
-    /// Fits inside the box, leaving the remainder unpainted.
-    Contain,
-    /// Ignores aspect ratio.
-    Stretch,
+crate::layout::node::prop::keywords! {
+    /// How an image fills its layout box (ADR-0055 decision 3).
+    #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+    pub enum Fit {
+        /// Covers the box and crops overflow. Default because it alone cannot leave wallpaper bars.
+        #[default]
+        Cover = "cover",
+        /// Fits inside the box, leaving the remainder unpainted.
+        Contain = "contain",
+        /// Ignores aspect ratio.
+        Stretch = "stretch",
+    }
 }
 
 /// Whether a draw waits for pixels (ADR-0122). `Inline` is the default for icons and wallpaper:

@@ -12,9 +12,10 @@
 
 use std::time::{Duration, Instant};
 
-use mlua::{Function, Lua, UserData, UserDataMethods};
+use mlua::{Function, Lua};
 use shared::{debug, warn};
 
+use super::luacats::{lua_class, lua_fn};
 use super::signal::CpuBudget;
 
 /// Range of `ms`, one millisecond to one day. Deliberately not `delay`/`pulse`'s 60-second ceiling:
@@ -89,45 +90,39 @@ impl TimerRegistry {
 /// config drops still fires.
 struct TimerHandle(TimerId);
 
-impl UserData for TimerHandle {
-    fn add_methods<M: UserDataMethods<Self>>(methods: &mut M) {
-        methods.add_method("cancel", |lua, this, ()| {
+lua_class! {
+    impl TimerHandle {
+        /// Disarms the timer. A no-op once it has fired or been cancelled, and inside its own callback.
+        fn cancel(lua, this) {
             if let Some(mut registry) = lua.app_data_mut::<TimerRegistry>() {
                 registry.take(this.0);
             }
             Ok(())
-        });
+        }
     }
 }
 
 pub fn register(lua: &Lua) -> mlua::Result<()> {
-    super::define(
+    lua_fn!(
         lua,
-        "timer",
-        r#"---@class TimerHandle
-local TimerHandle = {}
-
----Disarms the timer. A no-op once it has fired or been cancelled, and inside its own callback.
-function TimerHandle:cancel() end
-
----Runs `callback` once, `ms` from now, on a monotonic clock, under the 5 ms CPU budget (ADR-0203).
----Repeat by re-arming inside `callback`. Every evaluation clears all timers, so arm at the top level;
----a discarded handle still fires.
----[docs](https://anasgets111.github.io/mantle/guide/scripting.html#timer)
----@param ms integer `[1, 86400000]`; outside raises.
----@param callback fun() A raise is logged as a warning.
----@return TimerHandle
-"#,
-        lua.create_function(|lua, (ms, callback): (u64, Function)| {
+        /// Runs `callback` once, `ms` from now, on a monotonic clock, under the 5 ms CPU budget (ADR-0203).
+        /// Repeat by re-arming inside `callback`. Every evaluation clears all timers, so arm at the top level;
+        /// a discarded handle still fires.
+        /// [docs](https://anasgets111.github.io/mantle/guide/scripting.html#timer)
+        fn timer(
+            lua,
+            /// `[1, 86400000]`; outside raises.
+            ms: u64,
+            /// A raise is logged as a warning.
+            callback: fn(),
+        ) -> TimerHandle {
             if !(MIN_MS..=MAX_MS).contains(&ms) {
                 return Err(mlua::Error::runtime(format!("timer({ms}) is outside {MIN_MS}..={MAX_MS} milliseconds")));
             }
             let due = Instant::now() + Duration::from_millis(ms);
-            let mut registry = super::app_data_or_default::<TimerRegistry>(lua);
-            let id = registry.arm(due, callback)?;
-            drop(registry);
-            lua.create_userdata(TimerHandle(id))
-        })?,
+            let id = super::app_data_or_default::<TimerRegistry>(lua).arm(due, callback.0)?;
+            Ok(TimerHandle(id))
+        }
     )
 }
 

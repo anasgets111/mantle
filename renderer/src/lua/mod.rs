@@ -9,6 +9,7 @@ pub mod fuzzy;
 pub mod idle;
 pub mod json;
 pub mod log;
+pub(crate) mod luacats;
 pub mod marshal;
 pub mod namespace;
 pub mod nodes;
@@ -95,20 +96,42 @@ fn restrict_os(lua: &Lua) -> mlua::Result<()> {
     lua.globals().get::<Table>("package")?.get::<Table>("loaded")?.set("os", &kept)
 }
 
+/// What `lua-meta` says above a [`define`]d global's declaration.
+#[derive(Clone, Copy)]
+#[cfg_attr(not(test), expect(dead_code, reason = "read by the globals golden, a test"))]
+pub(crate) enum Stub {
+    /// Hand-written LuaCATS.
+    Text(&'static str),
+    /// A [`luacats::lua_fn!`] function's signature.
+    Fn(&'static luacats::Signature),
+}
+
+impl From<&'static str> for Stub {
+    fn from(text: &'static str) -> Self {
+        Stub::Text(text)
+    }
+}
+
+impl From<&'static luacats::Signature> for Stub {
+    fn from(signature: &'static luacats::Signature) -> Self {
+        Stub::Fn(signature)
+    }
+}
+
 /// Every [`define`] so far, in order: `(path, stub, is_table)`.
 #[cfg(test)]
 #[derive(Default)]
-struct Stubs(Vec<(String, &'static str, bool)>);
+struct Stubs(Vec<(String, Stub, bool)>);
 
 /// Sets global `path`, or member `table.name` of an already defined global table, and records
 /// `stub`, the LuaCATS `just stubs` writes above its declaration in `lua-meta`. The declaration is
-/// generated: `path = {}` for a table, else `function path(<its last block's @param names>) end`.
-/// The one way to add a global, so the stubs cannot miss one.
+/// generated: `path = {}` for a table, else `function path(<its parameters>) end`. The one way to
+/// add a global, so the stubs cannot miss one.
 #[cfg_attr(not(test), allow(unused_variables))]
-pub(crate) fn define(lua: &Lua, path: &str, stub: &'static str, value: impl mlua::IntoLua) -> mlua::Result<()> {
+pub(crate) fn define(lua: &Lua, path: &str, stub: impl Into<Stub>, value: impl mlua::IntoLua) -> mlua::Result<()> {
     let value = value.into_lua(lua)?;
     #[cfg(test)]
-    app_data_or_default::<Stubs>(lua).0.push((path.to_string(), stub, value.is_table()));
+    app_data_or_default::<Stubs>(lua).0.push((path.to_string(), stub.into(), value.is_table()));
     match path.split_once('.') {
         Some((table, name)) => lua.globals().get::<Table>(table)?.set(name, value),
         None => lua.globals().set(path, value),
@@ -615,26 +638,37 @@ pub(crate) mod tests {
         let reactive = Lua::new();
         signal::register(&reactive, signal::DirtyFlag::new()).unwrap();
         store::register(&reactive).unwrap();
-        let reactive = reactive.app_data_ref::<Stubs>().unwrap().0.clone();
-        let groups = [
-            ("globals.lua", GLOBALS_HEADER, defined.iter().filter(|stub| !reactive.contains(stub)).collect::<Vec<_>>()),
-            ("signals.lua", SIGNALS_HEADER, reactive.iter().collect()),
-        ];
+        let reactive: Vec<String> =
+            reactive.app_data_ref::<Stubs>().unwrap().0.iter().map(|(path, ..)| path.clone()).collect();
+        let (signals, globals): (Vec<_>, Vec<_>) = defined.iter().partition(|(path, ..)| reactive.contains(path));
         let mut files = Vec::new();
-        for (file, header, stubs) in groups {
+        for (file, header, stubs) in
+            [("globals.lua", GLOBALS_HEADER, globals), ("signals.lua", SIGNALS_HEADER, signals)]
+        {
             let mut rendered = header.to_string();
+            let mut declared = Vec::new();
             for (path, stub, is_table) in stubs {
-                let declaration = if *is_table {
-                    format!("{path} = {{}}")
-                } else {
-                    let own = stub.rsplit("\n\n").next().unwrap_or(stub);
-                    let params: Vec<&str> = own
-                        .lines()
-                        .filter_map(|line| line.strip_prefix("---@param ")?.split(' ').next())
-                        .map(|param| param.trim_end_matches('?'))
-                        .collect();
-                    format!("function {path}({}) end", params.join(", "))
+                let (stub, params) = match stub {
+                    Stub::Text(text) => {
+                        let own = text.rsplit("\n\n").next().unwrap_or(text);
+                        let params: Vec<&str> = own
+                            .lines()
+                            .filter_map(|line| line.strip_prefix("---@param ")?.split(' ').next())
+                            .map(|param| param.trim_end_matches('?'))
+                            .collect();
+                        (text.to_string(), params.join(", "))
+                    }
+                    Stub::Fn(signature) => {
+                        let mut classes = Vec::new();
+                        signature.classes(&mut classes);
+                        classes.retain(|class| !declared.contains(class));
+                        declared.extend(classes.iter().cloned());
+                        let classes: String = classes.iter().map(|class| format!("{class}\n")).collect();
+                        (classes + &signature.stub(), signature.names())
+                    }
                 };
+                let declaration =
+                    if *is_table { format!("{path} = {{}}") } else { format!("function {path}({params}) end") };
                 rendered += &format!("\n{stub}{declaration}\n");
             }
             files.push((format!("lua-meta/{file}"), rendered));

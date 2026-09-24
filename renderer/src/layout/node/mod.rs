@@ -8,28 +8,27 @@
 mod animate;
 mod content;
 mod paint_style;
+pub(crate) mod prop;
 mod spec;
 mod style;
 mod surface;
 mod toplevel;
 
 // Paint-only parsers are imported, not re-exported; `paint_style` is their sole caller (ADR-0068).
-use animate::{parse_shader_params, parse_transition};
+use animate::parse_shader_params;
 use content::{
-    parse_capture_output, parse_elide, parse_fit, parse_font_family, parse_font_size, parse_foreground,
-    parse_icon_name, parse_image_source, parse_live, parse_load, parse_mask_character, parse_max_lines,
-    parse_optional_foreground, parse_paint_cursor, parse_placeholder, parse_progress, parse_region, parse_retain,
-    parse_shader_source, parse_source_blur, parse_text_align, parse_wrap,
+    parse_elide, parse_font_family, parse_font_size, parse_foreground, parse_mask_character, parse_max_lines,
+    parse_placeholder, parse_progress, parse_shader_source, parse_text_align, parse_wrap,
 };
 use spec::parse_secure_submit;
 use style::{parse_background, parse_border_color, parse_border_width, parse_clip, parse_mask, parse_radius};
 
 #[cfg(test)]
 pub use animate::Animatable;
+pub(crate) use animate::Transition;
 pub use animate::{Dissolve, ShaderParam, TransitionSpec, Tween, advance, depart, is_paint_only, retarget};
-pub use content::{
-    Elide, StyleRun, TextAlign, Wrap, font_runs, parse_content, parse_icon_size, parse_node_id, parse_surface_id,
-};
+pub use content::{Elide, StyleRun, TextAlign, Wrap, font_runs, parse_content, parse_node_id, parse_surface_id};
+pub(crate) use content::{Live, Region};
 pub use paint_style::{PaintStyle, paint_style};
 pub use spec::{SecureSubmitTarget, SurfaceSpec, lock_spec, parse_children, parse_list_children, parse_single_child};
 // `wayland::tests`' and `instance::tests`' fixtures name it `node::LockSpec`; nothing else does.
@@ -55,8 +54,11 @@ pub type PropMap = rustc_hash::FxHashMap<&'static str, Value>;
 
 use mlua::{Lua, Value};
 
+use crate::lua::luacats::LuaType;
 use crate::lua::marshal;
+pub(crate) use crate::lua::nodes::properties::{self as fields, Property};
 use crate::lua::signal::{self, is_signal};
+use prop::Prop;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum SizeMode {
@@ -565,10 +567,10 @@ mod tests {
         assert!(parse_single_child(&props_with_nil_signal(&lua, "panel", "child")).unwrap().is_none());
         assert!(parse_children(&props_with_nil_signal(&lua, "row", "children")).unwrap().is_empty());
         assert_eq!(parse_content(&props_with_nil_signal(&lua, "text", "content")).unwrap().0, "");
-        assert_eq!(parse_icon_size(&props_with_nil_signal(&lua, "icon", "size")).unwrap(), 12.0);
-        assert_eq!(parse_icon_name(&props_with_nil_signal(&lua, "icon", "name")).unwrap(), "");
-        assert_eq!(parse_image_source(&props_with_nil_signal(&lua, "image", "source")).unwrap(), "");
-        assert_eq!(parse_fit(&props_with_nil_signal(&lua, "image", "fit")).unwrap(), Fit::Cover);
+        assert_eq!(fields::icon::size.read(&props_with_nil_signal(&lua, "icon", "size")).unwrap(), 12.0);
+        assert_eq!(fields::icon::name.read(&props_with_nil_signal(&lua, "icon", "name")).unwrap(), "");
+        assert_eq!(fields::image::source.read(&props_with_nil_signal(&lua, "image", "source")).unwrap(), "");
+        assert_eq!(fields::image::fit.read(&props_with_nil_signal(&lua, "image", "fit")).unwrap(), Fit::Cover);
     }
 
     #[test]

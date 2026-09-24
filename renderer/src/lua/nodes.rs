@@ -9,11 +9,11 @@ use mlua::{Lua, Table, Value};
 
 use crate::layout::node::PropMap;
 
-mod properties;
+pub(crate) mod properties;
 #[cfg(test)]
 mod stubs;
 
-use properties::{KINDS, PROPERTIES, kind_bit};
+use properties::{KINDS, kind_bit, properties};
 pub(crate) use properties::{default_bool, default_number, keyword, range};
 
 /// The node kinds, one global constructor each.
@@ -30,7 +30,7 @@ fn kind_entry(kind: &str) -> Option<(&'static str, u16)> {
 /// The table's own `&'static str` for `property`, which is what a [`PropMap`] keys by. A scan of
 /// the ~130 rows: ADR-0219 priced the per-property lookup at 10 ns against a 2.65 ms pass.
 fn name_in(bit: u16, property: &str) -> Option<&'static str> {
-    PROPERTIES.iter().find(|row| row.kinds & bit != 0 && row.name == property).map(|row| row.name)
+    properties().find(|row| row.kinds & bit != 0 && row.name == property).map(|row| row.name)
 }
 
 /// [`name_in`] for a caller holding only the kind. `animate` validates its entries this way.
@@ -41,8 +41,7 @@ pub(crate) fn accepted_name(kind: &str, property: &str) -> Option<&'static str> 
 /// Accepted properties, sorted for errors.
 fn accepted_properties(kind: &str) -> Vec<&'static str> {
     let bit = kind_bit(kind).unwrap_or(0);
-    let mut names: Vec<&'static str> =
-        PROPERTIES.iter().filter(|row| row.kinds & bit != 0).map(|row| row.name).collect();
+    let mut names: Vec<&'static str> = properties().filter(|row| row.kinds & bit != 0).map(|row| row.name).collect();
     names.sort_unstable();
     names.dedup();
     names
@@ -400,6 +399,14 @@ mod meta_stub_tests {
             .map(|(name, _)| name.to_string())
             .filter(|name| name.chars().all(|c| c.is_ascii_lowercase() || c == '_'))
             .collect();
+        // A typed field's read, `image::source.read(properties)`.
+        for (index, _) in text.match_indices("::") {
+            let rest = text[index + 2..].trim_start_matches("r#");
+            let name: String = rest.chars().take_while(|c| c.is_ascii_lowercase() || *c == '_').collect();
+            if !name.is_empty() && rest[name.len()..].starts_with(".read(") {
+                names.insert(name);
+            }
+        }
         for (index, _) in text.match_indices("properties") {
             let rest = &text[index + "properties".len()..];
             let head: String = rest.chars().take(40).collect();

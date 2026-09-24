@@ -13,6 +13,7 @@ use crate::image::{Fit, Load};
 use crate::text::snap::LogicalRect;
 
 use super::*;
+use fields::{capture, icon, image};
 
 /// Parsed paint properties with no `mlua::Value`. A kind admitted by
 /// `layout::scene::ensure_supported_kind` but absent here draws nothing. Lua tables compare by
@@ -115,28 +116,26 @@ pub fn paint_style(kind: &str, properties: &PropMap) -> Result<Option<PaintStyle
                 max_lines: parse_max_lines(properties)?,
             }
         }
-        "icon" => {
-            PaintStyle::Icon { name: parse_icon_name(properties)?, color: parse_optional_foreground(properties)? }
-        }
+        "icon" => PaintStyle::Icon { name: icon::name.read(properties)?, color: icon::foreground.read(properties)? },
         "image" => {
-            let transition = parse_transition(properties)?;
+            let transition = image::transition.read(properties)?;
             PaintStyle::Image {
-                source: parse_image_source(properties)?,
-                fit: parse_fit(properties)?,
-                load: parse_load(properties)?,
+                source: image::source.read(properties)?,
+                fit: image::fit.read(properties)?,
+                load: if image::r#async.read(properties)? { Load::Background } else { Load::Inline },
                 // A dissolve crosses *from* the picture the node is holding, so declaring one is
                 // declaring retention; making a config write both would only let it write one.
-                retain: parse_retain(properties)? || transition.is_some(),
+                retain: image::retain.read(properties)? || transition.is_some(),
                 transition,
-                source_blur: parse_source_blur(properties)?,
+                source_blur: image::source_blur.read(properties)?,
             }
         }
         "capture" => PaintStyle::Capture {
-            output: parse_capture_output(properties)?,
-            fit: parse_fit(properties)?,
-            live: parse_live(properties)?,
-            paint_cursor: parse_paint_cursor(properties)?,
-            region: parse_region(properties)?,
+            output: capture::output.read(properties)?,
+            fit: capture::fit.read(properties)?,
+            live: capture::live.read(properties)?,
+            paint_cursor: capture::paint_cursor.read(properties)?,
+            region: capture::region.read(properties)?,
         },
         "shader" => PaintStyle::Shader {
             source: parse_shader_source(properties)?,

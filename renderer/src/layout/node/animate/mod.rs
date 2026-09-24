@@ -23,8 +23,9 @@ mod transition;
 use easing::Easing;
 use sequence::{Sequence, parse_sequence};
 use spring::{Spring, parse_spring};
+pub(crate) use transition::Transition;
 pub(in crate::layout::node) use transition::parse_shader_params;
-pub use transition::{Dissolve, ShaderParam, TransitionSpec, parse_transition};
+pub use transition::{Dissolve, ShaderParam, TransitionSpec};
 
 /// The one thing a hex colour has to look like to reach `parse_hex_color` again next pass.
 fn hex_of(color: Rgba) -> String {

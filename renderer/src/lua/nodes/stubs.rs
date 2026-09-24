@@ -5,7 +5,7 @@
 //! The aliases and the classes nothing else describes (`TextRun`, `Transition`) are hand-written in
 //! [`NODES_HEADER`]: they document shapes inside a property, which the table does not model.
 
-use super::properties::{ALIGN, ALL, Absent, BOX, KINDS, POPUP_ANCHOR, PROPERTIES, Property, SURFACES};
+use super::properties::{ALIGN, ALL, Absent, BOX, KINDS, POPUP_ANCHOR, Property, SURFACES, Ty, properties};
 
 /// Choice sets the stubs name as an alias.
 const ALIASES: [(&str, &[&str]); 2] = [("Align", ALIGN), ("PopupAnchor", POPUP_ANCHOR)];
@@ -40,14 +40,35 @@ fn union(choices: &[&str]) -> String {
     choices.iter().map(|choice| format!("\"{choice}\"")).collect::<Vec<_>>().join("|")
 }
 
-/// The row's LuaCATS type: its choices, by alias where one names them, then `ty`.
+/// The row's LuaCATS type: its choices, by alias where one names them, then its field's type.
 fn lua_type(row: &Property, alias: bool) -> String {
+    let ty = match row.ty {
+        Ty::Lit(ty) => ty.to_string(),
+        Ty::Of(ty) => ty(),
+    };
     if row.choices.is_empty() {
-        return row.ty.to_string();
+        return ty;
     }
     let named = ALIASES.iter().find(|(_, choices)| alias && *choices == row.choices);
     let head = named.map_or_else(|| union(row.choices), |(name, _)| name.to_string());
-    if row.ty.is_empty() { head } else { format!("{head}|{}", row.ty) }
+    if ty.is_empty() { head } else { format!("{head}|{ty}") }
+}
+
+/// The row's `///` block as the stub's words and the docs table's cell: a `Book:` paragraph is the
+/// cell, the rest the words, each paragraph joined onto one line. No `Book:` makes the cell the words.
+fn docs(row: &Property) -> (String, String) {
+    let mut words = Vec::new();
+    let mut cell = (!row.behaviour.is_empty()).then(|| row.behaviour.to_string());
+    for paragraph in row.doc.split("\n\n") {
+        let line = paragraph.lines().map(str::trim).filter(|line| !line.is_empty()).collect::<Vec<_>>().join(" ");
+        match line.strip_prefix("Book: ") {
+            Some(book) => cell = Some(book.to_string()),
+            None if !line.is_empty() => words.push(line),
+            None => {}
+        }
+    }
+    let words = words.join(" ");
+    (cell.unwrap_or_else(|| words.clone()), words)
 }
 
 /// The docs' Default cell, `None` when there is none.
@@ -79,7 +100,8 @@ fn field(row: &Property) -> String {
         let joined = facts.join(", ");
         words.push(joined[..1].to_ascii_uppercase() + &joined[1..] + ".");
     }
-    words.extend((!row.doc.is_empty()).then(|| row.doc.to_string()));
+    let (_, doc) = docs(row);
+    words.extend((!doc.is_empty()).then_some(doc));
     let optional = if row.absent == Absent::Required { "" } else { "?" };
     let words = if words.is_empty() { String::new() } else { format!(" {}", words.join(" ")) };
     format!("---@field {}{optional} {}{words}\n", row.name, lua_type(row, true))
@@ -88,7 +110,7 @@ fn field(row: &Property) -> String {
 /// A kind's own rows: the ones its stub class declares and its page tables, after the common and box
 /// rows it inherits.
 fn own(kinds: u16) -> impl Iterator<Item = &'static Property> {
-    PROPERTIES.iter().filter(move |row| row.kinds & kinds != 0 && row.kinds != ALL && row.kinds != BOX)
+    properties().filter(move |row| row.kinds & kinds != 0 && row.kinds != ALL && row.kinds != BOX)
 }
 
 fn render_stub(header: &str, kinds: &[(&str, &str)]) -> String {
@@ -119,7 +141,7 @@ fn nodes_lua() -> String {
     header = header.replace("{ALIGN}", &union(ALIGN));
     for (class, kinds) in [("NodeBase", ALL), ("BoxBase", BOX)] {
         let marker = format!("{{{class}}}");
-        let fields: String = PROPERTIES.iter().filter(|row| row.kinds == kinds).map(field).collect();
+        let fields: String = properties().filter(|row| row.kinds == kinds).map(field).collect();
         header = header.replace(&marker, fields.trim_end());
     }
     render_stub(&header, &KINDS[..11])
@@ -148,13 +170,13 @@ fn table<'a>(rows: impl Iterator<Item = &'a Property>) -> String {
     let mut out = "| Property | Type | Default | Behaviour |\n| :--- | :--- | :--- | :--- |\n".to_string();
     for row in rows {
         let range = row.range.map(|(low, high)| format!(", `[{low}, {high}]`")).unwrap_or_default();
-        let behaviour = if row.behaviour.is_empty() { row.doc } else { row.behaviour };
+        let (behaviour, _) = docs(row);
         out.push_str(&format!(
             "| `{}` | `{}`{range} | {} | {} |\n",
             row.name,
             cell(&lua_type(row, false).replace(", [string]: \"no such property\"", "")),
             default_cell(row.absent).unwrap_or_else(|| "None".to_string()),
-            cell(behaviour)
+            cell(&behaviour)
         ));
     }
     out
@@ -164,8 +186,8 @@ fn table<'a>(rows: impl Iterator<Item = &'a Property>) -> String {
 /// kind's own on its page.
 fn doc_tables() -> Vec<(String, String)> {
     let mut pages = vec![
-        ("nodes/index".to_string(), table(PROPERTIES.iter().filter(|row| row.kinds == ALL))),
-        ("guide/paint".to_string(), table(PROPERTIES.iter().filter(|row| row.kinds == BOX))),
+        ("nodes/index".to_string(), table(properties().filter(|row| row.kinds == ALL))),
+        ("guide/paint".to_string(), table(properties().filter(|row| row.kinds == BOX))),
     ];
     for (kind, _) in KINDS {
         let page = page(kind);

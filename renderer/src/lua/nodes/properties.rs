@@ -10,6 +10,10 @@
 
 use Absent::{Bool, Choice, Lua, Number, Prose, Required, Unset};
 
+use crate::image::Fit;
+use crate::layout::node::prop::{Bound, Color, Field, Flag, Num, OneOf, Prop, Text};
+use crate::layout::node::{Live, Region, Transition};
+
 /// What an absent key means.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) enum Absent {
@@ -33,7 +37,7 @@ pub(crate) struct Property {
     /// Bits of [`KINDS`].
     pub kinds: u16,
     /// LuaCATS, after the `choices` union when there is one. `Bound` marks a signal-taking property.
-    pub ty: &'static str,
+    pub ty: Ty,
     pub choices: &'static [&'static str],
     /// Closed, and enforced by the parser that calls `style::within`.
     pub range: Option<(f32, f32)>,
@@ -44,8 +48,70 @@ pub(crate) struct Property {
     pub behaviour: &'static str,
 }
 
+/// Where a row's LuaCATS type comes from.
+#[derive(Clone, Copy, Debug)]
+#[cfg_attr(not(test), expect(dead_code, reason = "read by `stubs.rs`, a test"))]
+pub(crate) enum Ty {
+    /// The field's Rust type (`LuaType::lua`).
+    Of(fn() -> String),
+    /// Hand-written, for the rows not yet declared as fields.
+    Lit(&'static str),
+}
+
 const fn p(name: &'static str, kinds: u16, ty: &'static str, doc: &'static str) -> Property {
-    Property { name, kinds, ty, choices: &[], range: None, absent: Unset, doc, behaviour: "" }
+    Property { name, kinds, ty: Ty::Lit(ty), choices: &[], range: None, absent: Unset, doc, behaviour: "" }
+}
+
+/// A row for a field of type `T` with the name, kinds and `///` block `props!` hands it.
+pub(crate) const fn row<T: Prop>(name: &'static str, kinds: u16, doc: &'static str) -> Property {
+    // `stringify!(r#async)`.
+    let name = if let [b'r', b'#', ..] = name.as_bytes() { name.split_at(2).1 } else { name };
+    Property { name, kinds, ty: Ty::Of(T::lua), choices: T::CHOICES, range: None, absent: Unset, doc, behaviour: "" }
+}
+
+/// Declares each group of rows as a module of typed [`Field`]s, one `const` per property named as
+/// in Lua, and `ROWS`, the group's rows in order. A row is `name: Type = meta;` or, for a callback,
+/// `name(param: Type, ...) -> Return;`, where `meta` chains [`Property`]'s builders
+/// (`range(0.0, 1.0).absent(Number(1.0))`). A `Book:` paragraph in the `///` block is the docs
+/// table's cell; the rest is the stub's description.
+macro_rules! props {
+    ($($(#[doc = $group_doc:literal])* mod $group:ident($kinds:expr) { $($rows:tt)* })*) => {
+        $(
+            $(#[doc = $group_doc])*
+            #[allow(non_upper_case_globals)]
+            pub(crate) mod $group {
+                use super::*;
+                props!(@rows $kinds; []; $($rows)*);
+            }
+        )*
+        /// Every group's rows, in declaration order.
+        const GROUPS: &[&[Property]] = &[$($group::ROWS),*];
+    };
+    (@rows $kinds:expr; [$($done:ident)*];) => {
+        pub(crate) const ROWS: &[Property] = &[$($done.row),*];
+    };
+    (@rows $kinds:expr; [$($done:ident)*];
+        $(#[doc = $doc:literal])* $name:ident($($param:ident: $param_ty:ty),*) $(-> $ret:ty)? $(= $($meta:ident($($arg:expr),*)).+)?;
+        $($rest:tt)*
+    ) => {
+        pub(crate) const $name: Field<Callback> = Field::new(
+            Property {
+                ty: Ty::Of(|| fun(&[$((stringify!($param), <$param_ty as LuaType>::lua)),*], props!(@ret $($ret)?))),
+                ..row::<Callback>(stringify!($name), $kinds, concat!($($doc, "\n"),*))
+            } $($(.$meta($($arg),*))+)?
+        );
+        props!(@rows $kinds; [$($done)* $name]; $($rest)*);
+    };
+    (@rows $kinds:expr; [$($done:ident)*];
+        $(#[doc = $doc:literal])* $name:ident: $ty:ty $(= $($meta:ident($($arg:expr),*)).+)?;
+        $($rest:tt)*
+    ) => {
+        pub(crate) const $name: Field<$ty> =
+            Field::new(row::<$ty>(stringify!($name), $kinds, concat!($($doc, "\n"),*)) $($(.$meta($($arg),*))+)?);
+        props!(@rows $kinds; [$($done)* $name]; $($rest)*);
+    };
+    (@ret) => { None };
+    (@ret $ret:ty) => { Some((<$ret as LuaType>::lua, <$ret as LuaType>::OPTIONAL)) };
 }
 
 impl Property {
@@ -118,12 +184,11 @@ pub(crate) const ALIGN: &[&str] = &["Start", "Center", "End", "Stretch"];
 pub(crate) const POPUP_ANCHOR: &[&str] =
     &["Top", "Bottom", "Left", "Right", "TopLeft", "TopRight", "BottomLeft", "BottomRight", "Center"];
 const TEXT_ALIGN: &[&str] = &["Start", "Center", "End"];
-const FIT: &[&str] = &["cover", "contain", "stretch"];
 
 /// A key in no row for its kind is refused, so a misspelled `aling_v` raises instead of being read by
 /// nothing. Rows sharing a name agree on `choices`, `range` and a parser-read default
 /// (`rows_sharing_a_name_agree`); the stubs and docs keep the order here.
-pub(crate) const PROPERTIES: &[Property] = &[
+const HEAD: &[Property] = &[
     // Common.
     p("width", ALL, "Length|Bound", "").range(0.0, 8192.0).absent(Prose("content")).behaviour("See [sizes](#sizes)"),
     p("height", ALL, "Length|Bound", "As `width`.").range(0.0, 8192.0).absent(Prose("content")).behaviour("See [sizes](#sizes)"),
@@ -246,40 +311,71 @@ pub(crate) const PROPERTIES: &[Property] = &[
         .choices(&["None", "End"])
         .absent(Choice("None")),
     p("on_link", TEXT, "fun(href: string)", "Click on a run with an `href` (ADR-0106); the engine never opens it. Takes the click from any ancestor `button`; plain text passes it through."),
-    // icon.
-    p("name", ICON, "string|Bound", r#"Icon theme name, or an absolute image path (ADR-0054); `""` draws nothing."#)
-        .absent(Lua(r#""""#))
-        .behaviour(r#"An icon theme name (`"firefox"`, `"audio-volume-high-symbolic"`), looked up at the drawn size, or an absolute image path, used as is. `""` or a name the theme lacks draws nothing"#),
-    p("size", ICON, "number|Bound", "The box is `size` × `size` px; not range-checked.").absent(Number(12.0)),
-    p("foreground", ICON, "Color|Bound", "Colour for the SVG's `currentColor` (CSS `color`), which tints symbolic icons (ADR-0072). Full-colour icons ignore it.")
-        .absent(Prose("the file's own colours")),
-    // image.
-    p("source", IMAGE, "string|Bound", r#"File path, never a theme name; `""` draws nothing. PNG, JPEG, WebP, GIF, SVG or SVGZ; animated GIFs loop (ADR-0233)."#)
-        .absent(Lua(r#""""#))
-        .behaviour(r#"A file path (`mantle.config_dir .. "/img/a.png"`), never a theme name; `""` draws nothing. PNG, JPEG, WebP, GIF, SVG or SVGZ; animated GIFs loop"#),
-    p("fit", IMAGE, "Bound", r#"`"cover"` fills the box and crops, `"contain"` fits inside it, `"stretch"` distorts to it. No intrinsic size: set `width`/`height`."#)
-        .choices(FIT)
-        .absent(Choice("cover")),
-    p("async", IMAGE, "boolean|Bound", "`false` decodes in the frame that first draws it. `true` decodes on a worker and draws nothing until ready (ADR-0122); use it for many or large images.")
-        .absent(Bool(false)),
-    p("retain", IMAGE, "boolean|Bound", "Keep drawing the last picture while a new `source` decodes, and on a failed decode (ADR-0180, ADR-0183). Needs `async = true` and a stable `id`.")
-        .absent(Bool(false)),
-    p("transition", IMAGE, "Transition|Bound", "Cross-fade from the held picture to a newly decoded `source` (ADR-0181, ADR-0186). Implies `retain`; needs `async = true` and a stable `id`. The first picture appears without one.")
-        .behaviour("Cross from the held picture to each newly decoded `source`. Implies `retain`; needs `async = true` and a stable `id`. Unknown keys are refused. See [transition](#transition)"),
-    p("source_blur", IMAGE, "number|Bound", "Blur sigma in px (a fast box approximation), applied once at decode (ADR-0240). Runs on the decoding thread, so pair large images with `async`; under `async` a change blanks the image until the re-decode lands, and `retain` does not cover it (same `source`). Animated GIFs ignore it.")
-        .range(0.0, 8192.0)
-        .absent(Number(0.0))
-        .behaviour("Blur sigma in px, baked into the pixels once at decode (three box passes approximating a Gaussian); see [blurs](../guide/paint.md#blurs). Animated GIFs ignore it"),
-    // capture.
-    p("output", CAPTURE, "string|Bound", r#"Connector name, e.g. `"DP-1"`; `""` draws nothing. An unknown name draws nothing and warns once. Changing it starts a fresh capture."#)
-        .absent(Lua(r#""""#)),
-    p("fit", CAPTURE, "Bound", "As `image.fit`.").choices(FIT).absent(Choice("cover")).behaviour("As on [`image`](image.md)"),
-    p("live", CAPTURE, "boolean|number|Bound", "`false`: capture on show and on each `output` change. `true`: every frame, one in flight. A number: at most that many fps, `(0, 1000]` (ADR-0263). Pauses while hidden or unmapped.")
-        .absent(Bool(false)),
-    p("region", CAPTURE, "Rect|Bound", "Part of the output in its logical px, placed by `fit` as the whole frame. Every key is required and in that range; the size is non-zero.")
-        .range(0.0, 8192.0)
-        .absent(Prose("the whole output")),
-    p("paint_cursor", CAPTURE, "boolean|Bound", "Include the pointer in the frame.").absent(Bool(false)),
+];
+
+props! {
+    mod icon(ICON) {
+        /// Icon theme name, or an absolute image path (ADR-0054); `""` draws nothing.
+        ///
+        /// Book: An icon theme name (`"firefox"`, `"audio-volume-high-symbolic"`), looked up at the drawn size, or
+        /// an absolute image path, used as is. `""` or a name the theme lacks draws nothing
+        name: Bound<Text> = absent(Lua(r#""""#));
+        /// The box is `size` × `size` px; not range-checked.
+        size: Bound<Num> = absent(Number(12.0));
+        /// Colour for the SVG's `currentColor` (CSS `color`), which tints symbolic icons (ADR-0072). Full-colour
+        /// icons ignore it.
+        foreground: Bound<Color> = absent(Prose("the file's own colours"));
+    }
+    mod image(IMAGE) {
+        /// File path, never a theme name; `""` draws nothing. PNG, JPEG, WebP, GIF, SVG or SVGZ; animated GIFs
+        /// loop (ADR-0233).
+        ///
+        /// Book: A file path (`mantle.config_dir .. "/img/a.png"`), never a theme name; `""` draws nothing. PNG,
+        /// JPEG, WebP, GIF, SVG or SVGZ; animated GIFs loop
+        source: Bound<Text> = absent(Lua(r#""""#));
+        /// `"cover"` fills the box and crops, `"contain"` fits inside it, `"stretch"` distorts to it. No
+        /// intrinsic size: set `width`/`height`.
+        fit: Bound<OneOf<Fit>> = absent(Choice("cover"));
+        /// `false` decodes in the frame that first draws it. `true` decodes on a worker and draws nothing until
+        /// ready (ADR-0122); use it for many or large images.
+        r#async: Bound<Flag> = absent(Bool(false));
+        /// Keep drawing the last picture while a new `source` decodes, and on a failed decode (ADR-0180,
+        /// ADR-0183). Needs `async = true` and a stable `id`.
+        retain: Bound<Flag> = absent(Bool(false));
+        /// Cross-fade from the held picture to a newly decoded `source` (ADR-0181, ADR-0186). Implies `retain`;
+        /// needs `async = true` and a stable `id`. The first picture appears without one.
+        ///
+        /// Book: Cross from the held picture to each newly decoded `source`. Implies `retain`; needs `async =
+        /// true` and a stable `id`. Unknown keys are refused. See [transition](#transition)
+        transition: Bound<Transition>;
+        /// Blur sigma in px (a fast box approximation), applied once at decode (ADR-0240). Runs on the decoding
+        /// thread, so pair large images with `async`; under `async` a change blanks the image until the re-decode
+        /// lands, and `retain` does not cover it (same `source`). Animated GIFs ignore it.
+        ///
+        /// Book: Blur sigma in px, baked into the pixels once at decode (three box passes approximating a
+        /// Gaussian); see [blurs](../guide/paint.md#blurs). Animated GIFs ignore it
+        source_blur: Bound<Num> = range(0.0, 8192.0).absent(Number(0.0));
+    }
+    mod capture(CAPTURE) {
+        /// Connector name, e.g. `"DP-1"`; `""` draws nothing. An unknown name draws nothing and warns once.
+        /// Changing it starts a fresh capture.
+        output: Bound<Text> = absent(Lua(r#""""#));
+        /// As `image.fit`.
+        ///
+        /// Book: As on [`image`](image.md)
+        fit: Bound<OneOf<Fit>> = absent(Choice("cover"));
+        /// `false`: capture on show and on each `output` change. `true`: every frame, one in flight. A number:
+        /// at most that many fps, `(0, 1000]` (ADR-0263). Pauses while hidden or unmapped.
+        live: Bound<Live> = absent(Bool(false));
+        /// Part of the output in its logical px, placed by `fit` as the whole frame. Every key is required and
+        /// in that range; the size is non-zero.
+        region: Bound<Region> = range(0.0, 8192.0).absent(Prose("the whole output"));
+        /// Include the pointer in the frame.
+        paint_cursor: Bound<Flag> = absent(Bool(false));
+    }
+}
+
+const TAIL: &[Property] = &[
     // shader.
     p("source", SHADER, "string|Bound", r#"Absolute `.frag` path; relative is refused, `""` draws nothing. Saving the file recompiles it; one that fails to build logs once and draws nothing."#)
         .absent(Lua(r#""""#)),
@@ -394,25 +490,31 @@ pub(crate) fn kind_bit(kind: &str) -> Option<u16> {
     KINDS.iter().position(|(name, _)| *name == kind).map(|index| 1 << index)
 }
 
+/// Every row, in declaration order: what the name check, the parsers' lookups and the stubs read.
+pub(crate) fn properties() -> impl Iterator<Item = &'static Property> + Clone {
+    [HEAD].into_iter().chain(GROUPS.iter().copied()).chain([TAIL]).flatten()
+}
+
 /// The first row named `name` that `has` holds for.
-fn row(name: &str, has: impl Fn(&Property) -> bool) -> Option<&'static Property> {
-    PROPERTIES.iter().find(|row| row.name == name && has(row))
+fn first_row(name: &str, has: impl Fn(&Property) -> bool) -> Option<&'static Property> {
+    properties().find(|row| row.name == name && has(row))
 }
 
 /// `property`'s closed range, if it has one.
 pub(crate) fn range(property: &str) -> Option<(f32, f32)> {
-    row(property, |row| row.range.is_some())?.range
+    first_row(property, |row| row.range.is_some())?.range
 }
 
 /// `property`'s choices and its default among them, `None` when it is required.
 pub(crate) fn keyword(property: &str) -> (&'static [&'static str], Option<&'static str>) {
-    let row = row(property, |row| !row.choices.is_empty()).unwrap_or_else(|| panic!("`{property}` has no choices"));
+    let row =
+        first_row(property, |row| !row.choices.is_empty()).unwrap_or_else(|| panic!("`{property}` has no choices"));
     (row.choices, if let Choice(name) = row.absent { Some(name) } else { None })
 }
 
 /// `property`'s default number.
 pub(crate) fn default_number(property: &str) -> f32 {
-    match row(property, |row| matches!(row.absent, Number(_))).map(|row| row.absent) {
+    match first_row(property, |row| matches!(row.absent, Number(_))).map(|row| row.absent) {
         Some(Number(n)) => n,
         _ => panic!("`{property}` has no default number"),
     }
@@ -420,7 +522,7 @@ pub(crate) fn default_number(property: &str) -> f32 {
 
 /// `property`'s default boolean.
 pub(crate) fn default_bool(property: &str) -> bool {
-    match row(property, |row| matches!(row.absent, Bool(_))).map(|row| row.absent) {
+    match first_row(property, |row| matches!(row.absent, Bool(_))).map(|row| row.absent) {
         Some(Bool(b)) => b,
         _ => panic!("`{property}` has no default boolean"),
     }
@@ -434,8 +536,9 @@ mod tests {
     /// parser does.
     #[test]
     fn rows_sharing_a_name_agree() {
-        for (index, a) in PROPERTIES.iter().enumerate() {
-            for b in PROPERTIES[index + 1..].iter().filter(|b| b.name == a.name) {
+        let rows: Vec<&Property> = properties().collect();
+        for (index, a) in rows.iter().enumerate() {
+            for b in rows[index + 1..].iter().filter(|b| b.name == a.name) {
                 let both = |x: bool, y: bool| !(x && y);
                 assert!(both(!a.choices.is_empty(), !b.choices.is_empty()) || a.choices == b.choices, "{}", a.name);
                 assert!(both(a.range.is_some(), b.range.is_some()) || a.range == b.range, "{}", a.name);
@@ -449,7 +552,7 @@ mod tests {
     /// A choice default names a choice, so `keyword` finds its index.
     #[test]
     fn every_choice_default_is_one_of_its_choices() {
-        for row in PROPERTIES {
+        for row in properties() {
             if let Choice(name) = row.absent {
                 assert!(row.choices.contains(&name), "`{}` defaults to `{name}`, not a choice", row.name);
             }

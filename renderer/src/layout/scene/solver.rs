@@ -277,7 +277,7 @@ pub(super) fn measure_for(
                 memo,
             })
         }
-        "icon" => Some(Measure::Square(node::parse_icon_size(properties)?)),
+        "icon" => Some(Measure::Square(node::fields::icon::size.read(properties)?)),
         // `image` has no intrinsic size, unlike `icon`: knowing a file's own dimensions means
         // decoding it, and this pass has no canvas to decode against and runs on every
         // `Scene::apply`. So an `image` takes the box `width`/`height` give it, measuring

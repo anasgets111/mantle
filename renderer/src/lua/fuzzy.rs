@@ -305,27 +305,29 @@ pub fn score(haystack: &str, needle: &str) -> Option<(i32, usize)> {
 /// Bytes that are not UTF-8 score as no match rather than raising, since a desktop entry's name is
 /// whatever was on disk and one bad file must not take a whole list with it.
 pub fn register(lua: &Lua) -> mlua::Result<()> {
-    super::define(
+    super::luacats::lua_fn!(
         lua,
-        "fuzzy",
-        r#"---fzf's score for `needle` in `haystack`, or `nil, nil` when its characters do not appear in order
----(ADR-0201). Smart case: one uppercase character in `needle` makes the match case-sensitive.
----Scores compare only against the same needle; non-ASCII input takes a cruder scorer.
----[docs](https://anasgets111.github.io/mantle/guide/scripting.html#fuzzy)
----@param haystack string Non-UTF-8 bytes score as no match.
----@param needle string Empty scores `0, 0`.
----@return integer? score
----@return integer? start 0-based byte offset of the needle's first character at its earliest in-order hit (the best-scoring one for a one-character needle). For tiebreaks, not highlighting.
-"#,
-        lua.create_function(|_, (haystack, needle): (mlua::LuaString, mlua::LuaString)| {
+        /// fzf's score for `needle` in `haystack`, or `nil, nil` when its characters do not appear in order
+        /// (ADR-0201). Smart case: one uppercase character in `needle` makes the match case-sensitive.
+        /// Scores compare only against the same needle; non-ASCII input takes a cruder scorer.
+        /// [docs](https://anasgets111.github.io/mantle/guide/scripting.html#fuzzy)
+        fn fuzzy(
+            _lua,
+            /// Non-UTF-8 bytes score as no match.
+            haystack: mlua::LuaString,
+            /// Empty scores `0, 0`.
+            needle: mlua::LuaString,
+        ) -> (
+            score: Option<i32>,
+            /// 0-based byte offset of the needle's first character at its earliest in-order hit (the
+            /// best-scoring one for a one-character needle). For tiebreaks, not highlighting.
+            start: Option<usize>,
+        ) {
             let (Ok(haystack), Ok(needle)) = (haystack.to_str(), needle.to_str()) else {
                 return Ok((None, None));
             };
-            Ok(match score(&haystack, &needle) {
-                Some((score, start)) => (Some(score), Some(start)),
-                None => (None, None),
-            })
-        })?,
+            Ok(score(&haystack, &needle).unzip())
+        }
     )
 }
 
