@@ -1,0 +1,719 @@
+//! Shared `TrackedRole`/`TrackedSurface`/`MapState` bookkeeping and the create/destroy/(un)map
+//! lifecycle. Role-specific behavior is in `layer`, `xdg_shell`, and `lock`.
+
+use shared::{debug, error, warn};
+
+use super::*;
+use crate::layout::node::PropMap;
+use crate::text::snap::PhysicalRect;
+
+mod paint;
+mod resolved;
+
+pub use paint::RepaintSplit;
+
+/// A surface bound to shared EGL after its first configure. Field order is load-bearing:
+/// wayland-egl requires `WlEglSurface` to outlive the EGL surface, and Rust drops top to bottom;
+/// `khronos_egl::Surface` has no `Drop`, so [`App::destroy_surface_by_id`] destroys it explicitly.
+use wayland_protocols::ext::background_effect::v1::client::ext_background_effect_surface_v1::ExtBackgroundEffectSurfaceV1;
+
+pub(super) struct BoundSurface {
+    pub(super) egl_surface: EglSurface,
+    native_window: WlEglSurface,
+}
+
+/// Logs a bind-time failure; `surface_id` is `"{id}@{output}"` (ADR-0038).
+pub(super) fn log_bind_failure(surface_id: &str, stage: &str, err: impl std::fmt::Display) {
+    error!("{surface_id}: {stage} failed: {err}");
+}
+fn log_invalid_re_resolve(surface_id: &str, role: &str, err: impl std::fmt::Display) {
+    warn!("{surface_id}: re-resolved {role} properties are invalid, keeping the last applied ones: {err}");
+}
+/// The `visible` state. Three states are required because showing commits without a buffer and
+/// waits for configure before drawing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum MapState {
+    /// `visible` is false: either no buffer was attached yet, or the role object was destroyed
+    /// (ADR-0088, ADR-0049 decision 1). Nothing may be painted here; a panel may have no
+    /// `wl_surface` left to paint onto (see [`App::drop_role_object`]).
+    Unmapped,
+    /// The map commit is out; configure has not arrived.
+    AwaitingConfigure,
+    /// Configured; [`App::paint_surface`] may attach a buffer, and `swap_buffers` commits state.
+    Mapped,
+}
+/// A tracked `wl_surface`'s role and last-applied spec (ADR-0040 decision 1). One enum keeps
+/// EGL, paint and input paths on the shared `App::surfaces` index. Role objects exist only
+/// while shown (ADR-0049 decision 1, ADR-0088), hence the `Option`s.
+pub(super) enum TrackedRole {
+    Panel {
+        /// `None` after `visible = false`; ADR-0038's null-buffer remap was retained originally,
+        /// but niri does not honor it. Wire trace: remap commit, configure, ack, and buffer attach
+        /// all follow the spec, yet the surface never returns. A notification's first display and
+        /// every later one were invisible; reopening a hidden bar stayed blank (ADR-0088).
+        layer: Option<LayerSurface>,
+        /// Instance output, reused by [`App::show_panel`] (ADR-0038 decision 3). `None` for
+        /// `monitor = "Active"`, whose every show lets the compositor pick (ADR-0246).
+        output: Option<wl_output::WlOutput>,
+        /// `layer::spec_update`'s diff baseline and the spec used by
+        /// [`App::apply_exclusive_zone`] after configure (ADR-0038 decision 2).
+        spec: PanelSpec,
+        /// Output logical size for `SizeMode::Percent`. Do not use `SurfaceInstance::available`:
+        /// `set_instance_size` replaces it with the compositor size, which would shrink a panel on
+        /// every push. Panel-only; a window has no `width`/`height`.
+        output_size: layout::LogicalSize,
+        /// The box the last layout pass solved for this surface's root, which is what a `Content`
+        /// axis asks `set_size` for (`layer::layer_size_for`). Written by
+        /// [`App::apply_resolved_state`] on every pass, whether or not a `LayerSurface` exists, so
+        /// that [`App::show_panel`] rebuilds a hidden panel at the size the pass showing it
+        /// measured. Zero until a pass has one: an invisible root resolves to no geometry at all.
+        measured: layout::LogicalSize,
+        /// The last pair actually sent to `zwlr_layer_surface_v1::set_size`, and
+        /// `layer::spec_update`'s size baseline. Re-deriving it from the applied spec would
+        /// compare two specs against one measurement and miss the case the measurement exists for:
+        /// content that grew under a spec that did not change at all. `(0, 0)` while no layer
+        /// object has been built.
+        requested: (u32, u32),
+    },
+    Window {
+        /// `None` when hidden: no `xdg_toplevel`, `xdg_surface`, or `wl_surface` exists
+        /// (ADR-0049 decision 1).
+        window: Option<Window>,
+        /// `xdg_shell::window::window_update` baseline, retained while hidden so [`App::show_window`] uses
+        /// the last re-resolved spec.
+        spec: WindowSpec,
+    },
+    Popup {
+        /// `None` when hidden. `get_popup` consumes `xdg_positioner`, so every open builds a fresh
+        /// positioner, `wl_surface`, and `xdg_popup` (ADR-0049).
+        popup: Option<Popup>,
+        /// Whole spec for the next open; `xdg_positioner` fields are consumed at creation, so no
+        /// live diff exists.
+        spec: PopupSpec,
+        /// The size the next open asks the positioner for, in logical pixels: the spec's declared
+        /// numbers, with every `SizeMode::Content` axis replaced by what the resolved tree measured
+        /// on the pass this was written. The spec cannot hold it, since a `Content` axis has no
+        /// number until the tree is solved, and the positioner cannot wait for it, since
+        /// `get_popup` consumes the whole positioner at creation.
+        ///
+        /// Zero on an axis means nothing has been measured yet, which is what a hidden popup's
+        /// frozen 0x0 tree reports (ADR-0124). [`App::show_popup`] declines to open on that rather
+        /// than substituting a stale number: the pass that reveals the popup is the pass that
+        /// measures it, so the size is there by the time it is needed, and if it somehow is not,
+        /// waiting one more pass is better than opening at the wrong size.
+        requested: (f32, f32),
+        /// What the *live* popup's positioner was given, or `None` while nothing is open. A pass
+        /// whose [`Placement`] differs from this is one the open popup is the wrong size or in the
+        /// wrong place for, and [`App::reposition_popup`] is what closes that gap: `get_popup`
+        /// consumed the positioner at creation, so the only way to change any of it afterwards is
+        /// `xdg_popup.reposition`.
+        ///
+        /// Without it a popup keeps whatever it opened at. That is invisible for a menu, whose
+        /// contents are fixed, and wrong for anything measured: a battery tooltip opened on
+        /// "69% charging" cannot grow when the estimate arrives and becomes
+        /// "69% charging, 1h 20m to full", so the hover that was already up cuts the words off.
+        positioned: Option<Placement>,
+        /// ADR-0051 decision 2 latch: pointer count at compositor dismissal. It blocks replacement
+        /// while unchanged, preventing a `popup_done`/`visible = true` click-outside livelock. A
+        /// count, not a bool (first amendment), because the `visible = false` clear edge is not
+        /// observable here.
+        dismissed_at: Option<u64>,
+        /// Last [`App::show_popup`] refusal logged for this visible run; throttle repeats
+        /// (ADR-0049 amendment). Cleared on create or `visible = false`.
+        refusal_logged: Option<PopupRefusal>,
+    },
+    Lock {
+        /// Output covered by this lock instance; `lock` has no `monitor` property.
+        output: wl_output::WlOutput,
+        /// `None` until the lock is held (ADR-0052 decision 2). Dropping sends
+        /// `ext_session_lock_surface_v1.destroy` and exposes a solid color; cleared on output
+        /// removal or lock end.
+        surface: Option<SessionLockSurface>,
+    },
+}
+impl TrackedRole {
+    /// This surface's `wl_surface`, or `None` for a hidden window/popup.
+    pub(super) fn wl_surface(&self) -> Option<&wl_surface::WlSurface> {
+        match self {
+            TrackedRole::Panel { layer, .. } => layer.as_ref().map(LayerSurface::wl_surface),
+            TrackedRole::Window { window, .. } => window.as_ref().map(WaylandSurface::wl_surface),
+            TrackedRole::Popup { popup, .. } => popup.as_ref().map(WaylandSurface::wl_surface),
+            TrackedRole::Lock { surface, .. } => surface.as_ref().map(SessionLockSurface::wl_surface),
+        }
+    }
+
+    /// This surface as an `xdg_popup` parent, or `None` if hidden or unsupported
+    /// (ADR-0051 decision 1).
+    pub(super) fn as_popup_parent(&self) -> Option<PopupParent> {
+        match self {
+            TrackedRole::Panel { layer, .. } => layer.as_ref().map(|layer| PopupParent::Layer(layer.clone())),
+            TrackedRole::Window { window, .. } => window.as_ref().map(|w| PopupParent::Xdg(w.xdg_surface().clone())),
+            TrackedRole::Popup { popup, .. } => popup.as_ref().map(|p| PopupParent::Xdg(p.xdg_surface().clone())),
+            // Lock surfaces are neither accepted parent type (`xdg_surface` or
+            // `zwlr_layer_surface_v1`); while locked, only lock surfaces show (ADR-0042).
+            TrackedRole::Lock { .. } => None,
+        }
+    }
+}
+/// Why [`App::show_popup`] declined a popup; used to throttle repeated refusal logs
+/// (ADR-0049 amendment).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum PopupRefusal {
+    /// `grab = true` without a serial this turn (ADR-0051 decision 3).
+    Unarmed,
+    /// `grab = true` but no compositor seat exists.
+    Seatless,
+    /// `parent` names no shown surface, commonly a hidden parent window.
+    HiddenParent,
+    /// A `Content` axis with nothing measured on it yet, so there is no size to ask the positioner
+    /// for. Ordinarily impossible, since the pass that makes a popup visible is the pass that
+    /// measures it, so a standing one means the tree resolves to nothing on that axis.
+    Unmeasured,
+    /// The compositor bound `xdg_popup` below version 3, which is where `reposition` was added, so
+    /// an open popup cannot be resized or moved and keeps what it opened at until it closes.
+    Unrepositionable,
+}
+/// Everything an `xdg_positioner` is told, as one value: the size to ask for and the five fields
+/// that place it. It exists so that what is sent and what is remembered cannot drift apart: a
+/// popup repositions when this differs from what its live positioner was given, and a field added
+/// here is compared by the same edit that starts sending it.
+///
+/// All `Copy`, so remembering one costs nothing. `PopupSpec`'s own `id` and `parent` are not here:
+/// they are structural (ADR-0051 decision 1), and changing either is a different popup rather than
+/// a repositioned one.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(super) struct Placement {
+    pub(super) size: (f32, f32),
+    pub(super) anchor_rect: crate::text::snap::LogicalRect,
+    pub(super) anchor: node::PopupAnchor,
+    pub(super) gravity: node::PopupAnchor,
+    pub(super) constraint_adjustment: node::ConstraintAdjustment,
+    pub(super) offset: node::PopupOffset,
+}
+
+impl Placement {
+    /// What `spec` asks for, with its `Content` axes resolved against `root`, the box the layout
+    /// pass measured for this surface (see [`popup_requested_size`]).
+    pub(super) fn of(spec: &PopupSpec, root: crate::text::snap::LogicalRect) -> Self {
+        Self {
+            size: popup_requested_size(spec, root),
+            anchor_rect: spec.anchor_rect,
+            anchor: spec.anchor,
+            gravity: spec.gravity,
+            constraint_adjustment: spec.constraint_adjustment,
+            offset: spec.offset,
+        }
+    }
+
+    /// Whether both axes have a size to ask for. A `Content` axis reads zero until the tree is
+    /// measured, and `set_size` raises `invalid_input` on a zero.
+    pub(super) fn is_measured(&self) -> bool {
+        self.size.0 > 0.0 && self.size.1 > 0.0
+    }
+}
+
+/// What the next `xdg_positioner::set_size` should ask for: the spec's own numbers, with each
+/// `Content` axis taken from the box the layout pass measured for this surface's root.
+///
+/// `ceil`, not `round`: a card measuring 252.48 needs 253 or the half pixel it asked for is the
+/// half pixel the surface cuts off, which is the whole failure this sizing exists to end. Rounding
+/// is right for an anchor rect, which names a point, and wrong for an extent, which names room.
+///
+/// A `Content` axis the tree reports as zero stays zero, for [`App::show_popup`] to decline on.
+pub(super) fn popup_requested_size(spec: &PopupSpec, root: crate::text::snap::LogicalRect) -> (f32, f32) {
+    let axis = |mode: node::SizeMode, measured: f32| match mode {
+        node::SizeMode::Pixels(px) => px,
+        _ => measured.max(0.0).ceil(),
+    };
+    (axis(spec.width, root.width), axis(spec.height, root.height))
+}
+
+/// Popup roots: `Popup::from_surface` roots windows/nested popups at creation; a panel has no
+/// `xdg_surface`, so layer-shell's `get_popup` must root the raw popup before its initial commit.
+pub(super) enum PopupParent {
+    Layer(LayerSurface),
+    Xdg(xdg_surface::XdgSurface),
+}
+pub(super) struct TrackedSurface {
+    /// Declared before `role`, which owns the `wl_surface`. Rust drops fields top to bottom and
+    /// wayland-egl requires `wl_egl_window_destroy` first. Every explicit teardown path sequences
+    /// this by hand; an implicit drop, reachable when a fatal EGL error unwinds `App`, does not.
+    pub(super) bound: Option<BoundSurface>,
+    pub(super) role: TrackedRole,
+    /// `surface_id`: `"{id}@{output}"` for panels, bare `id` for windows; shared
+    /// by Lua, the retained scene and Wayland.
+    pub(super) surface_id: String,
+    pub(super) map_state: MapState,
+    /// Latest configure size, for the EGL bind (see [`App::bind_and_clear`]).
+    pub(super) configured_size: (u32, u32),
+    /// Last display list and size. The size matters because a resized EGL surface has empty
+    /// buffers; clear on rebind or any branch that cannot prove the pixels still match, or a stale
+    /// frame can remain with no redraw trigger.
+    pub(super) last_painted: Option<((u32, u32), layout::paint::DisplayList)>,
+    /// Damage of the frames presented before, newest first, `None` for the whole surface: what a
+    /// reused back buffer lacks (ADR-0258).
+    pub(super) damage_history: Vec<Option<Vec<PhysicalRect>>>,
+    pub(super) dirty: bool,
+    /// When the pixels on screen go stale although `last_painted` still describes them, so a paint
+    /// must run even against an identical list (ADR-0182). Set when a decode lands for a file this
+    /// surface draws, and to an animated source's next-frame instant (ADR-0233): the list is
+    /// unchanged, the texture behind it is not.
+    ///
+    /// Kept apart from clearing `last_painted` because that list is also the pin set
+    /// `ImageCache::trim` reads. Dropping it unpinned every image a mapped surface was showing for
+    /// the width of one repaint, and a wallpaper mid-dissolve repaints every frame, so `trim`
+    /// kept landing in that window, evicting a whole picker's thumbnails, which then re-decoded,
+    /// landed, and unpinned everything again.
+    pub(super) stale: Option<std::time::Instant>,
+    /// This surface's `ext_background_effect_surface_v1` (ADR-0195). `None` on a compositor without
+    /// the protocol, and on every surface whose tree never sets `blur`. [`App::drop_role_object`]
+    /// destroys it with its `wl_surface`: `set_blur_region` on an inert one kills the client.
+    pub(super) blur_effect: Option<ExtBackgroundEffectSurfaceV1>,
+    /// The blur region last sent, so an unchanged one is not resent.
+    pub(super) last_blur_region: Vec<crate::text::snap::PhysicalRect>,
+    /// The input region last sent, `None` before this `wl_surface` was sent one (ADR-0261).
+    pub(super) last_input_region: Option<Vec<crate::text::snap::PhysicalRect>>,
+}
+impl TrackedSurface {
+    pub(super) fn new(role: TrackedRole, surface_id: String) -> Self {
+        Self {
+            bound: None,
+            role,
+            surface_id,
+            map_state: MapState::Unmapped,
+            configured_size: (0, 0),
+            last_painted: None,
+            damage_history: Vec::new(),
+            dirty: true,
+            stale: None,
+            blur_effect: None,
+            last_blur_region: Vec::new(),
+            last_input_region: None,
+        }
+    }
+
+    fn is_clean(&self) -> bool {
+        !self.dirty && self.last_painted.is_some()
+    }
+
+    /// Whether the repaint this surface owes has come due; see [`TrackedSurface::stale`].
+    fn owes_a_paint(&self) -> bool {
+        self.stale.is_some_and(|due| due <= std::time::Instant::now())
+    }
+
+    /// [`App::drop_role_object`]'s per-entry half.
+    fn forget_role_object(&mut self) {
+        match &mut self.role {
+            TrackedRole::Panel { layer, .. } => drop(layer.take()),
+            TrackedRole::Window { window, .. } => drop(window.take()),
+            TrackedRole::Popup { popup, positioned, .. } => {
+                drop(popup.take());
+                *positioned = None;
+            }
+            TrackedRole::Lock { surface, .. } => drop(surface.take()),
+        }
+        // After the surface, not before: a live surface losing its effect falls back to a blanket
+        // compositor blur rule for its closing snapshot (see `release_blur_effect`).
+        if let Some(effect) = self.blur_effect.take() {
+            effect.destroy();
+        }
+        self.last_blur_region.clear();
+        self.last_input_region = None;
+        self.map_state = MapState::Unmapped;
+        // Those pixels are gone, and a kept list would pin its images through `trim` (ADR-0182).
+        self.last_painted = None;
+        self.dirty = true;
+    }
+}
+
+/// Initial `visible`, with a role-aware fallback when startup apply has no tree
+/// (`Scene::apply` rolled back): panels default visible to keep the shell up, painting nothing
+/// until the next re-resolve; windows/popups default hidden (ADR-0049 decision 1), and locks have
+/// no `visible` property (ADR-0042).
+fn starting_visible(resolved: Option<bool>, roster: &SurfaceSpec) -> bool {
+    resolved.unwrap_or(match roster {
+        SurfaceSpec::Panel(_) => true,
+        SurfaceSpec::Window(_) | SurfaceSpec::Popup(_) | SurfaceSpec::Lock(_) => false,
+    })
+}
+/// Re-derive a surface spec from resolved properties, using `roster` only for the role and log
+/// label (ADR-0049 amendment). `kind` built the roster, so taking the role from properties could
+/// hide a reconcile bug. [`App::create_surfaces`] is the caller; later passes parse inline by role.
+fn resolved_surface_spec(
+    roster: &SurfaceSpec,
+    properties: &PropMap,
+) -> (&'static str, Result<SurfaceSpec, layout::node::LayoutError>) {
+    match roster {
+        SurfaceSpec::Panel(_) => ("panel", node::panel_spec(properties).map(SurfaceSpec::Panel)),
+        SurfaceSpec::Window(_) => ("window", node::window_spec(properties).map(SurfaceSpec::Window)),
+        SurfaceSpec::Popup(_) => ("popup", node::popup_spec(properties).map(SurfaceSpec::Popup)),
+        SurfaceSpec::Lock(_) => ("lock", node::lock_spec(properties).map(SurfaceSpec::Lock)),
+    }
+}
+
+impl App {
+    /// Track each evaluated instance (ADR-0038 decision 1, ADR-0049 decision 1). Panels create
+    /// their layer object regardless of `visible`; windows/popups create only when visible, through
+    /// the same show paths used later. `specs` supplies roster/role, while resolved properties
+    /// supply fields; signal-bound roster placeholders are unsafe for popup positioners, so later
+    /// passes re-derive them. Neither declarations nor roles change on a re-resolve (ADR-0049
+    /// decision 3). Missing declarations log and skip. Startup passes all instances;
+    /// hotplug passes only additions.
+    pub(super) fn create_surfaces(
+        &mut self,
+        qh: &QueueHandle<App>,
+        specs: &[SurfaceSpec],
+        instances: &[SurfaceInstance],
+    ) {
+        // Re-read outputs because this also runs after hotplug.
+        let outputs: HashMap<String, wl_output::WlOutput> = self
+            .output_state
+            .outputs()
+            .enumerate()
+            .filter_map(|(index, output)| {
+                let info = self.output_state.info(&output)?;
+                Some((info.name.unwrap_or_else(|| format!("output-{index}")), output))
+            })
+            .collect();
+
+        for instance in instances {
+            let Some(roster) = specs.iter().find(|spec| spec.declared_id() == instance.declared_id) else {
+                debug!(2; "instance {:?} has no matching declaration; skipping", instance.instance_id);
+                continue;
+            };
+            let tree = self.client.scene().surface(&instance.instance_id);
+            let visible = starting_visible(tree.map(|tree| tree.visible), roster);
+            // Use resolved properties, not the raw roster. For popups this is permanent: each
+            // `PopupSpec` field is consumed by `get_popup`, and no `xdg_popup.reposition` exists,
+            // so a raw signal placeholder (`DEFERRED_POPUP_EXTENT`, 1x1 at 0,0) lasts its life.
+            let spec = match tree.map(|tree| resolved_surface_spec(roster, &tree.properties)) {
+                Some((_, Ok(fresh))) => fresh,
+                Some((role, Err(err))) => {
+                    log_invalid_re_resolve(&instance.instance_id, role, err);
+                    roster.clone()
+                }
+                None => roster.clone(),
+            };
+
+            // The solved root box, for a panel measuring an axis from its content. Zero without a
+            // tree, and zero while hidden (an invisible root resolves to no geometry at all),
+            // which `create_panel` reads as "not measured yet".
+            let measured = tree.map_or(layout::LogicalSize::default(), |tree| layout::LogicalSize {
+                width: tree.rect.width,
+                height: tree.rect.height,
+            });
+
+            match &spec {
+                SurfaceSpec::Panel(panel) => self.create_panel(qh, panel, instance, &outputs, visible, measured),
+                SurfaceSpec::Window(window) => self.create_window(qh, window, instance, visible),
+                SurfaceSpec::Popup(popup) => self.create_popup(qh, popup, instance, visible),
+                SurfaceSpec::Lock(_) => self.create_lock(instance, &outputs),
+            }
+        }
+        // On monitor hotplug, give the newly advertised output its lock surface (ADR-0042), or
+        // the compositor paints a solid color there. No-op without a held lock.
+        self.ensure_lock_surfaces(qh);
+    }
+
+    /// Destroys one surface instance (ADR-0038 decision 3). An unplugged monitor produces both
+    /// `zwlr_layer_surface_v1::closed` and `OutputHandler::output_destroyed`, in either order; the
+    /// no-op handles whichever callback arrives second.
+    pub(super) fn destroy_surface_by_id(&mut self, instance_id: &str) {
+        self.untrack_surface(instance_id);
+        // `App::surfaces` and `Scene::surfaces` are different maps. Also for an instance never
+        // tracked, such as a panel refused at creation, which still has a tree.
+        self.client.forget_surface(instance_id);
+    }
+
+    /// Drops one tracked surface's role object and entry, keeping its retained tree for a same-id
+    /// rebuild (ADR-0216).
+    pub(super) fn untrack_surface(&mut self, instance_id: &str) {
+        let Some(index) = self.surfaces.iter().position(|s| s.surface_id == instance_id) else {
+            return;
+        };
+        // Before `remove` invalidates indices; the scrubs read the tree.
+        self.drop_role_object(index);
+        self.surfaces.remove(index);
+    }
+
+    /// A configure records the compositor size, updates scene geometry and exclusive zone, binds
+    /// EGL, and paints. Layer-shell and xdg-shell share this path
+    /// because both require an initial unbuffered commit (ADR-0040 decision 4). The callers differ
+    /// only in size source: layer-shell supplies it, while a toplevel's `None` axes may be chosen
+    /// by the client (see `xdg_shell::window::toplevel_size_for`).
+    pub(super) fn bind_and_clear(&mut self, index: usize, width: u32, height: u32) {
+        self.surfaces[index].configured_size = (width, height);
+        // The startup resolve used output size; replace it with the granted size and dirty the
+        // scene. This paint uses the old resolve; the next poll turn applies the corrected one;
+        // re-resolving here would run once per configure instead of once per startup burst
+        // (ADR-0044 decision 2).
+        self.client.set_instance_size(
+            &self.surfaces[index].surface_id,
+            layout::LogicalSize { width: width as f32, height: height as f32 },
+        );
+        // No buffer may attach before this first or remap configure; everything below may draw.
+        if self.surfaces[index].map_state == MapState::AwaitingConfigure {
+            self.surfaces[index].map_state = MapState::Mapped;
+        }
+        self.apply_exclusive_zone(index);
+        // Apply resolved state on first configure too: a full transparent panel can otherwise mark
+        // the scene clean before its input region is ever set and swallow clicks behind it.
+        self.apply_resolved_state(index);
+
+        // A remap commit may be awaiting configure, so reject every state except `Mapped`.
+        if self.surfaces[index].map_state != MapState::Mapped {
+            return;
+        }
+
+        if !self.ensure_bound(index) {
+            return;
+        }
+        // Resize the existing `wl_egl_window` on a mode or neighboring-zone change; rebinding is
+        // unnecessary because both EGL objects remain valid.
+        if let Some(bound) = self.surfaces[index].bound.as_ref() {
+            bound.native_window.resize(width.max(1) as i32, height.max(1) as i32, 0, 0);
+        }
+        self.paint_surface(index);
+        self.sync_captures();
+    }
+
+    /// The only teardown; its order is ADR-0213's.
+    pub(super) fn drop_role_object(&mut self, index: usize) {
+        self.release_blur_effect(index);
+        // xdg-shell rejects a parent destroyed under live popups.
+        self.drop_child_popups(index);
+        self.release_bound(index);
+        self.surfaces[index].forget_role_object();
+        // No `leave` follows a client-side destroy; stale focus would scrub and re-arm every frame.
+        if self.keyboard_focus.as_deref() == Some(self.surfaces[index].surface_id.as_str()) {
+            self.keyboard_focus = None;
+            self.focus_secure_submit(None);
+        }
+        // More than tint: `on_hover(false)` is how a config releases what hovering took.
+        self.pointer_left_destroyed_surface(index);
+        debug!("{} destroyed", self.surfaces[index].surface_id);
+    }
+
+    /// Resolve a raw `wl_surface` from pointer or keyboard events. `None` is routine:
+    /// per-seat/per-commit objects can name a surface destroyed by output change or `visible`
+    /// flip (ADR-0049 decision 1).
+    pub(super) fn index_of_surface(&self, surface: &wl_surface::WlSurface) -> Option<usize> {
+        self.surfaces.iter().position(|s| s.role.wl_surface() == Some(surface))
+    }
+
+    /// [`App::index_of_surface`] as a surface id.
+    pub(super) fn surface_id_for(&self, surface: &wl_surface::WlSurface) -> Option<&str> {
+        self.index_of_surface(surface).map(|index| self.surfaces[index].surface_id.as_str())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::wayland::input::rect_table;
+
+    fn panel(id: &str) -> PanelSpec {
+        PanelSpec {
+            topology: node::SurfaceTopology {
+                id: id.to_string(),
+                layer: LayerKind::Top,
+                anchor: node::Anchor { top: true, right: true, bottom: false, left: true },
+                monitor: "All".to_string(),
+                namespace: format!("mantle-{id}"),
+            },
+            keyboard_interactivity: node::KeyboardInteractivity::None,
+            exclusive: node::Exclusive::Reserve,
+            margin: node::EdgeInsets::default(),
+            width: SizeMode::Fill,
+            height: SizeMode::Pixels(32.0),
+        }
+    }
+
+    #[test]
+    fn an_omitted_popup_axis_takes_the_measured_box_and_a_declared_one_ignores_it() {
+        // The whole point of the `Content` axis: the number the positioner is given comes from
+        // what the tree measured, not from a guess in the config. A declared axis is untouched by
+        // the measurement, so one axis can be fixed and the other fitted.
+        let measured = LogicalRect { x: 0.0, y: 0.0, width: 252.48, height: 36.0 };
+        let mut spec = popup_spec_fixture();
+        assert_eq!(popup_requested_size(&spec, measured), (200.0, 120.0), "declared numbers win outright");
+
+        spec.width = node::SizeMode::Content;
+        assert_eq!(
+            popup_requested_size(&spec, measured),
+            (253.0, 120.0),
+            "252.48 rounds *up*: 252 would cut the half pixel the card asked for, which is the clipping this ends"
+        );
+
+        spec.height = node::SizeMode::Content;
+        assert_eq!(popup_requested_size(&spec, measured), (253.0, 36.0));
+    }
+
+    #[test]
+    fn a_content_axis_measuring_nothing_stays_zero_for_show_popup_to_decline_on() {
+        // A hidden popup's tree is frozen at 0x0 (ADR-0124). Reporting that honestly is what lets
+        // `show_popup` wait a pass instead of opening at a size nothing measured.
+        let mut spec = popup_spec_fixture();
+        spec.width = node::SizeMode::Content;
+        spec.height = node::SizeMode::Content;
+        let nothing = LogicalRect::default();
+        assert_eq!(popup_requested_size(&spec, nothing), (0.0, 0.0));
+    }
+
+    #[test]
+    fn a_placement_moves_when_the_measurement_does_and_holds_when_nothing_does() {
+        // The comparison that decides whether an open popup is repositioned. It must be false for
+        // an unchanged pass: `apply_popup_visibility` runs for every surface on every capability
+        // push, so a placement that compared unequal to itself would send a `reposition` several
+        // times a second for the life of every open popup.
+        let card = LogicalRect { x: 0.0, y: 0.0, width: 169.0, height: 36.0 };
+        let mut spec = popup_spec_fixture();
+        spec.width = node::SizeMode::Content;
+        spec.height = node::SizeMode::Content;
+
+        let opened = Placement::of(&spec, card);
+        assert_eq!(opened, Placement::of(&spec, card), "an unchanged pass is not a reposition");
+
+        let grown = LogicalRect { width: 253.0, ..card };
+        assert_ne!(opened, Placement::of(&spec, grown), "the words grew, so the surface must follow");
+
+        // Placement, not just size: an indicator that moves takes its tooltip with it.
+        let mut slid = spec.clone();
+        slid.anchor_rect = LogicalRect { x: 400.0, ..spec.anchor_rect };
+        assert_ne!(opened, Placement::of(&slid, card));
+
+        // And a declared axis is deaf to the measurement, so a fixed popup never repositions for
+        // it.
+        let fixed = popup_spec_fixture();
+        assert_eq!(Placement::of(&fixed, card), Placement::of(&fixed, grown));
+    }
+
+    #[test]
+    fn an_unmeasured_placement_is_not_something_to_reposition_to() {
+        // A popup open on real content whose tree momentarily resolves to nothing must keep what it
+        // has: `set_size` raises `invalid_input` on a zero, and a popup that vanished mid-hover is
+        // worse than one a frame stale.
+        let mut spec = popup_spec_fixture();
+        spec.width = node::SizeMode::Content;
+        spec.height = node::SizeMode::Content;
+        let nothing = LogicalRect::default();
+        assert!(!Placement::of(&spec, nothing).is_measured());
+        assert!(Placement::of(&spec, LogicalRect { x: 0.0, y: 0.0, width: 169.0, height: 36.0 }).is_measured());
+
+        // One axis measured is not enough; `set_size` takes both.
+        let half = LogicalRect { x: 0.0, y: 0.0, width: 169.0, height: 0.0 };
+        assert!(!Placement::of(&spec, half).is_measured());
+    }
+
+    fn popup_spec_fixture() -> PopupSpec {
+        PopupSpec {
+            id: "menu".to_string(),
+            parent: "bar".to_string(),
+            anchor_rect: LogicalRect { x: 997.0, y: 4.0, width: 86.0, height: 24.0 },
+            width: SizeMode::Pixels(200.0),
+            height: SizeMode::Pixels(120.0),
+            anchor: PopupAnchor::BottomLeft,
+            gravity: PopupAnchor::BottomRight,
+            constraint_adjustment: ConstraintAdjustment::default(),
+            offset: node::PopupOffset { x: 0.0, y: 4.0 },
+            grab: true,
+        }
+    }
+
+    fn lock_spec_fixture() -> node::LockSpec {
+        node::LockSpec { id: "lock_screen".to_string() }
+    }
+
+    fn window(id: &str) -> WindowSpec {
+        WindowSpec {
+            id: id.to_string(),
+            title: String::new(),
+            app_id: format!("mantle-{id}"),
+            min_size: None,
+            max_size: None,
+        }
+    }
+
+    #[test]
+    fn a_dropped_role_object_leaves_an_unmapped_entry_that_pins_nothing() {
+        let mut tracked =
+            TrackedSurface::new(TrackedRole::Window { window: None, spec: window("settings") }, "settings".to_string());
+        tracked.map_state = MapState::Mapped;
+        tracked.last_painted = Some(((640, 480), layout::paint::DisplayList::default()));
+        tracked.last_blur_region.push(crate::text::snap::PhysicalRect { x0: 0, y0: 0, x1: 4, y1: 4 });
+        tracked.last_input_region = Some(Vec::new());
+
+        tracked.forget_role_object();
+
+        assert_eq!(tracked.map_state, MapState::Unmapped);
+        assert!(tracked.last_painted.is_none(), "a kept list pins its images in `ImageCache::trim`");
+        assert!(tracked.last_blur_region.is_empty());
+        assert!(tracked.last_input_region.is_none());
+    }
+
+    #[test]
+    fn a_failed_startup_apply_leaves_panels_up_and_windows_and_popups_closed() {
+        // The apply rolls its whole surface map back on error, so this is what every instance sees
+        // at once. A panel comes up painting nothing (the "keep the shell up" fallback); a window
+        // or popup created here would be a Wayland object the config never asked for.
+        assert!(starting_visible(None, &SurfaceSpec::Panel(panel("bar"))));
+        assert!(!starting_visible(None, &SurfaceSpec::Window(window("settings"))));
+        assert!(!starting_visible(None, &SurfaceSpec::Popup(popup_spec_fixture())));
+        assert!(!starting_visible(None, &SurfaceSpec::Lock(lock_spec_fixture())));
+    }
+
+    #[test]
+    fn a_resolved_tree_answers_visible_for_every_role_and_the_fallback_never_runs() {
+        for roster in [
+            SurfaceSpec::Panel(panel("bar")),
+            SurfaceSpec::Window(window("settings")),
+            SurfaceSpec::Popup(popup_spec_fixture()),
+            SurfaceSpec::Lock(lock_spec_fixture()),
+        ] {
+            assert!(starting_visible(Some(true), &roster));
+            assert!(
+                !starting_visible(Some(false), &roster),
+                "a declared-closed surface stays closed whatever its role"
+            );
+        }
+    }
+
+    #[test]
+    fn a_new_surfaces_spec_comes_from_the_resolved_tree_not_the_evaluations_roster() {
+        // ADR-0049's second amendment: the roster's `anchor_rect` is `DEFERRED_POPUP_EXTENT`'s
+        // 1x1 placeholder whenever the config signal-bound it, and a popup shown from that keeps it
+        // for its whole life since the positioner is consumed by `get_popup`.
+        let lua = Lua::new();
+        let rect = rect_table(&lua, LogicalRect { x: 40.0, y: 4.0, width: 86.0, height: 24.0 }).unwrap();
+        let properties = PropMap::from_iter([
+            ("id", Value::String(lua.create_string("menu").unwrap())),
+            ("parent", Value::String(lua.create_string("bar").unwrap())),
+            ("anchor_rect", Value::Table(rect)),
+            ("width", Value::Number(200.0)),
+            ("height", Value::Number(120.0)),
+        ]);
+        let mut placeholder = popup_spec_fixture();
+        placeholder.anchor_rect = LogicalRect { x: 0.0, y: 0.0, width: 1.0, height: 1.0 };
+
+        let (role, spec) = resolved_surface_spec(&SurfaceSpec::Popup(placeholder), &properties);
+        assert_eq!(role, "popup");
+        let SurfaceSpec::Popup(spec) = spec.unwrap() else {
+            panic!("the role comes from the roster, not from the properties")
+        };
+        assert_eq!(spec.anchor_rect, LogicalRect { x: 40.0, y: 4.0, width: 86.0, height: 24.0 });
+    }
+
+    #[test]
+    fn resolved_properties_that_do_not_parse_name_the_role_and_leave_the_roster_spec_standing() {
+        // Same shape `apply_resolved_state` logs on every later pass: the caller keeps the last
+        // applied spec rather than building a surface out of protocol defaults.
+        let lua = Lua::new();
+        let properties = PropMap::from_iter([
+            ("id", Value::String(lua.create_string("bar").unwrap())),
+            ("exclusive", Value::Number(32.0)),
+        ]);
+        let (role, spec) = resolved_surface_spec(&SurfaceSpec::Panel(panel("bar")), &properties);
+        assert_eq!(role, "panel");
+        assert!(spec.is_err());
+    }
+}
