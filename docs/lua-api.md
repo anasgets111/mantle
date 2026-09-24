@@ -244,7 +244,7 @@ already running, so the block's `duration` is the whole of the node's remaining 
 run for `visible = false`; `delay(signal, ms)` holds a whole surface open instead.
 
 Boxes, rows, columns, buttons and surface roots also accept `background`, `radius`,
-`border_color`, `border_width`, `blur`, `clip`, `corner_shape` and `mask`.
+`border_color`, `border_width`, `blur`, `backdrop_blur`, `clip`, `corner_shape` and `mask`.
 Colours use `#RRGGBB` or `#RRGGBBAA`. Borders may specify per-edge colours/widths;
 an edge needs both. `clip = "Box"` is the default; `"Rounded"` clips children with the radius;
 `"None"` leaves them the parent's clip (ADR-0257).
@@ -254,6 +254,8 @@ an edge needs both. `clip = "Box"` is the default; `"Rounded"` clips children wi
 or an image's alpha; see ADR-0255 and `lua-meta/nodes.lua`. An edge fade on a scrolling column:
 `mask = { gradient = "Linear", stops = { { 0, "#00000000" }, { 0.1, "#000000" }, { 0.9, "#000000" }, { 1, "#00000000" } } }`.
 See [paint parsing](../renderer/src/layout/node/paint_style.rs).
+
+`backdrop_blur` is frosted glass over the surface's own pixels, CSS `backdrop-filter: blur()`; see ADR-0256 and `lua-meta/nodes.lua`.
 
 ### 5.2 Node-specific properties
 

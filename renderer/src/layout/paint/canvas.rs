@@ -9,6 +9,7 @@ use femtovg::{
     Canvas, Color, CompositeOperation, ImageFilter, ImageFlags, ImageId, Paint, Path, PixelFormat, RenderTarget,
     Solidity,
 };
+use glow::HasContext;
 
 use crate::image::capture::CaptureCache;
 use crate::image::{self, Fit, ImageCache, Load};
@@ -323,6 +324,9 @@ fn run(painter: &mut TextPainter, walk: &mut Walk<'_, '_>, commands: &[DrawCmd],
                 draw_layer(painter, walk, rect, clip, *effect, commands, target, frame);
                 current_clip = None;
             }
+            Draw::Backdrop { sigma, radius, alpha } => {
+                draw_backdrop(painter, walk, rect, clip, *sigma, *radius, *alpha)
+            }
         }
     }
 }
@@ -351,11 +355,19 @@ fn draw_clipped(
     target: RenderTarget,
     frame: Frame,
 ) {
-    let Some(image) = offscreen(painter, walk, rect, clip, mask, commands, target, frame) else { return };
+    // Not a backdrop root, as CSS's `overflow: hidden` is not: a glass inside starts from what is
+    // under the group (ADR-0256).
+    let glass = mask.is_none() && super::any_draw_matches(commands, |draw| matches!(draw, Draw::Backdrop { .. }));
+    let seed = if glass { read_target(painter, walk, clip) } else { None };
+    let under = seed.as_ref().map(|(copy, _, paint)| paint(*copy, 1.0));
+    let Some(image) = offscreen(painter, walk, rect, clip, mask, under, commands, target, frame) else { return };
     let path = box_path(rect, radius);
     let (width, height) = ((clip.x1 - clip.x0) as f32, (clip.y1 - clip.y0) as f32);
     let paint = Paint::image(image, clip.x0 as f32, clip.y0 as f32, width, height, 0.0, 1.0);
-    painter.canvas_mut().fill_path(&path, &paint);
+    match seed {
+        Some(_) => replace(painter.canvas_mut(), &path, &paint, 1.0),
+        None => painter.canvas_mut().fill_path(&path, &paint),
+    }
 }
 
 /// A pooled render target of `size`, held until [`execute`] flushes; `None` when out of texture
@@ -372,8 +384,9 @@ fn scratch(painter: &mut TextPainter, walk: &mut Walk<'_, '_>, size: (usize, usi
     Some(image)
 }
 
-/// Draws `commands` into a scratch target covering `clip`, masked over the node's box `rect`,
-/// returned for the caller to composite at `clip`. `None` when there is nothing to composite.
+/// Draws `commands` into a scratch target covering `clip` over `under`, masked over the node's box
+/// `rect`, returned for the caller to composite at `clip`. `None` when there is nothing to
+/// composite.
 #[allow(clippy::too_many_arguments)]
 fn offscreen(
     painter: &mut TextPainter,
@@ -381,6 +394,7 @@ fn offscreen(
     rect: LogicalRect,
     clip: PhysicalRect,
     mask: Option<&(node::Mask, (u32, u32))>,
+    under: Option<Paint>,
     commands: &[DrawCmd],
     target: RenderTarget,
     frame: Frame,
@@ -408,6 +422,12 @@ fn offscreen(
     // scissors transform with it, so absolute command coordinates need no extra math.
     canvas.reset_transform();
     canvas.translate(-clip.x0 as f32, -clip.y0 as f32);
+    let mut whole = Path::new();
+    whole.rect(clip.x0 as f32, clip.y0 as f32, width as f32, height as f32);
+    if let Some(under) = under {
+        canvas.reset_scissor();
+        canvas.fill_path(&whole, &under.with_anti_alias(false));
+    }
     // The offscreen's own size (a shader quad inside a rounded clip places itself in that target,
     // ADR-0184), its origin at the clip's corner, and no transform: `draw_clipped`
     // reset the canvas transform above, and composites the result under the outer one afterwards.
@@ -434,8 +454,6 @@ fn offscreen(
                 false => CompositeOperation::DestinationIn,
                 true => CompositeOperation::DestinationOut,
             });
-            let mut whole = Path::new();
-            whole.rect(clip.x0 as f32, clip.y0 as f32, width as f32, height as f32);
             canvas.fill_path(&whole, &paint.with_anti_alias(false));
         }
     }
@@ -473,12 +491,12 @@ fn draw_layer(
     walk: &mut Walk<'_, '_>,
     rect: LogicalRect,
     clip: PhysicalRect,
-    node::Effect { shadow, blur }: node::Effect,
+    node::Effect { shadow, blur, .. }: node::Effect,
     commands: &[DrawCmd],
     target: RenderTarget,
     frame: Frame,
 ) {
-    let Some(content) = offscreen(painter, walk, rect, clip, None, commands, target, frame) else { return };
+    let Some(content) = offscreen(painter, walk, rect, clip, None, None, commands, target, frame) else { return };
     let size = ((clip.x1 - clip.x0) as usize, (clip.y1 - clip.y0) as usize);
     let area = LogicalRect { x: clip.x0 as f32, y: clip.y0 as f32, width: size.0 as f32, height: size.1 as f32 };
     if let Some(shadow) = shadow
@@ -486,10 +504,7 @@ fn draw_layer(
     {
         fill_image(painter.canvas_mut(), cast, super::shadow_rect(rect, area, shadow), 1.0);
     }
-    let content = match blur * walk.scale {
-        sigma if sigma >= MIN_SIGMA => blurred(painter, walk, content, size, sigma).unwrap_or(content),
-        _ => content,
-    };
+    let content = blurred(painter, walk, content, size, blur * walk.scale).unwrap_or(content);
     fill_image(painter.canvas_mut(), content, area, 1.0);
 }
 
@@ -503,6 +518,9 @@ fn blurred(
     size: (usize, usize),
     sigma: f32,
 ) -> Option<ImageId> {
+    if sigma < MIN_SIGMA {
+        return None;
+    }
     let image = scratch(painter, walk, size)?;
     painter.canvas_mut().filter_image(image, ImageFilter::GaussianBlur { sigma }, source);
     Some(image)
@@ -518,8 +536,7 @@ fn cast_shadow(
     target: RenderTarget,
 ) -> Option<ImageId> {
     let sigma = shadow.blur / 2.0 * walk.scale;
-    let cast =
-        if sigma >= MIN_SIGMA { blurred(painter, walk, content, size, sigma)? } else { scratch(painter, walk, size)? };
+    let cast = blurred(painter, walk, content, size, sigma).or_else(|| scratch(painter, walk, size))?;
     let (width, height) = (size.0 as f32, size.1 as f32);
     let mut whole = Path::new();
     whole.rect(0.0, 0.0, width, height);
@@ -538,6 +555,75 @@ fn cast_shadow(
     canvas.restore();
     canvas.set_render_target(target);
     Some(cast)
+}
+
+/// Blurs what the current target holds under `clip`, the 3 sigma the blur reads, into the box
+/// (ADR-0256).
+fn draw_backdrop(
+    painter: &mut TextPainter,
+    walk: &mut Walk<'_, '_>,
+    rect: LogicalRect,
+    clip: PhysicalRect,
+    sigma: f32,
+    radius: f32,
+    alpha: f32,
+) {
+    let Some((copy, size, paint)) = read_target(painter, walk, clip) else { return };
+    let blurred = blurred(painter, walk, copy, size, sigma * walk.scale).unwrap_or(copy);
+    replace(painter.canvas_mut(), &box_path(rect, radius), &paint(blurred, alpha), alpha);
+}
+
+/// The current target's pixels under `area`, copied to a scratch of the returned size, and the
+/// paint that lays an image of that size back where they were read, under the transform in force
+/// now. `None` without a GL context: femtovg cannot read a target.
+#[allow(clippy::type_complexity)]
+fn read_target(
+    painter: &mut TextPainter,
+    walk: &mut Walk<'_, '_>,
+    area: PhysicalRect,
+) -> Option<(ImageId, (usize, usize), impl Fn(ImageId, f32) -> Paint + use<>)> {
+    let gl = walk.shaders.as_ref()?.gl;
+    let canvas = painter.canvas_mut();
+    let to_target = canvas.transform();
+    let whole = PhysicalRect { x0: 0, y0: 0, x1: canvas.width() as i32, y1: canvas.height() as i32 };
+    let region = super::transformed(to_target.0, area).intersect(whole);
+    if super::is_empty(region) {
+        return None;
+    }
+    let size = ((region.x1 - region.x0) as usize, (region.y1 - region.y0) as usize);
+    let copy = scratch(painter, walk, size)?;
+    let canvas = painter.canvas_mut();
+    let texture = canvas.get_native_texture(copy).ok()?;
+    canvas.flush();
+    // SAFETY: `paint_surface` made this context current, the flush left the target bound, and
+    // femtovg's next flush rebinds every texture unit it uses.
+    unsafe {
+        gl.bind_texture(glow::TEXTURE_2D, Some(texture));
+        // GL rows run bottom up in a target and in a `FLIP_Y` image alike.
+        let (width, rows) = (size.0 as i32, size.1 as i32);
+        gl.copy_tex_sub_image_2d(glow::TEXTURE_2D, 0, 0, 0, region.x0, whole.y1 - region.y1, width, rows);
+        gl.bind_texture(glow::TEXTURE_2D, None);
+    }
+    // ponytail: approximate where a non-uniform `scale` meets a `rotate`, whose inverse skews and
+    // an image paint cannot. Upgrade path: a raw-GL quad, as the shader stage draws.
+    let from_target = to_target.inverse();
+    let (x, y) = from_target.transform_point(region.x0 as f32, region.y0 as f32);
+    let [a, b, c, d, ..] = from_target.0;
+    let angle = b.atan2(a);
+    let (sin, cos) = angle.sin_cos();
+    let (width, height) = (size.0 as f32 * a.hypot(b), size.1 as f32 * (d * cos - c * sin));
+    Some((copy, size, move |image, alpha| Paint::image(image, x, y, width, height, angle, alpha)))
+}
+
+/// Fills `path` with `paint` in place of what is there, a lerp by `alpha`: source-over would show
+/// a translucent ground through it.
+fn replace(canvas: &mut Canvas<OpenGl>, path: &Path, paint: &Paint, alpha: f32) {
+    canvas.save();
+    canvas.global_composite_operation(CompositeOperation::DestinationOut);
+    canvas.fill_path(path, &Paint::color(Color::rgbaf(0.0, 0.0, 0.0, alpha)));
+    canvas.global_composite_operation(CompositeOperation::Lighter);
+    canvas.fill_path(path, paint);
+    canvas.restore();
 }
 
 /// File-draw parameters shared by icon and image commands.
@@ -1008,13 +1094,8 @@ mod tests {
 
     /// Paints `child` inside a 64x64 panel with no fill and reads back the pixels at `points`.
     fn paint_points(child: &str, points: &[(usize, usize)]) -> Option<Vec<(u8, u8, u8, u8)>> {
-        let instance = init_headless_egl(64, 64)?;
-        let shaping = ShapingHandle::spawn();
-        let mut painter = text_painter(&instance, &shaping, 64, 64)?;
         let src = format!(r#"return panel {{ id = "bar", width = 64, height = 64, child = {child} }}"#);
-        let root = resolved_surface(&Lua::new(), &src, LogicalSize { width: 64.0, height: 64.0 });
-        paint_tree(&mut painter, &mut ImageCache::new(), &root, 1.0);
-        Some(points.iter().map(|&(x, y)| pixel_at(painter.canvas_mut(), x, y)).collect())
+        paint_with_gl(&src, (64, 64), points)
     }
 
     /// CSS geometry: a linear gradient runs top to bottom unless turned, a radial one from the centre
@@ -2073,12 +2154,33 @@ mod tests {
         assert!(near(px[2], (0, 0, 0)) && near(px[3], (255, 255, 255)), "and only it casts: {px:?}");
     }
 
+    /// Paints the surface `src` at `size` through [`execute`] with a GL context, which a shader
+    /// quad and a backdrop need, and reads back `points`.
+    fn paint_with_gl(src: &str, size: (u32, u32), points: &[(usize, usize)]) -> Option<Vec<(u8, u8, u8, u8)>> {
+        let instance = init_headless_egl(size.0 as i32, size.1 as i32)?;
+        let shaping = ShapingHandle::spawn();
+        let mut painter = text_painter(&instance, &shaping, size.0, size.1)?;
+        let root = resolved_surface(&Lua::new(), src, LogicalSize { width: size.0 as f32, height: size.1 as f32 });
+        // SAFETY: `init_headless_egl` made this context current on this thread.
+        let gl = unsafe {
+            glow::Context::from_loader_function(|s| {
+                instance.get_proc_address(s).map_or(std::ptr::null(), |f| f as *const c_void)
+            })
+        };
+        let mut stage = image_shader::ShaderStage::default();
+        painter.canvas_mut().clear_rect(0, 0, size.0, size.1, Color::rgbaf(0.0, 0.0, 0.0, 0.0));
+        let shaders = Some(Shaders { gl: &gl, stage: &mut stage });
+        let list = build(&root, 1.0, None);
+        let target = (size.0 as f32, size.1 as f32);
+        let _ =
+            execute(&mut painter, &mut ImageCache::new(), &mut CaptureCache::default(), &list, 1.0, target, shaders);
+        let canvas = painter.canvas_mut();
+        Some(points.iter().map(|&(x, y)| pixel_at(canvas, x, y)).collect())
+    }
+
     /// A raw-GL `shader` quad inside a layer lands in the offscreen, and casts its shadow from it.
     #[test]
     fn a_shader_nodes_quad_casts_a_shadow_through_the_layer() {
-        let Some(instance) = init_headless_egl(64, 96) else { return };
-        let shaping = ShapingHandle::spawn();
-        let Some(mut painter) = text_painter(&instance, &shaping, 64, 96) else { return };
         let dir = tempfile::tempdir().unwrap();
         let frag = dir.path().join("blue.frag");
         std::fs::write(&frag, "void main() { fragColor = vec4(0.0, 0.0, 1.0, 1.0); }").unwrap();
@@ -2088,30 +2190,144 @@ mod tests {
                 source = "{}", shadow_offset = {{ y = 16 }} }} }}"##,
             frag.display()
         );
-        let root = resolved_surface(&Lua::new(), &src, LogicalSize { width: 64.0, height: 96.0 });
-        // SAFETY: `init_headless_egl` made this context current on this thread.
-        let gl = unsafe {
-            glow::Context::from_loader_function(|s| {
-                instance.get_proc_address(s).map_or(std::ptr::null(), |f| f as *const c_void)
-            })
-        };
-        let mut stage = image_shader::ShaderStage::default();
-        let canvas = painter.canvas_mut();
-        canvas.clear_rect(0, 0, 64, 96, Color::rgbaf(0.0, 0.0, 0.0, 0.0));
-        let shaders = Some(Shaders { gl: &gl, stage: &mut stage });
-        let list = build(&root, 1.0, None);
-        let _ = execute(
-            &mut painter,
-            &mut ImageCache::new(),
-            &mut CaptureCache::default(),
-            &list,
-            1.0,
-            (64.0, 96.0),
-            shaders,
+        let Some(px) = paint_with_gl(&src, (64, 96), &[(32, 32), (32, 56), (32, 76)]) else { return };
+        assert_eq!(px[0], (0, 0, 255, 255), "the quad lands where the node is");
+        assert_eq!(px[1], (0, 0, 0, 255), "and casts its shadow below");
+        assert_eq!(px[2], (255, 255, 255, 255));
+    }
+
+    /// A transform moves the quad and its scissor together: a translated shader draws where it
+    /// slid to, a scaled one past its layout box.
+    #[test]
+    fn a_transformed_shader_node_draws_where_it_is_painted() {
+        let dir = tempfile::tempdir().unwrap();
+        let frag = dir.path().join("blue.frag");
+        std::fs::write(&frag, "void main() { fragColor = vec4(0.0, 0.0, 1.0, 1.0); }").unwrap();
+        let src = format!(
+            r##"return panel {{ id = "bar", width = 64, height = 48, child = row {{ children = {{
+                shader {{ width = 16, height = 16, source = "{0}", translate = {{ x = 16 }} }},
+                shader {{ width = 16, height = 16, margin = {{ left = 8, top = 24 }}, source = "{0}", scale = 2 }} }} }} }}"##,
+            frag.display()
         );
-        let canvas = painter.canvas_mut();
-        assert_eq!(pixel_at(canvas, 32, 32), (0, 0, 255, 255), "the quad lands where the node is");
-        assert_eq!(pixel_at(canvas, 32, 56), (0, 0, 0, 255), "and casts its shadow below");
-        assert_eq!(pixel_at(canvas, 32, 76), (255, 255, 255, 255));
+        let Some(px) = paint_with_gl(&src, (64, 48), &[(20, 8), (8, 8), (18, 18), (38, 38)]) else { return };
+        assert_eq!(px, [(0, 0, 255, 255), (0, 0, 0, 0), (0, 0, 255, 255), (0, 0, 255, 255)]);
+    }
+
+    /// ADR-0256. Eight-pixel stripes under a frosted pill blur to grey inside the pill only. The
+    /// pill's border and child draw sharp over it, and the corner outside its arc keeps the stripe.
+    /// Translucent stripes are replaced by their blur, not shown through it.
+    #[test]
+    fn a_backdrop_blur_frosts_the_stripes_under_a_pill_and_nothing_else() {
+        let src = r##"local stops = {}
+            for i = 0, 11 do
+                local colour = i % 2 == 0 and "#FFFFFFFF" or "#000000FF"
+                stops[#stops + 1] = { i / 12, colour }
+                stops[#stops + 1] = { (i + 1) / 12, colour }
+            end
+            return panel { id = "bar", width = 96, height = 48, child = rect { width = "Fill", height = "Fill",
+                background = { gradient = "Linear", angle = 90, stops = stops }, padding = 8,
+                children = { rect { width = 80, height = 32, radius = 16, backdrop_blur = 4,
+                    border_width = 2, border_color = "#00FF00FF", children = {
+                        rect { width = 4, height = 4, margin = { left = 38, top = 14 }, background = "#FF0000FF" } } } } } }"##;
+        let row: Vec<(usize, usize)> = (24..72).map(|x| (x, 30)).collect();
+        let fixed = [(4, 24), (12, 4), (44, 44), (10, 10), (48, 9), (48, 24)];
+        let points = [&row[..], &fixed].concat();
+        let translucent = src.replace("#FFFFFFFF", "#FFFFFF80").replace("#000000FF", "#00000000");
+        for (src, grey, (white, black)) in [
+            (src, 60..=196, ((255, 255, 255, 255), (0, 0, 0, 255))),
+            (&translucent, 30..=100, ((128, 128, 128, 128), (0, 0, 0, 0))),
+        ] {
+            let Some(px) = paint_with_gl(src, (96, 48), &points) else { return };
+            let (row, fixed) = px.split_at(row.len());
+            assert!(row.iter().all(|p| grey.contains(&p.0) && p.0 == p.2), "inside the pill is grey: {row:?}");
+            assert_eq!(fixed[..4], [white, black, black, black], "outside");
+            assert_eq!(fixed[4], (0, 255, 0, 255), "the border is sharp");
+            assert_eq!(fixed[5], (255, 0, 0, 255), "and so is the child");
+        }
+    }
+
+    /// ADR-0256. A frosted node fading in crosses from its backdrop to the blur, never through the
+    /// surface's transparency, and a box at the surface's edge does not blur in the void past it.
+    #[test]
+    fn a_fading_backdrop_keeps_an_opaque_ground_opaque_up_to_the_surfaces_edge() {
+        let src = r##"return panel { id = "bar", width = 64, height = 32, background = "#FF0000FF",
+            child = rect { width = "Fill", height = "Fill", backdrop_blur = 4, opacity = 0.5 } }"##;
+        let Some(px) = paint_with_gl(src, (64, 32), &[(32, 16), (0, 0), (63, 31)]) else { return };
+        assert_eq!(px, [(255, 0, 0, 255); 3]);
+    }
+
+    /// ADR-0256. A glass at a clipping parent's edge reads only inside that parent: a red header
+    /// above a blue viewport does not bleed into the glass at the viewport's top.
+    #[test]
+    fn a_glass_reads_nothing_past_its_parents_clip() {
+        let src = r##"return panel { id = "bar", width = 64, height = 48, child = column { width = "Fill", children = {
+            rect { width = "Fill", height = 16, background = "#FF0000FF" },
+            rect { width = "Fill", height = 32, background = "#0000FFFF",
+                children = { rect { width = "Fill", height = 16, backdrop_blur = 4 } } } } } }"##;
+        let Some(px) = paint_with_gl(src, (64, 48), &[(32, 16), (32, 8)]) else { return };
+        assert_eq!(px, [(0, 0, 255, 255), (255, 0, 0, 255)]);
+    }
+
+    /// ADR-0256. A rounded clip is not a backdrop root, as CSS's `overflow: hidden` is not: a
+    /// frosted pill inside a translucent rounded card blurs the stripes behind the card, and the
+    /// card's own translucent fill still blends over them once.
+    #[test]
+    fn a_glass_in_a_rounded_clip_blurs_what_is_behind_the_card() {
+        let src = r##"local stops = {}
+            for i = 0, 11 do
+                local colour = i % 2 == 0 and "#FFFFFFFF" or "#000000FF"
+                stops[#stops + 1] = { i / 12, colour }
+                stops[#stops + 1] = { (i + 1) / 12, colour }
+            end
+            return panel { id = "bar", width = 96, height = 48, padding = 4,
+                background = { gradient = "Linear", angle = 90, stops = stops },
+                child = rect { width = 88, height = 40, radius = 8, clip = "Rounded", padding = 4,
+                    children = { rect { width = 80, height = 32, radius = 16, backdrop_blur = 4,
+                        background = "#0000FF40" } } } }"##;
+        let row: Vec<(usize, usize)> = (24..72).map(|x| (x, 20)).collect();
+        let points = [&row[..], &[(2, 2), (12, 6), (20, 6)]].concat();
+        let Some(px) = paint_with_gl(src, (96, 48), &points) else { return };
+        let (row, fixed) = px.split_at(row.len());
+        assert!(row.iter().all(|p| (45..=150).contains(&p.0) && p.2 > p.0), "inside the pill is frosted: {row:?}");
+        let (white, black) = ((255, 255, 255, 255), (0, 0, 0, 255));
+        assert_eq!(fixed, [white, black, white], "outside the pill the stripes are sharp");
+        // A translucent ground under the card composites back once.
+        let translucent = src.replace("#FFFFFFFF", "#FFFFFF80").replace("#000000FF", "#00000000");
+        let Some(px) = paint_with_gl(&translucent, (96, 48), &points) else { return };
+        let (white, black) = ((128, 128, 128, 128), (0, 0, 0, 0));
+        assert_eq!(px[row.len()..], [white, black, white]);
+    }
+
+    /// ADR-0256. A backdrop split red and blue along the diagonal x + y = 52 across a frosted pill
+    /// reads red above it and blue below, blended only across it: the region is read where the pill
+    /// is, the right way up and round, on the screen, in a rounded clip's or a mask's offscreen,
+    /// from under the node's own layer, and through a transform. The pill sits off its targets'
+    /// vertical centres, so an unflipped read lands elsewhere.
+    #[test]
+    fn a_backdrop_is_read_where_the_box_is_in_every_target() {
+        let opaque_mask = r##"mask = { gradient = "Linear", stops = { { 0, "#FFFFFFFF" }, { 1, "#FFFFFFFF" } } },"##;
+        for (wrapper, pill) in [
+            ("", ""),
+            (r#"radius = 4, clip = "Rounded","#, ""),
+            (opaque_mask, ""),
+            ("", r##"content_blur = 1, border_width = 1, border_color = "#00FF00FF""##),
+            ("translate = { x = 4, y = -4 },", ""),
+            ("", "rotate = 180"),
+        ] {
+            let src = format!(
+                r##"return panel {{ id = "bar", width = 96, height = 96, padding = 8, child = rect {{
+                    width = 80, height = 64, {wrapper} children = {{ rect {{ width = "Fill", height = "Fill",
+                        padding = {{ left = 8 }}, background = {{ gradient = "Linear", angle = 135, stops = {{ {{ 0, "#FF0000FF" }},
+                            {{ 0.25, "#FF0000FF" }}, {{ 0.25, "#0000FFFF" }}, {{ 1, "#0000FFFF" }} }} }},
+                        children = {{ rect {{ width = 64, height = 32, radius = 16, backdrop_blur = 2, {pill} }} }} }} }} }} }}"##
+            );
+            let points = [(26, 14), (30, 22), (26, 26), (56, 28), (13, 12)];
+            let Some(px) = paint_with_gl(&src, (96, 96), &points) else { return };
+            let case = format!("wrapper {{ {wrapper} }}, pill {{ {pill} }}: {px:?}");
+            assert!(px[0].0 > 240 && px[0].2 < 15, "red above the split, {case}");
+            assert!(px[3].2 > 240 && px[3].0 < 15, "blue below it, {case}");
+            assert!(px[1..3].iter().all(|p| (40..=215).contains(&p.0) && (40..=215).contains(&p.2)), "blended, {case}");
+            assert_eq!(px[4], (255, 0, 0, 255), "sharp outside the pill, {case}");
+        }
     }
 }

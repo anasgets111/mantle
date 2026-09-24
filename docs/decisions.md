@@ -6116,6 +6116,67 @@ lighter than an unmasked border's. Upgrade path: composite unantialiased when `r
 **Amends ADR-0079** (a mask needs no second target, and a masked leaf still groups) **and the roadmap's Drawing row.** The
 "shaders over an arbitrary subtree" won't-do row stands: a mask is a composite operation, not a shader.
 
+## 0256. `backdrop_blur` blurs what the surface already painted under a box
+
+CSS `backdrop-filter: blur()`, Qt's frosted glass. `blur` (ADR-0195) asks the compositor and sees the
+desktop behind the surface; `backdrop_blur` sees only the surface's own pixels, so a pill over a
+wallpaper `image` frosts it while its text and border stay sharp.
+
+1. **A box property, a number.** Sigma in logical pixels, default `0`, on `BOX_PROPERTIES` because
+   `radius` and `corner_shape` are its shape. A paint-only tick, range `[0, 8192]`. It rides
+   `Effect` beside `content_blur`.
+2. **`Draw::Backdrop` precedes the node's own commands**, outside the offscreen its shadow,
+   `content_blur` or `mask` opens: that target holds nothing to read yet. Under a `scale`, `rotate` or
+   `translate` it is inside the node's `Transformed` group.
+3. **Read with raw GL.** femtovg 0.27 cannot read a target. The walk flushes femtovg, as the shader
+   stage does (ADR-0184), which leaves the current target bound, then `glCopyTexSubImage2D`s the
+   command's clip (the box padded 3 sigma, cut to the parent's clip) under the canvas transform,
+   cut to the target, into a pooled `FLIP_Y` scratch. A glass at a scroll viewport's edge reads
+   nothing past it. GL rows run bottom-up in the screen and in a `FLIP_Y` target alike, so the read
+   is at `height - y1` of whichever is bound: the screen or a rounded clip's, mask's or layer's
+   offscreen. The copy is blurred by `content_blur`'s `filter_image` and filled through `box_path`,
+   its image paint mapped back through the inverse canvas transform, so a moved box shows what is
+   under it now.
+4. **Erase, then add.** `DestinationOut` at the node's opacity, then `Lighter`: a lerp from the
+   backdrop to its blur, antialiased edge included. Source-over shows a translucent backdrop's sharp
+   pixels through the blur, and erasing then compositing over thins an opaque ground to 75% alpha at
+   half opacity.
+5. **A `mask`, shadow or `content_blur` offscreen is a backdrop root**, as CSS's `mask` and
+   `filter` are: a glass inside sees what that ancestor drew into it. A `clip = "Rounded"` is not,
+   as `overflow: hidden` is not: when its subtree holds a glass and it has no mask, its offscreen
+   starts as a copy of the parent target under the group, and composites back erase-then-add, so a
+   translucent ground is not applied twice. That costs one more copy, the table's copy-only column.
+6. **Invariant: a repainted backdrop's whole read area is drawn fresh this frame.**
+   `glCopyTexSubImage2D` ignores the scissor, so a read reaching stale pixels shows last frame's
+   frost and text in this one. `expand_backdrops` adds each backdrop's read area, mapped through its
+   enclosing matrices, whenever the damage meets it, and repeats until nothing is added. A GIF or
+   `shader` animating under a pill repaints the pill, and a glass repainting reaches every glass
+   whose read it covers. `damage_since` applies it, and so must a partial repaint's final region.
+   At opacity 0 there is no backdrop to read.
+7. **Cost.** Headless, 800x600 target, best of 7 x 100 frames with `glFinish`, a `#ffffff33` box
+   with text over a striped gradient, added to the same box without the property:
+
+   | Box | Copy only | sigma 2 | sigma 8 |
+   | :--- | :--- | :--- | :--- |
+   | 200x50 pill | +0.05 ms / +0.29 ms | +0.52 ms / +0.87 ms | +0.69 ms / +2.30 ms |
+   | 400x300 panel | +0.03 ms / +0.51 ms | +0.89 ms / +1.81 ms | +0.78 ms / +4.97 ms |
+
+   RTX 3080 (proprietary driver) / Mesa llvmpipe. The blur dominates: `filter_image` allocates a
+   texture and a framebuffer per call (ADR-0254 decision 4).
+
+Rejected: `glBlitFramebuffer`, which needs femtovg's private framebuffer for an offscreen; a CPU
+readback, a pipeline stall every frame; drawing everything under the node to a second target, which
+paints it twice.
+
+ponytail: a node's own `mask` does not fade its backdrop, drawn outside that mask's offscreen. Upgrade
+path: copy the backdrop before opening the offscreen and draw it first inside it.
+
+ponytail: the scratch pool matches exact sizes (ADR-0254), so a frosted box tweening its size or
+sliding off the target's edge reallocates its copy every frame.
+
+**Amends ADR-0254** (`Effect` carries `backdrop_blur`, and its decision 4 limits apply) **and the
+roadmap's Drawing row.**
+
 ## 0257. `clip = "None"` lets a wrapper leave its children uncut
 
 Every node cut its children to its box, so a content-sized wrapper cut its child's shadow to the

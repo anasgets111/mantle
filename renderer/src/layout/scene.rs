@@ -2937,10 +2937,10 @@ pub(super) mod tests {
         assert_eq!(block.rect, before, "nothing a paint-only tick writes can move a rect");
     }
 
-    /// ADR-0254: a shadow and a content blur tween on the paint-only tick, and the tick re-derives
+    /// ADR-0254, ADR-0256: a shadow and both blurs tween on the paint-only tick, and the tick re-derives
     /// the node's `effect` from the values it wrote.
     #[test]
-    fn a_shadow_and_a_content_blur_tween_on_the_paint_only_tick() {
+    fn a_shadow_and_both_blurs_tween_on_the_paint_only_tick() {
         let mut scene = Scene::new();
         let shaping = ShapingHandle::spawn();
         let (lua, surface) = surface_from(
@@ -2949,9 +2949,11 @@ pub(super) mod tests {
                 shadow_color = "#000000", shadow_blur = up:map(function(u) return u and 8 or 0 end),
                 shadow_offset = up:map(function(u) return u and { x = 0, y = 4 } or { x = 0, y = 0 } end),
                 content_blur = up:map(function(u) return u and 2 or 0 end),
+                backdrop_blur = up:map(function(u) return u and 8 or 0 end),
                 animate = { shadow_blur = { duration = 100, easing = "Linear" },
                             shadow_offset = { duration = 100, easing = "Linear" },
-                            content_blur = { duration = 100, easing = "Linear" } } } }"##,
+                            content_blur = { duration = 100, easing = "Linear" },
+                            backdrop_blur = { duration = 100, easing = "Linear" } } } }"##,
         );
         apply_at(&mut scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
         lua.load(r#"state("up", false):set(true)"#).exec().unwrap();
@@ -2964,6 +2966,7 @@ pub(super) mod tests {
         let shadow = effect.shadow.expect("halfway, the shadow shows");
         assert!((shadow.blur - 4.0).abs() < 0.01 && (shadow.offset.1 - 2.0).abs() < 0.01, "got {shadow:?}");
         assert!((effect.blur - 1.0).abs() < 0.01, "got {}", effect.blur);
+        assert!((effect.backdrop - 4.0).abs() < 0.01, "got {}", effect.backdrop);
     }
 
     /// `width` is not paint-only, so a tree carrying one has to take the relayout path even when

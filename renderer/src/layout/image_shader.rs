@@ -478,11 +478,12 @@ impl ShaderStage {
             gl.disable(glow::CULL_FACE);
 
             // The ancestor clip, which femtovg applies to its own paths through a uniform this
-            // quad never reads. GL scissors from the bottom left, so the box is flipped in the
-            // target it is being drawn into.
+            // quad never reads, moved with the quad. GL scissors from the bottom left, so the box
+            // is flipped in the target it is being drawn into.
+            let clip = run.transform.map_or(run.clip, |matrix| super::paint::transformed(matrix, run.clip));
             let (target_width, target_height) = run.target_size;
-            let (left, right) = (run.clip.x0 as f32 - run.target_origin.0, run.clip.x1 as f32 - run.target_origin.0);
-            let (top, bottom) = (run.clip.y0 as f32 - run.target_origin.1, run.clip.y1 as f32 - run.target_origin.1);
+            let (left, right) = (clip.x0 as f32 - run.target_origin.0, clip.x1 as f32 - run.target_origin.0);
+            let (top, bottom) = (clip.y0 as f32 - run.target_origin.1, clip.y1 as f32 - run.target_origin.1);
             let x = left.max(0.0);
             let y = (target_height - bottom).max(0.0);
             let scissor_width = right.min(target_width) - x;

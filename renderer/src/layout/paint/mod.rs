@@ -110,6 +110,9 @@ pub enum Draw {
     /// A subtree drawn offscreen, then composited over its own shadow and through `content_blur`
     /// (ADR-0254). `rect` is the node's box; `clip` covers everything the effect reaches.
     Layer { effect: node::Effect, commands: Vec<DrawCmd> },
+    /// What the target already holds under the node's box, blurred by `sigma` logical pixels and
+    /// drawn through its `radius` at `alpha` (ADR-0256). `clip` covers the 3 sigma the blur reads.
+    Backdrop { sigma: f32, radius: f32, alpha: f32 },
 }
 
 /// One drawable node: what, where, and its precomputed ancestor clip. Intersections are axis
@@ -263,13 +266,44 @@ impl DisplayList {
                 })
             })
             .map(command_bounds);
-        changed
+        let mut damage: Vec<PhysicalRect> = changed
             .filter(|rect| !is_empty(*rect))
             .reduce(union)
             .into_iter()
             .chain(textured)
             .filter(|r| !is_empty(*r))
-            .collect()
+            .collect();
+        self.expand_backdrops(&mut damage);
+        damage
+    }
+
+    /// Adds every backdrop's read area that `damage` reaches, until none is left, so a repainted
+    /// backdrop reads only pixels drawn this frame (ADR-0256).
+    pub fn expand_backdrops(&self, damage: &mut Vec<PhysicalRect>) {
+        fn reads(commands: &[DrawCmd], matrices: &mut Vec<node::Affine>, out: &mut Vec<PhysicalRect>) {
+            for command in commands {
+                match &command.draw {
+                    Draw::Backdrop { .. } => {
+                        out.push(matrices.iter().rev().fold(command_bounds(command), |read, m| transformed(*m, read)))
+                    }
+                    Draw::Transformed { matrix, commands } => {
+                        matrices.push(*matrix);
+                        reads(commands, matrices, out);
+                        matrices.pop();
+                    }
+                    Draw::Clipped { commands, .. } | Draw::Layer { commands, .. } => reads(commands, matrices, out),
+                    _ => {}
+                }
+            }
+        }
+        let mut pending = Vec::new();
+        reads(&self.commands, &mut Vec::new(), &mut pending);
+        while let Some(at) = pending.iter().position(|read| {
+            !damage.iter().any(|rect| rect.intersect(*read) == *read)
+                && damage.iter().any(|rect| !is_empty(rect.intersect(*read)))
+        }) {
+            damage.push(pending.swap_remove(at));
+        }
     }
 }
 
@@ -292,12 +326,17 @@ fn command_bounds(command: &DrawCmd) -> PhysicalRect {
     let Some(inner) = commands.iter().map(command_bounds).reduce(union) else {
         return PhysicalRect { x0: 0, y0: 0, x1: 0, y1: 0 };
     };
+    union(inner, transformed(*matrix, inner))
+}
+
+/// `rect`'s bounds under `matrix`.
+pub(crate) fn transformed(matrix: node::Affine, rect: PhysicalRect) -> PhysicalRect {
     if !matrix.iter().all(|n| n.is_finite()) {
         return UNCLIPPED;
     }
-    let (x, y) = (inner.x0 as f32, inner.y0 as f32);
-    let rect = LogicalRect { x, y, width: inner.x1 as f32 - x, height: inner.y1 as f32 - y };
-    union(inner, snap_to_physical(super::region::transformed_bounds(*matrix, rect), 1.0))
+    let (x, y) = (rect.x0 as f32, rect.y0 as f32);
+    let rect = LogicalRect { x, y, width: rect.x1 as f32 - x, height: rect.y1 as f32 - y };
+    snap_to_physical(super::region::transformed_bounds(matrix, rect), 1.0)
 }
 
 fn union(a: PhysicalRect, b: PhysicalRect) -> PhysicalRect {
@@ -374,6 +413,7 @@ fn build_node(
     let (parent_clip, clip) = (clip, clip.intersect(snap_to_physical(rect, scale)));
     let child_clip = if node.clips_children() { clip } else { parent_clip };
     let effect = node.effect;
+    let read = snap_to_physical(grow(rect, reach(effect.backdrop, scale)), scale);
     // ADR-0254 decision 2.
     let gradient = match (&node.paint, effect.shadow) {
         (Some(PaintStyle::Box { background: Some(node::Fill::Color(fill)), radius, mask: None, .. }), Some(shadow))
@@ -414,6 +454,16 @@ fn build_node(
         Some(PaintStyle::Box { mask: Some(mask), .. }) => Some(mask),
         _ => None,
     };
+    // Outside the node's own offscreen, which holds nothing to read (ADR-0256).
+    if let Some(PaintStyle::Box { radius, .. }) = node.paint
+        && effect.backdrop > 0.0
+        && opacity > 0.0
+        && !is_empty(clip)
+    {
+        let draw = Draw::Backdrop { sigma: effect.backdrop, radius, alpha: opacity };
+        out.push(DrawCmd { rect, clip: parent_clip.intersect(read), draw });
+    }
+    let body = out.len();
     if let Some((shadow, radius)) = gradient {
         let shadow = node::Shadow { color: fade(shadow.color, opacity), ..shadow };
         out.push(DrawCmd { rect, clip: parent_clip.intersect(reach), draw: Draw::Shadow { shadow, radius } });
@@ -465,8 +515,8 @@ fn build_node(
             }
         }
     }
-    if gradient.is_none() && (effect.shadow.is_some() || effect.blur > 0.0) && out.len() > start {
-        let commands: Vec<DrawCmd> = out.drain(start..).collect();
+    if gradient.is_none() && (effect.shadow.is_some() || effect.blur > 0.0) && out.len() > body {
+        let commands: Vec<DrawCmd> = out.drain(body..).collect();
         // A transformed child overflowing the box keeps the overflow it has without the layer.
         let bounds = commands.iter().map(command_bounds).filter(|r| !is_empty(*r)).fold(reach, union);
         // ponytail: a negative spread pulls in content from further out than this. Upgrade path:
@@ -1679,7 +1729,7 @@ mod tests {
         ] {
             let list = effect_surface(child);
             let layer = list.commands.last().unwrap();
-            let Draw::Layer { effect: node::Effect { shadow: Some(shadow), blur }, commands } = &layer.draw else {
+            let Draw::Layer { effect: node::Effect { shadow: Some(shadow), blur, .. }, commands } = &layer.draw else {
                 panic!("{child}: expected a layer, got {:?}", layer.draw)
             };
             assert_eq!((shadow.color.a, *blur), (1.0, 0.0), "{child}");
@@ -1769,6 +1819,76 @@ mod tests {
         let layer = list.commands.last().unwrap();
         assert!(matches!(layer.draw, Draw::Layer { .. }));
         assert!(layer.clip.x0 <= 20 && layer.clip.x1 >= 100, "the child's scaled box: {:?}", layer.clip);
+    }
+
+    /// ADR-0256. The backdrop is read before the node paints anything and outside the offscreen a
+    /// shadow draws the node into, faded with it, and its clip covers the 3 sigma the blur reads.
+    #[test]
+    fn a_backdrop_blur_draws_first_outside_the_nodes_layer_and_reaches_three_sigma() {
+        let list = effect_surface(
+            r##"rect { width = 40, height = 20, radius = 6, background = "#ffffff40", opacity = 0.5,
+                backdrop_blur = 4, shadow_offset = { y = 4 } }"##,
+        );
+        let at = list.commands.iter().position(|cmd| matches!(cmd.draw, Draw::Backdrop { .. })).expect("a backdrop");
+        assert_eq!(list.commands[at].draw, Draw::Backdrop { sigma: 4.0, radius: 6.0, alpha: 0.5 });
+        assert_eq!(list.commands[at].clip, PhysicalRect { x0: 28, y0: 28, x1: 92, y1: 72 });
+        assert!(matches!(list.commands[at + 1].draw, Draw::Layer { .. }), "the layer draws over it");
+        let plain = effect_surface(r##"rect { width = 40, height = 20, background = "#ffffff40" }"##);
+        assert!(!plain.commands.iter().any(|cmd| matches!(cmd.draw, Draw::Backdrop { .. })));
+    }
+
+    /// ADR-0256. A frosted node shows what is under it, so a change its blur reaches repaints it,
+    /// and one out of its reach does not.
+    #[test]
+    fn a_change_within_a_backdrops_reach_damages_the_frosted_node() {
+        let surface = |spacing: i32, colour: &str| {
+            effect_surface(&format!(
+                r##"row {{ spacing = {spacing}, children = {{ rect {{ width = 10, height = 20, background = "{colour}" }},
+                    rect {{ width = 40, height = 20, backdrop_blur = 4 }} }} }}"##
+            ))
+        };
+        for (spacing, reached) in [(4, true), (30, false)] {
+            let damage = surface(spacing, "#ff0000").damage_since(&surface(spacing, "#00ff00"));
+            let frosted = 50 + spacing + 40;
+            assert_eq!(damage.iter().any(|r| r.x1 >= frosted), reached, "spacing {spacing}: {damage:?}");
+        }
+    }
+
+    fn glass(x0: i32, x1: i32) -> DrawCmd {
+        let clip = PhysicalRect { x0, y0: 0, x1, y1: 10 };
+        let rect = LogicalRect { x: x0 as f32, y: 0.0, width: (x1 - x0) as f32, height: 10.0 };
+        DrawCmd { rect, clip, draw: Draw::Backdrop { sigma: 1.0, radius: 0.0, alpha: 1.0 } }
+    }
+
+    /// ADR-0256. A later glass repainting reaches an earlier one whose read it covers, and a read
+    /// already inside the damage adds nothing.
+    #[test]
+    fn backdrop_damage_expands_to_a_fixpoint_and_skips_covered_reads() {
+        let list = DisplayList { commands: vec![glass(0, 40), glass(30, 100), glass(92, 94)] };
+        let mut damage = vec![PhysicalRect { x0: 90, y0: 0, x1: 95, y1: 10 }];
+        list.expand_backdrops(&mut damage);
+        let pad = |x0, x1| PhysicalRect { x0: x0 - 2, y0: -2, x1: x1 + 2, y1: 12 };
+        assert_eq!(damage[1..], [pad(30, 100), pad(0, 40)]);
+    }
+
+    /// ADR-0256. A glass nested in groups damages its own read area mapped through the enclosing
+    /// matrices, not the whole group.
+    #[test]
+    fn a_nested_glass_damages_its_own_read_area_through_its_matrices() {
+        let group = |draw| DrawCmd { draw, ..glass(0, 200) };
+        let scaled = Draw::Transformed { matrix: [2.0, 0.0, 0.0, 2.0, 0.0, 0.0], commands: vec![glass(10, 20)] };
+        let clipped = Draw::Clipped { radius: 4.0, mask: None, commands: vec![group(scaled), glass(150, 160)] };
+        let list = DisplayList { commands: vec![group(clipped)] };
+        let mut damage = vec![PhysicalRect { x0: 30, y0: 0, x1: 31, y1: 1 }];
+        list.expand_backdrops(&mut damage);
+        assert_eq!(damage[1..], [PhysicalRect { x0: 16, y0: -4, x1: 44, y1: 24 }]);
+    }
+
+    /// Nothing to show at opacity 0, so nothing to read.
+    #[test]
+    fn a_fully_faded_glass_reads_no_backdrop() {
+        let list = effect_surface(r##"rect { width = 40, height = 20, backdrop_blur = 4, opacity = 0 }"##);
+        assert!(!list.commands.iter().any(|cmd| matches!(cmd.draw, Draw::Backdrop { .. })), "{list:?}");
     }
 
     /// A shadow moving repaints where it was and where it lands, not only the node's box.

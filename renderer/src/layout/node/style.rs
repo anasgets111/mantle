@@ -530,15 +530,17 @@ pub struct Shadow {
 }
 
 /// What a node's own painted output is filtered by (ADR-0254). `blur` is `content_blur`, CSS
-/// `filter: blur()`'s sigma; `0` is off.
+/// `filter: blur()`'s sigma; `backdrop` is `backdrop_blur`, `backdrop-filter: blur()`'s (ADR-0256).
+/// `0` is off.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct Effect {
     pub shadow: Option<Shadow>,
     pub blur: f32,
+    pub backdrop: f32,
 }
 
-/// `shadow_*` and `content_blur`, every kind. `None` when the shadow would draw nothing, so paint
-/// never opens an offscreen for it.
+/// `shadow_*` and `content_blur`, every kind, and a box's `backdrop_blur`. `None` when the shadow
+/// would draw nothing, so paint never opens an offscreen for it.
 pub fn parse_effect(properties: &PropMap) -> Result<Effect, LayoutError> {
     let color = parse_color(properties, "shadow_color")?.unwrap_or(Rgba { r: 0.0, g: 0.0, b: 0.0, a: 1.0 });
     let offset = properties.get("shadow_offset").map_or(Ok((0.0, 0.0)), |value| xy("shadow_offset", value))?;
@@ -548,6 +550,7 @@ pub fn parse_effect(properties: &PropMap) -> Result<Effect, LayoutError> {
     Ok(Effect {
         shadow: shows.then_some(Shadow { color, blur, offset, spread }),
         blur: within("content_blur", content::parse_number(properties, "content_blur", 0.0)?)?,
+        backdrop: within("backdrop_blur", content::parse_number(properties, "backdrop_blur", 0.0)?)?,
     })
 }
 
@@ -1313,9 +1316,11 @@ mod tests {
             parse("return { shadow_blur = 8, shadow_offset = { y = -2 }, shadow_spread = -1 }").unwrap().shadow,
             Some(Shadow { color: black, blur: 8.0, offset: (0.0, -2.0), spread: -1.0 })
         );
-        assert_eq!(parse("return { content_blur = 3 }").unwrap(), Effect { shadow: None, blur: 3.0 });
+        assert_eq!(parse("return { content_blur = 3 }").unwrap(), Effect { blur: 3.0, ..Effect::default() });
+        assert_eq!(parse("return { backdrop_blur = 8 }").unwrap(), Effect { backdrop: 8.0, ..Effect::default() });
         for (src, property) in [
             ("return { content_blur = -1 }", "content_blur"),
+            ("return { backdrop_blur = -1 }", "backdrop_blur"),
             ("return { shadow_blur = -1 }", "shadow_blur"),
             ("return { shadow_color = 3, shadow_blur = 1 }", "shadow_color"),
         ] {

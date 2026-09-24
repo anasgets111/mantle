@@ -1209,6 +1209,7 @@ const PAINT_ONLY: &[&str] = &[
     "shadow_offset",
     "shadow_spread",
     "content_blur",
+    "backdrop_blur",
 ];
 
 /// Whether a tween on `property` can be advanced by a paint-only tick; see [`PAINT_ONLY`].
