@@ -22,7 +22,7 @@ use content::{
     parse_shader_source, parse_source_blur, parse_text_align, parse_wrap,
 };
 use spec::parse_secure_submit;
-use style::{parse_background, parse_border_color, parse_border_width, parse_clip, parse_radius};
+use style::{parse_background, parse_border_color, parse_border_width, parse_clip, parse_mask, parse_radius};
 
 #[cfg(test)]
 pub use animate::Animatable;
@@ -36,9 +36,9 @@ pub use spec::{SecureSubmitTarget, SurfaceSpec, lock_spec, parse_children, parse
 #[cfg(test)]
 pub use spec::LockSpec;
 pub use style::{
-    Affine, BorderColor, ClipShape, Transform, apply_affine, invert_affine, parse_align, parse_blur, parse_cursor,
-    parse_edge_insets, parse_list_direction, parse_opacity, parse_size_bound, parse_size_mode, parse_spacing,
-    parse_transform, parse_visible,
+    Affine, BorderColor, ClipShape, Fill, Gradient, GradientShape, Mask, MaskSource, Transform, apply_affine,
+    invert_affine, parse_align, parse_blur, parse_cursor, parse_edge_insets, parse_list_direction, parse_opacity,
+    parse_size_bound, parse_size_mode, parse_spacing, parse_transform, parse_visible,
 };
 pub use surface::{
     Anchor, Exclusive, KeyboardInteractivity, LayerKind, PanelSpec, SurfaceTopology, panel_spec, parse_layer,

@@ -5,12 +5,14 @@ use std::f32::consts::{FRAC_PI_2, PI};
 use std::time::{Duration, Instant};
 
 use femtovg::renderer::OpenGl;
-use femtovg::{Canvas, Color, ImageFlags, ImageId, Paint, Path, PixelFormat, RenderTarget, Solidity};
+use femtovg::{
+    Canvas, Color, CompositeOperation, ImageFlags, ImageId, Paint, Path, PixelFormat, RenderTarget, Solidity,
+};
 
 use crate::image::capture::CaptureCache;
 use crate::image::{self, Fit, ImageCache, Load};
 use crate::layout::image_shader;
-use crate::layout::node::{self, BorderColor, EdgeInsets, Rgba};
+use crate::layout::node::{self, BorderColor, EdgeInsets, Fill, Gradient, GradientShape, MaskSource, Rgba};
 use crate::layout::scene::NodeId;
 #[cfg(test)]
 use crate::layout::scene::ResolvedNode;
@@ -147,8 +149,8 @@ fn run(painter: &mut TextPainter, walk: &mut Walk<'_, '_>, commands: &[DrawCmd],
             Draw::Box { background, radius, colors, widths } => {
                 let t0 = timing.then(Instant::now);
                 // `None` skips the fill; alpha 0 remains an explicit transparent rect.
-                if let Some(color) = background {
-                    fill_rect(painter.canvas_mut(), rect, *radius, *color);
+                if let Some(fill) = background {
+                    fill_rect(painter.canvas_mut(), rect, *radius, fill);
                 }
                 paint_border(painter.canvas_mut(), rect, *radius, *colors, *widths, scale);
                 if let Some(t0) = t0 {
@@ -303,8 +305,8 @@ fn run(painter: &mut TextPainter, walk: &mut Walk<'_, '_>, commands: &[DrawCmd],
                     unsafe { shaders.stage.draw(shaders.gl, painter.canvas_mut(), Some(source), &run) };
                 }
             }
-            Draw::Clipped { radius, commands } => {
-                draw_clipped(painter, walk, rect, clip, *radius, commands, target, frame);
+            Draw::Clipped { radius, mask, commands } => {
+                draw_clipped(painter, walk, rect, clip, *radius, mask.as_ref(), commands, target, frame);
                 current_clip = None;
             }
             Draw::Transformed { matrix, commands } => {
@@ -322,8 +324,8 @@ fn run(painter: &mut TextPainter, walk: &mut Walk<'_, '_>, commands: &[DrawCmd],
 /// Draws `commands` into an offscreen image, then fills the node's rounded path with that image.
 /// femtovg 0.26's `intersect_rounded_scissor` carries one rounded rectangle; on an 80x32 pill at
 /// radius 16 with a 30px child it re-rounded the child and leaked the ground 8% through the pill's
-/// straight top edge. Giving the child the pill's radius instead draws a lozenge. A mask
-/// texture would take two targets; femtovg's image-painted path needs one.
+/// straight top edge. Giving the child the pill's radius instead draws a lozenge. A `mask`
+/// multiplies the target's alpha before that fill, in the same one target (ADR-0255).
 ///
 /// The target comes from `TextPainter`'s pool: creating one per clipping node per repaint was 8.6 ms
 /// of an 8.6 ms repaint (ADR-0217).
@@ -338,6 +340,7 @@ fn draw_clipped(
     rect: LogicalRect,
     clip: PhysicalRect,
     radius: f32,
+    mask: Option<&(node::Mask, (u32, u32))>,
     commands: &[DrawCmd],
     target: RenderTarget,
     frame: Frame,
@@ -381,6 +384,31 @@ fn draw_clipped(
     let inner =
         Frame { size: (width as f32, height as f32), origin: (clip.x0 as f32, clip.y0 as f32), transform: None };
     run(painter, walk, commands, RenderTarget::Image(image), inner);
+
+    // Multiplying alpha keeps the target premultiplied, and so masks a shader quad drawn into it
+    // too. The fill covers the whole target: a pixel it misses keeps its alpha.
+    if let Some((mask, box_px)) = mask {
+        let paint = match &mask.source {
+            MaskSource::Gradient(gradient) => Some(gradient_paint(gradient, rect)),
+            // A missing mask image leaves the subtree unmasked, the answer an allocation failure
+            // above gets too.
+            MaskSource::Image(file) => walk
+                .images
+                .image(painter.canvas_mut(), std::path::Path::new(file), *box_px, None, Load::Inline, Fit::Stretch, 0)
+                .map(|id| Paint::image(id, rect.x, rect.y, rect.width, rect.height, 0.0, 1.0)),
+        };
+        if let Some(paint) = paint {
+            let canvas = painter.canvas_mut();
+            canvas.reset_scissor();
+            canvas.global_composite_operation(match mask.invert {
+                false => CompositeOperation::DestinationIn,
+                true => CompositeOperation::DestinationOut,
+            });
+            let mut whole = Path::new();
+            whole.rect(clip.x0 as f32, clip.y0 as f32, width as f32, height as f32);
+            canvas.fill_path(&whole, &paint.with_anti_alias(false));
+        }
+    }
 
     let canvas = painter.canvas_mut();
     canvas.restore();
@@ -515,13 +543,38 @@ fn box_path(rect: LogicalRect, radius: f32) -> Path {
 
 /// The background fill, rounded when the node asked for it. See [`box_path`] for why a radius at
 /// half the box is its own shape rather than a `rounded_rect` argument.
-fn fill_rect(canvas: &mut Canvas<OpenGl>, rect: LogicalRect, radius: f32, color: Rgba) {
+fn fill_rect(canvas: &mut Canvas<OpenGl>, rect: LogicalRect, radius: f32, fill: &Fill) {
     // femtovg's antialias fringe paints an empty path as a 1px line.
     if rect.width <= 0.0 || rect.height <= 0.0 {
         return;
     }
-    let path = box_path(rect, radius);
-    canvas.fill_path(&path, &Paint::color(Color::rgbaf(color.r, color.g, color.b, color.a)));
+    let paint = match fill {
+        Fill::Color(color) => Paint::color(Color::rgbaf(color.r, color.g, color.b, color.a)),
+        Fill::Gradient(gradient) => gradient_paint(gradient, rect),
+    };
+    canvas.fill_path(&box_path(rect, radius), &paint);
+}
+
+/// `gradient` laid over `rect` with CSS's geometry (ADR-0255).
+fn gradient_paint(gradient: &Gradient, rect: LogicalRect) -> Paint {
+    let stops = gradient.stops.iter().map(|(at, c)| (*at, Color::rgbaf(c.r, c.g, c.b, c.a)));
+    let (cx, cy) = (rect.x + rect.width / 2.0, rect.y + rect.height / 2.0);
+    match gradient.shape {
+        GradientShape::Linear { angle } => {
+            // CSS's gradient line: long enough that the corners it points between take the end stops.
+            let (sin, cos) = angle.to_radians().sin_cos();
+            let half = (rect.width * sin.abs() + rect.height * cos.abs()) / 2.0;
+            let (dx, dy) = (sin * half, -cos * half);
+            Paint::linear_gradient_stops(cx - dx, cy - dy, cx + dx, cy + dy, stops)
+        }
+        GradientShape::Radial => {
+            Paint::elliptical_gradient_stops(cx, cy, 0.0, 0.0, rect.width / 2.0, rect.height / 2.0, stops)
+        }
+        // femtovg starts a turn at three o'clock, CSS at twelve.
+        GradientShape::Conic { angle } => {
+            Paint::conic_gradient_stops_with_angle(cx, cy, (angle - 90.0).to_radians(), stops)
+        }
+    }
 }
 
 /// femtovg has no per-edge border primitive, so this covers exactly two cases. Uniform borders
@@ -829,6 +882,79 @@ mod tests {
         paint_tree(&mut painter, &mut ImageCache::new(), &root, 1.0);
 
         assert_eq!(pixel_at(painter.canvas_mut(), 32, 32), (255, 0, 0, 255));
+    }
+
+    /// Paints `child` inside a 64x64 panel with no fill and reads back the pixels at `points`.
+    fn paint_points(child: &str, points: &[(usize, usize)]) -> Option<Vec<(u8, u8, u8, u8)>> {
+        let instance = init_headless_egl(64, 64)?;
+        let shaping = ShapingHandle::spawn();
+        let mut painter = text_painter(&instance, &shaping, 64, 64)?;
+        let src = format!(r#"return panel {{ id = "bar", width = 64, height = 64, child = {child} }}"#);
+        let root = resolved_surface(&Lua::new(), &src, LogicalSize { width: 64.0, height: 64.0 });
+        paint_tree(&mut painter, &mut ImageCache::new(), &root, 1.0);
+        Some(points.iter().map(|&(x, y)| pixel_at(painter.canvas_mut(), x, y)).collect())
+    }
+
+    /// CSS geometry: a linear gradient runs top to bottom unless turned, a radial one from the centre
+    /// out to the edges.
+    #[test]
+    fn a_gradient_background_follows_css_geometry() {
+        let child = r##"rect { width = "Fill", height = "Fill",
+            background = { gradient = "Linear", stops = { { 0, "#FF0000" }, { 1, "#0000FF" } } } }"##;
+        let Some(px) = paint_points(child, &[(32, 0), (32, 63), (32, 32)]) else { return };
+        assert!(px[0].0 > 245 && px[0].2 < 10, "top is the first stop, got {:?}", px[0]);
+        assert!(px[1].2 > 245 && px[1].0 < 10, "bottom is the last stop, got {:?}", px[1]);
+        assert!((120..=136).contains(&px[2].0), "the middle is halfway, got {:?}", px[2]);
+
+        let turned = |shape: &str| {
+            format!(
+                r##"rect {{ width = "Fill", height = "Fill",
+                    background = {{ {shape}, stops = {{ {{ 0, "#FF0000" }}, {{ 1, "#0000FF" }} }} }} }}"##
+            )
+        };
+        let Some(px) = paint_points(&turned(r#"gradient = "Linear", angle = 90"#), &[(0, 32), (63, 32)]) else {
+            return;
+        };
+        assert!(px[0].0 > 245 && px[1].2 > 245, "90 degrees runs left to right, got {px:?}");
+        let Some(px) = paint_points(&turned(r#"gradient = "Radial""#), &[(32, 32), (32, 0), (0, 0)]) else { return };
+        assert!(px[0].0 > 245 && px[1].2 > 245 && px[2].2 > 245, "centre out to the edges, got {px:?}");
+    }
+
+    /// A mask multiplies alpha, so the node's own fill and its child fade together: an opaque stop
+    /// keeps them, a clear one leaves the untouched ground.
+    #[test]
+    fn a_gradient_mask_fades_the_nodes_fill_and_subtree_and_invert_flips_it() {
+        let masked = |invert: bool| {
+            format!(
+                r##"rect {{ width = "Fill", height = "Fill", background = "#FFFFFFFF",
+                    mask = {{ gradient = "Linear", invert = {invert},
+                        stops = {{ {{ 0, "#FFFFFFFF" }}, {{ 0.5, "#FFFFFFFF" }}, {{ 0.5, "#FFFFFF00" }}, {{ 1, "#FFFFFF00" }} }} }},
+                    children = {{ rect {{ width = 8, height = "Fill", background = "#FF0000FF" }} }} }}"##
+            )
+        };
+        let points = [(32, 8), (32, 56), (4, 8), (4, 56)];
+        let Some(kept) = paint_points(&masked(false), &points) else { return };
+        assert_eq!(kept, [(255, 255, 255, 255), (0, 0, 0, 0), (255, 0, 0, 255), (0, 0, 0, 0)]);
+        let Some(inverted) = paint_points(&masked(true), &points) else { return };
+        assert_eq!(inverted, [(0, 0, 0, 0), (255, 255, 255, 255), (0, 0, 0, 0), (255, 0, 0, 255)]);
+    }
+
+    /// An SVG mask is how a config cuts a subtree to a shape no `radius` draws.
+    #[test]
+    fn an_image_mask_keeps_only_what_its_alpha_covers() {
+        let dir = tempfile::tempdir().unwrap();
+        let svg = dir.path().join("left-half.svg");
+        std::fs::write(
+            &svg,
+            r#"<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64"><rect width="32" height="64" fill="black"/></svg>"#,
+        )
+        .unwrap();
+        let child = format!(
+            r##"rect {{ width = "Fill", height = "Fill", background = "#00FF00FF", mask = {{ source = "{}" }} }}"##,
+            svg.display()
+        );
+        let Some(px) = paint_points(&child, &[(8, 32), (56, 32)]) else { return };
+        assert_eq!(px, [(0, 255, 0, 255), (0, 0, 0, 0)]);
     }
 
     #[test]
@@ -1462,7 +1588,7 @@ mod tests {
         let Some(instance) = init_headless_egl(64, 48) else { return };
         let shaping = ShapingHandle::spawn();
         let Some(mut painter) = text_painter(&instance, &shaping, 64, 48) else { return };
-        let white = Rgba { r: 1.0, g: 1.0, b: 1.0, a: 1.0 };
+        let white = &Fill::Color(Rgba { r: 1.0, g: 1.0, b: 1.0, a: 1.0 });
         for (name, w) in [("a hair narrower", 31.999_998), ("a hair wider", 32.000_004), ("square", 32.0)] {
             let canvas = painter.canvas_mut();
             canvas.clear_rect(0, 0, 64, 48, Color::rgbaf(0.0, 0.0, 0.0, 1.0));
@@ -1481,7 +1607,7 @@ mod tests {
         let Some(mut painter) = text_painter(&instance, &shaping, 64, 48) else { return };
         let canvas = painter.canvas_mut();
         canvas.clear_rect(0, 0, 64, 48, Color::rgbaf(0.0, 0.0, 0.0, 1.0));
-        let white = Rgba { r: 1.0, g: 1.0, b: 1.0, a: 1.0 };
+        let white = &Fill::Color(Rgba { r: 1.0, g: 1.0, b: 1.0, a: 1.0 });
         fill_rect(canvas, LogicalRect { x: 24.0, y: 8.0, width: 0.0, height: 32.0 }, 6.0, white);
         canvas.flush();
         for x in 22..27 {

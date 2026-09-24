@@ -37,6 +37,9 @@
 ---@alias Color string Hex `#RRGGBB` or `#RRGGBBAA`. Strict: no shorthand, no named colours.
 ---@alias BorderColors { top?: Color, right?: Color, bottom?: Color, left?: Color } Per-edge colours, the one edge table whose values are strings rather than pixels. A signal in an edge is refused: bind `border_color` itself instead.
 ---@alias Axes { x?: number, y?: number } An `{ x, y }` pair; an absent axis takes the property's default.
+---@alias GradientStop [number, Color] A position within `[0, 1]` and the colour there. Positions ascend.
+---@alias Gradient { gradient: "Linear"|"Radial"|"Conic", angle?: number, stops: GradientStop[] } CSS geometry across the box: `angle` is degrees clockwise from the top, default `180` for `"Linear"` (downward) and `0` for `"Conic"` (where the turn starts); `"Radial"` is an ellipse from the centre to the edges and takes no `angle`. Two or more stops.
+---@alias Mask { gradient?: "Linear"|"Radial"|"Conic", angle?: number, stops?: GradientStop[], source?: string, invert?: boolean } A `Gradient` or an image `source` (stretched over the box, only its alpha read), exactly one. `invert` keeps what the mask covers out instead of in.
 ---@alias EasingName "Linear"|"InQuad"|"OutQuad"|"InOutQuad"|"InCubic"|"OutCubic"|"InOutCubic"|"InQuart"|"OutQuart"|"InOutQuart"|"InQuint"|"OutQuint"|"InOutQuint"|"InSine"|"OutSine"|"InOutSine"|"InExpo"|"OutExpo"|"InOutExpo"|"InCirc"|"OutCirc"|"InOutCirc"|"InBack"|"OutBack"|"InOutBack"|"InElastic"|"OutElastic"|"InOutElastic"|"InBounce"|"OutBounce"|"InOutBounce" QML's `Easing.Type` names without the prefix. `Back`, `Elastic` and `Bounce` overshoot and are clamped to the property's range.
 ---@alias Easing EasingName|[number, number, number, number]|{ steps: integer } A name, CSS `cubic-bezier(x1, y1, x2, y2)` as four numbers with `x1` and `x2` within `[0, 1]`, or `{ steps = n }` for `n` jumps that land on the target only at the end (ADR-0151).
 ---@alias Keyframe number|string|Edges|Axes|{ value: number|string|Edges|Axes, duration?: number, easing?: Easing } One stop in a `keyframes` list: a bare value taking the entry's timing, or a table naming its own. A `duration` of `0` is a jump rather than a stop, and a frame repeating the value before it is a hold.
@@ -73,7 +76,8 @@
 ---surface roles. `row` and `column` add no paint properties beyond `rect`'s; a surface root paints
 ---the same way.
 ---@class BoxBase
----@field background? Color|Bound Omitted means no fill at all, which differs from `#00000000`: the first draws nothing, the second draws a transparent rectangle.
+---@field background? Color|Gradient|Bound Omitted means no fill at all, which differs from `#00000000`: the first draws nothing, the second draws a transparent rectangle. A gradient snaps under `animate`.
+---@field mask? Mask|Bound Multiplies the alpha of this node's own paint and its subtree, Qt's `OpacityMask` (ADR-0255). Clips to the box, or to `radius` under `clip = "Rounded"`, and costs the same offscreen pass as a rounded clip. Hit-testing and `blur` ignore it: `blur = true` under an edge fade still blurs the whole box.
 ---@field radius? number|Bound Corner rounding, default `0`.
 ---@field corner_shape? "Round"|"Scoop"|Bound Which way `radius` bends. Default `"Round"`. `"Scoop"` cuts each corner in along a circle centred on the corner point, fill, rounded clip and blur alike. A box a little over `2 * radius` square, clipped by an `r`x`r` parent to one quadrant, is the inverted corner joining a panel to a bar.
 ---@field border_color? Color|BorderColors|Bound A bare string applies to all four edges. No default: an edge paints only where both a colour and a non-zero width say so.

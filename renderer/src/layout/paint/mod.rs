@@ -19,7 +19,7 @@ mod canvas;
 pub use canvas::{DrawnImage, Shaders, execute};
 
 use crate::image::{self, Fit, Load};
-use crate::layout::node::{self, BorderColor, ClipShape, EdgeInsets, PaintStyle, Rgba, StyleRun, TextAlign};
+use crate::layout::node::{self, BorderColor, ClipShape, EdgeInsets, Fill, PaintStyle, Rgba, StyleRun, TextAlign};
 use crate::layout::scene::{NodeId, ResolvedNode};
 use crate::text::snap::{LogicalRect, PhysicalRect, snap_to_physical};
 
@@ -28,7 +28,7 @@ use crate::text::snap::{LogicalRect, PhysicalRect, snap_to_physical};
 #[derive(Debug, Clone, PartialEq)]
 pub enum Draw {
     /// Box fill, then border, for containers and all surface roles.
-    Box { background: Option<Rgba>, radius: f32, colors: BorderColor, widths: EdgeInsets },
+    Box { background: Option<Fill>, radius: f32, colors: BorderColor, widths: EdgeInsets },
     Text {
         content: std::sync::Arc<str>,
         /// Byte ranges drawn in another face, underlined, or recoloured (ADR-0104).
@@ -97,9 +97,10 @@ pub enum Draw {
         params: Vec<node::ShaderParam>,
         alpha: f32,
     },
-    /// A subtree masked by the declaring node's rounded arc. Rectangular clips flatten into each
-    /// command; rounded clips stay grouped for [`execute`].
-    Clipped { radius: f32, commands: Vec<DrawCmd> },
+    /// A subtree masked by the declaring node's rounded arc and, if it has one, its `mask` with
+    /// the physical box an image mask is cached under (ADR-0255). Rectangular clips flatten into
+    /// each command; rounded clips and masks stay grouped for [`execute`].
+    Clipped { radius: f32, mask: Option<(node::Mask, (u32, u32))>, commands: Vec<DrawCmd> },
     /// The subtree of a node with a `scale`/`rotate`/`translate` (ADR-0149), drawn under its
     /// affine. Coordinates inside are the untransformed absolute ones.
     Transformed { matrix: node::Affine, commands: Vec<DrawCmd> },
@@ -134,14 +135,27 @@ pub struct DisplayList {
     pub commands: Vec<DrawCmd>,
 }
 
-/// Walks `commands` for a leaf `matches`, descending into `Clipped`/`Transformed` subtrees.
+/// Walks `commands` for a draw `matches`, a group before its `Clipped`/`Transformed` subtree.
 /// Shared by [`DisplayList::draws_any_of`] and [`DisplayList::captures_any_of`], which differ only
 /// in which `Draw` variant and field they compare.
 fn any_draw_matches(commands: &[DrawCmd], matches: impl Fn(&Draw) -> bool + Copy) -> bool {
-    commands.iter().any(|command| match &command.draw {
-        Draw::Clipped { commands, .. } | Draw::Transformed { commands, .. } => any_draw_matches(commands, matches),
-        draw => matches(draw),
+    commands.iter().any(|command| {
+        matches(&command.draw)
+            || match &command.draw {
+                Draw::Clipped { commands, .. } | Draw::Transformed { commands, .. } => {
+                    any_draw_matches(commands, matches)
+                }
+                _ => false,
+            }
     })
+}
+
+/// The file an image `mask` reads, which changes under an unchanged list as an `image`'s does.
+fn mask_file(draw: &Draw) -> Option<&str> {
+    match draw {
+        Draw::Clipped { mask: Some((node::Mask { source: node::MaskSource::Image(file), .. }, _)), .. } => Some(file),
+        _ => None,
+    }
 }
 
 impl DisplayList {
@@ -153,7 +167,7 @@ impl DisplayList {
             matches!(draw, Draw::Image { source, retained, .. } if files.iter().any(|file| {
                 file.as_os_str() == source.as_str()
                     || retained.as_ref().is_some_and(|cover| file.as_os_str() == cover.as_str())
-            }))
+            })) || mask_file(draw).is_some_and(|mask| files.iter().any(|file| file.as_os_str() == mask))
         })
     }
 
@@ -189,20 +203,29 @@ impl DisplayList {
     /// still shows what it last painted, so that entry must not be evicted underneath it.
     pub fn drawn_images(&self, out: &mut Vec<(std::path::PathBuf, (u32, u32))>) {
         fn walk(commands: &[DrawCmd], out: &mut Vec<(std::path::PathBuf, (u32, u32))>) {
+            // The box the *entry* is under, not the box it is drawn into: a vector's key is
+            // squared, and a pin that names the drawn box misses it (ADR-0183).
+            let pin = |out: &mut Vec<_>, path: &str, box_px| {
+                let path = std::path::PathBuf::from(path);
+                let key_box = image::cache_box(&path, box_px);
+                out.push((path, key_box));
+            };
             for command in commands {
                 match &command.draw {
                     Draw::Image { source, box_px, retained, .. } => {
-                        // The box the *entry* is under, not the box it is drawn into: a vector's
-                        // key is squared, and a pin that names the drawn box misses it (ADR-0183).
                         // Both endpoints are pinned, or `trim` frees the very texture covering the
                         // gap and the node blinks after all (ADR-0180).
                         for path in std::iter::once(source).chain(retained.iter()) {
-                            let path = std::path::PathBuf::from(path);
-                            let key_box = image::cache_box(&path, *box_px);
-                            out.push((path, key_box));
+                            pin(out, path, *box_px);
                         }
                     }
-                    Draw::Clipped { commands, .. } | Draw::Transformed { commands, .. } => walk(commands, out),
+                    Draw::Clipped { mask, commands, .. } => {
+                        if let (Some(file), Some((_, box_px))) = (mask_file(&command.draw), mask) {
+                            pin(out, file, *box_px);
+                        }
+                        walk(commands, out)
+                    }
+                    Draw::Transformed { commands, .. } => walk(commands, out),
                     _ => {}
                 }
             }
@@ -228,6 +251,7 @@ impl DisplayList {
             .filter(|command| {
                 any_draw_matches(std::slice::from_ref(command), |draw| {
                     matches!(draw, Draw::Image { .. } | Draw::Icon { .. } | Draw::Capture { .. })
+                        || mask_file(draw).is_some()
                 })
             })
             .map(command_bounds);
@@ -361,7 +385,29 @@ fn build_node(
     // parent clip once outside the group and `intersect_scissor` inside.
     let start = out.len();
     let (x, y) = (rect.x, rect.y);
+    let mask = match &node.paint {
+        Some(PaintStyle::Box { mask: Some(mask), .. }) => Some(mask),
+        _ => None,
+    };
     match rounded_clip(node) {
+        // A mask covers the node's own paint too, as Qt's `OpacityMask` covers its item (ADR-0255).
+        radius if mask.is_some() => {
+            let (fill, border) = split_fill_and_border(draw);
+            let mut inner: Vec<DrawCmd> = fill.map(|draw| DrawCmd { rect, clip, draw }).into_iter().collect();
+            for child in &node.children {
+                build_node(child, x, y, scale, clip, opacity, focus, &mut inner);
+            }
+            inner.extend(border.map(|draw| DrawCmd { rect, clip, draw }));
+            if !inner.is_empty() {
+                let box_px = (physical_edge(rect.width, scale), physical_edge(rect.height, scale));
+                let mask = mask.cloned().map(|mask| (mask, box_px));
+                out.push(DrawCmd {
+                    rect,
+                    clip,
+                    draw: Draw::Clipped { radius: radius.unwrap_or(0.0), mask, commands: inner },
+                });
+            }
+        }
         None => {
             if let Some(draw) = draw {
                 out.push(DrawCmd { rect, clip, draw });
@@ -383,7 +429,7 @@ fn build_node(
             }
             // A leaf has nothing to clip, so avoid the render target and composite.
             if !inner.is_empty() {
-                out.push(DrawCmd { rect, clip, draw: Draw::Clipped { radius, commands: inner } });
+                out.push(DrawCmd { rect, clip, draw: Draw::Clipped { radius, mask: None, commands: inner } });
             }
             if let Some(border) = border {
                 out.push(DrawCmd { rect, clip, draw: border });
@@ -457,8 +503,14 @@ fn draw_for(
         // The shared paint of `rect`/`row`/`column`/`button` and all four surface roles: background
         // fill, then borders. `clip` is not read here: it decides what this node's *children* are
         // cut to, `build_node`'s question, not this one's.
-        PaintStyle::Box { background, radius, colors, widths, clip: _ } => Some(Draw::Box {
-            background: background.map(|color| fade(color, opacity)),
+        PaintStyle::Box { background, radius, colors, widths, clip: _, mask: _ } => Some(Draw::Box {
+            background: background.as_ref().map(|fill| match fill {
+                Fill::Color(color) => Fill::Color(fade(*color, opacity)),
+                Fill::Gradient(gradient) => Fill::Gradient(node::Gradient {
+                    stops: gradient.stops.iter().map(|(at, color)| (*at, fade(*color, opacity))).collect(),
+                    ..*gradient
+                }),
+            }),
             radius: *radius,
             colors: fade_border(*colors, opacity),
             widths: *widths,
@@ -870,7 +922,7 @@ mod tests {
 
     fn box_alpha(cmd: &DrawCmd) -> f32 {
         match &cmd.draw {
-            Draw::Box { background: Some(color), .. } => color.a,
+            Draw::Box { background: Some(Fill::Color(color)), .. } => color.a,
             other => panic!("expected a filled box, got {other:?}"),
         }
     }
@@ -1034,7 +1086,7 @@ mod tests {
             .commands
             .iter()
             .filter_map(|c| match &c.draw {
-                Draw::Box { background: Some(color), .. } => Some(*color),
+                Draw::Box { background: Some(Fill::Color(color)), .. } => Some(*color),
                 _ => None,
             })
             .collect();
@@ -1419,12 +1471,80 @@ mod tests {
         assert_ne!(build(&tree, 1.0, None), before);
     }
 
+    /// `child` in a 96x48 panel, built at scale 1.
+    fn masked(child: &str) -> DisplayList {
+        let src = format!(r#"return panel {{ id = "bar", width = 96, height = 48, child = {child} }}"#);
+        build(&resolved_surface(&Lua::new(), &src, LogicalSize { width: 96.0, height: 48.0 }), 1.0, None)
+    }
+
+    const IMAGE_MASKED: &str = r##"rect { width = 80, height = 32, background = "#0000FFFF",
+        border_width = 1, border_color = "#FFFFFFFF", mask = { source = "/tmp/m.png" },
+        children = { rect { width = 30, height = "Fill", background = "#FF0000FF" } } }"##;
+
+    /// Qt's `OpacityMask` covers the item, not only its children, so the node's own fill and border
+    /// are drawn inside the masked group, in the order an unmasked box draws them.
+    #[test]
+    fn a_mask_groups_the_nodes_fill_subtree_and_border_in_paint_order() {
+        let list = masked(IMAGE_MASKED);
+        let [_, group] = list.commands.as_slice() else { panic!("the panel's box, then one group: {list:?}") };
+        let Draw::Clipped { radius, mask: Some((mask, box_px)), commands } = &group.draw else {
+            panic!("expected a masked group, got {:?}", group.draw)
+        };
+        assert_eq!((*radius, *box_px, mask.invert), (0.0, (80, 32), false));
+        let order: Vec<_> = commands
+            .iter()
+            .map(|cmd| match &cmd.draw {
+                Draw::Box { background: Some(_), widths, .. } if *widths == EdgeInsets::default() => "fill",
+                Draw::Box { background: None, .. } => "border",
+                other => panic!("{other:?}"),
+            })
+            .collect();
+        assert_eq!(order, ["fill", "fill", "border"], "own fill, child, own border");
+    }
+
+    #[test]
+    fn a_masked_rounded_box_composites_through_its_radius_and_a_leaf_still_groups() {
+        let list = masked(
+            r##"rect { width = 80, height = 32, radius = 8, clip = "Rounded", background = "#0000FFFF",
+                mask = { source = "/nonexistent/mask.svg" } }"##,
+        );
+        let Draw::Clipped { radius, mask: Some(_), commands } = &list.commands[1].draw else { panic!("{list:?}") };
+        assert_eq!((*radius, commands.len()), (8.0, 1));
+    }
+
+    /// Opacity is baked into the list (ADR-0063), so a gradient fades stop by stop like a colour.
+    #[test]
+    fn opacity_fades_every_gradient_stop() {
+        let list = masked(
+            r##"rect { width = 80, height = 32, opacity = 0.5,
+                background = { gradient = "Radial", stops = { { 0, "#ffffff" }, { 1, "#ffffff80" } } } }"##,
+        );
+        let Draw::Box { background: Some(Fill::Gradient(gradient)), .. } = &list.commands[1].draw else {
+            panic!("{list:?}")
+        };
+        let alphas: Vec<f32> = gradient.stops.iter().map(|(_, color)| color.a).collect();
+        assert_eq!(alphas, [0.5, 0.5 * 128.0 / 255.0]);
+    }
+
+    /// A mask texture changes under an unchanged list like an `image`'s: a decode landing, a GIF
+    /// frame, the file rewritten. So it is pinned, marks its surface stale, and damages its group.
+    #[test]
+    fn an_image_mask_is_a_texture_for_pinning_staleness_and_damage() {
+        let list = masked(IMAGE_MASKED);
+        let mut pinned = Vec::new();
+        list.drawn_images(&mut pinned);
+        assert_eq!(pinned, [(std::path::PathBuf::from("/tmp/m.png"), (80, 32))]);
+        assert!(list.draws_any_of(&[std::path::PathBuf::from("/tmp/m.png")]));
+        assert!(!list.draws_any_of(&[std::path::PathBuf::from("/tmp/other.png")]));
+        assert_eq!(list.damage_since(&list), [PhysicalRect { x0: -2, y0: -2, x1: 82, y1: 34 }]);
+    }
+
     #[test]
     fn damage_is_the_changed_commands_old_and_new_bounds_and_nothing_when_unchanged() {
         let cmd = |x: f32| {
             let rect = LogicalRect { x, y: 10.0, width: 20.0, height: 20.0 };
             let draw = Draw::Box {
-                background: Some(Rgba { r: 1.0, g: 1.0, b: 1.0, a: 1.0 }),
+                background: Some(Fill::Color(Rgba { r: 1.0, g: 1.0, b: 1.0, a: 1.0 })),
                 radius: 0.0,
                 colors: BorderColor::default(),
                 widths: EdgeInsets::default(),

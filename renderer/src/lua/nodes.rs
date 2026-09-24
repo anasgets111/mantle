@@ -39,7 +39,7 @@ const COMMON_PROPERTIES: &[&str] = &[
 /// Box-paint properties beyond [`COMMON_PROPERTIES`]. `node::paint_style`'s first arm paints
 /// `row`, `column`, `button`, `rect`, and all four root roles alike.
 const BOX_PROPERTIES: &[&str] =
-    &["background", "blur", "border_color", "border_width", "clip", "corner_shape", "radius"];
+    &["background", "blur", "border_color", "border_width", "clip", "corner_shape", "mask", "radius"];
 
 /// Which kinds that arm covers.
 const BOX_KINDS: [&str; 8] = ["rect", "row", "column", "button", "panel", "window", "popup", "lock"];
@@ -685,6 +685,11 @@ mod meta_stub_tests {
             ("origin", _) => return Some("{ x = 0.5, y = 0.5 }".to_string()),
             ("transition", "Transition") => return Some("{ duration = 400.5, easing = \"InOutCubic\" }".to_string()),
             ("border_color", "BorderColors") => return Some("{ top = \"#112233\" }".to_string()),
+            ("background", "Gradient") | ("mask", "Mask") => {
+                return Some(
+                    "{ gradient = \"Conic\", angle = 45, stops = { { 0, \"#112233\" }, { 1, \"#11223300\" } } }".into(),
+                );
+            }
             // Inline table shapes have no alias.
             ("anchor", shape) if shape.starts_with('{') => return Some("{ top = true, left = true }".to_string()),
             ("min_size" | "max_size", _) => return Some("{ width = 8.5, height = 8.5 }".to_string()),

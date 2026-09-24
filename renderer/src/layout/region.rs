@@ -418,11 +418,12 @@ mod tests {
         let mut card = region_node(1, "rect", (0.0, 0.0, 100.0, 100.0), solid_paint(), Vec::new());
         card.blur = true;
         card.paint = Some(PaintStyle::Box {
-            background: Some(node::Rgba { r: 0.0, g: 0.0, b: 0.0, a: 0.8 }),
+            background: Some(node::Fill::Color(node::Rgba { r: 0.0, g: 0.0, b: 0.0, a: 0.8 })),
             radius: 20.0,
             colors: node::BorderColor::default(),
             widths: crate::layout::node::EdgeInsets::default(),
             clip: node::ClipShape::Box,
+            mask: None,
         });
         // Only the top half is inside the list.
         let list = region_node(2, "list", (0.0, 0.0, 100.0, 50.0), None, vec![card]);

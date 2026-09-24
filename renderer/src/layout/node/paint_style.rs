@@ -20,8 +20,16 @@ use super::*;
 pub enum PaintStyle {
     /// Box fill/border for containers and all four surface roles. `clip` travels with `radius`
     /// because it changes how the node's shape clips descendants.
-    /// A negative `radius` is a scoop (`node::parse_radius`).
-    Box { background: Option<Rgba>, radius: f32, colors: BorderColor, widths: EdgeInsets, clip: ClipShape },
+    /// A negative `radius` is a scoop (`node::parse_radius`). `mask` covers the node's own paint
+    /// and its subtree (ADR-0255).
+    Box {
+        background: Option<Fill>,
+        radius: f32,
+        colors: BorderColor,
+        widths: EdgeInsets,
+        clip: ClipShape,
+        mask: Option<Mask>,
+    },
     /// Text before/after `layout::scene::finish` rewrites it to an ellipsized prefix under `elide` or
     /// wrapped lines joined by `\n`; display-list paint may therefore receive `\n`-joined lines.
     /// `elide`, `wrap`, and `max_lines` survive for that rewrite but are dead to `layout::paint`.
@@ -90,6 +98,7 @@ pub fn paint_style(kind: &str, properties: &PropMap) -> Result<Option<PaintStyle
             colors: parse_border_color(properties)?,
             widths: parse_border_width(properties)?,
             clip: parse_clip(properties)?,
+            mask: parse_mask(properties)?,
         },
         "text" => {
             let (content, runs) = parse_content(properties)?;

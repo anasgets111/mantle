@@ -2907,7 +2907,7 @@ pub(super) mod tests {
         let row = &scene.surface("bar@TEST").unwrap().children[0];
         let (block, label) = (&row.children[0], &row.children[1]);
         assert!((block.opacity - 0.6).abs() < 0.01, "halfway from 0.2 to 1, got {}", block.opacity);
-        let Some(PaintStyle::Box { background: Some(background), .. }) = block.paint else {
+        let Some(PaintStyle::Box { background: Some(node::Fill::Color(background)), .. }) = &block.paint else {
             panic!("a rect paints a box, got {:?}", block.paint)
         };
         assert!((background.r - 0.5).abs() < 0.02, "halfway from black to white, got {}", background.r);
@@ -3046,7 +3046,8 @@ pub(super) mod tests {
         apply_at(&mut scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
         let started = child_tween(&scene).started;
         scene.tick(&[instance_at(&surface, full())], &shaping, &lua, started + std::time::Duration::from_millis(50));
-        let Some(PaintStyle::Box { background: Some(grey), .. }) = scene.surface("bar@TEST").unwrap().children[0].paint
+        let Some(PaintStyle::Box { background: Some(node::Fill::Color(grey)), .. }) =
+            &scene.surface("bar@TEST").unwrap().children[0].paint
         else {
             panic!("a rect paints a box")
         };

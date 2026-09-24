@@ -942,6 +942,12 @@ impl Animatable {
             Value::Table(table) => {
                 let has = |key: &str| table.contains_key(key).unwrap_or(false);
                 let keys = if has("x") || has("y") { AXES } else { EDGES };
+                // Any other key makes it another shape, such as a gradient (ADR-0255).
+                let known =
+                    |key: &Value| matches!(key, Value::String(s) if keys.iter().any(|k| s.as_bytes() == k.as_bytes()));
+                if table.pairs::<Value, Value>().any(|pair| pair.map_or(true, |(key, _)| !known(&key))) {
+                    return Ok(None);
+                }
                 let mut values = [axis_default(property); 4];
                 for (slot, key) in values.iter_mut().zip(keys) {
                     let field: Value = table.get(*key).map_err(|e| invalid(property, e.to_string()))?;
@@ -1631,6 +1637,12 @@ mod tests {
         assert_eq!(back.get::<f32>("left").unwrap(), -10.0);
         let colours: Value = lua.load(r##"return { top = "#ff0000" }"##).eval().unwrap();
         assert_eq!(Animatable::from_value("border_color", Some(&colours)).unwrap(), None, "colour edges snap");
+        // Read as edges, it would write `{ top = 0, ... }` back into `background` and fail the pass.
+        let gradient: Value = lua
+            .load(r##"return { gradient = "Linear", stops = { { 0, "#000000" }, { 1, "#ffffff" } } }"##)
+            .eval()
+            .unwrap();
+        assert_eq!(Animatable::from_value("background", Some(&gradient)).unwrap(), None, "a gradient snaps");
     }
 
     #[test]

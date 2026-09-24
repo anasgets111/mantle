@@ -6017,3 +6017,51 @@ an `image` transition already uses, and its inputs are `u_size`, `u_progress` an
 Still rejected: a shader over an arbitrary subtree, or as a persistent filter.
 
 **Amends ADR-0184 decisions 4, 5 and 7 and the rejected shader node, and ADR-0047 decision 3.**
+
+## 0255. Gradients fill a box, and a `mask` multiplies a subtree's alpha in the clip's offscreen
+
+femtovg 0.27 draws linear, elliptical and conic gradients with any number of stops, and
+`CompositeOperation::DestinationIn` (`Zero, SrcAlpha`) multiplies every channel of a target by a
+paint's alpha. On a premultiplied target that product is still premultiplied, so ADR-0079's offscreen
+takes a mask as one more fill before it is composited.
+
+1. **One gradient table for `background` and `mask`.** `{ gradient = "Linear"|"Radial"|"Conic",
+   angle?, stops = { { position, colour }, ... } }`, with CSS's geometry: `angle` clockwise from the
+   top, `180` for linear and `0` for conic by default; the linear line spans the box's projection so
+   its corners take the end stops; radial reaches the edge midpoints. Two or more stops, ascending
+   within `[0, 1]`: femtovg's 256-texel stop ramp stops at a position past `1` and draws nothing
+   between two that run backwards.
+2. **`mask` is a gradient or an image `source`, with `invert`.** Qt's `OpacityMask` and
+   `MultiEffect`'s mask. The image is stretched over the box, as Qt scales `maskSource`, and read
+   through `ImageCache` in the frame; the list pins it like an `image`. `invert` is
+   `DestinationOut`.
+3. **The mask covers the node's own fill and border, not only its children**, as `OpacityMask`
+   covers its item. The group is the node's box, so a mask clips to it, or to `radius` under
+   `clip = "Rounded"`. A leaf with a mask still groups.
+4. **The mask fill covers the whole target, unantialiased.** A pixel it misses keeps its alpha.
+5. **Opacity fades each stop**, the way it fades a colour (ADR-0063).
+6. **A gradient snaps under `animate`.** A tween table with any key besides its edges or axes is
+   another shape; read as edges, a gradient wrote `{ top = 0, ... }` back and failed the pass.
+7. **A missing mask image leaves the subtree unmasked**, as a failed offscreen allocation does.
+
+A raw-GL quad drawn into the offscreen (ADR-0184, and a `shader` node's) is masked too: the stage
+flushes femtovg before drawing, and the mask fill is recorded after it. The quad must write
+premultiplied alpha, which it already must.
+
+Skipped: another node as the mask (Qt's `maskSource: item`). femtovg can do it with a second pooled
+target, but the scene cannot: a mask subtree would need layout, reconciliation and hit-test
+exclusion outside the child list. An SVG `source` covers static shapes. `MultiEffect`'s mask
+thresholds and spread need a shader over the target, which femtovg's composite operations cannot
+express. femtovg's feathered box gradient takes two colours and no stops; two nested linear masks
+fade all four edges until a component needs it in one.
+
+ponytail: hit-testing and `blur` regions (ADR-0195) ignore the mask, as they ignore a rounded
+clip's arc, so `blur = true` under an edge fade blurs the whole box. Upgrade path: a region per
+opaque band, which a gradient's stops give and an image's alpha does not.
+
+ponytail: a masked box's border is drawn in the offscreen, so its antialiased outer fringe is
+attenuated a second time by the antialiased composite through the box's path, so that pixel row is
+lighter than an unmasked border's. Upgrade path: composite unantialiased when `radius` is `0` and the box is pixel-aligned.
+
+**Amends ADR-0079** (a mask needs no second target, and a masked leaf still groups) **and the roadmap's Drawing row.** The
+"shaders over an arbitrary subtree" won't-do row stands: a mask is a composite operation, not a shader.
