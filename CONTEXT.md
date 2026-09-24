@@ -1,129 +1,110 @@
 # Mantle engine
 
-Current project vocabulary. Implementation contracts live in [docs](docs/lua-api.md); rationale and history live in [decisions](docs/decisions.md).
+Project vocabulary. The code is the source of truth. Contracts live in [lua-api](docs/lua-api.md)
+and [services](docs/services.md); [decisions](docs/decisions.md) is history, cited as ADR-NNNN for
+the why behind behavior the code confirms.
+
+## Processes and ownership
+
+| Term | Meaning |
+| :--- | :--- |
+| **Supervisor** | The long-lived process. Owns capabilities, idle-notify, PAM, polkit, session processes, the watcher and the control socket; spawns the Renderer and respawns it after a crash (ADR-0058). |
+| **Renderer** | The `mantle-renderer` process. Lua VM, retained scene, Wayland client and GL paint share its main thread (ADR-0039); socket I/O, text shaping and image decode run on worker threads. One per generation. |
+| **Generation** | One Renderer process and its Lua VM, numbered by a generation ID. Only a Renderer replacement starts a new one; a reload does not. |
+| **Authoritative generation** | The generation the Supervisor sends to and accepts frames from. A replacement becomes authoritative when spawned and is hydrated when it connects. |
+| **Instance directory** | `$XDG_RUNTIME_DIR/mantle/<pid>-<start ms>/`, one per Supervisor: control socket, log, lock file, icon spools. `mantle list`, `log`, `set` and `call` pick one (ADR-0222, ADR-0227). |
+| **Lock authority** | The Supervisor's side of the session lock: deciding to lock, authorizing release after PAM, owning the unlock exit, relocking after a Renderer crash (ADR-0058, ADR-0190). |
+| **Lock client** | The Renderer holding `ext_session_lock_v1` and painting its lock surfaces (ADR-0042, ADR-0052). |
+| **Check mode** | `mantle check`: the Supervisor runs the Renderer binary with `CHECK_ENV` to evaluate the config with no Wayland, subprocesses or state writes; every capability reads `nil`. See [CLI](docs/lua-api/cli.md). |
 
 ## Reloads
 
-**Generation**: A Renderer process and its Lua state with one generation ID. _Avoid_: instance, worker
-
-**Authoritative generation**: The live Renderer generation, receiving input and capability pushes; a crash replacement takes authority when it connects. _Avoid_: active generation, current process
-
-**Topology change**: A config edit that changes the declared surface set or its topology fingerprint. It applies in place, rebuilding only the changed surfaces (ADR-0216). _Avoid_: structural change, breaking change
-
-**Value change**: A config edit that rebuilds no surface: every change applies to the live surfaces. _Avoid_: minor change, hot patch
-
-**In-place reload**: Re-evaluation of the config in the same generation, preserving its Lua state and reconciling its retained scene. _Avoid_: hot-reload, live patch, VM reset
-
-**Dependency snapshot**: A Supervisor-owned capability payload and revision supplied to a generation for signal hydration. _Avoid_: state snapshot, hydration payload
-
-**Loader**: The evaluation of shell.lua into a node tree and declared surface topology. _Avoid_: config parser, AST compiler
-
-**Watcher**: The Supervisor's config-edit observer that initiates reload evaluation. _Avoid_: file monitor, reload trigger
-
-**Rollback**: Preservation of the working scene and surfaces when a reload fails. _Avoid_: revert, recovery
+| Term | Meaning |
+| :--- | :--- |
+| **Watcher** | The Supervisor's inotify observer of the config tree (`.lua`, `.frag`). A debounced save with changed content sends `Reevaluate` to the authoritative generation. |
+| **Loader** | The Renderer's evaluation of `shell.lua` into a node tree and surface specs. It first drops config modules from `package.loaded` and forgets idle thresholds. |
+| **In-place reload** | Re-evaluation in the same generation and VM, then one apply: reconcile the scene, then destroy or create the surfaces whose fingerprint changed (ADR-0216). |
+| **Surface fingerprint** | A declaration's creation-time fields (panel: id, layer, anchor, monitor, namespace; other roles: id). A change rebuilds that surface in place; other edits update live surfaces. |
+| **Topology change** | An edit that adds, removes or re-fingerprints a surface. Applies in place like any reload, except one that renames or removes the lock surface while locked, which is refused (ADR-0216). |
+| **Evaluation-scoped registration** | `action`, `on_change` and idle-threshold callbacks, cleared before each evaluation because they close over its locals; `timer`s the evaluation arms are staged and go live only when its output applies. For what survives, see [Runtime](docs/lua-api/runtime.md#what-survives-a-reload). |
+| **Rollback** | A failed evaluation or apply keeps the previous scene, surfaces and instances. A failed evaluation drops the timers, actions and change handlers it registered; a failed apply drops only its staged timers. |
+| **Rescue** | `mantle.rescue`, `{ is_rescue, error_log }`: set by a failed evaluation, a failed startup apply, or a refused or lost session lock; cleared by the next successful evaluation. A failed reload apply only logs. After a startup evaluation failure no surface binds; after a startup apply failure surfaces bind but paint nothing until a reload or push applies. |
 
 ## Surfaces
 
-**Surface**: A top-level declaration in shell.lua with a fixed role and one or more surface instances. The declared set belongs to a generation. _Avoid_: window, panel, layer
-
-**Surface role**: The behavior assigned to a surface: panel, window, popup or lock. _Avoid_: surface type, window kind, surface class
-
-**Lock client**: The Renderer holding the session-lock protocol handle and painting its lock surfaces. _Avoid_: lock authority, locker, lock screen
-
-**Surface instance**: One live mapping of a surface declaration. Panels and locks use `{id}@{output}`; windows, popups and `monitor = "Active"` panels use their declared ID. _Avoid_: surface copy, per-monitor surface
-
-**Wallpaper surface**: A config-declared Background panel displaying an image behind applications. _Avoid_: background layer, wallpaper capability
+| Term | Meaning |
+| :--- | :--- |
+| **Surface** | A top-level declaration returned by `shell.lua`, with one role and one or more instances. Not "window" or "layer". |
+| **Surface role** | `panel` (layer-shell), `window` (xdg_toplevel), `popup` (xdg_popup) or `lock` (session lock). See [Surfaces](docs/lua-api/surfaces.md). |
+| **Structural property** | A property read once per evaluation to make a structural decision, so it refuses a signal: any node's `id`; a `panel`'s `layer`, `anchor`, `monitor`, `namespace`; a `popup`'s `parent`. Those in the surface fingerprint rebuild the surface on change. |
+| **Surface instance** | One mapped copy of a surface. Per-output panels and locks use `{id}@{output}`; windows, popups and `monitor = "Active"` panels use the bare id (ADR-0246). Keys the retained scene. |
+| **Lock surface** | The lock declaration's instance on one output, alive only while the Renderer holds the lock (ADR-0052). |
 
 ## Scene
 
-**Retained scene**: A generation's persistent node tree, reconciled across evaluations. _Avoid_: scene graph, node tree
+| Term | Meaning |
+| :--- | :--- |
+| **Retained scene** | A generation's persistent node tree per surface instance, reconciled across evaluations and passes. |
+| **Node identity** | How a node is matched across evaluations, scoped to its parent: sibling `id` or list `key` (which wins), else position among id-less siblings. An unmatched id makes a new node (ADR-0045). |
+| **Retained-scene transaction** | One atomic reconcile and resolve of the retained scene. Unmatched children are dropped or become leaving nodes; a failure rolls back. |
+| **Signal resolution** | Reading a signal's current value while resolving a node property. `:get()` is a snapshot, not a live property. |
+| **Dirty scope** | `DirtyScope`, what a pass re-resolves: `Clean` (written cells nobody read), `Instances` (those that read them), or `All` (a scene-wide mark from reload, resize or rollback, or any write while the session lock is held). ADR-0244. |
+| **Layout pass budget** | `LayoutPassBudget`, the 2 s CPU ceiling for one whole pass, beside the 5 ms per-callback budget. Exceeding it fails the pass. See [Runtime](docs/lua-api/runtime.md). |
+| **Layout style** | A node's layout properties after signal resolution and validation (`LayoutStyle`), which the solver translates to a taffy style (ADR-0077). |
+| **Paint pass** | Drawing one surface instance from its resolved nodes without changing the scene. An unchanged `DisplayList` skips it (ADR-0063, ADR-0258). |
+| **Image cache** | A generation's decoded and uploaded textures (`CacheKey`: path, target box, file version, tint, crop, blur). A new generation starts cold. |
+| **Icon resolver** | `image::icons::resolve`: an icon theme name to an image file, memoized; an absolute path passes through (ADR-0054). |
+| **Shader node** | `shader { source, progress, params }`: a config `.frag` drawn as a node with no input textures; the Watcher reloads on its edit (ADR-0253). |
+| **Capture node** | `capture { output, region, live, ... }`: a live output preview with its own texture cache (ADR-0248). |
 
-**Retained-scene transaction**: An atomic reconciliation and resolution of the retained scene, matching nodes by identity and removing unmatched subtrees. _Avoid_: reload apply, tree diff
+## Signals and state
 
-**Resolved style**: A node's geometry properties after signal resolution and type validation for a layout pass. _Avoid_: style, computed style, layout cache
+| Term | Meaning |
+| :--- | :--- |
+| **Named state** | A `state(name, initial)` signal, keyed by name in the VM. Survives reloads until a scalar `initial` changes; lost with the generation. `mantle set`/`toggle` write it. |
+| **Input signal** | An engine-written, name-keyed signal (`hover`, `hover_rect`, `scroll`, `geometry`; `HoverRegistry`, `ScrollRegistry`, `GeometryRegistry`). Survives reloads like named state (ADR-0062, ADR-0069). |
+| **Change handler** | An `on_change(fn)` callback run with the current and previous payload on each capability, `rescue` or `screens` push (ADR-0115). |
+| **Idle threshold** | A registered inactivity duration with idle and resume callbacks, cancellable by its handle. The Supervisor keeps each duration's `ext_idle_notify` listeners across reloads and fans events out per generation (ADR-0158, ADR-0232). |
+| **Idle inhibit** | A hold that stops idle actions, through one logind inhibitor shared by config and `org.freedesktop.ScreenSaver` clients (ADR-0231). |
+| **Session process** | A `session_process` program the Supervisor owns. Survives reloads and Renderer replacement; stopped at shutdown with its declared signal (default SIGTERM), then SIGKILL after 5 s (ADR-0175). Unlike a `process.run` child, which is reaped with its generation. |
+| **Persistent table** | `persistent_table`: a JSON file read as signals and written one key at a time, surfaced through the `storage` capability (ADR-0136). |
 
-**Solver style**: The translation of a resolved style into the layout solver's sizing and positioning rules. _Avoid_: taffy style, flex style, constraint
+## Animation
 
-**Layout pass budget**: The CPU allowance for a whole retained-scene transaction. Exceeding it fails the transaction. _Avoid_: frame budget, CPU cap
+Contract: [Animation](docs/lua-api/animation.md).
 
-**Paint pass**: Drawing one surface instance from its resolved geometry without changing the retained scene. _Avoid_: render pass, draw loop, frame
-
-**Image cache**: A generation's decoded/uploaded image reuse, distinguished by source revision and target size. _Avoid_: texture atlas, asset cache
-
-**Icon resolver**: The Renderer lookup that turns an icon theme name or absolute path into an image source. _Avoid_: find_icon, icon theme engine
-
-**Node identity**: The match between nodes across evaluations, scoped to their parent. Explicit sibling IDs or list keys take precedence over positional matching. _Avoid_: node id, key, handle
-
-**Named state**: Lua-writable reactive state identified by a name within a generation. It survives in-place reloads with an unchanged seed, but not a Renderer replacement. _Avoid_: persistent state, local state, property
-
-**Signal resolution**: Reading a signal's current value when resolving a node property. A value obtained with `:get()` is a snapshot rather than a live property. _Avoid_: binding, unwrapping, dereferencing
-
-**Dirty scene**: A retained scene awaiting re-resolution after a signal write. _Avoid_: damage, invalidation, stale scene
-
-**Change handler**: A capability callback receiving the new and previous payload on a pushed snapshot. Registrations belong to one config evaluation. _Avoid_: watcher, subscription, signal listener, event
-
-**Drag**: A left-button interaction reporting start, movement and end in the target button's coordinates. _Avoid_: gesture, slider node, grab
-
-**Frame gating**: Permission to repaint only when compositor pacing permits it and the surface's display content has changed. _Avoid_: vsync, throttling, damage
-
-**Tween**: A retained node's property in flight between the value it displayed and the target a pass resolved, advanced per compositor frame callback without Lua. _Avoid_: animation object, transition, Behavior
-
-**Linger**: Keeping a surface mapped after its `visible` source dropped, for as long as its exit tween runs, through `delay(signal, ms)`. _Avoid_: close-hold timer, retained copy
-
-**Keyframe sequence**: A node property walked through a declared list of values, once or repeatedly, driven by elapsed time rather than by what a pass resolved. _Avoid_: timeline, animation group, SequentialAnimation
-
-**Leaving node**: A child the retained scene no longer holds, kept painted at its last rect and out of the flow for the length of its `animate.exit` block, which replaces every tween it was running. _Avoid_: exit transition, removal animation, ghost node
-
-**Pulse**: A signal reading `true` for a fixed window after its source changes value, which is how a config fires a one-shot animation without an imperative call. _Avoid_: trigger, event, restart, edge signal
-
-**Cross-dissolve**: An `image` crossing over a duration from the picture it was holding to the one whose decode has just landed, rather than swapping between them in one frame. _Avoid_: fade, transition, crossfade
-
-**Transition shader**: A config-supplied fragment shader that draws one `image`'s cross from its outgoing picture to its incoming one. The engine compiles and binds it and owns no effect of its own. _Avoid_: effect, filter, ShaderEffect
-
-**Spring**: A tween whose motion comes from stiffness and damping rather than a duration and a curve, and which hands its running speed to the run that replaces it when the target moves. _Avoid_: physics animation, damped tween, inertia
-
-## Ownership
-
-**Lock authority**: The Supervisor's decision to acquire the lock and authorize its authenticated release. _Avoid_: lock screen, lock client
-
-**Lock surface**: A surface instance covering one output while the Renderer holds the session lock. _Avoid_: lock screen widget
+| Term | Meaning |
+| :--- | :--- |
+| **Tween** | A property moving from its displayed value to a newly resolved one, advanced per frame callback without Lua. |
+| **Paint-only property** | A `PAINT_ONLY` property, whose change repaints without relayout (`opacity`, colours, `radius`, shadows, blurs, transforms, `progress`); its tweens tick without a pass (ADR-0178, ADR-0261). |
+| **Spring** | A tween driven by stiffness and damping instead of duration and easing; it keeps its velocity when the target moves (ADR-0154). |
+| **Keyframes** | A property walked through a list of values, once or looped, driven by elapsed time rather than a resolved target (ADR-0152). |
+| **Leaving node** | A child the scene dropped, painted at its last rect with no layout, input or identity while its `animate.exit` runs (ADR-0150). |
+| **Cross-dissolve** | An `image` blending from the picture it holds to a newly decoded one over its `transition` (ADR-0181, ADR-0186). |
+| **Transition shader** | `transition.shader`: a config fragment shader that draws an image's cross-dissolve; the engine compiles and binds it (ADR-0184). |
 
 ## Capabilities
 
-**Capability**: A named module owning one slice of platform state and its supported actions. _Avoid_: module, service, backend
+| Term | Meaning |
+| :--- | :--- |
+| **Capability** | A Supervisor module owning one slice of platform state and its actions, read in Lua as `mantle.<name>`. Not "service" or "backend". |
+| **Capability roster** | The `shared::Capability` enum: every capability with snapshot state, `idle` included (ADR-0076). `process` is addressable but off-roster. |
+| **Capabilities** | The Supervisor's `Capabilities` struct of controllers and channels. Not the `GenerationRegistry`, which tracks Renderer connections. |
+| **Capability start** | The first `mantle.<name>` read or secure-submit target starts the backend for the Supervisor's lifetime. `mantle.idle`, set directly on the namespace, starts on its first method call. `lock` and the polkit agent are built at boot; polkit registers its agent on start (ADR-0070). |
+| **Snapshot** | A capability's full state payload and revision, pushed to the authoritative generation on change. An equal payload is dropped, except `tray` and `notifications`, whose icon files are rewritten in place. |
+| **Hydration** | The Supervisor replaying its last snapshots to a newly connected generation. Before its first snapshot a capability reads `nil`. |
+| **Revision** | A capability's snapshot counter, stamped on commands as `expected_revision`. Nothing checks it (ADR-0004). |
+| **Mantle namespace** | The `mantle` table: capabilities, the Renderer-sourced `screens` and `rescue`, `version` and `config_dir`. |
+| **IDL** | The typed engine contract in `lua-meta/`: capability payloads and actions generated from Rust, node and surface properties hand-written. |
+| **Secure submit** | A secret field sending its native buffer straight to a named capability action, never through Lua (ADR-0005, ADR-0027). |
 
-**Revision**: A capability's state-version counter, carried on snapshots and stamped onto commands. _Avoid_: version, sequence number
+## Capability domains
 
-**Capability roster**: The complete set of Supervisor capability names with snapshot state exposed to config, including idle. _Avoid_: pre-seed list, known capabilities, `CAPABILITIES`
-
-**IDL**: The typed contract the engine exposes to Lua: capability payload fields, action names and node properties. The editor stubs carry it: capability payloads and actions generated from the Rust types, node properties hand-written. _Avoid_: schema, API surface, wire format
-
-**Capabilities**: The Supervisor's collection of capability controllers and their state/event channels (`Capabilities`). _Avoid_: capability registry (a `GenerationRegistry` tracks Renderer connections), capability manager, plugin table
-
-**Supervisor state**: The durable session state needed to supervise generations, capabilities, authentication and reloads. _Avoid_: session, context, app state, world
-
-**Capability start**: The first request that starts a capability's backend. Started backends remain for the Supervisor's lifetime. _Avoid_: activation, subscription, enabling a capability
-
-**Mantle namespace**: The Lua table exposing capabilities, output state, rescue state, version and config location. _Avoid_: globals, the state tree
-
-**Secure submit**: A field's direct delivery of its native secret buffer to a named capability action without exposing the secret to Lua. _Avoid_: secure handle, password callback
-
-**Idle threshold**: A config-registered inactivity duration with matched idle and resume callbacks. _Avoid_: idle timeout, inactivity timer
-
-**Idle inhibit**: A generation-owned hold preventing idle actions through logind inhibition and the Supervisor's event gate. _Avoid_: wake lock, keep-awake handle
-
-**Notification urgency**: The low, normal or critical tier supplied by a notification's sender. _Avoid_: priority, severity
-
-**Do-not-disturb**: The Supervisor-held toggle suppressing noncritical notification sounds. It does not filter the notification feed. _Avoid_: focus mode, silent mode, mute
-
-**Notification body span**: An allowlisted styled-text or trusted-image element in a sanitized notification body. _Avoid_: rich text, HTML fragment
-
-**Primary keyboard**: The selected keyboard represented by the singular keyboard capability. _Avoid_: main keyboard, active keyboard
-
-**Compositor link**: The compositor-specific connection supplying keyboard layout state and switching. _Avoid_: compositor adapter
-
-**Compositor probe**: Session-level detection that selects the supported compositor implementation. _Avoid_: compositor detection trait, session detector
-
-**Toplevel window**: Another application's top-level window, listed and controlled by the `windows` capability for taskbars, docks and alt-tab. Distinct from a config's own `window` surface role. _Avoid_: window (ambiguous with the surface role), client
-
-**Track identity**: The combined track ID, URL and title used to distinguish a changed track from a refresh of the same track. _Avoid_: track key, cache key
+| Term | Meaning |
+| :--- | :--- |
+| **Compositor probe** | Session-level detection of a supported compositor (`CompositorKind`: niri, Hyprland), shared by `keyboard`, `workspaces` and `windows`; `windows` falls back to wlr-foreign-toplevel elsewhere (ADR-0075). |
+| **Compositor link** | The keyboard capability's per-compositor connection for layout state and switching (`CompositorLink`). |
+| **Toplevel window** | Another application's window, listed by the `windows` capability (ADR-0247). Not the `window` surface role. |
+| **Do-not-disturb** | A `notifications` toggle that silences non-critical sounds. It does not filter the feed. |
+| **Notification body span** | One allowlisted styled-text or validated-image run of a sanitized notification body (ADR-0033). |
+| **Track identity** | MPRIS track ID, URL and title combined, telling a new track from a refresh of the same one (ADR-0036). |

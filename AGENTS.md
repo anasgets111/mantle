@@ -1,61 +1,92 @@
 # Mantle
 
-The Rust workspace crates `renderer`, `supervisor`, and `shared` execute desktop shells
-declared in Lua. Mantle ships no built-in shell; `share/starter` provides a minimal config.
+Rust engine that runs desktop shells declared in Lua. It ships no shell; `share/starter/shell.lua` is a
+minimal config. Engine code, tests and comments never cite a user config; tests use inline fixtures.
+A feature missing from a user config is not an engine gap.
 
-Rust code, tests, and comments never cite specific user configs. Engine tests use inline fixtures.
-A feature missing in a user config is not an engine gap.
+## Map
+
+| Path | Holds |
+| --- | --- |
+| `supervisor/` | `mantle` binary: CLI, capabilities, generations, stub generator |
+| `renderer/` | `mantle-renderer`: Wayland, Lua VM, layout, paint, text |
+| `shared/` | Wire types, paths, log macros |
+| `lua-meta/` | LuaLS stubs for config authors |
+| `docs/lua-api.md` | Config-author reference entry: what `shell.lua` can declare and call |
+| `docs/lua-api/` | Its pages: `runtime`, `cli`, `signals`, `capabilities`, `scripting`, `surfaces`, `nodes`, `paint`, `animation`, `input` |
+| `docs/services.md` | Capability ownership and backend behavior |
+| `docs/roadmap.md` | Open work |
+| `docs/decisions.md` | ADRs (`## 0081.`, cited as ADR-0081). History, not current API |
+| `CONTEXT.md` | Vocabulary only, no implementation |
+
+Code is the source of truth. Docs follow it; ADRs are history and may be stale, cited only as the
+why behind behavior the code confirms. Where a doc disagrees with the code, fix the doc.
+
+## Commands
+
+| Command | Use |
+| --- | --- |
+| `just` / `just check` | Gate before done: fmt-check, test, lint, docs, lua, types. With both staged and unstaged edits, checks the staged tree |
+| `just fmt` | Format Rust and Lua |
+| `just stubs` | Regenerate `lua-meta/mantle.lua` |
+| `just run [config]` | Build and run on `share/starter`. Not `cargo run -p supervisor`: it launches a stale renderer |
+| `just swap [args]` | Build the `swap` profile, replace the installed `mantle` pair under `~/.cargo/bin`, restart detached |
+| `just hooks` | Once per clone: pre-commit runs the relevant half of `check` on the staged tree and refuses a stale `mantle.lua` |
 
 ## Ponytail mode
 
-- **Code deletion.** Delete redundant, dead, or duplicated code. Removing lines is always preferred.
-- **Minimal diffs.** Add new lines only when nothing else works. The smallest diff in the right place wins.
-  The smallest diff in the wrong place is a second bug.
-- **Concise communication.** In replies, comments, commits, and docs, lead with the answer. Prefer tables
-  over bullets, bullets over paragraphs, and numbers over adjectives. Apply `unslop` everywhere.
-- **Decision comments.** State the non-obvious decision, never the mechanism, and never what the code used
-  to do. Rationale longer than one line belongs in an ADR.
-- **Commit messages.** State what changed and why. Omit before-state and session transcripts.
+- **Diffs.** Delete dead, redundant and duplicated code; add lines only when nothing else works. The
+  smallest diff in the wrong place is a second bug.
+- **Root cause.** Fix the cause, not the symptom. Grep every caller and fix the shared function once.
+- **Boring.** No new abstractions, dependencies or boilerplate unless required. Between similar
+  approaches, take the edge-case-correct one.
+- **Ceilings.** Mark a deliberate simplification with a `ponytail:` comment naming its ceiling and upgrade path.
+- **Checks.** Non-trivial logic gets one runnable check; trivial one-liners get none.
+- **Full effort.** Problem analysis, trust-boundary validation, data integrity, security, accessibility
+  and hardware calibration are never skipped.
+- **File size.** Split past ~700 production lines into domain modules, like `renderer/src/layout/node/`.
+  At ~500-700, split only a clear second domain. No file without a domain of its own.
+- **Writing.** Replies, comments, commits and docs lead with the answer: tables, then bullets, then
+  prose; numbers over adjectives. Apply `unslop`. Comments state the non-obvious decision, never the
+  mechanism or the old behavior. Commits state what changed and why.
+- **ADRs.** Append one to `docs/decisions.md` (next number) when a choice is hard to reverse,
+  surprising without context, and a real trade-off. Rationale longer than one line goes there.
 
-Trace the execution flow end-to-end before writing code, then stop at the first rung that holds:
+Trace the flow end to end before writing code, then stop at the first rung that holds:
 
-1. Does it need to exist? Apply YAGNI.
+1. Does it need to exist? (YAGNI)
 2. Does the codebase already have it? Reuse it.
-3. Does std, a platform feature, or an installed crate cover it? Use it.
+3. Does std, the platform or an installed crate cover it? Use it.
 4. Can it be one line?
-5. Write the minimum code that works.
-
-- Fix the root cause, not the symptom. Grep every caller and fix the shared function once.
-- No new abstractions, dependencies, or boilerplate unless strictly required.
-- **File size.** Split a file past ~700 production lines into modules scoped by domain, the way
-  `layout/node/` is. Between ~500 and ~700, split only a clear second domain. Never add a file
-  without a domain of its own.
-- Boring over clever. Between similar approaches, choose the edge-case-correct one.
-- Mark deliberate simplifications with a `ponytail:` comment stating the ceiling and upgrade path.
-- Never skip problem analysis, trust-boundary validation, data integrity, security, accessibility, or
-  hardware calibration.
-- Non-trivial logic gets one runnable check. Trivial one-liners get none.
+5. Only then, the minimum code that works.
 
 ## Lua stubs
 
-- **Capability payloads and actions.** Rust `*State` and `*Action` types generate them. Doc comments
-  become descriptions. Run `just stubs` and commit `lua-meta/mantle.lua`. Never edit it by hand.
-- **Node and surface properties.** Hand-written per ADR-0081. Edit `lua-meta/nodes.lua` and
-  `lua-meta/surfaces.lua` in the same commit as `accepted_properties`.
-- **Globals and signals.** Add new Lua globals or signals to `lua-meta/globals.lua` or
-  `lua-meta/signals.lua` in the same commit.
-- **Type checking.** `just check` is the gate, including `just types`. Requires `lua-language-server`.
+| File | Source | Enforced by |
+| --- | --- | --- |
+| `mantle.lua` | Generated from Rust `*State`/`*Action` types; doc comments become descriptions. Never hand-edit: `just stubs`, then commit | Golden test in `supervisor/src/stubs.rs` |
+| `nodes.lua`, `surfaces.lua` | Hand-written (ADR-0081). Change with `NODE_PROPERTIES` in `renderer/src/lua/nodes.rs` | `the_stubs_declare_every_node_kind_and_no_others`, `the_stubs_declare_the_same_properties_the_engine_accepts` |
+| `globals.lua`, `signals.lua` | Hand-written. Change with any new global or signal | `the_stubs_declare_every_engine_global` |
+
+Change a stub in the same commit as its engine code. `just types` checks `share/starter` against the
+stubs, then `lua-meta` alone, and fails without `lua-language-server`.
 
 ## Logging
 
-- **Runtime diagnostics.** Use `error!`, `warn!`, `notice!`, `info!`, or `debug!` from `shared`, imported by path
-  like `use shared::warn;`. The macro provides timestamp, level, and subsystem. Never write the
-  subsystem into the message. Use `eprintln!` only for CLI output preceding `shared::log::init`.
-- **Log filtering.** `MANTLE_LOG` takes filters like `debug`, `warn,tray=debug`, `network=off` per ADR-0229.
-- **Levels.** `notice!` is start, reload, respawn, and stop. `info!` is a state change, never setup (ADR-0251).
+- Use `error!`, `warn!`, `notice!`, `info!`, `debug!` from `shared`, imported by path (`use shared::warn;`).
+  The macro adds timestamp, level and subsystem; never write the subsystem into the message.
+- `eprintln!` (shared's non-panicking override, not std's) only for CLI output before `shared::log::init`.
+- `notice!` is start, reload, respawn, stop. `info!` is a state change, never setup (ADR-0251).
+- `MANTLE_LOG` takes filters like `debug`, `warn,tray=debug`, `network=off` (ADR-0229).
 
 ## Testing
 
-- **Path injection.** Never hardcode `/sys` or `/proc`. Readers accept `sys_root` or `proc_root`. Tests supply a tempdir.
-- **Test location.** Tests live beside the code in `#[cfg(test)] mod tests`. `shared/tests` is the sole exception.
-- **D-Bus tests.** Use `p2p_pair()` in `capabilities/test_support.rs`, never the session bus.
+- Tests live beside the code in `#[cfg(test)] mod tests`; `shared/tests` is the only exception.
+- Never hardcode `/sys` or `/proc`: readers take `sys_root`/`proc_root`, tests pass a tempdir.
+- D-Bus tests use `p2p_pair()` from `supervisor/src/capabilities/test_support.rs`, never the session bus.
+
+## Skills
+
+`.agents/skills/` (also `.claude/skills`, `.gemini/skills`): `implement`, `tdd`, `diagnosing-bugs`,
+`mantle-review`, `domain-modeling` (ADRs, `CONTEXT.md`), `grill-with-docs`, `grill-me`, `project-design`,
+`unslop`. `architecture-review` runs only when invoked by name.
