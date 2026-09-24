@@ -44,13 +44,23 @@ return panel {
 
 ## Which one do I use
 
-| To | Use |
-| :--- | :--- |
-| Run a command and read its output | [`process.run`](#processrun) |
-| Launch an app the user keeps | [`process.detach`](#processdetach) |
-| Keep a long-running program across reloads (a recorder) | [`session_process`](#session_process) |
+| | [`process.run`](#processrun) | [`session_process`](#session_process) | [`process.detach`](#processdetach) |
+| :--- | :--- | :--- | :--- |
+| Output | Line by line to `out_cb` | Inherited stdio: `mantle log` | None: `/dev/null` |
+| Exit | `exit_cb(code)` | `running` and `exit_code` signals | None |
+| Instances | One per call | One per name; `start` is a no-op while it runs | One per call |
+| Owner | The evaluation that started it | The Supervisor | Nobody: own session, reparented to init |
+| Reload | Killed, `exit_cb(nil)` | Keeps running | Unaffected |
+| Renderer crash | Killed, no `exit_cb` | Keeps running | Unaffected |
+| Shell stops | Killed | Stopped with `stop_signal`, `SIGKILL` after 5 s | Unaffected |
+| Typical uses | `curl`, `getent`, a poll every N seconds, a `--follow` stream | A screen recorder, a daemon the shell owns | Apps, `xdg-open`, a terminal |
 
-What each one keeps across a reload, a crash and a restart: [runtime](runtime.md#what-survives-a-reload).
+- Need the output or the exit code: `process.run`. A long-running one, like `tail -f` or a
+  subscribe loop, restarts with each save; that is the intended way to follow a stream.
+- One instance that must outlive a save or a crash: `session_process`.
+- A program the user keeps after the shell: `process.detach`.
+
+The rest of the shell's state across a reload, a crash and a stop: [runtime](runtime.md#what-survives-a-reload).
 
 ## process.run
 
