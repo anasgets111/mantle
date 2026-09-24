@@ -14,8 +14,7 @@ use Absent::{Bool, Choice, Lua, Number, Prose, Required, Unset};
 use crate::image::Fit;
 use crate::layout::hit::LogicalPoint;
 use crate::layout::node::prop::{
-    Bound, Callback, Color, Degrees, Field, Flag, Handle, Id, Name, Num, OneOf, Path, Pixels, Prop, Refused,
-    Structural, Text,
+    Bound, Callback, Color, Field, Flag, Handle, Id, Name, Num, OneOf, Path, Pixels, Prop, Refused, Structural, Text,
 };
 use crate::layout::node::{
     Align, Anchor, AnchorRect, Animations, Axes, BorderColor, Children, ClipShape, ConstraintAdjustment, Content,
@@ -218,7 +217,7 @@ props! {
         /// About `origin`; a missing axis is `1`. Paint only: layout and `geometry` see the unscaled box; hit-testing follows the painted one (ADR-0149).
         scale: Bound<Scale> = range(0.0, 64.0).absent(Number(1.0));
         /// Degrees clockwise about `origin`. Paint only.
-        rotate: Bound<Degrees> = range(-8192.0, 8192.0).absent(Number(0.0));
+        rotate: Bound<Num> = range(-8192.0, 8192.0).absent(Number(0.0));
         /// Pixel offset per axis, a missing one `0`, applied after `scale` and `rotate`. Paint only.
         translate: Bound<Axes> = range(-8192.0, 8192.0).absent(Lua("{ x = 0, y = 0 }"));
         /// Pivot for `scale` and `rotate` as box fractions; a missing axis is `0.5`.

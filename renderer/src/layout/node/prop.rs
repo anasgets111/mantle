@@ -23,12 +23,7 @@ pub(crate) trait Prop: LuaType {
     const RAW: bool = false;
     /// `value` is the property's entry, `None` when absent; `row` carries its name, range and default.
     fn read(row: &Property, value: Option<&Value>) -> Result<Self::Out, LayoutError>;
-    /// A [`Bound`] property holding a signal on the evaluation-time pass (`crate::socket`'s
-    /// `surface_specs`), which runs before any getter and must not call one: the placeholder until
-    /// `App::apply_resolved_state` re-reads the value from the resolved tree (ADR-0049's second
-    /// amendment). A literal is still fully validated on that pass, so a typo fails fast into
-    /// `rescue` rather than as an `xdg_positioner` protocol error at first open. A resolved map
-    /// holds no signal outside [`Self::RAW`] properties, so only surface specs meet this.
+    /// What a [`Bound`] signal reads as in `surface_specs`, which may call no getter (ADR-0049's second amendment).
     fn deferred(row: &Property) -> Result<Self::Out, LayoutError> {
         Self::read(row, None)
     }
@@ -132,30 +127,14 @@ spelled!(Num => f32::lua());
 impl Prop for Num {
     type Out = f32;
     fn read(row: &Property, value: Option<&Value>) -> Result<f32, LayoutError> {
-        within(row, number(row, value, "a number")?)
+        let Some(value) = value else {
+            let Absent::Number(n) = row.absent else { panic!("`{}` has no default number", row.name) };
+            return Ok(n);
+        };
+        let n = value_as_f32(row.name, value)?
+            .ok_or_else(|| invalid(row.name, format!("expected a number, got {}", preview_for_error(value))))?;
+        within(row, n)
     }
-}
-
-/// [`Num`], refused as `expected degrees`.
-pub(crate) struct Degrees;
-
-spelled!(Degrees => f32::lua());
-
-impl Prop for Degrees {
-    type Out = f32;
-    fn read(row: &Property, value: Option<&Value>) -> Result<f32, LayoutError> {
-        within(row, number(row, value, "degrees")?)
-    }
-}
-
-/// `value` as a number, `row`'s default number when absent; refused as `expected {what}`.
-fn number(row: &Property, value: Option<&Value>, what: &str) -> Result<f32, LayoutError> {
-    let Some(value) = value else {
-        let Absent::Number(n) = row.absent else { panic!("`{}` has no default number", row.name) };
-        return Ok(n);
-    };
-    value_as_f32(row.name, value)?
-        .ok_or_else(|| invalid(row.name, format!("expected {what}, got {}", preview_for_error(value))))
 }
 
 /// An optional pixel bound: `max_width`/`max_height` cap a `Content`-sized node's growth, leaving
@@ -424,7 +403,7 @@ impl Prop for Refused {
                 row.name,
                 format!(
                     "a `lock` takes no `{}`: a lock surface covers every connected output, for exactly as long as the compositor holds \
-                     the session locked, and none of that is the config's to set (ADR-0042, ADR-0052 decision 2)",
+                     the session locked, and none of that is the config's to set",
                     row.name
                 ),
             )),

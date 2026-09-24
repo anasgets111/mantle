@@ -52,8 +52,8 @@ fn config_stdlib() -> mlua::StdLib {
 /// the real functions so `os.date` keeps its strftime surface; bars use it, so `OS` cannot be
 /// removed wholesale. Their signatures are declared, not Rust's: Lua's own C functions implement
 /// them. Also replace `package.loaded.os`: `require` reads its own reference there, so changing
-/// only the global hands the library back through `require("os")` (measured for `io` under the old
-/// `ALL_SAFE` VM). `io` is absent from [`config_stdlib`], so only `os` needs this second replacement.
+/// only the global hands the library back through `require("os")`. `io` is absent from
+/// [`config_stdlib`], so only `os` needs this second replacement.
 fn restrict_os(lua: &Lua) -> mlua::Result<()> {
     let full: Table = lua.globals().get("os")?;
     let kept = lua.create_table()?;
