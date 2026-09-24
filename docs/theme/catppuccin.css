@@ -78,6 +78,8 @@ pre > code { border-radius: 8px; }
 .content video { width: 100%; }
 .wordmark { display: flex; justify-content: center; align-items: baseline; margin-block: 0.3em 0; font-size: 5em; font-weight: 700; line-height: 1; letter-spacing: -0.02em; background: linear-gradient(#46ecff, #1580f2 60%); -webkit-background-clip: text; background-clip: text; color: transparent; }
 .content .wordmark img { height: 0.78em; margin: 0 0.03em 0 0; border: 0; border-radius: 0; }
+/* The introduction's wordmark already names the book */
+body:has(.wordmark) .menu-title { visibility: hidden; }
 .blockquote-tag { padding: 0.6em 1em; border-radius: 0 8px 8px 0; background: var(--mantle); }
 
 /* On-this-page links nested under the current chapter */
