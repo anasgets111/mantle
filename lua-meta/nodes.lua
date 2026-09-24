@@ -12,6 +12,8 @@
 
 ---@alias Node table A node table, as one of the constructors below returns it.
 ---@alias Align "Start"|"Center"|"End"|"Stretch"
+-- ponytail: copied from cursor-icon 1.2's `FromStr`, which exposes no list to derive it from; the
+-- stub probe catches a name it refuses, not one missing here. Upgrade: derive once the crate lists them.
 ---@alias Cursor "default"|"pointer"|"text"|"not-allowed"|"grab"|"grabbing"|"move"|"crosshair"|"wait"|"progress"|"help"|"context-menu"|"cell"|"vertical-text"|"alias"|"copy"|"no-drop"|"zoom-in"|"zoom-out"|"all-scroll"|"col-resize"|"row-resize"|"n-resize"|"e-resize"|"s-resize"|"w-resize"|"ne-resize"|"nw-resize"|"se-resize"|"sw-resize"|"ew-resize"|"ns-resize"|"nesw-resize"|"nwse-resize" CSS cursor name (same as `wp_cursor_shape_v1`).
 ---@alias Edges { top?: number, right?: number, bottom?: number, left?: number, [string]: "no such property" } Per-edge pixels; a missing edge is `0`.
 -- ponytail: whole percents only, so a fraction (`"12.5%"`) or one above `"100%"`, which the engine
