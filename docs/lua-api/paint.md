@@ -30,7 +30,6 @@ A card: a translucent rounded fill, a hairline border, and a soft shadow that fa
 | Term | Meaning |
 | :--- | :--- |
 | Box kind | A node that paints a box: `rect`, `row`, `column`, `button` and the four [surface](surfaces.md) roles (`panel`, `window`, `popup`, `lock`) |
-| Surface | One top-level `panel`, `window`, `popup` or `lock` ([Surfaces](surfaces.md)). Each paints into its own buffer; the compositor stacks the buffers |
 | Repaint | Mantle redraws the changed part of a surface's buffer after a change; unchanged surfaces are not redrawn |
 | Offscreen pass | The subtree is drawn into a temporary texture, filtered or masked, then composited back. Costs a texture and an extra draw |
 | Layer | The offscreen pass that `content_blur` and some shadows use; unlike other offscreen passes it is kept and reused while it doesn't change |
@@ -39,9 +38,7 @@ A card: a translucent rounded fill, a hairline border, and a soft shadow that fa
 
 ## Who takes what
 
-Box kinds are `rect`, `row`, `column`, `button` and the four surface roles (`panel`, `window`,
-`popup`, `lock`). A property on a kind that does not take it is refused with the list of what it
-does take.
+A property on a kind that does not take it is refused with the list of what it does take.
 
 | Properties | Taken by |
 | :--- | :--- |
@@ -233,6 +230,36 @@ A frosted pill: the image is painted first, so the pill's `backdrop_blur` blurs 
 its rounded shape, and the fill tints it. The same pattern over a full-screen image frosts a lock
 screen's wallpaper.
 
+## Combining effects
+
+One node paints in this order, each step over the last:
+
+1. **Backdrop** (`backdrop_blur`): replaces the pixels under the box with their blur.
+2. **Shadow**, when it is a gradient quad or a silhouette.
+3. **Body**: fill, children in `z` order, border. With a `mask` or a `clip = "Rounded"` the body
+   goes through an offscreen pass.
+4. **Layer**: for `content_blur` or a layered shadow, the body is drawn offscreen, its shadow cast
+   from it, then the body blurred.
+5. **Transform** (`scale`, `rotate`, `translate`) wraps all of the above.
+
+| Combination | What happens | Do this |
+| :--- | :--- | :--- |
+| `mask` and `backdrop_blur` on one node | The mask fades the fill, border and subtree, not the node's own glass or box shadow | Put the glass on a child of the masked node |
+| `content_blur` and `backdrop_blur` on one node | The glass stays sharp; only the fill, border and subtree blur | Expected |
+| `backdrop_blur` inside a parent with `mask`, `content_blur` or a Content-mode shadow | The glass sees only what that parent has drawn so far, not what is under the parent | Move the glass out of the effect parent, or accept it |
+| `backdrop_blur` inside `clip = "Rounded"` without a mask | The glass sees what is under the parent, as without the clip | Nothing to do |
+| `backdrop_blur` on a surface root | Nothing is under it on the surface, so it blurs transparency | Use `blur = true` for the desktop |
+| `blur = true` and `backdrop_blur` on one box | The compositor blurs the desktop; the backdrop blurs this surface's pixels. Neither sees the other | Pick by what is underneath: desktop or own content |
+| Shadow and `content_blur` on one node | The shadow is cast from the sharp content, then the content is blurred | Expected |
+| Box-mode shadow on a translucent box | One gradient quad, cut out under the box; children do not cast | `shadow_mode = "Content"` to cast from what is painted |
+| Content-mode shadow on a masked node | Cast from the masked result | Expected |
+| Content-mode shadow or `content_blur` over an `image`, `icon`, `capture`, image `mask` or glass | The layer is redrawn every repaint instead of reused | Keep those out of animated layers, or accept the cost |
+| Anything under a glass changes | The glass repaints, and so does everything in the area it reads (3 sigma past its box) | Keep glass away from constantly animating content, or keep sigma small |
+| Shadow or `content_blur` near the parent's edge | Cut at the parent's clip, like any child paint | Give the parent padding, or `clip = "None"` on it |
+| `opacity` on a node with effects | Multiplied into every draw once; layers and clips composite at full alpha, so nothing fades twice | Expected |
+| `opacity < 1` on a group whose children overlap | Each child fades on its own, so overlaps show through each other (not CSS group opacity) | For a group fade, give the parent a uniform `mask` (e.g. both stops `"#00000080"`); it costs an offscreen pass |
+| A transform on a node with a glass or shadow | The backdrop, shadow and body move together; the glass reads under its transformed position | Expected |
+
 ## How do I…
 
 | Task | Answer |
@@ -383,36 +410,6 @@ A full-screen [panel](surfaces.md#panel) whose first child is a translucent scri
 second is the dialog. Dim with a colour rather than `blur = true` on the scrim: the compositor's
 blur does not fade with `opacity`, so a fading scrim would blur at full strength until it hits 0.
 
-## Combining effects
-
-One node paints in this order, each step over the last:
-
-1. **Backdrop** (`backdrop_blur`): replaces the pixels under the box with their blur.
-2. **Shadow**, when it is a gradient quad or a silhouette.
-3. **Body**: fill, children in `z` order, border. With a `mask` or a `clip = "Rounded"` the body
-   goes through an offscreen pass.
-4. **Layer**: for `content_blur` or a layered shadow, the body is drawn offscreen, its shadow cast
-   from it, then the body blurred.
-5. **Transform** (`scale`, `rotate`, `translate`) wraps all of the above.
-
-| Combination | What happens | Do this |
-| :--- | :--- | :--- |
-| `mask` and `backdrop_blur` on one node | The mask fades the fill, border and subtree, not the node's own glass or box shadow | Put the glass on a child of the masked node |
-| `content_blur` and `backdrop_blur` on one node | The glass stays sharp; only the fill, border and subtree blur | Expected |
-| `backdrop_blur` inside a parent with `mask`, `content_blur` or a Content-mode shadow | The glass sees only what that parent has drawn so far, not what is under the parent | Move the glass out of the effect parent, or accept it |
-| `backdrop_blur` inside `clip = "Rounded"` without a mask | The glass sees what is under the parent, as without the clip | Nothing to do |
-| `backdrop_blur` on a surface root | Nothing is under it on the surface, so it blurs transparency | Use `blur = true` for the desktop |
-| `blur = true` and `backdrop_blur` on one box | The compositor blurs the desktop; the backdrop blurs this surface's pixels. Neither sees the other | Pick by what is underneath: desktop or own content |
-| Shadow and `content_blur` on one node | The shadow is cast from the sharp content, then the content is blurred | Expected |
-| Box-mode shadow on a translucent box | One gradient quad, cut out under the box; children do not cast | `shadow_mode = "Content"` to cast from what is painted |
-| Content-mode shadow on a masked node | Cast from the masked result | Expected |
-| Content-mode shadow or `content_blur` over an `image`, `icon`, `capture`, image `mask` or glass | The layer is redrawn every repaint instead of reused | Keep those out of animated layers, or accept the cost |
-| Anything under a glass changes | The glass repaints, and so does everything in the area it reads (3 sigma past its box) | Keep glass away from constantly animating content, or keep sigma small |
-| Shadow or `content_blur` near the parent's edge | Cut at the parent's clip, like any child paint | Give the parent padding, or `clip = "None"` on it |
-| `opacity` on a node with effects | Multiplied into every draw once; layers and clips composite at full alpha, so nothing fades twice | Expected |
-| `opacity < 1` on a group whose children overlap | Each child fades on its own, so overlaps show through each other (not CSS group opacity) | For a group fade, give the parent a uniform `mask` (e.g. both stops `"#00000080"`); it costs an offscreen pass |
-| A transform on a node with a glass or shadow | The backdrop, shadow and body move together; the glass reads under its transformed position | Expected |
-
 ## Gotchas
 
 | Trap | Fix |
@@ -429,7 +426,7 @@ One node paints in this order, each step over the last:
 | Rounded corners, scoops and masks still take clicks in the cut-away area | Hit-testing uses the rectangle. Shrink the `button` or accept it |
 | A signal inside a gradient stop or border edge is refused | Map the whole table: `background = accent:map(function(c) return { gradient = "Linear", stops = { { 0, c }, { 1, "#00000000" } } } end)` |
 
-See also: [Nodes](nodes.md), [Surfaces](surfaces.md), [Animation](animation.md), [Input](input.md#hit-testing), [CONTEXT](../../CONTEXT.md).
+See also: [nodes](nodes.md), [surfaces](surfaces.md), [animation](animation.md), [input](input.md#hit-testing), [CONTEXT](../../CONTEXT.md).
 
 Source: [allowlist](../../renderer/src/lua/nodes.rs),
 [parsers](../../renderer/src/layout/node/style/mod.rs),

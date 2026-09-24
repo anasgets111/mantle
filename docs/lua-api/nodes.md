@@ -136,9 +136,9 @@ signal. In a `list`, `key` supplies it. Give a node a stable `id` when:
 ### Showing, hiding and switching
 
 `visible = false` takes a node out of layout, paint and input, with no gap. Its subtree stays in
-memory, frozen: no signal under it is read and no `list` builds, until it shows again. Use it for a
-section you toggle in place. For views that replace each other, bind the parent's `children`
-([switching views](signals.md#switching-views)). Only the current view is built.
+memory, [frozen](signals.md#how-re-resolution-works) until it shows again. Use it for a section you
+toggle in place. For views that replace each other, bind the parent's `children`
+([switching views](signals.md#switching-views)).
 
 `opacity = 0` is different: the node still takes space and still takes input.
 
@@ -210,8 +210,7 @@ The compositor draws the shape from its cursor theme.
 
 `rect`, `row`, `column`, `button` and the four surface roles also take `background`, `radius`,
 `corner_shape`, `border_color`, `border_width`, `clip`, `mask`, `blur`, `backdrop_blur` and
-`shadow_mode`. They are documented on [paint](paint.md#box-properties). `clip` decides what this
-node's children are cut to; the default `"Box"` cuts them to its rectangle.
+`shadow_mode`. They are documented on [paint](paint.md#box-properties).
 
 ## rect
 
@@ -472,30 +471,7 @@ out of view. `key` makes matching cheap and keeps each item's state across reord
 skip `itemfn`. Bound long lists with `limit` (a launcher showing the top 50 matches), or hide them
 while closed so they freeze.
 
-Workspace buttons, keyed by workspace id so a new workspace does not shift the others' state:
-
-```lua
-local strip = list {
-    direction = "Horizontal",
-    spacing = 4,
-    align_v = "Center",
-    source = mantle.workspaces:map(function(workspaces)
-        local output = workspaces and (workspaces.outputs or {})[1]
-        return output and output.workspaces or {}
-    end),
-    key = function(workspace) return tostring(workspace.id) end,
-    itemfn = function(workspace)
-        return button {
-            width = 24,
-            height = 24,
-            radius = 12,
-            background = workspace.populated and "#45475A" or "#00000000",
-            on_click = function() mantle.workspaces:invoke("focus", workspace.id) end,
-            children = { text { content = tostring(workspace.idx), align_h = "Center", align_v = "Center" } },
-        }
-    end,
-}
-```
+Keyed workspace buttons from a capability: [capabilities examples](capabilities.md#examples).
 
 A scrolling thumbnail grid: a vertical list of two-image rows, decoded off-thread.
 
@@ -580,7 +556,7 @@ local body = rect {
 
 ## How do I…
 
-| Task | Recipe |
+| Task | Answer |
 | :--- | :--- |
 | Centre something | [Below](#centre-something) |
 | Split a bar into left, centre and right | The [bar at the top](#nodes): two `"Fill"` rows around a content-sized middle |
@@ -699,6 +675,9 @@ local cover = rect {
 | `duplicate id` error | Sibling ids, and `list` keys, must be unique |
 | A shader draws nothing and `check` passed | `check` does not compile GLSL. Read `mantle log` for the compile error, and check the node has a size and an absolute `source` |
 
+See also: [surfaces](surfaces.md) (where a tree lives), [signals](signals.md) (live properties),
+[paint](paint.md), [animation](animation.md), [input](input.md), [capabilities](capabilities.md).
+
 Source: [node vocabulary](../../renderer/src/lua/nodes.rs),
 [layout solver](../../renderer/src/layout/scene/solver.rs),
 [pass and reconciliation](../../renderer/src/layout/scene/pass.rs),
@@ -711,6 +690,3 @@ Source: [node vocabulary](../../renderer/src/lua/nodes.rs),
 [cursor parse](../../renderer/src/layout/node/style/mod.rs) (names from the `cursor-icon` crate),
 [capture](../../renderer/src/wayland/capture/mod.rs),
 [check](../../renderer/src/check.rs).
-
-See also: [surfaces](surfaces.md) (where a tree lives), [signals](signals.md) (live properties),
-[paint](paint.md), [animation](animation.md), [input](input.md), [capabilities](capabilities.md).

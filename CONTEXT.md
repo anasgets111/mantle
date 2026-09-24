@@ -12,7 +12,7 @@ the why behind behavior the code confirms.
 | **Renderer** | The `mantle-renderer` process. Lua VM, retained scene, Wayland client and GL paint share its main thread (ADR-0039); socket I/O, text shaping and image decode run on worker threads. One per generation. |
 | **Generation** | One Renderer process and its Lua VM, numbered by a generation ID. Only a Renderer replacement starts a new one; a reload does not. |
 | **Authoritative generation** | The generation the Supervisor sends to and accepts frames from. A replacement becomes authoritative when spawned and is hydrated when it connects. |
-| **Instance directory** | `$XDG_RUNTIME_DIR/mantle/<pid>-<start ms>/`, one per Supervisor: control socket, log, lock file, icon spools. `mantle list`, `log`, `set` and `call` pick one (ADR-0222, ADR-0227). |
+| **Instance directory** | `$XDG_RUNTIME_DIR/mantle/<pid>-<start ms>/`, one per Supervisor: control socket, log, lock file, icon spools. `mantle list`, `log`, `set`, `toggle` and `call` pick one (ADR-0222, ADR-0227). |
 | **Lock authority** | The Supervisor's side of the session lock: deciding to lock, authorizing release after PAM, owning the unlock exit, relocking after a Renderer crash (ADR-0058, ADR-0190). |
 | **Lock client** | The Renderer holding `ext_session_lock_v1` and painting its lock surfaces (ADR-0042, ADR-0052). |
 | **Check mode** | `mantle check`: the Supervisor runs the Renderer binary with `CHECK_ENV` to evaluate the config with no Wayland, subprocesses or state writes; every capability reads `nil`. See [CLI](docs/lua-api/cli.md). |

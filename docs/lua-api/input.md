@@ -109,13 +109,7 @@ survives reloads.
 | `hover = hover(name)` | Any node kind. `true` while the pointer is over the node or any of its children (hit-tested, so clipping and stacking apply). Pointer leaving the surface, or the surface closing, turns every hover off. When layout moves nodes under a still pointer, hover follows |
 | `on_hover(inside)` | Called with `true`/`false` on each crossing caused by the pointer. Layout moving nodes under a still pointer updates `hover` but does not call it. Refused unless the same node has `hover` |
 | `hover_rect(name)` | Read-only signal of the node's rect from the last time its hover turned on. It keeps that rect after the pointer leaves, reads `{ x = 0, y = 0, width = 1, height = 1 }` before the first hover, and is updated before `on_hover` runs. Use it as a tooltip `popup`'s `anchor_rect` |
-| `cursor` | A CSS cursor name (below). The innermost node that sets one wins, and an explicit one beats a kind's default. Defaults: `"pointer"` over a `button` with `on_click`, `on_drag`, `on_wheel` or `submit`, and over a link; `"text"` over a `textfield`; the arrow (`"default"`) elsewhere. An unknown name is refused |
-
-**Cursor names:** `default`, `context-menu`, `help`, `pointer`, `progress`, `wait`, `cell`,
-`crosshair`, `text`, `vertical-text`, `alias`, `copy`, `move`, `no-drop`, `not-allowed`, `grab`,
-`grabbing`, `e-resize`, `n-resize`, `ne-resize`, `nw-resize`, `s-resize`, `se-resize`, `sw-resize`,
-`w-resize`, `ew-resize`, `ns-resize`, `nesw-resize`, `nwse-resize`, `col-resize`, `row-resize`,
-`all-scroll`, `zoom-in`, `zoom-out`. The compositor draws them from its cursor theme.
+| `cursor` | The pointer shape over a node: one of the [cursor names](nodes.md#cursor-names), defaults in [common properties](nodes.md#common-properties). The innermost node that sets one wins, and an explicit one beats a kind's default |
 
 ```lua
 local over = hover("wifi")
@@ -172,11 +166,8 @@ a press.
 | `on_cancel(cleared)` | Escape. The draft clears, the field drops focus, `on_change("")` fires if there was text, then `on_cancel` gets whether text was removed. Without `on_cancel`, Escape clears and the field keeps focus |
 | `on_navigate(key)` | `"up"`, `"down"`, `"page_up"`, `"page_down"`, `"tab"`, `"backtab"`, and `"left"`/`"right"` when the caret cannot move that way and Shift is up. Repeats while held. The draft is untouched |
 | `autofocus` | `true`: take the keys, with an empty draft and a call to `on_change("")`, when the surface gains keyboard focus or the field appears under it. The first visible such field in document order wins. It never takes over from a field that is already typing, and never re-takes a field the user just clicked away from |
-| `placeholder` | String shown while the draft is empty, focused or not; default `""` |
-| `font_size` | Number `[1, 8192]`, default `12` |
-| `foreground` | Colour of the draft, placeholder and mask, default `"#FFFFFF"` |
-| `text_align` | `"Start"`, `"Center"` or `"End"`, default `"Start"` |
 | `secure_submit`, `mask_character` | See [secure fields](#secure-fields) |
+| `placeholder`, `font_size`, `foreground`, `text_align` | Appearance; see [textfield](nodes.md#textfield) |
 
 | Key | Plain field | Secure field |
 | :--- | :--- | :--- |

@@ -110,8 +110,8 @@ on every reload.
 | Term | Meaning |
 | :--- | :--- |
 | Evaluation | One run of `shell.lua` and whatever it `require`s. Its top level has no CPU budget |
-| Reload | An evaluation in the same VM, triggered by a saved file, then one apply to the live scene |
-| Apply | The new surface list is reconciled with the scene on screen. A `panel` whose `id`, `layer`, `anchor`, `monitor` or `namespace` changed, or a `window`/`popup`/`lock` whose `id` changed, is rebuilt. Everything else updates in place ([surfaces](surfaces.md)) |
+| Reload | An evaluation in the same VM, triggered by a saved file or an output change, then one apply to the live scene |
+| Apply | The new surface list is reconciled with the scene on screen. A surface whose [fingerprint](surfaces.md#shared-rules) changed is rebuilt; everything else updates in place |
 | Generation | One Renderer process and its VM. A reload never starts a new one. Only a crash does, when the Supervisor respawns the Renderer |
 
 What triggers a reload:
@@ -122,6 +122,7 @@ What triggers a reload:
 | A save with the same bytes as the last one the watcher saw for that file | No |
 | Any other extension (`.json`, images, editor swap files) | No |
 | A new subdirectory | Watched from then on, and walked if it already has files |
+| An output is added, removed or reconfigured (`mantle.screens` changes) | Yes, at once, by the Renderer itself |
 | The whole directory disappears (a `git checkout`) | Watched again once it is back, polled every second |
 
 The watcher follows the config path resolved at startup. Retargeting a symlink later changes
@@ -196,7 +197,7 @@ it.
 | Layout pass | 2 s | One whole pass over the scene, including list `itemfn`s and function `child` builders | The pass fails and the previous scene stays |
 | Tree depth | 64 levels | Nested nodes in one surface | The pass fails |
 | Scalar values | Numbers finite, integers within ±(2^53 − 1), strings at most 64 KiB | `state` seeds, `:set()`, `mantle set`, and number or string node properties. Tables are not checked | `state` and `:set` raise. `mantle set` is refused with a warning. A node property fails the pass |
-| Numeric properties | `[0, 8192]` logical px for most sizes. `[-8192, 8192]` for `translate`, `rotate`, shadow offset and spread. `opacity` and `origin` `[0, 1]`, `scale` `[0, 64]`, `font_size` `[1, 8192]`. `margin`, `padding`, `spacing` and icon `size` are unbounded (a tween still clamps them) | Node and surface properties ([nodes](nodes.md)) | The pass fails, naming the property |
+| Numeric properties | `[0, 8192]` logical px for most sizes. `[-8192, 8192]` for `translate`, `rotate`, shader `progress`, shadow offset and spread. `opacity` and `origin` `[0, 1]`, `scale` `[0, 64]`, `font_size` `[1, 8192]`. `margin`, `padding`, `spacing` and icon `size` are unbounded (a tween still clamps them) | Node and surface properties ([nodes](nodes.md)) | The pass fails, naming the property |
 | Array length | 10,000 | `children` of one node, items of one `list` (`source`, and `limit` is clamped to it), runs in one `text` `content` | The pass fails |
 | `delay`, `pulse` duration | `[1, 60000]` ms | `delay(signal, ms)`, `pulse(signal, ms)` ([signals](signals.md)) | Raises at the call |
 | `timer` delay | `[1, 86400000]` ms (one day) | `timer(ms, fn)` ([scripting](scripting.md#timer)) | Raises at the call |
@@ -340,12 +341,12 @@ when the config evaluates.
 | A reload that fails in layout shows no rescue banner | `mantle.rescue` covers evaluation errors only. Check `mantle log` for the warning |
 | Saving a `.json` or an image beside `shell.lua` does not reload | Only `.lua` and `.frag` changes trigger a reload |
 
+See also: [cli](cli.md) · [signals](signals.md) · [scripting](scripting.md) ·
+[capabilities](capabilities.md) · [surfaces](surfaces.md) · [CONTEXT](../../CONTEXT.md) for
+generation, Supervisor and Renderer.
+
 Source: [VM setup and `require`](../../renderer/src/lua/mod.rs),
 [reload](../../renderer/src/socket/client/mod.rs), [apply](../../renderer/src/socket/client/resolve.rs),
 [watcher](../../supervisor/src/watcher.rs), [budget](../../renderer/src/lua/signal/budget.rs),
 [scalar checks](../../renderer/src/lua/marshal.rs), [property ranges](../../renderer/src/layout/node/style/mod.rs),
 [respawn](../../supervisor/src/supervisor.rs).
-
-See also: [cli](cli.md) · [signals](signals.md) · [scripting](scripting.md) ·
-[capabilities](capabilities.md) · [surfaces](surfaces.md) · [CONTEXT](../../CONTEXT.md) for
-generation, Supervisor and Renderer.

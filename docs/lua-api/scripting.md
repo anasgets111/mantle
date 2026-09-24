@@ -5,11 +5,8 @@ answer keybinds, and a few utilities. Reach for them from event handlers (`on_cl
 `on_change`, callbacks) or a module's top level. Everything that renders goes through
 [signals](signals.md) and [nodes](nodes.md) instead.
 
-Terms used below. The *Supervisor* is the long-lived `mantle` process that owns child programs
-and files. The *Renderer* is its child that runs your Lua and draws. A *generation* is one
-Renderer and its VM; saving a file reloads in place and keeps it, a crash starts a new one. A
-*push* is a capability sending new state; until the first one, a capability reads `nil`
-([capabilities](capabilities.md#reading-and-acting), [CONTEXT](../../CONTEXT.md)).
+Terms used below (*Supervisor*, *Renderer*, *generation*, *push*) are in the
+[glossary](../../CONTEXT.md).
 
 A clickable temperature read from an HTTP API. It needs `process.run`, `json`, `log` and a
 [named state](signals.md#named-state):
@@ -60,86 +57,13 @@ return panel {
 | Pull colours out of a wallpaper | [`palette.quantize`](#palettequantize) |
 | Set the font fallback chain | [`fonts`](#fonts) |
 
-Lifetimes, compared. The full reload table is in [runtime](runtime.md#what-survives-a-reload).
-
-| Global | Survives reload | Survives Renderer replacement | Survives shell exit |
-| :--- | :--- | :--- | :--- |
-| `process.run` child | Yes, callbacks included | No, group reaped | No |
-| `process.detach` child | Yes | Yes | Yes |
-| `session_process` program | Yes | Yes | No, stopped with `stop_signal` |
-| `persistent_table` values | Yes | Yes | Yes, on disk |
-| `timer`, `action` | No, cleared every evaluation | No | No |
-
-## How do I
-
-| Task | Answer |
-| :--- | :--- |
-| Fetch JSON over HTTP | The example at the top |
-| Poll a command every N seconds | [Below](#poll-a-command-every-n-seconds) |
-| Follow a long-running command's output | [Below](#follow-a-long-running-commands-output) |
-| Run a recorder that survives reloads | [session_process](#session_process) |
-| Persist a toggle or setting | [persistent_table](#persistent_table) |
-| Bind a key to Lua code | [action](#action), then `mantle call <name>` from the compositor |
-| Retry with backoff | [timer](#timer) |
-| Search as you type | [fuzzy](#fuzzy); for a slow source, debounce the query with [`delay`](signals.md#delay-hold-a-value) |
-| Open an app or URL | [process.detach](#processdetach) |
-| Theme from the wallpaper | [palette.quantize](#palettequantize) |
-
-### Poll a command every N seconds
-
-Let the timer own the loop and keep `exit_cb` to updating state. A reload clears the timer and
-the top-level call starts one fresh chain. Re-arming from `exit_cb` instead would let a child
-still running across a reload arm a second chain.
-
-```lua
-local disk = state("disk_usage", "")
-
-local function poll()
-    local lines = {}
-    process.run("df", { "--output=pcent", "/" }, function(line, stream)
-        if stream == "stdout" then lines[#lines + 1] = line end
-    end, function(code)
-        if code == 0 and lines[2] then disk:set(lines[2]:match("%d+%%") or "") end
-    end)
-    timer(30000, poll)
-end
-poll()
-
-return panel {
-    id = "disk", layer = "Top", anchor = { top = true },
-    child = text { content = disk:map(function(value) return "/ " .. value end) },
-}
-```
-
-### Follow a long-running command's output
-
-A `process.run` child that never exits keeps calling `out_cb`. It survives reloads, so guard the
-start with named state, which survives them too. When it exits, the next reload starts it again.
-
-```lua
-local title = state("now_playing", "")
-local following = state("now_playing_following", false)
-
-if not following:get() then
-    following:set(true)
-    process.run("playerctl", { "--follow", "metadata", "--format", "{{artist}} - {{title}}" },
-        function(line, stream)
-            if stream == "stdout" then title:set(line) end
-        end,
-        function() following:set(false) end)
-end
-
-return panel {
-    id = "media", layer = "Top", anchor = { top = true },
-    child = text { content = title, elide = "End", max_width = 300 },
-}
-```
+What each one keeps across a reload, a crash and a restart: [runtime](runtime.md#what-survives-a-reload).
 
 ## process.run
 
 Spawns a helper, streams its output line by line, and reports its exit.
 
-| | |
+| Part | Contract |
 | :--- | :--- |
 | Signature | `process.run(cmd, args, out_cb, exit_cb)` → handle |
 | `cmd` | Program name, looked up on `PATH`. No shell: no globbing, pipes, `~`, `$VAR` or quoting |
@@ -174,7 +98,7 @@ return panel {
 }
 ```
 
-| | |
+| Part | Contract |
 | :--- | :--- |
 | Signature | `process.detach(cmd, args)` → nothing |
 | `cmd`, `args` | As `process.run` |
@@ -275,7 +199,7 @@ return panel {
 }
 ```
 
-| | |
+| Part | Contract |
 | :--- | :--- |
 | Signature | `persistent_table { path, name, defaults? }` → store |
 | `path` | Absolute directory; relative raises. Created if missing. Build it from `os.getenv` or `mantle.config_dir` |
@@ -288,7 +212,7 @@ return panel {
 
 On disk:
 
-| Behavior | Detail |
+| Behaviour | Detail |
 | :--- | :--- |
 | Save | 1 s after the last write to that file, as pretty JSON through a temporary file and rename. A write still waiting at shell exit is lost |
 | First run | A missing file is created from `defaults` |
@@ -328,7 +252,7 @@ end
 tick()
 ```
 
-| | |
+| Part | Contract |
 | :--- | :--- |
 | Signature | `timer(ms, fn)` → handle |
 | `ms` | `1` to `86400000` (one day), monotonic clock; outside raises |
@@ -358,13 +282,11 @@ action("volume.up", function(step)
 end)
 ```
 
-| | |
+| Part | Contract |
 | :--- | :--- |
 | Signature | `action(name, fn)` → nothing |
 | `name` | Any non-empty string; nothing splits on `.`. Empty, or declared twice in one evaluation, raises |
-| Arguments | Each CLI argument is JSON-decoded when it parses (`0.1`, `true`, `{"a":1}`), else passed as a string |
-| Return | `nil` prints nothing; a string prints bare; anything else prints as JSON. Over 1 MiB, or not convertible to JSON, fails the call |
-| Failure | A raise, an unknown name, or a blown budget fails the call with the message. `mantle call` gives up after 5 s |
+| Arguments, return, failure | As [values and arguments](cli.md#values-and-arguments): each argument JSON-decoded when it parses, the return printed bare or as JSON. A return that is not convertible to JSON fails the call |
 | Limits | 5 ms CPU budget |
 | Lifetime | Cleared before every evaluation and again when one fails, so declare at the top level |
 
@@ -427,7 +349,7 @@ return panel {
 }
 ```
 
-| | |
+| Part | Contract |
 | :--- | :--- |
 | Signature | `fuzzy(haystack, needle)` → `score, start` |
 | Match | Integer `score` (higher is better) and `start`, the 0-based byte offset of the needle's first character at its earliest in-order hit (the best-scoring one for a one-character needle). For tiebreaks, not highlighting |
@@ -463,7 +385,7 @@ return panel {
 }
 ```
 
-| | |
+| Part | Contract |
 | :--- | :--- |
 | Signature | `palette.quantize(path, opts?, cb)` → handle |
 | `path` | Local raster image; no SVG or URL |
@@ -481,7 +403,7 @@ first family that covers it.
 fonts { "Inter", "Symbols Nerd Font", "Noto Color Emoji" }
 ```
 
-| | |
+| Part | Contract |
 | :--- | :--- |
 | Argument | Dense array of family-name strings. A hole, a named key or a non-string raises |
 | Resolution | Through `fc-match`. The first family that resolves is the primary and also loads its bold and italic faces; a family with no install is skipped (logged at `-vvv`) |
@@ -489,6 +411,71 @@ fonts { "Inter", "Symbols Nerd Font", "Noto Color Emoji" }
 | Per node | A `text` node's `font` goes in front of the chain ([nodes](nodes.md)) |
 | Uncovered glyph | fontconfig is asked for any installed face that covers it |
 | Lifetime | Read once at startup. Last call wins; an edit needs a shell restart |
+
+## How do I…
+
+| Task | Answer |
+| :--- | :--- |
+| Fetch JSON over HTTP | The example at the top |
+| Poll a command every N seconds | [Below](#poll-a-command-every-n-seconds) |
+| Follow a long-running command's output | [Below](#follow-a-long-running-commands-output) |
+| Run a recorder that survives reloads | [session_process](#session_process) |
+| Persist a toggle or setting | [persistent_table](#persistent_table) |
+| Bind a key to Lua code | [action](#action), then `mantle call <name>` from the compositor |
+| Retry with backoff | [timer](#timer) |
+| Search as you type | [fuzzy](#fuzzy); for a slow source, debounce the query with [`delay`](signals.md#delay-hold-a-value) |
+| Open an app or URL | [process.detach](#processdetach) |
+| Theme from the wallpaper | [palette.quantize](#palettequantize) |
+
+### Poll a command every N seconds
+
+Let the timer own the loop and keep `exit_cb` to updating state. A reload clears the timer and
+the top-level call starts one fresh chain. Re-arming from `exit_cb` instead would let a child
+still running across a reload arm a second chain.
+
+```lua
+local disk = state("disk_usage", "")
+
+local function poll()
+    local lines = {}
+    process.run("df", { "--output=pcent", "/" }, function(line, stream)
+        if stream == "stdout" then lines[#lines + 1] = line end
+    end, function(code)
+        if code == 0 and lines[2] then disk:set(lines[2]:match("%d+%%") or "") end
+    end)
+    timer(30000, poll)
+end
+poll()
+
+return panel {
+    id = "disk", layer = "Top", anchor = { top = true },
+    child = text { content = disk:map(function(value) return "/ " .. value end) },
+}
+```
+
+### Follow a long-running command's output
+
+A `process.run` child that never exits keeps calling `out_cb`. It survives reloads, so guard the
+start with named state, which survives them too. When it exits, the next reload starts it again.
+
+```lua
+local title = state("now_playing", "")
+local following = state("now_playing_following", false)
+
+if not following:get() then
+    following:set(true)
+    process.run("playerctl", { "--follow", "metadata", "--format", "{{artist}} - {{title}}" },
+        function(line, stream)
+            if stream == "stdout" then title:set(line) end
+        end,
+        function() following:set(false) end)
+end
+
+return panel {
+    id = "media", layer = "Top", anchor = { top = true },
+    child = text { content = title, elide = "End", max_width = 300 },
+}
+```
 
 ## Gotchas
 
@@ -501,7 +488,6 @@ fonts { "Inter", "Symbols Nerd Font", "Noto Color Emoji" }
 | `exit_cb` never arrives | It waits for stdout and stderr to close. A backgrounded grandchild holding the pipes delays it; redirect its output |
 | Callbacks from before a reload | `process.run` and `palette` callbacks run the old closures after a reload. Keep what they touch in named state |
 | `timer` or `action` declared only inside a callback | Every evaluation clears both, so they vanish on the next save. Declare actions at the top level; start timer chains from the top level too |
-| A failed reload | A failed evaluation leaves no timers or actions until the next good save, though the old scene stays. A failed apply keeps the new evaluation's actions but runs no timers |
 | `timer` re-armed from `exit_cb` | A child in flight across a reload arms a second chain beside the one the top level restarts. Arm the timer outside the callback ([poll recipe](#poll-a-command-every-n-seconds)) |
 | A callback "does nothing" | Raises in `timer`, `process.run` and `palette` callbacks log only at debug level. Run `mantle -vv`, or wrap the body in `pcall` and `log.warn` the error |
 | Two modules declare the same action | Raises. Pick unique names |
@@ -511,13 +497,13 @@ fonts { "Inter", "Symbols Nerd Font", "Noto Color Emoji" }
 | Invalid `stop_signal` | The Supervisor refuses the declaration with a warning, and `start` then does nothing. Use a name from the list above |
 | `dofile` / `loadfile` to read a data file | They block the render thread on file I/O. Use `persistent_table`, or `process.run("cat", { path }, ...)` |
 
+See also: [runtime](runtime.md) (reloads, budgets, logging), [signals](signals.md) (`state`,
+`delay`), [capabilities](capabilities.md) (`mantle.processes`, `mantle.storage`),
+[cli](cli.md) (`mantle call`, `mantle log`).
+
 Source: [process](../../renderer/src/lua/process.rs), [spawn and reap](../../supervisor/src/process/mod.rs),
 [process registry](../../supervisor/src/process/registry.rs), [session process](../../renderer/src/lua/session_process.rs),
 [processes controller](../../supervisor/src/capabilities/processes/controller.rs), [store](../../renderer/src/lua/store.rs),
 [storage controller](../../supervisor/src/capabilities/storage/controller.rs), [timer](../../renderer/src/lua/timer.rs),
 [action](../../renderer/src/lua/action.rs), [json](../../renderer/src/lua/json.rs), [log](../../renderer/src/lua/log.rs),
 [fuzzy](../../renderer/src/lua/fuzzy.rs), [palette](../../renderer/src/lua/palette.rs), [fonts](../../renderer/src/lua/fonts.rs).
-
-See also: [runtime](runtime.md) (reloads, budgets, logging), [signals](signals.md) (`state`,
-`delay`), [capabilities](capabilities.md) (`mantle.processes`, `mantle.storage`),
-[cli](cli.md) (`mantle call`, `mantle log`).

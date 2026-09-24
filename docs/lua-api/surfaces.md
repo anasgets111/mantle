@@ -39,21 +39,6 @@ return { bar }
 A 32px bar on every output that pushes windows down by its height and prints the output's
 connector name.
 
-## How do I…
-
-| Task | Recipe |
-| :--- | :--- |
-| Put a bar on every monitor | The example above |
-| Put a bar or dock on one monitor | [monitor](#monitor) |
-| Open a launcher overlay that takes the keyboard | [Keyboard focus](#keyboard-focus) |
-| Show a volume or brightness OSD | [OSD](#osd) |
-| Draw a wallpaper per output | [Per-output content](#per-output-content) |
-| Open a settings window | [window](#window) |
-| Show a dropdown under a bar button | [Dismissal](#dismissal) |
-| Open a submenu from a menu | [Nested menus](#nested-menus) |
-| Show a tooltip on hover | [Tooltip](#tooltip) |
-| Build a lock screen | [lock](#lock) |
-
 ## Shared rules
 
 Every surface takes `id` (required, a string) and one `child` node. It also takes the
@@ -61,7 +46,7 @@ Every surface takes `id` (required, a string) and one `child` node. It also take
 surface root has its own `background`, `radius`, `padding` and [paint](paint.md). A key no list
 names is refused.
 
-| Rule | Behavior |
+| Rule | Behaviour |
 | :--- | :--- |
 | Return value | One surface, a list of them, `{}` or nothing. Any other top-level node is refused |
 | Reload | The returned list is re-read on every [reload](runtime.md#evaluation-reload-and-generations). A surface whose fingerprint is unchanged keeps its Wayland objects; a missing one is destroyed; a new one is created |
@@ -188,7 +173,7 @@ local launcher = panel {
 `mantle toggle launcher_open` from a compositor keybind opens it on the output the compositor picks; Escape
 closes it. See [named state](signals.md#named-state) and [text fields](input.md#text-fields).
 
-| Compositor behavior | What the engine does or you do |
+| Compositor behaviour | What the engine does or you do |
 | :--- | :--- |
 | Hyprland refocuses the last window, onto its workspace, when a still-mapped panel drops to `"None"` | The engine skips layer requests for a panel being hidden in the same pass. Change `visible` and `keyboard_interactivity` together |
 | niri hands an `xdg_popup` the keyboard only if its parent held it when the popup mapped | The engine routes keys that arrive on the parent to the text field in a popup shown under it |
@@ -434,9 +419,10 @@ local details = popup {
 
 The session lock screen: one surface per connected output, covering it for as long as the
 compositor holds the session locked. A config declares at most one. Declaring it does not lock;
-`mantle.lock:invoke("lock")` does, and only a correct password unlocks. The lock's state
-(`active`, `authenticating`, `error`, `attempts`) and its actions are under
-[capabilities](capabilities.md).
+`mantle.lock:invoke("lock")` does, and only a correct password unlocks. The lock's state and
+actions are under [capabilities](capabilities.md#lock). A `lock` request is refused, with the
+reason in `mantle.lock`'s `error`, when the config declares no `lock` or its tree does not hold
+exactly one reachable `textfield` with `secure_submit = { capability = "lock", action = "authenticate" }`.
 
 | Property | Values |
 | :--- | :--- |
@@ -471,9 +457,23 @@ action("lock", function() mantle.lock:invoke("lock") end)
 ```
 
 The password never reaches Lua; see [secure fields](input.md#secure-fields). Bind
-`mantle call lock` to a key ([action](scripting.md#action)). `mantle.lock:invoke("set_unlock_animation", ms)`
-keeps the lock up to 600 ms after a correct password so the `child` can animate out; `unlocking` is
-`true` during that window.
+`mantle call lock` to a key ([action](scripting.md#action)). To animate the `child` out, see
+`set_unlock_animation` and `unlocking` under [lock](capabilities.md#lock).
+
+## How do I…
+
+| Task | Answer |
+| :--- | :--- |
+| Put a bar on every monitor | The [example at the top](#surfaces) |
+| Put a bar or dock on one monitor | [monitor](#monitor) |
+| Open a launcher overlay that takes the keyboard | [Keyboard focus](#keyboard-focus) |
+| Show a volume or brightness OSD | [OSD](#osd) |
+| Draw a wallpaper per output | [Per-output content](#per-output-content) |
+| Open a settings window | [window](#window) |
+| Show a dropdown under a bar button | [Dismissal](#dismissal) |
+| Open a submenu from a menu | [Nested menus](#nested-menus) |
+| Show a tooltip on hover | [Tooltip](#tooltip) |
+| Build a lock screen | [lock](#lock) |
 
 ## Gotchas
 
@@ -491,6 +491,9 @@ keeps the lock up to 600 ms after a correct password so the `child` can animate 
 | `exclusive = true` on a corner-anchored panel reserves nothing | Anchor one edge, alone or with both perpendicular edges, or give a px count |
 | `exclusive = 0` is refused | `false` |
 
+See also: [nodes](nodes.md), [paint](paint.md), [input](input.md), [signals](signals.md),
+[capabilities](capabilities.md#lock), [runtime](runtime.md), [CLI](cli.md).
+
 Source: [surface parsing](../../renderer/src/lua/surfaces.rs),
 [panel spec](../../renderer/src/layout/node/surface.rs),
 [window and popup specs](../../renderer/src/layout/node/toplevel.rs),
@@ -501,6 +504,3 @@ Source: [surface parsing](../../renderer/src/lua/surfaces.rs),
 [window](../../renderer/src/wayland/xdg_shell/window.rs),
 [popup](../../renderer/src/wayland/xdg_shell/popup.rs),
 [reload and hotplug](../../renderer/src/wayland/output.rs).
-
-See also: [nodes](nodes.md), [paint](paint.md), [input](input.md), [signals](signals.md),
-[capabilities](capabilities.md#lock), [runtime](runtime.md), [CLI](cli.md).

@@ -1623,9 +1623,9 @@ text {
 | Window flags are `nil` | `fullscreen` and `maximized` are `nil` on niri, `minimized` except on wlr; `set_fullscreen` and `set_maximized` are no-ops on niri |
 | `sysinfo` stays `nil` | It reads nothing until `mantle.sysinfo:invoke("configure", { cpu_interval = 2 })` |
 
+See also: [signals](signals.md) for `:map`, `computed` and named state; [input](input.md) for click and wheel handlers; [scripting](scripting.md) for `session_process`, `persistent_table` and `timer`; [services](../services.md) for backends.
+
 Source: [namespace](../../renderer/src/lua/namespace.rs), [capability](../../renderer/src/lua/capability.rs),
 [idle](../../renderer/src/lua/idle.rs), [lazy start and dispatch](../../supervisor/src/capabilities/lifecycle.rs),
 [argument decoding](../../supervisor/src/action.rs), [idle holds](../../supervisor/src/capabilities/idle/controller.rs),
 payload and action types under [`supervisor/src/capabilities/`](../../supervisor/src/capabilities/).
-
-See also: [signals](signals.md) for `:map`, `computed` and named state; [input](input.md) for click and wheel handlers; [scripting](scripting.md) for `session_process`, `persistent_table` and `timer`; [services](../services.md) for backends.

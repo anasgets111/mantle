@@ -4,9 +4,8 @@
 signal-driven change (a hover, a level, a toggle) should move rather than jump, when a node should
 fade in or out as the tree gains or drops it, or when something loops, like a spinner. The engine
 runs every tween on compositor frames; no Lua runs between the pass that starts a tween and its
-last frame. A *pass* is one re-resolution of a surface's properties, which happens when a
-[signal](signals.md) it reads changes ([how re-resolution works](signals.md#how-re-resolution-works)).
-A *tween* is one property moving from the value on screen to a newly resolved one.
+last frame. A *tween* is one property moving from the value on screen to the value a new
+[pass](nodes.md#layout-model) resolves.
 
 ```lua
 local open = hover("tray")
@@ -67,10 +66,10 @@ An `image` crossfading between sources uses its own `transition` property, not `
 
 ### Range clamp
 
-Every frame's value is clamped to the property's own range, which catches overshoot from `Back`,
-`Elastic`, a Bezier with `y` outside `[0, 1]`, or a spring: `opacity` and `origin` stay in `[0, 1]`, `scale` in
-`[0, 64]`, sizes and radii in `[0, 8192]`, and `margin`, `translate`, `rotate`, `progress`,
-`shadow_offset` and `shadow_spread` in `[-8192, 8192]`.
+Every frame's value is clamped to the property's [range](runtime.md#limits-and-budgets), which
+catches overshoot from `Back`, `Elastic`, a Bezier with `y` outside `[0, 1]`, or a spring. Only
+`margin`, `translate`, `rotate`, `progress`, `shadow_offset` and `shadow_spread` may go negative;
+`padding`, `spacing` and icon `size`, unbounded as plain values, tween within `[0, 8192]`.
 
 **Cost.** `opacity`, colours (`background`, `border_color`, `foreground`, `shadow_color`),
 `radius`, `translate`, `scale`, `rotate`, `origin`, `progress`, the `shadow_*` numbers,

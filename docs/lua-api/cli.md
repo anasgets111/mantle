@@ -228,20 +228,6 @@ It starts no programs and writes no state. On failure it prints only the error, 
 | 1 | The command failed. It prints `Error: <reason>`: no shell running, no shell with that `--pid`, `XDG_RUNTIME_DIR` unset, the socket unreachable, no log this login, `check` found an error, `call` failed or timed out, `-d` could not start the shell (not running within 5 s, or it exited), `init` could not write a file |
 | 2 | Bad arguments: unknown flag, missing name or value, a non-numeric `--pid`, `--profile=0`, a flag the command does not take, `--pid` with `-c`, `-c` with `list`. It prints `mantle: <reason>` and the help text. Also `mantle-renderer` run by hand |
 
-## Gotchas
-
-| Trap | Fix |
-| :--- | :--- |
-| `mantle set label true` stores a boolean, `mantle set count 3` a number | Quote JSON strings: `mantle set label '"true"'` |
-| A keybind does nothing and the terminal shows no error | `set`/`toggle` refusals go to the log. Run `mantle log` and look for `asked to write state` |
-| `mantle toggle modal` does nothing on a string state | A bare toggle needs a boolean. Pass the value: `mantle toggle modal settings` |
-| `mantle call x` says no action exists after a broken save | A failed reload clears actions. Fix the config and save ([runtime](runtime.md#evaluation-reload-and-generations)) |
-| `mantle check` passes, the shell shows nothing | `check` does not lay out node trees. Read `mantle log` for the layout warning |
-| Two bars on screen | Two shells are running. `mantle list`, then stop one |
-| `mantle -c dir list` is refused | `list` shows every config's shells; drop `-c` |
-| `mantle log -f` exits at once | That shell has stopped. The command printed its last run |
-| A keybind prints `XDG_RUNTIME_DIR is not set` | The command runs in an environment without it. Start the compositor from a proper login session |
-
 ## How do I…
 
 **…wire a keybind?** Declare a `state` or an `action`, then bind the command in the compositor, as
@@ -296,11 +282,25 @@ value, and a non-zero exit means it failed.
 **…get completion and type checking in an editor?** Run `mantle init`, then open the config
 directory in an editor with lua-language-server.
 
-Source: [argument parsing](../../supervisor/src/cli.rs), [commands](../../supervisor/src/main.rs),
-[shell selection](../../supervisor/src/instance.rs), [set/toggle/call client](../../supervisor/src/control_client.rs),
-[state writes](../../renderer/src/lua/signal/globals.rs), [check](../../renderer/src/check.rs),
-[init](../../supervisor/src/setup.rs), [log](../../supervisor/src/log.rs), [levels](../../shared/src/log.rs).
+## Gotchas
+
+| Trap | Fix |
+| :--- | :--- |
+| `mantle set label true` stores a boolean, `mantle set count 3` a number | Quote JSON strings: `mantle set label '"true"'` |
+| A keybind does nothing and the terminal shows no error | `set`/`toggle` refusals go to the log. Run `mantle log` and look for `asked to write state` |
+| `mantle toggle modal` does nothing on a string state | A bare toggle needs a boolean. Pass the value: `mantle toggle modal settings` |
+| `mantle call x` says no action exists after a broken save | A failed reload clears actions. Fix the config and save ([runtime](runtime.md#evaluation-reload-and-generations)) |
+| `mantle check` passes, the shell shows nothing | `check` does not lay out node trees. Read `mantle log` for the layout warning |
+| Two bars on screen | Two shells are running. `mantle list`, then stop one |
+| `mantle -c dir list` is refused | `list` shows every config's shells; drop `-c` |
+| `mantle log -f` exits at once | That shell has stopped. The command printed its last run |
+| A keybind prints `XDG_RUNTIME_DIR is not set` | The command runs in an environment without it. Start the compositor from a proper login session |
 
 See also: [runtime](runtime.md) · [named state](signals.md#named-state) ·
 [action](scripting.md#action) · [capabilities](capabilities.md) · [CONTEXT](../../CONTEXT.md) for
 Supervisor, Renderer and generation.
+
+Source: [argument parsing](../../supervisor/src/cli.rs), [commands](../../supervisor/src/main.rs),
+[shell selection](../../supervisor/src/instance.rs), [set/toggle/call client](../../supervisor/src/control_client.rs),
+[state writes](../../renderer/src/lua/signal/globals.rs), [check](../../renderer/src/check.rs),
+[init](../../supervisor/src/setup.rs), [log](../../supervisor/src/log.rs), [levels](../../shared/src/log.rs).

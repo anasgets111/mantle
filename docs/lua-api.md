@@ -17,13 +17,9 @@ This page is the wiki's home: a first shell to build, the core concepts, then in
 mantle init -c ~/.config/mantle
 ```
 
-| Writes | Contents |
-| :--- | :--- |
-| `shell.lua` | A starter bar with a clock, only when absent |
-| `.luarc.json` | Points lua-language-server at the API stubs, so your editor completes and type-checks |
-| Stubs | `$XDG_DATA_HOME/mantle/lua-meta/`, refreshed when they differ from this binary. Skipped when a package installs them under `$PREFIX/share/mantle/lua-meta` |
-
-`--force` overwrites `shell.lua` and `.luarc.json`. The config is a directory, not a file.
+It writes a starter `shell.lua` and a `.luarc.json` that points lua-language-server at the API
+stubs, so your editor completes and type-checks. The config is a directory, not a file
+([`init`](lua-api/cli.md#commands)).
 
 ### 2. A first bar
 
@@ -123,53 +119,16 @@ return {
 ### 4. Edit it live
 
 Saving any `.lua` or `.frag` file under the config directory re-evaluates `shell.lua` in the same
-process, and named state keeps its value. A reload whose evaluation raises keeps the previous scene on screen,
-logs the error and sets `mantle.rescue`. Show it in the bar so you see it without a terminal:
-
-```lua
-local rescue_line = text {
-    visible = mantle.rescue:map(function(rescue) return rescue.is_rescue end),
-    content = mantle.rescue:map(function(rescue) return rescue.error_log:match("^[^\n]*") end),
-    foreground = "#f38ba8",
-}
-```
-
-The next successful reload clears it. Details:
-[reload](lua-api/runtime.md#evaluation-reload-and-generations),
-[what survives it](lua-api/runtime.md#what-survives-a-reload).
+process, and named state keeps its value. A reload whose evaluation raises keeps the previous
+scene on screen, logs the error and sets `mantle.rescue`, which a config can draw as an
+[error banner](lua-api/runtime.md#evaluation-reload-and-generations). The next successful reload
+clears it. What a reload keeps: [what survives it](lua-api/runtime.md#what-survives-a-reload).
 
 ### 5. Split into modules
 
-`require` resolves inside the config directory only (`?.lua`, `?/init.lua`). A module returns a
-node like any other value:
-
-```lua
--- widgets/clock.lua
-return text {
-    content = mantle.system:map(function(system)
-        return os.date("%H:%M", system and system.time)
-    end),
-    foreground = "#cdd6f4",
-}
-```
-
-```lua
--- shell.lua
-local clock = require("widgets.clock")
-
-return {
-    panel {
-        id = "bar",
-        layer = "Top",
-        anchor = { top = true, left = true, right = true },
-        height = 32,
-        child = row { width = "Fill", align_h = "End", align_v = "Center", children = { clock } },
-    },
-}
-```
-
-Bind every `require` to a local: it returns the module and its file path, and a call last in a
-table constructor keeps both ([modules](lua-api/runtime.md#modules-and-require)).
+`require("widgets.clock")` loads `widgets/clock.lua` from the config directory, and nothing
+outside it. Bind every `require` to a local before listing it in a table: it returns the module
+and its file path. Example and rules: [modules](lua-api/runtime.md#modules-and-require).
 
 ### 6. Bind a key
 
@@ -232,7 +191,7 @@ Every page has a Gotchas table (trap | fix).
 | Open UI from a compositor keybind | [Bind a key](#6-bind-a-key), [drive UI from a keybind](lua-api/signals.md#drive-ui-from-a-keybind) |
 | Make a keybind run Lua and print a result | [action](lua-api/scripting.md#action) |
 | Switch between tabs or views | [Switching views](lua-api/signals.md#switching-views), [with ids](lua-api/nodes.md#switching-views-with-ids) |
-| Show a dropdown under a button | [popup](lua-api/surfaces.md#popup), [derived signals](lua-api/signals.md#derived-signals) |
+| Show a dropdown under a button | [Dismissal](lua-api/surfaces.md#dismissal) |
 | Show a tooltip on hover | [Tooltip](lua-api/surfaces.md#tooltip) |
 | Close a popup on outside click | [Dismissal](lua-api/surfaces.md#dismissal) |
 | Type into a panel | [Keyboard focus](lua-api/surfaces.md#keyboard-focus), [text fields](lua-api/input.md#text-fields) |
@@ -258,7 +217,7 @@ Every page has a Gotchas table (trap | fix).
 | Repeat something every few seconds | [timer](lua-api/scripting.md#timer) |
 | Remember a setting across restarts | [persistent_table](lua-api/scripting.md#persistent_table) |
 | Theme from the wallpaper | [palette.quantize](lua-api/scripting.md#palettequantize) |
-| Show a reload error in the bar | [Edit it live](#4-edit-it-live) |
+| Show a reload error in the bar | [Error banner](lua-api/runtime.md#evaluation-reload-and-generations) |
 | Find why a reload or budget failed | [Limits and budgets](lua-api/runtime.md#limits-and-budgets), [output and logging](lua-api/runtime.md#output-and-logging) |
 
 More recipes, per page: [runtime](lua-api/runtime.md#how-do-i), [signals](lua-api/signals.md#how-do-i), [scripting](lua-api/scripting.md#how-do-i), [surfaces](lua-api/surfaces.md#how-do-i), [nodes](lua-api/nodes.md#how-do-i), [paint](lua-api/paint.md#how-do-i), [animation](lua-api/animation.md#how-do-i).

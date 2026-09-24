@@ -272,7 +272,7 @@ Code: [capability wiring](../supervisor/src/capabilities/lifecycle.rs).
 
 | Data | Location |
 | :--- | :--- |
-| Config | `-c`, else `$MANTLE_CONFIG_DIR`, `$XDG_CONFIG_HOME/mantle`, `~/.config/mantle`; entry `shell.lua` |
+| Config | A directory with `shell.lua`; resolved as in [CLI](lua-api/cli.md#which-config-and-which-shell) |
 | Instance directory | `$XDG_RUNTIME_DIR/mantle/<supervisor pid>-<start ms>/`, mode `0700` (ADR-0222, ADR-0227). Stopped runs' directories stay until logout |
 | In it | `control.sock`, `shell.log`, `instance.lock` (held while the Supervisor lives), `config`, spooled `notifications/` and `tray/` PNGs |
 | Session-lock marker | `$XDG_RUNTIME_DIR/mantle/session-locked` |

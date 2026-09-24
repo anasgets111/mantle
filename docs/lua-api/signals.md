@@ -126,29 +126,7 @@ button {
 }
 ```
 
-A dropdown built from a state toggled by a button, with a [popup](surfaces.md) that follows it:
-
-```lua
-local open = state("menu_open", false)
-local anchor = state("menu_anchor", { x = 0, y = 0, width = 1, height = 1 })
-
-local bar = panel {
-  id = "bar", layer = "Top", anchor = { top = true, left = true, right = true }, height = 28,
-  child = button {
-    on_click = function(rect) anchor:set(rect); open:set(not open:get()) end,
-    children = { text { content = open:map(function(is_open) return is_open and "Menu ▴" or "Menu ▾" end) } },
-  },
-}
-
-local menu = popup {
-  id = "menu", parent = "bar", anchor_rect = anchor, anchor = "Bottom", gravity = "Bottom",
-  visible = open,
-  on_dismiss = function() open:set(false) end,
-  child = column { padding = 8, background = "#1e1e2e", children = { text { content = "Settings" } } },
-}
-
-return { bar, menu }
-```
+A dropdown under a button is a `popup` bound to a state the click toggles: [dismissal](surfaces.md#dismissal).
 
 ### delay: hold a value
 
@@ -252,28 +230,10 @@ nothing.
 ## Switching views
 
 A hidden subtree stays in the tree, frozen. That suits a section you show and hide in place. For
-views that replace each other, bind the parent's `children`. Only the current view is built, the
-old view leaves the tree (its `animate.exit` plays), and the new one builds fresh. Give each view a
-distinct `id`: two id-less views of the same kind in the same slot are matched and reused, so no
-exit plays.
-
-```lua
-local tab = state("tab", "wifi")
-
-local views = {
-  wifi = function() return text { id = "wifi", content = "Wi-Fi networks" } end,
-  bluetooth = function() return text { id = "bluetooth", content = "Bluetooth devices" } end,
-}
-
-local function tab_button(name, label)
-  return button { on_click = function() tab:set(name) end, children = { text { content = label } } }
-end
-
-column { children = {
-  row { spacing = 8, children = { tab_button("wifi", "Wi-Fi"), tab_button("bluetooth", "Bluetooth") } },
-  column { children = tab:map(function(current) return { views[current]() } end) },
-} }
-```
+views that replace each other, bind the parent's `children` to a signal that returns only the
+current view: the old view leaves the tree (its `animate.exit` plays) and the new one builds
+fresh. Give each view a distinct `id`, or two id-less views of the same kind are matched and
+reused. Example: [switching views with ids](nodes.md#switching-views-with-ids).
 
 ## How do I…
 
@@ -283,7 +243,7 @@ column { children = {
 | Colour a node from a capability | [Derived signals](#derived-signals) |
 | Derive one value from two capabilities | [Below](#derive-from-two-capabilities) |
 | Debounce a search field | [Below](#debounce-a-search) |
-| Open a dropdown under a button | [Derived signals](#derived-signals), and [surfaces](surfaces.md) for `popup` |
+| Open a dropdown under a button | [Dismissal](surfaces.md#dismissal) |
 | Keep a popup mapped while its exit plays | [delay](#delay-hold-a-value) |
 | Flash a node when a value changes | [pulse](#pulse-mark-a-change) |
 | Open or close UI from a compositor keybind | [Below](#drive-ui-from-a-keybind) |
@@ -334,21 +294,10 @@ column { width = 240, spacing = 4, children = {
 
 ### Drive UI from a keybind
 
-Declare a named state and bind the surface to it. A compositor keybind that runs
-`mantle toggle launcher_open` flips it, and `mantle set launcher_open false` closes it
-([cli](cli.md)). For a keybind that runs Lua code instead, use `action` ([scripting](scripting.md)).
-
-```lua
-local launcher_open = state("launcher_open", false)
-
-return panel {
-  id = "launcher", layer = "Overlay", width = 400, height = 300,
-  keyboard_interactivity = "OnDemand",
-  visible = launcher_open,
-  child = column { padding = 16, background = "#1e1e2e", width = "Fill", height = "Fill",
-    children = { text { content = "Launcher" } } },
-}
-```
+Bind the surface's `visible` to a named state. A compositor keybind that runs
+`mantle toggle launcher_open` flips it, and `mantle set launcher_open false` closes it. Example and
+compositor syntax: [cli](cli.md#cli). For a keybind that runs Lua code, use
+[`action`](scripting.md#action).
 
 ## Gotchas
 
@@ -366,13 +315,13 @@ return panel {
 | Hiding a view with `visible = false` keeps its whole subtree | Switch views through `children = sig:map(...)` |
 | A `:set` inside a map or computed | Maps must be side-effect free; write state from `on_click`, `on_change` or a `timer` |
 
+See also: [runtime](runtime.md) (budgets, reload), [capabilities](capabilities.md),
+[input](input.md) (`hover`, `scroll`), [animation](animation.md), [cli](cli.md),
+[CONTEXT](../../CONTEXT.md) (generation, hydration, dirty scope).
+
 Source: [signal core](../../renderer/src/lua/signal/mod.rs),
 [globals](../../renderer/src/lua/signal/globals.rs),
 [read tracking](../../renderer/src/lua/signal/tracking.rs),
 [re-resolve](../../renderer/src/socket/client/resolve.rs),
 [property resolution](../../renderer/src/layout/node/mod.rs),
 [frozen subtrees](../../renderer/src/layout/scene/pass.rs).
-
-See also: [runtime](runtime.md) (budgets, reload), [capabilities](capabilities.md),
-[input](input.md) (`hover`, `scroll`), [animation](animation.md), [cli](cli.md),
-[CONTEXT](../../CONTEXT.md) (generation, hydration, dirty scope).
