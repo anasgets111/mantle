@@ -189,7 +189,10 @@ fn decode_gif(
         } else {
             let image = ::image::RgbaImage::from_raw(source_width, source_height, canvas.to_vec())
                 .expect("canvas is exactly source_width * source_height * 4 bytes");
-            ::image::DynamicImage::ImageRgba8(image).thumbnail(stored_width, stored_height).into_rgba8().into_raw()
+            ::image::DynamicImage::ImageRgba8(image)
+                .thumbnail_exact(stored_width, stored_height)
+                .into_rgba8()
+                .into_raw()
         };
         let frame = if cropped { crop_to_box(scaled, stored_width, stored_height, box_px).0 } else { scaled };
         let mapped = map_rect(rect);
@@ -837,6 +840,26 @@ mod tests {
         assert_eq!(decoded.base.len(), 4 * 4 * 4, "the base is still the whole stored frame");
         assert_eq!(decoded.deltas[0].rect, (2, 2, 2, 2), "the source rect halved with it");
         assert_eq!(decoded.deltas[0].pixels.len(), 2 * 2 * 4, "against 64 bytes for a whole stored frame");
+    }
+
+    /// A 10x7 source covering a 3x3 box stores at 5x3 (`stored_size` ceils both edges), which an
+    /// aspect-keeping `thumbnail` would round down to 4x3 and the crop would then read past.
+    #[test]
+    fn a_gif_whose_cover_size_rounds_up_scales_to_exactly_that_size() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("wide.gif");
+        {
+            let mut file = std::fs::File::create(&path).unwrap();
+            let mut encoder = gif::Encoder::new(&mut file, 10, 7, &[]).unwrap();
+            write_frame(&mut encoder, (0, 0, 10, 7), [255, 0, 0, 255], gif::DisposalMethod::Keep, 5);
+            write_frame(&mut encoder, (6, 4, 4, 3), [0, 255, 0, 255], gif::DisposalMethod::Keep, 5);
+        }
+
+        let decoded = decode_gif(&path, (3, 3), true, Charge::Free, STARTING_TEXTURE_BUDGET).unwrap();
+        assert_eq!((decoded.width, decoded.height), (3, 3));
+        assert_eq!(decoded.base.len(), 3 * 3 * 4);
+        let (_, _, w, h) = decoded.deltas[0].rect;
+        assert_eq!(decoded.deltas[0].pixels.len(), (w * h * 4) as usize);
     }
 
     /// ADR-0240. `decode`'s call into `decode_gif` never passes `blur_px`, so this is a structural
