@@ -302,7 +302,7 @@ pub struct ProcessExited {
 /// `secret` is read once through `SecureBuffer::expose_secret`, never through
 /// [`CommandParams::arguments`], whose `Vec<serde_json::Value>` would leave a plaintext copy
 /// `.zeroize()` cannot reach. The Renderer zeroizes the source in `secure_submit_frame`
-/// (`renderer/src/wayland/mod.rs`) and this copy after `pump` writes it
+/// (`renderer/src/wayland/input/keyboard/secure.rs`) and this copy after `pump` writes it
 /// (`renderer/src/socket/mod.rs`). Because the frame crosses an unbounded, unwrapped channel,
 /// `Zeroize`/`ZeroizeOnDrop` also scrub failed sends and buffered frames when `outbound_rx` drops.
 #[derive(Clone, Serialize, Deserialize, PartialEq, Eq, Zeroize, ZeroizeOnDrop)]

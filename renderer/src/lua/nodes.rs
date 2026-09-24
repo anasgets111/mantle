@@ -543,7 +543,7 @@ mod meta_stub_tests {
     }
 
     /// Property literals in `properties.get("x")`, as the named parser argument in
-    /// `parse_align(properties, "align_v")`, or through `keyboard.rs`'s `function("on_cancel")`.
+    /// `parse_align(properties, "align_v")`, or through `keyboard/mod.rs`'s `function("on_cancel")`.
     fn property_literals(text: &str) -> BTreeSet<String> {
         let mut names: BTreeSet<String> = text
             .split("function(\"")

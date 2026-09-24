@@ -212,7 +212,7 @@ pub fn parse_list_children(properties: &PropMap) -> Result<Vec<VirtualNode>, Lay
 }
 
 /// `textfield.secure_submit` routes a masked field's committed buffer without Lua
-/// (ADR-0005, ADR-0027). Enter is read from `wl_keyboard` in `renderer/src/wayland/mod.rs`, not
+/// (ADR-0005, ADR-0027). Enter is read from `wl_keyboard` in `renderer/src/wayland/input/keyboard/secure.rs`, not
 /// `zwp_text_input_v3`; the pair keys `RendererFrame::SecureSubmit` (ADR-0050 decision 4). See
 /// `secure_key_action` for why a password must bypass the input-method bridge.
 #[derive(Debug, Clone, PartialEq, Eq)]
