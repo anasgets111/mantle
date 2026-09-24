@@ -168,7 +168,7 @@ pub struct CommandParams {
 }
 
 /// Supervisor update on system changes that hydrates active Lua signals. `apply_state_snapshot`
-/// (`renderer/src/socket/client.rs`) routes by `capability` (ADR-0029); `revision` is that capability's
+/// (`renderer/src/socket/client/mod.rs`) routes by `capability` (ADR-0029); `revision` is that capability's
 /// state-version counter (ADR-0004).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct StateSnapshot {

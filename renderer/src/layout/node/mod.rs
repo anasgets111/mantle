@@ -357,7 +357,7 @@ fn is_structural_property(kind: &str, property: &str) -> bool {
 pub fn resolve_properties(mut properties: PropMap, kind: &str, lua: &Lua) -> Result<PropMap, LayoutError> {
     if properties.values().any(|v| matches!(v, Value::UserData(_))) {
         // Sorted, and the sort is the point: unsorted, two failing properties on one node name
-        // whichever bucket the hasher put first. `renderer/src/socket/client.rs` puts this message in the
+        // whichever bucket the hasher put first. `renderer/src/socket/client/resolve.rs` puts this message in the
         // `rescue` global's `error_log` for a human to read (ADR-0024), so which one a broken config
         // names must come from the config. `two_failing_properties_always_report_the_same_one` guards it.
         let mut keys: Vec<&'static str> = properties.keys().copied().collect();
@@ -419,7 +419,7 @@ pub fn resolve_properties(mut properties: PropMap, kind: &str, lua: &Lua) -> Res
 /// `Signal` is free to change between passes, so admitting one here would leave that decision
 /// resting on a value that no longer holds. Every other property is read for the geometry or
 /// appearance of the pass it was read in, so a later change simply produces different output next
-/// pass. Concretely: `surface_topology` runs on every `Scene::apply` so `socket/client.rs`'s
+/// pass. Concretely: `surface_topology` runs on every `Scene::apply` so `renderer/src/socket/client/resolve.rs`'s
 /// `pending_surfaces` can diff it against `applied_topology` and choose what to rebuild
 /// (ADR-0216); a surface could otherwise move layer or monitor with no rebuild. `id` is
 /// `pair_children_by_id_then_position`'s reconcile identity, matched once per `Scene::apply` to
@@ -508,7 +508,7 @@ mod tests {
 
     /// A *resolved* property bag whose `property` slot held a live signal currently reading `nil`
     /// -- exactly the state every rostered capability's global is in before its first
-    /// `StateSnapshot` (`renderer/src/socket/client.rs`'s `RendererClient::new` seeds all of
+    /// `StateSnapshot` (`renderer/src/socket/client/mod.rs`'s `RendererClient::new` seeds all of
     /// `shared::Capability::ALL` at `Value::Nil`), which is what a config binding a bare capability
     /// signal resolves at startup. Routed through [`resolve_properties`] because that is where the
     /// nil rule now lives: the key is omitted from the resolved map rather than each parser
