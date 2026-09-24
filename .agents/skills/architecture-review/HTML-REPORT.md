@@ -191,7 +191,7 @@ Rules:
 
     <div class="files">
       <div>renderer/src/layout/scene/mod.rs</div>
-      <div>renderer/src/layout/node/style.rs</div>
+      <div>renderer/src/layout/node/style/mod.rs</div>
     </div>
 
     <p class="ps"><b>Problem.</b> One sentence naming the root cause of the friction.</p>

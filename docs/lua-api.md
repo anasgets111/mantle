@@ -181,7 +181,7 @@ tables do not resolve, so derive the whole table instead.
 | `content_blur` | Live Gaussian blur of the node's painted subtree, CSS `filter: blur()` sigma in logical pixels (ADR-0254). Reaches 3 sigma at any sigma (ADR-0262). Distinct from `blur` (the compositor's backdrop) and `image.source_blur` (once, at decode). Shadows and blur stop at the parent's box, so the parent needs padding or `clip = "None"` |
 
 Sizes and maximum sizes accept 0–8192 logical pixels. See
-[geometry parsing](../renderer/src/layout/node/style.rs).
+[geometry parsing](../renderer/src/layout/node/style/mod.rs).
 
 `animate` may name any property the node has, except `z`, which is refused (ADR-0259); a name the
 node does not accept is refused. What the value is decides whether it tweens: a number, a `"NN%"` size, a `#` colour and an edge table of
