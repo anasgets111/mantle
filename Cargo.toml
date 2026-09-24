@@ -56,7 +56,7 @@ panic = "abort"
 strip = true
 
 # On in release, which is not the default. The Renderer does its geometry in `i32` physical pixels
-# and hands the results to allocators: `layout/paint/canvas.rs`'s `draw_clipped` computes
+# and hands the results to allocators: `layout/paint/canvas/mod.rs`'s `draw_clipped` computes
 # `(clip.x1 - clip.x0) as usize` and asks femtovg for a texture that size. A wrapped subtraction
 # there is a `usize::MAX` allocation and no message, and the 134 casts clippy's pedantic group
 # flags across this workspace are all deliberate, so gating them at compile time would cost 134
