@@ -17,12 +17,12 @@ use tokio::task::JoinHandle;
 /// per keystroke; each otherwise serializes, writes, and renames.
 const SAVE_DEBOUNCE: Duration = Duration::from_millis(1000);
 
-/// `mantle.storage`'s payload (ADR-0136).
+/// `mantle.storage` payload (ADR-0136).
 #[derive(Debug, Clone, Default, PartialEq, serde::Serialize)]
 #[cfg_attr(test, derive(schemars::JsonSchema))]
 pub struct StorageState {
-    /// One entry per declared `persistent_table`, keyed by the absolute `path` joined from `path`
-    /// and `name`. Absent until declared, so unopened files read as `nil`, not an empty table.
+    /// Each declared `persistent_table`'s contents, keyed by its absolute file path; `nil` until
+    /// declared. Another writer's change to the file replaces it, unsaved writes included.
     pub files: BTreeMap<String, Value>,
 }
 

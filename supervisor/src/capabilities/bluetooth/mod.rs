@@ -36,7 +36,7 @@ pub use controller::BluetoothController;
 // State shape pushed as `mantle.bluetooth`'s StateSnapshot.
 // ---------------------------------------------------------------------------------------------
 
-/// The call this Supervisor is running for a device, drawn as its `busy`.
+/// What the shell is doing to a device, as its `busy`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[cfg_attr(test, derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
@@ -46,7 +46,7 @@ pub enum DeviceAction {
     Disconnecting,
 }
 
-/// What a [`PairingRequest`] asks; see [`PairingRequest::kind`].
+/// What a `pairing_request` asks; see `PairingRequest.kind`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[cfg_attr(test, derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
@@ -60,14 +60,14 @@ pub enum PairingKind {
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]
 #[cfg_attr(test, derive(schemars::JsonSchema))]
 pub struct ConnectedDevice {
-    /// Canonical MAC address, e.g. `"00:1A:7D:DA:71:11"`; every `bluetooth:` command uses it.
+    /// MAC address, e.g. `"00:1A:7D:DA:71:11"`; every `bluetooth` action takes it.
     pub mac: String,
-    /// The device's advertised name.
+    /// The device's advertised name, or empty.
     pub name: String,
     /// Battery percentage, or `-1` when the device reports none.
     pub battery: i32,
-    /// Drawing hint from the class of device: `"keyboard"`, `"mouse"`, `"headphones"`, `"headset"`,
-    /// `"phone"`, `"computer"` or `"generic"`.
+    /// From the class of device: `"keyboard"`, `"mouse"`, `"headphones"`, `"headset"`, `"phone"`,
+    /// `"computer"` or `"generic"`.
     pub category: String,
     /// Same as [`DiscoveredDevice::busy`].
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -77,11 +77,11 @@ pub struct ConnectedDevice {
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]
 #[cfg_attr(test, derive(schemars::JsonSchema))]
 pub struct PairedDevice {
-    /// Canonical MAC address accepted by `:invoke("connect", mac)` and `:invoke("forget", mac)`.
+    /// MAC address, the argument of `connect` and `forget`.
     pub mac: String,
-    /// The device's advertised name.
+    /// The device's advertised name, or empty.
     pub name: String,
-    /// Drawing hint, the same set as [`ConnectedDevice::category`].
+    /// Same set as `ConnectedDevice.category`.
     pub category: String,
     /// BlueZ refuses every connection to or from the device until it is unblocked.
     pub blocked: bool,
@@ -93,16 +93,15 @@ pub struct PairedDevice {
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]
 #[cfg_attr(test, derive(schemars::JsonSchema))]
 pub struct DiscoveredDevice {
-    /// Canonical MAC address accepted by `:invoke("pair", mac)`.
+    /// MAC address, the argument of `pair`.
     pub mac: String,
     /// Advertised name, often empty when the device broadcasts only an address.
     pub name: String,
-    /// Always `false`; every entry in this pool is unpaired (IDL contract).
+    /// Always `false`.
     pub paired: bool,
     /// BlueZ refuses to pair with or connect to the device until it is unblocked.
     pub blocked: bool,
-    /// The call this Supervisor is running for the device, or `nil`. Any list can carry it, and a
-    /// pair or connect started by another client never shows.
+    /// The action this shell is running on the device, or `nil`; another client's never shows.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub busy: Option<DeviceAction>,
 }
@@ -111,15 +110,14 @@ pub struct DiscoveredDevice {
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[cfg_attr(test, derive(schemars::JsonSchema))]
 pub struct PairingRequest {
-    /// `"confirm"`: does the device show `code`? `"authorize"`: a device asks to pair.
-    /// `"service"`: a paired but untrusted device asks to connect. `"display"`: type `code` on the
-    /// device, with nothing to answer.
+    /// `"confirm"`: does the device show `code`? `"authorize"`: may it pair? `"service"`: may a
+    /// paired, untrusted device connect? `"display"`: type `code` on the device; nothing to answer.
     pub kind: PairingKind,
     /// The device's MAC address.
     pub mac: String,
     /// The device's advertised name, or empty.
     pub name: String,
-    /// Six-digit passkey or legacy PIN for `"confirm"` and `"display"`, else `nil`.
+    /// Six-digit passkey for `"confirm"`, passkey or PIN for `"display"`, else `nil`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub code: Option<String>,
 }
@@ -127,25 +125,22 @@ pub struct PairingRequest {
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]
 #[cfg_attr(test, derive(schemars::JsonSchema))]
 pub struct BluetoothState {
-    /// An adapter is bound; without one every other field is inert and every write a logged no-op.
+    /// BlueZ has an adapter; `false` without one or without `bluetoothd`.
     pub available: bool,
-    /// Whether the adapter is powered, so always `false` without one.
+    /// The adapter is powered.
     pub enabled: bool,
-    /// Whether discovery is running, which fills [`BluetoothState::discovered_devices`].
+    /// The adapter is scanning, whichever client started it.
     pub discovering: bool,
-    /// Other devices can find this adapter and ask to pair; the agent asks first. BlueZ turns it off
-    /// after `DiscoverableTimeout` (180s by default).
+    /// Other devices can find this adapter. BlueZ turns it off after `DiscoverableTimeout` (180 s by default).
     pub discoverable: bool,
-    /// Paired, connected devices. Unordered: the registry is a `HashMap`, so the order can change
-    /// on any rebuild. Sort before drawing.
+    /// Paired, connected devices. Unordered and may reshuffle on any push: sort before drawing.
     pub connected_devices: Vec<ConnectedDevice>,
-    /// Paired devices that are not connected, unordered like `connected_devices`.
+    /// Paired devices that are not connected. Unordered like `connected_devices`.
     pub paired_devices: Vec<PairedDevice>,
-    /// Unpaired devices BlueZ knows. A stop keeps them; only devices still marked temporary expire,
-    /// after `TemporaryTimeout` (30s by default) -- one that was connected/trusted, or stored from
-    /// an earlier session, stays.
+    /// Unpaired devices BlueZ knows, unordered. Kept after `stop_discovery`; BlueZ expires unseen
+    /// temporary ones after `TemporaryTimeout` (30 s by default).
     pub discovered_devices: Vec<DiscoveredDevice>,
-    /// The pairing question on screen, or `nil`. Answer with `:invoke("answer_pairing", mac, accept)`.
+    /// The pairing question to show, or `nil`. Answer with `answer_pairing`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pairing_request: Option<PairingRequest>,
 }
@@ -196,21 +191,23 @@ fn class_to_category(class: u32) -> &'static str {
 pub enum BluetoothAction {
     /// Powers the adapter on or off.
     SetEnabled { enabled: bool },
-    /// Lets other devices find this adapter.
+    /// Makes the adapter findable by other devices, or not.
     SetDiscoverable { discoverable: bool },
-    /// Starts discovery, clearing `discovered_devices`.
+    /// Clears `discovered_devices` and scans. The request holds, so a scan starts once the adapter
+    /// powers on and pauses while a `pair` runs.
     StartDiscovery,
     /// Stops discovery; `discovered_devices` stays.
     StopDiscovery,
-    /// Pairs a discovered device.
+    /// Pairs a discovered device, then trusts and connects it.
     Pair { mac: String },
-    /// Connects a paired device.
+    /// Trusts and connects a paired device.
     Connect { mac: String },
     /// Disconnects a connected device.
     Disconnect { mac: String },
-    /// Removes a paired device.
+    /// Removes a device from BlueZ, unpairing it.
     Forget { mac: String },
-    /// Answers `pairing_request`.
+    /// Accepts or rejects the `pairing_request` for `mac`; a yes within 750 ms of it appearing is
+    /// ignored.
     AnswerPairing { mac: String, accept: bool },
 }
 

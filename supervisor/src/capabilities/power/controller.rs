@@ -10,25 +10,21 @@ use shared::{debug, error, warn};
 use tokio::sync::mpsc::UnboundedSender;
 use zbus::zvariant::OwnedValue;
 
-/// `mantle.power`'s full payload. Optional fields are omitted from JSON, so unavailable
-/// host data reads as Lua `nil`; see `power/mod.rs` for the four-field split.
+/// `mantle.power`'s payload. Profile fields are `nil` without power-profiles-daemon, the rest without UPower;
+/// a failed read is also `nil`. With neither service the capability stays `nil`.
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]
 #[cfg_attr(test, derive(schemars::JsonSchema))]
 pub struct PowerState {
-    /// Active platform profile, e.g. `"balanced"`, set by `:invoke("set_profile", p)`; `nil` without
-    /// power-profiles-daemon.
+    /// Active platform profile, e.g. `"balanced"`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub active_profile: Option<String>,
-    /// Profiles in daemon order, e.g. `{"performance", "balanced", "power-saver"}`; `nil` when
-    /// power-profiles-daemon is absent. Drive selectors from this list because machines differ.
+    /// Available profiles in daemon order, e.g. `{"power-saver", "balanced", "performance"}`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub profiles: Option<Vec<String>>,
-    /// Running on battery rather than mains, from UPower; `nil` without UPower. This is the mains
-    /// question; charge direction is `mantle.battery.state`.
+    /// UPower's `OnBattery`: running on battery rather than mains.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub on_battery: Option<bool>,
-    /// UPower's `EnergyRate` in watts, unchanged. It is positive in both directions, so
-    /// [`PowerState::on_battery`] supplies the sign; `nil` without UPower.
+    /// UPower's display-device `EnergyRate` in watts; direction is `mantle.battery.state`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub energy_rate: Option<f64>,
 }

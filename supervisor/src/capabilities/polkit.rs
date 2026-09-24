@@ -9,23 +9,21 @@ use tokio::sync::oneshot;
 
 use crate::polkit::{AgentError, BeginAuthenticationCall, first_unix_user_uid};
 
-/// `mantle.polkit`'s payload. All fields except `active` are empty while it is false.
+/// `mantle.polkit`'s payload (ADR-0114). Every other field is empty while `active` is false.
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize)]
 #[cfg_attr(test, derive(schemars::JsonSchema))]
 pub struct PolkitState {
-    /// polkitd is waiting for the user; the remaining fields describe its request.
+    /// polkitd is waiting for the user to authenticate.
     pub active: bool,
-    /// Translated text polkitd wants shown, such as "Authentication is required to ...".
+    /// Translated prompt text, e.g. `"Authentication is required to ..."`.
     pub message: String,
     /// Action being authorized, e.g. `org.freedesktop.systemd1.manage-units`.
     pub action_id: String,
     /// Themed icon name, or empty when the caller set none.
     pub icon_name: String,
-    /// A password is with PAM and unanswered. `pam_unix` takes about a second, so this drives a
-    /// checking line; a second submit is refused while true.
+    /// A password is with PAM. A second submit is refused while true.
     pub authenticating: bool,
-    /// Drawable reason for the last failure, e.g. `"authentication failed"`. Empty until failure;
-    /// the prompt stays open for another try and clears with it.
+    /// Drawable reason for the last failure, e.g. `"authentication failed"`. The prompt stays open to retry.
     pub error: String,
 }
 
@@ -33,7 +31,7 @@ pub struct PolkitState {
 #[cfg_attr(test, derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum PolkitAction {
-    /// Dismisses the prompt and tells polkitd's caller `Cancelled`.
+    /// Dismisses the prompt; the requesting program sees the request cancelled.
     Cancel,
 }
 

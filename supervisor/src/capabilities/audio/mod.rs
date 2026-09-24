@@ -22,7 +22,7 @@ pub enum AudioAction {
     SetMuted { muted: bool },
     /// Toggles master output mute.
     ToggleMute,
-    /// Sets default output balance, clamped to `[-1.0, 1.0]`; the louder side keeps its level and never passes the cap.
+    /// Sets default output balance, `-1.0` (left) to `1.0` (right), clamped; the louder side keeps its level.
     SetBalance { balance: f32 },
     /// Makes this `sinks[].id` the default output.
     SetDefaultSink { id: u32 },

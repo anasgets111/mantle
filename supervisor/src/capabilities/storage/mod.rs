@@ -12,14 +12,14 @@ pub use controller::{StorageController, StorageSignal};
 #[cfg_attr(test, derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum StorageAction {
-    /// Declares an absolute JSON file, the Renderer having joined `path` and `name`; `defaults`
-    /// fill missing keys.
+    /// Loads an absolute JSON file into `files[path]`, filling missing top-level keys from
+    /// `defaults`. `persistent_table` sends this; stored values win over defaults.
     Open {
         path: String,
         #[serde(default)]
         defaults: Option<serde_json::Map<String, serde_json::Value>>,
     },
-    /// Writes a key; `nil` deletes it.
+    /// Sets `key` in a declared file, `nil` deleting it; saved 1 s after the last write.
     Set {
         path: String,
         key: String,

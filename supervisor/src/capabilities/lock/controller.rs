@@ -156,17 +156,15 @@ impl LockController {
     }
 }
 
-/// Every action `mantle.lock:invoke(...)` accepts. There is no `unlock`: a lock screen's Lua button
-/// callback would make it a one-click path past PAM, forbidden by ADR-0042. Unknown `"unlock"` is
-/// logged and dropped.
+/// `mantle.lock` actions. There is no `unlock`; only a correct password unlocks (ADR-0042).
 #[derive(Debug, serde::Deserialize)]
 #[cfg_attr(test, derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum LockAction {
-    /// Locks the session.
+    /// Locks the session; a no-op while `active`.
     Lock,
-    /// Holds the lock open after PAM says yes, for an animation out (ADR-0190). Clamped to
-    /// [`MAX_UNLOCK_ANIMATION`]; no `ms` is no animation.
+    /// Keeps the lock up `ms` after a correct password for an out-animation (ADR-0190). Clamped to
+    /// 600; omitted is `0`.
     SetUnlockAnimation {
         #[serde(default)]
         ms: Option<u64>,

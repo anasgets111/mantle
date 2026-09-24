@@ -1,83 +1,77 @@
 ---@meta
--- The four surface roles (ADR-0040); a `wl_surface` stays inert. Protocol assigns its role. This
--- shell has one constructor per role. `shell.lua` returns the set, freshly evaluated on every
--- reload (ADR-0038).
+-- The four surface roles (ADR-0040), one constructor each. `shell.lua` returns the set, re-read on
+-- every reload (ADR-0038). Hand-written on `nodes.lua`'s terms.
 --
--- HAND-WRITTEN, on `nodes.lua`'s terms. Its header covers generation and checks; constructor
--- `---@param props`/`---@return Node` lines are bare there too.
---
--- `id`, `layer`, `anchor`, `monitor`, and a popup's `parent` reject `Signal`, unlike the rest. Read
--- them once per evaluation to decide which surfaces are rebuilt (ADR-0216); a later change would
--- strand that decision.
+-- Structural fields (`id`, `layer`, `anchor`, `monitor`, `namespace`, a popup's `parent`) refuse a
+-- `Signal`: they are read once per evaluation (ADR-0216).
 
 ---@alias Rect { x: number, y: number, width: number, height: number }
 ---@alias PopupAnchor "Top"|"Bottom"|"Left"|"Right"|"TopLeft"|"TopRight"|"BottomLeft"|"BottomRight"|"Center"
 
----A surface root uses `rect`'s `NodeBase` properties, paints like one, and keeps its own topology
----(`id`, `layer`, `anchor`, `monitor`, `namespace`) instead of a parent's layout slot.
+---A surface root takes `rect`'s node and box properties, plus its own topology.
 ---@class PanelProps: NodeBase, BoxBase
----@field id string Unique. A surface targeting several outputs is one Wayland surface per output, addressed as `"{id}@{output}"`.
----@field layer "Background"|"Bottom"|"Top"|"Overlay" Required, no default: a typo'd layer that quietly stacked a bar on `Background` would be worse than an error.
----@field anchor? { top?: boolean, bottom?: boolean, left?: boolean, right?: boolean }
----@field width? Length|Bound The layer-shell `set_size` request, live like `margin`. Omit to measure the width from the content, so the surface is the box the layout pass solved for `child` rather than a number guessed against it. The room it may take is the output less this surface's own margins on the edges it is anchored to; the compositor clamps anything larger, and content that wants more than the zones other clients reserved is still cut, so `max_width` is how a growing panel is bounded on purpose. `"Fill"` and an omitted width both hand the axis to the compositor when `anchor` names both `left` and `right` -- layer-shell spans an axis anchored that way and drops any size given -- and `"Fill"` on an axis anchored to one edge or neither is a protocol error, so that surface is refused instead of created.
----@field height? Length|Bound The same on the vertical axis, against `top` and `bottom`. The two are independent: a bar spans its width and measures its height. `exclusive = true` reserves what the compositor configures, so a measured panel reserves what it grew to. `max_height` caps the measurement, which is how "as tall as the stack, but no taller" is written.
----@field exclusive? boolean|integer|"Ignore"|Bound `true` reserves screen area along the anchored edge, derived from the size the compositor configures. An integer reserves exactly that many pixels whatever the surface's size, which is how a full-height surface keeps only its bar's strip: anchor `top`, `left` and `right`, since a surface anchored to all four edges reserves nothing. `false` (default) reserves none but still sits inside what other surfaces reserved. `"Ignore"` reserves none and ignores theirs, which is what a full-screen wallpaper needs to stay behind a bar rather than below it.
----@field margin? number|Edges|Bound Offsets from the anchored edges. Moves the surface itself, unlike `padding`. Bindable on a panel root, where it becomes a live `set_margin` on the layer surface rather than a re-layout.
----@field monitor? string An output name, `"All"` (default), or `"Active"`. `"Active"` is one surface on the output the compositor picks, usually the one in use. The compositor picks again on each show and never moves a shown surface. It refuses a percentage size and a function `child` (ADR-0246).
----@field namespace? string What the compositor sees, for rules like Hyprland's `layerrule`. Defaults to `"mantle-{id}"`.
----@field keyboard_interactivity? "None"|"OnDemand"|"Exclusive"|Bound Default `"None"`. Note that niri gives an `on_demand` layer surface focus the moment it maps, with no click involved.
----@field visible? boolean|Bound Hiding destroys the layer surface and showing recreates it (ADR-0088).
----@field child? Node|fun(output: string): Node? The one root node. A surface holds exactly one; use a `row` or `column` for more. A function is called once per output instance with that output's connector name and its return takes the child's place, so one `monitor = "All"` panel can show a different file per screen (ADR-0121); `nil` maps that instance empty. The eval-time probe calls it with `"PROBE"`.
+---@field id string Required; the surface's identity across reloads (duplicates are not checked). Each output's instance is `"{id}@{output}"`; `monitor = "Active"` keeps the bare `id`.
+---@field layer "Background"|"Bottom"|"Top"|"Overlay" Required, no default.
+---@field anchor? { top?: boolean, bottom?: boolean, left?: boolean, right?: boolean } Edges to pin to; an absent edge is `false`. None pinned centres the surface.
+---@field width? Length|Bound Live. Omitted measures the content, capped by the output less the anchored edges' margins; `"NN%"` is of the output. On an axis anchored to both edges, omitted and `"Fill"` both size the surface to the compositor's span; the root node stays content-sized, so give the child `width = "Fill"` to cover it.
+---@field height? Length|Bound As `width`, against `top`/`bottom`. `"Fill"` without both edges of its axis anchored is a protocol error: the surface stays hidden with a warning.
+---@field exclusive? boolean|integer|"Ignore"|Bound `false` (default) reserves nothing, a positive integer reserves that many px, `"Ignore"` also overlaps others' zones. `true` reserves the configured height when exactly one of `top`/`bottom` is anchored and `left`/`right` match (both or neither), the width in the transposed case, else nothing.
+---@field margin? number|Edges|Bound Offset from the anchored edges. Live.
+---@field monitor? string A connector name, `"All"` (default), or `"Active"`: one instance on the output the compositor picks at each show, refusing a `"NN%"` size and a function `child` (ADR-0246). An unknown connector warns and creates nothing.
+---@field namespace? string The layer namespace compositor rules match. Default `"mantle-{id}"`.
+---@field keyboard_interactivity? "None"|"OnDemand"|"Exclusive"|Bound Default `"None"`. Live.
+---@field visible? boolean|Bound Default `true`. Hiding destroys the layer surface; showing recreates it (ADR-0088).
+---@field child? Node|fun(output: string): Node? The one root node. A function runs per output instance with its connector name (ADR-0121); `nil` leaves that instance empty.
 
 ---@class WindowProps: NodeBase, BoxBase
----@field id string Unique across the surface set. Structural: read once per evaluation to decide what is rebuilt, so it rejects a `Signal`.
----@field title? string|Bound What the compositor shows in a task switcher. `xdg_toplevel.set_title`, valid on a mapped window, so a `Signal` here retitles in place.
----@field app_id? string|Bound What the compositor matches rules against.
----@field min_size? { width: number, height: number }|Bound Advisory; the spec says a client should not rely on the compositor obeying it.
----@field max_size? { width: number, height: number }|Bound Advisory.
----@field on_close? fun() A request, not a command. The callback may decline by doing nothing; the window stays open until the config sets `visible = false`.
----@field visible? boolean|Bound Hiding destroys the toplevel and showing recreates it; its state and `id` survive (ADR-0049). This is how a window is opened and closed.
----@field child? Node The one root node. A surface holds exactly one; use a `row` or `column` for more.
+---@field id string Required; the surface's identity across reloads.
+---@field title? string|Bound Live. Default `""`.
+---@field app_id? string|Bound Live; what compositor rules match. Default `"mantle-{id}"`.
+---@field min_size? { width: number, height: number }|Bound Advisory. Both axes required, each `[0, 8192]`, `0` unconstrained. Also the opening size when the compositor leaves it to the client, else 640x480.
+---@field max_size? { width: number, height: number }|Bound Advisory, as `min_size`. A non-zero axis below `min_size`'s is refused.
+---@field on_close? fun() The user asked to close. The window stays open until the config sets `visible = false`.
+---@field visible? boolean|Bound Default `true`. Opens and closes the window; state and `id` survive (ADR-0049).
+---@field child? Node The one root node.
 
 ---@class PopupProps: NodeBase, BoxBase
----@field id string Unique across the surface set. Structural, on the same terms as a `window`'s.
----@field parent string The `id` of the `panel` or `window` this anchors to.
----@field anchor_rect Rect|Bound Required and must be non-zero. Normally the rect `on_click` hands back, so a dropdown lands on the button that opened it.
----@field width? number|Bound Omit to size the popup to its content, which is what a `Content` axis means on every other node: the surface becomes the box the layout pass measured for `child`, so a card is never cut by the surface it sits in. A number is still a number and must be within `(0, 8192]` -- `xdg_positioner::set_size` raises `invalid_input` on zero or negative. No `"Fill"` and no percent: the compositor places a popup rather than fitting it into a parent, so there is no box for either to mean anything against. A measured axis is read on the pass that opens the popup; the popup does not resize afterwards, so a change of content lands on the next open.
----@field height? number|Bound Omit to measure, on the same terms as `width`. The two are independent: one axis may be a number while the other is measured.
----@field anchor? PopupAnchor|Bound Which edge or corner of `anchor_rect` the popup hangs from.
----@field gravity? PopupAnchor|Bound Which direction it extends from that point.
----@field constraint_adjustment? ("SlideX"|"SlideY"|"FlipX"|"FlipY"|"ResizeX"|"ResizeY")[]|Bound How the compositor may move it to keep it on screen. Defaults to `{ "FlipY", "SlideX" }`; the protocol's own default is none. Applied flip, then slide, then resize.
----@field offset? { x?: number, y?: number }|Bound Pixel nudge after anchor and gravity. Either axis alone is fine; the absent one is `0`.
----@field grab? boolean|Bound Default `true`. A compositor may deny the grab, in which case the popup is dismissed immediately and `on_dismiss` fires. That is a normal outcome, not an error.
----@field on_dismiss? fun() Fires when the compositor takes the popup down: a click outside, a denied grab, or the parent going away. Not called when the config unmaps it itself.
----@field visible? boolean|Bound Hiding destroys the popup and showing recreates it; its state and `id` survive (ADR-0049). This is how a popup is opened and closed.
----@field child? Node The one root node. A surface holds exactly one; use a `row` or `column` for more.
+---@field id string Required; the surface's identity across reloads.
+---@field parent string Required: the `id` of a shown `panel`, `window` or `popup`; hiding the parent closes this popup. On a per-output panel it opens on the clicked instance, else the first.
+---@field anchor_rect Rect|Bound Required, in the parent's surface coordinates; `width`/`height` in `(0, 8192]`, `x`/`y` default `0`. Usually the rect `on_click` passes.
+---@field width? number|Bound Pixels in `(0, 8192]`; no `"Fill"` or `%`. Omitted sizes to the content; an open popup follows it through `xdg_popup.reposition` (xdg-shell v3+).
+---@field height? number|Bound As `width`; each axis is independent.
+---@field anchor? PopupAnchor|Bound The point on `anchor_rect` the popup hangs from. Default `"Center"`.
+---@field gravity? PopupAnchor|Bound The direction it extends from that point. Default `"Center"`.
+---@field constraint_adjustment? ("SlideX"|"SlideY"|"FlipX"|"FlipY"|"ResizeX"|"ResizeY")[]|Bound How the compositor may keep it on screen. Default `{ "FlipY", "SlideX" }`, `{}` for none; order is ignored.
+---@field offset? { x?: number, y?: number }|Bound Pixel nudge after `anchor` and `gravity`; an absent axis is `0`.
+---@field grab? boolean|Bound Default `true`, which needs a click to grab from; a denied grab dismisses the popup. `false` for a hover tooltip.
+---@field on_dismiss? fun() The compositor closed it (click outside, denied grab); not called when the config hides it. Set `visible = false` here, or it reopens on the next click (ADR-0051).
+---@field visible? boolean|Bound Default `true`. Opens and closes the popup; state and `id` survive (ADR-0049).
+---@field child? Node The one root node.
 
 ---@class LockProps: NodeBase, BoxBase
----@field id string Unique across the surface set. Structural, on the same terms as a `window`'s.
----@field width? nil Refused: a lock covers every output while the compositor holds the session locked (ADR-0052).
+---@field id string Required; the surface's identity across reloads.
+---@field width? nil Refused: the lock covers each output (ADR-0052).
 ---@field height? nil Refused, as `width`.
----@field visible? nil Refused, as `width`.
----@field child? Node|fun(output: string): Node? The one root node. A surface holds exactly one; use a `row` or `column` for more. A function is called per output the way a `panel`'s is, since a lock surface is one per output too.
+---@field visible? nil Refused: the session lock decides when it shows.
+---@field child? Node|fun(output: string): Node? The one root node; a function runs per output, as on a `panel`.
 
----A layer surface (`zwlr_layer_surface_v1`). Bar, dock, wallpaper, OSD, launcher.
+---A layer surface (`zwlr_layer_surface_v1`): bar, dock, wallpaper, OSD, launcher.
 ---@param props PanelProps
 ---@return Node
 function panel(props) end
 
----An `xdg_toplevel`. Settings window, standalone dialog.
+---An `xdg_toplevel`: settings window, dialog.
 ---@param props WindowProps
 ---@return Node
 function window(props) end
 
----An `xdg_popup` under its parent surface. Dropdown, context menu, or tooltip. Hidden popups create
----no Wayland object until shown (`visible = false`, ADR-0049).
+---An `xdg_popup` on its parent: dropdown, context menu, tooltip. No Wayland object while hidden.
 ---@param props PopupProps
 ---@return Node
 function popup(props) end
 
----An `ext_session_lock_surface_v1`; focus comes from the protocol, not `keyboard_interactivity`.
+---An `ext_session_lock_surface_v1` per output, shown while the session is locked. Declaring one
+---does not lock (ADR-0052). At most one per config.
 ---@param props LockProps
 ---@return Node
 function lock(props) end

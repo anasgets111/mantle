@@ -5,22 +5,21 @@ use std::time::Duration;
 
 use shared::debug;
 
-/// `mantle.sysinfo`'s five Lua-visible fields, with field names unchanged from the `StateSnapshot`
-/// JSON keys.
+/// `mantle.sysinfo`'s payload; `nil` until `configure` sets an interval and a reading lands (ADR-0035).
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 #[cfg_attr(test, derive(schemars::JsonSchema))]
 pub struct SysinfoState {
-    /// Total CPU utilization, `0` to `100`, across cores. `0` before two samples can form a delta.
+    /// CPU utilization across all cores, `0` to `100`, rounded down; `0` until two samples form a delta.
     pub cpu_percent: u8,
-    /// Physical memory in use, `0` to `100`.
+    /// Physical memory in use (`MemTotal - MemAvailable`), `0` to `100`, rounded down.
     pub ram_percent: u8,
-    /// Swap in use, `0` to `100`; `0` means either no swap or empty swap.
+    /// Swap in use, `0` to `100`, rounded down; also `0` without swap.
     pub swap_percent: u8,
-    /// Per-core Celsius temperatures from one hwmon pass. Empty when none are exposed. Length is
-    /// sensor count, not core count, in core or CCD index order.
+    /// CPU temperatures in whole Celsius: per core (`coretemp`) or per CCD (`k10temp`), else one
+    /// package or `acpitz` reading; empty without a sensor. An unreadable sensor is skipped.
     pub temp_cores: Vec<i64>,
-    /// GPU temperature in Celsius, or `-1` without a GPU sensor. Read in the same hwmon pass as
-    /// [`SysinfoState::temp_cores`], so neither is newer than the other.
+    /// `amdgpu`, `nouveau` or `nvidia` hwmon temperature in whole Celsius, or `-1` without a
+    /// readable one.
     pub temp_gpu: i64,
 }
 
@@ -54,16 +53,15 @@ pub enum SysinfoSignal {
     Changed,
 }
 
-/// `sysinfo:configure`'s table (ADR-0035). Present keys override intervals; absent keys stay
-/// unchanged, and one wrong-typed key drops the whole call.
+/// `sysinfo:configure`'s table. Absent keys keep their interval; one wrong-typed key drops the call.
 #[derive(Debug, serde::Deserialize)]
 #[cfg_attr(test, derive(schemars::JsonSchema))]
 pub struct SysinfoConfigure {
-    /// Seconds between CPU usage reads. Zero suspends them.
+    /// Seconds between CPU reads; `0` (the default) stops them.
     pub cpu_interval: Option<u64>,
-    /// Seconds between memory reads. Zero suspends them.
+    /// Seconds between memory and swap reads; `0` (the default) stops them.
     pub ram_interval: Option<u64>,
-    /// Seconds between temperature reads. Zero suspends them.
+    /// Seconds between temperature reads; `0` (the default) stops them.
     pub temp_interval: Option<u64>,
 }
 

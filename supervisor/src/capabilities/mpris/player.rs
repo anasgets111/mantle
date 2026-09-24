@@ -19,42 +19,29 @@ use tokio::sync::mpsc::UnboundedSender;
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]
 #[cfg_attr(test, derive(schemars::JsonSchema))]
 pub struct PlayerState {
-    /// Bus-name suffix after `org.mpris.MediaPlayer2.`, e.g. `"spotify"`; used by `mpris:`
-    /// commands.
+    /// Bus-name suffix after `org.mpris.MediaPlayer2.`, e.g. `"spotify"`; every action takes it.
     pub id: String,
-    /// `MediaPlayer2.Identity`, e.g. `"Spotify"`; empty if unanswered.
+    /// Display name, e.g. `"Spotify"`; empty if unanswered.
     pub identity: String,
-    /// `"Playing"`, `"Paused"`, or `"Stopped"`; retains the previous value if the player fails.
+    /// `"Playing"`, `"Paused"` or `"Stopped"`; keeps the last value when a read fails, empty if none.
     pub play_state: String,
-    /// `xesam:title`; empty when metadata is absent, normal between tracks.
+    /// Track title; empty when unset, normal between tracks.
     pub title: String,
-    /// `xesam:artist`, joined with `", "`; empty when absent.
+    /// Artists joined with `", "`; empty when unset.
     pub artist: String,
-    /// Absolute artwork path, or empty. `mpris:artUrl` must be a `file://` URL canonicalizing to
-    /// an existing file; remote/stale URLs become empty. Held across same-track updates so covers
-    /// do not blink.
+    /// Cover art as an existing absolute path, or empty; a remote `artUrl` is not fetched.
     pub album_art_path: String,
-    /// Playback offset in microseconds, valid at [`PlayerState::position_updated_at`]. Nothing
-    /// polls it while playing; progress bars add elapsed time. `-1` when the player has never
-    /// answered `Position`, which is not the same as a track sitting at zero (ADR-0036).
+    /// Playback offset in microseconds as of `position_updated_at`, not polled while playing: add
+    /// elapsed time. `-1` when unknown (ADR-0036).
     pub position: i64,
-    /// `CLOCK_MONOTONIC` microseconds when [`PlayerState::position`] was read; subtract from a
-    /// monotonic `now` for elapsed time and survive wall-clock adjustments.
+    /// `CLOCK_MONOTONIC` microseconds when `position` was read. No Lua clock shares this epoch
+    /// (not `mantle.system.monotonic`); only compare it with itself.
     pub position_updated_at: i64,
-    /// `-1` when `mpris:length` is absent or malformed, as for a live stream; unavailable is not
-    /// fabricated as zero (ADR-0036).
+    /// Track length in microseconds, or `-1` when unknown, as for a live stream (ADR-0036).
     pub length: i64,
-    /// `xesam:url`, such as a local `file://` path or browser `https://` page; empty when absent,
-    /// normal for a stream.
-    ///
-    /// Carried for ADR-0137: configs cannot reliably classify video versus song from site lists or
-    /// extensions, which are taste-dependent.
+    /// `xesam:url` as sent, e.g. a `file://` path or an `https://` page; empty when unset (ADR-0137).
     pub url: String,
-    /// `MediaPlayer2.DesktopEntry`, the `.desktop` basename, e.g. `"mpv"` or `"firefox"`; empty
-    /// when unpublished.
-    ///
-    /// Stable player name for app matching. `identity` is a display string that may localize or
-    /// decorate.
+    /// The player's `.desktop` basename, e.g. `"firefox"`, for app matching; empty when unset.
     pub desktop_entry: String,
 }
 

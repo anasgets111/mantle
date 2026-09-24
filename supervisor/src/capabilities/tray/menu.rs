@@ -8,32 +8,26 @@ use super::proxies::DBusMenuProxy;
 use super::{MAX_MENU_NODES, MAX_TRAY_TEXT_BYTES};
 use crate::capabilities::truncate_utf8_bytes;
 
-/// One DBusMenu layout node, resolved to `tray.items[].menu`.
+/// One `tray.items[].menu` entry.
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]
 #[cfg_attr(test, derive(schemars::JsonSchema))]
 pub struct MenuItem {
-    /// DBusMenu item id, the second argument of `:invoke("activate_menu_item", id, menu_item_id)`
-    /// and of `"menu_will_show"`.
+    /// DBusMenu id, the second argument of `activate_menu_item` and `menu_will_show`.
     pub id: i32,
-    /// `"standard"` or `"separator"`. A separator carries no label and is not clickable.
+    /// `"standard"` (the default) or `"separator"`, as the application sent it.
     pub menu_type: String,
-    /// Entry text exactly as sent, or `nil`. Separators normally have none. `_` mnemonic markers
-    /// remain, so `"_Quit"` is sent as-is; strip it in config if you do not want the underscore
-    /// drawn.
+    /// Entry text as sent, or `nil`. `_` mnemonic markers remain (`"_Quit"`); strip them to draw.
     pub label: Option<String>,
-    /// `false` for a greyed-out entry. Activation is a no-op; keep it to preserve the application's
-    /// layout instead of filtering it.
+    /// `false` for a greyed-out entry; draw it, but clicking does nothing.
     pub enabled: bool,
-    /// Theme icon name, or `nil`; DBusMenu pixmaps are not carried.
+    /// Theme icon name, or `nil`. Icon pixmaps are not carried.
     pub icon_name: Option<String>,
     /// `"checkmark"`, `"radio"`, or `nil` for an entry that is not a toggle.
     pub toggle_type: Option<String>,
-    /// DBusMenu state: `0` off, `1` on, `-1` indeterminate. `nil` exactly when
-    /// [`MenuItem::toggle_type`] is `nil`; a missing state with a toggle type becomes `-1`.
+    /// `0` off, `1` on, `-1` indeterminate or unreported; `nil` exactly when `toggle_type` is.
     pub toggle_state: Option<i32>,
-    /// Nested entries from the single `GetLayout(0, -1)` reply, so no `"menu_will_show"` is
-    /// needed to populate them. Empty for leaves and for nodes at [`MAX_MENU_DEPTH`], whose
-    /// children are dropped with a debug line.
+    /// Submenu entries, empty for a leaf. An app that fills submenus lazily sends them only after
+    /// `menu_will_show`.
     pub children: Vec<MenuItem>,
 }
 

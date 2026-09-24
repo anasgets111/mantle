@@ -10,17 +10,14 @@ use tokio::sync::mpsc::UnboundedSender;
 
 use super::scan::{AppSummary, LaunchTarget, scan};
 
-/// `mantle.applications`'s payload (ADR-0061 decision 2, amended by ADR-0252).
+/// `mantle.applications` payload (ADR-0061, ADR-0252).
 #[derive(Debug, Clone, Default, PartialEq, serde::Serialize)]
 #[cfg_attr(test, derive(schemars::JsonSchema))]
 pub struct ApplicationsState {
-    /// Visible, launchable installed entries, sorted by name. Rebuilt by
-    /// `:invoke("refresh")`; directories are not watched, so mid-session installs wait for it.
+    /// Installed entries, sorted by `name` (byte order). Not watched: `"refresh"` rescans.
     pub entries: Vec<AppSummary>,
-    /// A window's `app_id` to its entry's index in `entries`: `entries[by_app_id[app_id]]`. For
-    /// callers holding `workspaces.active_client.class` rather than a desktop id. Exact
-    /// `StartupWMClass` and desktop id win over case-folded and last-dot-segment spellings; exact
-    /// keys are never displaced. A miss is only a heuristic miss, not proof that the app is uninstalled.
+    /// Window `app_id` to its 1-based index: `entries[by_app_id[app_id]]`. Keys are exact
+    /// `StartupWMClass` and desktop ids, then lowercased and last-dot-segment guesses.
     pub by_app_id: BTreeMap<String, usize>,
 }
 

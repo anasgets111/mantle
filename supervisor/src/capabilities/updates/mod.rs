@@ -14,11 +14,12 @@ pub use controller::{UpdatesController, UpdatesSignal};
 #[cfg_attr(test, derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum UpdatesAction {
-    /// Checks for upgrades now.
+    /// Checks for upgrades now, even when dormant; ignored while `checking`.
     Check,
-    /// Sets the check schedule.
+    /// Sets the check schedule and AUR use, and seeds a remembered check.
     Configure { config: controller::UpdatesConfigure },
-    /// Installs pending upgrades.
+    /// Runs a full upgrade, `pkexec pacman -Syu --noconfirm` or `aur_helper` when `aur` is on;
+    /// ignored while `installing`.
     Install,
 }
 

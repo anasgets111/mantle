@@ -20,35 +20,31 @@ use crate::capabilities::truncate_utf8_bytes;
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]
 #[cfg_attr(test, derive(schemars::JsonSchema))]
 pub struct TrayItem {
-    /// Sanitized D-Bus unique name with the item's object path appended, e.g.
-    /// `"1.234/StatusNotifierItem"`. Used by every `tray:` command.
+    /// Item identity for every `tray` action, e.g. `"1.234/StatusNotifierItem"`. Opaque.
     pub id: String,
-    /// Display name: `Title`, falling back to `Id` when `Title` is empty.
+    /// SNI `Title`, or its `Id` when the title is empty.
     pub name: String,
-    /// Theme icon name for `icon { name = ... }`; exclusive with [`TrayItem::icon_path`].
+    /// Theme icon name for `icon { name = ... }`. At most one of it and `icon_path` is set.
     pub icon_name: Option<String>,
-    /// Decoded, bounds-checked PNG in the runtime directory for `image { source = ... }`; set when
-    /// the item sent pixels instead of a theme name.
+    /// Icon file for `image { source = ... }`: one from the item's `IconThemePath`, or its pixmap
+    /// spooled to a PNG.
     pub icon_path: Option<String>,
-    /// `NeedsAttention` artwork, resolved like `icon_name`/`icon_path`; draw it instead of the base
-    /// pair when `status == "NeedsAttention"`. Both are `nil` when undeclared.
+    /// Artwork to draw while `status == "NeedsAttention"`, paired with `attention_icon_path` like
+    /// the base icon; both `nil` when unset.
     pub attention_icon_name: Option<String>,
-    /// File half of the attention artwork, matching `attention_icon_name`.
+    /// File half of the attention artwork.
     pub attention_icon_path: Option<String>,
-    /// Badge to draw over the base icon's corner. Carried, not composited, because a `stack` node
-    /// overlays images and the Supervisor has no canvas. Both are `nil` when undeclared.
+    /// Badge to draw over the icon's corner, paired with `overlay_icon_path`; both `nil` when unset.
     pub overlay_icon_name: Option<String>,
-    /// File half of the badge, matching `overlay_icon_name`.
+    /// File half of the badge.
     pub overlay_icon_path: Option<String>,
-    /// Tooltip title and text flattened to one string, or `nil` when absent.
+    /// Tooltip title and text joined by a newline, or `nil` when both are empty.
     pub tooltip: Option<String>,
-    /// SNI status: `"Active"`, `"Passive"`, or `"NeedsAttention"`. `"Passive"` asks config to hide
-    /// the item.
+    /// `"Active"`, `"Passive"` (the item asks to be hidden) or `"NeedsAttention"`, as the item sent it.
     pub status: String,
-    /// `true` means left click opens the menu instead of activating the item.
+    /// Left click should open `menu` instead of `activate`.
     pub item_is_menu: bool,
-    /// Top-level menu entries, or `nil` without `com.canonical.dbusmenu`. Fetched at registration
-    /// and on layout updates.
+    /// Top-level menu entries, or `nil` when the item exports no DBusMenu or its first fetch failed.
     pub menu: Option<Vec<MenuItem>>,
     /// Digests of the base, attention and overlay pixmaps behind the `*_path` PNGs, so new pixels
     /// at an unchanged path still compare unequal and push.

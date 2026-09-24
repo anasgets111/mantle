@@ -25,26 +25,25 @@ mod scan;
 
 pub use controller::NetworkController;
 
-/// One scanned AP, resolved to `network.available_networks` and serialized in a `StateSnapshot`
-/// payload, same convention as `audio::mixer::AppStream`.
+/// One scanned network in `available_networks`.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[cfg_attr(test, derive(schemars::JsonSchema))]
 pub struct AccessPointInfo {
-    /// Network name. Entries dedupe on it, keeping the stronger sighting.
+    /// Network name; one entry per SSID, from its strongest access point.
     pub ssid: String,
     /// Signal strength, `0` to `100`.
     pub strength: u8,
-    /// A key is required: WEP privacy or non-empty WPA1/RSN key management.
+    /// Needs a key: WEP, WPA or RSN.
     pub secure: bool,
-    /// `"2.4 GHz"`, `"5 GHz"` or `"6 GHz"`, from the AP's frequency.
+    /// `"2.4 GHz"`, `"5 GHz"`, `"6 GHz"`, or empty for a frequency outside those bands.
     pub band: String,
-    /// This is the AP currently associated.
+    /// The Wi-Fi device is associated with this SSID.
     pub active: bool,
-    /// A saved NetworkManager profile names this SSID, so joining it asks for no password.
+    /// A saved NetworkManager profile names this SSID, so `connect` asks for no password.
     pub saved: bool,
 }
 
-/// A failed join, as `network.connect_error`.
+/// A failed join, as `connect_error`.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[cfg_attr(test, derive(schemars::JsonSchema))]
 pub struct JoinError {
@@ -54,73 +53,52 @@ pub struct JoinError {
     pub message: String,
 }
 
-/// `mantle.network`'s whole live state, not only its scan results. Every field is re-derived from
-/// NetworkManager on each [`NetworkSignal`] (ADR-0029: no debounce or incremental state).
-///
-/// The AP list cannot answer "am I online": it has no wired link and cannot distinguish a powered
-/// down radio from a powered radio with no association.
+/// `mantle.network`'s payload (ADR-0037).
+// Re-derived from NetworkManager on each `NetworkSignal` (ADR-0029).
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]
 #[cfg_attr(test, derive(schemars::JsonSchema))]
 pub struct NetworkState {
-    /// A scan is in flight. Set when `:invoke("scan")` is accepted, before NetworkManager confirms,
-    /// so the spinner starts on the click.
+    /// A scan is in flight, from the moment `scan` is accepted.
     pub scanning: bool,
-    /// A connection carries the default route, from `PrimaryConnection`. `/` means none,
-    /// hence offline.
+    /// A connection carries the default route; `false` means offline.
     pub connected: bool,
-    /// Wi-Fi SSID, `"Ethernet"` for a wired default route, or `nil` with no association. Wired wins
-    /// when both are up. An association negotiating DHCP has an `ssid` but `connected == false`.
+    /// `"Ethernet"` when the default route is wired, else the associated SSID, else `nil`. An
+    /// association still getting an address has an `ssid` while `connected` is `false`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ssid: Option<String>,
-    /// Associated AP strength, `0` to `100`, or `0` without Wi-Fi association. Read from the merged
-    /// `available_networks` entry, so an indicator and the list agree.
+    /// The associated network's `strength`, `0` to `100`; `0` without a Wi-Fi association.
     pub strength: u8,
-    /// Wi-Fi radio power, from `WirelessEnabled`; distinguishes radio-off from radio-on with no
-    /// association.
+    /// Wi-Fi radio power (`WirelessEnabled`); can be `true` with no Wi-Fi hardware, see `wifi_present`.
     pub wifi_enabled: bool,
-    /// A Wi-Fi device exists; NetworkManager reports `wifi_enabled` even with no hardware behind it.
+    /// A Wi-Fi device exists.
     pub wifi_present: bool,
     /// At least one wired device exists, cable or not.
     pub ethernet_present: bool,
-    /// Whether NetworkManager manages networking, from `NetworkingEnabled`. `false` means the
-    /// other fields describe a switched-off stack.
+    /// NetworkManager networking is on (`NetworkingEnabled`).
     pub networking_enabled: bool,
-    /// A wired device is activated. This is the setter's read-back; carrier stays up when a cable
-    /// is seated, so it would not reflect `:invoke("set_ethernet_enabled", false)`.
+    /// A wired device is activated; `set_ethernet_enabled`'s read-back, unlike carrier.
     pub ethernet_enabled: bool,
-    /// The Wi-Fi device's IPv4 address without its prefix, or `nil` while it holds none.
+    /// The Wi-Fi device's IPv4 address without prefix, or `nil`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub wifi_ip: Option<String>,
-    /// The first activated wired device's IPv4 address without its prefix, or `nil`.
+    /// The first activated wired device's IPv4 address without prefix, or `nil`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ethernet_ip: Option<String>,
-    /// Link speed in Mb/s of the wired device `ethernet_ip` describes, or `0` when unknown.
+    /// That wired device's link speed in Mb/s; `0` when unknown or none is activated.
     pub ethernet_speed: u32,
-    /// SSID that `"connect"` is joining, or `nil`. Names the row whose spinner runs, and clears
-    /// when the attempt reaches a verdict or `:invoke("abort_connect")` stops it.
+    /// The SSID `connect` is joining, or `nil`; clears on a verdict or `abort_connect`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub connecting_ssid: Option<String>,
-    /// The last failed `"connect"`, or `nil` after success or before any attempt.
-    /// `AddAndActivateConnection2` returns before the radio tries; this is filled later from the
-    /// Wi-Fi device's `StateChanged` reason, where a wrong password is knowable.
-    ///
-    /// Sticky until the next attempt, like `UpdatesState::check_error`. It names its network, so a
-    /// sheet opened for another one does not read a leftover failure as its own.
+    /// The last failed `connect`, or `nil` before any or after a success. Kept until the next
+    /// `connect`, `cancel_connect` or `abort_connect`; check its `ssid` before showing it.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub connect_error: Option<JoinError>,
-    /// SSID whose `"connect"` waits for a password, or `nil`. Set by
-    /// [`resolve_connect_intent`](NetworkController::resolve_connect_intent) when no saved profile
-    /// or open AP answers, and after NetworkManager rejects a key; cleared by the consuming attempt
-    /// or `:invoke("cancel_connect")`.
-    ///
-    /// Kept here because "no profile for this SSID" lives in NetworkManager, not config (ADR-0037).
-    /// The shell binds `keyboard_interactivity` to it, so focus lasts exactly while it names a
-    /// network.
+    /// The SSID whose `connect` waits for a password from a `network`/`connect` secure field, or
+    /// `nil`. Also set after a rejected key; cleared when a join starts or by `cancel_connect`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub password_ssid: Option<String>,
-    /// Last completed scan: SSID-deduplicated, connected, then saved, then strongest, capped at 20.
-    /// Kept while [`NetworkState::scanning`] is true so a drawn list does not blank; payload order is
-    /// ready to draw.
+    /// NetworkManager's visible networks, re-read on every change: one per SSID, at most 20, ordered
+    /// associated, then saved, then strongest. `{}` without Wi-Fi hardware.
     pub available_networks: Vec<AccessPointInfo>,
 }
 
@@ -163,19 +141,21 @@ pub enum NetworkAction {
     SetNetworkingEnabled { enabled: bool },
     /// Powers the Wi-Fi radio.
     SetWifiEnabled { enabled: bool },
-    /// Activates or deactivates wired devices.
+    /// `false` disconnects every wired device; `true` activates each one's autoconnect profile, and a
+    /// device without one stays down.
     SetEthernetEnabled { enabled: bool },
-    /// Requests a Wi-Fi scan.
+    /// Requests a Wi-Fi scan; a no-op without Wi-Fi hardware.
     Scan,
-    /// Joins a network, setting `password_ssid` when it needs a key.
+    /// Joins a network. Without a saved profile, a secured, `hidden` or out-of-range one sets
+    /// `password_ssid` and waits for a key.
     Connect { ssid: String, hidden: bool },
-    /// Drops the password request `password_ssid` names.
+    /// Drops the password request `password_ssid` names; a join already running continues.
     CancelConnect,
-    /// Stops the join `connecting_ssid` names.
+    /// Stops the join `connecting_ssid` names, deleting a profile the join created.
     AbortConnect,
-    /// Deletes this SSID's saved profile.
+    /// Deletes every saved profile for this SSID.
     Forget { ssid: String },
-    /// Disconnects the Wi-Fi device.
+    /// Disconnects Wi-Fi; NetworkManager does not autoconnect it again until the next join.
     DisconnectWifi,
 }
 

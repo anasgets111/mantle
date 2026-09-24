@@ -38,23 +38,25 @@ pub use sound::run_sound_player;
 pub enum NotificationsAction {
     /// Removes a queued notification.
     Dismiss { id: u32 },
-    /// Invokes an `actions[].key`, or `"default"`.
+    /// Invokes an `actions[].key`, or `"default"`; removes the notification unless it is resident.
     InvokeAction {
         id: u32,
         #[serde(deserialize_with = "crate::capabilities::non_empty")]
         key: String,
     },
-    /// Sends reply text to a notification with `has_reply`.
+    /// Sends reply text to a notification with `has_reply`; removes it unless it is resident.
     Reply { id: u32, text: String },
-    /// Registers an Ogg Vorbis or 16-bit WAV sound file for an urgency tier.
+    /// Sets an urgency tier's sound: an existing file under `/usr/share`, `/usr/local/share`, `/opt`
+    /// or `$XDG_DATA_HOME`, else ignored. Only Ogg Vorbis and 16-bit PCM WAV play.
     SetSound { urgency: Urgency, path: String },
     /// Gates non-critical notification sounds.
     SetDnd { enabled: bool },
-    /// Gates non-critical sounds like `set_dnd` without changing DND, for a config's own rules.
+    /// Mutes non-critical sounds like `set_dnd`, without changing `dnd`.
     SetQuiet { enabled: bool },
-    /// Silences all sound from an app matched by `desktop-entry` or app name.
+    /// Silences every sound from an app, critical included, matched exactly on `app_name` or
+    /// `desktop_entry`.
     SetAppMuted { app: String, muted: bool },
-    /// Holds expiry countdowns this long; `0` releases the hold.
+    /// Pauses every expiry countdown for `seconds`, capped at 300; `0` releases the hold.
     HoldExpiry { seconds: u64 },
 }
 
@@ -131,8 +133,7 @@ const NOTIFICATIONS_CAPABILITIES: [&str; 10] = [
 
 // Wire-facing types (ADR-0033).
 
-/// One allowlisted body-markup run (CONTEXT.md, ADR-0033). Text carries styling and link target;
-/// images carry only a spooled/validated path. `alt` is parsed but not carried.
+/// One body-markup run (ADR-0033): styled text or an image.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[cfg_attr(test, derive(schemars::JsonSchema))]
 #[serde(tag = "kind")]
@@ -147,32 +148,29 @@ pub enum NotificationSpan {
         italic: bool,
         /// Whether the run was inside `<u>`.
         underline: bool,
-        /// `<a href>` target, or `nil` when not a link. Config decides whether to open it.
+        /// `<a href>` target, or `nil` when not a link.
         href: Option<String>,
     },
     #[serde(rename = "image")]
     Image {
-        /// Existing absolute path under a trusted root; outside paths are dropped during parsing.
+        /// Existing absolute path under an icon root; images elsewhere are dropped.
         image_path: String,
     },
 }
 
-/// One offered action button (ADR-0090), excluding `default` activation and `inline-reply`, which
-/// become [`Notification::has_default_action`] and [`Notification::has_reply`].
+/// One action button (ADR-0090).
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[cfg_attr(test, derive(schemars::JsonSchema))]
 pub struct NotificationAction {
-    /// Opaque key accepted by `:invoke("invoke_action", id, key)` and returned as
-    /// `ActionInvoked.action_key`.
+    /// Opaque key for `:invoke("invoke_action", id, key)`.
     pub key: String,
-    /// Button label, falling back to the key when empty unless the action is icon-only.
+    /// Button label, capped at 64 bytes. An empty label falls back to the key unless `icon_name` is set.
     pub label: String,
-    /// Theme icon name when `action-icons` is set; never a path or resolved here. Keys containing
-    /// `/` are refused to prevent a sender naming arbitrary files (ADR-0054 decision 2).
+    /// Theme icon name (the key) when the sender set `action-icons`, else `nil`. Never a path.
     pub icon_name: Option<String>,
 }
 
-/// `low`/`normal`/`critical` urgency tier, also used as the sound-registry key.
+/// Notification urgency, also the `set_sound` tier.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, serde::Deserialize)]
 #[cfg_attr(test, derive(schemars::JsonSchema))]
 pub enum Urgency {
@@ -321,55 +319,44 @@ impl<'de, T: Deserialize<'de> + Type> serde::de::Visitor<'de> for HintVisitor<T>
     }
 }
 
-/// Queued `notifications.feed[]` object (ADR-0033, ADR-0090). `expire_timeout` and
-/// `replaces_id` affect processing but are not feed data.
+/// One `notifications.feed` entry (ADR-0033).
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[cfg_attr(test, derive(schemars::JsonSchema))]
 pub struct Notification {
-    /// Server id, starting at `1`; used by dismiss/reply/action and reused by replacement.
+    /// Server id, from `1`; a replacement keeps the id it replaces.
     pub id: u32,
-    /// Arrival time in Unix epoch seconds, matching `mantle.system.time`; age is
-    /// `system.time - timestamp`. Replacements get fresh timestamps; carried because configs
-    /// cannot recover history inside ADR-0021 side-effect-free `computed`s.
+    /// Arrival time, Unix seconds; age is `mantle.system.time - timestamp`. A replacement restamps it.
     pub timestamp: i64,
-    /// Sending application, truncated to 64 bytes at a character boundary.
+    /// Sending application, truncated to 64 bytes.
     pub app_name: String,
-    /// Plain-text title, truncated to 128 bytes at a character boundary; markup is parsed out.
+    /// Title as sent, truncated to 128 bytes. Not markup-parsed: the spec makes it plain text.
     pub summary: String,
-    /// Body spans, truncated to 512 bytes before parsing. Text carries bold/italic/underline/href;
-    /// images carry trusted paths, so config draws without parsing markup.
+    /// Parsed body markup; the raw body is truncated to 512 bytes first.
     pub body: Vec<NotificationSpan>,
-    /// Attached picture (album art/avatar/thumbnail) as an existing absolute path: decoded image
-    /// spooled to runtime storage or a trusted sender path. `nil` when absent; never a theme name
-    /// (ADR-0091).
+    /// Attached picture (album art, avatar) as an existing absolute path, or `nil`. Never a theme
+    /// name (ADR-0091).
     pub image_path: Option<String>,
-    /// Application icon: theme name (for example `"firefox"`) or trusted absolute path; `nil` if
-    /// neither was supplied. Feeds `icon { name = ... }` (ADR-0054 decision 2, ADR-0091).
+    /// Application icon for `icon { name = ... }`: a theme name such as `"firefox"` or an
+    /// absolute path, or `nil` (ADR-0091).
     pub app_icon: Option<String>,
-    /// `"low"`, `"normal"`, or `"critical"`; missing hint means `"normal"`. Critical bypasses DND
-    /// and never expires.
+    /// `"normal"` when the sender set none. `"critical"` never expires and plays sound through DND.
     pub urgency: Urgency,
-    /// Whether the timeout expired. Ordinary expiry retires the entry from popups but leaves it in
-    /// feed history (ADR-0100), after `NotificationClosed(id, reason=1)`; replacements reset it.
-    /// Never true for critical or `expire_timeout = 0` notifications.
+    /// The timeout ran out: drop it from popups, keep it in history until dismissed (ADR-0100).
+    /// Never true for critical or `expire_timeout = 0`; a replacement resets it.
     pub expired: bool,
-    /// `hints["transient"]`: popup-only. Expired transient entries are removed, not retired,
-    /// so history never sees them (ADR-0100).
+    /// Popup-only: removed on expiry instead of retired to history (ADR-0100).
     pub transient: bool,
-    /// `hints["desktop-entry"]` id, e.g. `"org.telegram.desktop"`, used by
-    /// `mantle.applications.by_app_id` instead of the mutable/non-unique `app_name`.
-    /// `nil` when absent; slashed values are dropped (ADR-0101).
+    /// Sender's desktop id, e.g. `"org.telegram.desktop"`, for `mantle.applications.by_app_id`;
+    /// `nil` when absent or containing `/` (ADR-0101).
     pub desktop_entry: Option<String>,
-    /// Whether the sender offered inline reply; `:invoke("reply", id, text)` requires it.
+    /// The sender accepts `:invoke("reply", id, text)`.
     pub has_reply: bool,
-    /// `hints["x-kde-reply-placeholder-text"]`: what the sender wants an empty reply field to say,
-    /// "Reply to Alice" rather than a generic "Reply"; capped at 64 bytes, `nil` if absent, and
-    /// meaningless without [`Notification::has_reply`] (ADR-0101).
+    /// Placeholder for an empty reply field, e.g. `"Reply to Alice"`, capped at 64 bytes; `nil`
+    /// when unset (ADR-0101).
     pub reply_placeholder: Option<String>,
-    /// Offered buttons in sender order, excluding `default` and `inline-reply`; often empty.
+    /// Buttons in sender order, at most 8, excluding `default` and `inline-reply`.
     pub actions: Vec<NotificationAction>,
-    /// Whether the card is activatable via `:invoke("invoke_action", id, "default")`; separate
-    /// from `actions` because `default` is not a button.
+    /// Clicking the card may `:invoke("invoke_action", id, "default")`.
     pub has_default_action: bool,
     /// `hints["resident"]`: keep the notification after an action, as media prev/next needs;
     /// bookkeeping only and omitted from payload (`#[serde(skip)]`).
@@ -381,16 +368,14 @@ pub struct Notification {
     pub incarnation: u64,
 }
 
-/// `notifications.feed`/`notifications.dnd` `StateSnapshot` payload (ADR-0033).
+/// `mantle.notifications`'s payload (ADR-0033).
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]
 #[cfg_attr(test, derive(schemars::JsonSchema))]
 pub struct NotificationsState {
-    /// Newest 20 first, including unread retired entries until dismissed (ADR-0100); `expired`
-    /// distinguishes them. This is a view of the 100-entry queue, so older entries remain
-    /// dismissable by id after leaving the list (ADR-0033).
+    /// The newest 20 of up to 100 queued notifications, newest first, expired ones included
+    /// (ADR-0100); a replacement keeps its place. An entry past 20 stays dismissable by id.
     pub feed: Vec<Notification>,
-    /// DND from `:invoke("set_dnd", enabled)`; gates only non-critical sounds. Notifications remain
-    /// accepted, queued, and in `feed`; popup suppression is config policy.
+    /// Do-not-disturb: mutes non-critical sounds only. Hiding popups is the config's call.
     pub dnd: bool,
 }
 

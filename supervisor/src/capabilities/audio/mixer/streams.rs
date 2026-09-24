@@ -33,18 +33,17 @@ fn is_monitor_capture(props: &impl PropsLookup) -> bool {
     props.get_prop(*keys::STREAM_CAPTURE_SINK) == Some("true")
 }
 
-/// A `Stream/Output/Audio` or `Stream/Input/Audio` node resolved to its owning process. ADR-0053
-/// decision 3 names `id`/`name` to match the spec; ADR-0016's `pid`/`process_name` remain.
+/// One app's playback or recording stream (ADR-0053). Streams without a pid are left out.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[cfg_attr(test, derive(schemars::JsonSchema))]
 pub struct AppStream {
-    /// PipeWire registry id, the `MixerState::apps` key.
+    /// PipeWire node id, the first argument of `set_app_volume` and `set_app_muted`.
     pub id: u32,
-    /// `application.process.id` recorded for the owning process.
+    /// Owning process id, from `application.process.id`.
     pub pid: i32,
     /// `application.name`, if the client set one.
     pub name: Option<String>,
-    /// `/proc/{pid}/comm`, if the process still existed when observed.
+    /// `/proc/<pid>/comm`, or `nil` if it was unreadable when the stream's properties were read.
     pub process_name: Option<String>,
     /// `application.process.binary`, e.g. `"firefox"`.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -52,13 +51,12 @@ pub struct AppStream {
     /// XDG icon name from `application.icon-name`, else `media.icon-name`, e.g. `"firefox"`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub icon: Option<String>,
-    /// A recording stream (`Stream/Input/Audio`), e.g. a call's microphone, rather than playback.
+    /// A capture stream, such as a call's microphone, rather than playback.
     pub recording: bool,
-    /// Per-app volume, range `[0.0, 1.0]`, cube-rooted from `SPA_PARAM_Props` like a master
-    /// sink (`pw-cli enum-params <id> Props` confirms cubed `channelVolumes`). `nil` until then.
+    /// Stream volume, `1.0` is 100%; `nil` until PipeWire reports the stream's `Props`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub volume: Option<f32>,
-    /// Per-app mute, from the same `Props` as `volume`.
+    /// Stream mute; `false` until `volume` is known.
     pub muted: bool,
 }
 

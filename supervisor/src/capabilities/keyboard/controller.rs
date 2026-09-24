@@ -19,15 +19,12 @@ use super::super::scale::{percent_from_raw, raw_from_percent};
 use super::layout::{CompositorLink, HyprlandLink, NiriLink};
 use super::locks::{find_led, read_led_on, resolve_lock_leds};
 
-/// `mantle.keyboard`'s combined payload. `backlight_pct` is `-1` without keyboard-backlight
-/// hardware. Lock booleans have no sentinel: they default and remain `false` if neither evdev nor
-/// sysfs resolves. `active_layout` is the non-nullable empty-string sentinel; index and count are
-/// `0` by default (ADR-0034).
+/// `mantle.keyboard`'s payload (ADR-0034). Lock keys read `false` when no source resolves.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 #[cfg_attr(test, derive(schemars::JsonSchema))]
 pub struct KeyboardState {
-    /// Keyboard backlight, `0` to `100`, or `-1` without a backlight device. Check `-1` before
-    /// drawing a slider.
+    /// Keyboard backlight, `0` to `100`, or `-1` without a backlight device or readable level.
+    /// Refreshes on hardware hotkeys and `set_backlight` only, not on other software writes.
     pub backlight_pct: i32,
     /// Caps Lock is on.
     pub caps_lock: bool,
@@ -35,13 +32,11 @@ pub struct KeyboardState {
     pub num_lock: bool,
     /// Scroll Lock is on.
     pub scroll_lock: bool,
-    /// Layout display name, e.g. `"English (US)"`; empty before the compositor answers.
+    /// Layout display name, e.g. `"English (US)"`; empty before the compositor answers or without one.
     pub active_layout: String,
-    /// Active layout's 0-based configured-list position, passed to
-    /// `keyboard:invoke("switch_layout", index)`.
+    /// 0-based position of the active layout, as `switch_layout` takes it.
     pub active_layout_index: u32,
-    /// Configured layout count. Below `2`, `switch_layout` has nothing to change and a layout
-    /// indicator need not be drawn.
+    /// Configured layout count; below `2` there is nothing to switch.
     pub layout_count: u32,
 }
 

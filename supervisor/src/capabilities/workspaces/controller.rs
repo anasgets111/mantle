@@ -15,104 +15,89 @@ use crate::compositor::{CompositorKind, unsupported_session_report};
 
 use super::{hyprland, niri};
 
-/// `mantle.workspaces` payload. Field names are JSON keys; absent `active_client` is
-/// omitted, not `null` (`nil` when unfocused).
+/// `mantle.workspaces` payload; `nil` without niri or Hyprland.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 #[cfg_attr(test, derive(schemars::JsonSchema))]
 pub struct WorkspacesState {
-    /// Source compositor, `"niri"` or `"hyprland"` (ADR-0119). Hyprland creates a numbered
-    /// workspace on focus, so strips pad empty slots there; niri keeps its trailing empty one.
+    /// `"niri"` or `"hyprland"` (ADR-0119).
     pub compositor: String,
-    /// One entry per output, keyed by connector name; empty until the first compositor answer.
+    /// One entry per output, sorted by connector name.
     pub outputs: Vec<OutputWorkspaces>,
-    /// Focused toplevel, or `nil` if none. One window per session, not per output; an unfocused
-    /// monitor cannot be queried (ADR-0056 decision 4).
+    /// The focused window, or `nil` when none has focus. One per session, not per output.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub active_client: Option<ActiveClient>,
-    /// Compositor special workspaces, Hyprland's scratchpads, ordered by name (ADR-0119). Absent
-    /// when unsupported (`special == nil`); an empty list means supported but none exist. Hyprland
-    /// lists a special only while it holds a window or is shown.
+    /// Hyprland special workspaces, sorted by name (ADR-0119). `nil` on niri; empty means none
+    /// exist.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub special: Option<Vec<SpecialWorkspace>>,
-    /// Whether the compositor's overview is open; `nil` where there is no overview. A surface the
-    /// compositor only composites inside one can stop drawing when this is false.
+    /// Whether niri's overview is open; `nil` on Hyprland, which has none.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub overview_open: Option<bool>,
 }
 
-/// One special workspace (ADR-0119), identified by `name`, the argument to
-/// `:invoke("toggle_special", name)`; Hyprland uses names and negative ids.
+/// One Hyprland special workspace (ADR-0119).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[cfg_attr(test, derive(schemars::JsonSchema))]
 pub struct SpecialWorkspace {
-    /// Full compositor name, `"special:scratch"` or unnamed `"special"`.
+    /// Full name, `"special:scratch"` or `"special"`; the argument of `"toggle_special"`.
     pub name: String,
     /// Whether at least one window sits on it.
     pub populated: bool,
-    /// `app_id` of its standing window, chosen as [`WorkspaceEntry::app_id`] is.
+    /// `app_id` of its representative window, chosen as [`WorkspaceEntry::app_id`] is.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub app_id: Option<String>,
-    /// Connector currently showing it, absent while hidden; a special shows on one output at a
-    /// time.
+    /// Connector showing it, or `nil` while hidden.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub shown_on: Option<String>,
 }
 
-/// One output's workspace state; ADR-0056 decision 3 added ordered `workspaces` entries.
+/// One output's workspaces.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[cfg_attr(test, derive(schemars::JsonSchema))]
 pub struct OutputWorkspaces {
-    /// Connector name, e.g. `"eDP-1"`; matches `mantle.screens.name` and a surface's `monitor`.
+    /// Connector name, e.g. `"eDP-1"`, as in `mantle.screens` and a surface's `monitor`.
     pub name: String,
-    /// [`WorkspaceEntry::id`] visible on this output; every output has one.
+    /// [`WorkspaceEntry::id`] shown on this output.
     pub active_workspace: u64,
-    /// Present only on the focused output (ADR-0056 decision 4); `out.focused_workspace ~= nil`
-    /// tests whether this is the focused monitor.
+    /// [`WorkspaceEntry::id`] with focus, present only on the focused output (ADR-0056).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub focused_workspace: Option<u64>,
-    /// Workspaces on this output, ordered by [`WorkspaceEntry::idx`]; the strip draws these because
-    /// the two ids above are opaque.
+    /// Workspaces on this output, sorted by [`WorkspaceEntry::idx`].
     pub workspaces: Vec<WorkspaceEntry>,
 }
 
-/// `id` is the stable, monitor-independent identity used by `active_workspace`,
-/// `focused_workspace`, and `:invoke("focus", id)`. `idx` is the output-local 1-based position,
-/// useful for labels but unstable across reorders.
+/// One workspace. Draw `idx`, send `id`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[cfg_attr(test, derive(schemars::JsonSchema))]
 pub struct WorkspaceEntry {
-    /// Stable identity independent of output; the ids on [`OutputWorkspaces`] and
-    /// `:invoke("focus", id)` use it.
+    /// Stable id, the argument of `"focus"`. Hyprland's workspace number; opaque on niri.
     pub id: u64,
-    /// 1-based position on this output. Reorders renumber it, so draw `idx` but send `id`.
+    /// Label number: niri's 1-based position on the output, renumbered on reorder; Hyprland's
+    /// workspace number, equal to `id` up to `255`, where it saturates.
     pub idx: u8,
-    /// Compositor name, or `nil` when it has none; most do not.
+    /// Workspace name; `nil` when unnamed, or on Hyprland when the name is just the number.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
-    /// Whether a window sits here (ADR-0117); strips dim empty workspaces.
+    /// Whether a window sits here (ADR-0117).
     pub populated: bool,
-    /// Wayland `app_id` of its representative window: focused when focused, otherwise the
-    /// compositor's first. Absent for empty workspaces or windows without an id; `nil` means draw
-    /// the number.
+    /// `app_id` of a window here (ADR-0117): Hyprland's most recently focused one with an `app_id`;
+    /// on niri the focused one, else the lowest id, `nil` if that one has no `app_id`. `nil` when empty.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub app_id: Option<String>,
 }
 
-/// `active_client`. `is_fullscreen` is present only when reported (ADR-0056 decision 5
-/// rejects fabricated `false`; ADR-0119 lets Hyprland provide it). `class` is Wayland `app_id`;
-/// Wayland has no X11 `WM_CLASS` equivalent.
+/// The focused window.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 #[cfg_attr(test, derive(schemars::JsonSchema))]
 pub struct ActiveClient {
-    /// Window title, e.g. `"src/main.rs - Neovim"`; empty when unset.
+    /// Window title; empty when unset.
     pub title: String,
-    /// Wayland `app_id`, e.g. `"firefox"`. Named `class` for X11 familiarity; use it with
-    /// `applications.by_app_id`.
+    /// Wayland `app_id`, e.g. `"firefox"`; the key of `applications.by_app_id`. Empty when unset.
     pub class: String,
-    /// Whether the compositor floats this window rather than tiles it.
+    /// Whether the window floats rather than tiles.
     pub is_floating: bool,
-    /// Whether the window covers its whole output. Absent when unreported (niri-ipc has no field,
-    /// ADR-0056 decision 5); Hyprland reports it (ADR-0119).
+    /// Whether the window is fullscreen (maximized is `false`); `nil` on niri, which does not
+    /// report it (ADR-0056).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub is_fullscreen: Option<bool>,
 }

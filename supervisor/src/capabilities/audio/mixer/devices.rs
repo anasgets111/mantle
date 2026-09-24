@@ -9,18 +9,17 @@ use serde::Serialize;
 use super::PropsLookup;
 use crate::capabilities::audio::master;
 
-/// One `sinks`/`sources` entry. `name` is the user-facing `node.description`, not routing
-/// `node.name` (`"alsa_output.pci-0000_00_1f.3.analog-stereo"`).
+/// One `sinks` or `sources` entry.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 #[cfg_attr(test, derive(schemars::JsonSchema))]
 pub struct AudioDevice {
-    /// PipeWire registry id, the argument of `:invoke("set_default_sink", id)`.
+    /// PipeWire node id, the argument of `set_default_sink`/`set_default_source`; not reboot-stable.
     pub id: u32,
-    /// Device description, e.g. `"Built-in Audio Analog Stereo"`; neither is reboot-stable.
+    /// `node.description`, e.g. `"Built-in Audio Analog Stereo"`, else `node.nick`, else `node.name`.
     pub name: String,
-    /// Whether `default.audio.sink`/`default.audio.source` currently routes here.
+    /// This is the default output or input; with no default known, the lowest `id` is.
     pub active: bool,
-    /// PipeWire's `device.icon-name` hint, e.g. `"audio-card-analog"`; not resolved here.
+    /// `device.icon-name` theme name, e.g. `"audio-card-analog"`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub icon: Option<String>,
     /// The active card route's `port.type`, e.g. `"headphones"`, `"hdmi"`, `"mic"`.
@@ -29,7 +28,7 @@ pub struct AudioDevice {
     /// `device.bus`, e.g. `"pci"`, `"usb"`, `"bluetooth"`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub bus: Option<String>,
-    /// `device.form-factor`, e.g. `"headset"`; PCI cards carry none.
+    /// `device.form-factor`, e.g. `"headset"`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub form_factor: Option<String>,
 }
@@ -38,15 +37,13 @@ pub struct AudioDevice {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[cfg_attr(test, derive(schemars::JsonSchema))]
 pub struct BluetoothCodecs {
-    /// PipeWire device registry id, the first argument of
-    /// `:invoke("set_bluetooth_profile", device, index)`.
+    /// PipeWire device id, the first argument of `set_bluetooth_profile`.
     pub device: u32,
-    /// MAC address from WirePlumber's `bluez_card.` name, spelled as `mantle.bluetooth` spells it.
+    /// MAC address from the `bluez_card.*` name, `_` turned to `:`.
     pub mac: String,
-    /// Available profiles that name a codec, in profile index order.
+    /// Available profiles that name a codec, ordered by `index`.
     pub codecs: Vec<CodecProfile>,
-    /// `index` of the active profile, or `nil` before PipeWire reports it or when it names no
-    /// codec.
+    /// `index` of the active profile; `nil` before PipeWire reports it or when it is not in `codecs`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub active: Option<i32>,
 }
@@ -55,9 +52,9 @@ pub struct BluetoothCodecs {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[cfg_attr(test, derive(schemars::JsonSchema))]
 pub struct CodecProfile {
-    /// Profile index, the second argument of `:invoke("set_bluetooth_profile", device, index)`.
+    /// Profile index, the second argument of `set_bluetooth_profile`.
     pub index: i32,
-    /// The codec the description names, e.g. `"AAC"`, `"LDAC"`, `"mSBC"`.
+    /// Codec from the profile name, else its English description, e.g. `"AAC"`, `"LDAC"`, `"mSBC"`.
     pub codec: String,
     /// PipeWire's description, e.g. `"High Fidelity Playback (A2DP Sink, codec AAC)"`.
     pub description: String,

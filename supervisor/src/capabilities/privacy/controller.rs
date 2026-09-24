@@ -13,32 +13,26 @@ use crate::capabilities::audio::mixer::{CaptureApp, PrivacySources, VideoSourceA
 
 use super::video::{find_device_openers, read_comm};
 
-/// An app using one watched resource. The `{app_name}` row shape from ADR-0034's
-/// `privacy.camera_users` extends to microphone and screencast under ADR-0137; one type keeps the
-/// three "who" lists identical.
+/// One app using a camera, microphone or screen capture.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 #[cfg_attr(test, derive(schemars::JsonSchema))]
 pub struct PrivacyUser {
-    /// Process name from its PipeWire node, then `/proc/<pid>/comm`, then `"pid 1234"`; never
-    /// empty.
+    /// PipeWire `application.name`, else `/proc/<pid>/comm`, else `"pid 1234"` (or `"node 56"`);
+    /// never empty.
     pub app_name: String,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize)]
 #[cfg_attr(test, derive(schemars::JsonSchema))]
 pub struct PrivacyState {
-    /// Processes holding a camera open. Empty means no camera is in use; a config draws its
-    /// indicator only when this is non-empty.
+    /// One entry per process holding a `/dev/videoN` open; empty when none is. Only devices present
+    /// when `privacy` started are watched.
     pub camera_users: Vec<PrivacyUser>,
-    /// Apps PipeWire reports reading a microphone now (ADR-0137). Open-but-idle streams are absent:
-    /// this means "something is listening", not "something could".
-    ///
-    /// Distinct from `mantle.audio.source_muted`, a device setting; a muted active capture appears
-    /// in both.
+    /// Apps with a running PipeWire audio capture, one per name (ADR-0137). Idle streams and
+    /// sink-monitor captures are absent; a muted microphone still counts.
     pub microphone_users: Vec<PrivacyUser>,
-    /// Apps producing PipeWire screen-capture streams (ADR-0137). Names may be the portal's
-    /// identity for portal-created nodes. wlr-screencopy recorders (`wf-recorder`, `grim`) bypass
-    /// PipeWire and never appear.
+    /// Apps with a running PipeWire screen-capture stream, one per name (ADR-0137).
+    /// wlr-screencopy tools such as `wf-recorder` and `grim` never appear.
     pub screencast_users: Vec<PrivacyUser>,
 }
 

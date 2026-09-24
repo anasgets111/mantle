@@ -22,9 +22,9 @@ pub use controller::{WorkspacesController, WorkspacesSignal};
 #[cfg_attr(test, derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum WorkspacesAction {
-    /// Focuses a `WorkspaceEntry.id`; the compositor ignores one that does not exist.
+    /// Focuses a `WorkspaceEntry.id`. Hyprland creates a missing number; niri ignores it.
     Focus { id: u64 },
-    /// Shows or hides a special workspace; Hyprland creates an unknown name.
+    /// Shows or hides a `special[].name` on Hyprland, creating an unknown one; no-op on niri.
     ToggleSpecial {
         #[serde(deserialize_with = "crate::capabilities::non_empty")]
         name: String,

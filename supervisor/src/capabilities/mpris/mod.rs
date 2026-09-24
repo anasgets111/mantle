@@ -25,11 +25,11 @@ pub use controller::{MprisController, MprisSignal, PlayerCommand};
 #[cfg_attr(test, derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum MprisAction {
-    /// Controls `players[].id`.
+    /// Sends a playback command to `players[].id`.
     Control { id: String, cmd: PlayerCommand },
-    /// Seeks to an absolute position in microseconds.
+    /// Seeks to an absolute position in microseconds, clamped to `[0, length]` (only `>= 0` when `length` is `-1`).
     Seek { id: String, position_us: i64 },
-    /// Seeks by a signed offset in microseconds.
+    /// Seeks by a signed offset in microseconds, unclamped; past the end may skip to the next track.
     SeekRelative { id: String, offset_us: i64 },
 }
 

@@ -1,82 +1,50 @@
 ---@meta
--- The remaining engine globals, and the stdlib as ADR-0048 left it.
---
--- HAND-WRITTEN. `just stubs` does not touch it. `lua::tests::the_stubs_declare_every_engine_global`
--- checks names against the config VM; types drift only as a `just types` diagnostic.
---
--- The config VM loads only `COROUTINE | TABLE | STRING | UTF8 | MATH | PACKAGE | OS`, then replaces
--- `os` with four calls. `.luarc.json` disables the other builtins; without that and this `os`
--- declaration, the language server offers runtime-missing `io.open`, `os.execute`, and
--- `debug.getinfo`.
+-- Engine globals outside the reactive layer, and the restricted `os` (ADR-0048).
+-- Hand-written; `lua::tests::the_stubs_declare_every_engine_global` checks the names.
+-- The VM has no `io`, `debug` or FFI. `dofile` and `loadfile` remain and block on file I/O.
 
----The fallback chain is read at `shell.lua`'s top level before text measurement. Both readers fall
----back per glyph across it, so one declaration covers body text, CJK and emoji: the codepoint picks
----the face. A node that wants a different family says so with `text.font`, and this chain stays
----behind it as coverage (ADR-0144). Read once, at startup: editing it re-evaluates like any other
----change and does nothing until the shell restarts, because a chain change invalidates every
----measurement (ADR-0043).
----
----Non-string entries, holes, and named keys are refused. `#` is undefined on sparse tables, so a
----hole would lose the tail. An unmatched family is skipped with a diagnostic; typos cost one entry.
----@param chain string[] Family names in fallback order, densest first. A dense array: a hole truncates it.
+---Declares the font fallback chain. Each glyph falls back across it, so one chain covers body text,
+---CJK and emoji; a `text` node's `font` goes in front of it (ADR-0144). Read once at startup: a
+---change needs a shell restart (ADR-0043). The last call wins.
+---@param chain string[] Family names. The first is the body face and the only one whose bold and italic load; the rest cover glyphs it lacks. A hole, a named key or a non-string raises; an uninstalled family is skipped and logged at `-vvv`. Never calling it keeps `sans-serif`, Noto Sans CJK JP, Noto Color Emoji.
 function fonts(chain) end
 
----fzf's score for `needle` against `haystack`, and where the match begins; `nil` for no match, so
----`if value then` is the filter. A run, a word boundary, a camelCase hump and a digit each pay a
----bonus, which is what ranks "Visual Studio Code" above every other name holding v, s and c.
----
----Smart case: an all-lowercase needle matches either case, one uppercase character makes the whole
----comparison exact. Ordering is the caller's; this scores one pair (ADR-0201).
----
----Scores compare only between candidates scored against the same needle, and only within one
----alphabet: a non-ASCII haystack takes a cruder greedy scorer whose numbers do not line up with the
----ASCII path's. Both are on fzf's scale, so fzf's own thresholds carry over.
----@param haystack string The text to search, such as an application's name and comment joined.
----@param needle string What the user typed, already trimmed. Empty scores 0 rather than failing.
----@return integer? score, integer? start `start` is a 0-based byte offset into `haystack`, so `haystack:sub(start + 1)` begins at the match.
+---fzf's score for `needle` in `haystack`, or `nil, nil` when its characters do not appear in order
+---(ADR-0201). Smart case: one uppercase character in `needle` makes the match case-sensitive.
+---Scores compare only against the same needle; non-ASCII input takes a cruder scorer.
+---@param haystack string Non-UTF-8 bytes score as no match.
+---@param needle string Empty scores `0, 0`.
+---@return integer? score
+---@return integer? start 0-based byte offset of the needle's first character at its earliest in-order hit (the best-scoring one for a one-character needle). For tiebreaks, not highlighting.
 function fuzzy(haystack, needle) end
 
 ---@class TimerHandle
 local TimerHandle = {}
 
----Cancels a pending timer. A no-op once it has fired, once it is already cancelled, and inside its
----own callback, so nothing has to track which of those happened.
+---Disarms the timer. A no-op once it has fired or been cancelled, and inside its own callback.
 function TimerHandle:cancel() end
 
----Runs `callback` once, `ms` from now, on a monotonic clock (ADR-0203).
----
----The imperative counterpart to [`delay`] and [`pulse`], which move a *signal* on a clock and
----remain the answer for a debounce or a temporary flag. This is for what those cannot reach: a
----retry, or an action due at a deadline whether or not anything is looking at it.
----
----Repeat by re-arming inside the callback. There is no repeating flavour, because the delay would
----then run from the `timer` call the callback makes, not at a fixed rate, and only the config knows
----whether a missed deadline should be skipped or caught up.
----
----Registrations last one evaluation, like [`action`]: re-arm at the top level. A reload clears
----them, so `cancel` is not the only thing that stops one. The handle is not what keeps a timer
----armed, so one whose handle is discarded still fires.
----
----A callback armed by another callback waits for a later turn, so a one-millisecond timer re-arming
----itself cannot spin a frame. Callbacks run before the turn re-resolves the tree.
----@param ms integer Milliseconds from now, `[1, 86400000]`. Outside that raises. A day, not `delay`'s minute, because an idle stage can be two hours out.
----@param callback fun() No arguments, no return. Raising is logged and skipped; the rest of the batch still runs.
+---Runs `callback` once, `ms` from now, on a monotonic clock, under the 5 ms CPU budget (ADR-0203).
+---Repeat by re-arming inside `callback`. Every evaluation clears all timers, so arm at the top level;
+---a discarded handle still fires.
+---@param ms integer `[1, 86400000]`; outside raises.
+---@param callback fun() A raise is logged at debug (`-vv`).
 ---@return TimerHandle
 function timer(ms, callback) end
 
 json = {}
 
----Decodes JSON without raising. Errors return `nil` plus a message; JSON `null` also returns `nil`
----through the capability-payload mapping; both mean "no data" and are indistinguishable (ADR-0057).
----A `null` array element leaves a hole, and `ipairs` stops there.
----@param text string The JSON document. Any input is safe, including an empty string.
----@return any value, string? error
+---Decodes JSON and never raises: failure returns `nil, message`. JSON `null` also decodes to `nil`,
+---and a `null` array element leaves a hole that stops `ipairs` (ADR-0057). There is no encoder.
+---@param text string
+---@return any value
+---@return string? error
 function json.decode(text) end
 
 log = {}
 
----Writes a stamped, levelled line to the shell's log. Every level prints without `-v`; only
----`MANTLE_LOG=config=warn` or `config=off` filters these. Arguments are joined like `print`'s.
+---Writes a stamped line at this level, arguments joined like `print`'s (ADR-0245). Every level
+---prints by default; filter with `MANTLE_LOG=config=warn` or `config=off`.
 ---@param ... any
 function log.error(...) end
 
@@ -93,7 +61,7 @@ palette = {}
 
 ---@class PaletteSwatch
 ---@field color Color `#RRGGBB`.
----@field share number Fraction of the image's non-transparent pixels this colour stands for, 0 to 1.
+---@field share number Fraction of the counted (non-transparent) pixels, 0 to 1.
 
 ---@class PaletteHandle
 local PaletteHandle = {}
@@ -102,135 +70,92 @@ local PaletteHandle = {}
 function PaletteHandle:cancel() end
 
 ---Extracts an image's dominant colours off the Lua thread (ADR-0249). `cb` gets them most common
----first, or `nil` on failure with a logged warning.
----@param path string A local raster file. No SVG or URL.
----@param opts? { depth?: integer, rescale?: integer } `depth` 0 to 8, default 3, gives up to `2^depth` colours. `rescale` is the longest edge to shrink to first, default 128, `0` for full size.
+---first, or `nil` on failure (logged). `cb` runs unbudgeted.
+---@param path string A local raster file; no SVG or URL.
+---@param opts? { depth?: integer, rescale?: integer } `depth` 0 to 8, default 3: up to `2^depth` colours. `rescale` caps the longest edge before counting, default 128, `0` for full size. Out of range raises.
 ---@param cb fun(swatches: PaletteSwatch[]?)
 ---@return PaletteHandle
 function palette.quantize(path, opts, cb) end
 
 process = {}
 
----Declares what `mantle call <name>` runs (ADR-0197).
----
----The outward twin of `mantle.<cap>:invoke(...)`: a keybind writes a `state` when it wants the
----shell to look different and calls an action when it wants it to *do* something, because rendering
----may not have side effects and a `state` write reaches no config code.
----
----`name` is one opaque string. `"rec.toggle"` groups it for a reader the way a module path does and
----nothing splits on the dot, so any character its config wrote is allowed.
----
----Registrations last one evaluation: declare at the top level, not inside a callback that fires
----more than once. Two declarations of one name in the same evaluation are an error rather than the
----last one winning, since which won would otherwise depend on `require` order.
----
----What the handler returns is converted to JSON and printed by the caller; returning nothing and
----returning `nil` are the same answer. Raising inside it, or returning something that will not
----convert, reaches the caller as a failure and its exit code.
----@param name string
+---Declares what `mantle call <name> [args...]` runs (ADR-0197). Each argument arrives JSON-decoded,
+---or as a string when it is not JSON. The return prints as JSON (≤ 1 MiB), a string bare and `nil`
+---as nothing; a raise or an unconvertible return fails the call. Runs under the 5 ms CPU budget.
+---Every evaluation clears all actions, so declare at the top level.
+---@param name string Non-empty and unique per evaluation, else raises. Opaque: nothing splits on `.`.
 ---@param handler fun(...: any): any?
 function action(name, handler) end
 
 ---@class ProcessHandle
 local ProcessHandle = {}
 
----Safe after the process has already exited.
+---`SIGTERM` to its process group, `SIGKILL` 100 ms later; `exit_cb` still fires. A no-op after exit.
 function ProcessHandle:kill() end
 
----Spawns a process and streams output without blocking the shell.
----
----`out_cb` fires once per newline-stripped line from `BufReader::lines()`; pretty JSON arrives in
----pieces. Accumulate in `out_cb` and decode in `exit_cb`, the only one that knows it is complete.
----@param cmd string The executable. Resolved on `PATH`; no shell, so no globbing, no pipes and no quoting rules.
----@param args string[] One element per argument, already split. Passing `"a b"` is one argument containing a space.
----@param out_cb fun(line: string, stream: "stdout"|"stderr") Both streams reach the same callback; branch on `stream`.
----@param exit_cb fun(code: integer?) `nil` when the process was killed by a signal rather than exiting.
----@return ProcessHandle # Live immediately. The process is already running when this returns.
+---Spawns `cmd` with stdout and stderr piped and stdin on `/dev/null`, without blocking (ADR-0026).
+---The process belongs to the generation: its group is reaped when the Renderer is replaced.
+---Callbacks run unbudgeted; a raise is logged at debug (`-vv`).
+---@param cmd string Looked up on `PATH`; no shell, so no globbing, pipes or quoting.
+---@param args string[] Already split: `"a b"` is one argument.
+---@param out_cb fun(line: string, stream: "stdout"|"stderr") Once per line, newline stripped, cut at 64 KiB. Accumulate here and decode in `exit_cb`.
+---@param exit_cb fun(code: integer?) `nil` when a signal ended it or it failed to spawn.
+---@return ProcessHandle
 function process.run(cmd, args, out_cb, exit_cb) end
 
----Spawns a program and lets go of it completely.
----
----The program gets its own session and is reparented to `init`, so it is not this shell's child in
----any process tree, no reload can reap it, and killing the shell leaves it running. That is what a
----launcher wants: an editor opened from one should outlive the config edit that follows.
----
----There is no handle, no output and no exit code, because none of those survive letting go. Use
----[`process.run`] for anything whose output or exit you need, and this for anything you are
----handing to the user (ADR-0188).
----
----Its three standard streams go to `/dev/null`: nothing is reading them, and leaving them
----inherited lets a program write over the shell's own log long after it stopped being related.
----@param cmd string The executable. Resolved on `PATH`; no shell, so no globbing, no pipes and no quoting rules.
----@param args string[] One element per argument, already split. Passing `"a b"` is one argument containing a space.
+---Spawns `cmd` in its own session with stdio on `/dev/null`; it outlives every reload and the
+---shell. No handle, output or exit code, and a spawn failure is only logged (ADR-0188).
+---@param cmd string Looked up on `PATH`; no shell, so no globbing, pipes or quoting.
+---@param args string[] Already split: `"a b"` is one argument.
 function process.detach(cmd, args) end
 
 ---@class SessionProcessHandle
----One program declared with [`session_process`]. Every field is a signal over this program's entry
----in `mantle.processes`, and the three methods are the only ways to move it: there is no handle to
----hold, because holding one is exactly what a config cannot do across a reload.
----@field running Signal<boolean?> `nil` until the first push. Whether it is up now. The other fields describe the current run while this is true and the finished one while it is false.
----@field pid Signal<integer?> Its process id, which is also its process group. `nil` until the first `start`, and kept after an exit.
----@field started_at Signal<integer?> Unix seconds when the current or last run began. Subtract it from `mantle.system`'s clock for elapsed time; nothing here needs a second timer.
----@field exit_code Signal<integer?> How the last finished run ended. `nil` while running, before the first run, and when a signal ended it rather than an exit.
----@field start_error Signal<string?> `nil` until the first push. Why the last `start` produced no process -- usually a command that is not on `PATH`. Empty when it spawned. Without reading this, a config waiting on `running` waits forever.
+---A program declared with `session_process`. Each field is a signal over its `mantle.processes`
+---entry, `nil` before the first push; while `running` is false they describe the finished run.
+---@field running Signal<boolean?> Whether it is up.
+---@field pid Signal<integer?> Also its process group id. Kept after exit; `nil` before a spawn or after a failed `start`.
+---@field started_at Signal<integer?> Unix seconds the current or last run began; `nil` before a spawn or after a failed `start`.
+---@field exit_code Signal<integer?> The last finished run's exit status; `nil` while running, before the first run, or after a signal ended it.
+---@field start_error Signal<string?> Why the last `start` spawned nothing, usually a command not on `PATH`; `""` when it spawned.
 local SessionProcessHandle = {}
 
----Runs the program, replacing whatever the last run left behind.
----
----A name already running is left alone rather than started twice; `running` says which case this
----was. Nothing is returned: the outcome arrives as state, like every other capability.
----@param cmd string The executable. Resolved on `PATH`; no shell, so no globbing, no pipes and no quoting rules.
----@param args? string[] One element per argument, already split. Omitted means a bare command.
+---Starts the program unless it is already running, with stdio inherited. The outcome arrives as
+---state: `running`, or `start_error`.
+---@param cmd string Looked up on `PATH`; no shell, so no globbing, pipes or quoting.
+---@param args? string[] Already split: `"a b"` is one argument.
 function SessionProcessHandle:start(cmd, args) end
 
----Sends one signal to the program itself, not its group: a pause belongs to the program that was
----named, not to helpers it happened to spawn.
----
----Silently does nothing when it is not running, because acting on state one push old is ordinary.
----@param signal "TERM"|"INT"|"HUP"|"QUIT"|"USR1"|"USR2"|"KILL"|"STOP"|"CONT" Named without its `SIG` prefix. An unknown name is refused rather than guessed at.
+---Sends `signal` to the program itself, not its group. A no-op when it is not running.
+---@param signal SignalName
 function SessionProcessHandle:signal(signal) end
 
----Asks the program's whole group to stop with the signal its declaration named, escalating to
----`SIGKILL` five seconds later. Session shutdown does the same thing to every declared program.
+---Sends the declared `stop_signal` to the program's group, then `SIGKILL` 5 s later. Shell
+---shutdown does this to every session process.
 function SessionProcessHandle:stop() end
 
----Declares a program whose lifetime is the session's rather than this generation's.
----
----[`process.run`]'s child belongs to the generation that spawned it, and replacing that Renderer
----reaps the child's process group. Right for a helper
----that answers a question and exits, wrong for anything the user would notice stopping -- a
----recorder mid-file, a stream a widget is reading. This declares the second kind. The Supervisor
----holds it, does not restart on a config edit, and answers for it in `mantle.processes`.
----
----What is given up in exchange is output: stdio is inherited rather than piped, because a program
----that outlives the generation that started it has no callback left to deliver a line to. A config
----that wants a program's output wants `process.run`.
----
----Re-declaring a name returns the same handle and keeps a running program running, so this call
----belongs at a module's top level. Only `stop_signal` is re-read, which is what lets that be
----edited without stopping anything.
----@param spec { name: string, stop_signal?: "TERM"|"INT"|"HUP"|"QUIT"|"USR1"|"USR2"|"KILL"|"STOP"|"CONT" } `name` keys the program in `mantle.processes`; `stop_signal` is how it wants to be asked to finish, `"TERM"` by default. A program that writes a file it has to close on the way out says so here.
----@return SessionProcessHandle # The same handle for every declaration of one name.
+---Declares a program that lives for the session: the Supervisor holds it across reloads and stops
+---it at shutdown. Re-declaring a name returns the same handle and re-reads only `stop_signal`, so
+---declare at a module's top level. Use `process.run` when you need its output.
+---@param spec { name: string, stop_signal?: SignalName } `name` keys it in `mantle.processes`; empty raises. `stop_signal` defaults to `"TERM"`.
+---@return SessionProcessHandle
 function session_process(spec) end
 
 ---@class oslib
----The four `os` calls ADR-0048 keeps read process-local state without a waiting syscall. The rest,
----including `os.execute` and `os.remove`, is gone: the 5ms CPU cap counts instructions; a thread
----parked in a blocking syscall executes none, cannot be caught, and would wedge the Wayland thread.
+---Only these four calls exist; the rest of `os` is removed (ADR-0048).
 os = {}
 
----@param format? string `strftime` directives, or `"*t"` for a table. Defaults to `"%c"`. A leading `!` reads UTC.
----@param time? integer Unix seconds to format. Defaults to now.
----@return string|table # A string, or a table when `format` starts with `"*t"`.
+---@param format? string `strftime` directives, default `"%c"`; `"*t"` returns a table. A leading `!` reads UTC.
+---@param time? integer Unix seconds, default now.
+---@return string|table
 function os.date(format, time) end
 
----@param t? table A `os.date("*t")`-shaped table to convert. Omitted means now.
----@return integer # Unix seconds. Wall clock, so it moves when the clock is set; use `os.clock` for durations.
+---@param t? table An `os.date("*t")`-shaped table, default now.
+---@return integer # Unix seconds, wall clock.
 function os.time(t) end
 
----@return number # CPU seconds used by this process, as a float. Monotonic and immune to a clock change, which is what makes it the one to subtract.
+---@return number # CPU seconds this process has used; not elapsed time.
 function os.clock() end
 
----@param name string The variable to read.
----@return string? # Its value, or `nil` when unset. The shell's own environment, not the compositor's.
+---@param name string
+---@return string? # The shell's environment variable, `nil` when unset.
 function os.getenv(name) end

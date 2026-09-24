@@ -8,13 +8,12 @@ mod wlr;
 
 pub use controller::{WindowsController, WindowsSignal};
 
-/// Per-action backend support is documented on each variant. An unsupported action logs at debug
-/// and does nothing.
+// An action a backend does not support logs at debug and does nothing.
 #[derive(Debug, serde::Deserialize)]
 #[cfg_attr(test, derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum WindowsAction {
-    /// Focuses a window and switches to its workspace.
+    /// Focuses a window.
     Focus {
         #[serde(deserialize_with = "crate::capabilities::non_empty")]
         id: String,
@@ -24,20 +23,19 @@ pub enum WindowsAction {
         #[serde(deserialize_with = "crate::capabilities::non_empty")]
         id: String,
     },
-    /// Sets fullscreen on or off. Hyprland only toggles, so it writes only on a real change; niri
-    /// reports no fullscreen state, so it ignores this.
+    /// Sets fullscreen on or off; no-op on niri.
     SetFullscreen {
         #[serde(deserialize_with = "crate::capabilities::non_empty")]
         id: String,
         fullscreen: bool,
     },
-    /// Sets minimized on or off. Only the wlr-protocol path has a minimize concept.
+    /// Sets minimized on or off; wlr only.
     SetMinimized {
         #[serde(deserialize_with = "crate::capabilities::non_empty")]
         id: String,
         minimized: bool,
     },
-    /// Sets maximized on or off. niri has no maximize concept; Hyprland only toggles.
+    /// Sets maximized on or off; no-op on niri.
     SetMaximized {
         #[serde(deserialize_with = "crate::capabilities::non_empty")]
         id: String,

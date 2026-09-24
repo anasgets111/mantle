@@ -22,9 +22,9 @@ pub use scan::application_dirs;
 pub enum ApplicationsAction {
     /// Rescans installed desktop entries.
     Refresh,
-    /// Launches the `entries[].id` desktop entry.
+    /// Launches `entries[].id`, detached; `Terminal=true` entries run in `$TERMINAL`.
     Launch { id: String },
-    /// Opens a URL with `xdg-open`.
+    /// Opens an `http`, `https` or `mailto` URL (at most 2048 bytes) with `xdg-open` (ADR-0103).
     OpenUrl { url: String },
 }
 

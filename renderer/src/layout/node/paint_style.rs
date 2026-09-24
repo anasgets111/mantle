@@ -68,8 +68,8 @@ pub enum PaintStyle {
         transition: Option<TransitionSpec>,
         /// `source_blur` (ADR-0240): a static blur run once when the source's decode lands, in
         /// logical pixels. `0.0` is off. Distinct from `blur` (ADR-0195), which asks the
-        /// compositor to blur the desktop *behind* a node instead of blurring the node's own
-        /// pixels, and which an `image` can set too since it is a `BOX_PROPERTIES` name.
+        /// compositor to blur the desktop *behind* a box instead of blurring the node's own
+        /// pixels, and which `image` does not accept.
         source_blur: f32,
     },
     /// `capture` (ADR-0248): an output's live contents. `output` empty or naming nothing connected

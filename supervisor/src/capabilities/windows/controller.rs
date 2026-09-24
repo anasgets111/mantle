@@ -12,43 +12,44 @@ use crate::compositor::{CompositorKind, unsupported_session_report};
 
 use super::wlr;
 
-/// `mantle.windows` payload.
+/// `mantle.windows` payload; `nil` with no niri, Hyprland or wlr-foreign-toplevel backend.
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]
 #[cfg_attr(test, derive(schemars::JsonSchema))]
 pub struct WindowsState {
     /// `"niri"`, `"hyprland"`, or `"wlr_foreign_toplevel"`.
     pub source: String,
-    /// Sorted by workspace, then each backend's own order.
+    /// Sorted by `workspace_id`, then backend order; windows without one last.
     pub windows: Vec<WindowEntry>,
 }
 
-/// One window. `id` is opaque and backend-shaped; compare it and pass it back to `:invoke`, never
-/// parse it.
+/// One toplevel window. `nil` optional fields are ones the backend does not report.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[cfg_attr(test, derive(schemars::JsonSchema))]
 pub struct WindowEntry {
+    /// Opaque, backend-shaped id for `:invoke`; compare it, never parse it.
     pub id: String,
-    /// Empty when unset.
+    /// Window title; empty when unset.
     pub title: String,
-    /// Wayland `app_id`; Hyprland reports its `class` here, the closest equivalent.
+    /// Wayland `app_id` (Hyprland's `class`); empty when unset.
     pub app_id: String,
-    /// Absent where the backend has no workspace concept.
+    /// `WorkspaceEntry.id`; `nil` on wlr and on Hyprland special workspaces.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub workspace_id: Option<u64>,
-    /// Connector name; absent when unknown.
+    /// Connector name; `nil` when unknown. On wlr, the first output the window entered.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub output: Option<String>,
+    /// Whether the window has keyboard focus.
     pub focused: bool,
-    /// Absent on the wlr-protocol path, which has no floating/tiled concept.
+    /// `nil` on wlr.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub floating: Option<bool>,
-    /// Absent on niri, whose IPC does not report fullscreen state.
+    /// `nil` on niri.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub fullscreen: Option<bool>,
-    /// Only the wlr-protocol path reports this.
+    /// `nil` except on wlr.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub minimized: Option<bool>,
-    /// Absent on niri, which has no maximize concept.
+    /// `nil` on niri.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub maximized: Option<bool>,
 }

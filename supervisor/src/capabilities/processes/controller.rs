@@ -44,13 +44,11 @@ use crate::capabilities::system::controller::epoch_seconds;
 /// declared stop signal exists to avoid.
 const STOP_GRACE: Duration = Duration::from_secs(5);
 
-/// `mantle.processes`'s payload.
+/// `mantle.processes` payload.
 #[derive(Debug, Clone, Default, PartialEq, serde::Serialize)]
 #[cfg_attr(test, derive(schemars::JsonSchema))]
 pub struct ProcessesState {
-    /// One entry per name a config declared with `session_process`, keyed by that name. A name
-    /// nothing declared is absent rather than stopped, so a typo reads `nil` instead of quietly
-    /// looking like a program that never starts.
+    /// One entry per `session_process` name; an undeclared name is `nil`.
     pub sessions: BTreeMap<String, SessionProcess>,
 }
 
@@ -58,21 +56,16 @@ pub struct ProcessesState {
 #[derive(Debug, Clone, Default, PartialEq, serde::Serialize)]
 #[cfg_attr(test, derive(schemars::JsonSchema))]
 pub struct SessionProcess {
-    /// Whether it is up now. Every field below describes the current run while this is true, and
-    /// the finished one while it is false.
+    /// Whether it is up now. Otherwise the fields below describe the last run.
     pub running: bool,
-    /// Its process id, which is also its process group. `nil` until the first `start`, and kept
-    /// after an exit so a log line can still name what died.
+    /// Process id, also its process group id; kept after exit, `nil` before a spawn or after a failed `start`.
     pub pid: Option<u32>,
-    /// Unix seconds when the current or last run began; `nil` until the first `start`. Elapsed
-    /// time is this subtracted from `mantle.system`'s clock, so nothing here needs a second timer.
+    /// Unix seconds when the run began; `nil` before a spawn or after a failed `start`.
     pub started_at: Option<i64>,
-    /// How the last finished run ended: its exit status, `nil` while running, before the first
-    /// run, or when a signal ended it rather than an exit. Cleared by the next `start`.
+    /// Exit status of the last run; `nil` while running, before any run, or when a signal
+    /// killed it.
     pub exit_code: Option<i32>,
-    /// Why the last `start` produced no process at all -- a command that is not on `PATH`, most
-    /// often. Empty when it spawned, and cleared by the next `start`. Without this a config
-    /// waiting on `running` would wait forever with the reason only in the Supervisor's stderr.
+    /// Why the last `start` failed to spawn, e.g. a `cmd` not on `PATH`; empty when it spawned.
     pub start_error: String,
 }
 

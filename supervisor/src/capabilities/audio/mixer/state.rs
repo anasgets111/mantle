@@ -13,33 +13,32 @@ use super::devices::{AudioDevice, BluetoothCodecs, BluezCard, DeviceEntry, bluet
 use super::streams::{AppStream, CaptureApp, VideoSourceApp, running};
 use crate::capabilities::audio::master;
 
-/// Full `mantle.audio` payload (ADR-0053 decision 3).
+/// `mantle.audio`'s payload (ADR-0053).
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[cfg_attr(test, derive(schemars::JsonSchema))]
 pub struct AudioState {
-    /// Master output volume, range `[0.0, 1.5]`, derived from the default sink's `channelVolumes`.
-    /// `nil` until the default sink's first `Props`, or with none.
+    /// Default output volume, `0.0` to `1.5` (`1.0` is 100%), loudest channel; louder writes by other clients
+    /// are pulled back to `1.5`. `nil` with no sink or before its first volume report.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub volume: Option<f32>,
-    /// Master output mute.
+    /// Default output mute; `false` with no default sink.
     pub muted: bool,
-    /// Default output balance, `[-1.0, 1.0]` from left to right; `nil` for mono or an unknown channel map.
+    /// Default output balance, `-1.0` (left) to `1.0` (right); `nil` for mono or an unknown channel map.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub balance: Option<f32>,
-    /// Default input volume, range `[0.0, 1.0]`, using the sink's cube-root conversion
-    /// (`pw-cli enum-params <source> Props` has the same shape). `nil` until the default source's
-    /// first `Props`, or with none.
+    /// Default input volume, `1.0` is 100%; `set_source_volume` caps at `1.0`, another client may not.
+    /// `nil` with no source or before its first volume report.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub source_volume: Option<f32>,
-    /// Default input mute, the microphone-mute click target for privacy indicators.
+    /// Default input (microphone) mute; `false` with no default source.
     pub source_muted: bool,
-    /// Every output device; `:invoke("set_default_sink", id)` takes [`AudioDevice::id`].
+    /// Every output device.
     pub sinks: Vec<AudioDevice>,
-    /// Every input device, on the same terms as [`AudioState::sinks`].
+    /// Every input device.
     pub sources: Vec<AudioDevice>,
-    /// One entry per app playing or recording audio; empty is normal.
+    /// Apps playing or recording audio, excluding pid-less streams, notification sounds, meters and monitor captures.
     pub apps: Vec<AppStream>,
-    /// One entry per BlueZ audio device PipeWire knows, with its codecs; empty without one.
+    /// BlueZ audio devices PipeWire knows, with their codecs, ordered by `device`.
     pub bluetooth: Vec<BluetoothCodecs>,
 }
 

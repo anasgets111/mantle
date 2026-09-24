@@ -16,15 +16,16 @@ use nix::sys::signal::Signal;
 #[cfg_attr(test, derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum ProcessesAction {
-    /// Default `TERM`, the same default the rest of the Supervisor reaps with.
+    /// Registers `name` (required before `start`) and sets its stop signal, default `TERM`.
+    /// Redeclaring updates the signal without touching a running program.
     Declare {
         #[serde(deserialize_with = "crate::capabilities::non_empty")]
         name: String,
         #[serde(default)]
         stop_signal: Option<SignalName>,
     },
-    /// Starts a declared program without a shell, so one `args` element is one argument however
-    /// many spaces it holds.
+    /// Runs `cmd` with `args` (no shell) as its own process group. No-op while `running` or when
+    /// `name` is undeclared.
     Start {
         #[serde(deserialize_with = "crate::capabilities::non_empty")]
         name: String,
@@ -33,26 +34,21 @@ pub enum ProcessesAction {
         #[serde(default, deserialize_with = "crate::capabilities::lua_list")]
         args: Vec<String>,
     },
-    /// Sends one of `declare`'s signal names.
+    /// Sends `signal` to the program's process (not its group); no-op when not running.
     Signal {
         #[serde(deserialize_with = "crate::capabilities::non_empty")]
         name: String,
         signal: SignalName,
     },
-    /// Stops a program with its stop signal.
+    /// Sends the declared stop signal to the process group, then `KILL` if it is still up 5 s
+    /// later; no-op when not running.
     Stop {
         #[serde(deserialize_with = "crate::capabilities::non_empty")]
         name: String,
     },
 }
 
-/// The signal names a config may write, without the `SIG` prefix.
-///
-/// A closed list rather than a number: a config asking for signal 9 by number is asking for
-/// something it cannot have meant, and every name here is one a program documents as an
-/// interface: `INT` to finish and save, `USR1`/`USR2` for whatever the program says, `HUP` to reload.
-/// `KILL` is included because a config that has decided to be rid of something should not have to
-/// go through `process.run` to say so.
+/// A signal name without the `SIG` prefix.
 #[derive(Debug, serde::Deserialize)]
 #[cfg_attr(test, derive(schemars::JsonSchema))]
 #[serde(rename_all = "UPPERCASE")]

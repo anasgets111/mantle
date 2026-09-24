@@ -64,9 +64,7 @@ pub use controller::TrayController;
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]
 #[cfg_attr(test, derive(schemars::JsonSchema))]
 pub struct TrayState {
-    /// Registered items, oldest first. New items append; property updates do not move them, so no
-    /// sorting is needed. Registration order avoids lexicographic D-Bus id order, where `1.100`
-    /// precedes `1.20` and a new app lands mid-strip.
+    /// Registered items in registration order, oldest first; updates never reorder them.
     pub items: Vec<TrayItem>,
 }
 
@@ -83,15 +81,16 @@ fn unix_timestamp_u32() -> u32 {
 #[cfg_attr(test, derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum TrayAction {
-    /// Left-click activation at screen coordinates.
+    /// Left-click activation at screen coordinates `x`, `y`; a no-op when `item_is_menu`.
     Activate { id: String, x: i32, y: i32 },
-    /// Middle-click activation at screen coordinates (ADR-0074).
+    /// Middle-click activation at screen coordinates `x`, `y` (ADR-0074).
     SecondaryActivate { id: String, x: i32, y: i32 },
-    /// Passes `"vertical"` or `"horizontal"` verbatim (ADR-0074).
+    /// Scrolls the icon by `delta`; `orientation` is `"vertical"` or `"horizontal"`, passed verbatim (ADR-0074).
     Scroll { id: String, delta: i32, orientation: String },
-    /// Clicks a `MenuItem.id`.
+    /// Clicks the item's `MenuItem.id`.
     ActivateMenuItem { id: String, menu_item_id: i32 },
-    /// Tells the application a submenu is opening.
+    /// Tells the application submenu `submenu_id` is opening, then refetches the menu unless it
+    /// answers that nothing changed.
     MenuWillShow { id: String, submenu_id: i32 },
 }
 

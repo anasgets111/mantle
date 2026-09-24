@@ -14,10 +14,8 @@ use super::watcher::{service_name_for_id, spawn_discovery};
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]
 #[cfg_attr(test, derive(schemars::JsonSchema))]
 pub struct MprisState {
-    /// Every MPRIS player, longest-running first. New players append and position updates do not
-    /// move entries, so `players[1]` keeps its meaning.
-    ///
-    /// Empty when no player is running, which is valid, not an error.
+    /// Every controllable MPRIS player except `playerctld`, longest-running first, so `players[1]`
+    /// stays put; empty when none runs.
     pub players: Vec<PlayerState>,
 }
 

@@ -14,64 +14,52 @@ use super::reboot::{REBOOT_MARKER, run_reboot_marker_task};
 use crate::capabilities::system::controller::epoch_seconds;
 use crate::process;
 
-/// `mantle.updates` payload. `check_error`/`install_error` are `None` when clear. While
-/// `installing`, `install_total_steps == 0` means the manager has not printed the transaction size.
+/// `mantle.updates`'s payload.
 #[derive(Debug, Clone, Default, PartialEq, serde::Serialize)]
 #[cfg_attr(test, derive(schemars::JsonSchema))]
 pub struct UpdatesState {
-    /// Package manager name, or `nil` when unsupported. Available before any check and used by an
-    /// indicator to decide whether it belongs on the bar (ADR-0134), e.g. `"pacman"`.
+    /// Package manager, e.g. `"pacman"`, or `nil` when unsupported. Set from the first push (ADR-0134).
     pub package_manager: Option<String>,
-    /// AUR helper found at start, `"paru"` or `"yay"`, or `nil`. Installs go through it only once
-    /// `configure` sets `aur` (ADR-0250).
+    /// AUR helper found at start, `"paru"` or `"yay"`, or `nil`; used only once `configure` sets
+    /// `aur` (ADR-0250).
     pub aur_helper: Option<String>,
-    /// Number of packages with newer synced-repo versions. Always `#packages`, duplicated so a
-    /// badge need not walk the list.
+    /// Always `#packages`.
     pub count: u32,
-    /// Packages that would upgrade, one per entry. A failed check preserves the last good list and
-    /// [`UpdatesState::count`] while [`UpdatesState::check_error`] reports the gap.
+    /// Pending upgrades. A failed check keeps the last good list.
     pub packages: Vec<UpdateCandidate>,
-    /// Unix seconds when the last check completed successfully, or `nil` this session. Failed
-    /// checks preserve the older value.
+    /// Unix seconds of the last successful check (or the `checked_at` seed), else `nil`.
     pub last_successful_check: Option<i64>,
-    /// Last check error, or `nil` after success. Checks never modify the system
-    /// (`Backend::check`), so this is a network/parse failure, not a half-applied change.
+    /// Why the last check failed, or `nil` after a success. A check never modifies the system.
     pub check_error: Option<String>,
-    /// Why the last check has no AUR answer, or `nil`. `packages` still holds the repos' answer.
-    /// Set at `configure` when `aur` finds no helper.
+    /// Why AUR packages are missing: the last check's AUR query failed, or `aur` is on with no
+    /// `aur_helper`; `nil` otherwise. `packages` still holds the repos' answer.
     pub aur_error: Option<String>,
-    /// A check is running. Set before sync and cleared when its result is written, with a push at
-    /// both edges for spinners/refresh controls. `"check"` refuses a second check while true.
+    /// A check is running.
     pub checking: bool,
-    /// Consecutive check failures, reset to `0` by the first success. Thresholds belong in config.
+    /// Check failures in a row; a success resets it to `0`.
     pub consecutive_check_failures: u32,
-    /// An install is running. `install_*` describe a started run; `"install"` refuses a
-    /// second one while true.
+    /// An install is running; the `install_*` fields describe the latest run.
     pub installing: bool,
-    /// Current package number, using the manager's 1-based `(2/5)` counter. `0` before progress.
+    /// 1-based number of the package being installed, from the manager's `(2/5)`; `0` before the first.
     pub install_current_step: u32,
-    /// Transaction package count. `0` while [`UpdatesState::installing`] means no step line yet;
-    /// show progress as indeterminate rather than divide.
+    /// Packages in the transaction; `0` until the first step line, so draw progress as indeterminate.
     pub install_total_steps: u32,
-    /// Current package name from the step line. Empty before the first line, never `nil`.
+    /// Package being installed; empty before the first step line.
     pub install_current_package: String,
-    /// Manager exit code from the last install: `0` success, its code on failure, `nil` before one
-    /// finishes. Together with [`UpdatesState::install_log`], it is the failure fact; wording such
-    /// as network, disk, or signature error belongs in config (ADR-0113 amendment).
+    /// Package manager's exit code for the last install (`0` success); `nil` while running, before
+    /// one, or when a signal killed it.
     pub install_exit_code: Option<i32>,
-    /// Unix seconds when the last install stopped, regardless of outcome. Use it with the caller's
-    /// install start to measure duration.
+    /// Unix seconds when the last install's process ended, whatever its status; `nil` while
+    /// running, before one, or when it failed to spawn.
     pub install_finished_at: Option<i64>,
-    /// Last install output, newest last, stdout/stderr interleaved by arrival (two readers make the
-    /// cross-stream order inexact). Keeps the last 200 lines; cleared when an install starts.
+    /// The last 200 lines of install output, stdout and stderr interleaved, newest last; cleared
+    /// when an install starts.
     pub install_log: Vec<String>,
-    /// Why Supervisor never got a manager answer: spawn or wait failed. Unlike
-    /// [`UpdatesState::install_exit_code`], this means the install was never answered and the
-    /// failure is Supervisor's.
+    /// Why the package manager could not be run or waited on, or `nil`. Its own failures are
+    /// `install_exit_code`.
     pub install_error: Option<String>,
-    /// Whether `/run/mantle-reboot-required` exists. A pacman hook writes it, so a
-    /// terminal upgrade raises it too, and `/run` being tmpfs means a boot clears it. Nothing in
-    /// Mantle writes or clears it.
+    /// `/run/mantle-reboot-required` exists, watched live. Mantle never writes it: a user-installed
+    /// pacman hook must, and `/run` empties on reboot.
     pub reboot_required: bool,
 }
 
@@ -80,24 +68,22 @@ pub enum UpdatesSignal {
     Changed,
 }
 
-/// What `updates:configure` carries. One wrong-typed key drops the whole call (ADR-0034).
+/// `configure`'s table. One wrong-typed key drops the whole call (ADR-0034).
 #[derive(Debug, serde::Deserialize)]
 #[cfg_attr(test, derive(schemars::JsonSchema))]
 pub struct UpdatesConfigure {
-    /// Seconds between scheduled checks. Zero is dormant: nothing checks until a `check` asks.
+    /// Seconds between scheduled checks, the first at once unless `last_successful_check` is
+    /// younger; `0` checks only on `check`.
     #[serde(rename = "interval")]
     pub interval_secs: u64,
-    /// Remembered Unix time of the last successful check, likely from `system.state`. Optional
-    /// seed, not override: used only before this process has checked, so restarts can answer "has
-    /// an hour passed?" without starting over.
+    /// Persisted Unix seconds of the last successful check. Seeds `last_successful_check` only
+    /// while that is `nil`, so a restart need not recheck at once.
     pub checked_at: Option<i64>,
-    /// Remembered list from the check `checked_at` stamps, under the same seed rule: a restart
-    /// inside the interval skips its first check, and without this it would show "up to date" for
-    /// the rest of the hour. Ignored without `checked_at`, since a list with no age is unusable.
+    /// Persisted `packages` from that check, seeded on the same terms; ignored without `checked_at`.
     #[serde(default, deserialize_with = "crate::capabilities::lua_list")]
     pub packages: Vec<UpdateCandidate>,
-    /// Also checks the AUR and installs through `aur_helper` (ADR-0250). Sends every foreign
-    /// package name to aur.archlinux.org and builds without PKGBUILD review.
+    /// Also check the AUR and install through `aur_helper` (ADR-0250). Sends every foreign package
+    /// name to aur.archlinux.org and builds without PKGBUILD review.
     #[serde(default)]
     pub aur: bool,
 }

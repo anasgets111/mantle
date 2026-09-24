@@ -14,31 +14,25 @@
 
 use serde::Serialize;
 
-/// One logind inhibitor blocking idle.
+/// One holder blocking idle.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 #[cfg_attr(test, derive(schemars::JsonSchema))]
 pub struct IdleInhibitor {
-    /// Free-text `who` passed to `Inhibit`, e.g. `"mpv"`; draw it as a label, never match it.
+    /// Free-text holder name, e.g. `"mpv"`; draw it, never match it.
     pub who: String,
-    /// Free-text `why`, e.g. `"Playing video"`, often empty.
+    /// Free-text reason, e.g. `"Playing video"`; often empty.
     pub why: String,
 }
 
-/// `mantle.idle` payload (ADR-0141).
+/// `mantle.idle`'s payload (ADR-0141).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 #[cfg_attr(test, derive(schemars::JsonSchema))]
 pub struct IdleState {
-    /// Anything is holding the session awake: a logind inhibitor including this shell's own, a
-    /// client's `org.freedesktop.ScreenSaver` hold (ADR-0231), or the compositor withholding idle
-    /// notifications (ADR-0160). Either way no threshold event arrives while it is true, so a
-    /// countdown must stop -- but for different reasons. The logind half is the Supervisor's own
-    /// gate dropping events, and a screensaver hold becomes one; the compositor half is the
-    /// compositor never sending them, and nothing in this process gates on it.
+    /// Something holds the session awake: a logind inhibitor (this shell's included), a
+    /// `ScreenSaver` client (ADR-0231) or a Wayland inhibitor (ADR-0160). No threshold fires while true.
     pub inhibited: bool,
-    /// Idle-inhibitor holders other than this shell. A Wayland holder has an empty `who`, because
-    /// no protocol names one (ADR-0160). So does a `ScreenSaver` client arriving through
-    /// xdg-desktop-portal, which passes no application name, leaving `why` its only label: draw
-    /// `why` when `who` is empty.
+    /// Holders other than this shell, `ScreenSaver` clients included. The compositor's hold has an
+    /// empty `who`; draw `why` then.
     pub inhibitors: Vec<IdleInhibitor>,
 }
 

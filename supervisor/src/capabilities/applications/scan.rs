@@ -13,28 +13,22 @@ use super::entry::{desktop_file_id, flag, parse_group, tokenize_exec};
 /// `watcher.rs` does.
 const MAX_DEPTH: usize = 4;
 
-/// One application as config sees it (ADR-0061). Display data only: argv stays private because
-/// `:invoke("launch", id)` runs it, and exposing it would let config rewrite the command.
+/// One visible `Type=Application` desktop entry; display data only, argv stays private (ADR-0061).
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 #[cfg_attr(test, derive(schemars::JsonSchema))]
 pub struct AppSummary {
-    /// Desktop file id (`org.telegram.desktop`), and `launch`'s argument.
+    /// Desktop file id, e.g. `"org.telegram.desktop"`; the argument of `"launch"`.
     pub id: String,
-    /// Unlocalized `Name=`. `Name[xx]` is not read (ADR-0061), so this is English on a localized
-    /// system.
+    /// `Name=`, unlocalized: `Name[xx]` is not read (ADR-0061).
     pub name: String,
-    /// `Icon=` as written, either a theme name or absolute path; `icon { name = ... }` accepts
-    /// both (ADR-0054 decision 2). `None` means no `Icon=` key, distinct from failed resolution.
+    /// `Icon=` as written, a theme name or absolute path, both accepted by `icon { name }`; `nil`
+    /// without the key.
     pub icon: Option<String>,
-    /// Unlocalized `Comment=`, the one-line description/search text under the name, e.g.
-    /// `"Web Browser"` under `Firefox` (ADR-0112). `None` means no key, so config can hide it;
-    /// unlike `name`, this field is localized.
+    /// `Comment=`, unlocalized, e.g. `"Web Browser"` (ADR-0112); `nil` without the key.
     pub comment: Option<String>,
-    /// Unlocalized `GenericName=`, what the application is rather than what it is called:
-    /// `"Text Editor"` under `Zed`, which no other field of that entry says. Search text.
+    /// `GenericName=`, unlocalized, e.g. `"Text Editor"`; `nil` without the key.
     pub generic_name: Option<String>,
-    /// `Keywords=` split on `;`: the synonyms an entry ships for search, such as GIMP's `GNU` and
-    /// `Image Manipulation Program`. Empty when the key is absent. Search text, not a label.
+    /// `Keywords=` split on `;`, for search; empty without the key.
     pub keywords: Vec<String>,
 }
 

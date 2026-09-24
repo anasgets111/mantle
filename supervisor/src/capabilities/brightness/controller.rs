@@ -12,14 +12,11 @@ use udev::MonitorSocket;
 use super::super::read_attr;
 use super::super::scale::{percent_from_raw, raw_from_percent};
 
-/// `mantle.brightness`'s full payload. `percent` is the unchanged `StateSnapshot` JSON
-/// key. `Default` (`0`) precedes the first read, but no-device construction emits no signal, so
-/// Lua never observes the placeholder (see `brightness/mod.rs`).
+/// `mantle.brightness`'s payload; the capability stays `nil` on a machine with no backlight.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize)]
 #[cfg_attr(test, derive(schemars::JsonSchema))]
 pub struct BrightnessState {
-    /// Screen backlight, `0` to `100`, from sysfs `brightness` (the requested value), not
-    /// `actual_brightness`, which can lag during a hardware fade.
+    /// Screen backlight, `0` to `100`: the last requested level (sysfs `brightness`), not the mid-fade one.
     pub percent: u8,
 }
 

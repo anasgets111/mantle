@@ -10,19 +10,14 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use tokio::sync::mpsc::UnboundedSender;
 
-/// `mantle.system`'s Lua-visible fields, with their `StateSnapshot` JSON keys unchanged.
+/// `mantle.system`'s payload, pushed once a second.
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
 #[cfg_attr(test, derive(schemars::JsonSchema))]
 pub struct SystemState {
-    /// Unix epoch seconds, not milliseconds. `os.date` expects seconds; milliseconds would be wrong
-    /// by 1000x.
+    /// Unix epoch seconds, as `os.date` takes them.
     pub time: i64,
-    /// Whole seconds since this controller was built, which is the first time a config asked for
-    /// `system`. Only a difference means anything; take durations from this rather than from
-    /// `time`, which `settimeofday` and an NTP step move underneath a deadline.
-    ///
-    /// ponytail: `Instant` is `CLOCK_MONOTONIC` on Linux, so a suspend does not count toward an
-    /// elapsed reading. Suspend-inclusive timing wants `CLOCK_BOOTTIME` as a second field.
+    /// Seconds since `system` was first used; excludes suspend. Take durations from it, since NTP moves `time`.
+    // ponytail: `Instant` is `CLOCK_MONOTONIC`; suspend-inclusive timing wants a `CLOCK_BOOTTIME` field.
     pub monotonic: i64,
 }
 

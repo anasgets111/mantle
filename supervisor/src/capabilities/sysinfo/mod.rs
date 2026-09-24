@@ -12,7 +12,8 @@ pub use controller::{SysinfoController, SysinfoSignal};
 #[cfg_attr(test, derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum SysinfoAction {
-    /// Poll intervals in seconds.
+    /// Sets poll intervals; every one starts at `0`, so nothing is read until this. The first
+    /// reading lands one interval later (CPU: two).
     Configure { intervals: controller::SysinfoConfigure },
 }
 

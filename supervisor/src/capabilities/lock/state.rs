@@ -1,28 +1,17 @@
-/// `mantle.lock`'s payload (ADR-0052 decision 4). `attempts` counts failed authentications since
-/// acquisition. Lua cannot rebuild it from layout-time state (ADR-0044), so identical failures
-/// leave one `error` string; empty `error` means no failure, like `keyboard.active_layout`.
+/// `mantle.lock`'s payload (ADR-0052).
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize)]
 #[cfg_attr(test, derive(schemars::JsonSchema))]
 pub struct LockState {
-    /// The Renderer confirmed the session locked. A requested but unconfirmed lock remains `false`;
-    /// [`apply`] changes this only from the Renderer report.
+    /// The Renderer confirmed the session locked; a requested lock stays `false` until then.
     pub active: bool,
-    /// A password is with PAM and unanswered. `pam_unix` takes about a second, so this drives a
-    /// spinner; a second submit is refused while true.
+    /// A password is with PAM. A second submit is refused while true.
     pub authenticating: bool,
-    /// PAM answers against the held lock, including success. Resets to `0` only on a new confirmed
-    /// lock, so it is per-acquisition, not per-failure; lockout rules read it with `error`.
+    /// Rejected passwords since this lock was confirmed; reset by the next lock.
     pub attempts: u32,
-    /// Drawable reason for the last failure, e.g. `"too many attempts"`. Empty before attempts or
-    /// after success; rewritten on every PAM answer and cleared on a new lock.
+    /// Last failure to draw: a rejected password (`"authentication failed"`) or a refused lock's
+    /// reason. Cleared by a correct password, `lock`, a confirmed lock, and unlock.
     pub error: String,
-    /// PAM has said yes and the lock is still on the glass, which is the window a config animates
-    /// its lock screen out in (ADR-0190).
-    ///
-    /// True between a successful password and the Renderer's `Unlocked` report. With no
-    /// `unlock_animation` configured that window is as short as the round trip; with one it is at
-    /// least that long. Nothing a config does can extend it: the release is scheduled by the
-    /// Supervisor the moment PAM answers, and this is a readout of that, not a handle on it.
+    /// PAM said yes and the lock is still up: the window for an out-animation (ADR-0190).
     pub unlocking: bool,
     /// `SetSessionLock { locked: true }` is in flight before Renderer confirmation.
     /// `#[serde(skip)]`: bookkeeping, not payload. `active` must mean only Renderer confirmation,

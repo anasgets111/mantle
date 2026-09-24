@@ -15,28 +15,24 @@ use tokio::task::JoinHandle;
 /// one listing after the burst is the point.
 const RELIST_DEBOUNCE: Duration = Duration::from_millis(200);
 
-/// `mantle.files`'s payload (ADR-0120): watched folders keyed by the path `watch` was given, so
-/// `mantle.files.folders[folder]` reads back with the string the config wrote.
+/// `mantle.files` payload (ADR-0120).
 #[derive(Debug, Clone, Default, PartialEq, serde::Serialize)]
 #[cfg_attr(test, derive(schemars::JsonSchema))]
 pub struct FilesState {
-    /// One entry per active `:invoke("watch", path)`, keyed by `path` with trailing slashes stripped.
-    /// Absent until watched, so an unrequested folder is not an empty list.
+    /// One entry per `"watch"`, keyed by its `path` minus trailing slashes; `nil` until watched.
     pub folders: BTreeMap<String, Folder>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, serde::Serialize)]
 #[cfg_attr(test, derive(schemars::JsonSchema))]
 pub struct Folder {
-    /// `false` until the first listing lands, for a picker's loading spinner. `true` thereafter,
-    /// even when `entries` is empty or `error` is set.
+    /// `false` until the first listing lands, then `true` even when empty or failed.
     pub ready: bool,
-    /// Plain files directly inside the folder, skipping dotfiles, filtered to `watch`'s extensions
-    /// and sorted case-insensitively. Not recursive. Replaced wholesale after each debounced
-    /// inotify burst, so a copy in progress lands as one update.
+    /// Files (and symlinks to files) directly inside, minus dotfiles, filtered by extension and
+    /// sorted case-insensitively by name. Relisted 200 ms after the last change.
     pub entries: Vec<FileEntry>,
-    /// A drawable listing error such as `"No such file or directory"`, or absent on success. Set
-    /// with `ready = true`, distinguishing a missing folder from an empty one.
+    /// Why listing failed, e.g. `"No such file or directory (os error 2)"`; `nil` on success. A
+    /// missing or deleted folder is not watched for reappearing.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
 }
@@ -44,11 +40,11 @@ pub struct Folder {
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, serde::Serialize)]
 #[cfg_attr(test, derive(schemars::JsonSchema))]
 pub struct FileEntry {
-    /// File name alone, such as `sunrise.jpg`, for drawing and search.
+    /// File name, e.g. `"sunrise.jpg"`.
     pub name: String,
-    /// Absolute path for `image { source = ... }` and config storage.
+    /// Absolute path.
     pub path: String,
-    /// Last-modification Unix seconds for newest-first sorting; `0` when unavailable.
+    /// Modification time in Unix seconds; `0` when unavailable.
     pub modified: i64,
 }
 

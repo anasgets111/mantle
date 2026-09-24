@@ -10,44 +10,24 @@ use shared::error;
 use tokio::sync::mpsc::UnboundedSender;
 use zbus::zvariant::OwnedValue;
 
-/// `battery.state`, one of UPower's seven `Device.State` values.
-///
-/// A boolean collapsed `PendingCharge` and `PendingDischarge` into `false`, making a battery that
-/// is merely not moving indistinguishable from one that is draining. On a laptop that sets
-/// `charge_control_end_threshold` -- 70 here -- the not-moving case is most of every day, which is
-/// why the state is carried by name. The three seen on this hardware are `Charging`,
-/// `PendingCharge` and `Discharging`.
-///
-/// UPower documents these seven only as names: its `Device` page lists the enum and defines no
-/// value. So each doc below says what the kernel and this hardware were observed to do, and none
-/// of them is a guarantee from UPower.
-///
-/// Serialized by name, so Lua compares `b.state == "PendingCharge"`; `mpris.play_state` uses the
-/// same boundary shape.
+/// `battery.state`: UPower's `Device.State` by name, e.g. `b.state == "PendingCharge"`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize)]
 #[cfg_attr(test, derive(schemars::JsonSchema))]
 pub enum BatteryStatus {
-    /// UPower has no answer, including hosts whose display device is not a battery.
+    /// No answer: UPower unreachable, an unknown state number, or a display device that is not a battery.
     #[default]
     Unknown,
-    /// Taking current; on this hardware that means an adapter is supplying it.
+    /// Taking current from an adapter.
     Charging,
     /// Draining.
     Discharging,
-    /// Flat; UPower reports this instead of `Discharging` only at the very end.
+    /// Flat.
     Empty,
-    /// Charged and holding. A battery stopped below full reports `PendingCharge` instead.
+    /// Charged and holding.
     FullyCharged,
-    /// Waiting to charge: not draining, not taking current.
-    ///
-    /// A reached charge limit is the usual cause on a laptop that sets one, but a weak charger, a
-    /// thermal pause, and the second or two after a plug while the driver still reads
-    /// `Not charging` all report it too, so nothing downstream may read a limit out of it. The
-    /// first line stands alone on purpose: `stubs.rs` gives a variant only that much.
+    /// On mains, neither draining nor taking current: a charge limit, weak charger or thermal pause.
     PendingCharge,
-    /// Waiting to discharge, by name; UPower defines it no further.
-    ///
-    /// Linux battery sysfs has no status that produces it, so it is not expected on this hardware.
+    /// Waiting to discharge.
     PendingDischarge,
 }
 
@@ -68,24 +48,20 @@ impl BatteryStatus {
     }
 }
 
-/// `mantle.battery`'s full payload. Field names are the `StateSnapshot` JSON keys verbatim
-/// and may not be renamed. `Default` is the correct desktop answer when no battery exists.
+/// `mantle.battery`'s payload. No battery, or no UPower, reads `present = false` and defaults.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize)]
 #[cfg_attr(test, derive(schemars::JsonSchema))]
 pub struct BatteryState {
-    /// Whether UPower's display device is a battery and present. `false` on a desktop is an answer,
-    /// not missing data; check it before drawing the other fields.
+    /// UPower's display device is a present battery. Check it before drawing the other fields.
     pub present: bool,
-    /// Charge, `0` to `100`, rounded against the battery's full capacity, not its charge limit. A
-    /// machine capped at 70 therefore reads `70`, not `100`.
+    /// UPower's `Percentage`, rounded to `0` to `100`; a spurious `0` while not draining keeps the last value.
     pub percent: u8,
-    /// UPower's state, including `PendingCharge` on mains versus `Discharging` on battery.
+    /// What the battery is doing; see `BatteryStatus`.
     pub state: BatteryStatus,
-    /// Seconds until flat, or `nil`. UPower reports `0` while charging and before it has estimated;
-    /// neither is a duration.
+    /// Seconds until flat, or `nil` while UPower has no estimate.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub time_to_empty: Option<u32>,
-    /// Seconds until full, or `nil` on the same terms as `time_to_empty`.
+    /// Seconds until full, or `nil` while UPower has no estimate.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub time_to_full: Option<u32>,
 }

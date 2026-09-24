@@ -5,22 +5,21 @@
 
 use std::path::PathBuf;
 
-/// One installed package with a newer version, also the `updates.packages` Lua shape.
+/// One installed package with a newer version.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[cfg_attr(test, derive(schemars::JsonSchema))]
 pub struct UpdateCandidate {
-    /// The package name, as the package manager spells it.
+    /// Package name.
     pub name: String,
-    /// Installed version in the manager's spelling.
+    /// Installed version.
     pub old_version: String,
-    /// Version offered by synced repositories.
+    /// Version on offer.
     pub new_version: String,
     /// Bytes to fetch; `0` when already cached.
     pub download_size: i64,
-    /// Bytes occupied unpacked, not a delta. Config subtracts the old size if needed.
+    /// Bytes the new version occupies installed; not a delta.
     pub installed_size: i64,
-    /// Where the new version comes from: the repo's name, e.g. `"extra"`, or `"aur"`. Empty in a
-    /// list seeded from before the field existed.
+    /// Source repository, e.g. `"extra"` or `"aur"`; empty in a seeded list that lacks it.
     #[serde(default)]
     pub repository: String,
 }

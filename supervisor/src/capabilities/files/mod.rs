@@ -13,15 +13,15 @@ pub use controller::{FilesController, FilesSignal};
 #[cfg_attr(test, derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum FilesAction {
-    /// Lists an absolute folder into `folders[path]`. `extensions` are matched case-insensitively,
-    /// with or without the dot; none means every file.
+    /// Keeps `folders[path]` listing an absolute folder. `extensions` match case-insensitively,
+    /// dot optional; omitted means every file.
     Watch {
         #[serde(deserialize_with = "absolute")]
         path: String,
         #[serde(default, deserialize_with = "crate::capabilities::lua_list")]
         extensions: Vec<String>,
     },
-    /// Stops a `watch` on this path.
+    /// Stops watching `path` and removes it from `folders`.
     Unwatch {
         #[serde(deserialize_with = "absolute")]
         path: String,

@@ -1,225 +1,193 @@
 ---@meta
--- The nine geometric nodes and their shared properties.
+-- The eleven node kinds and their properties. Surface roles live in `surfaces.lua`.
 --
--- HAND-WRITTEN. `just stubs` does not touch it. Of five `lua-meta` files, only `mantle.lua` is
--- generated: capability payloads are `Serialize` structs, while a node's schema is scattered
--- `properties.get("...")` calls in `renderer/src/`, so it is not derivable data.
+-- HAND-WRITTEN: `just stubs` does not touch it. `renderer/src/lua/nodes.rs`'s `meta_stub_tests`
+-- checks constructors and each class's `---@field` names against `NODE_PROPERTIES`; `just types`
+-- checks `share/starter` against these types (ADR-0081).
 --
--- `renderer/src/lua/nodes.rs`'s `meta_stub_tests` matches constructors and each kind's `---@field`
--- names against `accepted_properties`; a property added to the engine but omitted here fails the
--- build. `just types` runs the language server over `share/starter` against these declarations, so a
--- wrong type here surfaces as a diagnostic on working config code (ADR-0081).
---
--- Constructor `---@param props`/`---@return Node` lines stay bare: the type is the sentence, and
--- a copy of "the properties above" per constructor adds nothing.
---
--- Every property accepts a signal in place of a literal, spelled `Bound` in each union. The engine
--- resolves it once per pass (`node::resolve_properties`), then applies the property's normal rules;
--- `radius = someSignal` is as ordinary as `radius = 8`.
---
--- `Bound` is `userdata`, not the `Signal` class: `---@class` accepts any table-shaped union
--- member, so `string|Signal` on `text.content` would admit every IDL payload table, including a
--- notification's `body` span array, reaching the engine as literal content. `userdata` rejects
--- tables and matches the runtime signal; see `signals.lua`'s [`Signal`].
---
--- Structural exceptions are `id`, `hover`, `scroll`, and a panel's `layer`/`anchor`/`monitor`/
--- `namespace`: `resolve_properties` passes them raw because identities do not resolve. `hover` and
--- `scroll` still take handles, so they are `Bound`; the other structural fields do not. Callbacks
--- (`on_*`/`itemfn`/`key`) also omit the union: a signal resolves to its value, then is refused as
--- non-function, making the declared union true but useless.
+-- `Bound` in a union means the property also takes a signal, resolved once per pass. It is
+-- `userdata`, not `Signal`, so table payloads are not mistaken for signals. `id` and callbacks take
+-- no signal; `hover`, `scroll` and `geometry` take the handle itself.
 
 ---@alias Node table A node table, as one of the constructors below returns it.
 ---@alias Align "Start"|"Center"|"End"|"Stretch"
----@alias Cursor "default"|"pointer"|"text"|"not-allowed"|"grab"|"grabbing"|"move"|"crosshair"|"wait"|"progress"|"help"|"context-menu"|"cell"|"vertical-text"|"alias"|"copy"|"no-drop"|"zoom-in"|"zoom-out"|"all-scroll"|"col-resize"|"row-resize"|"n-resize"|"e-resize"|"s-resize"|"w-resize"|"ne-resize"|"nw-resize"|"se-resize"|"sw-resize"|"ew-resize"|"ns-resize"|"nesw-resize"|"nwse-resize" A pointer shape by its CSS name, which is also its `wp_cursor_shape_v1` name.
----@alias Edges { top?: number, right?: number, bottom?: number, left?: number } Per-edge pixels. A bare number in the same slot broadcasts to all four, which is why every field taking this also takes `number`.
----@alias Percent string `"NN%"` of the parent's box, or of the output on a panel. The language server cannot narrow a pattern, so any string passes it.
----@alias Length number|"Fill"|Percent Pixels in `[0, 8192]`, fill the available space, or a percent of it.
----@alias Color string Hex `#RRGGBB` or `#RRGGBBAA`. Strict: no shorthand, no named colours.
----@alias BorderColors { top?: Color, right?: Color, bottom?: Color, left?: Color } Per-edge colours, the one edge table whose values are strings rather than pixels. A signal in an edge is refused: bind `border_color` itself instead.
----@alias Axes { x?: number, y?: number } An `{ x, y }` pair; an absent axis takes the property's default.
----@alias GradientStop [number, Color] A position within `[0, 1]` and the colour there. Positions ascend.
----@alias Gradient { gradient: "Linear"|"Radial"|"Conic", angle?: number, stops: GradientStop[] } CSS geometry across the box: `angle` is degrees clockwise from the top, default `180` for `"Linear"` (downward) and `0` for `"Conic"` (where the turn starts); `"Radial"` is an ellipse from the centre to the edges and takes no `angle`. Two or more stops.
----@alias Mask { gradient?: "Linear"|"Radial"|"Conic", angle?: number, stops?: GradientStop[], source?: string, invert?: boolean } A `Gradient` or an image `source` (stretched over the box, only its alpha read), exactly one. `invert` keeps what the mask covers out instead of in.
----@alias EasingName "Linear"|"InQuad"|"OutQuad"|"InOutQuad"|"InCubic"|"OutCubic"|"InOutCubic"|"InQuart"|"OutQuart"|"InOutQuart"|"InQuint"|"OutQuint"|"InOutQuint"|"InSine"|"OutSine"|"InOutSine"|"InExpo"|"OutExpo"|"InOutExpo"|"InCirc"|"OutCirc"|"InOutCirc"|"InBack"|"OutBack"|"InOutBack"|"InElastic"|"OutElastic"|"InOutElastic"|"InBounce"|"OutBounce"|"InOutBounce" QML's `Easing.Type` names without the prefix. `Back`, `Elastic` and `Bounce` overshoot and are clamped to the property's range.
----@alias Easing EasingName|[number, number, number, number]|{ steps: integer } A name, CSS `cubic-bezier(x1, y1, x2, y2)` as four numbers with `x1` and `x2` within `[0, 1]`, or `{ steps = n }` for `n` jumps that land on the target only at the end (ADR-0151).
----@alias Keyframe number|string|Edges|Axes|{ value: number|string|Edges|Axes, duration?: number, easing?: Easing } One stop in a `keyframes` list: a bare value taking the entry's timing, or a table naming its own. A `duration` of `0` is a jump rather than a stop, and a frame repeating the value before it is a hold.
----@alias Spring { stiffness: number, damping: number } A mass on a spring, in place of a duration and an easing (ADR-0154). `stiffness` is the pull toward the target, within `(0, 100000]`; `damping` is the drag on the way, within `(0, 10000]`, and `2 * math.sqrt(stiffness)` is where it stops overshooting. Both are required and there is no `mass`: it divides out of the two. A spring carries its speed through a change of target, which no easing can do.
----@alias Animation number|{ duration: number, delay?: number, easing?: Easing, from?: number|string|Edges, spring?: Spring, keyframes?: Keyframe[], loops?: integer|"Infinite" } A duration in milliseconds, `[1, 60000]`, with `InOutQuad` when no easing is named. `delay` is how long the property holds still first, `[0, 60000]` ms and zero by default, which is CSS's `transition-delay` (ADR-0153); on a sequence it offsets the whole run, not each cycle. `spring` replaces `duration` and `easing` rather than joining them; a `duration`, `easing`, `loops` or `keyframes` beside one is refused, and so is `loops` without `keyframes`. `from` is where a node that has never displayed the property starts: its entry animation, absent meaning the first value is taken as it is (ADR-0146). `keyframes` walks the property through at least two values instead of easing it to the one a pass resolved, `loops` times or forever (ADR-0152); at least one segment must last, since a list of nothing but jumps takes no time to walk; the entry's own presence is what starts and stops it, so bind `animate` itself to gate one. A sequence starts on its own first frame, so `from` has nothing to say beside one and naming both is refused.
----@alias Animations table<string, Animation> Which of this node's properties ease between values, and how. Any property the node has may be named, except `z`, which is refused (ADR-0259); what its value is decides whether it tweens: a number, a `"NN%"` size, a hex colour or an edge table of numbers eases against a value of the same shape, and anything else (`"Fill"`, a boolean, a table of colours, a shape change) snaps.
----@alias Exit { duration: number, delay?: number, easing?: Easing, [string]: any } The one key of `animate` that is not a property name: a shared duration, `delay` and easing, plus the value each named property eases to once a pass stops returning the node (ADR-0150). Each target starts from what the node displays, or from the property's identity when it never set one (`1` for `opacity` and `scale`, `0` for the rest), so `exit = { duration = 150, opacity = 0 }` fades out whatever the node was showing.
+---@alias Cursor "default"|"pointer"|"text"|"not-allowed"|"grab"|"grabbing"|"move"|"crosshair"|"wait"|"progress"|"help"|"context-menu"|"cell"|"vertical-text"|"alias"|"copy"|"no-drop"|"zoom-in"|"zoom-out"|"all-scroll"|"col-resize"|"row-resize"|"n-resize"|"e-resize"|"s-resize"|"w-resize"|"ne-resize"|"nw-resize"|"se-resize"|"sw-resize"|"ew-resize"|"ns-resize"|"nesw-resize"|"nwse-resize" CSS cursor name (same as `wp_cursor_shape_v1`).
+---@alias Edges { top?: number, right?: number, bottom?: number, left?: number } Per-edge pixels; a missing edge is `0`.
+---@alias Percent string `"NN%"` of the parent's box (the output's, on a panel). Not checked by the language server.
+---@alias Length number|"Fill"|Percent Pixels `[0, 8192]`, the remaining space, or a percent.
+---@alias Color string `"#RRGGBB"` or `"#RRGGBBAA"`. No shorthand or names.
+---@alias BorderColors { top?: Color, right?: Color, bottom?: Color, left?: Color } Per-edge colours; a signal inside is refused.
+---@alias Axes { x?: number, y?: number } A missing axis takes the property's default.
+---@alias GradientStop [number, Color] Position `[0, 1]` and colour. Positions ascend.
+---@alias Gradient { gradient: "Linear"|"Radial"|"Conic", angle?: number, stops: GradientStop[] } At least 2 stops. `angle` is degrees clockwise from the top: Linear default `180`, Conic default `0`, Radial refuses it.
+---@alias Mask { gradient?: "Linear"|"Radial"|"Conic", angle?: number, stops?: GradientStop[], source?: string, invert?: boolean } Exactly one of a `Gradient` or an image `source` path (alpha only, stretched over the box). `invert` swaps kept and cut.
+---@alias EasingName "Linear"|"InQuad"|"OutQuad"|"InOutQuad"|"InCubic"|"OutCubic"|"InOutCubic"|"InQuart"|"OutQuart"|"InOutQuart"|"InQuint"|"OutQuint"|"InOutQuint"|"InSine"|"OutSine"|"InOutSine"|"InExpo"|"OutExpo"|"InOutExpo"|"InCirc"|"OutCirc"|"InOutCirc"|"InBack"|"OutBack"|"InOutBack"|"InElastic"|"OutElastic"|"InOutElastic"|"InBounce"|"OutBounce"|"InOutBounce" `Back` and `Elastic` overshoot, as does a Bezier `y` outside `[0, 1]`; the property's range clamps them.
+---@alias Easing EasingName|[number, number, number, number]|{ steps: integer } A name, CSS `cubic-bezier` `{ x1, y1, x2, y2 }` with `x1`, `x2` in `[0, 1]`, or `{ steps = n }`, `n` in `[1, 1000]` (ADR-0151).
+---@alias Keyframe number|string|Edges|Axes|{ value: number|string|Edges|Axes, duration?: number, easing?: Easing } A bare value, or a frame with its own timing. `duration = 0` jumps; repeating the previous value holds.
+---@alias Spring { stiffness: number, damping: number } Both required: `stiffness` `(0, 100000]`, `damping` `(0, 10000]`; `2 * math.sqrt(stiffness)` is critical damping. Keeps its velocity when the target changes (ADR-0154).
+---@alias Animation number|{ duration?: number, delay?: number, easing?: Easing, from?: number|string|Edges|Axes, spring?: Spring, keyframes?: Keyframe[], loops?: integer|"Infinite" } A bare number is `duration`.
+--- - `duration`: ms `[1, 60000]`, required unless `spring`. `easing` defaults to `"InOutQuad"`.
+--- - `delay`: ms `[0, 60000]` before it starts; offsets a sequence once, not per loop (ADR-0153).
+--- - `from`: start value when the node did not display the property last pass (a new node, or one that lacked it); otherwise the first value snaps (ADR-0146). Refused beside `keyframes`.
+--- - `spring`: replaces `duration`, `easing`, `keyframes` and `loops`, which are refused beside it.
+--- - `keyframes`: at least 2 values, no holes, at least one segment with time; walks instead of easing to the resolved value (ADR-0152). `loops` `[1, 10000]` or `"Infinite"`, default `1`, only with `keyframes`. Bind `animate` to start or stop one.
+---@alias Animations table<string, Animation> Property name to animation. Names the node does not accept, `z` and `animate` are refused. Numbers, percents, colours and numeric `Edges`/`Axes` tween against the same shape; anything else snaps.
+---@alias Exit { duration?: number, delay?: number, easing?: Easing, spring?: Spring, [string]: any } `animate.exit`: timing as in `Animation` (`duration` or `spring` required once a target is named) plus `property = target` pairs the node eases to after a pass drops it (ADR-0150). A target starts from the shown value, or from the identity: `1` for `opacity`/`scale`, `0.5` for `origin`, alpha 0 for a colour, `0` otherwise.
 
 ---@class NodeBase
----@field width? Length|Bound Pixels, or `"Fill"` to take what the parent has left. Omitted means the node sizes to its content.
----@field height? Length|Bound The same, on the cross axis. `"Fill"` on both is how a background covers its parent.
----@field max_width? number|Bound A ceiling in pixels on a node whose `width` is omitted: it grows with its content up to here and stops. Past it the children overflow, which a `scroll` on the same node is what turns into scrolling. Ignored beside a fixed or `"Fill"` width, which already say how wide.
----@field max_height? number|Bound The same, on the other axis.
----@field min_width? number|Bound A floor in pixels on a node whose `width` is omitted: it never measures narrower than this, however little it holds. What keeps a card sized by its own words looking like a card when the words are two of them. Ignored beside a fixed or `"Fill"` width; above `max_width` it wins, as in CSS, rather than being refused.
----@field min_height? number|Bound The same, on the other axis.
----@field margin? number|Edges|Bound Outer spacing. A bare number is all four edges.
----@field padding? number|Edges|Bound Inner spacing. A bare number is all four edges.
----@field align_h? Align|Bound On a stacking parent this places the node in the content box; on a `row` it is read off the row itself as the main-axis distribution and ignored on the children.
----@field align_v? Align|Bound The same two jobs as `align_h`, swapped: main axis on a `column`, cross axis on a `row`.
----@field visible? boolean|Bound `false` keeps the node out of the constraint and paint passes, and out of its parent's spacing. Its subtree is frozen, not dropped (ADR-0124), so it stays in memory and every apply copies it. For one of several views (panels, pages, tabs), choose the parent's `children` with a signal instead of hiding siblings.
----@field opacity? number|Bound `[0, 1]`, default `1`. Inherited multiplicatively. Refused outside the range rather than clamped. A node at `0` still lays out and still takes pointer events.
----@field z? number|Bound Paint and hit order among siblings, default `0`, any finite number (ADR-0259). Higher paints later and takes the pointer first; equal `z` keeps declaration order. A parent always paints below its children, so a negative `z` sinks a child under its siblings, not under its parent. Layout and focus order ignore it. Snaps; `animate` refuses it.
----@field scale? number|Axes|Bound A paint-only scale about `origin` (ADR-0149): one factor for both axes, or `{ x, y }` with an absent axis at `1`. `[0, 64]`. Layout, `geometry` and siblings see the unscaled box; hit-testing and input regions follow the painted one.
----@field rotate? number|Bound Degrees clockwise about `origin`, paint-only.
----@field translate? Axes|Bound `{ x, y }` logical pixels the painted node is shifted by, after `scale` and `rotate`. Paint-only.
----@field origin? Axes|Bound Where `scale` and `rotate` pivot, as fractions of the node's box; default `{ x = 0.5, y = 0.5 }`, its centre.
----@field shadow_color? Color|Bound The drop shadow's colour, default `"#000000"` (ADR-0254). Shows once `shadow_blur`, `shadow_offset` or `shadow_spread` is set. Like `content_blur`, it stops at the parent's box, so give the parent padding or `clip = "None"`.
----@field shadow_blur? number|Bound CSS `box-shadow` blur radius in logical pixels, default `0`. A round box in `shadow_mode = "Box"`, or an opaque round box, fades linearly across `1.5 * shadow_blur` centred on its edge; a scoop and anything else take a Gaussian of sigma `shadow_blur / 2`, reaching 3 sigma (ADR-0262).
----@field shadow_offset? Axes|Bound `{ x, y }` logical pixels the shadow is shifted by, `[-8192, 8192]` each. Rotates and scales with the node.
----@field shadow_spread? number|Bound Logical pixels the shadow's box grows (or, negative, shrinks) a side before blurring. On content other than a box it scales the shadow about the box's centre, Qt's `shadowScale`.
----@field content_blur? number|Bound Gaussian blur of this node's own painted subtree, CSS `filter: blur()`'s sigma in logical pixels, default `0`, live every frame (ADR-0254). Not `blur`, which asks the compositor to blur the desktop behind the node, nor `image.source_blur`, a one-off blur at decode. Reaches 3 sigma at any sigma (ADR-0262).
----@field animate? Animations|Bound When a pass resolves a new value for a named property, the node eases from what it shows to the new value over the duration instead of snapping, and keeps easing between passes without running any Lua (ADR-0145). Only a node that already exists animates; a first value is taken as it is. Naming a property no tween carries is refused. The key `exit` is an `Exit` block rather than a duration: it is what the node eases to on its way out, kept painted but out of the layout until the tweens finish (ADR-0150).
----@field id? string Reconciliation hint, unique among siblings. Not addressable from Lua and has no effect on layout or paint (ADR-0045).
----@field hover? Bound The signal `hover(name)` returned. Marks this node's box as that slot's region.
----@field geometry? Bound The signal `geometry(name)` returned. The layout pass writes this node's absolute rect into it (ADR-0147).
----@field cursor? Cursor|Bound The shape the pointer takes over this node. Omitted means the node decides by what it is: a `button` with an `on_click` and a link's own words are `"pointer"`, a `textfield` is `"text"`, everything else is the arrow. Set it for the exceptions: `"default"` on a control that is off, `"grab"` on a handle, `"not-allowed"` on something refused. The innermost node under the pointer that says anything wins, so a `cursor` on a card still yields to a link in its body (ADR-0107).
----@field on_hover? fun(hovered: boolean) Fires once on each hover edge from Wayland Enter, Motion or Leave, not per motion event. A layout refresh under a resting pointer updates `hover(name)` silently. Requires a `hover` slot on the same node and is refused without one: that signal is what remembers whether the node was hovered last pass, so it is also what tells one node's crossings from another's. Read `hover_rect(name)` for where the crossing happened. This is the only way to *do* something on hover -- `hover(name)` alone changes what is drawn, and a `computed` may not have side effects.
+---@field width? Length|Bound Omitted sizes to content.
+---@field height? Length|Bound Omitted sizes to content.
+---@field max_width? number|Bound Pixel ceiling `[0, 8192]`, CSS `max-width`. Content past it overflows; `scroll` on the same node scrolls it.
+---@field max_height? number|Bound Pixel ceiling `[0, 8192]`, as `max_width`.
+---@field min_width? number|Bound Pixel floor `[0, 8192]`, CSS `min-width`; wins over a lower `max_width`.
+---@field min_height? number|Bound Pixel floor `[0, 8192]`, as `min_width`.
+---@field margin? number|Edges|Bound Outer spacing; a number sets all four edges. Default `0`.
+---@field padding? number|Edges|Bound Inner spacing; a number sets all four edges. Default `0`.
+---@field align_h? Align|Bound Default `"Start"`. Places the node in its parent: both axes under a stacking parent, only the cross axis under a `row`/`column`/`list`. On a `row` it also packs the children, which ignore their own (`"Stretch"` packs as `"Start"`). `"Stretch"` overrides a pixel size; `"Fill"` off the parent's flow axis overrides alignment.
+---@field align_v? Align|Bound Default `"Start"`. As `align_h` with the axes swapped: packs a `column`'s children.
+---@field visible? boolean|Bound Default `true`. `false` removes the node from layout, paint and spacing but keeps its subtree frozen in memory (ADR-0124); to switch views, bind the parent's `children`.
+---@field opacity? number|Bound `[0, 1]`, default `1`, multiplied down the tree. At `0` the node still takes space and input.
+---@field z? number|Bound Sibling paint and hit order, default `0`. Higher paints later and hits first; ties keep declaration order. Layout and focus ignore it; cannot animate (ADR-0259).
+---@field scale? number|Axes|Bound `[0, 64]`, default `1`, about `origin`. Paint only: layout and `geometry` see the unscaled box; hit-testing follows the painted one (ADR-0149).
+---@field rotate? number|Bound Degrees clockwise about `origin`, `[-8192, 8192]`, default `0`. Paint only.
+---@field translate? Axes|Bound Pixel offset `[-8192, 8192]` per axis, applied after `scale` and `rotate`. Paint only.
+---@field origin? Axes|Bound Pivot for `scale` and `rotate` as box fractions `[0, 1]`. Default `{ x = 0.5, y = 0.5 }`.
+---@field shadow_color? Color|Bound Default `"#000000"`. Draws when alpha > 0 and `shadow_blur`, `shadow_offset` or `shadow_spread` is set. Clipped at the parent's box: pad the parent or give it `clip = "None"` (ADR-0254).
+---@field shadow_blur? number|Bound CSS `box-shadow` blur radius in px, `[0, 8192]`, default `0` (ADR-0262).
+---@field shadow_offset? Axes|Bound Shadow offset in px, `[-8192, 8192]` per axis. Follows the node's transform.
+---@field shadow_spread? number|Bound Px the shadow grows (or shrinks) per side, `[-8192, 8192]`. On non-box content it scales the shadow about the box centre.
+---@field content_blur? number|Bound Gaussian sigma in px over this node's painted subtree, CSS `filter: blur()`, `[0, 8192]`, default `0`. Clipped like a shadow (ADR-0254).
+---@field animate? Animations|Bound Tween named properties to each newly resolved value without running Lua (ADR-0145). The `exit` key is an `Exit` block. Only a node already on screen animates, unless the entry has `from`.
+---@field id? string Unique among siblings; matches this node across passes. Siblings without one match by position (ADR-0045).
+---@field hover? Bound A `hover(name)` signal; this node's box is its region.
+---@field geometry? Bound A `geometry(name)` signal; layout writes this node's surface-local rect into it (ADR-0147).
+---@field cursor? Cursor|Bound Pointer shape over this node; the innermost node that sets one wins. Default: `"pointer"` on a `button` with a handler or `submit` and on a link, `"text"` on a `textfield`, else the arrow (ADR-0107).
+---@field on_hover? fun(hovered: boolean) Called on each hover edge from pointer Enter, Motion or Leave; layout changes under a still pointer do not call it. Refused without `hover` on the same node.
 
----The fill and border shared by box-painting nodes (`rect`, `row`, `column`, `button`) and all four
----surface roles. `row` and `column` add no paint properties beyond `rect`'s; a surface root paints
----the same way.
+---Box paint for `rect`, `row`, `column`, `button` and every surface role.
 ---@class BoxBase
----@field background? Color|Gradient|Bound Omitted means no fill at all, which differs from `#00000000`: the first draws nothing, the second draws a transparent rectangle. A gradient snaps under `animate`.
----@field mask? Mask|Bound Multiplies the alpha of this node's own paint and its subtree, Qt's `OpacityMask` (ADR-0255). Clips to the box, or to `radius` under `clip = "Rounded"`, and costs the same offscreen pass as a rounded clip. Hit-testing and `blur` ignore it: `blur = true` under an edge fade still blurs the whole box.
----@field radius? number|Bound Corner rounding, default `0`.
----@field corner_shape? "Round"|"Scoop"|Bound Which way `radius` bends. Default `"Round"`. `"Scoop"` cuts each corner in along a circle centred on the corner point, fill, rounded clip and blur alike. A box a little over `2 * radius` square, clipped by an `r`x`r` parent to one quadrant, is the inverted corner joining a panel to a bar.
----@field border_color? Color|BorderColors|Bound A bare string applies to all four edges. No default: an edge paints only where both a colour and a non-zero width say so.
----@field border_width? number|Edges|Bound A bare number applies to all four edges. Default `0`.
----@field blur? boolean|Bound Ask the compositor to blur the desktop behind this node's box (ADR-0195). Default `false`, and never inferred from a translucent `background`: an invisible `#00000000` control is not asking for glass, and border-only or image-backed glass has no background alpha to read. The engine unions every asking node in a surface, following the transforms and clips the node is painted under, so a card that slides, scrolls out of a list, or fades to nothing blurs where it is drawn and nowhere else. Nothing is sent on a compositor without `ext-background-effect-v1`, or one whose blur capability is off, so this is silently nothing rather than an error. Strength, passes and xray belong to the compositor's own configuration and cannot be set from here, which is why this is a boolean.
----@field backdrop_blur? number|Bound Frosted glass, CSS `backdrop-filter: blur()`'s sigma in logical pixels, default `0` (ADR-0256). Blurs what this surface already painted under the box, cut to `radius` and `corner_shape`; `background`, border and children draw sharp over it. Unlike `blur`, it never sees the desktop behind the surface. Under an ancestor's `mask`, shadow or `content_blur` it sees only what that ancestor painted; a `clip = "Rounded"` card lets it see through. Reaches 3 sigma at any sigma (ADR-0262).
----@field shadow_mode? "Box"|"Content"|Bound What casts the shadow (ADR-0260). Default `"Box"`, CSS `box-shadow`: the box's own shape, whatever its `background` alpha or children, and never drawn under the box, so a translucent or frosted body shows no shadow through it. `"Content"`, CSS `drop-shadow`: everything the node paints, label included, at its alpha. Other kinds always cast their content. An opaque box looks the same either way.
----@field clip? "Box"|"Rounded"|"None"|Bound What this node cuts its children down to. Default `"Box"`, its rectangle with square corners, which is what a node has always done. `"Rounded"` uses `radius` instead, so a child overflowing a pill is cut by the same arc the pill's fill draws. Costs an offscreen pass, which is why `radius` alone does not imply it. `"None"` cuts nothing: children keep this node's parent's clip, paint and take the pointer past its box, and cast shadows a wrapper would otherwise cut (ADR-0257). A `mask` still cuts to the box.
+---@field background? Color|Gradient|Bound Default none, which draws nothing (unlike `"#00000000"`). A gradient snaps under `animate`.
+---@field mask? Mask|Bound Multiplies the alpha of this node and its subtree (ADR-0255). Cut to the box, or to `radius` under `clip = "Rounded"`. Hit-testing and `blur` ignore it.
+---@field radius? number|Bound Corner radius px `[0, 8192]`, default `0`.
+---@field corner_shape? "Round"|"Scoop"|Bound Default `"Round"`. `"Scoop"` cuts each corner inward, centred on the corner point; fill, clip and blur follow.
+---@field border_color? Color|BorderColors|Bound A string sets all four edges. No default: an edge draws only with both a colour and a width.
+---@field border_width? number|Edges|Bound Px `[0, 8192]` per edge; a number sets all four. Default `0`.
+---@field blur? boolean|Bound Ask the compositor to blur the desktop behind this box, `ext-background-effect-v1` (ADR-0195). Default `false`; never inferred from a translucent background. Silently nothing without compositor support; strength is the compositor's.
+---@field backdrop_blur? number|Bound Gaussian sigma in px over what this surface already painted under the box, CSS `backdrop-filter`, `[0, 8192]`, default `0` (ADR-0256). Never sees the desktop; cut to `radius`/`corner_shape`.
+---@field shadow_mode? "Box"|"Content"|Bound Default `"Box"`: CSS `box-shadow` of the box shape, not drawn under the box. `"Content"`: CSS `drop-shadow` of everything painted (ADR-0260).
+---@field clip? "Box"|"Rounded"|"None"|Bound Default `"Box"`: children cut to the rectangle. `"Rounded"` also cuts to `radius`, at the cost of an offscreen pass. `"None"` leaves children on the parent's clip (ADR-0257).
 
 ---@class RectProps: NodeBase, BoxBase
----@field children? Node[] Drawn in order. A hole in the array truncates it, since `#` is undefined on a sparse table.
+---@field children? Node[] Drawn in order, at most 10000. A hole ends the array.
 
 ---@class RowProps: NodeBase, BoxBase
----@field spacing? number|Bound Pixels between siblings. A hidden child costs nothing, including its gap.
----@field children? Node[] Drawn in order. A hole in the array truncates it, since `#` is undefined on a sparse table.
----@field scroll? Bound The signal `scroll(name)` returned. Makes this a viewport its children move inside.
+---@field spacing? number|Bound Px between visible children, default `0`.
+---@field children? Node[] Drawn left to right, at most 10000. A hole ends the array.
+---@field scroll? Bound A `scroll(name)` signal; makes this a scrolling viewport.
 
 ---@class ColumnProps: NodeBase, BoxBase
----@field spacing? number|Bound Pixels between siblings, on the vertical axis here.
----@field children? Node[] Drawn in order. A hole in the array truncates it, since `#` is undefined on a sparse table.
----@field scroll? Bound The signal `scroll(name)` returned. Makes this a viewport its children move inside.
+---@field spacing? number|Bound Px between visible children, default `0`.
+---@field children? Node[] Drawn top to bottom, at most 10000. A hole ends the array.
+---@field scroll? Bound A `scroll(name)` signal; makes this a scrolling viewport.
 
----One `text` content stretch with its own look (ADR-0104), shaped like `NotificationSpan` minus
----`kind` and `href`; body text spans pass through as received. An image span has no `text` and is
----refused, so leave it out.
----`bold` and `italic` use the family's own faces when fontconfig finds them, else regular.
+---One styled stretch of `text.content` (ADR-0104). A notification body's text spans fit as-is;
+---drop image spans, which have no `text` and are refused.
 ---@class TextRun
----@field text string The run's text. An empty run is skipped.
----@field bold? boolean
----@field italic? boolean
----@field underline? boolean A rule just under the baseline, in the run's colour.
----@field color? Color This run's colour instead of the node's `foreground`. What a link is drawn in.
----@field href? string What a press on this run hands the node's `on_link` (ADR-0106). Carried, never opened by the engine; a body span's `href` goes straight here.
+---@field text string Empty runs are skipped.
+---@field bold? boolean Uses the family's bold face when fontconfig has one.
+---@field italic? boolean Uses the family's italic face when fontconfig has one.
+---@field underline? boolean Underline in the run's colour.
+---@field color? Color Overrides the node's `foreground`.
+---@field href? string Passed to the node's `on_link` when clicked; never opened by the engine (ADR-0106).
 
 ---@class TextProps: NodeBase
----@field content? string|TextRun[]|Bound One string, or an array of runs whose texts are joined and drawn in one paragraph, wrapping and eliding together (ADR-0104). Default `""`, so a text bound to a capability renders empty until the first push rather than failing at boot.
----@field font_size? number|Bound Default `12`.
----@field font? string|Bound Font family for this node, e.g. `"JetBrainsMono Nerd Font Mono"` (ADR-0144). Absent draws in the `fonts` chain, which is most nodes. The family leads and that chain stays behind it, so CJK and emoji still resolve. Resolved on first sight through fontconfig, exactly as a `fonts` entry is; a family nothing on the system answers draws in the declared chain and says so once on stderr, since the engine cannot tell a typo from an uninstalled font.
----@field foreground? Color|Bound Default opaque white.
----@field elide? "None"|"End"|Bound `"End"` drops trailing characters until the run plus an ellipsis fits. A no-op on a `Content`-sized box, which was measured from this same string. Default `"None"`. Under `wrap = "Word"` it applies to the last line kept rather than to the whole run.
----@field wrap? "None"|"Word"|Bound `"Word"` breaks an over-wide run onto further lines, at a word boundary where there is one and mid-word for a word wider than the box. Default `"None"`, one line however long. A `Content`-sized box has no width to break against, so wrapping needs an explicit `width`, a `"Fill"`, or a stretched cross axis.
----@field max_lines? number|Bound How many lines `wrap = "Word"` may use. `0` and absent both mean no limit, so an expander is `max_lines = expanded:map(function(e) return e and 0 or 2 end)`. Ignored without `wrap`, since an unwrapped run has one line to begin with.
----@field text_align? "Start"|"Center"|"End"|Bound Where the glyph run sits inside this node's own box, which is a different question from `align_h`. Only visible when the box is wider than the text. Default `"Start"`.
----@field on_link? fun(href: string) A click on a run carrying an `href` (ADR-0106). Wins over any `button` above this node, so a link inside a clickable card opens the page and does not also fire the card; a click on the plain words falls through to the card.
+---@field content? string|TextRun[]|Bound A string, or up to 10000 runs drawn as one paragraph. Default `""`.
+---@field font_size? number|Bound `[1, 8192]`, default `12`.
+---@field font? string|Bound Family placed before the `fonts` chain; absent uses the chain (ADR-0144). `""` raises; an unknown family falls back to the chain.
+---@field foreground? Color|Bound Default `"#FFFFFF"`.
+---@field elide? "None"|"End"|Bound Default `"None"`. `"End"` ends an over-long line with an ellipsis; under `wrap` it applies to the last kept line.
+---@field wrap? "None"|"Word"|Bound Default `"None"`. `"Word"` breaks at words, mid-word when one word is too wide. Needs a bounded width (`width`, `"Fill"` or a stretched cross axis).
+---@field max_lines? number|Bound Line cap under `wrap = "Word"`; `0` or absent is unlimited. Ignored without `wrap`.
+---@field text_align? "Start"|"Center"|"End"|Bound Default `"Start"`. Aligns lines inside the node's own box; `Start`/`End` follow each line's reading direction (ADR-0211).
+---@field on_link? fun(href: string) Click on a run with an `href` (ADR-0106). Takes the click from any ancestor `button`; plain text passes it through.
 
 ---@class IconProps: NodeBase
----@field name? string|Bound A theme name, or an absolute path used as that path. Resolved in the renderer (ADR-0054).
----@field size? number|Bound Bounding box diameter, default `12`.
----@field foreground? Color|Bound What a `currentColor` fill in the resolved SVG resolves to, which is what CSS `color` means (ADR-0072). A symbolic icon is drawn in this colour; a full-colour app icon names no `currentColor` and ignores it, so it is safe to pass unconditionally. Omitted leaves the file's own colours alone, which for a KDE symbolic icon means the near-black its stylesheet ships.
+---@field name? string|Bound Icon theme name, or an absolute image path (ADR-0054). Default `""`, drawing nothing.
+---@field size? number|Bound Box side in px, default `12`.
+---@field foreground? Color|Bound Colour for the SVG's `currentColor` (CSS `color`), which tints symbolic icons (ADR-0072). Full-colour icons ignore it. Absent keeps the file's colours.
 
+---`image.transition`. Unknown keys are refused.
 ---@class Transition
----@field duration number How long the cross runs, in ms. Required: a cross with no length is a snap, which `retain` alone already does.
----@field easing? Easing Default `"InOutQuad"`. The curve `u_progress` follows.
----@field shader? string Absolute path to a GLSL ES fragment shader to cross with, instead of the built-in dissolve (ADR-0184). Name one shipped beside `shell.lua` with `mantle.config_dir .. "/shaders/wipe.frag"`. Recompiled when the file's bytes change, so editing an effect takes a reload and not a restart.
----
---- The engine prepends `#version 300 es`, `highp` precision for floats and samplers, its own declarations and `#line 1`, so the file is a `void main()` and its compile errors carry its own line numbers. What it gets:
----
---- - `v_uv` -- this node's box, `0..1`, origin top-left, x right and y down.
---- - `u_progress` -- the eased progress, clamped to `0..1`.
---- - `u_size` -- the node's logical size in pixels, for aspect correction.
---- - `mantle_from(uv)` and `mantle_to(uv)` -- the outgoing and incoming pictures, premultiplied RGBA, each already placed by its `fit`, and `u_fill` (transparent) outside it. Sampling outside `0..1` is defined and returns that fill.
---- - `u_from_rect` and `u_to_rect` -- where each picture sits, as node-space `(x, y, width, height)` fractions. Under `"cover"` the origin is negative and the extent above one, because the picture is larger than the box that crops it.
----
---- Write premultiplied RGBA to `fragColor` in the encoded colour space the images arrive in; no linear-light conversion happens either side. The node's inherited `opacity` is applied by the engine after your `main` returns, so it cannot be got wrong, and the result is composited source-over under the node's clip and transform like any other draw.
----
---- Identifiers beginning `u_` or `mantle_` are the engine's. A shader that will not compile, will not link, or declares a non-`float` parameter is reported once and that transition falls back to the built-in cross-dissolve, so a mistake costs an effect and not a frame. A shader that compiles and loops forever hangs the GPU and with it the session: this is the config's own code at the same trust level as `process.run`, and nothing sandboxes it.
----@field params? table<string, number> Values for the `uniform float`s the shader declares, by name. Finite numbers only, which is every type a config needs to parametrise an effect. Every parameter the compiled shader has is set on every draw, so one omitted here is `0` rather than whatever another node using the same shader last set. A name the shader has no uniform for is ignored, since a shader may declare one and never use it. Refused without a `shader` to reach.
+---@field duration number Required, ms `[1, 60000]`.
+---@field easing? Easing Default `"InOutQuad"`; drives `u_progress`.
+---@field shader? string Absolute `.frag` path replacing the built-in dissolve, e.g. `mantle.config_dir .. "/shaders/wipe.frag"` (ADR-0184). Recompiled when the file changes.
+--- Shader contract. The engine prepends `#version 300 es`, `highp` precision, its declarations and `#line 1`; write `void main()`:
+--- - `v_uv`: box coordinates `0..1`, top-left origin, y down.
+--- - `u_progress`: eased progress, clamped to `0..1`. `u_size`: node size in logical px.
+--- - `mantle_from(uv)`, `mantle_to(uv)`: outgoing and incoming pictures, premultiplied and already placed by `fit`; transparent outside the picture.
+--- - `u_from_rect`, `u_to_rect`: each picture's `(x, y, w, h)` in box fractions (may exceed `0..1` under `"cover"`).
+--- - Output: premultiplied RGBA in `fragColor`, same colour space as the inputs. The engine applies `opacity` after.
+--- - Names starting `u_` or `mantle_` are reserved. A shader that fails to compile or link, or declares a uniform other than `float`/`vec2`-`vec4`, logs once and falls back to the dissolve. A shader that hangs the GPU hangs the session.
+---@field params? table<string, number|number[]> Uniform values by name: a finite number for `float`, 2-4 numbers for `vec2`-`vec4`. Missing uniforms are `0`; unknown names are ignored. Refused without `shader`.
 
 ---@class ImageProps: NodeBase
----@field source? string|Bound An absolute path. Never a theme name; that is `icon`'s job. An animated GIF plays, looping, with no property to start, stop or count it (ADR-0233).
----@field fit? "cover"|"contain"|"stretch"|Bound Default `"cover"`. An image has no intrinsic size and takes the box `width`/`height` give it.
----@field async? boolean|Bound Default `false`, which decodes the file inside the frame that first draws it, so the frame is whole: right for a wallpaper, whose first paint is what the swap waits on. `true` decodes on a worker pool and draws nothing until the pixels land, then repaints (ADR-0122): for a grid of thumbnails, where forty inline decodes would freeze the shell for a second. Either way a raster is stored scaled down to cover its box, so a 4K file drawn as a tile costs a tile's worth of texture.
----@field retain? boolean|Bound Default `false`. `true` keeps drawing the source this node last had pixels for while a newly named one decodes, instead of showing the surface behind it (ADR-0180). This is what lets a wallpaper change under `async = true`: the decode leaves the render thread, and the picture on screen holds until the replacement is ready to take over in one frame. It needs a node whose identity survives the change, so give the `image` a stable `id` and change its `source` -- a node keyed by its path is a different node and has nothing to hold. Inert without `async`, since an inline decode leaves no gap. A source that fails to decode leaves the old picture up rather than blanking, and keeps it up: the node moves on only when a paint has the new texture in hand (ADR-0183).
----@field transition? Transition|Bound Cross from the picture the node is holding to the one that just landed, instead of swapping in one frame (ADR-0181). Implies `retain`, which is where the outgoing picture comes from, and like it needs `async = true` and a node whose `id` survives the change. The first picture a node ever shows appears rather than crosses, having nothing to cross from. Without a `shader` the cross is a straight dissolve, run by the engine's own fragment shader so that it composes exactly: a transparent incoming pixel does not show the outgoing one through it, and a node `opacity` below 1 reads the same density mid-cross as at either end (ADR-0186). Name a `shader` for anything else -- a wipe, a disc, a pixelate -- which is a `.frag` file your config owns rather than an effect this engine ships (ADR-0184). A shader that will not build logs once and falls back to the plain dissolve.
----@field source_blur? number|Bound Default `0`, off. Blurs this image's own pixels once, when its decode lands (ADR-0240) -- unlike `blur` (a `BoxBase` field this node also has), which asks the compositor to blur the desktop *behind* the node instead. Set once per `source`, not tweened or rebound: `retain` covers a gap while `source` decodes but not one this alone opens, so changing it on a live node blanks the picture until the newly blurred texture lands. Runs on whichever thread decodes -- inline on the one driving Wayland dispatch and the config VM under the default `async = false`, so a large `source` with a large `source_blur` is a real stall there; pair it with `async = true` past icon-sized sources. In the source's own stored pixels, before `fit` places it: exact for the default `"cover"` at the source's native size or smaller, approximate under `"contain"` or a source upscaled to cover its box, where the drawn radius scales with it. Ignored on an animated GIF, which keeps playing sharp: a blur samples past a changed frame's edge, and blurring it would mean storing whole frames instead of the changed rects the engine keeps to stay inside its animation budget.
+---@field source? string|Bound File path, never a theme name. Default `""`. Animated GIFs loop (ADR-0233).
+---@field fit? "cover"|"contain"|"stretch"|Bound Default `"cover"`. No intrinsic size: set `width`/`height`.
+---@field async? boolean|Bound Default `false`, decoding in the frame that first draws it. `true` decodes on a worker and draws nothing until ready (ADR-0122); use it for many or large images.
+---@field retain? boolean|Bound Default `false`. Keep drawing the last picture while a new `source` decodes, and on a failed decode (ADR-0180, ADR-0183). Needs `async = true` and a stable `id`.
+---@field transition? Transition|Bound Cross-fade from the held picture to a newly decoded `source` (ADR-0181, ADR-0186). Implies `retain`; needs `async = true` and a stable `id`. The first picture appears without one.
+---@field source_blur? number|Bound Blur sigma in px (a fast box approximation), applied once at decode, `[0, 8192]`, default `0` (ADR-0240). Runs on the decoding thread, so pair large images with `async`; under `async` a change blanks the image until the re-decode lands, and `retain` does not cover it (same `source`). Animated GIFs ignore it.
 
---- Like `image`, has no intrinsic size: without an explicit `width`/`height` it lays out at 0x0
---- and draws nothing.
+---Live preview of one output (ADR-0248). No intrinsic size: without `width`/`height` it draws nothing.
 ---@class CaptureProps: NodeBase
----@field output? string|Bound A connector name, matching `panel.monitor`'s spelling (e.g. `"DP-1"`). A name matching no connected output draws nothing and logs a warning once.
----@field fit? "cover"|"contain"|"stretch"|Bound Default `"cover"`. Same meaning as `image.fit`.
----@field live? boolean|number|Bound Default `false`. `false` captures once, when the node appears and again whenever `output` changes. `true` keeps requesting the next frame as soon as the previous one arrives, at most one in flight. A number in `(0, 1000]`, like `live = 60`, is at most that many frames per second: frames come only when the screen changes, so 60 on a 165 Hz output measured 46-48. Paused while the node's surface is unmapped or the node leaves the scene, resuming on the next show.
----@field region? Rect|Bound Part of the output, in its logical pixels, placed by `fit` as if it were the whole frame. Every key required, `x` and `y` at least 0, the size positive, each at most 8192. The compositor copies only this part where wlr-screencopy is offered.
----@field paint_cursor? boolean|Bound Default `false`. Composite the pointer cursor onto the captured frame.
+---@field output? string|Bound Connector name, e.g. `"DP-1"`. Default `""`. An unknown name draws nothing and warns once.
+---@field fit? "cover"|"contain"|"stretch"|Bound Default `"cover"`, as `image.fit`.
+---@field live? boolean|number|Bound Default `false`: capture on show and on each `output` change. `true`: every frame, one in flight. A number: at most that many fps, `(0, 1000]` (ADR-0263). Pauses while hidden or unmapped.
+---@field region? Rect|Bound Part of the output in its logical px, placed by `fit` as the whole frame. All keys required, each `[0, 8192]`, size non-zero.
+---@field paint_cursor? boolean|Bound Default `false`. Include the pointer in the frame.
 
---- A fragment shader your config owns, drawn over the node's box with no input textures (ADR-0253).
---- Has no intrinsic size. The shader reads `v_uv` (0..1 across the box), `u_size` (logical px) and
---- `u_progress`, writes premultiplied `fragColor`, and gets the node's `opacity` applied after it.
---- `shadow_*` and `content_blur` apply to the quad (ADR-0254). Takes no input: add a `button` or `rect` for a hit area.
+---A config fragment shader over the node's box, with no input textures (ADR-0253). No intrinsic
+---size and no input; wrap it for clicks. Reads `v_uv`, `u_size` and `u_progress` as in
+---`Transition.shader`, writes premultiplied `fragColor`; `opacity`, `shadow_*` and `content_blur` apply.
 ---@class ShaderProps: NodeBase
----@field source? string|Bound Absolute path to a `.frag` file. A file that will not build logs once and draws nothing. Saving a `.frag` under the config directory reloads the config, which recompiles it.
----@field progress? number|Bound Default `0`. `u_progress`. The property to `animate`: a tween or spring on it repaints every frame with no Lua, may overshoot, and retargets mid-flight.
----@field params? table<string, number|number[]>|Bound Uniforms by name: a number for a `float`, a list of two to four for a `vec2`-`vec4`. A uniform left out reads zero. Not tweened; drive motion through `progress`.
+---@field source? string|Bound Absolute `.frag` path; relative is refused. Default `""`. A shader that fails to build logs once and draws nothing.
+---@field progress? number|Bound `u_progress`, `[-8192, 8192]`, default `0`. Animate this for motion; springs may overshoot.
+---@field params? table<string, number|number[]>|Bound Uniforms by name: a number for `float`, 2-4 numbers for `vec2`-`vec4`. Missing ones are `0`. Not tweened.
 
 ---@class ButtonProps: NodeBase, BoxBase
----@field children? Node[] Drawn in order. A hole in the array truncates it, since `#` is undefined on a sparse table.
----@field submit? boolean|Bound A click also sends the surface's armed `secure_submit` field, as Enter would (ADR-0114). The one way a button reaches a password, since no callback may; clickable with or without `on_click`.
----@field on_click? fun(rect: Rect, button: "left"|"right"|"middle") Fires on the release, and only when the release lands on the same node and the same button the press armed. A handler declaring one parameter still works.
----@field on_drag? fun(rect: Rect, pointer: { x: number, y: number }, phase: "start"|"move"|"end") A left press on this button holds the drag until its release (ADR-0116). `"start"` on the press, `"move"` on every motion while held, wherever the pointer has gone, `"end"` on the release or when the pointer leaves the surface. `pointer` is in the button's own coordinates and unclamped, so `pointer.x / rect.width` is the fraction along a horizontal track and `math.min(1, math.max(0, ...))` is the config's own clamp. The left click still fires on release inside the rect, so a control can take both.
----@field on_wheel? fun(rect: Rect, steps: number) One wheel event over this button, innermost against any scrollable container above or below it (ADR-0116). `steps` is in notches, positive away from the user; a touchpad swipe arrives as fractions of a notch. Vertical axis only.
+---@field children? Node[] Drawn in order, at most 10000. A hole ends the array.
+---@field submit? boolean|Bound A click also submits the armed `secure_submit` field, like Enter (ADR-0114). Works without `on_click`.
+---@field on_click? fun(rect: Rect, button: "left"|"right"|"middle") On release over the same button that was pressed. `rect` is the button's surface-local box.
+---@field on_drag? fun(rect: Rect, pointer: { x: number, y: number }, phase: "start"|"move"|"end") Left-button drag (ADR-0116). `pointer` is button-local and unclamped. `"start"` on press, `"end"` on release (before `on_click`) or when the pointer leaves the surface.
+---@field on_wheel? fun(rect: Rect, steps: number) Vertical wheel in notches, positive away from the user, fractional on touchpads (ADR-0116). The innermost handler or scroll container wins.
 
 ---@class ListProps: NodeBase
----@field source any[]|Bound A flat array table, or a signal wrapping one. A literal array is legal and stays fixed; the signal is what makes the list rebuild.
----@field itemfn fun(item: any): Node Built for every element.
----@field key? fun(item: any): string Maps an element to a stable string. Items reconcile by key, so inserting one rebuilds one. Duplicate keys are an error. Without it items match by index and an insertion rebuilds everything after it.
----@field limit? integer|Bound Max number of items to build from `source`. Caps item construction for long sources such as search results.
----@field direction? "Vertical"|"Horizontal"|Bound Default `"Vertical"`. Which way the generated items stack.
----@field spacing? number|Bound Pixels between generated items, along `direction`.
----@field scroll? Bound The signal `scroll(name)` returned. Makes this a viewport its children move inside.
+---@field source any[]|Bound Required array; bind a signal to rebuild on change. More than 10000 items without `limit` is an error.
+---@field itemfn fun(item: any): Node Required. Builds a node for every built item, visible or not.
+---@field key? fun(item: any): string Unique UTF-8 key per item; replaces the node's `id`. Duplicates are refused. Without it items match by position.
+---@field limit? integer|Bound Build at most this many items, capped at 10000.
+---@field direction? "Vertical"|"Horizontal"|Bound Default `"Vertical"`.
+---@field spacing? number|Bound Px between visible items along `direction`, default `0`.
+---@field scroll? Bound A `scroll(name)` signal; makes this a scrolling viewport.
 
+---Single-line text input. Reads `wl_keyboard`, not an input method, so no CJK composition or dead
+---keys. With `secure_submit` it is masked: keys never reach Lua and go to the capability
+---(ADR-0005, ADR-0092). Otherwise `on_change` or `on_submit` makes it plain; with neither it never
+---takes focus. A press focuses it; the surface needs `keyboard_interactivity`. The draft lives as
+---long as the node; losing focus keeps it (ADR-0108).
 ---@class TextfieldProps: NodeBase
----Two field kinds share this node (ADR-0092). `secure_submit` makes it masked: keystrokes stay in a
----native buffer and go to a capability; no Lua value holds them (ADR-0005). `on_change`/`on_submit`
----make it plain, handing every edit straight to the callback. Both declarations remain masked; neither means never
----focus it, since nothing could read its input.
----
----Both read `wl_keyboard`, not `zwp_text_input_v3`, so neither composes CJK or dead keys.
----Text-input-v3 produces nothing without a compositor-side input method, silently swallowing a
----bare-session reply.
----
----A press focuses a plain field; its surface needs `panel.keyboard_interactivity`.
----Its draft lasts
----as long as the node (ADR-0108): keyboard exit or another press stops input and hides the caret,
----but keeps the draft; pressing the field again resumes. Only Escape with `on_cancel`, submit, or
----node removal clears it.
----@field placeholder? string|Bound Drawn in the foreground colour while the field is empty. Not the value: submitting an untouched field submits an empty string. A focused plain field shows a caret instead, so that "empty" and "empty and typing into it" do not look alike.
----@field mask_character? string|Bound Hides typed input behind its first character; `•` by default, nothing for `""`.
----@field secure_submit? { capability: string, action: string }|Bound Only meaningful alongside `mask_character`; without it a masked field's value is unreadable from Lua entirely (ADR-0005, ADR-0027).
----@field on_change? fun(text: string) The whole text after each edit, not the delta. Per keystroke, since there is no input method to batch composition.
----@field on_submit? fun(text: string) Enter. Takes the whole text and leaves the field focused and empty, so a reply box takes the next message without another click. Never fires on a `secure_submit` field, whose Enter goes to the capability.
----@field autofocus? boolean|Bound A plain field that takes the keyboard the moment its surface does, with no press, and takes it empty: a search box that must be typable the instant a launcher opens. Every arm calls `on_change("")`, which is the config's "the field just opened" moment -- reset a selection or scroll a list to the top in it. Armed on the keyboard entering the surface and again whenever the tree changes under a focus already held, so a field that appears inside an open panel is covered too. Never while another plain field on the surface is typing, never over a `secure_submit` field, and never to re-take a field a press elsewhere just stopped -- that press was the answer. Two on one surface: the first in document order wins (ADR-0112).
----@field on_navigate? fun(key: "up"|"down"|"left"|"right"|"page_up"|"page_down"|"tab"|"backtab") An up, down, paging or Tab key while a plain field is typing. The keys a single-line field has no edit for, handed to the config by name so a list drawn under the field can move its selection; the text and caret stay put and `on_change` does not fire. Left and Right arrive only when the caret cannot move that way and Shift is up; Home and End never arrive (ADR-0236). Fires on key repeat too, so a held Down keeps moving. Without it these keys do nothing (ADR-0112).
----@field on_cancel? fun(cleared: boolean) Escape. On a `secure_submit` field: the secret is scrubbed, the field stays armed, and `cleared` is whether anything was typed. On a plain field: the buffer is cleared (`on_change("")` fires first if there was text), the field gives up the keyboard, and then this runs -- so it is safe to remove the field or drop the surface's `keyboard_interactivity` in here. `cleared` is whether that Escape had text to clear, which is the two-stage Escape a launcher wants: clear on the first press, close on the second. Do not rebuild it from `on_change`, which also fires `""` when `autofocus` arms the field on every open (ADR-0112) and so cannot tell an opened field from a cleared one. Without it Escape clears and *keeps* the focus, since a config that cannot be told the field let go must not have it let go silently (ADR-0092, ADR-0102).
----@field font_size? number|Bound Default `12`. Applies to the placeholder and to the masked content alike.
----@field foreground? Color|Bound Default opaque white.
----@field text_align? "Start"|"Center"|"End"|Bound Where the run sits inside the field's own box.
+---No intrinsic size: set `width`/`height`.
+---@field placeholder? string|Bound Shown while the field is empty, focused or not (ADR-0135). Never submitted.
+---@field mask_character? string|Bound Drawn per typed character in a `secure_submit` field. Default `"•"`; only the first character counts; `""` hides the length.
+---@field secure_submit? { capability: string, action: string }|Bound Native target for the secret: `lock`/`authenticate`, `polkit`/`authenticate` or `network`/`connect` (ADR-0027). Makes the field masked.
+---@field on_change? fun(text: string) Full text after every edit.
+---@field on_submit? fun(text: string) Enter with the full text; the field stays focused and clears. Never fires on a `secure_submit` field.
+---@field autofocus? boolean|Bound Plain fields only: take the keyboard, empty, when the surface gets it or the field appears, calling `on_change("")`. The first in document order wins; never steals from a field already typing or one a press just left (ADR-0112).
+---@field on_navigate? fun(key: "up"|"down"|"left"|"right"|"page_up"|"page_down"|"tab"|"backtab") Keys a single-line field does not use, for moving a list selection; repeats while held. `"left"`/`"right"` only when the caret cannot move that way and Shift is up (ADR-0236).
+---@field on_cancel? fun(cleared: boolean) Escape; `cleared` says whether it removed text. A plain field clears (firing `on_change("")` only if there was text), gives up focus, then calls this. A `secure_submit` field scrubs and stays armed. Without it Escape clears and keeps focus (ADR-0102).
+---@field font_size? number|Bound `[1, 8192]`, default `12`.
+---@field foreground? Color|Bound Default `"#FFFFFF"`.
+---@field text_align? "Start"|"Center"|"End"|Bound Default `"Start"`. Aligns the text inside the field's box.
 
 ---@param props RectProps
 ---@return Node

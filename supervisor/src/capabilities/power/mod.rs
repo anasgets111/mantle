@@ -19,7 +19,7 @@ pub use controller::{PowerController, PowerSignal};
 #[cfg_attr(test, derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum PowerAction {
-    /// Switches to one of `profiles`; the daemon rejects unknown names.
+    /// Switches to one of `profiles`. Not validated here; a rejected name is logged and `active_profile` stays.
     SetProfile { name: String },
 }
 
