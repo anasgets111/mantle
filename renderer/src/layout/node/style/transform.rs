@@ -1,5 +1,4 @@
-use super::{within, xy};
-use crate::layout::node::{LayoutError, PropMap, invalid, preview_for_error, value_as_f32};
+use crate::layout::node::{LayoutError, PropMap, fields};
 use crate::text::snap::LogicalRect;
 
 /// `scale`, `rotate`, `translate` and `origin` (ADR-0149): a paint-only affine on the
@@ -58,25 +57,13 @@ pub fn invert_affine([a, b, c, d, e, f]: Affine) -> Option<Affine> {
 }
 
 pub fn parse_transform(properties: &PropMap) -> Result<Transform, LayoutError> {
-    let mut transform = Transform::default();
-    if let Some(value) = properties.get("scale") {
-        transform.scale = match value_as_f32("scale", value)? {
-            Some(n) => (within("scale", n)?, n),
-            None => xy("scale", value)?,
-        };
-    }
-    if let Some(value) = properties.get("rotate") {
-        let n = value_as_f32("rotate", value)?
-            .ok_or_else(|| invalid("rotate", format!("expected degrees, got {}", preview_for_error(value))))?;
-        transform.rotate = within("rotate", n)?;
-    }
-    if let Some(value) = properties.get("translate") {
-        transform.translate = xy("translate", value)?;
-    }
-    if let Some(value) = properties.get("origin") {
-        transform.origin = xy("origin", value)?;
-    }
-    Ok(transform)
+    use fields::common;
+    Ok(Transform {
+        scale: common::scale.read(properties)?,
+        rotate: common::rotate.read(properties)?,
+        translate: common::translate.read(properties)?,
+        origin: common::origin.read(properties)?,
+    })
 }
 
 #[cfg(test)]

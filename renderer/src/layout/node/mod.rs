@@ -2,7 +2,7 @@
 //! once per node/pass (ADR-0044 decision 1); `SurfaceTopology`'s five fields and every node's
 //! optional `id` stay raw and reject signals. A `panel`'s other properties are live fields, not
 //! exceptions. Plain tables remain metamethod-backed, so each `table.get` can still run `__index`;
-//! see `parse_edge_insets`'s `ponytail:`. A signal resolving to another signal errors rather than
+//! see `EdgeInsets`'s read. A signal resolving to another signal errors rather than
 //! reading again, while `MAX_TREE_DEPTH` bounds recursive tree construction.
 
 mod animate;
@@ -14,35 +14,28 @@ mod style;
 mod surface;
 mod toplevel;
 
-// Paint-only parsers are imported, not re-exported; `paint_style` is their sole caller (ADR-0068).
-use animate::parse_shader_params;
-use content::{
-    parse_elide, parse_font_family, parse_font_size, parse_foreground, parse_mask_character, parse_max_lines,
-    parse_placeholder, parse_progress, parse_shader_source, parse_text_align, parse_wrap,
-};
-use spec::parse_secure_submit;
-use style::{parse_background, parse_border_color, parse_border_width, parse_clip, parse_mask, parse_radius};
+// Paint-only value types are imported, not re-exported; `paint_style` is their sole reader (ADR-0068).
+use style::parse_radius;
 
 #[cfg(test)]
 pub use animate::Animatable;
-pub(crate) use animate::Transition;
+pub(crate) use animate::{Animations, Params};
 pub use animate::{Dissolve, ShaderParam, TransitionSpec, Tween, advance, depart, is_paint_only, retarget};
-pub use content::{Elide, StyleRun, TextAlign, Wrap, font_runs, parse_content, parse_node_id, parse_surface_id};
-pub(crate) use content::{Live, Region};
+pub(crate) use content::{Content, Font, Live, MaxLines, Region};
+pub use content::{Elide, StyleRun, TextAlign, Wrap, font_runs};
 pub use paint_style::{PaintStyle, paint_style};
-pub use spec::{SecureSubmitTarget, SurfaceSpec, lock_spec, parse_children, parse_list_children, parse_single_child};
+pub(crate) use spec::{Children, Items, Limit, Root};
+pub use spec::{SecureSubmitTarget, SurfaceSpec, lock_spec, parse_list_children};
 // `wayland::tests`' and `instance::tests`' fixtures name it `node::LockSpec`; nothing else does.
 #[cfg(test)]
 pub use spec::LockSpec;
 pub use style::{
     Affine, BorderColor, ClipShape, Effect, Fill, Gradient, GradientShape, Mask, MaskSource, Shadow, Transform,
-    apply_affine, invert_affine, parse_align, parse_blur, parse_cursor, parse_edge_insets, parse_effect,
-    parse_list_direction, parse_opacity, parse_size_bound, parse_size_mode, parse_spacing, parse_transform,
-    parse_visible, parse_z,
+    apply_affine, invert_affine, parse_effect, parse_transform,
 };
-pub use surface::{
-    Anchor, Exclusive, KeyboardInteractivity, LayerKind, PanelSpec, SurfaceTopology, panel_spec, parse_layer,
-};
+pub(crate) use style::{Axes, CornerShape, Cursor, Direction, Scale, ShadowMode};
+pub use surface::{Anchor, Exclusive, KeyboardInteractivity, LayerKind, PanelSpec, SurfaceTopology, panel_spec};
+pub(crate) use toplevel::{AnchorRect, PopupExtent};
 pub use toplevel::{
     ConstraintAdjustment, PopupAnchor, PopupOffset, PopupSpec, SizeHint, WindowSpec, popup_spec, window_spec,
 };
@@ -57,7 +50,7 @@ use mlua::{Lua, Value};
 use crate::lua::luacats::LuaType;
 use crate::lua::marshal;
 pub(crate) use crate::lua::nodes::properties::{self as fields, Property};
-use crate::lua::signal::{self, is_signal};
+use crate::lua::signal;
 use prop::Prop;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -86,13 +79,15 @@ impl EdgeInsets {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Default)]
-pub enum Align {
-    #[default]
-    Start,
-    Center,
-    End,
-    Stretch,
+prop::keywords! {
+    #[derive(Debug, Clone, Copy, PartialEq, Default)]
+    pub enum Align {
+        #[default]
+        Start,
+        Center,
+        End,
+        Stretch,
+    }
 }
 
 /// A parsed colour in `0.0..=1.0`, stored as `f32` because femtovg's `Color::rgbaf` takes that
@@ -300,7 +295,7 @@ fn parse_hex_color(property: &str, s: &str) -> Result<Rgba, LayoutError> {
 /// `kind`, so [`reject_signal_in_structural_field`] still sees a raw `Value::UserData` and can
 /// refuse it. Resolving then rejecting is unimplementable: once read, a signal's value is
 /// indistinguishable from a literal. Kind-aware because a skip is only sound where a parser runs to
-/// do the rejecting. `id` is skipped on every kind ([`parse_node_id`]/[`parse_surface_id`] read it
+/// do the rejecting. `id` is skipped on every kind (the `id` fields read it
 /// wherever it appears). `layer`/`anchor`/`monitor`/`namespace` are read only by
 /// `surface::surface_topology` on top-level surfaces; skipping them on a `rect` (where no parser
 /// reads them) would leak a live `Signal` into `layout::scene::ResolvedNode::properties`, breaking
@@ -318,7 +313,7 @@ fn parse_hex_color(property: &str, s: &str) -> Result<Rgba, LayoutError> {
 /// identity rather than a protocol field. `hover` joins it there on any kind (ADR-0062 decision 3):
 /// it names the signal the pointer handler writes, and a resolved `hover` would arrive as the
 /// boolean `false`, saying nothing about *which* signal that is.
-fn is_structural_property(kind: &str, property: &str) -> bool {
+pub(crate) fn is_structural_property(kind: &str, property: &str) -> bool {
     property == "id"
         || property == "hover"
         // ADR-0069 decision 4: the positioning pass reads this signal's number and writes the
@@ -327,6 +322,8 @@ fn is_structural_property(kind: &str, property: &str) -> bool {
         // ADR-0147: the pass writes the laid-out rect into this handle after the solve.
         || property == "geometry"
         || (kind == "panel" && matches!(property, "layer" | "anchor" | "monitor" | "namespace"))
+        // `get_popup` pins one parent (ADR-0051 decision 1).
+        || (kind == "popup" && property == "parent")
 }
 
 /// One node's raw property map with every `Signal` replaced by its current value (ADR-0044 decision
@@ -338,7 +335,7 @@ fn is_structural_property(kind: &str, property: &str) -> bool {
 /// read per property makes the resolved tree a snapshot of one pass and stops ADR-0021's
 /// per-`get_value` 5ms budget being paid four times over for one property. The snapshot covers the
 /// *signals* only: a plain table with an `__index` metamethod is copied through as-is, and each
-/// `table.get` a parser makes still runs it again; see [`parse_edge_insets`]'s `ponytail:`. Nor is
+/// `table.get` a parser makes still runs it again; see [`EdgeInsets`]'s read. Nor is
 /// this ADR-0044 decision 3's rejected memoization, which caches *across* pushes and needs an
 /// invalidation rule no push has. Per entry: a key [`is_structural_property`] names for this node's
 /// `kind` is copied through raw, signal and all. A `Value::UserData` holding a `Signal` is read
@@ -437,9 +434,9 @@ pub fn resolve_properties(mut properties: PropMap, kind: &str, lua: &Lua) -> Res
     Ok(properties)
 }
 
-/// The carve-outs from decision 1's "parsers resolve a `Signal`" rule: [`SurfaceTopology`]'s five
-/// fields (`parse_surface_id`/`parse_layer`/`parse_anchor`/`parse_monitor`/`parse_namespace`) and
-/// every node's optional `id` ([`parse_node_id`], ADR-0045 decision 1) keep rejecting one outright.
+/// The carve-outs from decision 1's "parsers resolve a `Signal`" rule, the rows typed
+/// [`prop::Structural`]: [`SurfaceTopology`]'s five fields, a popup's `parent`, and every node's
+/// optional `id` (ADR-0045 decision 1) keep rejecting one outright.
 /// The unifying reason: each is read exactly once per evaluation and a *structural* decision
 /// (where a surface is placed, or which retained node a fresh one is) is then made and acted on. A
 /// `Signal` is free to change between passes, so admitting one here would leave that decision
@@ -452,43 +449,13 @@ pub fn resolve_properties(mut properties: PropMap, kind: &str, lua: &Lua) -> Res
 /// pair a fresh child against its retained counterpart; a later-changing value would make "the
 /// same node as last time" ambiguous. ADR-0044 decision 1 leaves both out: a gap, not a rejected
 /// case. This only works because [`resolve_properties`] passes the keys
-/// [`is_structural_property`] names through raw: these six parsers alone read the un-resolved
-/// value, since a resolved signal is indistinguishable from a literal by the time it reaches a map.
+/// [`is_structural_property`] names through raw: these fields alone read the un-resolved value,
+/// since a resolved signal is indistinguishable from a literal by the time it reaches a map.
 fn reject_signal_in_structural_field(property: &str, value: &Value) -> Result<(), LayoutError> {
     if matches!(value, Value::UserData(_)) {
         return Err(LayoutError::UnsupportedSignalProperty(property.to_string()));
     }
     Ok(())
-}
-
-/// Whether `property` currently holds a live [`crate::lua::signal::Signal`]: the one thing an
-/// **unresolved** property map can say that a resolved one cannot, "this pass is not in a position
-/// to check it" (ADR-0049's second amendment). Only ever true on the evaluation-time pass:
-/// [`resolve_properties`] reads every `Signal` it is handed and stores the *result* in its place,
-/// refusing a result that is itself a `Signal`, so no map it has been through can hold one, except
-/// under a key [`is_structural_property`] copies through raw, which
-/// [`reject_signal_in_structural_field`] refuses outright instead of deferring. A parser
-/// consulting this applies the amendment's split: on the pass reading raw properties
-/// (`crate::socket`'s `surface_specs`, which runs before any getter has been called and must not
-/// call one), a signal-bound property is skipped and left at the parser's documented placeholder;
-/// the authoritative value is later re-read from the resolved tree by `App::apply_resolved_state`.
-/// A *literal* is still fully validated on that pass, so a config typo fails fast into
-/// ADR-0046's `rescue` log rather than as an `xdg_positioner` protocol error at first open.
-/// Without this, `anchor_rect = popup_anchor` (ADR-0050 decision 3's spelling) would fail
-/// evaluation: every parser below otherwise rejects a raw `Value::UserData` with a type error.
-fn is_deferred_signal(properties: &PropMap, property: &str) -> bool {
-    matches!(properties.get(property), Some(Value::UserData(ud)) if is_signal(ud))
-}
-
-/// The value under `property`, or `None` when it is absent *or* a deferred `Signal`.
-///
-/// Nine parsers take the same default for both, so they read the property through this
-/// instead of writing [`is_deferred_signal`] and `properties.get` one after the other. Order does
-/// not matter: a deferred property missing from the map takes the default either way. Parsers whose
-/// deferred and absent answers differ -- `parse_anchor_rect`, `parse_popup_extent` -- keep both
-/// checks, because for them the distinction is the point.
-fn non_deferred_property<'a>(properties: &'a PropMap, property: &str) -> Option<&'a Value> {
-    properties.get(property).filter(|value| !matches!(value, Value::UserData(ud) if is_signal(ud)))
 }
 
 /// A test's property map, built the way production builds one: through the deserializer, which is
@@ -555,18 +522,24 @@ mod tests {
             !props_with_nil_signal(&lua, "rect", "width").contains_key("width"),
             "the rule is one omitted key, not a Nil each parser re-checks"
         );
-        assert_eq!(parse_size_mode(&props_with_nil_signal(&lua, "rect", "width"), "width").unwrap(), SizeMode::Content);
         assert_eq!(
-            parse_edge_insets(&props_with_nil_signal(&lua, "rect", "padding"), "padding").unwrap(),
+            fields::common::width.read(&props_with_nil_signal(&lua, "rect", "width")).unwrap(),
+            SizeMode::Content
+        );
+        assert_eq!(
+            fields::common::padding.read(&props_with_nil_signal(&lua, "rect", "padding")).unwrap(),
             EdgeInsets::default()
         );
-        assert_eq!(parse_align(&props_with_nil_signal(&lua, "rect", "align_h"), "align_h").unwrap(), Align::Start);
-        assert!(parse_visible(&props_with_nil_signal(&lua, "rect", "visible")).unwrap());
-        assert_eq!(parse_spacing(&props_with_nil_signal(&lua, "row", "spacing")).unwrap(), 0.0);
-        assert_eq!(parse_font_size(&props_with_nil_signal(&lua, "text", "font_size")).unwrap(), 12.0);
-        assert!(parse_single_child(&props_with_nil_signal(&lua, "panel", "child")).unwrap().is_none());
-        assert!(parse_children(&props_with_nil_signal(&lua, "row", "children")).unwrap().is_empty());
-        assert_eq!(parse_content(&props_with_nil_signal(&lua, "text", "content")).unwrap().0, "");
+        assert_eq!(
+            fields::common::align_h.read(&props_with_nil_signal(&lua, "rect", "align_h")).unwrap(),
+            Align::Start
+        );
+        assert!(fields::common::visible.read(&props_with_nil_signal(&lua, "rect", "visible")).unwrap());
+        assert_eq!(fields::flow::spacing.read(&props_with_nil_signal(&lua, "row", "spacing")).unwrap(), 0.0);
+        assert_eq!(fields::text::font_size.read(&props_with_nil_signal(&lua, "text", "font_size")).unwrap(), 12.0);
+        assert!(fields::root::child.read(&props_with_nil_signal(&lua, "panel", "child")).unwrap().is_none());
+        assert!(fields::stack::children.read(&props_with_nil_signal(&lua, "row", "children")).unwrap().is_empty());
+        assert_eq!(fields::text::content.read(&props_with_nil_signal(&lua, "text", "content")).unwrap().0, "");
         assert_eq!(fields::icon::size.read(&props_with_nil_signal(&lua, "icon", "size")).unwrap(), 12.0);
         assert_eq!(fields::icon::name.read(&props_with_nil_signal(&lua, "icon", "name")).unwrap(), "");
         assert_eq!(fields::image::source.read(&props_with_nil_signal(&lua, "image", "source")).unwrap(), "");
@@ -587,7 +560,7 @@ mod tests {
 
         assert!(matches!(resolved.get("id"), Some(Value::UserData(_))), "id must survive the resolve step unresolved");
         assert!(
-            matches!(parse_node_id(&resolved).unwrap_err(), LayoutError::UnsupportedSignalProperty(p) if p == "id")
+            matches!(fields::common::id.read(&resolved).unwrap_err(), LayoutError::UnsupportedSignalProperty(p) if p == "id")
         );
     }
 

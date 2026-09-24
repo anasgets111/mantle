@@ -162,7 +162,7 @@ fn wrapped_to_fit<'s>(
         return fitted;
     };
 
-    // `cap` is at least 1: `parse_max_lines` maps 0 to no cap at all, so a `Some` cap standing
+    // `cap` is at least 1: `MaxLines` maps 0 to no cap at all, so a `Some` cap standing
     // below a nonzero line count always leaves a line to rewrite.
     for (index, range) in shaped.line_ranges[..cap - 1].iter().enumerate() {
         push_direction_mark(&mut fitted, &content[range.clone()], rtl(index));

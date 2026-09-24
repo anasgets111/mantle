@@ -376,7 +376,7 @@ pub(super) fn solve(
 /// a horizontal list identical to a hand-built `row`, rather than a second implementation that
 /// agrees with it until it does not.
 fn flow_kind<'a>(kind: &'a str, properties: &PropMap) -> Result<&'a str, LayoutError> {
-    if kind == "list" { node::parse_list_direction(properties) } else { Ok(kind) }
+    if kind == "list" { Ok(node::fields::list::direction.read(properties)?.kind()) } else { Ok(kind) }
 }
 
 #[cfg(test)]

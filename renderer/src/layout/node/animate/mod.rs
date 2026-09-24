@@ -13,8 +13,12 @@ use std::time::{Duration, Instant};
 
 use mlua::{Lua, Value};
 
+use super::prop::Prop;
 use super::style::{axis_default, parse_percent, range_of};
-use super::{LayoutError, PropMap, Rgba, invalid, only_keys, parse_hex_color, preview_for_error, value_as_f32};
+use super::{
+    LayoutError, PropMap, Property, Rgba, fields, invalid, only_keys, parse_hex_color, preview_for_error, value_as_f32,
+};
+use crate::lua::luacats::LuaType;
 
 mod easing;
 mod sequence;
@@ -23,8 +27,7 @@ mod transition;
 use easing::Easing;
 use sequence::{Sequence, parse_sequence};
 use spring::{Spring, parse_spring};
-pub(crate) use transition::Transition;
-pub(in crate::layout::node) use transition::parse_shader_params;
+pub(crate) use transition::Params;
 pub use transition::{Dissolve, ShaderParam, TransitionSpec};
 
 /// The one thing a hex colour has to look like to reach `parse_hex_color` again next pass.
@@ -80,14 +83,8 @@ fn animatable_name(kind: &str, property: &str, field: &str) -> Result<&'static s
 /// snapping; what the value is decides whether it can tween ([`Animatable::from_value`]), the way
 /// Qt registers interpolators by type rather than by property.
 pub fn parse_animate(kind: &str, properties: &PropMap) -> Result<BTreeMap<&'static str, AnimationSpec>, LayoutError> {
-    let Some(value) = properties.get("animate") else {
+    let Some(table) = fields::common::animate.read(properties)? else {
         return Ok(BTreeMap::new());
-    };
-    let Value::Table(table) = value else {
-        return Err(invalid(
-            "animate",
-            format!("expected a table of property names to durations, got {}", preview_for_error(value)),
-        ));
     };
     // Sorted in and sorted out: Lua seeds its own string hashes, so two broken entries -- or two
     // that fail to retarget below -- would otherwise name either one, run to run (ADR-0024).
@@ -120,6 +117,30 @@ pub fn parse_animate(kind: &str, properties: &PropMap) -> Result<BTreeMap<&'stat
         out.insert(name, parse_spec(name, &entry)?);
     }
     Ok(out)
+}
+
+/// `animate`: a table of property names to animations, which [`parse_animate`] reads against the
+/// node's kind.
+pub(crate) struct Animations;
+
+impl LuaType for Animations {
+    fn lua() -> String {
+        "Animations".to_string()
+    }
+}
+
+impl Prop for Animations {
+    type Out = Option<mlua::Table>;
+    fn read(row: &Property, value: Option<&Value>) -> Result<Option<mlua::Table>, LayoutError> {
+        match value {
+            None => Ok(None),
+            Some(Value::Table(table)) => Ok(Some(table.clone())),
+            Some(other) => Err(invalid(
+                row.name,
+                format!("expected a table of property names to durations, got {}", preview_for_error(other)),
+            )),
+        }
+    }
 }
 
 /// One entry's spec: a bare duration, or `{ duration, easing, from }`, or those beside a
@@ -320,7 +341,7 @@ pub fn depart(
     now: Instant,
     lua: &Lua,
 ) -> Result<bool, LayoutError> {
-    let Some(Value::Table(animate)) = properties.get("animate") else { return Ok(false) };
+    let Some(animate) = fields::common::animate.read(properties)? else { return Ok(false) };
     let block: Value = animate.get("exit").map_err(|e| invalid("animate.exit", e.to_string()))?;
     let Some((spec, targets)) = parse_exit(kind, &block)? else { return Ok(false) };
     // Everything already in flight stops here, at the value it had reached. The exit owns the

@@ -65,7 +65,7 @@ the ones the protocol owns.
 | Property | Type | Default | Behaviour |
 | :--- | :--- | :--- | :--- |
 | `id` | `string` | Required | The surface's identity across reloads, unique among surfaces. A `panel`'s or `lock`'s per-output instances are `"{id}@{output}"`; `monitor = "Active"` keeps the bare `id` |
-| `child` | `Node\|fun(output: string): Node?` | None | The root's content. A function runs per output instance with its connector name; `nil` leaves that instance empty ([per-output child](index.md#per-output-child)) |
+| `child` | `Node\|fun(output: string): Node?\|Bound` | None | The root's content. A function runs per output instance with its connector name; `nil` leaves that instance empty ([per-output child](index.md#per-output-child)) |
 | `width` | `nil` | None | Refused: the lock covers each output |
 | `height` | `nil` | None | Refused, as `width` |
 | `visible` | `nil` | None | Refused: the session lock decides when it shows |

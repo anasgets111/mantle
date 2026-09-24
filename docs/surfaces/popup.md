@@ -77,7 +77,7 @@ live.
 | `grab` | `boolean\|Bound` | `true` | Takes an input grab so an outside click dismisses it ([grab](#grab)). `false` for a tooltip |
 | `on_dismiss` | `fun()` | None | The compositor closed it (click outside, denied grab, parent gone); not called when the config hides it. Set `visible = false` here, or it reopens on the next click |
 | `visible` | `boolean\|Bound` | `true` | Opens and closes the popup; state and `id` survive |
-| `child` | `Node` | None | The one root node; a function `child` is refused |
+| `child` | `Node\|Bound` | None | The one root node; a function `child` is refused |
 <!-- End of the generated table. -->
 
 ## Placement

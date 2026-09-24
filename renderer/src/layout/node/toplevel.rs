@@ -1,35 +1,16 @@
-//! `xdg_toplevel`/`xdg_positioner` specs, including window and popup field parsers. These
-//! describe live `xdg_shell` objects, not layer-shell or session-lock surfaces.
+//! `xdg_toplevel`/`xdg_positioner` specs, including window and popup value types. These describe
+//! live `xdg_shell` objects, not layer-shell or session-lock surfaces. `title`, `app_id` and the
+//! size hints are live requests on a mapped toplevel, so a signal updates them in place (ADR-0044
+//! decision 1); `app_id` defaults to `"mantle-{id}"`.
 
 use mlua::Value;
 
 use crate::text::snap::LogicalRect;
 
-use super::content::{parse_keyword, parse_string_property};
+use super::prop::{Keyword, keywords};
 use super::style::table_number;
 use super::*;
-
-/// The live `title`, defaulting to empty rather than exposing the internal `id`. `set_title` is
-/// valid after mapping, so signals update it in place (ADR-0044 decision 1).
-pub fn parse_title(properties: &PropMap) -> Result<String, LayoutError> {
-    // Deferred on the evaluation pass; `show_window` sends the resolved title.
-    if is_deferred_signal(properties, "title") {
-        return Ok(String::new());
-    }
-    parse_string_property(properties, "title", Some(""))
-}
-
-/// `app_id`, used by compositor window rules, defaulting to `"mantle-{id}"`. `set_app_id`
-/// remains valid after mapping (`xdg-shell.xml`), unlike layer-shell `namespace`; `id` is still
-/// structural because it is reconcile identity (ADR-0045 decision 1).
-pub fn parse_app_id(properties: &PropMap, id: &str) -> Result<String, LayoutError> {
-    let default = format!("mantle-{id}");
-    // Deferred on the evaluation pass; `set_app_id` is a live request.
-    if is_deferred_signal(properties, "app_id") {
-        return Ok(default);
-    }
-    parse_string_property(properties, "app_id", Some(&default))
-}
+use fields::{popup, window};
 
 /// The advisory `{ width, height }` size hint. Layout does not enforce it; Wayland receives it
 /// through `set_min_size`/`set_max_size`.
@@ -39,35 +20,45 @@ pub struct SizeHint {
     pub height: f32,
 }
 
+impl LuaType for SizeHint {
+    fn lua() -> String {
+        let axis = f32::lua();
+        format!("{{ width: {axis}, height: {axis}, [string]: \"no such property\" }}")
+    }
+}
+
 /// `None` means no request; `Some(0, 0)` sends an unconstrained request. A present hint must name
 /// both axes; use `0` for an unconstrained axis.
-fn parse_size_hint(properties: &PropMap, property: &str) -> Result<Option<SizeHint>, LayoutError> {
-    // Deferred on the evaluation pass; `show_window` sends the resolved request.
-    let Some(value) = non_deferred_property(properties, property) else {
-        return Ok(None);
-    };
-    let Value::Table(table) = value else {
-        return Err(invalid(
-            property,
-            format!("expected a `{{ width, height }}` table, got {}", preview_for_error(value)),
-        ));
-    };
-    only_keys(property, table, &["width", "height"])?;
-    let axis = |key: &str| -> Result<f32, LayoutError> {
-        let n = table_number(property, table, key)?.ok_or_else(|| {
-            invalid(
+impl Prop for SizeHint {
+    type Out = Option<SizeHint>;
+    fn read(row: &Property, value: Option<&Value>) -> Result<Option<SizeHint>, LayoutError> {
+        let property = row.name;
+        let Some(value) = value else {
+            return Ok(None);
+        };
+        let Value::Table(table) = value else {
+            return Err(invalid(
                 property,
-                format!("`{key}` is required -- a size hint names both axes, or use 0 for an unconstrained one"),
-            )
-        })?;
-        // Negative values make the request fail (`invalid_size`).
-        let (low, high) = super::style::range_of(property);
-        if !(low..=high).contains(&n) {
-            return Err(invalid(property, format!("`{key}` must be within [{low}, {high}], got {n}")));
-        }
-        Ok(n)
-    };
-    Ok(Some(SizeHint { width: axis("width")?, height: axis("height")? }))
+                format!("expected a `{{ width, height }}` table, got {}", preview_for_error(value)),
+            ));
+        };
+        only_keys(property, table, &["width", "height"])?;
+        let axis = |key: &str| -> Result<f32, LayoutError> {
+            let n = table_number(property, table, key)?.ok_or_else(|| {
+                invalid(
+                    property,
+                    format!("`{key}` is required -- a size hint names both axes, or use 0 for an unconstrained one"),
+                )
+            })?;
+            // Negative values make the request fail (`invalid_size`).
+            let (low, high) = row.range.expect("a size hint has a range");
+            if !(low..=high).contains(&n) {
+                return Err(invalid(property, format!("`{key}` must be within [{low}, {high}], got {n}")));
+            }
+            Ok(n)
+        };
+        Ok(Some(SizeHint { width: axis("width")?, height: axis("height")? }))
+    }
 }
 
 /// Checks `set_max_size`'s `max >= min` rule before Wayland sees it. Zero means unset, so it is not
@@ -106,46 +97,44 @@ pub struct WindowSpec {
 }
 
 pub fn window_spec(properties: &PropMap) -> Result<WindowSpec, LayoutError> {
-    let id = parse_surface_id(properties)?;
-    let app_id = parse_app_id(properties, &id)?;
-    let min_size = parse_size_hint(properties, "min_size")?;
-    let max_size = parse_size_hint(properties, "max_size")?;
+    let id = fields::surface::id.read(properties)?;
+    let app_id = window::app_id.read(properties)?.replace("{id}", &id);
+    let min_size = window::min_size.read(properties)?;
+    let max_size = window::max_size.read(properties)?;
     check_max_size_above_min(min_size, max_size)?;
-    Ok(WindowSpec { id, title: parse_title(properties)?, app_id, min_size, max_size })
+    Ok(WindowSpec { id, title: window::title.read(properties)?, app_id, min_size, max_size })
 }
 
-/// The shared `anchor`/`gravity` values. `Center` maps to protocol `none`, which centers an
-/// unspecified axis; `crate::wayland` maps this local enum to the positioner protocol.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum PopupAnchor {
-    /// The protocol's `none`, which is also its default for both requests.
-    #[default]
-    Center,
-    Top,
-    Bottom,
-    Left,
-    Right,
-    TopLeft,
-    TopRight,
-    BottomLeft,
-    BottomRight,
+keywords! {
+    /// The shared `anchor`/`gravity` values. `Center` maps to protocol `none`, which centers an
+    /// unspecified axis; `crate::wayland` maps this local enum to the positioner protocol.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+    pub enum PopupAnchor {
+        Top,
+        Bottom,
+        Left,
+        Right,
+        TopLeft,
+        TopRight,
+        BottomLeft,
+        BottomRight,
+        /// The protocol's `none`, which is also its default for both requests.
+        #[default]
+        Center,
+    }
 }
 
-/// Parses either anchor field; `property` names errors. Absent defaults to the protocol's
-/// [`PopupAnchor::Center`], unlike constraint adjustments.
-pub fn parse_popup_anchor(properties: &PropMap, property: &str) -> Result<PopupAnchor, LayoutError> {
-    let anchors = [
-        ("Top", PopupAnchor::Top),
-        ("Bottom", PopupAnchor::Bottom),
-        ("Left", PopupAnchor::Left),
-        ("Right", PopupAnchor::Right),
-        ("TopLeft", PopupAnchor::TopLeft),
-        ("TopRight", PopupAnchor::TopRight),
-        ("BottomLeft", PopupAnchor::BottomLeft),
-        ("BottomRight", PopupAnchor::BottomRight),
-        ("Center", PopupAnchor::Center),
-    ];
-    parse_keyword(non_deferred_property(properties, property), property, &anchors)
+keywords! {
+    /// One `constraint_adjustment` permission.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum Adjustment {
+        SlideX,
+        SlideY,
+        FlipX,
+        FlipY,
+        ResizeX,
+        ResizeY,
+    }
 }
 
 /// The six independent adjustment permissions. Array order is irrelevant because the compositor
@@ -173,44 +162,51 @@ impl Default for ConstraintAdjustment {
     }
 }
 
-pub fn parse_constraint_adjustment(properties: &PropMap) -> Result<ConstraintAdjustment, LayoutError> {
-    let Some(value) = non_deferred_property(properties, "constraint_adjustment") else {
-        return Ok(ConstraintAdjustment::default());
-    };
-    let Value::Table(table) = value else {
-        return Err(invalid(
-            "constraint_adjustment",
-            format!("expected an array table, got {}", preview_for_error(value)),
-        ));
-    };
-    let mut adjustment = ConstraintAdjustment::NONE;
-    for entry in table.sequence_values::<Value>() {
-        let entry = entry.map_err(|e| invalid("constraint_adjustment", e.to_string()))?;
-        let Value::String(s) = entry else {
+impl LuaType for ConstraintAdjustment {
+    fn lua() -> String {
+        Vec::<Adjustment>::lua()
+    }
+}
+
+impl Prop for ConstraintAdjustment {
+    type Out = ConstraintAdjustment;
+    fn read(_: &Property, value: Option<&Value>) -> Result<ConstraintAdjustment, LayoutError> {
+        let Some(value) = value else {
+            return Ok(ConstraintAdjustment::default());
+        };
+        let Value::Table(table) = value else {
             return Err(invalid(
                 "constraint_adjustment",
-                format!("expected a string entry, got {}", preview_for_error(&entry)),
+                format!("expected an array table, got {}", preview_for_error(value)),
             ));
         };
-        // Flags make repeats no-ops; array position has no meaning.
-        match checked_string("constraint_adjustment", &s)?.as_str() {
-            "SlideX" => adjustment.slide_x = true,
-            "SlideY" => adjustment.slide_y = true,
-            "FlipX" => adjustment.flip_x = true,
-            "FlipY" => adjustment.flip_y = true,
-            "ResizeX" => adjustment.resize_x = true,
-            "ResizeY" => adjustment.resize_y = true,
-            other => {
+        let mut adjustment = ConstraintAdjustment::NONE;
+        for entry in table.sequence_values::<Value>() {
+            let entry = entry.map_err(|e| invalid("constraint_adjustment", e.to_string()))?;
+            let Value::String(s) = entry else {
                 return Err(invalid(
                     "constraint_adjustment",
-                    format!(
-                        "expected one of `SlideX`, `SlideY`, `FlipX`, `FlipY`, `ResizeX`, `ResizeY`, got `{other}`"
-                    ),
+                    format!("expected a string entry, got {}", preview_for_error(&entry)),
                 ));
+            };
+            // Flags make repeats no-ops; array position has no meaning.
+            let name = checked_string("constraint_adjustment", &s)?;
+            let Some(at) = Adjustment::NAMES.iter().position(|known| *known == name) else {
+                let names: Vec<String> = Adjustment::NAMES.iter().map(|name| format!("`{name}`")).collect();
+                let message = format!("expected one of {}, got `{name}`", names.join(", "));
+                return Err(invalid("constraint_adjustment", message));
+            };
+            match Adjustment::VALUES[at] {
+                Adjustment::SlideX => adjustment.slide_x = true,
+                Adjustment::SlideY => adjustment.slide_y = true,
+                Adjustment::FlipX => adjustment.flip_x = true,
+                Adjustment::FlipY => adjustment.flip_y = true,
+                Adjustment::ResizeX => adjustment.resize_x = true,
+                Adjustment::ResizeY => adjustment.resize_y = true,
             }
         }
+        Ok(adjustment)
     }
-    Ok(adjustment)
 }
 
 /// The signed pixel nudge after anchor and gravity; negative values move up or left.
@@ -220,107 +216,130 @@ pub struct PopupOffset {
     pub y: f32,
 }
 
-pub fn parse_popup_offset(properties: &PropMap) -> Result<PopupOffset, LayoutError> {
-    let Some(value) = non_deferred_property(properties, "offset") else {
-        return Ok(PopupOffset::default());
-    };
-    let Value::Table(table) = value else {
-        return Err(invalid("offset", format!("expected an `{{ x, y }}` table, got {}", preview_for_error(value))));
-    };
-    only_keys("offset", table, &["x", "y"])?;
-    let axis = |key: &str| -> Result<f32, LayoutError> { Ok(table_number("offset", table, key)?.unwrap_or(0.0)) };
-    Ok(PopupOffset { x: axis("x")?, y: axis("y")? })
+impl LuaType for PopupOffset {
+    fn lua() -> String {
+        let axis = f32::lua();
+        format!("{{ x?: {axis}, y?: {axis}, [string]: \"no such property\" }}")
+    }
 }
+
+impl Prop for PopupOffset {
+    type Out = PopupOffset;
+    fn read(_: &Property, value: Option<&Value>) -> Result<PopupOffset, LayoutError> {
+        let Some(value) = value else {
+            return Ok(PopupOffset::default());
+        };
+        let Value::Table(table) = value else {
+            return Err(invalid("offset", format!("expected an `{{ x, y }}` table, got {}", preview_for_error(value))));
+        };
+        only_keys("offset", table, &["x", "y"])?;
+        let axis = |key: &str| -> Result<f32, LayoutError> { Ok(table_number("offset", table, key)?.unwrap_or(0.0)) };
+        Ok(PopupOffset { x: axis("x")?, y: axis("y")? })
+    }
+}
+
+/// A deferred `anchor_rect` or popup size: 1x1, because zero leaves the positioner incomplete.
+/// `App::apply_resolved_state` replaces it before creation (ADR-0049's second amendment), so
+/// `expand_instances` measures a signal-sized popup against 1x1 until its first configure.
+const DEFERRED_POPUP_EXTENT: f32 = 1.0;
 
 /// The parent-local `anchor_rect`, reused from `on_click` (ADR-0050 decision 3). `x`/`y` default
 /// to 0, but `width`/`height` must be in `(0, 8192]`: negative sizes raise `invalid_input`, zero
-/// leaves the positioner incomplete and raises `invalid_positioner` at `get_popup`. Deferred
-/// signals use a 1x1 placeholder because zero is incomplete; `App::apply_resolved_state` replaces
-/// it before creation (ADR-0049's second amendment). `expand_instances` therefore measures a
-/// signal-sized popup against 1x1 until its first configure.
-const DEFERRED_POPUP_EXTENT: f32 = 1.0;
+/// leaves the positioner incomplete and raises `invalid_positioner` at `get_popup`.
+pub(crate) struct AnchorRect;
 
-pub fn parse_anchor_rect(properties: &PropMap) -> Result<LogicalRect, LayoutError> {
-    if is_deferred_signal(properties, "anchor_rect") {
-        return Ok(LogicalRect { x: 0.0, y: 0.0, width: DEFERRED_POPUP_EXTENT, height: DEFERRED_POPUP_EXTENT });
+impl LuaType for AnchorRect {
+    fn lua() -> String {
+        LogicalRect::lua()
     }
-    let value = properties.get("anchor_rect").ok_or_else(|| {
-        invalid(
-            "anchor_rect",
-            "required for `popup`, got nothing -- a popup with no anchor rectangle raises invalid_positioner at get_popup",
-        )
-    })?;
-    let Value::Table(table) = value else {
-        return Err(invalid(
-            "anchor_rect",
-            format!("expected an `{{ x, y, width, height }}` table, got {}", preview_for_error(value)),
-        ));
-    };
-    only_keys("anchor_rect", table, &["x", "y", "width", "height"])?;
-    let origin =
-        |key: &str| -> Result<f32, LayoutError> { Ok(table_number("anchor_rect", table, key)?.unwrap_or(0.0)) };
-    let extent = |key: &str| -> Result<f32, LayoutError> {
-        let n = table_number("anchor_rect", table, key)?.ok_or_else(|| {
-            invalid("anchor_rect", format!("`{key}` is required and must be greater than 0 -- a zero-size anchor rectangle raises invalid_positioner"))
-        })?;
-        if !(n > 0.0 && n <= 8192.0) {
-            return Err(invalid(
-                "anchor_rect",
-                format!(
-                    "`{key}` must be within (0, 8192], got {n} -- a zero or negative anchor rectangle size is a protocol error"
-                ),
-            ));
-        }
-        Ok(n)
-    };
-    Ok(LogicalRect { x: origin("x")?, y: origin("y")?, width: extent("width")?, height: extent("height")? })
 }
 
-/// Popup `width`/`height`, narrower than [`parse_size_mode`]: no `"Fill"` and no percent, because
+impl Prop for AnchorRect {
+    type Out = LogicalRect;
+    fn read(_: &Property, value: Option<&Value>) -> Result<LogicalRect, LayoutError> {
+        let value = value.ok_or_else(|| {
+            invalid(
+                "anchor_rect",
+                "required for `popup`, got nothing -- a popup with no anchor rectangle raises invalid_positioner at get_popup",
+            )
+        })?;
+        let Value::Table(table) = value else {
+            return Err(invalid(
+                "anchor_rect",
+                format!("expected an `{{ x, y, width, height }}` table, got {}", preview_for_error(value)),
+            ));
+        };
+        only_keys("anchor_rect", table, &["x", "y", "width", "height"])?;
+        let origin =
+            |key: &str| -> Result<f32, LayoutError> { Ok(table_number("anchor_rect", table, key)?.unwrap_or(0.0)) };
+        let extent = |key: &str| -> Result<f32, LayoutError> {
+            let n = table_number("anchor_rect", table, key)?.ok_or_else(|| {
+                invalid("anchor_rect", format!("`{key}` is required and must be greater than 0 -- a zero-size anchor rectangle raises invalid_positioner"))
+            })?;
+            if !(n > 0.0 && n <= 8192.0) {
+                return Err(invalid(
+                    "anchor_rect",
+                    format!(
+                        "`{key}` must be within (0, 8192], got {n} -- a zero or negative anchor rectangle size is a protocol error"
+                    ),
+                ));
+            }
+            Ok(n)
+        };
+        Ok(LogicalRect { x: origin("x")?, y: origin("y")?, width: extent("width")?, height: extent("height")? })
+    }
+
+    fn deferred(_: &Property) -> Result<LogicalRect, LayoutError> {
+        Ok(LogicalRect { x: 0.0, y: 0.0, width: DEFERRED_POPUP_EXTENT, height: DEFERRED_POPUP_EXTENT })
+    }
+}
+
+/// Popup `width`/`height`, narrower than [`SizeMode`]: no `"Fill"` and no percent, because
 /// there is no parent box for either to mean anything against -- `xdg_positioner::set_size` takes a
 /// number, and the compositor places the popup rather than fitting it into something.
 ///
-/// Omitted is [`SizeMode::Content`], on the same terms as every other node: `parse_size_mode`'s own
+/// Omitted is [`SizeMode::Content`], on the same terms as every other node: [`SizeMode`]'s own
 /// error says content sizing has no literal and the property is left off instead. That axis is then
 /// whatever the resolved tree measures, and `wayland::surface::App::apply_resolved_state` reads it
 /// off the root's box on the pass that opens the popup. A number is still a number, and still has
 /// to be in `(0, 8192]`: `set_size` raises `invalid_input` on a zero or negative size.
-fn parse_popup_extent(properties: &PropMap, property: &str) -> Result<SizeMode, LayoutError> {
-    if is_deferred_signal(properties, property) {
-        return Ok(SizeMode::Pixels(DEFERRED_POPUP_EXTENT));
+pub(crate) struct PopupExtent;
+
+impl LuaType for PopupExtent {
+    fn lua() -> String {
+        f32::lua()
     }
-    let Some(value) = properties.get(property) else {
-        return Ok(SizeMode::Content);
-    };
-    let n = value_as_f32(property, value)?.ok_or_else(|| {
-        invalid(
-            property,
-            format!(
-                "expected a number, got {} -- a popup has no \"Fill\" and no percent; omit the property to size it to its content",
-                preview_for_error(value)
-            ),
-        )
-    })?;
-    if !(n > 0.0 && n <= 8192.0) {
-        return Err(invalid(
-            property,
-            format!("must be within (0, 8192], got {n} -- set_size raises invalid_input on a zero or negative size"),
-        ));
-    }
-    Ok(SizeMode::Pixels(n))
 }
 
-/// `grab`, defaulting to `true` so outside clicks dismiss a dropdown (ADR-0040 decision 2).
-/// ADR-0040 chose a real `xdg_popup` here over a second `panel`.
-/// Taking the grab needs a real input serial for one poll turn, and the compositor may deny it
-/// (ADR-0049 amendment).
-pub fn parse_grab(properties: &PropMap) -> Result<bool, LayoutError> {
-    let Some(value) = non_deferred_property(properties, "grab") else {
-        return Ok(true);
-    };
-    match value {
-        Value::Boolean(b) => Ok(*b),
-        other => Err(invalid("grab", format!("expected a boolean, got {}", preview_for_error(other)))),
+impl Prop for PopupExtent {
+    type Out = SizeMode;
+    fn read(row: &Property, value: Option<&Value>) -> Result<SizeMode, LayoutError> {
+        let property = row.name;
+        let Some(value) = value else {
+            return Ok(SizeMode::Content);
+        };
+        let n = value_as_f32(property, value)?.ok_or_else(|| {
+            invalid(
+                property,
+                format!(
+                    "expected a number, got {} -- a popup has no \"Fill\" and no percent; omit the property to size it to its content",
+                    preview_for_error(value)
+                ),
+            )
+        })?;
+        if !(n > 0.0 && n <= 8192.0) {
+            return Err(invalid(
+                property,
+                format!(
+                    "must be within (0, 8192], got {n} -- set_size raises invalid_input on a zero or negative size"
+                ),
+            ));
+        }
+        Ok(SizeMode::Pixels(n))
+    }
+
+    fn deferred(_: &Property) -> Result<SizeMode, LayoutError> {
+        Ok(SizeMode::Pixels(DEFERRED_POPUP_EXTENT))
     }
 }
 
@@ -328,16 +347,18 @@ pub fn parse_grab(properties: &PropMap) -> Result<bool, LayoutError> {
 /// because the protocol roots the popup through `xdg_surface.get_popup` or
 /// `zwlr_layer_surface_v1.get_popup`. The object exists only while shown and the positioner is
 /// consumed at `get_popup`, so all fields re-read on open; only declaration changes topology
-/// (ADR-0001, ADR-0049 decisions 1 and 3).
+/// (ADR-0001, ADR-0049 decisions 1 and 3). `grab` defaults to `true` so outside clicks dismiss a
+/// dropdown (ADR-0040 decision 2); taking it needs a real input serial for one poll turn, and the
+/// compositor may deny it (ADR-0049 amendment).
 #[derive(Debug, Clone, PartialEq)]
 pub struct PopupSpec {
     pub id: String,
     /// The `id` of the `panel` or `window` this popup anchors to. Read with the same lossy
-    /// conversion [`parse_surface_id`] uses on the other side of the match, so the two agree.
+    /// conversion the surface `id` uses on the other side of the match, so the two agree.
     pub parent: String,
     pub anchor_rect: LogicalRect,
     /// [`SizeMode::Pixels`] for a declared number, [`SizeMode::Content`] for an omitted axis. Only
-    /// those two: [`parse_popup_extent`] admits nothing else. A `Content` axis carries no number
+    /// those two: [`PopupExtent`] admits nothing else. A `Content` axis carries no number
     /// here because there is none until the tree is solved; `wayland::surface` resolves it against
     /// the root's measured box before the positioner is built.
     pub width: SizeMode,
@@ -352,21 +373,21 @@ pub struct PopupSpec {
 pub fn popup_spec(properties: &PropMap) -> Result<PopupSpec, LayoutError> {
     // `parent` is structural: `get_popup` pins this popup to one parent instance
     // (ADR-0051 decision 1).
-    let parent = parse_string_property(properties, "parent", None)?;
+    let parent = popup::parent.read(properties)?;
     if parent.is_empty() {
         return Err(invalid("parent", "must name the `id` of the `panel` or `window` this popup anchors to"));
     }
     Ok(PopupSpec {
-        id: parse_surface_id(properties)?,
+        id: fields::surface::id.read(properties)?,
         parent,
-        anchor_rect: parse_anchor_rect(properties)?,
-        width: parse_popup_extent(properties, "width")?,
-        height: parse_popup_extent(properties, "height")?,
-        anchor: parse_popup_anchor(properties, "anchor")?,
-        gravity: parse_popup_anchor(properties, "gravity")?,
-        constraint_adjustment: parse_constraint_adjustment(properties)?,
-        offset: parse_popup_offset(properties)?,
-        grab: parse_grab(properties)?,
+        anchor_rect: popup::anchor_rect.read(properties)?,
+        width: popup::width.read(properties)?,
+        height: popup::height.read(properties)?,
+        anchor: popup::anchor.read(properties)?,
+        gravity: popup::gravity.read(properties)?,
+        constraint_adjustment: popup::constraint_adjustment.read(properties)?,
+        offset: popup::offset.read(properties)?,
+        grab: popup::grab.read(properties)?,
     })
 }
 

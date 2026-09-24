@@ -1,4 +1,4 @@
-//! Surface specs, rebuild fingerprints, child-list parsers, and masked `SecureSubmitTarget`.
+//! Surface specs, rebuild fingerprints, child-list value types, and masked `SecureSubmitTarget`.
 //! List generation also owns duplicate-key rejection.
 
 use std::collections::HashSet;
@@ -8,13 +8,14 @@ use mlua::Value;
 use crate::lua::nodes::{DeserializeError, VirtualNode, deserialize_lua_table};
 
 use super::*;
+use fields::list;
 
 /// A `lock` is in `BOX_KINDS` (`crate::lua::nodes`) and accepts the common and box properties;
-/// [`lock_spec`] refuses only `visible`, `monitor`, `anchor`, `width`, and `height` (ADR-0052
-/// decision 2). `child` is walked into the retained tree, so the spec carries no layout field. It
-/// stays a struct rather than `SurfaceSpec::Lock(String)`, giving [`lock_spec`] a place to attach
-/// those refusals. There is no `LockTopology`: the protocol exposes only `ack_configure`, with
-/// size supplied by configure, so only declaration existence is fingerprinted.
+/// [`lock_spec`] refuses only `visible`, `width`, and `height` (ADR-0052 decision 2). `child` is
+/// walked into the retained tree, so the spec carries no layout field. It stays a struct rather
+/// than `SurfaceSpec::Lock(String)`, giving [`lock_spec`] a place to attach those refusals. There
+/// is no `LockTopology`: the protocol exposes only `ack_configure`, with size supplied by configure,
+/// so only declaration existence is fingerprinted.
 #[derive(Debug, Clone, PartialEq)]
 pub struct LockSpec {
     pub id: String,
@@ -22,23 +23,15 @@ pub struct LockSpec {
 
 /// Refuses unsupported properties before reading `id`. Ignoring `visible` could tear down a
 /// compositor-owned lock at `locked`/`unlock_and_destroy`, causing ADR-0042's solid-color fallback;
-/// the error reaches `rescue`'s `error_log` (ADR-0046) while unlocked. `monitor`, `anchor`,
-/// `width`, and `height` are inert because configure owns geometry and lock surfaces cover every
-/// output (ADR-0052 decision 2), but silent no-ops are still errors. A `Signal` under a refused key
-/// is refused too; `is_deferred_signal` does not apply to a lock.
+/// the error reaches `rescue`'s `error_log` (ADR-0046) while unlocked. `width` and `height` are
+/// inert because configure owns geometry and lock surfaces cover every output (ADR-0052 decision
+/// 2), but silent no-ops are still errors. A `Signal` under a refused key is refused too.
 pub fn lock_spec(properties: &PropMap) -> Result<LockSpec, LayoutError> {
-    for property in ["visible", "monitor", "anchor", "width", "height"] {
-        if properties.contains_key(property) {
-            return Err(invalid(
-                property,
-                format!(
-                    "a `lock` takes no `{property}`: a lock surface covers every connected output, for exactly as long as the compositor holds \
-                     the session locked, and none of that is the config's to set (ADR-0042, ADR-0052 decision 2)"
-                ),
-            ));
-        }
-    }
-    Ok(LockSpec { id: parse_surface_id(properties)? })
+    use fields::lock;
+    lock::visible.read(properties)?;
+    lock::width.read(properties)?;
+    lock::height.read(properties)?;
+    Ok(LockSpec { id: fields::surface::id.read(properties)? })
 }
 
 /// One declared top-level surface, parsed by its role (ADR-0040 decision 1). Declaration order
@@ -92,44 +85,121 @@ fn deserialize_child(table: &mlua::Table, property: &str) -> Result<VirtualNode,
     })
 }
 
-/// A single-node property converted with `deserialize_lua_table`.
-pub fn parse_single_child(properties: &PropMap) -> Result<Option<VirtualNode>, LayoutError> {
-    let Some(value) = properties.get("child") else {
-        return Ok(None);
-    };
-    let Value::Table(table) = value else {
-        return Err(invalid("child", format!("expected a node table, got {}", preview_for_error(value))));
-    };
-    Ok(Some(deserialize_child(table, "child")?))
+/// A surface root's one `child`, converted with `deserialize_lua_table`.
+impl Prop for VirtualNode {
+    type Out = Option<VirtualNode>;
+    fn read(row: &Property, value: Option<&Value>) -> Result<Option<VirtualNode>, LayoutError> {
+        let Some(value) = value else {
+            return Ok(None);
+        };
+        let Value::Table(table) = value else {
+            return Err(invalid(row.name, format!("expected a node table, got {}", preview_for_error(value))));
+        };
+        Ok(Some(deserialize_child(table, row.name)?))
+    }
+}
+
+/// A `panel`'s or `lock`'s `child`: a node, or a function of the output's connector name that
+/// `layout::scene::pass::build_child_for_output` calls before this reads its node (ADR-0121).
+pub(crate) struct Root;
+
+impl LuaType for Root {
+    fn lua() -> String {
+        let builder = crate::lua::luacats::fun(&[("output", String::lua)], Some((VirtualNode::lua, true)));
+        format!("{}|{builder}", VirtualNode::lua())
+    }
+}
+
+impl Prop for Root {
+    type Out = Option<VirtualNode>;
+    fn read(row: &Property, value: Option<&Value>) -> Result<Option<VirtualNode>, LayoutError> {
+        VirtualNode::read(row, value)
+    }
 }
 
 /// An array-of-nodes `children` property.
-pub fn parse_children(properties: &PropMap) -> Result<Vec<VirtualNode>, LayoutError> {
-    let Some(value) = properties.get("children") else {
-        return Ok(Vec::new());
-    };
-    let Value::Table(table) = value else {
-        return Err(invalid("children", format!("expected an array table, got {}", preview_for_error(value))));
-    };
-    // A config controls `#children`, and a sparse table's border can be enormous, so the hint is
-    // capped at what the loop below accepts.
-    let mut children = Vec::with_capacity(table.raw_len().min(MAX_ARRAY_ELEMENTS));
-    // By index to `#children`, not `sequence_values`: that stopped at the first nil, silently
-    // dropping every child after it.
-    for index in 1..=table.raw_len() {
-        if children.len() == MAX_ARRAY_ELEMENTS {
-            return Err(invalid("children", format!("more than {MAX_ARRAY_ELEMENTS} children in one node")));
-        }
-        let entry: Value = table.raw_get(index).map_err(|e| invalid("children", e.to_string()))?;
-        let Value::Table(entry) = entry else {
-            return Err(invalid(
-                "children",
-                format!("expected a node table at index {index}, got {}", preview_for_error(&entry)),
-            ));
-        };
-        children.push(deserialize_child(&entry, "children")?);
+pub(crate) struct Children;
+
+impl LuaType for Children {
+    fn lua() -> String {
+        Vec::<VirtualNode>::lua()
     }
-    Ok(children)
+}
+
+impl Prop for Children {
+    type Out = Vec<VirtualNode>;
+    fn read(_: &Property, value: Option<&Value>) -> Result<Vec<VirtualNode>, LayoutError> {
+        let Some(value) = value else {
+            return Ok(Vec::new());
+        };
+        let Value::Table(table) = value else {
+            return Err(invalid("children", format!("expected an array table, got {}", preview_for_error(value))));
+        };
+        // A config controls `#children`, and a sparse table's border can be enormous, so the hint is
+        // capped at what the loop below accepts.
+        let mut children = Vec::with_capacity(table.raw_len().min(MAX_ARRAY_ELEMENTS));
+        // By index to `#children`, not `sequence_values`: that stopped at the first nil, silently
+        // dropping every child after it.
+        for index in 1..=table.raw_len() {
+            if children.len() == MAX_ARRAY_ELEMENTS {
+                return Err(invalid("children", format!("more than {MAX_ARRAY_ELEMENTS} children in one node")));
+            }
+            let entry: Value = table.raw_get(index).map_err(|e| invalid("children", e.to_string()))?;
+            let Value::Table(entry) = entry else {
+                return Err(invalid(
+                    "children",
+                    format!("expected a node table at index {index}, got {}", preview_for_error(&entry)),
+                ));
+            };
+            children.push(deserialize_child(&entry, "children")?);
+        }
+        Ok(children)
+    }
+}
+
+/// A `list`'s `source`: absent, or a signal still reading nil before its first push, is an empty
+/// list.
+pub(crate) struct Items;
+
+impl LuaType for Items {
+    fn lua() -> String {
+        Vec::<Value>::lua()
+    }
+}
+
+impl Prop for Items {
+    type Out = Option<mlua::Table>;
+    fn read(row: &Property, value: Option<&Value>) -> Result<Option<mlua::Table>, LayoutError> {
+        match value {
+            None => Ok(None),
+            Some(Value::Table(source)) => Ok(Some(source.clone())),
+            Some(other) => Err(invalid(row.name, format!("expected an array table, got {}", preview_for_error(other)))),
+        }
+    }
+}
+
+/// A `list`'s `limit`, capped at what one list builds. ponytail: it bounds item construction for
+/// search and launchers; viewport windowing is the upgrade (ADR-0191).
+pub(crate) struct Limit;
+
+impl LuaType for Limit {
+    fn lua() -> String {
+        i64::lua()
+    }
+}
+
+impl Prop for Limit {
+    type Out = Option<usize>;
+    fn read(row: &Property, value: Option<&Value>) -> Result<Option<usize>, LayoutError> {
+        match value {
+            None => Ok(None),
+            Some(Value::Integer(n)) if *n >= 0 => Ok(Some((*n as usize).min(MAX_ARRAY_ELEMENTS))),
+            Some(Value::Number(n)) if *n >= 0.0 && n.fract() == 0.0 => Ok(Some((*n as usize).min(MAX_ARRAY_ELEMENTS))),
+            Some(other) => {
+                Err(invalid(row.name, format!("expected a non-negative integer, got {}", preview_for_error(other))))
+            }
+        }
+    }
 }
 
 /// A `list`'s children (ADR-0045 decision 3) are generated once per resolved
@@ -145,36 +215,10 @@ pub fn parse_children(properties: &PropMap) -> Result<Vec<VirtualNode>, LayoutEr
 /// pass (ADR-0132); the whole of it is a viewport, measured at 22us a row by
 /// `layout::scene::tests::list_pass_cost` and designed in ADR-0191.
 pub fn parse_list_children(properties: &PropMap) -> Result<Vec<VirtualNode>, LayoutError> {
-    // Absent, or a signal still reading nil before its first push, is an empty list.
-    let source = match properties.get("source") {
-        None => None,
-        Some(Value::Table(source)) => Some(source),
-        Some(other) => {
-            return Err(invalid("source", format!("expected an array table, got {}", preview_for_error(other))));
-        }
-    };
-
-    let itemfn = match properties.get("itemfn") {
-        Some(Value::Function(f)) => f,
-        Some(other) => return Err(invalid("itemfn", format!("expected a function, got {}", preview_for_error(other)))),
-        None => return Err(invalid("itemfn", "required for `list`, got nothing")),
-    };
-
-    let key_fn = match properties.get("key") {
-        Some(Value::Function(f)) => Some(f),
-        Some(other) => return Err(invalid("key", format!("expected a function, got {}", preview_for_error(other)))),
-        None => None,
-    };
-
-    // ponytail: limit bounds item construction for search/launchers. Upgrade path: viewport windowing (ADR-0191).
-    let limit = match properties.get("limit") {
-        Some(Value::Integer(n)) if *n >= 0 => Some((*n as usize).min(MAX_ARRAY_ELEMENTS)),
-        Some(Value::Number(n)) if *n >= 0.0 && n.fract() == 0.0 => Some((*n as usize).min(MAX_ARRAY_ELEMENTS)),
-        Some(other) => {
-            return Err(invalid("limit", format!("expected a non-negative integer, got {}", preview_for_error(other))));
-        }
-        None => None,
-    };
+    let source = list::source.read(properties)?;
+    let itemfn = list::itemfn.read(properties)?.expect("`itemfn` is required");
+    let key_fn = list::key.read(properties)?;
+    let limit = list::limit.read(properties)?;
 
     let Some(source) = source else {
         return Ok(Vec::new());
@@ -196,7 +240,7 @@ pub fn parse_list_children(properties: &PropMap) -> Result<Vec<VirtualNode>, Lay
         };
         let mut node = deserialize_child(&built_table, "itemfn")?;
 
-        if let Some(key_fn) = key_fn {
+        if let Some(key_fn) = &key_fn {
             // Moved, not borrowed: a borrow would keep this item rooted for the rest of the loop
             // body, which a `key` collecting garbage behind a weak table can see.
             let key_value = key_fn.call::<Value>(element).map_err(|e| invalid("key", e.to_string()))?;
@@ -235,52 +279,62 @@ pub struct SecureSubmitTarget {
     pub action: String,
 }
 
+impl LuaType for SecureSubmitTarget {
+    fn lua() -> String {
+        let name = String::lua();
+        format!("{{ capability: {name}, action: {name}, [string]: \"no such property\" }}")
+    }
+}
+
 /// `secure_submit` is optional because an unread mask is unreadable from Lua, and it
 /// is non-structural, so signal-bound values arrive resolved. `capability`/`action` reject
-/// non-UTF-8 rather than collapsing distinct bytes onto one Supervisor capability name, as
-/// [`parse_node_id`] does.
-pub fn parse_secure_submit(properties: &PropMap) -> Result<Option<SecureSubmitTarget>, LayoutError> {
-    let Some(value) = properties.get("secure_submit") else {
-        return Ok(None);
-    };
-    let Value::Table(table) = value else {
-        return Err(invalid("secure_submit", format!("expected a table, got {}", preview_for_error(value))));
-    };
-    only_keys("secure_submit", table, &["capability", "action"])?;
-    let field = |key: &str| -> Result<String, LayoutError> {
-        let v: Value = table.get(key).map_err(|e| invalid("secure_submit", e.to_string()))?;
-        let s = match v {
-            Value::Nil => return Err(invalid("secure_submit", format!("`{key}` is required"))),
-            Value::String(s) => s,
-            other => {
-                return Err(invalid(
-                    "secure_submit",
-                    format!("`{key}` must be a string, got {}", preview_for_error(&other)),
-                ));
-            }
+/// non-UTF-8 rather than collapsing distinct bytes onto one Supervisor capability name, as a
+/// node's `id` does.
+impl Prop for SecureSubmitTarget {
+    type Out = Option<SecureSubmitTarget>;
+    fn read(_: &Property, value: Option<&Value>) -> Result<Option<SecureSubmitTarget>, LayoutError> {
+        let Some(value) = value else {
+            return Ok(None);
         };
-        let s = s.to_str().map(|s| s.to_string()).map_err(|_| {
-            invalid(
+        let Value::Table(table) = value else {
+            return Err(invalid("secure_submit", format!("expected a table, got {}", preview_for_error(value))));
+        };
+        only_keys("secure_submit", table, &["capability", "action"])?;
+        let field = |key: &str| -> Result<String, LayoutError> {
+            let v: Value = table.get(key).map_err(|e| invalid("secure_submit", e.to_string()))?;
+            let s = match v {
+                Value::Nil => return Err(invalid("secure_submit", format!("`{key}` is required"))),
+                Value::String(s) => s,
+                other => {
+                    return Err(invalid(
+                        "secure_submit",
+                        format!("`{key}` must be a string, got {}", preview_for_error(&other)),
+                    ));
+                }
+            };
+            let s = s.to_str().map(|s| s.to_string()).map_err(|_| {
+                invalid(
+                    "secure_submit",
+                    format!(
+                        "`{key}` must be valid UTF-8 -- it addresses a Supervisor capability, so it cannot be converted lossily"
+                    ),
+                )
+            })?;
+            if s.is_empty() {
+                return Err(invalid("secure_submit", format!("`{key}` must not be empty")));
+            }
+            Ok(s)
+        };
+        let (capability, action) = (field("capability")?, field("action")?);
+        if !SECURE_SUBMIT_TARGETS.contains(&(capability.as_str(), action.as_str())) {
+            let known: Vec<String> = SECURE_SUBMIT_TARGETS.iter().map(|(c, a)| format!("`{c}`/`{a}`")).collect();
+            return Err(invalid(
                 "secure_submit",
-                format!(
-                    "`{key}` must be valid UTF-8 -- it addresses a Supervisor capability, so it cannot be converted lossily"
-                ),
-            )
-        })?;
-        if s.is_empty() {
-            return Err(invalid("secure_submit", format!("`{key}` must not be empty")));
+                format!("`{capability}`/`{action}` receives no password; it takes {}", known.join(", ")),
+            ));
         }
-        Ok(s)
-    };
-    let (capability, action) = (field("capability")?, field("action")?);
-    if !SECURE_SUBMIT_TARGETS.contains(&(capability.as_str(), action.as_str())) {
-        let known: Vec<String> = SECURE_SUBMIT_TARGETS.iter().map(|(c, a)| format!("`{c}`/`{a}`")).collect();
-        return Err(invalid(
-            "secure_submit",
-            format!("`{capability}`/`{action}` receives no password; it takes {}", known.join(", ")),
-        ));
+        Ok(Some(SecureSubmitTarget { capability, action }))
     }
-    Ok(Some(SecureSubmitTarget { capability, action }))
 }
 
 /// The pairs `supervisor/src/main.rs` routes a secret to; its fallback arm drops any other one, so
@@ -293,32 +347,32 @@ mod tests {
     use super::*;
 
     #[test]
-    fn parse_children_walks_nested_node_tables() {
+    fn children_walks_nested_node_tables() {
         let lua = mlua::Lua::new();
         let table: mlua::Table = lua
                 .load(r#"return { kind = "row", children = { { kind = "text", content = "a" }, { kind = "text", content = "b" } } }"#)
                 .eval()
                 .unwrap();
         let props = props_from_table(&table);
-        let children = parse_children(&props).unwrap();
+        let children = fields::stack::children.read(&props).unwrap();
         assert_eq!(children.len(), 2);
         assert_eq!(children[0].kind, "text");
         assert_eq!(children[1].properties.get("content").unwrap().as_string().unwrap().to_string_lossy(), "b");
     }
 
     #[test]
-    fn parse_single_child_converts_the_child_table() {
+    fn a_single_child_converts_the_child_table() {
         let lua = mlua::Lua::new();
         let table: mlua::Table = lua.load(r#"return { kind = "panel", child = { kind = "rect" } }"#).eval().unwrap();
         let props = props_from_table(&table);
-        let child = parse_single_child(&props).unwrap();
+        let child = fields::root::child.read(&props).unwrap();
         assert_eq!(child.unwrap().kind, "rect");
     }
 
     #[test]
-    fn parse_single_child_absent_is_none() {
+    fn a_single_child_absent_is_none() {
         let props = PropMap::default();
-        assert!(parse_single_child(&props).unwrap().is_none());
+        assert!(fields::root::child.read(&props).unwrap().is_none());
     }
 
     #[test]
@@ -336,7 +390,7 @@ mod tests {
         ] {
             let table: mlua::Table =
                 lua.load(format!("return {{ kind = \"textfield\", secure_submit = {source} }}")).eval().unwrap();
-            let err = parse_secure_submit(&props_from_table(&table)).unwrap_err();
+            let err = fields::textfield::secure_submit.read(&props_from_table(&table)).unwrap_err();
             assert!(
                 matches!(&err, LayoutError::InvalidProperty { property, detail } if property == "secure_submit" && detail == expected),
                 "{err}"
@@ -347,7 +401,7 @@ mod tests {
     #[test]
     fn secure_submit_absent_is_none() {
         let props = PropMap::default();
-        assert_eq!(parse_secure_submit(&props).unwrap(), None);
+        assert_eq!(fields::textfield::secure_submit.read(&props).unwrap(), None);
     }
 
     #[test]
@@ -359,7 +413,7 @@ mod tests {
             .unwrap();
         let props = props_from_table(&table);
         assert_eq!(
-            parse_secure_submit(&props).unwrap(),
+            fields::textfield::secure_submit.read(&props).unwrap(),
             Some(SecureSubmitTarget { capability: "network".to_string(), action: "connect".to_string() })
         );
     }
@@ -370,7 +424,7 @@ mod tests {
         let table: mlua::Table =
             lua.load(r#"return { kind = "textfield", secure_submit = { action = "connect" } }"#).eval().unwrap();
         let props = props_from_table(&table);
-        let err = parse_secure_submit(&props).unwrap_err();
+        let err = fields::textfield::secure_submit.read(&props).unwrap_err();
         assert!(
             matches!(&err, LayoutError::InvalidProperty { property, detail } if property == "secure_submit" && detail.contains("capability")),
             "got {err}"
@@ -383,7 +437,7 @@ mod tests {
         let table: mlua::Table =
             lua.load(r#"return { kind = "textfield", secure_submit = { capability = "network" } }"#).eval().unwrap();
         let props = props_from_table(&table);
-        let err = parse_secure_submit(&props).unwrap_err();
+        let err = fields::textfield::secure_submit.read(&props).unwrap_err();
         assert!(
             matches!(&err, LayoutError::InvalidProperty { property, detail } if property == "secure_submit" && detail.contains("action")),
             "got {err}"
@@ -398,7 +452,7 @@ mod tests {
             .eval()
             .unwrap();
         let props = props_from_table(&table);
-        let err = parse_secure_submit(&props).unwrap_err();
+        let err = fields::textfield::secure_submit.read(&props).unwrap_err();
         assert!(
             matches!(&err, LayoutError::InvalidProperty { property, detail } if property == "secure_submit" && detail.contains("capability")),
             "got {err}"
@@ -413,7 +467,7 @@ mod tests {
             .eval()
             .unwrap();
         let props = props_from_table(&table);
-        let err = parse_secure_submit(&props).unwrap_err();
+        let err = fields::textfield::secure_submit.read(&props).unwrap_err();
         assert!(
             matches!(&err, LayoutError::InvalidProperty { property, detail } if property == "secure_submit" && detail.contains("action")),
             "got {err}"
@@ -427,7 +481,7 @@ mod tests {
             lua.load(r#"return { kind = "textfield", secure_submit = "network.connect" }"#).eval().unwrap();
         let props = props_from_table(&table);
         assert!(matches!(
-            parse_secure_submit(&props).unwrap_err(),
+            fields::textfield::secure_submit.read(&props).unwrap_err(),
             LayoutError::InvalidProperty { property, .. } if property == "secure_submit"
         ));
     }
@@ -442,7 +496,7 @@ mod tests {
         inner.set("action", "connect").unwrap();
         table.set("secure_submit", inner).unwrap();
         let props = props_from_table(&table);
-        let err = parse_secure_submit(&props).unwrap_err();
+        let err = fields::textfield::secure_submit.read(&props).unwrap_err();
         assert!(
             matches!(&err, LayoutError::InvalidProperty { property, .. } if property == "secure_submit"),
             "a non-UTF-8 secure_submit field must be a LayoutError naming the property: {err:?}"
@@ -560,7 +614,7 @@ mod tests {
         let mut properties = PropMap::default();
         properties.insert("children", Value::Table(table));
 
-        let err = parse_children(&properties).expect_err("past the cap this must be refused");
+        let err = fields::stack::children.read(&properties).expect_err("past the cap this must be refused");
         assert!(format!("{err:?}").contains("more than"), "the error has to say what to fix: {err:?}");
     }
 
@@ -574,7 +628,7 @@ mod tests {
         let mut properties = PropMap::default();
         properties.insert("children", Value::Table(table));
 
-        assert_eq!(parse_children(&properties).unwrap().len(), 2);
+        assert_eq!(fields::stack::children.read(&properties).unwrap().len(), 2);
     }
 
     #[test]
@@ -612,7 +666,7 @@ mod tests {
             .load(r#"return { kind = "row", children = { { kind = "rect" }, nil, { kind = "rect" } } }"#)
             .eval()
             .unwrap();
-        let err = parse_children(&props_from_table(&table)).unwrap_err();
+        let err = fields::stack::children.read(&props_from_table(&table)).unwrap_err();
         assert!(
             matches!(&err, LayoutError::InvalidProperty { property, detail } if property == "children" && detail == "expected a node table at index 2, got Nil"),
             "{err}"

@@ -84,7 +84,7 @@ fn layer_size_for(spec: &PanelSpec, output: layout::LogicalSize, measured: layou
 /// an allocation like `Fill`'s, which is exactly what `available` wants.
 ///
 /// The resolved spec, never `crate::socket::surface_specs`': a signal-bound `width` reads as
-/// `Content` on the evaluation pass by design (`parse_size_mode` defers it for
+/// `Content` on the evaluation pass by design (`Bound` defers it for
 /// [`App::apply_spec_change`] to re-derive), and pinning `available` for one of those would strand
 /// a panel sized by a signal at its output's width.
 /// The most room a measured axis can actually take, and so what `available` is on one: the output,

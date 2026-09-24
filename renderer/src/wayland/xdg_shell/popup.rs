@@ -482,12 +482,11 @@ impl PopupHandler for App {
         self.hide_popup(index);
         self.latch_popup(index);
 
-        let on_dismiss =
-            self.client.scene().surface(&surface_id).and_then(|tree| match tree.properties.get("on_dismiss") {
-                // This key is opaque too.
-                Some(Value::Function(on_dismiss)) => Some(on_dismiss.clone()),
-                _ => None,
-            });
+        let on_dismiss = self
+            .client
+            .scene()
+            .surface(&surface_id)
+            .and_then(|tree| crate::layout::node::fields::popup::on_dismiss.read(&tree.properties).ok().flatten());
         let Some(on_dismiss) = on_dismiss else {
             // No handler is fine; the latch still prevents a livelock.
             return;

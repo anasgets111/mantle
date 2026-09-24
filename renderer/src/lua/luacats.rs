@@ -35,6 +35,7 @@ spelled!("function": Function);
 spelled!("userdata": AnyUserData);
 spelled!("": ());
 spelled!("Rect": crate::text::snap::LogicalRect);
+spelled!("{ x: number, y: number }": crate::layout::hit::LogicalPoint);
 spelled!("Node": super::VirtualNode);
 
 impl<T: LuaType> LuaType for Option<T> {

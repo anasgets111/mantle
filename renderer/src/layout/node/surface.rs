@@ -3,31 +3,21 @@
 
 use mlua::Value;
 
-use super::content::{parse_keyword, parse_string_property};
+use super::prop::keywords;
 use super::*;
+use fields::panel;
 
-/// The layer-shell stacking level. Kept separate from smithay-client-toolkit so this module has
-/// no Wayland types; `crate::wayland` maps it at the call site.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum LayerKind {
-    Background,
-    Bottom,
-    Top,
-    Overlay,
-}
-
-/// The required layer string (ADR-0038 decision 1). `create_panel` uses it per instance, so a
-/// typo such as `"Toop"` errors instead of silently selecting `Background`.
-pub fn parse_layer(properties: &PropMap) -> Result<LayerKind, LayoutError> {
-    // Requires the string and refuses a `Signal`; the keyword match then names every layer.
-    parse_string_property(properties, "layer", None)?;
-    let layers = [
-        ("Background", LayerKind::Background),
-        ("Bottom", LayerKind::Bottom),
-        ("Top", LayerKind::Top),
-        ("Overlay", LayerKind::Overlay),
-    ];
-    parse_keyword(properties.get("layer"), "layer", &layers)
+keywords! {
+    /// The layer-shell stacking level (ADR-0038 decision 1). Kept separate from
+    /// smithay-client-toolkit so this module has no Wayland types; `crate::wayland` maps it at the
+    /// call site.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum LayerKind {
+        Background,
+        Bottom,
+        Top,
+        Overlay,
+    }
 }
 
 /// The `{ top, bottom, left, right }` edge booleans, defaulting to false.
@@ -39,62 +29,50 @@ pub struct Anchor {
     pub left: bool,
 }
 
-pub fn parse_anchor(properties: &PropMap) -> Result<Anchor, LayoutError> {
-    let Some(value) = properties.get("anchor") else {
-        return Ok(Anchor::default());
-    };
-    reject_signal_in_structural_field("anchor", value)?;
-    let Value::Table(table) = value else {
-        return Err(invalid("anchor", format!("expected a table, got {}", preview_for_error(value))));
-    };
-    only_keys("anchor", table, &["top", "right", "bottom", "left"])?;
-    let edge = |key: &str| -> Result<bool, LayoutError> {
-        let v: Value = table.get(key).map_err(|e| invalid("anchor", e.to_string()))?;
-        match v {
-            Value::Nil => Ok(false),
-            Value::Boolean(b) => Ok(b),
-            other => Err(invalid("anchor", format!("`{key}` must be a boolean, got {}", preview_for_error(&other)))),
-        }
-    };
-    Ok(Anchor { top: edge("top")?, right: edge("right")?, bottom: edge("bottom")?, left: edge("left")? })
+impl LuaType for Anchor {
+    fn lua() -> String {
+        let edge = bool::lua();
+        format!("{{ top?: {edge}, bottom?: {edge}, left?: {edge}, right?: {edge}, [string]: \"no such property\" }}")
+    }
 }
 
-/// A specific output's connector name (e.g. `"DP-1"`, matched against `output.name` by
-/// `expand_instances`), `"All"`, or `"Active"` (ADR-0246); absent defaults to `"All"`.
-pub fn parse_monitor(properties: &PropMap) -> Result<String, LayoutError> {
-    parse_string_property(properties, "monitor", Some("All"))
+impl Prop for Anchor {
+    type Out = Anchor;
+    fn read(_: &Property, value: Option<&Value>) -> Result<Anchor, LayoutError> {
+        let Some(value) = value else {
+            return Ok(Anchor::default());
+        };
+        let Value::Table(table) = value else {
+            return Err(invalid("anchor", format!("expected a table, got {}", preview_for_error(value))));
+        };
+        only_keys("anchor", table, &["top", "right", "bottom", "left"])?;
+        let edge = |key: &str| -> Result<bool, LayoutError> {
+            let v: Value = table.get(key).map_err(|e| invalid("anchor", e.to_string()))?;
+            match v {
+                Value::Nil => Ok(false),
+                Value::Boolean(b) => Ok(b),
+                other => {
+                    Err(invalid("anchor", format!("`{key}` must be a boolean, got {}", preview_for_error(&other))))
+                }
+            }
+        };
+        Ok(Anchor { top: edge("top")?, right: edge("right")?, bottom: edge("bottom")?, left: edge("left")? })
+    }
 }
 
-/// The layer-shell namespace, also used by Hyprland `layerrule` for blur and animations. It
-/// defaults to `"mantle-{id}"`; `get_layer_surface` fixes it at creation, so an edit rebuilds the surface.
-pub fn parse_namespace(properties: &PropMap, id: &str) -> Result<String, LayoutError> {
-    let default = format!("mantle-{id}");
-    parse_string_property(properties, "namespace", Some(&default))
-}
-
-/// `keyboard_interactivity`, mapped to layer-shell by `crate::wayland::keyboard_interactivity_for`;
-/// kept local to avoid Wayland types here.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum KeyboardInteractivity {
-    /// The surface never receives key events.
-    #[default]
-    None,
-    OnDemand,
-    Exclusive,
-}
-
-/// `keyboard_interactivity`. It is live, not part of [`SurfaceTopology`]:
-/// `zwlr_layer_surface_v1::set_keyboard_interactivity` accepts changes on a mapped surface, so a
-/// `Signal` is a value change (ADR-0044 decision 1).
-pub fn parse_keyboard_interactivity(properties: &PropMap) -> Result<KeyboardInteractivity, LayoutError> {
-    // Deferred on the evaluation-time pass ([`is_deferred_signal`]), same split as
-    // [`parse_title`]'s: a field valid on a live surface is one only the resolved pass can read.
-    let modes = [
-        ("None", KeyboardInteractivity::None),
-        ("OnDemand", KeyboardInteractivity::OnDemand),
-        ("Exclusive", KeyboardInteractivity::Exclusive),
-    ];
-    parse_keyword(non_deferred_property(properties, "keyboard_interactivity"), "keyboard_interactivity", &modes)
+keywords! {
+    /// `keyboard_interactivity`, mapped to layer-shell by `crate::wayland::keyboard_interactivity_for`;
+    /// kept local to avoid Wayland types here. It is live, not part of [`SurfaceTopology`]:
+    /// `zwlr_layer_surface_v1::set_keyboard_interactivity` accepts changes on a mapped surface, so a
+    /// `Signal` is a value change (ADR-0044 decision 1).
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+    pub enum KeyboardInteractivity {
+        /// The surface never receives key events.
+        #[default]
+        None,
+        OnDemand,
+        Exclusive,
+    }
 }
 
 /// The exclusion answers mapped to `set_exclusive_zone`: positive reserves space, `0`
@@ -114,50 +92,60 @@ pub enum Exclusive {
     Ignore,
 }
 
+impl LuaType for Exclusive {
+    fn lua() -> String {
+        format!("{}|{}|\"Ignore\"", bool::lua(), i32::lua())
+    }
+}
+
 /// `exclusive`: booleans preserve their meanings, and `"Ignore"` adds the third protocol
 /// answer. It defaults to [`Exclusive::Respect`], so an undeclared panel floats over what is behind
-/// it rather than pushing windows aside or covering them. The additive default preserves old
-/// configs; `crate::wayland` computes the zone at configure time from the compositor's chosen size.
-pub fn parse_exclusive(properties: &PropMap) -> Result<Exclusive, LayoutError> {
-    // `exclusive = hide_bar` is valid config that only this pass cannot read, so
-    // `Respect` is the placeholder: a signal is unknown before its getter runs, and the other
-    // answers are visible mistakes for a frame -- `Ignore` paints over the bar, `Reserve` shoves
-    // every window aside.
-    let Some(value) = non_deferred_property(properties, "exclusive") else {
-        return Ok(Exclusive::Respect);
-    };
-    match value {
-        Value::Boolean(true) => Ok(Exclusive::Reserve),
-        Value::Boolean(false) => Ok(Exclusive::Respect),
-        Value::String(s) if checked_string("exclusive", s)? == "Ignore" => Ok(Exclusive::Ignore),
-        Value::Integer(n) if *n > 0 => Ok(Exclusive::Zone(i32::try_from(*n).unwrap_or(i32::MAX))),
-        other => Err(invalid(
-            "exclusive",
-            format!("expected a boolean, a pixel count or \"Ignore\", got {}", preview_for_error(other)),
-        )),
+/// it rather than pushing windows aside or covering them; `crate::wayland` computes the zone at
+/// configure time from the compositor's chosen size. `exclusive = hide_bar` is valid config that
+/// the evaluation-time pass cannot read, so `Respect` is its placeholder too: the other answers are
+/// visible mistakes for a frame -- `Ignore` paints over the bar, `Reserve` shoves every window aside.
+impl Prop for Exclusive {
+    type Out = Exclusive;
+    fn read(_: &Property, value: Option<&Value>) -> Result<Exclusive, LayoutError> {
+        let Some(value) = value else {
+            return Ok(Exclusive::Respect);
+        };
+        match value {
+            Value::Boolean(true) => Ok(Exclusive::Reserve),
+            Value::Boolean(false) => Ok(Exclusive::Respect),
+            Value::String(s) if checked_string("exclusive", s)? == "Ignore" => Ok(Exclusive::Ignore),
+            Value::Integer(n) if *n > 0 => Ok(Exclusive::Zone(i32::try_from(*n).unwrap_or(i32::MAX))),
+            other => Err(invalid(
+                "exclusive",
+                format!("expected a boolean, a pixel count or \"Ignore\", got {}", preview_for_error(other)),
+            )),
+        }
     }
 }
 
 /// Creation-time topology (`layer`, `anchor`, `monitor`, `namespace`, and `id`). A changed one
 /// rebuilds that panel's surfaces (ADR-0216); other `PanelSpec` fields update live (ADR-0038
-/// decision 2).
+/// decision 2). `namespace`, the layer namespace Hyprland `layerrule` matches, defaults to
+/// `"mantle-{id}"`; `get_layer_surface` fixes it at creation, so an edit rebuilds the surface.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SurfaceTopology {
     pub id: String,
     pub layer: LayerKind,
     pub anchor: Anchor,
+    /// A connector name (matched against `output.name` by `expand_instances`), `"All"`, or
+    /// `"Active"` (ADR-0246).
     pub monitor: String,
     pub namespace: String,
 }
 
 pub fn surface_topology(properties: &PropMap) -> Result<SurfaceTopology, LayoutError> {
-    let id = parse_surface_id(properties)?;
-    let namespace = parse_namespace(properties, &id)?;
+    let id = fields::surface::id.read(properties)?;
+    let namespace = panel::namespace.read(properties)?.replace("{id}", &id);
     Ok(SurfaceTopology {
         id,
-        layer: parse_layer(properties)?,
-        anchor: parse_anchor(properties)?,
-        monitor: parse_monitor(properties)?,
+        layer: panel::layer.read(properties)?,
+        anchor: panel::anchor.read(properties)?,
+        monitor: panel::monitor.read(properties)?,
         namespace,
     })
 }
@@ -173,7 +161,7 @@ pub struct PanelSpec {
     pub exclusive: Exclusive,
     /// The root anchor offset, not spacing between root and child. `Scene::apply_one_surface`
     /// passes `None` for both parent-margin arguments when resolving a root. Below a root it
-    /// remains ordinary layout margin parsed by [`parse_edge_insets`].
+    /// remains ordinary layout margin.
     pub margin: EdgeInsets,
     /// The layer-shell `set_size` request. `SizeMode::Fill` is protocol `0`; percentages resolve
     /// against the output at the call site that knows it.
@@ -184,11 +172,11 @@ pub struct PanelSpec {
 pub fn panel_spec(properties: &PropMap) -> Result<PanelSpec, LayoutError> {
     let spec = PanelSpec {
         topology: surface_topology(properties)?,
-        keyboard_interactivity: parse_keyboard_interactivity(properties)?,
-        exclusive: parse_exclusive(properties)?,
-        margin: parse_edge_insets(properties, "margin")?,
-        width: parse_size_mode(properties, "width")?,
-        height: parse_size_mode(properties, "height")?,
+        keyboard_interactivity: panel::keyboard_interactivity.read(properties)?,
+        exclusive: panel::exclusive.read(properties)?,
+        margin: panel::margin.read(properties)?,
+        width: panel::width.read(properties)?,
+        height: panel::height.read(properties)?,
     };
     // A percentage needs the output, which the compositor picks unseen (ADR-0246 decision 3).
     for (key, mode) in [("width", spec.width), ("height", spec.height)] {
@@ -212,7 +200,7 @@ mod tests {
     #[test]
     fn layer_is_required() {
         let props = PropMap::default();
-        assert!(matches!(parse_layer(&props).unwrap_err(), LayoutError::InvalidProperty { .. }));
+        assert!(matches!(fields::panel::layer.read(&props).unwrap_err(), LayoutError::InvalidProperty { .. }));
     }
 
     #[test]
@@ -220,7 +208,7 @@ mod tests {
         let lua = mlua::Lua::new();
         let table: mlua::Table = lua.load(r#"return { kind = "panel", layer = "Toop" }"#).eval().unwrap();
         let props = props_from_table(&table);
-        let err = parse_layer(&props).unwrap_err();
+        let err = fields::panel::layer.read(&props).unwrap_err();
         assert!(matches!(&err, LayoutError::InvalidProperty { property, .. } if property == "layer"), "got {err}");
         assert!(err.to_string().contains("Toop"), "the message must name the value the config wrote: {err}");
     }
@@ -228,7 +216,7 @@ mod tests {
     #[test]
     fn anchor_absent_defaults_all_false() {
         let props = PropMap::default();
-        assert_eq!(parse_anchor(&props).unwrap(), Anchor::default());
+        assert_eq!(fields::panel::anchor.read(&props).unwrap(), Anchor::default());
     }
 
     #[test]
@@ -237,13 +225,16 @@ mod tests {
         let table: mlua::Table =
             lua.load(r#"return { kind = "panel", anchor = { top = true, left = true } }"#).eval().unwrap();
         let props = props_from_table(&table);
-        assert_eq!(parse_anchor(&props).unwrap(), Anchor { top: true, right: false, bottom: false, left: true });
+        assert_eq!(
+            fields::panel::anchor.read(&props).unwrap(),
+            Anchor { top: true, right: false, bottom: false, left: true }
+        );
     }
 
     #[test]
     fn monitor_absent_defaults_to_all() {
         let props = PropMap::default();
-        assert_eq!(parse_monitor(&props).unwrap(), "All");
+        assert_eq!(fields::panel::monitor.read(&props).unwrap(), "All");
     }
 
     #[test]
@@ -251,7 +242,7 @@ mod tests {
         let lua = mlua::Lua::new();
         let table: mlua::Table = lua.load(r#"return { kind = "panel", monitor = "eDP-1" }"#).eval().unwrap();
         let props = props_from_table(&table);
-        assert_eq!(parse_monitor(&props).unwrap(), "eDP-1");
+        assert_eq!(fields::panel::monitor.read(&props).unwrap(), "eDP-1");
     }
 
     #[test]
@@ -281,7 +272,10 @@ mod tests {
         let table: mlua::Table =
             lua.load(r#"return { kind = "panel", id = "launcher", layer = "Overlay" }"#).eval().unwrap();
         let props = props_from_table(&table);
-        assert_eq!(parse_namespace(&props, "launcher").unwrap(), "mantle-launcher");
+        assert_eq!(
+            fields::panel::namespace.read(&props).map(|namespace| namespace.replace("{id}", "launcher")).unwrap(),
+            "mantle-launcher"
+        );
         assert_eq!(surface_topology(&props).unwrap().namespace, "mantle-launcher");
     }
 
@@ -300,14 +294,14 @@ mod tests {
         let props = props_from_table(&table);
         let resolved = resolve_properties(props, "panel", &lua).unwrap();
         assert!(
-            matches!(parse_namespace(&resolved, "bar").unwrap_err(), LayoutError::UnsupportedSignalProperty(p) if p == "namespace")
+            matches!(fields::panel::namespace.read(&resolved).map(|namespace| namespace.replace("{id}", "bar")).unwrap_err(), LayoutError::UnsupportedSignalProperty(p) if p == "namespace")
         );
     }
 
     #[test]
     fn keyboard_interactivity_absent_defaults_to_none() {
         let props = PropMap::default();
-        assert_eq!(parse_keyboard_interactivity(&props).unwrap(), KeyboardInteractivity::None);
+        assert_eq!(fields::panel::keyboard_interactivity.read(&props).unwrap(), KeyboardInteractivity::None);
     }
 
     #[test]
@@ -317,7 +311,7 @@ mod tests {
             lua.load(r#"return { kind = "panel", keyboard_interactivity = "Always" }"#).eval().unwrap();
         let props = props_from_table(&table);
         assert!(
-            matches!(parse_keyboard_interactivity(&props).unwrap_err(), LayoutError::InvalidProperty { property, .. } if property == "keyboard_interactivity")
+            matches!(fields::panel::keyboard_interactivity.read(&props).unwrap_err(), LayoutError::InvalidProperty { property, .. } if property == "keyboard_interactivity")
         );
     }
 
@@ -337,13 +331,13 @@ mod tests {
             .unwrap();
         let props = props_from_table(&table);
         let resolved = resolve_properties(props, "panel", &lua).unwrap();
-        assert_eq!(parse_keyboard_interactivity(&resolved).unwrap(), KeyboardInteractivity::Exclusive);
+        assert_eq!(fields::panel::keyboard_interactivity.read(&resolved).unwrap(), KeyboardInteractivity::Exclusive);
     }
 
     #[test]
     fn exclusive_absent_reserves_and_covers_nothing() {
         let props = PropMap::default();
-        assert_eq!(parse_exclusive(&props).unwrap(), Exclusive::Respect);
+        assert_eq!(fields::panel::exclusive.read(&props).unwrap(), Exclusive::Respect);
     }
 
     #[test]
@@ -351,7 +345,7 @@ mod tests {
         let lua = mlua::Lua::new();
         let parse = |src: &str| {
             let table: mlua::Table = lua.load(src).eval().unwrap();
-            parse_exclusive(&props_from_table(&table))
+            fields::panel::exclusive.read(&props_from_table(&table))
         };
         assert_eq!(parse(r#"return { kind = "panel", exclusive = true }"#).unwrap(), Exclusive::Reserve);
         assert_eq!(parse(r#"return { kind = "panel", exclusive = false }"#).unwrap(), Exclusive::Respect);
@@ -381,7 +375,7 @@ mod tests {
         crate::lua::signal::register(&lua, crate::lua::signal::DirtyFlag::new()).unwrap();
         let table: mlua::Table =
             lua.load(r#"return { kind = "panel", exclusive = state("hide_bar", true) }"#).eval().unwrap();
-        assert_eq!(parse_exclusive(&props_from_table(&table)).unwrap(), Exclusive::Respect);
+        assert_eq!(fields::panel::exclusive.read(&props_from_table(&table)).unwrap(), Exclusive::Respect);
     }
 
     #[test]
@@ -499,7 +493,7 @@ mod tests {
         table.set("layer", signal).unwrap();
         let node = deserialize_lua_table(&table).unwrap();
         assert!(
-            matches!(parse_layer(&node.properties).unwrap_err(), LayoutError::UnsupportedSignalProperty(p) if p == "layer")
+            matches!(fields::panel::layer.read(&node.properties).unwrap_err(), LayoutError::UnsupportedSignalProperty(p) if p == "layer")
         );
     }
 
@@ -524,7 +518,7 @@ mod tests {
     }
 
     #[test]
-    fn a_signal_in_layer_on_a_panel_still_survives_raw_for_parse_layer_to_reject() {
+    fn a_signal_in_layer_on_a_panel_still_survives_raw_for_the_layer_field_to_reject() {
         let lua = mlua::Lua::new();
         crate::lua::signal::register(&lua, crate::lua::signal::DirtyFlag::new()).unwrap();
         let signal = crate::lua::signal::Signal::new_live(Value::Boolean(true), crate::lua::signal::DirtyFlag::new()).0;
@@ -540,7 +534,7 @@ mod tests {
             "layer must survive the resolve step unresolved on a panel"
         );
         assert!(
-            matches!(parse_layer(&resolved).unwrap_err(), LayoutError::UnsupportedSignalProperty(p) if p == "layer")
+            matches!(fields::panel::layer.read(&resolved).unwrap_err(), LayoutError::UnsupportedSignalProperty(p) if p == "layer")
         );
     }
 }

@@ -340,7 +340,7 @@ impl RendererClient {
     /// it, for [`Self::set_instance_size`] to honour, and puts `ceiling` on those axes.
     /// `crate::wayland::layer` pushes both from the *resolved* panel spec, on creation and on every
     /// later pass: the socket parser cannot tell a genuinely omitted extent from a signal-bound
-    /// one, since `parse_size_mode` defers both to `SizeMode::Content`, and pinning `available` for
+    /// one, since `Bound` defers both to `SizeMode::Content`, and pinning `available` for
     /// a signal-bound extent would strand the surface at its output's size.
     ///
     /// The ceiling is written, not merely permitted, because on a measured axis `available` *is*
@@ -2133,10 +2133,10 @@ mod tests {
         run_startup(&mut client);
 
         let bar = client.scene.surface("bar@TEST").expect("a bare rostered signal must not stop the config applying");
-        assert!(bar.visible, "`visible = audio` with audio still nil must take parse_visible's default");
+        assert!(bar.visible, "`visible = audio` with audio still nil must take `visible`'s default");
         assert!(
             bar.children[0].children.is_empty(),
-            "`children = tray` with tray still nil must take parse_children's default"
+            "`children = tray` with tray still nil must take `children`'s default"
         );
         assert_eq!(
             rescue_state(&client.loader),
@@ -2163,9 +2163,9 @@ mod tests {
             .surface("bar@TEST")
             .expect("a bare rostered signal on `content` must not stop the config applying");
         assert_eq!(
-            layout::node::parse_content(&bar.children[0].properties).unwrap().0,
+            layout::node::fields::text::content.read(&bar.children[0].properties).unwrap().0,
             "",
-            "`content = audio` with audio still nil must take parse_content's default"
+            "`content = audio` with audio still nil must take `content`'s default"
         );
         assert_eq!(
             rescue_state(&client.loader),

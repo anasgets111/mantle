@@ -19,7 +19,7 @@ use crate::lua::{LoadOutput, Loader, LoaderError};
 ///
 /// **Literal fast-fail only, not the authoritative spec** for moving properties (ADR-0049 decision
 /// 2): a `Signal` in `window.title` or `popup.anchor_rect` is skipped via
-/// `layout::node::is_deferred_signal` and replaced by its parser placeholder; literals are fully
+/// `layout::node::prop::Prop::deferred` and replaced by its type's placeholder; literals are fully
 /// checked. `App::apply_resolved_state` builds authoritative `WindowSpec`/`PopupSpec` from the
 /// resolved tree (ADR-0044 decision 1); resolving here would double ADR-0021's getter budget on
 /// every monitor hotplug through `RendererClient::applied_surface_specs`.
@@ -27,7 +27,7 @@ use crate::lua::{LoadOutput, Loader, LoaderError};
 /// Authoritative here: roster fingerprint, order, and roles. **`lock` is fully authoritative and
 /// the only role that is** (ADR-0052 decision 2): `id` is structural and `child` belongs to the
 /// scene, so
-/// [`lock_spec`](layout::node::lock_spec) never consults `is_deferred_signal`.
+/// [`lock_spec`](layout::node::lock_spec) reads no field through `Bound`, so defers nothing.
 pub(crate) fn surface_specs(output: &LoadOutput) -> Result<Vec<SurfaceSpec>, LoaderError> {
     let invalid = |err: layout::node::LayoutError| LoaderError::InvalidTopology(err.to_string());
     let mut specs = Vec::with_capacity(output.surfaces.len());

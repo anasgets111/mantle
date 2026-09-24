@@ -5,9 +5,25 @@
 use shared::debug;
 
 use super::*;
+use crate::layout::node::prop::keywords;
 
 mod plain;
 mod secure;
+
+keywords! {
+    /// A key a single-line field does not use, handed to `on_navigate` for moving a list selection.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub(crate) enum NavigateKey {
+        Up = "up",
+        Down = "down",
+        Left = "left",
+        Right = "right",
+        PageUp = "page_up",
+        PageDown = "page_down",
+        Tab = "tab",
+        Backtab = "backtab",
+    }
+}
 
 /// Innermost pressed `textfield` (ADR-0092): masked fields address a capability and never Lua
 /// (ADR-0005); plain fields send edits to Lua.
@@ -39,11 +55,11 @@ pub(super) fn focused_field(path: &[&layout::ResolvedNode]) -> Option<FieldTarge
     if let Some(target) = target {
         return Some(FieldTarget::Masked(target.clone()));
     }
-    let function = |key: &str| match field.properties.get(key) {
-        Some(Value::Function(f)) => Some(f.clone()),
-        _ => None,
-    };
-    let (on_change, on_submit) = (function("on_change"), function("on_submit"));
+    // Refused by `resolve_properties` unless a function, so an error here cannot happen.
+    use node::fields::textfield;
+    let properties = &field.properties;
+    let on_change = textfield::on_change.read(properties).ok().flatten();
+    let on_submit = textfield::on_submit.read(properties).ok().flatten();
     if on_change.is_none() && on_submit.is_none() {
         return None;
     }
@@ -51,8 +67,8 @@ pub(super) fn focused_field(path: &[&layout::ResolvedNode]) -> Option<FieldTarge
         id: field.id,
         on_change,
         on_submit,
-        on_cancel: function("on_cancel"),
-        on_navigate: function("on_navigate"),
+        on_cancel: textfield::on_cancel.read(properties).ok().flatten(),
+        on_navigate: textfield::on_navigate.read(properties).ok().flatten(),
     })
 }
 
@@ -104,7 +120,7 @@ enum KeyAction<'a> {
     SelectAll,
     /// Navigation name for a plain field (ADR-0112); masked fields ignore it. Not Left or Right,
     /// which a caret has an edit for.
-    Navigate(&'static str),
+    Navigate(NavigateKey),
     Ignore,
 }
 
@@ -166,12 +182,12 @@ fn key_action<'a>(event: &'a KeyEvent, repeat: bool, ctrl: bool) -> KeyAction<'a
         Keysym::Home | Keysym::KP_Home => KeyAction::Move(Motion::Start),
         Keysym::End | Keysym::KP_End => KeyAction::Move(Motion::End),
         // Before `utf8`: xkbcommon returns Tab as `"\t"`, which the control filter would drop.
-        Keysym::Up | Keysym::KP_Up => KeyAction::Navigate("up"),
-        Keysym::Down | Keysym::KP_Down => KeyAction::Navigate("down"),
-        Keysym::Page_Up | Keysym::KP_Page_Up => KeyAction::Navigate("page_up"),
-        Keysym::Page_Down | Keysym::KP_Page_Down => KeyAction::Navigate("page_down"),
-        Keysym::Tab | Keysym::KP_Tab => KeyAction::Navigate("tab"),
-        Keysym::ISO_Left_Tab => KeyAction::Navigate("backtab"),
+        Keysym::Up | Keysym::KP_Up => KeyAction::Navigate(NavigateKey::Up),
+        Keysym::Down | Keysym::KP_Down => KeyAction::Navigate(NavigateKey::Down),
+        Keysym::Page_Up | Keysym::KP_Page_Up => KeyAction::Navigate(NavigateKey::PageUp),
+        Keysym::Page_Down | Keysym::KP_Page_Down => KeyAction::Navigate(NavigateKey::PageDown),
+        Keysym::Tab | Keysym::KP_Tab => KeyAction::Navigate(NavigateKey::Tab),
+        Keysym::ISO_Left_Tab => KeyAction::Navigate(NavigateKey::Backtab),
         _ => match event.utf8.as_deref() {
             Some(text) if !text.is_empty() && !text.chars().any(char::is_control) => KeyAction::Append(text),
             _ => KeyAction::Ignore,
@@ -656,7 +672,7 @@ mod tests {
         // character for each -- so an unfiltered append would silently put an ESC byte in the
         // middle of a secret that PAM then rejects with no visible reason. Tab is a navigation
         // key now (ADR-0112); what matters here is that it is still not an `Append`.
-        assert_eq!(key_action(&key(Keysym::Tab, Some("\t")), false, false), KeyAction::Navigate("tab"));
+        assert_eq!(key_action(&key(Keysym::Tab, Some("\t")), false, false), KeyAction::Navigate(NavigateKey::Tab));
         assert_eq!(key_action(&key(Keysym::Shift_L, None), false, false), KeyAction::Ignore);
         assert_eq!(key_action(&key(Keysym::Control_L, Some("\u{1b}")), false, false), KeyAction::Ignore);
     }

@@ -1,7 +1,6 @@
-//! Leaf-node content parsers: text, icons, images, font/color properties, and identity strings.
-//! None affect the box model; geometry parsers live beside them rather than here.
-//! [`paint_style`](super::paint_style()) runs them once per node per pass. `parse_string_property`
-//! is shared by `surface`/`toplevel`/`popup` parsers.
+//! Leaf-node content value types: text, runs, fonts and captures. None affect the box model;
+//! geometry types live beside them rather than here. [`paint_style`](super::paint_style()) reads
+//! them once per node per pass.
 
 use std::ops::Range;
 use std::sync::Arc;
@@ -11,6 +10,7 @@ use mlua::Value;
 use crate::text::shaping::FontRun;
 use crate::text::snap::LogicalRect;
 
+use super::prop::keywords;
 use super::*;
 
 /// A stretch of a `text`'s content drawn differently from the rest (ADR-0104): in the chain's
@@ -38,22 +38,32 @@ pub fn font_runs(runs: &[StyleRun]) -> Vec<FontRun> {
         .collect()
 }
 
-/// Parses `text.content` as one string or notification-body-style runs (ADR-0104), joining
-/// run text and preserving each run's style. The run shape is a body span minus `kind`, so text
-/// spans can stream through; the caller filters image spans, which have no `text`.
+/// `text.content`: one string or notification-body-style runs (ADR-0104), joining run text and
+/// preserving each run's style. The run shape is a body span minus `kind`, so text spans can stream
+/// through; the caller filters image spans, which have no `text`.
 ///
 /// Absent `content` is empty (ADR-0044 decision 1): before the first `StateSnapshot`, a capability
 /// signal reads `nil`, and `run_startup_evaluation` runs before the poll loop drains one. A typo in
 /// `content` therefore renders an empty node; `mantle.rescue` covers the important failures.
-pub fn parse_content(properties: &PropMap) -> Result<(String, Vec<StyleRun>), LayoutError> {
-    let Some(value) = properties.get("content") else {
-        return Ok((String::new(), Vec::new()));
-    };
-    match value {
-        Value::String(s) => Ok((checked_string("content", s)?, Vec::new())),
-        Value::Table(runs) => parse_runs(runs),
-        other => {
-            Err(invalid("content", format!("expected a string or an array of runs, got {}", preview_for_error(other))))
+pub(crate) struct Content;
+
+impl LuaType for Content {
+    fn lua() -> String {
+        format!("{}|TextRun[]", String::lua())
+    }
+}
+
+impl Prop for Content {
+    type Out = (String, Vec<StyleRun>);
+    fn read(_: &Property, value: Option<&Value>) -> Result<(String, Vec<StyleRun>), LayoutError> {
+        match value {
+            None => Ok((String::new(), Vec::new())),
+            Some(Value::String(s)) => Ok((checked_string("content", s)?, Vec::new())),
+            Some(Value::Table(runs)) => parse_runs(runs),
+            Some(other) => Err(invalid(
+                "content",
+                format!("expected a string or an array of runs, got {}", preview_for_error(other)),
+            )),
         }
     }
 }
@@ -135,36 +145,6 @@ fn parse_runs(runs: &mlua::Table) -> Result<(String, Vec<StyleRun>), LayoutError
     Ok((content, styles))
 }
 
-/// `textfield.placeholder` is empty by default. `image.source` is an absolute path,
-/// never an icon theme name (ADR-0054 decision 3).
-pub fn parse_placeholder(properties: &PropMap) -> Result<String, LayoutError> {
-    parse_optional_string(properties, "placeholder")
-}
-
-/// `textfield.mask_character` is drawn once per typed character. It defaults to
-/// U+2022 BULLET; `""` draws nothing, and longer strings use their first character.
-pub fn parse_mask_character(properties: &PropMap) -> Result<String, LayoutError> {
-    let declared = parse_optional_string(properties, "mask_character")?;
-    if !properties.contains_key("mask_character") {
-        return Ok("\u{2022}".to_string());
-    }
-    Ok(declared.chars().next().map(String::from).unwrap_or_default())
-}
-
-/// `shader.source` (ADR-0253): absolute like `transition.shader`, or empty for nothing drawn.
-pub fn parse_shader_source(properties: &PropMap) -> Result<String, LayoutError> {
-    let path = parse_optional_string(properties, "source")?;
-    if !path.is_empty() && !path.starts_with('/') {
-        return Err(invalid("source", format!("expected an absolute path, got `{path}`")));
-    }
-    Ok(path)
-}
-
-/// `shader.progress` (ADR-0253), default `0`: the shader's `u_progress`, and what `animate` drives.
-pub fn parse_progress(properties: &PropMap) -> Result<f32, LayoutError> {
-    style::within("progress", parse_number(properties, "progress")?)
-}
-
 /// `capture.live` (ADR-0248, ADR-0263): frames per second in (0, 1000], `true` uncapped
 /// (infinite), `false` or absent one-shot (`None`).
 pub(crate) struct Live;
@@ -226,27 +206,19 @@ impl Prop for Region {
     }
 }
 
-fn parse_optional_string(properties: &PropMap, property: &str) -> Result<String, LayoutError> {
-    let Some(value) = properties.get(property) else {
-        return Ok(String::new());
-    };
-    match value {
-        Value::String(s) => checked_string(property, s),
-        other => Err(invalid(property, format!("expected a string, got {}", preview_for_error(other)))),
+keywords! {
+    /// `TextAlign` places glyphs inside the node's box, unlike `align_h`, which places the node in its
+    /// parent; it matters only when the box is wider than the measured text.
+    ///
+    /// Its own type rather than reusing [`super::Align`]: that carries `Stretch`, which would
+    /// be meaningless here since a run of glyphs has no size to force.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+    pub enum TextAlign {
+        #[default]
+        Start,
+        Center,
+        End,
     }
-}
-
-/// `TextAlign` places glyphs inside the node's box, unlike `align_h`, which places the node in its parent; it matters only when the box is
-/// wider than the measured text.
-///
-/// Its own type rather than reusing [`super::Align`]: that carries `Stretch`, which would
-/// be meaningless here since a run of glyphs has no size to force.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum TextAlign {
-    #[default]
-    Start,
-    Center,
-    End,
 }
 
 impl TextAlign {
@@ -276,193 +248,85 @@ impl TextAlign {
 /// set is not fixed at parse time, since a family is resolved on first sight. An unresolvable name
 /// draws in the declared chain and logs it once at `-vvv`, the same bargain `fonts { ... }` already
 /// makes for a chain entry nothing on the system answers.
-pub fn parse_font_family(properties: &PropMap) -> Result<Option<Arc<str>>, LayoutError> {
-    let Some(value) = properties.get("font") else {
-        return Ok(None);
-    };
-    let Value::String(s) = value else {
-        return Err(invalid("font", format!("must be a family name string, got {}", preview_for_error(value))));
-    };
-    let family = checked_string("font", s)?;
-    // An empty string is a config bug that would otherwise look like "no family named", and the
-    // node would silently draw in the declared chain with nothing to point at.
-    if family.is_empty() {
-        return Err(invalid("font", "must be a family name, got an empty string".to_string()));
+pub(crate) struct Font;
+
+impl LuaType for Font {
+    fn lua() -> String {
+        String::lua()
     }
-    Ok(Some(Arc::from(family)))
 }
 
-/// What to do with text too wide for its box.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum Elide {
-    /// Let the clip cut it off.
-    #[default]
-    None,
-    /// Drop trailing characters and finish with a single-character ellipsis.
-    End,
+impl Prop for Font {
+    type Out = Option<Arc<str>>;
+    fn read(_: &Property, value: Option<&Value>) -> Result<Option<Arc<str>>, LayoutError> {
+        let Some(value) = value else {
+            return Ok(None);
+        };
+        let Value::String(s) = value else {
+            return Err(invalid("font", format!("must be a family name string, got {}", preview_for_error(value))));
+        };
+        let family = checked_string("font", s)?;
+        // An empty string is a config bug that would otherwise look like "no family named", and the
+        // node would silently draw in the declared chain with nothing to point at.
+        if family.is_empty() {
+            return Err(invalid("font", "must be a family name, got an empty string".to_string()));
+        }
+        Ok(Some(Arc::from(family)))
+    }
 }
 
-/// `elide`. Only `"End"` is offered: middle elision needs a grapheme budget across runs.
-pub fn parse_elide(properties: &PropMap) -> Result<Elide, LayoutError> {
-    parse_keyword(properties.get("elide"), "elide", &[("None", Elide::None), ("End", Elide::End)])
+keywords! {
+    /// What to do with text too wide for its box. Only `"End"` is offered: middle elision needs a
+    /// grapheme budget across runs.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+    pub enum Elide {
+        /// Let the clip cut it off.
+        #[default]
+        None,
+        /// Drop trailing characters and finish with a single-character ellipsis.
+        End,
+    }
 }
 
-/// Whether oversized text breaks onto another line. It composes with `elide`: `wrap = "Word"` and
-/// `elide = "End"` fills the allowed lines, then ellipsizes the last one.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum Wrap {
-    /// One line, however long.
-    #[default]
-    None,
-    /// Break at word boundaries, falling back to a glyph boundary for a word wider than the box,
-    /// using cosmic-text's `Wrap::WordOrGlyph`.
-    Word,
-}
-
-/// `wrap` defaults to `None`, which measures one line, so a fixed-width `text` reserves the height
-/// it paints.
-pub fn parse_wrap(properties: &PropMap) -> Result<Wrap, LayoutError> {
-    parse_keyword(properties.get("wrap"), "wrap", &[("None", Wrap::None), ("Word", Wrap::Word)])
+keywords! {
+    /// Whether oversized text breaks onto another line. It composes with `elide`: `wrap = "Word"`
+    /// and `elide = "End"` fills the allowed lines, then ellipsizes the last one. The default,
+    /// `None`, measures one line, so a fixed-width `text` reserves the height it paints.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+    pub enum Wrap {
+        /// One line, however long.
+        #[default]
+        None,
+        /// Break at word boundaries, falling back to a glyph boundary for a word wider than the box,
+        /// using cosmic-text's `Wrap::WordOrGlyph`.
+        Word,
+    }
 }
 
 /// `max_lines` is uncapped when absent or `0`; zero lets signal-driven values spell "absent"
 /// because `Bound` cannot. Negatives error rather than being clamped, which would hide a sign
-/// mistake in config arithmetic. It is consulted only for [`parse_wrap`] = `Word`, so setting both
+/// mistake in config arithmetic. It is consulted only under `wrap = "Word"`, so setting both
 /// unconditionally is safe.
-pub fn parse_max_lines(properties: &PropMap) -> Result<Option<usize>, LayoutError> {
-    let Some(value) = properties.get("max_lines") else {
-        return Ok(None);
-    };
-    let n = value_as_f32("max_lines", value)?
-        .ok_or_else(|| invalid("max_lines", format!("expected a number, got {}", preview_for_error(value))))?;
-    if n < 0.0 {
-        return Err(invalid("max_lines", format!("must not be negative, got {n}")));
-    }
-    Ok((n >= 1.0).then_some(n as usize))
-}
+pub(crate) struct MaxLines;
 
-/// `text_align` defaults to `Start`. `Start`/`End` match `align_h`.
-pub fn parse_text_align(properties: &PropMap) -> Result<TextAlign, LayoutError> {
-    parse_keyword(
-        properties.get("text_align"),
-        "text_align",
-        &[("Start", TextAlign::Start), ("Center", TextAlign::Center), ("End", TextAlign::End)],
-    )
-}
-
-pub fn parse_foreground(properties: &PropMap) -> Result<Rgba, LayoutError> {
-    let Some(value) = properties.get("foreground") else {
-        return Ok(Rgba { r: 1.0, g: 1.0, b: 1.0, a: 1.0 });
-    };
-    let Value::String(s) = value else {
-        return Err(invalid("foreground", format!("expected a string, got {}", preview_for_error(value))));
-    };
-    let s = checked_string("foreground", s)?;
-    parse_hex_color("foreground", &s)
-}
-
-pub fn parse_font_size(properties: &PropMap) -> Result<f32, LayoutError> {
-    style::within("font_size", parse_number(properties, "font_size")?)
-}
-
-/// Shared boolean parser behind `style::parse_blur` and
-/// `style::parse_visible`, the way [`parse_string_property`] is shared by the string ones. An
-/// absent key takes the property table's default; anything that is not a boolean is an error
-/// naming the property.
-pub(super) fn parse_bool(properties: &PropMap, property: &str) -> Result<bool, LayoutError> {
-    match properties.get(property) {
-        None => Ok(crate::lua::nodes::default_bool(property)),
-        Some(Value::Boolean(b)) => Ok(*b),
-        Some(other) => Err(invalid(property, format!("expected a boolean, got {}", preview_for_error(other)))),
+impl LuaType for MaxLines {
+    fn lua() -> String {
+        f32::lua()
     }
 }
 
-/// `value` as one of the property table's choices for `property`, mapped through the `values` entry
-/// of the same name; the table's default when absent. Anything else errors naming every choice.
-pub(super) fn parse_keyword<T: Copy>(
-    value: Option<&Value>,
-    property: &str,
-    values: &[(&str, T)],
-) -> Result<T, LayoutError> {
-    let (choices, default) = crate::lua::nodes::keyword(property);
-    debug_assert!(choices.iter().eq(values.iter().map(|(name, _)| name)), "`{property}`'s values name its choices");
-    let find = |name: &[u8]| values.iter().find(|(choice, _)| choice.as_bytes() == name).map(|(_, value)| *value);
-    let Some(value) = value else {
-        return Ok(default.and_then(|name| find(name.as_bytes())).expect("a required keyword is checked before this"));
-    };
-    let Value::String(s) = value else {
-        return Err(invalid(property, format!("expected a string, got {}", preview_for_error(value))));
-    };
-    find(&s.as_bytes()).ok_or_else(|| {
-        let names: Vec<String> = choices.iter().map(|name| format!("`{name}`")).collect();
-        invalid(property, format!("expected one of {}, got {}", names.join(", "), preview_for_error(value)))
-    })
-}
-
-/// Shared number parser behind [`parse_font_size`] and `style::parse_spacing`,
-/// the table's default when absent. Range-checking is the caller's: only `font_size` has a bound its
-/// consumer requires.
-pub(super) fn parse_number(properties: &PropMap, property: &str) -> Result<f32, LayoutError> {
-    let Some(value) = properties.get(property) else {
-        return Ok(crate::lua::nodes::default_number(property));
-    };
-    value_as_f32(property, value)?
-        .ok_or_else(|| invalid(property, format!("expected a number, got {}", preview_for_error(value))))
-}
-
-/// Shared structural-string parser behind [`parse_surface_id`], `surface::parse_layer`, and
-/// `surface::parse_monitor`: reject a `Signal`, require a string, and use `default` when
-/// absent. `None` makes the property required (Standards review, ADR-0024).
-pub(super) fn parse_string_property(
-    properties: &PropMap,
-    property: &str,
-    default: Option<&str>,
-) -> Result<String, LayoutError> {
-    let value = match properties.get(property) {
-        Some(value) => value,
-        None => match default {
-            Some(default) => return Ok(default.to_string()),
-            None => return Err(invalid(property, format!("surface node requires `{property}`"))),
-        },
-    };
-    reject_signal_in_structural_field(property, value)?;
-    match value {
-        Value::String(s) => Ok(s.to_string_lossy()),
-        other => Err(invalid(property, format!("expected a string, got {}", preview_for_error(other)))),
-    }
-}
-
-/// A top-level surface's `id`: required, unique per config, and keys `Scene::apply`'s `HashMap`
-/// for keyed reconciliation (ADR-0045). It is also the surface's *reconcile* identity: the tree
-/// root is found by key lookup rather than [`parse_node_id`]'s per-parent pairing, since a surface
-/// has no parent to scope within (decision 5: the same mechanism restated one level down).
-pub fn parse_surface_id(properties: &PropMap) -> Result<String, LayoutError> {
-    parse_string_property(properties, "id", None)
-}
-
-/// The optional `id` base property on every node kind, one level below a surface's root
-/// (ADR-0045 decisions 1-2). `None` means "no id", not an error:
-/// `pair_children_by_id_then_position` pairs an id-less child positionally against its id-less
-/// siblings (ADR-0023's rule applied to that subsequence). Adding or dropping an `id` changes
-/// identity, dropping the retained counterpart and allocating a new node. Rejects a `Signal` via
-/// [`reject_signal_in_structural_field`], same as [`parse_surface_id`]: reconcile identity is
-/// decided once at match time, not left to drift.
-///
-/// Non-UTF-8 bytes are refused rather than converted, unlike [`checked_string`]'s lossy handling
-/// of `content`-like properties: `to_string_lossy` maps `"\xFF"` and `"\xFE"` both to `U+FFFD`, so
-/// distinct ids would compare equal and a fresh child could claim the wrong counterpart. Scoping
-/// and duplicate rejection belong to `pair_children_by_id_then_position`, which has visibility
-/// into siblings that this parser does not.
-pub fn parse_node_id(properties: &PropMap) -> Result<Option<String>, LayoutError> {
-    let Some(value) = properties.get("id") else {
-        return Ok(None);
-    };
-    reject_signal_in_structural_field("id", value)?;
-    match value {
-        Value::String(s) => s.to_str().map(|s| Some((*s).to_owned())).map_err(|_| {
-            invalid("id", "must be valid UTF-8 -- an id is compared for equality, so it cannot be converted lossily")
-        }),
-        other => Err(invalid("id", format!("expected a string, got {}", preview_for_error(other)))),
+impl Prop for MaxLines {
+    type Out = Option<usize>;
+    fn read(row: &Property, value: Option<&Value>) -> Result<Option<usize>, LayoutError> {
+        let Some(value) = value else {
+            return Ok(None);
+        };
+        let n = value_as_f32(row.name, value)?
+            .ok_or_else(|| invalid(row.name, format!("expected a number, got {}", preview_for_error(value))))?;
+        if n < 0.0 {
+            return Err(invalid(row.name, format!("must not be negative, got {n}")));
+        }
+        Ok((n >= 1.0).then_some(n as usize))
     }
 }
 
@@ -486,7 +350,7 @@ mod tests {
     #[test]
     fn text_content_absent_defaults_to_the_empty_string() {
         let props = PropMap::default();
-        assert_eq!(parse_content(&props).unwrap().0, "");
+        assert_eq!(fields::text::content.read(&props).unwrap().0, "");
     }
 
     #[test]
@@ -499,7 +363,10 @@ mod tests {
         table.set("kind", "text").unwrap();
         table.set("content", signal).unwrap();
         let node = deserialize_lua_table(&table).unwrap();
-        assert_eq!(parse_content(&resolve_properties(node.properties, "text", &lua).unwrap()).unwrap().0, "hello");
+        assert_eq!(
+            fields::text::content.read(&resolve_properties(node.properties, "text", &lua).unwrap()).unwrap().0,
+            "hello"
+        );
     }
 
     #[test]
@@ -509,14 +376,16 @@ mod tests {
 
         let literal_table: mlua::Table = lua.load(r#"return { kind = "text", content = 5 }"#).eval().unwrap();
         let literal_props = props_from_table(&literal_table);
-        let literal_err = parse_content(&resolve_properties(literal_props, "text", &lua).unwrap()).unwrap_err();
+        let literal_err =
+            fields::text::content.read(&resolve_properties(literal_props, "text", &lua).unwrap()).unwrap_err();
 
         let signal = crate::lua::signal::Signal::new_live(Value::Integer(5), crate::lua::signal::DirtyFlag::new()).0;
         let table = lua.create_table().unwrap();
         table.set("kind", "text").unwrap();
         table.set("content", signal).unwrap();
         let node = deserialize_lua_table(&table).unwrap();
-        let signal_err = parse_content(&resolve_properties(node.properties, "text", &lua).unwrap()).unwrap_err();
+        let signal_err =
+            fields::text::content.read(&resolve_properties(node.properties, "text", &lua).unwrap()).unwrap_err();
 
         for err in [&literal_err, &signal_err] {
             assert!(matches!(
@@ -531,7 +400,7 @@ mod tests {
 
     fn runs_content(lua: &mlua::Lua, src: &str) -> Result<(String, Vec<StyleRun>), LayoutError> {
         let table: mlua::Table = lua.load(format!(r#"return {{ kind = "text", content = {src} }}"#)).eval().unwrap();
-        parse_content(&props_from_table(&table))
+        fields::text::content.read(&props_from_table(&table))
     }
 
     #[test]
@@ -741,7 +610,7 @@ mod tests {
         let table: mlua::Table = lua.load(r#"return { kind = "text", font_size = 1e300 }"#).eval().unwrap();
         let props = props_from_table(&table);
         assert!(matches!(
-            parse_font_size(&props).unwrap_err(),
+            fields::text::font_size.read(&props).unwrap_err(),
             LayoutError::InvalidProperty { property, .. } if property == "font_size"
         ));
     }
@@ -754,7 +623,7 @@ mod tests {
         for source in [r#"return { kind = "text", font_size = 0 }"#, r#"return { kind = "text", font_size = -0.0 }"#] {
             let table: mlua::Table = lua.load(source).eval().unwrap();
             assert!(matches!(
-                parse_font_size(&props_from_table(&table)).unwrap_err(),
+                fields::text::font_size.read(&props_from_table(&table)).unwrap_err(),
                 LayoutError::InvalidProperty { property, .. } if property == "font_size"
             ));
         }
@@ -763,14 +632,14 @@ mod tests {
     #[test]
     fn wrap_defaults_to_one_line_and_rejects_a_mode_that_does_not_exist() {
         let lua = mlua::Lua::new();
-        assert_eq!(parse_wrap(&PropMap::default()).unwrap(), Wrap::None);
+        assert_eq!(fields::text::wrap.read(&PropMap::default()).unwrap(), Wrap::None);
 
         let table: mlua::Table = lua.load(r#"return { kind = "text", wrap = "Word" }"#).eval().unwrap();
-        assert_eq!(parse_wrap(&props_from_table(&table)).unwrap(), Wrap::Word);
+        assert_eq!(fields::text::wrap.read(&props_from_table(&table)).unwrap(), Wrap::Word);
 
         // "WordWrap" is the plausible typo.
         let table: mlua::Table = lua.load(r#"return { kind = "text", wrap = "WordWrap" }"#).eval().unwrap();
-        let err = parse_wrap(&props_from_table(&table)).unwrap_err();
+        let err = fields::text::wrap.read(&props_from_table(&table)).unwrap_err();
         assert!(format!("{err}").contains("Word"), "the error should name the modes that do exist, got {err}");
     }
 
@@ -780,28 +649,28 @@ mod tests {
     #[test]
     fn max_lines_treats_absent_and_zero_alike_and_refuses_a_negative() {
         let lua = mlua::Lua::new();
-        assert_eq!(parse_max_lines(&PropMap::default()).unwrap(), None);
+        assert_eq!(fields::text::max_lines.read(&PropMap::default()).unwrap(), None);
 
         let table: mlua::Table = lua.load(r#"return { kind = "text", max_lines = 0 }"#).eval().unwrap();
-        assert_eq!(parse_max_lines(&props_from_table(&table)).unwrap(), None);
+        assert_eq!(fields::text::max_lines.read(&props_from_table(&table)).unwrap(), None);
 
         let table: mlua::Table = lua.load(r#"return { kind = "text", max_lines = 2 }"#).eval().unwrap();
-        assert_eq!(parse_max_lines(&props_from_table(&table)).unwrap(), Some(2));
+        assert_eq!(fields::text::max_lines.read(&props_from_table(&table)).unwrap(), Some(2));
 
         let table: mlua::Table = lua.load(r#"return { kind = "text", max_lines = -1 }"#).eval().unwrap();
         assert!(matches!(
-            parse_max_lines(&props_from_table(&table)).unwrap_err(),
+            fields::text::max_lines.read(&props_from_table(&table)).unwrap_err(),
             LayoutError::InvalidProperty { property, .. } if property == "max_lines"
         ));
 
         let table: mlua::Table = lua.load(r#"return { kind = "text", max_lines = "two" }"#).eval().unwrap();
-        assert!(parse_max_lines(&props_from_table(&table)).is_err());
+        assert!(fields::text::max_lines.read(&props_from_table(&table)).is_err());
     }
 
     #[test]
     fn font_size_absent_defaults_to_twelve() {
         let props = PropMap::default();
-        assert_eq!(parse_font_size(&props).unwrap(), 12.0);
+        assert_eq!(fields::text::font_size.read(&props).unwrap(), 12.0);
     }
 
     #[test]
@@ -813,7 +682,10 @@ mod tests {
         table.set("kind", "text").unwrap();
         table.set("font_size", signal).unwrap();
         let node = deserialize_lua_table(&table).unwrap();
-        assert_eq!(parse_font_size(&resolve_properties(node.properties, "text", &lua).unwrap()).unwrap(), 18.0);
+        assert_eq!(
+            fields::text::font_size.read(&resolve_properties(node.properties, "text", &lua).unwrap()).unwrap(),
+            18.0
+        );
     }
 
     #[test]
@@ -825,7 +697,7 @@ mod tests {
     #[test]
     fn node_id_absent_is_none() {
         let props = PropMap::default();
-        assert_eq!(parse_node_id(&props).unwrap(), None);
+        assert_eq!(fields::common::id.read(&props).unwrap(), None);
     }
 
     #[test]
@@ -833,7 +705,7 @@ mod tests {
         let lua = mlua::Lua::new();
         let table: mlua::Table = lua.load(r#"return { kind = "rect", id = "handle" }"#).eval().unwrap();
         let props = props_from_table(&table);
-        assert_eq!(parse_node_id(&props).unwrap(), Some("handle".to_string()));
+        assert_eq!(fields::common::id.read(&props).unwrap(), Some("handle".to_string()));
     }
 
     #[test]
@@ -846,7 +718,7 @@ mod tests {
         table.set("id", signal).unwrap();
         let node = deserialize_lua_table(&table).unwrap();
         assert!(
-            matches!(parse_node_id(&node.properties).unwrap_err(), LayoutError::UnsupportedSignalProperty(p) if p == "id")
+            matches!(fields::common::id.read(&node.properties).unwrap_err(), LayoutError::UnsupportedSignalProperty(p) if p == "id")
         );
     }
 
@@ -857,7 +729,7 @@ mod tests {
         table.set("kind", "rect").unwrap();
         table.set("id", lua.create_string(b"\xff").unwrap()).unwrap();
         let props = props_from_table(&table);
-        let err = parse_node_id(&props).unwrap_err();
+        let err = fields::common::id.read(&props).unwrap_err();
         assert!(
             matches!(&err, LayoutError::InvalidProperty { property, .. } if property == "id"),
             "a non-UTF-8 id must be a LayoutError naming the property: {err:?}"
@@ -873,7 +745,7 @@ mod tests {
             table.set("id", lua.create_string(byte).unwrap()).unwrap();
             let props = props_from_table(&table);
             assert!(
-                matches!(parse_node_id(&props), Err(LayoutError::InvalidProperty { ref property, .. }) if property == "id")
+                matches!(fields::common::id.read(&props), Err(LayoutError::InvalidProperty { ref property, .. }) if property == "id")
             );
         }
     }
@@ -881,7 +753,7 @@ mod tests {
     #[test]
     fn foreground_absent_defaults_to_white() {
         let props = PropMap::default();
-        assert_eq!(parse_foreground(&props).unwrap(), Rgba { r: 1.0, g: 1.0, b: 1.0, a: 1.0 });
+        assert_eq!(fields::text::foreground.read(&props).unwrap(), Some(Rgba { r: 1.0, g: 1.0, b: 1.0, a: 1.0 }));
     }
 
     #[test]
@@ -889,7 +761,10 @@ mod tests {
         let lua = mlua::Lua::new();
         let table: mlua::Table = lua.load(r##"return { kind = "text", foreground = "#00ff0080" }"##).eval().unwrap();
         let props = props_from_table(&table);
-        assert_eq!(parse_foreground(&props).unwrap(), Rgba { r: 0.0, g: 1.0, b: 0.0, a: 0x80 as f32 / 255.0 });
+        assert_eq!(
+            fields::text::foreground.read(&props).unwrap(),
+            Some(Rgba { r: 0.0, g: 1.0, b: 0.0, a: 0x80 as f32 / 255.0 })
+        );
     }
 
     #[test]
@@ -897,7 +772,7 @@ mod tests {
         let lua = mlua::Lua::new();
         let table: mlua::Table = lua.load(r#"return { kind = "text", foreground = 5 }"#).eval().unwrap();
         let props = props_from_table(&table);
-        let err = parse_foreground(&props).unwrap_err();
+        let err = fields::text::foreground.read(&props).unwrap_err();
         assert!(
             matches!(&err, LayoutError::InvalidProperty { property, detail } if property == "foreground" && detail.contains("expected a string")),
             "{err}"

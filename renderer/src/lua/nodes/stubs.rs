@@ -5,10 +5,12 @@
 //! The aliases and the classes nothing else describes (`TextRun`, `Transition`) are hand-written in
 //! [`NODES_HEADER`]: they document shapes inside a property, which the table does not model.
 
-use super::properties::{ALIGN, ALL, Absent, BOX, KINDS, POPUP_ANCHOR, Property, SURFACES, Ty, properties};
+use super::properties::{ALL, Absent, BOX, KINDS, Property, SURFACES, kind_doc, properties};
+use crate::layout::node::prop::Keyword;
+use crate::layout::node::{Align, PopupAnchor};
 
 /// Choice sets the stubs name as an alias.
-const ALIASES: [(&str, &[&str]); 2] = [("Align", ALIGN), ("PopupAnchor", POPUP_ANCHOR)];
+const ALIASES: [(&str, &[&str]); 2] = [("Align", Align::NAMES), ("PopupAnchor", PopupAnchor::NAMES)];
 
 /// The published book: `docs/x/y.md` is served at `x/y.html` under it.
 const DOCS: &str = "https://anasgets111.github.io/mantle/";
@@ -42,10 +44,7 @@ fn union(choices: &[&str]) -> String {
 
 /// The row's LuaCATS type: its choices, by alias where one names them, then its field's type.
 fn lua_type(row: &Property, alias: bool) -> String {
-    let ty = match row.ty {
-        Ty::Lit(ty) => ty.to_string(),
-        Ty::Of(ty) => ty(),
-    };
+    let ty = (row.ty)();
     if row.choices.is_empty() {
         return ty;
     }
@@ -58,7 +57,7 @@ fn lua_type(row: &Property, alias: bool) -> String {
 /// cell, the rest the words, each paragraph joined onto one line. No `Book:` makes the cell the words.
 fn docs(row: &Property) -> (String, String) {
     let mut words = Vec::new();
-    let mut cell = (!row.behaviour.is_empty()).then(|| row.behaviour.to_string());
+    let mut cell = None;
     for paragraph in row.doc.split("\n\n") {
         let line = paragraph.lines().map(str::trim).filter(|line| !line.is_empty()).collect::<Vec<_>>().join(" ");
         match line.strip_prefix("Book: ") {
@@ -113,17 +112,18 @@ fn own(kinds: u16) -> impl Iterator<Item = &'static Property> {
     properties().filter(move |row| row.kinds & kinds != 0 && row.kinds != ALL && row.kinds != BOX)
 }
 
-fn render_stub(header: &str, kinds: &[(&str, &str)]) -> String {
+fn render_stub(header: &str, kinds: &[&str]) -> String {
     let mut out = header.to_string();
-    for (kind, _) in kinds {
+    for kind in kinds {
         let bases = if kind_bit(kind) & BOX != 0 { "NodeBase, BoxBase" } else { "NodeBase" };
         out.push_str(&format!("\n---@class {}: {bases}\n", class(kind)));
         own(kind_bit(kind)).for_each(|row| out.push_str(&field(row)));
     }
-    for (kind, blurb) in kinds {
+    for kind in kinds {
         out.push('\n');
-        if !blurb.is_empty() {
-            out.push_str(&format!("---{blurb}\n"));
+        let blurb = kind_doc(kind_bit(kind)).lines().map(str::trim).collect::<Vec<_>>().join(" ");
+        if !blurb.trim().is_empty() {
+            out.push_str(&format!("---{}\n", blurb.trim()));
         }
         out.push_str(&format!(
             "---[docs]({DOCS}{}.html)\n---@param props {}\n---@return Node\nfunction {kind}(props) end\n",
@@ -138,7 +138,7 @@ fn render_stub(header: &str, kinds: &[(&str, &str)]) -> String {
 fn nodes_lua() -> String {
     let percent: Vec<String> = (0..=100).map(|n| format!("\"{n}%\"")).collect();
     let mut header = NODES_HEADER.replace("{PERCENT}", &percent.join("|")).replace("{DOCS}", DOCS);
-    header = header.replace("{ALIGN}", &union(ALIGN));
+    header = header.replace("{ALIGN}", &union(Align::NAMES));
     for (class, kinds) in [("NodeBase", ALL), ("BoxBase", BOX)] {
         let marker = format!("{{{class}}}");
         let fields: String = properties().filter(|row| row.kinds == kinds).map(field).collect();
@@ -149,7 +149,7 @@ fn nodes_lua() -> String {
 
 /// `lua-meta/surfaces.lua`.
 fn surfaces_lua() -> String {
-    render_stub(&SURFACES_HEADER.replace("{POPUP_ANCHOR}", &union(POPUP_ANCHOR)), &KINDS[11..])
+    render_stub(&SURFACES_HEADER.replace("{POPUP_ANCHOR}", &union(PopupAnchor::NAMES)), &KINDS[11..])
 }
 
 /// A doc string as a Markdown table cell: no `(ADR-NNNN)` pointers, which are history, and `|`
@@ -189,10 +189,10 @@ fn doc_tables() -> Vec<(String, String)> {
         ("nodes/index".to_string(), table(properties().filter(|row| row.kinds == ALL))),
         ("guide/paint".to_string(), table(properties().filter(|row| row.kinds == BOX))),
     ];
-    for (kind, _) in KINDS {
+    for kind in KINDS {
         let page = page(kind);
         if !pages.iter().any(|(listed, _)| *listed == page) {
-            let kinds = KINDS.iter().filter(|(other, _)| self::page(other) == page).map(|(other, _)| kind_bit(other));
+            let kinds = KINDS.iter().filter(|other| self::page(other) == page).map(|other| kind_bit(other));
             let rows = table(own(kinds.fold(0, |mask, bit| mask | bit)));
             pages.push((page, rows));
         }

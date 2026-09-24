@@ -63,7 +63,7 @@ next opens.
 | `visible` | `boolean\|Bound` | `true` | Opens and closes the window; state and `id` survive |
 | `width` | `Length\|Bound`, `[0, 8192]` | Fill the window | The root's size inside the window, not the window's ([size](#size)) |
 | `height` | `Length\|Bound`, `[0, 8192]` | Fill the window | As `width` |
-| `child` | `Node` | None | The one root node; a function `child` is refused |
+| `child` | `Node\|Bound` | None | The one root node; a function `child` is refused |
 <!-- End of the generated table. -->
 
 The engine requests server-side decorations and draws none itself. A compositor that insists on

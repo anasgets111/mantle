@@ -126,25 +126,28 @@ impl LayoutStyle {
     fn parse(properties: &PropMap) -> Result<Self, LayoutError> {
         // Validated and not kept: the pointer path reads the name back off `properties` when it
         // needs it (`layout::hit::cursor_under`), and a pass is the place a misspelling fails.
-        node::parse_cursor(properties)?;
+        use node::fields::{common, flow, paint};
+        common::cursor.read(properties)?;
         Ok(Self {
-            margin: node::parse_edge_insets(properties, "margin")?,
-            padding: node::parse_edge_insets(properties, "padding")?,
-            width_mode: node::parse_size_mode(properties, "width")?,
-            height_mode: node::parse_size_mode(properties, "height")?,
-            max_width: node::parse_size_bound(properties, "max_width")?,
-            max_height: node::parse_size_bound(properties, "max_height")?,
-            min_width: node::parse_size_bound(properties, "min_width")?,
-            min_height: node::parse_size_bound(properties, "min_height")?,
-            align_h: node::parse_align(properties, "align_h")?,
-            align_v: node::parse_align(properties, "align_v")?,
-            spacing: node::parse_spacing(properties)?,
-            visible: node::parse_visible(properties)?,
-            opacity: node::parse_opacity(properties)?,
-            z: node::parse_z(properties)?,
-            transform: node::parse_transform(properties)?,
-            blur: node::parse_blur(properties)?,
-            effect: node::parse_effect(properties)?,
+            margin: common::margin.read(properties)?,
+            padding: common::padding.read(properties)?,
+            width_mode: common::width.read(properties)?,
+            height_mode: common::height.read(properties)?,
+            max_width: common::max_width.read(properties)?,
+            max_height: common::max_height.read(properties)?,
+            min_width: common::min_width.read(properties)?,
+            min_height: common::min_height.read(properties)?,
+            align_h: common::align_h.read(properties)?,
+            align_v: common::align_v.read(properties)?,
+            // `row`/`column`'s row; a `list`'s agrees, and no other kind has one.
+            spacing: flow::spacing.read(properties)?,
+            visible: common::visible.read(properties)?,
+            opacity: common::opacity.read(properties)?,
+            // -0.0 would sort below its z = 0 siblings.
+            z: common::z.read(properties)? + 0.0,
+            transform: crate::layout::node::parse_transform(properties)?,
+            blur: paint::blur.read(properties)?,
+            effect: crate::layout::node::parse_effect(properties)?,
         })
     }
 }
@@ -517,7 +520,7 @@ impl Scene {
         // Match the declared id, then key the retained tree by instance id (ADR-0045 decision 1).
         let mut fresh = None;
         for candidate in fresh_surfaces {
-            if node::parse_surface_id(&candidate.properties)? == instance.declared_id {
+            if node::fields::surface::id.read(&candidate.properties)? == instance.declared_id {
                 fresh = Some(candidate);
                 break;
             }
@@ -752,7 +755,7 @@ pub(super) mod tests {
     }
 
     pub(super) fn instance_at(surface: &VirtualNode, available: LogicalSize) -> SurfaceInstance {
-        let declared_id = node::parse_surface_id(&surface.properties).expect("every fixture declares an `id`");
+        let declared_id = node::fields::surface::id.read(&surface.properties).expect("every fixture declares an `id`");
         SurfaceInstance {
             instance_id: format!("{declared_id}@TEST"),
             declared_id,
@@ -951,7 +954,7 @@ pub(super) mod tests {
         );
         apply_at(&mut scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
         let row = &scene.surface("bar@TEST").unwrap().children[0];
-        let id = |c: &ResolvedNode| node::parse_node_id(&c.properties).unwrap().unwrap();
+        let id = |c: &ResolvedNode| node::fields::common::id.read(&c.properties).unwrap().unwrap();
         assert_eq!(row.children[..2].iter().map(id).collect::<Vec<_>>(), ["a", "b"]);
         assert_eq!(row.children[2].children.iter().map(id).collect::<Vec<_>>(), ["c", "d"]);
         assert_eq!((row.children[0].rect.x, row.children[1].rect.x), (0.0, 10.0), "layout ignores z");

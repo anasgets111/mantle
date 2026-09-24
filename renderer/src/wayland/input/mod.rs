@@ -5,6 +5,8 @@ use shared::{debug, error};
 
 use super::*;
 mod keyboard;
+pub(crate) use keyboard::NavigateKey;
+pub(crate) use pointer::{DragPhase, MouseButton};
 mod pointer;
 
 pub(super) use keyboard::{FocusedField, FocusedTextField};

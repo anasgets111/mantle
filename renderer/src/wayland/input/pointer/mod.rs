@@ -5,6 +5,8 @@ use shared::warn;
 
 use super::keyboard::{FieldTarget, focused_field};
 use super::*;
+use crate::layout::node::fields::button;
+use crate::layout::node::prop::{Keyword, keywords};
 
 mod wheel;
 
@@ -50,16 +52,13 @@ pub(in crate::wayland) struct ArmedSerial {
 /// Innermost `button` with callable `on_click` in a hit path (ADR-0050 decision 1). Scan inward:
 /// the deepest node is normally the button's `text` child. A button without a handler is
 /// transparent; `layout::node::resolve_properties` refuses an `on_click` that is not a function.
-fn clickable_button<'a>(path: &[&'a layout::ResolvedNode]) -> Option<(LogicalRect, Option<&'a Function>, bool)> {
+fn clickable_button(path: &[&layout::ResolvedNode]) -> Option<(LogicalRect, Option<Function>, bool)> {
     path.iter().enumerate().rev().find_map(|(depth, node)| {
         if node.kind != "button" {
             return None;
         }
-        let on_click = match node.properties.get("on_click") {
-            Some(Value::Function(f)) => Some(f),
-            _ => None,
-        };
-        let submit = matches!(node.properties.get("submit"), Some(Value::Boolean(true)));
+        let on_click = button::on_click.read(&node.properties).ok().flatten();
+        let submit = button::submit.read(&node.properties).is_ok_and(|on| on);
         if on_click.is_none() && !submit {
             return None;
         }
@@ -69,27 +68,23 @@ fn clickable_button<'a>(path: &[&'a layout::ResolvedNode]) -> Option<(LogicalRec
 
 /// Innermost `button` with callable `on_drag` (ADR-0116 decision 1); unhandled buttons are
 /// transparent, so a handle inside a draggable track leaves the track draggable.
-fn draggable_button<'a>(path: &[&'a layout::ResolvedNode]) -> Option<(LogicalRect, &'a Function)> {
+fn draggable_button(path: &[&layout::ResolvedNode]) -> Option<(LogicalRect, Function)> {
     path.iter().enumerate().rev().find_map(|(depth, node)| {
         if node.kind != "button" {
             return None;
         }
-        let Some(Value::Function(on_drag)) = node.properties.get("on_drag") else {
-            return None;
-        };
+        let on_drag = button::on_drag.read(&node.properties).ok().flatten()?;
         Some((layout::hit::absolute_rect(&path[..=depth])?, on_drag))
     })
 }
 
 /// Innermost `button` with callable `on_wheel` (ADR-0116 decision 2).
-fn wheel_button<'a>(path: &[&'a layout::ResolvedNode]) -> Option<(usize, LogicalRect, &'a Function)> {
+fn wheel_button(path: &[&layout::ResolvedNode]) -> Option<(usize, LogicalRect, Function)> {
     path.iter().enumerate().rev().find_map(|(depth, node)| {
         if node.kind != "button" {
             return None;
         }
-        let Some(Value::Function(on_wheel)) = node.properties.get("on_wheel") else {
-            return None;
-        };
+        let on_wheel = button::on_wheel.read(&node.properties).ok().flatten()?;
         Some((depth, layout::hit::absolute_rect(&path[..=depth])?, on_wheel))
     })
 }
@@ -125,21 +120,14 @@ fn clickable(
         if node.kind != "text" {
             return None;
         }
-        let Some(Value::Function(on_link)) = node.properties.get("on_link") else {
-            return None;
-        };
+        let on_link = node::fields::text::on_link.read(&node.properties).ok().flatten()?;
         let rect = layout::hit::absolute_rect(&path[..=depth])?;
         let local = layout::hit::LogicalPoint { x: point.x - rect.x, y: point.y - rect.y };
         let href = layout::hit::link_under(node, local, shaping)?;
-        Some(Clickable { rect, handler: Some(on_link.clone()), link: Some(href), submit: false })
+        Some(Clickable { rect, handler: Some(on_link), link: Some(href), submit: false })
     });
     link.or_else(|| {
-        clickable_button(path).map(|(rect, on_click, submit)| Clickable {
-            rect,
-            handler: on_click.cloned(),
-            link: None,
-            submit,
-        })
+        clickable_button(path).map(|(rect, on_click, submit)| Clickable { rect, handler: on_click, link: None, submit })
     })
 }
 
@@ -162,10 +150,31 @@ struct PointerHit {
 /// `BTN_SIDE`/`BTN_EXTRA` (0x113/0x114), `BTN_BACK`/`BTN_FORWARD` (0x116/0x115).
 fn pointer_button_name(code: u32) -> Option<&'static str> {
     match code {
-        BTN_LEFT => Some("left"),
-        BTN_RIGHT => Some("right"),
-        BTN_MIDDLE => Some("middle"),
+        BTN_LEFT => Some(MouseButton::Left),
+        BTN_RIGHT => Some(MouseButton::Right),
+        BTN_MIDDLE => Some(MouseButton::Middle),
         _ => None,
+    }
+    .map(Keyword::name)
+}
+
+keywords! {
+    /// The mouse buttons `on_click` reports.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub(crate) enum MouseButton {
+        Left = "left",
+        Right = "right",
+        Middle = "middle",
+    }
+}
+
+keywords! {
+    /// Where an `on_drag` call falls in its drag (ADR-0116).
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub(crate) enum DragPhase {
+        Start = "start",
+        Move = "move",
+        End = "end",
     }
 }
 
@@ -261,13 +270,13 @@ fn call_on_drag(
     on_drag: &Function,
     rect: LogicalRect,
     position: (f64, f64),
-    phase: &str,
+    phase: DragPhase,
 ) -> Result<(), (&'static str, mlua::Error)> {
     let rect_argument = rect_table(lua, rect).map_err(|e| ("could not build on_drag's rect argument", e))?;
     let pointer = lua.create_table().map_err(|e| ("could not build on_drag's pointer argument", e))?;
     pointer.set("x", position.0 as f32 - rect.x).map_err(|e| ("could not build on_drag's pointer argument", e))?;
     pointer.set("y", position.1 as f32 - rect.y).map_err(|e| ("could not build on_drag's pointer argument", e))?;
-    on_drag.call::<()>((rect_argument, pointer, phase)).map_err(|e| ("on_drag raised, ignoring it", e))
+    on_drag.call::<()>((rect_argument, pointer, phase.name())).map_err(|e| ("on_drag raised, ignoring it", e))
 }
 
 /// Build `on_click`'s button rect `{ x, y, width, height }` in surface logical coordinates
@@ -379,7 +388,7 @@ impl PointerHandler for App {
                         && let Some((rect, handler)) = hit.drag
                     {
                         self.drag = Some(ActiveDrag { instance_id: instance_id.clone(), rect, handler });
-                        self.fire_on_drag(&instance_id, event.position, "start");
+                        self.fire_on_drag(&instance_id, event.position, DragPhase::Start);
                     }
                 }
                 PointerEventKind::Release { button, serial, .. } => {
@@ -398,7 +407,7 @@ impl PointerHandler for App {
                     // Release does not change focus; drag-off must not un-focus a textfield. End
                     // drag before click so a combined control commits before its click handler.
                     if button == BTN_LEFT {
-                        self.fire_on_drag(&instance_id, event.position, "end");
+                        self.fire_on_drag(&instance_id, event.position, DragPhase::End);
                     }
                     let hit = self.hit_under(index, event.position).button;
                     let fires = release_completes_click(
@@ -437,7 +446,7 @@ impl PointerHandler for App {
                     // End held drag at the last position; no release reaches this surface.
                     if let Some(&(_, position)) = self.pointer_at.as_ref() {
                         let instance_id = self.surfaces[index].surface_id.clone();
-                        self.fire_on_drag(&instance_id, position, "end");
+                        self.fire_on_drag(&instance_id, position, DragPhase::End);
                     }
                     self.armed = None;
                     self.cursor_shown = None;
@@ -452,7 +461,7 @@ impl PointerHandler for App {
                     let instance_id = self.surfaces[index].surface_id.clone();
                     // Fires before the write: no `on_drag` handler can read `pointer_at`.
                     if moved {
-                        self.fire_on_drag(&instance_id, event.position, "move");
+                        self.fire_on_drag(&instance_id, event.position, DragPhase::Move);
                         self.drag_selection(index, &instance_id, event.position);
                     }
                     self.pointer_at = Some((instance_id, event.position));
@@ -526,12 +535,12 @@ impl App {
 
     /// Fire one held drag edge for `instance_id` (ADR-0116 decision 1); `end` clears it before the
     /// callback so re-entry finds nothing held. Handler raises are logged and swallowed.
-    fn fire_on_drag(&mut self, instance_id: &str, position: (f64, f64), phase: &str) {
+    fn fire_on_drag(&mut self, instance_id: &str, position: (f64, f64), phase: DragPhase) {
         let Some(drag) = self.drag.as_ref().filter(|drag| drag.instance_id == instance_id) else {
             return;
         };
         let (rect, handler) = (drag.rect, drag.handler.clone());
-        if phase == "end" {
+        if phase == DragPhase::End {
             self.drag = None;
         }
         if let Err((what, e)) = call_on_drag(self.client.lua(), &handler, rect, position, phase) {
@@ -602,7 +611,7 @@ impl App {
         let Some(&(_, position)) = self.pointer_at.as_ref().filter(|(at, _)| *at == surface_id) else {
             return;
         };
-        self.fire_on_drag(&surface_id, position, "end");
+        self.fire_on_drag(&surface_id, position, DragPhase::End);
         self.armed = None;
         self.cursor_shown = None;
         self.pointer_at = None;
@@ -722,9 +731,9 @@ mod tests {
             })
             .unwrap();
         let rect = LogicalRect { x: 10.0, y: 4.0, width: 40.0, height: 24.0 };
-        call_on_drag(&lua, &handler, rect, (30.0, 10.0), "start").unwrap();
+        call_on_drag(&lua, &handler, rect, (30.0, 10.0), DragPhase::Start).unwrap();
         // Past the right edge: unclamped, so the config's own clamp is what pins the slider.
-        call_on_drag(&lua, &handler, rect, (60.0, 10.0), "end").unwrap();
+        call_on_drag(&lua, &handler, rect, (60.0, 10.0), DragPhase::End).unwrap();
         assert_eq!(*seen.borrow(), vec![(40.0, 20.0, 6.0, "start".to_string()), (40.0, 50.0, 6.0, "end".to_string())]);
     }
 

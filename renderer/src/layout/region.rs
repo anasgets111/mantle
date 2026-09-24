@@ -27,7 +27,8 @@ use crate::text::snap::{LogicalRect, PhysicalRect, snap_to_physical};
 /// it.
 pub fn overlay_input_regions(surface_root: &ResolvedNode, scale: f32) -> Vec<PhysicalRect> {
     // A role with no `layer` at all -- window, popup, lock -- keeps the paint proxy.
-    let paint_claims = !matches!(node::parse_layer(&surface_root.properties), Ok(node::LayerKind::Background));
+    let paint_claims =
+        !matches!(node::fields::panel::layer.read(&surface_root.properties), Ok(node::LayerKind::Background));
     let mut regions = Vec::new();
     for child in &surface_root.children {
         collect_input_regions(child, 0.0, 0.0, scale, paint_claims, &mut regions);

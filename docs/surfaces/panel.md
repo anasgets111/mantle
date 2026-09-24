@@ -53,13 +53,13 @@ update it in place ([reload](index.md#reload-and-structural-fields)).
 | `anchor` | `{ top?: boolean, bottom?: boolean, left?: boolean, right?: boolean }` | All `false` | Edges to pin to; an absent edge is `false`. None pinned centres the surface; one edge centres it along that edge |
 | `monitor` | `string` | `"All"` | A connector name, `"All"` or `"Active"`: which outputs get an instance ([monitor](#monitor)) |
 | `namespace` | `string` | `"mantle-{id}"` | The layer namespace compositor rules match (Hyprland `layerrule`, niri `layer-rule`) |
-| `width` | `Length\|Bound` | Content | The surface's size ([size](#size)) |
-| `height` | `Length\|Bound` | Content | The surface's size ([size](#size)) |
+| `width` | `Length\|Bound`, `[0, 8192]` | Content | The surface's size ([size](#size)) |
+| `height` | `Length\|Bound`, `[0, 8192]` | Content | The surface's size ([size](#size)) |
 | `exclusive` | `boolean\|integer\|"Ignore"\|Bound` | `false` | The space reserved from other windows ([exclusive zones](#exclusive-zones)) |
 | `keyboard_interactivity` | `"None"\|"OnDemand"\|"Exclusive"\|Bound` | `"None"` | Whether it takes the keyboard ([keyboard focus](#keyboard-focus)) |
 | `margin` | `number\|Edges\|Bound` | `0` | Offset from the anchored edges, not layout margin; one on an edge the panel is not anchored to does nothing |
 | `visible` | `boolean\|Bound` | `true` | Hiding destroys the layer surface; showing recreates it |
-| `child` | `Node\|fun(output: string): Node?` | None | The root's content. A function runs per output instance with its connector name; `nil` leaves that instance empty ([per-output child](index.md#per-output-child)) |
+| `child` | `Node\|fun(output: string): Node?\|Bound` | None | The root's content. A function runs per output instance with its connector name; `nil` leaves that instance empty ([per-output child](index.md#per-output-child)) |
 <!-- End of the generated table. -->
 
 ## monitor

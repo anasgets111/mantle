@@ -3,13 +3,11 @@
 //! Pure: unlike the rest of the pointer path, this only decides what a click means. Other
 //! pointer-path work owns live `wl_pointer` and `wl_surface` objects.
 
-use cursor_icon::CursorIcon;
-use mlua::Value;
-
-use crate::layout::node::{PaintStyle, apply_affine, font_runs, invert_affine};
+use crate::layout::node::{PaintStyle, apply_affine, fields, font_runs, invert_affine};
 use crate::layout::scene::ResolvedNode;
 use crate::text::shaping::{self, ShapingHandle};
 use crate::text::snap::LogicalRect;
+use cursor_icon::CursorIcon;
 
 /// A point in one surface's logical coordinates -- the space `wl_pointer`'s `position` already
 /// arrives in, and the space [`hit_path`] accumulates each node's parent-relative rect into.
@@ -128,13 +126,12 @@ pub fn cursor_under(path: &[&ResolvedNode], point: LogicalPoint, shaping: &Shapi
         .enumerate()
         .rev()
         .find_map(|(depth, node)| {
-            if let Some(Value::String(name)) = node.properties.get("cursor") {
-                // Validated by `node::parse_cursor` when the pass resolved the node, so a name
-                // that does not parse here is a bug, not a config error; the arrow is the fallback.
-                return Some(name.to_str().ok().and_then(|name| name.parse().ok()).unwrap_or(CursorIcon::Default));
+            // Validated when the pass resolved the node, so an error here cannot happen.
+            if let Some(cursor) = fields::common::cursor.read(&node.properties).ok().flatten() {
+                return Some(cursor);
             }
             match node.kind {
-                "text" if matches!(node.properties.get("on_link"), Some(Value::Function(_))) => {
+                "text" if fields::text::on_link.read(&node.properties).is_ok_and(|on_link| on_link.is_some()) => {
                     let rect = absolute_rect(&path[..=depth])?;
                     let local = LogicalPoint { x: point.x - rect.x, y: point.y - rect.y };
                     link_under(node, local, shaping).map(|_| CursorIcon::Pointer)
@@ -212,6 +209,7 @@ mod tests {
     use super::*;
     use crate::layout::node::{StyleRun, TextAlign};
     use crate::text::shaping::ShapeRequest;
+    use mlua::Value;
 
     // ---- cursor_under (ADR-0107) ----
 

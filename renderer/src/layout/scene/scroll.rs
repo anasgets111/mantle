@@ -32,7 +32,7 @@ pub(super) fn reveal_child(
     padding_start: f32,
     content_main: f32,
 ) {
-    let Some(signal) = node::signal_at(properties, "scroll") else {
+    let Some(signal) = node::fields::flow::scroll.read(properties).ok().flatten() else {
         return;
     };
     let Some(index) = signal.take_reveal() else {
@@ -68,7 +68,7 @@ pub(super) fn reveal_child(
 /// (content and viewport the same number by construction) is a no-op, the same answer `Fill` gives
 /// in a `Content` parent for the same reason: no remainder (decision 5).
 pub(super) fn scroll_offset(properties: &PropMap, content_main: f32, total_main: f32) -> f32 {
-    let Some(signal) = node::signal_at(properties, "scroll") else {
+    let Some(signal) = node::fields::flow::scroll.read(properties).ok().flatten() else {
         return 0.0;
     };
     let Some(asked) = signal.scroll_offset() else {

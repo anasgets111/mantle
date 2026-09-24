@@ -161,13 +161,11 @@ impl WindowHandler for App {
             return;
         };
         let surface_id = self.surfaces[index].surface_id.clone();
-        let on_close =
-            self.client.scene().surface(&surface_id).and_then(|tree| match tree.properties.get("on_close") {
-                // This key is opaque to `layout::node`, as `on_click` also is; this
-                // is its only type check.
-                Some(Value::Function(on_close)) => Some(on_close.clone()),
-                _ => None,
-            });
+        let on_close = self
+            .client
+            .scene()
+            .surface(&surface_id)
+            .and_then(|tree| crate::layout::node::fields::window::on_close.read(&tree.properties).ok().flatten());
         let Some(on_close) = on_close else {
             debug!(
                 2; "{surface_id}: the compositor asked it to close and no `on_close` declined or accepted; staying open"

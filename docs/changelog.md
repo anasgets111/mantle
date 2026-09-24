@@ -26,6 +26,9 @@ so everything since the rename from Obelisk sits under Unreleased.
 ### Changed
 
 - Lua's `warn` now logs at warn level like `log.warn`, on by default; before, it printed nothing.
+- `lua-meta` node and surface types come from the Rust types the engine parses with: a surface's
+  `child` declares the `Bound` it always took, a panel's `width`/`height` the `[0, 8192]` it always
+  enforced. A signal-bound popup `parent` fails every pass, not only the first.
 - A callback (`on_*`) that is not a function (write `cond and fn or nil`), a `submit` or
   `autofocus` that is not a boolean, and a `nil` or `false` entry in `children`, which dropped
   every child after it, fail the pass instead of being ignored.

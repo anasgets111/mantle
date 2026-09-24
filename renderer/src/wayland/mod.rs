@@ -61,6 +61,7 @@ mod dmabuf;
 mod egl_ext;
 mod idle_profile;
 mod input;
+pub(crate) use input::{DragPhase, MouseButton, NavigateKey};
 mod layer;
 mod lock;
 mod main_loop;

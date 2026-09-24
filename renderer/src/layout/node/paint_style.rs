@@ -13,7 +13,7 @@ use crate::image::{Fit, Load};
 use crate::text::snap::LogicalRect;
 
 use super::*;
-use fields::{capture, icon, image};
+use fields::{capture, icon, image, paint, shader, text, textfield};
 
 /// Parsed paint properties with no `mlua::Value`. A kind admitted by
 /// `layout::scene::ensure_supported_kind` but absent here draws nothing. Lua tables compare by
@@ -95,25 +95,25 @@ pub fn paint_style(kind: &str, properties: &PropMap) -> Result<Option<PaintStyle
     let style = match kind {
         // All containers and surface roles paint as a box.
         "rect" | "row" | "column" | "button" | "panel" | "window" | "popup" | "lock" => PaintStyle::Box {
-            background: parse_background(properties)?,
+            background: paint::background.read(properties)?,
             radius: parse_radius(properties)?,
-            colors: parse_border_color(properties)?,
-            widths: parse_border_width(properties)?,
-            clip: parse_clip(properties)?,
-            mask: parse_mask(properties)?,
+            colors: paint::border_color.read(properties)?,
+            widths: paint::border_width.read(properties)?,
+            clip: paint::clip.read(properties)?,
+            mask: paint::mask.read(properties)?,
         },
         "text" => {
-            let (content, runs) = parse_content(properties)?;
+            let (content, runs) = text::content.read(properties)?;
             PaintStyle::Text {
                 content: content.into(),
                 runs,
-                font_size: parse_font_size(properties)?,
-                font: parse_font_family(properties)?,
-                color: parse_foreground(properties)?,
-                align: parse_text_align(properties)?,
-                elide: parse_elide(properties)?,
-                wrap: parse_wrap(properties)?,
-                max_lines: parse_max_lines(properties)?,
+                font_size: text::font_size.read(properties)?,
+                font: text::font.read(properties)?,
+                color: text::foreground.read(properties)?.expect("`foreground` has a default"),
+                align: text::text_align.read(properties)?,
+                elide: text::elide.read(properties)?,
+                wrap: text::wrap.read(properties)?,
+                max_lines: text::max_lines.read(properties)?,
             }
         }
         "icon" => PaintStyle::Icon { name: icon::name.read(properties)?, color: icon::foreground.read(properties)? },
@@ -138,17 +138,18 @@ pub fn paint_style(kind: &str, properties: &PropMap) -> Result<Option<PaintStyle
             region: capture::region.read(properties)?,
         },
         "shader" => PaintStyle::Shader {
-            source: parse_shader_source(properties)?,
-            progress: parse_progress(properties)?,
-            params: parse_shader_params("params", properties.get("params").unwrap_or(&Value::Nil))?,
+            source: shader::source.read(properties)?,
+            progress: shader::progress.read(properties)?,
+            params: shader::params.read(properties)?,
         },
         "textfield" => PaintStyle::TextField {
-            target: parse_secure_submit(properties)?,
-            placeholder: parse_placeholder(properties)?,
-            mask: parse_mask_character(properties)?,
-            font_size: parse_font_size(properties)?,
-            color: parse_foreground(properties)?,
-            align: parse_text_align(properties)?,
+            target: textfield::secure_submit.read(properties)?,
+            placeholder: textfield::placeholder.read(properties)?,
+            // Drawn once per typed character: `""` draws nothing, a longer string its first one.
+            mask: textfield::mask_character.read(properties)?.chars().next().map(String::from).unwrap_or_default(),
+            font_size: textfield::font_size.read(properties)?,
+            color: textfield::foreground.read(properties)?.expect("`foreground` has a default"),
+            align: textfield::text_align.read(properties)?,
         },
         _ => return Ok(None),
     };

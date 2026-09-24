@@ -203,7 +203,7 @@ enum EdgeAxis {
 }
 
 /// One border edge: paints only where both a colour and a non-zero width say so
-/// (`node::parse_border_color`'s doc comment: `border_width` alone is documented behaviour,
+/// (`node::BorderColor`'s doc comment: `border_width` alone is documented behaviour,
 /// not a bug). Snaps the edge's thin axis with `snap_border_band` first, the same whole-physical-
 /// pixel treatment as the uniform-radius stroke above; the long axis is left alone, since only the
 /// thin axis can straddle a pixel boundary and blur.

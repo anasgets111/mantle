@@ -18,7 +18,7 @@ pub struct SurfaceInstance {
     /// `"bar@DP-1"` for a `panel`; the bare declared id (`"settings"`) for a `window`, with no
     /// output to qualify it. Keys `Scene`'s surface map.
     pub instance_id: String,
-    /// `"bar"`: what `node::parse_surface_id` reads off the node, pairing it to its `VirtualNode`.
+    /// `"bar"`: what the surface `id` field reads off the node, pairing it to its `VirtualNode`.
     pub declared_id: String,
     /// The output this instance lives on, or empty for a `window` (a toplevel has no
     /// `monitor`; the compositor places it).

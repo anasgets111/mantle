@@ -12,7 +12,7 @@ use super::tick::{advance_leaving, advanced_dissolve};
 use super::{
     LayoutStyle, LogicalSize, PreparedNode, ResolvedNode, Scene, close, ensure_node_admissible, open_span, tween_state,
 };
-use crate::layout::node::{self, LayoutError, PropMap, SizeMode, Tween};
+use crate::layout::node::{self, LayoutError, PropMap, SizeMode, Tween, fields};
 use crate::lua::nodes::VirtualNode;
 use crate::text::shaping::ShapingHandle;
 use crate::text::snap::LogicalRect;
@@ -23,8 +23,10 @@ use crate::text::snap::LogicalRect;
 /// buffer stays on `App` (ADR-0005).
 fn children_of(kind: &str, properties: &PropMap) -> Result<Vec<VirtualNode>, LayoutError> {
     match kind {
-        "panel" | "window" | "popup" | "lock" => Ok(node::parse_single_child(properties)?.into_iter().collect()),
-        "rect" | "row" | "column" | "button" => node::parse_children(properties),
+        "panel" | "lock" => Ok(fields::root::child.read(properties)?.into_iter().collect()),
+        "window" | "popup" => Ok(fields::toplevel::child.read(properties)?.into_iter().collect()),
+        "rect" | "button" => fields::stack::children.read(properties),
+        "row" | "column" => fields::flow::children.read(properties),
         // ADR-0045 decision 3: list children are generated from `source`, not a literal table.
         "list" => node::parse_list_children(properties),
         "text" | "icon" | "image" | "capture" | "shader" | "textfield" => Ok(Vec::new()),
@@ -149,7 +151,7 @@ fn pair_children_by_id_then_position(
     // Not `collect`: a `Result` collect drops the size hint, and a list is as long as its data.
     let mut fresh_ids: Vec<Option<String>> = Vec::with_capacity(fresh_children.len());
     for child in fresh_children {
-        fresh_ids.push(node::parse_node_id(&child.properties)?);
+        fresh_ids.push(node::fields::common::id.read(&child.properties)?);
     }
 
     // Decision 1: reject duplicate sibling ids before matching `old_children`.
@@ -166,7 +168,7 @@ fn pair_children_by_id_then_position(
     // Retained ids were already validated and cannot hold signals, so `.ok().flatten()` safely
     // treats absent and validated-no-id alike.
     let old_ids: Vec<Option<String>> =
-        old_children.iter().map(|c| node::parse_node_id(&c.properties).ok().flatten()).collect();
+        old_children.iter().map(|c| node::fields::common::id.read(&c.properties).ok().flatten()).collect();
     let mut old_slots: Vec<Option<ResolvedNode>> = old_children.into_iter().map(Some).collect();
 
     let mut retained_by_id: HashMap<&str, usize> = HashMap::with_capacity(old_ids.len());
@@ -530,7 +532,7 @@ mod tests {
         shaping: &ShapingHandle,
         lua: &Lua,
     ) -> Result<(), LayoutError> {
-        let declared_id = node::parse_surface_id(&surface.properties).expect("the fixture declares an `id`");
+        let declared_id = node::fields::surface::id.read(&surface.properties).expect("the fixture declares an `id`");
         let instances: Vec<SurfaceInstance> = ["LEFT", "RIGHT"]
             .into_iter()
             .map(|output| SurfaceInstance {
@@ -1243,7 +1245,7 @@ mod tests {
         assert_eq!(
             lua.globals().get::<u32>("indexes").unwrap(),
             4,
-            "one `parse_edge_insets` over four keys, not one per reader"
+            "one `margin` read over four keys, not one per reader"
         );
     }
 
@@ -1739,7 +1741,7 @@ mod tests {
 
         let root = scene.surface("screen-lock@TEST").unwrap();
         assert_eq!(root.kind, "lock");
-        assert_eq!(root.children.len(), 1, "a lock's `child`, read through the same `parse_single_child` a panel's is");
+        assert_eq!(root.children.len(), 1, "a lock's `child`, read through the same `child` field a panel's is");
         assert_eq!((root.children[0].rect.width, root.children[0].rect.height), (1920.0, 1080.0));
     }
 

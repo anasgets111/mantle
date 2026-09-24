@@ -210,7 +210,7 @@ pub(super) fn advanced_dissolve(dissolve: Option<Box<Dissolve>>, now: Instant) -
 /// One node of [`advance_paint_only`], all-or-nothing.
 ///
 /// `node::advance` writes into the retained map, and a value it writes can still be refused: a
-/// spring overshoots its target, and `parse_opacity` rejects anything outside `[0, 1]` rather than
+/// spring overshoots its target, and the `opacity` field rejects anything outside `[0, 1]` rather than
 /// clamping it (ADR-0068). A refused value left in the map would fail the next pass's re-read too,
 /// turning one refused frame into a scene that stops updating. So the values about to move are
 /// kept and put back on refusal, bounded by this node's tweens rather than its subtree's
@@ -228,7 +228,7 @@ fn advance_paint_only_node(node: &mut ResolvedNode, now: Instant, lua: &Lua) -> 
     let advanced = node::advance(&mut node.tweens, &mut node.properties, now, lua).and_then(|()| {
         let properties = &node.properties;
         Ok((
-            node::parse_opacity(properties)?,
+            node::fields::common::opacity.read(properties)?,
             node::parse_transform(properties)?,
             node::parse_effect(properties)?,
             node::paint_style(node.kind, properties)?,
@@ -463,7 +463,7 @@ mod tests {
         apply_at(&mut scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
         let row = &scene.surface("bar@TEST").unwrap().children[0];
         let ids: Vec<String> =
-            row.children.iter().map(|c| node::parse_node_id(&c.properties).unwrap().unwrap()).collect();
+            row.children.iter().map(|c| node::fields::common::id.read(&c.properties).unwrap().unwrap()).collect();
         assert_eq!(ids, ["c", "a"], "b had no exit block; a leaves after the live child");
         let (c, a) = (&row.children[0], &row.children[1]);
         assert_eq!(c.rect.x, 0.0, "the flow closed over the leaver's slot at once");

@@ -27,17 +27,15 @@ pub struct TransitionSpec {
     pub params: Vec<ShaderParam>,
 }
 
-/// `transition = { duration = 700, easing = "InOutCubic" }` on an `image`. The `duration` is
-/// required: a dissolve with no length is a snap, and `retain` on its own is already that.
-pub(crate) struct Transition;
-
-impl LuaType for Transition {
+impl LuaType for TransitionSpec {
     fn lua() -> String {
         "Transition".to_string()
     }
 }
 
-impl Prop for Transition {
+/// `transition = { duration = 700, easing = "InOutCubic" }` on an `image`. The `duration` is
+/// required: a dissolve with no length is a snap, and `retain` on its own is already that.
+impl Prop for TransitionSpec {
     type Out = Option<TransitionSpec>;
     fn read(_: &Property, value: Option<&Value>) -> Result<Option<TransitionSpec>, LayoutError> {
         parse_transition(value)
@@ -89,6 +87,22 @@ fn parse_transition(value: Option<&Value>) -> Result<Option<TransitionSpec>, Lay
 /// A uniform name, its value zero-padded to four, and how many the config wrote; the compiled
 /// uniform's type decides how many reach the shader, and a different count is logged.
 pub type ShaderParam = (String, [f32; 4], usize);
+
+/// A `shader`'s `params`, and a `transition`'s: [`parse_shader_params`].
+pub(crate) struct Params;
+
+impl LuaType for Params {
+    fn lua() -> String {
+        format!("table<{}, {}|{}>", String::lua(), f32::lua(), Vec::<f32>::lua())
+    }
+}
+
+impl Prop for Params {
+    type Out = Vec<ShaderParam>;
+    fn read(row: &Property, value: Option<&Value>) -> Result<Vec<ShaderParam>, LayoutError> {
+        parse_shader_params(row.name, value.unwrap_or(&Value::Nil))
+    }
+}
 
 /// `params = { softness = 0.1, tint = { 1, 0.5, 0, 1 } }`: uniform names to a number or a list of
 /// two to four (ADR-0184, vectors ADR-0253). Sorted, so the list is a value two runs can compare.

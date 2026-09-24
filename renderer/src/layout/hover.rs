@@ -2,9 +2,10 @@
 //!
 //! Pure: this decides what a hover means without a live `wl_pointer` or `wl_surface`.
 
-use mlua::{Function, Value};
+use mlua::Function;
 
 use super::hit::{self, LogicalPoint};
+use super::node::fields::common;
 use super::scene::ResolvedNode;
 use crate::lua::signal::Signal;
 use crate::text::snap::LogicalRect;
@@ -58,16 +59,13 @@ pub fn hover_writes(tree: &ResolvedNode, point: Option<LogicalPoint>) -> Vec<Hov
 /// off after the pointer leaves or the node becomes invisible.
 fn collect(node: &ResolvedNode, path: &[&ResolvedNode], writes: &mut Vec<HoverWrite>) {
     // ADR-0062 decision 3: the Wayland writer does not turn a non-hover value into a config error.
-    if let Some(signal) = super::node::signal_at(&node.properties, "hover") {
+    if let Some(signal) = common::hover.read(&node.properties).ok().flatten() {
         // Both references index the same tree. The path is bounded by `scene::MAX_TREE_DEPTH`, so
         // this scan is at most 64 comparisons.
         let depth = path.iter().position(|on_path| std::ptr::eq(*on_path, node));
         // The prefix turns this parent-relative rect into an absolute one (ADR-0050 decision 3).
         let rect = depth.and_then(|depth| hit::absolute_rect(&path[..=depth]));
-        let on_hover = match node.properties.get("on_hover") {
-            Some(Value::Function(callback)) => Some(callback.clone()),
-            _ => None,
-        };
+        let on_hover = common::on_hover.read(&node.properties).ok().flatten();
         writes.push(HoverWrite { signal, hovered: depth.is_some(), rect, on_hover });
     }
     for child in &node.children {
@@ -81,6 +79,7 @@ mod tests {
     use crate::layout::node::PropMap;
     use crate::lua::signal::DirtyFlag;
     use mlua::Lua;
+    use mlua::Value;
 
     fn hover_userdata(lua: &Lua) -> (Signal, Value) {
         let (over, _rect) = Signal::new_hover(DirtyFlag::new(), Value::Nil);

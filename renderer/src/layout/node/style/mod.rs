@@ -1,9 +1,10 @@
-//! Box-model and paint-adjacent parsers. `table_number` is shared by `toplevel`'s size hints,
+//! Box-model and paint-adjacent value types. `table_number` is shared by `toplevel`'s size hints,
 //! popup offsets, and anchor rectangles.
 
 use cursor_icon::CursorIcon;
 use mlua::Value;
 
+use super::prop::{keywords, within as row_within};
 use super::*;
 
 mod transform;
@@ -27,47 +28,40 @@ pub(super) fn parse_percent(s: &str) -> Option<f32> {
     digits.parse::<f32>().ok().map(|n| n / 100.0)
 }
 
-/// Numeric sizes use the `[0, 8192]` range (ADR-0021). `properties` is already a
-/// [`resolve_properties`] result, so an absent key covers both omission and a signal resolving to
-/// `nil`.
-pub fn parse_size_mode(properties: &PropMap, property: &str) -> Result<SizeMode, LayoutError> {
-    // Deferred on the evaluation pass: `width`/`height` are live layer-shell `set_size`
-    // fields (ADR-0038 decision 2), so `App::apply_spec_change` re-derives them each pass.
-    let Some(value) = non_deferred_property(properties, property) else {
-        return Ok(SizeMode::Content);
-    };
-    if let Some(n) = value_as_f32(property, value)? {
-        return Ok(SizeMode::Pixels(within(property, n)?));
+impl LuaType for SizeMode {
+    fn lua() -> String {
+        "Length".to_string()
     }
-    if let Value::String(s) = value {
-        if &*s.as_bytes() == b"Fill" {
-            return Ok(SizeMode::Fill);
-        }
-        if let Ok(s_str) = s.to_str()
-            && let Some(pct) = parse_percent(&s_str)
-        {
-            return Ok(SizeMode::Percent(pct));
-        }
-    }
-    Err(invalid(
-        property,
-        format!(
-            "expected a number, \"Fill\", or a \"NN%\" string (Content sizing has no literal -- omit the property instead), got {}",
-            preview_for_error(value)
-        ),
-    ))
 }
 
-/// One pixel bound on a `Content`-sized node: `max_width`/`max_height` cap its growth, leaving the
-/// overflow for `scroll`; `min_width`/`min_height` floor it. Percent and `"Fill"` bounds add no
-/// meaning beyond a fixed size.
-pub fn parse_size_bound(properties: &PropMap, property: &str) -> Result<Option<f32>, LayoutError> {
-    let Some(value) = properties.get(property) else {
-        return Ok(None);
-    };
-    match value_as_f32(property, value)? {
-        Some(n) => within(property, n).map(Some),
-        None => Err(invalid(property, format!("expected a number of pixels, got {}", preview_for_error(value)))),
+/// `width`/`height`: pixels within the row's range (ADR-0021), `"Fill"`, or `"NN%"`. The map is a
+/// [`resolve_properties`] result, so absent covers both omission and a signal resolving to `nil`.
+impl Prop for SizeMode {
+    type Out = SizeMode;
+    fn read(row: &Property, value: Option<&Value>) -> Result<SizeMode, LayoutError> {
+        let Some(value) = value else {
+            return Ok(SizeMode::Content);
+        };
+        if let Some(n) = value_as_f32(row.name, value)? {
+            return Ok(SizeMode::Pixels(row_within(row, n)?));
+        }
+        if let Value::String(s) = value {
+            if &*s.as_bytes() == b"Fill" {
+                return Ok(SizeMode::Fill);
+            }
+            if let Ok(s_str) = s.to_str()
+                && let Some(pct) = parse_percent(&s_str)
+            {
+                return Ok(SizeMode::Percent(pct));
+            }
+        }
+        Err(invalid(
+            row.name,
+            format!(
+                "expected a number, \"Fill\", or a \"NN%\" string (Content sizing has no literal -- omit the property instead), got {}",
+                preview_for_error(value)
+            ),
+        ))
     }
 }
 
@@ -83,27 +77,44 @@ pub(super) fn table_number(property: &str, table: &mlua::Table, key: &str) -> Re
     }
 }
 
-/// Parsed once per node per pass: `table.get` is metamethod-aware, so every consumer reading it
-/// again would re-run `__index`, and two reads could disagree about one child's margin. Those reads
-/// are plain Lua outside any signal, so `LayoutPassBudget`, not ADR-0021's per-getter cap, bounds
-/// them. Scalar shorthand is shared by `margin`/`padding`/`border_width`; only the last keeps a
-/// range check.
-pub fn parse_edge_insets(properties: &PropMap, property: &str) -> Result<EdgeInsets, LayoutError> {
-    // Deferred on the evaluation pass: a panel root's `margin` is the live layer-shell anchor
-    // offset (`set_margin`, ADR-0038 decision 2), so zero is the absent-key placeholder.
-    let Some(value) = non_deferred_property(properties, property) else {
-        return Ok(EdgeInsets::default());
-    };
-    if let Some(n) = value_as_f32(property, value)? {
-        return Ok(EdgeInsets { top: n, right: n, bottom: n, left: n });
+impl LuaType for EdgeInsets {
+    fn lua() -> String {
+        format!("{}|Edges", f32::lua())
     }
-    let Value::Table(table) = value else {
-        return Err(invalid(property, format!("expected a number or a table, got {}", preview_for_error(value))));
-    };
-    only_keys(property, table, &["top", "right", "bottom", "left"])?;
-    // An absent edge is 0; [`table_number`] rejects nested `Signal`s.
-    let edge = |key: &str| -> Result<f32, LayoutError> { Ok(table_number(property, table, key)?.unwrap_or(0.0)) };
-    Ok(EdgeInsets { top: edge("top")?, right: edge("right")?, bottom: edge("bottom")?, left: edge("left")? })
+}
+
+/// `margin`/`padding`/`border_width`: a number sets all four edges, a table each; an absent edge is
+/// 0, and a row with a range bounds every edge. Parsed once per node per pass: `table.get` is
+/// metamethod-aware, so every consumer reading it again would re-run `__index`, and two reads could
+/// disagree about one child's margin. Those reads are plain Lua outside any signal, so
+/// `LayoutPassBudget`, not ADR-0021's per-getter cap, bounds them.
+impl Prop for EdgeInsets {
+    type Out = EdgeInsets;
+    fn read(row: &Property, value: Option<&Value>) -> Result<EdgeInsets, LayoutError> {
+        let property = row.name;
+        let Some(value) = value else {
+            return Ok(EdgeInsets::default());
+        };
+        let insets = if let Some(n) = value_as_f32(property, value)? {
+            EdgeInsets { top: n, right: n, bottom: n, left: n }
+        } else {
+            let Value::Table(table) = value else {
+                return Err(invalid(
+                    property,
+                    format!("expected a number or a table, got {}", preview_for_error(value)),
+                ));
+            };
+            only_keys(property, table, &["top", "right", "bottom", "left"])?;
+            // An absent edge is 0; [`table_number`] rejects nested `Signal`s.
+            let edge =
+                |key: &str| -> Result<f32, LayoutError> { Ok(table_number(property, table, key)?.unwrap_or(0.0)) };
+            EdgeInsets { top: edge("top")?, right: edge("right")?, bottom: edge("bottom")?, left: edge("left")? }
+        };
+        for n in [insets.top, insets.right, insets.bottom, insets.left] {
+            row_within(row, n)?;
+        }
+        Ok(insets)
+    }
 }
 
 /// A box's fill: one colour, or a gradient across its box (ADR-0255).
@@ -147,58 +158,84 @@ pub enum MaskSource {
     Image(String),
 }
 
-/// `rect.background`. Absent is `None`, not transparent black: `fill_rect` skips
-/// it, while `#RRGGBBAA` with `AA = 00` remains an explicit transparent fill.
-pub fn parse_background(properties: &PropMap) -> Result<Option<Fill>, LayoutError> {
-    let Some(value) = properties.get("background") else {
-        return Ok(None);
-    };
-    match value {
-        Value::String(s) => Ok(Some(Fill::Color(parse_hex_color("background", &checked_string("background", s)?)?))),
-        Value::Table(table) => {
-            only_keys("background", table, &["gradient", "angle", "stops"])?;
-            Ok(Some(Fill::Gradient(parse_gradient("background", table)?)))
+impl LuaType for Fill {
+    fn lua() -> String {
+        "Color|Gradient".to_string()
+    }
+}
+
+/// `background`. Absent is `None`, not transparent black: `fill_rect` skips it, while
+/// `#RRGGBBAA` with `AA = 00` remains an explicit transparent fill.
+impl Prop for Fill {
+    type Out = Option<Fill>;
+    fn read(row: &Property, value: Option<&Value>) -> Result<Option<Fill>, LayoutError> {
+        let property = row.name;
+        let Some(value) = value else {
+            return Ok(None);
+        };
+        match value {
+            Value::String(s) => Ok(Some(Fill::Color(parse_hex_color(property, &checked_string(property, s)?)?))),
+            Value::Table(table) => {
+                only_keys(property, table, &["gradient", "angle", "stops"])?;
+                Ok(Some(Fill::Gradient(parse_gradient(property, table)?)))
+            }
+            _ => Err(invalid(
+                property,
+                format!("expected a hex colour or a gradient table, got {}", preview_for_error(value)),
+            )),
         }
-        _ => Err(invalid(
-            "background",
-            format!("expected a hex colour or a gradient table, got {}", preview_for_error(value)),
-        )),
+    }
+}
+
+impl LuaType for Mask {
+    fn lua() -> String {
+        "Mask".to_string()
     }
 }
 
 /// `mask = { gradient = ..., stops = ... }` or `mask = { source = path }`, either with `invert`.
-pub fn parse_mask(properties: &PropMap) -> Result<Option<Mask>, LayoutError> {
-    let Some(value) = properties.get("mask") else {
-        return Ok(None);
-    };
-    let Value::Table(table) = value else {
-        return Err(invalid("mask", format!("expected a table, got {}", preview_for_error(value))));
-    };
-    only_keys("mask", table, &["gradient", "angle", "stops", "source", "invert"])?;
-    let field = |key: &str| table_field("mask", table, key);
-    let invert = match field("invert")? {
-        Value::Nil => false,
-        Value::Boolean(b) => b,
-        other => return Err(invalid("mask", format!("`invert` must be a boolean, got {}", preview_for_error(&other)))),
-    };
-    let gradient = ["gradient", "stops", "angle"].into_iter().map(field).collect::<Result<Vec<_>, _>>()?;
-    let source = match (field("source")?, gradient.iter().all(Value::is_nil)) {
-        (Value::Nil, false) => MaskSource::Gradient(parse_gradient("mask", table)?),
-        (Value::String(s), true) => {
-            let path = checked_string("mask", &s)?;
-            if path.is_empty() {
-                return Err(invalid("mask", "`source` must not be empty"));
+impl Prop for Mask {
+    type Out = Option<Mask>;
+    fn read(row: &Property, value: Option<&Value>) -> Result<Option<Mask>, LayoutError> {
+        let property = row.name;
+        let Some(value) = value else {
+            return Ok(None);
+        };
+        let Value::Table(table) = value else {
+            return Err(invalid(property, format!("expected a table, got {}", preview_for_error(value))));
+        };
+        only_keys(property, table, &["gradient", "angle", "stops", "source", "invert"])?;
+        let field = |key: &str| table_field(property, table, key);
+        let invert = match field("invert")? {
+            Value::Nil => false,
+            Value::Boolean(b) => b,
+            other => {
+                return Err(invalid(
+                    property,
+                    format!("`invert` must be a boolean, got {}", preview_for_error(&other)),
+                ));
             }
-            MaskSource::Image(path)
-        }
-        (Value::Nil, true) | (Value::String(_), false) => {
-            return Err(invalid("mask", "name exactly one of `source` or a gradient"));
-        }
-        (other, _) => {
-            return Err(invalid("mask", format!("`source` must be a path string, got {}", preview_for_error(&other))));
-        }
-    };
-    Ok(Some(Mask { source, invert }))
+        };
+        let gradient = ["gradient", "stops", "angle"].into_iter().map(field).collect::<Result<Vec<_>, _>>()?;
+        let source = match (field("source")?, gradient.iter().all(Value::is_nil)) {
+            (Value::Nil, false) => MaskSource::Gradient(parse_gradient(property, table)?),
+            (Value::String(s), true) => {
+                let path = checked_string(property, &s)?;
+                if path.is_empty() {
+                    return Err(invalid(property, "`source` must not be empty"));
+                }
+                MaskSource::Image(path)
+            }
+            (Value::Nil, true) | (Value::String(_), false) => {
+                return Err(invalid(property, "name exactly one of `source` or a gradient"));
+            }
+            (other, _) => {
+                let got = preview_for_error(&other);
+                return Err(invalid(property, format!("`source` must be a path string, got {got}")));
+            }
+        };
+        Ok(Some(Mask { source, invert }))
+    }
 }
 
 /// One field of a config table; a nested signal is refused.
@@ -255,30 +292,28 @@ fn parse_gradient(property: &str, table: &mlua::Table) -> Result<Gradient, Layou
     Ok(Gradient { shape, stops })
 }
 
-fn parse_color(properties: &PropMap, property: &str) -> Result<Option<Rgba>, LayoutError> {
-    let Some(value) = properties.get(property) else {
-        return Ok(None);
-    };
-    let Value::String(s) = value else {
-        return Err(invalid(property, format!("expected a string, got {}", preview_for_error(value))));
-    };
-    let s = checked_string(property, s)?;
-    Ok(Some(parse_hex_color(property, &s)?))
+keywords! {
+    /// `corner_shape`: CSS's `corner-shape` names.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum CornerShape {
+        Round,
+        /// A quarter circle cut in, centred on the box's corner point.
+        Scoop,
+    }
 }
 
-/// `rect.radius`, defaulting to 0, negated under `corner_shape = "Scoop"`: a quarter circle cut in,
-/// centred on the box's corner point, CSS's `corner-shape` name.
+/// `radius`, negated under `corner_shape = "Scoop"`.
 pub fn parse_radius(properties: &PropMap) -> Result<f32, LayoutError> {
-    let scoop =
-        content::parse_keyword(properties.get("corner_shape"), "corner_shape", &[("Round", false), ("Scoop", true)])?;
-    within("radius", content::parse_number(properties, "radius")?).map(|n| if scoop { -n } else { n })
+    let radius = fields::paint::radius.read(properties)?;
+    Ok(if fields::paint::corner_shape.read(properties)? == CornerShape::Scoop { -radius } else { radius })
 }
 
-/// The range an overshooting easing is clamped into, and the one [`within`] enforces for the
-/// parsers that call it. Those are not the same set. The tween clamps every numeric property,
-/// while `spacing`, icon `size`, `margin` and `padding` take no parser bound: out of range there
-/// is a layout the solver absorbs, not a crash, and `snap_to_physical` bounds the coordinates
-/// that reach `wl_region`. Add a parser bound only where a consumer refuses the value.
+/// The range an overshooting easing is clamped into: the property table's `range`, else
+/// `[0, 8192]`; `margin`, which no parser bounds, tweens through negatives as `translate` does.
+/// The tween clamps every numeric property, while `spacing`, icon `size`, `margin` and `padding`
+/// take no parser bound: out of range there is a layout the solver absorbs, not a crash, and
+/// `snap_to_physical` bounds the coordinates that reach `wl_region`. Give a row a range only where a
+/// consumer refuses the value.
 ///
 /// `radius` and `border_width` share the `8192` ceiling with `width`/`height`. It is
 /// femtovg 0.26's: above roughly 8.4e6 `curve_divisions` (`path/cache.rs:911`) divides by
@@ -288,13 +323,10 @@ pub fn parse_radius(properties: &PropMap) -> Result<f32, LayoutError> {
 /// clears paint alpha.
 ///
 /// `font_size` alone floors at 1. `line_height` is `font_size * 1.2` and cosmic-text's
-/// `Buffer::new` asserts a non-zero line height, so a zero aborts the Renderer. Flooring here
-/// rather than in the parser covers the tween too, which clamps into this same range. Icon `size`
-/// needs no floor: it becomes a `Measure::Square` and the painter takes its pixels from the
+/// `Buffer::new` asserts a non-zero line height, so a zero aborts the Renderer. Flooring in the
+/// row rather than in a consumer covers the tween too, which clamps into this same range. Icon
+/// `size` needs no floor: it becomes a `Measure::Square` and the painter takes its pixels from the
 /// resolved box, so it never reaches a shaper.
-///
-/// The property table's `range`, else `[0, 8192]`; `margin`, which no parser bounds, tweens through
-/// negatives as `translate` does.
 pub(super) fn range_of(property: &str) -> (f32, f32) {
     crate::lua::nodes::range(property).unwrap_or(if property == "margin" { (-8192.0, 8192.0) } else { (0.0, 8192.0) })
 }
@@ -309,48 +341,74 @@ pub(super) fn axis_default(property: &str) -> f32 {
     }
 }
 
-/// `property`'s `{ x, y }` table, absent keys at [`axis_default`], both within [`range_of`].
-fn xy(property: &str, value: &Value) -> Result<(f32, f32), LayoutError> {
+/// `row`'s `{ x, y }` table, absent keys at [`axis_default`], both within its range.
+fn xy(row: &Property, value: &Value) -> Result<(f32, f32), LayoutError> {
+    let property = row.name;
     let Value::Table(table) = value else {
         return Err(invalid(property, format!("expected an {{ x, y }} table, got {}", preview_for_error(value))));
     };
     only_keys(property, table, &["x", "y"])?;
     let axis = |key| table_number(property, table, key).map(|n| n.unwrap_or(axis_default(property)));
-    Ok((within(property, axis("x")?)?, within(property, axis("y")?)?))
+    Ok((row_within(row, axis("x")?)?, row_within(row, axis("y")?)?))
 }
 
-pub(super) fn within(property: &str, n: f32) -> Result<f32, LayoutError> {
-    let (low, high) = range_of(property);
-    if !(low..=high).contains(&n) {
-        return Err(invalid(property, format!("must be within [{low}, {high}], got {n}")));
+/// `translate`, `origin`, `shadow_offset`: a per-axis pair.
+pub(crate) struct Axes;
+
+impl LuaType for Axes {
+    fn lua() -> String {
+        "Axes".to_string()
     }
-    Ok(n)
 }
 
-/// Whether a node clips children to its box or lets `radius` shape the clip.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum ClipShape {
-    /// The node's rectangle with square corners.
-    #[default]
-    Box,
-    /// The node's rounded shape, using the same arc as its background fill.
-    Rounded,
-    /// Nothing: children keep the parent's clip, so a wrapper does not cut their shadows.
-    None,
+impl Prop for Axes {
+    type Out = (f32, f32);
+    fn read(row: &Property, value: Option<&Value>) -> Result<(f32, f32), LayoutError> {
+        let default = axis_default(row.name);
+        value.map_or(Ok((default, default)), |value| xy(row, value))
+    }
 }
 
-/// `rect.clip` defaults to [`ClipShape::Box`] and is opt-in because rounded clipping
-/// needs an offscreen target and composite, while a square clip is a free GPU scissor.
-pub fn parse_clip(properties: &PropMap) -> Result<ClipShape, LayoutError> {
-    content::parse_keyword(
-        properties.get("clip"),
-        "clip",
-        &[("Box", ClipShape::Box), ("Rounded", ClipShape::Rounded), ("None", ClipShape::None)],
-    )
+/// `scale`: one factor for both axes, or [`Axes`].
+pub(crate) struct Scale;
+
+impl LuaType for Scale {
+    fn lua() -> String {
+        format!("{}|{}", f32::lua(), Axes::lua())
+    }
+}
+
+impl Prop for Scale {
+    type Out = (f32, f32);
+    fn read(row: &Property, value: Option<&Value>) -> Result<(f32, f32), LayoutError> {
+        let Some(value) = value else {
+            return Axes::read(row, None);
+        };
+        match value_as_f32(row.name, value)? {
+            Some(n) => Ok((row_within(row, n)?, n)),
+            None => xy(row, value),
+        }
+    }
+}
+
+keywords! {
+    /// Whether a node clips children to its box or lets `radius` shape the clip. `Box` is the
+    /// default because rounded clipping needs an offscreen target and composite, while a square
+    /// clip is a free GPU scissor.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+    pub enum ClipShape {
+        /// The node's rectangle with square corners.
+        #[default]
+        Box,
+        /// The node's rounded shape, using the same arc as its background fill.
+        Rounded,
+        /// Nothing: children keep the parent's clip, so a wrapper does not cut their shadows.
+        None,
+    }
 }
 
 /// `rect.border_color`, one colour per edge. `None` means "not painted", the same
-/// absence [`parse_background`] returns for a missing fill: an edge at width 0 needs no colour,
+/// absence [`Fill`] returns for a missing fill: an edge at width 0 needs no colour,
 /// and one with a colour at width 0 still paints nothing, so the drawing pass gets the same answer
 /// either way. The table form gives no per-edge default, so an absent edge takes `None`
 /// rather than an invented one.
@@ -362,78 +420,73 @@ pub struct BorderColor {
     pub left: Option<Rgba>,
 }
 
-pub fn parse_border_color(properties: &PropMap) -> Result<BorderColor, LayoutError> {
-    let Some(value) = properties.get("border_color") else {
-        return Ok(BorderColor::default());
-    };
-    if let Value::String(s) = value {
-        let s = checked_string("border_color", s)?;
-        let color = Some(parse_hex_color("border_color", &s)?);
-        return Ok(BorderColor { top: color, right: color, bottom: color, left: color });
+impl LuaType for BorderColor {
+    fn lua() -> String {
+        "Color|BorderColors".to_string()
     }
-    let Value::Table(table) = value else {
-        return Err(invalid("border_color", format!("expected a string or a table, got {}", preview_for_error(value))));
-    };
-    only_keys("border_color", table, &["top", "right", "bottom", "left"])?;
-    // Metamethod-aware, but parsed once per node by `paint_style` (ADR-0068).
-    let edge = |key: &str| -> Result<Option<Rgba>, LayoutError> {
-        let v: Value = table.get(key).map_err(|e| invalid("border_color", e.to_string()))?;
-        // Name the edge as well as the property; the shared string/color parsers only know the
-        // property.
-        let name_edge = |e: LayoutError| match e {
-            LayoutError::InvalidProperty { property, detail } => {
-                LayoutError::InvalidProperty { property, detail: format!("`{key}`: {detail}") }
-            }
-            other => other,
+}
+
+impl Prop for BorderColor {
+    type Out = BorderColor;
+    fn read(row: &Property, value: Option<&Value>) -> Result<BorderColor, LayoutError> {
+        let property = row.name;
+        let Some(value) = value else {
+            return Ok(BorderColor::default());
         };
-        match v {
-            Value::Nil => Ok(None),
-            // Reject nested signals rather than misreporting them as bad hex.
-            Value::UserData(_) => Err(LayoutError::UnsupportedSignalProperty(format!("border_color.{key}"))),
-            Value::String(s) => {
-                let s = checked_string("border_color", &s).map_err(name_edge)?;
-                Ok(Some(parse_hex_color("border_color", &s).map_err(name_edge)?))
-            }
-            other => Err(invalid(
-                "border_color",
-                format!("`{key}` must be a hex colour string, got {}", preview_for_error(&other)),
-            )),
+        if let Value::String(s) = value {
+            let color = Some(parse_hex_color(property, &checked_string(property, s)?)?);
+            return Ok(BorderColor { top: color, right: color, bottom: color, left: color });
         }
-    };
-    Ok(BorderColor { top: edge("top")?, right: edge("right")?, bottom: edge("bottom")?, left: edge("left")? })
-}
-
-/// `rect.border_width`, adding the range check [`parse_edge_insets`] leaves to its
-/// callers. `margin`/`padding` deliberately do not take it.
-pub fn parse_border_width(properties: &PropMap) -> Result<EdgeInsets, LayoutError> {
-    let insets = parse_edge_insets(properties, "border_width")?;
-    for n in [insets.top, insets.right, insets.bottom, insets.left] {
-        within("border_width", n)?;
+        let Value::Table(table) = value else {
+            return Err(invalid(property, format!("expected a string or a table, got {}", preview_for_error(value))));
+        };
+        only_keys(property, table, &["top", "right", "bottom", "left"])?;
+        // Metamethod-aware, but parsed once per node by `paint_style` (ADR-0068).
+        let edge = |key: &str| -> Result<Option<Rgba>, LayoutError> {
+            let v: Value = table.get(key).map_err(|e| invalid(property, e.to_string()))?;
+            // Name the edge as well as the property; the shared string/color parsers only know the
+            // property.
+            let name_edge = |e: LayoutError| match e {
+                LayoutError::InvalidProperty { property, detail } => {
+                    LayoutError::InvalidProperty { property, detail: format!("`{key}`: {detail}") }
+                }
+                other => other,
+            };
+            match v {
+                Value::Nil => Ok(None),
+                // Reject nested signals rather than misreporting them as bad hex.
+                Value::UserData(_) => Err(LayoutError::UnsupportedSignalProperty(format!("{property}.{key}"))),
+                Value::String(s) => {
+                    let s = checked_string(property, &s).map_err(name_edge)?;
+                    Ok(Some(parse_hex_color(property, &s).map_err(name_edge)?))
+                }
+                other => Err(invalid(
+                    property,
+                    format!("`{key}` must be a hex colour string, got {}", preview_for_error(&other)),
+                )),
+            }
+        };
+        Ok(BorderColor { top: edge("top")?, right: edge("right")?, bottom: edge("bottom")?, left: edge("left")? })
     }
-    Ok(insets)
 }
 
-pub fn parse_align(properties: &PropMap, property: &str) -> Result<Align, LayoutError> {
-    content::parse_keyword(
-        properties.get(property),
-        property,
-        &[("Start", Align::Start), ("Center", Align::Center), ("End", Align::End), ("Stretch", Align::Stretch)],
-    )
+keywords! {
+    /// `list.direction`: which of `row`'s or `column`'s layout a list borrows.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum Direction {
+        Vertical,
+        Horizontal,
+    }
 }
 
-/// `list.direction`, defaulting to `"Vertical"`; returns the borrowed `row` or `column` kind rather
-/// than adding a third layout arm.
-pub fn parse_list_direction(properties: &PropMap) -> Result<&'static str, LayoutError> {
-    content::parse_keyword(properties.get("direction"), "direction", &[("Vertical", "column"), ("Horizontal", "row")])
-}
-
-/// `blur`: ask the compositor to blur the desktop behind this node's box (ADR-0195). Opt-in per
-/// node and never inferred, because "translucent" is not "wants blur": a control may be
-/// deliberately invisible at `#00000000`, and a border-only or image-backed glass box has no
-/// background alpha to read at all. A node that asks and a compositor that cannot is silently
-/// nothing, which is what every other unavailable compositor feature already does here.
-pub fn parse_blur(properties: &PropMap) -> Result<bool, LayoutError> {
-    content::parse_bool(properties, "blur")
+impl Direction {
+    /// The borrowed kind, rather than adding a third layout arm.
+    pub fn kind(self) -> &'static str {
+        match self {
+            Direction::Vertical => "column",
+            Direction::Horizontal => "row",
+        }
+    }
 }
 
 /// A drop shadow in logical pixels, CSS `box-shadow`'s terms: `blur` is the radius (sigma is half
@@ -458,61 +511,57 @@ pub struct Effect {
     pub content_shadow: bool,
 }
 
+keywords! {
+    /// `shadow_mode`: CSS `box-shadow` of the box shape, or `drop-shadow` of everything painted.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum ShadowMode {
+        Box,
+        Content,
+    }
+}
+
 /// `shadow_*` and `content_blur`, every kind, and a box's `backdrop_blur` and `shadow_mode`. `None` when the shadow
 /// would draw nothing, so paint never opens an offscreen for it.
 pub fn parse_effect(properties: &PropMap) -> Result<Effect, LayoutError> {
-    let color = parse_color(properties, "shadow_color")?.unwrap_or(Rgba { r: 0.0, g: 0.0, b: 0.0, a: 1.0 });
-    let offset = properties.get("shadow_offset").map_or(Ok((0.0, 0.0)), |value| xy("shadow_offset", value))?;
-    let blur = within("shadow_blur", content::parse_number(properties, "shadow_blur")?)?;
-    let spread = within("shadow_spread", content::parse_number(properties, "shadow_spread")?)?;
+    use fields::{common, paint};
+    let color = common::shadow_color.read(properties)?.expect("`shadow_color` has a default");
+    let offset = common::shadow_offset.read(properties)?;
+    let blur = common::shadow_blur.read(properties)?;
+    let spread = common::shadow_spread.read(properties)?;
     let shows = color.a > 0.0 && (blur > 0.0 || spread != 0.0 || offset != (0.0, 0.0));
     Ok(Effect {
         shadow: shows.then_some(Shadow { color, blur, offset, spread }),
-        blur: within("content_blur", content::parse_number(properties, "content_blur")?)?,
-        backdrop: within("backdrop_blur", content::parse_number(properties, "backdrop_blur")?)?,
-        content_shadow: content::parse_keyword(
-            properties.get("shadow_mode"),
-            "shadow_mode",
-            &[("Box", false), ("Content", true)],
-        )?,
+        blur: common::content_blur.read(properties)?,
+        backdrop: paint::backdrop_blur.read(properties)?,
+        content_shadow: paint::shadow_mode.read(properties)? == ShadowMode::Content,
     })
-}
-
-/// `opacity` belongs to every kind, including non-painting lists, and is inherited by
-/// multiplication on `ResolvedNode`. It does not replace `visible`: a fully transparent node still
-/// lays out, occupies space, and hit-tests. Values outside `[0, 1]` error rather than clamp
-/// (ADR-0068).
-pub fn parse_opacity(properties: &PropMap) -> Result<f32, LayoutError> {
-    within("opacity", content::parse_number(properties, "opacity")?)
-}
-
-pub fn parse_visible(properties: &PropMap) -> Result<bool, LayoutError> {
-    content::parse_bool(properties, "visible")
 }
 
 /// `cursor`: CSS names such as `"pointer"`, `"text"`, `"grab"`, and resize edges, or `None`
 /// for the default rule (ADR-0107; `layout::hit::cursor_under`). `cursor_icon` and
 /// `wp_cursor_shape_v1` use the same names, so the compositor reads the config string directly.
-pub fn parse_cursor(properties: &PropMap) -> Result<Option<CursorIcon>, LayoutError> {
-    let Some(value) = properties.get("cursor") else {
-        return Ok(None);
-    };
-    let Value::String(name) = value else {
-        return Err(invalid("cursor", format!("must be a cursor name string, got {}", preview_for_error(value))));
-    };
-    let name = name.to_str().map_err(|_| invalid("cursor", "must be UTF-8"))?;
-    name.parse::<CursorIcon>()
-        .map(Some)
-        .map_err(|_| invalid("cursor", format!("unknown cursor name {name:?}; the names are CSS's, like \"pointer\"")))
+pub(crate) struct Cursor;
+
+impl LuaType for Cursor {
+    fn lua() -> String {
+        "Cursor".to_string()
+    }
 }
 
-pub fn parse_spacing(properties: &PropMap) -> Result<f32, LayoutError> {
-    content::parse_number(properties, "spacing")
-}
-
-pub fn parse_z(properties: &PropMap) -> Result<f32, LayoutError> {
-    // -0.0 would sort below its z = 0 siblings.
-    Ok(content::parse_number(properties, "z")? + 0.0)
+impl Prop for Cursor {
+    type Out = Option<CursorIcon>;
+    fn read(row: &Property, value: Option<&Value>) -> Result<Option<CursorIcon>, LayoutError> {
+        let Some(value) = value else {
+            return Ok(None);
+        };
+        let Value::String(name) = value else {
+            return Err(invalid(row.name, format!("must be a cursor name string, got {}", preview_for_error(value))));
+        };
+        let name = name.to_str().map_err(|_| invalid(row.name, "must be UTF-8"))?;
+        name.parse::<CursorIcon>().map(Some).map_err(|_| {
+            invalid(row.name, format!("unknown cursor name {name:?}; the names are CSS's, like \"pointer\""))
+        })
+    }
 }
 
 #[cfg(test)]
@@ -523,7 +572,7 @@ mod tests {
     #[test]
     fn width_absent_is_content() {
         let props = PropMap::default();
-        assert_eq!(parse_size_mode(&props, "width").unwrap(), SizeMode::Content);
+        assert_eq!(fields::common::width.read(&props).unwrap(), SizeMode::Content);
     }
 
     #[test]
@@ -531,7 +580,7 @@ mod tests {
         let lua = mlua::Lua::new();
         let table: mlua::Table = lua.load(r#"return { kind = "rect", width = 32 }"#).eval().unwrap();
         let props = props_from_table(&table);
-        assert_eq!(parse_size_mode(&props, "width").unwrap(), SizeMode::Pixels(32.0));
+        assert_eq!(fields::common::width.read(&props).unwrap(), SizeMode::Pixels(32.0));
     }
 
     #[test]
@@ -539,7 +588,7 @@ mod tests {
         let lua = mlua::Lua::new();
         let table: mlua::Table = lua.load(r#"return { kind = "rect", width = "Fill" }"#).eval().unwrap();
         let props = props_from_table(&table);
-        assert_eq!(parse_size_mode(&props, "width").unwrap(), SizeMode::Fill);
+        assert_eq!(fields::common::width.read(&props).unwrap(), SizeMode::Fill);
     }
 
     #[test]
@@ -547,7 +596,7 @@ mod tests {
         let lua = mlua::Lua::new();
         let table: mlua::Table = lua.load(r#"return { kind = "rect", width = "50%" }"#).eval().unwrap();
         let props = props_from_table(&table);
-        assert_eq!(parse_size_mode(&props, "width").unwrap(), SizeMode::Percent(0.5));
+        assert_eq!(fields::common::width.read(&props).unwrap(), SizeMode::Percent(0.5));
     }
 
     #[test]
@@ -555,7 +604,7 @@ mod tests {
         let lua = mlua::Lua::new();
         let table: mlua::Table = lua.load(r#"return { kind = "rect", width = 8193 }"#).eval().unwrap();
         let props = props_from_table(&table);
-        assert!(matches!(parse_size_mode(&props, "width").unwrap_err(), LayoutError::InvalidProperty { .. }));
+        assert!(matches!(fields::common::width.read(&props).unwrap_err(), LayoutError::InvalidProperty { .. }));
     }
 
     #[test]
@@ -563,7 +612,7 @@ mod tests {
         let lua = mlua::Lua::new();
         let table: mlua::Table = lua.load(r#"return { kind = "rect", width = -5 }"#).eval().unwrap();
         let props = props_from_table(&table);
-        assert!(matches!(parse_size_mode(&props, "width").unwrap_err(), LayoutError::InvalidProperty { .. }));
+        assert!(matches!(fields::common::width.read(&props).unwrap_err(), LayoutError::InvalidProperty { .. }));
     }
 
     #[test]
@@ -571,7 +620,7 @@ mod tests {
         let lua = mlua::Lua::new();
         let table: mlua::Table = lua.load(r#"return { kind = "rect", width = "banana" }"#).eval().unwrap();
         let props = props_from_table(&table);
-        assert!(matches!(parse_size_mode(&props, "width").unwrap_err(), LayoutError::InvalidProperty { .. }));
+        assert!(matches!(fields::common::width.read(&props).unwrap_err(), LayoutError::InvalidProperty { .. }));
     }
 
     #[test]
@@ -579,7 +628,7 @@ mod tests {
         let lua = mlua::Lua::new();
         let table: mlua::Table = lua.load(r#"return { kind = "rect", height = "Content" }"#).eval().unwrap();
         let props = props_from_table(&table);
-        let err = parse_size_mode(&props, "height").unwrap_err();
+        let err = fields::common::height.read(&props).unwrap_err();
         assert!(
             matches!(&err, LayoutError::InvalidProperty { property, detail } if property == "height" && detail.contains("omit the property")),
             "must name omission as how Content sizing is spelled: {err}"
@@ -592,7 +641,7 @@ mod tests {
         let table: mlua::Table =
             lua.load(r#"return { kind = "rect", margin = { top = 4, left = 2 } }"#).eval().unwrap();
         let props = props_from_table(&table);
-        let insets = parse_edge_insets(&props, "margin").unwrap();
+        let insets = fields::common::margin.read(&props).unwrap();
         assert_eq!(insets, EdgeInsets { top: 4.0, right: 0.0, bottom: 0.0, left: 2.0 });
     }
 
@@ -602,7 +651,7 @@ mod tests {
         let table: mlua::Table =
             lua.load(r#"return { kind = "rect", padding = { top = 4, left = 2 } }"#).eval().unwrap();
         let props = props_from_table(&table);
-        let insets = parse_edge_insets(&props, "padding").unwrap();
+        let insets = fields::common::padding.read(&props).unwrap();
         assert_eq!(insets, EdgeInsets { top: 4.0, right: 0.0, bottom: 0.0, left: 2.0 });
     }
 
@@ -612,7 +661,7 @@ mod tests {
         let table: mlua::Table = lua.load(r#"return { kind = "rect", margin = 10 }"#).eval().unwrap();
         let props = props_from_table(&table);
         assert_eq!(
-            parse_edge_insets(&props, "margin").unwrap(),
+            fields::common::margin.read(&props).unwrap(),
             EdgeInsets { top: 10.0, right: 10.0, bottom: 10.0, left: 10.0 }
         );
     }
@@ -623,7 +672,7 @@ mod tests {
         let table: mlua::Table = lua.load(r#"return { kind = "rect", padding = 10 }"#).eval().unwrap();
         let props = props_from_table(&table);
         assert_eq!(
-            parse_edge_insets(&props, "padding").unwrap(),
+            fields::common::padding.read(&props).unwrap(),
             EdgeInsets { top: 10.0, right: 10.0, bottom: 10.0, left: 10.0 }
         );
     }
@@ -634,7 +683,7 @@ mod tests {
         let table: mlua::Table = lua.load(r#"return { kind = "rect", margin = -10 }"#).eval().unwrap();
         let props = props_from_table(&table);
         assert_eq!(
-            parse_edge_insets(&props, "margin").unwrap(),
+            fields::common::margin.read(&props).unwrap(),
             EdgeInsets { top: -10.0, right: -10.0, bottom: -10.0, left: -10.0 }
         );
     }
@@ -645,7 +694,7 @@ mod tests {
         let table: mlua::Table = lua.load(r#"return { kind = "rect", padding = -10 }"#).eval().unwrap();
         let props = props_from_table(&table);
         assert_eq!(
-            parse_edge_insets(&props, "padding").unwrap(),
+            fields::common::padding.read(&props).unwrap(),
             EdgeInsets { top: -10.0, right: -10.0, bottom: -10.0, left: -10.0 }
         );
     }
@@ -653,7 +702,7 @@ mod tests {
     #[test]
     fn visible_absent_defaults_true() {
         let props = PropMap::default();
-        assert!(parse_visible(&props).unwrap());
+        assert!(fields::common::visible.read(&props).unwrap());
     }
 
     #[test]
@@ -667,7 +716,10 @@ mod tests {
         table.set("visible", signal).unwrap();
         let node = deserialize_lua_table(&table).unwrap();
         let resolved = resolve_properties(node.properties, "rect", &lua).unwrap();
-        assert!(!parse_visible(&resolved).unwrap(), "must read the signal's current value, not error on the handle");
+        assert!(
+            !fields::common::visible.read(&resolved).unwrap(),
+            "must read the signal's current value, not error on the handle"
+        );
     }
 
     #[test]
@@ -676,7 +728,7 @@ mod tests {
         let table: mlua::Table = lua.load(r#"return { kind = "row", spacing = 1e300 }"#).eval().unwrap();
         let props = props_from_table(&table);
         assert!(matches!(
-            parse_spacing(&props).unwrap_err(),
+            fields::flow::spacing.read(&props).unwrap_err(),
             LayoutError::InvalidProperty { property, .. } if property == "spacing"
         ));
     }
@@ -684,7 +736,7 @@ mod tests {
     #[test]
     fn background_absent_is_none() {
         let props = PropMap::default();
-        assert_eq!(parse_background(&props).unwrap(), None);
+        assert_eq!(fields::paint::background.read(&props).unwrap(), None);
     }
 
     #[test]
@@ -693,7 +745,7 @@ mod tests {
         let table: mlua::Table = lua.load(r##"return { kind = "rect", background = "#336699" }"##).eval().unwrap();
         let props = props_from_table(&table);
         assert_eq!(
-            parse_background(&props).unwrap(),
+            fields::paint::background.read(&props).unwrap(),
             Some(Fill::Color(Rgba { r: 0x33 as f32 / 255.0, g: 0x66 as f32 / 255.0, b: 0x99 as f32 / 255.0, a: 1.0 }))
         );
     }
@@ -704,7 +756,7 @@ mod tests {
         let table: mlua::Table = lua.load(r##"return { kind = "rect", background = "#33669980" }"##).eval().unwrap();
         let props = props_from_table(&table);
         assert_eq!(
-            parse_background(&props).unwrap(),
+            fields::paint::background.read(&props).unwrap(),
             Some(Fill::Color(Rgba {
                 r: 0x33 as f32 / 255.0,
                 g: 0x66 as f32 / 255.0,
@@ -719,7 +771,7 @@ mod tests {
         let lua = mlua::Lua::new();
         let table: mlua::Table = lua.load(r#"return { kind = "rect", background = "336699" }"#).eval().unwrap();
         let props = props_from_table(&table);
-        let err = parse_background(&props).unwrap_err();
+        let err = fields::paint::background.read(&props).unwrap_err();
         assert!(
             matches!(&err, LayoutError::InvalidProperty { property, detail } if property == "background" && detail.contains("must start with `#`")),
             "must name the missing `#`, not just some invalid-property error: {err}"
@@ -731,7 +783,7 @@ mod tests {
         let lua = mlua::Lua::new();
         let table: mlua::Table = lua.load(r##"return { kind = "rect", background = "#369" }"##).eval().unwrap();
         let props = props_from_table(&table);
-        let err = parse_background(&props).unwrap_err();
+        let err = fields::paint::background.read(&props).unwrap_err();
         assert!(
             matches!(&err, LayoutError::InvalidProperty { property, detail } if property == "background" && detail.contains("6 or 8") && detail.contains("got 3")),
             "must be the digit-count rule specifically, naming 3 digits: {err}"
@@ -743,7 +795,7 @@ mod tests {
         let lua = mlua::Lua::new();
         let table: mlua::Table = lua.load(r##"return { kind = "rect", background = "#zzzzzz" }"##).eval().unwrap();
         let props = props_from_table(&table);
-        let err = parse_background(&props).unwrap_err();
+        let err = fields::paint::background.read(&props).unwrap_err();
         assert!(
             matches!(&err, LayoutError::InvalidProperty { property, detail } if property == "background" && detail.contains("only hex digits")),
             "must be the hex-digit rule specifically, not the digit-count rule: {err}"
@@ -755,7 +807,7 @@ mod tests {
         let lua = mlua::Lua::new();
         let table: mlua::Table = lua.load(r##"return { kind = "rect", background = "#日本語" }"##).eval().unwrap();
         let props = props_from_table(&table);
-        let err = parse_background(&props).unwrap_err();
+        let err = fields::paint::background.read(&props).unwrap_err();
         assert!(
             matches!(&err, LayoutError::InvalidProperty { property, detail } if property == "background" && detail.contains("only hex digits") && !detail.contains("got 9")),
             "non-ASCII input must get the hex-digit diagnosis, not a byte-length count: {err}"
@@ -767,7 +819,7 @@ mod tests {
         let lua = mlua::Lua::new();
         let table: mlua::Table = lua.load(r#"return { kind = "rect", background = true }"#).eval().unwrap();
         let props = props_from_table(&table);
-        let err = parse_background(&props).unwrap_err();
+        let err = fields::paint::background.read(&props).unwrap_err();
         assert!(
             matches!(&err, LayoutError::InvalidProperty { property, detail } if property == "background" && detail.contains("expected a hex colour or a gradient table")),
             "{err}"
@@ -779,7 +831,10 @@ mod tests {
         let lua = mlua::Lua::new();
         let table: mlua::Table = lua.load(r##"return { kind = "rect", background = "#FF0000" }"##).eval().unwrap();
         let props = props_from_table(&table);
-        assert_eq!(parse_background(&props).unwrap(), Some(Fill::Color(Rgba { r: 1.0, g: 0.0, b: 0.0, a: 1.0 })));
+        assert_eq!(
+            fields::paint::background.read(&props).unwrap(),
+            Some(Fill::Color(Rgba { r: 1.0, g: 0.0, b: 0.0, a: 1.0 }))
+        );
     }
 
     #[test]
@@ -787,7 +842,7 @@ mod tests {
         let lua = mlua::Lua::new();
         let table: mlua::Table = lua.load(r##"return { kind = "rect", background = "#1234567" }"##).eval().unwrap();
         let props = props_from_table(&table);
-        let err = parse_background(&props).unwrap_err();
+        let err = fields::paint::background.read(&props).unwrap_err();
         assert!(
             matches!(&err, LayoutError::InvalidProperty { property, detail } if property == "background" && detail.contains("6 or 8") && detail.contains("got 7")),
             "{err}"
@@ -799,7 +854,7 @@ mod tests {
         let lua = mlua::Lua::new();
         let table: mlua::Table = lua.load(r##"return { kind = "rect", background = "#" }"##).eval().unwrap();
         let props = props_from_table(&table);
-        let err = parse_background(&props).unwrap_err();
+        let err = fields::paint::background.read(&props).unwrap_err();
         assert!(
             matches!(&err, LayoutError::InvalidProperty { property, detail } if property == "background" && detail.contains("6 or 8") && detail.contains("got 0")),
             "{err}"
@@ -833,7 +888,8 @@ mod tests {
             ("Conic", GradientShape::Conic { angle: 0.0 }),
         ] {
             let src = format!(r#"return {{ kind = "rect", background = {{ gradient = "{shape}", {stops} }} }}"#);
-            let Some(Fill::Gradient(gradient)) = parse_background(&eval_props(&lua, &src)).unwrap() else {
+            let Some(Fill::Gradient(gradient)) = fields::paint::background.read(&eval_props(&lua, &src)).unwrap()
+            else {
                 panic!("{shape}")
             };
             assert_eq!(gradient, Gradient { shape: expected, stops: vec![(0.0, WHITE), (1.0, CLEAR)] }, "{shape}");
@@ -851,22 +907,38 @@ mod tests {
                 &format!(r#"return {{ kind = "rect", background = {{ gradient = "Linear", stops = {stops} }} }}"#),
             )
         };
-        rejects(parse_background(&with(r##"{ { 0, "#ffffff" } }"##)), "background", "at least two");
-        rejects(parse_background(&with(r##"{ { 0, "#ffffff" }, { 1.5, "#ffffff" } }"##)), "background", "[0, 1]");
-        rejects(parse_background(&with(r##"{ { 0.6, "#ffffff" }, { 0.4, "#ffffff" } }"##)), "background", "ascending");
-        rejects(parse_background(&with(r##"{ { 0, "white" }, { 1, "#ffffff" } }"##)), "background", "`#`");
-        rejects(parse_background(&with(r##"{ "#ffffff", "#000000" }"##)), "background", "{ position, colour }");
-        rejects(parse_background(&with("nil")), "background", "`stops`");
+        rejects(fields::paint::background.read(&with(r##"{ { 0, "#ffffff" } }"##)), "background", "at least two");
+        rejects(
+            fields::paint::background.read(&with(r##"{ { 0, "#ffffff" }, { 1.5, "#ffffff" } }"##)),
+            "background",
+            "[0, 1]",
+        );
+        rejects(
+            fields::paint::background.read(&with(r##"{ { 0.6, "#ffffff" }, { 0.4, "#ffffff" } }"##)),
+            "background",
+            "ascending",
+        );
+        rejects(
+            fields::paint::background.read(&with(r##"{ { 0, "white" }, { 1, "#ffffff" } }"##)),
+            "background",
+            "`#`",
+        );
+        rejects(
+            fields::paint::background.read(&with(r##"{ "#ffffff", "#000000" }"##)),
+            "background",
+            "{ position, colour }",
+        );
+        rejects(fields::paint::background.read(&with("nil")), "background", "`stops`");
     }
 
     #[test]
     fn an_unknown_gradient_shape_or_a_radial_angle_is_refused() {
         let lua = mlua::Lua::new();
         let src = r##"return { kind = "rect", background = { gradient = "Box", stops = {} } }"##;
-        rejects(parse_background(&eval_props(&lua, src)), "background", "`Linear`, `Radial`, `Conic`");
+        rejects(fields::paint::background.read(&eval_props(&lua, src)), "background", "`Linear`, `Radial`, `Conic`");
         let src = r##"return { kind = "rect", background = { gradient = "Radial", angle = 45,
             stops = { { 0, "#ffffff" }, { 1, "#000000" } } } }"##;
-        rejects(parse_background(&eval_props(&lua, src)), "background", "angle");
+        rejects(fields::paint::background.read(&eval_props(&lua, src)), "background", "angle");
     }
 
     /// One gradient shape for `background` and `mask`, so a fade is written the way a fill is.
@@ -878,13 +950,13 @@ mod tests {
         let gradient =
             Gradient { shape: GradientShape::Linear { angle: 180.0 }, stops: vec![(0.0, CLEAR), (1.0, WHITE)] };
         assert_eq!(
-            parse_mask(&eval_props(&lua, src)).unwrap(),
+            fields::paint::mask.read(&eval_props(&lua, src)).unwrap(),
             Some(Mask { source: MaskSource::Gradient(gradient), invert: false })
         );
 
         let src = r#"return { kind = "rect", mask = { source = "/tmp/shape.svg", invert = true } }"#;
         assert_eq!(
-            parse_mask(&eval_props(&lua, src)).unwrap(),
+            fields::paint::mask.read(&eval_props(&lua, src)).unwrap(),
             Some(Mask { source: MaskSource::Image("/tmp/shape.svg".into()), invert: true })
         );
     }
@@ -892,28 +964,36 @@ mod tests {
     #[test]
     fn a_mask_naming_both_sources_or_neither_is_refused() {
         let lua = mlua::Lua::new();
-        rejects(parse_mask(&eval_props(&lua, r#"return { kind = "rect", mask = "/tmp/a.png" }"#)), "mask", "table");
         rejects(
-            parse_mask(&eval_props(&lua, r#"return { kind = "rect", mask = { invert = true } }"#)),
+            fields::paint::mask.read(&eval_props(&lua, r#"return { kind = "rect", mask = "/tmp/a.png" }"#)),
+            "mask",
+            "table",
+        );
+        rejects(
+            fields::paint::mask.read(&eval_props(&lua, r#"return { kind = "rect", mask = { invert = true } }"#)),
             "mask",
             "one of",
         );
         let both = r##"return { kind = "rect", mask = { source = "/a.png", gradient = "Radial",
             stops = { { 0, "#ffffff" }, { 1, "#000000" } } } }"##;
-        rejects(parse_mask(&eval_props(&lua, both)), "mask", "one of");
+        rejects(fields::paint::mask.read(&eval_props(&lua, both)), "mask", "one of");
         let stray = r##"return { kind = "rect", mask = { source = "/a.png", stops = { { 0, "#ffffff" } } } }"##;
-        rejects(parse_mask(&eval_props(&lua, stray)), "mask", "one of");
+        rejects(fields::paint::mask.read(&eval_props(&lua, stray)), "mask", "one of");
         let stray = r#"return { kind = "rect", mask = { source = "/a.png", angle = 90 } }"#;
-        rejects(parse_mask(&eval_props(&lua, stray)), "mask", "one of");
-        rejects(parse_mask(&eval_props(&lua, r#"return { kind = "rect", mask = { source = "" } }"#)), "mask", "empty");
+        rejects(fields::paint::mask.read(&eval_props(&lua, stray)), "mask", "one of");
+        rejects(
+            fields::paint::mask.read(&eval_props(&lua, r#"return { kind = "rect", mask = { source = "" } }"#)),
+            "mask",
+            "empty",
+        );
         let src = r#"return { kind = "rect", mask = { source = "/a.png", invert = 1 } }"#;
-        rejects(parse_mask(&eval_props(&lua, src)), "mask", "invert");
+        rejects(fields::paint::mask.read(&eval_props(&lua, src)), "mask", "invert");
     }
 
     #[test]
     fn clip_absent_defaults_to_the_nodes_box() {
         let props = PropMap::default();
-        assert_eq!(parse_clip(&props).unwrap(), ClipShape::Box);
+        assert_eq!(fields::paint::clip.read(&props).unwrap(), ClipShape::Box);
     }
 
     #[test]
@@ -925,7 +1005,7 @@ mod tests {
             let src = format!(r#"return {{ kind = "rect", clip = "{declared}" }}"#);
             let table: mlua::Table = lua.load(&src).eval().unwrap();
             let props = deserialize_lua_table(&table).unwrap().properties;
-            assert_eq!(parse_clip(&props).unwrap(), expected, "clip = {declared:?}");
+            assert_eq!(fields::paint::clip.read(&props).unwrap(), expected, "clip = {declared:?}");
         }
     }
 
@@ -936,7 +1016,7 @@ mod tests {
         let lua = mlua::Lua::new();
         let table: mlua::Table = lua.load(r#"return { kind = "rect", clip = "Circle" }"#).eval().unwrap();
         let props = deserialize_lua_table(&table).unwrap().properties;
-        let err = parse_clip(&props).unwrap_err();
+        let err = fields::paint::clip.read(&props).unwrap_err();
         assert!(
             matches!(&err, LayoutError::InvalidProperty { property, detail } if property == "clip" && detail.contains("`Box`, `Rounded`")),
             "got {err:?}"
@@ -945,7 +1025,7 @@ mod tests {
         let table: mlua::Table = lua.load(r#"return { kind = "rect", clip = true }"#).eval().unwrap();
         let props = deserialize_lua_table(&table).unwrap().properties;
         assert!(
-            matches!(parse_clip(&props).unwrap_err(), LayoutError::InvalidProperty { property, .. } if property == "clip")
+            matches!(fields::paint::clip.read(&props).unwrap_err(), LayoutError::InvalidProperty { property, .. } if property == "clip")
         );
     }
 
@@ -1002,7 +1082,7 @@ mod tests {
     #[test]
     fn border_width_absent_defaults_to_all_zero() {
         let props = PropMap::default();
-        assert_eq!(parse_border_width(&props).unwrap(), EdgeInsets::default());
+        assert_eq!(fields::paint::border_width.read(&props).unwrap(), EdgeInsets::default());
     }
 
     #[test]
@@ -1010,7 +1090,10 @@ mod tests {
         let lua = mlua::Lua::new();
         let table: mlua::Table = lua.load(r#"return { kind = "rect", border_width = 3 }"#).eval().unwrap();
         let props = props_from_table(&table);
-        assert_eq!(parse_border_width(&props).unwrap(), EdgeInsets { top: 3.0, right: 3.0, bottom: 3.0, left: 3.0 });
+        assert_eq!(
+            fields::paint::border_width.read(&props).unwrap(),
+            EdgeInsets { top: 3.0, right: 3.0, bottom: 3.0, left: 3.0 }
+        );
     }
 
     #[test]
@@ -1019,7 +1102,10 @@ mod tests {
         let table: mlua::Table =
             lua.load(r#"return { kind = "rect", border_width = { top = 2, left = 5 } }"#).eval().unwrap();
         let props = props_from_table(&table);
-        assert_eq!(parse_border_width(&props).unwrap(), EdgeInsets { top: 2.0, right: 0.0, bottom: 0.0, left: 5.0 });
+        assert_eq!(
+            fields::paint::border_width.read(&props).unwrap(),
+            EdgeInsets { top: 2.0, right: 0.0, bottom: 0.0, left: 5.0 }
+        );
     }
 
     #[test]
@@ -1027,7 +1113,7 @@ mod tests {
         let lua = mlua::Lua::new();
         let table: mlua::Table = lua.load(r#"return { kind = "rect", border_width = true }"#).eval().unwrap();
         let props = props_from_table(&table);
-        let err = parse_border_width(&props).unwrap_err();
+        let err = fields::paint::border_width.read(&props).unwrap_err();
         assert!(
             matches!(&err, LayoutError::InvalidProperty { property, detail } if property == "border_width" && detail.contains("expected a number or a table")),
             "{err}"
@@ -1039,7 +1125,7 @@ mod tests {
         let lua = mlua::Lua::new();
         let table: mlua::Table = lua.load(r#"return { kind = "rect", border_width = -4 }"#).eval().unwrap();
         let props = props_from_table(&table);
-        let err = parse_border_width(&props).unwrap_err();
+        let err = fields::paint::border_width.read(&props).unwrap_err();
         assert!(
             matches!(&err, LayoutError::InvalidProperty { property, detail } if property == "border_width" && detail.contains("[0, 8192]")),
             "must be the range rule, naming the bound: {err}"
@@ -1051,7 +1137,7 @@ mod tests {
         let lua = mlua::Lua::new();
         let table: mlua::Table = lua.load(r#"return { kind = "rect", border_width = 8193 }"#).eval().unwrap();
         let props = props_from_table(&table);
-        let err = parse_border_width(&props).unwrap_err();
+        let err = fields::paint::border_width.read(&props).unwrap_err();
         assert!(
             matches!(&err, LayoutError::InvalidProperty { property, detail } if property == "border_width" && detail.contains("[0, 8192]")),
             "must be the range rule, naming the bound: {err}"
@@ -1063,7 +1149,7 @@ mod tests {
         let lua = mlua::Lua::new();
         let table: mlua::Table = lua.load(r#"return { kind = "rect", border_width = { top = 8193 } }"#).eval().unwrap();
         let props = props_from_table(&table);
-        let err = parse_border_width(&props).unwrap_err();
+        let err = fields::paint::border_width.read(&props).unwrap_err();
         assert!(
             matches!(&err, LayoutError::InvalidProperty { property, detail } if property == "border_width" && detail.contains("[0, 8192]")),
             "must be the range rule, naming the bound: {err}"
@@ -1082,7 +1168,7 @@ mod tests {
         table.set("margin", margin).unwrap();
         let props = props_from_table(&table);
         assert!(matches!(
-            parse_edge_insets(&props, "margin").unwrap_err(),
+            fields::common::margin.read(&props).unwrap_err(),
             LayoutError::UnsupportedSignalProperty(p) if p == "margin.top"
         ));
     }
@@ -1090,7 +1176,7 @@ mod tests {
     #[test]
     fn border_color_absent_is_all_none() {
         let props = PropMap::default();
-        assert_eq!(parse_border_color(&props).unwrap(), BorderColor::default());
+        assert_eq!(fields::paint::border_color.read(&props).unwrap(), BorderColor::default());
     }
 
     #[test]
@@ -1099,7 +1185,10 @@ mod tests {
         let table: mlua::Table = lua.load(r##"return { kind = "rect", border_color = "#ff0000" }"##).eval().unwrap();
         let props = props_from_table(&table);
         let red = Some(Rgba { r: 1.0, g: 0.0, b: 0.0, a: 1.0 });
-        assert_eq!(parse_border_color(&props).unwrap(), BorderColor { top: red, right: red, bottom: red, left: red });
+        assert_eq!(
+            fields::paint::border_color.read(&props).unwrap(),
+            BorderColor { top: red, right: red, bottom: red, left: red }
+        );
     }
 
     #[test]
@@ -1111,7 +1200,7 @@ mod tests {
             .unwrap();
         let props = props_from_table(&table);
         assert_eq!(
-            parse_border_color(&props).unwrap(),
+            fields::paint::border_color.read(&props).unwrap(),
             BorderColor {
                 top: Some(Rgba { r: 1.0, g: 0.0, b: 0.0, a: 1.0 }),
                 right: None,
@@ -1127,7 +1216,7 @@ mod tests {
         let table: mlua::Table =
             lua.load(r#"return { kind = "rect", border_color = { top = "not-a-color" } }"#).eval().unwrap();
         let props = props_from_table(&table);
-        let err = parse_border_color(&props).unwrap_err();
+        let err = fields::paint::border_color.read(&props).unwrap_err();
         assert!(
             matches!(&err, LayoutError::InvalidProperty { property, detail } if property == "border_color" && detail.contains("top") && detail.contains("must start with `#`")),
             "must name the failing edge, not just `border_color`: {err}"
@@ -1140,7 +1229,7 @@ mod tests {
         let table: mlua::Table =
             lua.load(r#"return { kind = "rect", border_color = { right = "not-a-color" } }"#).eval().unwrap();
         let props = props_from_table(&table);
-        let err = parse_border_color(&props).unwrap_err();
+        let err = fields::paint::border_color.read(&props).unwrap_err();
         assert!(
             matches!(&err, LayoutError::InvalidProperty { property, detail } if property == "border_color" && detail.contains("right")),
             "must name `right`, the edge that actually failed: {err}"
@@ -1160,7 +1249,7 @@ mod tests {
         table.set("border_color", border_color).unwrap();
         let props = props_from_table(&table);
         assert!(matches!(
-            parse_border_color(&props).unwrap_err(),
+            fields::paint::border_color.read(&props).unwrap_err(),
             LayoutError::UnsupportedSignalProperty(p) if p == "border_color.top"
         ));
     }
@@ -1170,7 +1259,7 @@ mod tests {
         let lua = mlua::Lua::new();
         let table: mlua::Table = lua.load(r#"return { kind = "rect", border_color = true }"#).eval().unwrap();
         let props = props_from_table(&table);
-        let err = parse_border_color(&props).unwrap_err();
+        let err = fields::paint::border_color.read(&props).unwrap_err();
         assert!(
             matches!(&err, LayoutError::InvalidProperty { property, detail } if property == "border_color" && detail.contains("expected a string or a table")),
             "{err}"

@@ -440,7 +440,7 @@ fn physical_edge(logical: f32, scale: f32) -> u32 {
 }
 
 /// `image.source_blur` in physical pixels. Floored at 0, not [`physical_edge`]'s 1: a box always
-/// covers some area, but a blur may genuinely be off. `parse_source_blur` already rejects
+/// covers some area, but a blur may genuinely be off. the `source_blur` field already rejects
 /// negative, infinite and NaN logical values, and `scale` is always positive, so unlike
 /// `physical_edge` there is no out-of-range input here to clamp.
 fn physical_blur(logical: f32, scale: f32) -> u32 {

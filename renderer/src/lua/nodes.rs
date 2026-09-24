@@ -13,18 +13,18 @@ pub(crate) mod properties;
 #[cfg(test)]
 mod stubs;
 
+pub(crate) use properties::range;
 use properties::{KINDS, kind_bit, properties};
-pub(crate) use properties::{default_bool, default_number, keyword, range};
 
 /// The node kinds, one global constructor each.
 fn node_kinds() -> impl Iterator<Item = &'static str> {
-    KINDS.iter().map(|(kind, _)| *kind)
+    KINDS.iter().copied()
 }
 
 /// The table's own `&'static str` for `kind` and its bit, or `None` if it is not a node kind.
 fn kind_entry(kind: &str) -> Option<(&'static str, u16)> {
     let bit = kind_bit(kind)?;
-    Some((KINDS[bit.trailing_zeros() as usize].0, bit))
+    Some((KINDS[bit.trailing_zeros() as usize], bit))
 }
 
 /// The table's own `&'static str` for `property`, which is what a [`PropMap`] keys by. A scan of
@@ -390,7 +390,7 @@ mod meta_stub_tests {
     }
 
     /// Property literals in `properties.get("x")`, as the named parser argument in
-    /// `parse_align(properties, "align_v")`, or through `keyboard/mod.rs`'s `function("on_cancel")`.
+    /// `fields::common::align_v.read(properties)`, or through `keyboard/mod.rs`'s `function("on_cancel")`.
     fn property_literals(text: &str) -> BTreeSet<String> {
         let mut names: BTreeSet<String> = text
             .split("function(\"")
@@ -497,7 +497,7 @@ mod meta_stub_tests {
         );
     }
 
-    /// Literal sets refused without a `parse_keyword` list, so checked one way only: `cursor`
+    /// Literal sets refused without a keyword list, so checked one way only: `cursor`
     /// parses `cursor_icon`'s names, which it cannot enumerate; the rest mix one keyword into a
     /// number (`"Fill"`, `"Ignore"`, `animate`'s `loops = "Infinite"`).
     const ONE_WAY: [&str; 5] = ["animate", "cursor", "exclusive", "height", "width"];
@@ -549,7 +549,7 @@ mod meta_stub_tests {
             }
             first.get_or_insert(literal);
         }
-        // The refusal's `parse_keyword` list must equal the declared literals, making the check two-way.
+        // The refusal's keyword list must equal the declared literals, making the check two-way.
         let bogus = around("\"mantle_bogus\"");
         let declared: BTreeSet<&str> = members.iter().filter_map(|m| m.strip_prefix('"')?.strip_suffix('"')).collect();
         if !declared.is_empty() && !members.contains(&"string") {
@@ -687,7 +687,8 @@ mod meta_stub_tests {
         let shaping = crate::text::shaping::ShapingHandle::spawn();
         // Keep `scene::tests::apply_at` `pub(super)`; widening a test helper is what the justfile's
         // `docs` baseline discourages. One instance and output suffice for this probe.
-        let declared = crate::layout::node::parse_surface_id(&virtual_node.properties).map_err(|e| format!("{e:?}"))?;
+        let declared =
+            crate::layout::node::fields::surface::id.read(&virtual_node.properties).map_err(|e| format!("{e:?}"))?;
         let instance_id = format!("{declared}@PROBE");
         let instances = [crate::layout::instance::SurfaceInstance {
             instance_id: instance_id.clone(),

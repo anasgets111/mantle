@@ -5,6 +5,7 @@ use shared::{debug, warn};
 use unicode_segmentation::UnicodeSegmentation;
 
 use super::*;
+use crate::layout::node::prop::Keyword;
 
 /// First plain `autofocus = true` field in scope document order (ADR-0112). Skip masked fields and
 /// fields without callbacks; unlike two `secure_submit` fields, duplicate search boxes are a config
@@ -19,7 +20,7 @@ fn autofocus_field_in_scope(scope: &[(&str, &layout::ResolvedNode)]) -> Option<(
                 continue;
             }
             if node.kind == "textfield"
-                && matches!(node.properties.get("autofocus"), Some(Value::Boolean(true)))
+                && node::fields::textfield::autofocus.read(&node.properties).is_ok_and(|on| on)
                 && let Some(target @ FieldTarget::Plain { .. }) = focused_field(&[node])
             {
                 return Some((surface_id.to_string(), target));
@@ -41,7 +42,7 @@ struct PlainEdit {
     /// Escape with `on_cancel` drops focus and fires it.
     cancelled: bool,
     /// Up, down, Tab, or paging key: buffer stays; `on_navigate` hears the name.
-    navigated: Option<&'static str>,
+    navigated: Option<NavigateKey>,
     /// Caret or selection moved with the text unchanged: repaint, tell the config nothing.
     moved: bool,
 }
@@ -137,8 +138,8 @@ fn edit_plain_buffer(
             *selection = next;
             // An arrow the caret cannot take goes to the config, so a grid under the field can use it.
             let navigated = match motion {
-                Motion::Left if !moved && !shift => Some("left"),
-                Motion::Right if !moved && !shift => Some("right"),
+                Motion::Left if !moved && !shift => Some(NavigateKey::Left),
+                Motion::Right if !moved && !shift => Some(NavigateKey::Right),
                 _ => None,
             };
             PlainEdit { moved, navigated, ..PlainEdit::NONE }
@@ -416,7 +417,7 @@ impl App {
         // Navigation changes neither text nor caret, so it needs no repaint.
         if let Some(key) = edit.navigated {
             if let Some(on_navigate) = on_navigate
-                && let Err(e) = on_navigate.call::<()>(key)
+                && let Err(e) = on_navigate.call::<()>(key.name())
             {
                 warn!("{surface_id}: on_navigate raised, ignoring it: {e}");
             }
@@ -686,7 +687,7 @@ mod tests {
     fn an_arrow_the_caret_cannot_take_navigates() {
         let mut buffer = "ab".to_string();
         let right = edit_at_end(&mut buffer, KeyAction::Move(Motion::Right), false);
-        assert_eq!(right, PlainEdit { navigated: Some("right"), ..PlainEdit::NONE });
+        assert_eq!(right, PlainEdit { navigated: Some(NavigateKey::Right), ..PlainEdit::NONE });
         let left = edit_at_end(&mut buffer, KeyAction::Move(Motion::Left), false);
         assert_eq!(left, PlainEdit { moved: true, ..PlainEdit::NONE }, "the caret takes it");
         let mut selection = (0, 0);
@@ -713,19 +714,22 @@ mod tests {
     /// below it would drop that as a control character.
     #[test]
     fn arrow_paging_and_tab_keys_navigate_instead_of_editing() {
-        assert_eq!(key_action(&key(Keysym::Up, None), false, false), KeyAction::Navigate("up"));
+        assert_eq!(key_action(&key(Keysym::Up, None), false, false), KeyAction::Navigate(NavigateKey::Up));
         assert_eq!(
             key_action(&key(Keysym::Down, None), true, false),
-            KeyAction::Navigate("down"),
+            KeyAction::Navigate(NavigateKey::Down),
             "held Down keeps moving"
         );
-        assert_eq!(key_action(&key(Keysym::Page_Down, None), false, false), KeyAction::Navigate("page_down"));
-        assert_eq!(key_action(&key(Keysym::Tab, Some("\t")), false, false), KeyAction::Navigate("tab"));
-        assert_eq!(key_action(&key(Keysym::ISO_Left_Tab, None), false, false), KeyAction::Navigate("backtab"));
+        assert_eq!(key_action(&key(Keysym::Page_Down, None), false, false), KeyAction::Navigate(NavigateKey::PageDown));
+        assert_eq!(key_action(&key(Keysym::Tab, Some("\t")), false, false), KeyAction::Navigate(NavigateKey::Tab));
+        assert_eq!(
+            key_action(&key(Keysym::ISO_Left_Tab, None), false, false),
+            KeyAction::Navigate(NavigateKey::Backtab)
+        );
 
         let mut buffer = "fire".to_string();
-        let edit = edit_at_end(&mut buffer, KeyAction::Navigate("down"), true);
-        assert_eq!(edit, PlainEdit { navigated: Some("down"), ..PlainEdit::NONE });
+        let edit = edit_at_end(&mut buffer, KeyAction::Navigate(NavigateKey::Down), true);
+        assert_eq!(edit, PlainEdit { navigated: Some(NavigateKey::Down), ..PlainEdit::NONE });
         assert_eq!(buffer, "fire", "moving through the results is not an edit");
     }
 

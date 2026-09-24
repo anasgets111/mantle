@@ -15,13 +15,13 @@
 ---@field anchor? { top?: boolean, bottom?: boolean, left?: boolean, right?: boolean, [string]: "no such property" } Default: all `false`. Edges to pin to; an absent edge is `false`. None pinned centres the surface; one edge centres it along that edge.
 ---@field monitor? string Default `"All"`. A connector name, `"All"`, or `"Active"`: one instance on the output the compositor picks at each show, refusing a `"NN%"` size and a function `child` (ADR-0246). An unknown connector warns and creates nothing.
 ---@field namespace? string Default `"mantle-{id}"`. The layer namespace compositor rules match (Hyprland `layerrule`, niri `layer-rule`).
----@field width? Length|Bound Default: content. Omitted measures the content, capped by the output less the anchored edges' margins; `"NN%"` is of the output. On an axis anchored to both edges, omitted and `"Fill"` both size the surface to the compositor's span; the root node stays content-sized, so give the child `width = "Fill"` to cover it.
----@field height? Length|Bound Default: content. As `width`, against `top`/`bottom`. `"Fill"` without both edges of its axis anchored is a protocol error: the surface stays hidden with a warning.
+---@field width? Length|Bound `[0, 8192]`, default: content. Omitted measures the content, capped by the output less the anchored edges' margins; `"NN%"` is of the output. On an axis anchored to both edges, omitted and `"Fill"` both size the surface to the compositor's span; the root node stays content-sized, so give the child `width = "Fill"` to cover it.
+---@field height? Length|Bound `[0, 8192]`, default: content. As `width`, against `top`/`bottom`. `"Fill"` without both edges of its axis anchored is a protocol error: the surface stays hidden with a warning.
 ---@field exclusive? boolean|integer|"Ignore"|Bound Default `false`. `false` reserves nothing, a positive integer reserves that many px, `"Ignore"` also overlaps others' zones. `true` reserves the configured height when exactly one of `top`/`bottom` is anchored and `left`/`right` match (both or neither), the width in the transposed case, else nothing.
 ---@field keyboard_interactivity? "None"|"OnDemand"|"Exclusive"|Bound Default `"None"`. Whether it takes the keyboard.
 ---@field margin? number|Edges|Bound Default `0`. Offset from the anchored edges, not layout margin; one on an edge the panel is not anchored to does nothing.
 ---@field visible? boolean|Bound Default `true`. Hiding destroys the layer surface; showing recreates it (ADR-0088).
----@field child? Node|fun(output: string): Node? The one root node. A function runs per output instance with its connector name (ADR-0121); `nil` leaves that instance empty.
+---@field child? Node|fun(output: string): Node?|Bound The one root node. A function runs per output instance with its connector name (ADR-0121); `nil` leaves that instance empty.
 
 ---@class WindowProps: NodeBase, BoxBase
 ---@field id string Required. The surface's identity across reloads, unique among surfaces. A `panel`'s or `lock`'s per-output instances are `"{id}@{output}"`; `monitor = "Active"` keeps the bare `id`.
@@ -33,7 +33,7 @@
 ---@field visible? boolean|Bound Default `true`. Opens and closes the window; state and `id` survive (ADR-0049).
 ---@field width? Length|Bound `[0, 8192]`, default: fill the window. The root's size inside the window, not the window's.
 ---@field height? Length|Bound `[0, 8192]`, default: fill the window. As `width`.
----@field child? Node The one root node; a function `child` is refused.
+---@field child? Node|Bound The one root node; a function `child` is refused.
 
 ---@class PopupProps: NodeBase, BoxBase
 ---@field id string Required. The surface's identity across reloads, unique among surfaces. A `panel`'s or `lock`'s per-output instances are `"{id}@{output}"`; `monitor = "Active"` keeps the bare `id`.
@@ -48,11 +48,11 @@
 ---@field grab? boolean|Bound Default `true`. Takes an input grab so an outside click dismisses it; it needs a click to grab from, and a denied grab dismisses the popup. `false` for a hover tooltip.
 ---@field on_dismiss? fun() The compositor closed it (click outside, denied grab, parent gone); not called when the config hides it. Set `visible = false` here, or it reopens on the next click (ADR-0051).
 ---@field visible? boolean|Bound Default `true`. Opens and closes the popup; state and `id` survive (ADR-0049).
----@field child? Node The one root node; a function `child` is refused.
+---@field child? Node|Bound The one root node; a function `child` is refused.
 
 ---@class LockProps: NodeBase, BoxBase
 ---@field id string Required. The surface's identity across reloads, unique among surfaces. A `panel`'s or `lock`'s per-output instances are `"{id}@{output}"`; `monitor = "Active"` keeps the bare `id`.
----@field child? Node|fun(output: string): Node? The one root node. A function runs per output instance with its connector name (ADR-0121); `nil` leaves that instance empty.
+---@field child? Node|fun(output: string): Node?|Bound The one root node. A function runs per output instance with its connector name (ADR-0121); `nil` leaves that instance empty.
 ---@field width? nil Refused: the lock covers each output (ADR-0052).
 ---@field height? nil Refused, as `width`.
 ---@field visible? nil Refused: the session lock decides when it shows.
