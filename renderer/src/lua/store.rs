@@ -11,8 +11,9 @@
 
 use std::collections::HashMap;
 
-use mlua::{AnyUserData, Lua, ObjectLike, Table, Value};
+use mlua::{AnyUserData, IntoLua, Lua, ObjectLike, Table, Value};
 
+use crate::lua::luacats::{As, LuaType, lua_fn};
 use crate::lua::signal::{Signal, from_userdata};
 
 /// Stores keyed by joined absolute path: two calls naming one file share one table/signals. It
@@ -23,22 +24,17 @@ struct StoreRegistry(HashMap<String, Table>);
 /// Registers `persistent_table`. Resolve `mantle.storage` at call time; registration runs in
 /// `Loader::new`, before `lua::namespace::build` creates `mantle`.
 pub fn register(lua: &Lua) -> mlua::Result<()> {
-    super::define(
+    lua_fn!(
         lua,
-        "persistent_table",
-        r#"---@class PersistentTable
----One JSON file. Every key but `set` reads as a signal of its stored value, `nil` before the first
----push and for a missing key.
----@field set fun(self: PersistentTable, key: string, value: any) Stores one JSON value; `nil` deletes the key. The file is saved 1 s after the last write.
----@field [string] Signal<any>
-
----A named JSON file read as signals (ADR-0136). The same file returns the same table across reloads.
----`defaults` fills only missing keys, so adding one keeps the user's values.
----[docs](https://anasgets111.github.io/mantle/guide/scripting.html#persistent_table)
----@param spec { path: string, name: string, defaults?: table } `path` is an absolute directory and `name` a file name without `/`; otherwise raises.
----@return PersistentTable
-"#,
-        lua.create_function(|lua, spec: Table| {
+        /// A named JSON file read as signals (ADR-0136). The same file returns the same table across reloads.
+        /// `defaults` fills only missing keys, so adding one keeps the user's values.
+        /// [docs](https://anasgets111.github.io/mantle/guide/scripting.html#persistent_table)
+        fn persistent_table(
+            lua,
+            /// `path` is an absolute directory and `name` a file name without `/`; otherwise raises.
+            spec: As<Table, Spec>,
+        ) -> PersistentTable {
+            let spec = spec.0;
             super::marshal::only_keys(&spec, &["path", "name", "defaults"])
                 .map_err(|detail| mlua::Error::runtime(format!("persistent_table: {detail}")))?;
             let path: String = spec.get("path")?;
@@ -56,14 +52,52 @@ pub fn register(lua: &Lua) -> mlua::Result<()> {
             storage.call_method::<()>("invoke", ("open", file.clone(), defaults))?;
 
             if let Some(existing) = super::app_data_or_default::<StoreRegistry>(lua).0.get(&file).cloned() {
-                return Ok(existing);
+                return Ok(PersistentTable(existing));
             }
 
             let store = build_store(lua, &file, storage)?;
             super::app_data_or_default::<StoreRegistry>(lua).0.insert(file, store.clone());
-            Ok(store)
-        })?,
+            Ok(PersistentTable(store))
+        }
     )
+}
+
+/// `persistent_table`'s `spec`, checked key by key with messages naming the call.
+struct Spec;
+
+impl LuaType for Spec {
+    fn lua() -> String {
+        let name = String::lua();
+        format!("{{ path: {name}, name: {name}, defaults?: {} }}", Table::lua())
+    }
+}
+
+/// What `persistent_table` returns: [`build_store`]'s table, whose `set` is real and whose other
+/// keys are signals of the file's JSON values, whatever keys it holds; so the class block is written
+/// here rather than read off a Rust signature.
+struct PersistentTable(Table);
+
+impl IntoLua for PersistentTable {
+    fn into_lua(self, lua: &Lua) -> mlua::Result<Value> {
+        self.0.into_lua(lua)
+    }
+}
+
+impl LuaType for PersistentTable {
+    fn lua() -> String {
+        "PersistentTable".to_string()
+    }
+    fn classes(out: &mut Vec<String>) {
+        out.push(
+            r#"---@class PersistentTable
+---One JSON file. Every key but `set` reads as a signal of its stored value, `nil` before the first
+---push and for a missing key.
+---@field set fun(self: PersistentTable, key: string, value: any) Stores one JSON value; `nil` deletes the key. The file is saved 1 s after the last write.
+---@field [string] Signal<any>
+"#
+            .to_string(),
+        );
+    }
 }
 
 /// Config file as one absolute path.

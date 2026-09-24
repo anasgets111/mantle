@@ -14,8 +14,9 @@
 
 use std::collections::HashMap;
 
-use mlua::{Lua, ObjectLike, Table, Value};
+use mlua::{IntoLua, Lua, ObjectLike, Table, Value};
 
+use super::luacats::{As, LuaType, lua_fn};
 use super::store::{capability, index_entry_signals};
 
 /// Handles keyed by declared name, so two declarations of one program share a table and its
@@ -26,10 +27,72 @@ struct SessionRegistry(HashMap<String, Table>);
 /// Registers `session_process`. `mantle.processes` is resolved at call time: registration runs in
 /// `Loader::new`, before `lua::namespace::build` creates `mantle`.
 pub fn register(lua: &Lua) -> mlua::Result<()> {
-    super::define(
+    lua_fn!(
         lua,
-        "session_process",
-        r#"---@class SessionProcessHandle
+        /// Declares a program that lives for the session: the Supervisor holds it across reloads and stops
+        /// it at shutdown. Re-declaring a name returns the same handle and re-reads only `stop_signal`, so
+        /// declare at a module's top level. Use `process.run` when you need its output.
+        /// [docs](https://anasgets111.github.io/mantle/guide/processes.html#session_process)
+        fn session_process(
+            lua,
+            /// `name` keys it in `mantle.processes`; empty raises. `stop_signal` defaults to `"TERM"`.
+            spec: As<Table, Spec>,
+        ) -> SessionProcessHandle {
+            let spec = spec.0;
+            super::marshal::only_keys(&spec, &["name", "stop_signal"])
+                .map_err(|detail| mlua::Error::runtime(format!("session_process: {detail}")))?;
+            let name: String = spec.get("name")?;
+            if name.is_empty() {
+                return Err(mlua::Error::runtime(
+                    "session_process: name is how the Supervisor keys this program and how the config reads it back; it cannot be empty",
+                ));
+            }
+            let stop_signal: Value = spec.get("stop_signal")?;
+
+            let processes = capability(lua, "session_process", "processes")?;
+            // Sent every evaluation, like `storage:open`: the Supervisor keeps the entry it has
+            // and takes the newer stop signal, so editing that lands on reload without disturbing
+            // a program already up.
+            processes.call_method::<()>("invoke", ("declare", name.clone(), stop_signal))?;
+
+            if let Some(existing) = super::app_data_or_default::<SessionRegistry>(lua).0.get(&name).cloned() {
+                return Ok(SessionProcessHandle(existing));
+            }
+
+            let handle = build_handle(lua, &name, processes)?;
+            super::app_data_or_default::<SessionRegistry>(lua).0.insert(name, handle.clone());
+            Ok(SessionProcessHandle(handle))
+        }
+    )
+}
+
+/// `session_process`'s `spec`, checked key by key with messages naming the call.
+struct Spec;
+
+impl LuaType for Spec {
+    fn lua() -> String {
+        format!("{{ name: {}, stop_signal?: SignalName }}", String::lua())
+    }
+}
+
+/// What `session_process` returns: [`build_handle`]'s table, whose real fields are the methods and
+/// whose other keys are signals over the program's `mantle.processes` entry. The capability's entry
+/// type, not a Rust signature here, fixes those fields, so the class block is written beside it.
+struct SessionProcessHandle(Table);
+
+impl IntoLua for SessionProcessHandle {
+    fn into_lua(self, lua: &Lua) -> mlua::Result<Value> {
+        self.0.into_lua(lua)
+    }
+}
+
+impl LuaType for SessionProcessHandle {
+    fn lua() -> String {
+        "SessionProcessHandle".to_string()
+    }
+    fn classes(out: &mut Vec<String>) {
+        out.push(
+            r#"---@class SessionProcessHandle
 ---A program declared with `session_process`. Each field is a signal over its `mantle.processes`
 ---entry, `nil` before the first push; while `running` is false they describe the finished run.
 ---@field running Signal<boolean?> Whether it is up.
@@ -52,40 +115,10 @@ function SessionProcessHandle:signal(signal) end
 ---Sends the declared `stop_signal` to the program's group, then `SIGKILL` 5 s later. Shell
 ---shutdown does this to every session process.
 function SessionProcessHandle:stop() end
-
----Declares a program that lives for the session: the Supervisor holds it across reloads and stops
----it at shutdown. Re-declaring a name returns the same handle and re-reads only `stop_signal`, so
----declare at a module's top level. Use `process.run` when you need its output.
----[docs](https://anasgets111.github.io/mantle/guide/processes.html#session_process)
----@param spec { name: string, stop_signal?: SignalName } `name` keys it in `mantle.processes`; empty raises. `stop_signal` defaults to `"TERM"`.
----@return SessionProcessHandle
-"#,
-        lua.create_function(|lua, spec: Table| {
-            super::marshal::only_keys(&spec, &["name", "stop_signal"])
-                .map_err(|detail| mlua::Error::runtime(format!("session_process: {detail}")))?;
-            let name: String = spec.get("name")?;
-            if name.is_empty() {
-                return Err(mlua::Error::runtime(
-                    "session_process: name is how the Supervisor keys this program and how the config reads it back; it cannot be empty",
-                ));
-            }
-            let stop_signal: Value = spec.get("stop_signal")?;
-
-            let processes = capability(lua, "session_process", "processes")?;
-            // Sent every evaluation, like `storage:open`: the Supervisor keeps the entry it has
-            // and takes the newer stop signal, so editing that lands on reload without disturbing
-            // a program already up.
-            processes.call_method::<()>("invoke", ("declare", name.clone(), stop_signal))?;
-
-            if let Some(existing) = super::app_data_or_default::<SessionRegistry>(lua).0.get(&name).cloned() {
-                return Ok(existing);
-            }
-
-            let handle = build_handle(lua, &name, processes)?;
-            super::app_data_or_default::<SessionRegistry>(lua).0.insert(name, handle.clone());
-            Ok(handle)
-        })?,
-    )
+"#
+            .to_string(),
+        );
+    }
 }
 
 /// Config table: real `start`/`signal`/`stop` fields; `__index` answers other keys with signals.

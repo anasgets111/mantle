@@ -1,7 +1,7 @@
 //! Node constructors and `VirtualNode`, the loader's shallow table-to-Rust conversion.
 //!
 //! ponytail: shallow by design. `deserialize_lua_table` reads `kind`, refuses one with no
-//! `properties::KINDS` row or a key with no `properties::PROPERTIES` row, copies other keys unchanged,
+//! `properties::KINDS` row or a key no `properties` field declares, copies other keys unchanged,
 //! never recurses into `children`/`child` (reconciliation's job), and does not validate shapes such
 //! as `width` being an integer or `"Fill"` (the layout engine is the only typed-property consumer).
 
@@ -64,7 +64,7 @@ pub enum DeserializeError {
     #[error("node table's `kind` field is not a string")]
     KindNotAString,
     /// A key no parser for this `kind` reads; rejected instead of copied through
-    /// (`properties::PROPERTIES`).
+    /// (`properties::properties`).
     #[error("`{kind}` has no property `{property}`; it accepts {accepted}")]
     UnknownProperty { kind: String, property: String, accepted: String },
     /// A kind with no `properties::KINDS` row, and so no vocabulary to key a map by (ADR-0219).

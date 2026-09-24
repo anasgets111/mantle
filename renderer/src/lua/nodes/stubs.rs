@@ -1,5 +1,5 @@
 //! Renders `lua-meta/nodes.lua`, `lua-meta/surfaces.lua` and the docs' property tables from
-//! `properties::PROPERTIES`, the table the name check and the shared parsers read. The golden test
+//! the typed fields of `properties`, which the name check and the parsers read. The golden test
 //! below is the only caller: `just stubs` rewrites, a stale file fails `cargo test`.
 //!
 //! The aliases and the classes nothing else describes (`TextRun`, `Transition`) are hand-written in

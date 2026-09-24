@@ -73,7 +73,7 @@ under `UPDATE_STUBS=1` and otherwise fails on a stale file.
 | --- | --- | --- |
 | `mantle.lua` | Rust `*State`/`*Action` types; doc comments become descriptions | `supervisor/src/stubs.rs` |
 | `nodes.lua`, `surfaces.lua` | The typed fields in `renderer/src/lua/nodes/properties.rs`: each field's Rust type is its parser (`layout::node::prop::Prop`) and its LuaCATS (`lua::luacats::LuaType`), its `///` block the description; aliases in `nodes/stubs.rs` | `renderer/src/lua/nodes/stubs.rs`; `every_type_the_stubs_declare_is_accepted_by_the_engine` probes each type |
-| `globals.lua`, `signals.lua` | The `stub` of each `lua::define`, the one way to set a global | `renderer/src/lua/mod.rs` |
+| `globals.lua`, `signals.lua` | Each global's Rust signature through `lua::luacats` (`lua_fn!`, `lua_class!`, `lua_record!`, `lua_table!`), its `///` blocks the descriptions; `lua::define`, which they call, is the one way to set a global. The class blocks LuaLS models with generics or dynamic keys (`StateSignal`, `ScrollSignal`, `PersistentTable`, `SessionProcessHandle`) and `signals.lua`'s `Signal<T>` header are written beside their Rust types | `renderer/src/lua/mod.rs` |
 
 `just types` checks `share/starter` against the stubs, then `lua-meta` alone, and fails without
 `lua-language-server`.

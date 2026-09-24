@@ -7,7 +7,9 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::mpsc::{Receiver, Sender};
 
-use mlua::{Function, IntoLua, Lua, Table, UserData, UserDataMethods, Value};
+use mlua::{Function, Lua, Table};
+
+use super::luacats::{As, Hex, LuaType, lua_class, lua_fn, lua_record};
 use shared::warn;
 
 use crate::image::quantize::quantize_file;
@@ -18,20 +20,25 @@ const DEFAULT_DEPTH: i64 = 3;
 const DEFAULT_RESCALE: i64 = 128;
 
 /// A call's id and swatches, `None` on failure.
-type PaletteResult = (u64, Option<Vec<Swatch>>);
+type PaletteResult = (u64, Option<Vec<PaletteSwatch>>);
 
-/// `share` is the fraction of counted pixels, so a config can weigh colourfulness against coverage.
-struct Swatch {
-    color: String,
-    share: f64,
+// `share` is the fraction of counted pixels, so a config can weigh colourfulness against coverage.
+lua_record! {
+    struct PaletteSwatch {
+        /// `#RRGGBB`.
+        color: Hex,
+        /// Fraction of the counted (non-transparent) pixels, 0 to 1.
+        share: f64,
+    }
 }
 
-impl IntoLua for Swatch {
-    fn into_lua(self, lua: &Lua) -> mlua::Result<Value> {
-        let table = lua.create_table()?;
-        table.set("color", self.color)?;
-        table.set("share", self.share)?;
-        Ok(Value::Table(table))
+/// `palette.quantize`'s `opts`, read field by field against its own ranges.
+struct Options;
+
+impl LuaType for Options {
+    fn lua() -> String {
+        let integer = i64::lua();
+        format!("{{ depth?: {integer}, rescale?: {integer} }}")
     }
 }
 
@@ -80,8 +87,8 @@ impl PaletteRegistry {
                     Some(
                         buckets
                             .into_iter()
-                            .map(|(count, [r, g, b])| Swatch {
-                                color: format!("#{r:02X}{g:02X}{b:02X}"),
+                            .map(|(count, [r, g, b])| PaletteSwatch {
+                                color: Hex(format!("#{r:02X}{g:02X}{b:02X}")),
                                 share: f64::from(count) / f64::from(total),
                             })
                             .collect(),
@@ -117,13 +124,13 @@ pub struct PaletteHandle {
     registry: PaletteRegistry,
 }
 
-impl UserData for PaletteHandle {
-    fn add_methods<M: UserDataMethods<Self>>(methods: &mut M) {
-        // The decode runs to completion; only the callback is dropped.
-        methods.add_method("cancel", |_, this, ()| {
+lua_class! {
+    impl PaletteHandle {
+        /// Drops the callback. The decode still finishes.
+        fn cancel(_lua, this) {
             this.registry.0.borrow_mut().pending.remove(&this.id);
             Ok(())
-        });
+        }
     }
 }
 
@@ -135,29 +142,22 @@ fn opt(opts: &Option<Table>, key: &str, default: i64) -> mlua::Result<i64> {
 }
 
 pub fn register(lua: &Lua, registry: PaletteRegistry) -> mlua::Result<()> {
-    super::define(lua, "palette", "", lua.create_table()?)?;
-    super::define(
+    super::luacats::lua_table!(lua, palette)?;
+    lua_fn!(
         lua,
-        "palette.quantize",
-        r#"---@class PaletteSwatch
----@field color Color `#RRGGBB`.
----@field share number Fraction of the counted (non-transparent) pixels, 0 to 1.
-
----@class PaletteHandle
-local PaletteHandle = {}
-
----Drops the callback. The decode still finishes.
-function PaletteHandle:cancel() end
-
----Extracts an image's dominant colours off the Lua thread (ADR-0249). `cb` gets them most common
----first, or `nil` on failure (logged). `cb` runs unbudgeted.
----[docs](https://anasgets111.github.io/mantle/guide/scripting.html#palettequantize)
----@param path string A local raster file; no SVG or URL.
----@param opts? { depth?: integer, rescale?: integer } `depth` 0 to 8, default 3: up to `2^depth` colours. `rescale` caps the longest edge before counting, default 128, `0` for full size. Out of range raises.
----@param cb fun(swatches: PaletteSwatch[]?)
----@return PaletteHandle
-"#,
-        lua.create_function(move |_, (path, opts, cb): (String, Option<Table>, Function)| {
+        /// Extracts an image's dominant colours off the Lua thread (ADR-0249). `cb` gets them most common
+        /// first, or `nil` on failure (logged). `cb` runs unbudgeted.
+        /// [docs](https://anasgets111.github.io/mantle/guide/scripting.html#palettequantize)
+        fn palette.quantize(
+            _lua,
+            /// A local raster file; no SVG or URL.
+            path: String,
+            /// `depth` 0 to 8, default 3: up to `2^depth` colours. `rescale` caps the longest edge before
+            /// counting, default 128, `0` for full size. Out of range raises.
+            opts: As<Option<Table>, Option<Options>>,
+            cb: fn(swatches: Option<Vec<PaletteSwatch>>),
+        ) -> PaletteHandle {
+            let (opts, cb) = (opts.0, cb.0);
             if let Some(opts) = &opts {
                 super::marshal::only_keys(opts, &["depth", "rescale"])
                     .map_err(|detail| mlua::Error::runtime(format!("palette.quantize: options: {detail}")))?;
@@ -170,7 +170,7 @@ function PaletteHandle:cancel() end
                 )));
             };
             Ok(registry.quantize(path, depth, rescale, cb))
-        })?,
+        }
     )
 }
 

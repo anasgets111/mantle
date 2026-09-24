@@ -14,8 +14,11 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use mlua::{Function, Lua, UserData, UserDataMethods};
+use mlua::{Function, Lua};
 use shared::{ProcessStream, warn};
+
+use super::luacats::{lua_class, lua_fn};
+use crate::layout::node::prop::{Keyword, keywords};
 
 use super::capability::CommandSender;
 
@@ -81,11 +84,21 @@ impl ProcessRegistry {
     }
 }
 
+keywords! {
+    /// Which pipe an `out_cb` line came from; the wire keeps `shared::ProcessStream`.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum Stream {
+        Stdout = "stdout",
+        Stderr = "stderr",
+    }
+}
+
 fn stream_name(stream: ProcessStream) -> &'static str {
     match stream {
-        ProcessStream::Stdout => "stdout",
-        ProcessStream::Stderr => "stderr",
+        ProcessStream::Stdout => Stream::Stdout,
+        ProcessStream::Stderr => Stream::Stderr,
     }
+    .name()
 }
 
 /// Opaque userdata returned to Lua.
@@ -94,12 +107,13 @@ pub struct ProcessHandle {
     registry: ProcessRegistry,
 }
 
-impl UserData for ProcessHandle {
-    fn add_methods<M: UserDataMethods<Self>>(methods: &mut M) {
-        methods.add_method("kill", |_, this, ()| {
+lua_class! {
+    impl ProcessHandle {
+        /// `SIGTERM` to its process group, `SIGKILL` 100 ms later; `exit_cb` still fires. A no-op after exit.
+        fn kill(_lua, this) {
             this.registry.kill(this.id);
             Ok(())
-        });
+        }
     }
 }
 
@@ -107,43 +121,42 @@ impl UserData for ProcessHandle {
 /// closure signature supplies argument validation.
 pub fn register(lua: &Lua, registry: ProcessRegistry) -> mlua::Result<()> {
     let detach_registry = registry.clone();
-    super::define(lua, "process", "", lua.create_table()?)?;
-    super::define(
+    super::luacats::lua_table!(lua, process)?;
+    lua_fn!(
         lua,
-        "process.run",
-        r#"---@class ProcessHandle
-local ProcessHandle = {}
-
----`SIGTERM` to its process group, `SIGKILL` 100 ms later; `exit_cb` still fires. A no-op after exit.
-function ProcessHandle:kill() end
-
----Spawns `cmd` with stdout and stderr piped and stdin on `/dev/null`, without blocking (ADR-0026).
----The process belongs to the generation: its group is reaped when the Renderer is replaced.
----Callbacks run unbudgeted; a raise is logged as a warning.
----[docs](https://anasgets111.github.io/mantle/guide/processes.html#processrun)
----@param cmd string Looked up on `PATH`; no shell, so no globbing, pipes or quoting.
----@param args string[] Already split: `"a b"` is one argument.
----@param out_cb fun(line: string, stream: "stdout"|"stderr") Once per line, newline stripped, cut at 64 KiB. Accumulate here and decode in `exit_cb`.
----@param exit_cb fun(code: integer?) `nil` when a signal ended it or it failed to spawn.
----@return ProcessHandle
-"#,
-        lua.create_function(move |_, (cmd, args, out_cb, exit_cb): (String, Vec<String>, Function, Function)| {
-            Ok(registry.run(cmd, args, out_cb, exit_cb))
-        })?,
+        /// Spawns `cmd` with stdout and stderr piped and stdin on `/dev/null`, without blocking (ADR-0026).
+        /// The process belongs to the generation: its group is reaped when the Renderer is replaced.
+        /// Callbacks run unbudgeted; a raise is logged as a warning.
+        /// [docs](https://anasgets111.github.io/mantle/guide/processes.html#processrun)
+        fn process.run(
+            _lua,
+            /// Looked up on `PATH`; no shell, so no globbing, pipes or quoting.
+            cmd: String,
+            /// Already split: `"a b"` is one argument.
+            args: Vec<String>,
+            /// Once per line, newline stripped, cut at 64 KiB. Accumulate here and decode in `exit_cb`.
+            out_cb: fn(line: String, stream: Stream),
+            /// `nil` when a signal ended it or it failed to spawn.
+            exit_cb: fn(code: Option<i32>),
+        ) -> ProcessHandle {
+            Ok(registry.run(cmd, args, out_cb.0, exit_cb.0))
+        }
     )?;
-    super::define(
+    lua_fn!(
         lua,
-        "process.detach",
-        r#"---Spawns `cmd` in its own session with stdio on `/dev/null`; it outlives every reload and the
----shell. No handle, output or exit code, and a spawn failure is only logged (ADR-0188).
----[docs](https://anasgets111.github.io/mantle/guide/processes.html#processdetach)
----@param cmd string Looked up on `PATH`; no shell, so no globbing, pipes or quoting.
----@param args string[] Already split: `"a b"` is one argument.
-"#,
-        lua.create_function(move |_, (cmd, args): (String, Vec<String>)| {
+        /// Spawns `cmd` in its own session with stdio on `/dev/null`; it outlives every reload and the
+        /// shell. No handle, output or exit code, and a spawn failure is only logged (ADR-0188).
+        /// [docs](https://anasgets111.github.io/mantle/guide/processes.html#processdetach)
+        fn process.detach(
+            _lua,
+            /// Looked up on `PATH`; no shell, so no globbing, pipes or quoting.
+            cmd: String,
+            /// Already split: `"a b"` is one argument.
+            args: Vec<String>,
+        ) {
             detach_registry.detach(cmd, args);
             Ok(())
-        })?,
+        }
     )
 }
 

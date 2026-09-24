@@ -8,8 +8,20 @@ fn message(args: Variadic<Value>) -> mlua::Result<String> {
     Ok(args.iter().map(Value::to_string).collect::<mlua::Result<Vec<_>>>()?.join("\t"))
 }
 
-/// The stub of `log.warn`, `log.info` and `log.debug`; `log.error`'s carries the doc they share.
-const LEVEL: &str = "---@param ... any\n---[docs](https://anasgets111.github.io/mantle/guide/scripting.html#log)\n";
+/// `log.<name>` at `level`; `log.error`'s doc is the one they share.
+macro_rules! level {
+    ($lua:expr, $name:ident, $level:expr, $(#[doc = $doc:literal])*) => {
+        super::luacats::lua_fn!(
+            $lua,
+            $(#[doc = $doc])*
+            /// [docs](https://anasgets111.github.io/mantle/guide/scripting.html#log)
+            fn log.$name(_lua, args: Variadic<Value>) {
+                shared::log::emit($level, "config", format_args!("{}", message(args)?));
+                Ok(())
+            }
+        )
+    };
+}
 
 /// Lua's `warn` pieces joined into one line. On by default, unlike stock Lua: a config that calls
 /// `warn` wants it read. `@on`/`@off` still toggle it; other `@` controls are ignored, as in Lua.
@@ -46,32 +58,17 @@ pub fn register(lua: &Lua) -> mlua::Result<()> {
         }
         Ok(())
     });
-    super::define(lua, "log", "", lua.create_table()?)?;
-    for (name, level, stub) in [
-        (
-            "error",
-            Level::Error,
-            r#"---Writes a stamped line at this level, arguments joined like `print`'s (ADR-0245). Every level
----prints by default; filter with `MANTLE_LOG=config=warn` or `config=off`.
----@param ... any
----[docs](https://anasgets111.github.io/mantle/guide/scripting.html#log)
-"#,
-        ),
-        ("warn", Level::Warn, LEVEL),
-        ("info", Level::Info, LEVEL),
-        ("debug", Level::Debug(1), LEVEL),
-    ] {
-        super::define(
-            lua,
-            &format!("log.{name}"),
-            stub,
-            lua.create_function(move |_, args: Variadic<Value>| {
-                shared::log::emit(level, "config", format_args!("{}", message(args)?));
-                Ok(())
-            })?,
-        )?;
-    }
-    Ok(())
+    super::luacats::lua_table!(lua, log)?;
+    level!(
+        lua,
+        error,
+        Level::Error,
+        /// Writes a stamped line at this level, arguments joined like `print`'s (ADR-0245). Every level
+        /// prints by default; filter with `MANTLE_LOG=config=warn` or `config=off`.
+    )?;
+    level!(lua, warn, Level::Warn,)?;
+    level!(lua, info, Level::Info,)?;
+    level!(lua, debug, Level::Debug(1),)
 }
 
 #[cfg(test)]

@@ -3,7 +3,10 @@ use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 use std::time::Duration;
 
-use mlua::{Function, Lua, Table, Value};
+use mlua::{AnyUserData, IntoLua, Lua, Table, Value, Variadic};
+
+use crate::lua::luacats::{As, Generic, LuaType, SignalOf, lua_fn};
+use crate::text::snap::LogicalRect;
 
 use super::budget::install_hook;
 use super::tracking::next_computed_id;
@@ -122,20 +125,22 @@ pub fn register(lua: &Lua, dirty: DirtyFlag) -> mlua::Result<()> {
     let hover_dirty = dirty.clone();
     let rect_dirty = dirty.clone();
     let scroll_dirty = dirty.clone();
-    crate::lua::define(
+    lua_fn!(
         lua,
-        "computed",
-        r#"---A signal of `fn` over its dependencies' values, recomputed on read. `fn` must be side-effect free
----and runs under the shared 5 ms CPU budget (ADR-0021). ponytail: `fn`'s parameters are untyped,
----since typing them needs an overload per arity; prefer `:map` for one source.
----[docs](https://anasgets111.github.io/mantle/guide/signals.html#derived-signals)
----@param dependencies Signal<any>[] Signals or capabilities, in `fn`'s argument order; anything else raises.
----@param fn fun(...): any
----@return Signal<any> # Read-only.
-"#,
-        lua.create_function(|lua, (deps, func): (Table, Function)| {
-            let collected = deps
-                .sequence_values::<mlua::AnyUserData>()
+        /// A signal of `fn` over its dependencies' values, recomputed on read. `fn` must be side-effect free
+        /// and runs under the shared 5 ms CPU budget (ADR-0021). ponytail: `fn`'s parameters are untyped,
+        /// since typing them needs an overload per arity; prefer `:map` for one source.
+        /// [docs](https://anasgets111.github.io/mantle/guide/signals.html#derived-signals)
+        fn computed(
+            lua,
+            /// Signals or capabilities, in `fn`'s argument order; anything else raises.
+            dependencies: As<Table, Vec<SignalOf<Value>>>,
+            r#fn: fn(values: Variadic<Value>) -> Value,
+        ) -> /// Read-only.
+        SignalOf<Value, AnyUserData> {
+            let collected = dependencies
+                .0
+                .sequence_values::<AnyUserData>()
                 .map(|dep| {
                     let dep = dep?;
                     // Name the expected type; `borrow`'s error does not.
@@ -148,69 +153,71 @@ pub fn register(lua: &Lua, dirty: DirtyFlag) -> mlua::Result<()> {
                 })
                 .collect::<mlua::Result<Vec<_>>>()?;
             let kind = SignalKind::Computed { id: next_computed_id(), arity: collected.len() };
-            new_derived(lua, kind, Some(func), collected)
-        })?,
+            new_derived(lua, kind, Some(r#fn.0), collected).map(SignalOf::new)
+        }
     )?;
-    crate::lua::define(
+    lua_fn!(
         lua,
-        "delay",
-        r#"---`source`'s value once a new value has held for `ms`; until then, the old one (ADR-0146). A source
----that returns to the old value first changes nothing. A trailing debounce, or a close-hold:
----`visible = computed({ open, delay(open, ms) }, function(now, was) return now or was end)`.
----[docs](https://anasgets111.github.io/mantle/guide/signals.html#delay-hold-a-value)
----@generic T
----@param source Signal<T> A signal or capability; anything else raises.
----@param ms number `[1, 60000]`, rounded to whole milliseconds; outside raises.
----@return Signal<T> # Read-only.
-"#,
-        lua.create_function(|lua, (source_ud, millis): (mlua::AnyUserData, f64)| {
+        /// `source`'s value once a new value has held for `ms`; until then, the old one (ADR-0146). A source
+        /// that returns to the old value first changes nothing. A trailing debounce, or a close-hold:
+        /// `visible = computed({ open, delay(open, ms) }, function(now, was) return now or was end)`.
+        /// [docs](https://anasgets111.github.io/mantle/guide/signals.html#delay-hold-a-value)
+        fn delay(
+            lua,
+            /// A signal or capability; anything else raises.
+            source: SignalOf<Generic, AnyUserData>,
+            /// `[1, 60000]`, rounded to whole milliseconds; outside raises.
+            ms: f64,
+        ) -> /// Read-only.
+        SignalOf<Generic, AnyUserData> {
+            let source_ud = source.0;
             let source = from_userdata(&source_ud)
                 .ok_or_else(|| mlua::Error::runtime("delay() takes a Signal or an `mantle` capability first"))?;
-            let hold = parse_hold("delay() hold", millis)?;
+            let hold = parse_hold("delay() hold", ms)?;
             let held = source.get_value(lua)?;
             let ud = new_derived(lua, SignalKind::Delayed { hold, due: Rc::default() }, None, vec![source_ud])?;
             ud.set_nth_user_value(HELD_SLOT, held)?;
-            Ok(ud)
-        })?,
+            Ok(SignalOf::new(ud))
+        }
     )?;
-    crate::lua::define(
+    lua_fn!(
         lua,
-        "pulse",
-        r#"---`true` for `ms` after `source` changes value, else `false`; a change inside the window restarts it
----(ADR-0153). Fires one-shot animations: `animate = pulse(clicks, 400):map(...)` (ADR-0152). Values
----compare with `==`, so a table-valued source changes on every push.
----[docs](https://anasgets111.github.io/mantle/guide/signals.html#pulse-mark-a-change)
----@param source Signal<any> A signal or capability; anything else raises.
----@param ms number `[1, 60000]`, rounded to whole milliseconds; outside raises. At least as long as what it drives.
----@return Signal<boolean> # Read-only.
-"#,
-        lua.create_function(|lua, (source_ud, millis): (mlua::AnyUserData, f64)| {
+        /// `true` for `ms` after `source` changes value, else `false`; a change inside the window restarts it
+        /// (ADR-0153). Fires one-shot animations: `animate = pulse(clicks, 400):map(...)` (ADR-0152). Values
+        /// compare with `==`, so a table-valued source changes on every push.
+        /// [docs](https://anasgets111.github.io/mantle/guide/signals.html#pulse-mark-a-change)
+        fn pulse(
+            lua,
+            /// A signal or capability; anything else raises.
+            source: SignalOf<Value, AnyUserData>,
+            /// `[1, 60000]`, rounded to whole milliseconds; outside raises. At least as long as what it drives.
+            ms: f64,
+        ) -> /// Read-only.
+        SignalOf<bool, AnyUserData> {
+            let source_ud = source.0;
             let source = from_userdata(&source_ud)
                 .ok_or_else(|| mlua::Error::runtime("pulse() takes a Signal or an `mantle` capability first"))?;
-            let hold = parse_hold("pulse() window", millis)?;
+            let hold = parse_hold("pulse() window", ms)?;
             let seen = source.get_value(lua)?;
             let ud = new_derived(lua, SignalKind::Pulse { hold, until: Rc::default() }, None, vec![source_ud])?;
             ud.set_nth_user_value(HELD_SLOT, seen)?;
-            Ok(ud)
-        })?,
+            Ok(SignalOf::new(ud))
+        }
     )?;
-    crate::lua::define(
+    lua_fn!(
         lua,
-        "state",
-        r#"---@class StateSignal<T>: Signal<T>
----What `state` returns: the only signal Lua writes.
----@field set fun(self: StateSignal<T>, value: T) Stores `value` and re-resolves its readers. Raises on NaN, infinity, an integer past ±(2^53−1) or a string over 64 KiB; tables are not checked. Types are checked by LuaLS only.
-
----Named writable state that survives reloads. A changed scalar `initial` re-seeds it; a table
----`initial` never does (ADR-0044). `mantle set <name> <value>` and `mantle toggle <name> [value]`
----write it (ADR-0112): a bare toggle needs a boolean, and toggling to the held value restores `initial`.
----[docs](https://anasgets111.github.io/mantle/guide/signals.html#named-state)
----@generic T
----@param name string Its identity: one name, one signal.
----@param initial T The first value, and the signal's type for LuaLS.
----@return StateSignal<T>
-"#,
-        lua.create_function(move |lua, (name, initial): (String, Value)| {
+        /// Named writable state that survives reloads. A changed scalar `initial` re-seeds it; a table
+        /// `initial` never does (ADR-0044). `mantle set <name> <value>` and `mantle toggle <name> [value]`
+        /// write it (ADR-0112): a bare toggle needs a boolean, and toggling to the held value restores `initial`.
+        /// [docs](https://anasgets111.github.io/mantle/guide/signals.html#named-state)
+        fn state(
+            lua,
+            /// Its identity: one name, one signal.
+            name: String,
+            /// The first value, and the signal's type for LuaLS.
+            initial: Generic,
+        ) -> StateSignal {
+            let initial = initial.0;
             let (existing, repeated) = {
                 let mut registry = crate::lua::app_data_or_default::<StateRegistry>(lua);
                 (registry.0.get(&name).cloned(), !registry.1.insert(name.clone()))
@@ -232,7 +239,7 @@ pub fn register(lua: &Lua, dirty: DirtyFlag) -> mlua::Result<()> {
                     })?;
                     crate::lua::app_data_or_default::<StateRegistry>(lua).0.insert(name, (signal.clone(), initial));
                 }
-                return Ok(signal);
+                return Ok(StateSignal(signal));
             }
             let signal = Signal::new_state(initial.clone(), dirty.clone()).map_err(|err| {
                 mlua::Error::runtime(format!(
@@ -240,46 +247,46 @@ pub fn register(lua: &Lua, dirty: DirtyFlag) -> mlua::Result<()> {
                 ))
             })?;
             crate::lua::app_data_or_default::<StateRegistry>(lua).0.insert(name, (signal.clone(), initial));
-            Ok(signal)
-        })?,
+            Ok(StateSignal(signal))
+        }
     )?;
-    crate::lua::define(
+    lua_fn!(
         lua,
-        "hover",
-        r#"---Whether the pointer is inside the node whose `hover` is bound to this signal; `false` until it is
----(ADR-0062). One name, one signal, across reloads. Read-only.
----[docs](https://anasgets111.github.io/mantle/guide/input.html#hover)
----@param name string
----@return Signal<boolean>
-"#,
-        lua.create_function(move |lua, name: String| Ok(hover_slot(lua, &hover_dirty, name)?.0))?,
+        /// Whether the pointer is inside the node whose `hover` is bound to this signal; `false` until it is
+        /// (ADR-0062). One name, one signal, across reloads. Read-only.
+        /// [docs](https://anasgets111.github.io/mantle/guide/input.html#hover)
+        fn hover(lua, name: String) -> SignalOf<bool> {
+            Ok(SignalOf::new(hover_slot(lua, &hover_dirty, name)?.0))
+        }
     )?;
-    crate::lua::define(
+    lua_fn!(
         lua,
-        "hover_rect",
-        r#"---The absolute rect of `hover(name)`'s node, in its surface's logical coordinates, for a `popup`'s
----`anchor_rect`. `1x1` at the origin before the first hover; keeps the last rect after the pointer
----leaves.
----[docs](https://anasgets111.github.io/mantle/guide/input.html#hover)
----@param name string The `hover` slot. Reading this does not register a region.
----@return Signal<Rect>
-"#,
-        lua.create_function(move |lua, name: String| Ok(hover_slot(lua, &rect_dirty, name)?.1))?,
+        /// The absolute rect of `hover(name)`'s node, in its surface's logical coordinates, for a `popup`'s
+        /// `anchor_rect`. `1x1` at the origin before the first hover; keeps the last rect after the pointer
+        /// leaves.
+        /// [docs](https://anasgets111.github.io/mantle/guide/input.html#hover)
+        fn hover_rect(
+            lua,
+            /// The `hover` slot. Reading this does not register a region.
+            name: String,
+        ) -> SignalOf<LogicalRect> {
+            Ok(SignalOf::new(hover_slot(lua, &rect_dirty, name)?.1))
+        }
     )?;
-    crate::lua::define(
+    lua_fn!(
         lua,
-        "geometry",
-        r#"---The absolute rect of the node whose `geometry` is bound to this signal, in its surface's logical
----coordinates (the space of `on_click` and `hover_rect`); layout writes it (ADR-0147). Zero before
----the first layout. A change earns one follow-up pass, so a binding feeding its own measurement cannot loop.
----[docs](https://anasgets111.github.io/mantle/guide/signals.html#geometry-read-a-nodes-laid-out-rect)
----@param name string One name, one signal, across reloads.
----@return Signal<Rect>
-"#,
-        lua.create_function(|lua, name: String| {
+        /// The absolute rect of the node whose `geometry` is bound to this signal, in its surface's logical
+        /// coordinates (the space of `on_click` and `hover_rect`); layout writes it (ADR-0147). Zero before
+        /// the first layout. A change earns one follow-up pass, so a binding feeding its own measurement cannot loop.
+        /// [docs](https://anasgets111.github.io/mantle/guide/signals.html#geometry-read-a-nodes-laid-out-rect)
+        fn geometry(
+            lua,
+            /// One name, one signal, across reloads.
+            name: String,
+        ) -> SignalOf<LogicalRect> {
             let existing = crate::lua::app_data_or_default::<GeometryRegistry>(lua).0.get(&name).cloned();
             if let Some(signal) = existing {
-                return Ok(signal);
+                return Ok(SignalOf::new(signal));
             }
             let zero = lua.create_table()?;
             for key in ["x", "y", "width", "height"] {
@@ -287,30 +294,80 @@ pub fn register(lua: &Lua, dirty: DirtyFlag) -> mlua::Result<()> {
             }
             let signal = Signal(SignalKind::Geometry(next_cell_id(), Rc::new(RefCell::new(Value::Table(zero)))));
             crate::lua::app_data_or_default::<GeometryRegistry>(lua).0.insert(name, signal.clone());
-            Ok(signal)
-        })?,
+            Ok(SignalOf::new(signal))
+        }
     )?;
-    crate::lua::define(
+    lua_fn!(
         lua,
-        "scroll",
-        r#"---@class ScrollSignal: Signal<number>
+        /// A viewport's scroll offset along its main axis, in logical pixels from the top or left. The wheel
+        /// writes it and layout clamps it (ADR-0069); `:reveal` is the only request Lua makes.
+        /// [docs](https://anasgets111.github.io/mantle/guide/input.html#scroll)
+        fn scroll(
+            lua,
+            /// Bind the result as a `row`, `column` or `list`'s `scroll`. One name, one signal, across reloads.
+            name: String,
+        ) -> ScrollSignal {
+            Ok(ScrollSignal(
+                crate::lua::app_data_or_default::<ScrollRegistry>(lua)
+                    .0
+                    .entry(name)
+                    .or_insert_with(|| Signal::new_scroll(scroll_dirty.clone()))
+                    .clone(),
+            ))
+        }
+    )
+}
+
+/// What `state` returns: a [`Signal`] whose `set` works. LuaLS spells the family as classes over a
+/// generic `T` that no Rust signature carries (`signals.lua`'s header holds `Signal<T>`), so these
+/// class blocks are written here, beside the type.
+pub(crate) struct StateSignal(Signal);
+
+impl IntoLua for StateSignal {
+    fn into_lua(self, lua: &Lua) -> mlua::Result<Value> {
+        self.0.into_lua(lua)
+    }
+}
+
+impl LuaType for StateSignal {
+    fn lua() -> String {
+        "StateSignal<T>".to_string()
+    }
+    const GENERIC: bool = true;
+    fn classes(out: &mut Vec<String>) {
+        out.push(
+            r#"---@class StateSignal<T>: Signal<T>
+---What `state` returns: the only signal Lua writes.
+---@field set fun(self: StateSignal<T>, value: T) Stores `value` and re-resolves its readers. Raises on NaN, infinity, an integer past ±(2^53−1) or a string over 64 KiB; tables are not checked. Types are checked by LuaLS only.
+"#
+            .to_string(),
+        );
+    }
+}
+
+/// What `scroll` returns: a [`Signal`] whose `reveal` works; see [`StateSignal`] for why its class
+/// is written here.
+pub(crate) struct ScrollSignal(Signal);
+
+impl IntoLua for ScrollSignal {
+    fn into_lua(self, lua: &Lua) -> mlua::Result<Value> {
+        self.0.into_lua(lua)
+    }
+}
+
+impl LuaType for ScrollSignal {
+    fn lua() -> String {
+        "ScrollSignal".to_string()
+    }
+    fn classes(out: &mut Vec<String>) {
+        out.push(
+            r#"---@class ScrollSignal: Signal<number>
 ---What `scroll` returns.
 ---@field reveal fun(self: ScrollSignal, index: integer) On the next pass, scrolls the least distance that shows the viewport's `index`-th visible child (1-based; a `list`'s items in source order), then the wheel takes over (ADR-0112). An index with no child does nothing; below 1 raises.
-
----A viewport's scroll offset along its main axis, in logical pixels from the top or left. The wheel
----writes it and layout clamps it (ADR-0069); `:reveal` is the only request Lua makes.
----[docs](https://anasgets111.github.io/mantle/guide/input.html#scroll)
----@param name string Bind the result as a `row`, `column` or `list`'s `scroll`. One name, one signal, across reloads.
----@return ScrollSignal
-"#,
-        lua.create_function(move |lua, name: String| {
-            Ok(crate::lua::app_data_or_default::<ScrollRegistry>(lua)
-                .0
-                .entry(name)
-                .or_insert_with(|| Signal::new_scroll(scroll_dirty.clone()))
-                .clone())
-        })?,
-    )
+"#
+            .to_string(),
+        );
+    }
 }
 
 /// Name-keyed hover slot: boolean from `hover(name)`, rect from `hover_rect(name)`

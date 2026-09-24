@@ -48,90 +48,74 @@ fn config_stdlib() -> mlua::StdLib {
         | mlua::StdLib::OS
 }
 
-/// ADR-0048's four non-blocking, process-local `os` calls and their stubs. Bars use `os.date`, so
-/// `OS` cannot be removed wholesale.
-const OS_CALLS_THAT_CANNOT_BLOCK: [(&str, &str); 4] = [
-    (
-        "date",
-        r#"---@param format? string `strftime` directives, default `"%c"`; `"*t"` returns a table. A leading `!` reads UTC.
----@param time? integer Unix seconds, default now.
----@return string|table
-"#,
-    ),
-    (
-        "time",
-        r#"---@param t? table An `os.date("*t")`-shaped table, default now.
----@return integer # Unix seconds, wall clock.
-"#,
-    ),
-    ("clock", "---@return number # CPU seconds this process has used; not elapsed time.\n"),
-    (
-        "getenv",
-        r#"---@param name string
----@return string? # The shell's environment variable, `nil` when unset.
-"#,
-    ),
-];
-
-/// Replaces `os` with an allowlist of [`OS_CALLS_THAT_CANNOT_BLOCK`], copying the real functions so
-/// `os.date` keeps its strftime surface. Also replace `package.loaded.os`: `require` reads its own
-/// reference there, so changing only the global hands the library back through `require("os")`
-/// (measured for `io` under the old `ALL_SAFE` VM). `io` is absent from [`config_stdlib`], so only
-/// `os` needs this second replacement.
+/// Replaces `os` with an allowlist of ADR-0048's four non-blocking, process-local calls, copying
+/// the real functions so `os.date` keeps its strftime surface; bars use it, so `OS` cannot be
+/// removed wholesale. Their signatures are declared, not Rust's: Lua's own C functions implement
+/// them. Also replace `package.loaded.os`: `require` reads its own reference there, so changing
+/// only the global hands the library back through `require("os")` (measured for `io` under the old
+/// `ALL_SAFE` VM). `io` is absent from [`config_stdlib`], so only `os` needs this second replacement.
 fn restrict_os(lua: &Lua) -> mlua::Result<()> {
     let full: Table = lua.globals().get("os")?;
     let kept = lua.create_table()?;
-    define(
+    luacats::lua_table!(
         lua,
-        "os",
-        r#"---[docs](https://anasgets111.github.io/mantle/guide/runtime.html#the-vm)
----@class oslib
----Only these four calls exist; the rest of `os` is removed (ADR-0048).
-"#,
-        &kept,
+        /// [docs](https://anasgets111.github.io/mantle/guide/runtime.html#the-vm)
+        /// Only these four calls exist; the rest of `os` is removed (ADR-0048).
+        os: oslib = &kept
     )?;
-    for (name, stub) in OS_CALLS_THAT_CANNOT_BLOCK {
-        define(lua, &format!("os.{name}"), stub, full.get::<Value>(name)?)?;
-    }
+    luacats::lua_fn!(
+        lua,
+        fn os.date(
+            /// `strftime` directives, default `"%c"`; `"*t"` returns a table. A leading `!` reads UTC.
+            format: Option<String>,
+            /// Unix seconds, default now.
+            time: Option<i64>,
+        ) -> luacats::Or<String, Table> = full.get::<Value>("date")?
+    )?;
+    luacats::lua_fn!(
+        lua,
+        fn os.time(
+            /// An `os.date("*t")`-shaped table, default now.
+            t: Option<Table>,
+        ) -> /// Unix seconds, wall clock.
+        i64 = full.get::<Value>("time")?
+    )?;
+    luacats::lua_fn!(
+        lua,
+        fn os.clock() -> /// CPU seconds this process has used; not elapsed time.
+        f64 = full.get::<Value>("clock")?
+    )?;
+    luacats::lua_fn!(
+        lua,
+        fn os.getenv(name: String) -> /// The shell's environment variable, `nil` when unset.
+        Option<String> = full.get::<Value>("getenv")?
+    )?;
     lua.globals().get::<Table>("package")?.get::<Table>("loaded")?.set("os", &kept)
 }
 
-/// What `lua-meta` says above a [`define`]d global's declaration.
+/// What `lua-meta` says above a [`define`]d global's declaration: [`luacats::lua_fn!`]'s
+/// signature, or [`luacats::lua_table!`]'s `///` block and class.
 #[derive(Clone, Copy)]
 #[cfg_attr(not(test), expect(dead_code, reason = "read by the globals golden, a test"))]
 pub(crate) enum Stub {
-    /// Hand-written LuaCATS.
-    Text(&'static str),
-    /// A [`luacats::lua_fn!`] function's signature.
     Fn(&'static luacats::Signature),
+    Table { doc: &'static str, class: Option<&'static str> },
 }
 
-impl From<&'static str> for Stub {
-    fn from(text: &'static str) -> Self {
-        Stub::Text(text)
-    }
-}
-
-impl From<&'static luacats::Signature> for Stub {
-    fn from(signature: &'static luacats::Signature) -> Self {
-        Stub::Fn(signature)
-    }
-}
-
-/// Every [`define`] so far, in order: `(path, stub, is_table)`.
+/// Every [`define`] so far, in order.
 #[cfg(test)]
 #[derive(Default)]
-struct Stubs(Vec<(String, Stub, bool)>);
+struct Stubs(Vec<(String, Stub)>);
 
 /// Sets global `path`, or member `table.name` of an already defined global table, and records
-/// `stub`, the LuaCATS `just stubs` writes above its declaration in `lua-meta`. The declaration is
-/// generated: `path = {}` for a table, else `function path(<its parameters>) end`. The one way to
-/// add a global, so the stubs cannot miss one.
+/// `stub`, the LuaCATS `just stubs` writes above its declaration in `lua-meta`: `path = {}` for a
+/// table, else `function path(<its parameters>) end`. The one way to add a global, so the stubs
+/// cannot miss one; [`luacats::lua_fn!`] and [`luacats::lua_table!`] call it.
 #[cfg_attr(not(test), allow(unused_variables))]
-pub(crate) fn define(lua: &Lua, path: &str, stub: impl Into<Stub>, value: impl mlua::IntoLua) -> mlua::Result<()> {
+pub(crate) fn define(lua: &Lua, path: &str, stub: Stub, value: impl mlua::IntoLua) -> mlua::Result<()> {
     let value = value.into_lua(lua)?;
     #[cfg(test)]
-    app_data_or_default::<Stubs>(lua).0.push((path.to_string(), stub.into(), value.is_table()));
+    app_data_or_default::<Stubs>(lua).0.push((path.to_string(), stub));
     match path.split_once('.') {
         Some((table, name)) => lua.globals().get::<Table>(table)?.set(name, value),
         None => lua.globals().set(path, value),
@@ -391,7 +375,7 @@ pub(crate) mod tests {
     use super::*;
 
     /// Minimal loader for tests that do not `require`; evaluates `setup` above a `panel` and reads
-    /// back a global. A node would reject a probe key not in `nodes::properties::PROPERTIES`.
+    /// back a global. A node would reject a probe key no `nodes::properties` field declares.
     pub(crate) fn probe<T: mlua::FromLua>(loader: &Loader, setup: &str, name: &str) -> T {
         loader.evaluate(&format!("{setup}\nreturn panel {{ id = \"bar\", layer = \"Top\" }}")).unwrap();
         loader.lua().globals().get(name).unwrap()
@@ -647,16 +631,12 @@ pub(crate) mod tests {
         {
             let mut rendered = header.to_string();
             let mut declared = Vec::new();
-            for (path, stub, is_table) in stubs {
-                let (stub, params) = match stub {
-                    Stub::Text(text) => {
-                        let own = text.rsplit("\n\n").next().unwrap_or(text);
-                        let params: Vec<&str> = own
-                            .lines()
-                            .filter_map(|line| line.strip_prefix("---@param ")?.split(' ').next())
-                            .map(|param| param.trim_end_matches('?'))
-                            .collect();
-                        (text.to_string(), params.join(", "))
+            for (path, stub) in stubs {
+                rendered += &match stub {
+                    Stub::Table { doc, class } => {
+                        let doc: String = luacats::lines(doc).map(|line| format!("---{line}\n")).collect();
+                        let class = class.map(|class| format!("---@class {class}\n")).unwrap_or_default();
+                        format!("\n{doc}{class}{path} = {{}}\n")
                     }
                     Stub::Fn(signature) => {
                         let mut classes = Vec::new();
@@ -664,12 +644,9 @@ pub(crate) mod tests {
                         classes.retain(|class| !declared.contains(class));
                         declared.extend(classes.iter().cloned());
                         let classes: String = classes.iter().map(|class| format!("{class}\n")).collect();
-                        (classes + &signature.stub(), signature.names())
+                        format!("\n{classes}{}function {path}({}) end\n", signature.stub(), signature.names())
                     }
                 };
-                let declaration =
-                    if *is_table { format!("{path} = {{}}") } else { format!("function {path}({params}) end") };
-                rendered += &format!("\n{stub}{declaration}\n");
             }
             files.push((format!("lua-meta/{file}"), rendered));
         }
@@ -679,7 +656,7 @@ pub(crate) mod tests {
     /// Hand-written: no one registration owns what the whole file shares.
     const GLOBALS_HEADER: &str = r#"---@meta
 -- Engine globals outside the reactive layer, and the restricted `os` (ADR-0048).
--- Generated by `just stubs` from each `lua::define`; edit the stub there.
+-- Generated by `just stubs` from each global's Rust signature and `///` docs (`lua::luacats`).
 -- The VM has no `io`, `debug` or FFI. `dofile` and `loadfile` remain and block on file I/O.
 "#;
 
@@ -687,7 +664,7 @@ pub(crate) mod tests {
     /// neither has a registration to live beside.
     const SIGNALS_HEADER: &str = r#"---@meta
 -- The reactive layer: `Signal` and the globals that create one (ADR-0044).
--- Generated by `just stubs` from each `lua::define`; edit the stub there.
+-- Generated by `just stubs` from each global's Rust signature and `///` docs (`lua::luacats`).
 
 ---[docs](https://anasgets111.github.io/mantle/guide/signals.html#reference)
 ---@class Signal<T>: userdata
