@@ -374,9 +374,11 @@ fn run(painter: &mut TextPainter, walk: &mut Walk<'_, '_>, commands: &[DrawCmd],
                 painter.canvas_mut().restore();
                 current_clip = None;
             }
-            Draw::Shadow { shadow, radius } => paint_shadow(painter.canvas_mut(), rect, *shadow, *radius),
-            Draw::Layer { effect, commands } => {
-                draw_layer(painter, walk, command, *effect, commands, target, frame);
+            Draw::Shadow { shadow, radius, knockout } => {
+                paint_shadow(painter.canvas_mut(), rect, *shadow, *radius, *knockout)
+            }
+            Draw::Layer { .. } => {
+                draw_layer(painter, walk, command, target, frame);
                 current_clip = None;
             }
             Draw::Backdrop { sigma, radius, alpha } => {
@@ -527,23 +529,36 @@ fn offscreen(
     Some(image)
 }
 
-/// An opaque box's shadow (ADR-0254): femtovg's box gradient fades from the colour to nothing
-/// across 3 sigma centred on the spread box's edge, one quad and no render target.
-fn paint_shadow(canvas: &mut Canvas<OpenGl>, rect: LogicalRect, shadow: node::Shadow, radius: f32) {
+/// A round box's shadow (ADR-0254), cut out under the box when `knockout` (ADR-0260): femtovg's
+/// box gradient fades from the colour to nothing across 3 sigma centred on the spread box's edge.
+fn paint_shadow(canvas: &mut Canvas<OpenGl>, rect: LogicalRect, shadow: node::Shadow, own: f32, knockout: bool) {
     let LogicalRect { x, y, width, height } = super::shadow_rect(rect, rect, shadow);
     let Rgba { r, g, b, a } = shadow.color;
     // A ramp across 3 sigma is within 14/255 of the layer path's Gaussian; matching its slope
     // instead, 22. Floored at NanoVG's 1, since the gradient divides by it.
     let feather = (1.5 * shadow.blur).max(1.0);
-    // CSS: a square corner stays square under spread. A signed distance past half the box is
-    // positive everywhere, so the gradient would paint nothing.
-    let radius = if radius > 0.0 { (radius + shadow.spread).clamp(0.0, width.min(height) / 2.0) } else { 0.0 };
+    // A signed distance past half the box is positive everywhere, so the gradient would paint nothing.
+    let radius = spread_radius(own, shadow.spread).min(width.min(height) / 2.0);
     let color = Color::rgbaf(r, g, b, a);
     let paint = Paint::box_gradient(x, y, width, height, radius, feather, color, Color::rgbaf(r, g, b, 0.0));
     let reach = super::grow(LogicalRect { x, y, width, height }, feather / 2.0);
-    let mut path = Path::new();
-    path.rect(reach.x, reach.y, reach.width, reach.height);
+    let path = if knockout { knocked_out(rect, own, reach) } else { box_path(reach, 0.0) };
     canvas.fill_path(&path, &paint);
+}
+
+/// CSS's corner radius of a shadow spread from a box's: a square corner stays square.
+fn spread_radius(radius: f32, spread: f32) -> f32 {
+    let k = if radius < spread { 1.0 + (radius / spread - 1.0).powi(3) } else { 1.0 };
+    (radius + spread * k).max(0.0)
+}
+
+/// `outside` with the box cut out, which is where a box shadow draws (ADR-0260).
+fn knocked_out(rect: LogicalRect, radius: f32, outside: LogicalRect) -> Path {
+    let mut path = box_path(rect, radius);
+    path.solidity(Solidity::Hole);
+    path.rect(outside.x, outside.y, outside.width, outside.height);
+    path.solidity(Solidity::Solid);
+    path
 }
 
 /// A subtree under its own shadow and `content_blur` (ADR-0254). Both are femtovg filters over
@@ -552,11 +567,11 @@ fn draw_layer(
     painter: &mut TextPainter,
     walk: &mut Walk<'_, '_>,
     command: &DrawCmd,
-    node::Effect { shadow, blur, .. }: node::Effect,
-    commands: &[DrawCmd],
     target: RenderTarget,
     frame: Frame,
 ) {
+    let Draw::Layer { effect, silhouette, commands } = &command.draw else { return };
+    let (node::Effect { shadow, blur, .. }, silhouette) = (*effect, *silhouette);
     let (rect, clip) = (command.rect, command.clip);
     let size = ((clip.x1 - clip.x0) as usize, (clip.y1 - clip.y0) as usize);
     let area = LogicalRect { x: clip.x0 as f32, y: clip.y0 as f32, width: size.0 as f32, height: size.1 as f32 };
@@ -587,10 +602,24 @@ fn draw_layer(
             (cast, content)
         }
     };
+    let canvas = painter.canvas_mut();
     if let (Some(shadow), Some(cast)) = (shadow, cast) {
-        fill_image(painter.canvas_mut(), cast, super::shadow_rect(rect, area, shadow), 1.0);
+        let at = super::shadow_rect(rect, area, shadow);
+        match commands.as_slice() {
+            // The hole's part outside `at` would take the cast's clamped edge.
+            [DrawCmd { draw: Draw::Box { radius, .. }, .. }] if silhouette => {
+                canvas.save();
+                canvas.intersect_scissor(at.x, at.y, at.width, at.height);
+                let paint = Paint::image(cast, at.x, at.y, at.width, at.height, 0.0, 1.0);
+                canvas.fill_path(&knocked_out(rect, *radius, at), &paint);
+                canvas.restore();
+            }
+            _ => fill_image(canvas, cast, at, 1.0),
+        }
     }
-    fill_image(painter.canvas_mut(), content, area, 1.0);
+    if !silhouette {
+        fill_image(canvas, content, area, 1.0);
+    }
 }
 
 /// femtovg's blur divides by sigma, and its own shadow skips one below this.
@@ -2191,7 +2220,9 @@ mod tests {
         let Some(gradient) = paint_effect_at(&format!(r##"background = "#FF0000FF", {shadow}"##), &column) else {
             return;
         };
-        let Some(layer) = paint_effect_at(&format!(r##"background = "#FF0000FE", {shadow}"##), &column) else {
+        let Some(layer) =
+            paint_effect_at(&format!(r##"background = "#FF0000FE", shadow_mode = "Content", {shadow}"##), &column)
+        else {
             return;
         };
         let worst = gradient.iter().zip(&layer).map(|(g, l)| g.0.abs_diff(l.0)).max().unwrap();
@@ -2202,17 +2233,15 @@ mod tests {
     /// composites over it rather than beside it.
     #[test]
     fn a_translucent_box_casts_a_shadow_at_its_own_alpha_under_itself() {
-        let Some(px) = paint_effect(r##"background = "#FF000080", shadow_offset = { y = 16 }"##) else { return };
+        let content = r##"background = "#FF000080", shadow_mode = "Content", shadow_offset = { y = 16 }"##;
+        let Some(px) = paint_effect(content) else { return };
         assert!(near(px[0], (255, 255, 255)), "{px:?}");
         assert!(near(px[1], (255, 127, 127)), "the box alone: {px:?}");
         assert!(near(px[3], (191, 63, 63)), "the box over its shadow: {px:?}");
         assert!(near(px[5], (127, 127, 127)), "the shadow alone, at the box's alpha: {px:?}");
         assert!(near(px[7], (255, 255, 255)), "{px:?}");
 
-        let Some(px) = paint_effect(r##"background = "#FF000080", shadow_offset = { y = 16 }, shadow_blur = 8"##)
-        else {
-            return;
-        };
+        let Some(px) = paint_effect(&format!("{content}, shadow_blur = 8")) else { return };
         assert!((180..205).contains(&px[6].0), "a quarter dark at the blurred shadow's edge: {px:?}");
         assert!(px[7].0 >= 250, "and gone 3 sigma past it: {px:?}");
     }
@@ -2231,12 +2260,104 @@ mod tests {
     /// A mask cuts the pixels the shadow is cast from: the masked-away half casts nothing.
     #[test]
     fn a_masked_box_casts_the_shadow_of_what_its_mask_keeps() {
-        let effect = r##"background = "#FF0000FF", shadow_offset = { y = 16 },
+        let effect = r##"background = "#FF0000FF", shadow_offset = { y = 16 }, shadow_mode = "Content",
             mask = { gradient = "Linear", angle = 90,
                 stops = { { 0, "#FFFFFFFF" }, { 0.5, "#FFFFFFFF" }, { 0.5, "#FFFFFF00" }, { 1, "#FFFFFF00" } } }"##;
         let Some(px) = paint_effect_at(effect, &[(20, 30), (44, 30), (20, 56), (44, 56)]) else { return };
         assert!(near(px[0], (255, 0, 0)) && near(px[1], (255, 255, 255)), "the mask keeps the left half: {px:?}");
         assert!(near(px[2], (0, 0, 0)) && near(px[3], (255, 255, 255)), "and only it casts: {px:?}");
+    }
+
+    /// ADR-0260. A translucent box's shadow stops at its edge: the body shows the ground, not the
+    /// shadow, and past the edge it is the opaque box's shadow, pixel for pixel.
+    #[test]
+    fn a_box_shadow_is_knocked_out_under_a_translucent_box() {
+        let shadow = r##"shadow_offset = { y = 16 }, shadow_blur = 8"##;
+        let column: Vec<(usize, usize)> = (50..80).map(|y| (32, y)).collect();
+        let Some(opaque) = paint_effect_at(&format!(r##"background = "#FF0000FF", {shadow}"##), &column) else {
+            return;
+        };
+        let Some(glass) = paint_effect_at(&format!(r##"background = "#FF000080", {shadow}"##), &column) else { return };
+        assert_eq!(glass, opaque, "the shadow outside the box");
+        let Some(px) = paint_effect(r##"background = "#FF000080", shadow_offset = { y = 16 }"##) else { return };
+        assert!(near(px[3], (255, 127, 127)), "the box alone over its shadow: {px:?}");
+        assert!(near(px[5], (0, 0, 0)), "the shadow at full strength: {px:?}");
+    }
+
+    /// Twelve alternating white and black stops, `stops` for a linear gradient `background`.
+    const STRIPES: &str = r##"local stops = {}
+        for i = 0, 11 do
+            local colour = i % 2 == 0 and "#FFFFFFFF" or "#000000FF"
+            stops[#stops + 1] = { i / 12, colour }
+            stops[#stops + 1] = { (i + 1) / 12, colour }
+        end
+        "##;
+
+    /// ADR-0260. A box whose shadow lands outside its parent, or collapses, still draws.
+    #[test]
+    fn a_box_draws_when_its_shadow_does_not() {
+        for shadow in ["shadow_offset = { y = 100 }", "shadow_spread = -20"] {
+            let Some(px) = paint_effect_at(&format!(r##"background = "#FF000080", {shadow}"##), &[(32, 32)]) else {
+                return;
+            };
+            assert!(near(px[0], (255, 127, 127)), "{shadow}: {px:?}");
+        }
+    }
+
+    /// CSS: a spread past a small radius sharpens it by `1 + (r / spread - 1)^3`.
+    #[test]
+    fn a_spread_sharpens_a_radius_smaller_than_itself() {
+        assert_eq!(
+            [(4.0, 8.0), (0.0, 8.0), (12.0, 8.0), (6.0, -2.0), (2.0, -4.0)].map(|(r, s)| spread_radius(r, s)),
+            [11.0, 0.0, 20.0, 4.0, 0.0]
+        );
+    }
+
+    /// ADR-0260. Inside its edge a box shadow changes no pixel: not the label's, not a frosted
+    /// body's, whose blur reads the ground before its own shadow is drawn.
+    #[test]
+    fn a_box_shadow_leaves_a_frosted_labelled_pill_as_it_was() {
+        let src = |shadow: &str| {
+            format!(
+                r##"{STRIPES} return panel {{ id = "bar", width = 96, height = 48, child = rect {{ width = "Fill", height = "Fill",
+                    background = {{ gradient = "Linear", angle = 90, stops = stops }}, padding = 8,
+                    children = {{ rect {{ width = 80, height = 32, radius = 16, backdrop_blur = 4,
+                        background = "#FFFFFF33", padding = 8, {shadow}
+                        children = {{ text {{ content = "hi", foreground = "#FF0000FF" }} }} }} }} }} }}"##
+            )
+        };
+        // The pill is 8..88 x 8..40, rounded 16; a pixel's inset from its arc.
+        let inside = |x: usize, y: usize| {
+            let (dx, dy) = ((x as f32 + 0.5 - 48.0).abs() - 24.0, (y as f32 + 0.5 - 24.0).abs());
+            dx.max(0.0).hypot(dy) <= 14.5
+        };
+        let body: Vec<(usize, usize)> =
+            (8..88).flat_map(|x| (8..40).map(move |y| (x, y))).filter(|&(x, y)| inside(x, y)).collect();
+        let Some(plain) = paint_with_gl(&src(""), (96, 48), &body) else { return };
+        let Some(boxed) = paint_with_gl(&src("shadow_blur = 8, shadow_offset = { y = 4 },"), (96, 48), &body) else {
+            return;
+        };
+        assert!(plain == boxed, "the body unchanged by its box shadow");
+        let content = src(r#"shadow_blur = 8, shadow_offset = { y = 4 }, shadow_mode = "Content","#);
+        let Some(cast) = paint_with_gl(&content, (96, 48), &body) else { return };
+        assert!(cast != plain, "a content shadow shows through the glass");
+    }
+
+    /// ADR-0260. A scoop's box shadow is its silhouette: its own notches show the shadow under
+    /// them, the shadow's notches stay clear, and the body is knocked out.
+    #[test]
+    fn a_scooped_box_shadow_is_its_silhouette_knocked_out() {
+        let effect = r##"background = "#FF000080", radius = 12, corner_shape = "Scoop", shadow_offset = { y = 16 }"##;
+        let strip: Vec<(usize, usize)> = (18..31).map(|y| (32, y)).collect();
+        let Some(px) = paint_effect_at(effect, &[&[(32, 40), (32, 56), (17, 46), (17, 63)], &strip[..]].concat())
+        else {
+            return;
+        };
+        assert!(near(px[0], (255, 127, 127)), "the body over no shadow: {px:?}");
+        assert!(px[4..].iter().all(|&p| near(p, (255, 127, 127))), "none above the cast either: {px:?}");
+        assert!(near(px[1], (0, 0, 0)), "the shadow below: {px:?}");
+        assert!(near(px[2], (0, 0, 0)), "the box's notch shows the shadow: {px:?}");
+        assert!(near(px[3], (255, 255, 255)), "the shadow's own notch is clear: {px:?}");
     }
 
     /// Paints the surface `src` at `size` through [`execute`] with a GL context, which a shader
@@ -2473,17 +2594,12 @@ mod tests {
     /// Translucent stripes are replaced by their blur, not shown through it.
     #[test]
     fn a_backdrop_blur_frosts_the_stripes_under_a_pill_and_nothing_else() {
-        let src = r##"local stops = {}
-            for i = 0, 11 do
-                local colour = i % 2 == 0 and "#FFFFFFFF" or "#000000FF"
-                stops[#stops + 1] = { i / 12, colour }
-                stops[#stops + 1] = { (i + 1) / 12, colour }
-            end
-            return panel { id = "bar", width = 96, height = 48, child = rect { width = "Fill", height = "Fill",
+        let src = &(STRIPES.to_owned()
+            + r##"return panel { id = "bar", width = 96, height = 48, child = rect { width = "Fill", height = "Fill",
                 background = { gradient = "Linear", angle = 90, stops = stops }, padding = 8,
                 children = { rect { width = 80, height = 32, radius = 16, backdrop_blur = 4,
                     border_width = 2, border_color = "#00FF00FF", children = {
-                        rect { width = 4, height = 4, margin = { left = 38, top = 14 }, background = "#FF0000FF" } } } } } }"##;
+                        rect { width = 4, height = 4, margin = { left = 38, top = 14 }, background = "#FF0000FF" } } } } } }"##);
         let row: Vec<(usize, usize)> = (24..72).map(|x| (x, 30)).collect();
         let fixed = [(4, 24), (12, 4), (44, 44), (10, 10), (48, 9), (48, 24)];
         let points = [&row[..], &fixed].concat();
@@ -2528,17 +2644,12 @@ mod tests {
     /// card's own translucent fill still blends over them once.
     #[test]
     fn a_glass_in_a_rounded_clip_blurs_what_is_behind_the_card() {
-        let src = r##"local stops = {}
-            for i = 0, 11 do
-                local colour = i % 2 == 0 and "#FFFFFFFF" or "#000000FF"
-                stops[#stops + 1] = { i / 12, colour }
-                stops[#stops + 1] = { (i + 1) / 12, colour }
-            end
-            return panel { id = "bar", width = 96, height = 48, padding = 4,
+        let src = &(STRIPES.to_owned()
+            + r##"return panel { id = "bar", width = 96, height = 48, padding = 4,
                 background = { gradient = "Linear", angle = 90, stops = stops },
                 child = rect { width = 88, height = 40, radius = 8, clip = "Rounded", padding = 4,
                     children = { rect { width = 80, height = 32, radius = 16, backdrop_blur = 4,
-                        background = "#0000FF40" } } } }"##;
+                        background = "#0000FF40" } } } }"##);
         let row: Vec<(usize, usize)> = (24..72).map(|x| (x, 20)).collect();
         let points = [&row[..], &[(2, 2), (12, 6), (20, 6)]].concat();
         let Some(px) = paint_with_gl(src, (96, 48), &points) else { return };

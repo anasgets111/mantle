@@ -44,8 +44,18 @@ const COMMON_PROPERTIES: &[&str] = &[
 
 /// Box-paint properties beyond [`COMMON_PROPERTIES`]. `node::paint_style`'s first arm paints
 /// `row`, `column`, `button`, `rect`, and all four root roles alike.
-const BOX_PROPERTIES: &[&str] =
-    &["backdrop_blur", "background", "blur", "border_color", "border_width", "clip", "corner_shape", "mask", "radius"];
+const BOX_PROPERTIES: &[&str] = &[
+    "backdrop_blur",
+    "background",
+    "blur",
+    "border_color",
+    "border_width",
+    "clip",
+    "corner_shape",
+    "mask",
+    "radius",
+    "shadow_mode",
+];
 
 /// Which kinds that arm covers.
 const BOX_KINDS: [&str; 8] = ["rect", "row", "column", "button", "panel", "window", "popup", "lock"];
@@ -264,6 +274,17 @@ mod tests {
         let lua = lua_with_constructors();
         let table: mlua::Table = lua.load(r#"return rect { layer = "Top" }"#).eval().unwrap();
         assert!(deserialize_lua_table(&table).unwrap_err().to_string().contains("layer"));
+    }
+
+    /// ADR-0260: only a box has a box to cast, so text's shadow is always its content's.
+    #[test]
+    fn shadow_mode_is_a_box_property() {
+        let lua = lua_with_constructors();
+        let table: mlua::Table = lua.load(r#"return text { shadow_mode = "Box" }"#).eval().unwrap();
+        let err = deserialize_lua_table(&table).unwrap_err().to_string();
+        assert!(err.contains("`text` has no property `shadow_mode`"), "{err}");
+        let table: mlua::Table = lua.load(r#"return rect { shadow_mode = "Content" }"#).eval().unwrap();
+        assert!(deserialize_lua_table(&table).is_ok());
     }
 
     /// A surface root takes the base and box properties, like `rect` paint.

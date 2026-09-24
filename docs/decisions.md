@@ -6280,3 +6280,43 @@ one, which also moved it in the flow and in focus order. QML `z` and CSS `z-inde
    solver ignores `z`, so no rect moves.
 5. **`animate = { z = ... }` is refused.** An order has no halfway state, so a tween would reorder
    at an arbitrary frame.
+
+## 0260. `shadow_mode` casts a box's shadow from its shape, knocked out under it
+
+A translucent box took ADR-0254's layer, so its label cast a second label and the shadow showed
+through a glass body. Glass wants CSS `box-shadow`, not `drop-shadow`.
+
+1. **`shadow_mode = "Box" | "Content"`, a box property.** `"Box"`, the default: the box's shape
+   (`radius`, spread per CSS), whatever its `background` alpha, `mask` or children. `"Content"`:
+   ADR-0254 unchanged. Other kinds cast their content and refuse the key as an unknown property.
+2. **Paths.**
+
+   | Box | Round | Scoop |
+   | :--- | :--- | :--- |
+   | Opaque: colour fill, no `mask`, no `content_blur`, opacity 1 | `Draw::Shadow`, either mode | `Draw::Layer`, either mode |
+   | Anything else, `"Box"` | `Draw::Shadow` with `knockout` | silhouette `Draw::Layer`, knocked out |
+   | Anything else, `"Content"` | `Draw::Layer` | `Draw::Layer` |
+
+   An opaque box draws the same list in either mode, so it renders as before. A fading card is
+   not opaque: its body would show the shadow.
+3. **The knockout is one path**: the gradient's quad with the box's `box_path` as a `Solidity::Hole`
+   contour. One stencil fill, no target; the hole is antialiased separately from the fill, a
+   sub-pixel seam on arcs. Skipped when the fill covers the box, since that seam lightens the rim.
+4. **A scoop casts through a layer.** `box_gradient` has no concave corner, and a square gradient
+   under a scoop fills its notches. `Draw::Layer`'s `silhouette` holds one opaque `Draw::Box` and
+   composites only the cast, through the knocked-out path scissored to the cast, so the box's own
+   notches show the shadow under them.
+5. **Never in the body's layer.** Under `content_blur` the gradient draws before the blurred
+   layer, unblurred, and the layer's bounds are the blur's alone.
+6. **After the backdrop.** CSS's backdrop is what precedes the element, and the element's shadow
+   is part of it. `Draw::Backdrop` reads first, so a glass's blur never pulls in its own shadow;
+   the knockout keeps the shadow off the body. With the order swapped, the frosted-pill test fails.
+7. **Spread sharpens a small radius as CSS does**: below the spread, the added radius is
+   `spread * (1 + (radius / spread - 1)^3)`.
+
+Cost: a 400x300 translucent box at `shadow_blur = 16` measures within noise of no shadow, with no offscreen.
+
+Rejected: a square gradient under a scoop, which darkens its notches; a scissor or composite
+operation for the knockout, which cannot follow `radius` on the target without an offscreen.
+
+**Amends ADR-0254** (decision 2's paths and decision 6: a box shadow fades with the node).

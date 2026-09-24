@@ -104,12 +104,13 @@ pub enum Draw {
     /// The subtree of a node with a `scale`/`rotate`/`translate` (ADR-0149), drawn under its
     /// affine. Coordinates inside are the untransformed absolute ones.
     Transformed { matrix: node::Affine, commands: Vec<DrawCmd> },
-    /// An opaque box's shadow as one gradient quad under its fill (ADR-0254). `shadow.color`
-    /// carries the inherited opacity.
-    Shadow { shadow: node::Shadow, radius: f32 },
+    /// A box's shadow as one gradient quad under its fill (ADR-0254), cut out under the box when
+    /// `knockout` (ADR-0260). `shadow.color` carries the inherited opacity.
+    Shadow { shadow: node::Shadow, radius: f32, knockout: bool },
     /// A subtree drawn offscreen, then composited over its own shadow and through `content_blur`
-    /// (ADR-0254). `rect` is the node's box; `clip` covers everything the effect reaches.
-    Layer { effect: node::Effect, commands: Vec<DrawCmd> },
+    /// (ADR-0254). `rect` is the node's box; `clip` covers everything the effect reaches. A
+    /// `silhouette` is a scoop's fill, and only its shadow draws, cut out under the box (ADR-0260).
+    Layer { effect: node::Effect, silhouette: bool, commands: Vec<DrawCmd> },
     /// What the target already holds under the node's box, blurred by `sigma` logical pixels and
     /// drawn through its `radius` at `alpha` (ADR-0256). `clip` covers the 3 sigma the blur reads.
     Backdrop { sigma: f32, radius: f32, alpha: f32 },
@@ -484,21 +485,31 @@ fn build_node(
     let child_clip = if node.clips_children() { clip } else { parent_clip };
     let effect = node.effect;
     let read = snap_to_physical(grow(rect, reach(effect.backdrop, scale)), scale);
-    // ADR-0254 decision 2.
-    let gradient = match (&node.paint, effect.shadow) {
-        (Some(PaintStyle::Box { background: Some(node::Fill::Color(fill)), radius, mask: None, .. }), Some(shadow))
-            if fill.a >= 1.0 && *radius >= 0.0 && effect.blur == 0.0 =>
-        {
-            Some((shadow, *radius))
+    let opacity = inherited_opacity * node.opacity;
+    // ADR-0254 decision 2, ADR-0260. An opaque box draws as it did in either mode.
+    let (radius, opaque, boxed) = match &node.paint {
+        Some(PaintStyle::Box { background, radius, mask, .. }) => {
+            let opaque = matches!(background, Some(Fill::Color(fill)) if fill.a >= 1.0)
+                && mask.is_none()
+                && effect.blur == 0.0
+                && opacity >= 1.0;
+            (*radius, opaque, !opaque && !effect.content_shadow)
         }
-        _ => None,
+        _ => (0.0, false, false),
     };
-    let reach = match gradient {
-        Some((shadow, _)) => snap_to_physical(grow(shadow_rect(rect, rect, shadow), 1.5 * shadow.blur), scale),
+    // A gradient cannot draw a scoop, so a scoop's box shadow is its silhouette's.
+    let cast = effect.shadow.filter(|_| boxed || (opaque && radius >= 0.0));
+    let layered = node::Effect { shadow: effect.shadow.filter(|_| cast.is_none()), ..effect };
+    let own = layer_bounds(rect, layered, scale);
+    let reach = match cast.filter(|_| radius >= 0.0) {
+        Some(shadow) => union(
+            snap_to_physical(grow(shadow_rect(rect, rect, shadow), 1.5 * shadow.blur), scale),
+            if effect.blur > 0.0 { own } else { snap_to_physical(rect, scale) },
+        ),
         None if effect.shadow.is_some() || effect.blur > 0.0 => layer_bounds(rect, effect, scale),
         None => child_clip,
     };
-    // A box just scrolled out still casts the shadow reaching back in.
+    // A box just scrolled out still casts the shadow reaching back in; one whose shadow is out still draws.
     if is_empty(parent_clip.intersect(reach)) {
         return;
     }
@@ -507,7 +518,6 @@ fn build_node(
     // avoids the passwordless black lock screen ADR-0052 decision 3 rejects. Opacity is baked into
     // the list because ADR-0063 skips unchanged lists; applying it in `execute` would be invisible.
     // A fully clipped node draws nothing, and its children cut to its box return on their own.
-    let opacity = inherited_opacity * node.opacity;
     let draw = if is_empty(clip) { None } else { draw_for(node, rect, scale, opacity, focus) };
 
     // A transformed node paints itself and its subtree as one group under its matrix
@@ -533,11 +543,21 @@ fn build_node(
         let draw = Draw::Backdrop { sigma: effect.backdrop, radius, alpha: opacity };
         out.push(DrawCmd { rect, clip: parent_clip.intersect(read), draw });
     }
-    let body = out.len();
-    if let Some((shadow, radius)) = gradient {
+    // After the backdrop: CSS's backdrop is what precedes the element, and its shadow is part of it.
+    if let Some(shadow) = cast {
         let shadow = node::Shadow { color: fade(shadow.color, opacity), ..shadow };
-        out.push(DrawCmd { rect, clip: parent_clip.intersect(reach), draw: Draw::Shadow { shadow, radius } });
+        let draw = if radius >= 0.0 {
+            Draw::Shadow { shadow, radius, knockout: boxed }
+        } else {
+            let effect = node::Effect { shadow: Some(shadow), ..node::Effect::default() };
+            let black = Some(Fill::Color(Rgba { r: 0.0, g: 0.0, b: 0.0, a: 1.0 }));
+            let fill =
+                Draw::Box { background: black, radius, colors: BorderColor::default(), widths: EdgeInsets::default() };
+            Draw::Layer { effect, silhouette: true, commands: vec![DrawCmd { rect, clip, draw: fill }] }
+        };
+        out.push(DrawCmd { rect, clip: parent_clip.intersect(reach), draw });
     }
+    let body = out.len();
     match rounded_clip(node) {
         // A mask covers the node's own paint too, as Qt's `OpacityMask` covers its item (ADR-0255).
         radius if mask.is_some() => {
@@ -585,20 +605,20 @@ fn build_node(
             }
         }
     }
-    if gradient.is_none() && (effect.shadow.is_some() || effect.blur > 0.0) && out.len() > body {
+    if (layered.shadow.is_some() || layered.blur > 0.0) && out.len() > body {
         let commands: Vec<DrawCmd> = out.drain(body..).collect();
         // A transformed child overflowing the box keeps the overflow it has without the layer.
-        let bounds = commands.iter().map(command_bounds).filter(|r| !is_empty(*r)).fold(reach, union);
+        let bounds = commands.iter().map(command_bounds).filter(|r| !is_empty(*r)).fold(own, union);
         // ponytail: a negative spread pulls in content from further out than this. Upgrade path:
         // invert `shadow_rect` about the box.
-        let pad = effect.shadow.map_or(0.0, |shadow| {
+        let pad = layered.shadow.map_or(0.0, |shadow| {
             self::reach(shadow.blur / 2.0, scale) + shadow.offset.0.abs().max(shadow.offset.1.abs())
         });
-        let target = snap_to_physical(grow(surface, pad.max(self::reach(effect.blur, scale))), scale);
+        let target = snap_to_physical(grow(surface, pad.max(self::reach(layered.blur, scale))), scale);
         out.push(DrawCmd {
             rect,
             clip: parent_clip.intersect(bounds).intersect(target),
-            draw: Draw::Layer { effect, commands },
+            draw: Draw::Layer { effect: layered, silhouette: false, commands },
         });
     }
     if !node.transform.is_identity() {
@@ -1823,18 +1843,24 @@ mod tests {
     /// rather than to the box.
     #[test]
     fn an_opaque_box_casts_its_shadow_as_one_gradient_under_its_fill() {
-        let list = effect_surface(
-            r##"rect { width = 40, height = 20, radius = 6, background = "#ffffff", opacity = 0.5,
-                shadow_color = "#00000080", shadow_blur = 8, shadow_offset = { y = 4 }, shadow_spread = 2 }"##,
-        );
+        let card = |rest: &str| {
+            effect_surface(&format!(
+                r##"rect {{ width = 40, height = 20, radius = 6, background = "#ffffff", {rest}
+                    shadow_color = "#00000080", shadow_blur = 8, shadow_offset = {{ y = 4 }}, shadow_spread = 2 }}"##
+            ))
+        };
+        let list = card("opacity = 0.5,");
         let at = list.commands.iter().position(|cmd| matches!(cmd.draw, Draw::Shadow { .. })).expect("a shadow");
-        let Draw::Shadow { shadow, radius } = list.commands[at].draw else { unreachable!() };
-        assert_eq!(radius, 6.0);
+        let Draw::Shadow { shadow, radius, knockout } = list.commands[at].draw else { unreachable!() };
+        assert_eq!((radius, knockout), (6.0, true), "a fading card shows no shadow through its body");
         assert!((shadow.color.a - 0.5 * 128.0 / 255.0).abs() < 1e-6, "faded with the node: {shadow:?}");
         assert!(matches!(list.commands[at + 1].draw, Draw::Box { .. }), "the fill covers the shadow");
         // The box is 40..80 x 40..60; the shadow's box is 38..82 x 42..66, blurred 3 sigma, 12, further out.
         assert_eq!(list.commands[at].clip, PhysicalRect { x0: 26, y0: 30, x1: 94, y1: 78 });
         assert!(!list.commands.iter().any(|cmd| matches!(cmd.draw, Draw::Layer { .. })), "no offscreen");
+        let opaque = card("");
+        assert!(opaque.commands.iter().any(|cmd| matches!(cmd.draw, Draw::Shadow { knockout: false, .. })));
+        assert_eq!(card(r#"shadow_mode = "Content","#), opaque, "the same in either mode (ADR-0260)");
     }
 
     /// ADR-0254. Anything but an opaque box casts the shadow of its pixels, so its subtree goes
@@ -1845,11 +1871,12 @@ mod tests {
         for child in [
             r##"text { content = "hi", opacity = 0.5, shadow_blur = 4, shadow_offset = { x = 3 } }"##,
             r##"rect { width = 40, height = 20, background = "#ffffff80", opacity = 0.5, shadow_blur = 4,
-                shadow_offset = { x = 3 }, children = { text { content = "hi" } } }"##,
+                shadow_offset = { x = 3 }, shadow_mode = "Content", children = { text { content = "hi" } } }"##,
         ] {
             let list = effect_surface(child);
             let layer = list.commands.last().unwrap();
-            let Draw::Layer { effect: node::Effect { shadow: Some(shadow), blur, .. }, commands } = &layer.draw else {
+            let Draw::Layer { effect: node::Effect { shadow: Some(shadow), blur, .. }, commands, .. } = &layer.draw
+            else {
                 panic!("{child}: expected a layer, got {:?}", layer.draw)
             };
             assert_eq!((shadow.color.a, *blur), (1.0, 0.0), "{child}");
@@ -1859,6 +1886,53 @@ mod tests {
             assert_eq!((layer.clip.x0, layer.clip.y0), (node.x0 - 6, node.y0 - 6), "{child}");
             assert_eq!((layer.clip.x1, layer.clip.y1), (node.x1 + 9, node.y1 + 6), "{child}");
         }
+    }
+
+    /// ADR-0260. A box's shadow is its own shape whatever it holds: one gradient knocked out under
+    /// the box, faded with the node, and nothing offscreen, so the label casts nothing.
+    #[test]
+    fn a_translucent_box_casts_its_box_shadow_as_a_knocked_out_gradient() {
+        let list = effect_surface(
+            r##"rect { width = 40, height = 20, radius = 6, background = "#ffffff40", opacity = 0.5,
+                shadow_blur = 4, shadow_offset = { y = 4 }, children = { text { content = "hi" } } }"##,
+        );
+        let at = list.commands.iter().position(|cmd| matches!(cmd.draw, Draw::Shadow { .. })).expect("a shadow");
+        let Draw::Shadow { shadow, radius, knockout } = list.commands[at].draw else { unreachable!() };
+        assert_eq!((radius, knockout, shadow.color.a), (6.0, true, 0.5));
+        assert!(matches!(list.commands[at + 1].draw, Draw::Box { .. }), "the fill over it");
+        assert!(
+            list.commands[at + 2..].iter().any(|cmd| matches!(cmd.draw, Draw::Text { .. })),
+            "the label unshadowed"
+        );
+        assert!(!list.commands.iter().any(|cmd| matches!(cmd.draw, Draw::Layer { .. })), "no offscreen");
+    }
+
+    /// ADR-0260. `content_blur` still takes a layer, and the box shadow stays a gradient outside it.
+    /// A scoop, which a gradient cannot draw, casts its fill's silhouette alone through a layer.
+    #[test]
+    fn a_box_shadow_never_rides_the_bodys_layer() {
+        let list = effect_surface(
+            r##"rect { width = 40, height = 20, background = "#ffffff40", content_blur = 2, shadow_offset = { y = 4 } }"##,
+        );
+        assert!(matches!(list.commands[1].draw, Draw::Shadow { knockout: true, .. }), "{:?}", list.commands);
+        assert!(matches!(list.commands[2].draw, Draw::Layer { effect: node::Effect { shadow: None, .. }, .. }));
+        assert_eq!(list.commands[2].clip, PhysicalRect { x0: 34, y0: 34, x1: 86, y1: 66 }, "the blur's reach alone");
+
+        let list = effect_surface(
+            r##"rect { width = 40, height = 20, radius = 6, corner_shape = "Scoop", background = "#ffffff40",
+                opacity = 0.5, shadow_offset = { y = 4 }, children = { text { content = "hi" } } }"##,
+        );
+        let Draw::Layer { effect, silhouette: true, commands } = &list.commands[1].draw else {
+            panic!("{:?}", list.commands)
+        };
+        assert_eq!(effect.shadow.map(|shadow| shadow.color.a), Some(0.5), "faded with the node");
+        let [DrawCmd { draw: Draw::Box { background: Some(node::Fill::Color(fill)), radius, .. }, .. }] =
+            commands.as_slice()
+        else {
+            panic!("the silhouette alone: {commands:?}")
+        };
+        assert_eq!((fill.a, *radius), (1.0, -6.0));
+        assert!(list.commands[2..].iter().any(|cmd| matches!(cmd.draw, Draw::Text { .. })), "the label outside it");
     }
 
     /// ADR-0254. `content_blur` spreads the subtree's pixels 3 sigma past its box, and femtovg's
@@ -1921,7 +1995,7 @@ mod tests {
     fn a_layer_under_unclipped_ancestors_stops_near_the_surface() {
         let src = r##"return panel { id = "bar", width = 200, height = 100, clip = "None", child = rect {
             width = 40, height = 20, clip = "None", content_blur = 1,
-            shadow_blur = 4, shadow_offset = { x = 5 },
+            shadow_blur = 4, shadow_offset = { x = 5 }, shadow_mode = "Content",
             children = { rect { width = 8000, height = 8000, margin = { left = -4000 }, background = "#ffffff" } } } }"##;
         let list = build(&resolved_surface(&Lua::new(), src, LogicalSize { width: 200.0, height: 100.0 }), 1.0, None);
         let layer = list.commands.iter().find(|cmd| matches!(cmd.draw, Draw::Layer { .. })).expect("a layer");
@@ -1952,7 +2026,14 @@ mod tests {
         let at = list.commands.iter().position(|cmd| matches!(cmd.draw, Draw::Backdrop { .. })).expect("a backdrop");
         assert_eq!(list.commands[at].draw, Draw::Backdrop { sigma: 4.0, radius: 6.0, alpha: 0.5 });
         assert_eq!(list.commands[at].clip, PhysicalRect { x0: 28, y0: 28, x1: 92, y1: 72 });
-        assert!(matches!(list.commands[at + 1].draw, Draw::Layer { .. }), "the layer draws over it");
+        // CSS: the backdrop is what precedes the element, and its own box shadow is part of it.
+        assert!(matches!(list.commands[at + 1].draw, Draw::Shadow { .. }), "the box shadow draws after");
+        let content = effect_surface(
+            r##"rect { width = 40, height = 20, background = "#ffffff40", backdrop_blur = 4, shadow_offset = { y = 4 },
+                shadow_mode = "Content" }"##,
+        );
+        let at = content.commands.iter().position(|cmd| matches!(cmd.draw, Draw::Backdrop { .. })).unwrap();
+        assert!(matches!(content.commands[at + 1].draw, Draw::Layer { .. }), "the layer draws over it");
         let plain = effect_surface(r##"rect { width = 40, height = 20, background = "#ffffff40" }"##);
         assert!(!plain.commands.iter().any(|cmd| matches!(cmd.draw, Draw::Backdrop { .. })));
     }
