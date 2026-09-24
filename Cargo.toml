@@ -5,7 +5,7 @@ resolver = "3"
 # One version for the three crates. They ship together, the Supervisor spawns the Renderer as a
 # sibling binary, and `shared` is only ever consumed by those two, so three numbers could differ
 # only by mistake. It is also the number `mantle --version` prints, the one `mantle.version` hands
-# a config (§ 2), and the one stamped into the generated language-server stubs, and those three
+# a config, and the one stamped into the generated language-server stubs, and those three
 # disagreeing is exactly the failure worth designing out.
 #
 # Versioning tracks the Lua API, because that is the only public interface this has. Minor for an

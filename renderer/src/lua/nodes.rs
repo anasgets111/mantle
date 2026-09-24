@@ -468,6 +468,47 @@ mod meta_stub_tests {
         assert!(unread.is_empty(), "these properties are accepted but no parser reads them: {unread:?}");
     }
 
+    /// Each `docs/` property table names what its kind accepts: the shared lists once each, then
+    /// every page its kind's own row. A surface page also tables the shared properties whose
+    /// meaning differs on a root, so its table is bounded by the kind's own and accepted names.
+    #[test]
+    fn each_docs_property_table_names_what_its_kind_accepts() {
+        let names = |list: &[&str]| list.iter().map(|name| name.to_string()).collect::<BTreeSet<_>>();
+        assert_eq!(doc_table("nodes/index.md", "## Common properties"), names(super::COMMON_PROPERTIES));
+        assert_eq!(doc_table("guide/paint.md", "## Box properties"), names(super::BOX_PROPERTIES));
+        for (kind, own) in super::NODE_PROPERTIES {
+            let page = match *kind {
+                "row" | "column" => "nodes/row-column.md".to_string(),
+                kind if SURFACE_KINDS.contains(&kind) => format!("surfaces/{kind}.md"),
+                kind => format!("nodes/{kind}.md"),
+            };
+            let listed = doc_table(&page, "## Properties");
+            let missing: Vec<_> = names(own).into_iter().filter(|name| !listed.contains(name)).collect();
+            let accepted = super::accepted_properties(kind);
+            let refused: Vec<_> = listed.iter().filter(|name| !accepted.contains(&name.as_str())).collect();
+            assert!(
+                missing.is_empty() && refused.is_empty(),
+                "docs/{page} lacks {missing:?} and lists {refused:?}, which `{kind}` refuses"
+            );
+        }
+    }
+
+    /// Backticked names in the first column of the first table under `heading`; `on_click(rect)`
+    /// reads as `on_click`.
+    fn doc_table(page: &str, heading: &str) -> BTreeSet<String> {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../docs").join(page);
+        let text = std::fs::read_to_string(&path).unwrap_or_else(|err| panic!("{}: {err}", path.display()));
+        let (_, section) =
+            text.split_once(&format!("\n{heading}\n")).unwrap_or_else(|| panic!("{page} has no `{heading}`"));
+        let rows = section.lines().skip_while(|line| !line.starts_with('|')).take_while(|line| line.starts_with('|'));
+        let cells = rows.skip(2).filter_map(|row| row.split('|').nth(1));
+        cells
+            .flat_map(|cell| {
+                cell.split('`').skip(1).step_by(2).map(|name| name.split('(').next().unwrap_or(name).to_string())
+            })
+            .collect()
+    }
+
     /// Drops top-level `#[cfg(test)] mod … { … }` blocks, whose fixtures may name anything. Other
     /// `#[cfg(test)]` items often sit above production code, so they stay.
     fn without_test_modules(text: &str) -> String {
@@ -642,6 +683,11 @@ mod meta_stub_tests {
         );
     }
 
+    /// Literal sets refused without a `parse_keyword` list, so checked one way only: `cursor`
+    /// parses `cursor_icon`'s names, which it cannot enumerate; the rest mix one keyword into a
+    /// number (`"Fill"`, `"Ignore"`, `animate`'s `loops = "Infinite"`).
+    const ONE_WAY: [&str; 5] = ["animate", "cursor", "exclusive", "height", "width"];
+
     #[derive(Default)]
     struct Report {
         failures: Vec<String>,
@@ -689,12 +735,24 @@ mod meta_stub_tests {
             }
             first.get_or_insert(literal);
         }
+        // The refusal's `parse_keyword` list must equal the declared literals, making the check two-way.
         let bogus = around("\"mantle_bogus\"");
-        if members.iter().any(|m| m.starts_with('"'))
-            && !members.contains(&"string")
-            && apply_one(kind, required, field, Some(&bogus)).is_ok()
-        {
-            report.failures.push(format!("  {kind}.{field} declares a closed literal set, engine accepts `{bogus}`"));
+        let declared: BTreeSet<&str> = members.iter().filter_map(|m| m.strip_prefix('"')?.strip_suffix('"')).collect();
+        if !declared.is_empty() && !members.contains(&"string") {
+            let listed = apply_one(kind, required, field, Some(&bogus)).map(|()| None).unwrap_or_else(|err| {
+                let list = err.split_once("expected one of ")?.1.split(", got").next()?;
+                Some(list.split(", ").map(|name| name.trim_matches('`').to_string()).collect::<BTreeSet<_>>())
+            });
+            match listed {
+                Some(listed) if listed.iter().map(String::as_str).eq(declared.iter().copied()) => {}
+                Some(listed) => {
+                    report.failures.push(format!("  {kind}.{field} declares {declared:?}, engine lists {listed:?}"))
+                }
+                None if ONE_WAY.contains(&field) => {}
+                None => report
+                    .failures
+                    .push(format!("  {kind}.{field} declares a closed literal set, engine lists none for `{bogus}`")),
+            }
         }
         first
     }

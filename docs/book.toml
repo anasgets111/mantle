@@ -1,0 +1,19 @@
+[book]
+title = "Mantle"
+description = "Wayland desktop shells in Lua"
+src = "."
+
+[build]
+build-dir = "../target/book"
+create-missing = false
+
+[preprocessor.repo-links]
+command = "python3 ../tools/book_links.py"
+
+[output.html]
+site-url = "/mantle/"
+git-repository-url = "https://github.com/anasgets111/mantle"
+edit-url-template = "https://github.com/anasgets111/mantle/edit/main/docs/{path}"
+
+[output.html.search]
+enable = true

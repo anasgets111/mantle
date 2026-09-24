@@ -1,7 +1,7 @@
 -- Your shell. Everything on screen is declared here or in a file this requires.
 --
 -- Capabilities read `nil` until their first push, so the clock's map guards `s and s.time`;
--- `os.date` with a nil time is now. Docs: docs/lua-api.md.
+-- `os.date` with a nil time is now. Docs: https://anasgets111.github.io/mantle/
 fonts {
     "CaskaydiaCove Nerd Font Propo",
     "Noto Sans",

@@ -396,9 +396,8 @@ pub fn parse_font_size(properties: &PropMap) -> Result<f32, LayoutError> {
     style::within("font_size", parse_number(properties, "font_size", 12.0)?)
 }
 
-/// Absent `size` defaults to 12.0, matching [`parse_font_size`] and ADR-0044's nil rule. A typo
-/// such as `icon { sizee = 24 }` therefore draws a 12.0-sized icon rather than rejecting the tree;
-/// text and icons share the same default visual scale.
+/// Absent `size` defaults to 12.0, matching [`parse_font_size`] and ADR-0044's nil rule, so text
+/// and icons share the same default visual scale.
 pub fn parse_icon_size(properties: &PropMap) -> Result<f32, LayoutError> {
     parse_number(properties, "size", 12.0)
 }

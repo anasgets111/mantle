@@ -19,7 +19,7 @@ run config="share/starter": build
 
 # Everything a change has to pass before it is done, on what would be committed.
 check:
-    just staged-only just fmt-check test lint docs lua types
+    just staged-only just fmt-check test lint rustdoc lua types
 
 # Runs `command` on the staged tree. With both staged and unstaged edits, the unstaged ones are saved
 # as a patch, reverted, and re-applied on exit. A patch left by a killed run blocks the next.
@@ -55,8 +55,19 @@ lint:
 # Rustdoc warnings, which clippy does not check. For a link to a private item, demote it to a plain
 # backtick path; never widen visibility for rustdoc.
 [doc('Rustdoc warnings, including unresolved intra-doc links.')]
-docs:
+rustdoc:
     RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
+
+# The book at http://localhost:3000, rebuilt on save.
+docs:
+    mdbook serve docs --open
+
+# The book as CI publishes it, then every link and anchor in it. `tools/book_links.py` already
+# failed the build on a missing file outside `docs/`; lychee covers pages and anchors inside it.
+# `print.html` repeats every page, and `404.html` resolves against the site root.
+book:
+    mdbook build docs
+    lychee --offline --include-fragments --no-progress --exclude-path target/book/print.html --exclude-path target/book/404.html target/book
 
 # `lua` proves a file parses; this proves `share/starter` agrees with `lua-meta`, through the
 # engine the author's editor uses (ADR-0081). `lua-meta` is checked alone too, because a library's
@@ -112,10 +123,11 @@ lua:
     echo "all lua parses"
     python3 tools/luafmt.py --check {{lua_dirs}}
 
-# Regenerate `lua-meta/mantle.lua` from the supervisor's payload types, then show what moved.
+# Regenerate `lua-meta/mantle.lua` and `docs/capabilities/<name>.md` from the supervisor's payload
+# types, then show what moved.
 stubs:
     UPDATE_STUBS=1 cargo test -p supervisor stubs
-    @git diff --stat -- lua-meta/mantle.lua
+    @git diff --stat -- lua-meta/mantle.lua docs/capabilities
 
 # Separate from `lint` because a diff and a warning fail differently, and folding them buries the
 # diff. 71266cb and c83e79e landed four unformatted files with `just check` green on both.

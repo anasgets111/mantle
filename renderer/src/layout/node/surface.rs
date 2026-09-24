@@ -3,7 +3,7 @@
 
 use mlua::Value;
 
-use super::content::parse_string_property;
+use super::content::{parse_keyword, parse_string_property};
 use super::*;
 
 /// The layer-shell stacking level. Kept separate from smithay-client-toolkit so this module has
@@ -19,16 +19,15 @@ pub enum LayerKind {
 /// The required layer string (ADR-0038 decision 1). `create_panel` uses it per instance, so a
 /// typo such as `"Toop"` errors instead of silently selecting `Background`.
 pub fn parse_layer(properties: &PropMap) -> Result<LayerKind, LayoutError> {
-    match parse_string_property(properties, "layer", None)?.as_str() {
-        "Background" => Ok(LayerKind::Background),
-        "Bottom" => Ok(LayerKind::Bottom),
-        "Top" => Ok(LayerKind::Top),
-        "Overlay" => Ok(LayerKind::Overlay),
-        other => Err(invalid(
-            "layer",
-            format!("unknown layer `{other}` -- expected \"Background\", \"Bottom\", \"Top\", or \"Overlay\""),
-        )),
-    }
+    // Requires the string and refuses a `Signal`; the keyword match then names every layer.
+    parse_string_property(properties, "layer", None)?;
+    let layers = [
+        ("Background", LayerKind::Background),
+        ("Bottom", LayerKind::Bottom),
+        ("Top", LayerKind::Top),
+        ("Overlay", LayerKind::Overlay),
+    ];
+    parse_keyword(properties, "layer", LayerKind::Top, &layers)
 }
 
 /// The `{ top, bottom, left, right }` edge booleans, defaulting to false.
@@ -89,21 +88,15 @@ pub enum KeyboardInteractivity {
 pub fn parse_keyboard_interactivity(properties: &PropMap) -> Result<KeyboardInteractivity, LayoutError> {
     // Deferred on the evaluation-time pass ([`is_deferred_signal`]), same split as
     // [`parse_title`]'s: a field valid on a live surface is one only the resolved pass can read.
-    let Some(value) = non_deferred_property(properties, "keyboard_interactivity") else {
+    if non_deferred_property(properties, "keyboard_interactivity").is_none() {
         return Ok(KeyboardInteractivity::None);
-    };
-    let Value::String(s) = value else {
-        return Err(invalid("keyboard_interactivity", format!("expected a string, got {}", preview_for_error(value))));
-    };
-    match checked_string("keyboard_interactivity", s)?.as_str() {
-        "None" => Ok(KeyboardInteractivity::None),
-        "OnDemand" => Ok(KeyboardInteractivity::OnDemand),
-        "Exclusive" => Ok(KeyboardInteractivity::Exclusive),
-        other => Err(invalid(
-            "keyboard_interactivity",
-            format!("unknown keyboard interactivity `{other}` -- expected \"None\", \"OnDemand\", or \"Exclusive\""),
-        )),
     }
+    let modes = [
+        ("None", KeyboardInteractivity::None),
+        ("OnDemand", KeyboardInteractivity::OnDemand),
+        ("Exclusive", KeyboardInteractivity::Exclusive),
+    ];
+    parse_keyword(properties, "keyboard_interactivity", KeyboardInteractivity::None, &modes)
 }
 
 /// The exclusion answers mapped to `set_exclusive_zone`: positive reserves space, `0`

@@ -16,7 +16,7 @@ mod process;
 mod setup;
 mod snapshot;
 mod socket;
-// LuaCATS stub generator for tests only. `setup` reports stale stubs to users.
+// LuaCATS stub and capability page generator for tests only. `setup` reports stale stubs to users.
 #[cfg(test)]
 mod stubs;
 mod supervisor;

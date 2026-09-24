@@ -1,4 +1,5 @@
-//! Generates `lua-meta/mantle.lua` from the types that actually cross the socket.
+//! Generates `lua-meta/mantle.lua` and `docs/capabilities/<name>.md` from the types that actually
+//! cross the socket.
 //!
 //! Hand-written stubs were wrong twice in one session: `process.run` callback arity, and
 //! `mantle.notifications` claiming seven commands while `dispatch` has four (`low`/`normal`/
@@ -280,7 +281,14 @@ fn render_class(name: &str, body: &serde_json::Value, out: &mut String) {
     }
     out.push_str(&format!("\n---@class {name}\n"));
     append_description(body, out);
+    for (field, (type_name, optional, description)) in fields(body) {
+        let marker = if optional { "?" } else { "" };
+        out.push_str(&format!("---@field {field}{marker} {type_name}{description}\n"));
+    }
+}
 
+/// An object schema's fields by name, as `(type, optional, description)`.
+fn fields(body: &serde_json::Value) -> BTreeMap<String, (String, bool, String)> {
     let mut fields: BTreeMap<String, (String, bool, String)> = BTreeMap::new();
     let mut variants: Vec<&serde_json::Value> = Vec::new();
     if let Some(one_of) = body.get("oneOf").and_then(|o| o.as_array()) {
@@ -313,32 +321,38 @@ fn render_class(name: &str, body: &serde_json::Value, out: &mut String) {
             } else {
                 lua_type(fragment)
             };
-            let description = one_line(fragment.get("description"));
+            let mut description = one_line(fragment.get("description"));
+            if description.is_empty() && is_discriminator && tagged {
+                description = " Which variant this is; each other field belongs to one variant.".into();
+            }
             fields.entry(field.clone()).or_insert((type_name, optional, description));
         }
     }
+    fields
+}
 
-    for (field, (type_name, optional, description)) in fields {
-        let marker = if optional { "?" } else { "" };
-        out.push_str(&format!("---@field {field}{marker} {type_name}{description}\n"));
+/// One `---@field invoke` per action, which LuaLS reads as overloads.
+fn render_invoke(class: &str, actions: &serde_json::Value, out: &mut String) {
+    append_description(actions, out);
+    for (name, arguments, description) in action_list(actions) {
+        let arguments: String = arguments.iter().map(|argument| format!(", {argument}")).collect();
+        out.push_str(&format!("---@field invoke fun(self: {class}, command: \"{name}\"{arguments}){description}\n"));
     }
 }
 
-/// One `---@field invoke` per action, which LuaLS reads as overloads. External tagging makes a
+/// Each action as `(name, ["argument: type", ...], description)`. External tagging makes a
 /// fieldless action a string branch and any other a one-key object holding its fields.
 ///
 /// ponytail: `properties` come back alphabetical, so arguments follow `required` order, then at
 /// most one optional; a second needs serde's field order.
-fn render_invoke(class: &str, actions: &serde_json::Value, out: &mut String) {
-    append_description(actions, out);
+fn action_list(actions: &serde_json::Value) -> Vec<(String, Vec<String>, String)> {
     let branches =
         actions.get("oneOf").and_then(|o| o.as_array()).map_or_else(|| vec![actions], |b| b.iter().collect());
+    let mut list = Vec::new();
     for branch in branches {
         let description = one_line(branch.get("description"));
         if let Some(names) = enum_strings(branch).or_else(|| Some(vec![branch.get("const")?.as_str()?])) {
-            for name in names {
-                out.push_str(&format!("---@field invoke fun(self: {class}, command: \"{name}\"){description}\n"));
-            }
+            list.extend(names.into_iter().map(|name| (name.to_string(), Vec::new(), description.clone())));
             continue;
         }
         let (name, fields) = branch["properties"].as_object().and_then(|p| p.iter().next()).expect("a one-key object");
@@ -347,17 +361,14 @@ fn render_invoke(class: &str, actions: &serde_json::Value, out: &mut String) {
             .get("required")
             .and_then(|r| r.as_array())
             .map_or_else(Vec::new, |r| r.iter().filter_map(|v| v.as_str()).collect());
-        let mut params = format!("self: {class}, command: \"{name}\"");
-        for field in &required {
-            params.push_str(&format!(", {field}: {}", lua_type(&properties[*field])));
-        }
+        let mut arguments: Vec<String> =
+            required.iter().map(|field| format!("{field}: {}", lua_type(&properties[*field]))).collect();
         let optional: Vec<_> = properties.iter().filter(|(field, _)| !required.contains(&field.as_str())).collect();
         assert!(optional.len() <= 1, "{name} has {} optional arguments; see the ponytail above", optional.len());
-        for (field, fragment) in optional {
-            params.push_str(&format!(", {field}?: {}", lua_type(fragment)));
-        }
-        out.push_str(&format!("---@field invoke fun({params}){description}\n"));
+        arguments.extend(optional.into_iter().map(|(field, fragment)| format!("{field}?: {}", lua_type(fragment))));
+        list.push((name.clone(), arguments, description));
     }
+    list
 }
 
 /// The generated file.
@@ -398,7 +409,9 @@ pub fn render() -> String {
         // Inherit `get`/`map`/`on_change`: repeating them would need a class-specific `self`, and
         // an unbound `---@field` would check nothing.
         let base = if actions.is_none() { "ReadOnlyCapability" } else { "Capability" };
-        out.push_str(&format!("\n---@class {class}: {base}<{payload}>\n"));
+        out.push_str(&format!(
+            "\n---[docs]({DOCS}capabilities/{capability}.html)\n---@class {class}: {base}<{payload}>\n"
+        ));
         out.push_str(hand_written_methods(capability));
         match actions {
             Some(actions) => render_invoke(&class, actions.as_value(), &mut out),
@@ -413,9 +426,124 @@ pub fn render() -> String {
         let name = capability.as_str();
         out.push_str(&format!("---@field {name} {} {}\n", capability_class(name), capability.blurb()));
     }
-    out.push_str(MANTLE_TAIL);
+    out.push_str(&MANTLE_TAIL.replace("{DOCS}", DOCS));
     out
 }
+
+/// Splits `docs/capabilities/intro/<name>.md`: prose above it opens the page, prose below it
+/// (How do I…, Gotchas, See also) follows the generated tables.
+const REFERENCE_MARKER: &str = "<!-- reference -->";
+
+/// `docs/capabilities/<name>.md`: the roster blurb, the hand-written `intro`, then the same
+/// payload and action schemas `render` walks, as Markdown tables.
+fn render_page(capability: &str, payload: &Schema, actions: Option<&Schema>, intro: &str) -> String {
+    let (intro, outro) = intro.split_once(REFERENCE_MARKER).unwrap_or((intro, ""));
+    let blurb = shared::Capability::from_name(capability).expect("a rostered capability").blurb();
+    let class = payload_class(payload);
+    let payload = serde_json::to_value(payload).expect("a schema serializes");
+    let actions = actions.map(|a| serde_json::to_value(a).expect("a schema serializes"));
+    let mut out = format!(
+        "<!-- GENERATED by `supervisor/src/stubs.rs` from the Rust types and `intro/{capability}.md`. Do not \
+         edit: run `just stubs`. -->\n\n# {capability}\n\n{blurb}\n"
+    );
+    for section in [intro.trim(), "## State"].into_iter().filter(|section| !section.is_empty()) {
+        out.push_str(&format!("\n{section}\n"));
+    }
+    out.push_str(&format!(
+        "\n`mantle.{capability}:get()` returns `{class}`, `nil` before the first push. A field marked `?` may be \
+         absent.\n"
+    ));
+    render_table(&payload, &mut out);
+    let payload_defs = payload.get("$defs").and_then(|d| d.as_object()).cloned().unwrap_or_default();
+    for (name, body) in &payload_defs {
+        out.push_str(&format!("\n### `{name}`\n"));
+        render_table(body, &mut out);
+    }
+    out.push_str("\n## Actions\n\n");
+    match &actions {
+        Some(actions) => {
+            out.push_str(&format!(
+                "Call as `mantle.{capability}:invoke(\"action\", arguments...)`; `?` marks an argument you may omit.\n"
+            ));
+            if let Some(description) = actions.get("description").and_then(|d| d.as_str()) {
+                out.push_str(&format!("\n{}\n", prose(description)));
+            }
+            out.push_str("\n| Action | Arguments | Description |\n| --- | --- | --- |\n");
+            for (name, arguments, description) in action_list(actions) {
+                let arguments =
+                    if arguments.is_empty() { String::new() } else { format!("`{}`", arguments.join(", ")) };
+                out.push_str(&format!("| `{name}` | {} | {} |\n", cell(&arguments), cell(description.trim())));
+            }
+            for (name, body) in actions.get("$defs").and_then(|d| d.as_object()).into_iter().flatten() {
+                if !payload_defs.contains_key(name) {
+                    out.push_str(&format!("\n### `{name}`\n"));
+                    render_table(body, &mut out);
+                }
+            }
+        }
+        None => out.push_str("None: read-only, so an `invoke` is logged and dropped.\n"),
+    }
+    let outro = outro.trim();
+    if !outro.is_empty() {
+        out.push_str(&format!("\n{outro}\n"));
+    }
+    let module = format!("supervisor/src/capabilities/{capability}");
+    let source = if std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..").join(&module).is_dir() {
+        format!("{module}/")
+    } else {
+        format!("{module}.rs")
+    };
+    out.push_str(&format!("\nSource: [`{source}`](../../{source})\n"));
+    out
+}
+
+/// A schema's description, then its string values or its fields as a table.
+fn render_table(body: &serde_json::Value, out: &mut String) {
+    if let Some(description) = body.get("description").and_then(|d| d.as_str()) {
+        out.push_str(&format!("\n{}\n", prose(description)));
+    }
+    if body.get("properties").is_none()
+        && body.get("oneOf").is_none()
+        && let Some(values) = enum_strings(body)
+    {
+        let values: Vec<String> = values.iter().map(|v| format!("`\"{v}\"`")).collect();
+        out.push_str(&format!("\nOne of {}.\n", values.join(", ")));
+        return;
+    }
+    if body.get("properties").is_none()
+        && let Some(variants) = const_enum(body)
+    {
+        out.push_str("\n| Value | Description |\n| --- | --- |\n");
+        for (variant, description) in variants {
+            out.push_str(&format!(
+                "| `\"{variant}\"` | {} |\n",
+                cell(one_line(description.map(serde_json::Value::from).as_ref()).trim())
+            ));
+        }
+        return;
+    }
+    out.push_str("\n| Field | Type | Description |\n| --- | --- | --- |\n");
+    for (field, (type_name, optional, description)) in fields(body) {
+        let marker = if optional { "?" } else { "" };
+        out.push_str(&format!("| `{field}{marker}` | `{}` | {} |\n", cell(&type_name), cell(description.trim())));
+    }
+}
+
+/// A doc comment as Markdown prose: plain code spans, and no `(ADR-NNNN)` pointers, which are history.
+fn prose(text: &str) -> String {
+    regex_lite::Regex::new(r" \(ADR-\d+(, ADR-\d+)*\)")
+        .expect("a valid pattern")
+        .replace_all(&unlink(text), "")
+        .into_owned()
+}
+
+/// A Markdown table cell: GFM splits on `|` even inside a code span.
+fn cell(text: &str) -> String {
+    prose(text).replace('|', "\\|")
+}
+
+/// The published book: `docs/x/y.md` is served at `x/y.html` under it.
+const DOCS: &str = "https://anasgets111.github.io/mantle/";
 
 const GENERATED_HEADER: &str = r#"---@meta
 -- GENERATED by `supervisor/src/stubs.rs` for mantle {VERSION}. Do not edit: run `just stubs` and
@@ -494,10 +622,10 @@ const RENDERER_SOURCED: &str = r#"
 ---@field patch integer The Renderer's `CARGO_PKG_VERSION_PATCH`.
 "#;
 
-const MANTLE_TAIL: &str = r#"---@field screens ReadOnlyCapability<Screen[]> Connected outputs from the Renderer. `{}` rather than `nil` at first evaluation (ADR-0041).
----@field rescue ReadOnlyCapability<RescueState> Whether the last evaluation, the startup apply or the session lock failed; the previous scene stays up (ADR-0046).
----@field version MantleVersion The engine's version. Not a signal.
----@field config_dir string Directory `shell.lua` was loaded from, for naming files shipped beside it. Not a signal.
+const MANTLE_TAIL: &str = r#"---@field screens ReadOnlyCapability<Screen[]> Connected outputs from the Renderer. `{}` rather than `nil` at first evaluation (ADR-0041). [docs]({DOCS}capabilities/index.html#renderer-members)
+---@field rescue ReadOnlyCapability<RescueState> Whether the last evaluation, the startup apply or the session lock failed; the previous scene stays up (ADR-0046). [docs]({DOCS}capabilities/index.html#renderer-members)
+---@field version MantleVersion The engine's version. Not a signal. [docs]({DOCS}capabilities/index.html#renderer-members)
+---@field config_dir string Directory `shell.lua` was loaded from, for naming files shipped beside it. Not a signal. [docs]({DOCS}capabilities/index.html#renderer-members)
 mantle = {}
 "#;
 
@@ -506,11 +634,12 @@ mod tests {
     use std::collections::BTreeSet;
     use std::path::{Path, PathBuf};
 
-    fn stub_path() -> PathBuf {
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("../lua-meta/mantle.lua")
+    fn repo_path(path: &str) -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("..").join(path)
     }
 
-    /// Golden-file check. `just stubs` rewrites; without `UPDATE_STUBS`, differences fail.
+    /// Golden-file check over `lua-meta/mantle.lua` and every `docs/capabilities/<name>.md`.
+    /// `just stubs` rewrites; without `UPDATE_STUBS`, differences fail.
     ///
     /// Deliberately a test, not a build step: `render` reads derives here, but `build.rs`
     /// runs before that crate exists. Writing source during builds would break read-only checkouts
@@ -520,17 +649,28 @@ mod tests {
     /// editor open and completion. A fresh clone has usable stubs before compilation.
     #[test]
     fn the_generated_stub_matches_what_is_checked_in() {
-        let rendered = super::render();
-        let path = stub_path();
+        let mut files = vec![("lua-meta/mantle.lua".to_string(), super::render())];
+        for (capability, payload, actions) in super::capability_schemas() {
+            let intro = std::fs::read_to_string(repo_path(&format!("docs/capabilities/intro/{capability}.md")))
+                .unwrap_or_default();
+            let page = super::render_page(capability, &payload, actions.as_ref(), &intro);
+            files.push((format!("docs/capabilities/{capability}.md"), page));
+        }
+        let stale: Vec<_> = files
+            .iter()
+            .filter(|(path, rendered)| std::fs::read_to_string(repo_path(path)).ok().as_ref() != Some(rendered))
+            .collect();
         if std::env::var_os("UPDATE_STUBS").is_some() {
-            std::fs::write(&path, &rendered).expect("the stub file is writable");
+            for (path, rendered) in stale {
+                std::fs::write(repo_path(path), rendered).expect("the generated file is writable");
+            }
             return;
         }
-        let current = std::fs::read_to_string(&path).unwrap_or_default();
-        assert_eq!(
-            current, rendered,
-            "lua-meta/mantle.lua is stale. Run `just stubs` and commit the result. A version bump alone \
-             does this, because the version is stamped into the file."
+        let stale: Vec<&str> = stale.iter().map(|(path, _)| path.as_str()).collect();
+        assert!(
+            stale.is_empty(),
+            "{stale:?} are stale. Run `just stubs` and commit the result. A version bump alone does this to \
+             lua-meta/mantle.lua, because the version is stamped into it."
         );
     }
 

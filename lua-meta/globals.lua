@@ -7,11 +7,13 @@
 ---CJK and emoji; a `text` node's `font` goes in front of it (ADR-0144). Read once at startup: a
 ---change needs a shell restart (ADR-0043). The last call wins.
 ---@param chain string[] Family names. The first is the body face and the only one whose bold and italic load; the rest cover glyphs it lacks. A hole, a named key or a non-string raises; an uninstalled family is skipped and logged at `-vvv`. Never calling it keeps `sans-serif`, Noto Sans CJK JP, Noto Color Emoji.
+---[docs](https://anasgets111.github.io/mantle/guide/scripting.html#fonts)
 function fonts(chain) end
 
 ---fzf's score for `needle` in `haystack`, or `nil, nil` when its characters do not appear in order
 ---(ADR-0201). Smart case: one uppercase character in `needle` makes the match case-sensitive.
 ---Scores compare only against the same needle; non-ASCII input takes a cruder scorer.
+---[docs](https://anasgets111.github.io/mantle/guide/scripting.html#fuzzy)
 ---@param haystack string Non-UTF-8 bytes score as no match.
 ---@param needle string Empty scores `0, 0`.
 ---@return integer? score
@@ -27,6 +29,7 @@ function TimerHandle:cancel() end
 ---Runs `callback` once, `ms` from now, on a monotonic clock, under the 5 ms CPU budget (ADR-0203).
 ---Repeat by re-arming inside `callback`. Every evaluation clears all timers, so arm at the top level;
 ---a discarded handle still fires.
+---[docs](https://anasgets111.github.io/mantle/guide/scripting.html#timer)
 ---@param ms integer `[1, 86400000]`; outside raises.
 ---@param callback fun() A raise is logged at debug (`-vv`).
 ---@return TimerHandle
@@ -36,6 +39,7 @@ json = {}
 
 ---Decodes JSON and never raises: failure returns `nil, message`. JSON `null` also decodes to `nil`,
 ---and a `null` array element leaves a hole that stops `ipairs` (ADR-0057). There is no encoder.
+---[docs](https://anasgets111.github.io/mantle/guide/scripting.html#jsondecode)
 ---@param text string
 ---@return any value
 ---@return string? error
@@ -46,15 +50,19 @@ log = {}
 ---Writes a stamped line at this level, arguments joined like `print`'s (ADR-0245). Every level
 ---prints by default; filter with `MANTLE_LOG=config=warn` or `config=off`.
 ---@param ... any
+---[docs](https://anasgets111.github.io/mantle/guide/scripting.html#log)
 function log.error(...) end
 
 ---@param ... any
+---[docs](https://anasgets111.github.io/mantle/guide/scripting.html#log)
 function log.warn(...) end
 
 ---@param ... any
+---[docs](https://anasgets111.github.io/mantle/guide/scripting.html#log)
 function log.info(...) end
 
 ---@param ... any
+---[docs](https://anasgets111.github.io/mantle/guide/scripting.html#log)
 function log.debug(...) end
 
 palette = {}
@@ -71,6 +79,7 @@ function PaletteHandle:cancel() end
 
 ---Extracts an image's dominant colours off the Lua thread (ADR-0249). `cb` gets them most common
 ---first, or `nil` on failure (logged). `cb` runs unbudgeted.
+---[docs](https://anasgets111.github.io/mantle/guide/scripting.html#palettequantize)
 ---@param path string A local raster file; no SVG or URL.
 ---@param opts? { depth?: integer, rescale?: integer } `depth` 0 to 8, default 3: up to `2^depth` colours. `rescale` caps the longest edge before counting, default 128, `0` for full size. Out of range raises.
 ---@param cb fun(swatches: PaletteSwatch[]?)
@@ -83,6 +92,7 @@ process = {}
 ---or as a string when it is not JSON. The return prints as JSON (≤ 1 MiB), a string bare and `nil`
 ---as nothing; a raise or an unconvertible return fails the call. Runs under the 5 ms CPU budget.
 ---Every evaluation clears all actions, so declare at the top level.
+---[docs](https://anasgets111.github.io/mantle/guide/scripting.html#action)
 ---@param name string Non-empty and unique per evaluation, else raises. Opaque: nothing splits on `.`.
 ---@param handler fun(...: any): any?
 function action(name, handler) end
@@ -96,6 +106,7 @@ function ProcessHandle:kill() end
 ---Spawns `cmd` with stdout and stderr piped and stdin on `/dev/null`, without blocking (ADR-0026).
 ---The process belongs to the generation: its group is reaped when the Renderer is replaced.
 ---Callbacks run unbudgeted; a raise is logged at debug (`-vv`).
+---[docs](https://anasgets111.github.io/mantle/guide/processes.html#processrun)
 ---@param cmd string Looked up on `PATH`; no shell, so no globbing, pipes or quoting.
 ---@param args string[] Already split: `"a b"` is one argument.
 ---@param out_cb fun(line: string, stream: "stdout"|"stderr") Once per line, newline stripped, cut at 64 KiB. Accumulate here and decode in `exit_cb`.
@@ -105,6 +116,7 @@ function process.run(cmd, args, out_cb, exit_cb) end
 
 ---Spawns `cmd` in its own session with stdio on `/dev/null`; it outlives every reload and the
 ---shell. No handle, output or exit code, and a spawn failure is only logged (ADR-0188).
+---[docs](https://anasgets111.github.io/mantle/guide/processes.html#processdetach)
 ---@param cmd string Looked up on `PATH`; no shell, so no globbing, pipes or quoting.
 ---@param args string[] Already split: `"a b"` is one argument.
 function process.detach(cmd, args) end
@@ -136,10 +148,12 @@ function SessionProcessHandle:stop() end
 ---Declares a program that lives for the session: the Supervisor holds it across reloads and stops
 ---it at shutdown. Re-declaring a name returns the same handle and re-reads only `stop_signal`, so
 ---declare at a module's top level. Use `process.run` when you need its output.
+---[docs](https://anasgets111.github.io/mantle/guide/processes.html#session_process)
 ---@param spec { name: string, stop_signal?: SignalName } `name` keys it in `mantle.processes`; empty raises. `stop_signal` defaults to `"TERM"`.
 ---@return SessionProcessHandle
 function session_process(spec) end
 
+---[docs](https://anasgets111.github.io/mantle/guide/runtime.html#the-vm)
 ---@class oslib
 ---Only these four calls exist; the rest of `os` is removed (ADR-0048).
 os = {}

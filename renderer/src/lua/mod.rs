@@ -534,14 +534,7 @@ pub(crate) mod tests {
     #[test]
     fn the_stubs_declare_every_engine_global() {
         const MEMBER_TABLES: [&str; 5] = ["os", "process", "json", "log", "palette"];
-        let dir = tempfile::tempdir().unwrap();
-        let dirty = signal::DirtyFlag::new();
-        let loader = Loader::new(dirty.clone(), dir.path()).unwrap();
-        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-        let commands = capability::CommandSender::new(0, tx);
-        loader.register_process(process::ProcessRegistry::new(commands.clone())).unwrap();
-        loader.register_palette(palette::PaletteRegistry::new(None)).unwrap();
-        namespace::build(&loader, &dirty, &commands, &dir.path().join("shell.lua")).unwrap();
+        let (_dir, loader) = engine_loader();
 
         let keys = |table: Table| -> std::collections::BTreeSet<String> {
             table.pairs::<String, Value>().map(|pair| pair.unwrap().0).collect()
@@ -556,21 +549,95 @@ pub(crate) mod tests {
         }
 
         let mut declared = std::collections::BTreeSet::new();
-        for entry in std::fs::read_dir(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../lua-meta")).unwrap() {
-            for line in std::fs::read_to_string(entry.unwrap().path()).unwrap().lines() {
-                // `function name(` and `name = {}`; `local` and `Class:method` are not globals.
-                let name =
-                    line.strip_prefix("function ").and_then(|rest| rest.split_once('(')).or(line.split_once(" = {}"));
-                if let Some((name, _)) = name
-                    && !name.contains([':', ' '])
-                    && !stdlib.contains(name)
-                    && name.split_once('.').is_none_or(|(table, _)| MEMBER_TABLES.contains(&table))
-                {
-                    declared.insert(name.to_string());
-                }
+        for line in stubs().lines() {
+            // `function name(` and `name = {}`; `local` and `Class:method` are not globals.
+            let name =
+                line.strip_prefix("function ").and_then(|rest| rest.split_once('(')).or(line.split_once(" = {}"));
+            if let Some((name, _)) = name
+                && !name.contains([':', ' '])
+                && !stdlib.contains(name)
+                && name.split_once('.').is_none_or(|(table, _)| MEMBER_TABLES.contains(&table))
+            {
+                declared.insert(name.to_string());
             }
         }
         assert_eq!(declared, engine, "lua-meta is out of step with the config VM's globals");
+    }
+
+    /// Each handle's methods, read off one instance (a userdata's `__index`, a table's function
+    /// fields), match its stub classes' `Class:method` and `---@field name fun(` both ways. One
+    /// `Signal` userdata backs the three signal classes.
+    #[test]
+    fn the_stubs_declare_every_handle_method() {
+        let (_dir, loader) = engine_loader();
+        let source = stubs();
+        for (sample, classes) in [
+            (r#"state("probe", 1)"#, &["Signal", "StateSignal", "ScrollSignal"][..]),
+            ("timer(1000, function() end)", &["TimerHandle"]),
+            (r#"process.run("true", {}, function() end, function() end)"#, &["ProcessHandle"]),
+            (r#"palette.quantize("/probe.png", nil, function() end)"#, &["PaletteHandle"]),
+            (r#"session_process { name = "probe" }"#, &["SessionProcessHandle"]),
+            (r#"persistent_table { path = "/probe", name = "probe" }"#, &["PersistentTable"]),
+            ("mantle.audio", &["AudioCapability"]),
+            ("mantle.idle", &["IdleCapability"]),
+        ] {
+            let methods = match loader.lua().load(sample).eval::<Value>().unwrap() {
+                Value::UserData(handle) => handle.metatable().unwrap().get::<Table>("__index").unwrap(),
+                Value::Table(handle) => handle,
+                other => panic!("`{sample}` gave {other:?}"),
+            };
+            let engine: std::collections::BTreeSet<String> = methods
+                .pairs::<String, Value>()
+                .map(Result::unwrap)
+                .filter(|(_, v)| v.is_function())
+                .map(|(k, _)| k)
+                .collect();
+            let declared = classes.iter().flat_map(|class| stub_methods(&source, class)).collect();
+            assert_eq!(engine, declared, "lua-meta's {classes:?} methods are out of step with `{sample}`");
+        }
+    }
+
+    /// `class`'s declared methods and its parents'.
+    fn stub_methods(source: &str, class: &str) -> std::collections::BTreeSet<String> {
+        let (mut methods, mut current) = (std::collections::BTreeSet::new(), "");
+        for line in source.lines() {
+            if let Some(rest) = line.strip_prefix("---@class ") {
+                let (name, parents) = rest.split_once(':').unwrap_or((rest, ""));
+                current = name.split('<').next().unwrap_or(name);
+                for parent in parents.split(',').filter(|_| current == class) {
+                    methods.extend(stub_methods(source, parent.split('<').next().unwrap_or(parent).trim()));
+                }
+            } else if let Some((name, ty)) = line.strip_prefix("---@field ").and_then(|rest| rest.split_once(' '))
+                && current == class
+                && ty.starts_with("fun(")
+            {
+                methods.insert(name.to_string());
+            } else if let Some((name, _)) =
+                line.strip_prefix(&format!("function {class}:")).and_then(|r| r.split_once('('))
+            {
+                methods.insert(name.to_string());
+            }
+        }
+        methods
+    }
+
+    /// Every `lua-meta` file, concatenated.
+    fn stubs() -> String {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../lua-meta");
+        std::fs::read_dir(dir).unwrap().map(|entry| std::fs::read_to_string(entry.unwrap().path()).unwrap()).collect()
+    }
+
+    /// A loader with every engine global registered, as a start builds it.
+    fn engine_loader() -> (tempfile::TempDir, Loader) {
+        let dir = tempfile::tempdir().unwrap();
+        let dirty = signal::DirtyFlag::new();
+        let loader = Loader::new(dirty.clone(), dir.path()).unwrap();
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let commands = capability::CommandSender::new(0, tx);
+        loader.register_process(process::ProcessRegistry::new(commands.clone())).unwrap();
+        loader.register_palette(palette::PaletteRegistry::new(None)).unwrap();
+        namespace::build(&loader, &dirty, &commands, &dir.path().join("shell.lua")).unwrap();
+        (dir, loader)
     }
 
     /// `require` reads its own `package.loaded` reference, so removing only a global hands the

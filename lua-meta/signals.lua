@@ -2,6 +2,7 @@
 -- The reactive layer: `Signal` and the globals that create one (ADR-0044).
 -- Hand-written; `lua::tests::the_stubs_declare_every_engine_global` checks the names.
 
+---[docs](https://anasgets111.github.io/mantle/guide/signals.html#reference)
 ---@class Signal<T>: userdata
 ---A read-only reactive `T`. Pass the signal itself to a node property to keep it live; `:get()` is a
 ---snapshot. `set` works only on a `state` and `reveal` only on a `scroll`; elsewhere they raise.
@@ -21,6 +22,7 @@
 ---Named writable state that survives reloads. A changed scalar `initial` re-seeds it; a table
 ---`initial` never does (ADR-0044). `mantle set <name> <value>` and `mantle toggle <name> [value]`
 ---write it (ADR-0112): a bare toggle needs a boolean, and toggling to the held value restores `initial`.
+---[docs](https://anasgets111.github.io/mantle/guide/signals.html#named-state)
 ---@generic T
 ---@param name string Its identity: one name, one signal.
 ---@param initial T The first value, and the signal's type for LuaLS.
@@ -35,6 +37,7 @@ function state(name, initial) end
 
 ---A named JSON file read as signals (ADR-0136). The same file returns the same table across reloads.
 ---`defaults` fills only missing keys, so adding one keeps the user's values.
+---[docs](https://anasgets111.github.io/mantle/guide/scripting.html#persistent_table)
 ---@param spec { path: string, name: string, defaults?: table } `path` is an absolute directory and `name` a file name without `/`; otherwise raises.
 ---@return PersistentTable
 function persistent_table(spec) end
@@ -42,6 +45,7 @@ function persistent_table(spec) end
 ---A signal of `fn` over its dependencies' values, recomputed on read. `fn` must be side-effect free
 ---and runs under the shared 5 ms CPU budget (ADR-0021). ponytail: `fn`'s parameters are untyped,
 ---since typing them needs an overload per arity; prefer `:map` for one source.
+---[docs](https://anasgets111.github.io/mantle/guide/signals.html#derived-signals)
 ---@param dependencies Signal<any>[] Signals or capabilities, in `fn`'s argument order; anything else raises.
 ---@param fn fun(...): any
 ---@return Signal<any> # Read-only.
@@ -49,6 +53,7 @@ function computed(dependencies, fn) end
 
 ---Whether the pointer is inside the node whose `hover` is bound to this signal; `false` until it is
 ---(ADR-0062). One name, one signal, across reloads. Read-only.
+---[docs](https://anasgets111.github.io/mantle/guide/input.html#hover)
 ---@param name string
 ---@return Signal<boolean>
 function hover(name) end
@@ -56,6 +61,7 @@ function hover(name) end
 ---The absolute rect of `hover(name)`'s node, in its surface's logical coordinates, for a `popup`'s
 ---`anchor_rect`. `1x1` at the origin before the first hover; keeps the last rect after the pointer
 ---leaves.
+---[docs](https://anasgets111.github.io/mantle/guide/input.html#hover)
 ---@param name string The `hover` slot. Reading this does not register a region.
 ---@return Signal<Rect>
 function hover_rect(name) end
@@ -63,6 +69,7 @@ function hover_rect(name) end
 ---`source`'s value once a new value has held for `ms`; until then, the old one (ADR-0146). A source
 ---that returns to the old value first changes nothing. A trailing debounce, or a close-hold:
 ---`visible = computed({ open, delay(open, ms) }, function(now, was) return now or was end)`.
+---[docs](https://anasgets111.github.io/mantle/guide/signals.html#delay-hold-a-value)
 ---@generic T
 ---@param source Signal<T> A signal or capability; anything else raises.
 ---@param ms number `[1, 60000]`, rounded to whole milliseconds; outside raises.
@@ -72,6 +79,7 @@ function delay(source, ms) end
 ---`true` for `ms` after `source` changes value, else `false`; a change inside the window restarts it
 ---(ADR-0153). Fires one-shot animations: `animate = pulse(clicks, 400):map(...)` (ADR-0152). Values
 ---compare with `==`, so a table-valued source changes on every push.
+---[docs](https://anasgets111.github.io/mantle/guide/signals.html#pulse-mark-a-change)
 ---@param source Signal<any> A signal or capability; anything else raises.
 ---@param ms number `[1, 60000]`, rounded to whole milliseconds; outside raises. At least as long as what it drives.
 ---@return Signal<boolean> # Read-only.
@@ -80,6 +88,7 @@ function pulse(source, ms) end
 ---The absolute rect of the node whose `geometry` is bound to this signal, in its surface's logical
 ---coordinates (the space of `on_click` and `hover_rect`); layout writes it (ADR-0147). Zero before
 ---the first layout. A change earns one follow-up pass, so a binding feeding its own measurement cannot loop.
+---[docs](https://anasgets111.github.io/mantle/guide/signals.html#geometry-read-a-nodes-laid-out-rect)
 ---@param name string One name, one signal, across reloads.
 ---@return Signal<Rect>
 function geometry(name) end
@@ -90,6 +99,7 @@ function geometry(name) end
 
 ---A viewport's scroll offset along its main axis, in logical pixels from the top or left. The wheel
 ---writes it and layout clamps it (ADR-0069); `:reveal` is the only request Lua makes.
+---[docs](https://anasgets111.github.io/mantle/guide/input.html#scroll)
 ---@param name string Bind the result as a `row`, `column` or `list`'s `scroll`. One name, one signal, across reloads.
 ---@return ScrollSignal
 function scroll(name) end

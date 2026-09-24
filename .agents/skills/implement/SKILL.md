@@ -3,7 +3,7 @@ name: implement
 description: "Implement a Mantle slice."
 ---
 
-Implement the request against `docs/lua-api.md`, the relevant `docs/decisions.md` entries and the `CONTEXT.md`
+Implement the request against the user docs in `docs/` (start at `docs/introduction.md`), the relevant `DECISIONS.md` entries and the `CONTEXT.md`
 terms. `docs/roadmap.md` lists what is not built.
 
 - Framework first: platform connections, validation, secrets, lifetimes, input and rendering stay in Rust;

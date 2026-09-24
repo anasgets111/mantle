@@ -34,6 +34,7 @@
 ---@alias Animations table<string, Animation> Property name to animation. Names the node does not accept, `z` and `animate` are refused. Numbers, percents, colours and numeric `Edges`/`Axes` tween against the same shape; anything else snaps.
 ---@alias Exit { duration?: number, delay?: number, easing?: Easing, spring?: Spring, [string]: any } `animate.exit`: timing as in `Animation` (`duration` or `spring` required once a target is named) plus `property = target` pairs the node eases to after a pass drops it (ADR-0150). A target starts from the shown value, or from the identity: `1` for `opacity`/`scale`, `0.5` for `origin`, alpha 0 for a colour, `0` otherwise.
 
+---[docs](https://anasgets111.github.io/mantle/nodes/index.html#common-properties)
 ---@class NodeBase
 ---@field width? Length|Bound Omitted sizes to content.
 ---@field height? Length|Bound Omitted sizes to content.
@@ -65,6 +66,7 @@
 ---@field on_hover? fun(hovered: boolean) Called on each hover edge from pointer Enter, Motion or Leave; layout changes under a still pointer do not call it. Refused without `hover` on the same node.
 
 ---Box paint for `rect`, `row`, `column`, `button` and every surface role.
+---[docs](https://anasgets111.github.io/mantle/guide/paint.html#box-properties)
 ---@class BoxBase
 ---@field background? Color|Gradient|Bound Default none, which draws nothing (unlike `"#00000000"`). A gradient snaps under `animate`.
 ---@field mask? Mask|Bound Multiplies the alpha of this node and its subtree (ADR-0255). Cut to the box, or to `radius` under `clip = "Rounded"`. Hit-testing and `blur` ignore it.
@@ -189,46 +191,57 @@
 ---@field foreground? Color|Bound Default `"#FFFFFF"`.
 ---@field text_align? "Start"|"Center"|"End"|Bound Default `"Start"`. Aligns the text inside the field's box.
 
+---[docs](https://anasgets111.github.io/mantle/nodes/rect.html)
 ---@param props RectProps
 ---@return Node
 function rect(props) end
 
+---[docs](https://anasgets111.github.io/mantle/nodes/row-column.html)
 ---@param props RowProps
 ---@return Node
 function row(props) end
 
+---[docs](https://anasgets111.github.io/mantle/nodes/row-column.html)
 ---@param props ColumnProps
 ---@return Node
 function column(props) end
 
+---[docs](https://anasgets111.github.io/mantle/nodes/text.html)
 ---@param props TextProps
 ---@return Node
 function text(props) end
 
+---[docs](https://anasgets111.github.io/mantle/nodes/icon.html)
 ---@param props IconProps
 ---@return Node
 function icon(props) end
 
+---[docs](https://anasgets111.github.io/mantle/nodes/image.html)
 ---@param props ImageProps
 ---@return Node
 function image(props) end
 
+---[docs](https://anasgets111.github.io/mantle/nodes/capture.html)
 ---@param props CaptureProps
 ---@return Node
 function capture(props) end
 
+---[docs](https://anasgets111.github.io/mantle/nodes/shader.html)
 ---@param props ShaderProps
 ---@return Node
 function shader(props) end
 
+---[docs](https://anasgets111.github.io/mantle/nodes/button.html)
 ---@param props ButtonProps
 ---@return Node
 function button(props) end
 
+---[docs](https://anasgets111.github.io/mantle/nodes/list.html)
 ---@param props ListProps
 ---@return Node
 function list(props) end
 
+---[docs](https://anasgets111.github.io/mantle/nodes/textfield.html)
 ---@param props TextfieldProps
 ---@return Node
 function textfield(props) end

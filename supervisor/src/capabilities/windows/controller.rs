@@ -40,16 +40,16 @@ pub struct WindowEntry {
     pub output: Option<String>,
     /// Whether the window has keyboard focus.
     pub focused: bool,
-    /// `nil` on wlr.
+    /// Whether the window floats rather than tiles; `nil` on wlr.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub floating: Option<bool>,
-    /// `nil` on niri.
+    /// Whether the window is fullscreen; `nil` on niri.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub fullscreen: Option<bool>,
-    /// `nil` except on wlr.
+    /// Whether the window is minimized; `nil` except on wlr.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub minimized: Option<bool>,
-    /// `nil` on niri.
+    /// Whether the window is maximized; `nil` on niri.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub maximized: Option<bool>,
 }

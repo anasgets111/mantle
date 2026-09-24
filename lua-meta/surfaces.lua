@@ -56,22 +56,26 @@
 ---@field child? Node|fun(output: string): Node? The one root node; a function runs per output, as on a `panel`.
 
 ---A layer surface (`zwlr_layer_surface_v1`): bar, dock, wallpaper, OSD, launcher.
+---[docs](https://anasgets111.github.io/mantle/surfaces/panel.html)
 ---@param props PanelProps
 ---@return Node
 function panel(props) end
 
 ---An `xdg_toplevel`: settings window, dialog.
+---[docs](https://anasgets111.github.io/mantle/surfaces/window.html)
 ---@param props WindowProps
 ---@return Node
 function window(props) end
 
 ---An `xdg_popup` on its parent: dropdown, context menu, tooltip. No Wayland object while hidden.
+---[docs](https://anasgets111.github.io/mantle/surfaces/popup.html)
 ---@param props PopupProps
 ---@return Node
 function popup(props) end
 
 ---An `ext_session_lock_surface_v1` per output, shown while the session is locked. Declaring one
 ---does not lock (ADR-0052). At most one per config.
+---[docs](https://anasgets111.github.io/mantle/surfaces/lock.html)
 ---@param props LockProps
 ---@return Node
 function lock(props) end

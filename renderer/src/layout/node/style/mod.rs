@@ -264,15 +264,7 @@ fn parse_color(properties: &PropMap, property: &str) -> Result<Option<Rgba>, Lay
 /// `rect.radius`, defaulting to 0, negated under `corner_shape = "Scoop"`: a quarter circle cut in,
 /// centred on the box's corner point, CSS's `corner-shape` name.
 pub fn parse_radius(properties: &PropMap) -> Result<f32, LayoutError> {
-    let scoop = match properties.get("corner_shape") {
-        None => false,
-        Some(Value::String(s)) if s.as_bytes() == b"Round" => false,
-        Some(Value::String(s)) if s.as_bytes() == b"Scoop" => true,
-        Some(other) => {
-            let got = preview_for_error(other);
-            return Err(invalid("corner_shape", format!("expected \"Round\" or \"Scoop\", got {got}")));
-        }
-    };
+    let scoop = content::parse_keyword(properties, "corner_shape", false, &[("Round", false), ("Scoop", true)])?;
     let Some(value) = properties.get("radius") else {
         return Ok(0.0);
     };

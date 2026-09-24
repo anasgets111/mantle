@@ -9,7 +9,9 @@ Mantle ships no shell of its own. [`share/starter`](share/starter) is a one-cloc
 
 https://github.com/user-attachments/assets/038ee763-d7b6-4df9-9f79-2f131d4f0dcd
 
-Status: pre-release. The Lua API changes without notice.
+Status: pre-release. The Lua API changes without notice; the [changelog](docs/changelog.md) lists what moved.
+
+Docs: **<https://anasgets111.github.io/mantle/>**, built from [`docs/`](docs).
 
 ## Requirements
 
@@ -22,7 +24,7 @@ Status: pre-release. The Lua API changes without notice.
 | `capture` node | `ext-image-copy-capture-v1`, else `wlr-screencopy-v1` |
 | `blur = true` | `ext-background-effect-v1`; ignored when absent |
 | `idle` capability | `ext-idle-notify-v1` |
-| Capabilities over D-Bus | NetworkManager, BlueZ, UPower, power-profiles-daemon, logind, polkit ([services](docs/services.md)) |
+| Capabilities over D-Bus | NetworkManager, BlueZ, UPower, power-profiles-daemon, logind, polkit ([per capability](docs/guide/installation.md#requirements)) |
 | Fonts | fontconfig (`fc-match`) |
 | `updates` capability | pacman; `pkexec` to install |
 | Build | Rust 1.89+, libalpm, PipeWire, PAM, udev, EGL, GBM, xkbcommon, libwayland-client, libwayland-egl. Lua 5.4 is vendored |
@@ -39,6 +41,7 @@ prompts fall back to `login`) and a polkit rule for `updates` installs.
 | `just build` | `mantle` and `mantle-renderer` into `target/debug` |
 | `just run [config]` | Builds, then runs `config` (default `share/starter`), leaving `~/.config/mantle` alone |
 | `just check` | The gate (on the staged tree when there are also unstaged edits): rustfmt, tests, clippy, rustdoc, Lua parse and format, LuaLS types |
+| `just docs` / `just book` | Serve the docs site locally / build it and check every link |
 | `just fmt` | Formats Rust and Lua |
 | `just swap` | Optimised build into `$CARGO_HOME/bin`, then restarts the running shell detached |
 
@@ -71,17 +74,17 @@ else `~/.config/mantle`. `require` resolves inside it, and saving any `.lua` in 
 | `mantle call NAME [ARGS…]` | Run `action(NAME)` and print its return |
 
 Keybinds drive a running shell with `toggle` and `call`. `-c` and `--pid` pick the shell; `-V`
-and `-h` print version and help. Full contract: [CLI](docs/lua-api/cli.md).
+and `-h` print version and help. Full contract: [CLI](docs/guide/cli.md).
 
 ## Docs
 
 | Doc | For |
 | :--- | :--- |
-| [Lua API](docs/lua-api.md) | Config authors: the entry and index. One page each in [`docs/lua-api/`](docs/lua-api): runtime, CLI, signals, capabilities, scripting, surfaces, nodes, paint, animation, input |
-| [Services](docs/services.md) | Backend behavior: platform dependencies, lifetimes, wire format, reloads |
-| [Decisions](docs/decisions.md) | ADRs: why each design, and what was rejected |
+| [Site](https://anasgets111.github.io/mantle/) | Config authors: guide, nodes, surfaces, capabilities, cookbook. Source in [`docs/`](docs), entry [`introduction.md`](docs/introduction.md) |
+| [Changelog](docs/changelog.md) | User-facing Lua API and CLI changes |
+| [Decisions](DECISIONS.md) | ADRs: why each design, and what was rejected |
 | [Roadmap](docs/roadmap.md) | Open gaps, open questions and non-goals |
-| [CONTEXT.md](CONTEXT.md) | Vocabulary: generation, named state, capability |
+| [Glossary](docs/glossary.md), [CONTEXT.md](CONTEXT.md) | Vocabulary: user-facing terms, then engine-internal ones |
 | [`lua-meta/`](lua-meta) | LuaLS stubs `mantle init` points the editor at |
 
 ## License

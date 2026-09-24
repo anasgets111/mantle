@@ -5,7 +5,7 @@ use mlua::Value;
 
 use crate::text::snap::LogicalRect;
 
-use super::content::parse_string_property;
+use super::content::{parse_keyword, parse_string_property};
 use super::style::table_number;
 use super::*;
 
@@ -133,29 +133,21 @@ pub enum PopupAnchor {
 /// Parses either anchor field; `property` names errors. Absent defaults to the protocol's
 /// [`PopupAnchor::Center`], unlike constraint adjustments.
 pub fn parse_popup_anchor(properties: &PropMap, property: &str) -> Result<PopupAnchor, LayoutError> {
-    let Some(value) = non_deferred_property(properties, property) else {
+    if non_deferred_property(properties, property).is_none() {
         return Ok(PopupAnchor::Center);
-    };
-    let Value::String(s) = value else {
-        return Err(invalid(property, format!("expected a string, got {}", preview_for_error(value))));
-    };
-    match checked_string(property, s)?.as_str() {
-        "Top" => Ok(PopupAnchor::Top),
-        "Bottom" => Ok(PopupAnchor::Bottom),
-        "Left" => Ok(PopupAnchor::Left),
-        "Right" => Ok(PopupAnchor::Right),
-        "TopLeft" => Ok(PopupAnchor::TopLeft),
-        "TopRight" => Ok(PopupAnchor::TopRight),
-        "BottomLeft" => Ok(PopupAnchor::BottomLeft),
-        "BottomRight" => Ok(PopupAnchor::BottomRight),
-        "Center" => Ok(PopupAnchor::Center),
-        other => Err(invalid(
-            property,
-            format!(
-                "unknown popup anchor `{other}` -- expected \"Top\", \"Bottom\", \"Left\", \"Right\", \"TopLeft\", \"TopRight\", \"BottomLeft\", \"BottomRight\", or \"Center\""
-            ),
-        )),
     }
+    let anchors = [
+        ("Top", PopupAnchor::Top),
+        ("Bottom", PopupAnchor::Bottom),
+        ("Left", PopupAnchor::Left),
+        ("Right", PopupAnchor::Right),
+        ("TopLeft", PopupAnchor::TopLeft),
+        ("TopRight", PopupAnchor::TopRight),
+        ("BottomLeft", PopupAnchor::BottomLeft),
+        ("BottomRight", PopupAnchor::BottomRight),
+        ("Center", PopupAnchor::Center),
+    ];
+    parse_keyword(properties, property, PopupAnchor::Center, &anchors)
 }
 
 /// The six independent adjustment permissions. Array order is irrelevant because the compositor
@@ -214,7 +206,7 @@ pub fn parse_constraint_adjustment(properties: &PropMap) -> Result<ConstraintAdj
                 return Err(invalid(
                     "constraint_adjustment",
                     format!(
-                        "unknown adjustment `{other}` -- expected \"SlideX\", \"SlideY\", \"FlipX\", \"FlipY\", \"ResizeX\", or \"ResizeY\""
+                        "expected one of `SlideX`, `SlideY`, `FlipX`, `FlipY`, `ResizeX`, `ResizeY`, got `{other}`"
                     ),
                 ));
             }

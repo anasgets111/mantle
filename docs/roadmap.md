@@ -1,7 +1,7 @@
 # Roadmap
 
-Ordering is intent, not a schedule. [API](lua-api.md) and [services](services.md) hold what
-exists, [decisions](decisions.md) why. Rust owns platform connections, validation, secrets,
+Ordering is intent, not a schedule. The [docs](introduction.md) hold what exists,
+[`DECISIONS.md`](../DECISIONS.md) why. Rust owns platform connections, validation, secrets,
 resource lifetimes, input and rendering; Lua owns composition, appearance and orchestration. A
 feature one config lacks is not an engine gap.
 

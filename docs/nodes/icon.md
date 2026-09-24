@@ -1,0 +1,68 @@
+# icon
+
+A square icon from the desktop icon theme, or from a file path. Reach for it for app icons, status
+glyphs and tray items. Symbolic (SVG) icons take a tint. For photos and artwork at their own aspect
+ratio, use an [`image`](image.md).
+
+The focused window's icon and title. [`mantle.applications`](../capabilities/applications.md) maps a
+window's `app_id` to its desktop entry, whose `icon` is a theme name:
+
+```lua
+local focused_icon = computed({ mantle.applications, mantle.workspaces }, function(apps, workspaces)
+    local client = workspaces and workspaces.active_client
+    if apps == nil or client == nil then return "" end
+    local index = apps.by_app_id[client.class] or apps.by_app_id[string.lower(client.class)]
+    return index and apps.entries[index].icon or ""
+end)
+
+local app_badge = row { spacing = 6, align_v = "Center", children = {
+    icon { name = focused_icon, size = 18, align_v = "Center" },
+    text { content = mantle.workspaces:map(function(w)
+        return w and w.active_client and w.active_client.title or ""
+    end), width = 200, elide = "End", align_v = "Center" },
+} }
+```
+
+## Properties
+
+`icon` takes the [common properties](index.md#common-properties), plus:
+
+| Property | Values | Default | Behaviour |
+| :--- | :--- | :--- | :--- |
+| `name` | An icon theme name (`"firefox"`, `"audio-volume-high-symbolic"`), or an absolute image path | `""`, drawing nothing | A theme name is looked up at the drawn size; a path is used as is. A name the theme lacks draws nothing |
+| `size` | Pixels, any finite number (no range check) | 12 | The node is `size` × `size` |
+| `foreground` | [Colour](../guide/paint.md#colours) | The file's own colours | Fills the SVG's `currentColor`, which tints symbolic icons. Full-colour icons ignore it |
+
+An explicit `width` or `height` overrides that axis of the square; the icon draws at the shorter
+side, centred.
+
+The theme is `gtk-icon-theme-name` from `~/.config/gtk-4.0/settings.ini`, else
+`~/.config/gtk-3.0/settings.ini`, else `hicolor`. It is read once per Renderer process, so a theme
+change shows after a shell restart, not a reload. Files load as PNG, JPEG, WebP, GIF, SVG or SVGZ.
+
+## How do I…
+
+| Task | Answer |
+| :--- | :--- |
+| Show an app's icon | The example above |
+| Tint a symbolic icon | `foreground = "#CDD6F4"` on a `-symbolic` name |
+| Show a tray item's icon | `name = item.icon_name or item.icon_path`: both spellings work ([tray](../capabilities/tray.md)) |
+| Show a notification's app icon | `name = notification.app_icon` ([notifications](../capabilities/notifications.md)) |
+| Make an icon button | Put the `icon` in a [`button`](button.md) |
+| Put a badge on an icon | Layer them in a [`rect`](rect.md) |
+
+## Gotchas
+
+| Trap | Fix |
+| :--- | :--- |
+| An icon draws nothing | The theme has no such name. Check the name under `/usr/share/icons/<theme>`, or pass an absolute path |
+| `foreground` does not change a colour icon | Only SVGs that use `currentColor` (symbolic icons) take it |
+| The wrong theme's icons appear | The theme comes from GTK settings, read at Renderer start. Set `gtk-icon-theme-name` and restart the shell |
+| An icon is smaller than its box | It draws at the shorter side of `width`/`height`. Keep them equal, or use `size` alone |
+| An icon given as a relative path draws nothing | A relative `name` is a theme name. Use `mantle.config_dir .. "/icons/x.svg"` |
+
+See also: [image](image.md), [capabilities](../capabilities/index.md).
+
+Source: [vocabulary](../../renderer/src/lua/nodes.rs), [content parsers](../../renderer/src/layout/node/content.rs),
+[theme lookup](../../renderer/src/image/icons.rs), [decode](../../renderer/src/image/decode.rs),
+[icon draw](../../renderer/src/layout/paint/build.rs).

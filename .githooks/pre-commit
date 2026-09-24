@@ -2,14 +2,16 @@
 # The half of `just check` a commit can affect, picked from the staged paths:
 #
 # - Rust: anything the crates compile or their tests read. `lua-meta/` and `share/starter/shell.lua`
-#   are `include_str!`'d, and `pam_worker.rs` reads `packaging/pam.d`. That one subdirectory, not
-#   `packaging/` whole, which will hold files no test opens.
+#   are `include_str!`'d, and the doc tests read every `docs/**/*.md`. `pam_worker.rs` reads
+#   `packaging/pam.d`: that one subdirectory, not `packaging/` whole, which will hold files no test
+#   opens.
 # - Lua: any `.lua`, `.luarc.json`, `.editorconfig`, or the formatter.
 # - Everything else, this hook and the justfile included: nothing.
 #
 # Runs on the staged tree: `just staged-only` sets unstaged edits aside for the run.
 #
-# A stale `lua-meta/mantle.lua` is regenerated and the commit refused rather than staged.
+# A stale `lua-meta/mantle.lua` or capability page is regenerated and the commit refused rather than
+# staged.
 #
 # Install with `just hooks`. Skip once with `git commit --no-verify`.
 set -euo pipefail
@@ -19,7 +21,7 @@ cd "$(git rev-parse --show-toplevel)"
 staged="$(git diff --cached --name-only -z | tr '\0' '\n')"
 rust=false lua=false
 # Not `grep -q` after a pipe: it exits on the first match, and pipefail reads the SIGPIPE as no match.
-if grep -vE '\.md$' <<<"$staged" |
+if grep -qE '^docs/.*\.md$' <<<"$staged" || grep -vE '\.md$' <<<"$staged" |
     grep -E '\.rs$|(^|/)Cargo\.(toml|lock)$|^rustfmt\.toml$|^\.cargo/|^(renderer|supervisor|shared|lua-meta)/|^packaging/pam\.d/|^share/starter/shell\.lua$' >/dev/null; then
     rust=true
 fi
@@ -43,16 +45,17 @@ fail() {
 }
 
 if $rust; then
-    before="$(git hash-object lua-meta/mantle.lua)"
+    generated() { cat lua-meta/mantle.lua docs/capabilities/*.md | git hash-object --stdin; }
+    before="$(generated)"
     # Almost always a build error rather than the generator: this is the first compile after an
     # edit, so stderr stays on screen. Only the pass list is noise.
     UPDATE_STUBS=1 cargo test --quiet -p supervisor stubs >/dev/null || fail "the stub regeneration (just stubs)"
-    if [ "$before" != "$(git hash-object lua-meta/mantle.lua)" ]; then
-        echo "pre-commit: lua-meta/mantle.lua was stale and has been regenerated. Review it, then: git add lua-meta/mantle.lua" >&2
+    if [ "$before" != "$(generated)" ]; then
+        echo "pre-commit: generated stubs or pages were stale and have been regenerated. Review them, then: git add lua-meta/mantle.lua docs/capabilities" >&2
         exit 1
     fi
     just fmt-check || fail "cargo fmt --check"
-    just test lint docs || fail "the Rust checks"
+    just test lint rustdoc || fail "the Rust checks"
 fi
 
 if $lua; then

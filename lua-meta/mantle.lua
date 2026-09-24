@@ -166,7 +166,7 @@
 ---@field href? string `<a href>` target, or `nil` when not a link.
 ---@field image_path? string Existing absolute path under an icon root; images elsewhere are dropped.
 ---@field italic? boolean Whether the run was inside `<i>`.
----@field kind "text"|"image"
+---@field kind "text"|"image" Which variant this is; each other field belongs to one variant.
 ---@field text? string Unescaped text; empty runs are omitted.
 ---@field underline? boolean Whether the run was inside `<u>`.
 
@@ -273,12 +273,12 @@
 ---@class WindowEntry
 ---One toplevel window. `nil` optional fields are ones the backend does not report.
 ---@field app_id string Wayland `app_id` (Hyprland's `class`); empty when unset.
----@field floating? boolean `nil` on wlr.
+---@field floating? boolean Whether the window floats rather than tiles; `nil` on wlr.
 ---@field focused boolean Whether the window has keyboard focus.
----@field fullscreen? boolean `nil` on niri.
+---@field fullscreen? boolean Whether the window is fullscreen; `nil` on niri.
 ---@field id string Opaque, backend-shaped id for `:invoke`; compare it, never parse it.
----@field maximized? boolean `nil` on niri.
----@field minimized? boolean `nil` except on wlr.
+---@field maximized? boolean Whether the window is maximized; `nil` on niri.
+---@field minimized? boolean Whether the window is minimized; `nil` except on wlr.
 ---@field output? string Connector name; `nil` when unknown. On wlr, the first output the window entered.
 ---@field title string Window title; empty when unset.
 ---@field workspace_id? integer `WorkspaceEntry.id`; `nil` on wlr and on Hyprland special workspaces.
@@ -466,11 +466,13 @@
 
 --- Capabilities -------------------------------------------------------------------------------
 
+---[docs](https://anasgets111.github.io/mantle/capabilities/applications.html)
 ---@class ApplicationsCapability: Capability<ApplicationsState>
 ---@field invoke fun(self: ApplicationsCapability, command: "refresh") Rescans installed desktop entries.
 ---@field invoke fun(self: ApplicationsCapability, command: "launch", id: string) Launches `entries[].id`, detached; `Terminal=true` entries run in `$TERMINAL`.
 ---@field invoke fun(self: ApplicationsCapability, command: "open_url", url: string) Opens an `http`, `https` or `mailto` URL (at most 2048 bytes) with `xdg-open` (ADR-0103).
 
+---[docs](https://anasgets111.github.io/mantle/capabilities/audio.html)
 ---@class AudioCapability: Capability<AudioState>
 ---@field invoke fun(self: AudioCapability, command: "set_volume", volume: number) Sets master output volume, clamped to `[0.0, 1.5]`.
 ---@field invoke fun(self: AudioCapability, command: "set_muted", muted: boolean) Sets master output mute.
@@ -485,9 +487,11 @@
 ---@field invoke fun(self: AudioCapability, command: "set_app_muted", id: integer, muted: boolean) Sets an `apps[].id` stream's mute.
 ---@field invoke fun(self: AudioCapability, command: "set_bluetooth_profile", device: integer, index: integer) Switches a `bluetooth[].device` to one of its `codecs[].index`.
 
+---[docs](https://anasgets111.github.io/mantle/capabilities/battery.html)
 ---@class BatteryCapability: ReadOnlyCapability<BatteryState>
 local BatteryCapability = {}
 
+---[docs](https://anasgets111.github.io/mantle/capabilities/idle.html)
 ---@class IdleCapability: ReadOnlyCapability<IdleState>
 ---@field register_threshold fun(self: IdleCapability, seconds: integer, on_idle: fun(), on_resume: fun()): integer Runs `on_idle` after `seconds` without input and `on_resume` when input returns; returns a handle for `cancel_threshold`. When an earlier registration at the same `seconds` has already gone idle this evaluation, `on_idle` runs at once. Reloads drop registrations.
 ---@field cancel_threshold fun(self: IdleCapability, handle: integer) Drops one registration; an unknown handle is a no-op.
@@ -495,6 +499,7 @@ local BatteryCapability = {}
 ---@field release_inhibit fun(self: IdleCapability) Releases one `inhibit` hold; with none held, a no-op.
 local IdleCapability = {}
 
+---[docs](https://anasgets111.github.io/mantle/capabilities/bluetooth.html)
 ---@class BluetoothCapability: Capability<BluetoothState>
 ---@field invoke fun(self: BluetoothCapability, command: "set_enabled", enabled: boolean) Powers the adapter on or off.
 ---@field invoke fun(self: BluetoothCapability, command: "set_discoverable", discoverable: boolean) Makes the adapter findable by other devices, or not.
@@ -506,33 +511,40 @@ local IdleCapability = {}
 ---@field invoke fun(self: BluetoothCapability, command: "forget", mac: string) Removes a device from BlueZ, unpairing it.
 ---@field invoke fun(self: BluetoothCapability, command: "answer_pairing", mac: string, accept: boolean) Accepts or rejects the `pairing_request` for `mac`; a yes within 750 ms of it appearing is ignored.
 
+---[docs](https://anasgets111.github.io/mantle/capabilities/brightness.html)
 ---@class BrightnessCapability: Capability<BrightnessState>
 ---@field invoke fun(self: BrightnessCapability, command: "set", percent: integer) Sets the screen backlight, `0` to `100`; higher clamps to `100`.
 
+---[docs](https://anasgets111.github.io/mantle/capabilities/files.html)
 ---@class FilesCapability: Capability<FilesState>
 ---@field invoke fun(self: FilesCapability, command: "watch", path: string, extensions?: string[]) Keeps `folders[path]` listing an absolute folder. `extensions` match case-insensitively, dot optional; omitted means every file.
 ---@field invoke fun(self: FilesCapability, command: "unwatch", path: string) Stops watching `path` and removes it from `folders`.
 
+---[docs](https://anasgets111.github.io/mantle/capabilities/processes.html)
 ---@class ProcessesCapability: Capability<ProcessesState>
 ---@field invoke fun(self: ProcessesCapability, command: "declare", name: string, stop_signal?: SignalName) Registers `name` (required before `start`) and sets its stop signal, default `TERM`. Redeclaring updates the signal without touching a running program.
 ---@field invoke fun(self: ProcessesCapability, command: "start", name: string, cmd: string, args?: string[]) Runs `cmd` with `args` (no shell) as its own process group. No-op while `running` or when `name` is undeclared.
 ---@field invoke fun(self: ProcessesCapability, command: "signal", name: string, signal: SignalName) Sends `signal` to the program's process (not its group); no-op when not running.
 ---@field invoke fun(self: ProcessesCapability, command: "stop", name: string) Sends the declared stop signal to the process group, then `KILL` if it is still up 5 s later; no-op when not running.
 
+---[docs](https://anasgets111.github.io/mantle/capabilities/keyboard.html)
 ---@class KeyboardCapability: Capability<KeyboardState>
 ---@field invoke fun(self: KeyboardCapability, command: "set_backlight", percent: integer) Sets the keyboard backlight, `0` to `100`; higher clamps to `100`.
 ---@field invoke fun(self: KeyboardCapability, command: "switch_layout", index: integer) Switches to the 0-based configured layout `index`.
 
+---[docs](https://anasgets111.github.io/mantle/capabilities/lock.html)
 ---@class LockCapability: Capability<LockState>
 ---`mantle.lock` actions. There is no `unlock`; only a correct password unlocks (ADR-0042).
 ---@field invoke fun(self: LockCapability, command: "lock") Locks the session; a no-op while `active`.
 ---@field invoke fun(self: LockCapability, command: "set_unlock_animation", ms?: integer) Keeps the lock up `ms` after a correct password for an out-animation (ADR-0190). Clamped to 600; omitted is `0`.
 
+---[docs](https://anasgets111.github.io/mantle/capabilities/mpris.html)
 ---@class MprisCapability: Capability<MprisState>
 ---@field invoke fun(self: MprisCapability, command: "control", id: string, cmd: PlayerCommand) Sends a playback command to `players[].id`.
 ---@field invoke fun(self: MprisCapability, command: "seek", id: string, position_us: integer) Seeks to an absolute position in microseconds, clamped to `[0, length]` (only `>= 0` when `length` is `-1`).
 ---@field invoke fun(self: MprisCapability, command: "seek_relative", id: string, offset_us: integer) Seeks by a signed offset in microseconds, unclamped; past the end may skip to the next track.
 
+---[docs](https://anasgets111.github.io/mantle/capabilities/network.html)
 ---@class NetworkCapability: Capability<NetworkState>
 ---@field invoke fun(self: NetworkCapability, command: "set_networking_enabled", enabled: boolean) Turns NetworkManager networking on or off.
 ---@field invoke fun(self: NetworkCapability, command: "set_wifi_enabled", enabled: boolean) Powers the Wi-Fi radio.
@@ -544,6 +556,7 @@ local IdleCapability = {}
 ---@field invoke fun(self: NetworkCapability, command: "forget", ssid: string) Deletes every saved profile for this SSID.
 ---@field invoke fun(self: NetworkCapability, command: "disconnect_wifi") Disconnects Wi-Fi; NetworkManager does not autoconnect it again until the next join.
 
+---[docs](https://anasgets111.github.io/mantle/capabilities/notifications.html)
 ---@class NotificationsCapability: Capability<NotificationsState>
 ---@field invoke fun(self: NotificationsCapability, command: "dismiss", id: integer) Removes a queued notification.
 ---@field invoke fun(self: NotificationsCapability, command: "invoke_action", id: integer, key: string) Invokes an `actions[].key`, or `"default"`; removes the notification unless it is resident.
@@ -554,25 +567,32 @@ local IdleCapability = {}
 ---@field invoke fun(self: NotificationsCapability, command: "set_app_muted", app: string, muted: boolean) Silences every sound from an app, critical included, matched exactly on `app_name` or `desktop_entry`.
 ---@field invoke fun(self: NotificationsCapability, command: "hold_expiry", seconds: integer) Pauses every expiry countdown for `seconds`, capped at 300; `0` releases the hold.
 
+---[docs](https://anasgets111.github.io/mantle/capabilities/power.html)
 ---@class PowerCapability: Capability<PowerState>
 ---@field invoke fun(self: PowerCapability, command: "set_profile", name: string) Switches to one of `profiles`. Not validated here; a rejected name is logged and `active_profile` stays.
 
+---[docs](https://anasgets111.github.io/mantle/capabilities/privacy.html)
 ---@class PrivacyCapability: ReadOnlyCapability<PrivacyState>
 local PrivacyCapability = {}
 
+---[docs](https://anasgets111.github.io/mantle/capabilities/sysinfo.html)
 ---@class SysinfoCapability: Capability<SysinfoState>
 ---@field invoke fun(self: SysinfoCapability, command: "configure", intervals: SysinfoConfigure) Sets poll intervals; every one starts at `0`, so nothing is read until this. The first reading lands one interval later (CPU: two).
 
+---[docs](https://anasgets111.github.io/mantle/capabilities/system.html)
 ---@class SystemCapability: ReadOnlyCapability<SystemState>
 local SystemCapability = {}
 
+---[docs](https://anasgets111.github.io/mantle/capabilities/storage.html)
 ---@class StorageCapability: Capability<StorageState>
 ---@field invoke fun(self: StorageCapability, command: "open", path: string, defaults?: table<string, any>) Loads an absolute JSON file into `files[path]`, filling missing top-level keys from `defaults`. `persistent_table` sends this; stored values win over defaults.
 ---@field invoke fun(self: StorageCapability, command: "set", path: string, key: string, value?: any) Sets `key` in a declared file, `nil` deleting it; saved 1 s after the last write.
 
+---[docs](https://anasgets111.github.io/mantle/capabilities/polkit.html)
 ---@class PolkitCapability: Capability<PolkitState>
 ---@field invoke fun(self: PolkitCapability, command: "cancel") Dismisses the prompt; the requesting program sees the request cancelled.
 
+---[docs](https://anasgets111.github.io/mantle/capabilities/tray.html)
 ---@class TrayCapability: Capability<TrayState>
 ---@field invoke fun(self: TrayCapability, command: "activate", id: string, x: integer, y: integer) Left-click activation at screen coordinates `x`, `y`; a no-op when `item_is_menu`.
 ---@field invoke fun(self: TrayCapability, command: "secondary_activate", id: string, x: integer, y: integer) Middle-click activation at screen coordinates `x`, `y` (ADR-0074).
@@ -580,15 +600,18 @@ local SystemCapability = {}
 ---@field invoke fun(self: TrayCapability, command: "activate_menu_item", id: string, menu_item_id: integer) Clicks the item's `MenuItem.id`.
 ---@field invoke fun(self: TrayCapability, command: "menu_will_show", id: string, submenu_id: integer) Tells the application submenu `submenu_id` is opening, then refetches the menu unless it answers that nothing changed.
 
+---[docs](https://anasgets111.github.io/mantle/capabilities/updates.html)
 ---@class UpdatesCapability: Capability<UpdatesState>
 ---@field invoke fun(self: UpdatesCapability, command: "check") Checks for upgrades now, even when dormant; ignored while `checking`.
 ---@field invoke fun(self: UpdatesCapability, command: "configure", config: UpdatesConfigure) Sets the check schedule and AUR use, and seeds a remembered check.
 ---@field invoke fun(self: UpdatesCapability, command: "install") Runs a full upgrade, `pkexec pacman -Syu --noconfirm` or `aur_helper` when `aur` is on; ignored while `installing`.
 
+---[docs](https://anasgets111.github.io/mantle/capabilities/workspaces.html)
 ---@class WorkspacesCapability: Capability<WorkspacesState>
 ---@field invoke fun(self: WorkspacesCapability, command: "focus", id: integer) Focuses a `WorkspaceEntry.id`. Hyprland creates a missing number; niri ignores it.
 ---@field invoke fun(self: WorkspacesCapability, command: "toggle_special", name: string) Shows or hides a `special[].name` on Hyprland, creating an unknown one; no-op on niri.
 
+---[docs](https://anasgets111.github.io/mantle/capabilities/windows.html)
 ---@class WindowsCapability: Capability<WindowsState>
 ---@field invoke fun(self: WindowsCapability, command: "focus", id: string) Focuses a window.
 ---@field invoke fun(self: WindowsCapability, command: "close", id: string) Asks the compositor to close the window.
@@ -655,8 +678,8 @@ local SystemCapability = {}
 ---@field idle IdleCapability Idle inhibitors, plus threshold and inhibit methods.
 ---@field processes ProcessesCapability Programs declared with `session_process`: running state, start time and last exit.
 ---@field windows WindowsCapability Open toplevel windows with title, app ID, workspace, output and state flags.
----@field screens ReadOnlyCapability<Screen[]> Connected outputs from the Renderer. `{}` rather than `nil` at first evaluation (ADR-0041).
----@field rescue ReadOnlyCapability<RescueState> Whether the last evaluation, the startup apply or the session lock failed; the previous scene stays up (ADR-0046).
----@field version MantleVersion The engine's version. Not a signal.
----@field config_dir string Directory `shell.lua` was loaded from, for naming files shipped beside it. Not a signal.
+---@field screens ReadOnlyCapability<Screen[]> Connected outputs from the Renderer. `{}` rather than `nil` at first evaluation (ADR-0041). [docs](https://anasgets111.github.io/mantle/capabilities/index.html#renderer-members)
+---@field rescue ReadOnlyCapability<RescueState> Whether the last evaluation, the startup apply or the session lock failed; the previous scene stays up (ADR-0046). [docs](https://anasgets111.github.io/mantle/capabilities/index.html#renderer-members)
+---@field version MantleVersion The engine's version. Not a signal. [docs](https://anasgets111.github.io/mantle/capabilities/index.html#renderer-members)
+---@field config_dir string Directory `shell.lua` was loaded from, for naming files shipped beside it. Not a signal. [docs](https://anasgets111.github.io/mantle/capabilities/index.html#renderer-members)
 mantle = {}

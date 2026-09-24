@@ -1,6 +1,6 @@
 # Decision records
 
-Decisions live in one file, `docs/decisions.md`, one entry each, numbered sequentially.
+Decisions live in one file, `DECISIONS.md`, one entry each, numbered sequentially.
 
 ## Template
 
@@ -22,7 +22,7 @@ Only when it adds value. Most entries need none.
 
 ## Numbering
 
-Take the highest `## NNNN.` in `docs/decisions.md` and add one. Never reuse or renumber: code cites
+Take the highest `## NNNN.` in `DECISIONS.md` and add one. Never reuse or renumber: code cites
 `ADR-NNNN`.
 
 ## Superseding
