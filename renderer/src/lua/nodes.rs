@@ -14,7 +14,7 @@ pub(crate) mod properties;
 mod stubs;
 
 pub(crate) use properties::range;
-use properties::{KINDS, kind_bit, properties};
+use properties::{KINDS, Property, kind_bit, properties};
 
 /// The node kinds, one global constructor each.
 fn node_kinds() -> impl Iterator<Item = &'static str> {
@@ -27,15 +27,15 @@ fn kind_entry(kind: &str) -> Option<(&'static str, u16)> {
     Some((KINDS[bit.trailing_zeros() as usize], bit))
 }
 
-/// The table's own `&'static str` for `property`, which is what a [`PropMap`] keys by. A scan of
+/// The row for `property`, whose `&'static str` name is what a [`PropMap`] keys by. A scan of
 /// the ~130 rows: ADR-0219 priced the per-property lookup at 10 ns against a 2.65 ms pass.
-fn name_in(bit: u16, property: &str) -> Option<&'static str> {
-    properties().find(|row| row.kinds & bit != 0 && row.name == property).map(|row| row.name)
+fn row_in(bit: u16, property: &str) -> Option<&'static Property> {
+    properties().find(|row| row.kinds & bit != 0 && row.name == property)
 }
 
-/// [`name_in`] for a caller holding only the kind. `animate` validates its entries this way.
-pub(crate) fn accepted_name(kind: &str, property: &str) -> Option<&'static str> {
-    name_in(kind_bit(kind)?, property)
+/// [`row_in`] for a caller holding only the kind.
+pub(crate) fn accepted(kind: &str, property: &str) -> Option<&'static Property> {
+    row_in(kind_bit(kind)?, property)
 }
 
 /// Accepted properties, sorted for errors.
@@ -106,7 +106,7 @@ pub fn deserialize_lua_table(table: &Table) -> Result<VirtualNode, DeserializeEr
         let name = match &key {
             Value::String(s) => match s.to_str() {
                 Ok(text) if &*text == "kind" => continue,
-                Ok(text) => name_in(bit, &text),
+                Ok(text) => row_in(bit, &text).map(|row| row.name),
                 Err(_) => None,
             },
             _ => None,

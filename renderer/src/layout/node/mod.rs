@@ -294,38 +294,14 @@ fn parse_hex_color(property: &str, s: &str) -> Result<Rgba, LayoutError> {
 }
 
 /// Whether `property` is one [`resolve_properties`] copies through untouched on a node of this
-/// `kind`, so [`reject_signal_in_structural_field`] still sees a raw `Value::UserData` and can
-/// refuse it. Resolving then rejecting is unimplementable: once read, a signal's value is
-/// indistinguishable from a literal. Kind-aware because a skip is only sound where a parser runs to
-/// do the rejecting. `id` is skipped on every kind (the `id` fields read it
-/// wherever it appears). `layer`/`anchor`/`monitor`/`namespace` are read only by
-/// `surface::surface_topology` on top-level surfaces; skipping them on a `rect` (where no parser
-/// reads them) would leak a live `Signal` into `layout::scene::ResolvedNode::properties`, breaking
-/// its "never a `Signal`" invariant. Below a surface these resolve like any ordinary property.
-/// `namespace` joins the carve-out for the same protocol reason as `monitor`:
-/// `zwlr_layer_shell_v1::get_layer_surface` fixes a namespace at creation and no request changes it
-/// on a live surface. The in-place `panel` fields (`keyboard_interactivity`, `exclusive`, `margin`,
-/// `width`/`height`) are deliberately *not* here: layer-shell permits changing each on a live
-/// surface (ADR-0044 decision 1). `window`, `popup` and `lock` add nothing, by the same live-object
-/// test: a `window`'s `set_title`/`set_app_id`/`set_min_size`/`set_max_size` are all valid requests
-/// on a mapped toplevel; a `popup`'s whole `xdg_positioner` is rebuilt on every open (ADR-0049
-/// decision 1), so `anchor_rect`/`anchor`/`gravity` may carry a `Signal` (`parent` may not:
-/// `get_popup` pins one parent, ADR-0051 decision 1); a `lock`'s property list is only `id` and
-/// `child`, already the universal arm's as a reconcile
-/// identity rather than a protocol field. `hover` joins it there on any kind (ADR-0062 decision 3):
-/// it names the signal the pointer handler writes, and a resolved `hover` would arrive as the
-/// boolean `false`, saying nothing about *which* signal that is.
+/// `kind`: its field's type reads it raw ([`prop::Prop::RAW`]), so
+/// [`reject_signal_in_structural_field`] still sees a signal to refuse and a [`prop::Handle`] keeps
+/// the signal it names. Resolving then rejecting is unimplementable: once read, a signal's value is
+/// indistinguishable from a literal. A panel's `layer`/`anchor`/`monitor`/`namespace` are structural
+/// because `get_layer_surface` fixes them at creation, a popup's `parent` because `get_popup` pins
+/// one (ADR-0051 decision 1); what a live request can change stays bound (ADR-0044 decision 1).
 pub(crate) fn is_structural_property(kind: &str, property: &str) -> bool {
-    property == "id"
-        || property == "hover"
-        // ADR-0069 decision 4: the positioning pass reads this signal's number and writes the
-        // clamped one back, so it needs the handle, not a snapshot.
-        || property == "scroll"
-        // ADR-0147: the pass writes the laid-out rect into this handle after the solve.
-        || property == "geometry"
-        || (kind == "panel" && matches!(property, "layer" | "anchor" | "monitor" | "namespace"))
-        // `get_popup` pins one parent (ADR-0051 decision 1).
-        || (kind == "popup" && property == "parent")
+    crate::lua::nodes::accepted(kind, property).is_some_and(|row| row.raw)
 }
 
 /// One node's raw property map with every `Signal` replaced by its current value (ADR-0044 decision

@@ -78,7 +78,8 @@ fn animatable_name(kind: &str, property: &str, field: &str) -> Result<&'static s
     if property == "z" {
         return Err(invalid(field, "`z` snaps; it cannot animate"));
     }
-    crate::lua::nodes::accepted_name(kind, property)
+    crate::lua::nodes::accepted(kind, property)
+        .map(|row| row.name)
         .filter(|name| *name != "animate")
         .ok_or_else(|| invalid(field, format!("`{property}` is not a property of a `{kind}` node")))
 }

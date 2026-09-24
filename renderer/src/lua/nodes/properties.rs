@@ -614,22 +614,4 @@ mod tests {
             }
         }
     }
-
-    /// `resolve_properties` copies these through as written by name, so they must be the rows whose
-    /// type is read raw: a `Structural` field it resolved would reach its parser as a value, and a
-    /// `Handle` as a snapshot of the signal it names.
-    #[test]
-    fn the_raw_rows_are_the_ones_resolve_copies_through() {
-        for kind in KINDS {
-            let bit = kind_bit(kind).unwrap();
-            for row in properties().filter(|row| row.kinds & bit != 0) {
-                assert_eq!(
-                    crate::layout::node::is_structural_property(kind, row.name),
-                    row.raw,
-                    "`{kind}.{}`",
-                    row.name
-                );
-            }
-        }
-    }
 }
