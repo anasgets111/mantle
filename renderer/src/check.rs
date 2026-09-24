@@ -175,8 +175,9 @@ mod doc_examples {
     /// Per channel. NVIDIA and llvmpipe differ by at most 2; 1 px of padding, spacing or radius, or
     /// any colour change, moves some pixel further.
     const TOLERANCE: u8 = 2;
-    /// Transparent pixels show as Catppuccin Mocha base, the book's own background.
-    const BACKDROP: [u8; 3] = [0x1e, 0x1e, 0x2e];
+    /// Transparent pixels show as Catppuccin Mocha crust, darker than the book's base, so a surface
+    /// painted in base keeps its edge.
+    const BACKDROP: [u8; 3] = [0x11, 0x11, 0x1b];
     /// 2026-09-24 12:45:00 UTC: what `os.time()` returns in a shot.
     const EPOCH: u64 = 1_790_253_900;
 
