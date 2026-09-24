@@ -69,11 +69,9 @@ pub(super) struct SurfaceStateWork {
     pub(super) popup_latch: bool,
 }
 
-/// `apply_resolved_state` is a role spec parse and an undiffed `wl_region` round trip per surface.
-/// A pass earns that for all of them. A tick earns it for the instances it named and no others:
-/// `Scene::tick` mutates only the trees it returns, so every other surface still has the tree its
-/// last push came from. Eighteen mapped surfaces at 60 Hz is otherwise seventeen region round
-/// trips a frame for surfaces the narrowed repaint will not even paint.
+/// `apply_resolved_state` is a role spec parse per surface. A pass earns that for all of them. A
+/// tick earns it for the instances it named and no others: `Scene::tick` mutates only the trees it
+/// returns, so every other surface still has the tree its last push came from.
 ///
 /// The latch is the exception, and it is an exception because it does not come from the scene at
 /// all. A press or release arms `input_serial` and bumps `pointer_input_count`, and the loop

@@ -1196,10 +1196,8 @@ pub fn retarget(
 /// `opacity` is in `LayoutStyle` and still belongs here: the solver never receives it, `finish`
 /// only copies it onto the node, and `layout::paint` multiplies it down the subtree.
 ///
-/// The transform properties are deliberately absent even though the solver ignores them too.
-/// ADR-0149 maps the pointer back through a node's inverse transform, so moving one changes what
-/// the pointer hits, and the input regions have to be rebuilt with it. They stay on the layout
-/// path until something rebuilds those regions without a full pass.
+/// The transform properties belong here too (ADR-0261): hit testing reads them at event time, and
+/// the regions they move are re-derived for every ticked surface.
 const PAINT_ONLY: &[&str] = &[
     "opacity",
     "background",
@@ -1213,6 +1211,10 @@ const PAINT_ONLY: &[&str] = &[
     "shadow_spread",
     "content_blur",
     "backdrop_blur",
+    "translate",
+    "scale",
+    "rotate",
+    "origin",
 ];
 
 /// Whether a tween on `property` can be advanced by a paint-only tick; see [`PAINT_ONLY`].

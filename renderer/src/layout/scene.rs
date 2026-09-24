@@ -1071,9 +1071,9 @@ fn repainted_keeping_fitted_text(old: Option<PaintStyle>, fresh: Option<PaintSty
 /// One frame of a tree whose every running tween is paint-only, advanced where it stands.
 ///
 /// [`relayout_retained`] answers one question -- what size is everything now -- and
-/// `node::is_paint_only` is the set of properties that cannot change the answer. So this walks the tree the tweens are already in, advances them, and re-derives the two things they do
-/// change: the node's own `opacity` and its parsed paint. No clone, no solver tree, no measurement,
-/// and no geometry to publish, because no rect moved.
+/// `node::is_paint_only` is the set of properties that cannot change the answer. So this walks the
+/// tree the tweens are already in, advances them, and re-derives the node's parsed state. No clone,
+/// no solver tree, no measurement, and no geometry to publish, because no rect moved.
 fn advance_paint_only(node: &mut ResolvedNode, now: Instant, lua: &Lua) -> Result<(), LayoutError> {
     // Frozen, tweens included (ADR-0124): `animating` does not count a hidden subtree, and
     // `tick_is_paint_only` passes over it for the same reason.
@@ -1119,18 +1119,20 @@ fn advance_paint_only_node(node: &mut ResolvedNode, now: Instant, lua: &Lua) -> 
         .map(|(property, value)| (*property, value.clone()))
         .collect();
     // Nothing is assigned to the node until every step has succeeded, so a refusal leaves its
-    // `opacity`, `effect` and `paint` describing the same frame its properties do.
+    // `opacity`, `transform`, `effect` and `paint` describing the same frame its properties do.
     let advanced = node::advance(&mut node.tweens, &mut node.properties, now, lua).and_then(|()| {
         let properties = &node.properties;
         Ok((
             node::parse_opacity(properties)?,
+            node::parse_transform(properties)?,
             node::parse_effect(properties)?,
             node::paint_style(node.kind, properties)?,
         ))
     });
     match advanced {
-        Ok((opacity, effect, fresh)) => {
+        Ok((opacity, transform, effect, fresh)) => {
             node.opacity = opacity;
+            node.transform = transform;
             node.effect = effect;
             node.paint = repainted_keeping_fitted_text(node.paint.take(), fresh);
             Ok(())
@@ -3192,6 +3194,37 @@ pub(super) mod tests {
         assert!(
             d.x0 >= clip.x0 - 2 && d.x1 <= clip.x1 + 2 && d.y0 >= clip.y0 - 2 && d.y1 <= clip.y1 + 2,
             "damage {d:?} outside the shader's box {clip:?}"
+        );
+    }
+
+    /// ADR-0261. A `translate` and `scale` loop ticks without a relayout, and the input region
+    /// follows it.
+    #[test]
+    fn a_transform_loop_ticks_paint_only_and_its_input_region_follows() {
+        let mut scene = Scene::new();
+        let shaping = ShapingHandle::spawn();
+        let (lua, surface) = surface_from(
+            r##"panel { id = "bar", child = row { width = 400, height = 40, children = {
+                  rect { width = 20, height = 20, background = "#ffffff",
+                         animate = { translate = { duration = 100, easing = "Linear", loops = "Infinite",
+                                                   keyframes = { { x = 0, y = 0 }, { x = 200, y = 0 } } },
+                                     scale = { duration = 100, easing = "Linear", loops = "Infinite",
+                                               keyframes = { 1, 2 } } } } } } }"##,
+        );
+        apply_at(&mut scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
+        let root = scene.surface("bar@TEST").unwrap();
+        assert!(root.tick_is_paint_only(), "a transform asks the solver nothing");
+        let (rect, started) = (root.children[0].children[0].rect, root.children[0].children[0].tweens[0].started);
+        scene.tick(&[instance_at(&surface, full())], &shaping, &lua, started + std::time::Duration::from_millis(50));
+
+        // Halfway: translate 100, scale 1.5 about the centre, so the box spans x 95..125.
+        let root = scene.surface("bar@TEST").unwrap();
+        let node = &root.children[0].children[0];
+        assert_eq!(node.rect, rect, "a paint-only tick moves no rect");
+        assert_eq!((node.transform.translate, node.transform.scale), ((100.0, 0.0), (1.5, 1.5)));
+        assert_eq!(
+            crate::layout::overlay_input_regions(root, 1.0),
+            [crate::text::snap::PhysicalRect { x0: 95, y0: -5, x1: 125, y1: 25 }]
         );
     }
 

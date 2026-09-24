@@ -6320,3 +6320,24 @@ Rejected: a square gradient under a scoop, which darkens its notches; a scissor 
 operation for the knockout, which cannot follow `radius` on the target without an offscreen.
 
 **Amends ADR-0254** (decision 2's paths and decision 6: a box shadow fades with the node).
+
+## 0261. A transform tween ticks paint-only
+
+A `translate` and `scale` loop at 166 Hz cost 1.40 ms of `tick` a frame, 44% of a 3.2 ms frame:
+transforms stayed off the paint-only list because moving one moves what the pointer hits, and
+the whole surface relaid out every frame to rebuild its input region.
+
+1. **`translate`, `scale`, `rotate` and `origin` are paint-only.** The tick re-parses the node's
+   `transform` beside its opacity, effect and paint. No rect moves, so `geometry` writes nothing.
+2. **Hover follows the tick.** `refresh_hover_after_layout` runs after every tick, so a box moving
+   under a still pointer updates its `hover` signals; `on_hover` still follows only the pointer
+   (ADR-0112).
+
+3. **An unchanged input region is not resent.** A moving box would otherwise send a region every
+   frame. The last one sent is kept per surface, forgotten with the role object, as the blur
+   region's already was.
+
+Paint-only 1.0 µs against 53 µs relayout; regions 1.3 µs.
+
+**Amends ADR-0145** (decision 3: a transform tween skips the relayout) **and ADR-0149** (the
+transform re-derives on the paint-only tick).

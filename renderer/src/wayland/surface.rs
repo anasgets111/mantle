@@ -316,12 +316,10 @@ pub(super) struct TrackedSurface {
     /// the protocol, and on every surface whose tree never sets `blur`. [`App::drop_role_object`]
     /// destroys it with its `wl_surface`: `set_blur_region` on an inert one kills the client.
     pub(super) blur_effect: Option<ExtBackgroundEffectSurfaceV1>,
-    /// The region last sent, so an unchanged one is not resent. `apply_input_region` deliberately
-    /// does not diff, and says why: one `wl_region` round trip is cheaper than the repaint that
-    /// follows it. That reasoning was about a handful of rectangles. A rounded card is a couple of
-    /// dozen, several cards more, and a card that only fades has the same region on every frame of
-    /// the fade, so this one compares.
+    /// The blur region last sent, so an unchanged one is not resent.
     pub(super) last_blur_region: Vec<crate::text::snap::PhysicalRect>,
+    /// The input region last sent, `None` before this `wl_surface` was sent one (ADR-0261).
+    pub(super) last_input_region: Option<Vec<crate::text::snap::PhysicalRect>>,
 }
 impl TrackedSurface {
     pub(super) fn new(role: TrackedRole, surface_id: String) -> Self {
@@ -337,6 +335,7 @@ impl TrackedSurface {
             stale: None,
             blur_effect: None,
             last_blur_region: Vec::new(),
+            last_input_region: None,
         }
     }
 
@@ -366,6 +365,7 @@ impl TrackedSurface {
             effect.destroy();
         }
         self.last_blur_region.clear();
+        self.last_input_region = None;
         self.map_state = MapState::Unmapped;
         // Those pixels are gone, and a kept list would pin its images through `trim` (ADR-0182).
         self.last_painted = None;
@@ -580,12 +580,7 @@ impl App {
 
     /// The same, for the instances a tween tick advanced.
     ///
-    /// A tick moves the trees it names and no others, so the rest hold the fields, region and
-    /// visibility they were last pushed. Re-deriving those costs a role spec parse and a
-    /// `wl_region` create/add/set/destroy per surface, and `apply_input_region` deliberately does
-    /// not diff, a reasonable trade when a GPU repaint follows, which for a narrowed tick is
-    /// exactly what does not. Eighteen mapped surfaces at 60 Hz make that seventeen round trips a
-    /// frame for surfaces nothing is going to paint.
+    /// A tick re-derives only the trees it moved, saving a role spec parse per surface.
     pub(super) fn apply_resolved_surface_state_for(&mut self, named: &[&[String]]) {
         for index in 0..self.surfaces.len() {
             if named.iter().any(|ids| ids.contains(&self.surfaces[index].surface_id)) {
@@ -698,21 +693,22 @@ impl App {
 
     /// Set the per-surface input region from the resolved tree (ADR-0038 decision 5): no
     /// visible children means pass-through, a full child covers the surface, and intermediate
-    /// content gets its visible geometry. Scale is `1.0` because no buffer scale is set. Do not
-    /// diff against the last region: the following GPU repaint costs more than one `wl_region`
-    /// round trip. That holds because every caller is a surface about to paint; see
-    /// [`App::apply_resolved_surface_state_for`], which is what keeps a tick's frame from paying
-    /// this for the surfaces it did not move. Skip a hidden window with no `wl_surface`; its first
-    /// post-show re-resolve sets the region.
+    /// content gets its visible geometry. Scale is `1.0` because no buffer scale is set. An
+    /// unchanged region is not resent: a transform tween re-derives it every frame (ADR-0261).
+    /// Skip a hidden window with no `wl_surface`; its first post-show re-resolve sets the region.
     fn apply_input_region(&mut self, index: usize, regions: Vec<crate::text::snap::PhysicalRect>) {
         let Some(surface) = self.surfaces[index].role.wl_surface().cloned() else {
             return;
         };
+        if self.surfaces[index].last_input_region.as_ref() == Some(&regions) {
+            return;
+        }
         let Some(region) = self.region_of(index, &regions) else {
             return;
         };
         surface.set_input_region(Some(region.wl_region()));
         // `set_input_region` copies the contents, so dropping the region here is sufficient.
+        self.surfaces[index].last_input_region = Some(regions);
     }
 
     fn region_of(&self, index: usize, rects: &[crate::text::snap::PhysicalRect]) -> Option<Region> {
@@ -1480,12 +1476,14 @@ mod tests {
         tracked.map_state = MapState::Mapped;
         tracked.last_painted = Some(((640, 480), layout::paint::DisplayList::default()));
         tracked.last_blur_region.push(crate::text::snap::PhysicalRect { x0: 0, y0: 0, x1: 4, y1: 4 });
+        tracked.last_input_region = Some(Vec::new());
 
         tracked.forget_role_object();
 
         assert_eq!(tracked.map_state, MapState::Unmapped);
         assert!(tracked.last_painted.is_none(), "a kept list pins its images in `ImageCache::trim`");
         assert!(tracked.last_blur_region.is_empty());
+        assert!(tracked.last_input_region.is_none());
     }
 
     #[test]
