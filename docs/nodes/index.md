@@ -67,6 +67,7 @@ and box properties and stack their one `child` ([surfaces](../surfaces/index.md)
 
 | Rule | Detail |
 | :--- | :--- |
+| Types | A property table's Type column is the editor stubs' LuaCATS type. `Bound` means it also takes a signal; `Length` is a [size](#sizes); `Edges` is `{ top, right, bottom, left }` with missing edges 0; `Axes` is `{ x, y }` with a missing axis at the property's default; `Color` is a colour; `Animations` is per-property [tweens](../guide/animation.md). A range after the type is checked |
 | Signals | Any property can hold a [signal](../guide/signals.md) except `id` and callbacks. `hover`, `scroll` and `geometry` take the signal handle itself. A signal nested inside a property table is not resolved, and is refused: derive the whole table |
 | `nil` | A property whose signal reads `nil` is absent, so it takes its default. Capabilities read `nil` until their first push, so a bare capability binding never fails layout |
 | Numbers | Finite. A value outside a property's range is an error, not a clamp |
@@ -151,27 +152,38 @@ lines inside the node's own box, and matters only when that box is wider than th
 
 ## Common properties
 
-| Property | Values | Default |
-| :--- | :--- | :--- |
-| `id` | String, unique among siblings; see [identity](#identity-and-reconciliation) | None |
-| `width`, `height` | See [sizes](#sizes) | Content |
-| `min_width`, `min_height`, `max_width`, `max_height` | Pixels `[0, 8192]` | None |
-| `padding`, `margin` | Number or `{ top, right, bottom, left }` | 0 |
-| `align_h`, `align_v` | `"Start"`, `"Center"`, `"End"`, `"Stretch"`; see [alignment](#alignment) | `"Start"` |
-| `visible` | Boolean; `false` removes the node and freezes its subtree ([showing and hiding](#showing-hiding-and-switching)) | `true` |
-| `opacity` | `[0, 1]`, multiplied down the tree | 1 |
-| `z` | Finite number. Siblings paint and hit-test in ascending `z`, ties in declaration order. Layout and focus order ignore it; it cannot animate | 0 |
-| `cursor` | One of the [cursor names](#cursor-names). The innermost node under the pointer that sets one wins | `"pointer"` on a `button` with a handler or `submit` and over a link, `"text"` on a `textfield`, else the arrow |
-| `scale` | Number or `{ x, y }`, `[0, 64]`. A missing axis is 1 | 1 |
-| `rotate` | Degrees clockwise, `[-8192, 8192]` | 0 |
-| `translate` | `{ x, y }` px, `[-8192, 8192]`, applied after scale and rotate. A missing axis is 0 | `{ x = 0, y = 0 }` |
-| `origin` | `{ x, y }` fractions of the box `[0, 1]`: the pivot for scale and rotate. A missing axis is 0.5 | `{ x = 0.5, y = 0.5 }` |
-| `hover` | A `hover(name)` signal the engine sets while the pointer is over this node or its children ([hover](../guide/input.md#hover)) | None |
-| `on_hover(inside)` | Called with `true`/`false` when the pointer crosses the node's edge. Refused without `hover` on the same node | None |
-| `geometry` | A `geometry(name)` signal the pass writes this node's surface-local rect into ([geometry](../guide/signals.md#geometry-read-a-nodes-laid-out-rect)) | None |
-| `animate` | Per-property tweens and an `exit` block ([animation](../guide/animation.md)) | None |
-| `shadow_color`, `shadow_blur`, `shadow_offset`, `shadow_spread` | A drop shadow ([shadows](../guide/paint.md#shadows)) | None |
-| `content_blur` | Blur of this node's painted subtree ([blurs](../guide/paint.md#blurs)) | 0 |
+<!-- Generated from renderer/src/lua/nodes/properties.rs by `just stubs`: edit the table there. -->
+| Property | Type | Default | Behaviour |
+| :--- | :--- | :--- | :--- |
+| `width` | `Length\|Bound`, `[0, 8192]` | Content | See [sizes](#sizes) |
+| `height` | `Length\|Bound`, `[0, 8192]` | Content | See [sizes](#sizes) |
+| `max_width` | `number\|Bound`, `[0, 8192]` | None | Pixel ceiling, CSS `max-width`. Content past it overflows; a `scroll` on the same node scrolls it ([sizes](#sizes)) |
+| `max_height` | `number\|Bound`, `[0, 8192]` | None | Pixel ceiling, as `max_width` |
+| `min_width` | `number\|Bound`, `[0, 8192]` | None | Pixel floor, CSS `min-width`; wins over a lower `max_width` |
+| `min_height` | `number\|Bound`, `[0, 8192]` | None | Pixel floor, as `min_width` |
+| `margin` | `number\|Edges\|Bound` | `0` | Outside the box; part of the room the node takes in its parent. A number sets all four edges; not range-checked ([spacing](#spacing-padding-and-margin)) |
+| `padding` | `number\|Edges\|Bound` | `0` | Inside the box, around its children or text. A number sets all four edges; not range-checked ([spacing](#spacing-padding-and-margin)) |
+| `align_h` | `"Start"\|"Center"\|"End"\|"Stretch"\|Bound` | `"Start"` | See [alignment](#alignment) |
+| `align_v` | `"Start"\|"Center"\|"End"\|"Stretch"\|Bound` | `"Start"` | See [alignment](#alignment) |
+| `visible` | `boolean\|Bound` | `true` | `false` removes the node from layout, paint and spacing and freezes its subtree ([showing and hiding](#showing-hiding-and-switching)) |
+| `opacity` | `number\|Bound`, `[0, 1]` | `1` | Multiplied down the tree. At `0` the node still takes space and input |
+| `z` | `number\|Bound` | `0` | Sibling paint and hit order. Higher paints later and hits first; ties keep declaration order. Layout and focus ignore it; cannot animate |
+| `scale` | `number\|Axes\|Bound`, `[0, 64]` | `1` | About `origin`; a missing axis is `1`. Paint only: layout and `geometry` see the unscaled box; hit-testing follows the painted one |
+| `rotate` | `number\|Bound`, `[-8192, 8192]` | `0` | Degrees clockwise about `origin`. Paint only |
+| `translate` | `Axes\|Bound`, `[-8192, 8192]` | `{ x = 0, y = 0 }` | Pixel offset per axis, a missing one `0`, applied after `scale` and `rotate`. Paint only |
+| `origin` | `Axes\|Bound`, `[0, 1]` | `{ x = 0.5, y = 0.5 }` | Pivot for `scale` and `rotate` as box fractions; a missing axis is `0.5` |
+| `shadow_color` | `Color\|Bound` | `"#000000"` | A drop shadow ([shadows](../guide/paint.md#shadows)). Draws when alpha > 0 and `shadow_blur`, `shadow_offset` or `shadow_spread` is set |
+| `shadow_blur` | `number\|Bound`, `[0, 8192]` | `0` | CSS `box-shadow` blur radius in px |
+| `shadow_offset` | `Axes\|Bound`, `[-8192, 8192]` | `{ x = 0, y = 0 }` | Shadow offset in px per axis. Follows the node's transform |
+| `shadow_spread` | `number\|Bound`, `[-8192, 8192]` | `0` | Px the shadow grows (or shrinks) per side. On non-box content it scales the shadow about the box centre |
+| `content_blur` | `number\|Bound`, `[0, 8192]` | `0` | Gaussian sigma in px over this node's painted subtree, CSS `filter: blur()` ([blurs](../guide/paint.md#blurs)). Clipped like a shadow |
+| `animate` | `Animations\|Bound` | None | Per-property tweens and an `exit` block ([animation](../guide/animation.md)). Only a node already on screen animates, unless the entry has `from` |
+| `id` | `string` | None | Unique among siblings; matches this node across passes ([identity](#identity-and-reconciliation)). Never a signal |
+| `hover` | `Bound` | None | A `hover(name)` signal the engine sets while the pointer is over this node or its children ([hover](../guide/input.md#hover)) |
+| `geometry` | `Bound` | None | A `geometry(name)` signal the pass writes this node's surface-local rect into ([geometry](../guide/signals.md#geometry-read-a-nodes-laid-out-rect)) |
+| `cursor` | `Cursor\|Bound` | `"pointer"` on a `button` with a handler or `submit` and on a link, `"text"` on a `textfield`, else the arrow | One of the [cursor names](#cursor-names). The innermost node under the pointer that sets one wins |
+| `on_hover` | `fun(hovered: boolean)` | None | Called on each hover edge from pointer Enter, Motion or Leave; layout changes under a still pointer do not call it. Refused without `hover` on the same node |
+<!-- End of the generated table. -->
 
 `scale`, `rotate` and `translate` are paint-only, like CSS `transform`: the node and its subtree
 draw moved, but layout, siblings and `geometry` see the untransformed box. Hit-testing follows the

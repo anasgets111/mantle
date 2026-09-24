@@ -123,11 +123,12 @@ lua:
     echo "all lua parses"
     python3 tools/luafmt.py --check {{lua_dirs}}
 
-# Regenerate `lua-meta/mantle.lua` and `docs/capabilities/<name>.md` from the supervisor's payload
-# types, then show what moved.
+# Regenerate every `lua-meta/*.lua` stub and the docs they feed: capability pages from the
+# supervisor's payload types, node and surface property tables from the renderer's property table.
+# Every golden test is named `the_generated_*`. Then show what moved.
 stubs:
-    UPDATE_STUBS=1 cargo test -p supervisor stubs
-    @git diff --stat -- lua-meta/mantle.lua docs/capabilities
+    UPDATE_STUBS=1 cargo test -p supervisor -p renderer the_generated_
+    @git diff --stat -- lua-meta docs
 
 # Separate from `lint` because a diff and a warning fail differently, and folding them buries the
 # diff. 71266cb and c83e79e landed four unformatted files with `just check` green on both.

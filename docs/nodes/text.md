@@ -33,17 +33,19 @@ The middle column is `"Fill"` so the texts have a bounded width; the icon keeps 
 
 `text` takes the [common properties](index.md#common-properties), plus:
 
-| Property | Values | Default | Behaviour |
+<!-- Generated from renderer/src/lua/nodes/properties.rs by `just stubs`: edit the table there. -->
+| Property | Type | Default | Behaviour |
 | :--- | :--- | :--- | :--- |
-| `content` | A string, or an array of up to 10000 [runs](#runs) | `""` | Drawn as one paragraph |
-| `font` | A family name | The `fonts` chain | Placed before the chain for this node. An unknown family falls back to the chain; `""` is refused |
-| `font_size` | Pixels, `[1, 8192]` | 12 | Each line is `1.2 × font_size` tall |
-| `foreground` | [Colour](../guide/paint.md#colours) | `"#FFFFFF"` | A run's `color` overrides it |
-| `text_align` | `"Start"`, `"Center"`, `"End"` | `"Start"` | Places lines inside the node's own box; `"Start"` and `"End"` follow each line's reading direction. Matters only when the box is wider than the text |
-| `wrap` | `"None"`, `"Word"` | `"None"` | `"None"`: one line. `"Word"`: break at words, mid-word for a word wider than the box |
-| `max_lines` | Non-negative number; 0 is unlimited | 0 | Line cap under `wrap = "Word"`. Ignored without `wrap`. A negative value is refused |
-| `elide` | `"None"`, `"End"` | `"None"` | `"End"` ends an over-long line with `…`. Under `wrap`, applies to the last kept line |
-| `on_link(href)` | Function | None | Called when a run with an `href` is clicked. The engine never opens the link. Takes that click from any `button` around it; a click elsewhere on the text passes through |
+| `content` | `string\|TextRun[]\|Bound` | `""` | A string, or an array of up to 10000 [runs](#runs), drawn as one paragraph |
+| `font` | `string\|Bound` | The `fonts` chain | Family placed before the `fonts` chain. `""` raises; an unknown family falls back to the chain |
+| `font_size` | `number\|Bound`, `[1, 8192]` | `12` | Each line is `1.2 × font_size` tall |
+| `foreground` | `Color\|Bound` | `"#FFFFFF"` | A [colour](../guide/paint.md#colours); a run's `color` overrides it |
+| `text_align` | `"Start"\|"Center"\|"End"\|Bound` | `"Start"` | Aligns lines inside the node's own box; `Start`/`End` follow each line's reading direction. Matters only when the box is wider than the text |
+| `wrap` | `"None"\|"Word"\|Bound` | `"None"` | `"Word"` breaks at words, mid-word when one word is too wide. Needs a bounded width (`width`, `"Fill"` or a stretched cross axis) |
+| `max_lines` | `number\|Bound` | `0` | Line cap under `wrap = "Word"`; `0` is unlimited, a negative value is refused. Ignored without `wrap` |
+| `elide` | `"None"\|"End"\|Bound` | `"None"` | `"End"` ends an over-long line with an ellipsis; under `wrap` it applies to the last kept line |
+| `on_link` | `fun(href: string)` | None | Click on a run with an `href`; the engine never opens it. Takes the click from any ancestor `button`; plain text passes it through |
+<!-- End of the generated table. -->
 
 ### Runs
 

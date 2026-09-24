@@ -56,9 +56,19 @@ fn decode(lua: &Lua, bytes: &[u8]) -> Result<Value, String> {
 /// `json.decode` does not raise on input, well-formed or not, unless Lua cannot allocate the
 /// message string.
 pub fn register(lua: &Lua) -> mlua::Result<()> {
-    let table = lua.create_table()?;
-    table.set("decode", lua.create_function(|lua, text: mlua::LuaString| Ok(decode(lua, &text.as_bytes())))?)?;
-    lua.globals().set("json", table)
+    super::define(lua, "json", "", lua.create_table()?)?;
+    super::define(
+        lua,
+        "json.decode",
+        r#"---Decodes JSON and never raises: failure returns `nil, message`. JSON `null` also decodes to `nil`,
+---and a `null` array element leaves a hole that stops `ipairs` (ADR-0057). There is no encoder.
+---[docs](https://anasgets111.github.io/mantle/guide/scripting.html#jsondecode)
+---@param text string
+---@return any value
+---@return string? error
+"#,
+        lua.create_function(|lua, text: mlua::LuaString| Ok(decode(lua, &text.as_bytes())))?,
+    )
 }
 
 #[cfg(test)]

@@ -41,22 +41,26 @@ bar takes clicks ([input region](index.md#input-region)).
 
 ## Properties
 
-Beyond the [shared properties](index.md#properties-every-role-takes). *Structural* fields refuse a
-signal and rebuild the surface when edited; *live* ones take a signal and update it in place
-([reload](index.md#reload-and-structural-fields)).
+Beyond the [shared properties](index.md#properties-every-role-takes). *Structural* fields, the types
+without `Bound`, refuse a signal and rebuild the surface when edited; *live* ones take a signal and
+update it in place ([reload](index.md#reload-and-structural-fields)).
 
-| Property | Values | Default | Kind | Behaviour |
-| :--- | :--- | :--- | :--- | :--- |
-| `layer` | `"Background"`, `"Bottom"`, `"Top"`, `"Overlay"` | Required | Structural | Stacking level, bottom to top. `"Overlay"` draws over fullscreen windows |
-| `anchor` | `{ top?, bottom?, left?, right? }` booleans; an absent edge is `false` | All `false` | Structural | Edges to pin to. None anchored centres the surface; one edge centres it along that edge |
-| `monitor` | A connector name, `"All"` or `"Active"` | `"All"` | Structural | Which outputs get an instance ([monitor](#monitor)) |
-| `namespace` | String | `"mantle-<id>"` | Structural | The layer namespace compositor rules match (Hyprland `layerrule`, niri `layer-rule`) |
-| `width`, `height` | px, `"NN%"` of the output, `"Fill"`, or omitted | Content | Live | The surface's size ([size](#size)) |
-| `exclusive` | `false`, `true`, a positive integer, `"Ignore"` | `false` | Live | The space reserved from other windows ([exclusive zones](#exclusive-zones)) |
-| `keyboard_interactivity` | `"None"`, `"OnDemand"`, `"Exclusive"` | `"None"` | Live | Whether it takes the keyboard ([keyboard focus](#keyboard-focus)) |
-| `margin` | Number, or `{ top?, right?, bottom?, left? }` with absent edges `0` | `0` | Live | Offset from the anchored edges, not layout margin. A margin on an edge the panel is not anchored to does nothing |
-| `visible` | Boolean | `true` | Live | Hiding destroys the layer surface; showing builds a new one |
-| `child` | A node, or `function(output)` | None | Live | The root's content ([per-output child](index.md#per-output-child)) |
+<!-- Generated from renderer/src/lua/nodes/properties.rs by `just stubs`: edit the table there. -->
+| Property | Type | Default | Behaviour |
+| :--- | :--- | :--- | :--- |
+| `id` | `string` | Required | The surface's identity across reloads, unique among surfaces. A `panel`'s or `lock`'s per-output instances are `"{id}@{output}"`; `monitor = "Active"` keeps the bare `id` |
+| `layer` | `"Background"\|"Bottom"\|"Top"\|"Overlay"` | Required | Stacking level, bottom to top. `"Overlay"` draws over fullscreen windows |
+| `anchor` | `{ top?: boolean, bottom?: boolean, left?: boolean, right?: boolean }` | All `false` | Edges to pin to; an absent edge is `false`. None pinned centres the surface; one edge centres it along that edge |
+| `monitor` | `string` | `"All"` | A connector name, `"All"` or `"Active"`: which outputs get an instance ([monitor](#monitor)) |
+| `namespace` | `string` | `"mantle-{id}"` | The layer namespace compositor rules match (Hyprland `layerrule`, niri `layer-rule`) |
+| `width` | `Length\|Bound` | Content | The surface's size ([size](#size)) |
+| `height` | `Length\|Bound` | Content | The surface's size ([size](#size)) |
+| `exclusive` | `boolean\|integer\|"Ignore"\|Bound` | `false` | The space reserved from other windows ([exclusive zones](#exclusive-zones)) |
+| `keyboard_interactivity` | `"None"\|"OnDemand"\|"Exclusive"\|Bound` | `"None"` | Whether it takes the keyboard ([keyboard focus](#keyboard-focus)) |
+| `margin` | `number\|Edges\|Bound` | `0` | Offset from the anchored edges, not layout margin; one on an edge the panel is not anchored to does nothing |
+| `visible` | `boolean\|Bound` | `true` | Hiding destroys the layer surface; showing recreates it |
+| `child` | `Node\|fun(output: string): Node?` | None | The root's content. A function runs per output instance with its connector name; `nil` leaves that instance empty ([per-output child](index.md#per-output-child)) |
+<!-- End of the generated table. -->
 
 ## monitor
 

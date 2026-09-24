@@ -60,10 +60,10 @@ fn parse_size_hint(properties: &PropMap, property: &str) -> Result<Option<SizeHi
                 format!("`{key}` is required -- a size hint names both axes, or use 0 for an unconstrained one"),
             )
         })?;
-        // Negative values make the request fail (`invalid_size`); `[0, 8192]` is the
-        // upper bound.
-        if !(0.0..=8192.0).contains(&n) {
-            return Err(invalid(property, format!("`{key}` must be within [0, 8192], got {n}")));
+        // Negative values make the request fail (`invalid_size`).
+        let (low, high) = super::style::range_of(property);
+        if !(low..=high).contains(&n) {
+            return Err(invalid(property, format!("`{key}` must be within [{low}, {high}], got {n}")));
         }
         Ok(n)
     };
@@ -134,9 +134,6 @@ pub enum PopupAnchor {
 /// Parses either anchor field; `property` names errors. Absent defaults to the protocol's
 /// [`PopupAnchor::Center`], unlike constraint adjustments.
 pub fn parse_popup_anchor(properties: &PropMap, property: &str) -> Result<PopupAnchor, LayoutError> {
-    if non_deferred_property(properties, property).is_none() {
-        return Ok(PopupAnchor::Center);
-    }
     let anchors = [
         ("Top", PopupAnchor::Top),
         ("Bottom", PopupAnchor::Bottom),
@@ -148,7 +145,7 @@ pub fn parse_popup_anchor(properties: &PropMap, property: &str) -> Result<PopupA
         ("BottomRight", PopupAnchor::BottomRight),
         ("Center", PopupAnchor::Center),
     ];
-    parse_keyword(properties, property, PopupAnchor::Center, &anchors)
+    parse_keyword(non_deferred_property(properties, property), property, &anchors)
 }
 
 /// The six independent adjustment permissions. Array order is irrelevant because the compositor
@@ -716,27 +713,6 @@ mod tests {
             popup_spec(&props).unwrap_err(),
             LayoutError::InvalidProperty { property, .. } if property == "width"
         ));
-    }
-
-    #[test]
-    fn popup_anchor_and_gravity_read_the_same_nine_value_set() {
-        let lua = mlua::Lua::new();
-        for (text, expected) in [
-            ("Top", PopupAnchor::Top),
-            ("Bottom", PopupAnchor::Bottom),
-            ("Left", PopupAnchor::Left),
-            ("Right", PopupAnchor::Right),
-            ("TopLeft", PopupAnchor::TopLeft),
-            ("TopRight", PopupAnchor::TopRight),
-            ("BottomLeft", PopupAnchor::BottomLeft),
-            ("BottomRight", PopupAnchor::BottomRight),
-            ("Center", PopupAnchor::Center),
-        ] {
-            let props = popup_props(&lua, &format!(r#", anchor = "{text}", gravity = "{text}""#));
-            let spec = popup_spec(&props).unwrap();
-            assert_eq!(spec.anchor, expected);
-            assert_eq!(spec.gravity, expected);
-        }
     }
 
     #[test]

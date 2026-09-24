@@ -61,14 +61,20 @@ out, then the session unlocks.
 A `lock` takes `id`, `child` and the [common and box node properties](../nodes/index.md), minus
 the ones the protocol owns.
 
-| Property | Values | Default | Behaviour |
+<!-- Generated from renderer/src/lua/nodes/properties.rs by `just stubs`: edit the table there. -->
+| Property | Type | Default | Behaviour |
 | :--- | :--- | :--- | :--- |
-| `id` | String | Required | Structural. A rename is refused while the session is locked (a warning in `mantle log`); save again after unlocking |
-| `child` | A node, or `function(output)` | None | The root's content, per output with a function ([per-output child](index.md#per-output-child)) |
-| Common and box properties | As on any box | | The root fills the output whatever it says; give children `"Fill"` to cover it |
+| `id` | `string` | Required | The surface's identity across reloads, unique among surfaces. A `panel`'s or `lock`'s per-output instances are `"{id}@{output}"`; `monitor = "Active"` keeps the bare `id` |
+| `child` | `Node\|fun(output: string): Node?` | None | The root's content. A function runs per output instance with its connector name; `nil` leaves that instance empty ([per-output child](index.md#per-output-child)) |
+| `width` | `nil` | None | Refused: the lock covers each output |
+| `height` | `nil` | None | Refused, as `width` |
+| `visible` | `nil` | None | Refused: the session lock decides when it shows |
+<!-- End of the generated table. -->
 
-`visible`, `width`, `height`, `monitor` and `anchor` are refused: the protocol owns coverage and
-lifetime. A config declares at most one `lock`; two are refused at evaluation.
+`monitor` and `anchor` are refused too: the protocol owns coverage and lifetime. The root fills the
+output whatever its common properties say; give children `"Fill"` to cover it. A rename of `id` is
+refused while the session is locked (a warning in `mantle log`); save again after unlocking. A
+config declares at most one `lock`; two are refused at evaluation.
 
 ## When a lock is refused
 

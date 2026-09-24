@@ -27,11 +27,13 @@ local app_badge = row { spacing = 6, align_v = "Center", children = {
 
 `icon` takes the [common properties](index.md#common-properties), plus:
 
-| Property | Values | Default | Behaviour |
+<!-- Generated from renderer/src/lua/nodes/properties.rs by `just stubs`: edit the table there. -->
+| Property | Type | Default | Behaviour |
 | :--- | :--- | :--- | :--- |
-| `name` | An icon theme name (`"firefox"`, `"audio-volume-high-symbolic"`), or an absolute image path | `""`, drawing nothing | A theme name is looked up at the drawn size; a path is used as is. A name the theme lacks draws nothing |
-| `size` | Pixels, any finite number (no range check) | 12 | The node is `size` × `size` |
-| `foreground` | [Colour](../guide/paint.md#colours) | The file's own colours | Fills the SVG's `currentColor`, which tints symbolic icons. Full-colour icons ignore it |
+| `name` | `string\|Bound` | `""` | An icon theme name (`"firefox"`, `"audio-volume-high-symbolic"`), looked up at the drawn size, or an absolute image path, used as is. `""` or a name the theme lacks draws nothing |
+| `size` | `number\|Bound` | `12` | The box is `size` × `size` px; not range-checked |
+| `foreground` | `Color\|Bound` | The file's own colours | Colour for the SVG's `currentColor` (CSS `color`), which tints symbolic icons. Full-colour icons ignore it |
+<!-- End of the generated table. -->
 
 An explicit `width` or `height` overrides that axis of the square; the icon draws at the shorter
 side, centred.

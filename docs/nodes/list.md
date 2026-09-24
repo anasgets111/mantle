@@ -42,15 +42,17 @@ Keyed workspace buttons from a capability: [workspaces cookbook](../cookbook/wor
 `list` takes the [common properties](index.md#common-properties), plus the ones below. It takes no
 [box properties](index.md#box-properties): wrap it in a `rect` or `column` for a background.
 
-| Property | Values | Default | Behaviour |
+<!-- Generated from renderer/src/lua/nodes/properties.rs by `just stubs`: edit the table there. -->
+| Property | Type | Default | Behaviour |
 | :--- | :--- | :--- | :--- |
-| `source` | Array. Bind a signal to rebuild on change | Empty | One item per element, in order; a `nil` hole ends it. Missing or `nil` (a capability before its first push) builds no items. More than 10000 elements is refused unless `limit` caps it |
-| `itemfn(item)` | Function, required | — | Returns one node table for an element |
-| `key(item)` | Function returning a UTF-8 string | None | Called with the element; the result becomes that item's `id`, replacing any `id` `itemfn` set. Duplicates are refused. Without it, items match by position |
-| `limit` | Non-negative integer | None | Build at most this many items. Values above 10000 act as 10000. `0` builds none |
-| `direction` | `"Vertical"`, `"Horizontal"` | `"Vertical"` | Lays out as a `column` or a `row` |
-| `spacing` | Pixels, any finite number | 0 | Gap between visible items; negative overlaps them |
-| `scroll` | A `scroll(name)` signal | None | Makes the list a scrolling viewport along `direction` ([scroll](../guide/input.md#scroll)) |
+| `source` | `any[]\|Bound` | Empty | Array; bind a signal to rebuild on change. Missing or `nil` (a capability before its first push) is an empty list; a `nil` hole ends it. More than 10000 items without `limit` is an error |
+| `itemfn` | `fun(item: any): Node` | Required | Builds a node for every built item, visible or not |
+| `key` | `fun(item: any): string` | None | Unique UTF-8 key per item; replaces the node's `id`. Duplicates are refused. Without it items match by position |
+| `limit` | `integer\|Bound` | None | Build at most this many items; above 10000 acts as 10000, `0` builds none |
+| `direction` | `"Vertical"\|"Horizontal"\|Bound` | `"Vertical"` | Lays out as a `column` or a `row` |
+| `spacing` | `number\|Bound` | `0` | Px between visible items along `direction`; negative values overlap them |
+| `scroll` | `Bound` | None | A `scroll(name)` signal; makes the list a scrolling viewport along `direction` ([scroll](../guide/input.md#scroll)) |
+<!-- End of the generated table. -->
 
 A `list` packs and aligns exactly like the `row` or `column` its `direction` names: its own
 `align_v` (vertical) or `align_h` (horizontal) packs the items.

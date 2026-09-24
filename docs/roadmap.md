@@ -15,7 +15,7 @@ Defects or missing pieces a config cannot work around.
 | Keyboard focus and accessibility | Only `textfield` holds focus; Tab reaches the config as `on_navigate("tab")`. Needs focusable controls, keyboard activation and an accessibility tree | — |
 | Blocking `dofile` / `loadfile` | The base library keeps both, and they read files on the Wayland thread outside the CPU budget, against ADR-0048's intent. Remove them or route them through `require`'s resolver | 0048 |
 | HiDPI | Paint scale is fixed at `1.0`, so every surface on a scaled output is upscaled and soft. Needs `set_buffer_scale` (or fractional-scale plus viewporter) with a matching EGL resize and glyph raster scale | — |
-| Silent failures | Errors in `on_change`, `timer`, `process.run` and idle callbacks log at debug; `warn()` prints nothing; a failed reload apply leaves `mantle.rescue` false; an invalid `stop_signal` is dropped with a log line; `mantle set` on a removed `state` passes. Each should reach the author | — |
+| Silent failures | `warn()` prints nothing; an invalid `stop_signal` is dropped with a log line; `mantle set` on a `state` a reload removed still passes. Each should reach the author | — |
 | Hyprland layout switch | `keyboard/layout.rs` sends `switchxkblayout`, which Hyprland 0.56's Lua socket likely rejects; the other Hyprland writes already use `hl.dsp.*` | — |
 | Multi-prompt PAM | The worker relays every masked prompt, but `LockState` and `secure_submit` carry one password, answered to every prompt. Fingerprint, 2FA and expired passwords fail. Echo-on prompts stay refused | 0241 |
 
@@ -30,7 +30,7 @@ Wanted, but each needs a consumer or a decision first.
 | Large lists | Every item up to `limit` is built on every pass, visible or not. Virtualization would need `key` to be mandatory, which cannot be enforced | 0191, 0219 |
 | Output actions | `windows` has five actions; screens are read-only. Pick the actions, then settle niri/Hyprland differences and revert | 0119, 0247 |
 | Service depth | MPRIS lacks stop, shuffle, repeat, rate and volume; audio has no per-channel levels or peak metering; UPower reads only `DisplayDevice`; `network` tracks only the first Wi-Fi device; Bluetooth pairing refuses PIN and passkey entry. Extend for concrete controls | — |
-| External IPC | `set`/`toggle` are one-way; `call` returns only what the action returns. No generic state read or subscription | 0197 |
+| External IPC | `set`/`toggle` answer only applied or refused; `call` returns only what the action returns. No generic state read or subscription | 0197 |
 | Process control | Start, stream and signal exist. No child stdin, cwd or env | 0175, 0188 |
 | Panel root sizing | A panel spanning an axis sizes the surface but not its root node, while window and lock roots fill theirs (`forced_root_size`). Decide whether panel roots fill too | — |
 | Move transitions | A sibling closing a gap snaps. Needs the solver's old and new rects per sibling | — |

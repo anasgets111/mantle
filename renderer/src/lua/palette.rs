@@ -135,9 +135,28 @@ fn opt(opts: &Option<Table>, key: &str, default: i64) -> mlua::Result<i64> {
 }
 
 pub fn register(lua: &Lua, registry: PaletteRegistry) -> mlua::Result<()> {
-    let table = lua.create_table()?;
-    table.set(
-        "quantize",
+    super::define(lua, "palette", "", lua.create_table()?)?;
+    super::define(
+        lua,
+        "palette.quantize",
+        r#"---@class PaletteSwatch
+---@field color Color `#RRGGBB`.
+---@field share number Fraction of the counted (non-transparent) pixels, 0 to 1.
+
+---@class PaletteHandle
+local PaletteHandle = {}
+
+---Drops the callback. The decode still finishes.
+function PaletteHandle:cancel() end
+
+---Extracts an image's dominant colours off the Lua thread (ADR-0249). `cb` gets them most common
+---first, or `nil` on failure (logged). `cb` runs unbudgeted.
+---[docs](https://anasgets111.github.io/mantle/guide/scripting.html#palettequantize)
+---@param path string A local raster file; no SVG or URL.
+---@param opts? { depth?: integer, rescale?: integer } `depth` 0 to 8, default 3: up to `2^depth` colours. `rescale` caps the longest edge before counting, default 128, `0` for full size. Out of range raises.
+---@param cb fun(swatches: PaletteSwatch[]?)
+---@return PaletteHandle
+"#,
         lua.create_function(move |_, (path, opts, cb): (String, Option<Table>, Function)| {
             if let Some(opts) = &opts {
                 super::marshal::only_keys(opts, &["depth", "rescale"])
@@ -152,8 +171,7 @@ pub fn register(lua: &Lua, registry: PaletteRegistry) -> mlua::Result<()> {
             };
             Ok(registry.quantize(path, depth, rescale, cb))
         })?,
-    )?;
-    lua.globals().set("palette", table)
+    )
 }
 
 #[cfg(test)]

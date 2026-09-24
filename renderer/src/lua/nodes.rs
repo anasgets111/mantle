@@ -1,7 +1,7 @@
 //! Node constructors and `VirtualNode`, the loader's shallow table-to-Rust conversion.
 //!
 //! ponytail: shallow by design. `deserialize_lua_table` reads `kind`, refuses one with no
-//! `NODE_PROPERTIES` row, copies other keys unchanged,
+//! `properties::KINDS` row or a key with no `properties::PROPERTIES` row, copies other keys unchanged,
 //! never recurses into `children`/`child` (reconciliation's job), and does not validate shapes such
 //! as `width` being an integer or `"Fill"` (the layout engine is the only typed-property consumer).
 
@@ -9,150 +9,42 @@ use mlua::{Lua, Table, Value};
 
 use crate::layout::node::PropMap;
 
-/// Properties every kind, including surface roles, takes: geometry, identity, and two flags.
-/// `layout::scene` reads them without checking kind.
-const COMMON_PROPERTIES: &[&str] = &[
-    "align_h",
-    "align_v",
-    "animate",
-    "content_blur",
-    "cursor",
-    "geometry",
-    "height",
-    "hover",
-    "id",
-    "margin",
-    "max_height",
-    "max_width",
-    "min_height",
-    "min_width",
-    "on_hover",
-    "opacity",
-    "origin",
-    "padding",
-    "rotate",
-    "scale",
-    "shadow_blur",
-    "shadow_color",
-    "shadow_offset",
-    "shadow_spread",
-    "translate",
-    "visible",
-    "width",
-    "z",
-];
+mod properties;
+#[cfg(test)]
+mod stubs;
 
-/// Box-paint properties beyond [`COMMON_PROPERTIES`]. `node::paint_style`'s first arm paints
-/// `row`, `column`, `button`, `rect`, and all four root roles alike.
-const BOX_PROPERTIES: &[&str] = &[
-    "backdrop_blur",
-    "background",
-    "blur",
-    "border_color",
-    "border_width",
-    "clip",
-    "corner_shape",
-    "mask",
-    "radius",
-    "shadow_mode",
-];
-
-/// Which kinds that arm covers.
-const BOX_KINDS: [&str; 8] = ["rect", "row", "column", "button", "panel", "window", "popup", "lock"];
-
-/// Every node kind, in constructor order, with its properties beyond the common and box lists. The
-/// last four rows are root roles (ADR-0040); declaring a `lock` does not lock (ADR-0052 decision 2).
-/// A key in no list is refused, so a misspelled `aling_v` raises instead of being read by nothing.
-///
-/// ponytail: hand-written because the schema is scattered `properties.get("...")` calls across
-/// `layout/node/`, `layout/scene/`, and `wayland/`, each with its own defaulting/coercion.
-/// Guards:
-/// `every_property_a_parser_reads_is_accepted`, `the_stubs_declare_the_same_properties`. Upgrade:
-/// per-kind props structs, which means rewriting the parsers.
-const NODE_PROPERTIES: &[(&str, &[&str])] = &[
-    ("rect", &["children"]),
-    ("row", &["children", "scroll", "spacing"]),
-    ("column", &["children", "scroll", "spacing"]),
-    ("text", &["content", "elide", "font", "font_size", "foreground", "max_lines", "on_link", "text_align", "wrap"]),
-    // `foreground` is CSS `color`: the resolved SVG's `currentColor` fill (ADR-0072). Full-colour
-    // icons name no `currentColor`, so this is safe.
-    ("icon", &["foreground", "name", "size"]),
-    ("image", &["async", "fit", "retain", "source", "source_blur", "transition"]),
-    // A live output preview (ADR-0248): no `async`/`retain`/`transition`, which are about a decode
-    // this node has none of.
-    ("capture", &["fit", "live", "output", "paint_cursor", "region"]),
-    // A config fragment shader with no input textures (ADR-0253).
-    ("shader", &["params", "progress", "source"]),
-    ("button", &["children", "on_click", "on_drag", "on_wheel", "submit"]),
-    ("list", &["direction", "itemfn", "key", "limit", "scroll", "source", "spacing"]),
-    // `node::paint_style` reads these for `textfield`, which draws a placeholder or masked content.
-    (
-        "textfield",
-        &[
-            "autofocus",
-            "font_size",
-            "foreground",
-            "mask_character",
-            "on_cancel",
-            "on_change",
-            "on_navigate",
-            "on_submit",
-            "placeholder",
-            "secure_submit",
-            "text_align",
-        ],
-    ),
-    ("panel", &["anchor", "child", "exclusive", "keyboard_interactivity", "layer", "monitor", "namespace"]),
-    ("window", &["app_id", "child", "max_size", "min_size", "on_close", "title"]),
-    (
-        "popup",
-        &[
-            "anchor",
-            "anchor_rect",
-            "child",
-            "constraint_adjustment",
-            "grab",
-            "gravity",
-            "offset",
-            "on_dismiss",
-            "parent",
-        ],
-    ),
-    ("lock", &["child"]),
-];
+use properties::{KINDS, PROPERTIES, kind_bit};
+pub(crate) use properties::{default_bool, default_number, keyword, range};
 
 /// The node kinds, one global constructor each.
 fn node_kinds() -> impl Iterator<Item = &'static str> {
-    NODE_PROPERTIES.iter().map(|(kind, _)| *kind)
+    KINDS.iter().map(|(kind, _)| *kind)
 }
 
-/// The vocabulary's own `&'static str` for `kind` and the lists it draws its properties from, or
-/// `None` if it is not a node kind.
-fn accepted_lists(kind: &str) -> Option<(&'static str, &'static [&'static str], bool)> {
-    let (name, own) = NODE_PROPERTIES.iter().find(|(name, _)| *name == kind)?;
-    Some((name, own, BOX_KINDS.contains(&kind)))
+/// The table's own `&'static str` for `kind` and its bit, or `None` if it is not a node kind.
+fn kind_entry(kind: &str) -> Option<(&'static str, u16)> {
+    let bit = kind_bit(kind)?;
+    Some((KINDS[bit.trailing_zeros() as usize].0, bit))
 }
 
-/// The list's own `&'static str` for `property`, which is what a [`PropMap`] keys by.
-fn name_in((_, own, boxed): (&'static str, &'static [&'static str], bool), property: &str) -> Option<&'static str> {
-    let found = |list: &'static [&'static str]| list.iter().copied().find(|name| *name == property);
-    found(own).or_else(|| found(COMMON_PROPERTIES)).or_else(|| if boxed { found(BOX_PROPERTIES) } else { None })
+/// The table's own `&'static str` for `property`, which is what a [`PropMap`] keys by. A scan of
+/// the ~130 rows: ADR-0219 priced the per-property lookup at 10 ns against a 2.65 ms pass.
+fn name_in(bit: u16, property: &str) -> Option<&'static str> {
+    PROPERTIES.iter().find(|row| row.kinds & bit != 0 && row.name == property).map(|row| row.name)
 }
 
 /// [`name_in`] for a caller holding only the kind. `animate` validates its entries this way.
 pub(crate) fn accepted_name(kind: &str, property: &str) -> Option<&'static str> {
-    name_in(accepted_lists(kind)?, property)
+    name_in(kind_bit(kind)?, property)
 }
 
 /// Accepted properties, sorted for errors.
 fn accepted_properties(kind: &str) -> Vec<&'static str> {
+    let bit = kind_bit(kind).unwrap_or(0);
     let mut names: Vec<&'static str> =
-        NODE_PROPERTIES.iter().find(|(name, _)| *name == kind).map_or_else(Vec::new, |(_, own)| own.to_vec());
-    names.extend_from_slice(COMMON_PROPERTIES);
-    if BOX_KINDS.contains(&kind) {
-        names.extend_from_slice(BOX_PROPERTIES);
-    }
+        PROPERTIES.iter().filter(|row| row.kinds & bit != 0).map(|row| row.name).collect();
     names.sort_unstable();
+    names.dedup();
     names
 }
 
@@ -173,10 +65,10 @@ pub enum DeserializeError {
     #[error("node table's `kind` field is not a string")]
     KindNotAString,
     /// A key no parser for this `kind` reads; rejected instead of copied through
-    /// ([`NODE_PROPERTIES`]).
+    /// (`properties::PROPERTIES`).
     #[error("`{kind}` has no property `{property}`; it accepts {accepted}")]
     UnknownProperty { kind: String, property: String, accepted: String },
-    /// A kind with no [`NODE_PROPERTIES`] row, and so no vocabulary to key a map by (ADR-0219).
+    /// A kind with no `properties::KINDS` row, and so no vocabulary to key a map by (ADR-0219).
     #[error("`{0}` is not a node kind")]
     UnsupportedKind(String),
 }
@@ -198,17 +90,16 @@ pub fn register_node_constructors(lua: &Lua) -> mlua::Result<()> {
 /// Converts one Lua node table into a [`VirtualNode`]: pulls out `kind`, copies every other
 /// key-value pair into `properties` as-is. Does not recurse into `children`/`child`.
 pub fn deserialize_lua_table(table: &Table) -> Result<VirtualNode, DeserializeError> {
-    let lists = match table.get::<Value>("kind")? {
+    let (kind, bit) = match table.get::<Value>("kind")? {
         // Borrowed for the lookup: the static the row hands back is what the node keeps, so a
         // supported kind allocates nothing. Only a refusal copies the spelling (ADR-0219).
-        Value::String(s) => match s.to_str().ok().and_then(|text| accepted_lists(&text)) {
-            Some(lists) => lists,
+        Value::String(s) => match s.to_str().ok().and_then(|text| kind_entry(&text)) {
+            Some(entry) => entry,
             None => return Err(DeserializeError::UnsupportedKind(s.to_string_lossy())),
         },
         Value::Nil => return Err(DeserializeError::MissingKind),
         _ => return Err(DeserializeError::KindNotAString),
     };
-    let kind = lists.0;
 
     let mut properties = PropMap::default();
     for pair in table.pairs::<Value, Value>() {
@@ -216,7 +107,7 @@ pub fn deserialize_lua_table(table: &Table) -> Result<VirtualNode, DeserializeEr
         let name = match &key {
             Value::String(s) => match s.to_str() {
                 Ok(text) if &*text == "kind" => continue,
-                Ok(text) => name_in(lists, &text),
+                Ok(text) => name_in(bit, &text),
                 Err(_) => None,
             },
             _ => None,
@@ -372,45 +263,12 @@ mod tests {
             assert_eq!(table.get::<String>("kind").unwrap(), kind);
         }
     }
-
-    #[test]
-    fn window_and_popup_are_constructors_a_config_can_call() {
-        // Explicitly named; the loop would pass whatever the array contains.
-        let lua = lua_with_constructors();
-        let table: Table = lua.load(r#"return popup { id = "menu", parent = "bar" }"#).eval().unwrap();
-        assert_eq!(table.get::<String>("kind").unwrap(), "popup");
-        assert_eq!(table.get::<String>("parent").unwrap(), "bar");
-    }
-
-    #[test]
-    fn image_is_a_constructor() {
-        // Pin by name (ADR-0054 decision 3); the loop could pass after this entry was dropped,
-        // silently removing wallpaper support.
-        let lua = lua_with_constructors();
-        let table: Table = lua.load(r#"return image { source = "/tmp/wall.png", fit = "cover" }"#).eval().unwrap();
-        assert_eq!(table.get::<String>("kind").unwrap(), "image");
-        assert_eq!(table.get::<String>("source").unwrap(), "/tmp/wall.png");
-        assert_eq!(table.get::<String>("fit").unwrap(), "cover");
-    }
-
-    #[test]
-    fn lock_is_a_constructor_a_config_can_call_because_declaring_one_is_not_locking() {
-        // Pin by name (ADR-0052 decision 2); the loop could pass after this entry was dropped.
-        let lua = lua_with_constructors();
-        let table: Table = lua.load(r#"return lock { id = "screen-lock" }"#).eval().unwrap();
-        assert_eq!(table.get::<String>("kind").unwrap(), "lock");
-        assert_eq!(table.get::<String>("id").unwrap(), "screen-lock");
-    }
 }
 
-/// `lua-meta/nodes.lua` and `lua-meta/surfaces.lua` stay hand-written: no type describes their
-/// scattered `properties.get("...")` calls, each validating inline.
-/// `lua-meta/mantle.lua` is generated (`supervisor/src/stubs.rs`) because capability payloads are
-/// real `Serialize` structs.
-///
-/// This guard covers the hand-written half, checking roster drift where a new kind lacks a stub;
-/// the capability check stays here because this crate owns `shared::Capability::ALL`'s Lua
-/// spelling.
+/// Checks `lua-meta/nodes.lua` and `lua-meta/surfaces.lua`, which `stubs.rs` generates from the
+/// property table, against the engine: the generator's class split against the accepted names, and
+/// every declared type against a real apply. The capability check stays here because this crate owns
+/// `shared::Capability::ALL`'s Lua spelling.
 #[cfg(test)]
 mod meta_stub_tests {
     use std::collections::{BTreeMap, BTreeSet};
@@ -422,20 +280,9 @@ mod meta_stub_tests {
             .unwrap_or_else(|err| panic!("{} is missing or unreadable: {err}", path.display()))
     }
 
-    /// Every callable node constructor, exactly once.
-    #[test]
-    fn the_stubs_declare_every_node_kind_and_no_others() {
-        let source = meta("nodes.lua") + &meta("surfaces.lua");
-        let declared: BTreeSet<&str> =
-            source.lines().filter_map(|line| line.strip_prefix("function ")?.split('(').next()).collect();
-        let expected: BTreeSet<&str> = super::node_kinds().collect();
-        assert_eq!(declared, expected, "lua-meta is out of step with NODE_PROPERTIES");
-    }
-
-    /// Every kind's inherited `---@field` set matches [`super::accepted_properties`]. Editor
-    /// stubs offering a refused name are worse than omission. This first ran red because `RowProps`
-    /// lacked `background` despite `node::paint_style` painting it since ADR-0068, and all four
-    /// surface classes lacked their long-standing `NodeBase` fields.
+    /// Every kind's inherited `---@field` set matches [`super::accepted_properties`]: the generator's
+    /// `NodeBase`/`BoxBase`/own split loses and invents nothing. Editor stubs offering a refused name
+    /// are worse than omission.
     #[test]
     fn the_stubs_declare_the_same_properties_the_engine_accepts() {
         let source = meta("nodes.lua") + &meta("surfaces.lua");
@@ -444,7 +291,7 @@ mod meta_stub_tests {
             let class = format!("{}Props", capitalize(kind));
             let declared = fields_of(&classes, &class);
             let expected: BTreeSet<String> = super::accepted_properties(kind).into_iter().map(str::to_string).collect();
-            assert_eq!(declared, expected, "lua-meta's {class} is out of step with NODE_PROPERTIES for `{kind}`");
+            assert_eq!(declared, expected, "lua-meta's {class} is out of step with the property table for `{kind}`");
         }
     }
 
@@ -466,47 +313,6 @@ mod meta_stub_tests {
         );
         let unread: Vec<&String> = accepted.difference(&read).collect();
         assert!(unread.is_empty(), "these properties are accepted but no parser reads them: {unread:?}");
-    }
-
-    /// Each `docs/` property table names what its kind accepts: the shared lists once each, then
-    /// every page its kind's own row. A surface page also tables the shared properties whose
-    /// meaning differs on a root, so its table is bounded by the kind's own and accepted names.
-    #[test]
-    fn each_docs_property_table_names_what_its_kind_accepts() {
-        let names = |list: &[&str]| list.iter().map(|name| name.to_string()).collect::<BTreeSet<_>>();
-        assert_eq!(doc_table("nodes/index.md", "## Common properties"), names(super::COMMON_PROPERTIES));
-        assert_eq!(doc_table("guide/paint.md", "## Box properties"), names(super::BOX_PROPERTIES));
-        for (kind, own) in super::NODE_PROPERTIES {
-            let page = match *kind {
-                "row" | "column" => "nodes/row-column.md".to_string(),
-                kind if SURFACE_KINDS.contains(&kind) => format!("surfaces/{kind}.md"),
-                kind => format!("nodes/{kind}.md"),
-            };
-            let listed = doc_table(&page, "## Properties");
-            let missing: Vec<_> = names(own).into_iter().filter(|name| !listed.contains(name)).collect();
-            let accepted = super::accepted_properties(kind);
-            let refused: Vec<_> = listed.iter().filter(|name| !accepted.contains(&name.as_str())).collect();
-            assert!(
-                missing.is_empty() && refused.is_empty(),
-                "docs/{page} lacks {missing:?} and lists {refused:?}, which `{kind}` refuses"
-            );
-        }
-    }
-
-    /// Backticked names in the first column of the first table under `heading`; `on_click(rect)`
-    /// reads as `on_click`.
-    fn doc_table(page: &str, heading: &str) -> BTreeSet<String> {
-        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../docs").join(page);
-        let text = std::fs::read_to_string(&path).unwrap_or_else(|err| panic!("{}: {err}", path.display()));
-        let (_, section) =
-            text.split_once(&format!("\n{heading}\n")).unwrap_or_else(|| panic!("{page} has no `{heading}`"));
-        let rows = section.lines().skip_while(|line| !line.starts_with('|')).take_while(|line| line.starts_with('|'));
-        let cells = rows.skip(2).filter_map(|row| row.split('|').nth(1));
-        cells
-            .flat_map(|cell| {
-                cell.split('`').skip(1).step_by(2).map(|name| name.split('(').next().unwrap_or(name).to_string())
-            })
-            .collect()
     }
 
     /// Drops top-level `#[cfg(test)] mod … { … }` blocks, whose fixtures may name anything. Other
@@ -532,7 +338,7 @@ mod meta_stub_tests {
         chars.next().map(|first| first.to_ascii_uppercase().to_string() + chars.as_str()).unwrap_or_default()
     }
 
-    /// Each `---@class Name: Parent, Parent` and its own `---@field` names.
+    /// Each `---@class Name: Parent, Parent` and its own `---@field` names, less the `[string]` guard.
     fn parse_classes(source: &str) -> Vec<(String, Vec<String>, BTreeSet<String>)> {
         let mut classes: Vec<(String, Vec<String>, BTreeSet<String>)> = Vec::new();
         for line in source.lines() {
@@ -544,6 +350,7 @@ mod meta_stub_tests {
                 classes.push((name.to_string(), parents, BTreeSet::new()));
             } else if let Some(rest) = line.strip_prefix("---@field ")
                 && let Some((name, _)) = rest.split_once(char::is_whitespace)
+                && !name.starts_with('[')
                 && let Some(current) = classes.last_mut()
             {
                 current.2.insert(name.trim_end_matches('?').to_string());
@@ -619,9 +426,9 @@ mod meta_stub_tests {
     /// engine does not close, an `integer` it lets take a fraction, and a required field it does
     /// not require. One-way by design: `just types` catches engine-accepted fields missing from the
     /// stub. Missing `sample` rows fail.
-    /// ponytail: checks, does not derive. Upgrade to per-kind props structs, making `nodes.lua`
-    /// generable like `mantle.lua`; that rewrites parsing and trades property-specific errors for
-    /// serde's. Not worth it while this test holds.
+    /// ponytail: a row's `ty` is written, not derived from its parser, so this is what holds them
+    /// together. Upgrade: per-kind props structs, which rewrites parsing and trades
+    /// property-specific errors for serde's.
     #[test]
     fn every_type_the_stubs_declare_is_accepted_by_the_engine() {
         let source = meta("nodes.lua") + &meta("surfaces.lua");
@@ -920,6 +727,7 @@ mod meta_stub_tests {
             } else if let Some(rest) = line.strip_prefix("---@field ")
                 && let Some(current) = classes.last_mut()
                 && let Some((name, rest)) = rest.split_once(' ')
+                && !name.starts_with('[')
             {
                 current.2.push(Field {
                     name: name.trim_end_matches('?').to_string(),

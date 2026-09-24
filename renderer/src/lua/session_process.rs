@@ -26,8 +26,40 @@ struct SessionRegistry(HashMap<String, Table>);
 /// Registers `session_process`. `mantle.processes` is resolved at call time: registration runs in
 /// `Loader::new`, before `lua::namespace::build` creates `mantle`.
 pub fn register(lua: &Lua) -> mlua::Result<()> {
-    lua.globals().set(
+    super::define(
+        lua,
         "session_process",
+        r#"---@class SessionProcessHandle
+---A program declared with `session_process`. Each field is a signal over its `mantle.processes`
+---entry, `nil` before the first push; while `running` is false they describe the finished run.
+---@field running Signal<boolean?> Whether it is up.
+---@field pid Signal<integer?> Also its process group id. Kept after exit; `nil` before a spawn or after a failed `start`.
+---@field started_at Signal<integer?> Unix seconds the current or last run began; `nil` before a spawn or after a failed `start`.
+---@field exit_code Signal<integer?> The last finished run's exit status; `nil` while running, before the first run, or after a signal ended it.
+---@field start_error Signal<string?> Why the last `start` spawned nothing, usually a command not on `PATH`; `""` when it spawned.
+local SessionProcessHandle = {}
+
+---Starts the program unless it is already running, with stdio inherited. The outcome arrives as
+---state: `running`, or `start_error`.
+---@param cmd string Looked up on `PATH`; no shell, so no globbing, pipes or quoting.
+---@param args? string[] Already split: `"a b"` is one argument.
+function SessionProcessHandle:start(cmd, args) end
+
+---Sends `signal` to the program itself, not its group. A no-op when it is not running.
+---@param signal SignalName
+function SessionProcessHandle:signal(signal) end
+
+---Sends the declared `stop_signal` to the program's group, then `SIGKILL` 5 s later. Shell
+---shutdown does this to every session process.
+function SessionProcessHandle:stop() end
+
+---Declares a program that lives for the session: the Supervisor holds it across reloads and stops
+---it at shutdown. Re-declaring a name returns the same handle and re-reads only `stop_signal`, so
+---declare at a module's top level. Use `process.run` when you need its output.
+---[docs](https://anasgets111.github.io/mantle/guide/processes.html#session_process)
+---@param spec { name: string, stop_signal?: SignalName } `name` keys it in `mantle.processes`; empty raises. `stop_signal` defaults to `"TERM"`.
+---@return SessionProcessHandle
+"#,
         lua.create_function(|lua, spec: Table| {
             super::marshal::only_keys(&spec, &["name", "stop_signal"])
                 .map_err(|detail| mlua::Error::runtime(format!("session_process: {detail}")))?;

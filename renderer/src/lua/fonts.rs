@@ -26,8 +26,15 @@ struct FontRegistry(Vec<String>);
 /// Last call wins. Multiple declarations are a mistake; appending would silently create a chain
 /// neither declaration asked for, while replacement matches the second declaration's reading.
 pub fn register(lua: &Lua) -> mlua::Result<()> {
-    lua.globals().set(
+    super::define(
+        lua,
         "fonts",
+        r#"---Declares the font fallback chain. Each glyph falls back across it, so one chain covers body text,
+---CJK and emoji; a `text` node's `font` goes in front of it (ADR-0144). Read once at startup: a
+---change needs a shell restart (ADR-0043). The last call wins.
+---@param chain string[] Family names. The first is the body face and the only one whose bold and italic load; the rest cover glyphs it lacks. A hole, a named key or a non-string raises; an uninstalled family is skipped and logged at `-vvv`. Never calling it keeps `sans-serif`, Noto Sans CJK JP, Noto Color Emoji.
+---[docs](https://anasgets111.github.io/mantle/guide/scripting.html#fonts)
+"#,
         lua.create_function(|lua, chain: mlua::Table| {
             // Collect every key, then require exactly `1..=n`: `sequence_values` stops at the first
             // `nil`, while Lua's `#` is undefined for sparse tables and returns 1 for

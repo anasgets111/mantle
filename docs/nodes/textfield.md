@@ -54,19 +54,21 @@ The panel needs `keyboard_interactivity` for the field to get keys ([panel](../s
 
 `textfield` takes the [common properties](index.md#common-properties), plus:
 
-| Property | Values | Default | Behaviour |
+<!-- Generated from renderer/src/lua/nodes/properties.rs by `just stubs`: edit the table there. -->
+| Property | Type | Default | Behaviour |
 | :--- | :--- | :--- | :--- |
-| `placeholder` | String | `""` | Shown while the draft is empty, focused or not. Never submitted |
-| `font_size` | Pixels, `[1, 8192]` | 12 | Size of the text and placeholder |
-| `foreground` | [Colour](../guide/paint.md#colours) | `"#FFFFFF"` | Colour of the text and placeholder |
-| `text_align` | `"Start"`, `"Center"`, `"End"` | `"Start"` | Places the text inside the field's box |
-| `autofocus` | `true` | `false` | Plain fields only: take the keyboard, empty, when the surface gets it or the field appears. The first visible one in document order wins |
-| `on_change(text)` | Function | None | The whole draft after every edit |
-| `on_submit(text)` | Function | None | Enter, with the whole draft; the draft then clears and the field keeps focus. Never fires on a `secure_submit` field |
-| `on_cancel(cleared)` | Function | None | Escape; `cleared` says whether text was removed. Without it, Escape clears and keeps focus |
-| `on_navigate(key)` | Function; `key` is `"up"`, `"down"`, `"left"`, `"right"`, `"page_up"`, `"page_down"`, `"tab"` or `"backtab"` | None | Keys the field does not use; repeats while held. `"left"`/`"right"` only when the caret cannot move that way and Shift is up |
-| `secure_submit` | `{ capability, action }`, both non-empty UTF-8 strings | None | Makes the field masked; keys never reach Lua. Only `lock`/`authenticate`, `polkit`/`authenticate` and `network`/`connect`; any other pair or key is an error ([secure fields](../guide/input.md#secure-fields)) |
-| `mask_character` | String | `"•"` | Drawn once per typed character in a `secure_submit` field. Only the first character counts; `""` hides the length |
+| `placeholder` | `string\|Bound` | `""` | Shown while the field is empty, focused or not. Never submitted |
+| `font_size` | `number\|Bound`, `[1, 8192]` | `12` | Size of the text and placeholder |
+| `foreground` | `Color\|Bound` | `"#FFFFFF"` | Colour of the text and placeholder |
+| `text_align` | `"Start"\|"Center"\|"End"\|Bound` | `"Start"` | Aligns the text inside the field's box |
+| `autofocus` | `boolean\|Bound` | `false` | Plain fields only: take the keyboard, empty, when the surface gets it or the field appears, calling `on_change("")`. The first in document order wins; never steals from a field already typing or one a press just left |
+| `on_change` | `fun(text: string)` | None | Full text after every edit |
+| `on_submit` | `fun(text: string)` | None | Enter with the full text; the field stays focused and clears. Never fires on a `secure_submit` field |
+| `on_cancel` | `fun(cleared: boolean)` | None | Escape; `cleared` says whether it removed text. A plain field clears (firing `on_change("")` only if there was text), gives up focus, then calls this. A `secure_submit` field scrubs and stays armed. Without it Escape clears and keeps focus |
+| `on_navigate` | `fun(key: "up"\|"down"\|"left"\|"right"\|"page_up"\|"page_down"\|"tab"\|"backtab")` | None | Keys a single-line field does not use, for moving a list selection; repeats while held. `"left"`/`"right"` only when the caret cannot move that way and Shift is up |
+| `secure_submit` | `{ capability: string, action: string }\|Bound` | None | Makes the field masked; keys never reach Lua. Both non-empty UTF-8 strings: only `lock`/`authenticate`, `polkit`/`authenticate` and `network`/`connect`; any other pair or key is an error ([secure fields](../guide/input.md#secure-fields)) |
+| `mask_character` | `string\|Bound` | `"•"` | Drawn per typed character in a `secure_submit` field. Only the first character counts; `""` hides the length |
+<!-- End of the generated table. -->
 
 The field has no intrinsic size, so give it `width` and `height`. The text is vertically centred in
 the box and drawn in the [`fonts`](../guide/scripting.md#fonts) chain (there is no `font` property).

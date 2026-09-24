@@ -48,7 +48,7 @@ list names is refused with the list of accepted keys.
 
 | Property | Values | Default | Behaviour |
 | :--- | :--- | :--- | :--- |
-| `id` | String | Required | The surface's identity across reloads and the prefix of its instance ids. Structural. Duplicates are not checked, so keep it unique |
+| `id` | String | Required | The surface's identity across reloads and the prefix of its instance ids. Structural. Unique across every role; a duplicate is refused |
 | `child` | One node; `function(output)` on a `panel` or `lock` ([per-output child](#per-output-child)) | None | The root's one child. `nil` leaves the surface empty |
 | `visible` | Boolean or signal | `true` | Creates and destroys the protocol object, not a hidden map. Retained state and `id` survive. `lock` refuses it |
 
@@ -125,7 +125,6 @@ on_click = ... }` there ([click outside to close](panel.md#close-an-overlay-on-a
 
 | Trap | Fix |
 | :--- | :--- |
-| `mantle check` passes but a surface never appears | `check` lays out once with every capability `nil` on stand-in 1920x1080 outputs, so data-dependent branches and real output sizes go unchecked. Read `mantle log` after a reload |
 | `layer = state(...)` or a signal `anchor` is refused | Structural fields take literals; switch between two declared panels, or edit the file |
 | A click on a panel's or window's background reaches the window behind it | The root's own `background` claims no input. Put the background on a `width = "Fill", height = "Fill"` child; on a panel, make the panel `"Fill"` on those axes too |
 | `two surfaces declare` an id | Surface ids are unique across every role; rename one |

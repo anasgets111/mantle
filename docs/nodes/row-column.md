@@ -29,11 +29,13 @@ local meter = row {
 `row` and `column` take the [common](index.md#common-properties) and
 [box](index.md#box-properties) properties, plus:
 
-| Property | Values | Default | Behaviour |
+<!-- Generated from renderer/src/lua/nodes/properties.rs by `just stubs`: edit the table there. -->
+| Property | Type | Default | Behaviour |
 | :--- | :--- | :--- | :--- |
-| `children` | Array of node tables, up to 10000; a `nil` or `false` entry is an error | None | Laid out in order along the main axis. Bind a signal of an array to [switch views](index.md#switching-views-with-ids) |
-| `spacing` | Pixels, any finite number | 0 | Gap between visible children. Negative values overlap them. A hidden child adds no gap |
-| `scroll` | A `scroll(name)` signal | None | Makes the node a scrolling viewport along its main axis ([scroll](../guide/input.md#scroll)) |
+| `children` | `Node[]\|Bound` | None | Array of node tables, up to 10000; a `nil` or `false` entry is an error. Laid out in order along the main axis. Bind a signal of an array to [switch views](index.md#switching-views-with-ids) |
+| `spacing` | `number\|Bound` | `0` | Px between visible children; negative values overlap them. Not range-checked |
+| `scroll` | `Bound` | None | A `scroll(name)` signal; makes the node a scrolling viewport along its main axis ([scroll](../guide/input.md#scroll)) |
+<!-- End of the generated table. -->
 
 How the container packs its children:
 

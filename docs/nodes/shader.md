@@ -36,11 +36,13 @@ void main() {
 
 `shader` takes the [common properties](index.md#common-properties), plus:
 
-| Property | Values | Default | Behaviour |
+<!-- Generated from renderer/src/lua/nodes/properties.rs by `just stubs`: edit the table there. -->
+| Property | Type | Default | Behaviour |
 | :--- | :--- | :--- | :--- |
-| `source` | Absolute `.frag` path; a relative one is refused | `""`, drawing nothing | The shader to run. Saving the file recompiles it |
-| `progress` | Number, `[-8192, 8192]` | 0 | Becomes `u_progress`. There is no clock uniform: [animate](../guide/animation.md) this for motion; the wide range lets a spring overshoot |
-| `params` | `{ name = number \| { 2 to 4 numbers } }`, finite numbers | `{}` | Values for the shader's own `float` and `vec2` to `vec4` uniforms. Not tweened |
+| `source` | `string\|Bound` | `""` | Absolute `.frag` path; relative is refused, `""` draws nothing. Saving the file recompiles it; one that fails to build logs once and draws nothing |
+| `progress` | `number\|Bound`, `[-8192, 8192]` | `0` | Becomes `u_progress`. There is no clock uniform: [animate](../guide/animation.md) this for motion; the wide range lets a spring overshoot |
+| `params` | `table<string, number\|number[]>\|Bound` | `{}` | Uniforms by name: a finite number for `float`, 2-4 numbers for `vec2`-`vec4`. Missing ones are `0`. Not tweened |
+<!-- End of the generated table. -->
 
 It has no intrinsic size: without `width` and `height` it draws nothing. `opacity`, transforms,
 `shadow_*` and `content_blur` apply to it.

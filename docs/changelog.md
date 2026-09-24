@@ -25,9 +25,9 @@ so everything since the rename from Obelisk sits under Unreleased.
 
 ### Changed
 
-- A callback (`on_*`) that is not a function, or a `submit` or `autofocus` that is not a boolean,
-  fails the pass instead of being ignored: write `cond and fn or nil`.
-- A `nil` or `false` entry in `children` fails the pass instead of dropping every child after it.
+- A callback (`on_*`) that is not a function (write `cond and fn or nil`), a `submit` or
+  `autofocus` that is not a boolean, and a `nil` or `false` entry in `children`, which dropped
+  every child after it, fail the pass instead of being ignored.
 - A table property (`padding`, `anchor`, `shadow_offset`, `min_size`, `anchor_rect`, an `animate`
   entry, a text run, `secure_submit`, ...) and the `session_process`, `persistent_table` and
   `palette.quantize` option tables refuse a key they do not take.
@@ -46,6 +46,8 @@ so everything since the rename from Obelisk sits under Unreleased.
 - `mantle.rescue` is set when a reload, or a live update, fails to apply, and clears only when a
   scene applies. Errors raised in callbacks, failed spawns and failed `mantle call`s are warnings,
   and a missing icon or undecodable image warns once per name.
+- The editor stubs flag a misspelled property or table key and a percent that is not a whole
+  `"0%"` to `"100%"`, and type `children` as taking a signal, as the engine does.
 - `translate`, `scale`, `rotate` and `origin` tweens repaint without relayout.
 - Hover callbacks fire on pointer entry.
 - An equal capability snapshot is not pushed again, except `tray` and `notifications`.

@@ -365,7 +365,6 @@ return panel {
 | A `pulse`-driven run is cut short, or a second click does not replay it | Removing the entry snaps the property, so make the window at least `delay + duration × loops`. A click inside the window only extends it; the entry never leaves, so the run does not restart |
 | Sliding with `margin` stutters on a large surface | Tween `translate`: it skips layout |
 | `width` will not overshoot below `0` with `OutBack` | The property's range clamps every frame. Use `margin` or `translate` for motion that must go negative |
-| A typo in `animate` passes `mantle check` | `check` does not resolve nodes; the running shell refuses it on the first pass that resolves the node. See [cli](cli.md) |
 
 See also: [signals](signals.md) (`pulse`, `delay`, `hover`), [nodes](../nodes/index.md) (properties and
 identity), [input](input.md) (hover and clicks that drive motion), [paint](paint.md) (what the

@@ -30,14 +30,16 @@ return { panel {
 
 `image` takes the [common properties](index.md#common-properties), plus:
 
-| Property | Values | Default | Behaviour |
+<!-- Generated from renderer/src/lua/nodes/properties.rs by `just stubs`: edit the table there. -->
+| Property | Type | Default | Behaviour |
 | :--- | :--- | :--- | :--- |
-| `source` | Absolute file path (`mantle.config_dir .. "/img/a.png"`) | `""`, drawing nothing | PNG, JPEG, WebP, GIF, SVG or SVGZ. Never a theme name. Animated GIFs loop |
-| `fit` | `"cover"`, `"contain"`, `"stretch"` | `"cover"` | `"cover"` fills the box and crops; `"contain"` fits inside it; `"stretch"` distorts to it |
-| `async` | Boolean | `false` | `true` decodes on a worker thread and draws nothing until the picture is ready. `false` decodes in the frame that first draws it |
-| `retain` | Boolean | `false` | Keep drawing the previous picture while a new `source` decodes, and when a decode fails. Needs `async = true` and a stable identity |
-| `transition` | `{ duration, easing?, shader?, params? }` | None | Cross from the held picture to each newly decoded `source`. Implies `retain`. Unknown keys are refused. See [transition](#transition) |
-| `source_blur` | Blur sigma in px, `[0, 8192]` | 0 | Baked into the pixels once at decode (three box passes approximating a Gaussian); see [blurs](../guide/paint.md#blurs). Animated GIFs ignore it |
+| `source` | `string\|Bound` | `""` | A file path (`mantle.config_dir .. "/img/a.png"`), never a theme name; `""` draws nothing. PNG, JPEG, WebP, GIF, SVG or SVGZ; animated GIFs loop |
+| `fit` | `"cover"\|"contain"\|"stretch"\|Bound` | `"cover"` | `"cover"` fills the box and crops, `"contain"` fits inside it, `"stretch"` distorts to it. No intrinsic size: set `width`/`height` |
+| `async` | `boolean\|Bound` | `false` | `false` decodes in the frame that first draws it. `true` decodes on a worker and draws nothing until ready; use it for many or large images |
+| `retain` | `boolean\|Bound` | `false` | Keep drawing the last picture while a new `source` decodes, and on a failed decode. Needs `async = true` and a stable `id` |
+| `transition` | `Transition\|Bound` | None | Cross from the held picture to each newly decoded `source`. Implies `retain`; needs `async = true` and a stable `id`. Unknown keys are refused. See [transition](#transition) |
+| `source_blur` | `number\|Bound`, `[0, 8192]` | `0` | Blur sigma in px, baked into the pixels once at decode (three box passes approximating a Gaussian); see [blurs](../guide/paint.md#blurs). Animated GIFs ignore it |
+<!-- End of the generated table. -->
 
 An image has no intrinsic size: without `width` and `height` it is 0 × 0. Use `async` for large
 files or many thumbnails, since an inline decode runs on the thread that draws the shell.

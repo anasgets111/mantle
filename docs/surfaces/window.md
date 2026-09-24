@@ -51,16 +51,20 @@ Beyond the [shared properties](index.md#properties-every-role-takes). Every fiel
 signal updates the open window in place. A change made while the window is closed applies when it
 next opens.
 
-| Property | Values | Default | Behaviour |
+<!-- Generated from renderer/src/lua/nodes/properties.rs by `just stubs`: edit the table there. -->
+| Property | Type | Default | Behaviour |
 | :--- | :--- | :--- | :--- |
-| `title` | String | `""` | The window title |
-| `app_id` | String | `"mantle-<id>"` | What compositor window rules match |
-| `min_size` | `{ width, height }`, both keys required, each `[0, 8192]`; `0` leaves that axis unconstrained | None | Advisory hint to the compositor; layout does not enforce it. Also the opening size ([size](#size)) |
-| `max_size` | As `min_size`. A non-zero axis below `min_size`'s is refused | None | Advisory hint; also clamps the opening size |
-| `on_close` | `function()` | None | Called when the user asks to close. The window stays open unless the config sets `visible = false`. Without it, a close request does nothing |
-| `visible` | Boolean | `true` | Creates or destroys the toplevel |
-| `width`, `height` | As on any node | Fill the window | The root's size inside the window, not the window's ([size](#size)) |
-| `child` | One node | None | The root's content. A function `child` is refused |
+| `id` | `string` | Required | The surface's identity across reloads, unique among surfaces. A `panel`'s or `lock`'s per-output instances are `"{id}@{output}"`; `monitor = "Active"` keeps the bare `id` |
+| `title` | `string\|Bound` | `""` | The window title |
+| `app_id` | `string\|Bound` | `"mantle-{id}"` | What compositor window rules match |
+| `min_size` | `{ width: number, height: number }\|Bound`, `[0, 8192]` | None | Advisory hint to the compositor; layout does not enforce it. Both keys required, `0` leaves that axis unconstrained. Also the opening size ([size](#size)) |
+| `max_size` | `{ width: number, height: number }\|Bound`, `[0, 8192]` | None | Advisory, as `min_size`. A non-zero axis below `min_size`'s is refused; also clamps the opening size |
+| `on_close` | `fun()` | None | The user asked to close. The window stays open until the config sets `visible = false`; without a handler a close request does nothing |
+| `visible` | `boolean\|Bound` | `true` | Opens and closes the window; state and `id` survive |
+| `width` | `Length\|Bound`, `[0, 8192]` | Fill the window | The root's size inside the window, not the window's ([size](#size)) |
+| `height` | `Length\|Bound`, `[0, 8192]` | Fill the window | As `width` |
+| `child` | `Node` | None | The one root node; a function `child` is refused |
+<!-- End of the generated table. -->
 
 The engine requests server-side decorations and draws none itself. A compositor that insists on
 client-side decorations gets an undecorated window, with a log line.

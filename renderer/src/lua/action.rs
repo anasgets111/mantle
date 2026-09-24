@@ -31,8 +31,17 @@ const MAX_ANSWER_BYTES: usize = 1024 * 1024;
 struct ActionRegistry(HashMap<String, Function>);
 
 pub fn register(lua: &Lua) -> mlua::Result<()> {
-    lua.globals().set(
+    super::define(
+        lua,
         "action",
+        r#"---Declares what `mantle call <name> [args...]` runs (ADR-0197). Each argument arrives JSON-decoded,
+---or as a string when it is not JSON. The return prints as JSON (≤ 1 MiB), a string bare and `nil`
+---as nothing; a raise or an unconvertible return fails the call. Runs under the 5 ms CPU budget.
+---Every evaluation clears all actions, so declare at the top level.
+---[docs](https://anasgets111.github.io/mantle/guide/scripting.html#action)
+---@param name string Non-empty and unique per evaluation, else raises. Opaque: nothing splits on `.`.
+---@param handler fun(...: any): any?
+"#,
         lua.create_function(|lua, (name, handler): (String, Function)| {
             if name.is_empty() {
                 return Err(mlua::Error::runtime("action() needs a name; `mantle call` has nothing to ask for"));

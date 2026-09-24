@@ -23,8 +23,21 @@ struct StoreRegistry(HashMap<String, Table>);
 /// Registers `persistent_table`. Resolve `mantle.storage` at call time; registration runs in
 /// `Loader::new`, before `lua::namespace::build` creates `mantle`.
 pub fn register(lua: &Lua) -> mlua::Result<()> {
-    lua.globals().set(
+    super::define(
+        lua,
         "persistent_table",
+        r#"---@class PersistentTable
+---One JSON file. Every key but `set` reads as a signal of its stored value, `nil` before the first
+---push and for a missing key.
+---@field set fun(self: PersistentTable, key: string, value: any) Stores one JSON value; `nil` deletes the key. The file is saved 1 s after the last write.
+---@field [string] Signal<any>
+
+---A named JSON file read as signals (ADR-0136). The same file returns the same table across reloads.
+---`defaults` fills only missing keys, so adding one keeps the user's values.
+---[docs](https://anasgets111.github.io/mantle/guide/scripting.html#persistent_table)
+---@param spec { path: string, name: string, defaults?: table } `path` is an absolute directory and `name` a file name without `/`; otherwise raises.
+---@return PersistentTable
+"#,
         lua.create_function(|lua, spec: Table| {
             super::marshal::only_keys(&spec, &["path", "name", "defaults"])
                 .map_err(|detail| mlua::Error::runtime(format!("persistent_table: {detail}")))?;

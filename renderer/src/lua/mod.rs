@@ -47,9 +47,30 @@ fn config_stdlib() -> mlua::StdLib {
         | mlua::StdLib::OS
 }
 
-/// ADR-0048's four non-blocking, process-local `os` calls. Bars use `os.date`, so `OS` cannot be
-/// removed wholesale.
-const OS_CALLS_THAT_CANNOT_BLOCK: [&str; 4] = ["time", "date", "clock", "getenv"];
+/// ADR-0048's four non-blocking, process-local `os` calls and their stubs. Bars use `os.date`, so
+/// `OS` cannot be removed wholesale.
+const OS_CALLS_THAT_CANNOT_BLOCK: [(&str, &str); 4] = [
+    (
+        "date",
+        r#"---@param format? string `strftime` directives, default `"%c"`; `"*t"` returns a table. A leading `!` reads UTC.
+---@param time? integer Unix seconds, default now.
+---@return string|table
+"#,
+    ),
+    (
+        "time",
+        r#"---@param t? table An `os.date("*t")`-shaped table, default now.
+---@return integer # Unix seconds, wall clock.
+"#,
+    ),
+    ("clock", "---@return number # CPU seconds this process has used; not elapsed time.\n"),
+    (
+        "getenv",
+        r#"---@param name string
+---@return string? # The shell's environment variable, `nil` when unset.
+"#,
+    ),
+];
 
 /// Replaces `os` with an allowlist of [`OS_CALLS_THAT_CANNOT_BLOCK`], copying the real functions so
 /// `os.date` keeps its strftime surface. Also replace `package.loaded.os`: `require` reads its own
@@ -59,11 +80,39 @@ const OS_CALLS_THAT_CANNOT_BLOCK: [&str; 4] = ["time", "date", "clock", "getenv"
 fn restrict_os(lua: &Lua) -> mlua::Result<()> {
     let full: Table = lua.globals().get("os")?;
     let kept = lua.create_table()?;
-    for name in OS_CALLS_THAT_CANNOT_BLOCK {
-        kept.set(name, full.get::<Value>(name)?)?;
+    define(
+        lua,
+        "os",
+        r#"---[docs](https://anasgets111.github.io/mantle/guide/runtime.html#the-vm)
+---@class oslib
+---Only these four calls exist; the rest of `os` is removed (ADR-0048).
+"#,
+        &kept,
+    )?;
+    for (name, stub) in OS_CALLS_THAT_CANNOT_BLOCK {
+        define(lua, &format!("os.{name}"), stub, full.get::<Value>(name)?)?;
     }
-    lua.globals().set("os", &kept)?;
     lua.globals().get::<Table>("package")?.get::<Table>("loaded")?.set("os", &kept)
+}
+
+/// Every [`define`] so far, in order: `(path, stub, is_table)`.
+#[cfg(test)]
+#[derive(Default)]
+struct Stubs(Vec<(String, &'static str, bool)>);
+
+/// Sets global `path`, or member `table.name` of an already defined global table, and records
+/// `stub`, the LuaCATS `just stubs` writes above its declaration in `lua-meta`. The declaration is
+/// generated: `path = {}` for a table, else `function path(<its last block's @param names>) end`.
+/// The one way to add a global, so the stubs cannot miss one.
+#[cfg_attr(not(test), allow(unused_variables))]
+pub(crate) fn define(lua: &Lua, path: &str, stub: &'static str, value: impl mlua::IntoLua) -> mlua::Result<()> {
+    let value = value.into_lua(lua)?;
+    #[cfg(test)]
+    app_data_or_default::<Stubs>(lua).0.push((path.to_string(), stub, value.is_table()));
+    match path.split_once('.') {
+        Some((table, name)) => lua.globals().get::<Table>(table)?.set(name, value),
+        None => lua.globals().set(path, value),
+    }
 }
 
 /// Points `require` only at the config directory (ADR-0047 decision 1), replacing Lua's default
@@ -319,7 +368,7 @@ pub(crate) mod tests {
     use super::*;
 
     /// Minimal loader for tests that do not `require`; evaluates `setup` above a `panel` and reads
-    /// back a global. A node would reject a probe key not in `nodes::NODE_PROPERTIES`.
+    /// back a global. A node would reject a probe key not in `nodes::properties::PROPERTIES`.
     pub(crate) fn probe<T: mlua::FromLua>(loader: &Loader, setup: &str, name: &str) -> T {
         loader.evaluate(&format!("{setup}\nreturn panel {{ id = \"bar\", layer = \"Top\" }}")).unwrap();
         loader.lua().globals().get(name).unwrap()
@@ -529,41 +578,96 @@ pub(crate) mod tests {
         assert!(year >= 2024, "os.date has to be the real one, not a stub: got {year}");
     }
 
-    /// Every engine global, and every member of the engine-owned `os`/`process`/`json`/`log`, has a
-    /// `lua-meta` stub, and no stub names what the VM lacks. Enumerated at runtime, so any
-    /// registration style counts. `mantle`'s members are `mantle.lua`'s generator's to check.
+    /// `lua-meta/globals.lua` and `signals.lua`, rendered from every [`define`] a started engine made:
+    /// `signals.lua` takes the reactive layer's, `globals.lua` the rest. An engine global set without
+    /// `define` fails too.
     #[test]
-    fn the_stubs_declare_every_engine_global() {
-        const MEMBER_TABLES: [&str; 5] = ["os", "process", "json", "log", "palette"];
+    fn the_generated_globals_stubs_match_what_is_checked_in() {
         let (_dir, loader) = engine_loader();
+        let lua = loader.lua();
+        let defined = lua.app_data_ref::<Stubs>().unwrap().0.clone();
+        let paths: std::collections::BTreeSet<&str> = defined.iter().map(|(path, ..)| path.as_str()).collect();
 
-        let keys = |table: Table| -> std::collections::BTreeSet<String> {
-            table.pairs::<String, Value>().map(|pair| pair.unwrap().0).collect()
-        };
-        let stdlib = keys(Lua::new_with(config_stdlib(), mlua::LuaOptions::default()).unwrap().globals());
-        let mut engine: std::collections::BTreeSet<String> =
-            keys(loader.lua().globals()).difference(&stdlib).cloned().collect();
-        for table in MEMBER_TABLES {
-            engine.extend(
-                keys(loader.lua().globals().get(table).unwrap()).into_iter().map(|key| format!("{table}.{key}")),
-            );
-        }
-
-        let mut declared = std::collections::BTreeSet::new();
-        for line in stubs().lines() {
-            // `function name(` and `name = {}`; `local` and `Class:method` are not globals.
-            let name =
-                line.strip_prefix("function ").and_then(|rest| rest.split_once('(')).or(line.split_once(" = {}"));
-            if let Some((name, _)) = name
-                && !name.contains([':', ' '])
-                && !stdlib.contains(name)
-                && name.split_once('.').is_none_or(|(table, _)| MEMBER_TABLES.contains(&table))
+        let stdlib = Lua::new_with(config_stdlib(), mlua::LuaOptions::default()).unwrap();
+        for (name, value) in lua.globals().pairs::<String, Value>().map(Result::unwrap) {
+            let defined = paths.contains(name.as_str());
+            if !defined && stdlib.globals().contains_key(name.as_str()).unwrap() {
+                continue;
+            }
+            // Node constructors and `mantle` belong to `nodes.lua` and `mantle.lua`.
+            let is_node = || {
+                let node = lua.load(format!("return {name} {{}}")).eval::<Table>();
+                node.and_then(|node| node.get::<String>("kind")).is_ok_and(|kind| kind == name)
+            };
+            assert!(defined || name == "mantle" || is_node(), "`{name}` was set without `define`");
+            if let Value::Table(members) = value
+                && defined
             {
-                declared.insert(name.to_string());
+                for (key, _) in members.pairs::<String, Value>().map(Result::unwrap) {
+                    assert!(
+                        paths.contains(format!("{name}.{key}").as_str()),
+                        "`{name}.{key}` was set without `define`"
+                    );
+                }
             }
         }
-        assert_eq!(declared, engine, "lua-meta is out of step with the config VM's globals");
+
+        let reactive = Lua::new();
+        signal::register(&reactive, signal::DirtyFlag::new()).unwrap();
+        store::register(&reactive).unwrap();
+        let reactive = reactive.app_data_ref::<Stubs>().unwrap().0.clone();
+        let groups = [
+            ("globals.lua", GLOBALS_HEADER, defined.iter().filter(|stub| !reactive.contains(stub)).collect::<Vec<_>>()),
+            ("signals.lua", SIGNALS_HEADER, reactive.iter().collect()),
+        ];
+        let mut files = Vec::new();
+        for (file, header, stubs) in groups {
+            let mut rendered = header.to_string();
+            for (path, stub, is_table) in stubs {
+                let declaration = if *is_table {
+                    format!("{path} = {{}}")
+                } else {
+                    let own = stub.rsplit("\n\n").next().unwrap_or(stub);
+                    let params: Vec<&str> = own
+                        .lines()
+                        .filter_map(|line| line.strip_prefix("---@param ")?.split(' ').next())
+                        .map(|param| param.trim_end_matches('?'))
+                        .collect();
+                    format!("function {path}({}) end", params.join(", "))
+                };
+                rendered += &format!("\n{stub}{declaration}\n");
+            }
+            files.push((format!("lua-meta/{file}"), rendered));
+        }
+        shared::check_generated(&files);
     }
+
+    /// Hand-written: no one registration owns what the whole file shares.
+    const GLOBALS_HEADER: &str = r#"---@meta
+-- Engine globals outside the reactive layer, and the restricted `os` (ADR-0048).
+-- Generated by `just stubs` from each `lua::define`; edit the stub there.
+-- The VM has no `io`, `debug` or FFI. `dofile` and `loadfile` remain and block on file I/O.
+"#;
+
+    /// Hand-written: `Signal<T>` backs every signal and capability, and `Bound` is LuaLS-only, so
+    /// neither has a registration to live beside.
+    const SIGNALS_HEADER: &str = r#"---@meta
+-- The reactive layer: `Signal` and the globals that create one (ADR-0044).
+-- Generated by `just stubs` from each `lua::define`; edit the stub there.
+
+---[docs](https://anasgets111.github.io/mantle/guide/signals.html#reference)
+---@class Signal<T>: userdata
+---A read-only reactive `T`. Pass the signal itself to a node property to keep it live; `:get()` is a
+---snapshot. `set` works only on a `state` and `reveal` only on a `scroll`; elsewhere they raise.
+---Stub note: `: userdata` keeps tables out of signal-typed slots, and methods must stay `---@field`s
+---or `T` does not bind in callbacks.
+---@field get fun(self: Signal<T>): T The value now; `nil` before a capability's first push.
+---@field map fun(self: Signal<T>, fn: fun(value: T): any): Signal<any> A derived signal of `fn(value)`. `fn` must be side-effect free and runs under the shared 5 ms CPU budget (ADR-0021). ponytail: returns `Signal<any>`, since a `---@field` cannot bind a second type parameter; only one hop is typed.
+
+---A node property value: a literal or a signal carrying one. `userdata`, not `Signal`, because a
+---class in a union admits any table.
+---@alias Bound userdata
+"#;
 
     /// Each handle's methods, read off one instance (a userdata's `__index`, a table's function
     /// fields), match its stub classes' `Class:method` and `---@field name fun(` both ways. One

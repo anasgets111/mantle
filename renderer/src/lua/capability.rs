@@ -17,15 +17,10 @@ use std::collections::HashSet;
 use std::rc::Rc;
 
 use mlua::{Function, Lua, LuaSerdeExt, MultiValue, UserData, UserDataMethods, Value};
-use shared::{CommandEnvelope, CommandParams, RendererFrame, debug, error, warn};
+use shared::{CommandEnvelope, CommandParams, RendererFrame, error, warn};
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::lua::signal::{CpuBudget, DirtyFlag, LiveSignalHandle, Signal};
-
-/// Off-roster names held before the set is cleared. A config's typos never reach it, so each
-/// names itself once; past it a churning computed name reports again, which is the trade for
-/// bounding what a per-pass name can grow.
-const WARNED_UNKNOWN_CAP: usize = 64;
 
 /// Builds the generation-guarded envelope and queues it for the socket thread. One sender per
 /// generation is cloned into every [`Capability`] on `mantle`.
@@ -39,10 +34,6 @@ pub struct CommandSender {
     /// `lua::namespace` and `secure_submit`'s sweep both use it (ADR-0070 decisions 1, 5), so a
     /// second `mantle.audio` reader costs nothing.
     started: Rc<RefCell<HashSet<String>>>,
-    /// Off-roster names already reported, so a config with two typos hears about both. Capped
-    /// rather than grown for the same reason `started` refuses them: `secure_submit` takes a
-    /// config-computed name and this runs on every layout pass.
-    warned_unknown: Rc<RefCell<HashSet<String>>>,
     outbound_tx: UnboundedSender<RendererFrame>,
 }
 
@@ -53,7 +44,6 @@ impl CommandSender {
             generation_id,
             next_id: Rc::new(Cell::new(0)),
             started: Rc::new(RefCell::new(HashSet::new())),
-            warned_unknown: Rc::new(RefCell::new(HashSet::new())),
             outbound_tx,
         }
     }
@@ -65,19 +55,9 @@ impl CommandSender {
         if self.started.borrow().contains(capability) {
             return;
         }
-        // Checked before `started` remembers it: `secure_submit` takes a config-computed name and
-        // its sweep runs on every apply and re-resolve, so an off-roster one must reach neither set
-        // unbounded.
-        let Some(known) = shared::Capability::from_name(capability) else {
-            let mut warned = self.warned_unknown.borrow_mut();
-            if warned.len() >= WARNED_UNKNOWN_CAP {
-                warned.clear();
-            }
-            if warned.insert(capability.to_string()) {
-                debug!("mantle.{capability}: not a capability, so nothing starts");
-            }
-            return;
-        };
+        // Every caller passes a roster name: `mantle`'s index, `idle`, and `secure_submit`, whose
+        // parser admits only its three targets.
+        let known = shared::Capability::from_name(capability).expect("a roster name");
         self.started.borrow_mut().insert(capability.to_string());
         let frame = RendererFrame::StartCapability { capability: known };
         if self.outbound_tx.send(frame).is_err() {
@@ -328,17 +308,6 @@ pub(crate) mod tests {
                 other => panic!("a command must be queued as RendererFrame::Command, got {other:?}"),
             }
         }
-    }
-
-    #[test]
-    fn an_off_roster_name_is_never_remembered_as_started() {
-        let (tx, _rx) = mpsc::unbounded_channel();
-        let commands = CommandSender::new(0, tx);
-
-        commands.start_capability("not_a_capability");
-        commands.start_capability("not_a_capability");
-
-        assert!(commands.started.borrow().is_empty(), "nothing starts, so nothing is remembered as started");
     }
 
     #[test]

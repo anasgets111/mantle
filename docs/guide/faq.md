@@ -36,7 +36,7 @@ follow the link for the fix. Traps that stay within one topic are in that page's
 | An `on_change`, `timer`, `process.run`, `palette` or idle callback does nothing | Its error, a blown CPU budget included, is a warning. Read `mantle log` | [Output and logging](runtime.md#output-and-logging) |
 | `process.run` prints nothing and `exit_cb` gets `nil` | The spawn failed, usually a command not on `PATH`. `mantle log` has the reason | [process.run](processes.md#processrun) |
 | `mantle.<cap>:invoke(...)` returns `nil` and nothing changes | `invoke` is fire and forget; a wrong argument type or count is dropped with a log line | [actions](../capabilities/index.md#actions) |
-| A keybind running `mantle set` or `mantle toggle` does nothing | Refusals (an undeclared name, a bare `toggle` on a non-boolean) go to `mantle log`, not the exit code | [cli gotchas](cli.md#gotchas) |
+| A keybind running `mantle set` or `mantle toggle` does nothing | It was refused (an undeclared name, a bare `toggle` on a non-boolean). The compositor discards the error; `mantle log` keeps it | [cli gotchas](cli.md#gotchas) |
 | Saving a `.json` or an image beside `shell.lua` does not reload | Only `.lua` and `.frag` changes reload; a byte-identical save and an unreadable directory (`changes inside it will not reload`) do not either | [Evaluation, reload and generations](runtime.md#evaluation-reload-and-generations) |
 | An edit to `fonts { ... }` does nothing | The font chain is read when the Renderer starts | [fonts](scripting.md#fonts) |
 | A `textfield` shows no caret and takes no keys | The panel does not take keyboard focus | [text fields](input.md#text-fields), [panel](../surfaces/panel.md) |

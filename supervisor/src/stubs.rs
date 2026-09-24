@@ -632,46 +632,21 @@ mantle = {}
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeSet;
-    use std::path::{Path, PathBuf};
-
-    fn repo_path(path: &str) -> PathBuf {
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("..").join(path)
-    }
-
-    /// Golden-file check over `lua-meta/mantle.lua` and every `docs/capabilities/<name>.md`.
-    /// `just stubs` rewrites; without `UPDATE_STUBS`, differences fail.
-    ///
-    /// Deliberately a test, not a build step: `render` reads derives here, but `build.rs`
-    /// runs before that crate exists. Writing source during builds would break read-only checkouts
-    /// and dirty the tree on every `cargo build`.
-    ///
-    /// Checked in because the language server reads the working tree with no build step between
-    /// editor open and completion. A fresh clone has usable stubs before compilation.
+    /// `lua-meta/mantle.lua` and every `docs/capabilities/<name>.md`. A version bump alone restales
+    /// `mantle.lua`, which stamps the version.
     #[test]
     fn the_generated_stub_matches_what_is_checked_in() {
         let mut files = vec![("lua-meta/mantle.lua".to_string(), super::render())];
         for (capability, payload, actions) in super::capability_schemas() {
-            let intro = std::fs::read_to_string(repo_path(&format!("docs/capabilities/intro/{capability}.md")))
-                .unwrap_or_default();
+            let intro = std::fs::read_to_string(format!(
+                "{}/../docs/capabilities/intro/{capability}.md",
+                env!("CARGO_MANIFEST_DIR")
+            ))
+            .unwrap_or_default();
             let page = super::render_page(capability, &payload, actions.as_ref(), &intro);
             files.push((format!("docs/capabilities/{capability}.md"), page));
         }
-        let stale: Vec<_> = files
-            .iter()
-            .filter(|(path, rendered)| std::fs::read_to_string(repo_path(path)).ok().as_ref() != Some(rendered))
-            .collect();
-        if std::env::var_os("UPDATE_STUBS").is_some() {
-            for (path, rendered) in stale {
-                std::fs::write(repo_path(path), rendered).expect("the generated file is writable");
-            }
-            return;
-        }
-        let stale: Vec<&str> = stale.iter().map(|(path, _)| path.as_str()).collect();
-        assert!(
-            stale.is_empty(),
-            "{stale:?} are stale. Run `just stubs` and commit the result. A version bump alone does this to \
-             lua-meta/mantle.lua, because the version is stamped into it."
-        );
+        shared::check_generated(&files);
     }
 
     /// A read-only capability's `invoke` raises in the Renderer, so its class must not offer one.

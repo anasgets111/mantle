@@ -101,8 +101,23 @@ impl UserData for TimerHandle {
 }
 
 pub fn register(lua: &Lua) -> mlua::Result<()> {
-    lua.globals().set(
+    super::define(
+        lua,
         "timer",
+        r#"---@class TimerHandle
+local TimerHandle = {}
+
+---Disarms the timer. A no-op once it has fired or been cancelled, and inside its own callback.
+function TimerHandle:cancel() end
+
+---Runs `callback` once, `ms` from now, on a monotonic clock, under the 5 ms CPU budget (ADR-0203).
+---Repeat by re-arming inside `callback`. Every evaluation clears all timers, so arm at the top level;
+---a discarded handle still fires.
+---[docs](https://anasgets111.github.io/mantle/guide/scripting.html#timer)
+---@param ms integer `[1, 86400000]`; outside raises.
+---@param callback fun() A raise is logged as a warning.
+---@return TimerHandle
+"#,
         lua.create_function(|lua, (ms, callback): (u64, Function)| {
             if !(MIN_MS..=MAX_MS).contains(&ms) {
                 return Err(mlua::Error::runtime(format!("timer({ms}) is outside {MIN_MS}..={MAX_MS} milliseconds")));

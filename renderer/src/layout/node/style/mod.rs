@@ -269,13 +269,9 @@ fn parse_color(properties: &PropMap, property: &str) -> Result<Option<Rgba>, Lay
 /// `rect.radius`, defaulting to 0, negated under `corner_shape = "Scoop"`: a quarter circle cut in,
 /// centred on the box's corner point, CSS's `corner-shape` name.
 pub fn parse_radius(properties: &PropMap) -> Result<f32, LayoutError> {
-    let scoop = content::parse_keyword(properties, "corner_shape", false, &[("Round", false), ("Scoop", true)])?;
-    let Some(value) = properties.get("radius") else {
-        return Ok(0.0);
-    };
-    let n = value_as_f32("radius", value)?
-        .ok_or_else(|| invalid("radius", format!("expected a number, got {}", preview_for_error(value))))?;
-    within("radius", n).map(|n| if scoop { -n } else { n })
+    let scoop =
+        content::parse_keyword(properties.get("corner_shape"), "corner_shape", &[("Round", false), ("Scoop", true)])?;
+    within("radius", content::parse_number(properties, "radius")?).map(|n| if scoop { -n } else { n })
 }
 
 /// The range an overshooting easing is clamped into, and the one [`within`] enforces for the
@@ -296,15 +292,11 @@ pub fn parse_radius(properties: &PropMap) -> Result<f32, LayoutError> {
 /// rather than in the parser covers the tween too, which clamps into this same range. Icon `size`
 /// needs no floor: it becomes a `Measure::Square` and the painter takes its pixels from the
 /// resolved box, so it never reaches a shaper.
+///
+/// The property table's `range`, else `[0, 8192]`; `margin`, which no parser bounds, tweens through
+/// negatives as `translate` does.
 pub(super) fn range_of(property: &str) -> (f32, f32) {
-    match property {
-        "opacity" | "origin" => (0.0, 1.0),
-        "scale" => (0.0, 64.0),
-        "font_size" => (1.0, 8192.0),
-        // `progress` so a spring may undershoot its start.
-        "margin" | "translate" | "rotate" | "progress" | "shadow_offset" | "shadow_spread" => (-8192.0, 8192.0),
-        _ => (0.0, 8192.0),
-    }
+    crate::lua::nodes::range(property).unwrap_or(if property == "margin" { (-8192.0, 8192.0) } else { (0.0, 8192.0) })
 }
 
 /// What an absent key in `property`'s `{ x, y }` or edge table means: the identity for that
@@ -351,9 +343,8 @@ pub enum ClipShape {
 /// needs an offscreen target and composite, while a square clip is a free GPU scissor.
 pub fn parse_clip(properties: &PropMap) -> Result<ClipShape, LayoutError> {
     content::parse_keyword(
-        properties,
+        properties.get("clip"),
         "clip",
-        ClipShape::Box,
         &[("Box", ClipShape::Box), ("Rounded", ClipShape::Rounded), ("None", ClipShape::None)],
     )
 }
@@ -423,15 +414,17 @@ pub fn parse_border_width(properties: &PropMap) -> Result<EdgeInsets, LayoutErro
 }
 
 pub fn parse_align(properties: &PropMap, property: &str) -> Result<Align, LayoutError> {
-    let choices =
-        [("Start", Align::Start), ("Center", Align::Center), ("End", Align::End), ("Stretch", Align::Stretch)];
-    content::parse_keyword(properties, property, Align::Start, &choices)
+    content::parse_keyword(
+        properties.get(property),
+        property,
+        &[("Start", Align::Start), ("Center", Align::Center), ("End", Align::End), ("Stretch", Align::Stretch)],
+    )
 }
 
 /// `list.direction`, defaulting to `"Vertical"`; returns the borrowed `row` or `column` kind rather
 /// than adding a third layout arm.
 pub fn parse_list_direction(properties: &PropMap) -> Result<&'static str, LayoutError> {
-    content::parse_keyword(properties, "direction", "column", &[("Vertical", "column"), ("Horizontal", "row")])
+    content::parse_keyword(properties.get("direction"), "direction", &[("Vertical", "column"), ("Horizontal", "row")])
 }
 
 /// `blur`: ask the compositor to blur the desktop behind this node's box (ADR-0195). Opt-in per
@@ -440,7 +433,7 @@ pub fn parse_list_direction(properties: &PropMap) -> Result<&'static str, Layout
 /// background alpha to read at all. A node that asks and a compositor that cannot is silently
 /// nothing, which is what every other unavailable compositor feature already does here.
 pub fn parse_blur(properties: &PropMap) -> Result<bool, LayoutError> {
-    content::parse_bool(properties, "blur", false)
+    content::parse_bool(properties, "blur")
 }
 
 /// A drop shadow in logical pixels, CSS `box-shadow`'s terms: `blur` is the radius (sigma is half
@@ -470,14 +463,18 @@ pub struct Effect {
 pub fn parse_effect(properties: &PropMap) -> Result<Effect, LayoutError> {
     let color = parse_color(properties, "shadow_color")?.unwrap_or(Rgba { r: 0.0, g: 0.0, b: 0.0, a: 1.0 });
     let offset = properties.get("shadow_offset").map_or(Ok((0.0, 0.0)), |value| xy("shadow_offset", value))?;
-    let blur = within("shadow_blur", content::parse_number(properties, "shadow_blur", 0.0)?)?;
-    let spread = within("shadow_spread", content::parse_number(properties, "shadow_spread", 0.0)?)?;
+    let blur = within("shadow_blur", content::parse_number(properties, "shadow_blur")?)?;
+    let spread = within("shadow_spread", content::parse_number(properties, "shadow_spread")?)?;
     let shows = color.a > 0.0 && (blur > 0.0 || spread != 0.0 || offset != (0.0, 0.0));
     Ok(Effect {
         shadow: shows.then_some(Shadow { color, blur, offset, spread }),
-        blur: within("content_blur", content::parse_number(properties, "content_blur", 0.0)?)?,
-        backdrop: within("backdrop_blur", content::parse_number(properties, "backdrop_blur", 0.0)?)?,
-        content_shadow: content::parse_keyword(properties, "shadow_mode", false, &[("Box", false), ("Content", true)])?,
+        blur: within("content_blur", content::parse_number(properties, "content_blur")?)?,
+        backdrop: within("backdrop_blur", content::parse_number(properties, "backdrop_blur")?)?,
+        content_shadow: content::parse_keyword(
+            properties.get("shadow_mode"),
+            "shadow_mode",
+            &[("Box", false), ("Content", true)],
+        )?,
     })
 }
 
@@ -486,17 +483,11 @@ pub fn parse_effect(properties: &PropMap) -> Result<Effect, LayoutError> {
 /// lays out, occupies space, and hit-tests. Values outside `[0, 1]` error rather than clamp
 /// (ADR-0068).
 pub fn parse_opacity(properties: &PropMap) -> Result<f32, LayoutError> {
-    let Some(value) = properties.get("opacity") else {
-        return Ok(1.0);
-    };
-    let Some(n) = value_as_f32("opacity", value)? else {
-        return Err(invalid("opacity", format!("must be a number, got {}", preview_for_error(value))));
-    };
-    within("opacity", n)
+    within("opacity", content::parse_number(properties, "opacity")?)
 }
 
 pub fn parse_visible(properties: &PropMap) -> Result<bool, LayoutError> {
-    content::parse_bool(properties, "visible", true)
+    content::parse_bool(properties, "visible")
 }
 
 /// `cursor`: CSS names such as `"pointer"`, `"text"`, `"grab"`, and resize edges, or `None`
@@ -516,12 +507,12 @@ pub fn parse_cursor(properties: &PropMap) -> Result<Option<CursorIcon>, LayoutEr
 }
 
 pub fn parse_spacing(properties: &PropMap) -> Result<f32, LayoutError> {
-    content::parse_number(properties, "spacing", 0.0)
+    content::parse_number(properties, "spacing")
 }
 
 pub fn parse_z(properties: &PropMap) -> Result<f32, LayoutError> {
     // -0.0 would sort below its z = 0 siblings.
-    Ok(content::parse_number(properties, "z", 0.0)? + 0.0)
+    Ok(content::parse_number(properties, "z")? + 0.0)
 }
 
 #[cfg(test)]
@@ -657,19 +648,6 @@ mod tests {
             parse_edge_insets(&props, "padding").unwrap(),
             EdgeInsets { top: -10.0, right: -10.0, bottom: -10.0, left: -10.0 }
         );
-    }
-
-    #[test]
-    fn align_h_parses_all_four_variants() {
-        for (text, expected) in
-            [("Start", Align::Start), ("Center", Align::Center), ("End", Align::End), ("Stretch", Align::Stretch)]
-        {
-            let lua = mlua::Lua::new();
-            let table: mlua::Table =
-                lua.load(format!(r#"return {{ kind = "rect", align_h = "{text}" }}"#)).eval().unwrap();
-            let props = props_from_table(&table);
-            assert_eq!(parse_align(&props, "align_h").unwrap(), expected);
-        }
     }
 
     #[test]

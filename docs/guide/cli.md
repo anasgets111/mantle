@@ -293,9 +293,8 @@ directory in an editor with lua-language-server.
 | :--- | :--- |
 | `mantle set label true` stores a boolean, `mantle set count 3` a number | Quote JSON strings: `mantle set label '"true"'` |
 | A keybind does nothing and the terminal shows no error | The compositor discards the command's stderr. Run it in a terminal, or `mantle log` and look for `asked to write state` |
-| `mantle toggle modal` does nothing on a string state | A bare toggle needs a boolean. Pass the value: `mantle toggle modal settings` |
+| `mantle toggle modal` is refused on a string state | A bare toggle needs a boolean. Pass the value: `mantle toggle modal settings` |
 | `mantle call x` says no action exists after a broken save | A failed reload clears actions. Fix the config and save ([runtime](runtime.md#evaluation-reload-and-generations)) |
-| `mantle check` passes, the shell shows nothing | `check` lays out with every capability `nil`, so a branch that needs data went unchecked. Read `mantle log` for the layout warning |
 | Two bars on screen | Two shells are running. `mantle list`, then stop one |
 | `mantle -c dir list` is refused | `list` shows every config's shells; drop `-c` |
 | `mantle log -f` exits at once | That shell has stopped. The command printed its last run |

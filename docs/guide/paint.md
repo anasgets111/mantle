@@ -59,17 +59,20 @@ colours and no short `#RGB` form.
 
 ## Box properties
 
-| Property | Values | Default |
-| :--- | :--- | :--- |
-| `background` | Colour or [gradient](#gradients). Absent draws nothing; `"#00000000"` is an explicit transparent fill | None |
-| `radius` | px `[0, 8192]`. Above half the shorter side it clamps, so `radius = 999` makes a pill or circle | 0 |
-| `corner_shape` | `"Round"`, or `"Scoop"`: each corner is a quarter circle cut inward, centred on the corner point. Fill, clip, glass, shadow and `blur` region follow it | `"Round"` |
-| `border_color` | Colour, or `{ top, right, bottom, left }` of colours; a missing edge has none | None |
-| `border_width` | Number, or `{ top, right, bottom, left }` with missing edges 0; each `[0, 8192]` | 0 |
-| `clip` | See [Clip](#clip) | `"Box"` |
-| `mask` | See [Mask](#mask) | None |
-| `shadow_mode` | See [Shadows](#shadows) | `"Box"` |
-| `backdrop_blur`, `blur` | See [Blurs](#blurs) | 0, `false` |
+<!-- Generated from renderer/src/lua/nodes/properties.rs by `just stubs`: edit the table there. -->
+| Property | Type | Default | Behaviour |
+| :--- | :--- | :--- | :--- |
+| `background` | `Color\|Gradient\|Bound` | None | A colour or [gradient](#gradients). Absent draws nothing; `"#00000000"` is an explicit transparent fill. A gradient snaps under `animate` |
+| `mask` | `Mask\|Bound` | None | Multiplies the alpha of this node and its subtree; see [Mask](#mask) |
+| `radius` | `number\|Bound`, `[0, 8192]` | `0` | Corner radius px. Above half the shorter side it clamps, so `radius = 999` makes a pill or circle |
+| `corner_shape` | `"Round"\|"Scoop"\|Bound` | `"Round"` | `"Scoop"` cuts each corner inward as a quarter circle centred on the corner point; fill, clip, glass, shadow and the `blur` region follow |
+| `border_color` | `Color\|BorderColors\|Bound` | None | A string sets all four edges; a missing edge has none. An edge draws only with both a colour and a width |
+| `border_width` | `number\|Edges\|Bound`, `[0, 8192]` | `0` | Px per edge; a number sets all four, a missing edge is `0`. Borders draw inside the box and take no layout space |
+| `blur` | `boolean\|Bound` | `false` | Ask the compositor to blur the desktop behind this box; see [Blurs](#blurs). Never inferred from a translucent background |
+| `backdrop_blur` | `number\|Bound`, `[0, 8192]` | `0` | Gaussian sigma in px over what this surface already painted under the box, CSS `backdrop-filter`; see [Blurs](#blurs) |
+| `shadow_mode` | `"Box"\|"Content"\|Bound` | `"Box"` | `"Box"`: CSS `box-shadow` of the box shape. `"Content"`: CSS `drop-shadow` of everything painted. See [Shadows](#shadows) |
+| `clip` | `"Box"\|"Rounded"\|"None"\|Bound` | `"Box"` | `"Box"` cuts children to the rectangle, `"Rounded"` also to `radius`, `"None"` leaves them on the parent's clip. See [Clip](#clip) |
+<!-- End of the generated table. -->
 
 Borders draw inside the box and take no layout space, so give the box padding at least as wide
 as the border. An edge draws only when it has both a colour and a width. A uniform border (same

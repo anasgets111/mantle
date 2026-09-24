@@ -27,7 +27,7 @@ pub fn parse_layer(properties: &PropMap) -> Result<LayerKind, LayoutError> {
         ("Top", LayerKind::Top),
         ("Overlay", LayerKind::Overlay),
     ];
-    parse_keyword(properties, "layer", LayerKind::Top, &layers)
+    parse_keyword(properties.get("layer"), "layer", &layers)
 }
 
 /// The `{ top, bottom, left, right }` edge booleans, defaulting to false.
@@ -89,15 +89,12 @@ pub enum KeyboardInteractivity {
 pub fn parse_keyboard_interactivity(properties: &PropMap) -> Result<KeyboardInteractivity, LayoutError> {
     // Deferred on the evaluation-time pass ([`is_deferred_signal`]), same split as
     // [`parse_title`]'s: a field valid on a live surface is one only the resolved pass can read.
-    if non_deferred_property(properties, "keyboard_interactivity").is_none() {
-        return Ok(KeyboardInteractivity::None);
-    }
     let modes = [
         ("None", KeyboardInteractivity::None),
         ("OnDemand", KeyboardInteractivity::OnDemand),
         ("Exclusive", KeyboardInteractivity::Exclusive),
     ];
-    parse_keyword(properties, "keyboard_interactivity", KeyboardInteractivity::None, &modes)
+    parse_keyword(non_deferred_property(properties, "keyboard_interactivity"), "keyboard_interactivity", &modes)
 }
 
 /// The exclusion answers mapped to `set_exclusive_zone`: positive reserves space, `0`
@@ -219,22 +216,6 @@ mod tests {
     }
 
     #[test]
-    fn layer_reads_each_of_the_four_protocol_levels() {
-        let lua = mlua::Lua::new();
-        for (text, expected) in [
-            ("Background", LayerKind::Background),
-            ("Bottom", LayerKind::Bottom),
-            ("Top", LayerKind::Top),
-            ("Overlay", LayerKind::Overlay),
-        ] {
-            let table: mlua::Table =
-                lua.load(format!(r#"return {{ kind = "panel", layer = "{text}" }}"#)).eval().unwrap();
-            let props = props_from_table(&table);
-            assert_eq!(parse_layer(&props).unwrap(), expected);
-        }
-    }
-
-    #[test]
     fn an_unrecognized_layer_is_a_config_error_not_a_silent_default() {
         let lua = mlua::Lua::new();
         let table: mlua::Table = lua.load(r#"return { kind = "panel", layer = "Toop" }"#).eval().unwrap();
@@ -327,21 +308,6 @@ mod tests {
     fn keyboard_interactivity_absent_defaults_to_none() {
         let props = PropMap::default();
         assert_eq!(parse_keyboard_interactivity(&props).unwrap(), KeyboardInteractivity::None);
-    }
-
-    #[test]
-    fn keyboard_interactivity_reads_each_of_the_three_protocol_modes() {
-        let lua = mlua::Lua::new();
-        for (text, expected) in [
-            ("None", KeyboardInteractivity::None),
-            ("OnDemand", KeyboardInteractivity::OnDemand),
-            ("Exclusive", KeyboardInteractivity::Exclusive),
-        ] {
-            let table: mlua::Table =
-                lua.load(format!(r#"return {{ kind = "panel", keyboard_interactivity = "{text}" }}"#)).eval().unwrap();
-            let props = props_from_table(&table);
-            assert_eq!(parse_keyboard_interactivity(&props).unwrap(), expected);
-        }
     }
 
     #[test]

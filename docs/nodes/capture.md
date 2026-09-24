@@ -29,13 +29,15 @@ local preview = rect {
 
 `capture` takes the [common properties](index.md#common-properties), plus:
 
-| Property | Values | Default | Behaviour |
+<!-- Generated from renderer/src/lua/nodes/properties.rs by `just stubs`: edit the table there. -->
+| Property | Type | Default | Behaviour |
 | :--- | :--- | :--- | :--- |
-| `output` | Connector name, e.g. `"DP-1"` | `""`, drawing nothing | A name that is not connected draws nothing and logs one warning. Changing it starts a fresh capture |
-| `fit` | `"cover"`, `"contain"`, `"stretch"` | `"cover"` | As on [`image`](image.md) |
-| `live` | `false`, `true`, or frames per second `(0, 1000]` | `false` | `false`: one frame on show and on each `output` change. `true`: every frame, one in flight. A number: at most that many frames per second |
-| `region` | `{ x, y, width, height }` in the output's logical px | The whole output | Every key required, each `[0, 8192]`, size non-zero. Placed by `fit` as if it were the whole frame |
-| `paint_cursor` | Boolean | `false` | Include the pointer in the frame |
+| `output` | `string\|Bound` | `""` | Connector name, e.g. `"DP-1"`; `""` draws nothing. An unknown name draws nothing and warns once. Changing it starts a fresh capture |
+| `fit` | `"cover"\|"contain"\|"stretch"\|Bound` | `"cover"` | As on [`image`](image.md) |
+| `live` | `boolean\|number\|Bound` | `false` | `false`: capture on show and on each `output` change. `true`: every frame, one in flight. A number: at most that many fps, `(0, 1000]`. Pauses while hidden or unmapped |
+| `region` | `Rect\|Bound`, `[0, 8192]` | The whole output | Part of the output in its logical px, placed by `fit` as the whole frame. Every key is required and in that range; the size is non-zero |
+| `paint_cursor` | `boolean\|Bound` | `false` | Include the pointer in the frame |
+<!-- End of the generated table. -->
 
 It has no intrinsic size: without `width` and `height` it draws nothing. Capture pauses while the
 node is hidden or its surface unmapped, and starts fresh when it shows again. New frames arrive only

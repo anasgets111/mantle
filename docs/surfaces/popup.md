@@ -61,19 +61,23 @@ dismisses it and `on_dismiss` clears the state.
 Beyond the [shared properties](index.md#properties-every-role-takes). All fields but `parent` are
 live.
 
-| Property | Values | Default | Behaviour |
+<!-- Generated from renderer/src/lua/nodes/properties.rs by `just stubs`: edit the table there. -->
+| Property | Type | Default | Behaviour |
 | :--- | :--- | :--- | :--- |
-| `parent` | The `id` of a `panel`, `window` or `popup` | Required | Structural: refuses a signal; a change applies at the next open. A `lock` cannot be a parent |
-| `anchor_rect` | `{ x?, y?, width, height }` in the parent's surface coordinates. `width`, `height` in `(0, 8192]`; `x`, `y` default `0` | Required | The rectangle the popup is placed against |
-| `anchor` | Point on `anchor_rect` the popup hangs from: `"Top"`, `"Bottom"`, `"Left"`, `"Right"`, `"TopLeft"`, `"TopRight"`, `"BottomLeft"`, `"BottomRight"`, `"Center"` | `"Center"` | |
-| `gravity` | Direction it extends from that point; same values | `"Center"` | `"Bottom"` hangs it below the point, `"BottomRight"` below and to the right |
-| `constraint_adjustment` | Array of `"SlideX"`, `"SlideY"`, `"FlipX"`, `"FlipY"`, `"ResizeX"`, `"ResizeY"`; order is ignored, `{}` for none | `{ "FlipY", "SlideX" }` | What the compositor may do to keep it on screen |
-| `offset` | `{ x?, y? }` px, an absent axis `0` | `{ x = 0, y = 0 }` | Nudge after `anchor` and `gravity`; negative moves up or left |
-| `width`, `height` | px in `(0, 8192]`, or omitted | Content | Omitted measures the content, capped at the first output's size and the root's `max_width`/`max_height`. No `"Fill"`, no `"NN%"` |
-| `grab` | Boolean | `true` | `true` takes an input grab so an outside click dismisses it ([grab](#grab)). `false` for a tooltip |
-| `on_dismiss` | `function()` | None | Called after the compositor closes it (outside click, denied grab, parent gone). Not called when the config hides it |
-| `visible` | Boolean | `true` | Opens or closes it |
-| `child` | One node | None | The root's content. A function `child` is refused |
+| `id` | `string` | Required | The surface's identity across reloads, unique among surfaces. A `panel`'s or `lock`'s per-output instances are `"{id}@{output}"`; `monitor = "Active"` keeps the bare `id` |
+| `parent` | `string` | Required | The `id` of a shown `panel`, `window` or `popup`; hiding the parent closes this popup. On a per-output panel it opens on the clicked instance, else the first. A change applies at the next open; a `lock` cannot be a parent |
+| `anchor_rect` | `Rect\|Bound` | Required | In the parent's surface coordinates; `width`/`height` in `(0, 8192]`, `x`/`y` default `0`. Usually the rect `on_click` passes |
+| `anchor` | `"Top"\|"Bottom"\|"Left"\|"Right"\|"TopLeft"\|"TopRight"\|"BottomLeft"\|"BottomRight"\|"Center"\|Bound` | `"Center"` | The point on `anchor_rect` the popup hangs from |
+| `gravity` | `"Top"\|"Bottom"\|"Left"\|"Right"\|"TopLeft"\|"TopRight"\|"BottomLeft"\|"BottomRight"\|"Center"\|Bound` | `"Center"` | The direction it extends from that point: `"Bottom"` hangs it below, `"BottomRight"` below and to the right |
+| `constraint_adjustment` | `("SlideX"\|"SlideY"\|"FlipX"\|"FlipY"\|"ResizeX"\|"ResizeY")[]\|Bound` | `{ "FlipY", "SlideX" }` | How the compositor may keep it on screen; `{}` for none, order is ignored |
+| `offset` | `{ x?: number, y?: number }\|Bound` | `{ x = 0, y = 0 }` | Pixel nudge after `anchor` and `gravity`; an absent axis is `0`, negative moves up or left |
+| `width` | `number\|Bound` | Content | Pixels in `(0, 8192]`; no `"Fill"` or `%`. Omitted sizes to the content, capped at the first output's size and the root's `max_width`/`max_height`; an open popup follows it through `xdg_popup.reposition` (xdg-shell v3+) |
+| `height` | `number\|Bound` | Content | As `width`; each axis is independent |
+| `grab` | `boolean\|Bound` | `true` | Takes an input grab so an outside click dismisses it ([grab](#grab)). `false` for a tooltip |
+| `on_dismiss` | `fun()` | None | The compositor closed it (click outside, denied grab, parent gone); not called when the config hides it. Set `visible = false` here, or it reopens on the next click |
+| `visible` | `boolean\|Bound` | `true` | Opens and closes the popup; state and `id` survive |
+| `child` | `Node` | None | The one root node; a function `child` is refused |
+<!-- End of the generated table. -->
 
 ## Placement
 

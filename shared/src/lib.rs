@@ -571,6 +571,29 @@ impl Malloc {
     }
 }
 
+/// The golden-file check behind every `the_generated_*` test, over `(path from the repo root,
+/// rendered)`: `UPDATE_STUBS=1` rewrites the stale files, otherwise a stale one fails naming `just stubs`.
+///
+/// A test, not a build step: the renderers read types and registrations `build.rs` runs before, and
+/// writing source during a build would break read-only checkouts. The output is checked in because
+/// the language server reads the working tree, so a fresh clone has stubs before it compiles.
+#[doc(hidden)]
+pub fn check_generated(files: &[(String, String)]) {
+    let path = |file: &str| std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..").join(file);
+    let stale: Vec<&(String, String)> = files
+        .iter()
+        .filter(|(file, rendered)| std::fs::read_to_string(path(file)).ok().as_ref() != Some(rendered))
+        .collect();
+    if std::env::var_os("UPDATE_STUBS").is_some() {
+        for (file, rendered) in stale {
+            std::fs::write(path(file), rendered).expect("the generated file is writable");
+        }
+        return;
+    }
+    let stale: Vec<&str> = stale.iter().map(|(file, _)| file.as_str()).collect();
+    assert!(stale.is_empty(), "{stale:?} are stale. Run `just stubs` and commit the result.");
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

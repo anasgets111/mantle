@@ -87,8 +87,8 @@ const MEMO_CAPACITY: usize = 4096;
 /// Size -> name -> path, nested so hits borrow the inner `&str` without allocating.
 type Memo = HashMap<u16, HashMap<String, Option<PathBuf>>>;
 
-/// The active theme's *directory* name, read once per process. Theme changes appear on reload, the
-/// font-chain cadence, rather than rereading settings behind every paint.
+/// The active theme's *directory* name, read once per process rather than behind every paint, so a
+/// theme change needs a restart.
 fn theme() -> &'static str {
     static THEME: OnceLock<String> = OnceLock::new();
     THEME.get_or_init(|| gtk_setting("gtk-icon-theme-name").unwrap_or_else(|| "hicolor".to_string()))

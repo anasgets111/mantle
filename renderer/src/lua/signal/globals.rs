@@ -122,8 +122,17 @@ pub fn register(lua: &Lua, dirty: DirtyFlag) -> mlua::Result<()> {
     let hover_dirty = dirty.clone();
     let rect_dirty = dirty.clone();
     let scroll_dirty = dirty.clone();
-    lua.globals().set(
+    crate::lua::define(
+        lua,
         "computed",
+        r#"---A signal of `fn` over its dependencies' values, recomputed on read. `fn` must be side-effect free
+---and runs under the shared 5 ms CPU budget (ADR-0021). ponytail: `fn`'s parameters are untyped,
+---since typing them needs an overload per arity; prefer `:map` for one source.
+---[docs](https://anasgets111.github.io/mantle/guide/signals.html#derived-signals)
+---@param dependencies Signal<any>[] Signals or capabilities, in `fn`'s argument order; anything else raises.
+---@param fn fun(...): any
+---@return Signal<any> # Read-only.
+"#,
         lua.create_function(|lua, (deps, func): (Table, Function)| {
             let collected = deps
                 .sequence_values::<mlua::AnyUserData>()
@@ -142,8 +151,18 @@ pub fn register(lua: &Lua, dirty: DirtyFlag) -> mlua::Result<()> {
             new_derived(lua, kind, Some(func), collected)
         })?,
     )?;
-    lua.globals().set(
+    crate::lua::define(
+        lua,
         "delay",
+        r#"---`source`'s value once a new value has held for `ms`; until then, the old one (ADR-0146). A source
+---that returns to the old value first changes nothing. A trailing debounce, or a close-hold:
+---`visible = computed({ open, delay(open, ms) }, function(now, was) return now or was end)`.
+---[docs](https://anasgets111.github.io/mantle/guide/signals.html#delay-hold-a-value)
+---@generic T
+---@param source Signal<T> A signal or capability; anything else raises.
+---@param ms number `[1, 60000]`, rounded to whole milliseconds; outside raises.
+---@return Signal<T> # Read-only.
+"#,
         lua.create_function(|lua, (source_ud, millis): (mlua::AnyUserData, f64)| {
             let source = from_userdata(&source_ud)
                 .ok_or_else(|| mlua::Error::runtime("delay() takes a Signal or an `mantle` capability first"))?;
@@ -154,8 +173,17 @@ pub fn register(lua: &Lua, dirty: DirtyFlag) -> mlua::Result<()> {
             Ok(ud)
         })?,
     )?;
-    lua.globals().set(
+    crate::lua::define(
+        lua,
         "pulse",
+        r#"---`true` for `ms` after `source` changes value, else `false`; a change inside the window restarts it
+---(ADR-0153). Fires one-shot animations: `animate = pulse(clicks, 400):map(...)` (ADR-0152). Values
+---compare with `==`, so a table-valued source changes on every push.
+---[docs](https://anasgets111.github.io/mantle/guide/signals.html#pulse-mark-a-change)
+---@param source Signal<any> A signal or capability; anything else raises.
+---@param ms number `[1, 60000]`, rounded to whole milliseconds; outside raises. At least as long as what it drives.
+---@return Signal<boolean> # Read-only.
+"#,
         lua.create_function(|lua, (source_ud, millis): (mlua::AnyUserData, f64)| {
             let source = from_userdata(&source_ud)
                 .ok_or_else(|| mlua::Error::runtime("pulse() takes a Signal or an `mantle` capability first"))?;
@@ -166,8 +194,22 @@ pub fn register(lua: &Lua, dirty: DirtyFlag) -> mlua::Result<()> {
             Ok(ud)
         })?,
     )?;
-    lua.globals().set(
+    crate::lua::define(
+        lua,
         "state",
+        r#"---@class StateSignal<T>: Signal<T>
+---What `state` returns: the only signal Lua writes.
+---@field set fun(self: StateSignal<T>, value: T) Stores `value` and re-resolves its readers. Raises on NaN, infinity, an integer past ±(2^53−1) or a string over 64 KiB; tables are not checked. Types are checked by LuaLS only.
+
+---Named writable state that survives reloads. A changed scalar `initial` re-seeds it; a table
+---`initial` never does (ADR-0044). `mantle set <name> <value>` and `mantle toggle <name> [value]`
+---write it (ADR-0112): a bare toggle needs a boolean, and toggling to the held value restores `initial`.
+---[docs](https://anasgets111.github.io/mantle/guide/signals.html#named-state)
+---@generic T
+---@param name string Its identity: one name, one signal.
+---@param initial T The first value, and the signal's type for LuaLS.
+---@return StateSignal<T>
+"#,
         lua.create_function(move |lua, (name, initial): (String, Value)| {
             let (existing, repeated) = {
                 let mut registry = crate::lua::app_data_or_default::<StateRegistry>(lua);
@@ -201,12 +243,39 @@ pub fn register(lua: &Lua, dirty: DirtyFlag) -> mlua::Result<()> {
             Ok(signal)
         })?,
     )?;
-    lua.globals()
-        .set("hover", lua.create_function(move |lua, name: String| Ok(hover_slot(lua, &hover_dirty, name)?.0))?)?;
-    lua.globals()
-        .set("hover_rect", lua.create_function(move |lua, name: String| Ok(hover_slot(lua, &rect_dirty, name)?.1))?)?;
-    lua.globals().set(
+    crate::lua::define(
+        lua,
+        "hover",
+        r#"---Whether the pointer is inside the node whose `hover` is bound to this signal; `false` until it is
+---(ADR-0062). One name, one signal, across reloads. Read-only.
+---[docs](https://anasgets111.github.io/mantle/guide/input.html#hover)
+---@param name string
+---@return Signal<boolean>
+"#,
+        lua.create_function(move |lua, name: String| Ok(hover_slot(lua, &hover_dirty, name)?.0))?,
+    )?;
+    crate::lua::define(
+        lua,
+        "hover_rect",
+        r#"---The absolute rect of `hover(name)`'s node, in its surface's logical coordinates, for a `popup`'s
+---`anchor_rect`. `1x1` at the origin before the first hover; keeps the last rect after the pointer
+---leaves.
+---[docs](https://anasgets111.github.io/mantle/guide/input.html#hover)
+---@param name string The `hover` slot. Reading this does not register a region.
+---@return Signal<Rect>
+"#,
+        lua.create_function(move |lua, name: String| Ok(hover_slot(lua, &rect_dirty, name)?.1))?,
+    )?;
+    crate::lua::define(
+        lua,
         "geometry",
+        r#"---The absolute rect of the node whose `geometry` is bound to this signal, in its surface's logical
+---coordinates (the space of `on_click` and `hover_rect`); layout writes it (ADR-0147). Zero before
+---the first layout. A change earns one follow-up pass, so a binding feeding its own measurement cannot loop.
+---[docs](https://anasgets111.github.io/mantle/guide/signals.html#geometry-read-a-nodes-laid-out-rect)
+---@param name string One name, one signal, across reloads.
+---@return Signal<Rect>
+"#,
         lua.create_function(|lua, name: String| {
             let existing = crate::lua::app_data_or_default::<GeometryRegistry>(lua).0.get(&name).cloned();
             if let Some(signal) = existing {
@@ -221,8 +290,19 @@ pub fn register(lua: &Lua, dirty: DirtyFlag) -> mlua::Result<()> {
             Ok(signal)
         })?,
     )?;
-    lua.globals().set(
+    crate::lua::define(
+        lua,
         "scroll",
+        r#"---@class ScrollSignal: Signal<number>
+---What `scroll` returns.
+---@field reveal fun(self: ScrollSignal, index: integer) On the next pass, scrolls the least distance that shows the viewport's `index`-th visible child (1-based; a `list`'s items in source order), then the wheel takes over (ADR-0112). An index with no child does nothing; below 1 raises.
+
+---A viewport's scroll offset along its main axis, in logical pixels from the top or left. The wheel
+---writes it and layout clamps it (ADR-0069); `:reveal` is the only request Lua makes.
+---[docs](https://anasgets111.github.io/mantle/guide/input.html#scroll)
+---@param name string Bind the result as a `row`, `column` or `list`'s `scroll`. One name, one signal, across reloads.
+---@return ScrollSignal
+"#,
         lua.create_function(move |lua, name: String| {
             Ok(crate::lua::app_data_or_default::<ScrollRegistry>(lua)
                 .0

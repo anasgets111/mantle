@@ -35,9 +35,11 @@ The badge comes second, so it paints over the icon.
 `rect` takes the [common](index.md#common-properties) and [box](index.md#box-properties)
 properties, plus:
 
-| Property | Values | Default | Behaviour |
+<!-- Generated from renderer/src/lua/nodes/properties.rs by `just stubs`: edit the table there. -->
+| Property | Type | Default | Behaviour |
 | :--- | :--- | :--- | :--- |
-| `children` | Array of node tables, up to 10000; a `nil` or `false` entry is an error | None | Stacked in order: later children paint over earlier ones. Bind a signal of an array to [switch views](index.md#switching-views-with-ids) |
+| `children` | `Node[]\|Bound` | None | Array of node tables, up to 10000; a `nil` or `false` entry is an error. Stacked in order: later children paint over earlier ones. Bind a signal of an array to [switch views](index.md#switching-views-with-ids) |
+<!-- End of the generated table. -->
 
 Without `width` and `height`, a `rect` is the union of its children, and 0 × 0 with none.
 

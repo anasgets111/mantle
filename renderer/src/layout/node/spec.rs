@@ -471,7 +471,7 @@ mod tests {
     fn every_property_a_lock_denies_is_refused_by_name_rather_than_ignored() {
         let lua = mlua::Lua::new();
         // `monitor` and `anchor` never reach `lock_spec` from a config any more: they are not on
-        // `lock`'s row in `nodes::NODE_PROPERTIES`, so `deserialize_lua_table` refuses them first
+        // a `lock` row in `nodes::properties::PROPERTIES`, so `deserialize_lua_table` refuses them first
         // (`a_lock_property_that_is_not_even_on_the_kind_is_refused_before_lock_spec_sees_it`).
         // The three left here are ones a lock legitimately has a row for and refuses anyway.
         for property in ["visible", "width", "height"] {

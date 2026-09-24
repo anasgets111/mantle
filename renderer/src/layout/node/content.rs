@@ -165,27 +165,30 @@ pub fn parse_image_source(properties: &PropMap) -> Result<String, LayoutError> {
 /// `image.fit` (ADR-0055 decision 3) defaults to `cover`; an unrecognised string errors rather
 /// than silently selecting a fit.
 pub fn parse_fit(properties: &PropMap) -> Result<Fit, LayoutError> {
-    let choices = [("cover", Fit::Cover), ("contain", Fit::Contain), ("stretch", Fit::Stretch)];
-    parse_keyword(properties, "fit", Fit::default(), &choices)
+    parse_keyword(
+        properties.get("fit"),
+        "fit",
+        &[("cover", Fit::Cover), ("contain", Fit::Contain), ("stretch", Fit::Stretch)],
+    )
 }
 
 /// `image.async` (ADR-0122): absent/`false` decodes in the frame; `true` uses the pool and draws
 /// nothing until the result lands. A signal resolving to `nil` arrives as an absent key.
 pub fn parse_load(properties: &PropMap) -> Result<Load, LayoutError> {
-    Ok(if parse_bool(properties, "async", false)? { Load::Background } else { Load::Inline })
+    Ok(if parse_bool(properties, "async")? { Load::Background } else { Load::Inline })
 }
 
 /// `image.retain` (ADR-0180): while a new `source` decodes, keep drawing the one this node last
 /// had pixels for instead of nothing. Inert without `async = true`, because an inline decode is
 /// finished by the time the draw asks for it and never leaves a gap to cover.
 pub fn parse_retain(properties: &PropMap) -> Result<bool, LayoutError> {
-    parse_bool(properties, "retain", false)
+    parse_bool(properties, "retain")
 }
 
 /// `image.source_blur` (ADR-0240): logical pixels, `0.0` (off) by default, capped at 8192 like
 /// every property `style::range_of` has no bound of its own for.
 pub fn parse_source_blur(properties: &PropMap) -> Result<f32, LayoutError> {
-    style::within("source_blur", parse_number(properties, "source_blur", 0.0)?)
+    style::within("source_blur", parse_number(properties, "source_blur")?)
 }
 
 /// `capture.output` (ADR-0248): a connector name, matching `panel.monitor`'s spelling
@@ -208,7 +211,7 @@ pub fn parse_shader_source(properties: &PropMap) -> Result<String, LayoutError> 
 
 /// `shader.progress` (ADR-0253), default `0`: the shader's `u_progress`, and what `animate` drives.
 pub fn parse_progress(properties: &PropMap) -> Result<f32, LayoutError> {
-    style::within("progress", parse_number(properties, "progress", 0.0)?)
+    style::within("progress", parse_number(properties, "progress")?)
 }
 
 /// `capture.live` (ADR-0248, ADR-0263): frames per second in (0, 1000], `true` uncapped
@@ -252,7 +255,7 @@ pub fn parse_region(properties: &PropMap) -> Result<Option<LogicalRect>, LayoutE
 
 /// `capture.paint_cursor` (ADR-0248), default `false`.
 pub fn parse_paint_cursor(properties: &PropMap) -> Result<bool, LayoutError> {
-    parse_bool(properties, "paint_cursor", false)
+    parse_bool(properties, "paint_cursor")
 }
 
 fn parse_optional_string(properties: &PropMap, property: &str) -> Result<String, LayoutError> {
@@ -333,7 +336,7 @@ pub enum Elide {
 
 /// `elide`. Only `"End"` is offered: middle elision needs a grapheme budget across runs.
 pub fn parse_elide(properties: &PropMap) -> Result<Elide, LayoutError> {
-    parse_keyword(properties, "elide", Elide::None, &[("None", Elide::None), ("End", Elide::End)])
+    parse_keyword(properties.get("elide"), "elide", &[("None", Elide::None), ("End", Elide::End)])
 }
 
 /// Whether oversized text breaks onto another line. It composes with `elide`: `wrap = "Word"` and
@@ -351,7 +354,7 @@ pub enum Wrap {
 /// `wrap` defaults to `None`, which measures one line, so a fixed-width `text` reserves the height
 /// it paints.
 pub fn parse_wrap(properties: &PropMap) -> Result<Wrap, LayoutError> {
-    parse_keyword(properties, "wrap", Wrap::None, &[("None", Wrap::None), ("Word", Wrap::Word)])
+    parse_keyword(properties.get("wrap"), "wrap", &[("None", Wrap::None), ("Word", Wrap::Word)])
 }
 
 /// `max_lines` is uncapped when absent or `0`; zero lets signal-driven values spell "absent"
@@ -372,8 +375,11 @@ pub fn parse_max_lines(properties: &PropMap) -> Result<Option<usize>, LayoutErro
 
 /// `text_align` defaults to `Start`. `Start`/`End` match `align_h`.
 pub fn parse_text_align(properties: &PropMap) -> Result<TextAlign, LayoutError> {
-    let choices = [("Start", TextAlign::Start), ("Center", TextAlign::Center), ("End", TextAlign::End)];
-    parse_keyword(properties, "text_align", TextAlign::Start, &choices)
+    parse_keyword(
+        properties.get("text_align"),
+        "text_align",
+        &[("Start", TextAlign::Start), ("Center", TextAlign::Center), ("End", TextAlign::End)],
+    )
 }
 
 /// The declared `foreground`, or `None` when absent. Icons preserve their file colours unless
@@ -397,51 +403,55 @@ pub fn parse_foreground(properties: &PropMap) -> Result<Rgba, LayoutError> {
 }
 
 pub fn parse_font_size(properties: &PropMap) -> Result<f32, LayoutError> {
-    style::within("font_size", parse_number(properties, "font_size", 12.0)?)
+    style::within("font_size", parse_number(properties, "font_size")?)
 }
 
 /// Absent `size` defaults to 12.0, matching [`parse_font_size`] and ADR-0044's nil rule, so text
 /// and icons share the same default visual scale.
 pub fn parse_icon_size(properties: &PropMap) -> Result<f32, LayoutError> {
-    parse_number(properties, "size", 12.0)
+    parse_number(properties, "size")
 }
 
 /// Shared boolean parser behind [`parse_load`], [`parse_retain`], `style::parse_blur` and
 /// `style::parse_visible`, the way [`parse_string_property`] is shared by the string ones. An
-/// absent key takes `default`; anything that is not a boolean is an error naming the property.
-pub(super) fn parse_bool(properties: &PropMap, property: &str, default: bool) -> Result<bool, LayoutError> {
+/// absent key takes the property table's default; anything that is not a boolean is an error
+/// naming the property.
+pub(super) fn parse_bool(properties: &PropMap, property: &str) -> Result<bool, LayoutError> {
     match properties.get(property) {
-        None => Ok(default),
+        None => Ok(crate::lua::nodes::default_bool(property)),
         Some(Value::Boolean(b)) => Ok(*b),
         Some(other) => Err(invalid(property, format!("expected a boolean, got {}", preview_for_error(other)))),
     }
 }
 
-/// One of `choices`' names, `default` when absent. Anything else errors naming every choice.
+/// `value` as one of the property table's choices for `property`, mapped through the `values` entry
+/// of the same name; the table's default when absent. Anything else errors naming every choice.
 pub(super) fn parse_keyword<T: Copy>(
-    properties: &PropMap,
+    value: Option<&Value>,
     property: &str,
-    default: T,
-    choices: &[(&str, T)],
+    values: &[(&str, T)],
 ) -> Result<T, LayoutError> {
-    let Some(value) = properties.get(property) else {
-        return Ok(default);
+    let (choices, default) = crate::lua::nodes::keyword(property);
+    debug_assert!(choices.iter().eq(values.iter().map(|(name, _)| name)), "`{property}`'s values name its choices");
+    let find = |name: &[u8]| values.iter().find(|(choice, _)| choice.as_bytes() == name).map(|(_, value)| *value);
+    let Some(value) = value else {
+        return Ok(default.and_then(|name| find(name.as_bytes())).expect("a required keyword is checked before this"));
     };
     let Value::String(s) = value else {
         return Err(invalid(property, format!("expected a string, got {}", preview_for_error(value))));
     };
-    let bytes = s.as_bytes();
-    choices.iter().find(|(name, _)| name.as_bytes() == &*bytes).map(|&(_, choice)| choice).ok_or_else(|| {
-        let names: Vec<String> = choices.iter().map(|(name, _)| format!("`{name}`")).collect();
+    find(&s.as_bytes()).ok_or_else(|| {
+        let names: Vec<String> = choices.iter().map(|name| format!("`{name}`")).collect();
         invalid(property, format!("expected one of {}, got {}", names.join(", "), preview_for_error(value)))
     })
 }
 
-/// Shared number parser behind [`parse_font_size`], [`parse_icon_size`] and `style::parse_spacing`.
-/// Range-checking is the caller's: only `font_size` has a bound its consumer requires.
-pub(super) fn parse_number(properties: &PropMap, property: &str, default: f32) -> Result<f32, LayoutError> {
+/// Shared number parser behind [`parse_font_size`], [`parse_icon_size`] and `style::parse_spacing`,
+/// the table's default when absent. Range-checking is the caller's: only `font_size` has a bound its
+/// consumer requires.
+pub(super) fn parse_number(properties: &PropMap, property: &str) -> Result<f32, LayoutError> {
     let Some(value) = properties.get(property) else {
-        return Ok(default);
+        return Ok(crate::lua::nodes::default_number(property));
     };
     value_as_f32(property, value)?
         .ok_or_else(|| invalid(property, format!("expected a number, got {}", preview_for_error(value))))

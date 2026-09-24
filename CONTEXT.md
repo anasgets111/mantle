@@ -77,7 +77,7 @@ cited as ADR-NNNN for the why behind behavior the code confirms.
 | **Capability roster** | The `shared::Capability` enum: every capability with snapshot state, `idle` included (ADR-0076). `process` is addressable but off-roster. |
 | **Capabilities** | The Supervisor's `Capabilities` struct of controllers and channels. Not the `GenerationRegistry`, which tracks Renderer connections. |
 | **Revision** | A capability's snapshot counter, stamped on commands as `expected_revision`. Nothing checks it (ADR-0004). |
-| **IDL** | The typed engine contract in `lua-meta/`: capability payloads and actions generated from Rust, node and surface properties hand-written. |
+| **IDL** | The typed engine contract in `lua-meta/`, generated from Rust: capability payloads and actions from their types; node and surface properties from the property table, whose LuaCATS types and docs are written by hand; globals from the hand-written stub text beside each registration. |
 
 ## Capability domains
 
