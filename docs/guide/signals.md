@@ -227,6 +227,10 @@ A `list` keeps its items while nothing its last build read has changed: a write 
 surface lays them out again without calling `itemfn` or reading their signals. What a build reads,
 and what it cannot see: [when items rebuild](../nodes/list.md#when-items-rebuild).
 
+A node reads its `children` or `child` table once and keeps what it read while it holds that same
+table. A node table or `children` array changed in place is not seen; a signal answering a new table
+is.
+
 A `visible = false` node's subtree is frozen. Its children keep their nodes, ids, properties and
 last geometry. None of their signals is read, no `list` item function runs and nothing re-lays
 out until the node is shown again. Signals that only a hidden subtree reads therefore trigger

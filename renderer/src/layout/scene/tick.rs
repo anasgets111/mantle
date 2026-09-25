@@ -122,7 +122,17 @@ fn prepare_retained(
     node::advance(&mut node.tweens, &mut node.properties, now, lua)?;
     let style = LayoutStyle::parse(&node.properties)?;
     let ResolvedNode {
-        id, kind, properties, children, tweens, displayed_source, dissolve, text_memo, list_memo, ..
+        id,
+        kind,
+        properties,
+        children,
+        tweens,
+        displayed_source,
+        dissolve,
+        text_memo,
+        list_memo,
+        child_table,
+        ..
     } = node;
     let text_memo = if text_tweening { None } else { text_memo };
     let paint = node::paint_style(kind, &properties)?;
@@ -142,6 +152,7 @@ fn prepare_retained(
         tweens,
         leaving: Vec::new(),
         list_memo,
+        child_table,
     };
     if !node.style.visible {
         return Ok(node);

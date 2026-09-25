@@ -1,4 +1,5 @@
 use std::collections::{HashMap, HashSet};
+use std::rc::Rc;
 use std::time::Instant;
 
 use mlua::{Lua, Value};
@@ -32,6 +33,48 @@ fn children_of(kind: &str, properties: &PropMap) -> Result<Vec<VirtualNode>, Lay
         "text" | "icon" | "image" | "capture" | "shader" | "textfield" => Ok(Vec::new()),
         other => unreachable!("ensure_supported_kind already rejected `{other}`"),
     }
+}
+
+/// The nodes a node last read out of its `children` or `child` table. Read again only
+/// once the node holds a different table: a signal's new value, a function `child`'s new call or a
+/// rebuilt `list` item. Blind to a table changed in place, the contract `docs/nodes/index.md` states.
+#[derive(Clone)]
+pub struct ChildTable {
+    /// Kept to keep it alive: compared by address, so a collected table cannot hand its address to
+    /// a new one.
+    table: mlua::Table,
+    /// Checked first: a table of a dropped VM panics on any read, and its address can come back in
+    /// the next VM. A scene outlives its VM only in tests.
+    lua: mlua::WeakLua,
+    /// Shared, so the rollback copy each pass takes of the retained tree does not copy them.
+    nodes: Rc<[VirtualNode]>,
+}
+
+/// By hand: `WeakLua` has no `Debug`.
+impl std::fmt::Debug for ChildTable {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ChildTable").field("nodes", &self.nodes.len()).finish_non_exhaustive()
+    }
+}
+
+/// [`children_of`], or the nodes `kept` read from the same table.
+fn children_kept(
+    kind: &str,
+    properties: &PropMap,
+    kept: &mut Option<ChildTable>,
+    lua: &Lua,
+) -> Result<Vec<VirtualNode>, LayoutError> {
+    // A kind accepts one of the two keys, so at most one is present.
+    let Some(Value::Table(table)) = properties.get("children").or_else(|| properties.get("child")) else {
+        return children_of(kind, properties);
+    };
+    let lua = lua.weak();
+    if let Some(kept) = kept.as_ref().filter(|kept| kept.lua == lua && kept.table.to_pointer() == table.to_pointer()) {
+        return Ok(kept.nodes.to_vec());
+    }
+    let nodes = children_of(kind, properties)?;
+    *kept = Some(ChildTable { table: table.clone(), lua, nodes: nodes.as_slice().into() });
+    Ok(nodes)
 }
 
 /// `child = function(output)` on a `panel`/`lock` (ADR-0121) runs per instance and pass, with the
@@ -234,13 +277,13 @@ pub(super) fn prepare(
     // Removed while hidden means removed off screen: no exit plays anywhere under a thaw.
     let thawing = thawing || retained.as_ref().is_some_and(|r| !r.visible);
 
-    let (id, displayed_source, dissolve, old_children, text_memo, list_memo) = match retained {
+    let (id, displayed_source, dissolve, old_children, text_memo, list_memo, child_table) = match retained {
         Some(r) => {
             let memo =
                 if kind == "text" && text_measure_matches(&properties, &r.properties) { r.text_memo } else { None };
-            (r.id, r.displayed_source, r.dissolve, r.children, memo, r.list_memo)
+            (r.id, r.displayed_source, r.dissolve, r.children, memo, r.list_memo, r.child_table)
         }
-        None => (scene.alloc_id(), None, None, Vec::new(), None, None),
+        None => (scene.alloc_id(), None, None, Vec::new(), None, None, None),
     };
     // Already leaving children are not paired again: a re-added id is a new node beside the one
     // still fading.
@@ -281,6 +324,7 @@ pub(super) fn prepare(
         tweens,
         leaving: Vec::new(),
         list_memo,
+        child_table,
     };
     if !node.style.visible {
         node.frozen.extend(leaving);
@@ -299,7 +343,7 @@ pub(super) fn prepare(
         close(&mut at, &mut scene.resolve_split.list);
         res?
     } else {
-        children_of(kind, &node.properties)?
+        children_kept(kind, &node.properties, &mut node.child_table, lua)?
     };
     let (matched_candidates, mut unclaimed) =
         pair_children_by_id_then_position(&fresh_children, std::mem::take(&mut node.frozen))?;
@@ -412,6 +456,7 @@ fn finish(
         tweens,
         leaving,
         list_memo,
+        child_table,
     } = prepared;
     let layout = tree.layout(taffy_id).map_err(taffy_failed)?;
     let size = LogicalSize { width: layout.size.width, height: layout.size.height };
@@ -497,6 +542,7 @@ fn finish(
         leaving: false,
         text_memo,
         list_memo,
+        child_table,
     })
 }
 
@@ -567,6 +613,28 @@ mod tests {
             })
             .collect();
         scene.apply(std::slice::from_ref(surface), &instances, shaping, lua)
+    }
+
+    /// A `children` table is read once per table: an edit in place is not seen, a new table is.
+    #[test]
+    fn a_children_table_is_read_again_only_once_the_node_holds_a_new_one() {
+        let mut scene = Scene::new();
+        let shaping = ShapingHandle::spawn();
+        let (lua, surface) = surface_from(
+            r#"first = { rect { width = 4, height = 4 } }
+            kids = state("kids", first)
+            return panel { id = "bar", child = row { children = kids } }"#,
+        );
+        let count = |scene: &Scene| scene.surface("bar@TEST").unwrap().children[0].children.len();
+        apply_at(&mut scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
+
+        lua.load("first[2] = rect { width = 4, height = 4 }").exec().unwrap();
+        apply_at(&mut scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
+        assert_eq!(count(&scene), 1, "the same table keeps what it read");
+
+        lua.load("kids:set({ first[1], first[2], rect {} })").exec().unwrap();
+        apply_at(&mut scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
+        assert_eq!(count(&scene), 3, "a new table is read");
     }
 
     #[test]

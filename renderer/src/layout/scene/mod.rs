@@ -89,6 +89,7 @@ impl ResolvedNode {
             leaving: false,
             text_memo: None,
             list_memo: None,
+            child_table: None,
         }
     }
 }
@@ -233,6 +234,9 @@ pub struct ResolvedNode {
     pub text_memo: Option<(Option<f32>, taffy::Size<f32>)>,
     /// What a `list` built its items from, so a pass that finds it unchanged keeps them.
     pub list_memo: Option<node::ListMemo>,
+    /// What its `children` or `child` table last read as, so a pass holding the same table skips
+    /// reading it again.
+    pub child_table: Option<pass::ChildTable>,
 }
 
 impl ResolvedNode {
@@ -712,6 +716,8 @@ struct PreparedNode {
     leaving: Vec<ResolvedNode>,
     /// Carried across the pass, or replaced by the build that ran; see [`ResolvedNode::list_memo`].
     list_memo: Option<node::ListMemo>,
+    /// Carried across the pass, or replaced by the read that ran; see [`ResolvedNode::child_table`].
+    child_table: Option<pass::ChildTable>,
 }
 
 #[cfg(test)]
@@ -1413,6 +1419,53 @@ pub(super) mod tests {
                 );
             }
         }
+    }
+
+    /// What the non-list part of `prepare` costs per pass on a bar:
+    /// `MANTLE_PROFILE=1 cargo test -p renderer --release bar_pass_cost -- --ignored --nocapture`.
+    /// Ignored like [`list_pass_cost`]. 50 hover chips of `rect > row > (rect, text)` and a clock
+    /// text written each pass, 203 nodes. On this machine, `props` (the resolve span less the list
+    /// span) was 0.545 ms a pass reading every `children` table each pass, 0.325 ms keeping what
+    /// each table read (`pass::ChildTable`).
+    #[test]
+    #[ignore]
+    fn bar_pass_cost() {
+        let (lua, surface) = surface_from(
+            r##"clock = state("clock", "0")
+            local chips = { text { content = clock, font_size = 13 } }
+            for i = 1, 50 do
+                local over = hover("chip" .. i)
+                chips[#chips + 1] = rect {
+                    hover = over, radius = 6, padding = 4,
+                    background = over:map(function(on) return on and "#313244" or "#1E1E2E" end),
+                    children = { row { spacing = 4, children = {
+                        rect { width = 8, height = 8, background = "#89B4FA" },
+                        text { content = "chip " .. i, font_size = 12, foreground = "#CDD6F4" },
+                    } } },
+                }
+            end
+            return panel { id = "bar", child = row { width = "Fill", height = 32, spacing = 4, children = chips } }"##,
+        );
+        let shaping = ShapingHandle::spawn();
+        let mut scene = Scene::new();
+        apply_at(&mut scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
+        let (_, nodes, _) = scene.census();
+        scene.take_resolve_split();
+        let passes = 200;
+        for tick in 0..passes {
+            lua.load(format!("clock:set('{tick}')")).exec().unwrap();
+            apply_at(&mut scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
+        }
+        let split = scene.take_resolve_split();
+        let per_pass = |d: std::time::Duration| d.as_secs_f64() * 1000.0 / passes as f64;
+        println!(
+            "BAR nodes={nodes}: props {:.3} ms/pass (resolve {:.3} list {:.3} solve {:.3} clone {:.3})",
+            per_pass(split.resolve - split.list),
+            per_pass(split.resolve),
+            per_pass(split.list),
+            per_pass(split.solve),
+            per_pass(split.clone),
+        );
     }
 
     /// What one production read of a retained tree costs:
