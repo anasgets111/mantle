@@ -6621,3 +6621,46 @@ to define it outside the builder.
 
 **Amends ADR-0044** (decision 3: a list's build is cached across passes, invalidated per written
 cell) **and ADR-0132** (item 3: the list half of delegate memoization is built, at the size above).
+
+## 0270. A node resolves again only when a signal its last resolve read has been written
+
+A write to any cell a surface instance read re-resolved every node on it: a 1 Hz clock `text` ran
+the getters of all 377 nodes of a bar. Live profile of that bar: resolve 2.71 ms a pass, of which
+running property getters is 1.85 ms, about 4.9 µs a node and linear in node count.
+
+**The rule.** A node's resolved properties are recomputed only when a signal its last resolve read
+(a `state`, `computed`, `:map`, capability, `hover`, `scroll` or `geometry` cell) has been written
+since, or its declaration changed. Otherwise the pass keeps the properties it resolved last time and
+runs no Lua for that node. The node's children are still walked; each decides for itself.
+
+1. **The unit is one node's own resolve**: `resolve_properties`, a surface root's function `child`,
+   and `retarget`. A read frame (ADR-0269's) around it keeps the cells read, with the write clock
+   taken before it. A later pass whose raw property values are the same Lua values and whose cells
+   are unwritten since advances the kept tweens (`node::advance`, as a tick does) and reuses the
+   kept properties; it notes the kept cells as the instance's reads, so the next write to one still
+   dirties the surface (ADR-0044's amendment, constraint 1).
+2. **A declaration change is a miss.** Raw values compare by identity for tables, functions and
+   userdata and by value for scalars and strings, so a node built afresh by an `itemfn` or a
+   function `child` resolves again even with nothing written.
+3. **What freezes.** A getter reading anything but a signal: `os.date()` or `os.time()` with no
+   signal behind them, `os.clock()`, `math.random`, an upvalue or global changed without `:set`, a
+   file. It shows what it read at its last resolve until a signal it read changes. Before, it
+   refreshed on any write to its surface. A surface root's function `child` runs again only when a
+   signal it read with `:get()` changes. A pending `delay` or open `pulse` reads the clock and keeps
+   its node resolving every pass (ADR-0269 decision 5).
+4. **The fix for authors** is to derive time from a signal: `mantle.system:map(function(s) return
+   os.date(fmt, s.time) end)`, or a `state` a `timer` writes.
+5. **Errors are unchanged.** A failed pass rolls back to the last good tree and its memos, whose
+   stamps predate the write that broke the node, so the next pass resolves it again (ADR-0265,
+   ADR-0266). A node with no retained partner, or whose partner changed kind, always resolves.
+
+This is ADR-0044's amendment carried one level down: it said per-node invalidation needs "a stated
+reactivity contract -- a getter reads only signals and pure data" first. This entry states it. It is
+ADR-0269's contract for `list` items, now for every node; `ListMemo` stays, since it skips `itemfn`
+and pairing, which a per-node memo cannot.
+
+Rejected: comparing each resolved value after running its getter (the getter is the cost); a memo
+keyed by `NodeId` beside the scene (rollback recycles ids, as for ADR-0269).
+
+**Amends ADR-0044** (decision 3: every node's resolve is cached across passes, invalidated per
+written cell) **and ADR-0121** (a function `child` is no longer called on every pass).
