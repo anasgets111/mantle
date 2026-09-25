@@ -94,9 +94,13 @@ impl Scene {
             .and_then(|tree| if budget.exceeded() { Err(LayoutError::PassBudgetExceeded) } else { Ok(tree) });
             match outcome {
                 Ok(tree) => {
-                    // Quiet: a tick never schedules a pass (ADR-0131).
+                    // Quiet: a tick never schedules a pass (ADR-0131), except the one that settles,
+                    // which owes the readers of rects it moved one pass at their final place.
                     if let Err(err) = publish_geometry(&tree, 0.0, 0.0, lua, true) {
                         debug!("{key}: writing a geometry signal failed: {err}");
+                    }
+                    if !tree.animating() {
+                        note_settled_geometry(&tree, lua);
                     }
                     if tree.animating() && !tree.tick_is_paint_only() {
                         self.solver_trees.insert(key.to_string(), solver);
@@ -111,6 +115,18 @@ impl Scene {
         }
         relaid
     }
+}
+
+/// Every in-flow `geometry` rect under `node` as moved: the quiet ticks wrote them, and a reader
+/// the last pass resolved has not seen the value they settled on.
+fn note_settled_geometry(node: &ResolvedNode, lua: &Lua) {
+    if !node.in_flow() {
+        return;
+    }
+    if let Some((id, _)) = node::signal_at(&node.properties, "geometry").and_then(|signal| signal.geometry_cell()) {
+        crate::lua::signal::note_geometry_moved(lua, id);
+    }
+    node.children.iter().for_each(|child| note_settled_geometry(child, lua));
 }
 
 fn strip_tweens(node: &mut ResolvedNode) {
@@ -458,6 +474,63 @@ mod tests {
         let started = scene.surface("bar@TEST").unwrap().children[0].tweens[0].started;
         scene.tick(&[instance_at(&surface, full())], &shaping, &lua, started + std::time::Duration::from_millis(100));
         assert!(shown(&scene) > initial);
+    }
+
+    #[test]
+    fn a_percent_child_follows_its_growing_parent_through_the_tween_and_after() {
+        let mut scene = Scene::new();
+        let shaping = ShapingHandle::spawn();
+        let (lua, surface) = surface_from(
+            r#"local e = state("e", false)
+            local w = e:map(function(on) return on and 220 or 34 end)
+            local o = e:map(function(on) return on and 1 or 0 end)
+            local v = state("v", 50)
+            local function bar() return rect { width = v:map(function(x) return x .. "%" end), height = "Fill",
+                opacity = o, animate = { opacity = { duration = 100, easing = "Linear" } },
+                children = { row { width = w, height = "Fill", animate = { width = { duration = 100, easing = "Linear" } } } } } end
+            return panel { id = "bar", child = button { width = w, height = 20, clip = "Rounded", radius = 4,
+                animate = { width = { duration = 100, easing = "Linear" } },
+                children = { bar(), row { width = "Fill", height = "Fill", children = { rect { width = "100%" } } } } } }"#,
+        );
+        let fill = |scene: &Scene| {
+            let parent = &scene.surface("bar@TEST").unwrap().children[0];
+            (parent.rect.width, parent.children[0].rect.width)
+        };
+        apply_at(&mut scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
+        lua.load(r#"state("e", false):set(true)"#).exec().unwrap();
+        apply_at(&mut scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
+        let started = scene.surface("bar@TEST").unwrap().children[0].tweens[0].started;
+        let instances = [instance_at(&surface, full())];
+        for ms in [30, 60, 100, 200] {
+            scene.tick(&instances, &shaping, &lua, started + std::time::Duration::from_millis(ms));
+            let (parent, child) = fill(&scene);
+            assert!((child - parent / 2.0).abs() < 0.5, "at {ms} ms: {child} in {parent}");
+        }
+        apply_at(&mut scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
+        assert_eq!(fill(&scene), (220.0, 110.0), "a settled pass keeps it");
+    }
+
+    #[test]
+    fn only_the_tick_that_settles_owes_its_geometry_readers_a_pass() {
+        let mut scene = Scene::new();
+        let shaping = ShapingHandle::spawn();
+        let (lua, surface) = surface_from(
+            r#"return panel { id = "bar", child = rect { width = state("w", 40), height = 20, geometry = geometry("g"),
+                animate = { width = { duration = 100, easing = "Linear" } } } }"#,
+        );
+        apply_at(&mut scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
+        lua.load(r#"state("w", 40):set(90)"#).exec().unwrap();
+        apply_at(&mut scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
+        crate::lua::signal::take_geometry_moved(&lua);
+        let started = child_tween(&scene).started;
+        let instances = [instance_at(&surface, full())];
+
+        scene.tick(&instances, &shaping, &lua, started + std::time::Duration::from_millis(50));
+        assert!(crate::lua::signal::take_geometry_moved(&lua).is_empty(), "a mid-tween frame is quiet");
+        scene.tick(&instances, &shaping, &lua, started + std::time::Duration::from_millis(100));
+        assert_eq!(crate::lua::signal::take_geometry_moved(&lua).len(), 1, "the settling frame is not");
+        let rect: mlua::Table = lua.load(r#"return geometry("g"):get()"#).eval().unwrap();
+        assert_eq!(rect.get::<f32>("width").unwrap(), 90.0);
     }
 
     #[test]

@@ -193,10 +193,14 @@ impl RendererClient {
     /// One animation frame (ADR-0145) for the instances in `due`, whose compositor frame callbacks
     /// landed: advances their tweens to `now` and relays them out, without reading `shell.lua` or
     /// any signal. Returns the instance ids it advanced, so the caller repaints those surfaces and
-    /// no others.
+    /// no others. A tree that settles owes the readers of its `geometry` rects one pass.
     pub fn tick_animations(&mut self, due: &[String], now: std::time::Instant) -> Vec<String> {
         let instances = self.instances.iter().filter(|instance| due.contains(&instance.instance_id));
-        self.scene.tick(instances, &self.shaping, self.loader.lua(), now)
+        let ticked = self.scene.tick(instances, &self.shaping, self.loader.lua(), now);
+        for id in crate::lua::signal::take_geometry_moved(self.loader.lua()) {
+            self.dirty.mark_cell(id);
+        }
+        ticked
     }
 }
 

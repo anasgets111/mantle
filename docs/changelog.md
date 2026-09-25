@@ -30,6 +30,8 @@ so everything since the rename from Obelisk sits under Unreleased.
 
 ### Changed
 
+- A `geometry` rect an animation moved schedules one pass when the animation settles, so a
+  property bound to it catches up instead of waiting for an unrelated write.
 - A `state:set` of the value the state already holds re-resolves nothing, and a `:map` or
   `computed` re-resolves its readers only when its result changes. Scalars and plain-data tables
   compare by value ([signals](guide/signals.md#derived-signals)).
