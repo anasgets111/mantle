@@ -13,7 +13,7 @@ use super::menu::fetch_menu_via;
 use super::proxies::StatusNotifierWatcherClientProxy;
 use super::registration::{ResolvedRegistration, item_id, resolve_registration};
 use super::registry::{
-    ItemEntry, ItemKey, ItemRegistry, ordered_items, register_item, spawn_name_owner_changed_forwarder,
+    ItemEntry, ItemKey, ItemRegistry, ordered_items, register_item, spawn_name_owner_changed_forwarder, store_menu,
 };
 use super::watcher::StatusNotifierWatcher;
 use super::{
@@ -157,7 +157,7 @@ impl TrayController {
 
     /// `tray:menu_will_show(id, submenu_id)` calls DBusMenu `AboutToShow(submenu_id)`, its
     /// lazy-population signal, then re-fetches and pushes the entire menu tree unless the item
-    /// answers that nothing changed; a later change arrives as `LayoutUpdated` (ADR-0031). Full
+    /// answers, or the refetch shows, that nothing changed; a later change arrives as `LayoutUpdated` (ADR-0031). Full
     /// refetch is adequate for human-scale trees.
     pub async fn menu_will_show(&self, id: &str, submenu_id: i32) {
         let Some((key, menu)) = self.find("menu_will_show", id, |key, entry| (key.clone(), entry.menu.clone())) else {
@@ -176,11 +176,11 @@ impl TrayController {
         match fetch_menu_via(&menu).await {
             Ok(items) => {
                 let mut guard = self.registry.lock().expect("mutex poisoned");
-                if let Some(entry) = guard.get_mut(&key) {
-                    entry.last_known.menu = Some(items);
-                }
+                let changed = guard.get_mut(&key).is_some_and(|entry| store_menu(entry, items));
                 drop(guard);
-                let _ = self.events.send(TraySignal::RegistryChanged);
+                if changed {
+                    let _ = self.events.send(TraySignal::RegistryChanged);
+                }
             }
             Err(err) => debug!("menu_will_show({id:?}, {submenu_id}) GetLayout failed: {err}"),
         }

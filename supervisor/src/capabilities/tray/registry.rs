@@ -17,7 +17,7 @@ use crate::capabilities::shm_icons;
 use super::TraySignal;
 use super::icon::SPOOL_SUBDIR;
 use super::item::{TrayItem, fetch_tray_item_base};
-use super::menu::fetch_menu_via;
+use super::menu::{MenuItem, fetch_menu_via};
 use super::proxies::{DBusMenuProxy, StatusNotifierItemProxy, bind_dbusmenu, bind_item};
 use super::registration::ResolvedRegistration;
 
@@ -215,6 +215,15 @@ fn spawn_item_signal_forwarder(
     })
 }
 
+/// Stores a refetched menu and returns whether it differs from the stored one. Tray skips
+/// equal-snapshot dedupe for its icon spool, so this is what keeps an app's no-op `LayoutUpdated`
+/// from pushing the whole tray. Menus carry no pixmaps, so equal means nothing to redraw.
+pub(super) fn store_menu(entry: &mut ItemEntry, items: Vec<MenuItem>) -> bool {
+    let changed = entry.last_known.menu.as_ref() != Some(&items);
+    entry.last_known.menu = Some(items);
+    changed
+}
+
 /// Refetches the full menu on each `LayoutUpdated` and updates `menu` in place (ADR-0031). One
 /// task per menu-bearing item, aborted with the item task on unregistration.
 fn spawn_menu_signal_forwarder(
@@ -230,9 +239,9 @@ fn spawn_menu_signal_forwarder(
                 Ok(items) => {
                     let mut guard = registry.lock().expect("mutex poisoned");
                     let Some(entry) = guard.get_mut(&key) else { break };
-                    entry.last_known.menu = Some(items);
+                    let changed = store_menu(entry, items);
                     drop(guard);
-                    if events.send(TraySignal::RegistryChanged).is_err() {
+                    if changed && events.send(TraySignal::RegistryChanged).is_err() {
                         break;
                     }
                 }
@@ -310,7 +319,6 @@ pub(super) fn spawn_name_owner_changed_forwarder(
 mod tests {
     use super::*;
     use crate::capabilities::test_support::p2p_pair;
-    use crate::capabilities::tray::menu::MenuItem;
 
     /// Minimal entry for ordering tests. A p2p proxy bind makes no call, so no answering peer is
     /// needed.
@@ -398,6 +406,18 @@ mod tests {
         assert!(!keep_menu_across(&mut entry, pixmap.clone()), "the same pixels are no change");
         let repainted = TrayItem { pixmap_digests: [Some(2), None, None], ..pixmap };
         assert!(keep_menu_across(&mut entry, repainted), "the same PNG path can hold new pixels");
+    }
+
+    #[tokio::test]
+    async fn a_refetched_menu_is_a_change_only_when_it_differs() {
+        let (connection, _peer) = p2p_pair().await;
+        let mut entry = entry(&connection, "item", 0).await;
+        let quit = vec![MenuItem { label: Some("Quit".to_string()), ..MenuItem::default() }];
+        assert!(store_menu(&mut entry, quit.clone()), "the first menu is a change");
+        assert!(!store_menu(&mut entry, quit.clone()), "a no-op LayoutUpdated refetch is no change");
+        let toggled = vec![MenuItem { toggle_state: Some(1), ..quit[0].clone() }];
+        assert!(store_menu(&mut entry, toggled.clone()));
+        assert_eq!(entry.last_known.menu, Some(toggled));
     }
 
     /// In-place updates must not move an item.
