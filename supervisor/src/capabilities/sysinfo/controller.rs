@@ -38,7 +38,7 @@ impl Default for SysinfoState {
 pub enum PollMode {
     /// `interval == 0`: no timer; await only `watch::Receiver::changed()`.
     Dormant,
-    /// `interval != 0`: race `tokio::time::interval(_).tick()` against
+    /// `interval != 0`: race `tokio::time::interval_at(_).tick()` against
     /// `watch::Receiver::changed()`.
     Ticking(Duration),
 }

@@ -38,7 +38,7 @@ Call each as `mantle.sysinfo:<action>(arguments...)`; `?` marks an argument you 
 
 | Action | Arguments | Description |
 | --- | --- | --- |
-| `configure` | `intervals: SysinfoConfigure` | Sets poll intervals; every one starts at `0`, so nothing is read until this. The first reading lands one interval later (CPU: two). |
+| `configure` | `intervals: SysinfoConfigure` | Sets poll intervals; every one starts at `0`, so nothing is read until this. The first reading lands on the next wall-clock second (CPU: one interval after it). |
 
 ### `SysinfoConfigure`
 

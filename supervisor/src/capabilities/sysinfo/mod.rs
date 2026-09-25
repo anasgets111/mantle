@@ -13,7 +13,7 @@ pub use controller::{SysinfoController, SysinfoSignal};
 #[serde(rename_all = "snake_case")]
 pub enum SysinfoAction {
     /// Sets poll intervals; every one starts at `0`, so nothing is read until this. The first
-    /// reading lands one interval later (CPU: two).
+    /// reading lands on the next wall-clock second (CPU: one interval after it).
     Configure { intervals: controller::SysinfoConfigure },
 }
 

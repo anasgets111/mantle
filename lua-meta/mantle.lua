@@ -586,7 +586,7 @@ local PrivacyCapability = {}
 
 ---[docs](https://anasgets111.github.io/mantle/capabilities/sysinfo.html)
 ---@class SysinfoCapability: Capability<SysinfoState>, userdata
----@field configure fun(self: SysinfoCapability, intervals: SysinfoConfigure) Sets poll intervals; every one starts at `0`, so nothing is read until this. The first reading lands one interval later (CPU: two).
+---@field configure fun(self: SysinfoCapability, intervals: SysinfoConfigure) Sets poll intervals; every one starts at `0`, so nothing is read until this. The first reading lands on the next wall-clock second (CPU: one interval after it).
 
 ---[docs](https://anasgets111.github.io/mantle/capabilities/system.html)
 ---@class SystemCapability: ReadOnlyCapability<SystemState>, userdata
