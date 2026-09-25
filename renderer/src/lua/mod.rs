@@ -187,6 +187,9 @@ impl Loader {
     /// `config_dir` ([`point_package_path_at`]).
     pub fn new(dirty: signal::DirtyFlag, config_dir: &std::path::Path) -> mlua::Result<Self> {
         let lua = Lua::new_with(config_stdlib(), mlua::LuaOptions::default())?;
+        // Pause 150, not 200: the heap peaks at 1.5x live instead of 2x, for twice the cycles over
+        // a live set of a few MiB. Incremental, not generational, keeps weak-table timing as tested.
+        lua.gc_set_mode(mlua::state::GcMode::Incremental(mlua::state::GcIncParams::default().pause(150)));
         restrict_os(&lua)?;
         point_package_path_at(&lua, config_dir)?;
         location::name_required_chunks_relatively(&lua, config_dir)?;

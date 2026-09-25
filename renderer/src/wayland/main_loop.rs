@@ -116,6 +116,7 @@ pub fn run(
         surfaces_drawn: 0,
         repaint_split: surface::RepaintSplit::default(),
         current_egl_surface: None,
+        pending_trim: true,
     };
 
     // Binding delivers outputs and seat capabilities as a burst; two roundtrips populate the
@@ -154,7 +155,7 @@ pub fn run(
     // Both `None` unless `mantle --profile`.
     let mut profile = idle_profile::IdleProfile::from_env();
     let mut memory = memory_profile::MemoryProfile::from_env();
-    let mut was_active = false;
+    let mut node_high_water = 0;
 
     loop {
         // `then` leaves the clock unread while the profile is off, as `idle_profile` promises.
@@ -330,8 +331,8 @@ pub fn run(
         // Skip focus maintenance on a truly idle turn (ADR-0124): it walks the focused scope's trees
         // for fields.
         let active = dispatched || re_resolved || typed || !landed.is_empty();
-        if active {
-            was_active = true;
+        if passed && shed_nodes(&mut node_high_water, app.client.scene().census().1) {
+            app.pending_trim = true;
         }
         // Disarm after the turn, not only when active: `dispatch_pending` armed this serial and
         // `apply_resolved_surface_state` is its only reader. This enforces ADR-0049's one-turn
@@ -421,17 +422,16 @@ pub fn run(
                 nix::poll::PollTimeout::try_from(millis.min(i32::MAX as u128) as i32)
                     .unwrap_or(nix::poll::PollTimeout::NONE)
             });
-            // Collect Lua garbage and hand glibc's free lists back to the OS before entering
-            // indefinite sleep (ADR-0124). Keystroke bursts and animations pay zero trims while
-            // running, and trim exactly once when settling into idle.
-            if was_active && timeout == nix::poll::PollTimeout::NONE {
+            // Collect Lua garbage and hand glibc's free lists back to the OS once something freed in
+            // bulk, whatever timer is pending: a text tick frees nothing worth a full GC.
+            // ponytail: a trim can land between two animation frames, one frame's hitch per release.
+            if std::mem::take(&mut app.pending_trim) {
                 let _ = app.client.lua().gc_collect();
                 // SAFETY: plain one-integer FFI. `malloc_trim` locks the arenas itself and only
                 // `madvise`s pages the allocator already holds free, never live chunks.
                 unsafe {
                     libc::malloc_trim(0);
                 }
-                was_active = false;
             }
             let woke = matches!(nix::poll::poll(&mut fds, timeout), Ok(n) if n > 0);
             let wayland_ready = woke && fds[0].any().unwrap_or(false);
@@ -480,6 +480,14 @@ pub fn run(
     Err("stopped on an EGL/GPU failure, the only thing that sets `app.exit`".into())
 }
 
+/// Whether the scene's `nodes` fell a quarter below the most it held since it last shed, which
+/// is a closed list or a reload's leftovers, not a clock tick; the mark restarts at `nodes`.
+fn shed_nodes(high_water: &mut usize, nodes: usize) -> bool {
+    let shed = nodes < *high_water - *high_water / 4;
+    *high_water = if shed { nodes } else { (*high_water).max(nodes) };
+    shed
+}
+
 /// Reads every subsystem that owns heap into one [`memory_profile::Census`], at one instant so the
 /// columns are comparable. `malloc` is left default: `MemoryProfile` reads `mallinfo2` itself,
 /// after this returns, so the arena totals include whatever this walk allocated rather than
@@ -504,4 +512,18 @@ fn census(app: &App) -> (memory_profile::Census, memory_profile::Surfaces) {
         malloc: shared::Malloc::default(),
     };
     (census, memory_profile::Surfaces(app.client.scene().census_by_surface()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::shed_nodes;
+
+    #[test]
+    fn only_a_quarter_of_the_scene_going_away_asks_for_a_trim() {
+        let mut high_water = 0;
+        let shed: Vec<bool> =
+            [100, 90, 76, 74, 80, 61, 59].into_iter().map(|nodes| shed_nodes(&mut high_water, nodes)).collect();
+        assert_eq!(shed, [false, false, false, true, false, false, true]);
+        assert_eq!(high_water, 59, "a shed restarts the mark where the scene now is");
+    }
 }

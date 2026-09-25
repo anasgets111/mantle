@@ -6672,3 +6672,21 @@ keyed by `NodeId` beside the scene (rollback recycles ids, as for ADR-0269).
 
 **Amends ADR-0044** (decision 3: every node's resolve is cached across passes, invalidated per
 written cell) **and ADR-0121** (a function `child` is no longer called on every pass).
+
+## 0271. The idle trim runs after a bulk release, not on every settle into sleep
+
+ADR-0124's trim (full Lua GC plus `malloc_trim(0)`) ran when an active turn settled into a sleep
+with no deadline. Both ways wrong: a config with a re-arming `timer` never reaches an unbounded
+sleep, so it never trimmed (10.1 MiB of free glibc heap held on a live session); a config without
+one trimmed after every 1 Hz clock push.
+
+1. `App.pending_trim` is set by the events that free memory in bulk: startup, `release_bound`
+   (every hide, destroy, unplug, popup close, lock teardown), an applied reload, and a pass that
+   leaves the scene a quarter below its node high-water mark.
+2. The loop trims once before its next `poll` when set, whatever deadline is pending.
+3. Not triggers: image eviction (GPU memory; decodes over 1 MB are already mmap'd) and an animation
+   settling (frees nothing large).
+
+Trade-off: a trim can land between two animation frames, one frame's hitch per release event.
+
+**Amends ADR-0124.**

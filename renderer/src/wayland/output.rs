@@ -268,6 +268,8 @@ impl App {
             self.client.set_instances(previous);
             return;
         }
+        // The replaced evaluation's tables are garbage now.
+        self.pending_trim = true;
         for instance_id in &reconcile.removed {
             if reconcile.added.iter().any(|added| &added.instance_id == instance_id) {
                 // Same id: keep the tree the apply just built.

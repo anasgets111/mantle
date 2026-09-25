@@ -228,6 +228,9 @@ pub struct App {
     surfaces_drawn: usize,
     repaint_split: surface::RepaintSplit,
     current_egl_surface: Option<EglSurface>,
+    /// Something freed memory in bulk (startup, a reload, a surface's EGL buffers, a shed tree);
+    /// the loop collects Lua garbage and trims glibc before it next sleeps.
+    pending_trim: bool,
 }
 
 impl ProvidesRegistryState for App {
