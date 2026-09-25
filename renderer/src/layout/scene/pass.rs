@@ -735,7 +735,7 @@ mod tests {
         );
     }
 
-    /// Six broken widgets took six restarts when a pass stopped at the first.
+    /// One failed pass names every broken node, and the rollback still keeps the prior scene.
     #[test]
     fn a_failed_pass_reports_every_broken_node_and_keeps_the_prior_scene() {
         let mut scene = Scene::new();

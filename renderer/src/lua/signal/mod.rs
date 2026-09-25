@@ -976,7 +976,7 @@ mod tests {
         assert_eq!(result, 7);
     }
 
-    /// A hole used to end the list like `ipairs`, so `c` silently never reached `fn`.
+    /// A hole is an entry, not the end of the list, so a dependency after it is never dropped.
     #[test]
     fn computed_names_the_dependency_that_is_not_a_signal() {
         let lua = lua_with_state().0;

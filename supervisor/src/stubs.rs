@@ -642,8 +642,9 @@ mantle = {}
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeSet;
-    /// `lua-meta/mantle.lua`, `mantle check`'s sample payloads and every `docs/capabilities/<name>.md`. A version bump alone restales
-    /// `mantle.lua`, which stamps the version.
+    /// `lua-meta/mantle.lua`, `mantle check`'s sample payloads and every
+    /// `docs/capabilities/<name>.md`. A version bump alone restales `mantle.lua`, which stamps the
+    /// version.
     #[test]
     fn the_generated_stub_matches_what_is_checked_in() {
         let mut files = vec![

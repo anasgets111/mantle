@@ -414,8 +414,8 @@ pub(crate) mod tests {
         assert_eq!(label, "index");
     }
 
-    /// Lua's `LUA_IDSIZE` is 60 bytes, so an absolute chunk name cut every location to
-    /// `...2b41-2949-.../shell.lua:1`.
+    /// Relative names stay under Lua's 60-byte `LUA_IDSIZE`, which cuts an absolute one from the
+    /// front.
     #[test]
     fn an_error_in_a_required_module_names_it_relative_to_the_config_directory() {
         let dir = tempfile::tempdir().unwrap();
