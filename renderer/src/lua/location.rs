@@ -32,20 +32,26 @@ pub(super) fn chunk_name(config_dir: &Path, path: &Path) -> String {
 }
 
 /// A Lua error as a config author reads it: without mlua's `runtime error: ` prefix, and without
-/// the traceback frames that are the engine's glue rather than config code. A `[C]` metamethod or
-/// `__index` upvalue is mlua's error handler or userdata dispatch, and `__mlua_*` chunks are mlua's
-/// own Lua; none of them names a line the author wrote.
+/// the traceback frames that are the engine's glue rather than config code. A `[C]` metamethod,
+/// `__index` upvalue or unnamed `[C]: in ?` is mlua's error handler or userdata dispatch, and
+/// `__mlua_*` chunks are mlua's own Lua; none of them names a line the author wrote. An error that
+/// crossed a Rust callback carries a second traceback, the tail of the first, so only the first is
+/// kept.
 pub(crate) fn describe(err: &mlua::Error) -> String {
     let text = err.to_string();
+    let text = text.strip_prefix("runtime error: ").unwrap_or(&text);
+    let text = match text.match_indices("stack traceback:").nth(1) {
+        Some((second, _)) => &text[..second],
+        None => text,
+    };
     let mut lines: Vec<&str> = text
-        .strip_prefix("runtime error: ")
-        .unwrap_or(&text)
         .lines()
         .filter(|line| {
             let frame = line.trim_start_matches('\t');
             frame.len() == line.len()
                 || !(frame.starts_with("[C]: in metamethod ")
                     || frame.starts_with("[C]: in upvalue '__")
+                    || frame == "[C]: in ?"
                     || frame.starts_with("__mlua"))
         })
         .collect();
@@ -112,5 +118,27 @@ impl std::fmt::Display for Site {
             Some((chunk, _)) => write!(f, "{chunk}:{line}"),
             None => write!(f, "?:{line}"),
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use mlua::Lua;
+
+    /// `error` raised in the main chunk, and a failing `computed` read through `:get()`, which
+    /// crosses a Rust callback and so gathers a second traceback.
+    #[test]
+    fn describe_keeps_one_traceback_of_config_frames() {
+        let lua = Lua::new();
+        crate::lua::signal::register(&lua, crate::lua::signal::DirtyFlag::new()).unwrap();
+        let run = |source: &str| super::describe(&lua.load(source).set_name("@shell.lua").exec().unwrap_err());
+
+        assert_eq!(
+            run("error('broken')"),
+            "shell.lua:1: broken\nstack traceback:\n\t[C]: in function 'error'\n\tshell.lua:1: in main chunk"
+        );
+        let read = run("local s = state('a', 1)\nreturn computed({s}, function(v) return v.x end):get()");
+        assert_eq!(read.matches("stack traceback:").count(), 1, "{read}");
+        assert!(read.ends_with("\tshell.lua:2: in main chunk"), "{read}");
     }
 }
