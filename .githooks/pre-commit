@@ -49,14 +49,14 @@ fail() {
 
 if $rust || $docs; then
     # The docs pages with a generated property table are among `docs/**/*.md`.
-    generated() { cat lua-meta/*.lua docs/*/*.md | git hash-object --stdin; }
+    generated() { cat lua-meta/*.lua docs/*/*.md renderer/src/check_samples.json | git hash-object --stdin; }
     before="$(generated)"
     # Almost always a build error rather than the generator: this is the first compile after an
     # edit, so stderr stays on screen. Only the pass list is noise.
     UPDATE_STUBS=1 cargo test --quiet -p supervisor -p renderer the_generated_ >/dev/null ||
         fail "the stub regeneration (just stubs)"
     if [ "$before" != "$(generated)" ]; then
-        echo "pre-commit: generated stubs or pages were stale and have been regenerated. Review them, then: git add lua-meta docs" >&2
+        echo "pre-commit: generated stubs or pages were stale and have been regenerated. Review them, then: git add lua-meta docs renderer/src/check_samples.json" >&2
         exit 1
     fi
 fi
