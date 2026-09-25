@@ -37,25 +37,36 @@ fn role_of(spec: &SurfaceSpec) -> &'static str {
 pub fn run(config_dir: &Path) -> Result<String, String> {
     let shell_lua = config_dir.join("shell.lua");
     let (output, specs, namespace, loader) = evaluate(config_dir)?;
-    let shaping = ShapingHandle::spawn();
     let size = LogicalSize { width: 1920.0, height: 1080.0 };
-    let before = lay_out(&output, &specs, &loader, &shaping, size).err();
-    push_samples(&namespace, &loader)
-        .map_err(|err| format!("{}: sample capability data: {err}", shell_lua.display()))?;
-    // A static layout error fails both passes alike; name it once.
-    let after = lay_out(&output, &specs, &loader, &shaping, size).err().filter(|after| Some(after) != before.as_ref());
-    let failures: Vec<String> = [("before capability data", before), ("with sample capability data", after)]
-        .into_iter()
-        .filter_map(|(pass, err)| Some(format!("{}: {pass}: {}", shell_lua.display(), err?)))
-        .collect();
-    if !failures.is_empty() {
-        return Err(failures.join("\n"));
-    }
+    lay_out_both_passes(&output, &specs, &namespace, &loader, &ShapingHandle::spawn(), size).map_err(|failures| {
+        failures.iter().map(|failure| format!("{}: {failure}", shell_lua.display())).collect::<Vec<_>>().join("\n")
+    })?;
     let mut report = format!("{}: ok, {} surface(s)\n", shell_lua.display(), specs.len());
     for spec in &specs {
         report.push_str(&format!("  {:<7} {}\n", role_of(spec), spec.declared_id()));
     }
     Ok(report)
+}
+
+/// Lays out with every capability `nil`, then again after [`push_samples`]; each failing pass is
+/// one `<pass>: <error>` entry, which may span lines.
+fn lay_out_both_passes(
+    output: &LoadOutput,
+    specs: &[SurfaceSpec],
+    namespace: &Namespace,
+    loader: &Loader,
+    shaping: &ShapingHandle,
+    size: LogicalSize,
+) -> Result<(), Vec<String>> {
+    let before = lay_out(output, specs, loader, shaping, size).err();
+    push_samples(namespace, loader).map_err(|err| vec![format!("sample capability data: {err}")])?;
+    // A static layout error fails both passes alike; name it once.
+    let after = lay_out(output, specs, loader, shaping, size).err().filter(|after| Some(after) != before.as_ref());
+    let failures: Vec<String> = [("before capability data", before), ("with sample capability data", after)]
+        .into_iter()
+        .filter_map(|(pass, err)| Some(format!("{pass}: {}", err?)))
+        .collect();
+    if failures.is_empty() { Ok(()) } else { Err(failures) }
 }
 
 /// Lays the evaluated scene out through the production `Scene::apply_locked` on one `size` output
@@ -85,12 +96,15 @@ fn lay_out(
     Ok((scene, instances))
 }
 
-/// One `StateSnapshot`-shaped push per capability from `check_samples.json`, the file
+/// One sample `StateSnapshot` payload per capability, keyed by name: the file
 /// `the_generated_stub_matches_what_is_checked_in` writes from the Supervisor's `*State` schemas.
+pub(crate) fn samples() -> serde_json::Map<String, serde_json::Value> {
+    serde_json::from_str(include_str!("check_samples.json")).expect("the generated samples are a JSON object")
+}
+
+/// One `StateSnapshot`-shaped push per capability from [`samples`].
 fn push_samples(namespace: &Namespace, loader: &Loader) -> mlua::Result<()> {
-    let samples: serde_json::Map<String, serde_json::Value> =
-        serde_json::from_str(include_str!("check_samples.json")).map_err(mlua::Error::external)?;
-    for (capability, payload) in &samples {
+    for (capability, payload) in &samples() {
         let Some(handle) = namespace.capabilities.get(capability) else { continue };
         let previous = handle.hydrate(loader.to_lua_value(payload)?, 1);
         handle.notify_change(loader.lua(), previous);
@@ -782,8 +796,9 @@ return panel { id = "bar", layer = "Top", height = 20, child = row { children = 
     fn lay_out(block: &str, shaping: &ShapingHandle) -> Result<(), String> {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("shell.lua"), shell(block)).unwrap();
-        let (output, specs, _, loader) = super::evaluate(dir.path())?;
-        super::lay_out(&output, &specs, &loader, shaping, OUTPUT).map(drop)
+        let (output, specs, namespace, loader) = super::evaluate(dir.path())?;
+        super::lay_out_both_passes(&output, &specs, &namespace, &loader, shaping, OUTPUT)
+            .map_err(|failures| failures.join("\n"))
     }
 
     /// Passes when `shot` is within [`TOLERANCE`] of `image`. Otherwise writes it to `image`

@@ -682,27 +682,4 @@ mod tests {
             assert_eq!(variants, listed, "shared::Capability::actions for {capability}");
         }
     }
-
-    /// The Renderer redirects `mantle.<name>.<field>` to `:get()` by `shared::Capability::state_fields`,
-    /// so each list must be exactly its `*State` struct's top-level fields.
-    #[test]
-    fn the_renderer_state_fields_are_the_state_struct_fields() {
-        for (capability, state, _) in super::capability_schemas() {
-            let state = serde_json::to_value(state).expect("a schema serializes");
-            let fields: BTreeSet<&str> = state
-                .get("properties")
-                .and_then(|p| p.as_object())
-                .into_iter()
-                .flatten()
-                .map(|(k, _)| k.as_str())
-                .collect();
-            let listed: BTreeSet<&str> = shared::Capability::from_name(capability)
-                .expect("a roster name")
-                .state_fields()
-                .iter()
-                .copied()
-                .collect();
-            assert_eq!(fields, listed, "shared::Capability::state_fields for {capability}");
-        }
-    }
 }

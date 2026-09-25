@@ -252,8 +252,10 @@ impl UserData for Capability {
             let actions = roster.map_or(&[][..], shared::Capability::actions);
             let Some(&action) = actions.iter().find(|action| **action == key) else {
                 let name = &this.name;
-                let fields = roster.map_or(&[][..], shared::Capability::state_fields);
-                let hint = match closest(&key, actions.iter().chain(fields).copied()) {
+                // The generated samples hold every top-level `*State` field, so they name `:get()` paths.
+                let samples = crate::check::samples();
+                let fields = samples.get(name.as_str()).and_then(|state| state.as_object()).into_iter().flatten();
+                let hint = match closest(&key, actions.iter().copied().chain(fields.map(|(field, _)| field.as_str()))) {
                     Some(near) if actions.contains(&near) => format!("did you mean mantle.{name}:{near}(...)?"),
                     Some(near) => format!("did you mean mantle.{name}:get().{near}?"),
                     None if actions.is_empty() => {
