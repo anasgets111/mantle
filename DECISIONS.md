@@ -6690,3 +6690,20 @@ one trimmed after every 1 Hz clock push.
 Trade-off: a trim can land between two animation frames, one frame's hitch per release event.
 
 **Amends ADR-0124.**
+
+## 0272. A derived signal's plain-data table result compares by value
+
+A `:map` returning `{ { text = hour, bold = true } }` or `{ key = "", elapsed = 0 }` from a 1 Hz
+snapshot re-resolved its readers every second, because a fresh table never equals the last one.
+
+1. A computed keeps an owned snapshot (`tracking::Plain`) of its last output when it is plain data:
+   scalars, and tables with no metatable, scalar keys and plain values, 256 entries in all. Equal
+   snapshot, no change. Owned rather than the table itself, which rooted `M.x = computed(...)`'s
+   module across reloads; taken at settle, so an in-place mutation still reads as a change.
+2. `state:set` compares the held value live (`same_value`): a different plain table equal entry for
+   entry is skipped, but the same table anywhere in either is a write, since mutating in place and
+   setting it again is how a writer signals a change.
+3. Anything holding a function, signal, userdata or metatable, or past the budget, keeps the old
+   rule: a change whenever an input was written.
+
+Trade-off: a table result costs one walk and copy per re-run; the budget caps it.

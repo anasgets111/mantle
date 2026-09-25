@@ -10,7 +10,7 @@ use crate::lua::marshal::{a_type, list_entries};
 use crate::text::snap::LogicalRect;
 
 use super::budget::install_hook;
-use super::tracking::next_computed_id;
+use super::tracking::Output;
 use super::{
     CellId, DirtyFlag, HELD_SLOT, Signal, SignalKind, from_userdata, is_signal, literal_was_edited, new_derived,
     next_cell_id,
@@ -179,7 +179,7 @@ pub fn register(lua: &Lua, dirty: DirtyFlag) -> mlua::Result<()> {
                     ))),
                 })
                 .collect::<mlua::Result<Vec<_>>>()?;
-            let kind = SignalKind::Computed { id: next_computed_id(), arity: collected.len() };
+            let kind = SignalKind::Computed { out: Output::new(), arity: collected.len() };
             new_derived(lua, kind, Some(r#fn.0), collected).map(SignalOf::new)
         }
     )?;

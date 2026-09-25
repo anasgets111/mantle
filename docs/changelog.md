@@ -28,6 +28,9 @@ so everything since the rename from Obelisk sits under Unreleased.
 
 ### Changed
 
+- A `state:set` of the value the state already holds re-resolves nothing, and a `:map` or
+  `computed` re-resolves its readers only when its result changes. Scalars and plain-data tables
+  compare by value ([signals](guide/signals.md#derived-signals)).
 - `mantle.sysinfo` reads on the wall-clock second, first at the next one after `configure`
   rather than one interval later, so its pushes can share `mantle.system`'s layout pass.
 - `mantle.applications` watches its directories and rescans after a change, so installs and

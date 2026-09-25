@@ -587,9 +587,7 @@ mod tests {
         let (mut client, _outbound_rx) = test_client(&path);
         assert!(run_startup(&mut client));
 
-        assert!(client.re_resolve_if_dirty(), "the first measurement earns a follow-up");
-        assert_eq!(client.take_last_resolved(), Some(vec!["reader@TEST".to_string()]));
-        assert!(!client.re_resolve_if_dirty(), "and only one");
+        assert!(!client.re_resolve_if_dirty(), "the reader, laid out after the card, mapped its first measurement");
 
         client.loader.lua().load("w:set(40)").exec().unwrap();
         assert!(client.re_resolve_if_dirty());

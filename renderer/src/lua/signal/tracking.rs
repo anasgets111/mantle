@@ -1,34 +1,153 @@
 use std::rc::Rc;
 
+use std::cell::RefCell;
+
 use mlua::{Lua, Value};
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 
 use super::CellId;
 use super::budget::PassDeadline;
 
-/// One `Computed`'s identity for [`EvaluationMemo`], counted rather than derived from an address.
-/// The memo keeps nothing alive, and a pass builds and discards computeds constantly, so an
-/// address freed by one would serve its value to the next computed allocated there (ADR-0170).
-/// A counter cannot be recycled. `Signal::clone` copies the id because a clone is the same computed
-/// with the same `func`, which is the one case that must share a memo entry.
-pub(super) type MemoKey = u64;
-
-/// Next unused [`MemoKey`]. `Relaxed` is enough: ids need only differ, and the Loader is one thread
-/// (ADR-0039).
-pub(super) fn next_computed_id() -> MemoKey {
-    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+/// A `computed`'s own cell, which its readers depend on instead of its sources: a write to a source
+/// reaches them only when it changes the output. The id is counted, never an address a dead
+/// computed could hand on (ADR-0170), and keys the pass's [`EvaluationMemo`] too.
+pub(super) struct Output {
+    pub(super) cell: CellId,
+    /// The last output, when it was plain data; `None` before the first evaluation.
+    last: RefCell<Option<Plain>>,
 }
 
-pub(super) struct MemoEntry {
-    value: Value,
-    cells: Vec<CellId>,
+/// An owned copy of a plain-data output: scalars, and tables with no metatable, scalar keys and
+/// plain values, [`super::SAME_TABLE_ENTRIES`] entries in all. Owned, so the last output is
+/// compared without rooting a table (`M.x = computed(...)` would keep its module alive), and
+/// taken at settle, so a table mutated in place since then still reads as a change.
+#[derive(PartialEq, Eq, PartialOrd, Ord)]
+enum Plain {
+    Nil,
+    Bool(bool),
+    Int(i64),
+    /// By bits, as [`super::same_scalar`] compares.
+    Num(u64),
+    Str(Vec<u8>),
+    /// Sorted, since `pairs` order differs between equal tables.
+    Table(Vec<(Plain, Plain)>),
+}
+
+impl Plain {
+    fn of(value: &Value, budget: &mut usize) -> Option<Self> {
+        Some(match value {
+            Value::Nil => Self::Nil,
+            Value::Boolean(b) => Self::Bool(*b),
+            Value::Integer(i) => Self::Int(*i),
+            Value::Number(n) => Self::Num(n.to_bits()),
+            Value::String(s) => Self::Str(s.as_bytes().to_vec()),
+            Value::Table(table) if table.metatable().is_none() => {
+                let mut entries = Vec::new();
+                for pair in table.pairs::<Value, Value>() {
+                    let (key, value) = pair.ok()?;
+                    *budget = budget.checked_sub(1)?;
+                    if !super::is_comparable_literal(&key) {
+                        return None;
+                    }
+                    entries.push((Self::of(&key, budget)?, Self::of(&value, budget)?));
+                }
+                entries.sort_unstable();
+                Self::Table(entries)
+            }
+            _ => return None,
+        })
+    }
+}
+
+impl Output {
+    pub(super) fn new() -> Rc<Self> {
+        Rc::new(Self { cell: super::next_cell_id(), last: RefCell::new(None) })
+    }
+
+    /// Records an evaluation that took `at` before reading `inputs`, and stamps [`Self::cell`] when
+    /// the output changed. A scalar or a plain-data table changes by value ([`Plain`]);
+    /// anything else is new every run, so it changes when an input was written since the last run.
+    pub(super) fn settle(&self, lua: &Lua, value: &Value, at: u64, inputs: Vec<CellId>) {
+        let stale = WRITES.with_borrow(|log| {
+            log.computeds.get(&self.cell).map(|(was, prev)| log.written(*was, prev, &mut FxHashMap::default()))
+        });
+        let scalar = super::is_comparable_literal(value);
+        let plain = Plain::of(value, &mut { super::SAME_TABLE_ENTRIES });
+        let mut last = self.last.borrow_mut();
+        let same = plain.is_some() && *last == plain;
+        // Anything else re-run with no input written is the pass reading it again, not a change.
+        let changed = stale.is_some_and(|stale| !same && (scalar || stale));
+        *last = plain;
+        drop(last);
+        let in_pass = lua.app_data_ref::<MemoTable>().is_some_and(|table| table.pass_opened.is_some());
+        WRITES.with_borrow_mut(|log| {
+            if changed {
+                // In a pass, at its opening: every reader this pass read the new value.
+                let stamp = if in_pass { at } else { log.tick() };
+                log.last.insert(self.cell, stamp);
+            }
+            log.computeds.insert(self.cell, (at, inputs));
+        });
+    }
+}
+
+/// `try_`: a computed collected while the log is borrowed, or at thread exit, leaves its entry.
+impl Drop for Output {
+    fn drop(&mut self) {
+        let _ = WRITES.try_with(|log| {
+            if let Ok(mut log) = log.try_borrow_mut() {
+                log.computeds.remove(&self.cell);
+                log.last.remove(&self.cell);
+            }
+        });
+    }
+}
+
+/// Computeds reading any of `cells`, directly or through another, that an instance reads, directly
+/// or through another. The rest, such as one the last resolve dropped, wait unread for collection.
+pub(super) fn downstream(lua: &Lua, cells: &FxHashSet<CellId>) -> Vec<CellId> {
+    let tracker = lua.app_data_ref::<ReadTracker>();
+    WRITES.with_borrow(|log| {
+        let inputs = |out: &CellId| log.computeds.get(out).map_or(&[][..], |(_, inputs)| inputs);
+        let found = grow(FxHashSet::default(), &log.computeds.keys().copied().collect::<Vec<_>>(), |out, found| {
+            inputs(out).iter().any(|cell| cells.contains(cell) || found.contains(cell))
+        });
+        let read = found.iter().filter(|out| tracker.as_ref().is_some_and(|t| t.cell_readers.contains_key(out)));
+        let found: Vec<CellId> = found.iter().copied().collect();
+        let needed = grow(read.copied().collect(), &found, |out, needed| {
+            needed.iter().any(|reader| inputs(reader).contains(out))
+        });
+        needed.into_iter().collect()
+    })
+}
+
+/// `set` plus every one of `candidates` that `joins` it, until none does.
+fn grow(
+    mut set: FxHashSet<CellId>,
+    candidates: &[CellId],
+    joins: impl Fn(&CellId, &FxHashSet<CellId>) -> bool,
+) -> FxHashSet<CellId> {
+    loop {
+        let joining: Vec<CellId> =
+            candidates.iter().filter(|out| !set.contains(*out) && joins(out, &set)).copied().collect();
+        if joining.is_empty() {
+            return set;
+        }
+        set.extend(joining);
+    }
+}
+
+/// Computed cells stamped after `stamp`.
+pub(super) fn outputs_written_since(stamp: u64) -> Vec<CellId> {
+    WRITES.with_borrow(|log| {
+        log.computeds.keys().filter(|out| log.last.get(out).is_some_and(|at| *at > stamp)).copied().collect()
+    })
 }
 
 /// Values already produced during the current outermost [`Signal::get_value`](super::Signal::get_value).
 #[derive(Default)]
 pub(super) struct MemoTable {
-    pub(super) map: FxHashMap<MemoKey, MemoEntry>,
+    pub(super) map: FxHashMap<CellId, Value>,
     depth: usize,
     pub(super) eval_stack: Vec<Vec<CellId>>,
     /// The write clock when the open pass began, the oldest write a value it serves can predate.
@@ -47,7 +166,7 @@ impl<'lua> ComputedFrame<'lua> {
     }
 
     pub(crate) fn finish(self) -> Vec<CellId> {
-        let cells = EvaluationMemo::pop_frame(self.0);
+        let cells = EvaluationMemo::pop_frame(self.0, true);
         std::mem::forget(self);
         cells
     }
@@ -55,7 +174,41 @@ impl<'lua> ComputedFrame<'lua> {
 
 impl Drop for ComputedFrame<'_> {
     fn drop(&mut self) {
-        EvaluationMemo::pop_frame(self.0);
+        EvaluationMemo::pop_frame(self.0, true);
+    }
+}
+
+/// A `computed`'s run: its reads go to its own [`Output`], not the enclosing frame or instance,
+/// which read the output cell instead.
+pub(super) struct Evaluation<'lua> {
+    lua: &'lua Lua,
+    instance: Option<Rc<str>>,
+    open: bool,
+}
+
+impl<'lua> Evaluation<'lua> {
+    pub(super) fn enter(lua: &'lua Lua) -> Self {
+        EvaluationMemo::push_frame(lua);
+        let instance = lua.app_data_mut::<ReadTracker>().and_then(|mut tracker| tracker.active_instance.take());
+        Self { lua, instance, open: true }
+    }
+
+    pub(super) fn finish(mut self) -> Vec<CellId> {
+        self.open = false;
+        EvaluationMemo::pop_frame(self.lua, false)
+    }
+}
+
+impl Drop for Evaluation<'_> {
+    fn drop(&mut self) {
+        if self.open {
+            EvaluationMemo::pop_frame(self.lua, false);
+        }
+        if let Some(instance) = self.instance.take()
+            && let Some(mut tracker) = self.lua.app_data_mut::<ReadTracker>()
+        {
+            tracker.active_instance = Some(instance);
+        }
     }
 }
 
@@ -141,6 +294,34 @@ struct WriteLog {
     /// reads without writing a cell.
     everything: u64,
     last: FxHashMap<CellId, u64>,
+    /// Each live computed's [`Output`]: the clock its last run took and the cells that run read.
+    computeds: FxHashMap<CellId, (u64, Vec<CellId>)>,
+}
+
+impl WriteLog {
+    fn tick(&mut self) -> u64 {
+        self.clock += 1;
+        self.clock
+    }
+
+    /// Whether any of `cells` was written after `stamp`. A computed's cell also counts as written
+    /// when its inputs were written since its last run: its output is unknown until it runs again.
+    /// `seen` holds that answer per computed, so a diamond is walked once.
+    fn written(&self, stamp: u64, cells: &[CellId], seen: &mut FxHashMap<CellId, bool>) -> bool {
+        self.everything > stamp
+            || cells.iter().any(|cell| {
+                *cell == UNSETTLED
+                    || self.last.get(cell).is_some_and(|at| *at > stamp)
+                    || self.computeds.get(cell).is_some_and(|(at, inputs)| {
+                        if let Some(known) = seen.get(cell) {
+                            return *known;
+                        }
+                        let written = self.written(*at, inputs, seen);
+                        seen.insert(*cell, written);
+                        written
+                    })
+            })
+    }
 }
 
 thread_local! {
@@ -150,8 +331,7 @@ thread_local! {
 /// Stamps a write to `cell`, whether or not it dirties the scene.
 pub(crate) fn note_write(cell: CellId) {
     WRITES.with_borrow_mut(|log| {
-        log.clock += 1;
-        let at = log.clock;
+        let at = log.tick();
         log.last.insert(cell, at);
     });
 }
@@ -179,10 +359,7 @@ pub(super) fn current_clock() -> u64 {
 
 /// Whether any of `cells` was written after `stamp`.
 pub(crate) fn written_since(stamp: u64, cells: &[CellId]) -> bool {
-    WRITES.with_borrow(|log| {
-        log.everything > stamp
-            || cells.iter().any(|cell| *cell == UNSETTLED || log.last.get(cell).is_some_and(|at| *at > stamp))
-    })
+    WRITES.with_borrow(|log| log.written(stamp, cells, &mut FxHashMap::default()))
 }
 
 /// [`note_read`]'s instance half.
@@ -250,20 +427,15 @@ impl<'lua> EvaluationMemo<'lua> {
     /// A value already produced, with its cells noted as read by the active instance and the
     /// enclosing frame. `None` outside an evaluation, which is the outermost `Computed`'s own
     /// first look.
-    pub(super) fn get(lua: &Lua, key: MemoKey) -> Option<Value> {
-        let mut table = lua.app_data_mut::<MemoTable>()?;
-        let MemoTable { map, eval_stack, .. } = &mut *table;
-        let entry = map.get(&key)?;
-        note_instance_reads(lua, &entry.cells);
-        if let Some(frame) = eval_stack.last_mut() {
-            add_unique(frame, &entry.cells);
-        }
-        Some(entry.value.clone())
+    pub(super) fn get(lua: &Lua, key: CellId) -> Option<Value> {
+        let value = lua.app_data_ref::<MemoTable>()?.map.get(&key)?.clone();
+        note_reads(lua, &[key]);
+        Some(value)
     }
 
-    pub(super) fn insert(lua: &Lua, key: MemoKey, value: &Value, cells: Vec<CellId>) {
+    pub(super) fn insert(lua: &Lua, key: CellId, value: &Value) {
         if let Some(mut table) = lua.app_data_mut::<MemoTable>() {
-            table.map.insert(key, MemoEntry { value: value.clone(), cells });
+            table.map.insert(key, value.clone());
         }
     }
 
@@ -272,12 +444,13 @@ impl<'lua> EvaluationMemo<'lua> {
         crate::lua::app_data_or_default::<MemoTable>(lua).eval_stack.push(Vec::new());
     }
 
-    fn pop_frame(lua: &Lua) -> Vec<CellId> {
+    /// `merge` hands the frame's cells to the enclosing one.
+    fn pop_frame(lua: &Lua, merge: bool) -> Vec<CellId> {
         let Some(mut table) = lua.app_data_mut::<MemoTable>() else {
             return Vec::new();
         };
         let cells = table.eval_stack.pop().unwrap_or_default();
-        if let Some(parent) = table.eval_stack.last_mut() {
+        if merge && let Some(parent) = table.eval_stack.last_mut() {
             add_unique(parent, &cells);
         }
         cells
@@ -531,6 +704,59 @@ mod tests {
 
         assert_eq!(result.unwrap(), 1_048_576, "a shared dependency must still be summed once per edge");
         assert_eq!(calls.get(), 20, "one call per level; the un-memoized graph would make 2^20-1");
+    }
+
+    /// A clock text mapped from a snapshot pushed every second: a push that leaves the minute alone
+    /// dirties no instance and leaves the node's memo holding.
+    #[test]
+    fn a_source_write_that_leaves_the_mapped_output_alone_re_resolves_nothing() {
+        let (lua, dirty) = lua_with_state();
+        lua.load(r#"sys = state("sys", { t = 60 }) clock = sys:map(function(s) return s.t // 60 end)"#).exec().unwrap();
+        let (stamp, cells) = {
+            let _pass = LayoutPassBudget::enter(&lua).unwrap();
+            begin_instance_resolve(&lua, "bar");
+            let stamp = write_clock(&lua);
+            let frame = ComputedFrame::enter(&lua);
+            lua.load("clock:get()").exec().unwrap();
+            end_instance_resolve(&lua);
+            (stamp, frame.finish())
+        };
+
+        lua.load("sys:set({ t = 61 })").exec().unwrap();
+        assert_eq!(dirty.take_scope(&lua), DirtyScope::Clean);
+        assert!(!written_since(stamp, &cells), "the node's memo still holds");
+
+        lua.load("sys:set({ t = 120 })").exec().unwrap();
+        assert_eq!(dirty.take_scope(&lua), DirtyScope::Instances(vec!["bar".into()]));
+        assert!(written_since(stamp, &cells));
+
+        // A handler reading the change first leaves nothing for the take to rerun, yet it counts.
+        lua.load("sys:set({ t = 180 }) clock:get()").exec().unwrap();
+        assert_eq!(dirty.take_scope(&lua), DirtyScope::Instances(vec!["bar".into()]));
+    }
+
+    #[test]
+    fn a_mapped_table_equal_entry_for_entry_re_resolves_nothing() {
+        let (lua, dirty) = lua_with_state();
+        lua.load(r#"sys = state("sys", { t = 60 }) clock = sys:map(function(s) return { { text = s.t // 60, bold = true } } end)"#)
+            .exec()
+            .unwrap();
+        let (stamp, cells) = {
+            let _pass = LayoutPassBudget::enter(&lua).unwrap();
+            begin_instance_resolve(&lua, "bar");
+            let stamp = write_clock(&lua);
+            let frame = ComputedFrame::enter(&lua);
+            lua.load("clock:get()").exec().unwrap();
+            end_instance_resolve(&lua);
+            (stamp, frame.finish())
+        };
+
+        lua.load("sys:set({ t = 61 })").exec().unwrap();
+        assert_eq!(dirty.take_scope(&lua), DirtyScope::Clean);
+        assert!(!written_since(stamp, &cells), "a fresh but equal table is no change");
+
+        lua.load("sys:set({ t = 120 })").exec().unwrap();
+        assert_eq!(dirty.take_scope(&lua), DirtyScope::Instances(vec!["bar".into()]));
     }
 
     #[test]

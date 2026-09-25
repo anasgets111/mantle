@@ -2,9 +2,9 @@
 //! (ADR-0044 decision 5). Rust owns the userdata; `computed` calls `fn` with dependency values, not
 //! handles, so its body does not call `:get()` on declared deps.
 //!
-//! ponytail: `computed`/`map` hold no value between passes; they recompute whenever a node reads
-//! them. [`EvaluationMemo`] collapses repeats *within* one pass; across passes a node keeps its
-//! resolved properties until a cell it read is written (ADR-0270), so only signal reads invalidate.
+//! `computed`/`map` keep only their last scalar output, to tell their readers whether it changed.
+//! [`EvaluationMemo`] collapses repeats *within* one pass; across passes a node keeps its resolved
+//! properties until a cell it read is written (ADR-0270), so only signal reads invalidate.
 
 mod budget;
 mod globals;
@@ -28,7 +28,9 @@ pub(crate) use tracking::{
     ComputedFrame, begin_instance_resolve, end_instance_resolve, forget_instance, note_everything_written, note_read,
     note_reads, note_write, reset_read_tracker, write_clock, written_since,
 };
-use tracking::{EvaluationMemo, MemoKey, ReadTracker, next_computed_id, note_unsettled};
+use tracking::{
+    Evaluation, EvaluationMemo, Output, ReadTracker, current_clock, downstream, note_unsettled, outputs_written_since,
+};
 
 /// Globally unique identifier for a reactive cell, avoiding pointer recycling issues (ADR-0170).
 /// `0` is never allocated; `tracking` spends it on the clock.
@@ -45,7 +47,7 @@ enum SignalKind {
     /// `computed`/`map`. Function and sources are user values, not fields, so a cycle through a
     /// config table stays collectable (ADR-0221); `Delayed`/`Pulse` keep their source and values the
     /// same way, leaving only their clocks in Rust.
-    Computed { id: MemoKey, arity: usize },
+    Computed { out: Rc<Output>, arity: usize },
     /// A `Computed`, `Delayed` or `Pulse` read out of its userdata by [`from_userdata`], carrying
     /// the handle to its user values. Lives only as long as the read that made it.
     Derived(mlua::AnyUserData),
@@ -177,6 +179,55 @@ fn check_lua_authored(value: &Value) -> Result<(), marshal::MarshalError> {
 /// pointer identity; fresh values would always look edited.
 fn is_comparable_literal(value: &Value) -> bool {
     matches!(value, Value::Nil | Value::Boolean(_) | Value::Integer(_) | Value::Number(_) | Value::String(_))
+}
+
+/// Whether writing `b` over `a` changes nothing a reader sees. Strict by variant, since Lua 5.4
+/// prints `1` and `1.0` differently, and floats by bits, so `-0.0` differs from `0.0` and NaN matches itself.
+fn same_scalar(a: &Value, b: &Value) -> bool {
+    match (a, b) {
+        (Value::Nil, Value::Nil) => true,
+        (Value::Boolean(a), Value::Boolean(b)) => a == b,
+        (Value::Integer(a), Value::Integer(b)) => a == b,
+        (Value::Number(a), Value::Number(b)) => a.to_bits() == b.to_bits(),
+        (Value::String(a), Value::String(b)) => a.as_bytes() == b.as_bytes(),
+        _ => false,
+    }
+}
+
+/// Entries [`same_value`] walks before calling two tables different.
+pub(super) const SAME_TABLE_ENTRIES: usize = 256;
+
+/// [`same_scalar`], plus two different plain-data tables (no metatable, scalar keys, scalar or
+/// plain-table values) equal entry for entry. The same table, anywhere in either, is a change: a
+/// writer that mutated it in place and wrote it again is signalling one.
+fn same_value(a: &Value, b: &Value) -> bool {
+    fn same_table(a: &mlua::Table, b: &mlua::Table, budget: &mut usize) -> bool {
+        if a == b || a.metatable().is_some() || b.metatable().is_some() {
+            return false;
+        }
+        let mut entries = 0;
+        for pair in a.pairs::<Value, Value>() {
+            let Ok((key, value)) = pair else { return false };
+            if *budget == 0 || !is_comparable_literal(&key) {
+                return false;
+            }
+            *budget -= 1;
+            entries += 1;
+            let Ok(other) = b.raw_get::<Value>(key) else { return false };
+            let same = match (&value, &other) {
+                (Value::Table(value), Value::Table(other)) => same_table(value, other, budget),
+                _ => same_scalar(&value, &other),
+            };
+            if !same {
+                return false;
+            }
+        }
+        b.pairs::<Value, Value>().count() == entries
+    }
+    match (a, b) {
+        (Value::Table(a), Value::Table(b)) => same_table(a, b, &mut { SAME_TABLE_ENTRIES }),
+        _ => same_scalar(a, b),
+    }
 }
 
 /// Whether the `state` literal changed. `None` means no edit per ADR-0044's amendment. This keeps
@@ -326,7 +377,7 @@ impl Signal {
     /// Lua and Rust so `lua::capability::Capability` makes `mantle.lock` read like bare
     /// capabilities.
     pub(crate) fn mapped(lua: &Lua, source: mlua::AnyUserData, func: Function) -> mlua::Result<mlua::AnyUserData> {
-        new_derived(lua, SignalKind::Computed { id: next_computed_id(), arity: 1 }, Some(func), vec![source])
+        new_derived(lua, SignalKind::Computed { out: Output::new(), arity: 1 }, Some(func), vec![source])
     }
 
     /// Reads current value (ADR-0044 decision 1). `layout::node` uses it to resolve signal
@@ -370,7 +421,11 @@ fn new_derived(
     func: Option<Function>,
     sources: Vec<mlua::AnyUserData>,
 ) -> mlua::Result<mlua::AnyUserData> {
+    let out = if let SignalKind::Computed { out, .. } = &kind { Some(out.cell) } else { None };
     let ud = lua.create_userdata(Signal(kind))?;
+    if let Some(out) = out {
+        computeds(lua)?.raw_set(out.0, &ud)?;
+    }
     ud.set_nth_user_value(SITE_SLOT, Site::to_lua(Site::of_caller(lua)))?;
     if let Some(func) = func {
         ud.set_nth_user_value(FUNCTION_SLOT, func)?;
@@ -379,6 +434,20 @@ fn new_derived(
         ud.set_nth_user_value(FIRST_SOURCE_SLOT + offset, source)?;
     }
     Ok(ud)
+}
+
+/// Every live computed by its output cell, weakly, for [`DirtyFlag::take_scope`] to run again.
+fn computeds(lua: &Lua) -> mlua::Result<mlua::Table> {
+    const KEY: &str = "mantle.signal.computeds";
+    if let Some(table) = lua.named_registry_value::<Option<mlua::Table>>(KEY)? {
+        return Ok(table);
+    }
+    let table = lua.create_table()?;
+    let weak = lua.create_table()?;
+    weak.raw_set("__mode", "v")?;
+    table.set_metatable(Some(weak))?;
+    lua.set_named_registry_value(KEY, &table)?;
+    Ok(table)
 }
 
 fn source_at(ud: &mlua::AnyUserData, slot: usize) -> mlua::Result<Signal> {
@@ -419,12 +488,12 @@ fn read_derived(lua: &Lua, ud: &mlua::AnyUserData) -> mlua::Result<Value> {
             ud.set_nth_user_value(HELD_SLOT, cell.seen)?;
             Ok(Value::Boolean(open))
         }
-        SignalKind::Computed { id, arity } => {
+        SignalKind::Computed { out, arity } => {
             // A repeat within this evaluation costs one hash lookup and no Lua. Checked before
             // `CpuBudget::enter` on purpose: a hit does no work, so it must not spend a nesting
             // level either, or a wide diamond would hit `MAX_SIGNAL_NESTING_DEPTH` on cache
             // hits alone.
-            if let Some(value) = EvaluationMemo::get(lua, id) {
+            if let Some(value) = EvaluationMemo::get(lua, out.cell) {
                 return Ok(value);
             }
 
@@ -436,7 +505,8 @@ fn read_derived(lua: &Lua, ud: &mlua::AnyUserData) -> mlua::Result<Value> {
             // `capability::CapabilityHandle::notify_change` handler: that handler may `:set()`
             // between its own `:get()` calls and has to observe its own writes.
             let _memo = EvaluationMemo::enter(lua);
-            let frame = ComputedFrame::enter(lua);
+            let at = write_clock(lua);
+            let evaluation = Evaluation::enter(lua);
 
             let mut args = Vec::with_capacity(arity);
             for slot in FIRST_SOURCE_SLOT..FIRST_SOURCE_SLOT + arity {
@@ -454,8 +524,9 @@ fn read_derived(lua: &Lua, ud: &mlua::AnyUserData) -> mlua::Result<Value> {
                 }
                 (value, _) => value?,
             };
-            let cells = frame.finish();
-            EvaluationMemo::insert(lua, id, &value, cells);
+            out.settle(lua, &value, at, evaluation.finish());
+            EvaluationMemo::insert(lua, out.cell, &value);
+            note_reads(lua, &[out.cell]);
             Ok(value)
         }
         other => Signal(other).get_value(lua),
@@ -560,6 +631,8 @@ pub enum DirtyScope {
 struct DirtyState {
     all: bool,
     cells: rustc_hash::FxHashSet<CellId>,
+    /// The write clock at the last take: a computed stamped since then has readers to re-resolve.
+    taken_at: u64,
 }
 
 /// Shared invalidation flag tracking scene-wide or cell-targeted dirty marks.
@@ -590,7 +663,7 @@ impl DirtyFlag {
     pub fn take(&self) -> bool {
         let mut state = self.0.borrow_mut();
         if state.all || !state.cells.is_empty() {
-            *state = DirtyState::default();
+            *state = DirtyState { taken_at: current_clock(), ..DirtyState::default() };
             true
         } else {
             false
@@ -598,16 +671,25 @@ impl DirtyFlag {
     }
 
     /// Takes the invalidation scope: Clean, All, or targeted Instances based on ReadTracker.
+    ///
+    /// A computed reading a written cell runs again here, and its readers count only if its output
+    /// changed. ponytail: one that changed runs again in the pass too; handing its value over is the upgrade.
     pub fn take_scope(&self, lua: &Lua) -> DirtyScope {
-        let mut state = self.0.borrow_mut();
-        if !state.all && state.cells.is_empty() {
-            return DirtyScope::Clean;
-        }
-        if state.all {
-            *state = DirtyState::default();
-            return DirtyScope::All;
-        }
-        let cells = std::mem::take(&mut state.cells);
+        let (mut cells, taken_at) = {
+            let mut state = self.0.borrow_mut();
+            if !state.all && state.cells.is_empty() {
+                return DirtyScope::Clean;
+            }
+            if state.all {
+                *state = DirtyState { taken_at: current_clock(), ..DirtyState::default() };
+                return DirtyScope::All;
+            }
+            (std::mem::take(&mut state.cells), state.taken_at)
+        };
+        // Unborrowed: a computed may `set` a state, which marks this flag.
+        rerun_computeds(lua, &cells);
+        cells.extend(outputs_written_since(taken_at));
+        self.0.borrow_mut().taken_at = current_clock();
         let tracker = lua.app_data_ref::<ReadTracker>();
         let mut instances = rustc_hash::FxHashSet::default();
         if let Some(tracker) = tracker {
@@ -620,6 +702,24 @@ impl DirtyFlag {
             }
         }
         if instances.is_empty() { DirtyScope::Clean } else { DirtyScope::Instances(instances.into_iter().collect()) }
+    }
+}
+
+/// Runs every computed downstream of `cells` once, which stamps each whose output changed. One that
+/// fails counts as changed, so the pass meets the same error and reports it.
+fn rerun_computeds(lua: &Lua, cells: &rustc_hash::FxHashSet<CellId>) {
+    let outs = downstream(lua, cells);
+    if outs.is_empty() {
+        return;
+    }
+    let Ok(table) = computeds(lua) else { return };
+    let _memo = EvaluationMemo::enter(lua);
+    for out in outs {
+        if let Ok(Some(ud)) = table.raw_get::<Option<mlua::AnyUserData>>(out.0)
+            && read(lua, &ud).is_err()
+        {
+            note_write(out);
+        }
     }
 }
 
@@ -660,8 +760,10 @@ impl UserData for Signal {
             check_lua_authored(&value).map_err(|err| {
                 mlua::Error::runtime(format!("signal:set() refused its value at the marshalling boundary: {err}"))
             })?;
-            *cell.borrow_mut() = value;
-            dirty.mark_cell(*id);
+            if !same_value(&cell.borrow(), &value) {
+                *cell.borrow_mut() = value;
+                dirty.mark_cell(*id);
+            }
             Ok(())
         });
     }
@@ -909,6 +1011,22 @@ mod tests {
 
         lua.load("s:set(1)").exec().unwrap();
         assert!(dirty.take(), "writing a state signal must mark the shared scene-dirty flag");
+
+        lua.load("s:set(1)").exec().unwrap();
+        assert!(!dirty.take(), "writing the value it holds changes nothing");
+        lua.load("s:set(1.0)").exec().unwrap();
+        assert!(dirty.take(), "1.0 prints differently from 1");
+
+        lua.load("s:set({ a = 1, b = { 'x' } })").exec().unwrap();
+        assert!(dirty.take());
+        lua.load("s:set({ a = 1, b = { 'x' } })").exec().unwrap();
+        assert!(!dirty.take(), "a fresh table equal entry for entry changes nothing");
+        lua.load("s:set({ a = 1, b = { 'x' }, c = 2 })").exec().unwrap();
+        assert!(dirty.take(), "an extra key is a change");
+        lua.load("t = s:get() t.a = 2 s:set(t)").exec().unwrap();
+        assert!(dirty.take(), "the same table mutated in place is a change");
+        lua.load("s:set({ f = print }) s:set({ f = print })").exec().unwrap();
+        assert!(dirty.take(), "a function inside is not plain data");
     }
 
     #[test]

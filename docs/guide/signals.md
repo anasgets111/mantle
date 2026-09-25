@@ -72,7 +72,10 @@ Only `state` can be written from Lua. `:set` on any other kind raises an error t
 
 `:set` refuses the scalars outside the engine's [value limits](runtime.md#limits-and-budgets) and
 leaves tables unchecked. It checks no types: `state("x", 1):set({})` succeeds, and only
-LuaLS flags it. A `:set` re-resolves the readers even when the value has not changed.
+LuaLS flags it. A `:set` of what the state already holds changes nothing: `1` over `1` is
+skipped, `1.0` over `1` is a write. A fresh plain-data table (no metatable, only scalars and such
+tables inside, 256 entries in all) equal entry for entry is skipped too; the same table written
+again after changing it in place is a write.
 
 ### Errors
 
@@ -93,9 +96,11 @@ LuaLS flags it. A `:set` re-resolves the readers even when the value has not cha
 
 ## Derived signals
 
-`:map` and `computed` hold no value between passes. They run whenever a node reads them, and a
-node reads them again only once a signal they read is written
-([what a node reads again](#what-a-node-reads-again)). Within one pass, a derived signal read by
+`:map` and `computed` run again once a signal they read is written, and their readers re-resolve
+only when the result changed ([what a node reads again](#what-a-node-reads-again)): a scalar or a
+plain-data table by value, anything holding a function, signal or metatable on every run. An
+`HH:MM` label or a `{ { text = hour, bold = true } }` run list mapped from a per-second snapshot
+re-resolves once a minute. Within one pass, a derived signal read by
 several properties runs once. Keep their functions cheap and side-effect free: no `:set`, no
 process, no action. They run under the CPU budget and nesting limit described in
 [runtime](runtime.md). Side effects belong in `on_click`, a capability's
@@ -218,6 +223,7 @@ dirty, and the next pass re-resolves only the instances that read it.
 | Event | Re-resolves |
 | :--- | :--- |
 | `:set`, a capability push, a hover or scroll change | Instances that read that signal in their last resolve |
+| The same, under a `map` or `computed` | Instances that read it, once its result changed |
 | A write to a signal no instance reads | Nothing |
 | A `delay` coming due or a `pulse` window closing | Every instance |
 | A `geometry` rect moving | One follow-up pass over the instances that read it |
@@ -236,7 +242,7 @@ whole bar. A `list` keeps its items the same way ([when items rebuild](../nodes/
 
 | Change | The node reads its properties again |
 | :--- | :--- |
-| A write to a signal bound to one of its properties, or under a `map` or `computed` bound to one | ✓ |
+| A write to a signal bound to one of its properties, or one changing the result of a `map` or `computed` bound to one | ✓ |
 | A write to its own `hover` or `scroll` slot | ✓ |
 | A different table, function, signal or value in its declaration, as in a rebuilt `list` item | ✓ |
 | A reload | ✓ |
