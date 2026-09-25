@@ -276,7 +276,7 @@ impl<'lua> ListBuild<'lua> {
         Self {
             inputs: list_inputs(properties),
             limit: list::limit.read(properties).ok().flatten(),
-            stamp: signal::write_clock(),
+            stamp: signal::write_clock(lua),
             frame: ComputedFrame::enter(lua),
         }
     }

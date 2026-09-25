@@ -31,6 +31,8 @@ pub(super) struct MemoTable {
     pub(super) map: FxHashMap<MemoKey, MemoEntry>,
     depth: usize,
     pub(super) eval_stack: Vec<Vec<CellId>>,
+    /// The write clock when the open pass began, the oldest write a value it serves can predate.
+    pub(super) pass_opened: Option<u64>,
 }
 
 /// The cells read between `enter` and `finish`, including through a memo hit or a nested frame,
@@ -163,8 +165,15 @@ pub(crate) fn note_everything_written() {
     });
 }
 
-/// The stamp a build takes before it reads anything.
-pub(crate) fn write_clock() -> u64 {
+/// The stamp a build takes before it reads anything. Inside a pass, the clock when the pass began:
+/// the pass serves one answer per computed (ADR-0157), so a build may read a value from before a
+/// write the pass itself made, a scroll clamp or a getter's `set`.
+pub(crate) fn write_clock(lua: &Lua) -> u64 {
+    let opened = lua.app_data_ref::<MemoTable>().and_then(|table| table.pass_opened);
+    opened.unwrap_or_else(current_clock)
+}
+
+pub(super) fn current_clock() -> u64 {
     WRITES.with_borrow(|log| log.clock)
 }
 

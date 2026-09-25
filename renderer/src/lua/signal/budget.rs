@@ -129,7 +129,7 @@ impl<'lua> LayoutPassBudget<'lua> {
     pub(crate) fn enter(lua: &'lua Lua) -> mlua::Result<Self> {
         crate::lua::app_data_or_default::<PassDeadline>(lua).0 = Some(Deadline::lasting(LAYOUT_PASS_CAP));
         // Starts with or retains the memo table across passes, clearing it at pass end.
-        crate::lua::app_data_or_default::<MemoTable>(lua);
+        crate::lua::app_data_or_default::<MemoTable>(lua).pass_opened = Some(super::tracking::current_clock());
         Ok(Self { lua })
     }
 
@@ -148,6 +148,7 @@ impl Drop for LayoutPassBudget<'_> {
         if let Ok(Some(mut table)) = self.lua.try_app_data_mut::<MemoTable>() {
             table.map.clear();
             table.eval_stack.clear();
+            table.pass_opened = None;
         }
     }
 }

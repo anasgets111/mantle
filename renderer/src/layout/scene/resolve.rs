@@ -67,7 +67,7 @@ pub(super) fn resolve(
         let style = LayoutStyle::parse(&properties)?;
         return Ok(Resolved { properties, style, tweens, memo, text_memo });
     }
-    let stamp = signal::write_clock();
+    let stamp = signal::write_clock(lua);
     let frame = ComputedFrame::enter(lua);
     let mut properties = build(node::resolve_properties(raw.clone(), kind, lua)?)?;
     let tweens = node::retarget(kind, retained.as_deref().map(tween_state), &mut properties, now, lua)?;
@@ -107,7 +107,7 @@ impl std::fmt::Debug for ResolveMemo {
 
 #[cfg(test)]
 mod tests {
-    use super::super::tests::{apply_at, full, surface_from};
+    use super::super::tests::{apply_at, full, instance_at, surface_from};
     use super::super::*;
     use crate::lua::signal::from_userdata;
 
@@ -239,6 +239,38 @@ mod tests {
 
         bar.run(r##"accent:set("#303030")"##);
         assert_eq!(string(bar.child(1), "background"), "#303030");
+    }
+
+    /// A pass serves one answer per computed (ADR-0157), so a node resolved after the first
+    /// instance's scroll clamp still reads the pre-clamp offset. Its memo has to count that write,
+    /// or the second output shows the stale offset until the next scroll.
+    #[test]
+    fn a_readout_served_a_value_from_before_a_mid_pass_write_resolves_again_next_pass() {
+        let mut bar = Fixture::new(
+            r#"offset = scroll("list")
+            return panel { id = "bar", child = row { children = {
+                column { width = 10, height = 40, scroll = offset, children = { rect { width = 10, height = 10 } } },
+                text { content = offset:map(function(v) return tostring(math.floor(v)) end) },
+            } } }"#,
+        );
+        let on = |output: &str| SurfaceInstance {
+            output: output.into(),
+            instance_id: format!("bar@{output}"),
+            ..instance_at(&bar.surface, full())
+        };
+        let instances = [on("A"), on("B")];
+        let apply = |bar: &mut Fixture| {
+            bar.scene.apply(std::slice::from_ref(&bar.surface), &instances, &bar.shaping, &bar.lua).unwrap();
+        };
+        apply(&mut bar);
+        // Past the end of 10 px of content in 40 px: the first instance's pass clamps it to 0.
+        bar.signal("offset").scroll_handle().unwrap().set_changed(Value::Number(30.0));
+        apply(&mut bar);
+        apply(&mut bar);
+        for output in ["A", "B"] {
+            let text = &bar.scene.surface(&format!("bar@{output}")).unwrap().children[0].children[1];
+            assert_eq!(string(text, "content"), "0", "on {output}");
+        }
     }
 
     /// A new evaluation may change what any getter reads without writing a cell.
