@@ -107,6 +107,8 @@ pub struct RendererClient {
     dirty: DirtyFlag,
     /// Instance IDs narrowed during the last dirty re-resolve, or `None` if full resolve.
     last_resolved: Option<Vec<String>>,
+    /// The last dirty re-resolve's failure and its unlogged repeats; `None` once a pass applies.
+    re_resolve_failure: Option<(String, u32)>,
     state: ReloadState,
     /// `mantle` table for lazy members. Above `loader` for drop order.
     mantle: mlua::Table,
@@ -181,6 +183,7 @@ impl RendererClient {
             idle_registry: namespace.idle,
             dirty,
             last_resolved: None,
+            re_resolve_failure: None,
             state: ReloadState { applied_specs: Vec::new(), applied_output: None, pending: None },
             mantle: namespace.table,
             loader,

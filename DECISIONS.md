@@ -6474,3 +6474,19 @@ already rejected.
 
 **Amends ADR-0052** (decision 1: actions are methods, not a generic `invoke`) **and ADR-0215**
 (decision 3: one typed method per variant).
+
+## 0265. A failed dirty re-resolve waits for the next change, and logs once per run
+
+A pass that failed to apply re-marked the whole scene, so every later poll turn retried it: a
+pointer motion, a frame callback or an unrelated push each ran a full-scene pass that failed the same
+way and logged it again. One user saw one error 335 times in 6 s. The poll timeout never reads the
+flag, so it was a retry per wake, not a spin.
+
+1. **No re-mark.** A pass reads signals, sizes and time through marks, so only a mark can change its
+   outcome. The failure resets the read tracker as before, and while it stands any mark takes the
+   whole-scene scope, the lock branch's rule, so a push to a cell the tracker forgot still retries.
+2. **One line per run.** A failure logs when its text differs from the last one; the run's repeat
+   count logs when the text changes or a pass applies.
+
+Trade-off: a computed that fails on impure input (`os.time`, a file) with no signal behind it now
+stays failed until the next change instead of the next wake. The rescue banner still shows it.

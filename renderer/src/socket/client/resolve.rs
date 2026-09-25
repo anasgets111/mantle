@@ -108,7 +108,8 @@ impl RendererClient {
         let Some(output) = self.state.applied_output.as_ref() else {
             return false;
         };
-        let scope = if self.holds_session_lock {
+        // After a failure the read tracker is reset, so any mark retries the whole scene.
+        let scope = if self.holds_session_lock || self.re_resolve_failure.is_some() {
             if !self.dirty.take() {
                 return false;
             }
@@ -144,11 +145,14 @@ impl RendererClient {
             self.loader.lua(),
             self.holds_session_lock,
         );
-        if let Err(err) = applied {
-            // Rollback keeps the prior scene; the rescue lasts until a pass applies.
-            warn!("dirty-scene re-resolve failed, keeping the prior scene: {err}");
-            self.rescue_applied_output(Some(&err.to_string()));
-            self.dirty.mark();
+        let failure = applied.err().map(|err| err.to_string());
+        for line in fold_failure(&mut self.re_resolve_failure, failure.clone()) {
+            warn!("dirty-scene re-resolve failed, keeping the prior scene: {line}");
+        }
+        if let Some(err) = failure {
+            // Rollback keeps the prior scene; the rescue lasts until a pass applies. No re-mark:
+            // only a change can fix the failure, and the wakes between changes cannot.
+            self.rescue_applied_output(Some(&err));
             crate::lua::signal::reset_read_tracker(self.loader.lua());
             return false;
         }
@@ -193,6 +197,21 @@ impl RendererClient {
     pub fn tick_animations(&mut self, now: std::time::Instant) -> Vec<String> {
         self.scene.tick(&self.instances, &self.shaping, self.loader.lua(), now)
     }
+}
+
+/// Folds one pass's outcome (`None` for success) into `run`, the last logged failure and its
+/// unlogged repeats. Returns the lines owed to the log: the ended run's repeat count, then a new
+/// failure.
+fn fold_failure(run: &mut Option<(String, u32)>, failure: Option<String>) -> Vec<String> {
+    if let (Some((last, repeats)), Some(failure)) = (run.as_mut(), failure.as_ref())
+        && last == failure
+    {
+        *repeats += 1;
+        return Vec::new();
+    }
+    let ended = std::mem::replace(run, failure.clone().map(|failure| (failure, 0)));
+    let ended = ended.filter(|(_, repeats)| *repeats > 0).map(|(last, repeats)| format!("{last} (repeats: {repeats})"));
+    ended.into_iter().chain(failure).collect()
 }
 
 /// `MANTLE_DUMP_LAYOUT=<instance id>` (e.g. `bar@eDP-1`) prints each visible node's kind,
@@ -570,6 +589,50 @@ mod tests {
         assert_eq!(client.take_last_resolved(), Some(vec!["reader@TEST".to_string()]));
         let reader = client.scene.surface("reader@TEST").unwrap();
         assert_eq!(reader.children[0].rect.width, 40.0, "the reader laid out from the moved rect");
+    }
+
+    /// A failure logs once per run of the same text; the run's repeat count lands when it
+    /// changes or clears, so a failure retried on every push cannot flood the log.
+    #[test]
+    fn a_repeated_failure_logs_once_and_reports_its_repeats_when_it_ends() {
+        let mut run = None;
+        let mut fold = |failure: Option<&str>| super::fold_failure(&mut run, failure.map(str::to_string));
+
+        assert_eq!(fold(Some("a")), ["a"]);
+        assert!(fold(Some("a")).is_empty());
+        assert!(fold(Some("a")).is_empty());
+        assert_eq!(fold(Some("b")), ["a (repeats: 2)", "b"]);
+        assert!(fold(None).is_empty(), "a failure that never repeated owes no count");
+        assert_eq!(fold(Some("b")), ["b"], "a success ends the run, so the same text logs again");
+        assert!(fold(Some("b")).is_empty());
+        assert_eq!(fold(None), ["b (repeats: 1)"]);
+    }
+
+    /// A failed pass owes no retry on its own: the loop also wakes for pointer motion and frame
+    /// callbacks, and none of them can change what failed. The next change retries.
+    #[test]
+    fn a_failed_pass_waits_for_a_change_before_it_retries() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_shell_lua(
+            dir.path(),
+            r#"
+            armed = state("armed", false)
+            return panel { id = "bar", layer = "Top", child = text { content = "m",
+                opacity = computed({armed}, function(a) if a then return 2.0 else return 1.0 end end) } }
+            "#,
+        );
+        let (mut client, _outbound_rx) = test_client(&path);
+        assert!(run_startup(&mut client));
+
+        client.loader.lua().load("armed:set(true)").exec().unwrap();
+        assert!(!client.re_resolve_if_dirty(), "an invalid property must fail the pass");
+        // The rescue write the failure made is a change of its own; it earns one retry.
+        client.re_resolve_if_dirty();
+        assert!(!client.dirty.take(), "a failed pass must not re-dirty the scene");
+
+        client.loader.lua().load("armed:set(false)").exec().unwrap();
+        assert!(client.re_resolve_if_dirty(), "the next change must retry the whole scene");
+        assert_eq!(rescue_state(&client.loader), (false, String::new()));
     }
 
     #[test]
