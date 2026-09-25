@@ -194,13 +194,13 @@ fn deliver_plain_edit(surface_id: &str, edit: PlainEdit, text: String, callbacks
         && let Some(on_submit) = on_submit
         && let Err(e) = on_submit.call::<()>(text.clone())
     {
-        warn!("{surface_id}: on_submit raised, ignoring it: {e}");
+        warn!("{surface_id}: on_submit raised, ignoring it: {}", crate::lua::describe(&e));
     }
     if edit.changed
         && let Some(on_change) = on_change
         && let Err(e) = on_change.call::<()>(if edit.submitted { String::new() } else { text })
     {
-        warn!("{surface_id}: on_change raised, ignoring it: {e}");
+        warn!("{surface_id}: on_change raised, ignoring it: {}", crate::lua::describe(&e));
     }
     // `edit.changed` is the one thing a config cannot work out for itself: the autofocus arm fires
     // `on_change("")` too, so counting empty changes cannot tell a cleared field from an opened one.
@@ -208,7 +208,7 @@ fn deliver_plain_edit(surface_id: &str, edit: PlainEdit, text: String, callbacks
         && let Some(on_cancel) = on_cancel
         && let Err(e) = on_cancel.call::<()>(edit.changed)
     {
-        warn!("{surface_id}: on_cancel raised, ignoring it: {e}");
+        warn!("{surface_id}: on_cancel raised, ignoring it: {}", crate::lua::describe(&e));
     }
 }
 
@@ -262,7 +262,7 @@ impl App {
         if let Some(on_change) = opened
             && let Err(e) = on_change.call::<()>(String::new())
         {
-            warn!("{surface_id}: on_change raised, ignoring it: {e}");
+            warn!("{surface_id}: on_change raised, ignoring it: {}", crate::lua::describe(&e));
         }
     }
 
@@ -419,7 +419,7 @@ impl App {
             if let Some(on_navigate) = on_navigate
                 && let Err(e) = on_navigate.call::<()>(key.name())
             {
-                warn!("{surface_id}: on_navigate raised, ignoring it: {e}");
+                warn!("{surface_id}: on_navigate raised, ignoring it: {}", crate::lua::describe(&e));
             }
             return;
         }

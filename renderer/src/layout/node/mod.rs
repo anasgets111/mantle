@@ -196,11 +196,18 @@ impl LayoutError {
     ///
     /// Indices are positions among a parent's `children`, so they are stable to read against the
     /// config but not identities: a `list` renumbers its rows as its source changes.
-    pub(crate) fn in_child(self, index: usize, kind: &str) -> Self {
+    ///
+    /// `site` is the line that built the child: indices say where in the tree, not which line of
+    /// which file, and a node a helper function returns has no index in the file at all.
+    pub(crate) fn in_child(self, index: usize, kind: &str, site: Option<crate::lua::location::Site>) -> Self {
         let Self::InvalidProperty { property, detail } = self else {
             return self;
         };
-        Self::InvalidProperty { property, detail: format!("{kind}[{index}] > {detail}") }
+        let detail = match site {
+            Some(site) => format!("{kind}[{index}] ({site}) > {detail}"),
+            None => format!("{kind}[{index}] > {detail}"),
+        };
+        Self::InvalidProperty { property, detail }
     }
 }
 
@@ -403,9 +410,9 @@ pub fn resolve_properties(mut properties: PropMap, kind: &str, lua: &Lua) -> Res
             };
             // Name the node kind: a config has many `background`s, and the bare property left a reader
             // grepping every one of them. `Scene::apply_admitting` adds the surface.
-            let value = signal
-                .get_value(lua)
-                .map_err(|e| invalid(property, format!("Signal getter on a `{kind}` node failed: {e}")))?;
+            let value = signal.get_value(lua).map_err(|e| {
+                invalid(property, format!("Signal getter on a `{kind}` node failed: {}", crate::lua::describe(&e)))
+            })?;
             match value {
                 Value::UserData(_) => {
                     return Err(invalid(

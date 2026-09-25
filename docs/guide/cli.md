@@ -217,10 +217,21 @@ real layout code, on one 1920x1080 output plus one per `monitor` name a panel pi
 | `with sample capability data` | One sample push each: every list has one entry, every optional field is set, every string is `"sample"`, every integer `1` | Typos and bad properties in a list `itemfn` or a branch that only shows with data |
 
 It prints `<path>: ok, N surface(s)` and one `<role> <id>` line per surface, preceded by anything
-the config `print`ed. A layout error prints as `<path>: <pass>: layout: <error>`, once per failing
-pass, and exits 1. With more than one broken node, `<error>` is `N nodes failed:` and then one node
-per line: the first 20, then `and N more`. A mistake repeated on every output, or by every item of a
-`list`, is listed once.
+the config `print`ed. An error prints as `<config dir>: <error>` and exits 1; files in it are named
+relative to the config directory. A layout error names its pass, `<config dir>: <pass>: layout:
+<error>`, once per failing pass. With more than one broken node, `<error>` is `N nodes failed:` and
+then one node per line: the first 20, then `and N more`. A mistake repeated on every output, or by
+every item of a `list`, is listed once. The path names the line that built each node and, for a
+failing `:map` or `computed`, the line that created the signal:
+
+```text
+~/.config/mantle: widgets/bar.lua:4: attempt to perform arithmetic on a nil value
+stack traceback:
+	widgets/bar.lua:4: in function 'widgets.bar.build'
+	shell.lua:3: in main chunk
+~/.config/mantle: before capability data: layout: invalid value for `children`: on `bar@DP-1`: row[0] (shell.lua:7) > children[0]: shell.lua:2: `text` has no property `contnet`; did you mean `content`?
+~/.config/mantle: before capability data: layout: invalid value for `content`: on `bar@DP-1`: text[0] (shell.lua:9) > Signal getter on a `text` node failed: signal created at shell.lua:3: shell.lua:4: attempt to index a number value (local 'n')
+```
 
 | Caught | Not caught |
 | :--- | :--- |

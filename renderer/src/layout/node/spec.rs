@@ -78,10 +78,20 @@ pub enum SurfaceFingerprint {
 
 /// [`deserialize_lua_table`] with a refused kind kept as itself, so a child of an unsupported kind
 /// still fails the pass as one rather than as a malformed `children` entry.
-fn deserialize_child(table: &mlua::Table, property: &str) -> Result<VirtualNode, LayoutError> {
+fn deserialize_child(table: &mlua::Table, property: &str, index: Option<usize>) -> Result<VirtualNode, LayoutError> {
     deserialize_lua_table(table).map_err(|e| match e {
         DeserializeError::UnsupportedKind(kind) => LayoutError::UnsupportedNodeKind(kind),
-        other => invalid(property, other.to_string()),
+        other => {
+            let detail = crate::lua::nodes::at_site(table, other.to_string());
+            // The index tells apart siblings a helper built on one line, which share a site.
+            invalid(
+                property,
+                match index {
+                    Some(index) => format!("{property}[{index}]: {detail}"),
+                    None => detail,
+                },
+            )
+        }
     })
 }
 
@@ -95,7 +105,7 @@ impl Prop for VirtualNode {
         let Value::Table(table) = value else {
             return Err(invalid(row.name, format!("expected a node table, got {}", preview_for_error(value))));
         };
-        Ok(Some(deserialize_child(table, row.name)?))
+        Ok(Some(deserialize_child(table, row.name, None)?))
     }
 }
 
@@ -149,7 +159,7 @@ impl Prop for Children {
                     format!("expected a node table at index {index}, got {}", preview_for_error(&entry)),
                 ));
             };
-            match deserialize_child(&entry, "children") {
+            match deserialize_child(&entry, "children", Some(index - 1)) {
                 Ok(child) => children.push(child),
                 Err(err) => failed.push(err),
             }
@@ -234,16 +244,16 @@ pub fn parse_list_children(properties: &PropMap) -> Result<Vec<VirtualNode>, Lay
         let element = element.map_err(|e| invalid("source", e.to_string()))?;
 
         let item = (|| {
-            let built = itemfn.call::<Value>(&element).map_err(|e| invalid("itemfn", e.to_string()))?;
+            let built = itemfn.call::<Value>(&element).map_err(|e| invalid("itemfn", crate::lua::describe(&e)))?;
             let Value::Table(built_table) = built else {
                 return Err(invalid("itemfn", format!("expected a node table, got {}", preview_for_error(&built))));
             };
-            let mut node = deserialize_child(&built_table, "itemfn")?;
+            let mut node = deserialize_child(&built_table, "itemfn", None)?;
 
             if let Some(key_fn) = &key_fn {
                 // Moved, not borrowed: a borrow would keep this item rooted for the rest of the loop
                 // body, which a `key` collecting garbage behind a weak table can see.
-                let key_value = key_fn.call::<Value>(element).map_err(|e| invalid("key", e.to_string()))?;
+                let key_value = key_fn.call::<Value>(element).map_err(|e| invalid("key", crate::lua::describe(&e)))?;
                 let Value::String(key_str) = key_value else {
                     return Err(invalid(
                         "key",

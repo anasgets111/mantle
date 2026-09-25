@@ -323,7 +323,7 @@ pub(crate) fn apply_hover_write(lua: &Lua, write: layout::hover::HoverWrite, fir
         && let Some(on_hover) = &write.on_hover
         && let Err(err) = on_hover.call::<()>(write.hovered)
     {
-        warn!("{surface_id}: on_hover handler raised: {err}");
+        warn!("{surface_id}: on_hover handler raised: {}", crate::lua::describe(&err));
     }
 }
 
@@ -425,7 +425,7 @@ impl PointerHandler for App {
                             // Links take `href`, not the paragraph rect; a link is not a button.
                             (Some(href), Some(handler)) => {
                                 if let Err(e) = handler.call::<()>(href) {
-                                    warn!("{instance_id}: on_link raised, ignoring it: {e}");
+                                    warn!("{instance_id}: on_link raised, ignoring it: {}", crate::lua::describe(&e));
                                 }
                             }
                             (_, handler) => {
@@ -544,7 +544,7 @@ impl App {
             self.drag = None;
         }
         if let Err((what, e)) = call_on_drag(self.client.lua(), &handler, rect, position, phase) {
-            warn!("{instance_id}: {what}: {e}");
+            warn!("{instance_id}: {what}: {}", crate::lua::describe(&e));
         }
     }
 
@@ -653,7 +653,7 @@ impl App {
     fn fire_on_click(&mut self, instance_id: &str, rect: LogicalRect, button: &str, on_click: &Function) {
         // `signal:set()` marks its own dirty flag (ADR-0044 decision 5); this call need not.
         if let Err((what, e)) = call_on_click(self.client.lua(), on_click, rect, button) {
-            warn!("{instance_id}: {what}: {e}");
+            warn!("{instance_id}: {what}: {}", crate::lua::describe(&e));
         }
     }
 }

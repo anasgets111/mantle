@@ -221,7 +221,7 @@ impl CapabilityHandle {
                 budget.check_not_exceeded()
             });
             if let Err(err) = outcome {
-                warn!("mantle.{}:on_change handler raised, ignoring it: {err}", self.name);
+                warn!("mantle.{}:on_change handler raised, ignoring it: {}", self.name, crate::lua::describe(&err));
             }
         }
     }

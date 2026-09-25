@@ -16,6 +16,7 @@ use std::time::{Duration, Instant};
 
 use mlua::{Function, Lua, MultiValue, UserData, UserDataMethods, Value};
 
+use crate::lua::location::Site;
 use crate::lua::marshal;
 
 pub(crate) use budget::{CpuBudget, LayoutPassBudget, thread_cpu_time};
@@ -348,9 +349,13 @@ impl Signal {
     }
 }
 
+/// User value holding where the signal was created ([`Site`]), named when its
+/// function raises: that happens during a later layout pass, and the traceback shows only the
+/// function's own lines, not the binding that made it.
+const SITE_SLOT: usize = 1;
 /// User value holding a `Computed`'s function; its sources, or a `Delayed`/`Pulse` source, follow.
-const FUNCTION_SLOT: usize = 1;
-const FIRST_SOURCE_SLOT: usize = 2;
+const FUNCTION_SLOT: usize = 2;
+const FIRST_SOURCE_SLOT: usize = 3;
 /// A `Delayed`'s held value or a `Pulse`'s last-seen one, after the source; then a pending value.
 const HELD_SLOT: usize = FIRST_SOURCE_SLOT + 1;
 const PENDING_SLOT: usize = HELD_SLOT + 1;
@@ -364,6 +369,7 @@ fn new_derived(
     sources: Vec<mlua::AnyUserData>,
 ) -> mlua::Result<mlua::AnyUserData> {
     let ud = lua.create_userdata(Signal(kind))?;
+    ud.set_nth_user_value(SITE_SLOT, Site::to_lua(Site::of_caller(lua)))?;
     if let Some(func) = func {
         ud.set_nth_user_value(FUNCTION_SLOT, func)?;
     }
@@ -429,8 +435,17 @@ fn read_derived(lua: &Lua, ud: &mlua::AnyUserData) -> mlua::Result<Value> {
                 args.push(source_at(ud, slot)?.get_value(lua)?);
             }
             let func: Function = ud.nth_user_value(FUNCTION_SLOT)?;
-            let value = func.call::<Value>(MultiValue::from_vec(args))?;
-            budget.check_not_exceeded()?;
+            let value = func.call::<Value>(MultiValue::from_vec(args)).and_then(|value| {
+                budget.check_not_exceeded()?;
+                Ok(value)
+            });
+            let value = match (value, Site::from_lua(&ud.nth_user_value(SITE_SLOT)?)) {
+                (Err(err), Some(site)) => {
+                    let err = super::describe(&err);
+                    return Err(mlua::Error::runtime(format!("signal created at {site}: {err}")));
+                }
+                (value, _) => value?,
+            };
             let cells = frame.finish();
             EvaluationMemo::insert(lua, id, &value, cells);
             Ok(value)

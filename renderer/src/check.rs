@@ -39,7 +39,7 @@ pub fn run(config_dir: &Path) -> Result<String, String> {
     let (output, specs, namespace, loader) = evaluate(config_dir)?;
     let size = LogicalSize { width: 1920.0, height: 1080.0 };
     lay_out_both_passes(&output, &specs, &namespace, &loader, &ShapingHandle::spawn(), size).map_err(|failures| {
-        failures.iter().map(|failure| format!("{}: {failure}", shell_lua.display())).collect::<Vec<_>>().join("\n")
+        failures.iter().map(|failure| format!("{}: {failure}", config_dir.display())).collect::<Vec<_>>().join("\n")
     })?;
     let mut report = format!("{}: ok, {} surface(s)\n", shell_lua.display(), specs.len());
     for spec in &specs {
@@ -125,7 +125,7 @@ fn evaluate(config_dir: &Path) -> Result<(LoadOutput, Vec<SurfaceSpec>, Namespac
     }
 
     let dirty = DirtyFlag::new();
-    let loader = Loader::new(dirty.clone(), config_dir).map_err(|err| format!("{}: {err}", shell_lua.display()))?;
+    let loader = Loader::new(dirty.clone(), config_dir).map_err(|err| format!("{}: {err}", config_dir.display()))?;
 
     // Register `mantle`, `process.run` and `palette.quantize`: configs reach for all three during
     // evaluation, and a bare `Loader` dies on the first `mantle.` access. Capabilities read `nil`,
@@ -141,7 +141,7 @@ fn evaluate(config_dir: &Path) -> Result<(LoadOutput, Vec<SurfaceSpec>, Namespac
     let namespace = namespace::build(&loader, &dirty, &commands, &shell_lua).map_err(|err| err.to_string())?;
 
     let (output, specs) =
-        evaluate_and_specs(&loader, &shell_lua).map_err(|err| format!("{}: {err}", shell_lua.display()))?;
+        evaluate_and_specs(&loader, &shell_lua).map_err(|err| format!("{}: {err}", config_dir.display()))?;
     Ok((output, specs, namespace, loader))
 }
 
@@ -175,6 +175,91 @@ mod tests {
         assert!(err.contains("shell.lua"), "the error must name the file: {err}");
     }
 
+    /// The config directory once, then Lua's own `file:line`, named relative to it.
+    #[test]
+    fn an_error_in_a_required_module_names_the_directory_once_and_the_module_by_its_relative_path() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("widgets")).unwrap();
+        std::fs::write(
+            dir.path().join("widgets/bar.lua"),
+            "local M = {}\nfunction M.build() return nil + 1 end\nreturn M\n",
+        )
+        .unwrap();
+        std::fs::write(dir.path().join("shell.lua"), "local built = require(\"widgets.bar\").build()\nreturn built\n")
+            .unwrap();
+
+        let err = super::run(dir.path()).unwrap_err();
+
+        let head =
+            format!("{}: widgets/bar.lua:2: attempt to perform arithmetic on a nil value\n", dir.path().display());
+        assert!(err.starts_with(&head), "{err}");
+        assert_eq!(err.matches(&dir.path().display().to_string()).count(), 1, "{err}");
+    }
+
+    /// Each step of the path to a refused node names the line that built it, including a node a
+    /// helper function returned.
+    #[test]
+    fn a_node_error_names_the_line_that_built_each_node_on_its_path() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("shell.lua"),
+            "local function label()\n\
+             \x20 return text { contnet = \"hi\" }\n\
+             end\n\
+             return panel { id = \"p\", layer = \"Top\", child = row {\n\
+             \x20 children = { row {\n\
+             \x20   children = { label() },\n\
+             \x20 } },\n\
+             } }\n",
+        )
+        .unwrap();
+
+        let err = super::run(dir.path()).unwrap_err();
+
+        assert!(
+            err.contains("row[0] (shell.lua:4) > row[0] (shell.lua:5) > children[0]: shell.lua:2: `text` has no property `contnet`"),
+            "{err}"
+        );
+    }
+
+    /// A getter's failure names the line that made the signal, not only the line inside its function.
+    #[test]
+    fn a_failing_map_names_where_the_signal_was_created() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("shell.lua"),
+            "local count = state(\"count\", 1)\n\
+             local label = count:map(function(n)\n\
+             \x20 return n.missing\n\
+             end)\n\
+             return panel { id = \"p\", layer = \"Top\", child = text { content = label } }\n",
+        )
+        .unwrap();
+
+        let err = super::run(dir.path()).unwrap_err();
+
+        assert!(
+            err.contains(
+                "text[0] (shell.lua:5) > Signal getter on a `text` node failed: signal created at shell.lua:2: \
+                 shell.lua:3: attempt to index a number value (local 'n')\nstack traceback:\n\tshell.lua:3: in function <shell.lua:2>"
+            ),
+            "{err}"
+        );
+        assert!(!err.contains("[C]: in metamethod"), "the error handler's own frame is noise: {err}");
+    }
+
+    /// mlua's userdata dispatch adds `[C]: in upvalue '__index'` and `__mlua_index:31` frames above
+    /// the config's; only the config's own line is left.
+    #[test]
+    fn a_traceback_keeps_only_the_config_frames() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("shell.lua"), "local volume = mantle.audio.volume\nreturn {}\n").unwrap();
+
+        let err = super::run(dir.path()).unwrap_err();
+
+        assert!(err.ends_with("\nstack traceback:\n\tshell.lua:1: in main chunk"), "{err}");
+    }
+
     /// A panel pinned to a named monitor still lays out, so its errors are caught too.
     #[test]
     fn a_layout_error_on_a_monitor_pinned_panel_fails_the_check() {
@@ -185,7 +270,7 @@ mod tests {
         )
         .unwrap();
         let err = super::run(dir.path()).unwrap_err();
-        assert!(err.contains("shell.lua: before capability data: layout:"), "{err}");
+        assert!(err.contains(&format!("{}: before capability data: layout:", dir.path().display())), "{err}");
     }
 
     /// An `itemfn` runs only once a `list` source has rows, and every capability reads `nil` until

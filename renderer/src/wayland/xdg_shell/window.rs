@@ -173,7 +173,7 @@ impl WindowHandler for App {
             return;
         };
         if let Err(e) = on_close.call::<()>(()) {
-            warn!("{surface_id}: on_close raised, ignoring it: {e}");
+            warn!("{surface_id}: on_close raised, ignoring it: {}", crate::lua::describe(&e));
         }
     }
 

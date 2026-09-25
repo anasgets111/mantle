@@ -247,7 +247,7 @@ impl App {
                         .and_then(|tree| secure_on_cancel(tree, &field.target))
                     && let Err(e) = on_cancel.call::<()>(cleared)
                 {
-                    warn!("{}: on_cancel raised, ignoring it: {e}", field.surface_id);
+                    warn!("{}: on_cancel raised, ignoring it: {}", field.surface_id, crate::lua::describe(&e));
                 }
             }
             KeyAction::Submit => self.finish_secure_submit(),

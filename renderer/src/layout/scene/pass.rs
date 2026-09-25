@@ -56,7 +56,7 @@ pub(super) fn build_child_for_output(
             ),
         ));
     }
-    let built = builder.call::<Value>(output).map_err(|e| node::invalid("child", e.to_string()))?;
+    let built = builder.call::<Value>(output).map_err(|e| node::invalid("child", crate::lua::describe(&e)))?;
     match built {
         Value::Table(_) => {
             properties.insert("child", built);
@@ -302,10 +302,10 @@ pub(super) fn prepare(
     node.children.reserve(fresh_children.len());
     let mut failed = Vec::new();
     for (index, (fresh_child, candidate)) in fresh_children.into_iter().zip(matched_candidates).enumerate() {
-        let VirtualNode { kind: child_kind, properties: child_raw } = fresh_child;
+        let VirtualNode { kind: child_kind, properties: child_raw, site } = fresh_child;
         // Every failure below names this child, so the message that reaches a human is the path
         // down to the node rather than a property name and a surface (`LayoutError::in_child`).
-        let here = |err: LayoutError| err.in_child(index, child_kind);
+        let here = |err: LayoutError| err.in_child(index, child_kind, site);
 
         // Before this child's own getters run, not after: resolving its property map calls back
         // into Lua, and a child the walk is about to refuse must not execute anything on the way
@@ -730,7 +730,7 @@ mod tests {
         assert_eq!(property, "content");
         assert_eq!(
             detail,
-            "on `bar@TEST`: column[0] > row[1] > text[1] > expected a string or an array of runs, got Integer(5)",
+            "on `bar@TEST`: column[0] (shell.lua:1) > row[1] (shell.lua:3) > text[1] (shell.lua:3) > expected a string or an array of runs, got Integer(5)",
             "the path must lead to the guilty node, and neither sibling text node is on it"
         );
     }
@@ -755,9 +755,15 @@ mod tests {
         let lines: Vec<&str> = err.lines().collect();
         assert_eq!(lines.len(), 4, "a count, then one line per broken node: {err}");
         assert_eq!(lines[0], "3 nodes failed:");
-        assert!(lines[1].contains("on `bar@TEST`: column[0] > text[0] > expected a string"), "{err}");
-        assert!(lines[2].contains("on `bar@TEST`: column[0] > row[1] > text[1] > expected a string"), "{err}");
-        assert!(lines[3].contains("on `bar@TEST`: column[0] > rect[2] >"), "{err}");
+        assert!(
+            lines[1].contains("on `bar@TEST`: column[0] (shell.lua:1) > text[0] (shell.lua:2) > expected a string"),
+            "{err}"
+        );
+        assert!(
+            lines[2].contains("column[0] (shell.lua:1) > row[1] (shell.lua:3) > text[1] (shell.lua:3) > expected"),
+            "{err}"
+        );
+        assert!(lines[3].contains("on `bar@TEST`: column[0] (shell.lua:1) > rect[2] (shell.lua:4) >"), "{err}");
         assert_eq!(scene.surface("bar@TEST").unwrap().children[0].kind, "rect", "the prior scene stays");
     }
 
@@ -777,9 +783,15 @@ mod tests {
 
         let lines: Vec<&str> = err.lines().collect();
         assert_eq!(lines.len(), 4, "{err}");
-        assert!(lines[1].contains("`text` has no property `contnet`"), "{err}");
-        assert!(lines[2].contains("`rect` has no property `color`"), "{err}");
-        assert!(lines[3].contains("list[1] > ") && lines[3].contains("`contnet`"), "{err}");
+        assert!(
+            lines[1].contains("row[0] (shell.lua:2) > children[0]: shell.lua:2: `text` has no property `contnet`"),
+            "{err}"
+        );
+        assert!(
+            lines[2].contains("row[0] (shell.lua:2) > children[1]: shell.lua:2: `rect` has no property `color`"),
+            "{err}"
+        );
+        assert!(lines[3].contains("list[1] (shell.lua:3) > shell.lua:3: `text` has no property `contnet`"), "{err}");
     }
 
     /// A surface on two outputs repeats each mistake; another surface's still counts.
@@ -816,8 +828,8 @@ mod tests {
 
         let lines: Vec<&str> = err.lines().collect();
         assert_eq!(lines[0], "31 nodes failed:", "bar once, not once per output, and dock's 30: {err}");
-        assert!(lines[1].contains("on `bar@LEFT`: text[0] >"), "{err}");
-        assert!(lines[2].contains("on `dock@LEFT`: column[0] > text[0] >"), "{err}");
+        assert!(lines[1].contains("on `bar@LEFT`: text[0] ("), "{err}");
+        assert!(lines[2].contains("on `dock@LEFT`: column[0] (") && lines[2].contains(") > text[0] ("), "{err}");
         assert_eq!(lines.len(), 22, "twenty listed, then the rest counted: {err}");
         assert_eq!(lines[21], "  and 11 more");
     }

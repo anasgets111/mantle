@@ -71,7 +71,7 @@ impl App {
             match rect_table(self.client.lua(), rect) {
                 Ok(rect) => {
                     if let Err(e) = on_wheel.call::<()>((rect, steps)) {
-                        warn!("{surface_id}: on_wheel raised, ignoring it: {e}");
+                        warn!("{surface_id}: on_wheel raised, ignoring it: {}", crate::lua::describe(&e));
                     }
                 }
                 Err(e) => warn!("{surface_id}: could not build on_wheel's rect argument: {e}"),

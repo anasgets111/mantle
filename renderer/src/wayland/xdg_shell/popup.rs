@@ -492,7 +492,7 @@ impl PopupHandler for App {
             return;
         };
         if let Err(e) = on_dismiss.call::<()>(()) {
-            warn!("{surface_id}: on_dismiss raised, ignoring it: {e}");
+            warn!("{surface_id}: on_dismiss raised, ignoring it: {}", crate::lua::describe(&e));
         }
     }
 }

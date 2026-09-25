@@ -9,6 +9,7 @@ use mlua::{Lua, Table, Value};
 
 use super::fuzzy::closest;
 use crate::layout::node::PropMap;
+use crate::lua::location::Site;
 
 pub(crate) mod properties;
 #[cfg(test)]
@@ -54,6 +55,22 @@ fn accepted_properties(kind: &str) -> Vec<&'static str> {
 pub struct VirtualNode {
     pub kind: &'static str,
     pub properties: PropMap,
+    /// Where its constructor ran, for layout errors to name.
+    pub site: Option<Site>,
+}
+
+/// The key a constructor records its [`Site`] under. Beside `kind` in the props table
+/// rather than in a Rust map keyed by table: a table outlives no record of it, and a copied table
+/// passed to a constructor again gets that call's line.
+const SITE: &str = "__site";
+
+/// `detail` behind the line that built `table`, `shell.lua:12: detail`, the way Lua prefixes its own
+/// errors. For a table the loader refused, so no [`VirtualNode`] carries the site.
+pub(crate) fn at_site(table: &Table, detail: String) -> String {
+    match table.raw_get::<Value>(SITE).ok().as_ref().and_then(Site::from_lua) {
+        Some(site) => format!("{site}: {detail}"),
+        None => detail,
+    }
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -78,8 +95,9 @@ pub fn register_node_constructors(lua: &Lua) -> mlua::Result<()> {
     for kind in node_kinds() {
         lua.globals().set(
             kind,
-            lua.create_function(move |_, props: Table| {
+            lua.create_function(move |lua, props: Table| {
                 props.set("kind", kind)?;
+                props.set(SITE, Site::to_lua(Site::of_caller(lua)))?;
                 Ok(props)
             })?,
         )?;
@@ -102,11 +120,16 @@ pub fn deserialize_lua_table(table: &Table) -> Result<VirtualNode, DeserializeEr
     };
 
     let mut properties = PropMap::default();
+    let mut site = None;
     for pair in table.pairs::<Value, Value>() {
         let (key, value) = pair?;
         let name = match &key {
             Value::String(s) => match s.to_str() {
                 Ok(text) if &*text == "kind" => continue,
+                Ok(text) if &*text == SITE => {
+                    site = Site::from_lua(&value);
+                    continue;
+                }
                 Ok(text) => row_in(bit, &text).map(|row| row.name),
                 Err(_) => None,
             },
@@ -128,7 +151,7 @@ pub fn deserialize_lua_table(table: &Table) -> Result<VirtualNode, DeserializeEr
         properties.insert(name, value);
     }
 
-    Ok(VirtualNode { kind, properties })
+    Ok(VirtualNode { kind, properties, site })
 }
 
 #[cfg(test)]

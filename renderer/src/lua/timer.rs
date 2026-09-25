@@ -168,7 +168,7 @@ pub fn dispatch_due(lua: &Lua, now: Instant) {
             budget.check_not_exceeded()
         });
         if let Err(err) = outcome {
-            warn!("timer callback raised, ignoring it: {err}");
+            warn!("timer callback raised, ignoring it: {}", crate::lua::describe(&err));
         }
     }
     if let Some(mut registry) = lua.app_data_mut::<TimerRegistry>() {

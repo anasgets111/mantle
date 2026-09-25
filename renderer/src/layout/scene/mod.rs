@@ -739,7 +739,7 @@ pub(super) mod tests {
         let lua = mlua::Lua::new();
         register_node_constructors(&lua).unwrap();
         crate::lua::signal::register(&lua, crate::lua::signal::DirtyFlag::new()).unwrap();
-        let table: mlua::Table = lua.load(lua_src).eval().unwrap();
+        let table: mlua::Table = lua.load(lua_src).set_name("@shell.lua").eval().unwrap();
         let node = deserialize_lua_table(&table).unwrap();
         (lua, node)
     }

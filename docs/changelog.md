@@ -67,6 +67,12 @@ so everything since the rename from Obelisk sits under Unreleased.
 - `mantle check` lays out a second time after one sample push per capability, every list one entry
   long, so an error in a list `itemfn` or a data-only branch fails the check; each error names its
   pass ([what check covers](guide/cli.md#what-check-covers)).
+- Errors name files relative to the config directory (`widgets/bar.lua:4`, not a path Lua cut to
+  `...2b41-2949-.../bar.lua:4`), including `require`d modules. A layout error's path names the
+  line that built each node (`row[0] (shell.lua:7) > ...`), a failing `:map` or `computed` the line
+  that created it (`signal created at shell.lua:3`), and tracebacks drop the engine's own frames.
+  `mantle check` prints the config directory once instead of `shell.lua: shell.lua failed to
+  evaluate` ([CLI](guide/cli.md#what-check-covers)).
 - The `.luarc.json` from `mantle init` warns on unused locals and on the `type-check`,
   `unbalanced`, `strict` and `global` diagnostic groups in every file.
 - `mantle.rescue` is set when a reload, or a live update, fails to apply, and clears only when a

@@ -6545,3 +6545,25 @@ count for errors a config author finds on the first live push.
 
 Ceiling: one value per field. A branch taken only on `false`, a second enum variant or an empty
 list is still reached only by the `nil` pass or not at all.
+
+## 0268. Nodes and derived signals record the line that built them
+
+A layout error named its node by tree path alone (`row[0] > row[0] > text ...`), and a failing
+`:map` by the line inside its function; neither said which line of which file to open. Lua's
+60-byte `LUA_IDSIZE` also cut every absolute chunk name to `...2b41-2949-.../shell.lua:1`.
+
+1. **Chunks are named relative to the config directory**: `@shell.lua`, and `@widgets/bar.lua`
+   through a replacement for `package.searchers[2]` that runs the same `package.searchpath` and
+   returns the same two values. `package.loaded` keys and ADR-0047's forgetting are unchanged.
+2. **Each node constructor stores its caller's `file:line` under `__site`** in the props table,
+   beside `kind`, and each derived signal (`:map`, `computed`, `delay`, `pulse`) in a user value.
+   The site is one integer: an index into a thread-local, append-only table of chunk names, above
+   the line. In a release build it adds 210 ns to a 250 ns constructor; a formatted Lua string
+   added 285 ns. A 200-node `itemfn` rebuild pays about 42 µs.
+3. **Thread-local, not per VM**: a refused child is formatted in `layout::node::spec`, where no
+   `Lua` is at hand. The VM runs on one thread (ADR-0039), so the thread that records a site
+   displays it.
+
+A config iterating a node table with `pairs` sees `__site`. Rejected: a Rust map keyed by table
+pointer, which a collected table's reused address would mislabel; recording sites only under
+`mantle check`, which would leave the live error log and `mantle.rescue` without them.

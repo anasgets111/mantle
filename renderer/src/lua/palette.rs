@@ -109,7 +109,7 @@ impl PaletteRegistry {
         for (id, swatches) in results {
             let Some(cb) = self.0.borrow_mut().pending.remove(&id) else { continue };
             if let Err(err) = cb.call::<()>(swatches) {
-                warn!("palette.quantize(id={id}): callback raised an error: {err}");
+                warn!("palette.quantize(id={id}): callback raised an error: {}", crate::lua::describe(&err));
             }
         }
     }

@@ -8,6 +8,7 @@ pub mod fonts;
 pub mod fuzzy;
 pub mod idle;
 pub mod json;
+pub(crate) mod location;
 pub mod log;
 pub(crate) mod luacats;
 pub mod marshal;
@@ -21,6 +22,7 @@ pub mod store;
 pub mod surfaces;
 pub mod timer;
 
+pub(crate) use location::describe;
 pub use nodes::VirtualNode;
 use std::cell::RefCell;
 
@@ -148,12 +150,15 @@ pub struct Loader {
     /// [`Loader::forget_config_modules`] to subtract. Capturing tracks [`config_stdlib`] changes;
     /// hardcoding could evict a newly added standard module.
     standard_modules: std::collections::HashSet<String>,
+    /// What [`location::chunk_name`] names `shell.lua` relative to.
+    config_dir: std::path::PathBuf,
 }
 
 #[derive(Debug, thiserror::Error)]
 pub enum LoaderError {
-    /// `shell.lua` failed to parse or raised during evaluation.
-    #[error("shell.lua failed to evaluate: {0}")]
+    /// `shell.lua` failed to parse or raised during evaluation. Lua's message starts with the file
+    /// and line, so the variant adds nothing in front of it.
+    #[error("{}", describe(.0))]
     Eval(#[from] mlua::Error),
     /// Clean evaluation returned neither a root-role surface nor an array. Empty array and no
     /// return are valid: a config may declare no surfaces (ADR-0070 decision 7).
@@ -166,16 +171,6 @@ pub enum LoaderError {
     /// distinct from [`Self::InvalidTopLevelReturn`].
     #[error("shell.lua's surface topology is invalid: {0}")]
     InvalidTopology(String),
-}
-
-impl From<nodes::DeserializeError> for LoaderError {
-    fn from(err: nodes::DeserializeError) -> Self {
-        match err {
-            // Only a top-level node converts this way, and it never reaches `require_surface`.
-            nodes::DeserializeError::UnsupportedKind(kind) => not_a_surface(&kind),
-            other => LoaderError::InvalidTopLevelReturn(other.to_string()),
-        }
-    }
 }
 
 /// One `Loader::evaluate` result: top-level `panel` nodes with topology
@@ -194,6 +189,7 @@ impl Loader {
         let lua = Lua::new_with(config_stdlib(), mlua::LuaOptions::default())?;
         restrict_os(&lua)?;
         point_package_path_at(&lua, config_dir)?;
+        location::name_required_chunks_relatively(&lua, config_dir)?;
         nodes::register_node_constructors(&lua)?;
         action::register(&lua)?;
         json::register(&lua)?;
@@ -205,7 +201,7 @@ impl Loader {
         session_process::register(&lua)?;
         timer::register(&lua)?;
         let standard_modules = loaded_module_names(&lua)?;
-        Ok(Loader { lua, standard_modules, idle: RefCell::new(None) })
+        Ok(Loader { lua, standard_modules, idle: RefCell::new(None), config_dir: config_dir.to_path_buf() })
     }
 
     /// Test-only evaluation under the generic `shell.lua` chunk name; production has a real path.
@@ -217,7 +213,7 @@ impl Loader {
     /// Reads and evaluates the real `shell.lua` path.
     pub fn evaluate_file(&self, path: &std::path::Path) -> Result<LoadOutput, LoaderError> {
         let source = std::fs::read_to_string(path)?;
-        self.evaluate_named(&source, &path.display().to_string())
+        self.evaluate_named(&source, &location::chunk_name(&self.config_dir, path))
     }
 
     /// Names the chunk in config errors; without it mlua names this Rust call site. Leading `@`
@@ -323,9 +319,7 @@ fn collect_surfaces(value: Value) -> Result<Vec<VirtualNode>, LoaderError> {
     };
 
     if table.contains_key("kind")? {
-        let node = nodes::deserialize_lua_table(&table)?;
-        require_surface(&node)?;
-        return Ok(vec![node]);
+        return Ok(vec![surface(&table)?]);
     }
 
     // Type-check each element as `Value`, so the error names the element and what it was; a hole
@@ -351,9 +345,7 @@ fn collect_surfaces(value: Value) -> Result<Vec<VirtualNode>, LoaderError> {
                 )));
             }
         };
-        let node = nodes::deserialize_lua_table(&entry)?;
-        require_surface(&node)?;
-        surfaces.push(node);
+        surfaces.push(surface(&entry)?);
     }
     // `return {}` declares no surfaces, not a mistake (ADR-0070 decision 7).
     Ok(surfaces)
@@ -365,9 +357,13 @@ fn collect_surfaces(value: Value) -> Result<Vec<VirtualNode>, LoaderError> {
 /// until `visible` is true) and `popup`. `lock` owns no `ext_session_lock_surface_v1` until the
 /// compositor sends `locked`; rejecting it would leave the authored lock-screen `child` nowhere
 /// legal to write.
-fn require_surface(node: &VirtualNode) -> Result<(), LoaderError> {
+fn surface(table: &Table) -> Result<VirtualNode, LoaderError> {
+    let node = nodes::deserialize_lua_table(table).map_err(|err| match err {
+        nodes::DeserializeError::UnsupportedKind(kind) => not_a_surface(&kind),
+        other => LoaderError::InvalidTopLevelReturn(nodes::at_site(table, other.to_string())),
+    })?;
     match node.kind {
-        "panel" | "window" | "popup" | "lock" => Ok(()),
+        "panel" | "window" | "popup" | "lock" => Ok(node),
         other => Err(not_a_surface(other)),
     }
 }
@@ -416,6 +412,31 @@ pub(crate) mod tests {
 
         let label: String = loader.lua().load(r#"return require("widgets").label"#).eval().unwrap();
         assert_eq!(label, "index");
+    }
+
+    /// Lua's `LUA_IDSIZE` is 60 bytes, so an absolute chunk name cut every location to
+    /// `...2b41-2949-.../shell.lua:1`.
+    #[test]
+    fn an_error_in_a_required_module_names_it_relative_to_the_config_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("widgets")).unwrap();
+        std::fs::write(
+            dir.path().join("widgets/bar.lua"),
+            "local M = {}\nfunction M.build() return nil + 1 end\nreturn M\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("shell.lua"),
+            "local bar = require(\"widgets.bar\")\nlocal built = bar.build()\nreturn built\n",
+        )
+        .unwrap();
+        let loader = Loader::new(signal::DirtyFlag::new(), dir.path()).unwrap();
+
+        let message = loader.evaluate_file(&dir.path().join("shell.lua")).unwrap_err().to_string();
+
+        assert!(message.starts_with("widgets/bar.lua:2: attempt to perform arithmetic"), "{message}");
+        assert!(message.contains("\n\tshell.lua:2: in main chunk"), "{message}");
+        assert!(!message.contains(&dir.path().display().to_string()), "{message}");
     }
 
     #[test]
@@ -1062,16 +1083,12 @@ return { panel { id = "a", layer = "Top" }, missing, panel { id = "c", layer = "
         let path = dir.path().join("shell.lua");
         std::fs::write(&path, "return panel { id = \"bar\" }\nthis is not lua\n").unwrap();
 
-        let loader = test_loader();
+        let loader = Loader::new(signal::DirtyFlag::new(), dir.path()).unwrap();
         let message = loader.evaluate_file(&path).unwrap_err().to_string();
 
-        assert!(message.contains(&path.display().to_string()), "expected the config path in: {message}");
-        assert!(!message.contains("lua/mod.rs"), "expected no engine source path in: {message}");
-        // Not `[string "/long/path/to/shell..."]`: Lua truncates non-`@` chunk names before the
-        // filename.
-        assert!(!message.contains("[string"), "expected a file-named chunk in: {message}");
-        // Include the line to fix, not just the file.
-        assert!(message.contains(":2:"), "expected the offending line number in: {message}");
+        // The file and line to fix, relative to the config directory. Not
+        // `renderer/src/lua/mod.rs:74:127`, and not `[string "..."]`, which Lua truncates.
+        assert_eq!(message, "syntax error: shell.lua:2: <eof> expected near 'this'");
     }
 
     #[test]
