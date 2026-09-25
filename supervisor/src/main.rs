@@ -108,9 +108,6 @@ fn main() -> Result<(), Box<dyn Error>> {
     if std::env::var_os("MANTLE_PAM_WORKER").is_some() {
         return pam_worker::run_worker();
     }
-    if std::env::var_os("MANTLE_PACMAN_CHECK").is_some() {
-        return capabilities::updates::pacman::run_check_worker();
-    }
 
     let args = match cli::parse(std::env::args()) {
         Ok(args) => args,

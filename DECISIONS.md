@@ -6793,3 +6793,32 @@ so readers that kept their memo lag until the wake writes the cell, within the s
 A computed reading `os.time` or an upvalue still changes with no cause.
 
 **Amends ADR-0153 and ADR-0270** (the pull-based wake and its scene-wide dirty).
+
+## 0276. The pacman check runs pacman's own tools, not libalpm
+
+Linking libalpm tied the binary to `libalpm.so.16`: it could not start on Fedora or Debian, and a
+pacman soname bump would break it on Arch. The check now spawns tools pacman ships or depends on.
+
+| Step | Command |
+| :--- | :--- |
+| Repos and mirrors | `pacman-conf --repo-list`, `pacman-conf --repo <r> Server` |
+| Sync | `curl --time-cond <db> --remote-time` per repo, mirrors in order, into `$XDG_RUNTIME_DIR/mantle/pacman/sync` |
+| Outdated | `pacman --dbpath <that root> -Qu` |
+| Sizes, repository | `-Sddp --print-format '%n %s'` (download, `0` once cached), `-Si` (repository, installed size) |
+| AUR | `-Qm` for the foreign packages, `vercmp` per changed version |
+
+1. **`curl` syncs, not `pacman -Sy`.** `-Sy` refuses a non-root user even with `--dbpath`;
+   `checkupdates` gets past that with `fakeroot`, a dependency outside `base`. `curl` is one pacman
+   already requires. Reads (`-Q`, `-Sp`, `-Si`) run as the user.
+2. **The re-exec check worker and its `malloc_trim` rationale (ADR-0127) go.** libalpm's ~55 MiB
+   parse heap now lives in the `pacman` children and leaves with them; the Supervisor holds
+   strings. No libalpm lock is taken, so the killed-sync lock cleanup goes too.
+3. **Every call runs under `LC_ALL=C` with `--color never`**; the parsers are pure.
+4. **`IgnorePkg` entries drop out**, since `-Syu` will not take them; libalpm's diff listed them.
+
+Costs: text parsing of pacman's output; `installed_size` comes from `-Si`'s two-decimal KiB or MiB,
+up to ~5 KiB off; no `.db.sig` is fetched, so a `DatabaseRequired` repo fails the check.
+
+The `Backend` trait is unchanged, so a dnf or apt backend is a sibling module.
+
+**Supersedes ADR-0034.4** (the `alpm` crate) **and ADR-0127's trim** (libalpm's parse heap).

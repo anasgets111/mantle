@@ -19,7 +19,7 @@ mantle log -f         # follow its output
 | `capture` node | `ext-image-copy-capture-v1`, else `wlr-screencopy-v1` |
 | `blur = true` | `ext-background-effect-v1`; ignored when absent |
 | Fonts | fontconfig (`fc-match`) |
-| Build | Rust 1.89+, libalpm, PipeWire, PAM, udev, EGL, GBM, xkbcommon, libwayland-client, libwayland-egl. Lua 5.4 is vendored |
+| Build | Rust 1.89+, PipeWire, PAM, udev, EGL, GBM, xkbcommon, libwayland-client, libwayland-egl. Lua 5.4 is vendored |
 | Editor completion | lua-language-server |
 
 A [capability](../capabilities/index.md) starts on the config's first `mantle.<name>` read and
@@ -42,7 +42,7 @@ needs its backend only from then. What each one does without it is in its page's
 | [`lock`](../capabilities/lock.md#backend) | `ext-session-lock-v1`, logind, the `mantle` PAM stack ([below](#install)) |
 | [`polkit`](../capabilities/polkit.md#backend) | polkitd with its helper socket `/run/polkit/agent-helper.socket`, `$XDG_SESSION_ID`, no other polkit agent running |
 | [`sysinfo`](../capabilities/sysinfo.md#backend) | hwmon `k10temp`, `coretemp` or `acpitz` for CPU temperature; `amdgpu`, `nouveau` or `nvidia` for GPU |
-| [`updates`](../capabilities/updates.md#backend) | `pacman`; `pkexec`, answered by the `polkit` agent; `curl` and paru or yay for AUR |
+| [`updates`](../capabilities/updates.md#backend) | `pacman` and the `curl` it depends on; `pkexec`, answered by the `polkit` agent; paru or yay for AUR |
 | [`applications`](../capabilities/applications.md#backend) | `$TERMINAL` for `Terminal=true` entries, `xdg-open` for `open_url` |
 
 `system`, `files`, `storage` and `processes` need nothing beyond the paths and programs the config

@@ -32,6 +32,10 @@ so everything since the rename from Obelisk sits under Unreleased.
 
 ### Changed
 
+- `mantle.updates` checks through `pacman`, `pacman-conf`, `curl` and `vercmp` instead of
+  linking libalpm, so building no longer needs libalpm and the binary starts off Arch. `packages`
+  leaves out `IgnorePkg` entries, and `installed_size` rounds to the two decimals pacman prints
+  ([updates](capabilities/updates.md#backend)).
 - A `geometry` rect an animation moved schedules one pass when the animation settles, so a
   property bound to it catches up instead of waiting for an unrelated write.
 - A `state:set` of the value the state already holds re-resolves nothing, and a `:map` or

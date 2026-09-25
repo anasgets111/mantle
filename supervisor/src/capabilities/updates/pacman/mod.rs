@@ -1,10 +1,9 @@
 //! Arch's `pacman`, as an `mantle.updates` backend (ADR-0034, ADR-0134). The one implementation
 //! of [`super::backend::Backend`] this Supervisor ships. Everything under here knows about
-//! `libalpm`, `/etc/pacman.conf` and `pacman`'s own stdout; nothing above the trait does.
+//! `/etc/pacman.conf`, `pacman`'s own stdout and the AUR; nothing above the trait does.
 
 pub mod aur;
 pub mod check;
-pub mod conf;
 pub mod install;
 
 use std::path::{Path, PathBuf};
@@ -44,7 +43,11 @@ impl Backend for PacmanBackend {
     }
 
     fn check(&self) -> Result<CheckReport, String> {
-        let mut report = check_in_a_child(&self.conf_path, &self.db_root, self.active_helper().is_some())?;
+        // Per login like `checkupdates`' `/tmp/checkup-db-$UID`, but in the 0700 runtime dir.
+        let sync_root =
+            shared::runtime_root().map_err(|err| format!("no directory to sync into: {err}"))?.join("pacman");
+        let mut report =
+            check_against_the_sync_root(&self.conf_path, &self.db_root, &sync_root, self.active_helper().is_some())?;
         report.aur_error = report.aur_error.or_else(|| self.missing_helper());
         Ok(report)
     }
@@ -80,67 +83,6 @@ impl Backend for PacmanBackend {
     }
 }
 
-/// Env names carrying the check into a re-exec of this binary.
-const CHECK_WORKER: &str = "MANTLE_PACMAN_CHECK";
-const CHECK_CONF: &str = "MANTLE_PACMAN_CONF";
-const CHECK_DB_ROOT: &str = "MANTLE_PACMAN_DB_ROOT";
-const CHECK_SYNC_ROOT: &str = "MANTLE_PACMAN_SYNC_ROOT";
-const CHECK_AUR: &str = "MANTLE_PACMAN_AUR";
-
-/// Runs the check in a child that then exits, because process exit is the only thing that returns
-/// the memory. One sync costs ~55 MiB of glibc arena and `malloc_trim` gives back none of it: the
-/// bytes are freed, but libalpm leaves at least one live chunk on every arena page, so nothing can
-/// be unmapped. In-process the *first* check raised the Supervisor's floor for the rest of the
-/// session.
-///
-/// `Backend::check` already runs inside `spawn_blocking`, so this waits on the child rather than
-/// reaching for `tokio::process`.
-fn check_in_a_child(conf_path: &Path, db_root: &Path, aur: bool) -> Result<CheckReport, String> {
-    // Per login like `checkupdates`' `/tmp/checkup-db-$UID`, but in the 0700 runtime dir.
-    let sync_root = shared::runtime_root().map_err(|err| format!("no directory to sync into: {err}"))?.join("pacman");
-    let mut command = std::process::Command::new(crate::pam_worker::SELF_EXE);
-    command
-        .env(CHECK_WORKER, "1")
-        .env(CHECK_CONF, conf_path)
-        .env(CHECK_DB_ROOT, db_root)
-        .env(CHECK_SYNC_ROOT, &sync_root);
-    if aur {
-        command.env(CHECK_AUR, "1");
-    }
-    let output = command.output().map_err(|err| format!("failed to spawn the update check: {err}"))?;
-
-    if !output.status.success() {
-        // A killed sync leaves libalpm's lock behind, and it would refuse every later check.
-        if std::os::unix::process::ExitStatusExt::signal(&output.status).is_some() {
-            let _ = std::fs::remove_file(sync_root.join("db.lck"));
-        }
-        // The worker prints its own diagnosis; without one, name the status so a crash is not a
-        // silent "no updates".
-        let detail = String::from_utf8_lossy(&output.stderr);
-        let detail = detail.trim();
-        return Err(if detail.is_empty() {
-            format!("the update check exited with {}", output.status)
-        } else {
-            detail.to_string()
-        });
-    }
-
-    serde_json::from_slice::<Result<CheckReport, String>>(&output.stdout)
-        .map_err(|err| format!("the update check returned no readable result: {err}"))?
-}
-
-/// Child branch of [`check_in_a_child`], entered from `main` before anything else starts. Writes
-/// one JSON `Result` and returns; the exit that follows is what reclaims the arena.
-pub(crate) fn run_check_worker() -> Result<(), Box<dyn std::error::Error>> {
-    let conf_path = PathBuf::from(std::env::var_os(CHECK_CONF).ok_or("missing the pacman conf path")?);
-    let db_root = PathBuf::from(std::env::var_os(CHECK_DB_ROOT).ok_or("missing the pacman db root")?);
-    let sync_root = PathBuf::from(std::env::var_os(CHECK_SYNC_ROOT).ok_or("missing the pacman sync root")?);
-
-    let result = check_against_the_sync_root(&conf_path, &db_root, &sync_root, std::env::var_os(CHECK_AUR).is_some());
-    serde_json::to_writer(std::io::stdout().lock(), &result)?;
-    Ok(())
-}
-
 /// Syncs and checks in `sync_root`, which holds one symlink to `db_root/local`, never in the real db
 /// (ADR-0034, amended ADR-0113). Only `sync_root/sync/` is written, and it persists between checks
 /// so an unchanged mirror db is not downloaded again.
@@ -160,24 +102,26 @@ fn check_against_the_sync_root(
     std::fs::create_dir_all(sync_root).map_err(|err| format!("failed to create {}: {err}", sync_root.display()))?;
     link_local_db(db_root, sync_root)?;
 
-    let repos = conf::resolve_repo_servers(conf_path);
-    if repos.is_empty() {
-        return Err(format!("no repos resolved from {}", conf_path.display()));
-    }
-
-    let (mut packages, foreign) =
-        check::check_for_updates(Path::new("/"), sync_root, &repos).map_err(|err| err.to_string())?;
-    let aur_error = if aur { aur::check(&foreign).map(|found| packages.extend(found)).err() } else { None };
+    check::sync(conf_path, sync_root)?;
+    let mut packages = check::outdated(conf_path, sync_root)?;
+    let aur_error = if aur {
+        check::foreign(conf_path, sync_root)
+            .and_then(|foreign| aur::check(&foreign))
+            .map(|found| packages.extend(found))
+            .err()
+    } else {
+        None
+    };
     Ok(CheckReport { packages, aur_error })
 }
 
-/// Links `db_root/local` in as `sync_root/local`, the one name `alpm` looks for when it reads
+/// Links `db_root/local` in as `sync_root/local`, the one name pacman looks for when it reads
 /// installed packages out of a db root. Split out from [`check_against_the_sync_root`] only so the
 /// name and the read-through are testable without a mirror: everything else that function does
 /// needs the network.
 fn link_local_db(db_root: &Path, sync_root: &Path) -> Result<(), String> {
     let local_src = db_root.join("local");
-    // Refuse a missing source: `symlink` permits a dangling `local/`, which `alpm` reads as no
+    // Refuse a missing source: `symlink` permits a dangling `local/`, which pacman reads as no
     // installed packages and therefore every mirror package being an update.
     if !local_src.is_dir() {
         return Err(format!("{} is not a directory; cannot check updates against it", local_src.display()));
@@ -228,7 +172,7 @@ mod tests {
 
     #[test]
     fn the_sync_root_reads_installed_packages_through_a_link_named_local() {
-        // `alpm` looks specifically for `local/`; another link name makes every package look new.
+        // pacman looks specifically for `local/`; another link name makes every package look new.
         let real = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(real.path().join("local").join("bash-5.3-1")).unwrap();
         std::fs::write(real.path().join("local").join("bash-5.3-1").join("desc"), "%NAME%\nbash\n").unwrap();

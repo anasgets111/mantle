@@ -215,9 +215,7 @@ impl UpdatesController {
 }
 
 /// Runs until every `UpdatesController` (and its `Clone`s) drops. Spawned only with a backend. Each
-/// check uses
-/// `tokio::task::spawn_blocking`: `Backend::check` performs blocking network I/O and pacman's
-/// `alpm` types are not `Send`.
+/// check uses `tokio::task::spawn_blocking`: `Backend::check` waits on blocking subprocesses.
 async fn run_check_task(
     backend: Arc<dyn Backend>,
     mut interval_rx: watch::Receiver<Duration>,

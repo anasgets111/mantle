@@ -327,7 +327,7 @@ impl<T> Drop for ReportOnDrop<T> {
 ///
 /// Not `renderer_binary_path()`'s problem: that one calls `with_file_name`, which drops the whole
 /// " (deleted)" filename and rebuilds a real sibling path.
-pub(crate) const SELF_EXE: &str = "/proc/self/exe";
+const SELF_EXE: &str = "/proc/self/exe";
 
 /// Re-execs this binary as a PAM worker for `username`, then calls [`exchange_over`].
 async fn spawn_worker_and_exchange(username: &str, secret: &[u8]) -> std::io::Result<shared::PamOutcome> {

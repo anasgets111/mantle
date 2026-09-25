@@ -88,7 +88,7 @@ Call each as `mantle.updates:<action>(arguments...)`; `?` marks an argument you 
 | Part | Behaviour |
 | :--- | :--- |
 | Detection | `pacman` on `PATH` at start, and `paru`, else `yay`, as `aur_helper`. Without `pacman`, `package_manager` is `nil` and every action is ignored |
-| Check | A child process syncs the repo databases into `$XDG_RUNTIME_DIR/mantle/pacman`, against `/var/lib/pacman/local`; the system's own databases stay untouched. With `aur = true`, one `curl` POST to the AUR RPC (30 s timeout) covers the foreign packages |
+| Check | `curl` fetches each repo database `pacman-conf` lists into `$XDG_RUNTIME_DIR/mantle/pacman`, skipping one the mirror reports unchanged; the system's own databases stay untouched. `pacman -Qu`, `-Sp` and `-Si` then read it against `/var/lib/pacman/local`. Packages in `IgnorePkg` are left out. With `aur = true`, `pacman -Qm` names the foreign packages, one `curl` POST to the AUR RPC (30 s timeout) covers them, and `vercmp` orders the versions |
 | Install | `pkexec pacman -Syu --noconfirm`, or `<aur_helper> -Syu --noconfirm --sudo pkexec` with `aur` on. `pkexec` asks the session's polkit agent. The [polkit rule](../guide/installation.md#install) makes that one approval per run for `wheel` users |
 | Progress | Parsed from pacman's `(2/5) upgrading name` lines. The download phase prints nothing, since pacman draws no progress without a tty |
 | Reboot | An inotify watch on `/run` mirrors `/run/mantle-reboot-required` into `reboot_required` |

@@ -25,7 +25,7 @@ pub struct UpdateCandidate {
 }
 
 /// One successful check. `aur_error` means the AUR half failed; `packages` still holds the repos'.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CheckReport {
     pub packages: Vec<UpdateCandidate>,
     pub aur_error: Option<String>,
@@ -47,8 +47,7 @@ pub struct InstallCommand {
 }
 
 /// Package-manager backend. `Send + Sync + 'static` is required because the controller shares it
-/// with a spawned task; `alpm` handles remain local to one [`Backend::check`] call because they are
-/// not `Send`.
+/// with a spawned task.
 pub trait Backend: Send + Sync + 'static {
     /// Manager name in `UpdatesState::package_manager`, e.g. lowercase command name `"pacman"`.
     fn name(&self) -> &'static str;
