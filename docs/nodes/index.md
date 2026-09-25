@@ -306,7 +306,7 @@ return body
 | `duplicate id` error | Sibling ids, and `list` keys, must be unique |
 | A signal inside a table property (`padding = { top = sig }`) raises an error | Map the whole table: `padding = sig:map(function(v) return { top = v } end)` |
 | `on_click = cond and fn` raises `expected a function` | A false `cond` yields `false`: write `cond and fn or nil` |
-| `children = { a, cond and b, c }` raises `expected a node table at index 2` | A false or nil entry is a hole. Build the array with `table.insert`, or a signal of the whole array |
+| `children = { a, cond and b, c }` raises `children[1]: expected a node table`, counting from 0 like the rest of the path | A false or nil entry is a hole. Build the array with `table.insert`, or a signal of the whole array |
 | `opacity = 0` hides a node but it still takes clicks | Use `visible = false` |
 
 See also: [surfaces](../surfaces/index.md) (where a tree lives), [signals](../guide/signals.md)

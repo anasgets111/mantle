@@ -63,7 +63,8 @@ so everything since the rename from Obelisk sits under Unreleased.
   when the stubs `mantle init` wrote are out of date.
 - A pass that fails names every broken node, one per line, in `mantle check`, the log and
   `mantle.rescue`, instead of stopping at the first. It lists 20, then counts the rest
-  ([what check covers](guide/cli.md#what-check-covers)).
+  ([what check covers](guide/cli.md#what-check-covers)). A `children` entry that is not a node
+  reads `children[1]: expected a node table`, counted from 0 like the rest of the path.
 - `mantle check` lays out a second time after one sample push per capability, every list one entry
   long, so an error in a list `itemfn` or a data-only branch fails the check; each error names its
   pass ([what check covers](guide/cli.md#what-check-covers)).

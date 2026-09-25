@@ -149,17 +149,18 @@ impl Prop for Children {
         // By index to `#children`, not `sequence_values`: that stopped at the first nil, silently
         // dropping every child after it.
         for index in 1..=table.raw_len() {
-            if children.len() == MAX_ARRAY_ELEMENTS {
+            if index > MAX_ARRAY_ELEMENTS {
                 return Err(invalid("children", format!("more than {MAX_ARRAY_ELEMENTS} children in one node")));
             }
             let entry: Value = table.raw_get(index).map_err(|e| invalid("children", e.to_string()))?;
-            let Value::Table(entry) = entry else {
-                return Err(invalid(
+            let child = match entry {
+                Value::Table(entry) => deserialize_child(&entry, "children", Some(index - 1)),
+                other => Err(invalid(
                     "children",
-                    format!("expected a node table at index {index}, got {}", preview_for_error(&entry)),
-                ));
+                    format!("children[{}]: expected a node table, got {}", index - 1, preview_for_error(&other)),
+                )),
             };
-            match deserialize_child(&entry, "children", Some(index - 1)) {
+            match child {
                 Ok(child) => children.push(child),
                 Err(err) => failed.push(err),
             }
@@ -628,6 +629,13 @@ mod tests {
 
         let err = fields::stack::children.read(&properties).expect_err("past the cap this must be refused");
         assert!(format!("{err:?}").contains("more than"), "the error has to say what to fix: {err:?}");
+
+        // Children that fail count toward the cap too, rather than piling up one error each.
+        let broken: mlua::Table =
+            lua.load("local kids = {} for i = 1, 10001 do kids[i] = rect { colr = 1 } end return kids").eval().unwrap();
+        properties.insert("children", Value::Table(broken));
+        let err = fields::stack::children.read(&properties).expect_err("past the cap this must be refused");
+        assert!(format!("{err:?}").contains("more than"), "{err:?}");
     }
 
     /// The cap must not be in the way of anything a real config builds.
@@ -680,8 +688,16 @@ mod tests {
             .unwrap();
         let err = fields::stack::children.read(&props_from_table(&table)).unwrap_err();
         assert!(
-            matches!(&err, LayoutError::InvalidProperty { property, detail } if property == "children" && detail == "expected a node table at index 2, got Nil"),
+            matches!(&err, LayoutError::InvalidProperty { property, detail } if property == "children" && detail == "children[1]: expected a node table, got Nil"),
             "{err}"
         );
+
+        // The hole does not hide a sibling's mistake.
+        let table: mlua::Table = lua
+            .load(r#"return { kind = "row", children = { { kind = "rect", colr = 1 }, nil, { kind = "rect" } } }"#)
+            .eval()
+            .unwrap();
+        let err = fields::stack::children.read(&props_from_table(&table)).unwrap_err().to_string();
+        assert!(err.starts_with("2 nodes failed:"), "{err}");
     }
 }
