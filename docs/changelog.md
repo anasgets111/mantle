@@ -53,6 +53,10 @@ so everything since the rename from Obelisk sits under Unreleased.
   name raises, listing the actions the capability has, as does any action on a capability with
   none; a `.` call in place of `:` raises instead of sending a wrong argument
   ([actions](capabilities/index.md#actions)).
+- A state field read off a capability raises `did you mean mantle.audio:get().volume?`, and a
+  misspelled action names the one it is close to.
+- A misspelled node or surface property raises "did you mean `content`?" instead of listing every
+  property the kind takes; the list stays for a key close to none.
 - `mantle set` and `mantle toggle` wait for the shell and exit 1 with its reason when it refuses
   the write ([CLI](guide/cli.md#values-and-arguments)).
 - `mantle check` lays the config out on stand-in outputs and fails on a layout error, and says

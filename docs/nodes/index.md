@@ -44,8 +44,8 @@ the exact centre whatever its width. The right row packs its children at its end
 ## Kinds
 
 Every kind accepts the [common properties](#common-properties). Box kinds also accept the
-[box properties](#box-properties). Any other key raises an error listing what the kind accepts, so
-a typo such as `aling_v` fails.
+[box properties](#box-properties). Any other key raises an error: a typo such as `aling_v` asks
+"did you mean `align_v`?", and a key close to nothing lists what the kind accepts.
 
 | Kind | Page | Box | Children | Own properties |
 | :--- | :--- | :---: | :--- | :--- |

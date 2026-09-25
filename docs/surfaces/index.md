@@ -44,7 +44,7 @@ return { bar }
 Every surface takes `id` (required) and one `child` node. The root is itself a box node, so it
 also takes the [common and box node properties](../nodes/index.md): its own `background`, `radius`,
 `padding`, `border_*`, [paint](../guide/paint.md) and [`animate`](../guide/animation.md). Any other
-key is refused, and the error lists the accepted ones.
+key is refused, and the error names the closest accepted one or, with none close, lists them all.
 
 | Property | Values | Default | Behaviour |
 | :--- | :--- | :--- | :--- |

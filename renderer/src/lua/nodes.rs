@@ -7,6 +7,7 @@
 
 use mlua::{Lua, Table, Value};
 
+use super::fuzzy::closest;
 use crate::layout::node::PropMap;
 
 pub(crate) mod properties;
@@ -65,8 +66,8 @@ pub enum DeserializeError {
     KindNotAString,
     /// A key no parser for this `kind` reads; rejected instead of copied through
     /// (`properties::properties`).
-    #[error("`{kind}` has no property `{property}`; it accepts {accepted}")]
-    UnknownProperty { kind: String, property: String, accepted: String },
+    #[error("`{kind}` has no property `{property}`; {hint}")]
+    UnknownProperty { kind: String, property: String, hint: String },
     /// A kind with no `properties::KINDS` row, and so no vocabulary to key a map by (ADR-0219).
     #[error("`{0}` is not a node kind")]
     UnsupportedKind(String),
@@ -112,15 +113,17 @@ pub fn deserialize_lua_table(table: &Table) -> Result<VirtualNode, DeserializeEr
             _ => None,
         };
         let Some(name) = name else {
-            return Err(DeserializeError::UnknownProperty {
-                kind: kind.to_string(),
-                // Lossy: `Value::to_string` refuses the key this arm exists to name.
-                property: match &key {
-                    Value::String(s) => s.to_string_lossy(),
-                    other => other.to_string()?,
-                },
-                accepted: accepted_properties(kind).join(", "),
-            });
+            // Lossy: `Value::to_string` refuses the key this arm exists to name.
+            let property = match &key {
+                Value::String(s) => s.to_string_lossy(),
+                other => other.to_string()?,
+            };
+            let accepted = accepted_properties(kind);
+            let hint = match closest(&property, accepted.iter().copied()) {
+                Some(near) => format!("did you mean `{near}`?"),
+                None => format!("it accepts {}", accepted.join(", ")),
+            };
+            return Err(DeserializeError::UnknownProperty { kind: kind.to_string(), property, hint });
         };
         properties.insert(name, value);
     }
@@ -145,17 +148,6 @@ mod tests {
             lua.load(r##"return rect { background = "#11111B", width = "Fill", height = 32 }"##).eval().unwrap();
         assert_eq!(table.get::<String>("kind").unwrap(), "rect");
         assert_eq!(table.get::<String>("background").unwrap(), "#11111B");
-    }
-
-    #[test]
-    fn a_misspelled_property_is_refused_and_the_message_names_what_the_kind_takes() {
-        let lua = lua_with_constructors();
-        let table: mlua::Table = lua.load(r#"return row { aling_v = "Center" }"#).eval().unwrap();
-
-        let err = deserialize_lua_table(&table).unwrap_err().to_string();
-
-        assert!(err.contains("aling_v"), "the message must name the key that was refused: {err}");
-        assert!(err.contains("align_v"), "and the ones it accepts, so the typo is visible: {err}");
     }
 
     /// Per-kind check: `layer` is root-role topology, not a `rect` property.
@@ -247,11 +239,26 @@ mod tests {
 
         let err = deserialize_lua_table(&table).unwrap_err();
 
-        let DeserializeError::UnknownProperty { property, accepted, .. } = err else {
+        let DeserializeError::UnknownProperty { property, hint, .. } = err else {
             panic!("a key that is not UTF-8 is an unknown property, got: {err}")
         };
         assert!(property.contains('\u{fffd}'), "the key must be named lossily, got `{property}`");
-        assert!(accepted.contains("width"), "the accepted list must survive: {accepted}");
+        assert_eq!(hint, "did you mean `width`?");
+    }
+
+    /// A near miss names the one property; the full list only helps when nothing is close.
+    #[test]
+    fn an_unknown_property_names_the_close_match_or_else_every_accepted_name() {
+        let lua = lua_with_constructors();
+        let unknown = |source: &str| deserialize_lua_table(&lua.load(source).eval().unwrap()).unwrap_err().to_string();
+
+        assert_eq!(
+            unknown(r#"return text { contnet = "x" }"#),
+            "`text` has no property `contnet`; did you mean `content`?"
+        );
+        let far = unknown(r#"return text { zzz = 1 }"#);
+        assert!(far.starts_with("`text` has no property `zzz`; it accepts "), "{far}");
+        assert!(far.contains("content"), "{far}");
     }
 
     #[test]

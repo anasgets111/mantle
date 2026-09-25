@@ -63,8 +63,10 @@ Supervisor checks types and count.
 
 | Mistake | Result |
 | :--- | :--- |
-| Unknown action name, or a state field read off the capability (`mantle.audio.volume`) | Raises at the read, listing the actions the capability takes |
-| Any method but `get`, `map` and `on_change` on `battery`, `privacy` or `system` | Raises: they have no actions |
+| A state field read off the capability (`mantle.audio.volume`) | Raises at the read: `did you mean mantle.audio:get().volume?` |
+| A misspelled action (`mantle.audio:set_volum(1)`) | Raises at the read: `did you mean mantle.audio:set_volume(...)?` |
+| Any other unknown name | Raises at the read, listing the actions the capability takes |
+| Any other method but `get`, `map` and `on_change` on `battery`, `privacy` or `system` | Raises: they have no actions |
 | A function or userdata argument | Raises at the call, naming its slot |
 | Wrong type or argument count | Logged (`mantle log`) and dropped |
 | A float where an `integer` goes | Dropped: `5.0` is refused, `5` works. `math.floor(x + 0.5)` returns an integer |

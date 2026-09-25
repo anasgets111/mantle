@@ -6,6 +6,9 @@
 //!
 //! The scorer only: iterate, sort, tiebreak and cap stay in the config. No backtrack
 //! pass, so no match positions; `start` is returned for a tiebreak.
+//!
+//! [`closest`] is the other fuzzy match: edit distance for the engine's own "did you mean", where a
+//! typo swaps letters that fzf's in-order match would reject.
 
 use mlua::Lua;
 
@@ -299,6 +302,53 @@ pub fn score(haystack: &str, needle: &str) -> Option<(i32, usize)> {
     fuzzy_match_unicode(case_sensitive, haystack, needle)
 }
 
+/// The candidate a mistyped `name` most likely meant, for a "did you mean" in a config error: the
+/// nearest within two edits ignoring case, else the one candidate `name` begins. Names of three
+/// characters or fewer get one edit, since two reach unrelated words (`top` to `gap`). Earlier
+/// candidates win ties.
+pub fn closest<'a>(name: &str, candidates: impl IntoIterator<Item = &'a str>) -> Option<&'a str> {
+    let name: Vec<char> = name.to_lowercase().chars().collect();
+    let limit = if name.len() <= 3 { 1 } else { 2 };
+    let candidates: Vec<(&str, Vec<char>)> =
+        candidates.into_iter().map(|candidate| (candidate, candidate.to_lowercase().chars().collect())).collect();
+    let nearest = candidates
+        .iter()
+        .map(|(candidate, folded)| (edit_distance(&name, folded), *candidate))
+        .filter(|&(distance, _)| distance <= limit)
+        .min_by_key(|&(distance, _)| distance);
+    if let Some((_, candidate)) = nearest {
+        return Some(candidate);
+    }
+    let mut extending = candidates.iter().filter(|(_, folded)| name.len() >= 3 && folded.starts_with(&name));
+    match (extending.next(), extending.next()) {
+        (Some((candidate, _)), None) => Some(candidate),
+        _ => None,
+    }
+}
+
+/// Optimal string alignment distance: Levenshtein plus one-edit adjacent transpositions, the
+/// commonest typo (`contnet`).
+fn edit_distance(a: &[char], b: &[char]) -> usize {
+    let mut table = vec![vec![0; b.len() + 1]; a.len() + 1];
+    for (i, row) in table.iter_mut().enumerate() {
+        row[0] = i;
+    }
+    for (j, cell) in table[0].iter_mut().enumerate() {
+        *cell = j;
+    }
+    for i in 1..=a.len() {
+        for j in 1..=b.len() {
+            let substitution = table[i - 1][j - 1] + usize::from(a[i - 1] != b[j - 1]);
+            let mut best = substitution.min(table[i - 1][j] + 1).min(table[i][j - 1] + 1);
+            if i > 1 && j > 1 && a[i - 1] == b[j - 2] && a[i - 2] == b[j - 1] {
+                best = best.min(table[i - 2][j - 2] + 1);
+            }
+            table[i][j] = best;
+        }
+    }
+    table[a.len()][b.len()]
+}
+
 /// A bare global rather than a capability: a capability is an async action answered by a payload,
 /// and this is read inside `computed`s, which must be pure and synchronous (ADR-0021).
 ///
@@ -334,6 +384,23 @@ pub fn register(lua: &Lua) -> mlua::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn closest_takes_a_near_miss_or_a_unique_start_and_nothing_else() {
+        let names = ["content", "font_size", "font_family", "gap", "width"];
+        for (typo, meant) in [
+            ("contnet", Some("content")), // transposition, one edit
+            ("Width", Some("width")),     // case only
+            ("fnot_size", Some("font_size")),
+            ("fonts", None), // two starts, and two edits from neither
+            ("font_fam", Some("font_family")),
+            ("top", None), // two edits from `gap`, past a short name's one
+            ("gao", Some("gap")),
+            ("colour", None),
+        ] {
+            assert_eq!(closest(typo, names), meant, "{typo}");
+        }
+    }
 
     fn scored(haystack: &str, needle: &str) -> i32 {
         score(haystack, needle).expect("expected a match").0

@@ -17,6 +17,7 @@ use mlua::{Function, Lua, LuaSerdeExt, MetaMethod, MultiValue, UserData, UserDat
 use shared::{CommandEnvelope, CommandParams, RendererFrame, error, warn};
 use tokio::sync::mpsc::UnboundedSender;
 
+use crate::lua::fuzzy::closest;
 use crate::lua::signal::{CpuBudget, DirtyFlag, LiveSignalHandle, Signal};
 
 /// Builds the generation-guarded envelope and queues it for the socket thread. One sender per
@@ -247,19 +248,20 @@ impl UserData for Capability {
         // `__index`; `every_roster_action_is_a_method_no_builtin_shadows` keeps names clear of them.
         // An unknown key raises rather than reading `nil`, so `mantle.audio.volume` names the fix.
         methods.add_meta_method(MetaMethod::Index, |lua, this, key: String| {
-            let actions = shared::Capability::from_name(&this.name).map_or(&[][..], shared::Capability::actions);
-            if actions.is_empty() {
-                return Err(mlua::Error::runtime(format!(
-                    "mantle.{0} has no `{key}`: it is read-only, with no actions; read it with mantle.{0}:get()",
-                    this.name
-                )));
-            }
+            let roster = shared::Capability::from_name(&this.name);
+            let actions = roster.map_or(&[][..], shared::Capability::actions);
             let Some(&action) = actions.iter().find(|action| **action == key) else {
-                return Err(mlua::Error::runtime(format!(
-                    "mantle.{} has no `{key}`: its actions are {}; :get() reads its state",
-                    this.name,
-                    actions.join(", ")
-                )));
+                let name = &this.name;
+                let fields = roster.map_or(&[][..], shared::Capability::state_fields);
+                let hint = match closest(&key, actions.iter().chain(fields).copied()) {
+                    Some(near) if actions.contains(&near) => format!("did you mean mantle.{name}:{near}(...)?"),
+                    Some(near) => format!("did you mean mantle.{name}:get().{near}?"),
+                    None if actions.is_empty() => {
+                        format!("it is read-only, with no actions; read it with mantle.{name}:get()")
+                    }
+                    None => format!("its actions are {}; :get() reads its state", actions.join(", ")),
+                };
+                return Err(mlua::Error::runtime(format!("mantle.{name} has no `{key}`: {hint}")));
             };
             let capability = this.clone();
             lua.create_function(move |lua, (receiver, args): (Value, MultiValue)| {
@@ -391,6 +393,8 @@ pub(crate) mod tests {
     fn an_unknown_or_read_only_action_is_a_config_error_and_queues_nothing() {
         let (lua, _handle, mut rx) = lua_with_capability(0);
         let err = lua.load(r#"mantle.probe:set_volumee(1)"#).exec().unwrap_err();
+        assert!(err.to_string().contains("did you mean mantle.audio:set_volume(...)?"), "{err}");
+        let err = lua.load(r#"mantle.probe:rename()"#).exec().unwrap_err();
         assert!(err.to_string().contains("its actions are set_volume,"), "{err}");
 
         let (tx, _rx) = mpsc::unbounded_channel();
@@ -399,6 +403,26 @@ pub(crate) mod tests {
         let err = lua.load(r#"mantle.battery:refresh()"#).exec().unwrap_err();
         assert!(err.to_string().contains("it is read-only"), "{err}");
         assert!(queued_command(&mut rx).is_none(), "a refused name must not reach the Supervisor");
+    }
+
+    /// Before the first snapshot too: the path comes from the roster, not from the pushed payload.
+    #[test]
+    fn reading_a_state_field_off_the_capability_names_its_get_path() {
+        let (lua, _handle, _rx) = lua_with_capability(0);
+
+        let err = lua.load("return mantle.probe.volume").exec().unwrap_err();
+        assert!(
+            err.to_string().contains("mantle.audio has no `volume`: did you mean mantle.audio:get().volume?"),
+            "{err}"
+        );
+        let err = lua.load("return mantle.probe.volme").exec().unwrap_err();
+        assert!(err.to_string().contains("did you mean mantle.audio:get().volume?"), "{err}");
+
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let (battery, _) = Capability::new("battery", DirtyFlag::new(), CommandSender::new(0, tx));
+        lua.globals().get::<mlua::Table>("mantle").unwrap().set("battery", battery).unwrap();
+        let err = lua.load("return mantle.battery.percent").exec().unwrap_err();
+        assert!(err.to_string().contains("did you mean mantle.battery:get().percent?"), "{err}");
     }
 
     #[test]

@@ -218,6 +218,101 @@ impl Capability {
     }
 }
 
+impl Capability {
+    /// The top-level fields of the state `:get()` returns, so reading one off the capability
+    /// names its `:get()` path. `supervisor/src/stubs.rs` pins each list to its `*State` struct.
+    pub const fn state_fields(self) -> &'static [&'static str] {
+        match self {
+            Capability::Applications => &["by_app_id", "entries"],
+            Capability::Audio => &[
+                "apps",
+                "balance",
+                "bluetooth",
+                "muted",
+                "sinks",
+                "source_muted",
+                "source_volume",
+                "sources",
+                "volume",
+            ],
+            Capability::Battery => &["percent", "present", "state", "time_to_empty", "time_to_full"],
+            Capability::Bluetooth => &[
+                "available",
+                "connected_devices",
+                "discoverable",
+                "discovered_devices",
+                "discovering",
+                "enabled",
+                "paired_devices",
+                "pairing_request",
+            ],
+            Capability::Brightness => &["percent"],
+            Capability::Files => &["folders"],
+            Capability::Idle => &["inhibited", "inhibitors"],
+            Capability::Keyboard => &[
+                "active_layout",
+                "active_layout_index",
+                "backlight_pct",
+                "caps_lock",
+                "layout_count",
+                "num_lock",
+                "scroll_lock",
+            ],
+            Capability::Lock => &["active", "attempts", "authenticating", "error", "unlocking"],
+            Capability::Mpris => &["players"],
+            Capability::Network => &[
+                "available_networks",
+                "connect_error",
+                "connected",
+                "connecting_ssid",
+                "ethernet_enabled",
+                "ethernet_ip",
+                "ethernet_present",
+                "ethernet_speed",
+                "networking_enabled",
+                "password_ssid",
+                "scanning",
+                "ssid",
+                "strength",
+                "wifi_enabled",
+                "wifi_ip",
+                "wifi_present",
+            ],
+            Capability::Notifications => &["dnd", "feed"],
+            Capability::Polkit => &["action_id", "active", "authenticating", "error", "icon_name", "message"],
+            Capability::Power => &["active_profile", "energy_rate", "on_battery", "profiles"],
+            Capability::Privacy => &["camera_users", "microphone_users", "screencast_users"],
+            Capability::Processes => &["sessions"],
+            Capability::Storage => &["files"],
+            Capability::Sysinfo => &["cpu_percent", "ram_percent", "swap_percent", "temp_cores", "temp_gpu"],
+            Capability::System => &["monotonic", "time"],
+            Capability::Tray => &["items"],
+            Capability::Updates => &[
+                "aur_error",
+                "aur_helper",
+                "check_error",
+                "checking",
+                "consecutive_check_failures",
+                "count",
+                "install_current_package",
+                "install_current_step",
+                "install_error",
+                "install_exit_code",
+                "install_finished_at",
+                "install_log",
+                "install_total_steps",
+                "installing",
+                "last_successful_check",
+                "package_manager",
+                "packages",
+                "reboot_required",
+            ],
+            Capability::Windows => &["source", "windows"],
+            Capability::Workspaces => &["active_client", "compositor", "outputs", "overview_open", "special"],
+        }
+    }
+}
+
 impl std::fmt::Display for Capability {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(self.as_str())

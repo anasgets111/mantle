@@ -37,7 +37,8 @@ A card: a translucent rounded fill, a hairline border and a soft shadow below it
 
 ## Who takes what
 
-A property on a kind that does not take it is refused with the list of what it does take.
+A property on a kind that does not take it is refused, naming the closest property the kind takes
+or, with none close, listing them all.
 
 | Properties | Taken by |
 | :--- | :--- |
