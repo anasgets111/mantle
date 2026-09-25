@@ -200,7 +200,7 @@ mod tests {
     }
 
     /// ADR-0270: a function `child` is part of its root's resolve, so it runs again only when a
-    /// signal it read changes.
+    /// signal that resolve read changes.
     #[test]
     fn a_function_child_runs_again_only_when_a_signal_it_read_changes() {
         let mut bar = Fixture::new(

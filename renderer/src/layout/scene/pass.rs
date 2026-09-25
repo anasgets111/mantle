@@ -74,9 +74,11 @@ fn children_kept(
 }
 
 /// `child = function(output)` on a `panel`/`lock` (ADR-0121) runs per instance, with the output
-/// name, before the ordinary child walk, and again only when a signal it read changes (ADR-0270).
-/// Repeat calls preserve registry-stable state such as `state("wallpaper_" .. output)`. `window`/`popup` and a `monitor = "Active"` panel (ADR-0246)
-/// have no output name, so function children are refused rather than called with `""`.
+/// name, before the ordinary child walk. It is part of its root's resolve, so it runs again only
+/// when the root resolves again (ADR-0270): a signal it or the root's properties read was written,
+/// or a reload. Repeat calls preserve registry-stable state such as `state("wallpaper_" .. output)`.
+/// `window`/`popup` and a `monitor = "Active"` panel (ADR-0246) have no output name, so function
+/// children are refused rather than called with `""`.
 pub(super) fn build_child_for_output(
     mut properties: PropMap,
     kind: &str,

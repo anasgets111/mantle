@@ -884,9 +884,13 @@ mod tests {
         lua.load(r#"state("w", 40):set(90)"#).exec().unwrap();
         apply_at(&mut scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
         let started = child_tween(&scene).started;
-        // An unrelated re-resolve (any signal write dirties the whole scene) must not restart it.
+        // Neither a pass that resolves the node again with the same target nor one that keeps it
+        // (ADR-0270) restarts it.
+        crate::lua::signal::begin_evaluation(&lua);
         apply_at(&mut scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
-        assert_eq!(child_tween(&scene).started, started);
+        assert_eq!(child_tween(&scene).started, started, "resolved again");
+        apply_at(&mut scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
+        assert_eq!(child_tween(&scene).started, started, "kept");
     }
 
     #[test]
