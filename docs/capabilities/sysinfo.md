@@ -61,7 +61,9 @@ Call each as `mantle.sysinfo:<action>(arguments...)`; `?` marks an argument you 
 
 The chips are picked once, when `sysinfo` starts; a driver loaded later needs a Supervisor
 restart. A reading pushes only when it changed a field. Intervals live in the Supervisor, so they
-outlast reloads until the next `configure`.
+outlast reloads until the next `configure`. Each read runs on the wall-clock second, first at the
+next one after `configure`, so it lands with `mantle.system.time`'s tick and the two can share one
+layout pass.
 
 ## Gotchas
 

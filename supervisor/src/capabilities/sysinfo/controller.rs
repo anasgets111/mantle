@@ -152,7 +152,8 @@ fn publish_if_changed(
     }
 }
 
-/// One metric's poll loop: parked while its interval is zero, otherwise `tick` once per interval.
+/// One metric's poll loop: parked while its interval is zero, otherwise `tick` at the next
+/// wall-clock second and once per interval after.
 /// `previous` is the tick's memory across samples, cleared on going dormant: `/proc/stat` counters
 /// are cumulative since boot, so a delta across a dormant spell is bogus.
 async fn run_ticker<T>(mut interval_rx: tokio::sync::watch::Receiver<Duration>, mut tick: impl FnMut(&mut Option<T>)) {
@@ -167,8 +168,11 @@ async fn run_ticker<T>(mut interval_rx: tokio::sync::watch::Receiver<Duration>, 
                 }
             }
             PollMode::Ticking(duration) => {
-                let mut ticker = tokio::time::interval(duration);
-                ticker.tick().await; // tokio::time::interval's first tick fires immediately; consume it unused
+                // On the clock's second, so a whole-second interval lands in `system`'s push turn.
+                let mut ticker = tokio::time::interval_at(
+                    crate::capabilities::system::controller::next_wall_clock_second(),
+                    duration,
+                );
                 loop {
                     tokio::select! {
                         _ = ticker.tick() => tick(&mut previous),

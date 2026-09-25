@@ -45,6 +45,13 @@ pub fn time_until_next_second(elapsed_since_epoch: Duration) -> Duration {
     Duration::from_secs(1) - Duration::from_nanos(u64::from(elapsed_since_epoch.subsec_nanos()))
 }
 
+/// The next wall-clock second as a tokio deadline. Every 1 Hz-multiple poller starts here, so
+/// their pushes reach the Renderer together and share one re-resolve (ADR-0044 decision 2).
+pub fn next_wall_clock_second() -> tokio::time::Instant {
+    tokio::time::Instant::now()
+        + time_until_next_second(SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default())
+}
+
 pub struct SystemController {
     state: Arc<Mutex<SystemState>>,
 }
@@ -69,8 +76,7 @@ impl SystemController {
 
 /// Aligns its first wake to the next wall-clock second, then ticks a steady one-second interval.
 async fn run_clock_task(state: Arc<Mutex<SystemState>>, signal_tx: UnboundedSender<SystemSignal>, started: Instant) {
-    let delay = time_until_next_second(SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default());
-    let mut ticker = tokio::time::interval_at(tokio::time::Instant::now() + delay, Duration::from_secs(1));
+    let mut ticker = tokio::time::interval_at(next_wall_clock_second(), Duration::from_secs(1));
 
     loop {
         ticker.tick().await;

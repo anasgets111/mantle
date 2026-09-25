@@ -28,6 +28,8 @@ so everything since the rename from Obelisk sits under Unreleased.
 
 ### Changed
 
+- `mantle.sysinfo` reads on the wall-clock second, first at the next one after `configure`
+  rather than one interval later, so its pushes can share `mantle.system`'s layout pass.
 - `mantle.applications` watches its directories and rescans after a change, so installs and
   removals appear without `refresh` ([applications](capabilities/applications.md)).
 - A reload kills every `process.run` child and calls its `exit_cb(nil)` before the new evaluation
