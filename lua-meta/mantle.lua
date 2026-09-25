@@ -695,4 +695,5 @@ local PrivacyCapability = {}
 ---@field rescue WatchedSignal<RescueState> Whether the last evaluation, apply, live update or the session lock failed; the previous scene stays up (ADR-0046). [docs](https://anasgets111.github.io/mantle/capabilities/index.html#renderer-members)
 ---@field version MantleVersion The engine's version. Not a signal. [docs](https://anasgets111.github.io/mantle/capabilities/index.html#renderer-members)
 ---@field config_dir string Directory `shell.lua` was loaded from, for naming files shipped beside it. Not a signal. [docs](https://anasgets111.github.io/mantle/capabilities/index.html#renderer-members)
+---@field pid integer The Supervisor's process id, as `mantle list` shows it; `mantle stop --pid` ends this shell. Not a signal. [docs](https://anasgets111.github.io/mantle/capabilities/index.html#renderer-members)
 mantle = {}

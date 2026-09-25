@@ -77,6 +77,7 @@ In a terminal, `mantle call volume.up 0.1` prints the handler's return value, su
 | `mantle check` | Evaluates and lays out the config once without Wayland and exits. See [What check covers](#what-check-covers) |
 | `mantle log [-f]` | Prints a shell's stdout and stderr. `-f` keeps printing until that shell exits |
 | `mantle list` | Prints running shells, oldest first: `PID`, `UPTIME`, `DIR` (the instance directory) and `CONFIG` |
+| `mantle stop` | Sends the shell `SIGTERM` and waits up to 10 s for it to exit. Exits non-zero if it is still running |
 | `mantle set <name> <value>` | Writes the running config's `state(name, ...)` and waits for the shell to accept it |
 | `mantle toggle <name>` | Flips that state. It must hold a boolean |
 | `mantle toggle <name> <value>` | Sets the state to `value`. If it already holds `value`, restores the `initial` its `state(name, initial)` declares |
@@ -98,7 +99,7 @@ Flags and the command may come in any order. `-V` and `-h` win over anything aft
 | `--profile[=SECS]` | Run only | Logs idle-loop, heap and PSS/GPU memory reports every `SECS` seconds, default 60, with each capability's last snapshot as `name=<bytes>B/<sent>/<deduped>`: pushes sent to the renderer and pushes dropped as equal to the last, since start. Implies `-v` |
 | `--force` | `init` only | Overwrites `.luarc.json` and `shell.lua` |
 | `-f`, `--follow` | `log` only | Follows the log until its shell exits |
-| `--pid <pid>`, `--pid=<pid>` | `set`, `toggle`, `call`, `log` | Addresses the shell with that pid, as `mantle list` shows it. Refused together with `-c` |
+| `--pid <pid>`, `--pid=<pid>` | `set`, `toggle`, `call`, `log`, `stop` | Addresses the shell with that pid, as `mantle list` shows it. Refused together with `-c` |
 
 A flag given to a command it does not apply to is an error, not ignored. `--detached` is the flag
 `-d` passes to the copy it starts; typed by hand, it is ignored and the shell runs in the
@@ -266,8 +267,10 @@ shell act. niri's `repeat=false` keeps a held key from toggling repeatedly.
 
 **…start or stop the shell?** Start it from the compositor ([run the shell](installation.md#run-the-shell)),
 which gives it `XDG_RUNTIME_DIR` and the Wayland socket. From a terminal, `mantle -d` starts it
-and gives the prompt back. Stop it with Ctrl-C in the foreground, or `kill <pid>` with the pid
-`mantle list` shows.
+and gives the prompt back. Stop it with Ctrl-C in the foreground, or `mantle stop` (`-c` or
+`--pid` picks one of several). A config stops its own shell with
+`process.detach("mantle", { "stop", "--pid", tostring(mantle.pid) })`, which outlives the
+shell it stops.
 
 **…read the logs?** `mantle log` prints the whole log of the current shell. `mantle log -f` follows
 it. Errors raised in callbacks are warnings, so they show by default. For more detail, restart with
@@ -321,7 +324,7 @@ value, and a non-zero exit means it failed.
 | A keybind does nothing and the terminal shows no error | The compositor discards the command's stderr. Run it in a terminal, or `mantle log` and look for `asked to write state` |
 | `mantle toggle modal` is refused on a string state | A bare toggle needs a boolean. Pass the value: `mantle toggle modal settings` |
 | `mantle call x` says no action exists after a broken save | A failed reload clears actions. Fix the config and save ([runtime](runtime.md#evaluation-reload-and-generations)) |
-| Two bars on screen | Two shells are running. `mantle list`, then stop one |
+| Two bars on screen | Two shells are running. `mantle list`, then `mantle stop --pid <pid>` |
 | `mantle -c dir list` is refused | `list` shows every config's shells; drop `-c` |
 | `mantle log -f` exits at once | That shell has stopped. The command printed its last run |
 | `XDG_RUNTIME_DIR is not set` | The command runs in an environment without it. Start the compositor from a proper login session |

@@ -35,6 +35,8 @@ pub enum Command {
     },
     /// `list` prints the running Supervisors (ADR-0222).
     List,
+    /// `stop` sends a Supervisor `SIGTERM` and waits for it to let go of its instance directory.
+    Stop,
     Version,
     Help,
 }
@@ -73,6 +75,7 @@ USAGE:
                                 NAME<TAB>VALUE with VALUE in JSON
     mantle log [-f]             print the shell's stdout and stderr
     mantle list                 show running shells: PID UPTIME DIR CONFIG
+    mantle stop                 stop a running shell and wait for it to exit
 
 OPTIONS:
     -c, --config <DIR>   the config directory, holding shell.lua. Overrides
@@ -81,7 +84,7 @@ OPTIONS:
                          return, sending its output to `mantle log`
         --force          init only: overwrite files that already exist
     -f, --follow         log only: keep printing until the shell exits
-        --pid <PID>      set, toggle, call and log: the shell `list` shows,
+        --pid <PID>      set, toggle, call, log and stop: the shell `list` shows,
                          not with -c
         --profile[=SECS] run only: log idle, heap and PSS/GPU reports every
                          SECS seconds, 60 by default. Implies -v, which is
@@ -177,7 +180,7 @@ pub fn parse<I: IntoIterator<Item = String>>(argv: I) -> Result<Args, String> {
             continue;
         }
         match arg.as_str() {
-            "init" | "check" | "set" | "toggle" | "call" | "log" | "list" if command.is_none() => {
+            "init" | "check" | "set" | "toggle" | "call" | "log" | "list" | "stop" if command.is_none() => {
                 command = Some(match arg.as_str() {
                     "init" => "init",
                     "check" => "check",
@@ -185,6 +188,7 @@ pub fn parse<I: IntoIterator<Item = String>>(argv: I) -> Result<Args, String> {
                     "call" => "call",
                     "log" => "log",
                     "list" => "list",
+                    "stop" => "stop",
                     _ => "toggle",
                 });
             }
@@ -276,6 +280,7 @@ pub fn parse<I: IntoIterator<Item = String>>(argv: I) -> Result<Args, String> {
         }
         Some("log") => Command::Log { follow },
         Some("list") => Command::List,
+        Some("stop") => Command::Stop,
         _ => Command::Run,
     };
     if force && !matches!(command, Command::Init { .. }) {
@@ -296,10 +301,14 @@ pub fn parse<I: IntoIterator<Item = String>>(argv: I) -> Result<Args, String> {
     if pid.is_some()
         && !matches!(
             command,
-            Command::SetState(_) | Command::Call { .. } | Command::ListDeclared(_) | Command::Log { .. }
+            Command::SetState(_)
+                | Command::Call { .. }
+                | Command::ListDeclared(_)
+                | Command::Log { .. }
+                | Command::Stop
         )
     {
-        return Err("--pid is only meaningful with `set`, `toggle`, `call` and `log`".to_string());
+        return Err("--pid is only meaningful with `set`, `toggle`, `call`, `log` and `stop`".to_string());
     }
     if config_dir.is_some() && command == Command::List {
         return Err("`list` shows every config's shells".to_string());
@@ -512,6 +521,8 @@ mod tests {
             Command::SetState(shared::SetState { write: shared::StateWrite::Toggle, .. })
         ));
         assert_eq!(parse_args(&["log", "--pid=7"]).unwrap().pid, Some(7));
+        let stop = parse_args(&["stop", "--pid", "9"]).unwrap();
+        assert_eq!((stop.command, stop.pid), (Command::Stop, Some(9)));
         assert_eq!(parse_args(&["list"]).unwrap().command, Command::List);
         for refused in [
             &["-d", "--pid", "5"][..],
@@ -521,6 +532,7 @@ mod tests {
             &["log", "-c", "/", "--pid", "5"],
             &["call", "rec.toggle", "--pid", "5", "-c", "/"],
             &["log", "--pid", "x"],
+            &["stop", "-c", "/", "--pid", "5"],
         ] {
             assert!(parse_args(refused).is_err(), "{refused:?}");
         }

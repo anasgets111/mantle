@@ -14,6 +14,7 @@ pub const LOCK: &str = "instance.lock";
 pub const LOG: &str = "shell.log";
 
 /// A Supervisor's directory as `list` read it.
+#[derive(Clone)]
 pub struct Instance {
     pub pid: u32,
     pub dir: PathBuf,
@@ -95,6 +96,27 @@ pub fn list(root: &Path) -> Vec<Instance> {
             })
         })
         .collect()
+}
+
+/// Outlasts the Supervisor's slowest shutdown step, a `session_process`'s 5 s stop grace.
+const STOP_WAIT: Duration = Duration::from_secs(10);
+
+/// `SIGTERM`, the shutdown Ctrl-C also takes, then waits for the lock: it is released only when the
+/// Supervisor exits, so a caller may start the next shell as soon as this returns.
+pub fn stop(instance: &Instance) -> Result<(), Box<dyn std::error::Error>> {
+    let pid = nix::unistd::Pid::from_raw(instance.pid as i32);
+    match nix::sys::signal::kill(pid, nix::sys::signal::Signal::SIGTERM) {
+        Ok(()) | Err(nix::errno::Errno::ESRCH) => {}
+        Err(err) => return Err(format!("cannot signal pid {}: {err}", instance.pid).into()),
+    }
+    let deadline = std::time::Instant::now() + STOP_WAIT;
+    while is_live(&instance.dir) {
+        if std::time::Instant::now() > deadline {
+            return Err(format!("pid {} is still running after {}s", instance.pid, STOP_WAIT.as_secs()).into());
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    Ok(())
 }
 
 /// Pids wrap, so start time orders instances.

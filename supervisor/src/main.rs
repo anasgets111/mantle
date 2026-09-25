@@ -126,7 +126,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         std::io::Result::Ok(std::fs::canonicalize(&dir).unwrap_or(dir))
     };
     let (explicit, pid) = (args.config_dir.is_some(), args.pid);
-    let instance_dir = |log: bool| -> Result<PathBuf, Box<dyn Error>> {
+    let instance = |log: bool| -> Result<instance::Instance, Box<dyn Error>> {
         let (instances, config) = (instance::list(&shared::runtime_root()?), config_dir()?);
         let selected = if log {
             let (selected, note) = instance::select_log(&instances, pid, explicit.then_some(&*config))?;
@@ -137,7 +137,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         } else {
             instance::select_command(&instances, pid, &config, explicit)?
         };
-        Ok(selected.dir.clone())
+        Ok(selected.clone())
     };
 
     match args.command {
@@ -150,12 +150,12 @@ fn main() -> Result<(), Box<dyn Error>> {
             Ok(())
         }
         cli::Command::Init { force } => setup::run(&config_dir()?, force),
-        cli::Command::SetState(set) => control_client::send(set, &instance_dir(false)?),
-        cli::Command::Call { name, arguments } => control_client::call(name, arguments, &instance_dir(false)?),
-        cli::Command::ListDeclared(declared) => control_client::list(declared, &instance_dir(false)?),
+        cli::Command::SetState(set) => control_client::send(set, &instance(false)?.dir),
+        cli::Command::Call { name, arguments } => control_client::call(name, arguments, &instance(false)?.dir),
+        cli::Command::ListDeclared(declared) => control_client::list(declared, &instance(false)?.dir),
         cli::Command::Log { follow } => {
             let colour = std::io::IsTerminal::is_terminal(&std::io::stdout());
-            log::print(&instance_dir(true)?, follow, colour, &mut std::io::stdout().lock())
+            log::print(&instance(true)?.dir, follow, colour, &mut std::io::stdout().lock())
         }
         cli::Command::List => {
             let mut running: Vec<_> = instance::list(&shared::runtime_root()?).into_iter().filter(|i| i.live).collect();
@@ -171,6 +171,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             }
             Ok(())
         }
+        cli::Command::Stop => instance::stop(&instance(false)?),
         cli::Command::Check => match setup::check(&config_dir()?) {
             Ok(report) => {
                 print!("{report}");

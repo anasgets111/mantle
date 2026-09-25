@@ -1,4 +1,4 @@
-//! The `mantle` table for capabilities, `rescue`, `screens`, `version`, and `config_dir`
+//! The `mantle` table for capabilities, `rescue`, `screens`, `version`, `config_dir` and `pid`
 //! (`CONTEXT.md`, **Mantle namespace**).
 //!
 //! Built once per generation before `shell.lua`; it answers no `SupervisorFrame`, so construction
@@ -25,8 +25,8 @@ pub(crate) struct Namespace {
     pub(crate) screens_payload: serde_json::Value,
 }
 
-/// Builds `mantle`: every roster name, Renderer-sourced `rescue`/`screens`, `idle`, `version`, and
-/// `config_dir`.
+/// Builds `mantle`: every roster name, Renderer-sourced `rescue`/`screens`, `idle`, `version`,
+/// `config_dir` and `pid`.
 ///
 /// **Roster names stay off the table.** `__index` moves each from a side table on first read and
 /// starts its controller (ADR-0070 decision 1). Before the first push, config reads a live `nil`
@@ -73,6 +73,8 @@ pub(crate) fn build(
     // `shared::config_dir()`. Static string beside `version`, not a pushing capability.
     table
         .set("config_dir", shell_lua_path.parent().map(|dir| dir.to_string_lossy().into_owned()).unwrap_or_default())?;
+    // The Supervisor spawns every Renderer itself, so its parent is the shell `mantle stop --pid` names.
+    table.set("pid", std::os::unix::process::parent_id())?;
     loader.set_global("mantle", table.clone())?;
     Ok(Namespace { table, capabilities, rescue, idle, screens, screens_payload })
 }

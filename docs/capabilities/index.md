@@ -115,7 +115,7 @@ pages. On the LuaLS library path, `mantle.audio:get().` completes fields and
 
 ### Renderer members
 
-Four members come from the Renderer, not a backend, so they are never `nil` and start nothing.
+Five members come from the Renderer, not a backend, so they are never `nil` and start nothing.
 
 | Member | Kind | Contract |
 | :--- | :--- | :--- |
@@ -123,6 +123,7 @@ Four members come from the Renderer, not a backend, so they are never `nil` and 
 | `mantle.rescue` | Signal | `{ is_rescue, error_log }`. `is_rescue` turns `true` when an evaluation raises, a scene fails to apply, a live update fails, a reload renames the lock surface while locked, or the session lock is refused or torn down; `error_log` holds the reason, ready to draw. The next reload that applies clears it, and so does a later pass after a failed startup apply or live update |
 | `mantle.version` | Plain table | `{ major, minor, patch }` integers, for guarding newer API |
 | `mantle.config_dir` | Plain string | Directory `shell.lua` was loaded from, for naming files shipped beside it |
+| `mantle.pid` | Plain integer | The Supervisor's pid, as `mantle list` shows it. `mantle stop --pid` with it ends this shell |
 
 #### `Screen`
 

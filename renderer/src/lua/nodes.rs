@@ -870,7 +870,7 @@ mod meta_stub_tests {
         // Off-roster members lack a `StateSnapshot` and roster entry (`lua::namespace::build`).
         // `idle` left this list under ADR-0141: it is now a roster capability wrapped for three
         // callbacks that cannot cross the wire.
-        let off_roster = ["screens", "rescue", "version", "config_dir"];
+        let off_roster = ["screens", "rescue", "version", "config_dir", "pid"];
         let declared: BTreeSet<&str> = class
             .lines()
             .take_while(|line| line.starts_with("---@field"))

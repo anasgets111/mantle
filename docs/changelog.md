@@ -27,6 +27,8 @@ so everything since the rename from Obelisk sits under Unreleased.
   its states with their values ([CLI](guide/cli.md#commands)).
 - `mantle.system:configure({ interval = 60 })` pushes the clock every minute on the minute
   instead of every second, or never with `0`; default `1` ([system](capabilities/system.md)).
+- `mantle stop [--pid | -c]` stops a running shell and waits for it to exit; `mantle.pid` is the
+  shell's own pid, so a config can stop itself ([CLI](guide/cli.md#commands)).
 
 ### Changed
 
