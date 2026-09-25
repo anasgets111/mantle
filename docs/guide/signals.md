@@ -93,11 +93,12 @@ LuaLS flags it. A `:set` re-resolves the readers even when the value has not cha
 
 ## Derived signals
 
-`:map` and `computed` do not cache between passes. They run again whenever something reads them,
-and a node reads its properties again only once a signal they read is written
-([what a node reads again](#what-a-node-reads-again)); within one pass, a derived signal read by
-several properties runs once. Keep their functions cheap and side-effect free: no `:set`, no process, no action. They run under the CPU budget and nesting
-limit described in [runtime](runtime.md). Side effects belong in `on_click`, a capability's
+`:map` and `computed` hold no value between passes. They run whenever a node reads them, and a
+node reads them again only once a signal they read is written
+([what a node reads again](#what-a-node-reads-again)). Within one pass, a derived signal read by
+several properties runs once. Keep their functions cheap and side-effect free: no `:set`, no
+process, no action. They run under the CPU budget and nesting limit described in
+[runtime](runtime.md). Side effects belong in `on_click`, a capability's
 `on_change` ([capabilities](../capabilities/index.md)) or a `timer` ([scripting](scripting.md)).
 
 A derived colour:
@@ -230,15 +231,16 @@ is.
 ### What a node reads again
 
 Within a re-resolved surface, each node keeps the properties it resolved last time until a signal
-that resolve read is written. A clock `text` written every second reads that one node again, not
-the whole bar. A `list` keeps its items the same way ([when items rebuild](../nodes/list.md#when-items-rebuild)).
+that resolve read is written. A clock written every second resolves its one `text` again, not the
+whole bar. A `list` keeps its items the same way ([when items rebuild](../nodes/list.md#when-items-rebuild)).
 
 | Change | The node reads its properties again |
 | :--- | :--- |
 | A write to a signal bound to one of its properties, or under a `map` or `computed` bound to one | ✓ |
 | A write to its own `hover` or `scroll` slot | ✓ |
-| A different value in its declaration: a rebuilt `list` item, a new `children` table, a reload | ✓ |
-| A write to a signal a function `child` read with `:get()` (the function runs again) | ✓ |
+| A different table, function, signal or value in its declaration, as in a rebuilt `list` item | ✓ |
+| A reload | ✓ |
+| For a `panel` or `lock` root, a write to a signal its function `child` read. Every ✓ here runs that function again | ✓ |
 | A write to anything else, even on the same surface | |
 
 The engine sees signal reads only. A `map`, `computed`, `itemfn`, `key` or function `child` must

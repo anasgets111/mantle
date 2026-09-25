@@ -77,10 +77,10 @@ about half the cost of building them. One change rebuilds every item, scrolled o
 and across reorders. Cap a long list with `limit` (a launcher's top 50 matches), or hide it while
 closed so it freezes.
 
-The engine sees signal reads only. `itemfn`, `key` and every `map` bound inside an item that reads
-the clock, a mutable variable or a `source` table changed in place shows what it read at the last
-build; a `delay` or `pulse` rebuilds the list on every pass while one is pending or open. The full
-rule, and what to read instead: [what a node reads again](../guide/signals.md#what-a-node-reads-again).
+The engine sees signal reads only. An `itemfn`, `key` or item `map` that reads the clock, a mutable
+variable or a `source` table changed in place keeps what it read until a signal it read is written.
+A `delay` or `pulse` rebuilds the list on every pass while one is pending or open. What to read
+instead: [what a node reads again](../guide/signals.md#what-a-node-reads-again).
 
 ## How do I…
 
