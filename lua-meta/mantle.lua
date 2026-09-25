@@ -152,7 +152,7 @@
 ---@field body NotificationSpan[] Parsed body markup; the raw body is truncated to 512 bytes first.
 ---@field desktop_entry? string Sender's desktop id, e.g. `"org.telegram.desktop"`, for `mantle.applications.by_app_id`; `nil` when absent or containing `/` (ADR-0101).
 ---@field expired boolean The timeout ran out: drop it from popups, keep it in history until dismissed (ADR-0100). Never true for critical or `expire_timeout = 0`; a replacement resets it.
----@field has_default_action boolean Clicking the card may `:invoke("invoke_action", id, "default")`.
+---@field has_default_action boolean Clicking the card may `:invoke_action(id, "default")`.
 ---@field has_reply boolean The sender accepts `mantle.notifications:reply(id, text)`.
 ---@field id integer Server id, from `1`; a replacement keeps the id it replaces.
 ---@field image_path? string Attached picture (album art, avatar) as an existing absolute path, or `nil`. Never a theme name (ADR-0091).
@@ -165,7 +165,7 @@
 ---@class NotificationAction
 ---One action button (ADR-0090).
 ---@field icon_name? string Theme icon name (the key) when the sender set `action-icons`, else `nil`. Never a path.
----@field key string Opaque key for `:invoke("invoke_action", id, key)`.
+---@field key string Opaque key for `:invoke_action(id, key)`.
 ---@field label string Button label, capped at 64 bytes. An empty label falls back to the key unless `icon_name` is set.
 
 ---@class NotificationSpan

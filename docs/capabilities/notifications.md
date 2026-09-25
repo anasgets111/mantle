@@ -45,7 +45,7 @@ One `notifications.feed` entry.
 | `body` | `NotificationSpan[]` | Parsed body markup; the raw body is truncated to 512 bytes first. |
 | `desktop_entry?` | `string` | Sender's desktop id, e.g. `"org.telegram.desktop"`, for `mantle.applications.by_app_id`; `nil` when absent or containing `/`. |
 | `expired` | `boolean` | The timeout ran out: drop it from popups, keep it in history until dismissed. Never true for critical or `expire_timeout = 0`; a replacement resets it. |
-| `has_default_action` | `boolean` | Clicking the card may `:invoke("invoke_action", id, "default")`. |
+| `has_default_action` | `boolean` | Clicking the card may `:invoke_action(id, "default")`. |
 | `has_reply` | `boolean` | The sender accepts `mantle.notifications:reply(id, text)`. |
 | `id` | `integer` | Server id, from `1`; a replacement keeps the id it replaces. |
 | `image_path?` | `string` | Attached picture (album art, avatar) as an existing absolute path, or `nil`. Never a theme name. |
@@ -62,7 +62,7 @@ One action button.
 | Field | Type | Description |
 | --- | --- | --- |
 | `icon_name?` | `string` | Theme icon name (the key) when the sender set `action-icons`, else `nil`. Never a path. |
-| `key` | `string` | Opaque key for `:invoke("invoke_action", id, key)`. |
+| `key` | `string` | Opaque key for `:invoke_action(id, key)`. |
 | `label` | `string` | Button label, capped at 64 bytes. An empty label falls back to the key unless `icon_name` is set. |
 
 ### `NotificationSpan`

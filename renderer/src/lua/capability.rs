@@ -256,7 +256,7 @@ impl UserData for Capability {
             }
             let Some(&action) = actions.iter().find(|action| **action == key) else {
                 return Err(mlua::Error::runtime(format!(
-                    "mantle.{} has no `{key}`: its actions are {}, and :get() reads its state",
+                    "mantle.{} has no `{key}`: its actions are {}; :get() reads its state",
                     this.name,
                     actions.join(", ")
                 )));

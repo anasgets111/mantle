@@ -148,8 +148,8 @@ impl Capability {
 
 impl Capability {
     /// The action names, each a method on `mantle.<name>`; empty for a read-only capability. The
-    /// Renderer refuses any other name at call time; the Supervisor still validates arguments. `supervisor/src/stubs.rs` pins
-    /// each list to its serde action enum.
+    /// Renderer refuses any other name at call time; the Supervisor still validates arguments.
+    /// `supervisor/src/stubs.rs` pins each list to its serde action enum.
     pub const fn actions(self) -> &'static [&'static str] {
         match self {
             Capability::Applications => &["refresh", "launch", "open_url"],

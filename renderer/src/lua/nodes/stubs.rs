@@ -143,7 +143,7 @@ fn own(kinds: u16) -> impl Iterator<Item = &'static Property> {
 /// `kind`'s `animate` field and the alias it names: only the properties `parse_animate` takes on
 /// `kind`, plus `exit`, so a misspelled or foreign name is a type error as it is a pass error.
 fn animate(kind: &str) -> (String, String) {
-    let name = format!("{}Animations", &class(kind)[..class(kind).len() - "Props".len()]);
+    let name = format!("{}Animations", class(kind).trim_end_matches("Props"));
     let keys: String = super::accepted_properties(kind)
         .into_iter()
         .filter(|property| crate::layout::node::animatable_name(kind, property, "animate").is_ok())

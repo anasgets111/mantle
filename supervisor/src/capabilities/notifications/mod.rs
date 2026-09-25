@@ -162,7 +162,7 @@ pub enum NotificationSpan {
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[cfg_attr(test, derive(schemars::JsonSchema))]
 pub struct NotificationAction {
-    /// Opaque key for `:invoke("invoke_action", id, key)`.
+    /// Opaque key for `:invoke_action(id, key)`.
     pub key: String,
     /// Button label, capped at 64 bytes. An empty label falls back to the key unless `icon_name` is set.
     pub label: String,
@@ -356,7 +356,7 @@ pub struct Notification {
     pub reply_placeholder: Option<String>,
     /// Buttons in sender order, at most 8, excluding `default` and `inline-reply`.
     pub actions: Vec<NotificationAction>,
-    /// Clicking the card may `:invoke("invoke_action", id, "default")`.
+    /// Clicking the card may `:invoke_action(id, "default")`.
     pub has_default_action: bool,
     /// `hints["resident"]`: keep the notification after an action, as media prev/next needs;
     /// bookkeeping only and omitted from payload (`#[serde(skip)]`).
