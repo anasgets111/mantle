@@ -1099,6 +1099,9 @@ Two constraints for anyone who tries again, both found by breaking something:
 Kept from that work: `Scene::apply_admitting` snapshots only the instances it visits rather than
 cloning every retained tree, which is 21 needless deep clones per push on `dev-config`.
 
+Amended by ADR-0270: decision 3 is reversed; a node's resolve is kept across passes until a cell it
+read is written.
+
 ## 0045. Nodes reconcile by scoped `id`, and `list` items by `key`
 
 1. Optional node IDs are parent-scoped reconciliation hints, not global addresses. Duplicate sibling
@@ -2226,6 +2229,8 @@ No user-state overload or unnecessary stat fields; application indexing keeps ex
 
 Reject window/popup functions, which lack fixed output, and a global output signal with ambiguous
 per-instance meaning. Config implements per-output wallpaper/persistence.
+
+Amended by ADR-0270: decision 2's function runs again only when its root resolves again.
 
 ## 0122. Images decode to their box, and off the frame through the thumbnail cache when asked
 
@@ -6643,13 +6648,13 @@ runs no Lua for that node. The node's children are still walked; each decides fo
    kept properties; it notes the kept cells as the instance's reads, so the next write to one still
    dirties the surface (ADR-0044's amendment, constraint 1).
 2. **A declaration change is a miss.** Raw values compare by identity for tables, functions and
-   userdata and by value for scalars and strings, so a node built afresh by an `itemfn` or a
-   function `child` resolves again even with nothing written.
+   userdata and by value for scalars and strings, so a node an `itemfn` or a function `child` built
+   afresh resolves again when its declaration holds a table, function or signal.
 3. **What freezes.** A getter reading anything but a signal: `os.date()` or `os.time()` with no
    signal behind them, `os.clock()`, `math.random`, an upvalue or global changed without `:set`, a
    file. It shows what it read at its last resolve until a signal it read changes. Before, it
-   refreshed on any write to its surface. A surface root's function `child` runs again only when a
-   signal it read with `:get()` changes. A pending `delay` or open `pulse` reads the clock and keeps
+   refreshed on any write to its surface. A surface root's function `child` runs again only when the
+   root resolves again: a signal it or the root's own properties read changes, or a reload. A pending `delay` or open `pulse` reads the clock and keeps
    its node resolving every pass (ADR-0269 decision 5).
 4. **The fix for authors** is to derive time from a signal: `mantle.system:map(function(s) return
    os.date(fmt, s.time) end)`, or a `state` a `timer` writes.
