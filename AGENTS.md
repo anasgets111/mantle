@@ -45,8 +45,9 @@ why behind behavior the code confirms. Where a doc disagrees with the code, fix 
 - **Checks.** Non-trivial logic gets one runnable check; trivial one-liners get none.
 - **Full effort.** Problem analysis, trust-boundary validation, data integrity, security, accessibility
   and hardware calibration are never skipped.
-- **File size.** Split past ~700 production lines into domain modules, like `renderer/src/layout/node/`.
-  At ~500-700, split only a clear second domain. No file without a domain of its own.
+- **Domains.** A file holds one domain; split out a clear second one at any size, like a backend's
+  `check`, `install` and `aur` in `updates/pacman/`. Past ~700 production lines, find the domains
+  and split, like `renderer/src/layout/node/`. No file without a domain of its own.
 - **Writing.** Replies, comments, commits and docs lead with the answer: tables, then bullets, then
   prose; numbers over adjectives. Apply `unslop`. Comments state the non-obvious decision, never the
   mechanism or the old behavior. Commits state what changed and why.
