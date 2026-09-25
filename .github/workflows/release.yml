@@ -15,6 +15,10 @@ jobs:
   build:
     runs-on: ubuntu-latest
     container: ubuntu:26.04
+    # A container job's steps default to `sh`, which has no `${var::n}`.
+    defaults:
+      run:
+        shell: bash
     steps:
       - name: Build dependencies
         run: |
