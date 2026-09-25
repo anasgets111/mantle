@@ -3,7 +3,7 @@ use crate::layout::node::{self, Align, LayoutError, PaintStyle, PropMap, SizeMod
 use crate::text::shaping::{self, ShapeRequest, ShapingHandle};
 use taffy::prelude::{length, line, span};
 
-/// A per-pass solver tree. Geometry stays fractional until `text::snap` applies the
+/// A solver tree. Layout animation ticks retain it. Geometry stays fractional until `text::snap` applies the
 /// surface scale at paint; taffy otherwise rounds layouts to whole numbers.
 pub(super) fn new_solver_tree() -> taffy::TaffyTree<Measure> {
     let mut tree = taffy::TaffyTree::new();
@@ -85,7 +85,7 @@ fn main_align(align: Align) -> taffy::JustifyContent {
 
 /// One node's taffy style, combining its container and item roles. `parent_axis` decides whether a
 /// `Fill` shares a flow remainder or takes the whole slot; `None` means stacking or surface root.
-fn taffy_style(
+pub(super) fn taffy_style(
     kind: &str,
     properties: &PropMap,
     style: &LayoutStyle,

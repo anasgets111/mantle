@@ -149,7 +149,9 @@ pub(super) fn solve_instance(
             None => taffy::Dimension::auto(),
         },
     };
-    tree.set_style(prepared.taffy, root_style).map_err(taffy_failed)?;
+    if tree.style(prepared.taffy).map_err(taffy_failed)?.size != root_style.size {
+        tree.set_style(prepared.taffy, root_style).map_err(taffy_failed)?;
+    }
     solve(tree, prepared.taffy, available, shaping)?;
     finish(tree, prepared, shaping)
 }
@@ -502,6 +504,7 @@ fn finish(
 
     Ok(ResolvedNode {
         layout_style: std::rc::Rc::new(style),
+        taffy: Some(taffy_id),
         id,
         kind,
         rect: LogicalRect { x: layout.location.x, y: layout.location.y, width: size.width, height: size.height },

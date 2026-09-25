@@ -78,6 +78,7 @@ impl ResolvedNode {
             rect: LogicalRect { x, y, width, height },
             margin: EdgeInsets::default(),
             layout_style: std::rc::Rc::new(LayoutStyle::parse(&PropMap::default()).unwrap()),
+            taffy: None,
             visible: true,
             opacity: 1.0,
             z: 0.0,
@@ -178,7 +179,10 @@ impl LayoutStyle {
 /// third state, `Value::Nil` retained as "bound but unresolved".
 #[derive(Debug, Clone)]
 pub struct ResolvedNode {
+    /// Cached for layout ticks; a pass replaces it after resolving properties.
     pub(crate) layout_style: std::rc::Rc<LayoutStyle>,
+    /// The solver node in `Scene::solver_trees`, valid only while that instance's tree is cached.
+    pub(crate) taffy: Option<taffy::NodeId>,
     /// The identity its retained counterpart was reconciled under, carried so a later reader can
     /// say "this node, again" across passes. Stable by construction: `reconcile_node` keeps the
     /// retained node's id and only allocates when there was nothing to match, so an id survives
@@ -190,7 +194,7 @@ pub struct ResolvedNode {
     pub kind: &'static str,
     pub rect: LogicalRect,
     /// This node's own margin, kept because a parent measures its children's footprint after they
-    /// are built ([`extent_along`]). The rest of [`LayoutStyle`] is pass-local and is not retained.
+    /// are built ([`extent_along`]).
     ///
     /// [`extent_along`]: scroll::extent_along
     pub margin: EdgeInsets,
@@ -324,6 +328,8 @@ impl ResolvedNode {
 #[derive(Default)]
 pub struct Scene {
     surfaces: HashMap<String, ResolvedNode>,
+    /// Kept only while an instance has layout animation in flight.
+    solver_trees: HashMap<String, taffy::TaffyTree<solver::Measure>>,
     next_id: u64,
     resolve_split: ResolveSplit,
     tick_split: TickSplit,
@@ -474,6 +480,7 @@ impl Scene {
         let outcome = self.apply_visiting(fresh_surfaces, instances, shaping, lua, &budget, &mut rollback, admit);
         if outcome.is_err() {
             for (key, tree) in rollback {
+                self.solver_trees.remove(&key);
                 match tree {
                     Some(tree) => self.surfaces.insert(key, tree),
                     None => self.surfaces.remove(&key),
@@ -577,13 +584,17 @@ impl Scene {
             build_child_for_output(properties, fresh.kind, &instance.output)
         })?;
 
-        // Taffy trees are per-instance and per-pass; only retained `NodeId`s cross the call, so a
-        // failed walk drops the temporary tree without extra rollback state.
+        // A failed walk drops its temporary solver tree without extra rollback state.
         let mut tree = new_solver_tree();
         let prepared = prepare(self, &mut tree, existing, fresh.kind, resolved, None, false, lua, now, 0)?;
         close(&mut at, &mut self.resolve_split.resolve);
         let solved = solve_instance(&mut tree, prepared, available, shaping)?;
         publish_geometry(&solved, 0.0, 0.0, lua, false).map_err(|e| node::invalid("geometry", e.to_string()))?;
+        if solved.animating() && !solved.tick_is_paint_only() {
+            self.solver_trees.insert(key.clone(), tree);
+        } else {
+            self.solver_trees.remove(&key);
+        }
         self.surfaces.insert(key, solved);
         close(&mut at, &mut self.resolve_split.solve);
         Ok(())
@@ -638,6 +649,7 @@ impl Scene {
     /// process, one tree per output name ever seen.
     pub fn forget(&mut self, instance_id: &str) {
         self.surfaces.remove(instance_id);
+        self.solver_trees.remove(instance_id);
     }
 
     /// Node count per retained surface, largest first, for `crate::wayland::memory_profile`. The
