@@ -3,7 +3,7 @@
 
 use std::collections::HashSet;
 
-use mlua::{Lua, Value};
+use mlua::{Lua, Value, WeakLua};
 
 use crate::lua::nodes::{DeserializeError, VirtualNode, deserialize_lua_table};
 use crate::lua::signal::{self, CellId, ComputedFrame};
@@ -233,11 +233,14 @@ pub fn list_children(properties: &PropMap, lua: &Lua) -> Result<Vec<VirtualNode>
 ///
 /// Exact for signals, and blind to anything else a build reads: `os.time()`, an upvalue, a table
 /// mutated in place. That is the contract `docs/nodes/list.md` states.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct ListMemo {
     /// Kept to keep them alive: compared by address, so a collected function cannot hand its
     /// address to a new one. By address and not `==`, which asserts both come from one `Lua`.
     inputs: [Value; 3],
+    /// Checked first: a value of a dropped VM panics on any read. A scene outlives its VM only in
+    /// tests.
+    lua: WeakLua,
     limit: Option<usize>,
     stamp: u64,
     cells: Vec<CellId>,
@@ -249,6 +252,7 @@ pub struct ListBuild<'lua> {
     inputs: [Value; 3],
     limit: Option<usize>,
     stamp: u64,
+    lua: WeakLua,
     frame: ComputedFrame<'lua>,
 }
 
@@ -261,7 +265,8 @@ impl ListMemo {
     /// noted as this pass's, so the instance stays a reader of what the skipped build read.
     pub fn still_holds(&self, properties: &PropMap, lua: &Lua) -> bool {
         let same = |a: &Value, b: &Value| a.type_name() == b.type_name() && a.to_pointer() == b.to_pointer();
-        let holds = self.inputs.iter().zip(&list_inputs(properties)).all(|(a, b)| same(a, b))
+        let holds = self.lua == lua.weak()
+            && self.inputs.iter().zip(&list_inputs(properties)).all(|(a, b)| same(a, b))
             && list::limit.read(properties).is_ok_and(|limit| limit == self.limit)
             && !signal::written_since(self.stamp, &self.cells);
         if holds {
@@ -271,18 +276,32 @@ impl ListMemo {
     }
 }
 
+/// By hand: `WeakLua` has no `Debug`.
+impl std::fmt::Debug for ListMemo {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ListMemo").field("stamp", &self.stamp).field("cells", &self.cells).finish_non_exhaustive()
+    }
+}
+
 impl<'lua> ListBuild<'lua> {
     pub fn open(properties: &PropMap, lua: &'lua Lua) -> Self {
         Self {
             inputs: list_inputs(properties),
             limit: list::limit.read(properties).ok().flatten(),
             stamp: signal::write_clock(lua),
+            lua: lua.weak(),
             frame: ComputedFrame::enter(lua),
         }
     }
 
     pub fn close(self) -> ListMemo {
-        ListMemo { inputs: self.inputs, limit: self.limit, stamp: self.stamp, cells: self.frame.finish() }
+        ListMemo {
+            inputs: self.inputs,
+            lua: self.lua,
+            limit: self.limit,
+            stamp: self.stamp,
+            cells: self.frame.finish(),
+        }
     }
 }
 

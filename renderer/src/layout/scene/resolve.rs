@@ -273,6 +273,22 @@ mod tests {
         }
     }
 
+    /// The memos a list and its items keep hold values of the VM that built them; a scene handed a
+    /// new VM must not read them.
+    #[test]
+    fn a_scene_carried_to_a_new_vm_builds_again_rather_than_reading_the_old_ones_memos() {
+        const LIST: &str = r#"return panel { id = "bar", child = list { source = { "a" },
+            itemfn = function() return rect { width = 10, height = 10 } end } }"#;
+        let mut scene = Scene::new();
+        let shaping = ShapingHandle::spawn();
+        let (lua, surface) = surface_from(LIST);
+        apply_at(&mut scene, &[surface], full(), &shaping, &lua).unwrap();
+        drop(lua);
+        let (lua, surface) = surface_from(LIST);
+        apply_at(&mut scene, &[surface], full(), &shaping, &lua).unwrap();
+        assert_eq!(scene.surface("bar@TEST").unwrap().children[0].children[0].rect.width, 10.0);
+    }
+
     /// A new evaluation may change what any getter reads without writing a cell.
     #[test]
     fn a_new_evaluation_resolves_every_node_again() {
