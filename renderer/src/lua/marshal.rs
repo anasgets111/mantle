@@ -67,7 +67,9 @@ pub(crate) fn list_entries(table: &mlua::Table) -> Result<Vec<mlua::Value>, Stri
             (mlua::Value::String(key), _) => {
                 return Err(format!("key `{}` is not a list index", key.to_string_lossy()));
             }
-            (other, _) => return Err(format!("key {other:?} is not a list index")),
+            (mlua::Value::Integer(index), _) => return Err(format!("key {index} is not a list index")),
+            (mlua::Value::Number(index), _) => return Err(format!("key {index} is not a list index")),
+            (other, _) => return Err(format!("{} key is not a list index", a_type(&other))),
         }
     }
     entries.sort_unstable_by_key(|(index, _)| *index);
@@ -94,6 +96,15 @@ pub(crate) fn a_type(value: &mlua::Value) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_key_that_is_not_a_list_index_is_named_as_lua_writes_it() {
+        let lua = mlua::Lua::new();
+        let refused = |source: &str| list_entries(&lua.load(source).eval().unwrap()).unwrap_err();
+        assert_eq!(refused("return { [0] = 1 }"), "key 0 is not a list index");
+        assert_eq!(refused("return { [1.5] = 1 }"), "key 1.5 is not a list index");
+        assert_eq!(refused("return { [{}] = 1 }"), "a table key is not a list index");
+    }
 
     #[test]
     fn only_keys_names_the_first_unknown_key_and_what_the_table_takes() {
