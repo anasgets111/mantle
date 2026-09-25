@@ -2,9 +2,9 @@
 //! (ADR-0044 decision 5). Rust owns the userdata; `computed` calls `fn` with dependency values, not
 //! handles, so its body does not call `:get()` on declared deps.
 //!
-//! ponytail: `computed`/`map` recompute on every layout pass, with no invalidation graph across
-//! passes. [`EvaluationMemo`] collapses repeats *within* one pass; nothing caches *between* them,
-//! so the Watcher still decides when a value goes stale.
+//! ponytail: `computed`/`map` hold no value between passes; they recompute whenever a node reads
+//! them. [`EvaluationMemo`] collapses repeats *within* one pass; across passes a node keeps its
+//! resolved properties until a cell it read is written (ADR-0270), so only signal reads invalidate.
 
 mod budget;
 mod globals;
@@ -671,7 +671,7 @@ impl UserData for Signal {
 /// `capability::Capability`, and wrapped `IdleMember`; every capability uses one, so live
 /// bindings stay live instead of becoming literals.
 ///
-/// This runs for every signal-valued property of every node, on every whole-scene resolve, so a
+/// This runs for every signal-valued property of every node that resolves, so a
 /// derived signal comes back as a [`SignalKind::Derived`] handle and its sources are read only when
 /// it is.
 pub fn from_userdata(ud: &mlua::AnyUserData) -> Option<Signal> {
@@ -844,8 +844,7 @@ mod tests {
     #[test]
     fn writing_the_value_already_stored_marks_nothing() {
         // ADR-0062 decision 4: pointer motion writes at device rate, and one mark re-resolves every
-        // surface
-        // (ADR-0044 decision 2); a stationary pointer must cause no re-resolves.
+        // surface that read the slot (ADR-0244); a stationary pointer must cause no re-resolves.
         let dirty = DirtyFlag::new();
         let (hovered, _rect) = Signal::new_hover(dirty.clone(), Value::Nil);
         let handle = hovered.hover_handle().unwrap();

@@ -1,6 +1,6 @@
 //! Typed, validated properties for `VirtualNode`. `resolve_properties` reads each ordinary `Signal`
-//! once per node/pass (ADR-0044 decision 1); `SurfaceTopology`'s five fields and every node's
-//! optional `id` stay raw and reject signals. A `panel`'s other properties are live fields, not
+//! at most once per node per pass (ADR-0044 decision 1); `SurfaceTopology`'s five fields and every
+//! node's optional `id` stay raw and reject signals. A `panel`'s other properties are live fields, not
 //! exceptions. Plain tables remain metamethod-backed, so each `table.get` can still run `__index`;
 //! see `NumberOrEdges`'s read. A signal resolving to another signal errors rather than
 //! reading again, while `MAX_TREE_DEPTH` bounds recursive tree construction.
@@ -382,7 +382,7 @@ pub(crate) fn is_structural_property(kind: &str, property: &str) -> bool {
 /// nothing downstream looked at: deferring would mean keeping the getter around to re-run later,
 /// the second read this function prevents.
 ///
-/// Evaluates every property holding a [`crate::lua::signal::Signal`] once per pass. Non-signal
+/// Evaluates every property holding a [`crate::lua::signal::Signal`]. Non-signal
 /// properties remain untouched in the map. When no signals are present, resolution completes
 /// in place with no allocations or sorting.
 pub fn resolve_properties(mut properties: PropMap, kind: &str, lua: &Lua) -> Result<PropMap, LayoutError> {

@@ -51,8 +51,8 @@ pub(super) async fn run_reboot_marker_task(
     }
 }
 
-/// Pushes only on a change: `/run` is busy and every push re-resolves every surface (ADR-0044
-/// decision 2).
+/// Pushes only on a change: `/run` is busy and every push re-resolves every surface that reads
+/// `updates` (ADR-0244).
 fn publish_reboot_required(marker: &Path, state: &Arc<Mutex<UpdatesState>>, events: &UnboundedSender<UpdatesSignal>) {
     let required = marker.exists();
     let mut guard = state.lock().expect("mutex poisoned");
