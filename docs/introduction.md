@@ -117,7 +117,7 @@ return {
 
 | Command | Does |
 | :--- | :--- |
-| `mantle check` | Evaluates and lays out the config with no Wayland and every capability `nil`, then exits; 1 on error. Run after every edit. [What it misses](guide/cli.md#what-check-covers) |
+| `mantle check` | Evaluates and lays out the config with no Wayland, with every capability `nil` and again with sample data, then exits; 1 on error. Run after every edit. [What it misses](guide/cli.md#what-check-covers) |
 | `mantle -d` | Starts the shell detached and prints its pid |
 | `mantle log -f` | Follows the running shell's output, `print` included |
 | `mantle` | Runs it in the foreground instead |

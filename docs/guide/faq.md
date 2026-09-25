@@ -7,7 +7,7 @@ stays within one page is in that page's Gotchas table.
 
 | Step | Command | Tells you |
 | :--- | :--- | :--- |
-| 1 | `mantle check` | Syntax and top-level errors, with file and line. Node and layout errors as laid out with every capability `nil` ([what check covers](cli.md#what-check-covers)) |
+| 1 | `mantle check` | Syntax and top-level errors, with file and line. Node and layout errors as laid out with every capability `nil`, then with sample data ([what check covers](cli.md#what-check-covers)) |
 | 2 | `mantle log` | Evaluation errors, layout errors, errors raised in callbacks, failed `mantle call`s and refused `mantle set`/`toggle` writes ([output and logging](runtime.md#output-and-logging)) |
 | 3 | `MANTLE_DUMP_LAYOUT=<id>@<output> mantle -vvv` | Every visible node's kind and rect on that surface after each pass ([how do I](cli.md#how-do-i)) |
 
@@ -16,7 +16,7 @@ stays within one page is in that page's Gotchas table.
 | Symptom | Cause | Fix |
 | :--- | :--- | :--- |
 | No surface appears at all after starting | The startup evaluation raised, so there is no scene. The error is in the log | [Evaluation, reload and generations](runtime.md#evaluation-reload-and-generations) |
-| `mantle check` passes, but a surface is empty or lays out wrong | `check` lays out once with every capability `nil` on a 1920x1080 output, so a branch that needs capability data, or a smaller output, went unchecked. The running shell reports those in `mantle log` | [What check covers](cli.md#what-check-covers), then the [layout dump](cli.md#how-do-i) and the [layout model](../nodes/index.md) |
+| `mantle check` passes, but a surface is empty or lays out wrong | `check` lays out on a 1920x1080 output with every capability `nil`, then with one sample value each, so a branch that needs a particular value, or a smaller output, went unchecked. The running shell reports those in `mantle log` | [What check covers](cli.md#what-check-covers), then the [layout dump](cli.md#how-do-i) and the [layout model](../nodes/index.md) |
 | A node shows before its data arrives | The map returns `nil` for `visible`, which counts as absent, and `visible` defaults to `true` | [signals gotchas](signals.md#gotchas) |
 | Two bars on screen | Two shells are running, one per `mantle` start | [cli gotchas](cli.md#gotchas) |
 | The shell vanishes and comes back only after 30 s | The Renderer died three times within 60 s, so the next respawn waits | Fix the error in `mantle log` ([limits](runtime.md#limits-and-budgets)) |
@@ -38,7 +38,7 @@ stays within one page is in that page's Gotchas table.
 
 | Symptom | Cause | Fix |
 | :--- | :--- | :--- |
-| A map raises `attempt to index a nil value` at startup, or a capability reads `nil` | Every capability reads `nil` until its first push, for the whole of `mantle check`, and for good when its backend is missing | [The one rule](signals.md#the-one-rule), [capabilities](../capabilities/index.md) |
+| A map raises `attempt to index a nil value` at startup, or a capability reads `nil` | Every capability reads `nil` until its first push, for `mantle check`'s first pass, and for good when its backend is missing | [The one rule](signals.md#the-one-rule), [capabilities](../capabilities/index.md) |
 | A text never updates | It holds a `:get()` snapshot, not the signal | [The one rule](signals.md#the-one-rule) |
 | A setting is lost after the shell restarts | Named state lives in the Renderer and dies with it | [persistent_table](scripting.md#persistent_table) |
 | A switched view keeps old state, or snaps in without its animation | `visible = false` freezes the subtree in place; two id-less views of the same kind are reused | [Switching views](signals.md#switching-views), [nodes](../nodes/index.md) |

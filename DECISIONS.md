@@ -6515,3 +6515,33 @@ prior scene.
 Cost: a failing pass now runs the getters and item functions of every node after the first
 failure, and later instances publish `geometry` before the rollback, as earlier instances already
 did. Both are what a passing pass runs anyway.
+
+## 0267. `mantle check` lays out again on generated sample pushes
+
+Every capability reads `nil` during check (ADR-0044), and configs guard with `s and s.outputs or {}`,
+so no `list` had a row and no `itemfn` ran: `text { contnet = o.name }` passed check and failed on
+the first push. An empty payload does not help, since `{}.outputs` is `nil` too.
+
+1. **Two passes, one evaluation.** Layout runs with every capability `nil`, then again after one
+   push per capability through the same `hydrate` and `on_change` path a `StateSnapshot` takes,
+   without re-evaluating `shell.lua` (ADR-0044 decision 2). Both passes stay: a config must survive
+   the pre-push state too. Each error is labelled `before capability data` or `with sample
+   capability data`; one both passes raise alike prints once.
+2. **Samples come from the `*State` schemas.** `stubs::samples` walks the same schemars output as
+   the stubs: every array one element, every `Option` `Some`, every map one `"sample"` key, every
+   enum or tagged union its first variant, strings `"sample"`, integers `1`, numbers `0.5`,
+   booleans `true`. A recursive `$ref` (a tray menu's `children`) ends in `[]`.
+3. **A checked-in file, not a runtime hand-off.** `the_generated_stub_matches_what_is_checked_in`
+   writes `renderer/src/check_samples.json` through `shared::check_generated`, and the Renderer
+   `include_str!`s it. A new field or capability restales it and fails the golden test until
+   `just stubs`, as for `mantle.lua`. Renderer tests read the same file, which a Supervisor-to-
+   Renderer hand-off over `CHECK_ENV` would not give them, and the Renderer takes no dependency on
+   the Supervisor.
+
+Rejected: hand-written JSON per capability, which drifts from the types; a
+`#[derive(Sample)]` on every `*State`, which adds a derive to every payload type to restate what the
+schemas already describe; a sample pass per enum variant, which multiplies layout by the variant
+count for errors a config author finds on the first live push.
+
+Ceiling: one value per field. A branch taken only on `false`, a second enum variant or an empty
+list is still reached only by the `nil` pass or not at all.

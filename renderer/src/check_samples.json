@@ -1,0 +1,421 @@
+{
+  "applications": {
+    "by_app_id": {
+      "sample": 1
+    },
+    "entries": [
+      {
+        "comment": "sample",
+        "generic_name": "sample",
+        "icon": "sample",
+        "id": "sample",
+        "keywords": [
+          "sample"
+        ],
+        "name": "sample"
+      }
+    ]
+  },
+  "audio": {
+    "apps": [
+      {
+        "binary": "sample",
+        "icon": "sample",
+        "id": 1,
+        "muted": true,
+        "name": "sample",
+        "pid": 1,
+        "process_name": "sample",
+        "recording": true,
+        "volume": 0.5
+      }
+    ],
+    "balance": 0.5,
+    "bluetooth": [
+      {
+        "active": 1,
+        "codecs": [
+          {
+            "codec": "sample",
+            "description": "sample",
+            "index": 1
+          }
+        ],
+        "device": 1,
+        "mac": "sample"
+      }
+    ],
+    "muted": true,
+    "sinks": [
+      {
+        "active": true,
+        "bus": "sample",
+        "form_factor": "sample",
+        "icon": "sample",
+        "id": 1,
+        "name": "sample",
+        "port": "sample"
+      }
+    ],
+    "source_muted": true,
+    "source_volume": 0.5,
+    "sources": [
+      {
+        "active": true,
+        "bus": "sample",
+        "form_factor": "sample",
+        "icon": "sample",
+        "id": 1,
+        "name": "sample",
+        "port": "sample"
+      }
+    ],
+    "volume": 0.5
+  },
+  "battery": {
+    "percent": 1,
+    "present": true,
+    "state": "Unknown",
+    "time_to_empty": 1,
+    "time_to_full": 1
+  },
+  "bluetooth": {
+    "available": true,
+    "connected_devices": [
+      {
+        "battery": 1,
+        "busy": "pairing",
+        "category": "sample",
+        "mac": "sample",
+        "name": "sample"
+      }
+    ],
+    "discoverable": true,
+    "discovered_devices": [
+      {
+        "blocked": true,
+        "busy": "pairing",
+        "mac": "sample",
+        "name": "sample",
+        "paired": true
+      }
+    ],
+    "discovering": true,
+    "enabled": true,
+    "paired_devices": [
+      {
+        "blocked": true,
+        "busy": "pairing",
+        "category": "sample",
+        "mac": "sample",
+        "name": "sample"
+      }
+    ],
+    "pairing_request": {
+      "code": "sample",
+      "kind": "confirm",
+      "mac": "sample",
+      "name": "sample"
+    }
+  },
+  "brightness": {
+    "percent": 1
+  },
+  "files": {
+    "folders": {
+      "sample": {
+        "entries": [
+          {
+            "modified": 1,
+            "name": "sample",
+            "path": "sample"
+          }
+        ],
+        "error": "sample",
+        "ready": true
+      }
+    }
+  },
+  "idle": {
+    "inhibited": true,
+    "inhibitors": [
+      {
+        "who": "sample",
+        "why": "sample"
+      }
+    ]
+  },
+  "keyboard": {
+    "active_layout": "sample",
+    "active_layout_index": 1,
+    "backlight_pct": 1,
+    "caps_lock": true,
+    "layout_count": 1,
+    "num_lock": true,
+    "scroll_lock": true
+  },
+  "lock": {
+    "active": true,
+    "attempts": 1,
+    "authenticating": true,
+    "error": "sample",
+    "unlocking": true
+  },
+  "mpris": {
+    "players": [
+      {
+        "album_art_path": "sample",
+        "artist": "sample",
+        "desktop_entry": "sample",
+        "id": "sample",
+        "identity": "sample",
+        "length": 1,
+        "play_state": "sample",
+        "position": 1,
+        "position_updated_at": 1,
+        "title": "sample",
+        "url": "sample"
+      }
+    ]
+  },
+  "network": {
+    "available_networks": [
+      {
+        "active": true,
+        "band": "sample",
+        "saved": true,
+        "secure": true,
+        "ssid": "sample",
+        "strength": 1
+      }
+    ],
+    "connect_error": {
+      "message": "sample",
+      "ssid": "sample"
+    },
+    "connected": true,
+    "connecting_ssid": "sample",
+    "ethernet_enabled": true,
+    "ethernet_ip": "sample",
+    "ethernet_present": true,
+    "ethernet_speed": 1,
+    "networking_enabled": true,
+    "password_ssid": "sample",
+    "scanning": true,
+    "ssid": "sample",
+    "strength": 1,
+    "wifi_enabled": true,
+    "wifi_ip": "sample",
+    "wifi_present": true
+  },
+  "notifications": {
+    "dnd": true,
+    "feed": [
+      {
+        "actions": [
+          {
+            "icon_name": "sample",
+            "key": "sample",
+            "label": "sample"
+          }
+        ],
+        "app_icon": "sample",
+        "app_name": "sample",
+        "body": [
+          {
+            "bold": true,
+            "href": "sample",
+            "italic": true,
+            "kind": "text",
+            "text": "sample",
+            "underline": true
+          }
+        ],
+        "desktop_entry": "sample",
+        "expired": true,
+        "has_default_action": true,
+        "has_reply": true,
+        "id": 1,
+        "image_path": "sample",
+        "reply_placeholder": "sample",
+        "summary": "sample",
+        "timestamp": 1,
+        "transient": true,
+        "urgency": "low"
+      }
+    ]
+  },
+  "polkit": {
+    "action_id": "sample",
+    "active": true,
+    "authenticating": true,
+    "error": "sample",
+    "icon_name": "sample",
+    "message": "sample"
+  },
+  "power": {
+    "active_profile": "sample",
+    "energy_rate": 0.5,
+    "on_battery": true,
+    "profiles": [
+      "sample"
+    ]
+  },
+  "privacy": {
+    "camera_users": [
+      {
+        "app_name": "sample"
+      }
+    ],
+    "microphone_users": [
+      {
+        "app_name": "sample"
+      }
+    ],
+    "screencast_users": [
+      {
+        "app_name": "sample"
+      }
+    ]
+  },
+  "processes": {
+    "sessions": {
+      "sample": {
+        "exit_code": 1,
+        "pid": 1,
+        "running": true,
+        "start_error": "sample",
+        "started_at": 1
+      }
+    }
+  },
+  "storage": {
+    "files": {
+      "sample": "sample"
+    }
+  },
+  "sysinfo": {
+    "cpu_percent": 1,
+    "ram_percent": 1,
+    "swap_percent": 1,
+    "temp_cores": [
+      1
+    ],
+    "temp_gpu": 1
+  },
+  "system": {
+    "monotonic": 1,
+    "time": 1
+  },
+  "tray": {
+    "items": [
+      {
+        "attention_icon_name": "sample",
+        "attention_icon_path": "sample",
+        "icon_name": "sample",
+        "icon_path": "sample",
+        "id": "sample",
+        "item_is_menu": true,
+        "menu": [
+          {
+            "children": [],
+            "enabled": true,
+            "icon_name": "sample",
+            "id": 1,
+            "label": "sample",
+            "menu_type": "sample",
+            "toggle_state": 1,
+            "toggle_type": "sample"
+          }
+        ],
+        "name": "sample",
+        "overlay_icon_name": "sample",
+        "overlay_icon_path": "sample",
+        "status": "sample",
+        "tooltip": "sample"
+      }
+    ]
+  },
+  "updates": {
+    "aur_error": "sample",
+    "aur_helper": "sample",
+    "check_error": "sample",
+    "checking": true,
+    "consecutive_check_failures": 1,
+    "count": 1,
+    "install_current_package": "sample",
+    "install_current_step": 1,
+    "install_error": "sample",
+    "install_exit_code": 1,
+    "install_finished_at": 1,
+    "install_log": [
+      "sample"
+    ],
+    "install_total_steps": 1,
+    "installing": true,
+    "last_successful_check": 1,
+    "package_manager": "sample",
+    "packages": [
+      {
+        "download_size": 1,
+        "installed_size": 1,
+        "name": "sample",
+        "new_version": "sample",
+        "old_version": "sample",
+        "repository": "sample"
+      }
+    ],
+    "reboot_required": true
+  },
+  "windows": {
+    "source": "sample",
+    "windows": [
+      {
+        "app_id": "sample",
+        "floating": true,
+        "focused": true,
+        "fullscreen": true,
+        "id": "sample",
+        "maximized": true,
+        "minimized": true,
+        "output": "sample",
+        "title": "sample",
+        "workspace_id": 1
+      }
+    ]
+  },
+  "workspaces": {
+    "active_client": {
+      "class": "sample",
+      "is_floating": true,
+      "is_fullscreen": true,
+      "title": "sample"
+    },
+    "compositor": "sample",
+    "outputs": [
+      {
+        "active_workspace": 1,
+        "focused_workspace": 1,
+        "name": "sample",
+        "workspaces": [
+          {
+            "app_id": "sample",
+            "id": 1,
+            "idx": 1,
+            "name": "sample",
+            "populated": true
+          }
+        ]
+      }
+    ],
+    "overview_open": true,
+    "special": [
+      {
+        "app_id": "sample",
+        "name": "sample",
+        "populated": true,
+        "shown_on": "sample"
+      }
+    ]
+  }
+}

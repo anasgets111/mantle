@@ -15,6 +15,8 @@
 
 use std::collections::BTreeMap;
 
+mod samples;
+
 use schemars::{Schema, schema_for};
 
 /// The sole capability-to-payload/action mapping. `push_snapshot` takes `&impl Serialize`, so
@@ -640,11 +642,14 @@ mantle = {}
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeSet;
-    /// `lua-meta/mantle.lua` and every `docs/capabilities/<name>.md`. A version bump alone restales
+    /// `lua-meta/mantle.lua`, `mantle check`'s sample payloads and every `docs/capabilities/<name>.md`. A version bump alone restales
     /// `mantle.lua`, which stamps the version.
     #[test]
     fn the_generated_stub_matches_what_is_checked_in() {
-        let mut files = vec![("lua-meta/mantle.lua".to_string(), super::render())];
+        let mut files = vec![
+            ("lua-meta/mantle.lua".to_string(), super::render()),
+            ("renderer/src/check_samples.json".to_string(), super::samples::render()),
+        ];
         for (capability, payload, actions) in super::capability_schemas() {
             let intro = std::fs::read_to_string(format!(
                 "{}/../docs/capabilities/intro/{capability}.md",

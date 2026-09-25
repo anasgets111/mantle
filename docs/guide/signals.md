@@ -32,7 +32,7 @@ return panel {
 | A table with a signal inside, e.g. `{ left = sig }` | Refused at layout. Derive the whole table: `sig:map(function(v) return { left = v } end)` |
 
 A capability (`mantle.<name>`, see [capabilities](../capabilities/index.md)) is a signal too. It reads `nil`
-until its first snapshot arrives (hydration), and it stays `nil` for the whole of `mantle check`.
+until its first snapshot arrives (hydration), and in `mantle check`'s first pass, before a sample push.
 Every function that reads a capability must handle `nil`. When a signal resolves to `nil`, its
 property counts as absent and takes the property's default.
 
@@ -303,7 +303,7 @@ compositor syntax: [cli](cli.md#cli). For a keybind that runs Lua code, use
 | Trap | Fix |
 | :--- | :--- |
 | `content = sig:get()` never updates | Pass `sig` or `sig:map(...)`; `:get()` is a snapshot |
-| A map errors with `attempt to index a nil value` at startup | Capabilities read `nil` before hydration and in `mantle check`; return a fallback for `nil` |
+| A map errors with `attempt to index a nil value` at startup | Capabilities read `nil` before hydration and in `mantle check`'s first pass; return a fallback for `nil` |
 | `visible = cap:map(function(c) return c and c.on end)` shows the node before hydration | `nil` means absent, and `visible` defaults to `true`; return `false` explicitly |
 | `margin = { left = sig }` fails at layout: `` `margin.left` is a Signal handle `` | Signals inside a property table do not resolve. Derive the whole table with `:map` or `computed`; the error's `:get()` advice gives a snapshot |
 | A map that returns a signal fails with `a Signal resolved to another Signal` | Resolution happens once; return a plain value, or combine the sources with `computed` |

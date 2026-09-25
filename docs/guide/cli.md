@@ -208,20 +208,27 @@ never equals, so toggling to a table always sets it.
 ## What check covers
 
 `mantle check` evaluates `shell.lua` and its `require`s exactly as a start does, with no
-Wayland, no GPU, and every capability reading `nil`. Then it lays every surface out once with the
-real layout code, on one 1920x1080 output plus one per `monitor` name a panel pins. It prints
-`<path>: ok, N surface(s)` and one `<role> <id>` line per surface, preceded by anything the config
-`print`ed. A layout error prints as `<path>: layout: <error>` and exits 1. With more than one
-broken node, `<error>` is `N nodes failed:` and then one node per line: the first 20, then
-`and N more`. A mistake repeated on every output, or by every item of a `list`, is listed once.
+Wayland, no GPU, and every capability reading `nil`. Then it lays every surface out twice with the
+real layout code, on one 1920x1080 output plus one per `monitor` name a panel pins:
+
+| Pass | Capabilities read | Catches |
+| :--- | :--- | :--- |
+| `before capability data` | `nil`, as at start before the first push | Code that forgets the `nil` case |
+| `with sample capability data` | One sample push each: every list has one entry, every optional field is set, every string is `"sample"`, every integer `1` | Typos and bad properties in a list `itemfn` or a branch that only shows with data |
+
+It prints `<path>: ok, N surface(s)` and one `<role> <id>` line per surface, preceded by anything
+the config `print`ed. A layout error prints as `<path>: <pass>: layout: <error>`, once per failing
+pass, and exits 1. With more than one broken node, `<error>` is `N nodes failed:` and then one node
+per line: the first 20, then `and N more`. A mistake repeated on every output, or by every item of a
+`list`, is listed once.
 
 | Caught | Not caught |
 | :--- | :--- |
 | Lua syntax errors, in any required module | Handler errors: `on_click`, `on_change`, `action`, `timer` never fire |
-| Runtime errors at the top level of `shell.lua` and its modules | Branches that only show with capability data, since every capability is `nil` |
+| Runtime errors at the top level of `shell.lua` and its modules | Branches that need a particular value: the samples take the first enum value, `true` and non-empty lists |
 | A top-level return that is not surfaces, including `require`'s second value | `process.run` output: commands are queued and never run |
 | Surface and node properties: unknown names, wrong value types, bad colours, out-of-range sizes | Fonts, images, shaders and the compositor's response |
-| Errors in `:map`, `computed`, list `itemfn`s and function `child` builders, as laid out with `nil` capabilities | Sizes that only fail on a smaller or scaled output |
+| Errors in `:map`, `computed`, list `itemfn`s and function `child` builders, with `nil` and with sample capabilities | Sizes that only fail on a smaller or scaled output |
 | More than one `lock`, and a missing `shell.lua` | |
 
 When the stubs `mantle init` wrote differ from this `mantle`, `check` also prints one line asking

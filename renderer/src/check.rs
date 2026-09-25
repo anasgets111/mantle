@@ -3,8 +3,8 @@
 //! `shared::CHECK_ENV` and forwards the exit code.
 //!
 //! No Wayland, surfaces, or GPU: layout runs through the production `Scene` apply on stand-in
-//! outputs. Matches pre-first-`StateSnapshot` evaluation: every capability signal reads `nil`
-//! (ADR-0044).
+//! outputs. Evaluation matches a boot's, before the first `StateSnapshot`: every capability signal
+//! reads `nil` (ADR-0044). Layout then runs again on sample pushes (ADR-0267).
 
 use std::path::Path;
 
@@ -31,11 +31,26 @@ fn role_of(spec: &SurfaceSpec) -> &'static str {
 
 /// Evaluates and lays out `shell.lua` under `config_dir` and returns the report, or the error a
 /// config author needs to read.
+///
+/// Lays out twice, as a boot does: once with every capability `nil`, then again after one sample
+/// push per capability (ADR-0267), so an `itemfn` runs on a row. Each failing pass is reported.
 pub fn run(config_dir: &Path) -> Result<String, String> {
     let shell_lua = config_dir.join("shell.lua");
-    let (output, specs, _, loader) = evaluate(config_dir)?;
-    lay_out(&output, &specs, &loader, &ShapingHandle::spawn(), LogicalSize { width: 1920.0, height: 1080.0 })
-        .map_err(|err| format!("{}: {err}", shell_lua.display()))?;
+    let (output, specs, namespace, loader) = evaluate(config_dir)?;
+    let shaping = ShapingHandle::spawn();
+    let size = LogicalSize { width: 1920.0, height: 1080.0 };
+    let before = lay_out(&output, &specs, &loader, &shaping, size).err();
+    push_samples(&namespace, &loader)
+        .map_err(|err| format!("{}: sample capability data: {err}", shell_lua.display()))?;
+    // A static layout error fails both passes alike; name it once.
+    let after = lay_out(&output, &specs, &loader, &shaping, size).err().filter(|after| Some(after) != before.as_ref());
+    let failures: Vec<String> = [("before capability data", before), ("with sample capability data", after)]
+        .into_iter()
+        .filter_map(|(pass, err)| Some(format!("{}: {pass}: {}", shell_lua.display(), err?)))
+        .collect();
+    if !failures.is_empty() {
+        return Err(failures.join("\n"));
+    }
     let mut report = format!("{}: ok, {} surface(s)\n", shell_lua.display(), specs.len());
     for spec in &specs {
         report.push_str(&format!("  {:<7} {}\n", role_of(spec), spec.declared_id()));
@@ -68,6 +83,19 @@ fn lay_out(
         .apply_locked(&output.surfaces, &instances, shaping, loader.lua(), false)
         .map_err(|err| format!("layout: {err}"))?;
     Ok((scene, instances))
+}
+
+/// One `StateSnapshot`-shaped push per capability from `check_samples.json`, the file
+/// `the_generated_stub_matches_what_is_checked_in` writes from the Supervisor's `*State` schemas.
+fn push_samples(namespace: &Namespace, loader: &Loader) -> mlua::Result<()> {
+    let samples: serde_json::Map<String, serde_json::Value> =
+        serde_json::from_str(include_str!("check_samples.json")).map_err(mlua::Error::external)?;
+    for (capability, payload) in &samples {
+        let Some(handle) = namespace.capabilities.get(capability) else { continue };
+        let previous = handle.hydrate(loader.to_lua_value(payload)?, 1);
+        handle.notify_change(loader.lua(), previous);
+    }
+    Ok(())
 }
 
 /// `run`'s evaluation, returning the `Loader` last: the node tables in `LoadOutput` live in its
@@ -143,7 +171,27 @@ mod tests {
         )
         .unwrap();
         let err = super::run(dir.path()).unwrap_err();
-        assert!(err.contains("shell.lua: layout:"), "{err}");
+        assert!(err.contains("shell.lua: before capability data: layout:"), "{err}");
+    }
+
+    /// An `itemfn` runs only once a `list` source has rows, and every capability reads `nil` until
+    /// its first push, so only the sample pass reaches this typo.
+    #[test]
+    fn a_typo_inside_an_itemfn_fails_the_check_with_sample_capability_data() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("shell.lua"),
+            r#"return { panel { id = "p", layer = "Top", anchor = { top = true }, width = "Fill", height = 30,
+    child = list {
+        source = mantle.workspaces:map(function(s) return s and s.outputs or {} end),
+        itemfn = function(o) return text { contnet = o.name } end,
+    } } }
+"#,
+        )
+        .unwrap();
+        let err = super::run(dir.path()).unwrap_err();
+        assert!(err.contains("with sample capability data"), "the failing pass must be named: {err}");
+        assert!(err.contains("contnet"), "{err}");
     }
 }
 

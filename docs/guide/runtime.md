@@ -268,7 +268,7 @@ started `mantle` in the foreground also gets a copy.
 
 | Step | Command | Tells you |
 | :--- | :--- | :--- |
-| 1 | `mantle check` | Syntax and top-level errors, with file and line. Node and layout errors as laid out with every capability `nil` ([what check covers](cli.md#what-check-covers)) |
+| 1 | `mantle check` | Syntax and top-level errors, with file and line. Node and layout errors as laid out with every capability `nil`, then with sample data ([what check covers](cli.md#what-check-covers)) |
 | 2 | `mantle log` | `shell.lua re-evaluation failed` (evaluation error) or `the re-evaluated config failed to apply` (layout error, previous scene kept), and errors raised in callbacks |
 | 3 | Draw `mantle.rescue` | The evaluation or apply error on screen, as in the [banner above](#evaluation-reload-and-generations) |
 
