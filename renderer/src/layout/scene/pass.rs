@@ -300,6 +300,7 @@ pub(super) fn prepare(
     let own_axis = main_axis_of(kind, &node.properties)?;
 
     node.children.reserve(fresh_children.len());
+    let mut failed = Vec::new();
     for (index, (fresh_child, candidate)) in fresh_children.into_iter().zip(matched_candidates).enumerate() {
         let VirtualNode { kind: child_kind, properties: child_raw } = fresh_child;
         // Every failure below names this child, so the message that reaches a human is the path
@@ -324,12 +325,11 @@ pub(super) fn prepare(
         // recursive call, because the style the call is handed is built from them and a second
         // read of an impure `margin` could answer differently. Tweens go between the two: the
         // parse must see the displayed value, not the target (ADR-0145).
-        let mut child_properties = node::resolve_properties(child_raw, child_kind, lua).map_err(here)?;
-        let child_tweens =
-            node::retarget(child_kind, reusable.as_ref().map(tween_state), &mut child_properties, now, lua)
-                .map_err(here)?;
-        let child_style = LayoutStyle::parse(&child_properties).map_err(here)?;
-        node.children.push(
+        let child = (|| {
+            let mut child_properties = node::resolve_properties(child_raw, child_kind, lua)?;
+            let child_tweens =
+                node::retarget(child_kind, reusable.as_ref().map(tween_state), &mut child_properties, now, lua)?;
+            let child_style = LayoutStyle::parse(&child_properties)?;
             prepare(
                 scene,
                 tree,
@@ -344,8 +344,19 @@ pub(super) fn prepare(
                 now,
                 depth + 1,
             )
-            .map_err(here)?,
-        );
+        })();
+        // A broken child does not stop its siblings, so one pass names every broken node. Too deep
+        // does: a node holding itself twice would otherwise walk 2^64 paths to the cap.
+        match child {
+            Ok(child) => node.children.push(child),
+            Err(err @ LayoutError::TreeTooDeep { .. }) => return Err(err),
+            Err(err) => failed.extend(err.into_each().into_iter().map(here)),
+        }
+    }
+    // The rest of this node, its leavers and its taffy children, is skipped: built around a hole,
+    // it could only fail again for a child already reported.
+    if !failed.is_empty() {
+        return Err(LayoutError::many(failed));
     }
 
     // The ones on their way out: those already leaving move on, those the tree just dropped
@@ -722,6 +733,93 @@ mod tests {
             "on `bar@TEST`: column[0] > row[1] > text[1] > expected a string or an array of runs, got Integer(5)",
             "the path must lead to the guilty node, and neither sibling text node is on it"
         );
+    }
+
+    /// Six broken widgets took six restarts when a pass stopped at the first.
+    #[test]
+    fn a_failed_pass_reports_every_broken_node_and_keeps_the_prior_scene() {
+        let mut scene = Scene::new();
+        let shaping = ShapingHandle::spawn();
+        let (lua, good) = surface_from(r#"panel { id = "bar", child = rect { width = 10, height = 10 } }"#);
+        apply_at(&mut scene, &[good], full(), &shaping, &lua).unwrap();
+        let (lua, bad) = surface_from(
+            r#"panel { id = "bar", child = column { children = {
+                   text { content = 1 },
+                   row { children = { text { content = "fine" }, text { content = 2 } } },
+                   rect { width = "wide" },
+               } } }"#,
+        );
+
+        let err = apply_at(&mut scene, &[bad], full(), &shaping, &lua).unwrap_err().to_string();
+
+        let lines: Vec<&str> = err.lines().collect();
+        assert_eq!(lines.len(), 4, "a count, then one line per broken node: {err}");
+        assert_eq!(lines[0], "3 nodes failed:");
+        assert!(lines[1].contains("on `bar@TEST`: column[0] > text[0] > expected a string"), "{err}");
+        assert!(lines[2].contains("on `bar@TEST`: column[0] > row[1] > text[1] > expected a string"), "{err}");
+        assert!(lines[3].contains("on `bar@TEST`: column[0] > rect[2] >"), "{err}");
+        assert_eq!(scene.surface("bar@TEST").unwrap().children[0].kind, "rect", "the prior scene stays");
+    }
+
+    /// A misspelled key fails while the parent reads its `children`, before the per-child walk. A
+    /// `list` repeats its `itemfn`'s mistake on every item, which is one mistake.
+    #[test]
+    fn a_failed_pass_reports_every_misspelled_child_and_a_list_mistake_once() {
+        let (lua, surface) = surface_from(
+            r##"panel { id = "bar", child = column { children = {
+                   row { children = { text { contnet = "a" }, rect { color = "#fff" } } },
+                   list { source = { 1, 2, 3 }, itemfn = function(n) return text { contnet = n } end },
+               } } }"##,
+        );
+
+        let err =
+            apply_at(&mut Scene::new(), &[surface], full(), &ShapingHandle::spawn(), &lua).unwrap_err().to_string();
+
+        let lines: Vec<&str> = err.lines().collect();
+        assert_eq!(lines.len(), 4, "{err}");
+        assert!(lines[1].contains("`text` has no property `contnet`"), "{err}");
+        assert!(lines[2].contains("`rect` has no property `color`"), "{err}");
+        assert!(lines[3].contains("list[1] > ") && lines[3].contains("`contnet`"), "{err}");
+    }
+
+    /// A surface on two outputs repeats each mistake; another surface's still counts.
+    #[test]
+    fn a_failed_pass_reports_a_mistake_once_across_outputs_and_caps_the_list() {
+        let shaping = ShapingHandle::spawn();
+        let lua = mlua::Lua::new();
+        register_node_constructors(&lua).unwrap();
+        crate::lua::signal::register(&lua, crate::lua::signal::DirtyFlag::new()).unwrap();
+        let surfaces: Vec<VirtualNode> = lua
+            .load(
+                r#"local broken = {}
+                   for i = 1, 30 do broken[i] = text { content = i } end
+                   return {
+                       panel { id = "bar", child = text { content = 0 } },
+                       panel { id = "dock", child = column { children = broken } },
+                   }"#,
+            )
+            .eval::<Vec<mlua::Table>>()
+            .unwrap()
+            .iter()
+            .map(|table| deserialize_lua_table(table).unwrap())
+            .collect();
+        let on = |declared: &str, output: &str| SurfaceInstance {
+            instance_id: format!("{declared}@{output}"),
+            declared_id: declared.to_string(),
+            output: output.to_string(),
+            available: full(),
+            measured_axes: (false, false),
+        };
+        let instances = [on("bar", "LEFT"), on("bar", "RIGHT"), on("dock", "LEFT")];
+
+        let err = Scene::new().apply(&surfaces, &instances, &shaping, &lua).unwrap_err().to_string();
+
+        let lines: Vec<&str> = err.lines().collect();
+        assert_eq!(lines[0], "31 nodes failed:", "bar once, not once per output, and dock's 30: {err}");
+        assert!(lines[1].contains("on `bar@LEFT`: text[0] >"), "{err}");
+        assert!(lines[2].contains("on `dock@LEFT`: column[0] > text[0] >"), "{err}");
+        assert_eq!(lines.len(), 22, "twenty listed, then the rest counted: {err}");
+        assert_eq!(lines[21], "  and 11 more");
     }
 
     #[test]

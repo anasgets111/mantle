@@ -211,7 +211,9 @@ never equals, so toggling to a table always sets it.
 Wayland, no GPU, and every capability reading `nil`. Then it lays every surface out once with the
 real layout code, on one 1920x1080 output plus one per `monitor` name a panel pins. It prints
 `<path>: ok, N surface(s)` and one `<role> <id>` line per surface, preceded by anything the config
-`print`ed. A layout error prints as `<path>: layout: <error>` and exits 1.
+`print`ed. A layout error prints as `<path>: layout: <error>` and exits 1. With more than one
+broken node, `<error>` is `N nodes failed:` and then one node per line: the first 20, then
+`and N more`. A mistake repeated on every output, or by every item of a `list`, is listed once.
 
 | Caught | Not caught |
 | :--- | :--- |

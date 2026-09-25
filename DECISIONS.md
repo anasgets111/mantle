@@ -6490,3 +6490,28 @@ flag, so it was a retry per wake, not a spin.
 
 Trade-off: a computed that fails on impure input (`os.time`, a file) with no signal behind it now
 stays failed until the next change instead of the next wake. The rescue banner still shows it.
+
+## 0266. A failed pass collects every broken node before it rolls back
+
+A pass stopped at its first error, so six broken widgets took six restarts. It now keeps walking
+and reports them all; the outcome is unchanged: any error rejects the whole apply and restores the
+prior scene.
+
+1. **Siblings, list items and instances continue.** `prepare`'s child loop, `children` and
+   `list` deserialization, and `Scene::apply_visiting`'s instance loop record an error and move
+   on. Each record is one node's error, flattened into `LayoutError::Several`.
+2. **A failed node's own remaining work is skipped.** Once any child fails, its parent returns
+   before leavers and taffy wiring, and a failed instance is not solved or published. That work
+   is built around a hole and could only fail again for a node already reported. A node whose own
+   properties fail is not descended into: its children are unknown or would be walked under a
+   parent the report already names.
+3. **Two stops stay immediate.** `TreeTooDeep` returns at once: a node holding itself twice would
+   walk 2^64 paths to the cap. An exceeded pass budget returns `PassBudgetExceeded` after the
+   instance it hit.
+4. **Once each, 20 shown.** Identical messages collapse (every item of one `itemfn`), and so does
+   one declaration's error on several outputs, kept under its first instance id. The report lists
+   20 and counts the rest.
+
+Cost: a failing pass now runs the getters and item functions of every node after the first
+failure, and later instances publish `geometry` before the rollback, as earlier instances already
+did. Both are what a passing pass runs anyway.

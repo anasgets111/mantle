@@ -488,14 +488,25 @@ impl Scene {
         let blame_the_budget =
             |outcome: LayoutError| if budget.exceeded() { LayoutError::PassBudgetExceeded } else { outcome };
 
+        // Every instance runs even after one fails, so the report covers the whole scene. One
+        // declaration on three outputs is one mistake, reported once under its first instance.
+        let mut failed = Vec::new();
+        let mut seen = std::collections::HashSet::new();
         for instance in instances {
             if let Err(err) = self.apply_one_instance(fresh_surfaces, instance, shaping, lua, now, rollback) {
                 // Blame first: a hook interruption is about the pass, not this instance.
-                return Err(match blame_the_budget(err) {
-                    LayoutError::PassBudgetExceeded => LayoutError::PassBudgetExceeded,
-                    other => other.on_surface(&instance.instance_id),
-                });
+                if budget.exceeded() {
+                    return Err(LayoutError::PassBudgetExceeded);
+                }
+                for err in err.into_each() {
+                    if seen.insert((instance.declared_id.as_str(), err.to_string())) {
+                        failed.push(err.on_surface(&instance.instance_id));
+                    }
+                }
             }
+        }
+        if !failed.is_empty() {
+            return Err(LayoutError::many(failed));
         }
         admit(self).map_err(blame_the_budget)?;
         // Lua can catch the hook error with `pcall`; the final deadline check cannot be caught.

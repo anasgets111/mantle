@@ -61,6 +61,9 @@ so everything since the rename from Obelisk sits under Unreleased.
   the write ([CLI](guide/cli.md#values-and-arguments)).
 - `mantle check` lays the config out on stand-in outputs and fails on a layout error, and says
   when the stubs `mantle init` wrote are out of date.
+- A pass that fails names every broken node, one per line, in `mantle check`, the log and
+  `mantle.rescue`, instead of stopping at the first. It lists 20, then counts the rest
+  ([what check covers](guide/cli.md#what-check-covers)).
 - The `.luarc.json` from `mantle init` warns on unused locals and on the `type-check`,
   `unbalanced`, `strict` and `global` diagnostic groups in every file.
 - `mantle.rescue` is set when a reload, or a live update, fails to apply, and clears only when a

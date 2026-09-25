@@ -130,9 +130,44 @@ pub enum LayoutError {
         "the layout pass exceeded its CPU budget -- a property getter or an `__index` metamethod that does not return?"
     )]
     PassBudgetExceeded,
+    /// Every node a failed pass refused, so one run names them all rather than the first. Flat:
+    /// each entry is one node's error, never another `Several`.
+    #[error("{}", several(.0))]
+    Several(Vec<LayoutError>),
+}
+
+/// Most failures one report lists. A config broken past this gets the count, and twenty are
+/// enough to start on.
+const SHOWN_FAILURES: usize = 20;
+
+fn several(errors: &[LayoutError]) -> String {
+    let mut out = format!("{} nodes failed:", errors.len());
+    for err in errors.iter().take(SHOWN_FAILURES) {
+        out.push_str(&format!("\n  {err}"));
+    }
+    if errors.len() > SHOWN_FAILURES {
+        out.push_str(&format!("\n  and {} more", errors.len() - SHOWN_FAILURES));
+    }
+    out
 }
 
 impl LayoutError {
+    /// One error as itself, several as [`Self::Several`], each message once. `errors` is flat and
+    /// never empty.
+    pub(crate) fn many(errors: Vec<Self>) -> Self {
+        let mut seen = std::collections::HashSet::new();
+        let mut errors: Vec<Self> = errors.into_iter().filter(|err| seen.insert(err.to_string())).collect();
+        if errors.len() == 1 { errors.remove(0) } else { Self::Several(errors) }
+    }
+
+    /// The single errors inside, for a caller adding a path segment or a surface to each.
+    pub(crate) fn into_each(self) -> Vec<Self> {
+        match self {
+            Self::Several(errors) => errors,
+            other => vec![other],
+        }
+    }
+
     /// Names the surface this came from, added by `layout::scene::Scene::apply_admitting` as it
     /// walks instances. A whole-scene re-resolve reported one property name for a config with a
     /// dozen surfaces (`invalid value for \`background\`` and nothing else), leaving a reader to

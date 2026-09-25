@@ -137,7 +137,7 @@ How each failure ends:
 | Startup evaluation raises | No scene. Surfaces paint nothing. `mantle.rescue` is set as below. The next successful reload brings the shell up |
 | Startup evaluation succeeds but the scene rejects it | No scene. `mantle.rescue` is set |
 | Reload evaluation raises (syntax error, runtime error, bad top-level return) | The previous scene stays on screen. [`mantle.rescue`](../capabilities/index.md#renderer-members) becomes `{ is_rescue = true, error_log = "<the error>" }`. The error is logged |
-| Reload evaluates but the scene rejects it (bad property value, a map over budget) | The previous scene stays. `mantle.rescue` is set. The error is logged |
+| Reload evaluates but the scene rejects it (bad property value, a map over budget) | The previous scene stays. `mantle.rescue` is set. The error is logged, one line per broken node, as [`mantle check`](cli.md#what-check-covers) prints it |
 | A live update fails later (a pushed value breaks a map) | The previous scene stays. `mantle.rescue` is set until a pass applies. Warning logged |
 | The session lock is refused, or the compositor ends it | `mantle.rescue` becomes `{ is_rescue = true, error_log = "<the reason>" }`. The error is logged ([lock](../surfaces/lock.md)) |
 | A reload would recreate the lock surface while locked | Refused with a warning and `mantle.rescue`; save again after unlocking |

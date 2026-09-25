@@ -134,6 +134,8 @@ impl Prop for Children {
         // A config controls `#children`, and a sparse table's border can be enormous, so the hint is
         // capped at what the loop below accepts.
         let mut children = Vec::with_capacity(table.raw_len().min(MAX_ARRAY_ELEMENTS));
+        // A misspelled child does not hide its siblings' mistakes.
+        let mut failed = Vec::new();
         // By index to `#children`, not `sequence_values`: that stopped at the first nil, silently
         // dropping every child after it.
         for index in 1..=table.raw_len() {
@@ -147,7 +149,13 @@ impl Prop for Children {
                     format!("expected a node table at index {index}, got {}", preview_for_error(&entry)),
                 ));
             };
-            children.push(deserialize_child(&entry, "children")?);
+            match deserialize_child(&entry, "children") {
+                Ok(child) => children.push(child),
+                Err(err) => failed.push(err),
+            }
+        }
+        if !failed.is_empty() {
+            return Err(LayoutError::many(failed));
         }
         Ok(children)
     }
@@ -213,46 +221,57 @@ pub fn parse_list_children(properties: &PropMap) -> Result<Vec<VirtualNode>, Lay
     };
     let mut children = Vec::with_capacity(source.raw_len().min(limit.unwrap_or(MAX_ARRAY_ELEMENTS)));
     let mut seen_keys: HashSet<String> = HashSet::new();
-    for element in source.sequence_values::<Value>() {
-        if limit.is_some_and(|lim| children.len() == lim) {
+    // A broken item does not stop the rest; every item repeating one `itemfn` mistake is one
+    // entry after `LayoutError::many`.
+    let mut failed = Vec::new();
+    for (index, element) in source.sequence_values::<Value>().enumerate() {
+        if limit.is_some_and(|lim| index == lim) {
             break;
         }
-        if children.len() == MAX_ARRAY_ELEMENTS {
+        if index == MAX_ARRAY_ELEMENTS {
             return Err(invalid("source", format!("more than {MAX_ARRAY_ELEMENTS} items in one list")));
         }
         let element = element.map_err(|e| invalid("source", e.to_string()))?;
 
-        let built = itemfn.call::<Value>(&element).map_err(|e| invalid("itemfn", e.to_string()))?;
-        let Value::Table(built_table) = built else {
-            return Err(invalid("itemfn", format!("expected a node table, got {}", preview_for_error(&built))));
-        };
-        let mut node = deserialize_child(&built_table, "itemfn")?;
-
-        if let Some(key_fn) = &key_fn {
-            // Moved, not borrowed: a borrow would keep this item rooted for the rest of the loop
-            // body, which a `key` collecting garbage behind a weak table can see.
-            let key_value = key_fn.call::<Value>(element).map_err(|e| invalid("key", e.to_string()))?;
-            let Value::String(key_str) = key_value else {
-                return Err(invalid(
-                    "key",
-                    format!("expected key(item) to return a string, got {}", preview_for_error(&key_value)),
-                ));
+        let item = (|| {
+            let built = itemfn.call::<Value>(&element).map_err(|e| invalid("itemfn", e.to_string()))?;
+            let Value::Table(built_table) = built else {
+                return Err(invalid("itemfn", format!("expected a node table, got {}", preview_for_error(&built))));
             };
-            let key_text = key_str.to_str().map(|s| (*s).to_owned()).map_err(|_| {
-                invalid(
-                    "key",
-                    "must be valid UTF-8 -- a key is compared for equality, so it cannot be converted lossily",
-                )
-            })?;
-            if seen_keys.contains(&key_text) {
-                return Err(invalid("key", format!("duplicate key `{key_text}` among list items")));
-            }
-            seen_keys.insert(key_text);
-            // List identity wins over any `id` the item function supplied.
-            node.properties.insert("id", Value::String(key_str));
-        }
+            let mut node = deserialize_child(&built_table, "itemfn")?;
 
-        children.push(node);
+            if let Some(key_fn) = &key_fn {
+                // Moved, not borrowed: a borrow would keep this item rooted for the rest of the loop
+                // body, which a `key` collecting garbage behind a weak table can see.
+                let key_value = key_fn.call::<Value>(element).map_err(|e| invalid("key", e.to_string()))?;
+                let Value::String(key_str) = key_value else {
+                    return Err(invalid(
+                        "key",
+                        format!("expected key(item) to return a string, got {}", preview_for_error(&key_value)),
+                    ));
+                };
+                let key_text = key_str.to_str().map(|s| (*s).to_owned()).map_err(|_| {
+                    invalid(
+                        "key",
+                        "must be valid UTF-8 -- a key is compared for equality, so it cannot be converted lossily",
+                    )
+                })?;
+                if seen_keys.contains(&key_text) {
+                    return Err(invalid("key", format!("duplicate key `{key_text}` among list items")));
+                }
+                seen_keys.insert(key_text);
+                // List identity wins over any `id` the item function supplied.
+                node.properties.insert("id", Value::String(key_str));
+            }
+            Ok(node)
+        })();
+        match item {
+            Ok(node) => children.push(node),
+            Err(err) => failed.push(err),
+        }
+    }
+    if !failed.is_empty() {
+        return Err(LayoutError::many(failed));
     }
     Ok(children)
 }
