@@ -81,6 +81,8 @@ In a terminal, `mantle call volume.up 0.1` prints the handler's return value, su
 | `mantle toggle <name>` | Flips that state. It must hold a boolean |
 | `mantle toggle <name> <value>` | Sets the state to `value`. If it already holds `value`, restores the `initial` its `state(name, initial)` declares |
 | `mantle call <name> [args...]` | Runs the config's `action(name, fn)` with `args`, waits for it and prints what it returned |
+| `mantle call` | Prints each `action` name the running config declares, one per line, sorted. After a failed reload, the actions [it left](runtime.md#evaluation-reload-and-generations) |
+| `mantle set`, `mantle toggle` | Prints each `state` the running config declares, sorted, as `name<TAB>value`. The value is JSON with strings quoted, so passed back as one argument, `mantle set <name> <value>` restores it: `"true"` stays a string. A value JSON cannot hold (a function, a number-keyed table that is not a list) prints the name alone. After a failed reload, the states of the scene still on screen |
 | `mantle -V`, `--version` | Prints `mantle <version>` |
 | `mantle -h`, `--help` | Prints the built-in help |
 
@@ -268,6 +270,16 @@ $ mantle log --pid 9051 -f
 **…try a config without touching the running shell?** `mantle check -c ~/src/mantle-test` first,
 then `mantle -c ~/src/mantle-test` starts a second shell on it. Its surfaces draw beside the
 first shell's, so give them other ids or anchors, and address it with `-c` or `--pid`.
+
+**…see what a keybind can reach?** `mantle call` lists the actions and `mantle set` the states
+with their values. Both print nothing when the config declares none, so they pipe into a picker:
+`mantle call | fzf | xargs mantle call`.
+
+```text
+$ mantle set
+launcher_open	false
+modal	"settings"
+```
 
 **…set a string that looks like a number or boolean?** Quote it as JSON: `mantle set label '"42"'`.
 

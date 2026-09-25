@@ -279,6 +279,7 @@ impl RendererClient {
                 // ADR-0044 decision 2 target: later pushes skip `shell.lua`.
                 self.state.applied_output = Some(output);
                 lua::timer::promote(self.loader.lua());
+                lua::signal::promote_states(self.loader.lua());
                 Some(specs)
             }
             Err(err) => {
@@ -493,6 +494,20 @@ impl RendererClient {
                 let result = shared::CallResult { id: call.id, outcome };
                 if let Err(err) = self.commands.frames().send(RendererFrame::CallResult(result)) {
                     error!("failed to answer `mantle call {}`: {err}", call.name);
+                }
+            }
+            // A bare `mantle call`/`set`/`toggle`: what this generation answers for.
+            SupervisorFrame::ListDeclared { id, declared } => {
+                let outcome = match declared {
+                    shared::Declared::Actions => shared::CallOutcome::Returned(lua::action::names(self.lua())),
+                    shared::Declared::States => {
+                        shared::CallOutcome::Returned(serde_json::json!(lua::signal::declared_states(self.lua())))
+                    }
+                };
+                if let Err(err) =
+                    self.commands.frames().send(RendererFrame::CallResult(shared::CallResult { id, outcome }))
+                {
+                    error!("failed to answer a `mantle` listing: {err}");
                 }
             }
             // The Supervisor routes these to control clients; one arriving here is a wire fault.

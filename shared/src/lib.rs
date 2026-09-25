@@ -306,6 +306,16 @@ pub struct Call {
     pub arguments: Vec<serde_json::Value>,
 }
 
+/// What a bare `mantle call` or `mantle set`/`toggle` lists. The generation answers with a
+/// [`CallResult`] holding the sorted lines to print.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub enum Declared {
+    /// Every `action(name, fn)` the running config declares.
+    Actions,
+    /// Every `state(name, initial)` the running config declares.
+    States,
+}
+
 /// The answer to one [`Call`], carrying `id` back so the Supervisor can find the peer that waits.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct CallResult {
@@ -451,6 +461,11 @@ pub enum SupervisorFrame {
     },
     /// A control client's `mantle call`, forwarded to the authoritative generation (ADR-0197).
     Call(Call),
+    /// A control client's bare `mantle call`/`set`/`toggle`, routed like [`Self::Call`].
+    ListDeclared {
+        id: u64,
+        declared: Declared,
+    },
     /// That call's answer, routed back to the waiting control client (ADR-0197).
     CallResult(CallResult),
 }
@@ -473,6 +488,11 @@ pub enum RendererFrame {
     /// Control-client frame like [`Self::SetState`]: `mantle call` (ADR-0197). Its `id`, like
     /// `SetState`'s, is zero on the way in; the Supervisor assigns the real one when it forwards.
     Call(Call),
+    /// Control-client frame: a bare `mantle call`/`set`/`toggle`, its `id` zero like `Call`'s.
+    ListDeclared {
+        id: u64,
+        declared: Declared,
+    },
     /// A generation answering a forwarded [`Call`] (ADR-0197).
     CallResult(CallResult),
     /// Idempotently starts `capability`'s controller when this generation first reads

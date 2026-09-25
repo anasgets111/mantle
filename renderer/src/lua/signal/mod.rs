@@ -20,7 +20,9 @@ use crate::lua::marshal;
 
 pub(crate) use budget::{CpuBudget, LayoutPassBudget, thread_cpu_time};
 pub(crate) use globals::note_geometry_moved;
-pub use globals::{any_hover_registered, begin_evaluation, register, take_geometry_moved, write_state};
+pub use globals::{
+    any_hover_registered, begin_evaluation, declared_states, promote_states, register, take_geometry_moved, write_state,
+};
 use tracking::{ComputedFrame, EvaluationMemo, MemoKey, ReadTracker, next_computed_id};
 pub(crate) use tracking::{
     begin_instance_resolve, end_instance_resolve, forget_instance, note_read, reset_read_tracker,

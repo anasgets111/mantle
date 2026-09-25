@@ -394,8 +394,9 @@ async fn handle_connection(
                     // Stamped here because this is where the waiting peer's write half is; `main`
                     // sees frames, not the connections they arrived on.
                     let waiting = match &mut frame {
-                        RendererFrame::Call(call) => Some((&mut call.id, &call.name)),
-                        RendererFrame::SetState { id, set } => Some((id, &set.name)),
+                        RendererFrame::Call(call) => Some((&mut call.id, call.name.as_str())),
+                        RendererFrame::SetState { id, set } => Some((id, set.name.as_str())),
+                        RendererFrame::ListDeclared { id, .. } => Some((id, "a listing")),
                         _ => None,
                     };
                     if let Some((slot, name)) = waiting {
@@ -460,10 +461,10 @@ async fn handle_connection(
 fn refuse_frame(control_client: bool, generation_id: u32, frame: &RendererFrame) -> Option<String> {
     if control_client {
         return match frame {
-            RendererFrame::SetState { .. } | RendererFrame::Call(_) => None,
+            RendererFrame::SetState { .. } | RendererFrame::Call(_) | RendererFrame::ListDeclared { .. } => None,
             // `RendererFrame` derives `Debug` and `SecureSubmit` redacts its own secret, so this
             // cannot print a password.
-            other => Some(format!("a control client may only send SetState or Call, not {other:?}")),
+            other => Some(format!("a control client may only send SetState, Call or ListDeclared, not {other:?}")),
         };
     }
     let claimed = match frame {
@@ -518,6 +519,8 @@ mod tests {
         assert!(refuse_frame(true, shared::CONTROL_CLIENT_GENERATION, &set_state).is_none());
         let call = RendererFrame::Call(shared::Call { id: 0, name: "rec.toggle".into(), arguments: Vec::new() });
         assert!(refuse_frame(true, shared::CONTROL_CLIENT_GENERATION, &call).is_none());
+        let list = RendererFrame::ListDeclared { id: 0, declared: shared::Declared::States };
+        assert!(refuse_frame(true, shared::CONTROL_CLIENT_GENERATION, &list).is_none());
 
         let refusal = refuse_frame(true, shared::CONTROL_CLIENT_GENERATION, &command_frame(0))
             .expect("a control client must not be able to send Command");

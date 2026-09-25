@@ -26,6 +26,8 @@ pub enum Command {
         name: String,
         arguments: Vec<serde_json::Value>,
     },
+    /// A bare `call`, `set` or `toggle` prints what that verb can reach in the running config.
+    ListDeclared(shared::Declared),
     /// `log [-f]` prints what a run wrote to stdout and stderr, which a shell with no terminal
     /// parks in a file (ADR-0199).
     Log {
@@ -65,7 +67,10 @@ USAGE:
                                 set it to VALUE, or back to its declared
                                 initial when it already is VALUE
     mantle call <NAME> [ARGS]   run the config's action(NAME) and print what
-                                 it returned
+                                it returned
+    mantle call                 list the config's actions, one per line
+    mantle set, mantle toggle   list the config's states, one per line, as
+                                NAME<TAB>VALUE with VALUE in JSON
     mantle log [-f]             print the shell's stdout and stderr
     mantle list                 show running shells: PID UPTIME DIR CONFIG
 
@@ -231,6 +236,9 @@ pub fn parse<I: IntoIterator<Item = String>>(argv: I) -> Result<Args, String> {
     let command = match command {
         Some("init") => Command::Init { force },
         Some("check") => Command::Check,
+        // A bare verb lists what it could name. `toggle VALUE` reaches any state, so `toggle` lists
+        // the same set as `set`.
+        Some("set") if positional.is_empty() => Command::ListDeclared(shared::Declared::States),
         Some("set") => {
             let [name, value] = <[String; 2]>::try_from(positional)
                 .map_err(|_| "set takes a state name and a value: `mantle set launcher_open true`".to_string())?;
@@ -240,27 +248,31 @@ pub fn parse<I: IntoIterator<Item = String>>(argv: I) -> Result<Args, String> {
         }
         Some("toggle") => {
             let mut positional = positional.into_iter();
-            let name = positional
-                .next()
-                .ok_or_else(|| "toggle takes a state name: `mantle toggle launcher_open`".to_string())?;
-            let write = match positional.next() {
+            match (positional.next(), positional.next()) {
+                (None, _) => Command::ListDeclared(shared::Declared::States),
+                (Some(name), None) => Command::SetState(shared::SetState { name, write: shared::StateWrite::Toggle }),
                 // The same reading as `set`: JSON when it parses, a string otherwise.
-                Some(value) => shared::StateWrite::ToggleTo(
-                    serde_json::from_str(&value).unwrap_or(serde_json::Value::String(value)),
-                ),
-                None => shared::StateWrite::Toggle,
-            };
-            Command::SetState(shared::SetState { name, write })
+                (Some(name), Some(value)) => Command::SetState(shared::SetState {
+                    name,
+                    write: shared::StateWrite::ToggleTo(
+                        serde_json::from_str(&value).unwrap_or(serde_json::Value::String(value)),
+                    ),
+                }),
+            }
         }
         Some("call") => {
             let mut positional = positional.into_iter();
-            let name =
-                positional.next().ok_or_else(|| "call takes an action name: `mantle call rec.toggle`".to_string())?;
-            // The same reading as `set`: JSON when it parses, a string otherwise, so a keybind
-            // passing a word needs no shell quoting.
-            let arguments =
-                positional.map(|arg| serde_json::from_str(&arg).unwrap_or(serde_json::Value::String(arg))).collect();
-            Command::Call { name, arguments }
+            match positional.next() {
+                None => Command::ListDeclared(shared::Declared::Actions),
+                // The same reading as `set`: JSON when it parses, a string otherwise, so a keybind
+                // passing a word needs no shell quoting.
+                Some(name) => Command::Call {
+                    name,
+                    arguments: positional
+                        .map(|arg| serde_json::from_str(&arg).unwrap_or(serde_json::Value::String(arg)))
+                        .collect(),
+                },
+            }
         }
         Some("log") => Command::Log { follow },
         Some("list") => Command::List,
@@ -281,7 +293,12 @@ pub fn parse<I: IntoIterator<Item = String>>(argv: I) -> Result<Args, String> {
     if verbose > 0 && !matches!(command, Command::Run) {
         return Err("-v is only meaningful when starting the shell".to_string());
     }
-    if pid.is_some() && !matches!(command, Command::SetState(_) | Command::Call { .. } | Command::Log { .. }) {
+    if pid.is_some()
+        && !matches!(
+            command,
+            Command::SetState(_) | Command::Call { .. } | Command::ListDeclared(_) | Command::Log { .. }
+        )
+    {
         return Err("--pid is only meaningful with `set`, `toggle`, `call` and `log`".to_string());
     }
     if config_dir.is_some() && command == Command::List {
@@ -422,7 +439,6 @@ mod tests {
                 arguments: vec![serde_json::json!(7), serde_json::json!("hello")]
             }
         );
-        assert!(parse_args(&["call"]).is_err(), "call without a name has nothing to ask for");
         assert_eq!(parse_args(&["log"]).unwrap().command, Command::Log { follow: false });
         assert_eq!(parse_args(&["log", "-f"]).unwrap().command, Command::Log { follow: true });
     }
@@ -463,7 +479,19 @@ mod tests {
             "a toggle with a value is a toggle to it"
         );
         assert!(parse_args(&["set", "launcher_open"]).is_err(), "set without a value");
-        assert!(parse_args(&["toggle"]).is_err(), "toggle without a name");
+    }
+
+    /// A bare verb lists what it can reach, so a completion or a picker never needs the config.
+    #[test]
+    fn a_bare_call_set_or_toggle_lists_what_the_running_config_declares() {
+        use shared::Declared;
+        assert_eq!(parse_args(&["call"]).unwrap().command, Command::ListDeclared(Declared::Actions));
+        assert_eq!(parse_args(&["set"]).unwrap().command, Command::ListDeclared(Declared::States));
+        assert_eq!(parse_args(&["toggle"]).unwrap().command, Command::ListDeclared(Declared::States));
+        let parsed = parse_args(&["call", "--pid", "5"]).unwrap();
+        assert_eq!((parsed.command, parsed.pid), (Command::ListDeclared(Declared::Actions), Some(5)));
+        assert!(parse_args(&["set", "-c", "/"]).unwrap().config_dir.is_some());
+        assert!(parse_args(&["set", "--pid", "5", "-c", "/"]).is_err(), "--pid and -c still exclude each other");
     }
 
     #[test]

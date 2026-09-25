@@ -102,6 +102,14 @@ pub fn dispatch(lua: &Lua, name: &str, arguments: &[serde_json::Value]) -> share
     }
 }
 
+/// Every declared name, sorted, for a bare `mantle call`.
+pub fn names(lua: &Lua) -> serde_json::Value {
+    let mut names: Vec<String> =
+        lua.app_data_ref::<ActionRegistry>().map(|registry| registry.0.keys().cloned().collect()).unwrap_or_default();
+    names.sort_unstable();
+    serde_json::json!(names)
+}
+
 /// Drops every registration before an evaluation re-adds them, the counterpart to
 /// `capability::CapabilityHandle::clear_handlers`. Also correct after a *failed* evaluation: half a
 /// config's actions answering is worse than none, and the scene still on screen belongs to the
@@ -232,6 +240,16 @@ mod tests {
         assert_eq!(dispatch(&lua, "half", &[]), shared::CallOutcome::Returned(serde_json::json!(1)));
         clear(&lua);
         failure(dispatch(&lua, "half", &[]));
+    }
+
+    #[test]
+    fn the_listing_is_every_declared_name_sorted_and_empty_after_a_clear() {
+        let lua = lua();
+        assert_eq!(names(&lua), serde_json::json!([]), "a config with no actions lists nothing");
+        lua.load(r#"action("rec.toggle", function() end) action("audio.mute", function() end)"#).exec().unwrap();
+        assert_eq!(names(&lua), serde_json::json!(["audio.mute", "rec.toggle"]));
+        clear(&lua);
+        assert_eq!(names(&lua), serde_json::json!([]));
     }
 
     #[test]

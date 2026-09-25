@@ -1,18 +1,20 @@
-//! Client half of `mantle set`, `mantle toggle` (ADR-0112) and `mantle call` (ADR-0197):
-//! connect to the running Supervisor, send a handshake and one frame, and wait for its answer, so
-//! a refused write or a failed call exits non-zero.
+//! Client half of `mantle set`, `mantle toggle` (ADR-0112), `mantle call` (ADR-0197) and their bare
+//! listings: connect to the running Supervisor, send a handshake and one frame, and wait for its
+//! answer, so a refused write or a failed call exits non-zero.
 //!
 //! Separate from `socket/mod.rs`, the listener: this is the only external connector, running from a
 //! compositor keybind's `spawn` with no runtime, config directory, or D-Bus.
 
 use std::error::Error;
+use std::io::Write;
 use std::path::Path;
 
 use std::time::Duration;
 
 use shared::framing::{read_json_frame, write_json_frame};
 use shared::{
-    CONTROL_CLIENT_GENERATION, Call, CallOutcome, ConnectionHandshake, RendererFrame, SetState, SupervisorFrame,
+    CONTROL_CLIENT_GENERATION, Call, CallOutcome, ConnectionHandshake, Declared, RendererFrame, SetState,
+    SupervisorFrame,
 };
 use tokio::net::UnixStream;
 
@@ -76,4 +78,26 @@ pub fn call(name: String, arguments: Vec<serde_json::Value>, instance_dir: &Path
             Ok(())
         }
     }
+}
+
+/// Prints the lines of a bare `call` (action names) or `set`/`toggle` (`name<TAB>value`), which the
+/// generation formats.
+pub fn list(declared: Declared, instance_dir: &Path) -> Result<(), Box<dyn Error>> {
+    let lines = match ask(instance_dir, RendererFrame::ListDeclared { id: 0, declared }, "the listing")? {
+        CallOutcome::Failed(why) => return Err(format!("the listing failed: {why}").into()),
+        CallOutcome::Returned(lines) => lines,
+    };
+    let serde_json::Value::Array(lines) = lines else {
+        return Err(format!("the shell answered the listing with {lines}").into());
+    };
+    // `writeln!`, not `println!`: a reader that quits early (`head`, fzf) closes the pipe, which
+    // ends the listing quietly rather than panicking or printing an error.
+    let mut stdout = std::io::stdout().lock();
+    for line in lines.iter().filter_map(serde_json::Value::as_str) {
+        match writeln!(stdout, "{line}") {
+            Err(err) if err.kind() == std::io::ErrorKind::BrokenPipe => break,
+            result => result?,
+        }
+    }
+    Ok(())
 }

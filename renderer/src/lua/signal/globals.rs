@@ -3,7 +3,7 @@ use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 use std::time::Duration;
 
-use mlua::{AnyUserData, IntoLua, Lua, Table, Value, Variadic};
+use mlua::{AnyUserData, IntoLua, Lua, LuaSerdeExt, Table, Value, Variadic};
 
 use crate::lua::luacats::{As, Generic, LuaType, SignalOf, lua_fn};
 use crate::text::snap::LogicalRect;
@@ -44,6 +44,30 @@ pub fn write_state(lua: &Lua, set: &shared::SetState) -> Result<(), String> {
     signal.reseed(value).map_err(|err| format!("refused at the marshalling boundary: {err}"))
 }
 
+/// The evaluation's output reached the screen, so its names are the ones a bare `mantle set` lists.
+/// Listing only: `write_state` reaches every name the VM ever declared, before and after this.
+pub fn promote_states(lua: &Lua) {
+    if let Some(mut registry) = lua.app_data_mut::<StateRegistry>() {
+        registry.2 = registry.1.clone();
+    }
+}
+
+/// A bare `mantle set`'s lines, sorted: each promoted state as `name<TAB>value`, the value compact
+/// JSON so `mantle set` reads it back. A value JSON cannot hold (a function, a number-keyed table
+/// that is not a list) prints the name alone, so one such state does not hide the others.
+pub fn declared_states(lua: &Lua) -> Vec<String> {
+    let Some(registry) = lua.app_data_ref::<StateRegistry>() else { return Vec::new() };
+    let mut lines: Vec<String> = (registry.2.iter())
+        .filter_map(|name| Some((name, registry.0.get(name)?)))
+        .map(|(name, (signal, _))| {
+            let json = signal.get_value(lua).ok().and_then(|value| lua.from_value::<serde_json::Value>(value).ok());
+            json.map_or_else(|| name.clone(), |json| format!("{name}\t{json}"))
+        })
+        .collect();
+    lines.sort_unstable();
+    lines
+}
+
 /// Whether config called `hover(name)`. `crate::wayland` checks first, so configs without tooltip
 /// or hover expansion pay no tree clone, walk, or signal writes at pointer-report rate.
 pub fn any_hover_registered(lua: &Lua) -> bool {
@@ -53,9 +77,10 @@ pub fn any_hover_registered(lua: &Lua) -> bool {
 /// ADR-0044 decision 5 state registry: name preserves last-click values across in-place reloads;
 /// the stored literal detects an edited initial, which wins over live state (the wallpaper case).
 /// In `Lua::set_app_data`, so ADR-0044 decision 4's persistent VM preserves it and a replaced
-/// Renderer starts without it. The set is the names declared since [`begin_evaluation`].
+/// Renderer starts without it. The first set is the names declared since [`begin_evaluation`], the
+/// second the one [`promote_states`] last took, which a bare `mantle set` lists.
 #[derive(Default)]
-struct StateRegistry(HashMap<String, (Signal, Value)>, HashSet<String>);
+struct StateRegistry(HashMap<String, (Signal, Value)>, HashSet<String>, HashSet<String>);
 
 /// Called by `Loader` before each evaluation: only a second, different seed within one evaluation
 /// is a conflict, while one differing from the last evaluation's is an edit.
@@ -590,6 +615,28 @@ mod tests {
         write_state(&lua, &shared::SetState { name: "panel_kind".into(), write: to_launcher() }).unwrap();
         assert_eq!(lua.load("return KIND:get()").eval::<String>().unwrap(), "none", "already it: back to the initial");
         assert!(dirty.take());
+    }
+
+    /// A bare `mantle set` lists the names the shell on screen declared, with values `set` reads back.
+    #[test]
+    fn the_listing_is_the_applied_evaluations_states_with_their_current_values() {
+        let (lua, _dirty) = lua_with_state();
+        assert!(declared_states(&lua).is_empty(), "nothing declared lists nothing");
+        lua.load(r#"state("open", false):set(true) state("kind", "true") state("tags", { "a" }) state("fn", print)"#)
+            .exec()
+            .unwrap();
+        promote_states(&lua);
+        let listed = declared_states(&lua);
+        // A string stays quoted, so `mantle set kind '"true"'` restores a string and not a boolean;
+        // a function has no JSON, so its name stands alone.
+        assert_eq!(listed, ["fn", "kind\t\"true\"", "open\ttrue", "tags\t[\"a\"]"]);
+
+        // A reload that raises part-way is never promoted: the scene on screen, and its names, stay.
+        begin_evaluation(&lua);
+        lua.load(r#"state("open", false)"#).exec().unwrap();
+        assert_eq!(declared_states(&lua), listed);
+        promote_states(&lua);
+        assert_eq!(declared_states(&lua), ["open\ttrue"], "a dropped name goes");
     }
 
     #[test]

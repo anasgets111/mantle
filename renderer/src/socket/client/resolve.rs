@@ -70,6 +70,7 @@ impl RendererClient {
                 self.last_resolved = None;
                 self.settle_geometry();
                 lua::timer::promote(self.loader.lua());
+                lua::signal::promote_states(self.loader.lua());
                 true
             }
             Err(err) => {

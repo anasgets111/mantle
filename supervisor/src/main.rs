@@ -152,6 +152,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         cli::Command::Init { force } => setup::run(&config_dir()?, force),
         cli::Command::SetState(set) => control_client::send(set, &instance_dir(false)?),
         cli::Command::Call { name, arguments } => control_client::call(name, arguments, &instance_dir(false)?),
+        cli::Command::ListDeclared(declared) => control_client::list(declared, &instance_dir(false)?),
         cli::Command::Log { follow } => {
             let colour = std::io::IsTerminal::is_terminal(&std::io::stdout());
             log::print(&instance_dir(true)?, follow, colour, &mut std::io::stdout().lock())
@@ -386,6 +387,12 @@ async fn run_supervisor(
                     let generation_id = supervisor.authoritative.generation_id;
                     call_routes.dispatched(call.id, generation_id);
                     send_frame_logged(&supervisor.registry, generation_id, &SupervisorFrame::Call(call));
+                }
+                RendererFrame::ListDeclared { id, declared } => {
+                    let generation_id = supervisor.authoritative.generation_id;
+                    call_routes.dispatched(id, generation_id);
+                    let frame = SupervisorFrame::ListDeclared { id, declared };
+                    send_frame_logged(&supervisor.registry, generation_id, &frame);
                 }
                 // The answer, back to whichever peer is waiting on that id. A refusal here is the
                 // caller's deadline expiring rather than a wrong answer, which is the safe way
