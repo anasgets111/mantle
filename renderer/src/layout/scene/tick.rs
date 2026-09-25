@@ -1003,7 +1003,9 @@ mod tests {
 
     /// What one tick costs on `read_seam_cost`'s 162-node tree, one node tweening:
     /// `MANTLE_PROFILE=1 cargo test -p renderer --release tick_cost -- --ignored --nocapture`.
-    /// Ignored for the same reasons; the profile variable adds the relayout's split.
+    /// Ignored for the same reasons; the profile variable adds the relayout's split. `state` is the
+    /// protocol state a ticked surface re-derives: 1.5us against a 2.6us paint-only tick, which is
+    /// why a tick that cannot move a region still re-derives it rather than tracking which can.
     #[test]
     #[ignore]
     fn tick_cost() {
@@ -1020,7 +1022,7 @@ mod tests {
                 end
                 kids[1] = rect {{ width = 8, height = 8, background = "#FFFFFFFF", {tweened} = v,
                   animate = {{ {tweened} = {{ duration = 60000, easing = "Linear" }} }} }}
-                return panel {{ id = "bar", child = row {{ spacing = 4, children = kids }} }}"##
+                return panel {{ id = "bar", layer = "Top", child = row {{ spacing = 4, children = kids }} }}"##
             ));
             let mut scene = Scene::new();
             apply_at(&mut scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
@@ -1036,13 +1038,24 @@ mod tests {
                 assert!(!scene.tick(&instances, &shaping, &lua, now).is_empty());
             }
             let per = |d: Duration| d.as_secs_f64() * 1e6 / f64::from(ticks);
-            let split = scene.take_tick_split();
+            let (elapsed, split) = (clock.elapsed(), scene.take_tick_split());
+            // What `App::apply_resolved_state` derives from the tree a tick left.
+            let tree = scene.surface("bar@TEST").unwrap();
+            let clock = Instant::now();
+            for _ in 0..ticks {
+                std::hint::black_box((
+                    node::panel_spec(&tree.properties).unwrap(),
+                    crate::layout::overlay_input_regions(tree, 1.0),
+                    crate::layout::blur_regions(tree, 1.0),
+                ));
+            }
             println!(
-                "TICK tweened={tweened} per_tick={:.1}us (clone={:.1} prepare={:.1} solve={:.1})",
-                per(clock.elapsed()),
+                "TICK tweened={tweened} per_tick={:.1}us (clone={:.1} prepare={:.1} solve={:.1}) state={:.1}us",
+                per(elapsed),
                 per(split.clone),
                 per(split.prepare),
                 per(split.solve),
+                per(clock.elapsed()),
             );
         }
     }
