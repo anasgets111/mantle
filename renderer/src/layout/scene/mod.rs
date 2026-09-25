@@ -77,6 +77,7 @@ impl ResolvedNode {
             kind,
             rect: LogicalRect { x, y, width, height },
             margin: EdgeInsets::default(),
+            layout_style: std::rc::Rc::new(LayoutStyle::parse(&PropMap::default()).unwrap()),
             visible: true,
             opacity: 1.0,
             z: 0.0,
@@ -104,7 +105,7 @@ impl ResolvedNode {
 /// child before recursing because it needs the margin and size for the solver (ADR-0077); ignored
 /// fields are still validated so a later kind change cannot hide a malformed property (ADR-0068).
 #[derive(Debug, Clone, Copy, PartialEq)]
-struct LayoutStyle {
+pub(crate) struct LayoutStyle {
     margin: EdgeInsets,
     padding: EdgeInsets,
     width_mode: SizeMode,
@@ -177,6 +178,7 @@ impl LayoutStyle {
 /// third state, `Value::Nil` retained as "bound but unresolved".
 #[derive(Debug, Clone)]
 pub struct ResolvedNode {
+    pub(crate) layout_style: std::rc::Rc<LayoutStyle>,
     /// The identity its retained counterpart was reconciled under, carried so a later reader can
     /// say "this node, again" across passes. Stable by construction: `reconcile_node` keeps the
     /// retained node's id and only allocates when there was nothing to match, so an id survives

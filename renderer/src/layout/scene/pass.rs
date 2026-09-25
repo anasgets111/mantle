@@ -501,6 +501,7 @@ fn finish(
     };
 
     Ok(ResolvedNode {
+        layout_style: std::rc::Rc::new(style),
         id,
         kind,
         rect: LogicalRect { x: layout.location.x, y: layout.location.y, width: size.width, height: size.height },

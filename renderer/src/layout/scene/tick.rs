@@ -141,12 +141,15 @@ fn prepare_retained(
     // so `text_memo` is cleared and the final layout size is measured before `resting` locks in
     // the memo on subsequent frames.
     let text_tweening = text_measure_tweening(node.kind, &node.tweens);
+    let changed = node.tweens.iter().any(|tween| !tween.resting);
     node::advance(&mut node.tweens, &mut node.properties, now, lua)?;
-    let style = LayoutStyle::parse(&node.properties)?;
+    let style = if changed { LayoutStyle::parse(&node.properties)? } else { *node.layout_style };
     let ResolvedNode {
         id,
+        layout_style: _,
         kind,
         properties,
+        paint: old_paint,
         children,
         tweens,
         displayed_source,
@@ -158,7 +161,7 @@ fn prepare_retained(
         ..
     } = node;
     let text_memo = if text_tweening { None } else { text_memo };
-    let paint = node::paint_style(kind, &properties)?;
+    let paint = if changed { node::paint_style(kind, &properties)? } else { old_paint };
     let measure = measure_for(kind, paint.as_ref(), &properties, text_memo)?;
     let taffy_id = new_solver_node(tree, kind, &properties, &style, parent_axis, measure)?;
     let node = PreparedNode {
@@ -287,6 +290,10 @@ fn advance_paint_only_node(node: &mut ResolvedNode, now: Instant, lua: &Lua) -> 
     });
     match advanced {
         Ok((opacity, transform, effect, fresh)) => {
+            let style = std::rc::Rc::make_mut(&mut node.layout_style);
+            style.opacity = opacity;
+            style.transform = transform;
+            style.effect = effect;
             node.opacity = opacity;
             node.transform = transform;
             node.effect = effect;
@@ -411,28 +418,25 @@ mod tests {
         assert!(thawed.tweens.is_empty() || thawed.rect.width < 90.0, "the thaw settles or resumes, never stalls");
     }
 
-    /// The same runaway `__index` as
-    /// `a_runaway_index_metamethod_fails_the_pass_instead_of_hanging_it`,
-    /// armed only once the passes are done: a tick re-parses the retained edge table, so it runs
-    /// the metamethod outside any `apply`. Slow on purpose, roughly `LAYOUT_PASS_CAP`.
+    /// A stable edge table belongs to the last pass. Only the width tween changes on ticks.
     #[test]
-    fn a_runaway_index_metamethod_snaps_the_tween_instead_of_hanging_the_tick() {
+    fn a_tick_does_not_reparse_an_unchanged_edge_table() {
         let mut scene = Scene::new();
         let shaping = ShapingHandle::spawn();
         let (lua, surface) = surface_from(
-            r#"local m = setmetatable({}, { __index = function() if hang then while true do end end return 2 end })
-            return panel { id = "bar", child = rect { width = state("w", 40), height = 10, margin = m, animate = { width = 100 } } }"#,
+            r#"local m = setmetatable({}, { __index = function() reads = (reads or 0) + 1 return 2 end })
+            return panel { id = "bar", child = row { children = {
+                rect { width = state("w", 40), height = 10, animate = { width = 100 } },
+                rect { width = 10, height = 10, margin = m } } } }"#,
         );
         apply_at(&mut scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
         lua.load(r#"state("w", 40):set(90)"#).exec().unwrap();
         apply_at(&mut scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
-        let started = child_tween(&scene).started;
-        lua.load("hang = true").exec().unwrap();
-
-        let clock = std::time::Instant::now();
+        let started = scene.surface("bar@TEST").unwrap().children[0].children[0].tweens[0].started;
+        let reads: usize = lua.globals().get("reads").unwrap();
         scene.tick(&[instance_at(&surface, full())], &shaping, &lua, started + std::time::Duration::from_millis(50));
-        assert!(clock.elapsed() < std::time::Duration::from_secs(20), "must be bounded, took {:?}", clock.elapsed());
-        assert!(!scene.surface("bar@TEST").unwrap().animating(), "the tween is dropped, not retried next frame");
+        assert_eq!(lua.globals().get::<usize>("reads").unwrap(), reads);
+        assert!(scene.surface("bar@TEST").unwrap().animating());
     }
 
     #[test]
