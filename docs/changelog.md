@@ -69,6 +69,8 @@ so everything since the rename from Obelisk sits under Unreleased.
   property the kind takes; the list stays for a key close to none.
 - `mantle set` and `mantle toggle` wait for the shell and exit 1 with its reason when it refuses
   the write ([CLI](guide/cli.md#values-and-arguments)).
+- A tween advances on its own surface's frame callbacks, so a surface animates at its output's
+  refresh rate instead of the fastest animating output's ([animation](guide/animation.md)).
 - `mantle check` lays the config out on stand-in outputs and fails on a layout error, and says
   when the stubs `mantle init` wrote are out of date.
 - A pass that fails names every broken node, one per line, in `mantle check`, the log and

@@ -300,10 +300,14 @@ impl CompositorHandler for App {
     }
 
     /// A frame callback `App::paint_surface` requested because that surface's tree was mid-tween
-    /// (ADR-0145). One flag for every surface: the poll loop ticks the whole scene, and a second
-    /// output's callback in the same turn is absorbed by it.
-    fn frame(&mut self, _conn: &Connection, _qh: &QueueHandle<Self>, _surface: &wl_surface::WlSurface, _time: u32) {
-        self.animation_frame_due = true;
+    /// (ADR-0145). Only this surface ticks: another output's callback would otherwise advance and
+    /// repaint it faster than its own output refreshes.
+    fn frame(&mut self, _conn: &Connection, _qh: &QueueHandle<Self>, surface: &wl_surface::WlSurface, _time: u32) {
+        if let Some(id) = self.surface_id_for(surface)
+            && !self.animation_frames_due.iter().any(|due| due == id)
+        {
+            self.animation_frames_due.push(id.to_string());
+        }
     }
 
     fn surface_enter(

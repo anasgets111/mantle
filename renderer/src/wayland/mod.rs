@@ -217,11 +217,12 @@ pub struct App {
     caret_epoch: std::time::Instant,
     /// The phase the focused field was last queued to paint.
     caret_painted_on: bool,
-    /// A compositor frame callback landed for a surface whose tree was mid-tween (ADR-0145). The
-    /// poll loop takes it once per turn and advances every tween; `paint_surface` asks for the
-    /// next one while anything is still moving, which is what keeps the chain alive and lets it
-    /// die on its own when nothing is (ADR-0130 decision 3).
-    animation_frame_due: bool,
+    /// Surfaces whose compositor frame callback landed while their tree was mid-tween (ADR-0145).
+    /// The poll loop takes them once per turn and advances only their tweens, so each surface
+    /// animates at its own output's refresh; `paint_surface` asks for the next one while anything
+    /// is still moving, which is what keeps the chain alive and lets it die on its own when
+    /// nothing is (ADR-0130 decision 3).
+    animation_frames_due: Vec<String>,
     /// Surfaces actually drawn and swapped since the last idle-profile sample; paint walks all
     /// mapped surfaces and declines most, so the aggregate count matters.
     surfaces_drawn: usize,

@@ -190,12 +190,13 @@ impl RendererClient {
         }
     }
 
-    /// One animation frame (ADR-0145): advances every tween to `now` and relays out the instances
-    /// that carry one, without reading `shell.lua` or any signal. Called from the poll loop when a
-    /// compositor frame callback lands. Returns the instance ids it advanced, so the caller
-    /// repaints those surfaces and no others.
-    pub fn tick_animations(&mut self, now: std::time::Instant) -> Vec<String> {
-        self.scene.tick(&self.instances, &self.shaping, self.loader.lua(), now)
+    /// One animation frame (ADR-0145) for the instances in `due`, whose compositor frame callbacks
+    /// landed: advances their tweens to `now` and relays them out, without reading `shell.lua` or
+    /// any signal. Returns the instance ids it advanced, so the caller repaints those surfaces and
+    /// no others.
+    pub fn tick_animations(&mut self, due: &[String], now: std::time::Instant) -> Vec<String> {
+        let instances = self.instances.iter().filter(|instance| due.contains(&instance.instance_id));
+        self.scene.tick(instances, &self.shaping, self.loader.lua(), now)
     }
 }
 

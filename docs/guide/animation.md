@@ -3,8 +3,9 @@
 `animate` makes a node's properties move to a new value instead of snapping: on a hover, a level
 or a toggle, as a node enters or leaves the tree, or in a loop like a spinner. A *tween* is one
 property moving from the value on screen to the value a new [pass](../nodes/index.md) resolves.
-The engine runs every tween on compositor frames; no Lua runs between the pass that starts a tween
-and its last frame.
+The engine runs every tween on its own surface's compositor frames, so a panel on a 60 Hz output
+moves at 60 Hz beside one at 165 Hz; no Lua runs between the pass that starts a tween and its last
+frame.
 
 ```lua
 local open = hover("tray")

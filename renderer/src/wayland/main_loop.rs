@@ -112,7 +112,7 @@ pub fn run(
         caret_blink: input::caret_blink(),
         caret_epoch: std::time::Instant::now(),
         caret_painted_on: true,
-        animation_frame_due: false,
+        animation_frames_due: Vec::new(),
         surfaces_drawn: 0,
         repaint_split: surface::RepaintSplit::default(),
         current_egl_surface: None,
@@ -257,11 +257,9 @@ pub fn run(
         phases.mark_resolve_split(app.client.take_resolve_split());
         // A frame callback is the tween clock (ADR-0145). Taken every turn so a callback that
         // arrives with a push is answered by this repaint, not repeated next turn.
-        let ticked = if std::mem::take(&mut app.animation_frame_due) {
-            app.client.tick_animations(std::time::Instant::now())
-        } else {
-            Vec::new()
-        };
+        let due = std::mem::take(&mut app.animation_frames_due);
+        let ticked =
+            if due.is_empty() { Vec::new() } else { app.client.tick_animations(&due, std::time::Instant::now()) };
         phases.mark_tick();
         phases.mark_tick_split(app.client.take_tick_split());
         let re_resolved = passed || !ticked.is_empty();

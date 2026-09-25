@@ -28,7 +28,7 @@ impl Scene {
         std::mem::take(&mut self.tick_split)
     }
 
-    /// Advances every tween to `now` and lays the affected instances out again from their retained
+    /// Advances the tweens of `instances` to `now` and lays the affected ones out again from their retained
     /// property maps, without running Lua (ADR-0145): the only Lua the retained walk touches is a
     /// plain table read. Returns the instances it advanced, which is what the caller owes the
     /// screen this frame. An instance whose relayout fails keeps its last tree and loses its
@@ -37,9 +37,9 @@ impl Scene {
     /// A tree whose every running tween only changes what it paints skips the relayout entirely
     /// and is advanced where it stands ([`advance_paint_only`]). That is most of what a config
     /// animates -- a fade, a hover colour, a border lighting up -- and none of it can move a rect.
-    pub fn tick(
+    pub fn tick<'a>(
         &mut self,
-        instances: &[SurfaceInstance],
+        instances: impl IntoIterator<Item = &'a SurfaceInstance>,
         shaping: &ShapingHandle,
         lua: &Lua,
         now: Instant,
@@ -1043,6 +1043,86 @@ mod tests {
                 per(split.clone),
                 per(split.prepare),
                 per(split.solve),
+            );
+        }
+    }
+
+    /// Two instances of one surface, one per output, as `monitor = "All"` makes them.
+    fn two_outputs(surface: &VirtualNode) -> [SurfaceInstance; 2] {
+        ["A", "B"].map(|output| SurfaceInstance {
+            instance_id: format!("bar@{output}"),
+            output: output.to_string(),
+            ..instance_at(surface, full())
+        })
+    }
+
+    /// A tick advances only the instances it is handed, and one ticked less often lands where the
+    /// clock says rather than where its missed frames would have left it.
+    #[test]
+    fn a_tick_advances_only_the_instances_whose_frame_is_due() {
+        let (_, lua, surface) = animated_width("Linear");
+        let (mut scene, shaping) = (Scene::new(), ShapingHandle::spawn());
+        let [a, b] = two_outputs(&surface);
+        let both = [a.clone(), b.clone()];
+        scene.apply(std::slice::from_ref(&surface), &both, &shaping, &lua).unwrap();
+        lua.load(r#"state("w", 40):set(90)"#).exec().unwrap();
+        scene.apply(std::slice::from_ref(&surface), &both, &shaping, &lua).unwrap();
+        let width = |scene: &Scene, id: &str| scene.surface(id).unwrap().children[0].rect.width;
+        let started = scene.surface("bar@A").unwrap().children[0].tweens[0].started;
+
+        let ticked = scene.tick([&a], &shaping, &lua, started + std::time::Duration::from_millis(50));
+        assert_eq!(ticked, ["bar@A"]);
+        assert_eq!((width(&scene, "bar@A"), width(&scene, "bar@B")), (65.0, 40.0), "B's frame was not due");
+
+        scene.tick([&b], &shaping, &lua, started + std::time::Duration::from_millis(75));
+        assert_eq!(width(&scene, "bar@B"), 77.5, "B catches up to the clock in one frame");
+        assert!(scene.surface("bar@A").unwrap().animating(), "A still owes its own frames");
+    }
+
+    /// `tick_cost`'s tree on two outputs, one at 165 Hz and one at 60 Hz, for one second: ticking
+    /// every animating instance on each callback, against ticking only the one whose callback it
+    /// was. `cargo test -p renderer --release mixed_refresh_tick_cost -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn mixed_refresh_tick_cost() {
+        let (lua, surface) = surface_from(
+            r##"local v = state("v", 8)
+            local kids = {}
+            for i = 1, 40 do
+              kids[i] = row { spacing = 2, background = "#204080FF", children = {
+                rect { width = 8, height = 8, background = "#FFFFFFFF" },
+                text { content = "item " .. i, font_size = 12 },
+                rect { width = 8, height = 8, background = "#00FF00FF" } } }
+            end
+            kids[1] = rect { width = v, height = 8, animate = { width = { duration = 60000, easing = "Linear" } } }
+            return panel { id = "bar", child = row { spacing = 4, children = kids } }"##,
+        );
+        let shaping = ShapingHandle::spawn();
+        let [a, b] = two_outputs(&surface);
+        let mut callbacks: Vec<(u64, &SurfaceInstance)> = (0..165u64).map(|i| (i * 1_000_000 / 165, &a)).collect();
+        callbacks.extend((0..60u64).map(|i| (i * 1_000_000 / 60, &b)));
+        callbacks.sort_by_key(|(at, _)| *at);
+        for per_surface in [false, true] {
+            let mut scene = Scene::new();
+            let both = [a.clone(), b.clone()];
+            scene.apply(std::slice::from_ref(&surface), &both, &shaping, &lua).unwrap();
+            lua.load(r#"state("v", 8):set(40)"#).exec().unwrap();
+            scene.apply(std::slice::from_ref(&surface), &both, &shaping, &lua).unwrap();
+            lua.load(r#"state("v", 8):set(8)"#).exec().unwrap();
+            let started = scene.surface("bar@A").unwrap().children[0].children[0].tweens[0].started;
+            let (clock, mut relaid) = (Instant::now(), 0);
+            for (at, due) in &callbacks {
+                let now = started + std::time::Duration::from_micros(*at);
+                let ticked = if per_surface {
+                    scene.tick([*due], &shaping, &lua, now)
+                } else {
+                    scene.tick(&both, &shaping, &lua, now)
+                };
+                relaid += ticked.len();
+            }
+            println!(
+                "MIXED per_surface={per_surface} relayouts={relaid} total={:.1}ms",
+                clock.elapsed().as_secs_f64() * 1e3
             );
         }
     }
