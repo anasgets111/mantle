@@ -1,14 +1,13 @@
-//! Access-point scanning for `mantle.network`: `RequestScan`, the held access-point proxies, and
+//! Access-point scanning for `mantle.network`: `RequestScan`, the held access-point readings, and
 //! the deduplicated, capped `available_networks` list `build_state` reads.
 
 use std::collections::{HashMap, HashSet};
 
 use shared::{debug, warn};
-use zbus::zvariant::OwnedObjectPath;
+use zbus::zvariant::{OwnedObjectPath, OwnedValue};
 
-use super::proxies::{AP_FLAGS_PRIVACY, AccessPointProxy};
+use super::proxies::AP_FLAGS_PRIVACY;
 use super::{AccessPointInfo, NetworkController, NetworkSignal};
-use crate::capabilities::bind;
 
 /// How many deduplicated APs [`dedup_and_top20`] keeps.
 const MAX_AVAILABLE_NETWORKS: usize = 20;
@@ -91,28 +90,70 @@ pub(super) fn resolve_ssid(wired: bool, associated: Option<&AccessPointInfo>) ->
     }
 }
 
-/// Reads one access point into the shape `network.available_networks` wants. `active` is passed
-/// in rather than derived here: it is a fact about the device's association, not about the access
-/// point, and only the caller holds it.
-async fn read_access_point(
-    ap: &AccessPointProxy<'static>,
-    active: bool,
-    saved_ssids: &HashSet<Vec<u8>>,
-) -> Option<AccessPointInfo> {
-    let ssid_bytes = ap.ssid().await.ok()?;
-    let strength = ap.strength().await.ok()?;
-    let frequency = ap.frequency().await.ok()?;
-    let flags = ap.flags().await.unwrap_or(0);
-    let wpa_flags = ap.wpa_flags().await.unwrap_or(0);
-    let rsn_flags = ap.rsn_flags().await.unwrap_or(0);
-    Some(AccessPointInfo {
-        saved: saved_ssids.contains(&ssid_bytes),
-        ssid: String::from_utf8_lossy(&ssid_bytes).into_owned(),
-        strength,
-        secure: access_point_is_secure(flags, wpa_flags, rsn_flags),
-        band: resolve_band(frequency).unwrap_or_default().to_string(),
-        active,
-    })
+/// One access point's last `GetAll`, held between rebuilds.
+#[derive(Debug, Clone, PartialEq)]
+pub(super) struct ApReading {
+    ssid: Vec<u8>,
+    strength: u8,
+    secure: bool,
+    band: &'static str,
+}
+
+impl ApReading {
+    /// `None` without the SSID, strength or frequency; absent flags read as open.
+    fn from_properties(mut all: HashMap<String, OwnedValue>) -> Option<Self> {
+        fn take<T: TryFrom<OwnedValue>>(all: &mut HashMap<String, OwnedValue>, name: &str) -> Option<T> {
+            all.remove(name).and_then(|value| T::try_from(value).ok())
+        }
+        let flag = |all: &mut HashMap<String, OwnedValue>, name| take::<u32>(all, name).unwrap_or(0);
+        Some(Self {
+            ssid: take(&mut all, "Ssid")?,
+            strength: take(&mut all, "Strength")?,
+            band: resolve_band(take(&mut all, "Frequency")?).unwrap_or_default(),
+            secure: access_point_is_secure(
+                flag(&mut all, "Flags"),
+                flag(&mut all, "WpaFlags"),
+                flag(&mut all, "RsnFlags"),
+            ),
+        })
+    }
+
+    /// The row `network.available_networks` wants. `active` is a fact about the device's
+    /// association, not the access point, so the caller passes it.
+    fn info(&self, active: bool, saved_ssids: &HashSet<Vec<u8>>) -> AccessPointInfo {
+        AccessPointInfo {
+            saved: saved_ssids.contains(&self.ssid),
+            ssid: String::from_utf8_lossy(&self.ssid).into_owned(),
+            strength: self.strength,
+            secure: self.secure,
+            band: self.band.to_string(),
+            active,
+        }
+    }
+}
+
+/// One uncached `GetAll`: a cached proxy would subscribe to every in-range AP's `Strength`.
+async fn read_access_point(connection: &zbus::Connection, path: &OwnedObjectPath) -> Option<ApReading> {
+    let reply = async {
+        zbus::fdo::PropertiesProxy::builder(connection)
+            .destination("org.freedesktop.NetworkManager")?
+            .path(path.clone())?
+            .cache_properties(zbus::proxy::CacheProperties::No)
+            .build()
+            .await?
+            .get_all(zbus::names::InterfaceName::from_static_str_unchecked(
+                "org.freedesktop.NetworkManager.AccessPoint",
+            ))
+            .await
+            .map_err(zbus::Error::from)
+    };
+    match reply.await {
+        Ok(all) => ApReading::from_properties(all),
+        Err(err) => {
+            debug!("failed to read access point {path}: {err}");
+            None
+        }
+    }
 }
 
 impl NetworkController {
@@ -141,7 +182,10 @@ impl NetworkController {
 
     /// Re-queries, deduplicates, and caps the current AP list at 20 by strength (ADR-0029:
     /// no debounce). Returns empty, not an error, without Wi-Fi hardware.
-    pub async fn build_available_networks(&self) -> Vec<AccessPointInfo> {
+    ///
+    /// Reads the associated AP and new ones each time, and every AP after a `scan`, which is when
+    /// NetworkManager updates a neighbour's strength; the rest come from the last reading.
+    pub async fn build_available_networks(&self, scanned: bool) -> Vec<AccessPointInfo> {
         let Some(wifi) = self.wifi() else {
             return Vec::new();
         };
@@ -154,39 +198,31 @@ impl NetworkController {
             }
         };
 
-        let access_points = self.warm_access_points(&ap_paths).await;
-        let saved_ssids = self.saved_ssids.lock().expect("mutex poisoned").clone();
-        let mut aps = Vec::with_capacity(access_points.len());
-        for (path, proxy) in &access_points {
-            if let Some(ap) = read_access_point(proxy, active_path.as_ref() == Some(path), &saved_ssids).await {
-                aps.push(ap);
-            }
-        }
-        dedup_and_top20(aps)
-    }
-
-    /// Binds missing `paths`, drops held paths no longer in range, and returns live proxies in path
-    /// order. Returned clones share each held proxy's property cache.
-    ///
-    /// Takes the lock around, not across, binding because it is a plain mutex and binding awaits.
-    async fn warm_access_points(&self, paths: &[OwnedObjectPath]) -> Vec<(OwnedObjectPath, AccessPointProxy<'static>)> {
-        let missing: Vec<OwnedObjectPath> = {
+        // The lock goes around, not across, the reads: it is a plain mutex and reading awaits.
+        let stale: Vec<&OwnedObjectPath> = {
             let held = self.access_points.lock().expect("mutex poisoned");
-            paths.iter().filter(|path| !held.contains_key(*path)).cloned().collect()
+            ap_paths
+                .iter()
+                .filter(|path| scanned || active_path.as_ref() == Some(*path) || !held.contains_key(*path))
+                .collect()
         };
-        let mut bound = Vec::with_capacity(missing.len());
-        for path in missing {
-            match bind::<AccessPointProxy>(&self.connection, path.clone()).await {
-                Ok(proxy) => bound.push((path, proxy)),
-                Err(err) => debug!("failed to bind access point {path}: {err}"),
-            }
-        }
+        let readings =
+            futures_util::future::join_all(stale.iter().map(|path| read_access_point(&self.connection, path))).await;
 
-        let in_range: HashSet<&OwnedObjectPath> = paths.iter().collect();
+        let saved_ssids = self.saved_ssids.lock().expect("mutex poisoned").clone();
+        let in_range: HashSet<&OwnedObjectPath> = ap_paths.iter().collect();
         let mut held = self.access_points.lock().expect("mutex poisoned");
-        held.extend(bound);
+        for (path, reading) in stale.into_iter().zip(readings) {
+            match reading {
+                Some(reading) => held.insert(path.clone(), reading),
+                None => held.remove(path), // unreadable: skipped, and read again next time
+            };
+        }
         held.retain(|path, _| in_range.contains(path));
-        paths.iter().filter_map(|path| Some((path.clone(), held.get(path)?.clone()))).collect()
+        let aps = ap_paths
+            .iter()
+            .filter_map(|path| Some(held.get(path)?.info(active_path.as_ref() == Some(path), &saved_ssids)));
+        dedup_and_top20(aps.collect())
     }
 }
 
@@ -203,6 +239,26 @@ mod tests {
             active: false,
             saved: false,
         }
+    }
+
+    #[test]
+    fn an_access_point_reads_from_one_get_all_and_needs_its_ssid_strength_and_frequency() {
+        let all = |pairs: Vec<(&str, OwnedValue)>| pairs.into_iter().map(|(k, v)| (k.to_string(), v)).collect();
+        let reading = ApReading::from_properties(all(vec![
+            ("Ssid", OwnedValue::try_from(zbus::zvariant::Value::from(b"home".to_vec())).unwrap()),
+            ("Strength", OwnedValue::from(62u8)),
+            ("Frequency", OwnedValue::from(5180u32)),
+            ("RsnFlags", OwnedValue::from(0x100u32)),
+        ]))
+        .unwrap();
+        let mut saved = HashSet::new();
+        saved.insert(b"home".to_vec());
+        let info = reading.info(true, &saved);
+        assert_eq!((info.ssid.as_str(), info.strength, info.band.as_str()), ("home", 62, "5 GHz"));
+        assert!(info.secure && info.saved && info.active);
+
+        let no_ssid = all(vec![("Strength", OwnedValue::from(62u8)), ("Frequency", OwnedValue::from(5180u32))]);
+        assert_eq!(ApReading::from_properties(no_ssid), None, "skipped rather than listed nameless");
     }
 
     #[test]

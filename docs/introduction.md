@@ -106,7 +106,7 @@ return {
 
 | Line | Why |
 | :--- | :--- |
-| `mantle.system:map(...)` | A [derived signal](guide/signals.md#derived-signals); `content` re-resolves on every push (once a second). `:get()` would freeze it |
+| `mantle.system:map(...)` | A [derived signal](guide/signals.md#derived-signals); `content` re-resolves on every push (once a second unless [`configure`](capabilities/system.md) says otherwise). `:get()` would freeze it |
 | `system and system.time` | Capabilities read `nil` until their first push, so every map handles `nil` |
 | `list { source, itemfn, key }` | Rebuilds one button per workspace when the list changes ([list](nodes/list.md)) |
 | `:focus(id)` | Fire and forget; the new active workspace arrives in the next push ([actions](capabilities/index.md#actions)) |

@@ -9,9 +9,9 @@
 //!
 //! Hyprland has no state event stream. `.socket2.sock` sends `event>>payload` lines; `.socket.sock`
 //! returns the `hyprctl -j` JSON. On a workspace/monitor/window event, re-read
-//! `workspaces`/`monitors`/`clients`/`activewindow`, reduce, and publish. Bursts re-read every
-//! event (a window opening sends four or five); `StatePublisher` drops equal results, so four
-//! local round trips per event remain until measured data justifies coalescing.
+//! `workspaces`/`monitors`/`clients`/`activewindow`, reduce, and publish, once per burst: every
+//! line already buffered joins the one that woke the reader (a window opening sends four or
+//! five). A title change alone patches the last read from `windowtitlev2` without a request.
 //!
 //! How Hyprland's model lands on `WorkspaceRow`:
 //!
@@ -41,6 +41,7 @@ use std::path::Path;
 use serde::Deserialize;
 
 use super::controller::{FocusedWindow, SpecialWorkspace, StatePublisher, WorkspaceRow};
+use crate::capabilities::keyboard::layout::LayoutSink;
 use crate::capabilities::windows::controller::{StatePublisher as WindowsPublisher, WindowEntry};
 use crate::compositor::{hyprland_command, hyprland_request, hyprland_signature, hyprland_socket_path};
 use shared::{Capability, debug, error};
@@ -264,8 +265,10 @@ fn window_rows(
 }
 
 /// Event names that trigger a state read: prefix before `>>`. Only v1 names match, because each v2
-/// ships beside its v1 and a second read would return the same state. Excludes `activelayout`, `submap`, `screencast`, and similar events that do
-/// not move workspaces; `keyboard` already handles its own state.
+/// ships beside its v1 and a second read would return the same state. `windowtitle` is the
+/// exception: [`read_burst`] takes its v2, which names the window. Excludes `activelayout`
+/// (`keyboard`'s, also read by [`read_burst`]), `submap`, `screencast`, and similar events that do
+/// not move workspaces.
 const TRIGGERS: &[&str] = &[
     "workspace",
     "focusedmon",
@@ -280,7 +283,6 @@ const TRIGGERS: &[&str] = &[
     "activewindow",
     "fullscreen",
     "changefloatingmode",
-    "windowtitle",
     "monitoradded",
     "monitorremoved",
 ];
@@ -288,6 +290,49 @@ const TRIGGERS: &[&str] = &[
 fn is_trigger(line: &str) -> bool {
     let name = line.split_once(">>").map_or(line, |(name, _)| name);
     TRIGGERS.contains(&name)
+}
+
+/// What one burst of events asks for.
+#[derive(Debug, Default, PartialEq)]
+struct Burst {
+    reread: bool,
+    /// An `activelayout`, answered by one `j/devices` read for `keyboard`.
+    layout: bool,
+    /// `(address, title)` per `windowtitlev2`, the address as `j/clients` spells it.
+    titles: Vec<(String, String)>,
+}
+
+/// Blocks for one line, then takes every complete line already buffered. `None` at socket end.
+fn read_burst<R: std::io::Read>(reader: &mut BufReader<R>) -> std::io::Result<Option<Burst>> {
+    let mut burst = Burst::default();
+    let mut line = String::new();
+    loop {
+        line.clear();
+        if reader.read_line(&mut line)? == 0 {
+            return Ok(None);
+        }
+        let event = line.trim_end_matches('\n');
+        match event.strip_prefix("windowtitlev2>>").and_then(|rest| rest.split_once(',')) {
+            Some((address, title)) => burst.titles.push((format!("0x{address}"), title.to_string())),
+            None if event.starts_with("activelayout>>") => burst.layout = true,
+            None => burst.reread |= is_trigger(event),
+        }
+        if !reader.buffer().contains(&b'\n') {
+            return Ok(Some(burst));
+        }
+    }
+}
+
+/// Retitles `address` in the last read; a window it lacks waits for the next `openwindow` read.
+fn patch_title(state: &mut State, address: &str, title: &str) {
+    if let Some(window) = state.3.iter_mut().find(|window| window.id == address) {
+        window.title = title.to_string();
+        if window.focused
+            && let Some(focused) = &mut state.1
+        {
+            focused.title = title.to_string();
+        }
+    }
 }
 
 /// Four parsed reads, plus the full window list folded from the same `clients`/`activewindow`.
@@ -333,9 +378,9 @@ fn read_state(socket_path: &Path) -> Option<State> {
 }
 
 /// Connects to the event socket before the first state read, so an intervening change remains a
-/// line to process. One OS thread then re-reads after every trigger until socket end or no
-/// listener. Also drives `mantle.windows` from the same reads.
-pub fn spawn_reader(mut publisher: StatePublisher, mut windows_publisher: WindowsPublisher) {
+/// line to process. One OS thread then re-reads once per burst with a trigger until socket end or
+/// no listener. Also drives `mantle.windows` from the same reads, and `keyboard`'s layout.
+pub fn spawn_reader(mut publisher: StatePublisher, mut windows_publisher: WindowsPublisher, keyboard: LayoutSink) {
     let Some(signature) = hyprland_signature() else {
         debug!("HYPRLAND_INSTANCE_SIGNATURE is unset or empty; workspace and window reporting disabled for this run");
         return;
@@ -364,19 +409,33 @@ pub fn spawn_reader(mut publisher: StatePublisher, mut windows_publisher: Window
     }
 
     std::thread::spawn(move || {
-        if let Some((rows, focused, special, windows)) = read_state(&command_path) {
-            publish!(&rows, focused.as_ref(), Some(&special), windows);
-        }
-        for line in BufReader::new(stream).lines() {
-            let Ok(line) = line else {
-                error!("Hyprland event socket read failed; workspaces and windows will no longer update");
-                return;
-            };
-            if !is_trigger(&line) {
-                continue;
+        let mut reader = BufReader::new(stream);
+        keyboard.read_hyprland(&command_path);
+        let mut last = read_state(&command_path);
+        loop {
+            if let Some((rows, focused, special, windows)) = &last {
+                publish!(rows, focused.as_ref(), Some(special.as_slice()), windows.clone());
             }
-            if let Some((rows, focused, special, windows)) = read_state(&command_path) {
-                publish!(&rows, focused.as_ref(), Some(&special), windows);
+            let burst = match read_burst(&mut reader) {
+                Ok(Some(burst)) => burst,
+                Ok(None) => break,
+                Err(_) => {
+                    error!("Hyprland event socket read failed; workspaces and windows will no longer update");
+                    return;
+                }
+            };
+            if burst.layout {
+                keyboard.read_hyprland(&command_path);
+            }
+            if burst.reread {
+                let Some(state) = read_state(&command_path) else { continue };
+                last = Some(state);
+            } else if let Some(state) = &mut last
+                && !burst.titles.is_empty()
+            {
+                burst.titles.iter().for_each(|(address, title)| patch_title(state, address, title));
+            } else {
+                continue;
             }
         }
         error!("Hyprland event socket closed; workspaces and windows will no longer update");
@@ -663,6 +722,37 @@ mod tests {
         assert!(!is_trigger("activelayout>>at-translated-set-2-keyboard,English (US)"));
         assert!(!is_trigger("submap>>resize"));
         assert!(!is_trigger("urgent>>55d1c0a3b2c0"));
+    }
+
+    #[test]
+    fn a_burst_is_every_buffered_line_and_a_title_change_alone_needs_no_read() {
+        // `chain` hands each half over in its own `read`, as two socket wakes would.
+        let first = &b"openwindow>>a11ce,1,kitty,~\nactivewindowv2>>a11ce\nwindowtitlev2>>a11ce,~, fish\n"[..];
+        let second = &b"windowtitle>>a11ce\nwindowtitlev2>>a11ce,vim\n"[..];
+        let mut reader = BufReader::new(std::io::Read::chain(first, second));
+
+        let burst = read_burst(&mut reader).unwrap().unwrap();
+        assert!(burst.reread);
+        assert_eq!(burst.titles, [("0xa11ce".to_string(), "~, fish".to_string())], "the title keeps its comma");
+        let burst = read_burst(&mut reader).unwrap().unwrap();
+        assert_eq!(
+            burst,
+            Burst { reread: false, layout: false, titles: vec![("0xa11ce".to_string(), "vim".to_string())] }
+        );
+        assert_eq!(read_burst(&mut reader).unwrap(), None, "socket end");
+    }
+
+    #[test]
+    fn patch_title_retitles_the_window_and_the_focused_window_when_it_is_that_one() {
+        let clients = clients(serde_json::json!([client("kitty", "~", 1, 0, true)]));
+        let focused = to_focused_window(&clients[0]);
+        let mut state = (Vec::new(), Some(focused), Vec::new(), window_rows(&clients, &[], Some("0x55d1c0a3b2c0")));
+
+        patch_title(&mut state, "0x55d1c0a3b2c0", "vim");
+        patch_title(&mut state, "0xdead", "unknown windows are left to the next read");
+
+        assert_eq!(state.3[0].title, "vim");
+        assert_eq!(state.1.unwrap().title, "vim");
     }
 
     /// Without this, `set_maximized`/`set_fullscreen` compare against stale state and can toggle

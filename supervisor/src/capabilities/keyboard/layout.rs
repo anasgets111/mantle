@@ -1,73 +1,80 @@
-//! Keyboard layout integration for `mantle.keyboard` (ADR-0034). `crate::compositor` selects a
-//! [`CompositorLink`] at startup; without a supported compositor, layout is empty with count `0`.
+//! Keyboard layout integration for `mantle.keyboard` (ADR-0034). The shared niri/Hyprland reader
+//! (`capabilities::lifecycle`'s `CompositorReader`) writes layout through a [`LayoutSink`];
+//! `switch_layout` goes through a [`CompositorLink`]. Without a supported compositor, layout is
+//! empty with count `0`.
 
-use std::io::{BufRead, BufReader};
-use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use serde::Deserialize;
-use shared::{debug, error};
+use shared::debug;
 use tokio::sync::mpsc::UnboundedSender;
 
-use crate::compositor::{hyprland_command, hyprland_request, hyprland_socket_path, niri_action, niri_event_stream};
+use crate::compositor::{hyprland_command, hyprland_request, hyprland_socket_path, niri_action};
 
 use super::controller::{KeyboardSignal, KeyboardState};
 
-/// `switch_layout` is synchronous fire-and-forget; state returns through the implementor's event
-/// stream. It is not `async fn` to preserve `Box<dyn CompositorLink>` object safety.
+/// `switch_layout` is synchronous fire-and-forget; state returns through the compositor reader. It
+/// is not `async fn` to preserve `Box<dyn CompositorLink>` object safety.
 pub trait CompositorLink: Send + Sync {
     fn switch_layout(&self, index: usize);
 }
 
-fn apply_niri_layout(state: &Arc<Mutex<KeyboardState>>, names: &[String], idx: u8) {
-    let mut guard = state.lock().expect("mutex poisoned");
-    guard.active_layout = names.get(idx as usize).cloned().unwrap_or_default();
-    guard.active_layout_index = u32::from(idx);
-    guard.layout_count = names.len() as u32;
+/// `keyboard`'s state as the compositor reader sees it. The reader writes layout from its first
+/// event, and signals once `keyboard` has started and set `events`.
+#[derive(Clone, Default)]
+pub struct LayoutSink {
+    pub state: Arc<Mutex<KeyboardState>>,
+    pub events: Arc<OnceLock<UnboundedSender<KeyboardSignal>>>,
+}
+
+impl LayoutSink {
+    fn write(&self, active_layout: String, active_layout_index: u32, layout_count: u32) {
+        {
+            let mut guard = self.state.lock().expect("mutex poisoned");
+            guard.active_layout = active_layout;
+            guard.active_layout_index = active_layout_index;
+            guard.layout_count = layout_count;
+        }
+        if let Some(events) = self.events.get() {
+            let _ = events.send(KeyboardSignal::Changed);
+        }
+    }
+
+    /// Applies a niri layout event; `false` for any other. `names` carries the list between a
+    /// `KeyboardLayoutsChanged` and the `KeyboardLayoutSwitched` events after it.
+    pub fn apply_niri(&self, names: &mut Vec<String>, event: &niri_ipc::Event) -> bool {
+        let idx = match event {
+            niri_ipc::Event::KeyboardLayoutsChanged { keyboard_layouts } => {
+                names.clone_from(&keyboard_layouts.names);
+                keyboard_layouts.current_idx
+            }
+            niri_ipc::Event::KeyboardLayoutSwitched { idx } => *idx,
+            _ => return false,
+        };
+        self.write(names.get(idx as usize).cloned().unwrap_or_default(), u32::from(idx), names.len() as u32);
+        true
+    }
+
+    /// One `j/devices` read, on Hyprland's `activelayout` event and once at reader start.
+    pub fn read_hyprland(&self, socket_path: &Path) {
+        let reply = match hyprland_request(socket_path, "j/devices") {
+            Ok(reply) => reply,
+            Err(err) => return debug!("Hyprland `devices` request failed; layout not updated this round: {err}"),
+        };
+        let Some(keyboard) = parse_hyprland_devices(&reply) else {
+            return debug!("Hyprland `devices` reply held no usable keyboard entry; layout not updated this round");
+        };
+        self.apply_hyprland(keyboard);
+    }
+
+    fn apply_hyprland(&self, keyboard: HyprlandKeyboard) {
+        let count = keyboard.layout.split(',').filter(|s| !s.is_empty()).count() as u32;
+        self.write(keyboard.active_keymap, keyboard.active_layout_index, count);
+    }
 }
 
 pub struct NiriLink;
-
-impl NiriLink {
-    /// Connects to `$NIRI_SOCKET` and reads its blocking `Socket` stream on a dedicated thread.
-    /// The first event carries full initial state, so no startup query is needed. Failed connects
-    /// yield `None`.
-    pub fn new(state: Arc<Mutex<KeyboardState>>, events: UnboundedSender<KeyboardSignal>) -> Option<Self> {
-        let socket = niri_event_stream("keyboard", "layout reporting")?;
-
-        std::thread::spawn(move || {
-            let mut read_event = socket.read_events();
-            let mut names: Vec<String> = Vec::new();
-            loop {
-                let event = match read_event() {
-                    Ok(event) => event,
-                    Err(err) => {
-                        error!("niri event stream ended; layout will no longer update: {err}");
-                        return;
-                    }
-                };
-                let changed = match event {
-                    niri_ipc::Event::KeyboardLayoutsChanged { keyboard_layouts } => {
-                        names = keyboard_layouts.names;
-                        apply_niri_layout(&state, &names, keyboard_layouts.current_idx);
-                        true
-                    }
-                    niri_ipc::Event::KeyboardLayoutSwitched { idx } => {
-                        apply_niri_layout(&state, &names, idx);
-                        true
-                    }
-                    _ => false,
-                };
-                if changed && events.send(KeyboardSignal::Changed).is_err() {
-                    return;
-                }
-            }
-        });
-
-        Some(Self)
-    }
-}
 
 impl CompositorLink for NiriLink {
     fn switch_layout(&self, index: usize) {
@@ -82,10 +89,7 @@ impl CompositorLink for NiriLink {
     }
 }
 
-/// Hyprland IPC uses two sockets under
-/// `$XDG_RUNTIME_DIR/hypr/$HYPRLAND_INSTANCE_SIGNATURE/`: `.socket2.sock` pushes newline-terminated
-/// `event>>payload` lines, where `activelayout>>...` only triggers a resync; `.socket.sock` answers
-/// `j/devices` reads and `switchxkblayout main <index>` writes.
+/// `switchxkblayout main <index>` over Hyprland's `.socket.sock`.
 pub struct HyprlandLink {
     command_path: PathBuf,
 }
@@ -124,68 +128,11 @@ fn parse_hyprland_devices(json: &str) -> Option<HyprlandKeyboard> {
     parsed.iter().find(|k| k.main).cloned().or_else(|| parsed.into_iter().next())
 }
 
-fn apply_hyprland_layout(state: &Arc<Mutex<KeyboardState>>, keyboard: &HyprlandKeyboard) {
-    let mut guard = state.lock().expect("mutex poisoned");
-    guard.active_layout = keyboard.active_keymap.clone();
-    guard.active_layout_index = keyboard.active_layout_index;
-    guard.layout_count = keyboard.layout.split(',').filter(|s| !s.is_empty()).count() as u32;
-}
-
-/// One `j/devices` read applied to `state` and signalled. `false` only when nobody is listening any
-/// more, which ends the reader. Blocking there, so two reads cannot land out of order.
-fn publish(socket_path: &Path, state: &Arc<Mutex<KeyboardState>>, events: &UnboundedSender<KeyboardSignal>) -> bool {
-    let reply = match hyprland_request(socket_path, "j/devices") {
-        Ok(reply) => reply,
-        Err(err) => {
-            debug!("Hyprland `devices` request failed; layout not updated this round: {err}");
-            return true;
-        }
-    };
-    let Some(keyboard) = parse_hyprland_devices(&reply) else {
-        debug!("Hyprland `devices` reply held no usable keyboard entry; layout not updated this round");
-        return true;
-    };
-    apply_hyprland_layout(state, &keyboard);
-    events.send(KeyboardSignal::Changed).is_ok()
-}
-
 impl HyprlandLink {
     /// `signature` is a non-empty `$HYPRLAND_INSTANCE_SIGNATURE`, from
     /// `compositor::hyprland_signature`.
-    ///
-    /// Everything runs on the reader thread, because `UnixStream::connect` blocks and an `async fn`
-    /// on a two-worker runtime calls this. Connecting there, before the first read, also keeps a
-    /// switch in that gap a line still to process.
-    pub fn new(signature: String, state: Arc<Mutex<KeyboardState>>, events: UnboundedSender<KeyboardSignal>) -> Self {
-        let events_path = hyprland_socket_path(&signature, ".socket2.sock");
-        let command_path = hyprland_socket_path(&signature, ".socket.sock");
-        let reader_path = command_path.clone();
-        std::thread::spawn(move || {
-            let stream = UnixStream::connect(&events_path)
-                .inspect_err(|err| {
-                    debug!("failed to connect to Hyprland's event socket at {}; layout will not update after the first read: {err}",
-                        events_path.display()
-                    )
-                })
-                .ok();
-            // Read once even with no event socket. The layout is then frozen but right, where an
-            // indicator drawn only for two or more layouts would otherwise never appear.
-            if !publish(&reader_path, &state, &events) {
-                return;
-            }
-            let Some(stream) = stream else { return };
-            for line in BufReader::new(stream).lines() {
-                let Ok(line) = line else {
-                    error!("Hyprland event socket read failed; layout will no longer update");
-                    return;
-                };
-                if line.starts_with("activelayout>>") && !publish(&reader_path, &state, &events) {
-                    return;
-                }
-            }
-            error!("Hyprland event socket closed; layout will no longer update");
-        });
-        Self { command_path }
+    pub fn new(signature: &str) -> Self {
+        Self { command_path: hyprland_socket_path(signature, ".socket.sock") }
     }
 }
 
@@ -240,13 +187,33 @@ mod tests {
     fn apply_hyprland_layout_counts_the_configured_layouts_and_keeps_the_reported_index() {
         // Regression: the index was pinned to `0`, so Lua could not cycle from the reported value.
         let json = r#"{"keyboards":[{"active_keymap":"Arabic (Egypt)","layout":"us,ara","active_layout_index":1,"main":true}]}"#;
-        let state = Arc::new(Mutex::new(KeyboardState::default()));
-        apply_hyprland_layout(&state, &parse_hyprland_devices(json).expect("should parse"));
-        let guard = state.lock().unwrap();
+        let sink = LayoutSink::default();
+        sink.apply_hyprland(parse_hyprland_devices(json).expect("should parse"));
+        let guard = sink.state.lock().unwrap();
         assert_eq!(
             (guard.active_layout.as_str(), guard.active_layout_index, guard.layout_count),
             ("Arabic (Egypt)", 1, 2)
         );
+    }
+
+    #[test]
+    fn a_niri_switch_names_its_layout_from_the_last_list_and_signals_once_keyboard_listens() {
+        let sink = LayoutSink::default();
+        let mut names = Vec::new();
+        let layouts: niri_ipc::KeyboardLayouts =
+            serde_json::from_value(serde_json::json!({ "names": ["English (US)", "Arabic"], "current_idx": 0 }))
+                .unwrap();
+        assert!(sink.apply_niri(&mut names, &niri_ipc::Event::KeyboardLayoutsChanged { keyboard_layouts: layouts }));
+
+        let (events, mut signals) = tokio::sync::mpsc::unbounded_channel();
+        sink.events.set(events).unwrap();
+        assert!(sink.apply_niri(&mut names, &niri_ipc::Event::KeyboardLayoutSwitched { idx: 1 }));
+        assert!(!sink.apply_niri(&mut names, &niri_ipc::Event::OverviewOpenedOrClosed { is_open: true }));
+
+        let guard = sink.state.lock().unwrap();
+        assert_eq!((guard.active_layout.as_str(), guard.active_layout_index, guard.layout_count), ("Arabic", 1, 2));
+        assert_eq!(signals.try_recv(), Ok(KeyboardSignal::Changed));
+        assert!(signals.try_recv().is_err(), "the write before `keyboard` started sent nothing");
     }
 
     #[test]

@@ -11,7 +11,7 @@ use tokio::io::unix::AsyncFd;
 use tokio::sync::mpsc::UnboundedSender;
 use udev::MonitorSocket;
 
-use crate::compositor::{CompositorKind, detect_compositor, hyprland_signature, unsupported_session_report};
+use crate::compositor::{CompositorKind, hyprland_signature, unsupported_session_report};
 
 use super::super::brightness::controller::Login1SessionProxy;
 use super::super::read_attr;
@@ -77,10 +77,16 @@ pub struct KeyboardController {
 
 impl KeyboardController {
     /// `system_bus` carries logind backlight writes. `leds_root` (default `/sys/class/leds`) is
-    /// test-injected and holds the backlight and the sysfs lock fallback. Layout selects one
-    /// [`CompositorLink`] via `crate::compositor`'s env probe, or `None` without an implementor.
-    pub fn new(system_bus: zbus::Connection, leds_root: &Path, events_tx: UnboundedSender<KeyboardSignal>) -> Self {
-        let state = Arc::new(Mutex::new(KeyboardState::default()));
+    /// test-injected and holds the backlight and the sysfs lock fallback. `state` is shared with the
+    /// compositor reader, which writes layout; `compositor` picks the [`CompositorLink`] for
+    /// `switch_layout`.
+    pub fn new(
+        system_bus: zbus::Connection,
+        leds_root: &Path,
+        state: Arc<Mutex<KeyboardState>>,
+        compositor: Option<CompositorKind>,
+        events_tx: UnboundedSender<KeyboardSignal>,
+    ) -> Self {
         let backlight = find_backlight(leds_root);
         match &backlight {
             Some(led) => watch_backlight(led.clone(), Arc::clone(&state), events_tx.clone()),
@@ -89,16 +95,15 @@ impl KeyboardController {
             }
         }
         tokio::spawn(watch_locks(resolve_locks(leds_root, &state), Arc::clone(&state), events_tx.clone()));
-        let layout: Option<Box<dyn CompositorLink>> = match detect_compositor() {
+        let layout: Option<Box<dyn CompositorLink>> = match compositor {
             Some(CompositorKind::Hyprland) => match hyprland_signature() {
-                Some(signature) => Some(Box::new(HyprlandLink::new(signature, Arc::clone(&state), events_tx.clone()))),
+                Some(signature) => Some(Box::new(HyprlandLink::new(&signature))),
                 None => {
                     debug!("HYPRLAND_INSTANCE_SIGNATURE is unset or empty; layout reporting disabled for this run");
                     None
                 }
             },
-            Some(CompositorKind::Niri) => NiriLink::new(Arc::clone(&state), events_tx.clone())
-                .map(|link| Box::new(link) as Box<dyn CompositorLink>),
+            Some(CompositorKind::Niri) => Some(Box::new(NiriLink)),
             None => {
                 debug!("{}; layout reporting disabled for this run", unsupported_session_report());
                 None

@@ -24,7 +24,7 @@ use super::processes::{self, ProcessesController};
 use super::signals::{Senders, Signal, Signals};
 use super::storage::{self, StorageController};
 use super::sysinfo::{self, SysinfoController};
-use super::system::SystemController;
+use super::system::{self, SystemController};
 use super::tray::{self, TrayController, TraySignal};
 use super::updates::{self, UpdatesController};
 use super::windows::{self, WindowsController};
@@ -73,8 +73,8 @@ pub struct Capabilities {
     /// `run_privacy_task` ever reads.
     privacy_tx: Option<watch::Sender<PrivacySources>>,
     privacy_sources: watch::Receiver<PrivacySources>,
-    /// `workspaces` and `windows`' shared niri/Hyprland reader: whichever starts first spawns it,
-    /// the other attaches instead of opening a second connection.
+    /// `workspaces`, `windows` and `keyboard`'s shared niri/Hyprland reader: whichever starts first
+    /// spawns it, the others attach instead of opening another connection.
     compositor_reader: CompositorReader,
 }
 
@@ -83,6 +83,7 @@ pub struct Capabilities {
 struct CompositorReader {
     workspaces: Arc<Mutex<workspaces::controller::WorkspacesState>>,
     windows: Arc<Mutex<windows::controller::WindowsState>>,
+    keyboard: keyboard::layout::LayoutSink,
     compositor: Option<CompositorKind>,
     started: bool,
 }
@@ -148,10 +149,13 @@ impl Capabilities {
                     self.senders.windows.clone(),
                     kind.name(),
                 );
+                let keyboard = self.compositor_reader.keyboard.clone();
                 match kind {
-                    CompositorKind::Niri => workspaces::niri::spawn_reader(workspaces_publisher, windows_publisher),
+                    CompositorKind::Niri => {
+                        workspaces::niri::spawn_reader(workspaces_publisher, windows_publisher, keyboard)
+                    }
                     CompositorKind::Hyprland => {
-                        workspaces::hyprland::spawn_reader(workspaces_publisher, windows_publisher)
+                        workspaces::hyprland::spawn_reader(workspaces_publisher, windows_publisher, keyboard)
                     }
                 }
             }
@@ -314,10 +318,25 @@ impl Capabilities {
             // No `*::kbd_backlight` LED -> -1; missing lock source -> `false` (ADR-0034).
             Capability::Keyboard => {
                 if self.keyboard.is_none() {
+                    // ponytail: a keyboard-only Hyprland config also pays `workspaces`' re-read per
+                    // event burst; gate `read_state` on a started consumer if that shows up.
+                    let compositor = self.ensure_compositor_reader();
                     let (events, signals) = unbounded_channel();
+                    let sink = &self.compositor_reader.keyboard;
+                    let _ = sink.events.set(events.clone());
+                    // The reader may have written layout before this start, with nobody to signal.
+                    let _ = events.send(keyboard::controller::KeyboardSignal::Changed);
+                    let state = Arc::clone(&sink.state);
                     let connection = self.connection.clone();
-                    let build =
-                        async move { Some(KeyboardController::new(connection, Path::new("/sys/class/leds"), events)) };
+                    let build = async move {
+                        Some(KeyboardController::new(
+                            connection,
+                            Path::new("/sys/class/leds"),
+                            state,
+                            compositor,
+                            events,
+                        ))
+                    };
                     let handle = |keyboard: KeyboardController, _| async move { keyboard.snapshot() };
                     self.keyboard = Some(spawn_worker(build, signals, handle, self.senders.keyboard.clone()));
                 }
@@ -392,7 +411,7 @@ impl Capabilities {
                     self.power = Some(PowerController::new(self.connection.clone(), self.senders.power.clone()));
                 }
             }
-            // 1Hz clock, and nothing else since ADR-0136 (ADR-0053).
+            // The clock, and nothing else since ADR-0136 (ADR-0053).
             Capability::System => {
                 if self.system.is_none() {
                     self.system = Some(SystemController::new(self.senders.system.clone()));
@@ -567,7 +586,7 @@ impl Capabilities {
                     push!(Capability::Processes, &processes.snapshot());
                 }
             }
-            // Once per wall-clock second, when the epoch changes (ADR-0053 decision 2).
+            // Once per clock tick (ADR-0053 decision 2).
             Signal::System => {
                 if let Some(system) = &self.system {
                     push!(Capability::System, &system.snapshot());
@@ -591,7 +610,7 @@ impl Capabilities {
 
     /// Routes a command to its module (ADR-0037). Optional controllers exist only after the config
     /// reads their member (ADR-0070), so missing ones call `log_unstarted`; boot-built `lock` is
-    /// passed in, and read-only `battery`/`privacy`/`system` have no dispatch.
+    /// passed in, and read-only `battery`/`privacy` have no dispatch.
     pub fn dispatch(&mut self, capability: Capability, envelope: &CommandEnvelope, lock: &LockController) {
         debug!(2; "dispatching command: {capability} {}", envelope.params.action);
         macro_rules! to {
@@ -621,12 +640,13 @@ impl Capabilities {
             Capability::Processes => to!(self.processes, processes::dispatch),
             Capability::Audio => to!(self.audio, audio::dispatch),
             Capability::Idle => to!(self.idle, idle::dispatch),
+            Capability::System => to!(self.system, system::dispatch),
             Capability::Lock => lock::dispatch(lock, envelope),
             // Answered in `Supervisor::dispatch_capability_command`, where its controller lives
             // beside the state push that cancel handling needs.
             Capability::Polkit => {}
             // Read-only: no action enum; a named command is malformed Renderer input.
-            Capability::Battery | Capability::Privacy | Capability::System => {
+            Capability::Battery | Capability::Privacy => {
                 debug!(
                     "{capability}: read-only capability received a command from generation {}; dropping",
                     envelope.params.generation_id

@@ -1298,6 +1298,9 @@ compositor probing to a shared top-level module; keep niri types local.
 Amendment, ADR-0247: decision 2's niri/Hyprland reader now feeds `windows` too, the third consumer
 that justified sharing it instead of a second connection.
 
+Amendment: `keyboard`'s layout now comes from that reader too, so niri and Hyprland events are
+decoded once. Starting `keyboard` starts the reader.
+
 ## 0057. `json.decode` is one function on the engine's existing null mapping
 
 1. Reuse the capability payload converter. JSON null becomes Lua nil, not a sentinel; null array
@@ -1705,6 +1708,10 @@ Superseded in part by ADR-0210: a missing language server fails the gate.
    a weak active connection survives.
 
 Multi-adapter selection and hotplug discovery remained unbuilt.
+
+Amendment to decision 8: the retained proxies cached through `PropertiesChanged`, so every in-range
+AP's strength woke the Supervisor, the traffic decision 7 avoided. Each AP's last uncached `GetAll`
+is retained instead, re-read for the associated AP on every rebuild and for all after a scan.
 
 ## 0083. `network:connect` reuses a saved profile, and the AP order is deterministic
 

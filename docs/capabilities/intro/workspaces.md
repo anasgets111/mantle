@@ -33,7 +33,7 @@ The Supervisor picks the compositor once, from `$HYPRLAND_INSTANCE_SIGNATURE`, t
 
 | Capability | niri | Hyprland | Neither |
 | :--- | :--- | :--- | :--- |
-| `workspaces` | IPC event stream | `.socket2.sock` events, then a re-read over `.socket.sock` | `nil` for the run |
+| `workspaces` | IPC event stream | `.socket2.sock` events, then one re-read per burst over `.socket.sock`; a title change alone patches in place | `nil` for the run |
 | `windows` | Same event stream | Same re-read | `zwlr_foreign_toplevel_manager_v1` on its own Wayland connection; `nil` if the protocol is missing or setup takes over 5 s |
 
 Hyprland's refusal of a write logs at debug level only (`MANTLE_LOG=debug`); niri's is not logged.

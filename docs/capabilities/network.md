@@ -90,6 +90,7 @@ Call each as `mantle.network:<action>(arguments...)`; `?` marks an argument you 
 | Devices | Only the first Wi-Fi device is tracked. Wired fields describe the first activated wired device |
 | Toggles | Networking through `Enable`, Wi-Fi through `WirelessEnabled` |
 | Scan | `RequestScan`. `scanning` turns `true` on the call and `false` when `LastScan` moves or NetworkManager refuses |
+| Access points | The associated one's strength is live. The others' are read when they appear and after each scan, when NetworkManager updates them |
 | Connect | A saved profile or an open network in range joins at once. Anything else sets `password_ssid` and waits for the key from a `secure_submit = { capability = "network", action = "connect" }` field ([secure fields](../guide/input.md#secure-fields)); the key never reaches Lua |
 | Join verdict | Watched for up to 45 s. A rejected key sets `password_ssid` again. A new network's profile, key included, is saved when the join starts and stays after a rejection; a key retyped for a saved profile reaches disk only once NetworkManager accepts it |
 | Abort | `abort_connect` deletes a profile the join created, else deactivates the join |

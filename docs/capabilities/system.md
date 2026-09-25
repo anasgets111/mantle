@@ -2,9 +2,11 @@
 
 # system
 
-Wall and monotonic clocks, pushed once a second.
+Wall and monotonic clocks, pushed once a second until `configure` sets the interval.
 
 ```lua
+mantle.system:configure({ interval = 60 }) -- the text below shows no seconds
+
 text {
     content = mantle.system:map(function(system)
         return system and os.date("%a %H:%M", system.time) or ""
@@ -16,22 +18,37 @@ text {
 
 `mantle.system:get()` returns `SystemState`, `nil` before the first push. A field marked `?` may be absent.
 
-`mantle.system`'s payload, pushed once a second.
+`mantle.system`'s payload, pushed on each tick of `interval`.
 
 | Field | Type | Description |
 | --- | --- | --- |
-| `monotonic` | `integer` | Seconds since `system` was first used; excludes suspend. Take durations from it, since NTP moves `time`. |
+| `monotonic` | `integer` | Seconds since `system` was first used, as of the last push; excludes suspend. Take durations from it, since NTP moves `time`. |
 | `time` | `integer` | Unix epoch seconds, as `os.date` takes them. |
 
 ## Actions
 
-None: read-only, so any method but `get`, `map` and `on_change` raises.
+Call each as `mantle.system:<action>(arguments...)`; `?` marks an argument you may omit.
+
+| Action | Arguments | Description |
+| --- | --- | --- |
+| `configure` | `settings: SystemConfigure` | Sets the push interval, `1` second until this. Each push lands on a wall-clock multiple of it, and one lands at once. |
+
+### `SystemConfigure`
+
+`system:configure`'s table. An absent `interval` keeps the current one.
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `interval?` | `integer` | Seconds between pushes, each on a multiple of it since the epoch, so `60` lands on every minute; `1` is the default and `0` stops them. |
 
 ## Backend
 
-The Supervisor's own clocks; nothing external. The first push lands on the next wall-clock second,
-up to 1 s after the first read, then one push a second. That alignment happens once: after an NTP
-step or a resume, pushes land mid-second until the Supervisor restarts.
+The Supervisor's own clocks; nothing external. Pushes land on wall-clock multiples of `interval`
+since the epoch (default `1`): `60` lands on each minute's `:00`; `3600` on UTC hours, not local
+ones in a half-hour timezone. A push due during suspend lands on resume, and a clock step (NTP,
+`settimeofday`) pushes at once and re-aligns. `0` stops pushes; `time` and `monotonic` keep their
+last values. The interval lives in the Supervisor, so it outlasts reloads until the next
+`configure`, and every reader shares it.
 
 See also: [Clock bar](../cookbook/clock-bar.md) recipe.
 

@@ -127,7 +127,7 @@ roster! {
     Lock => "lock", "The session lock: whether it is held, authentication progress and the last failure.",
     Polkit => "polkit", "The pending polkit authentication request, its progress and the last failure.",
     Battery => "battery", "UPower's display device: charge, state and time estimates.",
-    System => "system", "Wall and monotonic clocks, pushed once a second.",
+    System => "system", "Wall and monotonic clocks, pushed once a second until `configure` sets the interval.",
     Brightness => "brightness", "The screen backlight percentage; `nil` without a backlight.",
     Workspaces => "workspaces", "Workspaces per output, special workspaces and the focused window.",
     Power => "power", "Power profiles, mains or battery, and battery power draw.",
@@ -213,7 +213,8 @@ impl Capability {
             Capability::Updates => &["check", "configure", "install"],
             Capability::Workspaces => &["focus", "toggle_special"],
             Capability::Windows => &["focus", "close", "set_fullscreen", "set_minimized", "set_maximized"],
-            Capability::Battery | Capability::Idle | Capability::Privacy | Capability::System => &[],
+            Capability::System => &["configure"],
+            Capability::Battery | Capability::Idle | Capability::Privacy => &[],
         }
     }
 }

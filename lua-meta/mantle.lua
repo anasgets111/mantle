@@ -245,6 +245,10 @@
 ---@field ram_interval? integer Seconds between memory and swap reads; `0` (the default) stops them.
 ---@field temp_interval? integer Seconds between temperature reads; `0` (the default) stops them.
 
+---@class SystemConfigure
+---`system:configure`'s table. An absent `interval` keeps the current one.
+---@field interval? integer Seconds between pushes, each on a multiple of it since the epoch, so `60` lands on every minute; `1` is the default and `0` stops them.
+
 ---@class TrayItem
 ---@field attention_icon_name? string Artwork to draw while `status == "NeedsAttention"`, paired with `attention_icon_path` like the base icon; both `nil` when unset.
 ---@field attention_icon_path? string File half of the attention artwork.
@@ -419,8 +423,8 @@
 ---@field temp_gpu integer `amdgpu`, `nouveau` or `nvidia` hwmon temperature in whole Celsius, or `-1` without a readable one.
 
 ---@class SystemState
----`mantle.system`'s payload, pushed once a second.
----@field monotonic integer Seconds since `system` was first used; excludes suspend. Take durations from it, since NTP moves `time`.
+---`mantle.system`'s payload, pushed on each tick of `interval`.
+---@field monotonic integer Seconds since `system` was first used, as of the last push; excludes suspend. Take durations from it, since NTP moves `time`.
 ---@field time integer Unix epoch seconds, as `os.date` takes them.
 
 ---@class StorageState
@@ -589,8 +593,8 @@ local PrivacyCapability = {}
 ---@field configure fun(self: SysinfoCapability, intervals: SysinfoConfigure) Sets poll intervals; every one starts at `0`, so nothing is read until this. The first reading lands on the next wall-clock second (CPU: one interval after it).
 
 ---[docs](https://anasgets111.github.io/mantle/capabilities/system.html)
----@class SystemCapability: ReadOnlyCapability<SystemState>, userdata
-local SystemCapability = {}
+---@class SystemCapability: Capability<SystemState>, userdata
+---@field configure fun(self: SystemCapability, settings: SystemConfigure) Sets the push interval, `1` second until this. Each push lands on a wall-clock multiple of it, and one lands at once.
 
 ---[docs](https://anasgets111.github.io/mantle/capabilities/storage.html)
 ---@class StorageCapability: Capability<StorageState>, userdata
@@ -677,7 +681,7 @@ local SystemCapability = {}
 ---@field lock LockCapability The session lock: whether it is held, authentication progress and the last failure.
 ---@field polkit PolkitCapability The pending polkit authentication request, its progress and the last failure.
 ---@field battery BatteryCapability UPower's display device: charge, state and time estimates.
----@field system SystemCapability Wall and monotonic clocks, pushed once a second.
+---@field system SystemCapability Wall and monotonic clocks, pushed once a second until `configure` sets the interval.
 ---@field brightness BrightnessCapability The screen backlight percentage; `nil` without a backlight.
 ---@field workspaces WorkspacesCapability Workspaces per output, special workspaces and the focused window.
 ---@field power PowerCapability Power profiles, mains or battery, and battery power draw.

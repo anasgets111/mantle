@@ -12,9 +12,7 @@ use super::connect::Attempt;
 use super::devices::{
     Devices, EthernetDevice, WifiDevice, forward, resolve_devices, spawn_manager_forwarder, watch_devices,
 };
-use super::proxies::{
-    AccessPointProxy, DEVICE_STATE_ACTIVATED, DeviceProxy, IP4ConfigProxy, NetworkManagerProxy, SettingsProxy,
-};
+use super::proxies::{DEVICE_STATE_ACTIVATED, DeviceProxy, IP4ConfigProxy, NetworkManagerProxy, SettingsProxy};
 use super::scan::resolve_ssid;
 use super::{NetworkSignal, NetworkState, PendingNetworkConnect};
 
@@ -27,12 +25,9 @@ pub struct NetworkController {
     pub(super) settings: SettingsProxy<'static>,
     /// The devices NetworkManager has now; see [`Devices`].
     pub(super) devices: Arc<Mutex<Devices>>,
-    /// AP proxies kept between rebuilds, keyed by object path. They retain zbus property caches fed
-    /// by `PropertiesChanged`, avoiding a match rule, `GetAll`, and unsubscribe per AP per pass.
-    /// At 10 APs, rebuild time fell from 11.25ms to 0.84ms (ADR-0082).
-    ///
-    /// Pruned against the live path list on each rebuild; `AccessPointRemoved` already requests it.
-    pub(super) access_points: Arc<Mutex<HashMap<OwnedObjectPath, AccessPointProxy<'static>>>>,
+    /// Each AP's last reading, keyed by object path, so a rebuild between scans reads only the
+    /// associated AP and new ones (ADR-0082). Pruned against the live path list on each rebuild.
+    pub(super) access_points: Arc<Mutex<HashMap<OwnedObjectPath, super::scan::ApReading>>>,
     /// Saved Wi-Fi SSIDs for [`AccessPointInfo::saved`](super::AccessPointInfo::saved), refreshed on
     /// [`NetworkSignal::SavedChanged`]. ponytail: an edited profile's SSID stays stale until the next
     /// add or remove. Upgrade path: watch each profile's `Updated`.
@@ -126,7 +121,7 @@ impl NetworkController {
                     _ => {}
                 }
                 // Read D-Bus before taking the plain mutex; never hold it across an await.
-                let mut next = self.build_state().await;
+                let mut next = self.build_state(signal == NetworkSignal::ScanCompleted).await;
                 let mut state = self.state.lock().expect("mutex poisoned");
                 carry_across_rebuild(&mut next, &mut state, signal);
                 *state = next;
@@ -137,8 +132,8 @@ impl NetworkController {
 
     /// Freshly reads every `NetworkState` field except `scanning`. Each property falls back to
     /// `Default` on error, so one unreadable field does not abort the snapshot.
-    async fn build_state(&self) -> NetworkState {
-        let available_networks = self.build_available_networks().await;
+    async fn build_state(&self, scanned: bool) -> NetworkState {
+        let available_networks = self.build_available_networks(scanned).await;
         let associated = available_networks.iter().find(|ap| ap.active);
         // `PrimaryConnection` is `/` without a default route; its type says whether the route is
         // wired.

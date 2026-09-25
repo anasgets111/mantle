@@ -25,12 +25,18 @@ so everything since the rename from Obelisk sits under Unreleased.
 - `--profile` reports each capability's snapshot pushes sent and deduped beside its size ([CLI](guide/cli.md#flags)).
 - A bare `mantle call` lists the running config's actions, and a bare `mantle set` or `mantle toggle`
   its states with their values ([CLI](guide/cli.md#commands)).
+- `mantle.system:configure({ interval = 60 })` pushes the clock every minute on the minute
+  instead of every second, or never with `0`; default `1` ([system](capabilities/system.md)).
 
 ### Changed
 
 - A `state:set` of the value the state already holds re-resolves nothing, and a `:map` or
   `computed` re-resolves its readers only when its result changes. Scalars and plain-data tables
   compare by value ([signals](guide/signals.md#derived-signals)).
+- `mantle.system` pushes land on the wall-clock second after a resume or clock step too, rather
+  than mid-second until a restart.
+- `mantle.keyboard` pushes once when it starts, so it is no longer `nil` without niri or Hyprland
+  until a lock key or the backlight changes.
 - `mantle.sysinfo` reads on the wall-clock second, first at the next one after `configure`
   rather than one interval later, so its pushes can share `mantle.system`'s layout pass.
 - `mantle.applications` watches its directories and rescans after a change, so installs and

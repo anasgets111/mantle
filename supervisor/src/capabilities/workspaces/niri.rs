@@ -8,6 +8,7 @@ use std::collections::HashMap;
 use shared::{debug, error};
 
 use super::controller::{FocusedWindow, StatePublisher, WorkspaceRow};
+use crate::capabilities::keyboard::layout::LayoutSink;
 use crate::capabilities::windows::controller::{StatePublisher as WindowsPublisher, WindowEntry};
 
 /// niri workspaces reduced to the common input. Clone `name` and `output` per event; a session has
@@ -86,9 +87,6 @@ fn focused_window(windows: &HashMap<u64, niri_ipc::Window>) -> Option<FocusedWin
 /// thread (`std::net::UnixStream`). `EventStreamStatePart::apply` returns ignored events, so one
 /// `let` chain passes each event down the parts that did not want it.
 ///
-/// Uses a second event-stream connection; `keyboard` already owns one for `KeyboardLayoutsChanged`
-/// (ADR-0056 decision 2 weighs this against sharing).
-///
 /// ponytail: `niri_ipc::state` panics on `WindowClosed` or `WindowLayoutsChanged` for an unknown
 /// window (`.expect`). The reader feeds one ordered stream from the full replay, so it cannot
 /// violate those invariants externally. If one fires, only this thread dies; workspaces stop for
@@ -96,8 +94,9 @@ fn focused_window(windows: &HashMap<u64, niri_ipc::Window>) -> Option<FocusedWin
 /// both parts and re-requesting the stream; no instance has been observed and this code cannot
 /// trigger the case.
 ///
-/// Also drives `mantle.windows` from the same stream, rather than a second connection.
-pub fn spawn_reader(mut publisher: StatePublisher, mut windows_publisher: WindowsPublisher) {
+/// Also drives `mantle.windows` and `keyboard`'s layout from the same stream, rather than a second
+/// connection.
+pub fn spawn_reader(mut publisher: StatePublisher, mut windows_publisher: WindowsPublisher, keyboard: LayoutSink) {
     let Some(socket) = crate::compositor::niri_event_stream("workspaces", "workspace and window reporting") else {
         return;
     };
@@ -109,6 +108,7 @@ pub fn spawn_reader(mut publisher: StatePublisher, mut windows_publisher: Window
         let mut niri_workspaces = niri_ipc::state::WorkspacesState::default();
         let mut niri_windows = niri_ipc::state::WindowsState::default();
         let mut niri_overview = niri_ipc::state::OverviewState::default();
+        let mut layout_names = Vec::new();
         loop {
             let event = match read_event() {
                 Ok(event) => event,
@@ -117,6 +117,9 @@ pub fn spawn_reader(mut publisher: StatePublisher, mut windows_publisher: Window
                     return;
                 }
             };
+            if keyboard.apply_niri(&mut layout_names, &event) {
+                continue;
+            }
             // No published row reads layouts, focus timestamps or urgency.
             let moves_rows = !matches!(
                 event,

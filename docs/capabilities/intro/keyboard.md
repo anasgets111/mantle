@@ -27,10 +27,9 @@ button {
 | :--- | :--- | :--- |
 | Lock keys | `EV_LED` events from the first `/dev/input` device with a Caps Lock LED; a replugged keyboard is reopened | sysfs `*::capslock`, `*::numlock`, `*::scrolllock` read once, then frozen; with none of those, `false` |
 | Backlight | Reads sysfs `*::kbd_backlight`, writes through logind's `SetBrightness` | `backlight_pct = -1`; `set_backlight` is logged and ignored |
-| Layout | niri's event stream, or Hyprland's `devices` for the keyboard marked `main` (the one typed on last) | `active_layout = ""`, `layout_count = 0`; `switch_layout` is logged and ignored |
+| Layout | The event stream [`workspaces`](workspaces.md) reads: niri's layout events, or Hyprland's `devices` for the keyboard marked `main` (the one typed on last) | `active_layout = ""`, `layout_count = 0`; `switch_layout` is logged and ignored |
 
-The first push comes from the compositor's first layout report. Without niri or Hyprland,
-`mantle.keyboard` stays `nil` until a lock key, the backlight or a replugged keyboard pushes.
+The first push comes when `keyboard` starts, with whatever layout the compositor has reported.
 
 ## Gotchas
 

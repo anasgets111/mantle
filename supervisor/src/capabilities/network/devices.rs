@@ -157,9 +157,9 @@ fn spawn_wifi_forwarder(
 /// between scans. `None` for NetworkManager's `/` path means no association.
 ///
 /// Watch only the associated AP. On real hardware over 180s it emitted 26 times, a quiet 6-second
-/// poll, versus 76 events across 17 APs, one every 2.4s indefinitely. Rebuilds reread every AP,
-/// so the full list stayed as fresh at one third the traffic; ADR-0029 item 6 required this
-/// measured choice before adding debounce.
+/// poll, versus 76 events across 17 APs, one every 2.4s indefinitely. The others are read after
+/// each scan, which is when NetworkManager moves them; ADR-0029 item 6 required this measured
+/// choice before adding debounce.
 fn strength_forwarder(
     connection: &zbus::Connection,
     path: OwnedObjectPath,
