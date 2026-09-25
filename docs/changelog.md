@@ -55,8 +55,8 @@ so everything since the rename from Obelisk sits under Unreleased.
   `itemfn`, `key` and the maps inside items must read time and mutable data through signals, or
   they show what they read at the last build ([when items rebuild](nodes/list.md#when-items-rebuild)).
 - A node reads each `children` or `child` table once and keeps it while it holds that table, so a
-  pass costs about 40% less outside the solve. A node table or `children` array changed in place is
-  no longer seen; bind a signal or `:set` a new table ([gotchas](nodes/index.md#gotchas)).
+  pass's property reads outside `list` builds cost about 40% less. A node table or `children` array
+  changed in place is no longer seen; bind a signal or `:set` a new table ([gotchas](nodes/index.md#gotchas)).
 - **Breaking:** each capability action is a method, and `:invoke` is gone:
   `mantle.audio:set_volume(0.5)` replaces `mantle.audio:invoke("set_volume", 0.5)`. The editor
   stubs type each action's own arguments, so `mantle.audio:set_muted(0.5)` is flagged. An unknown
