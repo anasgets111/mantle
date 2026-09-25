@@ -227,6 +227,7 @@ dirty, and the next pass re-resolves only the instances that read it.
 | A write to a signal no instance reads | Nothing |
 | A `delay` coming due or a `pulse` window closing | Every instance |
 | A `geometry` rect moving | One follow-up pass over the instances that read it |
+| A wheel over a container whose `scroll` signal nothing else reads | Nothing: its children move where they are |
 | Any write while the session is locked | Every instance |
 | A reload, or a re-resolve that failed | Every instance |
 
@@ -243,7 +244,7 @@ whole bar. A `list` keeps its items the same way ([when items rebuild](../nodes/
 | Change | The node reads its properties again |
 | :--- | :--- |
 | A write to a signal bound to one of its properties, or one changing the result of a `map` or `computed` bound to one | ✓ |
-| A write to its own `hover` or `scroll` slot | ✓ |
+| A write to its own `hover` slot | ✓ |
 | A different table, function, signal or value in its declaration, as in a rebuilt `list` item | ✓ |
 | A reload | ✓ |
 | For a `panel` or `lock` root, a write to a signal its function `child` read. Every ✓ here runs that function again | ✓ |

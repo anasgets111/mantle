@@ -77,6 +77,7 @@ impl ResolvedNode {
             kind,
             rect: LogicalRect { x, y, width, height },
             margin: EdgeInsets::default(),
+            scrolled: 0.0,
             layout_style: std::rc::Rc::new(LayoutStyle::parse(&PropMap::default()).unwrap()),
             taffy: None,
             visible: true,
@@ -198,6 +199,8 @@ pub struct ResolvedNode {
     ///
     /// [`extent_along`]: scroll::extent_along
     pub margin: EdgeInsets,
+    /// The scroll offset its children carry, so a wheel moves them on from it without a pass.
+    pub(crate) scrolled: f32,
     pub visible: bool,
     /// This node's own `opacity`, before any ancestor's. `layout::paint::build_node` multiplies
     /// the chain descending, the same way it intersects a clip, so a panel fades with everything
@@ -1356,20 +1359,21 @@ pub(super) mod tests {
     /// same reasons as [`read_seam_cost`]: it reports numbers, and only a release build's mean
     /// anything. `MANTLE_PROFILE=1` adds the per-pass split.
     ///
-    /// Six nodes per row, one of them text, beside a `clock` text, over a cached re-apply -- the
-    /// per-capability-push shape of ADR-0044 decision 2, not a cold start. `clock` writes only the
-    /// clock, so the list keeps its items (ADR-0269); `source` writes the list's source, so it
-    /// builds them all. On this machine:
+    /// Six nodes per row, one of them text and one holding a `hover`, beside a `clock` text, over a
+    /// cached re-apply -- the per-capability-push shape of ADR-0044 decision 2, not a cold start.
+    /// `clock` writes only the clock, so the list keeps its items (ADR-0269); `source` writes the
+    /// list's source, so it builds them all; `item` writes the first row's `hover`, so it builds
+    /// that row (ADR-0273). On this machine:
     ///
-    /// | rows | `clock` p50 | `source` p50 | note |
-    /// |---|---|---|---|
-    /// | 12 | 0.17 ms | 0.29 ms | one viewport of a virtualized list |
-    /// | 50 | 0.51 ms | 1.15 ms | ADR-0132's fifty tiles |
-    /// | 125 | 1.23 ms | 2.79 ms | 500 wallpapers, four to a row |
-    /// | 500 | 4.8 ms | 11.2 ms | 2000 wallpapers |
-    /// | 125, no text | 0.93 ms | 2.31 ms | |
+    /// | rows | `clock` p50 | `source` p50 | `item` p50 | note |
+    /// |---|---|---|---|---|
+    /// | 12 | 0.10 ms | 0.31 ms | 0.10 ms | one viewport of a virtualized list |
+    /// | 50 | 0.44 ms | 1.47 ms | 0.48 ms | ADR-0132's fifty tiles |
+    /// | 125 | 0.96 ms | 3.65 ms | 1.15 ms | 500 wallpapers, four to a row |
+    /// | 500 | 4.4 ms | 15.3 ms | 4.5 ms | 2000 wallpapers |
+    /// | 125, no text | 0.81 ms | 2.94 ms | 0.87 ms | |
     ///
-    /// Linear in source length either way: about 10us a row kept, 22us a row built. A kept list
+    /// Linear in source length either way: about 9us a row kept, 30us a row built. A kept list
     /// still lays every item out; ADR-0191's viewport is the design that would cut it to the first
     /// row of this table, and why it is not built yet.
     #[test]
@@ -1392,8 +1396,10 @@ pub(super) mod tests {
                             source = source,
                             key = function(e) return e.id end,
                             itemfn = function(e)
+                                local over = hover(e.id)
                                 return row {{ width = "Fill", height = 96, spacing = 6, children = {{
-                                    rect {{ width = 96, height = 96, background = "#202020", radius = 8 }},
+                                    rect {{ width = 96, height = 96, radius = 8, hover = over,
+                                        background = over:map(function(on) return on and "#303030" or "#202020" end) }},
                                     rect {{ width = 96, height = 96, background = "#202020", radius = 8 }},
                                     rect {{ width = 96, height = 96, background = "#202020", radius = 8 }},
                                     rect {{ width = 96, height = 96, background = "#202020", radius = 8 }},
@@ -1407,7 +1413,7 @@ pub(super) mod tests {
         };
         let shaping = ShapingHandle::spawn();
         for (rows, text) in [(12usize, true), (50, true), (125, true), (500, true), (125, false)] {
-            for (written, write) in [("clock", "clock:set(tostring(tick))"), ("source", "source:set(source:get())")] {
+            for written in ["clock", "source", "item"] {
                 let (lua, surface) = surface_from(&src(rows, text));
                 let mut scene = Scene::new();
                 apply_at(&mut scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
@@ -1415,7 +1421,15 @@ pub(super) mod tests {
                 let mut samples = Vec::new();
                 for tick in 0..40 {
                     lua.globals().set("tick", tick).unwrap();
-                    lua.load(write).exec().unwrap();
+                    match written {
+                        "clock" => lua.load("clock:set(tostring(tick))").exec().unwrap(),
+                        "source" => lua.load("source:set(source:get())").exec().unwrap(),
+                        _ => {
+                            let over = lua.load(r#"return hover("e1")"#).eval().unwrap();
+                            let over = crate::lua::signal::from_userdata(&over).unwrap();
+                            over.hover_handle().unwrap().set_changed(mlua::Value::Boolean(tick % 2 == 0));
+                        }
+                    }
                     let started = std::time::Instant::now();
                     apply_at(&mut scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
                     samples.push(started.elapsed().as_secs_f64() * 1000.0);
@@ -1435,13 +1449,50 @@ pub(super) mod tests {
         }
     }
 
+    /// What one wheel event costs on a scrolled 500-row list:
+    /// `cargo test -p renderer --release scroll_cost -- --ignored --nocapture`. Ignored like
+    /// [`list_pass_cost`]. On this machine, p50 0.06 ms in place; the pass it replaces took 2.4 ms.
+    #[test]
+    #[ignore]
+    fn scroll_cost() {
+        let (lua, surface) = surface_from(
+            r##"s = scroll("s")
+            local entries = {}
+            for i = 1, 500 do entries[i] = { id = "e" .. i, label = "wallpaper " .. i } end
+            return panel { id = "picker", child = list {
+                width = "Fill", height = "Fill", spacing = 6, scroll = s, source = state("source", entries),
+                key = function(e) return e.id end,
+                itemfn = function(e)
+                    return row { width = "Fill", height = 96, spacing = 6, children = {
+                        rect { width = 96, height = 96, background = "#202020", radius = 8 },
+                        rect { width = 96, height = 96, background = "#202020", radius = 8 },
+                        text { content = e.label, font_size = 14 },
+                    } }
+                end,
+            } }"##,
+        );
+        let signal = crate::lua::signal::from_userdata(&lua.globals().get("s").unwrap()).unwrap();
+        let shaping = ShapingHandle::spawn();
+        let mut scene = Scene::new();
+        apply_at(&mut scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
+        let mut samples = Vec::new();
+        for tick in 0..40 {
+            let offset = f64::from(tick) * 17.0;
+            let started = std::time::Instant::now();
+            scene.scroll_in_place(&signal, offset as f32, &lua).unwrap();
+            samples.push(started.elapsed().as_secs_f64() * 1000.0);
+        }
+        samples.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        println!("SCROLL 500 rows: p50 {:.3} ms  p95 {:.3} ms", samples[20], samples[38]);
+    }
+
     /// What the non-list part of `prepare` costs per pass on a bar:
     /// `MANTLE_PROFILE=1 cargo test -p renderer --release bar_pass_cost -- --ignored --nocapture`.
     /// Ignored like [`list_pass_cost`]. 50 hover chips of `rect > row > (rect, text)` and a clock
     /// text written each pass, 203 nodes. On this machine, `props` (the resolve span less the list
     /// span) was 0.545 ms a pass reading every `children` table each pass, 0.325 ms keeping what
     /// each table read (`pass::ChildTable`), 0.240 ms also keeping every node the clock write did
-    /// not reach (ADR-0270).
+    /// not reach (ADR-0270), 0.16 ms also keeping those nodes' parsed style and paint.
     #[test]
     #[ignore]
     fn bar_pass_cost() {

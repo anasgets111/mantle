@@ -63,15 +63,16 @@ A `list` packs and aligns exactly like the `row` or `column` its `direction` nam
 
 A list keeps the items it built until something that build read changes. A pass that finds nothing
 changed calls no `itemfn` and reads none of the items' signals; it lays the kept items out again,
-about half the cost of building them. One change rebuilds every item, scrolled out of view or not.
+about a third of the cost of building them. A change one item read builds that item alone; a change
+the list itself read builds every item, scrolled out of view or not.
 
-| Change | Rebuilds the items |
+| Change | Builds again |
 | :--- | :--- |
-| A write to `source`, or to a signal under a `map` or `computed` bound to it | ✓ |
-| A write to a signal `itemfn` or `key` read with `:get()` | ✓ |
-| A write to a signal bound to a property of a built item, at any depth | ✓ |
-| A new `source`, `itemfn` or `key` value, a new `limit`, or a reload | ✓ |
-| A write to anything else, even on the same surface | |
+| A write to `source`, or to a signal under a `map` or `computed` bound to it | Every item |
+| A write to a signal `key` read with `:get()` | Every item |
+| A new `source`, `itemfn` or `key` value, a new `limit`, or a reload | Every item |
+| A write to a signal an item's `itemfn` call read with `:get()`, or bound to a property of that item at any depth, such as its `hover` | That item |
+| A write to anything else, even on the same surface | Nothing |
 
 `key` carries each item's state (tweens, a held image, a text field's draft) onto its rebuilt node,
 and across reorders. Cap a long list with `limit` (a launcher's top 50 matches), or hide it while
@@ -79,7 +80,7 @@ closed so it freezes.
 
 The engine sees signal reads only. An `itemfn`, `key` or item `map` that reads the clock, a mutable
 variable or a `source` table changed in place keeps what it read until a signal it read is written.
-A `delay` or `pulse` rebuilds the list on every pass while one is pending or open. What to read
+A `delay` or `pulse` builds the items that read it again on every pass while one is pending or open. What to read
 instead: [what a node reads again](../guide/signals.md#what-a-node-reads-again).
 
 ## How do I…

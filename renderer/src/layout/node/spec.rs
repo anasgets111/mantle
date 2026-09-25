@@ -211,25 +211,35 @@ impl Prop for Limit {
     }
 }
 
-/// A `list`'s items, `source` read here rather than by `resolve_properties` so a list that
-/// [`ListMemo::still_holds`] reads nothing at all.
-pub fn list_children(properties: &PropMap, lua: &Lua) -> Result<Vec<VirtualNode>, LayoutError> {
-    let Some(source) = signal_at(properties, "source") else {
-        return parse_list_children(properties);
+/// A `list`'s items and the build that made them, `source` read here rather than by
+/// `resolve_properties` so a list that [`ListMemo::still_holds`] reads nothing at all.
+pub fn list_children(properties: &PropMap, lua: &Lua) -> Result<(Vec<VirtualNode>, ListMemo), LayoutError> {
+    let mut build = ListMemo {
+        inputs: list_inputs(properties),
+        limit: list::limit.read(properties).ok().flatten(),
+        stamp: signal::write_clock(lua),
+        lua: lua.weak(),
+        cells: Vec::new(),
+        items: Vec::new(),
     };
+    let Some(source) = signal_at(properties, "source") else {
+        return Ok((parse_list_children(properties, lua, &mut build)?, build));
+    };
+    let frame = ComputedFrame::enter(lua);
+    let value = resolve_signal(&source, "list", "source", lua);
+    build.cells = frame.finish();
     let mut resolved = properties.clone();
-    match resolve_signal(&source, "list", "source", lua)? {
+    match value? {
         Some(value) => resolved.insert("source", value),
         None => resolved.remove("source"),
     };
-    parse_list_children(&resolved)
+    Ok((parse_list_children(&resolved, lua, &mut build)?, build))
 }
 
-/// What a `list` last built its items from (ADR-0269): its `source`, `itemfn` and `key` by
-/// identity, its `limit`, and every cell its build read -- the source, `itemfn` and `key` bodies,
-/// and each item's own bound properties, down the whole subtree. While none of that has changed the
-/// items it built are still the ones a build would make, so the pass lays out the retained ones
-/// instead of calling `itemfn` again.
+/// What a `list` last built its items from (ADR-0269, ADR-0273): its `source`, `itemfn` and `key`
+/// by identity, its `limit`, the cells reading `source` and calling `key` read, and per item, the
+/// cells its `itemfn` call and its own subtree read. While the list's own inputs hold, the pass
+/// lays the retained items out again and calls `itemfn` only for an item whose cells were written.
 ///
 /// Exact for signals, and blind to anything else a build reads: `os.time()`, an upvalue, a table
 /// mutated in place. That is the contract `docs/nodes/list.md` states.
@@ -244,16 +254,18 @@ pub struct ListMemo {
     limit: Option<usize>,
     stamp: u64,
     cells: Vec<CellId>,
+    /// One per item, in the order the list holds them.
+    pub items: Vec<ItemMemo>,
 }
 
-/// A build under way: the inputs and the clock taken before it reads anything, and the frame
-/// collecting what it reads.
-pub struct ListBuild<'lua> {
-    inputs: [Value; 3],
-    limit: Option<usize>,
+/// One `list` item's build: the element it came from, the key `key` gave it, the write clock
+/// taken before it read anything, and what it read.
+#[derive(Clone)]
+pub struct ItemMemo {
+    element: Value,
+    key: Option<mlua::LuaString>,
     stamp: u64,
-    lua: WeakLua,
-    frame: ComputedFrame<'lua>,
+    cells: Vec<CellId>,
 }
 
 fn list_inputs(properties: &PropMap) -> [Value; 3] {
@@ -261,8 +273,9 @@ fn list_inputs(properties: &PropMap) -> [Value; 3] {
 }
 
 impl ListMemo {
-    /// Whether a build now would make the items the last one did. When it would, its reads are
-    /// noted as this pass's, so the instance stays a reader of what the skipped build read.
+    /// Whether a build now would read the same elements and keys the last one did. When it would,
+    /// those reads are noted as this pass's, so the instance stays a reader of what the skipped
+    /// build read; each kept item notes its own through [`ItemMemo::holds`].
     pub fn still_holds(&self, properties: &PropMap, lua: &Lua) -> bool {
         let same = |a: &Value, b: &Value| a.type_name() == b.type_name() && a.to_pointer() == b.to_pointer();
         let holds = self.lua == lua.weak()
@@ -274,35 +287,68 @@ impl ListMemo {
         }
         holds
     }
+
+    /// Whether the last build read `cell`, for the list or any of its items.
+    pub fn read(&self, cell: CellId) -> bool {
+        self.cells.contains(&cell) || self.items.iter().any(|item| item.cells.contains(&cell))
+    }
+
+    /// Adds what item `index`'s subtree read to what its `itemfn` call did.
+    pub fn item_read(&mut self, index: usize, cells: &[CellId]) {
+        extend_unique(&mut self.items[index].cells, cells);
+    }
+}
+
+impl ItemMemo {
+    /// Whether this item would build the same. When it would, its reads are noted as this pass's.
+    pub fn holds(&self, lua: &Lua) -> bool {
+        let holds = !signal::written_since(self.stamp, &self.cells);
+        if holds {
+            signal::note_reads(lua, &self.cells);
+        }
+        holds
+    }
+
+    /// This item built again from the element and key it had, and its fresh memo.
+    pub fn rebuild(&self, properties: &PropMap, lua: &Lua) -> Result<(VirtualNode, ItemMemo), LayoutError> {
+        let itemfn = list::itemfn.read(properties)?.expect("`itemfn` is required");
+        let stamp = signal::write_clock(lua);
+        let frame = ComputedFrame::enter(lua);
+        let mut node = build_item(&itemfn, &self.element)?;
+        if let Some(key) = &self.key {
+            node.properties.insert("id", Value::String(key.clone()));
+        }
+        let memo = ItemMemo { element: self.element.clone(), key: self.key.clone(), stamp, cells: frame.finish() };
+        Ok((node, memo))
+    }
 }
 
 /// By hand: `WeakLua` has no `Debug`.
 impl std::fmt::Debug for ListMemo {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("ListMemo").field("stamp", &self.stamp).field("cells", &self.cells).finish_non_exhaustive()
+        f.debug_struct("ListMemo")
+            .field("stamp", &self.stamp)
+            .field("cells", &self.cells)
+            .field("items", &self.items.len())
+            .finish_non_exhaustive()
     }
 }
 
-impl<'lua> ListBuild<'lua> {
-    pub fn open(properties: &PropMap, lua: &'lua Lua) -> Self {
-        Self {
-            inputs: list_inputs(properties),
-            limit: list::limit.read(properties).ok().flatten(),
-            stamp: signal::write_clock(lua),
-            lua: lua.weak(),
-            frame: ComputedFrame::enter(lua),
+fn extend_unique(into: &mut Vec<CellId>, cells: &[CellId]) {
+    for cell in cells {
+        if !into.contains(cell) {
+            into.push(*cell);
         }
     }
+}
 
-    pub fn close(self) -> ListMemo {
-        ListMemo {
-            inputs: self.inputs,
-            lua: self.lua,
-            limit: self.limit,
-            stamp: self.stamp,
-            cells: self.frame.finish(),
-        }
-    }
+/// `itemfn(element)` as a node.
+fn build_item(itemfn: &mlua::Function, element: &Value) -> Result<VirtualNode, LayoutError> {
+    let built = itemfn.call::<Value>(element).map_err(|e| invalid("itemfn", crate::lua::describe(&e)))?;
+    let Value::Table(built_table) = built else {
+        return Err(invalid("itemfn", format!("expected a node table, got {}", preview_for_error(&built))));
+    };
+    deserialize_child(&built_table, "itemfn", None)
 }
 
 /// A `list`'s children (ADR-0045 decision 3) are generated once per resolved
@@ -311,11 +357,12 @@ impl<'lua> ListBuild<'lua> {
 /// is called on the source value, not the built node, and overwrites that node's `id`; duplicate
 /// keys fail here before `pair_children_by_id_then_position` sees them.
 ///
-/// ponytail: a list whose [`ListMemo`] still holds skips all of this and its items' resolution,
-/// but a change to anything it read rebuilds every item, and a hit still lays every item out.
-/// Per-item memos and a viewport (ADR-0191) are the upgrades; `layout::scene::tests::list_pass_cost`
-/// measures both paths.
-pub fn parse_list_children(properties: &PropMap) -> Result<Vec<VirtualNode>, LayoutError> {
+/// Each `itemfn` call reads in its own frame, into `build`'s item; each `key` call into `build`'s
+/// own cells, since a key is the item's identity rather than its content.
+///
+/// ponytail: a list whose [`ListMemo`] still holds still lays every item out. A viewport
+/// (ADR-0191) is the upgrade; `layout::scene::tests::list_pass_cost` measures both paths.
+fn parse_list_children(properties: &PropMap, lua: &Lua, build: &mut ListMemo) -> Result<Vec<VirtualNode>, LayoutError> {
     let source = list::source.read(properties)?;
     let itemfn = list::itemfn.read(properties)?.expect("`itemfn` is required");
     let key_fn = list::key.read(properties)?;
@@ -339,16 +386,17 @@ pub fn parse_list_children(properties: &PropMap) -> Result<Vec<VirtualNode>, Lay
         let element = element.map_err(|e| invalid("source", e.to_string()))?;
 
         let item = (|| {
-            let built = itemfn.call::<Value>(&element).map_err(|e| invalid("itemfn", crate::lua::describe(&e)))?;
-            let Value::Table(built_table) = built else {
-                return Err(invalid("itemfn", format!("expected a node table, got {}", preview_for_error(&built))));
-            };
-            let mut node = deserialize_child(&built_table, "itemfn", None)?;
+            let stamp = signal::write_clock(lua);
+            let frame = ComputedFrame::enter(lua);
+            let node = build_item(&itemfn, &element);
+            let mut memo = ItemMemo { element: element.clone(), key: None, stamp, cells: frame.finish() };
+            let mut node = node?;
 
             if let Some(key_fn) = &key_fn {
-                // Moved, not borrowed: a borrow would keep this item rooted for the rest of the loop
-                // body, which a `key` collecting garbage behind a weak table can see.
-                let key_value = key_fn.call::<Value>(element).map_err(|e| invalid("key", crate::lua::describe(&e)))?;
+                let frame = ComputedFrame::enter(lua);
+                let key_value = key_fn.call::<Value>(element);
+                extend_unique(&mut build.cells, &frame.finish());
+                let key_value = key_value.map_err(|e| invalid("key", crate::lua::describe(&e)))?;
                 let Value::String(key_str) = key_value else {
                     return Err(invalid(
                         "key",
@@ -366,12 +414,16 @@ pub fn parse_list_children(properties: &PropMap) -> Result<Vec<VirtualNode>, Lay
                 }
                 seen_keys.insert(key_text);
                 // List identity wins over any `id` the item function supplied.
-                node.properties.insert("id", Value::String(key_str));
+                node.properties.insert("id", Value::String(key_str.clone()));
+                memo.key = Some(key_str);
             }
-            Ok(node)
+            Ok((node, memo))
         })();
         match item {
-            Ok(node) => children.push(node),
+            Ok((node, memo)) => {
+                children.push(node);
+                build.items.push(memo);
+            }
             Err(err) => failed.push(err),
         }
     }
@@ -746,12 +798,12 @@ mod tests {
     }
 
     #[test]
-    fn parse_list_children_bounds_to_limit_and_refuses_invalid_values() {
+    fn list_children_bounds_to_limit_and_refuses_invalid_values() {
         let lua = mlua::Lua::new();
         crate::lua::nodes::register_node_constructors(&lua).unwrap();
         let eval = |s: &str| -> Result<usize, LayoutError> {
             let t: mlua::Table = lua.load(s).eval().unwrap();
-            parse_list_children(&props_from_table(&t)).map(|c| c.len())
+            list_children(&props_from_table(&t), &lua).map(|(children, _)| children.len())
         };
         assert_eq!(
             eval("return list { source = { 1, 2, 3, 4 }, limit = 2, itemfn = function(i) return rect { width = i, height = i } end }").unwrap(),

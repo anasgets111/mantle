@@ -1,8 +1,126 @@
-use mlua::Value;
+use mlua::{Lua, Value};
+use shared::debug;
 
-use super::ResolvedNode;
-use super::solver::MainAxis;
+use super::pass::publish_geometry;
+use super::solver::{MainAxis, main_axis_of};
+use super::{LayoutStyle, LogicalSize, ResolvedNode, Scene};
 use crate::layout::node::{self, PropMap};
+use crate::lua::signal::{CellId, Signal};
+
+impl Scene {
+    /// A wheel's `asked` offset for `signal`, applied to the retained trees without a pass
+    /// (ADR-0274): each visible container it scrolls moves its children, clamped against the room
+    /// they already take, and the instances whose children moved come back with their `geometry`
+    /// published. `None`, with nothing written, when only a pass shows the offset: a getter, `:map`
+    /// or `list` build read it, or nothing on screen scrolls by it.
+    pub fn scroll_in_place(&mut self, signal: &Signal, asked: f32, lua: &Lua) -> Option<Vec<String>> {
+        let cell = signal.cell_id()?;
+        let handle = signal.scroll_handle()?;
+        let mut holders = 0;
+        let read = crate::lua::signal::with_derived(cell);
+        if !self.surfaces.values().all(|tree| read_only_as_scroll(tree, cell, &read, &mut holders)) || holders == 0 {
+            return None;
+        }
+        handle.set_quiet(Value::Number(f64::from(asked)));
+        let mut moved = Vec::new();
+        for (key, tree) in &mut self.surfaces {
+            if scroll_retained(tree, cell) {
+                if let Err(err) = publish_geometry(tree, 0.0, 0.0, lua, false) {
+                    debug!("{key}: writing a geometry signal failed: {err}");
+                }
+                moved.push(key.clone());
+            }
+        }
+        Some(moved)
+    }
+}
+
+/// The axis `node` scrolls along by `cell`, if it does.
+fn scrolls_by(node: &ResolvedNode, cell: CellId) -> Option<MainAxis> {
+    let holds = node::signal_at(&node.properties, "scroll").and_then(|signal| signal.cell_id()) == Some(cell);
+    if holds { main_axis_of(node.kind, &node.properties).ok().flatten() } else { None }
+}
+
+/// Counts the visible containers `cell` scrolls into `holders`; false when a node a pass resolves
+/// read it or a computed over it (`read`). Below a hidden node is frozen (ADR-0124): a pass would not show it the offset either.
+///
+/// ponytail: a scroll slot inside a `list` item is that item's read, so that list falls back to a
+/// pass. Upgrade: note a slot to the instance alone, outside every frame.
+fn read_only_as_scroll(
+    node: &ResolvedNode,
+    cell: CellId,
+    read: &rustc_hash::FxHashSet<CellId>,
+    holders: &mut usize,
+) -> bool {
+    if node.leaving {
+        return true;
+    }
+    if read.iter().any(|&cell| {
+        node.resolve_memo.as_ref().is_some_and(|memo| memo.read(cell))
+            || node.list_memo.as_ref().is_some_and(|memo| memo.read(cell))
+    }) {
+        return false;
+    }
+    if !node.visible {
+        return true;
+    }
+    *holders += usize::from(scrolls_by(node, cell).is_some());
+    node.children.iter().all(|child| read_only_as_scroll(child, cell, read, holders))
+}
+
+/// Moves the children of every visible container `cell` scrolls to its offset; whether any moved.
+fn scroll_retained(node: &mut ResolvedNode, cell: CellId) -> bool {
+    if !node.in_flow() {
+        return false;
+    }
+    let mut moved = false;
+    if let Some(axis) = scrolls_by(node, cell) {
+        let size = LogicalSize { width: node.rect.width, height: node.rect.height };
+        let from = node.scrolled;
+        node.scrolled = scroll_children(&node.properties, &node.layout_style, size, axis, &mut node.children, from);
+        moved = node.scrolled != from;
+    }
+    for child in &mut node.children {
+        moved |= scroll_retained(child, cell);
+    }
+    moved
+}
+
+/// Clamps this container's asked offset against the room its children take and moves them to it
+/// from `from`, the offset they carry now. Returns the offset they carry after.
+///
+/// Subtracted from every child's main coordinate, so a scrolled child sits before the content box
+/// and the clip `layout::paint` computes per node cuts it. Summed here rather than read off
+/// taffy's `scrollable_overflow_rect`, since the two disagree: CSS scrollable overflow is the union
+/// of the children's border boxes, while this engine's `spacing`-and-margin footprint is what
+/// `Fill` was sized against, which the tests pin.
+pub(super) fn scroll_children(
+    properties: &PropMap,
+    style: &LayoutStyle,
+    size: LogicalSize,
+    axis: MainAxis,
+    children: &mut [ResolvedNode],
+    from: f32,
+) -> f32 {
+    let padding = style.padding;
+    let (content_main, padding_start) = match axis {
+        MainAxis::Horizontal => ((size.width - padding.horizontal()).max(0.0), padding.left),
+        MainAxis::Vertical => ((size.height - padding.vertical()).max(0.0), padding.top),
+    };
+    reveal_child(properties, children, axis, padding_start - from, content_main);
+    let offset = scroll_offset(properties, content_main, extent_along(children, axis, style.spacing));
+    let by = offset - from;
+    if by != 0.0 {
+        // A leaver keeps the offset it was dropped at (`finish`).
+        for child in children.iter_mut().filter(|child| !child.leaving) {
+            match axis {
+                MainAxis::Horizontal => child.rect.x -= by,
+                MainAxis::Vertical => child.rect.y -= by,
+            }
+        }
+    }
+    offset
+}
 
 /// How much room this container's visible children take along `axis`, margins and gaps included:
 /// the number a scroll offset is clamped against. The same footprint the sizing pass used, which
@@ -25,7 +143,7 @@ pub(super) fn extent_along(children: &[ResolvedNode], axis: MainAxis, spacing: f
 /// the end, and a reveal of a child that does not exist changes nothing. Children are still at
 /// their unscrolled positions here, which is what makes `rect` minus the leading padding the
 /// child's place in the content.
-pub(super) fn reveal_child(
+fn reveal_child(
     properties: &PropMap,
     children: &[ResolvedNode],
     axis: MainAxis,
@@ -67,7 +185,7 @@ pub(super) fn reveal_child(
 /// A container with nothing to scroll returns 0 rather than erroring, so a `Content`-sized column
 /// (content and viewport the same number by construction) is a no-op, the same answer `Fill` gives
 /// in a `Content` parent for the same reason: no remainder (decision 5).
-pub(super) fn scroll_offset(properties: &PropMap, content_main: f32, total_main: f32) -> f32 {
+fn scroll_offset(properties: &PropMap, content_main: f32, total_main: f32) -> f32 {
     let Some(signal) = node::fields::flow::scroll.read(properties).ok().flatten() else {
         return 0.0;
     };
@@ -327,5 +445,51 @@ mod tests {
         let column = &scene.surface("bar@TEST").unwrap().children[0];
         let ys: Vec<f32> = column.children.iter().map(|c| c.rect.y).collect();
         assert_eq!(ys, vec![0.0, 100.0], "a `state()` signal holding 120 scrolls nothing");
+    }
+
+    /// A wheel over a container nothing but its `scroll` slot reads moves the kept children where
+    /// a pass would put them, clamped, and schedules no pass. A readout of the offset owes one.
+    #[test]
+    fn a_wheel_scrolls_in_place_unless_lua_reads_the_offset() {
+        let ys = |scene: &Scene| -> Vec<f32> {
+            scene.surface("bar@TEST").unwrap().children[0].children[0].children.iter().map(|c| c.rect.y).collect()
+        };
+        let lua = mlua::Lua::new();
+        register_node_constructors(&lua).unwrap();
+        let dirty = crate::lua::signal::DirtyFlag::new();
+        crate::lua::signal::register(&lua, dirty.clone()).unwrap();
+        let table: mlua::Table = lua
+            .load(
+                r#"s = scroll("s")
+                shown = state("shown", false)
+                local tile = rect { width = 10, height = 100 }
+                return panel { id = "bar", child = row { children = {
+                    column { height = 100, padding = 5, spacing = 4, scroll = s, children = { tile, tile, tile } },
+                    row { visible = shown, children = { text { content = s:map(function(v) return tostring(v) end) } } },
+                } } }"#,
+            )
+            .eval()
+            .unwrap();
+        let surface = deserialize_lua_table(&table).unwrap();
+        let signal = crate::lua::signal::from_userdata(&lua.globals().get("s").unwrap()).unwrap();
+        let mut scene = Scene::new();
+        let shaping = ShapingHandle::spawn();
+        let pass = |scene: &mut Scene| apply_at(scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
+        pass(&mut scene);
+        dirty.take();
+
+        assert_eq!(scene.scroll_in_place(&signal, 150.0, &lua), Some(vec!["bar@TEST".to_string()]));
+        assert_eq!(ys(&scene), [-145.0, -41.0, 63.0]);
+        assert!(!dirty.take(), "no pass is scheduled");
+        assert_eq!(scene.scroll_in_place(&signal, 900.0, &lua).map(|moved| moved.len()), Some(1));
+        assert_eq!(signal.scroll_offset(), Some(218.0), "308 px of tiles in a 90 px viewport");
+        let kept = ys(&scene);
+        pass(&mut scene);
+        assert_eq!(ys(&scene), kept, "a pass puts them where the wheel did");
+
+        lua.load("shown:set(true)").exec().unwrap();
+        pass(&mut scene);
+        assert_eq!(scene.scroll_in_place(&signal, 0.0, &lua), None, "the readout owes a pass");
+        assert_eq!(signal.scroll_offset(), Some(218.0), "and nothing is written");
     }
 }

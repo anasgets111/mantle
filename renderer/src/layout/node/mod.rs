@@ -29,7 +29,7 @@ pub(crate) use content::{Content, Font, Live, MaxLines, Region};
 pub use content::{Elide, StyleRun, TextAlign, Wrap, font_runs};
 pub use paint_style::{PaintStyle, paint_style};
 pub(crate) use spec::{Children, Items, Limit, Root};
-pub use spec::{ListBuild, ListMemo, SecureSubmitTarget, SurfaceSpec, list_children, lock_spec};
+pub use spec::{ListMemo, SecureSubmitTarget, SurfaceSpec, list_children, lock_spec};
 // `wayland::tests`' and `instance::tests`' fixtures name it `node::LockSpec`; nothing else does.
 #[cfg(test)]
 pub use spec::LockSpec;
@@ -396,8 +396,9 @@ pub fn resolve_properties(mut properties: PropMap, kind: &str, lua: &Lua) -> Res
         for property in keys {
             if is_structural_property(kind, property) {
                 // The writer of a `geometry` rect is not its reader: a moved rect re-resolves only
-                // the nodes that read it.
-                if property != "geometry"
+                // the nodes that read it. A `scroll` slot's holder reads nothing of it either; the
+                // scene notes it outside the node's own reads (`scene::resolve`).
+                if !matches!(property, "geometry" | "scroll")
                     && let Some(cell) = signal_at(&properties, property).and_then(|s| s.cell_id())
                 {
                     signal::note_read(lua, cell);

@@ -352,6 +352,14 @@ fn resolved_surface_spec(
 }
 
 impl App {
+    /// Owes each of `instance_ids` a repaint for a tree changed outside a pass or tick: a wheel
+    /// scrolled it in place.
+    pub(in crate::wayland) fn mark_surfaces_stale(&mut self, instance_ids: &[String]) {
+        for surface in self.surfaces.iter_mut().filter(|surface| instance_ids.contains(&surface.surface_id)) {
+            surface.stale = Some(std::time::Instant::now());
+        }
+    }
+
     /// Track each evaluated instance (ADR-0038 decision 1, ADR-0049 decision 1). Panels create
     /// their layer object regardless of `visible`; windows/popups create only when visible, through
     /// the same show paths used later. `specs` supplies roster/role, while resolved properties

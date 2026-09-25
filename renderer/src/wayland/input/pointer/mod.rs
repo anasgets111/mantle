@@ -452,7 +452,7 @@ impl PointerHandler for App {
                     self.cursor_shown = None;
                     self.pointer_at = None;
                     let tree = self.client.scene().surface(&self.surfaces[index].surface_id);
-                    self.sync_hover(index, tree, None, HoverUpdate::Pointer);
+                    self.sync_hover(index, tree, &[], HoverUpdate::Pointer);
                 }
                 // Motion off the armed rect does not disarm; return and release still click. Enter
                 // and Motion update hover and may fire `on_hover` on crossings.
@@ -465,11 +465,13 @@ impl PointerHandler for App {
                         self.drag_selection(index, &instance_id, event.position);
                     }
                     self.pointer_at = Some((instance_id, event.position));
-                    // One lookup serves both; `Scene::surface` lends its tree.
+                    // One lookup and one hit path serve both; `Scene::surface` lends its tree.
                     let tree = self.client.scene().surface(&self.surfaces[index].surface_id);
-                    self.sync_hover(index, tree, Some(event.position), HoverUpdate::Pointer);
+                    let point = layout::hit::LogicalPoint { x: event.position.0 as f32, y: event.position.1 as f32 };
+                    let path = tree.map(|tree| layout::hit::hit_path(tree, point)).unwrap_or_default();
+                    self.sync_hover(index, tree, &path, HoverUpdate::Pointer);
                     // Chosen while the tree is still borrowed, shown once that borrow has ended.
-                    let shape = self.cursor_for(tree, event.position);
+                    let shape = layout::hit::cursor_under(&path, point, &self.shaping);
                     self.show_cursor(shape);
                 }
                 // Wheel (ADR-0069); use the event's own position.
@@ -548,17 +550,6 @@ impl App {
         }
     }
 
-    /// The cursor [`layout::hit::cursor_under`] chooses under `position` (ADR-0107). Split from
-    /// [`Self::show_cursor`] so the choosing ends its borrow of the lent tree before the showing
-    /// writes through `&mut self`.
-    fn cursor_for(&self, tree: Option<&layout::ResolvedNode>, position: (f64, f64)) -> cursor_icon::CursorIcon {
-        let Some(tree) = tree else {
-            return cursor_icon::CursorIcon::Default;
-        };
-        let point = layout::hit::LogicalPoint { x: position.0 as f32, y: position.1 as f32 };
-        layout::hit::cursor_under(&layout::hit::hit_path(tree, point), point, &self.shaping)
-    }
-
     /// Set the cursor only when it changes; motion arrives per pixel and each `set_shape` would add
     /// compositor work. `Leave` clears the cache because the shape is bound to the next enter
     /// serial.
@@ -591,7 +582,9 @@ impl App {
             return;
         };
         let tree = self.client.scene().surface(surface_id);
-        self.sync_hover(index, tree, Some(*position), HoverUpdate::Layout);
+        let point = layout::hit::LogicalPoint { x: position.0 as f32, y: position.1 as f32 };
+        let path = tree.map(|tree| layout::hit::hit_path(tree, point)).unwrap_or_default();
+        self.sync_hover(index, tree, &path, HoverUpdate::Layout);
     }
 
     /// The pointer half of `App::drop_role_object`'s scrub, for the one leave the compositor never
@@ -616,21 +609,20 @@ impl App {
         self.cursor_shown = None;
         self.pointer_at = None;
         let tree = self.client.scene().surface(&surface_id);
-        self.sync_hover(index, tree, None, HoverUpdate::Pointer);
+        self.sync_hover(index, tree, &[], HoverUpdate::Pointer);
     }
 
-    /// Write all `hover` signals, or clear them for `None` (ADR-0062). Collect writes before
+    /// Write all `hover` signals from the pointer's hit `path`, empty off the surface (ADR-0062). Collect writes before
     /// `set_changed` because the tree borrow must end; only moved values dirty the scene (decision
     /// 4), so a stationary pointer inside one button re-resolves nothing while device-rate motion
     /// continues (ADR-0044 decision 2). Pointer updates enable `on_hover`; layout refreshes do not.
     ///
-    /// Takes the tree rather than fetching it so one lookup serves this and the cursor.
-    ///
+    /// Takes the tree and path rather than finding them so one lookup serves this and the cursor.
     fn sync_hover(
         &self,
         index: usize,
         tree: Option<&layout::ResolvedNode>,
-        position: Option<(f64, f64)>,
+        path: &[&layout::ResolvedNode],
         update: HoverUpdate,
     ) {
         // Skip the expensive tree walk when no config registered `hover(name)`.
@@ -640,8 +632,7 @@ impl App {
         let Some(tree) = tree else {
             return;
         };
-        let point = position.map(|(x, y)| layout::hit::LogicalPoint { x: x as f32, y: y as f32 });
-        let writes = layout::hover::hover_writes(tree, point);
+        let writes = layout::hover::hover_writes(tree, path);
         let lua = self.client.lua();
         for write in writes {
             apply_hover_write(lua, write, update.fires_on_hover(), &self.surfaces[index].surface_id);

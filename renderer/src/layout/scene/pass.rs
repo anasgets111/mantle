@@ -6,12 +6,13 @@ use mlua::{Lua, Value};
 
 use super::fit::fit_text_to_box;
 use super::resolve::{Resolved, resolve};
-use super::scroll::{extent_along, reveal_child, scroll_offset};
+use super::scroll::scroll_children;
 use super::solver::{MainAxis, Measure, hold_leavers, main_axis_of, measure_for, new_solver_node, solve, taffy_failed};
-use super::tick::{advance_leaving, advanced_dissolve, prepare_retained_children};
+use super::tick::{advance_leaving, advanced_dissolve, prepare_retained};
 use super::{LayoutStyle, LogicalSize, PreparedNode, ResolvedNode, Scene, close, ensure_node_admissible, open_span};
 use crate::layout::node::{self, LayoutError, PropMap, SizeMode, fields};
 use crate::lua::nodes::VirtualNode;
+use crate::lua::signal::ComputedFrame;
 use crate::text::shaping::ShapingHandle;
 use crate::text::snap::LogicalRect;
 
@@ -275,7 +276,7 @@ pub(super) fn prepare(
     // Removed while hidden means removed off screen: no exit plays anywhere under a thaw.
     let thawing = thawing || retained.as_ref().is_some_and(|r| !r.visible);
 
-    let Resolved { properties, style, tweens, memo: resolve_memo, text_memo } = resolved;
+    let Resolved { properties, style, paint, tweens, memo: resolve_memo, text_memo } = resolved;
     let (id, displayed_source, dissolve, old_children, list_memo, child_table) = match retained {
         Some(r) => (r.id, r.displayed_source, r.dissolve, r.children, r.list_memo, r.child_table),
         None => (scene.alloc_id(), None, None, Vec::new(), None, None),
@@ -291,8 +292,7 @@ pub(super) fn prepare(
         };
 
     // Before the children, because a `text`'s measurement reads the `content` and `font_size`
-    // parsed here rather than parsing them a second time.
-    let paint = node::paint_style(kind, &properties)?;
+    // `resolve` parsed rather than parsing them a second time.
     let measure = measure_for(kind, paint.as_ref(), &properties, text_memo)?;
 
     // Before the children, so their ids attach afterwards, and so the `taffy::Style` behind it is
@@ -326,29 +326,16 @@ pub(super) fn prepare(
         node.frozen.extend(leaving);
         return Ok(node);
     }
-    // ADR-0269: nothing the last build read has changed, so it would build these items again.
-    if node.list_memo.as_ref().is_some_and(|memo| memo.still_holds(&node.properties, lua)) {
-        node.frozen.extend(leaving);
-        return prepare_retained_children(tree, node, lua, now);
-    }
-
-    let list_build = (kind == "list").then(|| node::ListBuild::open(&node.properties, lua));
-    let fresh_children = if kind == "list" {
-        let mut at = open_span();
-        let res = node::list_children(&node.properties, lua);
-        close(&mut at, &mut scene.resolve_split.list);
-        res?
-    } else {
-        children_kept(kind, &node.properties, &mut node.child_table, lua)?
-    };
-    let (matched_candidates, mut unclaimed) =
-        pair_children_by_id_then_position(&fresh_children, std::mem::take(&mut node.frozen))?;
+    let (fresh_children, matched_candidates, mut unclaimed) = children_this_pass(scene, &mut node, lua)?;
     let own_axis = main_axis_of(kind, &node.properties)?;
 
     node.children.reserve(fresh_children.len());
     let mut failed = Vec::new();
-    for (index, (fresh_child, candidate)) in fresh_children.into_iter().zip(matched_candidates).enumerate() {
-        let VirtualNode { kind: child_kind, properties: child_raw, site } = fresh_child;
+    for (index, (fresh_child, mut candidate)) in fresh_children.into_iter().zip(matched_candidates).enumerate() {
+        let Some(VirtualNode { kind: child_kind, properties: child_raw, site }) = fresh_child else {
+            keep_item(tree, &mut node, &mut candidate, own_axis, lua, now)?;
+            continue;
+        };
         // Every failure below names this child, so the message that reaches a human is the path
         // down to the node rather than a property name and a surface (`LayoutError::in_child`).
         let here = |err: LayoutError| err.in_child(index, child_kind, site);
@@ -370,10 +357,15 @@ pub(super) fn prepare(
         // This child's one resolve and one parse for this pass, both here rather than inside the
         // recursive call, because the style the call is handed is built from them and a second
         // read of an impure `margin` could answer differently.
+        // A list item's reads are its own (ADR-0273).
+        let item = node.list_memo.is_some().then(|| ComputedFrame::enter(lua));
         let child = (|| {
             let resolved = resolve(child_kind, child_raw, reusable.as_mut(), now, lua, Ok)?;
             prepare(scene, tree, reusable, child_kind, resolved, own_axis, thawing, lua, now, depth + 1)
         })();
+        if let (Some(memo), Some(item)) = (node.list_memo.as_mut(), item) {
+            memo.item_read(index, &item.finish());
+        }
         // A broken child does not stop its siblings, so one pass names every broken node. Too deep
         // does: a node holding itself twice would otherwise walk 2^64 paths to the cap.
         match child {
@@ -405,8 +397,92 @@ pub(super) fn prepare(
 
     let child_ids: Vec<taffy::NodeId> = node.children.iter().map(|child| child.taffy).collect();
     tree.set_children(taffy_id, &child_ids).map_err(taffy_failed)?;
-    node.list_memo = list_build.map(node::ListBuild::close);
     Ok(node)
+}
+
+/// A kept `list` item laid out again as it is. Its own frame, like `children_this_pass`, and taken
+/// by reference: a debug build copies a node passed by value into [`prepare`]'s frame.
+fn keep_item(
+    tree: &mut taffy::TaffyTree<Measure>,
+    node: &mut PreparedNode,
+    kept: &mut Option<ResolvedNode>,
+    own_axis: Option<MainAxis>,
+    lua: &Lua,
+    now: Instant,
+) -> Result<(), LayoutError> {
+    let kept = kept.take().expect("a kept item is paired with itself");
+    node.children.push(prepare_retained(tree, kept, own_axis, false, lua, now)?);
+    Ok(())
+}
+
+/// Each child this pass, paired with its retained node, and the retained nodes left unpaired.
+/// `None` for a kept `list` item, laid out again as it is. Leaves on `node` the list memo its
+/// items read into. Split from [`prepare`] to keep its frame, one per tree level, small.
+#[allow(clippy::type_complexity)]
+fn children_this_pass(
+    scene: &mut Scene,
+    node: &mut PreparedNode,
+    lua: &Lua,
+) -> Result<(Vec<Option<VirtualNode>>, Vec<Option<ResolvedNode>>, Vec<ResolvedNode>), LayoutError> {
+    // ADR-0269: nothing the list's own build read has changed, so it keeps its items, in order.
+    if let Some(memo) = node.list_memo.as_mut()
+        && memo.items.len() == node.frozen.len()
+        && memo.still_holds(&node.properties, lua)
+        && let Some(fresh) = written_items(memo, &node.frozen, &node.properties, lua)?
+    {
+        return Ok((fresh, std::mem::take(&mut node.frozen).into_iter().map(Some).collect(), Vec::new()));
+    }
+    let fresh = if node.kind == "list" {
+        let mut at = open_span();
+        let res = node::list_children(&node.properties, lua);
+        close(&mut at, &mut scene.resolve_split.list);
+        let (fresh, memo) = res?;
+        node.list_memo = Some(memo);
+        fresh
+    } else {
+        children_kept(node.kind, &node.properties, &mut node.child_table, lua)?
+    };
+    let (matched, unclaimed) = pair_children_by_id_then_position(&fresh, std::mem::take(&mut node.frozen))?;
+    Ok((fresh.into_iter().map(Some).collect(), matched, unclaimed))
+}
+
+/// A list's items when its own build still holds (ADR-0269): `None` for each whose last build
+/// still holds, and for each whose reads were written, its node built again (ADR-0273). `None`
+/// overall when one of those changed kind or `id`, which only a whole build pairs.
+///
+/// ponytail: that fallback calls those items' `itemfn` a second time this pass. Upgrade: hand the
+/// nodes built here to the whole build.
+fn written_items(
+    memo: &mut node::ListMemo,
+    retained: &[ResolvedNode],
+    properties: &PropMap,
+    lua: &Lua,
+) -> Result<Option<Vec<Option<VirtualNode>>>, LayoutError> {
+    let id = |properties: &PropMap| node::fields::common::id.read(properties).ok().flatten();
+    let mut fresh = Vec::with_capacity(retained.len());
+    let mut rebuilt = Vec::new();
+    let mut failed = Vec::new();
+    for (index, (item, old)) in memo.items.iter().zip(retained).enumerate() {
+        if item.holds(lua) {
+            fresh.push(None);
+            continue;
+        }
+        match item.rebuild(properties, lua) {
+            Ok((node, _)) if node.kind != old.kind || id(&node.properties) != id(&old.properties) => return Ok(None),
+            Ok((node, item)) => {
+                fresh.push(Some(node));
+                rebuilt.push((index, item));
+            }
+            Err(err) => failed.push(err),
+        }
+    }
+    if !failed.is_empty() {
+        return Err(LayoutError::many(failed));
+    }
+    for (index, item) in rebuilt {
+        memo.items[index] = item;
+    }
+    Ok(Some(fresh))
 }
 
 /// The second walk: solved geometry back out of the tree and into retained nodes.
@@ -449,42 +525,15 @@ fn finish(
 
     // Frozen children come back as they were (see `prepare`): no scroll offset applied again to
     // rects that already carry one, no text refitted to a box that was not laid out.
-    let (children, text_memo) = if style.visible {
+    let (children, text_memo, scrolled) = if style.visible {
         let mut children: Vec<ResolvedNode> =
             children.into_iter().map(|child| finish(tree, child, shaping)).collect::<Result<_, _>>()?;
 
-        // ADR-0069 decision 4. Subtracted from every child's main coordinate, so a scrolled child sits
-        // before the content box and the clip `layout::paint` computes per node cuts it. Summed here
-        // rather than read off taffy's `scrollable_overflow_rect`, since the two disagree: CSS
-        // scrollable overflow is the union of the children's border boxes, while this engine's
-        // `spacing`-and-margin footprint is what `Fill` was sized against, which the tests pin.
-        if let Some(axis) = main_axis_of(kind, &properties)? {
-            let padding = style.padding;
-            let (content_main, total_main) = match axis {
-                MainAxis::Horizontal => (
-                    (size.width - padding.horizontal()).max(0.0),
-                    extent_along(&children, MainAxis::Horizontal, style.spacing),
-                ),
-                MainAxis::Vertical => (
-                    (size.height - padding.vertical()).max(0.0),
-                    extent_along(&children, MainAxis::Vertical, style.spacing),
-                ),
-            };
-            let padding_start = match axis {
-                MainAxis::Horizontal => padding.left,
-                MainAxis::Vertical => padding.top,
-            };
-            reveal_child(&properties, &children, axis, padding_start, content_main);
-            let offset = scroll_offset(&properties, content_main, total_main);
-            if offset != 0.0 {
-                for child in &mut children {
-                    match axis {
-                        MainAxis::Horizontal => child.rect.x -= offset,
-                        MainAxis::Vertical => child.rect.y -= offset,
-                    }
-                }
-            }
-        }
+        // ADR-0069 decision 4.
+        let scrolled = match main_axis_of(kind, &properties)? {
+            Some(axis) => scroll_children(&properties, &style, size, axis, &mut children, 0.0),
+            None => 0.0,
+        };
 
         // After sizing, because the width it fits into is this node's own, and before the node is
         // built, because what it rewrites is the string the display list will carry.
@@ -497,9 +546,9 @@ fn finish(
         // upgrade is to carry the offset each leaver was dropped at on the node and subtract the
         // difference here; nothing has asked for it, and lists here scroll far slower than they fade.
         children.extend(leaving);
-        (children, text_memo)
+        (children, text_memo, scrolled)
     } else {
-        (frozen, None)
+        (frozen, None, 0.0)
     };
 
     Ok(ResolvedNode {
@@ -509,6 +558,7 @@ fn finish(
         kind,
         rect: LogicalRect { x: layout.location.x, y: layout.location.y, width: size.width, height: size.height },
         margin: style.margin,
+        scrolled,
         visible: style.visible,
         opacity: style.opacity,
         z: style.z,
@@ -871,6 +921,59 @@ mod tests {
         lua.load(r#"limit:set(1)"#).exec().unwrap();
         apply(&mut scene);
         assert_eq!(rows(&scene), ["ab?y"], "the list's own `limit`");
+    }
+
+    /// ADR-0273: a write one item read builds that item alone, on the node it had.
+    #[test]
+    fn a_write_one_item_read_builds_that_item_alone() {
+        let mut scene = Scene::new();
+        let shaping = ShapingHandle::spawn();
+        let (lua, surface) = clock_beside_a_list(
+            r#"local on = state("on_" .. name, false)
+            return text { content = on:map(function(v) return (v and "*" or "") .. name end) }"#,
+        );
+        let built = || lua.globals().get::<i64>("built").unwrap();
+        let ids = |scene: &Scene| -> Vec<NodeId> {
+            scene.surface("bar@TEST").unwrap().children[0].children[1].children.iter().map(|c| c.id).collect()
+        };
+        apply_at(&mut scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
+        let first = ids(&scene);
+
+        lua.load(r#"state("on_b", false):set(true)"#).exec().unwrap();
+        apply_at(&mut scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
+        assert_eq!(built(), 4, "b's itemfn, and no other");
+        assert_eq!(list_contents(&scene), ["a", "*b", "c"]);
+        assert_eq!(ids(&scene), first);
+
+        lua.load(r#"state("on_b", false):set(false)"#).exec().unwrap();
+        apply_at(&mut scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
+        assert_eq!((built(), list_contents(&scene)), (5, vec!["a".to_string(), "b".into(), "c".into()]));
+    }
+
+    /// An item built again under a different `id` is a different node, which only pairing places.
+    #[test]
+    fn an_item_built_again_under_another_id_builds_the_whole_list() {
+        let mut scene = Scene::new();
+        let shaping = ShapingHandle::spawn();
+        let (lua, surface) = surface_from(
+            r#"built = 0
+            return panel { id = "bar", child = column { children = {
+                text { content = "x" },
+                list { source = { "a", "b" }, itemfn = function(name)
+                    built = built + 1
+                    return text { id = state("id_" .. name, name):get(), content = name }
+                end },
+            } } }"#,
+        );
+        let built = || lua.globals().get::<i64>("built").unwrap();
+        apply_at(&mut scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
+        let b = scene.surface("bar@TEST").unwrap().children[0].children[1].children[1].id;
+
+        lua.load(r#"state("id_b", "b"):set("z")"#).exec().unwrap();
+        apply_at(&mut scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
+        assert_eq!(built(), 5, "b's itemfn, then the whole build's two");
+        assert_eq!(list_contents(&scene), ["a", "b"]);
+        assert_ne!(scene.surface("bar@TEST").unwrap().children[0].children[1].children[1].id, b);
     }
 
     /// The instance must stay a reader of the source across a pass that skipped reading it, or the

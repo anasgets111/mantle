@@ -72,6 +72,10 @@ so everything since the rename from Obelisk sits under Unreleased.
   variable or a file keeps its last answer until a signal it read changes. Derive time from
   `mantle.system`: `mantle.system:map(function(s) return s and os.date("%H:%M", s.time) or "" end)`
   ([what a node reads again](guide/signals.md#what-a-node-reads-again)).
+- A write one `list` item read, such as its `hover`, builds that item alone instead of every item:
+  4.5 ms instead of 16 ms a pass on 500 rows ([when items rebuild](nodes/list.md#when-items-rebuild)).
+- A wheel over a container whose `scroll` signal no getter, `map` or `list` build reads moves its
+  children without a layout pass: 0.06 ms instead of 2.4 ms on 500 rows.
 - **Breaking:** each capability action is a method, and `:invoke` is gone:
   `mantle.audio:set_volume(0.5)` replaces `mantle.audio:invoke("set_volume", 0.5)`. The editor
   stubs type each action's own arguments, so `mantle.audio:set_muted(0.5)` is flagged. An unknown

@@ -4,7 +4,7 @@
 
 use mlua::Function;
 
-use super::hit::{self, LogicalPoint};
+use super::hit;
 use super::node::fields::common;
 use super::scene::ResolvedNode;
 use crate::lua::signal::Signal;
@@ -31,8 +31,9 @@ pub struct HoverWrite {
 /// Every `hover` signal declared anywhere in `tree`, paired with whether the pointer is on its
 /// node.
 ///
-/// `point` is `None` when the pointer is not in this surface at all -- a `wl_pointer` `Leave`, or a
-/// surface the pointer never entered -- which turns every hover in the tree off.
+/// `path` is the [`hit::hit_path`] the cursor was chosen from, empty when the pointer is not in this
+/// surface at all -- a `wl_pointer` `Leave`, or a surface the pointer never entered -- which turns
+/// every hover in the tree off.
 ///
 /// **The whole tree, not the hit path.** Returning only the nodes under the pointer would say what
 /// to turn on and nothing about what to turn off, and the node being left is exactly the one whose
@@ -48,11 +49,16 @@ pub struct HoverWrite {
 /// pairs in order, so the last one wins. That is a config saying two boxes are one hover region,
 /// and the answer it gets is "hovered if the deepest-declared of them is", which is the only answer
 /// available without the writer knowing what the config meant.
-pub fn hover_writes(tree: &ResolvedNode, point: Option<LogicalPoint>) -> Vec<HoverWrite> {
-    let path = point.map(|point| hit::hit_path(tree, point)).unwrap_or_default();
+pub fn hover_writes(tree: &ResolvedNode, path: &[&ResolvedNode]) -> Vec<HoverWrite> {
     let mut writes = Vec::new();
-    collect(tree, &path, &mut writes);
+    collect(tree, path, &mut writes);
     writes
+}
+
+/// [`hover_writes`] at `point`, `None` off the surface.
+#[cfg(test)]
+pub fn hover_writes_at(tree: &ResolvedNode, point: Option<hit::LogicalPoint>) -> Vec<HoverWrite> {
+    hover_writes(tree, &point.map(|point| hit::hit_path(tree, point)).unwrap_or_default())
 }
 
 /// Pushes `node`'s hover signal, if any, then recurses. Every node is visited so a hover can turn
@@ -75,6 +81,7 @@ fn collect(node: &ResolvedNode, path: &[&ResolvedNode], writes: &mut Vec<HoverWr
 
 #[cfg(test)]
 mod tests {
+    use super::hit::LogicalPoint;
     use super::*;
     use crate::layout::node::PropMap;
     use crate::lua::signal::DirtyFlag;
@@ -118,7 +125,7 @@ mod tests {
     #[test]
     fn a_tree_with_no_hover_property_asks_for_no_writes() {
         let tree = node((0.0, 0.0, 100.0, 20.0), None, vec![node((0.0, 0.0, 50.0, 20.0), None, vec![])]);
-        assert!(hover_writes(&tree, at(10.0, 10.0)).is_empty());
+        assert!(hover_writes_at(&tree, at(10.0, 10.0)).is_empty());
     }
 
     #[test]
@@ -132,8 +139,8 @@ mod tests {
             vec![node((0.0, 0.0, 50.0, 20.0), Some(left), vec![]), node((50.0, 0.0, 50.0, 20.0), Some(right), vec![])],
         );
 
-        assert_eq!(answers(&hover_writes(&tree, at(10.0, 10.0))), vec![true, false]);
-        assert_eq!(answers(&hover_writes(&tree, at(60.0, 10.0))), vec![false, true]);
+        assert_eq!(answers(&hover_writes_at(&tree, at(10.0, 10.0))), vec![true, false]);
+        assert_eq!(answers(&hover_writes_at(&tree, at(60.0, 10.0))), vec![false, true]);
     }
 
     #[test]
@@ -145,8 +152,8 @@ mod tests {
         let (_inner_signal, inner) = hover_userdata(&lua);
         let tree = node((0.0, 0.0, 100.0, 20.0), Some(outer), vec![node((10.0, 5.0, 30.0, 10.0), Some(inner), vec![])]);
 
-        assert_eq!(answers(&hover_writes(&tree, at(20.0, 10.0))), vec![true, true], "both the pill and its button");
-        assert_eq!(answers(&hover_writes(&tree, at(80.0, 10.0))), vec![true, false], "the pill alone");
+        assert_eq!(answers(&hover_writes_at(&tree, at(20.0, 10.0))), vec![true, true], "both the pill and its button");
+        assert_eq!(answers(&hover_writes_at(&tree, at(80.0, 10.0))), vec![true, false], "the pill alone");
     }
 
     #[test]
@@ -157,8 +164,8 @@ mod tests {
         let (_signal, hover) = hover_userdata(&lua);
         let tree = node((0.0, 0.0, 100.0, 20.0), Some(hover), vec![]);
 
-        assert_eq!(answers(&hover_writes(&tree, at(10.0, 10.0))), vec![true]);
-        assert_eq!(answers(&hover_writes(&tree, None)), vec![false], "a Leave turns it off");
+        assert_eq!(answers(&hover_writes_at(&tree, at(10.0, 10.0))), vec![true]);
+        assert_eq!(answers(&hover_writes_at(&tree, None)), vec![false], "a Leave turns it off");
     }
 
     #[test]
@@ -170,7 +177,7 @@ mod tests {
         let mut tree = node((0.0, 0.0, 100.0, 20.0), Some(hover), vec![]);
         tree.visible = false;
 
-        assert_eq!(answers(&hover_writes(&tree, at(10.0, 10.0))), vec![false]);
+        assert_eq!(answers(&hover_writes_at(&tree, at(10.0, 10.0))), vec![false]);
     }
 
     /// `on_hover` rides on the same write as the signal, because the signal is the memory: the
@@ -183,13 +190,13 @@ mod tests {
         let callback = lua.create_function(|_, ()| Ok(())).unwrap();
         let tree = node_with((0.0, 0.0, 100.0, 20.0), Some(hover), Some(Value::Function(callback)), vec![]);
 
-        let writes = hover_writes(&tree, at(10.0, 10.0));
+        let writes = hover_writes_at(&tree, at(10.0, 10.0));
         assert!(writes[0].on_hover.is_some(), "the callback reaches the caller that fires it");
         assert!(writes[0].hovered);
 
         // On the way out too: a leave is a crossing, and releasing whatever the enter took is the
         // whole reason a config wants the edge rather than the signal.
-        let leaving = hover_writes(&tree, None);
+        let leaving = hover_writes_at(&tree, None);
         assert!(leaving[0].on_hover.is_some());
         assert!(!leaving[0].hovered);
     }
@@ -199,13 +206,13 @@ mod tests {
         let lua = Lua::new();
         let (_signal, hover) = hover_userdata(&lua);
         let tree = node((0.0, 0.0, 100.0, 20.0), Some(hover), vec![]);
-        assert!(hover_writes(&tree, at(10.0, 10.0))[0].on_hover.is_none());
+        assert!(hover_writes_at(&tree, at(10.0, 10.0))[0].on_hover.is_none());
     }
 
     #[test]
     fn a_hover_property_that_is_not_a_signal_is_inert_rather_than_an_error() {
         let tree = node((0.0, 0.0, 100.0, 20.0), Some(Value::Boolean(true)), vec![]);
-        assert!(hover_writes(&tree, at(10.0, 10.0)).is_empty());
+        assert!(hover_writes_at(&tree, at(10.0, 10.0)).is_empty());
     }
 
     #[test]
@@ -217,14 +224,14 @@ mod tests {
         let (_signal, hover) = hover_userdata(&lua);
         let tree = node((4.0, 2.0, 100.0, 20.0), None, vec![node((10.0, 5.0, 30.0, 10.0), Some(hover), vec![])]);
 
-        let writes = hover_writes(&tree, at(20.0, 10.0));
+        let writes = hover_writes_at(&tree, at(20.0, 10.0));
         assert!(writes[0].hovered);
         let rect = writes[0].rect.expect("a hovered node reports its rect");
         assert_eq!((rect.x, rect.y, rect.width, rect.height), (14.0, 7.0, 30.0, 10.0));
 
         // None on the way out, so the rect signal keeps the last place the pointer was and
         // `anchor_rect` stays a valid non-zero rect while the popup closes.
-        let leaving = hover_writes(&tree, None);
+        let leaving = hover_writes_at(&tree, None);
         assert!(!leaving[0].hovered);
         assert!(leaving[0].rect.is_none());
     }
@@ -243,6 +250,6 @@ mod tests {
             vec![node((0.0, 0.0, 100.0, 20.0), Some(under), vec![]), node((0.0, 0.0, 100.0, 20.0), Some(over), vec![])],
         );
 
-        assert_eq!(answers(&hover_writes(&tree, at(10.0, 10.0))), vec![false, true]);
+        assert_eq!(answers(&hover_writes_at(&tree, at(10.0, 10.0))), vec![false, true]);
     }
 }

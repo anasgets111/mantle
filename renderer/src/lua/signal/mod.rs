@@ -26,7 +26,7 @@ pub use globals::{
 };
 pub(crate) use tracking::{
     ComputedFrame, begin_instance_resolve, end_instance_resolve, forget_instance, note_everything_written, note_read,
-    note_reads, note_write, reset_read_tracker, write_clock, written_since,
+    note_reads, note_write, reset_read_tracker, with_derived, write_clock, written_since,
 };
 use tracking::{
     Evaluation, EvaluationMemo, Output, ReadTracker, current_clock, downstream, note_unsettled, outputs_written_since,

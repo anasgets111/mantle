@@ -137,6 +137,16 @@ fn grow(
     }
 }
 
+/// `cell` and every computed reading it, directly or through another: what a reader of `cell`'s
+/// value may have recorded instead of `cell`.
+pub(crate) fn with_derived(cell: CellId) -> FxHashSet<CellId> {
+    WRITES.with_borrow(|log| {
+        let outs: Vec<CellId> = log.computeds.keys().copied().collect();
+        let start = FxHashSet::from_iter([cell]);
+        grow(start, &outs, |out, found| log.computeds[out].1.iter().any(|input| found.contains(input)))
+    })
+}
+
 /// Computed cells stamped after `stamp`.
 pub(super) fn outputs_written_since(stamp: u64) -> Vec<CellId> {
     WRITES.with_borrow(|log| {

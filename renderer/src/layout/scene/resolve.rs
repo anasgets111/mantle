@@ -8,7 +8,7 @@ use mlua::{Lua, Value, WeakLua};
 
 use super::solver::{text_measure_matches, text_measure_tweening};
 use super::{LayoutStyle, ResolvedNode};
-use crate::layout::node::{self, LayoutError, PropMap, Tween};
+use crate::layout::node::{self, LayoutError, PaintStyle, PropMap, Tween};
 use crate::lua::signal::{self, CellId, ComputedFrame};
 
 /// What a node's properties were last resolved from: its raw declaration, the write clock taken
@@ -34,6 +34,7 @@ pub struct ResolveMemo {
 pub(super) struct Resolved {
     pub properties: PropMap,
     pub style: LayoutStyle,
+    pub paint: Option<PaintStyle>,
     pub tweens: Vec<Tween>,
     pub memo: Rc<ResolveMemo>,
     /// The retained measurement, when this `text` measures from what it measured from last pass.
@@ -52,6 +53,11 @@ pub(super) fn resolve(
     lua: &Lua,
     build: impl FnOnce(PropMap) -> Result<PropMap, LayoutError>,
 ) -> Result<Resolved, LayoutError> {
+    // The surface's read, not the node's: `finish` applies the offset to whatever it keeps, and a
+    // wheel scrolls in place while no getter reads it (ADR-0274).
+    if let Some(slot) = node::signal_at(&raw, "scroll").and_then(|signal| signal.cell_id()) {
+        signal::note_reads(lua, &[slot]);
+    }
     if let Some(r) = retained.as_deref_mut()
         && let Some(memo) = r.resolve_memo.take_if(|memo| {
             memo.lua == lua.weak()
@@ -63,9 +69,13 @@ pub(super) fn resolve(
         let text_memo = if text_measure_tweening(kind, &r.tweens) { None } else { r.text_memo };
         let mut properties = std::mem::take(&mut r.properties);
         let mut tweens = std::mem::take(&mut r.tweens);
+        // A resting tween moves nothing, so what the last pass or tick parsed still holds. A `text`
+        // parses again: `finish` fitted its kept paint to last pass's box.
+        let moving = tweens.iter().any(|tween| !tween.resting);
         node::advance(&mut tweens, &mut properties, now, lua)?;
-        let style = LayoutStyle::parse(&properties)?;
-        return Ok(Resolved { properties, style, tweens, memo, text_memo });
+        let style = if moving { LayoutStyle::parse(&properties)? } else { *r.layout_style };
+        let paint = if moving || kind == "text" { node::paint_style(kind, &properties)? } else { r.paint.take() };
+        return Ok(Resolved { properties, style, paint, tweens, memo, text_memo });
     }
     let stamp = signal::write_clock(lua);
     let frame = ComputedFrame::enter(lua);
@@ -76,7 +86,8 @@ pub(super) fn resolve(
         .filter(|r| kind == "text" && text_measure_matches(&properties, &r.properties))
         .and_then(|r| r.text_memo);
     let style = LayoutStyle::parse(&properties)?;
-    Ok(Resolved { properties, style, tweens, memo, text_memo })
+    let paint = node::paint_style(kind, &properties)?;
+    Ok(Resolved { properties, style, paint, tweens, memo, text_memo })
 }
 
 /// What `node::retarget` reads off a retained node.
@@ -96,6 +107,13 @@ fn same_declaration(kept: &PropMap, fresh: &PropMap) -> bool {
                 (a, b) => a == b,
             })
         })
+}
+
+impl ResolveMemo {
+    /// Whether this resolve read `cell`: a getter, a `:map` or a function `child` did.
+    pub(super) fn read(&self, cell: CellId) -> bool {
+        self.cells.contains(&cell)
+    }
 }
 
 /// By hand: `WeakLua` has no `Debug`.
@@ -197,6 +215,22 @@ mod tests {
         bar.apply().unwrap();
         assert_eq!(bar.child(0).rect.y, -30.0, "the kept column scrolls its children");
         assert_eq!(bar.runs(), 2, "the scroll is not the chip's");
+    }
+
+    /// A kept node keeps its parse too: the edge table's `__index` runs on the first pass only.
+    #[test]
+    fn a_kept_node_does_not_parse_its_properties_again() {
+        let mut bar = Fixture::new(
+            r#"reads = 0
+            clock = state("clock", "0")
+            local m = setmetatable({}, { __index = function() reads = reads + 1 return 2 end })
+            return panel { id = "bar", child = column { children = {
+                text { content = clock }, rect { width = 10, height = 10, margin = m } } } }"#,
+        );
+        let reads: i64 = bar.lua.globals().get("reads").unwrap();
+        bar.run(r#"clock:set("1")"#);
+        assert_eq!(bar.lua.globals().get::<i64>("reads").unwrap(), reads);
+        assert_eq!(bar.child(1).margin.left, 2.0);
     }
 
     /// ADR-0270: a function `child` is part of its root's resolve, so it runs again only when a

@@ -139,6 +139,7 @@ Like `hover`, the name is the identity and survives reloads.
 | Axis | A `column` or vertical `list` scrolls with the vertical wheel, a `row` or horizontal `list` with the horizontal one only |
 | Distance | One wheel notch is 39 px; a touchpad scrolls the distance it reports |
 | Bound | Layout clamps the offset to `[0, content − viewport]` and writes the clamped value back. The container needs a bounded size on its axis (fixed, `"Fill"` or `max_*`); one sized by its content has nothing to scroll |
+| Cost | While only `scroll` properties read the signal, the wheel moves the laid-out children without a layout pass. A `map` or `:get()` of it, or a `scroll` inside a `list` item, costs a pass per wheel event |
 | `:reveal(index)` | On the next pass, scrolls the least distance that shows the `index`-th visible child (1-based; a `list`'s items in source order). An index past the end does nothing; below 1 raises. Only a `scroll` signal has it |
 
 ## Text fields

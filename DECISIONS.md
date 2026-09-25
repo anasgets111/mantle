@@ -6714,3 +6714,60 @@ snapshot re-resolved its readers every second, because a fresh table never equal
    rule: a change whenever an input was written.
 
 Trade-off: a table result costs one walk and copy per re-run; the budget caps it.
+
+## 0273. A `list` item builds again alone when only its own reads were written
+
+ADR-0269 kept a list's items while nothing its whole build read had changed, and built every item
+when anything had. A hover crossing writes the `hover` cell of the item under the pointer, which
+the whole build read, so crossing one row of a 500-row list called `itemfn` 500 times.
+`layout::scene::tests::list_pass_cost`, release, one item's `hover` written each pass, p50:
+
+| rows | before | after | `clock` written, for scale |
+|---|---|---|---|
+| 12 | 0.32 ms | 0.10 ms | 0.10 ms |
+| 125 | 4.0 ms | 1.15 ms | 1.0 ms |
+| 500 | 16 ms | 4.5 ms | 4.4 ms |
+
+1. **Two read sets.** The list's own: reading `source` and each `key` call, since a key is an
+   item's identity. Each item's own: its `itemfn(element)` call and its subtree's resolution, one
+   frame each, merged. A write to the list's set builds every item, as before; a write to one
+   item's set calls `itemfn` for that item alone, with the element and key it was built from, and
+   resolves it against its retained node. The other items are laid out again as they are.
+2. **Only pairing places a new identity.** An item built again as another kind or under another
+   `id` (a key-less `itemfn` choosing its `id` from a signal) sends the whole list through a build.
+   Its `itemfn` runs twice that pass; the nodes built first are not handed over.
+3. **The kept items stay in order.** A kept list holds as many items as its memo, in build order,
+   so item `i` is retained child `i`; any other count builds the whole list.
+
+Rejected: comparing the rebuilt item's output to the kept one (the build is the cost); a memo per
+item keyed by element identity, which would also keep the items a push left alone but needs the
+source compared element by element, and a capability push is a fresh table every time.
+
+**Supersedes ADR-0269 decision 1** (the unit is the whole list).
+
+## 0274. A wheel scrolls the retained tree in place when no getter reads the offset
+
+A wheel or touchpad frame wrote the `scroll` signal and scheduled a full pass: resolve walk, parse,
+a new solver tree, the solve. The offset is a shift `finish` applies after the solve, so the pass
+recomputed a layout that had not changed. `layout::scene::tests::scroll_cost`, 500 rows, release,
+p50: 2.4 ms a pass, at 60 to 120 frames a second; 0.06 ms in place.
+
+1. **In place when only `scroll` slots read the offset.** `Scene::scroll_in_place` walks every
+   retained tree. When no node a pass would resolve read the cell through Lua (a getter, `:map`,
+   function `child` or `list` build), it moves each visible container's children from the offset
+   they carry (`ResolvedNode::scrolled`) to the new one, clamped against the extent they already
+   take, writes the clamp back quietly, and publishes `geometry`. Otherwise the wheel writes the
+   signal as before and a pass runs.
+2. **A slot is the surface's read, not the node's.** `resolve_properties` no longer notes a node's
+   own `scroll` slot in its read frame; `scene::resolve` notes it to the instance outside it. So a
+   node's memo holds the cell only when Lua read it, which is the test in 1, and a scroll write no
+   longer resolves its container again.
+3. **What follows a pass follows this too.** The wheel handler marks the moved surfaces stale for a
+   repaint, pushes their input and blur regions, and re-runs hover under the resting pointer; a
+   `geometry` rect the move changed marks its readers dirty, as `settle_geometry` does.
+
+The ceiling: a `scroll` slot inside a `list` item is that item's read (ADR-0273), so that list
+still falls back to a pass. Noting a slot to the instance alone, outside every frame, needs a
+tracking call `lua::signal` does not have.
+
+**Amends ADR-0069** (decision 4: the pass is no longer the only place the offset is applied).

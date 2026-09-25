@@ -408,6 +408,15 @@ impl RendererClient {
         &self.scene
     }
 
+    /// [`Scene::scroll_in_place`], with a pass owed to the readers of each `geometry` rect it moved.
+    pub fn scroll_in_place(&mut self, signal: &crate::lua::signal::Signal, asked: f32) -> Option<Vec<String>> {
+        let moved = self.scene.scroll_in_place(signal, asked, self.loader.lua());
+        for id in crate::lua::signal::take_geometry_moved(self.loader.lua()) {
+            self.dirty.mark_cell(id);
+        }
+        moved
+    }
+
     /// This turn's resolve split, for the idle report; see [`Scene::take_resolve_split`].
     pub fn take_resolve_split(&mut self) -> crate::layout::scene::ResolveSplit {
         self.scene.take_resolve_split()
@@ -896,7 +905,7 @@ mod tests {
 
         // `hover_writes` receives the same tree as `App::sync_hover` when the pointer enters.
         let tree = client.scene.surface("bar@TEST").unwrap();
-        let writes = layout::hover::hover_writes(tree, Some(layout::hit::LogicalPoint { x: 50.0, y: 10.0 }));
+        let writes = layout::hover::hover_writes_at(tree, Some(layout::hit::LogicalPoint { x: 50.0, y: 10.0 }));
         assert_eq!(writes.len(), 1, "one node declared a hover, so there is one write");
         assert!(writes[0].hovered, "the pointer is inside the row that declared it");
         assert!(writes[0].rect.is_some(), "and it reports where it is, for a tooltip to anchor to");
@@ -914,7 +923,7 @@ mod tests {
         // Leave again, the edge callback designs lose when reevaluation replaces the node
         // (ADR-0062 decision 1).
         let tree = client.scene.surface("bar@TEST").unwrap();
-        for write in layout::hover::hover_writes(tree, None) {
+        for write in layout::hover::hover_writes_at(tree, None) {
             write.signal.hover_handle().unwrap().set_changed(mlua::Value::Boolean(write.hovered));
         }
         assert!(client.re_resolve_if_dirty());
@@ -1012,7 +1021,7 @@ mod tests {
 
         let mut opened_by = 0;
         for centre in centres {
-            let writes = layout::hover::hover_writes(&bar, Some(centre));
+            let writes = layout::hover::hover_writes_at(&bar, Some(centre));
             // Applied as `App::sync_hover` does: a point inside one region is outside the others,
             // and turning those *off* is half the walk.
             for write in &writes {
@@ -1046,7 +1055,7 @@ mod tests {
         // Closing again. `anchor_rect` keeps its last rect rather than clearing, which is what
         // preserves the non-zero rule on the way out.
         let bar = client.scene.surface("bar@TEST").unwrap();
-        for write in layout::hover::hover_writes(bar, None) {
+        for write in layout::hover::hover_writes_at(bar, None) {
             write.signal.hover_handle().unwrap().set_changed(mlua::Value::Boolean(false));
         }
         assert!(client.re_resolve_if_dirty());

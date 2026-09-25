@@ -92,8 +92,18 @@ impl App {
         let Some(handle) = signal.scroll_handle() else {
             return;
         };
-        let current = signal.scroll_offset().unwrap_or(0.0);
-        handle.set_changed(mlua::Value::Number(f64::from(current + delta)));
+        let asked = signal.scroll_offset().unwrap_or(0.0) + delta;
+        match self.client.scroll_in_place(&signal, asked) {
+            // A pass would re-resolve nothing a scroll changes; the tree's own rects are enough.
+            Some(moved) => {
+                self.mark_surfaces_stale(&moved);
+                self.apply_resolved_surface_state_for(&[&moved]);
+                self.refresh_hover_after_layout();
+            }
+            None => {
+                handle.set_changed(mlua::Value::Number(f64::from(asked)));
+            }
+        }
     }
 }
 

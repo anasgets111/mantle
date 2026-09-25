@@ -306,7 +306,7 @@ mod doc_examples {
     use crate::image::ImageCache;
     use crate::image::capture::CaptureCache;
     use crate::layout::hit::LogicalPoint;
-    use crate::layout::hover::hover_writes;
+    use crate::layout::hover::hover_writes_at;
     use crate::layout::image_shader::ShaderStage;
     use crate::layout::instance::SurfaceInstance;
     use crate::layout::node::{PopupAnchor, PopupSpec, SurfaceSpec, popup_spec};
@@ -612,7 +612,7 @@ os.getenv = function(name) return ({{ USER = "user", HOME = "/home/user" }})[nam
             .filter(|instance| surface.as_ref().is_none_or(|surface| *surface == instance.declared_id))
             .find_map(|instance| Some((instance, scene.surface(&instance.instance_id)?)))
             .ok_or(format!("__pointer: no surface `{}`", surface.unwrap_or_default()))?;
-        for write in hover_writes(tree, Some(point)) {
+        for write in hover_writes_at(tree, Some(point)) {
             apply_hover_write(lua, write, true, &instance.instance_id);
         }
         Ok(())

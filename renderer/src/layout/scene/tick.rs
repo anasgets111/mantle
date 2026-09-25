@@ -143,11 +143,12 @@ fn relayout_retained(
     solved
 }
 
-/// [`prepare`] over a retained tree. Unchanged nodes reuse their parsed style and solver node;
-/// animated nodes update both. Hidden children stay frozen and tweens advance without reconciliation.
+/// [`prepare`] over a retained tree: for a tick, and for a pass over a `list` item that would
+/// build the same (ADR-0269). Unchanged nodes reuse their parsed style and solver node; animated
+/// nodes update both. Hidden children stay frozen and tweens advance without reconciliation.
 ///
 /// [`prepare`]: super::pass::prepare
-fn prepare_retained(
+pub(super) fn prepare_retained(
     tree: &mut taffy::TaffyTree<Measure>,
     mut node: ResolvedNode,
     parent_axis: Option<MainAxis>,
@@ -213,21 +214,11 @@ fn prepare_retained(
     if !node.style.visible {
         return Ok(node);
     }
-    prepare_retained_children_with_tree(tree, node, parent_axis, reuse, lua, now)
+    prepare_retained_children(tree, node, parent_axis, reuse, lua, now)
 }
 
-/// `node`'s retained children, in `frozen`, laid out again as they are: for a tick, and for a pass
-/// over a `list` whose items would build the same (ADR-0269).
-pub(super) fn prepare_retained_children(
-    tree: &mut taffy::TaffyTree<Measure>,
-    node: PreparedNode,
-    lua: &Lua,
-    now: Instant,
-) -> Result<PreparedNode, LayoutError> {
-    prepare_retained_children_with_tree(tree, node, None, false, lua, now)
-}
-
-fn prepare_retained_children_with_tree(
+/// `node`'s retained children, in `frozen`, laid out again as they are.
+fn prepare_retained_children(
     tree: &mut taffy::TaffyTree<Measure>,
     mut node: PreparedNode,
     parent_axis: Option<MainAxis>,
