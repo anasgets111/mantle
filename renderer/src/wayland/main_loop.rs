@@ -263,6 +263,7 @@ pub fn run(
             Vec::new()
         };
         phases.mark_tick();
+        phases.mark_tick_split(app.client.take_tick_split());
         let re_resolved = passed || !ticked.is_empty();
         // Take unconditionally so a keystroke arriving with a push is covered by this repaint, not
         // repeated next turn.

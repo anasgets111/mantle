@@ -11,6 +11,7 @@ mod pass;
 mod scroll;
 mod solver;
 mod tick;
+pub use tick::TickSplit;
 
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
@@ -318,6 +319,7 @@ pub struct Scene {
     surfaces: HashMap<String, ResolvedNode>,
     next_id: u64,
     resolve_split: ResolveSplit,
+    tick_split: TickSplit,
 }
 
 /// Where one resolve pass spends itself, split the three ways [`Scene::apply_one_instance`]

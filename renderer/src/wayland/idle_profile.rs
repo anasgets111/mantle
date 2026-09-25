@@ -54,6 +54,7 @@ pub struct Phases {
     surface_state: Duration,
     repaint: Duration,
     resolve_split: crate::layout::scene::ResolveSplit,
+    tick_split: crate::layout::scene::TickSplit,
     repaint_split: crate::wayland::surface::RepaintSplit,
 }
 
@@ -84,6 +85,10 @@ impl Phases {
     /// per instance while it ran.
     pub fn mark_resolve_split(&mut self, split: crate::layout::scene::ResolveSplit) {
         self.resolve_split = split;
+    }
+
+    pub fn mark_tick_split(&mut self, split: crate::layout::scene::TickSplit) {
+        self.tick_split = split;
     }
 
     pub fn mark_surface_state(&mut self) {
@@ -135,6 +140,7 @@ pub struct Counters {
     repaint: Duration,
     repaint_split: crate::wayland::surface::RepaintSplit,
     tick: Duration,
+    tick_split: crate::layout::scene::TickSplit,
     dispatch_cpu: Duration,
     focus_turns: u64,
     focus_searched: u64,
@@ -237,6 +243,9 @@ impl IdleProfile {
         c.repaint += phases.repaint;
         c.repaint_split += phases.repaint_split;
         c.tick += phases.tick;
+        c.tick_split.clone += phases.tick_split.clone;
+        c.tick_split.prepare += phases.tick_split.prepare;
+        c.tick_split.solve += phases.tick_split.solve;
 
         let elapsed = self.window_started.elapsed();
         if elapsed < self.interval {
@@ -261,7 +270,7 @@ fn render(window: Duration, c: &Counters, cpu: Cpu) -> String {
     format!(
         "idle {:.1}s: turns={} idle={} cpu proc={:.2}% main={:.2}% | wake wl={} wake={} both={} none={} \
          | work dispatch={} resolve={} tick={} type={} decode={} paint={} drawn={} \
-         | ms resolve={:.1} (clone={:.1} list={:.1} props={:.1} solve={:.1}) surfstate={:.1} repaint={:.1} (build={:.1} gl={:.1} text={:.1} icon={:.1} box={:.1} flush={:.1} swap={:.1}) tick={:.1} dispatch={:.1} \
+         | ms resolve={:.1} (clone={:.1} list={:.1} props={:.1} solve={:.1}) surfstate={:.1} repaint={:.1} (build={:.1} gl={:.1} text={:.1} icon={:.1} box={:.1} flush={:.1} swap={:.1}) tick={:.1} (clone={:.1} prepare={:.1} solve={:.1}) dispatch={:.1} \
          | focus turns={} searched={} ms={:.1}{}",
         secs,
         c.turns,
@@ -294,6 +303,9 @@ fn render(window: Duration, c: &Counters, cpu: Cpu) -> String {
         c.repaint_split.flush.as_secs_f64() * 1000.0,
         c.repaint_split.swap.as_secs_f64() * 1000.0,
         c.tick.as_secs_f64() * 1000.0,
+        c.tick_split.clone.as_secs_f64() * 1000.0,
+        c.tick_split.prepare.as_secs_f64() * 1000.0,
+        c.tick_split.solve.as_secs_f64() * 1000.0,
         c.dispatch_cpu.as_secs_f64() * 1000.0,
         c.focus_turns,
         c.focus_searched,
@@ -346,6 +358,12 @@ mod tests {
             resolve_solve: Duration::from_micros(4_200),
             surface_state: Duration::from_micros(1_400),
             repaint: Duration::from_micros(500),
+            tick: Duration::from_micros(3_000),
+            tick_split: crate::layout::scene::TickSplit {
+                clone: Duration::from_micros(700),
+                prepare: Duration::from_micros(1_200),
+                solve: Duration::from_micros(900),
+            },
             ..Counters::default()
         };
         let line = render(Duration::from_secs(10), &c, Cpu::default());
@@ -354,6 +372,7 @@ mod tests {
             line.contains("ms resolve=21.6 (clone=9.1 list=2.5 props=4.8 solve=4.2) surfstate=1.4 repaint=0.5"),
             "{line}"
         );
+        assert!(line.contains("tick=3.0 (clone=0.7 prepare=1.2 solve=0.9)"), "{line}");
     }
 
     #[test]

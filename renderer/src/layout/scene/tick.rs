@@ -1,4 +1,4 @@
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use mlua::{Lua, Value};
 use shared::debug;
@@ -8,12 +8,26 @@ use super::solver::{
     MainAxis, Measure, TEXT_MEASURE_KEYS, hold_leavers, main_axis_of, measure_for, new_solver_node, new_solver_tree,
     taffy_failed,
 };
-use super::{LayoutStyle, LogicalSize, PreparedNode, ResolvedNode, Scene};
+use super::{LayoutStyle, LogicalSize, PreparedNode, ResolvedNode, Scene, close, open_span};
 use crate::layout::instance::SurfaceInstance;
 use crate::layout::node::{self, Dissolve, LayoutError, PaintStyle, SizeMode};
 use crate::text::shaping::ShapingHandle;
 
+/// Where a tick's relayouts spend themselves, for `--profile`. A paint-only tick is in none of
+/// these, so `ms tick` less their sum is that path plus the geometry writes.
+#[derive(Clone, Copy, Default)]
+pub struct TickSplit {
+    pub clone: Duration,
+    pub prepare: Duration,
+    pub solve: Duration,
+}
+
 impl Scene {
+    /// Drained like [`Scene::take_resolve_split`].
+    pub fn take_tick_split(&mut self) -> TickSplit {
+        std::mem::take(&mut self.tick_split)
+    }
+
     /// Advances every tween to `now` and lays the affected instances out again from their retained
     /// property maps, without running Lua (ADR-0145): the only Lua the retained walk touches is a
     /// plain table read. Returns the instances it advanced, which is what the caller owes the
@@ -59,7 +73,10 @@ impl Scene {
             }
             // ponytail: the clone is the rollback for a failure that should not happen; the same
             // shape `apply_admitting` uses per pass. Drop it once a tick has never failed in use.
-            let outcome = relayout_retained(retained.clone(), instance.available, shaping, lua, now)
+            let mut at = open_span();
+            let root = retained.clone();
+            close(&mut at, &mut self.tick_split.clone);
+            let outcome = relayout_retained(root, instance.available, shaping, lua, now, &mut at, &mut self.tick_split)
                 .and_then(|tree| if budget.exceeded() { Err(LayoutError::PassBudgetExceeded) } else { Ok(tree) });
             match outcome {
                 Ok(tree) => {
@@ -96,10 +113,15 @@ fn relayout_retained(
     shaping: &ShapingHandle,
     lua: &Lua,
     now: Instant,
+    at: &mut Option<Instant>,
+    split: &mut TickSplit,
 ) -> Result<ResolvedNode, LayoutError> {
     let mut tree = new_solver_tree();
     let prepared = prepare_retained(&mut tree, root, None, lua, now)?;
-    solve_instance(&mut tree, prepared, available, shaping)
+    close(at, &mut split.prepare);
+    let solved = solve_instance(&mut tree, prepared, available, shaping);
+    close(at, &mut split.solve);
+    solved
 }
 
 /// [`prepare`] over a retained tree instead of a fresh one: same parse, same solver node, same
@@ -976,6 +998,52 @@ mod tests {
             crate::layout::overlay_input_regions(root, 1.0),
             [crate::text::snap::PhysicalRect { x0: 95, y0: -5, x1: 125, y1: 25 }]
         );
+    }
+
+    /// What one tick costs on `read_seam_cost`'s 162-node tree, one node tweening:
+    /// `MANTLE_PROFILE=1 cargo test -p renderer --release tick_cost -- --ignored --nocapture`.
+    /// Ignored for the same reasons; the profile variable adds the relayout's split.
+    #[test]
+    #[ignore]
+    fn tick_cost() {
+        let shaping = ShapingHandle::spawn();
+        for (tweened, from, to) in [("width", "8", "40"), ("background", r##""#000000""##, r##""#ffffff""##)] {
+            let (lua, surface) = surface_from(&format!(
+                r##"local v = state("v", {from})
+                local kids = {{}}
+                for i = 1, 40 do
+                  kids[i] = row {{ spacing = 2, background = "#204080FF", children = {{
+                    rect {{ width = 8, height = 8, background = "#FFFFFFFF" }},
+                    text {{ content = "item " .. i, font_size = 12 }},
+                    rect {{ width = 8, height = 8, background = "#00FF00FF" }} }} }}
+                end
+                kids[1] = rect {{ width = 8, height = 8, background = "#FFFFFFFF", {tweened} = v,
+                  animate = {{ {tweened} = {{ duration = 60000, easing = "Linear" }} }} }}
+                return panel {{ id = "bar", child = row {{ spacing = 4, children = kids }} }}"##
+            ));
+            let mut scene = Scene::new();
+            apply_at(&mut scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
+            lua.load(format!(r#"state("v", {from}):set({to})"#)).exec().unwrap();
+            apply_at(&mut scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
+            let started = scene.surface("bar@TEST").unwrap().children[0].children[0].tweens[0].started;
+            let instances = [instance_at(&surface, full())];
+            let ticks = 2_000u32;
+            scene.take_tick_split();
+            let clock = Instant::now();
+            for frame in 0..ticks {
+                let now = started + std::time::Duration::from_micros(u64::from(frame) * 100);
+                assert!(!scene.tick(&instances, &shaping, &lua, now).is_empty());
+            }
+            let per = |d: Duration| d.as_secs_f64() * 1e6 / f64::from(ticks);
+            let split = scene.take_tick_split();
+            println!(
+                "TICK tweened={tweened} per_tick={:.1}us (clone={:.1} prepare={:.1} solve={:.1})",
+                per(clock.elapsed()),
+                per(split.clone),
+                per(split.prepare),
+                per(split.solve),
+            );
+        }
     }
 
     #[test]

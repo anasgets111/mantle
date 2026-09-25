@@ -413,6 +413,11 @@ impl RendererClient {
         self.scene.take_resolve_split()
     }
 
+    /// This turn's tick split; see [`Scene::take_tick_split`].
+    pub fn take_tick_split(&mut self) -> crate::layout::scene::TickSplit {
+        self.scene.take_tick_split()
+    }
+
     /// Relays what a surface's paint actually drew into the retained scene, where a `retain`ing
     /// `image` stops covering the gap and a `transition` starts (ADR-0183). Narrow on purpose: the
     /// scene is not handed out mutably for a caller to walk itself.
