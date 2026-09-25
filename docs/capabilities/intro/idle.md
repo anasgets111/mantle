@@ -18,7 +18,7 @@ end)
 
 | Method | Contract |
 | :--- | :--- |
-| `:register_threshold(seconds, on_idle, on_resume)` | Runs `on_idle` after `seconds` without input and `on_resume` when input returns. Returns an integer handle. If this idle period already passed `seconds` for another registration, `on_idle` runs at once |
+| `:register_threshold(seconds, on_idle, on_resume)` | Runs `on_idle` after `seconds` (1 to 4294967, whole) without input and `on_resume` when input returns. Returns an integer handle. If this idle period already passed `seconds` for another registration, `on_idle` runs at once |
 | `:cancel_threshold(handle)` | Drops one registration. An unknown or cancelled handle is a no-op |
 | `:inhibit(reason)` | Takes one hold on a logind `idle` block inhibitor. Counted: two calls need two releases |
 | `:release_inhibit()` | Releases one hold; with none held, a no-op |

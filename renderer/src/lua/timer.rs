@@ -112,14 +112,15 @@ pub fn register(lua: &Lua) -> mlua::Result<()> {
         fn timer(
             lua,
             /// `[1, 86400000]`; outside raises.
-            ms: i64,
+            ms: f64,
             /// A raise is logged as a warning.
             callback: fn(),
         ) -> TimerHandle {
-            let Some(ms) = u64::try_from(ms).ok().filter(|ms| (MIN_MS..=MAX_MS).contains(ms)) else {
+            // `contains` is false for NaN, so a non-finite `ms` gets the range message too.
+            if !(MIN_MS as f64..=MAX_MS as f64).contains(&ms) {
                 return Err(mlua::Error::runtime(format!("timer({ms}) is outside {MIN_MS}..={MAX_MS} milliseconds")));
-            };
-            let due = Instant::now() + Duration::from_millis(ms);
+            }
+            let due = Instant::now() + Duration::from_secs_f64(ms / 1000.0);
             let id = super::app_data_or_default::<TimerRegistry>(lua).arm(due, callback.0)?;
             Ok(TimerHandle(id))
         }
@@ -463,5 +464,8 @@ mod tests {
         assert!(err.contains("timer(-1) is outside"), "the engine's range message, not mlua's conversion error: {err}");
         assert!(lua.load("timer(86400001, function() end)").exec().is_err());
         lua.load("timer(86400000, function() end)").exec().expect("a full day is the documented ceiling");
+        lua.load("timer(1.5, function() end)").exec().expect("a fractional ms is a duration like any other");
+        let err = lua.load("timer(0/0, function() end)").exec().unwrap_err().to_string();
+        assert!(err.contains("timer(NaN) is outside"), "the engine's range message: {err}");
     }
 }

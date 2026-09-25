@@ -110,7 +110,7 @@ tick()
 | Part | Contract |
 | :--- | :--- |
 | Signature | `timer(ms, fn)` → handle |
-| `ms` | `1` to `86400000` (one day), monotonic clock; outside raises |
+| `ms` | `1` to `86400000` (one day), fractions allowed, monotonic clock; outside raises |
 | `fn` | Called with no arguments under the 5 ms CPU budget. A raise or blown budget is logged as a warning |
 | Handle | `handle:cancel()` disarms it. A no-op once fired or cancelled. Dropping the handle does not disarm |
 | Order | Timers due at the same moment fire in the order they were armed; one may cancel another in the same batch |

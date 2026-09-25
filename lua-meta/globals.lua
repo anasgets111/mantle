@@ -122,7 +122,7 @@ function TimerHandle:cancel() end
 ---Repeat by re-arming inside `callback`. Every evaluation clears all timers, so arm at the top level;
 ---a discarded handle still fires.
 ---[docs](https://anasgets111.github.io/mantle/guide/scripting.html#timer)
----@param ms integer `[1, 86400000]`; outside raises.
+---@param ms number `[1, 86400000]`; outside raises.
 ---@param callback fun() A raise is logged as a warning.
 ---@return TimerHandle
 function timer(ms, callback) end

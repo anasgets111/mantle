@@ -278,7 +278,7 @@ A module runs once per evaluation, and every later `require` of
 it returns the same table. For a value that changes, use a named `state`: the same name gives the
 same signal in any module.
 
-```lua
+```lua,fragment
 -- lib/palette.lua: every module that requires it in one evaluation gets this same table.
 return {
     accent = "#89b4faff",

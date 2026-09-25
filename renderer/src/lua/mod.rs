@@ -328,19 +328,28 @@ fn collect_surfaces(value: Value) -> Result<Vec<VirtualNode>, LoaderError> {
         return Ok(vec![node]);
     }
 
-    // Type-check each element as `Value`: `sequence_values::<Table>()` reports "error converting
-    // Lua string to table" without naming the element or its value, and misclassifies a valid
-    // evaluation as `LoaderError::Eval`.
+    // Type-check each element as `Value`, so the error names the element and what it was; a hole
+    // reads as `nil` rather than ending the list.
+    let entries = marshal::list_entries(&table)
+        .map_err(|detail| LoaderError::InvalidTopLevelReturn(format!("the surface list: {detail}")))?;
     let mut surfaces = Vec::new();
-    for (index, entry) in table.sequence_values::<Value>().enumerate() {
-        let entry = entry.map_err(LoaderError::from)?;
-        let Value::Table(entry) = entry else {
-            return Err(LoaderError::InvalidTopLevelReturn(format!(
-                "surface {} is a {}, not a node{}",
-                index + 1,
-                entry.type_name(),
-                REQUIRE_RETURNS_TWO_VALUES
-            )));
+    for (index, entry) in entries.into_iter().enumerate() {
+        let entry = match entry {
+            Value::Table(entry) => entry,
+            Value::Nil => {
+                return Err(LoaderError::InvalidTopLevelReturn(format!(
+                    "surface {} is nil: the variable or module it names holds no node",
+                    index + 1
+                )));
+            }
+            other => {
+                return Err(LoaderError::InvalidTopLevelReturn(format!(
+                    "surface {} is {}, not a node{}",
+                    index + 1,
+                    marshal::a_type(&other),
+                    REQUIRE_RETURNS_TWO_VALUES
+                )));
+            }
         };
         let node = nodes::deserialize_lua_table(&entry)?;
         require_surface(&node)?;
@@ -554,6 +563,22 @@ pub(crate) mod tests {
         assert!(message.contains("surface 2"), "the message has to say which element: {message}");
         assert!(message.contains("string"), "the message has to say what it got: {message}");
         assert!(message.contains("require"), "the message has to name the cause a config author cannot see: {message}");
+    }
+
+    /// A module that returns nothing leaves a hole; the surfaces after it must not vanish silently.
+    #[test]
+    fn a_nil_in_the_surface_list_names_its_index_instead_of_dropping_what_follows() {
+        let loader = test_loader();
+        let err = loader
+            .evaluate(
+                r#"local missing
+return { panel { id = "a", layer = "Top" }, missing, panel { id = "c", layer = "Top" } }"#,
+            )
+            .unwrap_err();
+
+        let message = err.to_string();
+        assert!(matches!(err, LoaderError::InvalidTopLevelReturn(_)), "{err:?}");
+        assert!(message.contains("surface 2 is nil"), "{message}");
     }
 
     /// Whether `expr` evaluates to `nil` in the config environment.

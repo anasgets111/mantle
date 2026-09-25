@@ -86,8 +86,13 @@ so everything since the rename from Obelisk sits under Unreleased.
 - A `nil` or non-signal `computed` dependency raises naming its index,
   `` computed() dependency 2 is nil; ... ``; before, a hole dropped every dependency after it. A
   named key in the list raises too.
-- `timer(-1, fn)` raises `timer(-1) is outside 1..=86400000 milliseconds`, not mlua's
-  `error converting Lua integer to u64`.
+- `timer`'s `ms` is a `number`: `timer(1.5, fn)` runs, and `timer(-1, fn)` or a NaN raises
+  `timer(-1) is outside 1..=86400000 milliseconds`, not mlua's `error converting Lua integer to u64`.
+- `mantle.idle:register_threshold` outside `1..=4294967` seconds raises naming the range; before,
+  a negative one got mlua's conversion error and a huge one was clamped. `cancel_threshold(-1)` is a
+  no-op like any unknown handle.
+- A `nil` in the returned surface list raises `surface 2 is nil: ...`; before, it dropped every
+  surface after it.
 - An equal capability snapshot is not pushed again, except `tray` and `notifications`.
 - A bad `layer`, `corner_shape`, `keyboard_interactivity`, popup `anchor` or `gravity`,
   `constraint_adjustment` entry or easing name fails with one wording that lists every choice:

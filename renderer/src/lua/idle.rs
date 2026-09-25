@@ -38,6 +38,9 @@ use shared::{debug, warn};
 
 use crate::lua::capability::Capability;
 
+/// The longest threshold ext-idle-notify's u32 millisecond timeout holds.
+const MAX_THRESHOLD_SEC: u64 = u32::MAX as u64 / 1000;
+
 /// Callbacks left by one `register_threshold` call, under the handle that cancels them.
 struct Threshold {
     id: u64,
@@ -233,11 +236,20 @@ impl UserData for IdleMember {
             this.0.state().add_handler(f);
             Ok(())
         });
-        methods.add_method("cancel_threshold", |_, this, id: u64| {
-            this.0.cancel_threshold(id);
+        methods.add_method("cancel_threshold", |_, this, id: i64| {
+            // A negative handle was never issued, and an unknown handle cancels nothing.
+            if let Ok(id) = u64::try_from(id) {
+                this.0.cancel_threshold(id);
+            }
             Ok(())
         });
-        methods.add_method("register_threshold", |_, this, (sec, on_idle, on_resume): (u64, Function, Function)| {
+        methods.add_method("register_threshold", |_, this, (sec, on_idle, on_resume): (i64, Function, Function)| {
+            // ext-idle-notify takes a u32 of milliseconds; past it the Supervisor would clamp.
+            let Some(sec) = u64::try_from(sec).ok().filter(|sec| (1..=MAX_THRESHOLD_SEC).contains(sec)) else {
+                return Err(mlua::Error::runtime(format!(
+                    "mantle.idle:register_threshold({sec}) is outside 1..={MAX_THRESHOLD_SEC} seconds"
+                )));
+            };
             Ok(this.0.register_threshold(sec, on_idle, on_resume))
         });
         methods.add_method("inhibit", |_, this, reason: String| {
@@ -289,6 +301,19 @@ mod tests {
                 "{call} must send the start ahead of its command, got {first:?}"
             );
         }
+    }
+
+    /// The engine's own range message, not mlua's `u64` conversion error; a negative handle is
+    /// an unknown one, which cancels nothing.
+    #[test]
+    fn a_threshold_outside_the_range_names_the_range() {
+        let (lua, _registry, _rx) = lua_with_idle(0);
+        for sec in ["0", "-1", "4294968"] {
+            let err = lua.load(format!("idle:register_threshold({sec}, function() end, function() end)")).exec();
+            let err = err.unwrap_err().to_string();
+            assert!(err.contains(&format!("register_threshold({sec}) is outside 1..=4294967 seconds")), "{err}");
+        }
+        lua.load("idle:cancel_threshold(-1)").exec().expect("an unknown handle is a no-op");
     }
 
     /// One start per generation, not per call.
