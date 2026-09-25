@@ -536,6 +536,10 @@ impl Tween {
                 return sequence.frames[0].value;
             }
             Motion::Sequence(sequence) => return sequence.at(elapsed, self.property),
+            // Exactly the target, not `from + (to - from) * 1`: a settled spring is still off by its
+            // threshold, and once the tween is dropped `retarget` reads this value back as the target
+            // it compares against, so anything short of `to` starts a new tween on the next pass.
+            _ if self.done(now) => return self.to,
             Motion::Eased { duration, easing } => {
                 easing.apply((elapsed.as_secs_f32() / duration.as_secs_f32()).min(1.0))
             }
@@ -1081,6 +1085,28 @@ mod tests {
         // `loops` without a list to walk was read by nobody at all, typo and count alike.
         let text = refused(&lua, "return { animate = { width = { duration = 10, loops = 3 } } }");
         assert!(text.contains("`loops`"), "{text}");
+    }
+
+    #[test]
+    fn a_settled_tween_shows_its_target_exactly() {
+        let lua = Lua::new();
+        let started = Instant::now();
+        for src in [
+            "return { animate = { width = { spring = { stiffness = 200, damping = 10 } } } }",
+            "return { animate = { width = { duration = 100, easing = \"OutCubic\" } } }",
+        ] {
+            let tween = Tween {
+                property: "width",
+                from: Animatable::Number(0.0),
+                to: Animatable::Number(0.3),
+                started,
+                spec: spec(&lua, src),
+                resting: false,
+            };
+            let settled = started + Duration::from_secs(60);
+            assert!(tween.done(settled), "{src}");
+            assert_eq!(tween.at(settled), Animatable::Number(0.3), "{src}");
+        }
     }
 
     #[test]
