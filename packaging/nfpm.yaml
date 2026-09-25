@@ -1,0 +1,73 @@
+# The .deb and .rpm the `release` workflow builds from `target/release`. `VERSION` comes from the
+# workflow. The layout is the one `setup.rs` probes: `$PREFIX/lib/mantle` beside
+# `$PREFIX/share/mantle/lua-meta`. The polkit rule is pacman's, so neither package ships it.
+name: mantle
+arch: amd64
+platform: linux
+version: ${VERSION}
+version_schema: none
+maintainer: Anas Khalifa <anasgets111@gmail.com>
+description: Wayland desktop shell engine configured in Lua
+homepage: https://anasgets111.github.io/mantle
+license: MIT
+
+contents:
+  # Owned, so removing the rpm takes them too; dpkg drops an empty one either way.
+  - dst: /usr/lib/mantle
+    type: dir
+  - dst: /usr/share/mantle
+    type: dir
+  - dst: /usr/share/mantle/lua-meta
+    type: dir
+  - dst: /usr/share/licenses/mantle
+    type: dir
+  - src: target/release/mantle
+    dst: /usr/lib/mantle/mantle
+    file_info: {mode: 0755}
+  - src: target/release/mantle-renderer
+    dst: /usr/lib/mantle/mantle-renderer
+    file_info: {mode: 0755}
+  - src: /usr/lib/mantle/mantle
+    dst: /usr/bin/mantle
+    type: symlink
+  - src: lua-meta/*.lua
+    dst: /usr/share/mantle/lua-meta/
+  - src: LICENSE
+    dst: /usr/share/licenses/mantle/LICENSE
+  - src: packaging/pam.d/mantle
+    dst: /etc/pam.d/mantle
+    type: config|noreplace
+
+# The libraries `readelf -d` lists, plus `fc-match`. Built on glibc 2.43, so older refuses to load.
+overrides:
+  deb:
+    depends:
+      - libc6 (>= 2.43)
+      - libgcc-s1
+      - libpam0g
+      - libudev1
+      - libpipewire-0.3-0t64
+      - libwayland-client0
+      - libwayland-egl1
+      - libxkbcommon0
+      - libegl1
+      - libgbm1
+      - fontconfig
+    recommends:
+      - pkexec
+  rpm:
+    # rpm's own soname capabilities, so no Fedora package name is hardcoded.
+    depends:
+      - libc.so.6(GLIBC_2.43)(64bit)
+      - libgcc_s.so.1()(64bit)
+      - libpam.so.0()(64bit)
+      - libudev.so.1()(64bit)
+      - libpipewire-0.3.so.0()(64bit)
+      - libwayland-client.so.0()(64bit)
+      - libwayland-egl.so.1()(64bit)
+      - libxkbcommon.so.0()(64bit)
+      - libEGL.so.1()(64bit)
+      - libgbm.so.1()(64bit)
+      - fontconfig
+    recommends:
+      - polkit

@@ -53,6 +53,8 @@ names.
 | Route | Steps |
 | :--- | :--- |
 | Arch | [`mantle-git`](https://aur.archlinux.org/packages/mantle-git) from the AUR builds `main` and installs the PAM stack |
+| Ubuntu, Fedora | A [release](https://github.com/anasgets111/mantle/releases)'s `sudo apt install ./mantle_<version>_amd64.deb` or `sudo dnf install ./mantle-<version>-1.x86_64.rpm`: under `/usr`, with its libraries as dependencies and the PAM stack. Ubuntu 26.04 and Fedora 44 or later, since it needs glibc 2.43 |
+| Release tarball | `sudo tar -xzf mantle-<version>-x86_64-linux.tar.gz -C /` installs under `/usr/local`, with the PAM stack and polkit rule under `/etc`; the libraries are yours to install. Needs glibc 2.43 |
 | From source | `cargo build --workspace --release`, then copy `target/release/mantle` and `target/release/mantle-renderer` into one directory on `PATH`, such as `~/.local/bin` |
 | From a checkout, for development | `just run [config]` builds and runs `config` (default `share/starter`). `just swap` builds an optimised pair into `$CARGO_HOME/bin` and restarts the running shell |
 

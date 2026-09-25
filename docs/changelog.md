@@ -8,6 +8,8 @@ so everything since the rename from Obelisk sits under Unreleased.
 
 ### Added
 
+- x86_64 release builds: a `.deb`, an `.rpm` and a tarball, built in Ubuntu 26.04 by the `release`
+  workflow on a `v*` tag ([install](guide/installation.md#install)).
 - This site: guide, one page per node, surface and capability, cookbook, glossary. Every Lua
   example on it runs as a test, and the `lua-meta` stubs link each entry to its page.
 - Nodes: [`shader`](nodes/shader.md) (a config fragment shader) and [`capture`](nodes/capture.md)

@@ -1,0 +1,81 @@
+# The x86_64 tarball, .deb and .rpm: a `v*` tag builds them and publishes a GitHub release; a
+# manual run builds them as a workflow artifact only. It builds in ubuntu:26.04, so glibc 2.43's
+# symbol versions set the floor: an older glibc refuses to load the binaries.
+name: release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    container: ubuntu:26.04
+    steps:
+      - name: Build dependencies
+        run: |
+          apt-get update -q
+          DEBIAN_FRONTEND=noninteractive apt-get install -qy --no-install-recommends \
+            ca-certificates curl cargo build-essential pkg-config clang libclang-dev \
+            libpipewire-0.3-dev libpam0g-dev libudev-dev libwayland-dev libxkbcommon-dev \
+            libegl-dev libgbm-dev
+      - name: nfpm
+        run: |
+          curl -fsSLo /tmp/nfpm.deb https://github.com/goreleaser/nfpm/releases/download/v2.47.0/nfpm_2.47.0_amd64.deb
+          echo "3f1cf344bd0b57373ca55636a78c08b0491f7293d609a456a9ac3b0b150fda97  /tmp/nfpm.deb" | sha256sum -c
+          dpkg -i /tmp/nfpm.deb
+      - uses: actions/checkout@v5
+      - run: cargo build --workspace --release --locked
+      # The layout `setup.rs` and `renderer_binary_path` resolve: both binaries in
+      # `$PREFIX/lib/mantle`, the stubs in `$PREFIX/share/mantle/lua-meta`.
+      - name: Package
+        id: package
+        run: |
+          # `~` sorts a manual build before any release in both dpkg and rpm.
+          export VERSION="${GITHUB_REF_NAME#v}"
+          [ "$GITHUB_REF_TYPE" = tag ] || VERSION="0~git${GITHUB_SHA::7}"
+          name="mantle-$VERSION-x86_64-linux"
+          root="stage/$name"
+          install -Dm755 -t "$root/usr/local/lib/mantle" target/release/mantle target/release/mantle-renderer
+          mkdir -p "$root/usr/local/bin"
+          ln -s ../lib/mantle/mantle "$root/usr/local/bin/mantle"
+          install -Dm644 -t "$root/usr/local/share/mantle/lua-meta" lua-meta/*.lua
+          install -Dm644 LICENSE "$root/usr/local/share/licenses/mantle/LICENSE"
+          install -Dm644 packaging/pam.d/mantle "$root/etc/pam.d/mantle"
+          install -Dm644 -t "$root/etc/polkit-1/rules.d" packaging/polkit-1/rules.d/*.rules
+          # Both binaries load and the renderer evaluates the starter config, with no compositor.
+          "$root/usr/local/bin/mantle" check -c share/starter
+          if readelf -d "$root"/usr/local/lib/mantle/* | grep -q libalpm; then exit 1; fi
+          echo "glibc floor: $(readelf -W --dyn-syms "$root"/usr/local/lib/mantle/* | grep -o 'GLIBC_[0-9.]*' | sort -uV | tail -1)"
+          tar -C "$root" -czf "stage/$name.tar.gz" usr etc
+          nfpm package -f packaging/nfpm.yaml -p deb -t stage/
+          nfpm package -f packaging/nfpm.yaml -p rpm -t stage/
+          (cd stage && sha256sum *.tar.gz *.deb *.rpm > SHA256SUMS)
+          echo "name=$name" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.package.outputs.name }}
+          path: |
+            stage/*.tar.gz
+            stage/*.deb
+            stage/*.rpm
+            stage/SHA256SUMS
+
+  release:
+    if: github.ref_type == 'tag'
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v5
+        with:
+          path: dist
+          merge-multiple: true
+      - run: gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --generate-notes dist/*
+        env:
+          GH_TOKEN: ${{ github.token }}
