@@ -7,6 +7,13 @@ use shared::{Capability, SupervisorFrame, warn};
 
 use crate::{send_frame_logged, socket};
 
+/// A capability's last sent snapshot, plus how many pushes since start were dropped as equal to
+/// the one before them. The revision counts the ones sent.
+pub(crate) struct Published {
+    pub(crate) snapshot: shared::StateSnapshot,
+    pub(crate) deduped: u32,
+}
+
 /// Pushes `state` as a fresh `StateSnapshot` with the next revision, and records it in
 /// `last_snapshots` (ADR-0029), which `Supervisor::hydrate` replays to a new generation. A payload
 /// equal to the last one is dropped: every push re-resolves the Renderer's scene (ADR-0044).
@@ -15,7 +22,7 @@ use crate::{send_frame_logged, socket};
 pub(crate) fn push_snapshot(
     registry: &socket::GenerationRegistry,
     generation_id: u32,
-    last_snapshots: &mut HashMap<Capability, shared::StateSnapshot>,
+    last_snapshots: &mut HashMap<Capability, Published>,
     capability: Capability,
     state: &impl serde::Serialize,
 ) {
@@ -24,11 +31,16 @@ pub(crate) fn push_snapshot(
             // Tray and notification icons are rewritten in place at the same path, so an equal
             // payload can still mean new pixels for the Renderer to stat.
             let spools_icons = matches!(capability, Capability::Tray | Capability::Notifications);
-            if !spools_icons && last_snapshots.get(&capability).is_some_and(|last| last.payload == payload) {
+            if let Some(last) = last_snapshots.get_mut(&capability)
+                && !spools_icons
+                && last.snapshot.payload == payload
+            {
+                last.deduped += 1;
                 return;
             }
             // ADR-0004's state version; the first push is `1`.
-            let revision = last_snapshots.get(&capability).map_or(0, |last| last.revision) + 1;
+            let (revision, deduped) =
+                last_snapshots.get(&capability).map_or((1, 0), |last| (last.snapshot.revision + 1, last.deduped));
             // Move the snapshot through the frame and take it back out. `send_frame_logged`
             // borrows, so the obvious spelling deep-clones the whole `payload` tree -- the largest
             // thing on this path -- on every signal, purely to keep a copy.
@@ -39,7 +51,7 @@ pub(crate) fn push_snapshot(
             });
             send_frame_logged(registry, generation_id, &frame);
             if let SupervisorFrame::StateSnapshot(snapshot) = frame {
-                last_snapshots.insert(capability, snapshot);
+                last_snapshots.insert(capability, Published { snapshot, deduped });
             }
         }
         Err(err) => warn!("failed to serialize {capability} StateSnapshot: {err}"),
@@ -56,12 +68,12 @@ mod tests {
         let mut last_snapshots = HashMap::new();
         let mut push = |capability, value: u32| {
             push_snapshot(&registry, 1, &mut last_snapshots, capability, &value);
-            last_snapshots[&capability].revision
+            (last_snapshots[&capability].snapshot.revision, last_snapshots[&capability].deduped)
         };
-        assert_eq!(push(Capability::Audio, 1), 1);
-        assert_eq!(push(Capability::Audio, 1), 1, "an equal payload must not bump the revision");
-        assert_eq!(push(Capability::Audio, 2), 2);
-        assert_eq!(push(Capability::Tray, 1), 1);
-        assert_eq!(push(Capability::Tray, 1), 2, "a rewritten tray icon keeps its path and still needs a push");
+        assert_eq!(push(Capability::Audio, 1), (1, 0));
+        assert_eq!(push(Capability::Audio, 1), (1, 1), "an equal payload must not bump the revision");
+        assert_eq!(push(Capability::Audio, 2), (2, 1));
+        assert_eq!(push(Capability::Tray, 1), (1, 0));
+        assert_eq!(push(Capability::Tray, 1), (2, 0), "a rewritten tray icon keeps its path and still needs a push");
     }
 }

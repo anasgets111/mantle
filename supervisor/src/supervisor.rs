@@ -17,10 +17,11 @@ use crate::generation::{
     Authoritative, RESTART_COOLDOWN, RESTART_LIMIT, RESTART_WINDOW, Renderer, RendererDeparture, RestartBrake,
     classify_departure, departure_report,
 };
+use crate::memory;
 use crate::pam_worker;
 use crate::polkit::AgentRequest;
 use crate::process::registry::{LiveProcesses, reap_processes, wait_and_report_exit};
-use crate::snapshot::push_snapshot;
+use crate::snapshot::{Published, push_snapshot};
 use crate::socket;
 use crate::{process, send_frame_logged};
 
@@ -77,7 +78,7 @@ pub(crate) struct Supervisor {
     session_bridge: lock::logind::SessionBridge,
     /// Last snapshot per capability, replayed to each new generation by [`Supervisor::hydrate`]. Its
     /// revision is the capability's state version (ADR-0004).
-    last_snapshots: HashMap<Capability, shared::StateSnapshot>,
+    last_snapshots: HashMap<Capability, Published>,
     /// Id for the next crash replacement.
     next_generation_id: u32,
     renderer: Renderer,
@@ -224,15 +225,18 @@ impl Supervisor {
         send_frame_logged(&self.registry, self.authoritative.generation_id, &SupervisorFrame::Reevaluate);
     }
 
-    /// Every `last_snapshots` payload for `--profile`, serialized bytes, largest first. All of
-    /// them, because which capability's published state grows with traffic is the question, not
-    /// the premise. Serializing to measure is the work `push_snapshot` already does per change,
-    /// and this runs once per report.
-    pub(crate) fn snapshot_sizes(&self) -> Vec<(&'static str, usize)> {
-        let mut sizes: Vec<(&'static str, usize)> = self
+    /// Every `last_snapshots` entry for `--profile`: serialized bytes, pushes sent and pushes
+    /// deduped, largest first. All of them, because which capability's published state grows
+    /// with traffic is the question, not the premise. Serializing to measure is the work
+    /// `push_snapshot` already does per change, and this runs once per report.
+    pub(crate) fn snapshot_sizes(&self) -> Vec<memory::SnapshotStat> {
+        let mut sizes: Vec<memory::SnapshotStat> = self
             .last_snapshots
             .iter()
-            .map(|(capability, snapshot)| (capability.as_str(), snapshot.payload.to_string().len()))
+            .map(|(capability, last)| {
+                let bytes = last.snapshot.payload.to_string().len();
+                (capability.as_str(), bytes, last.snapshot.revision, last.deduped)
+            })
             .collect();
         sizes.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(b.0)));
         sizes
@@ -246,11 +250,11 @@ impl Supervisor {
         }
         debug!("hydrating generation {generation_id} with {} snapshots", self.last_snapshots.len());
         // Moved through each frame and back, as in `push_snapshot`, rather than deep-cloned.
-        for (capability, snapshot) in std::mem::take(&mut self.last_snapshots) {
-            let frame = SupervisorFrame::StateSnapshot(snapshot);
+        for (capability, last) in std::mem::take(&mut self.last_snapshots) {
+            let frame = SupervisorFrame::StateSnapshot(last.snapshot);
             send_frame_logged(&self.registry, generation_id, &frame);
             if let SupervisorFrame::StateSnapshot(snapshot) = frame {
-                self.last_snapshots.insert(capability, snapshot);
+                self.last_snapshots.insert(capability, Published { snapshot, deduped: last.deduped });
             }
         }
         // ADR-0058 decision 4: replay before relock, or one default frame looks like a broken

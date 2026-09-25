@@ -95,7 +95,7 @@ Flags and the command may come in any order. `-V` and `-h` win over anything aft
 | `-c <dir>`, `--config <dir>`, `--config=<dir>` | Everything except `list` | The config directory. A path to a file (`shell.lua`) means its directory, with a notice. A relative path is made absolute |
 | `-d`, `--detach` | Run only | Detached start, as above |
 | `-v`, `--verbose` | Run only | Raises the log level. Repeat or group: `-v`, `-vv`, `-vvv` |
-| `--profile[=SECS]` | Run only | Logs idle-loop, heap and PSS/GPU memory reports every `SECS` seconds, default 60. Implies `-v` |
+| `--profile[=SECS]` | Run only | Logs idle-loop, heap and PSS/GPU memory reports every `SECS` seconds, default 60, with each capability's last snapshot as `name=<bytes>B/<sent>/<deduped>`: pushes sent to the renderer and pushes dropped as equal to the last, since start. Implies `-v` |
 | `--force` | `init` only | Overwrites `.luarc.json` and `shell.lua` |
 | `-f`, `--follow` | `log` only | Follows the log until its shell exits |
 | `--pid <pid>`, `--pid=<pid>` | `set`, `toggle`, `call`, `log` | Addresses the shell with that pid, as `mantle list` shows it. Refused together with `-c` |

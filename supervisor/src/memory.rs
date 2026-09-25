@@ -49,16 +49,19 @@ pub(crate) struct ProcessMemory {
     pub(crate) gpu: Gpu,
 }
 
+/// A capability's last payload in serialized bytes, pushes sent, and pushes deduped as equal.
+pub(crate) type SnapshotStat = (&'static str, usize, u32, u32);
+
 /// Supervisor plus the renderer, keyed by generation. A renderer already exited at read time is
 /// absent, not an error (see [`sample`]).
 #[derive(Debug)]
 pub(crate) struct Sample {
     pub(crate) supervisor: ProcessMemory,
     pub(crate) malloc: Malloc,
-    /// Every `last_snapshots` payload, serialized bytes, largest first. The map is keyed by the
-    /// closed [`Capability`](shared::Capability) roster, so only the values can grow, and this is
-    /// the only place that growth is visible.
-    pub(crate) snapshots: Vec<(&'static str, usize)>,
+    /// Every `last_snapshots` entry, largest first. The map is keyed by the closed
+    /// [`Capability`](shared::Capability) roster, so only the values can grow, and this is the
+    /// only place that growth is visible.
+    pub(crate) snapshots: Vec<SnapshotStat>,
     pub(crate) renderer: Option<(u32, ProcessMemory)>,
 }
 
@@ -181,9 +184,12 @@ pub(crate) fn report_line(label: &str, sample: &Sample) -> String {
         mib_from_bytes(sample.malloc.mmapped),
     );
     if !sample.snapshots.is_empty() {
-        let sizes: Vec<String> =
-            sample.snapshots.iter().map(|(capability, bytes)| format!("{capability}={bytes}")).collect();
-        line.push_str(&format!("; snapshots {}", sizes.join(" ")));
+        let sizes: Vec<String> = sample
+            .snapshots
+            .iter()
+            .map(|(capability, bytes, sent, deduped)| format!("{capability}={bytes}B/{sent}/{deduped}"))
+            .collect();
+        line.push_str(&format!("; snapshots bytes/sent/deduped {}", sizes.join(" ")));
     }
     if let Some((generation_id, memory)) = &sample.renderer {
         line.push_str(&format!(
@@ -236,7 +242,7 @@ fn read_gpu(process_dir: &Path) -> Gpu {
 pub(crate) fn sample(
     proc_root: &Path,
     renderer: Option<(u32, u32)>,
-    snapshots: Vec<(&'static str, usize)>,
+    snapshots: Vec<SnapshotStat>,
 ) -> io::Result<Sample> {
     let supervisor = read_process_memory(proc_root, "self")?;
     debug!(2; "supervisor memory sampled: pss={} uss={} gpu_resident={}", supervisor.rollup.pss, supervisor.rollup.uss, supervisor.gpu.resident);
@@ -263,12 +269,7 @@ pub(crate) fn sampler(period: Option<Duration>) -> Option<tokio::time::Interval>
 /// Reads and logs one sample across the Supervisor and the authoritative Renderer (ADR-0043
 /// decision 1), from `main.rs`'s steady-state timer. A reaped `Child` with `id() == None` is left
 /// out, not reported as zero.
-pub(crate) fn log_sample(
-    label: &str,
-    generation_id: u32,
-    child: &tokio::process::Child,
-    snapshots: Vec<(&'static str, usize)>,
-) {
+pub(crate) fn log_sample(label: &str, generation_id: u32, child: &tokio::process::Child, snapshots: Vec<SnapshotStat>) {
     match sample(Path::new(PROC_ROOT), child.id().map(|pid| (generation_id, pid)), snapshots) {
         Ok(sample) => info!("{}", report_line(label, &sample)),
         Err(err) => debug!("{label} sample failed: {err}"),
@@ -551,7 +552,7 @@ drm-engine-video-enhance:\t0 ns\n";
                 in_use: 4 * 1024 * 1024,
                 free: 2 * 1024 * 1024,
             },
-            snapshots: vec![("notifications", 4096), ("audio", 512)],
+            snapshots: vec![("notifications", 4096, 3, 0), ("audio", 512, 40, 7)],
             renderer: Some((
                 0,
                 ProcessMemory {
@@ -565,7 +566,7 @@ drm-engine-video-enhance:\t0 ns\n";
             report_line("periodic", &sample),
             "periodic: total pss 58.0 MiB; supervisor pss 8.0 MiB uss 0.0 MiB \
              (malloc in_use 4.0 free 2.0 arena 6.0 mmap 1.0 MiB); \
-             snapshots notifications=4096 audio=512; \
+             snapshots bytes/sent/deduped notifications=4096B/3/0 audio=512B/40/7; \
              generation 0 pss 50.0 MiB uss 40.0 MiB gpu 20.0 MiB (3.0 MiB shared, 1 drm client(s))"
         );
     }

@@ -22,6 +22,7 @@ so everything since the rename from Obelisk sits under Unreleased.
   bindings; Left/Right reach `on_navigate` when the caret cannot move; Escape in a
   `secure_submit` field calls `on_cancel`.
 - Numbered verbosity (`-v`, `-vv`, `-vvv`), quiet by default; `--profile` prints its own reports ([CLI](guide/cli.md#flags)).
+- `--profile` reports each capability's snapshot pushes sent and deduped beside its size ([CLI](guide/cli.md#flags)).
 - A bare `mantle call` lists the running config's actions, and a bare `mantle set` or `mantle toggle`
   its states with their values ([CLI](guide/cli.md#commands)).
 
