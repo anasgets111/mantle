@@ -5,16 +5,12 @@ use std::time::Instant;
 use mlua::{Lua, Value};
 
 use super::fit::fit_text_to_box;
+use super::resolve::{Resolved, resolve};
 use super::scroll::{extent_along, reveal_child, scroll_offset};
-use super::solver::{
-    MainAxis, Measure, hold_leavers, main_axis_of, measure_for, new_solver_node, solve, taffy_failed,
-    text_measure_matches,
-};
+use super::solver::{MainAxis, Measure, hold_leavers, main_axis_of, measure_for, new_solver_node, solve, taffy_failed};
 use super::tick::{advance_leaving, advanced_dissolve, prepare_retained_children};
-use super::{
-    LayoutStyle, LogicalSize, PreparedNode, ResolvedNode, Scene, close, ensure_node_admissible, open_span, tween_state,
-};
-use crate::layout::node::{self, LayoutError, PropMap, SizeMode, Tween, fields};
+use super::{LayoutStyle, LogicalSize, PreparedNode, ResolvedNode, Scene, close, ensure_node_admissible, open_span};
+use crate::layout::node::{self, LayoutError, PropMap, SizeMode, fields};
 use crate::lua::nodes::VirtualNode;
 use crate::text::shaping::ShapingHandle;
 use crate::text::snap::LogicalRect;
@@ -77,9 +73,9 @@ fn children_kept(
     Ok(nodes)
 }
 
-/// `child = function(output)` on a `panel`/`lock` (ADR-0121) runs per instance and pass, with the
-/// output name, before the ordinary child walk. Per-pass calls preserve registry-stable state such
-/// as `state("wallpaper_" .. output)`. `window`/`popup` and a `monitor = "Active"` panel (ADR-0246)
+/// `child = function(output)` on a `panel`/`lock` (ADR-0121) runs per instance, with the output
+/// name, before the ordinary child walk, and again only when a signal it read changes (ADR-0270).
+/// Repeat calls preserve registry-stable state such as `state("wallpaper_" .. output)`. `window`/`popup` and a `monitor = "Active"` panel (ADR-0246)
 /// have no output name, so function children are refused rather than called with `""`.
 pub(super) fn build_child_for_output(
     mut properties: PropMap,
@@ -248,11 +244,11 @@ fn pair_children_by_id_then_position(
 /// the config wrote the nodes.
 ///
 /// Everything that can run Lua or fail happens here, depth-first in declaration order, guaranteeing
-/// every getter fires exactly once, in source order. The hand-written pass had to work to keep
+/// every getter that runs fires exactly once, in source order. The hand-written pass had to work to keep
 /// that, recursing into `Fill` children after their siblings and splitting resolution out of the
 /// recursion; here there are no rounds, so declaration and recursion order are the same one.
 ///
-/// `properties` and `style` arrive already resolved and parsed, done by the parent:
+/// `resolved` arrives already resolved and parsed, done by the parent:
 /// `taffy_style` needs a child's `margin` and size modes to build the node, so the parse happens
 /// in the parent's loop. `Scene::apply_one_instance` does it for a surface root, which has none.
 #[allow(clippy::too_many_arguments)]
@@ -261,9 +257,7 @@ pub(super) fn prepare(
     tree: &mut taffy::TaffyTree<Measure>,
     retained: Option<ResolvedNode>,
     kind: &'static str,
-    properties: PropMap,
-    style: LayoutStyle,
-    tweens: Vec<Tween>,
+    resolved: Resolved,
     parent_axis: Option<MainAxis>,
     thawing: bool,
     lua: &Lua,
@@ -277,13 +271,10 @@ pub(super) fn prepare(
     // Removed while hidden means removed off screen: no exit plays anywhere under a thaw.
     let thawing = thawing || retained.as_ref().is_some_and(|r| !r.visible);
 
-    let (id, displayed_source, dissolve, old_children, text_memo, list_memo, child_table) = match retained {
-        Some(r) => {
-            let memo =
-                if kind == "text" && text_measure_matches(&properties, &r.properties) { r.text_memo } else { None };
-            (r.id, r.displayed_source, r.dissolve, r.children, memo, r.list_memo, r.child_table)
-        }
-        None => (scene.alloc_id(), None, None, Vec::new(), None, None, None),
+    let Resolved { properties, style, tweens, memo: resolve_memo, text_memo } = resolved;
+    let (id, displayed_source, dissolve, old_children, list_memo, child_table) = match retained {
+        Some(r) => (r.id, r.displayed_source, r.dissolve, r.children, r.list_memo, r.child_table),
+        None => (scene.alloc_id(), None, None, Vec::new(), None, None),
     };
     // Already leaving children are not paired again: a re-added id is a new node beside the one
     // still fading.
@@ -325,6 +316,7 @@ pub(super) fn prepare(
         leaving: Vec::new(),
         list_memo,
         child_table,
+        resolve_memo: Some(resolve_memo),
     };
     if !node.style.visible {
         node.frozen.extend(leaving);
@@ -363,7 +355,7 @@ pub(super) fn prepare(
         // same variant, kind and level the recursive call raises (see `ensure_node_admissible`).
         ensure_node_admissible(child_kind, depth + 1)?;
 
-        let reusable = match candidate {
+        let mut reusable = match candidate {
             Some(candidate) if candidate.kind != child_kind => {
                 unclaimed.push(candidate);
                 None
@@ -373,27 +365,10 @@ pub(super) fn prepare(
 
         // This child's one resolve and one parse for this pass, both here rather than inside the
         // recursive call, because the style the call is handed is built from them and a second
-        // read of an impure `margin` could answer differently. Tweens go between the two: the
-        // parse must see the displayed value, not the target (ADR-0145).
+        // read of an impure `margin` could answer differently.
         let child = (|| {
-            let mut child_properties = node::resolve_properties(child_raw, child_kind, lua)?;
-            let child_tweens =
-                node::retarget(child_kind, reusable.as_ref().map(tween_state), &mut child_properties, now, lua)?;
-            let child_style = LayoutStyle::parse(&child_properties)?;
-            prepare(
-                scene,
-                tree,
-                reusable,
-                child_kind,
-                child_properties,
-                child_style,
-                child_tweens,
-                own_axis,
-                thawing,
-                lua,
-                now,
-                depth + 1,
-            )
+            let resolved = resolve(child_kind, child_raw, reusable.as_mut(), now, lua, Ok)?;
+            prepare(scene, tree, reusable, child_kind, resolved, own_axis, thawing, lua, now, depth + 1)
         })();
         // A broken child does not stop its siblings, so one pass names every broken node. Too deep
         // does: a node holding itself twice would otherwise walk 2^64 paths to the cap.
@@ -457,6 +432,7 @@ fn finish(
         leaving,
         list_memo,
         child_table,
+        resolve_memo,
     } = prepared;
     let layout = tree.layout(taffy_id).map_err(taffy_failed)?;
     let size = LogicalSize { width: layout.size.width, height: layout.size.height };
@@ -543,6 +519,7 @@ fn finish(
         text_memo,
         list_memo,
         child_table,
+        resolve_memo,
     })
 }
 
@@ -1826,8 +1803,10 @@ mod tests {
         assert_eq!(row.children[0].rect.width, 500.0, "and the fill child was still sized from the remainder");
     }
 
+    /// ADR-0270's contract: a getter that reads no signal, here a counter upvalue, answers once
+    /// and holds that answer until something it read through a signal is written.
     #[test]
-    fn a_second_apply_resolves_the_property_again_rather_than_reusing_the_first_passes_answer() {
+    fn a_second_apply_with_nothing_written_keeps_the_first_passes_answer() {
         let mut scene = Scene::new();
         let shaping = ShapingHandle::spawn();
         let lua = mlua::Lua::new();
@@ -1836,7 +1815,8 @@ mod tests {
         apply_at(&mut scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
         apply_at(&mut scene, &[surface], full(), &shaping, &lua).unwrap();
 
-        assert_eq!(lua.globals().get::<i64>("reads").unwrap(), 2, "each apply resolves afresh");
+        assert_eq!(lua.globals().get::<i64>("reads").unwrap(), 1, "the second apply reads no getter");
+        assert_eq!(scene.surface("bar@TEST").unwrap().children[0].children[0].rect.x, 1.0, "and keeps its margin");
     }
 
     #[test]

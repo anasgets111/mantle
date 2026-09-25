@@ -355,7 +355,8 @@ pub(crate) fn is_structural_property(kind: &str, property: &str) -> bool {
 }
 
 /// One node's raw property map with every `Signal` replaced by its current value (ADR-0044 decision
-/// 1). Called once per node per pass, as that node enters reconciliation; everything downstream
+/// 1). Called at most once per node per pass, as that node enters reconciliation, and not at all
+/// for a node whose last resolve still holds (ADR-0270); everything downstream
 /// (this module's parsers, `layout::scene`'s sizing/positioning passes, `ResolvedNode::properties`)
 /// reads the result, not the raw map. Once, and once is load-bearing: `Signal::get_value` runs a
 /// `computed` signal's Lua closure, and a closure that is not a pure function of unchanged state
@@ -363,9 +364,7 @@ pub(crate) fn is_structural_property(kind: &str, property: &str) -> bool {
 /// read per property makes the resolved tree a snapshot of one pass and stops ADR-0021's
 /// per-`get_value` 5ms budget being paid four times over for one property. The snapshot covers the
 /// *signals* only: a plain table with an `__index` metamethod is copied through as-is, and each
-/// `table.get` a parser makes still runs it again; see `NumberOrEdges`'s read. Nor is
-/// this ADR-0044 decision 3's rejected memoization, which caches *across* pushes and needs an
-/// invalidation rule no push has. Per entry: a key [`is_structural_property`] names for this node's
+/// `table.get` a parser makes still runs it again; see `NumberOrEdges`'s read. Per entry: a key [`is_structural_property`] names for this node's
 /// `kind` is copied through raw, signal and all. A `Value::UserData` holding a `Signal` is read
 /// through `Signal::get_value` and the *result* stored in its place; a result that is itself a
 /// `Signal` is an error naming the property, not a second read, avoiding an unbounded loop on a

@@ -26,7 +26,7 @@ return panel {
 
 | Property value | Behaviour |
 | :--- | :--- |
-| `sig` | Read again on every pass that re-resolves this surface |
+| `sig` | Read again once it is written |
 | `sig:map(fn)` | Live: `fn` of `sig`'s current value |
 | `sig:get()` | A plain value, taken when the config was evaluated |
 | A table with a signal inside, e.g. `{ left = sig }` | Refused at layout. Derive the whole table: `sig:map(function(v) return { left = v } end)` |
@@ -93,10 +93,10 @@ LuaLS flags it. A `:set` re-resolves the readers even when the value has not cha
 
 ## Derived signals
 
-`:map` and `computed` do not cache between passes. They run again whenever something reads them;
-within one pass, a derived signal read by several properties runs once. One inside a `list` item
-runs only when the list rebuilds ([when items rebuild](../nodes/list.md#when-items-rebuild)). Keep their functions cheap
-and side-effect free: no `:set`, no process, no action. They run under the CPU budget and nesting
+`:map` and `computed` do not cache between passes. They run again whenever something reads them,
+and a node reads its properties again only once a signal they read is written
+([what a node reads again](#what-a-node-reads-again)); within one pass, a derived signal read by
+several properties runs once. Keep their functions cheap and side-effect free: no `:set`, no process, no action. They run under the CPU budget and nesting
 limit described in [runtime](runtime.md). Side effects belong in `on_click`, a capability's
 `on_change` ([capabilities](../capabilities/index.md)) or a `timer` ([scripting](scripting.md)).
 
@@ -223,13 +223,35 @@ dirty, and the next pass re-resolves only the instances that read it.
 | Any write while the session is locked | Every instance |
 | A reload, or a re-resolve that failed | Every instance |
 
-A `list` keeps its items while nothing its last build read has changed: a write elsewhere on the
-surface lays them out again without calling `itemfn` or reading their signals. What a build reads,
-and what it cannot see: [when items rebuild](../nodes/list.md#when-items-rebuild).
-
 A node reads its `children` or `child` table once and keeps what it read while it holds that same
 table. A node table or `children` array changed in place is not seen; a signal answering a new table
 is.
+
+### What a node reads again
+
+Within a re-resolved surface, each node keeps the properties it resolved last time until a signal
+that resolve read is written. A clock `text` written every second reads that one node again, not
+the whole bar. A `list` keeps its items the same way ([when items rebuild](../nodes/list.md#when-items-rebuild)).
+
+| Change | The node reads its properties again |
+| :--- | :--- |
+| A write to a signal bound to one of its properties, or under a `map` or `computed` bound to one | ✓ |
+| A write to its own `hover` or `scroll` slot | ✓ |
+| A different value in its declaration: a rebuilt `list` item, a new `children` table, a reload | ✓ |
+| A write to a signal a function `child` read with `:get()` (the function runs again) | ✓ |
+| A write to anything else, even on the same surface | |
+
+The engine sees signal reads only. A `map`, `computed`, `itemfn`, `key` or function `child` must
+answer from its arguments and the signals it reads; anything else it reads is taken as it was at the
+node's last resolve:
+
+| Read inside the function | Kept until a signal it read changes | Instead |
+| :--- | :--- | :--- |
+| `os.time()`, `os.date()` with no time, `os.clock()`, `math.random()` | ✓ | `mantle.system:map(function(s) return s and os.date("%H:%M", s.time) or "" end)`, or a `state` a `timer` writes |
+| A local or global changed without `:set` | ✓ | Keep it in a `state` |
+| A file | ✓ | Read it in a `timer` and `:set` a `state` |
+| A table changed in place, such as a `list`'s `source` | ✓ | `:set` the table again, or build a new one |
+| A `delay` or `pulse` | | Nothing: its readers resolve on every pass while one is pending or open |
 
 A `visible = false` node's subtree is frozen. Its children keep their nodes, ids, properties and
 last geometry. None of their signals is read, no `list` item function runs and nothing re-lays
@@ -323,6 +345,7 @@ compositor syntax: [cli](cli.md#cli). For a keybind that runs Lua code, use
 | `pulse(cap, ms)` fires on every push | Table payloads are never `==`; pulse a mapped scalar |
 | Hiding a view with `visible = false` keeps its whole subtree | Switch views through `children = sig:map(...)` |
 | A `:set` inside a map or computed | Maps must be side-effect free; write state from `on_click`, `on_change` or a `timer` |
+| A clock from `os.date()` alone stops updating | Nothing it read is a signal, so its node keeps the first answer. Derive it from `mantle.system`'s `time` ([what a node reads again](#what-a-node-reads-again)) |
 
 See also: [runtime](runtime.md) (budgets, reload), [capabilities](../capabilities/index.md),
 [input](input.md) (`hover`, `scroll`), [animation](animation.md), [cli](cli.md),
@@ -333,4 +356,5 @@ Source: [signal core](../../renderer/src/lua/signal/mod.rs),
 [read tracking](../../renderer/src/lua/signal/tracking.rs),
 [re-resolve](../../renderer/src/socket/client/resolve.rs),
 [property resolution](../../renderer/src/layout/node/mod.rs),
+[kept nodes](../../renderer/src/layout/scene/resolve.rs),
 [frozen subtrees](../../renderer/src/layout/scene/pass.rs).

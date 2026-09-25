@@ -6627,6 +6627,9 @@ cell) **and ADR-0132** (item 3: the list half of delegate memoization is built, 
 A write to any cell a surface instance read re-resolved every node on it: a 1 Hz clock `text` ran
 the getters of all 377 nodes of a bar. Live profile of that bar: resolve 2.71 ms a pass, of which
 running property getters is 1.85 ms, about 4.9 µs a node and linear in node count.
+`layout::scene::tests::bar_pass_cost` (release, 203 nodes, 50 hover chips, one map each, a clock
+written each pass): 0.33 ms to 0.24 ms of resolve a pass. The saving scales with what the getters
+cost, which that fixture keeps trivial.
 
 **The rule.** A node's resolved properties are recomputed only when a signal its last resolve read
 (a `state`, `computed`, `:map`, capability, `hover`, `scroll` or `geometry` cell) has been written

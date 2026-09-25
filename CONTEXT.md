@@ -63,6 +63,7 @@ cited as ADR-NNNN for the why behind behavior the code confirms.
 | **Retained scene** | A generation's persistent node tree per surface instance, reconciled across evaluations and passes. |
 | **Retained-scene transaction** | One atomic reconcile and resolve of the retained scene. Unmatched children are dropped or become leaving nodes; a failure rolls back. |
 | **Signal resolution** | Reading a signal's current value while resolving a node property. `:get()` is a snapshot, not a live property. |
+| **Kept node** | A node whose declaration is unchanged and every cell its last resolve read is unwritten since, so the pass reuses its resolved properties and runs no getter (`ResolveMemo`, ADR-0270). |
 | **Kept list** | A `list` whose last build's inputs and every cell it read are unwritten since, so the pass lays out its retained items instead of building them (`ListMemo`, ADR-0269). |
 | **Dirty scope** | `DirtyScope`, what a pass re-resolves: `Clean` (written cells nobody read), `Instances` (those that read them), or `All` (a scene-wide mark from reload, resize or rollback, or any write while the session lock is held). ADR-0244. |
 | **Layout pass budget** | `LayoutPassBudget`, the 2 s CPU ceiling for one whole pass, beside the 5 ms per-callback budget. Exceeding it fails the pass. See [Runtime](docs/guide/runtime.md#limits-and-budgets). |

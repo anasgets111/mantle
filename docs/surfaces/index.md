@@ -84,8 +84,10 @@ fixes when the object is created.
 ## Per-output child
 
 `child = function(output)` is for `panel` and `lock`, the roles with one instance per output. It
-runs on every layout pass with that instance's connector name (`"DP-1"`), so keep it cheap and key
-per-output state by name: `state("wallpaper_" .. output, ...)`. Returning `nil` leaves that output's
+runs with that instance's connector name (`"DP-1"`) on the first pass, and again only once a signal
+it read with `:get()` is written ([what a node reads again](../guide/signals.md#what-a-node-reads-again)).
+Bind signals to properties inside it rather than reading them, and key per-output state by name:
+`state("wallpaper_" .. output, ...)`. Returning `nil` leaves that output's
 instance empty. A `window`, `popup` or `monitor = "Active"` panel has no output name and refuses a
 function `child`. Example: [per-output wallpaper](panel.md#per-output-content).
 

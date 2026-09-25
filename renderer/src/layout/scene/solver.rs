@@ -1,5 +1,5 @@
 use super::{LayoutStyle, LogicalSize};
-use crate::layout::node::{self, Align, LayoutError, PaintStyle, PropMap, SizeMode};
+use crate::layout::node::{self, Align, LayoutError, PaintStyle, PropMap, SizeMode, Tween};
 use crate::text::shaping::{self, ShapeRequest, ShapingHandle};
 use taffy::prelude::{length, line, span};
 
@@ -279,6 +279,11 @@ pub(super) const TEXT_MEASURE_KEYS: &[&str] = &["content", "font_size", "font", 
 
 pub(super) fn text_measure_matches(fresh: &PropMap, retained: &PropMap) -> bool {
     TEXT_MEASURE_KEYS.iter().all(|k| fresh.get(k) == retained.get(k))
+}
+
+/// Whether a running tween moves what this `text` measures from, so advancing it voids the memo.
+pub(super) fn text_measure_tweening(kind: &str, tweens: &[Tween]) -> bool {
+    kind == "text" && tweens.iter().any(|t| !t.resting && TEXT_MEASURE_KEYS.contains(&t.property))
 }
 
 /// What the solver asks a leaf for its size with, for the two kinds whose size is their content.

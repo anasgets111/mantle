@@ -57,6 +57,12 @@ so everything since the rename from Obelisk sits under Unreleased.
 - A node reads each `children` or `child` table once and keeps it while it holds that table, so a
   pass's property reads outside `list` builds cost about 40% less. A node table or `children` array
   changed in place is no longer seen; bind a signal or `:set` a new table ([gotchas](nodes/index.md#gotchas)).
+- A node keeps the properties it resolved until a signal they read is written, instead of running
+  every getter on its surface on every write: a clock tick re-reads the clock's node, not the bar.
+  A map, `computed` or function `child` that reads `os.date()` with no time, `os.time()`, a mutable
+  variable or a file keeps its last answer until a signal it read changes. Derive time from
+  `mantle.system`: `mantle.system:map(function(s) return s and os.date("%H:%M", s.time) or "" end)`
+  ([what a node reads again](guide/signals.md#what-a-node-reads-again)).
 - **Breaking:** each capability action is a method, and `:invoke` is gone:
   `mantle.audio:set_volume(0.5)` replaces `mantle.audio:invoke("set_volume", 0.5)`. The editor
   stubs type each action's own arguments, so `mantle.audio:set_muted(0.5)` is flagged. An unknown

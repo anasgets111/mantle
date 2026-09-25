@@ -5,8 +5,8 @@ use shared::debug;
 
 use super::pass::{publish_geometry, solve_instance};
 use super::solver::{
-    MainAxis, Measure, TEXT_MEASURE_KEYS, hold_leavers, main_axis_of, measure_for, new_solver_node, new_solver_tree,
-    taffy_failed,
+    MainAxis, Measure, hold_leavers, main_axis_of, measure_for, new_solver_node, new_solver_tree, taffy_failed,
+    text_measure_tweening,
 };
 use super::{LayoutStyle, LogicalSize, PreparedNode, ResolvedNode, Scene, close, open_span};
 use crate::layout::instance::SurfaceInstance;
@@ -140,8 +140,7 @@ fn prepare_retained(
     // Checked before `advance`: on the frame a tween lands, `resting` is still false here,
     // so `text_memo` is cleared and the final layout size is measured before `resting` locks in
     // the memo on subsequent frames.
-    let text_tweening =
-        node.kind == "text" && node.tweens.iter().any(|t| !t.resting && TEXT_MEASURE_KEYS.contains(&t.property));
+    let text_tweening = text_measure_tweening(node.kind, &node.tweens);
     node::advance(&mut node.tweens, &mut node.properties, now, lua)?;
     let style = LayoutStyle::parse(&node.properties)?;
     let ResolvedNode {
@@ -155,6 +154,7 @@ fn prepare_retained(
         text_memo,
         list_memo,
         child_table,
+        resolve_memo,
         ..
     } = node;
     let text_memo = if text_tweening { None } else { text_memo };
@@ -176,6 +176,7 @@ fn prepare_retained(
         leaving: Vec::new(),
         list_memo,
         child_table,
+        resolve_memo,
     };
     if !node.style.visible {
         return Ok(node);

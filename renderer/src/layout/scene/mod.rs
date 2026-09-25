@@ -8,6 +8,7 @@
 
 mod fit;
 mod pass;
+mod resolve;
 mod scroll;
 mod solver;
 mod tick;
@@ -26,6 +27,7 @@ use crate::lua::nodes::VirtualNode;
 use crate::text::shaping::ShapingHandle;
 use crate::text::snap::LogicalRect;
 use pass::{build_child_for_output, prepare, publish_geometry, solve_instance};
+use resolve::{ResolveMemo, resolve};
 use solver::new_solver_tree;
 pub(crate) use solver::{MainAxis, main_axis_of};
 
@@ -91,6 +93,7 @@ impl ResolvedNode {
             text_memo: None,
             list_memo: None,
             child_table: None,
+            resolve_memo: None,
         }
     }
 }
@@ -238,6 +241,9 @@ pub struct ResolvedNode {
     /// What its `children` or `child` table last read as, so a pass holding the same table skips
     /// reading it again.
     pub child_table: Option<pass::ChildTable>,
+    /// What `properties` were resolved from, so a pass that finds it unchanged keeps them. Shared,
+    /// so the rollback copy of the tree does not copy the raw values it holds.
+    pub resolve_memo: Option<std::rc::Rc<ResolveMemo>>,
 }
 
 impl ResolvedNode {
@@ -273,8 +279,7 @@ impl ResolvedNode {
     /// Whether any visible node in this tree is mid-tween, which is what asks the compositor for
     /// another frame callback (`wayland::surface::App::paint_surface`). A hidden node's subtree is
     /// frozen (ADR-0124), tweens included: nothing advances them, so counting them would arm a
-    /// callback chain that never ends. They wait there and the thaw's `node::retarget` settles
-    /// them.
+    /// callback chain that never ends. They wait there and the thaw's resolve settles them.
     pub fn animating(&self) -> bool {
         self.visible
             && (self.tweens.iter().any(|tween| !tween.resting)
@@ -558,25 +563,22 @@ impl Scene {
         let key = instance.instance_id.clone();
         let available = instance.available;
         let mut at = open_span();
-        let existing = self.surfaces.remove(&key);
+        let mut existing = self.surfaces.remove(&key);
         rollback.push((key.clone(), existing.clone()));
         close(&mut at, &mut self.resolve_split.clone);
         // Check admissibility before resolution runs Lua. Children get the same check in the loop
         // that parses their margin before recursing.
         ensure_node_admissible(fresh.kind, 0)?;
         // Cloned, not moved: one declaration is resolved once per instance of it, one per output.
-        let properties = node::resolve_properties(fresh.properties.clone(), fresh.kind, lua)?;
-        let mut properties = build_child_for_output(properties, fresh.kind, &instance.output)?;
-        let tweens = node::retarget(fresh.kind, existing.as_ref().map(tween_state), &mut properties, now, lua)?;
-        // The root has no parent, so its once-per-node parse happens here; children parse in the
-        // parent's loop.
-        let style = LayoutStyle::parse(&properties)?;
+        // The root has no parent, so its resolve happens here; children resolve in the parent's loop.
+        let resolved = resolve(fresh.kind, fresh.properties.clone(), existing.as_mut(), now, lua, |properties| {
+            build_child_for_output(properties, fresh.kind, &instance.output)
+        })?;
 
         // Taffy trees are per-instance and per-pass; only retained `NodeId`s cross the call, so a
         // failed walk drops the temporary tree without extra rollback state.
         let mut tree = new_solver_tree();
-        let prepared =
-            prepare(self, &mut tree, existing, fresh.kind, properties, style, tweens, None, false, lua, now, 0)?;
+        let prepared = prepare(self, &mut tree, existing, fresh.kind, resolved, None, false, lua, now, 0)?;
         close(&mut at, &mut self.resolve_split.resolve);
         let solved = solve_instance(&mut tree, prepared, available, shaping)?;
         publish_geometry(&solved, 0.0, 0.0, lua, false).map_err(|e| node::invalid("geometry", e.to_string()))?;
@@ -687,11 +689,6 @@ fn ensure_node_admissible(kind: &str, depth: u32) -> Result<(), LayoutError> {
     Ok(())
 }
 
-/// What `node::retarget` reads off a retained node.
-fn tween_state(node: &ResolvedNode) -> (&[Tween], &PropMap) {
-    (&node.tweens, &node.properties)
-}
-
 /// One node after identity, resolution and parsing, and before geometry: everything a
 /// [`ResolvedNode`] needs except the rect, plus the taffy node that rect will come out of.
 ///
@@ -720,6 +717,7 @@ struct PreparedNode {
     list_memo: Option<node::ListMemo>,
     /// Carried across the pass, or replaced by the read that ran; see [`ResolvedNode::child_table`].
     child_table: Option<pass::ChildTable>,
+    resolve_memo: Option<std::rc::Rc<ResolveMemo>>,
 }
 
 #[cfg(test)]
@@ -1428,7 +1426,8 @@ pub(super) mod tests {
     /// Ignored like [`list_pass_cost`]. 50 hover chips of `rect > row > (rect, text)` and a clock
     /// text written each pass, 203 nodes. On this machine, `props` (the resolve span less the list
     /// span) was 0.545 ms a pass reading every `children` table each pass, 0.325 ms keeping what
-    /// each table read (`pass::ChildTable`).
+    /// each table read (`pass::ChildTable`), 0.240 ms also keeping every node the clock write did
+    /// not reach (ADR-0270).
     #[test]
     #[ignore]
     fn bar_pass_cost() {

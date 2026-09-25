@@ -77,16 +77,10 @@ about half the cost of building them. One change rebuilds every item, scrolled o
 and across reorders. Cap a long list with `limit` (a launcher's top 50 matches), or hide it while
 closed so it freezes.
 
-The engine sees signal reads only. `itemfn`, `key` and every `map` bound inside an item must
-answer from their arguments and the signals they read; anything else they read is taken as it was
-at the last build:
-
-| Read inside an item | Stays as built until the next rebuild | Instead |
-| :--- | :--- | :--- |
-| `os.time()`, `os.date()`, `os.clock()` | ✓ | Derive from `mantle.system`'s `time`, or a `state` a `timer` writes |
-| A local or global changed without `:set` | ✓ | Keep it in a `state` |
-| A `source` table changed in place | ✓ | `:set` the table again, or build a new one |
-| A `delay` or `pulse` | | Nothing: the list rebuilds on every pass while one is pending or open |
+The engine sees signal reads only. `itemfn`, `key` and every `map` bound inside an item that reads
+the clock, a mutable variable or a `source` table changed in place shows what it read at the last
+build; a `delay` or `pulse` rebuilds the list on every pass while one is pending or open. The full
+rule, and what to read instead: [what a node reads again](../guide/signals.md#what-a-node-reads-again).
 
 ## How do I…
 
@@ -126,8 +120,8 @@ local items = list {
 | Trap | Fix |
 | :--- | :--- |
 | A 2000-item `list` makes every update slow | Every item is laid out on every pass, and built whenever anything it read changes, visible or not. Cap it with `limit`, filter the `source`, or hide the list while it is closed |
-| A `list` rebuilds on every pass though nothing it shows changed | Its `itemfn` or `key` is a new function each pass, as inside a function `child`. Define them once, outside the builder |
-| A relative time ("3 min ago") in an item stops updating | `itemfn` read the clock with `os.time()`. Bind the text to a `map` of `mantle.system` instead ([when items rebuild](#when-items-rebuild)) |
+| A `list` rebuilds though nothing it shows changed | Its `itemfn` or `key` is a new function each time the builder around it runs, as inside a function `child` that reads a signal. Define them once, outside the builder |
+| A relative time ("3 min ago") in an item stops updating | `itemfn` read the clock with `os.time()`. Bind the text to a `map` of `mantle.system` instead ([what a node reads again](../guide/signals.md#what-a-node-reads-again)) |
 | A `list` of more than 10000 elements is refused | Set `limit`, or page the `source` |
 | `duplicate key` error | `key` must return a different string for every element |
 | `key` returning a number is refused | Return a string: `tostring(item.id)` |
