@@ -32,8 +32,7 @@ impl Scene {
     /// property maps, without running Lua (ADR-0145): the only Lua the retained walk touches is a
     /// plain table read. Returns the instances it advanced, which is what the caller owes the
     /// screen this frame. An instance whose relayout fails keeps its last tree and loses its
-    /// tweens, so a bug there is one log line and a snap rather than a log line per frame; the
-    /// values a tick writes are ones a pass already accepted, so that should not happen.
+    /// tweens, so a failure is one log line and a snap rather than a log line per frame.
     ///
     /// A tree whose every running tween only changes what it paints skips the relayout entirely
     /// and is advanced where it stands ([`advance_paint_only`]). That is most of what a config
@@ -71,8 +70,10 @@ impl Scene {
                 }
                 continue;
             }
-            // ponytail: the clone is the rollback for a failure that should not happen; the same
-            // shape `apply_admitting` uses per pass. Drop it once a tick has never failed in use.
+            // ponytail: the clone is the rollback. A relayout consumes the tree and can fail
+            // partway: a retained edge table's `__index` runs on every re-parse, and a tweened
+            // value can be refused. 16us of a 320us relayout on 162 nodes (`tick_cost`); an undo
+            // path through `prepare_retained` and `finish` is the upgrade if it ever dominates.
             let mut at = open_span();
             let root = retained.clone();
             close(&mut at, &mut self.tick_split.clone);
