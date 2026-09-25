@@ -45,7 +45,7 @@ property counts as absent and takes the property's default.
 | `sig:set(value)` | nothing | State signals only; see [who writes each kind](#who-writes-each-kind) |
 | `sig:reveal(index)` | nothing | `scroll` signals only; scrolls the `index`-th child into view ([input](input.md)) |
 | `cap:on_change(fn)`, `cap:<action>(...)` | nothing | Capabilities only ([capabilities](../capabilities/index.md)) |
-| `computed({ a, b, ... }, fn)` | signal | `fn(a_value, b_value, ...)`: the values in list order, not the signals. Each entry must be a signal or capability, or the call raises |
+| `computed({ a, b, ... }, fn)` | signal | `fn(a_value, b_value, ...)`: the values in list order, not the signals. Each entry must be a signal or capability: a `nil`, another value or a named key raises, naming the entry |
 | `state(name, initial)` | state signal | Writable [named state](#named-state), written with `:set(value)` |
 | `delay(sig, ms)` | signal | `sig`'s value once a new value has held for `ms`, and the old value until then. A change that reverts sooner is dropped |
 | `pulse(sig, ms)` | boolean signal | `true` for `ms` after `sig` changes, `false` otherwise. A change inside the window restarts it. Starts `false` |
@@ -78,7 +78,8 @@ LuaLS flags it. A `:set` re-resolves the readers even when the value has not cha
 
 | Message starts with | Cause |
 | :--- | :--- |
-| `computed() dependencies must be Signals or` | A `computed` list entry is not a signal or capability |
+| `computed() dependency 2 is nil` / `is a table` | That `computed` list entry is not a signal or capability; `nil` is often a misspelled variable |
+| `computed() dependencies: key` | The `computed` list has a named key; list the signals in `fn`'s order |
 | `delay() takes a Signal` / `pulse() takes a Signal` | The first argument is not a signal or capability |
 | `delay() hold must be within [1, 60000] ms` / `pulse() window must be within` | `ms` out of range, or rounds to 0 |
 | `signal:set() is only valid on a state(name, initial) signal` | `:set` on a derived, capability, hover, scroll or geometry signal |

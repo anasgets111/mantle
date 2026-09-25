@@ -961,6 +961,21 @@ mod tests {
         assert_eq!(result, 7);
     }
 
+    /// A hole used to end the list like `ipairs`, so `c` silently never reached `fn`.
+    #[test]
+    fn computed_names_the_dependency_that_is_not_a_signal() {
+        let lua = lua_with_state().0;
+        lua.globals().set("a", Signal::new_state(Value::Integer(3), DirtyFlag::new()).unwrap()).unwrap();
+        let err = |source: &str| lua.load(source).exec().unwrap_err().to_string();
+
+        let hole = err("computed({a, nil, a}, function(x, y, z) return x end)");
+        assert!(hole.contains("computed() dependency 2 is nil"), "{hole}");
+        let number = err("computed({a, 5}, function(x, y) return x end)");
+        assert!(number.contains("computed() dependency 2 is an integer"), "{number}");
+        let named = err("computed({a, b = a}, function(x) return x end)");
+        assert!(named.contains("`b`"), "{named}");
+    }
+
     #[test]
     fn computed_reflects_a_later_signal_reconstruction_not_a_stale_cache() {
         // No memoization: later `get` sees a rebuilt dependency, not a cached first read.

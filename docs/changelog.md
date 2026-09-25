@@ -73,6 +73,11 @@ so everything since the rename from Obelisk sits under Unreleased.
   `scroll` property is declared.
 - `translate`, `scale`, `rotate` and `origin` tweens repaint without relayout.
 - Hover callbacks fire on pointer entry.
+- A `nil` or non-signal `computed` dependency raises naming its index,
+  `` computed() dependency 2 is nil; ... ``; before, a hole dropped every dependency after it. A
+  named key in the list raises too.
+- `timer(-1, fn)` raises `timer(-1) is outside 1..=86400000 milliseconds`, not mlua's
+  `error converting Lua integer to u64`.
 - An equal capability snapshot is not pushed again, except `tray` and `notifications`.
 - A bad `layer`, `corner_shape`, `keyboard_interactivity`, popup `anchor` or `gravity`,
   `constraint_adjustment` entry or easing name fails with one wording that lists every choice:

@@ -6,6 +6,7 @@ use std::time::Duration;
 use mlua::{AnyUserData, IntoLua, Lua, LuaSerdeExt, Table, Value, Variadic};
 
 use crate::lua::luacats::{As, Generic, LuaType, SignalOf, lua_fn};
+use crate::lua::marshal::{a_type, list_entries};
 use crate::text::snap::LogicalRect;
 
 use super::budget::install_hook;
@@ -163,18 +164,17 @@ pub fn register(lua: &Lua, dirty: DirtyFlag) -> mlua::Result<()> {
             r#fn: fn(values: Variadic<Value>) -> Value,
         ) -> /// Read-only.
         SignalOf<Value, AnyUserData> {
-            let collected = dependencies
-                .0
-                .sequence_values::<AnyUserData>()
-                .map(|dep| {
-                    let dep = dep?;
+            let entries = list_entries(&dependencies.0)
+                .map_err(|detail| mlua::Error::runtime(format!("computed() dependencies: {detail}")))?;
+            let collected = (1..)
+                .zip(entries)
+                .map(|(index, dep)| match dep {
                     // Name the expected type; `borrow`'s error does not.
-                    if !is_signal(&dep) {
-                        return Err(mlua::Error::runtime(
-                            "computed() dependencies must be Signals or `mantle` capabilities",
-                        ));
-                    }
-                    Ok(dep)
+                    Value::UserData(dep) if is_signal(&dep) => Ok(dep),
+                    other => Err(mlua::Error::runtime(format!(
+                        "computed() dependency {index} is {}; dependencies must be Signals or `mantle` capabilities",
+                        a_type(&other)
+                    ))),
                 })
                 .collect::<mlua::Result<Vec<_>>>()?;
             let kind = SignalKind::Computed { id: next_computed_id(), arity: collected.len() };

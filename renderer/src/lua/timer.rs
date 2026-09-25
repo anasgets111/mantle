@@ -112,13 +112,13 @@ pub fn register(lua: &Lua) -> mlua::Result<()> {
         fn timer(
             lua,
             /// `[1, 86400000]`; outside raises.
-            ms: u64,
+            ms: i64,
             /// A raise is logged as a warning.
             callback: fn(),
         ) -> TimerHandle {
-            if !(MIN_MS..=MAX_MS).contains(&ms) {
+            let Some(ms) = u64::try_from(ms).ok().filter(|ms| (MIN_MS..=MAX_MS).contains(ms)) else {
                 return Err(mlua::Error::runtime(format!("timer({ms}) is outside {MIN_MS}..={MAX_MS} milliseconds")));
-            }
+            };
             let due = Instant::now() + Duration::from_millis(ms);
             let id = super::app_data_or_default::<TimerRegistry>(lua).arm(due, callback.0)?;
             Ok(TimerHandle(id))
@@ -459,6 +459,8 @@ mod tests {
         let lua = lua();
 
         assert!(lua.load("timer(0, function() end)").exec().is_err());
+        let err = lua.load("timer(-1, function() end)").exec().unwrap_err().to_string();
+        assert!(err.contains("timer(-1) is outside"), "the engine's range message, not mlua's conversion error: {err}");
         assert!(lua.load("timer(86400001, function() end)").exec().is_err());
         lua.load("timer(86400000, function() end)").exec().expect("a full day is the documented ceiling");
     }

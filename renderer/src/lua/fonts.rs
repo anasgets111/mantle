@@ -40,38 +40,22 @@ pub fn register(lua: &Lua) -> mlua::Result<()> {
             /// Emoji.
             chain: super::luacats::As<mlua::Table, Vec<String>>,
         ) {
-            let chain = chain.0;
-            // Collect every key, then require exactly `1..=n`: `sequence_values` stops at the first
-            // `nil`, while Lua's `#` is undefined for sparse tables and returns 1 for
-            // `{ [1] = "A", [3] = "C" }`. Either would silently drop the tail and shorten fallback.
-            let mut indexed: Vec<(i64, String)> = Vec::new();
-            for pair in chain.pairs::<mlua::Value, mlua::Value>() {
-                let (key, value) = pair?;
-                let mlua::Value::Integer(index) = key else {
-                    return Err(mlua::Error::runtime(
-                        "fonts() takes an array of family-name strings, not a table with named keys",
-                    ));
-                };
+            let entries = super::marshal::list_entries(&chain.0)
+                .map_err(|detail| mlua::Error::runtime(format!("fonts() takes a list of family names: {detail}")))?;
+            let mut families = Vec::with_capacity(entries.len());
+            for (index, entry) in (1..).zip(entries) {
                 // Check before mlua's `FromLua`, which coerces numbers like Lua. Without this,
                 // `fonts { 12 }` records family `"12"`; only `resolve_chain` then reports a
                 // missing font, hiding the config error.
-                let mlua::Value::String(family) = value else {
+                let mlua::Value::String(family) = entry else {
                     return Err(mlua::Error::runtime(format!(
-                        "fonts() takes an array of family-name strings; entry {index} is not a string"
+                        "fonts() entry {index} is {}; it takes family-name strings",
+                        super::marshal::a_type(&entry)
                     )));
                 };
-                indexed.push((index, family.to_string_lossy()));
+                families.push(family.to_string_lossy());
             }
-            indexed.sort_by_key(|(index, _)| *index);
-            for (position, (index, _)) in indexed.iter().enumerate() {
-                let expected = position as i64 + 1;
-                if *index != expected {
-                    return Err(mlua::Error::runtime(format!(
-                        "fonts() takes a dense array of family-name strings; entry {expected} is missing"
-                    )));
-                }
-            }
-            lua.set_app_data(FontRegistry(indexed.into_iter().map(|(_, family)| family).collect()));
+            lua.set_app_data(FontRegistry(families));
             Ok(())
         }
     )

@@ -54,6 +54,43 @@ pub(crate) fn only_keys(table: &mlua::Table, keys: &[&str]) -> Result<(), String
     Err(format!("unknown key {first}; it takes {}", keys.join(", ")))
 }
 
+/// A config list's entries `1..=n` in order, ending at the first hole, which reads as `nil` so
+/// the caller's per-entry check names its index. `ipairs` and `sequence_values` stop at a hole and
+/// `#` may count past it, so either silently drops or pads entries; walking every key catches
+/// `{ a, nil, c }`. Refuses a named key, which no reader of a list sees. ponytail: a trailing `nil`
+/// leaves no key behind and stays undetectable.
+pub(crate) fn list_entries(table: &mlua::Table) -> Result<Vec<mlua::Value>, String> {
+    let mut entries: Vec<(i64, mlua::Value)> = Vec::new();
+    for pair in table.pairs::<mlua::Value, mlua::Value>() {
+        match pair.map_err(|e| e.to_string())? {
+            (mlua::Value::Integer(index), value) if index >= 1 => entries.push((index, value)),
+            (mlua::Value::String(key), _) => {
+                return Err(format!("key `{}` is not a list index", key.to_string_lossy()));
+            }
+            (other, _) => return Err(format!("key {other:?} is not a list index")),
+        }
+    }
+    entries.sort_unstable_by_key(|(index, _)| *index);
+    let mut list = Vec::with_capacity(entries.len());
+    for (position, (index, value)) in (1..).zip(entries) {
+        if index != position {
+            list.push(mlua::Value::Nil);
+            break;
+        }
+        list.push(value);
+    }
+    Ok(list)
+}
+
+/// `value`'s type with its article: "nil", "an integer", "a string".
+pub(crate) fn a_type(value: &mlua::Value) -> String {
+    match value.type_name() {
+        "nil" => "nil".into(),
+        name @ ("integer" | "error") => format!("an {name}"),
+        name => format!("a {name}"),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
