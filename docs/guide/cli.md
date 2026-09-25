@@ -225,17 +225,19 @@ every item of a `list`, is listed once. The path names the line that built each 
 failing `:map` or `computed`, the line that created the signal:
 
 ```text
-~/.config/mantle: widgets/bar.lua:4: attempt to perform arithmetic on a nil value
+/home/me/.config/mantle: widgets/bar.lua:4: attempt to perform arithmetic on a nil value
 stack traceback:
 	widgets/bar.lua:4: in function 'widgets.bar.build'
 	shell.lua:3: in main chunk
-~/.config/mantle: before capability data: layout: invalid value for `children`: on `bar@DP-1`: row[0] (shell.lua:7) > children[0]: shell.lua:2: `text` has no property `contnet`; did you mean `content`?
-~/.config/mantle: before capability data: layout: invalid value for `content`: on `bar@DP-1`: text[0] (shell.lua:9) > Signal getter on a `text` node failed: signal created at shell.lua:3: shell.lua:4: attempt to index a number value (local 'n')
+/home/me/.config/mantle: before capability data: layout: invalid value for `children`: on `bar@DP-1`: row[0] (shell.lua:7) > children[0]: shell.lua:2: `text` has no property `contnet`; did you mean `content`?
+/home/me/.config/mantle: before capability data: layout: invalid value for `content`: on `bar@DP-1`: text[0] (shell.lua:9) > Signal getter on a `text` node failed: signal created at shell.lua:3: shell.lua:4: attempt to index a number value (local 'n')
+stack traceback:
+	shell.lua:4: in function <shell.lua:3>
 ```
 
 | Caught | Not caught |
 | :--- | :--- |
-| Lua syntax errors, in any required module | Handler errors: `on_click`, `on_change`, `action`, `timer` never fire |
+| Lua syntax errors, in any required module | Handler errors: `on_click`, `action` and `timer` never fire, and a capability `on_change` that raises on the sample push only logs a warning |
 | Runtime errors at the top level of `shell.lua` and its modules | Branches that need a particular value: the samples take the first enum value, `true` and non-empty lists |
 | A top-level return that is not surfaces, including `require`'s second value | `process.run` output: commands are queued and never run |
 | Surface and node properties: unknown names, wrong value types, bad colours, out-of-range sizes | Fonts, images, shaders and the compositor's response |

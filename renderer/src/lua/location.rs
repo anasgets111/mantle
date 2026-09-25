@@ -64,8 +64,7 @@ pub(crate) fn describe(err: &mlua::Error) -> String {
 /// A line of config code, `widgets/bar.lua:12` once displayed: where a node or derived signal was
 /// constructed, for an error that surfaces in a later layout pass, when that line is no longer on
 /// the stack (ADR-0268). One Lua integer, the chunk's index in [`CHUNKS`] above the line, so
-/// recording one makes no string: on a release build it adds 210 ns to a 250 ns node constructor,
-/// where a formatted Lua string added 285 ns. About half is the props table growing a third key.
+/// recording one makes no string.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Site(i64);
 
@@ -102,7 +101,8 @@ impl Site {
         site.map(|site| site.0)
     }
 
-    /// Back from [`Self::to_lua`]; anything else, such as a config's own `__site`, is no site.
+    /// Back from [`Self::to_lua`]. A non-integer, or an integer naming no recorded chunk, is no
+    /// site; a config's own integer `__site` can still pass for one.
     pub(crate) fn from_lua(value: &Value) -> Option<Site> {
         let Value::Integer(packed) = value else { return None };
         let known = CHUNKS.with_borrow(|chunks| (0..chunks.len() as i64).contains(&(packed >> 32)));

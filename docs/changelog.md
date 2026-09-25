@@ -99,7 +99,8 @@ so everything since the rename from Obelisk sits under Unreleased.
   a negative one got mlua's conversion error and a huge one was clamped. `cancel_threshold(-1)` is a
   no-op like any unknown handle.
 - A `nil` in the returned surface list raises `surface 2 is nil: ...`; before, it dropped every
-  surface after it.
+  surface after it. A named key in the list (`return { bar, cfg = x }`) raises instead of being
+  ignored.
 - An equal capability snapshot is not pushed again, except `tray` and `notifications`.
 - A bad `layer`, `corner_shape`, `keyboard_interactivity`, popup `anchor` or `gravity`,
   `constraint_adjustment` entry or easing name fails with one wording that lists every choice:
