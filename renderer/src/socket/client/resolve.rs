@@ -28,6 +28,7 @@ impl RendererClient {
             Ok(()) => {
                 log_applied_surfaces(&self.scene, &self.instances);
                 start_secure_submit_capabilities(&self.scene, &self.instances, &self.commands);
+                log_re_resolve(&mut self.re_resolve_failure, None);
                 self.rescue_applied_output(None);
                 // Consume `set_screens`'s pre-evaluation seed (ADR-0041 decision 2) only after
                 // success; a failed apply leaves it for the next one.
@@ -61,6 +62,7 @@ impl RendererClient {
                 log_applied_surfaces(&self.scene, &self.instances);
                 start_secure_submit_capabilities(&self.scene, &self.instances, &self.commands);
                 self.set_rescue_state(false, "");
+                log_re_resolve(&mut self.re_resolve_failure, None);
                 self.state.applied_specs = specs;
                 // ADR-0044 decision 2 re-resolve target.
                 self.state.applied_output = Some(output);
@@ -146,9 +148,7 @@ impl RendererClient {
             self.holds_session_lock,
         );
         let failure = applied.err().map(|err| err.to_string());
-        for line in fold_failure(&mut self.re_resolve_failure, failure.clone()) {
-            warn!("dirty-scene re-resolve failed, keeping the prior scene: {line}");
-        }
+        log_re_resolve(&mut self.re_resolve_failure, failure.clone());
         if let Some(err) = failure {
             // Rollback keeps the prior scene; the rescue lasts until a pass applies. No re-mark:
             // only a change can fix the failure, and the wakes between changes cannot.
@@ -196,6 +196,14 @@ impl RendererClient {
     /// repaints those surfaces and no others.
     pub fn tick_animations(&mut self, now: std::time::Instant) -> Vec<String> {
         self.scene.tick(&self.instances, &self.shaping, self.loader.lua(), now)
+    }
+}
+
+/// Folds a pass's outcome (`None` for any pass that applied) into `run`, logging what
+/// [`fold_failure`] owes.
+fn log_re_resolve(run: &mut Option<(String, u32)>, failure: Option<String>) {
+    for line in fold_failure(run, failure) {
+        warn!("dirty-scene re-resolve failed, keeping the prior scene: {line}");
     }
 }
 
@@ -633,6 +641,31 @@ mod tests {
         client.loader.lua().load("armed:set(false)").exec().unwrap();
         assert!(client.re_resolve_if_dirty(), "the next change must retry the whole scene");
         assert_eq!(rescue_state(&client.loader), (false, String::new()));
+    }
+
+    /// Any applied pass ends the run, so the same failure after it logs again rather than
+    /// counting as a repeat of one the scene has since recovered from.
+    #[test]
+    fn an_applied_startup_pass_ends_a_re_resolve_failure_run() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_shell_lua(
+            dir.path(),
+            r#"
+            armed = state("armed", false)
+            return panel { id = "bar", layer = "Top", child = text { content = "m",
+                opacity = computed({armed}, function(a) if a then return 2.0 else return 1.0 end end) } }
+            "#,
+        );
+        let (mut client, _outbound_rx) = test_client(&path);
+        assert!(run_startup(&mut client));
+        client.loader.lua().load("armed:set(true)").exec().unwrap();
+        assert!(!client.re_resolve_if_dirty());
+        assert!(client.re_resolve_failure.is_some());
+
+        client.loader.lua().load("armed:set(false)").exec().unwrap();
+        assert!(client.apply_instances());
+
+        assert!(client.re_resolve_failure.is_none());
     }
 
     #[test]
