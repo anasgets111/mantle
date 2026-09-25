@@ -28,12 +28,9 @@ pub(crate) use tracking::{
     ComputedFrame, begin_instance_resolve, end_instance_resolve, forget_instance, note_everything_written, note_read,
     note_reads, note_write, reset_read_tracker, with_derived, write_clock, written_since,
 };
-use tracking::{
-    Evaluation, EvaluationMemo, Output, ReadTracker, current_clock, downstream, note_unsettled, outputs_written_since,
-};
+use tracking::{Evaluation, EvaluationMemo, Output, ReadTracker, current_clock, downstream, outputs_written_since};
 
 /// Globally unique identifier for a reactive cell, avoiding pointer recycling issues (ADR-0170).
-/// `0` is never allocated; `tracking` spends it on the clock.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub(crate) struct CellId(u64);
 
@@ -83,19 +80,19 @@ enum SignalKind {
     /// rather than dirtying the scene it was measured in.
     Geometry(CellId, Rc<RefCell<Value>>),
     /// `delay(signal, ms)` (ADR-0146): follows `source` once it has held a new value for `hold`.
-    /// Pull-based like everything else here: a read notes the pending value and its due time,
-    /// arms the poll loop's one timeout through [`WakeDeadline`], and keeps answering the held
-    /// value until a read after the due time adopts the new one. A source that returns to the
+    /// A read notes the pending value and its due time, arms a wake through [`WakeDeadline`], and
+    /// keeps answering the held value until a read after the due time adopts the new one; the
+    /// wake writes `cell`, so its readers make that read (ADR-0275). A source that returns to the
     /// held value before then cancels the change, which makes this a trailing debounce as well
     /// as a close-hold.
-    Delayed { hold: Duration, due: Rc<Cell<Option<Instant>>> },
+    Delayed { hold: Duration, due: Rc<Cell<Option<Instant>>>, cell: CellId },
     /// `pulse(signal, ms)` (ADR-0153): `true` for `ms` after `source` changes value, `false`
     /// otherwise. The other half of [`SignalKind::Delayed`]'s shape and the same machinery -- that
     /// one answers the old value until a change settles, this one says a change just happened --
     /// and it is what fires a one-shot animation, which a config has no way to call `restart()` on
-    /// (ADR-0152). Pull-based: a read compares against the value it last saw, arms the wake, and
-    /// falls back to `false` on the read after the window closes.
-    Pulse { hold: Duration, until: Rc<Cell<Option<Instant>>> },
+    /// (ADR-0152). A read compares against the value it last saw, arms the wake, and falls back to
+    /// `false` on the read after the window closes, which the wake writing `cell` prompts.
+    Pulse { hold: Duration, until: Rc<Cell<Option<Instant>>>, cell: CellId },
 }
 
 struct DelayCell {
@@ -113,29 +110,28 @@ struct PulseCell {
 
 /// The earliest moment a clock-driven signal has to be re-read -- a `delay`'s hold coming due or
 /// a `pulse`'s window closing -- read by the poll loop as its timeout; `None` keeps the loop
-/// timeout-free (ADR-0124). One slot, not a list: a due wake dirties the scene, the pass re-reads
-/// every such signal, and each one still pending re-arms itself.
+/// timeout-free (ADR-0124). One entry per signal: its due wake writes its cell, so only its
+/// readers resolve again (ADR-0275).
 #[derive(Default)]
-struct WakeDeadline(Option<Instant>);
+struct WakeDeadline(Vec<(Instant, CellId)>);
 
-fn arm_wake(lua: &Lua, due: Instant) {
+fn arm_wake(lua: &Lua, due: Instant, cell: CellId) {
     let mut slot = super::app_data_or_default::<WakeDeadline>(lua);
-    slot.0 = Some(slot.0.map_or(due, |current| current.min(due)));
+    slot.0.retain(|(_, armed)| *armed != cell);
+    slot.0.push((due, cell));
 }
 
 /// When the poll loop has to wake for a pending `delay` or `pulse`, if any.
 pub fn next_wake_deadline(lua: &Lua) -> Option<Instant> {
-    lua.app_data_ref::<WakeDeadline>().and_then(|slot| slot.0)
+    lua.app_data_ref::<WakeDeadline>().and_then(|slot| slot.0.iter().map(|(due, _)| *due).min())
 }
 
-/// Clears a due deadline and says so; the caller dirties the scene. Not due, or none, is `false`.
-pub fn take_due_wake(lua: &Lua, now: Instant) -> bool {
-    let Some(mut slot) = lua.app_data_mut::<WakeDeadline>() else { return false };
-    if slot.0.is_some_and(|due| due <= now) {
-        slot.0 = None;
-        return true;
-    }
-    false
+/// Takes the cells of the signals come due; the caller writes them.
+pub fn take_due_wake(lua: &Lua, now: Instant) -> Vec<CellId> {
+    let Some(mut slot) = lua.app_data_mut::<WakeDeadline>() else { return Vec::new() };
+    let (due, later): (Vec<_>, Vec<_>) = slot.0.drain(..).partition(|(at, _)| *at <= now);
+    slot.0 = later;
+    due.into_iter().map(|(_, cell)| cell).collect()
 }
 
 impl SignalKind {
@@ -461,29 +457,25 @@ fn read_derived(lua: &Lua, ud: &mlua::AnyUserData) -> mlua::Result<Value> {
         // Both recurse into their source, so both claim a nesting level for the reason
         // `Computed` does. Unguarded, a long enough chain exhausted the Rust stack and
         // aborted `mantle check` before any cap could answer.
-        SignalKind::Delayed { hold, due } => {
+        SignalKind::Delayed { hold, due, cell: own } => {
             let _budget = CpuBudget::enter(lua)?;
             let fresh = source_at(ud, FIRST_SOURCE_SLOT)?.get_value(lua)?;
             let pending = due.get().map(|at| mlua::Result::Ok((ud.nth_user_value(PENDING_SLOT)?, at))).transpose()?;
             let mut cell = DelayCell { held: ud.nth_user_value(HELD_SLOT)?, pending };
-            let answer = cell.follow(fresh, hold, Instant::now(), |at| arm_wake(lua, at));
-            if cell.pending.is_some() {
-                note_unsettled(lua);
-            }
+            note_read(lua, own);
+            let answer = cell.follow(fresh, hold, Instant::now(), |at| arm_wake(lua, at, own));
             let (pending, at) = cell.pending.unzip();
             due.set(at);
             ud.set_nth_user_value(HELD_SLOT, cell.held)?;
             ud.set_nth_user_value(PENDING_SLOT, pending)?;
             Ok(answer)
         }
-        SignalKind::Pulse { hold, until } => {
+        SignalKind::Pulse { hold, until, cell: own } => {
             let _budget = CpuBudget::enter(lua)?;
             let fresh = source_at(ud, FIRST_SOURCE_SLOT)?.get_value(lua)?;
             let mut cell = PulseCell { seen: ud.nth_user_value(HELD_SLOT)?, until: until.get() };
-            let open = cell.fire(fresh, hold, Instant::now(), |at| arm_wake(lua, at));
-            if open {
-                note_unsettled(lua);
-            }
+            note_read(lua, own);
+            let open = cell.fire(fresh, hold, Instant::now(), |at| arm_wake(lua, at, own));
             until.set(cell.until);
             ud.set_nth_user_value(HELD_SLOT, cell.seen)?;
             Ok(Value::Boolean(open))
@@ -845,7 +837,7 @@ mod tests {
         assert!(!lua.load("return held:get()").eval::<bool>().unwrap());
         assert!(next_wake_deadline(&lua).is_some());
         std::thread::sleep(Duration::from_millis(5));
-        assert!(take_due_wake(&lua, Instant::now()));
+        assert!(!take_due_wake(&lua, Instant::now()).is_empty());
         assert!(lua.load("return held:get()").eval::<bool>().unwrap());
         assert!(next_wake_deadline(&lua).is_none(), "an adopted value leaves nothing armed");
         for refused in ["delay(open, 0)", "delay(open, 0.1)"] {
@@ -892,7 +884,7 @@ mod tests {
         assert!(lua.load("return flashing:get()").eval::<bool>().unwrap());
         assert!(next_wake_deadline(&lua).is_some());
         std::thread::sleep(Duration::from_millis(60));
-        assert!(take_due_wake(&lua, Instant::now()));
+        assert!(!take_due_wake(&lua, Instant::now()).is_empty());
         assert!(!lua.load("return flashing:get()").eval::<bool>().unwrap(), "the window closed");
 
         for refused in ["pulse(clicks, 0)", "pulse(clicks, 0.1)"] {

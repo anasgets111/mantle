@@ -82,8 +82,10 @@ impl Output {
         let in_pass = lua.app_data_ref::<MemoTable>().is_some_and(|table| table.pass_opened.is_some());
         WRITES.with_borrow_mut(|log| {
             if changed {
-                // In a pass, at its opening: every reader this pass read the new value.
-                let stamp = if in_pass { at } else { log.tick() };
+                // In a pass, at its opening, so every reader this pass read the new value; or later,
+                // at a write the pass made before this run, which readers resolved earlier missed.
+                let cause = inputs.iter().filter_map(|cell| log.last.get(cell)).max().copied();
+                let stamp = if in_pass { cause.map_or(at, |cause| at.max(cause)) } else { log.tick() };
                 log.last.insert(self.cell, stamp);
             }
             log.computeds.insert(self.cell, (at, inputs));
@@ -284,15 +286,6 @@ pub(crate) fn note_reads(lua: &Lua, cells: &[CellId]) {
     }
 }
 
-/// Marks the enclosing frame as reading a clock: a `delay` holding a pending value or a `pulse`
-/// whose window is open answers differently later with no cell written.
-pub(super) fn note_unsettled(lua: &Lua) {
-    EvaluationMemo::record_dependency(lua, UNSETTLED);
-}
-
-/// Stands for the clock in a read set; never allocated, and always written.
-const UNSETTLED: CellId = CellId(0);
-
 /// When each cell was last written, on one counter. Per thread rather than per `Lua`: a capability
 /// push writes through a `LiveSignalHandle`, which holds no `Lua`, and cells are `Rc`s, so every
 /// write lands on the thread that reads them. `CellId`s are process-unique, so two VMs on one
@@ -320,8 +313,7 @@ impl WriteLog {
     fn written(&self, stamp: u64, cells: &[CellId], seen: &mut FxHashMap<CellId, bool>) -> bool {
         self.everything > stamp
             || cells.iter().any(|cell| {
-                *cell == UNSETTLED
-                    || self.last.get(cell).is_some_and(|at| *at > stamp)
+                self.last.get(cell).is_some_and(|at| *at > stamp)
                     || self.computeds.get(cell).is_some_and(|(at, inputs)| {
                         if let Some(known) = seen.get(cell) {
                             return *known;

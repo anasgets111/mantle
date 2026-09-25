@@ -1,8 +1,8 @@
 //! `timer(ms, fn)`: config-owned one-shot callbacks (ADR-0203).
 //!
 //! The imperative half of the clock. `delay(signal, ms)` and `pulse(signal, ms)` are pull-based:
-//! a due wake dirties the scene and the pass re-reads them, which is why `signal/mod.rs` needs only one
-//! deadline slot and no identity. A callback cannot work that way. It has to run whether or not any
+//! a due wake writes the signal's cell and its readers' pass re-reads it (ADR-0275), so the wake
+//! holds nothing but that cell. A callback cannot work that way. It has to run whether or not any
 //! visible node reads anything, so it needs its own list, its own identity, and its own turn
 //! position (ADR-0124's hidden subtrees are never resolved, so a pull-based timer behind one would
 //! silently never fire).

@@ -202,7 +202,7 @@ pub fn register(lua: &Lua, dirty: DirtyFlag) -> mlua::Result<()> {
                 .ok_or_else(|| mlua::Error::runtime("delay() takes a Signal or an `mantle` capability first"))?;
             let hold = parse_hold("delay() hold", ms)?;
             let held = source.get_value(lua)?;
-            let ud = new_derived(lua, SignalKind::Delayed { hold, due: Rc::default() }, None, vec![source_ud])?;
+            let ud = new_derived(lua, SignalKind::Delayed { hold, due: Rc::default(), cell: super::next_cell_id() }, None, vec![source_ud])?;
             ud.set_nth_user_value(HELD_SLOT, held)?;
             Ok(SignalOf::new(ud))
         }
@@ -226,7 +226,7 @@ pub fn register(lua: &Lua, dirty: DirtyFlag) -> mlua::Result<()> {
                 .ok_or_else(|| mlua::Error::runtime("pulse() takes a Signal or an `mantle` capability first"))?;
             let hold = parse_hold("pulse() window", ms)?;
             let seen = source.get_value(lua)?;
-            let ud = new_derived(lua, SignalKind::Pulse { hold, until: Rc::default() }, None, vec![source_ud])?;
+            let ud = new_derived(lua, SignalKind::Pulse { hold, until: Rc::default(), cell: super::next_cell_id() }, None, vec![source_ud])?;
             ud.set_nth_user_value(HELD_SLOT, seen)?;
             Ok(SignalOf::new(ud))
         }

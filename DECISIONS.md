@@ -6771,3 +6771,25 @@ still falls back to a pass. Noting a slot to the instance alone, outside every f
 tracking call `lua::signal` does not have.
 
 **Amends ADR-0069** (decision 4: the pass is no longer the only place the offset is applied).
+
+## 0275. A clock-driven signal lands as a write to its own cell
+
+A `delay` coming due or a `pulse` window closing changed its answer with no cell written. A read
+of one pending put a sentinel in the read set that counted as always written, and the due wake
+dirtied the whole scene. Two passes could then open on one clock: a pill whose `delay` landed
+stamped its collapsed width no newer than the memos of the pass before, and stayed open.
+
+1. **Each `delay` and `pulse` owns a cell.** A read notes it; the wake list holds one
+   `(due, cell)` per signal, and a due wake writes that cell. Only its readers resolve again, and
+   a pending signal no longer rebuilds its readers on every pass until it lands.
+2. **A computed changed in a pass is stamped at its newest input.** The pass-open clock stood for
+   every change a pass makes. A computed first run after a write the pass itself made, a published
+   `geometry` or a getter's `set`, changed after the surfaces resolved earlier in the pass read
+   it; stamped at the pass open, the next scope took it as already seen and those surfaces kept
+   the old value. `Output::settle` stamps `max(pass open, newest input stamp)`.
+
+The ceiling: a read after the due time but before the wake adopts the new value with no write,
+so readers that kept their memo lag until the wake writes the cell, within the same loop turn.
+A computed reading `os.time` or an upvalue still changes with no cause.
+
+**Amends ADR-0153 and ADR-0270** (the pull-based wake and its scene-wide dirty).

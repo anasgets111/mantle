@@ -602,6 +602,96 @@ mod tests {
         assert_eq!(reader.children[0].rect.width, 40.0, "the reader laid out from the moved rect");
     }
 
+    /// The loop's own path for a hover-held pill: a `delay` under two computeds lets go on the turn
+    /// it comes due.
+    #[test]
+    fn a_lingering_width_collapses_on_the_turn_its_delay_comes_due() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_shell_lua(
+            dir.path(),
+            r#"
+            h = state("h", false)
+            local linger = computed({ h, delay(h, 20) }, function(now, was) return now == true or was == true end)
+            local expanded = computed({ linger, state("held", false) }, function(o, held) return o or held end)
+            local probe = computed({ h, linger, expanded }, function(_, _, e) return e end)
+            local function cell(shown)
+                return row { width = computed({ expanded, shown }, function(o, k) return (o or k) and 34 or 0 end),
+                    height = 20, opacity = computed({ expanded, shown }, function(o, k) return (o or k) and 1 or 0 end),
+                    animate = { width = 100, opacity = 100 } }
+            end
+            return { panel { id = "bar", layer = "Top", child = row { children = {
+                row { spacing = probe:map(function(o) return o and 7 or 0 end), animate = { spacing = 100 },
+                    children = { cell(state("s1", false)), cell(state("s2", true)) } } } } } }
+            "#,
+        );
+        let (mut client, _outbound_rx) = test_client(&path);
+        assert!(run_startup(&mut client));
+        let widths = |client: &RendererClient| -> Vec<f32> {
+            client.scene.surface("bar@TEST").unwrap().children[0].children[0]
+                .children
+                .iter()
+                .map(|c| c.rect.width)
+                .collect()
+        };
+        let turn = |client: &mut RendererClient| {
+            client.wake_due_signals();
+            client.re_resolve_if_dirty();
+            client.tick_animations(
+                &["bar@TEST".to_string()],
+                std::time::Instant::now() + std::time::Duration::from_secs(1),
+            );
+            client.re_resolve_if_dirty();
+        };
+        client.loader.lua().load("h:set(true)").exec().unwrap();
+        turn(&mut client);
+        std::thread::sleep(std::time::Duration::from_millis(40));
+        turn(&mut client);
+        assert_eq!(widths(&client), [34.0, 34.0]);
+        client.loader.lua().load("h:set(false)").exec().unwrap();
+        turn(&mut client);
+        assert_eq!(widths(&client), [34.0, 34.0], "the delay holds it open");
+        std::thread::sleep(std::time::Duration::from_millis(40));
+        turn(&mut client);
+        assert_eq!(widths(&client), [0.0, 34.0], "and lets go on the turn it comes due");
+    }
+
+    /// A computed first run after a write its own pass made changes as of that write, so a
+    /// surface resolved earlier in the pass, which read the old value, still resolves again.
+    #[test]
+    fn a_computed_changed_by_a_mid_pass_write_reaches_the_surfaces_resolved_before_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_shell_lua(
+            dir.path(),
+            r#"
+            wide = state("wide", false)
+            local g = geometry("g")
+            local x = computed({ g }, function(r) return r and r.width or 0 end)
+            return {
+                panel { id = "early", layer = "Top", child = row { children = { row { width = x, height = 5 } } } },
+                panel { id = "src", layer = "Top", child = row { children = {
+                    row { geometry = g, width = wide:map(function(w) return w and 50 or 10 end), height = 5 } } } },
+                panel { id = "late", layer = "Top", child = row { children = {
+                    row { width = computed({ g, x, wide }, function(_, v, w) return w and v + 1 or v end), height = 5 } } } },
+            }
+            "#,
+        );
+        let (mut client, _outbound_rx) = test_client(&path);
+        assert!(run_startup(&mut client));
+        let width = |client: &RendererClient, id: &str| {
+            client.scene.surface(&format!("{id}@TEST")).unwrap().children[0].children[0].rect.width
+        };
+        for _ in 0..4 {
+            client.re_resolve_if_dirty();
+        }
+        assert_eq!((width(&client, "early"), width(&client, "late")), (10.0, 10.0));
+
+        client.loader.lua().load("wide:set(true)").exec().unwrap();
+        for _ in 0..4 {
+            client.re_resolve_if_dirty();
+        }
+        assert_eq!((width(&client, "early"), width(&client, "late")), (50.0, 51.0));
+    }
+
     /// A failure logs once per run of the same text; the run's repeat count lands when it
     /// changes or clears, so a failure retried on every push cannot flood the log.
     #[test]

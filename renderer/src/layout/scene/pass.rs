@@ -1028,14 +1028,13 @@ mod tests {
         assert_eq!(list_contents(&scene), ["a", "b", "c"], "the rollback kept the last good items");
     }
 
-    /// A pending `delay` answers differently once its hold runs out, with no cell written.
+    /// A pending `delay` costs its readers nothing until it lands, which writes its cell.
     #[test]
-    fn a_list_reading_a_pending_delay_builds_on_every_pass_until_it_settles() {
+    fn a_list_reading_a_pending_delay_builds_again_only_when_it_lands() {
         let mut scene = Scene::new();
         let shaping = ShapingHandle::spawn();
-        let (lua, surface) = clock_beside_a_list(
-            r#"held = held or delay(state("q", "old"), 60000) return text { content = held:get() }"#,
-        );
+        let (lua, surface) =
+            clock_beside_a_list(r#"held = held or delay(state("q", "old"), 20) return text { content = held:get() }"#);
         let built = || lua.globals().get::<i64>("built").unwrap();
         let apply =
             |scene: &mut Scene| apply_at(scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
@@ -1050,7 +1049,14 @@ mod tests {
         assert_eq!(built(), 6);
         lua.load(r#"clock:set("2")"#).exec().unwrap();
         apply(&mut scene);
-        assert_eq!(built(), 9, "pending, so the next pass has to ask it again");
+        assert_eq!(built(), 6, "pending, and nothing it reads was written");
+        std::thread::sleep(std::time::Duration::from_millis(40));
+        crate::lua::signal::take_due_wake(&lua, std::time::Instant::now())
+            .into_iter()
+            .for_each(crate::lua::signal::note_write);
+        apply(&mut scene);
+        assert_eq!(built(), 9, "the landing writes the delay");
+        assert_eq!(list_contents(&scene), ["new", "new", "new"]);
     }
 
     /// A layout write is quiet, and still a write: `geometry` is published after the build that

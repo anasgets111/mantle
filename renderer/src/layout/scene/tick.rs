@@ -985,6 +985,69 @@ mod tests {
     }
 
     #[test]
+    fn a_width_mapped_through_a_lingering_computed_collapses_once_the_delay_lands() {
+        let mut scene = Scene::new();
+        let shaping = ShapingHandle::spawn();
+        let (lua, surface) = surface_from(
+            r#"local h = state("h", false)
+            local linger = computed({ h, delay(h, 20) }, function(now, was) return now == true or was == true end)
+            local open = computed({ linger, state("held", false) }, function(o, held) return o or held end)
+            return panel { id = "bar", child = row { children = {
+                row { width = computed({ open, state("kept", false) }, function(o, k) return (o or k) and 34 or 0 end), height = 20 } } } }"#,
+        );
+        let width = |scene: &Scene| scene.surface("bar@TEST").unwrap().children[0].children[0].rect.width;
+        let pass = |scene: &mut Scene| apply_at(scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
+        let land = |scene: &mut Scene| {
+            std::thread::sleep(std::time::Duration::from_millis(40));
+            crate::lua::signal::take_due_wake(&lua, std::time::Instant::now())
+                .into_iter()
+                .for_each(crate::lua::signal::note_write);
+            pass(scene);
+        };
+        pass(&mut scene);
+        assert_eq!(width(&scene), 0.0);
+        lua.load(r#"state("h", false):set(true)"#).exec().unwrap();
+        pass(&mut scene);
+        assert_eq!(width(&scene), 34.0);
+        land(&mut scene);
+        lua.load(r#"state("h", false):set(false)"#).exec().unwrap();
+        pass(&mut scene);
+        assert_eq!(width(&scene), 34.0, "the delay holds it open");
+        land(&mut scene);
+        assert_eq!(width(&scene), 0.0, "and lets go once it lands");
+    }
+
+    #[test]
+    fn a_collapsed_width_stays_collapsed_through_the_pass_after_its_tween() {
+        let mut scene = Scene::new();
+        let shaping = ShapingHandle::spawn();
+        let (lua, surface) = surface_from(
+            r#"local open = state("open", true)
+            return panel { id = "bar", child = row { geometry = geometry("g"), children = {
+                row { width = open:map(function(o) return o and 34 or 0 end), height = 20,
+                    opacity = open:map(function(o) return o and 1 or 0 end),
+                    animate = { width = 100, opacity = 100 } },
+                text { content = state("other", "a") } } } }"#,
+        );
+        let width = |scene: &Scene| scene.surface("bar@TEST").unwrap().children[0].children[0].rect.width;
+        let pass = |scene: &mut Scene| apply_at(scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
+        pass(&mut scene);
+        lua.load(r#"state("open", true):set(false)"#).exec().unwrap();
+        pass(&mut scene);
+        let started = scene.surface("bar@TEST").unwrap().children[0].children[0].tweens[0].started;
+        let instances = [instance_at(&surface, full())];
+        for ms in [50, 100, 150] {
+            scene.tick(&instances, &shaping, &lua, started + std::time::Duration::from_millis(ms));
+        }
+        assert_eq!(width(&scene), 0.0, "the tween lands");
+        pass(&mut scene);
+        assert_eq!(width(&scene), 0.0, "a kept node keeps its landed width");
+        lua.load(r#"state("other", "a"):set("b")"#).exec().unwrap();
+        pass(&mut scene);
+        assert_eq!(width(&scene), 0.0, "and so does a pass another write asked for");
+    }
+
+    #[test]
     fn a_lingering_surface_keeps_its_card_tweening_through_the_close() {
         // The root stays visible through `delay` while the card fades and lifts.
         let mut scene = Scene::new();
