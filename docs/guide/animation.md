@@ -78,7 +78,8 @@ catches overshoot from `Back`, `Elastic`, a Bezier with `y` outside `[0, 1]`, or
 | `opacity`, colours, `radius`, `translate`, `scale`, `rotate`, `origin`, `progress`, `shadow_*`, `content_blur`, `backdrop_blur` | Repaints; no layout pass |
 | Anything else: `width`, `height`, `margin`, `padding`, `spacing`, `font_size`, … | Lays the surface out again |
 
-Slide with `translate`, not `margin`.
+Slide with `translate` and grow on hover with `scale` when surrounding nodes should stay put.
+Both skip layout; `width` and `margin` lay out the surface on every animation frame.
 
 ## Entry keys
 
