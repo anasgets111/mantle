@@ -289,6 +289,104 @@ mod tests {
         assert_eq!(scene.surface("bar@TEST").unwrap().children[0].children[0].rect.width, 10.0);
     }
 
+    /// A computed over a computed hands its cells up through the frame it runs in, so a write to
+    /// the innermost cell still reaches the node.
+    #[test]
+    fn a_write_under_a_computed_of_a_computed_reaches_the_node() {
+        let mut bar = Fixture::new(
+            r##"accent = state("accent", "#101010")
+            local inner = accent:map(function(c) return c end)
+            return panel { id = "bar", child = column { children = {
+                rect { width = 10, height = 10, background = inner:map(function(c) return c end) },
+            } } }"##,
+        );
+        bar.run(r##"accent:set("#202020")"##);
+        assert_eq!(string(bar.child(0), "background"), "#202020");
+    }
+
+    /// A hidden subtree reads nothing (ADR-0124); shown again, a child whose input was written
+    /// meanwhile resolves again, and one whose input was not is kept.
+    #[test]
+    fn a_child_shown_again_resolves_only_if_its_input_was_written_while_hidden() {
+        let mut bar = Fixture::new(
+            r#"runs = 0
+            shown = state("shown", true)
+            label = state("label", "a")
+            other = state("other", "x")
+            return panel { id = "bar", child = column { children = {
+                row { visible = shown, children = {
+                    text { content = label },
+                    text { content = other:map(function(v) runs = runs + 1 return v end) },
+                } },
+            } } }"#,
+        );
+        bar.run(r#"shown:set(false)"#);
+        bar.run(r#"label:set("b")"#);
+        bar.run(r#"shown:set(true)"#);
+        let row = bar.child(0);
+        assert_eq!(string(&row.children[0], "content"), "b");
+        assert_eq!((string(&row.children[1], "content"), bar.runs()), ("x".into(), 1));
+    }
+
+    /// An item's reads are the list build's reads (ADR-0269), so a write to one rebuilds the list
+    /// and the rebuilt item shows it.
+    #[test]
+    fn a_write_an_item_read_reaches_it_through_the_list() {
+        let mut bar = Fixture::new(
+            r##"accent = state("accent", "#101010")
+            items = state("items", { "a", "b" })
+            return panel { id = "bar", child = column { children = {
+                list { source = items, itemfn = function(name)
+                    return text { content = name, foreground = accent }
+                end },
+            } } }"##,
+        );
+        bar.run(r##"accent:set("#202020")"##);
+        let list = bar.child(0);
+        assert_eq!(string(&list.children[1], "foreground"), "#202020");
+
+        bar.run(r#"items:set({ "c", "b" })"#);
+        let list = bar.child(0);
+        assert_eq!(
+            (string(&list.children[0], "content"), string(&list.children[1], "content")),
+            ("c".into(), "b".into())
+        );
+    }
+
+    /// Paired by id, a node takes its own memo with it, so reordering keeps each one's answer.
+    /// Paired by position, a sibling's removal hands a node a different declaration, which misses.
+    #[test]
+    fn reordered_or_removed_siblings_each_show_their_own_declaration() {
+        let mut bar = Fixture::new(
+            r#"swap = state("swap", false)
+            local a = text { id = "a", content = "A" }
+            local b = text { id = "b", content = "B" }
+            return panel { id = "bar", child = column { children = swap:map(function(s)
+                if s then return { b, a, text { content = "2" } } end
+                return { a, b, text { content = "1" }, text { content = "2" } }
+            end) } }"#,
+        );
+        bar.run(r#"swap:set(true)"#);
+        let contents: Vec<String> = (0..3).map(|i| string(bar.child(i), "content")).collect();
+        assert_eq!(contents, ["B", "A", "2"]);
+    }
+
+    /// A getter that writes a cell it read answers from before its own write, so the node resolves
+    /// again next pass rather than keeping that answer.
+    #[test]
+    fn a_node_that_writes_what_it_read_resolves_again_until_it_settles() {
+        let mut bar = Fixture::new(
+            r#"n = state("n", 0)
+            return panel { id = "bar", child = column { children = {
+                text { content = n:map(function(v) if v < 2 then n:set(v + 1) end return tostring(v) end) },
+            } } }"#,
+        );
+        for expected in ["1", "2", "2"] {
+            bar.apply().unwrap();
+            assert_eq!(string(bar.child(0), "content"), expected);
+        }
+    }
+
     /// A new evaluation may change what any getter reads without writing a cell.
     #[test]
     fn a_new_evaluation_resolves_every_node_again() {
