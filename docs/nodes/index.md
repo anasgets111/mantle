@@ -213,9 +213,9 @@ take none of them: wrap one in a `rect` for a background, border or rounded clip
 
 ## Identity and reconciliation
 
-Each pass rebuilds the tree from Lua, then matches it against the nodes on screen, one parent at a
-time. A matched node keeps its state: running tweens, a held image, a capture stream, a text field's
-draft. An unmatched old node is removed, after its `animate.exit` if it has one
+Each pass walks the declared tree and matches it against the nodes on screen, one parent at a time.
+A matched node keeps its state: running tweens, a held image, a capture stream, a text field's
+draft, and its resolved properties until a signal they read is written. An unmatched old node is removed, after its `animate.exit` if it has one
 ([exit](../guide/animation.md#exit)).
 
 | Child | Matches |

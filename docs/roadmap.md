@@ -27,7 +27,7 @@ Wanted, but each needs a consumer or a decision first.
 | :--- | :--- | :--- |
 | Greeter | Mantle as a greetd client under cage or sway. Needs multi-prompt PAM and a session-launch command | — |
 | Drawing | Gradients, `mask`, shadows and blurs exist; no config-facing paths, and no node masks another. Add the smallest set a real component needs; SVG covers static artwork, but its `<text>` draws nothing | 0254–0256 |
-| Large lists | Every item up to `limit` is built on every pass, visible or not. Virtualization would need `key` to be mandatory, which cannot be enforced | 0191, 0219 |
+| Large lists | Every item up to `limit` is laid out on every pass and built again whenever anything it read changes, visible or not. Virtualization would need `key` to be mandatory, which cannot be enforced | 0191, 0219 |
 | Output actions | `windows` has five actions; screens are read-only. Pick the actions, then settle niri/Hyprland differences and revert | 0119, 0247 |
 | Service depth | MPRIS lacks stop, shuffle, repeat, rate and volume; audio has no per-channel levels or peak metering; UPower reads only `DisplayDevice`; `network` tracks only the first Wi-Fi device; Bluetooth pairing refuses PIN and passkey entry. Extend for concrete controls | — |
 | External IPC | `set`/`toggle` answer only applied or refused; `call` returns only what the action returns. No generic state read or subscription | 0197 |
