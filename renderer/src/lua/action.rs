@@ -98,7 +98,7 @@ pub fn dispatch(lua: &Lua, name: &str, arguments: &[serde_json::Value]) -> share
             },
             Err(err) => shared::CallOutcome::Failed(format!("what it returned does not convert to JSON: {err}")),
         },
-        Err(err) => shared::CallOutcome::Failed(err.to_string()),
+        Err(err) => shared::CallOutcome::Failed(crate::lua::describe(&err)),
     }
 }
 
