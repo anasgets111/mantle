@@ -94,7 +94,8 @@ LuaLS flags it. A `:set` re-resolves the readers even when the value has not cha
 ## Derived signals
 
 `:map` and `computed` do not cache between passes. They run again whenever something reads them;
-within one pass, a derived signal read by several properties runs once. Keep their functions cheap
+within one pass, a derived signal read by several properties runs once. One inside a `list` item
+runs only when the list rebuilds ([when items rebuild](../nodes/list.md#when-items-rebuild)). Keep their functions cheap
 and side-effect free: no `:set`, no process, no action. They run under the CPU budget and nesting
 limit described in [runtime](runtime.md). Side effects belong in `on_click`, a capability's
 `on_change` ([capabilities](../capabilities/index.md)) or a `timer` ([scripting](scripting.md)).
@@ -221,6 +222,10 @@ dirty, and the next pass re-resolves only the instances that read it.
 | A `geometry` rect moving | One follow-up pass over the instances that read it |
 | Any write while the session is locked | Every instance |
 | A reload, or a re-resolve that failed | Every instance |
+
+A `list` keeps its items while nothing its last build read has changed: a write elsewhere on the
+surface lays them out again without calling `itemfn` or reading their signals. What a build reads,
+and what it cannot see: [when items rebuild](../nodes/list.md#when-items-rebuild).
 
 A `visible = false` node's subtree is frozen. Its children keep their nodes, ids, properties and
 last geometry. None of their signals is read, no `list` item function runs and nothing re-lays

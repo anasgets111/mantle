@@ -29,7 +29,7 @@ pub(crate) use content::{Content, Font, Live, MaxLines, Region};
 pub use content::{Elide, StyleRun, TextAlign, Wrap, font_runs};
 pub use paint_style::{PaintStyle, paint_style};
 pub(crate) use spec::{Children, Items, Limit, Root};
-pub use spec::{SecureSubmitTarget, SurfaceSpec, lock_spec, parse_list_children};
+pub use spec::{ListBuild, ListMemo, SecureSubmitTarget, SurfaceSpec, list_children, lock_spec};
 // `wayland::tests`' and `instance::tests`' fixtures name it `node::LockSpec`; nothing else does.
 #[cfg(test)]
 pub use spec::LockSpec;
@@ -408,25 +408,10 @@ pub fn resolve_properties(mut properties: PropMap, kind: &str, lua: &Lua) -> Res
             let Some(signal) = signal_at(&properties, property) else {
                 continue;
             };
-            // Name the node kind: a config has many `background`s, and the bare property left a reader
-            // grepping every one of them. `Scene::apply_admitting` adds the surface.
-            let value = signal.get_value(lua).map_err(|e| {
-                invalid(property, format!("Signal getter on a `{kind}` node failed: {}", crate::lua::describe(&e)))
-            })?;
-            match value {
-                Value::UserData(_) => {
-                    return Err(invalid(
-                        property,
-                        "a Signal resolved to another Signal -- resolution happens exactly once, not to a fixed point",
-                    ));
-                }
-                Value::Nil => {
-                    properties.remove(property);
-                }
-                value => {
-                    properties.insert(property, value);
-                }
-            }
+            match resolve_signal(&signal, kind, property, lua)? {
+                Some(value) => properties.insert(property, value),
+                None => properties.remove(property),
+            };
         }
     }
     // Callbacks and the two input flags have no parser: the input handlers read them where they
@@ -460,6 +445,28 @@ pub fn resolve_properties(mut properties: PropMap, kind: &str, lua: &Lua) -> Res
         ));
     }
     Ok(properties)
+}
+
+/// `signal`'s value for `property`, `None` for nil: the property is absent.
+fn resolve_signal(
+    signal: &signal::Signal,
+    kind: &str,
+    property: &str,
+    lua: &Lua,
+) -> Result<Option<Value>, LayoutError> {
+    // Name the node kind: a config has many `background`s, and the bare property left a reader
+    // grepping every one of them. `Scene::apply_admitting` adds the surface.
+    let value = signal.get_value(lua).map_err(|e| {
+        invalid(property, format!("Signal getter on a `{kind}` node failed: {}", crate::lua::describe(&e)))
+    })?;
+    match value {
+        Value::UserData(_) => Err(invalid(
+            property,
+            "a Signal resolved to another Signal -- resolution happens exactly once, not to a fixed point",
+        )),
+        Value::Nil => Ok(None),
+        value => Ok(Some(value)),
+    }
 }
 
 /// The carve-outs from decision 1's "parsers resolve a `Signal`" rule, the rows typed

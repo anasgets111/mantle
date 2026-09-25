@@ -3,9 +3,10 @@
 
 use std::collections::HashSet;
 
-use mlua::Value;
+use mlua::{Lua, Value};
 
 use crate::lua::nodes::{DeserializeError, VirtualNode, deserialize_lua_table};
+use crate::lua::signal::{self, CellId, ComputedFrame};
 
 use super::*;
 use fields::list;
@@ -173,13 +174,14 @@ impl Prop for Children {
 }
 
 /// A `list`'s `source`: absent, or a signal still reading nil before its first push, is an empty
-/// list.
+/// list. Raw past `resolve_properties`: [`list_children`] reads it, and only when the list builds.
 pub(crate) struct Items;
 
-spelled!(Items => Vec::<Value>::lua());
+spelled!(Items => prop::Bound::<Vec<Value>>::lua());
 
 impl Prop for Items {
     type Out = Option<mlua::Table>;
+    const RAW: bool = true;
     fn read(row: &Property, value: Option<&Value>) -> Result<Option<mlua::Table>, LayoutError> {
         match value {
             None => Ok(None),
@@ -209,18 +211,91 @@ impl Prop for Limit {
     }
 }
 
+/// A `list`'s items, `source` read here rather than by `resolve_properties` so a list that
+/// [`ListMemo::still_holds`] reads nothing at all.
+pub fn list_children(properties: &PropMap, lua: &Lua) -> Result<Vec<VirtualNode>, LayoutError> {
+    let Some(source) = signal_at(properties, "source") else {
+        return parse_list_children(properties);
+    };
+    let mut resolved = properties.clone();
+    match resolve_signal(&source, "list", "source", lua)? {
+        Some(value) => resolved.insert("source", value),
+        None => resolved.remove("source"),
+    };
+    parse_list_children(&resolved)
+}
+
+/// What a `list` last built its items from (ADR-0269): its `source`, `itemfn` and `key` by
+/// identity, its `limit`, and every cell its build read -- the source, `itemfn` and `key` bodies,
+/// and each item's own bound properties, down the whole subtree. While none of that has changed the
+/// items it built are still the ones a build would make, so the pass lays out the retained ones
+/// instead of calling `itemfn` again.
+///
+/// Exact for signals, and blind to anything else a build reads: `os.time()`, an upvalue, a table
+/// mutated in place. That is the contract `docs/nodes/list.md` states.
+#[derive(Debug, Clone)]
+pub struct ListMemo {
+    /// Kept to keep them alive: compared by address, so a collected function cannot hand its
+    /// address to a new one. By address and not `==`, which asserts both come from one `Lua`.
+    inputs: [Value; 3],
+    limit: Option<usize>,
+    stamp: u64,
+    cells: Vec<CellId>,
+}
+
+/// A build under way: the inputs and the clock taken before it reads anything, and the frame
+/// collecting what it reads.
+pub struct ListBuild<'lua> {
+    inputs: [Value; 3],
+    limit: Option<usize>,
+    stamp: u64,
+    frame: ComputedFrame<'lua>,
+}
+
+fn list_inputs(properties: &PropMap) -> [Value; 3] {
+    ["source", "itemfn", "key"].map(|key| properties.get(key).cloned().unwrap_or(Value::Nil))
+}
+
+impl ListMemo {
+    /// Whether a build now would make the items the last one did. When it would, its reads are
+    /// noted as this pass's, so the instance stays a reader of what the skipped build read.
+    pub fn still_holds(&self, properties: &PropMap, lua: &Lua) -> bool {
+        let same = |a: &Value, b: &Value| a.type_name() == b.type_name() && a.to_pointer() == b.to_pointer();
+        let holds = self.inputs.iter().zip(&list_inputs(properties)).all(|(a, b)| same(a, b))
+            && list::limit.read(properties).is_ok_and(|limit| limit == self.limit)
+            && !signal::written_since(self.stamp, &self.cells);
+        if holds {
+            signal::note_reads(lua, &self.cells);
+        }
+        holds
+    }
+}
+
+impl<'lua> ListBuild<'lua> {
+    pub fn open(properties: &PropMap, lua: &'lua Lua) -> Self {
+        Self {
+            inputs: list_inputs(properties),
+            limit: list::limit.read(properties).ok().flatten(),
+            stamp: signal::write_clock(),
+            frame: ComputedFrame::enter(lua),
+        }
+    }
+
+    pub fn close(self) -> ListMemo {
+        ListMemo { inputs: self.inputs, limit: self.limit, stamp: self.stamp, cells: self.frame.finish() }
+    }
+}
+
 /// A `list`'s children (ADR-0045 decision 3) are generated once per resolved
 /// `source` item; it arrives already resolved, so a `Signal` there was read exactly once before
 /// `itemfn` runs. Without `key`, reconciliation is positional. With it, `key(element)`
 /// is called on the source value, not the built node, and overwrites that node's `id`; duplicate
 /// keys fail here before `pair_children_by_id_then_position` sees them.
 ///
-/// ponytail: `key` speeds reconciliation, not evaluation. A 30-item tray still runs `itemfn` 30
-/// times and discards 29 fresh nodes on ADR-0044 decision 2's per-poll-turn capability-push
-/// cadence. `list` is a "fast-reconciling virtual repeater"; skipping unchanged items
-/// needs retained-side data, which `children_of` does not provide. That is worth about 19% of the
-/// pass (ADR-0132); the whole of it is a viewport, measured at 22us a row by
-/// `layout::scene::tests::list_pass_cost` and designed in ADR-0191.
+/// ponytail: a list whose [`ListMemo`] still holds skips all of this and its items' resolution,
+/// but a change to anything it read rebuilds every item, and a hit still lays every item out.
+/// Per-item memos and a viewport (ADR-0191) are the upgrades; `layout::scene::tests::list_pass_cost`
+/// measures both paths.
 pub fn parse_list_children(properties: &PropMap) -> Result<Vec<VirtualNode>, LayoutError> {
     let source = list::source.read(properties)?;
     let itemfn = list::itemfn.read(properties)?.expect("`itemfn` is required");

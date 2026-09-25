@@ -121,12 +121,14 @@ fn prepare_retained(
         node.kind == "text" && node.tweens.iter().any(|t| !t.resting && TEXT_MEASURE_KEYS.contains(&t.property));
     node::advance(&mut node.tweens, &mut node.properties, now, lua)?;
     let style = LayoutStyle::parse(&node.properties)?;
-    let ResolvedNode { id, kind, properties, children, tweens, displayed_source, dissolve, text_memo, .. } = node;
+    let ResolvedNode {
+        id, kind, properties, children, tweens, displayed_source, dissolve, text_memo, list_memo, ..
+    } = node;
     let text_memo = if text_tweening { None } else { text_memo };
     let paint = node::paint_style(kind, &properties)?;
     let measure = measure_for(kind, paint.as_ref(), &properties, text_memo)?;
     let taffy_id = new_solver_node(tree, kind, &properties, &style, parent_axis, measure)?;
-    let mut node = PreparedNode {
+    let node = PreparedNode {
         id,
         kind,
         style,
@@ -139,10 +141,22 @@ fn prepare_retained(
         frozen: children,
         tweens,
         leaving: Vec::new(),
+        list_memo,
     };
     if !node.style.visible {
         return Ok(node);
     }
+    prepare_retained_children(tree, node, lua, now)
+}
+
+/// `node`'s retained children, in `frozen`, laid out again as they are: for a tick, and for a pass
+/// over a `list` whose items would build the same (ADR-0269).
+pub(super) fn prepare_retained_children(
+    tree: &mut taffy::TaffyTree<Measure>,
+    mut node: PreparedNode,
+    lua: &Lua,
+    now: Instant,
+) -> Result<PreparedNode, LayoutError> {
     let own_axis = main_axis_of(node.kind, &node.properties)?;
     for child in std::mem::take(&mut node.frozen) {
         if child.leaving {
@@ -153,9 +167,9 @@ fn prepare_retained(
             node.children.push(prepare_retained(tree, child, own_axis, lua, now)?);
         }
     }
-    hold_leavers(tree, taffy_id, &node.style, &node.leaving)?;
+    hold_leavers(tree, node.taffy, &node.style, &node.leaving)?;
     let child_ids: Vec<taffy::NodeId> = node.children.iter().map(|child| child.taffy).collect();
-    tree.set_children(taffy_id, &child_ids).map_err(taffy_failed)?;
+    tree.set_children(node.taffy, &child_ids).map_err(taffy_failed)?;
     Ok(node)
 }
 

@@ -9,7 +9,7 @@ use super::solver::{
     MainAxis, Measure, hold_leavers, main_axis_of, measure_for, new_solver_node, solve, taffy_failed,
     text_measure_matches,
 };
-use super::tick::{advance_leaving, advanced_dissolve};
+use super::tick::{advance_leaving, advanced_dissolve, prepare_retained_children};
 use super::{
     LayoutStyle, LogicalSize, PreparedNode, ResolvedNode, Scene, close, ensure_node_admissible, open_span, tween_state,
 };
@@ -28,8 +28,7 @@ fn children_of(kind: &str, properties: &PropMap) -> Result<Vec<VirtualNode>, Lay
         "window" | "popup" => Ok(fields::toplevel::child.read(properties)?.into_iter().collect()),
         "rect" | "button" => fields::stack::children.read(properties),
         "row" | "column" => fields::flow::children.read(properties),
-        // ADR-0045 decision 3: list children are generated from `source`, not a literal table.
-        "list" => node::parse_list_children(properties),
+        "list" => unreachable!("`prepare` builds a list's items through `node::list_children`"),
         "text" | "icon" | "image" | "capture" | "shader" | "textfield" => Ok(Vec::new()),
         other => unreachable!("ensure_supported_kind already rejected `{other}`"),
     }
@@ -235,13 +234,13 @@ pub(super) fn prepare(
     // Removed while hidden means removed off screen: no exit plays anywhere under a thaw.
     let thawing = thawing || retained.as_ref().is_some_and(|r| !r.visible);
 
-    let (id, displayed_source, dissolve, old_children, text_memo) = match retained {
+    let (id, displayed_source, dissolve, old_children, text_memo, list_memo) = match retained {
         Some(r) => {
             let memo =
                 if kind == "text" && text_measure_matches(&properties, &r.properties) { r.text_memo } else { None };
-            (r.id, r.displayed_source, r.dissolve, r.children, memo)
+            (r.id, r.displayed_source, r.dissolve, r.children, memo, r.list_memo)
         }
-        None => (scene.alloc_id(), None, None, Vec::new(), None),
+        None => (scene.alloc_id(), None, None, Vec::new(), None, None),
     };
     // Already leaving children are not paired again: a re-added id is a new node beside the one
     // still fading.
@@ -281,15 +280,22 @@ pub(super) fn prepare(
         frozen: old_children,
         tweens,
         leaving: Vec::new(),
+        list_memo,
     };
     if !node.style.visible {
         node.frozen.extend(leaving);
         return Ok(node);
     }
+    // ADR-0269: nothing the last build read has changed, so it would build these items again.
+    if node.list_memo.as_ref().is_some_and(|memo| memo.still_holds(&node.properties, lua)) {
+        node.frozen.extend(leaving);
+        return prepare_retained_children(tree, node, lua, now);
+    }
 
+    let list_build = (kind == "list").then(|| node::ListBuild::open(&node.properties, lua));
     let fresh_children = if kind == "list" {
         let mut at = open_span();
-        let res = children_of(kind, &node.properties);
+        let res = node::list_children(&node.properties, lua);
         close(&mut at, &mut scene.resolve_split.list);
         res?
     } else {
@@ -376,6 +382,7 @@ pub(super) fn prepare(
 
     let child_ids: Vec<taffy::NodeId> = node.children.iter().map(|child| child.taffy).collect();
     tree.set_children(taffy_id, &child_ids).map_err(taffy_failed)?;
+    node.list_memo = list_build.map(node::ListBuild::close);
     Ok(node)
 }
 
@@ -404,6 +411,7 @@ fn finish(
         frozen,
         tweens,
         leaving,
+        list_memo,
     } = prepared;
     let layout = tree.layout(taffy_id).map_err(taffy_failed)?;
     let size = LogicalSize { width: layout.size.width, height: layout.size.height };
@@ -488,6 +496,7 @@ fn finish(
         tweens,
         leaving: false,
         text_memo,
+        list_memo,
     })
 }
 
@@ -520,6 +529,7 @@ pub(super) fn publish_geometry(
                 rect.set(key, v)?;
             }
             *cell.borrow_mut() = Value::Table(rect);
+            crate::lua::signal::note_write(id);
             if !quiet {
                 crate::lua::signal::note_geometry_moved(lua, id);
             }
@@ -681,9 +691,288 @@ mod tests {
         apply_at(&mut scene, &[surface], full(), &shaping, &lua).unwrap();
         let thawed = scene.surface("bar@TEST").unwrap();
         let ids_after: Vec<NodeId> = thawed.children[0].children[0].children.iter().map(|c| c.id).collect();
-        assert_eq!(ids_after, ids_before, "showing it again pairs the fresh items with the frozen nodes");
-        assert_eq!(built(), 4);
+        assert_eq!(ids_after, ids_before, "showing it again keeps the frozen nodes");
+        assert_eq!(built(), 2, "and builds nothing, since nothing the list read has changed (ADR-0269)");
         assert_eq!(thawed.children[0].children[0].children[1].rect.y, 10.0, "and lays them out again");
+    }
+
+    /// The `content` of each item of the list at `column[1]`, a leaver included.
+    fn list_contents(scene: &Scene) -> Vec<String> {
+        let list = &scene.surface("bar@TEST").unwrap().children[0].children[1];
+        assert_eq!(list.kind, "list");
+        list.children
+            .iter()
+            .map(|item| match item.properties.get("content") {
+                Some(Value::String(s)) => s.to_string_lossy(),
+                other => format!("{other:?}"),
+            })
+            .collect()
+    }
+
+    /// A `clock` text beside a `list` of `items`, counting `itemfn` calls in `built`. `item` is the
+    /// body of `itemfn(name)`.
+    fn clock_beside_a_list(item: &str) -> (mlua::Lua, VirtualNode) {
+        surface_from(&format!(
+            r#"built = 0
+            clock = state("clock", "0")
+            items = state("items", {{ "a", "b", "c" }})
+            return panel {{ id = "bar", child = column {{ children = {{
+                text {{ content = clock }},
+                list {{ source = items, key = function(name) return name end, itemfn = function(name)
+                    built = built + 1
+                    {item}
+                end }},
+            }} }} }}"#
+        ))
+    }
+
+    #[test]
+    fn a_write_the_list_never_read_runs_no_item_function_and_keeps_its_items() {
+        let mut scene = Scene::new();
+        let shaping = ShapingHandle::spawn();
+        let (lua, surface) = clock_beside_a_list("return text { content = name }");
+        let built = || lua.globals().get::<i64>("built").unwrap();
+        let apply =
+            |scene: &mut Scene| apply_at(scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
+
+        apply(&mut scene);
+        let ids = |scene: &Scene| -> Vec<NodeId> {
+            scene.surface("bar@TEST").unwrap().children[0].children[1].children.iter().map(|c| c.id).collect()
+        };
+        let first = ids(&scene);
+        assert_eq!(built(), 3);
+
+        lua.load(r#"clock:set("1")"#).exec().unwrap();
+        apply(&mut scene);
+        assert_eq!(built(), 3, "the clock is not the list's");
+        assert_eq!(ids(&scene), first);
+        assert_eq!(list_contents(&scene), ["a", "b", "c"]);
+        let clock = &scene.surface("bar@TEST").unwrap().children[0].children[0];
+        assert_eq!(clock.properties.get("content").and_then(|v| v.as_string()).unwrap().to_string_lossy(), "1");
+
+        lua.load(r#"items:set({ "a", "b", "c", "d" })"#).exec().unwrap();
+        apply(&mut scene);
+        assert_eq!(built(), 7, "a new source builds every item again");
+        assert_eq!(list_contents(&scene), ["a", "b", "c", "d"]);
+        assert_eq!(ids(&scene)[..3], first[..], "and reconciles them onto the nodes they had");
+    }
+
+    #[test]
+    fn a_signal_read_by_itemfn_or_bound_in_an_item_or_under_the_source_rebuilds_the_list() {
+        let mut scene = Scene::new();
+        let shaping = ShapingHandle::spawn();
+        let (lua, surface) = surface_from(
+            r#"built = 0
+            clock = state("clock", "0")
+            suffix = state("suffix", "!")
+            shown = state("shown", "x")
+            filter = state("filter", "")
+            limit = state("limit", 10)
+            local all = { "ab", "ac", "b" }
+            local source = computed({ filter }, function(f)
+                local out = {}
+                for _, n in ipairs(all) do if n:find(f, 1, true) then out[#out + 1] = n end end
+                return out
+            end)
+            return panel { id = "bar", child = column { children = {
+                text { content = clock },
+                list { source = source, limit = limit, itemfn = function(name)
+                    built = built + 1
+                    return row { children = { text { content = name .. suffix:get() }, text { content = shown } } }
+                end },
+            } } }"#,
+        );
+        let apply =
+            |scene: &mut Scene| apply_at(scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
+        let rows = |scene: &Scene| -> Vec<String> {
+            scene.surface("bar@TEST").unwrap().children[0].children[1]
+                .children
+                .iter()
+                .map(|row| {
+                    row.children
+                        .iter()
+                        .map(|t| t.properties.get("content").unwrap().as_string().unwrap().to_string_lossy())
+                        .collect::<Vec<_>>()
+                        .join("")
+                })
+                .collect()
+        };
+        let built = || lua.globals().get::<i64>("built").unwrap();
+
+        apply(&mut scene);
+        assert_eq!(rows(&scene), ["ab!x", "ac!x", "b!x"]);
+        lua.load(r#"clock:set("1")"#).exec().unwrap();
+        apply(&mut scene);
+        assert_eq!(built(), 3, "the computed source's own state is unchanged");
+
+        lua.load(r#"suffix:set("?")"#).exec().unwrap();
+        apply(&mut scene);
+        assert_eq!(rows(&scene), ["ab?x", "ac?x", "b?x"], "a `:get()` inside `itemfn`");
+
+        lua.load(r#"shown:set("y")"#).exec().unwrap();
+        apply(&mut scene);
+        assert_eq!(rows(&scene), ["ab?y", "ac?y", "b?y"], "a signal bound inside a built item");
+
+        lua.load(r#"filter:set("a")"#).exec().unwrap();
+        apply(&mut scene);
+        assert_eq!(rows(&scene), ["ab?y", "ac?y"], "a state under a computed `source`");
+
+        lua.load(r#"limit:set(1)"#).exec().unwrap();
+        apply(&mut scene);
+        assert_eq!(rows(&scene), ["ab?y"], "the list's own `limit`");
+    }
+
+    /// The instance must stay a reader of the source across a pass that skipped reading it, or the
+    /// next write to it would re-resolve nothing.
+    #[test]
+    fn a_pass_that_skips_a_list_still_leaves_its_surface_reading_the_source() {
+        let mut scene = Scene::new();
+        let shaping = ShapingHandle::spawn();
+        let lua = mlua::Lua::new();
+        register_node_constructors(&lua).unwrap();
+        let dirty = crate::lua::signal::DirtyFlag::new();
+        crate::lua::signal::register(&lua, dirty.clone()).unwrap();
+        let table: mlua::Table = lua
+            .load(
+                r#"clock = state("clock", "0")
+                items = state("items", { "a" })
+                return panel { id = "bar", child = column { children = {
+                    text { content = clock },
+                    list { source = items:map(function(all) return all end), itemfn = function(name)
+                        return text { content = name }
+                    end },
+                } } }"#,
+            )
+            .eval()
+            .unwrap();
+        let surface = deserialize_lua_table(&table).unwrap();
+        apply_at(&mut scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
+        lua.load(r#"clock:set("1")"#).exec().unwrap();
+        assert_eq!(dirty.take_scope(&lua), crate::lua::signal::DirtyScope::Instances(vec!["bar@TEST".into()]));
+        apply_at(&mut scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
+
+        lua.load(r#"items:set({ "b" })"#).exec().unwrap();
+        assert_eq!(dirty.take_scope(&lua), crate::lua::signal::DirtyScope::Instances(vec!["bar@TEST".into()]));
+    }
+
+    /// A failed pass rolls back to the last good items and their memo, which predates the write
+    /// that broke them: the next pass builds again and fails again rather than keeping them.
+    #[test]
+    fn a_list_that_failed_its_last_build_builds_and_fails_again() {
+        let mut scene = Scene::new();
+        let shaping = ShapingHandle::spawn();
+        let (lua, surface) =
+            clock_beside_a_list(r#"if name == "bad" then error("no") end return text { content = name }"#);
+        let apply = |scene: &mut Scene| apply_at(scene, std::slice::from_ref(&surface), full(), &shaping, &lua);
+        apply(&mut scene).unwrap();
+
+        lua.load(r#"items:set({ "a", "bad" })"#).exec().unwrap();
+        assert!(apply(&mut scene).is_err());
+        assert!(apply(&mut scene).is_err(), "nothing written since, and still no kept items");
+        lua.load(r#"clock:set("1")"#).exec().unwrap();
+        assert!(apply(&mut scene).is_err());
+        assert_eq!(list_contents(&scene), ["a", "b", "c"], "the rollback kept the last good items");
+    }
+
+    /// A pending `delay` answers differently once its hold runs out, with no cell written.
+    #[test]
+    fn a_list_reading_a_pending_delay_builds_on_every_pass_until_it_settles() {
+        let mut scene = Scene::new();
+        let shaping = ShapingHandle::spawn();
+        let (lua, surface) = clock_beside_a_list(
+            r#"held = held or delay(state("q", "old"), 60000) return text { content = held:get() }"#,
+        );
+        let built = || lua.globals().get::<i64>("built").unwrap();
+        let apply =
+            |scene: &mut Scene| apply_at(scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
+
+        apply(&mut scene);
+        lua.load(r#"clock:set("1")"#).exec().unwrap();
+        apply(&mut scene);
+        assert_eq!(built(), 3, "a settled delay is as good as its source");
+
+        lua.load(r#"state("q", "old"):set("new")"#).exec().unwrap();
+        apply(&mut scene);
+        assert_eq!(built(), 6);
+        lua.load(r#"clock:set("2")"#).exec().unwrap();
+        apply(&mut scene);
+        assert_eq!(built(), 9, "pending, so the next pass has to ask it again");
+    }
+
+    /// A layout write is quiet, and still a write: `geometry` is published after the build that
+    /// read it, and the next pass must see the new rect.
+    #[test]
+    fn a_geometry_read_by_itemfn_rebuilds_the_list_once_layout_moves_it() {
+        let mut scene = Scene::new();
+        let shaping = ShapingHandle::spawn();
+        let (lua, surface) = surface_from(
+            r#"g = geometry("box")
+            return panel { id = "bar", child = column { children = {
+                rect { width = 40, height = 10, geometry = g },
+                list { source = { "a" }, itemfn = function(name)
+                    return text { content = name .. math.floor(g:get().width) }
+                end },
+            } } }"#,
+        );
+        apply_at(&mut scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
+        assert_eq!(list_contents(&scene), ["a0"], "the first build ran before the first layout");
+        apply_at(&mut scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
+        assert_eq!(list_contents(&scene), ["a40"]);
+    }
+
+    #[test]
+    fn a_new_evaluation_builds_its_list_again_over_an_unchanged_source() {
+        let mut scene = Scene::new();
+        let shaping = ShapingHandle::spawn();
+        let (lua, surface) = clock_beside_a_list("return text { content = name }");
+        apply_at(&mut scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
+
+        let table: mlua::Table = lua
+            .load(
+                r#"return panel { id = "bar", child = column { children = {
+                    text { content = clock },
+                    list { source = items, itemfn = function(name) return text { content = name .. "2" } end },
+                } } }"#,
+            )
+            .eval()
+            .unwrap();
+        let reloaded = deserialize_lua_table(&table).unwrap();
+        apply_at(&mut scene, &[reloaded], full(), &shaping, &lua).unwrap();
+        assert_eq!(list_contents(&scene), ["a2", "b2", "c2"]);
+    }
+
+    /// Leavers and running tweens live on the retained items a skipped build keeps, and move on as
+    /// they would in a build.
+    #[test]
+    fn a_skipped_build_keeps_a_leaver_leaving_and_a_tween_running() {
+        let mut scene = Scene::new();
+        let shaping = ShapingHandle::spawn();
+        let (lua, surface) = clock_beside_a_list(
+            r#"return text { id = name, content = name, font_size = size,
+                animate = { font_size = { duration = 60000 }, exit = { duration = 60000, opacity = 0 } } }"#,
+        );
+        lua.load(r#"size = state("size", 10)"#).exec().unwrap();
+        let apply =
+            |scene: &mut Scene| apply_at(scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
+        apply(&mut scene);
+
+        lua.load(r#"items:set({ "a", "b" }) size:set(20)"#).exec().unwrap();
+        apply(&mut scene);
+        let list = |scene: &Scene| scene.surface("bar@TEST").unwrap().children[0].children[1].clone();
+        let before = list(&scene);
+        assert_eq!(before.children.iter().map(|c| c.leaving).collect::<Vec<_>>(), [false, false, true]);
+        let started = before.children[0].tweens[0].started;
+
+        lua.load(r#"clock:set("1")"#).exec().unwrap();
+        apply(&mut scene);
+        assert_eq!(lua.globals().get::<i64>("built").unwrap(), 5, "3, then 2 for the new source, then none");
+        let after = list(&scene);
+        assert_eq!(after.children.iter().map(|c| c.leaving).collect::<Vec<_>>(), [false, false, true]);
+        assert_eq!(after.children[0].tweens[0].started, started, "the tween runs on rather than restarting");
+        assert_eq!(
+            after.children.iter().map(|c| c.id).collect::<Vec<_>>(),
+            before.children.iter().map(|c| c.id).collect::<Vec<_>>()
+        );
     }
 
     #[test]

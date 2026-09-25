@@ -33,15 +33,18 @@ pub(super) struct MemoTable {
     pub(super) eval_stack: Vec<Vec<CellId>>,
 }
 
-pub(super) struct ComputedFrame<'lua>(&'lua Lua);
+/// The cells read between `enter` and `finish`, including through a memo hit or a nested frame,
+/// which hands its own up on close. A `computed` evaluation is one; a `list`'s build is another
+/// (ADR-0269).
+pub(crate) struct ComputedFrame<'lua>(&'lua Lua);
 
 impl<'lua> ComputedFrame<'lua> {
-    pub(super) fn enter(lua: &'lua Lua) -> Self {
+    pub(crate) fn enter(lua: &'lua Lua) -> Self {
         EvaluationMemo::push_frame(lua);
         Self(lua)
     }
 
-    pub(super) fn finish(self) -> Vec<CellId> {
+    pub(crate) fn finish(self) -> Vec<CellId> {
         let cells = EvaluationMemo::pop_frame(self.0);
         std::mem::forget(self);
         cells
@@ -103,6 +106,74 @@ pub(crate) fn reset_read_tracker(lua: &Lua) {
 pub(crate) fn note_read(lua: &Lua, cell_id: CellId) {
     note_instance_reads(lua, &[cell_id]);
     EvaluationMemo::record_dependency(lua, cell_id);
+}
+
+/// [`note_read`] for every cell a skipped build read last time, so the instance and any enclosing
+/// frame still depend on them.
+pub(crate) fn note_reads(lua: &Lua, cells: &[CellId]) {
+    note_instance_reads(lua, cells);
+    if let Some(mut table) = lua.app_data_mut::<MemoTable>()
+        && let Some(frame) = table.eval_stack.last_mut()
+    {
+        add_unique(frame, cells);
+    }
+}
+
+/// Marks the enclosing frame as reading a clock: a `delay` holding a pending value or a `pulse`
+/// whose window is open answers differently later with no cell written.
+pub(super) fn note_unsettled(lua: &Lua) {
+    EvaluationMemo::record_dependency(lua, UNSETTLED);
+}
+
+/// Stands for the clock in a read set; never allocated, and always written.
+const UNSETTLED: CellId = CellId(0);
+
+/// When each cell was last written, on one counter. Per thread rather than per `Lua`: a capability
+/// push writes through a `LiveSignalHandle`, which holds no `Lua`, and cells are `Rc`s, so every
+/// write lands on the thread that reads them. `CellId`s are process-unique, so two VMs on one
+/// thread cannot collide.
+#[derive(Default)]
+struct WriteLog {
+    clock: u64,
+    /// Every cell counts as written at this tick: a new evaluation may have changed what a build
+    /// reads without writing a cell.
+    everything: u64,
+    last: FxHashMap<CellId, u64>,
+}
+
+thread_local! {
+    static WRITES: std::cell::RefCell<WriteLog> = std::cell::RefCell::new(WriteLog::default());
+}
+
+/// Stamps a write to `cell`, whether or not it dirties the scene.
+pub(crate) fn note_write(cell: CellId) {
+    WRITES.with_borrow_mut(|log| {
+        log.clock += 1;
+        let at = log.clock;
+        log.last.insert(cell, at);
+    });
+}
+
+/// Counts every cell as written now, and forgets the per-cell stamps this subsumes.
+pub(crate) fn note_everything_written() {
+    WRITES.with_borrow_mut(|log| {
+        log.clock += 1;
+        log.everything = log.clock;
+        log.last.clear();
+    });
+}
+
+/// The stamp a build takes before it reads anything.
+pub(crate) fn write_clock() -> u64 {
+    WRITES.with_borrow(|log| log.clock)
+}
+
+/// Whether any of `cells` was written after `stamp`.
+pub(crate) fn written_since(stamp: u64, cells: &[CellId]) -> bool {
+    WRITES.with_borrow(|log| {
+        log.everything > stamp
+            || cells.iter().any(|cell| *cell == UNSETTLED || log.last.get(cell).is_some_and(|at| *at > stamp))
+    })
 }
 
 /// [`note_read`]'s instance half.
@@ -187,10 +258,9 @@ impl<'lua> EvaluationMemo<'lua> {
         }
     }
 
+    /// Creates the table, so a frame opened outside any evaluation still collects its reads.
     fn push_frame(lua: &Lua) {
-        if let Some(mut table) = lua.app_data_mut::<MemoTable>() {
-            table.eval_stack.push(Vec::new());
-        }
+        crate::lua::app_data_or_default::<MemoTable>(lua).eval_stack.push(Vec::new());
     }
 
     fn pop_frame(lua: &Lua) -> Vec<CellId> {

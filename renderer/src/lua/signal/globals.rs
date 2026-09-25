@@ -84,8 +84,10 @@ pub fn any_hover_registered(lua: &Lua) -> bool {
 struct StateRegistry(HashMap<String, (Signal, Value)>, HashSet<String>, HashSet<String>);
 
 /// Called by `Loader` before each evaluation: only a second, different seed within one evaluation
-/// is a conflict, while one differing from the last evaluation's is an edit.
+/// is a conflict, while one differing from the last evaluation's is an edit. The evaluation may
+/// change what any build reads without writing a cell, so it counts as writing every one.
 pub fn begin_evaluation(lua: &Lua) {
+    super::note_everything_written();
     if let Some(mut registry) = lua.app_data_mut::<StateRegistry>() {
         registry.1.clear();
     }

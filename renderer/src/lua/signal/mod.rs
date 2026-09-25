@@ -24,12 +24,14 @@ pub(crate) use globals::note_geometry_moved;
 pub use globals::{
     any_hover_registered, begin_evaluation, declared_states, promote_states, register, take_geometry_moved, write_state,
 };
-use tracking::{ComputedFrame, EvaluationMemo, MemoKey, ReadTracker, next_computed_id};
 pub(crate) use tracking::{
-    begin_instance_resolve, end_instance_resolve, forget_instance, note_read, reset_read_tracker,
+    ComputedFrame, begin_instance_resolve, end_instance_resolve, forget_instance, note_everything_written, note_read,
+    note_reads, note_write, reset_read_tracker, write_clock, written_since,
 };
+use tracking::{EvaluationMemo, MemoKey, ReadTracker, next_computed_id, note_unsettled};
 
 /// Globally unique identifier for a reactive cell, avoiding pointer recycling issues (ADR-0170).
+/// `0` is never allocated; `tracking` spends it on the clock.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub(crate) struct CellId(u64);
 
@@ -396,6 +398,9 @@ fn read_derived(lua: &Lua, ud: &mlua::AnyUserData) -> mlua::Result<Value> {
             let pending = due.get().map(|at| mlua::Result::Ok((ud.nth_user_value(PENDING_SLOT)?, at))).transpose()?;
             let mut cell = DelayCell { held: ud.nth_user_value(HELD_SLOT)?, pending };
             let answer = cell.follow(fresh, hold, Instant::now(), |at| arm_wake(lua, at));
+            if cell.pending.is_some() {
+                note_unsettled(lua);
+            }
             let (pending, at) = cell.pending.unzip();
             due.set(at);
             ud.set_nth_user_value(HELD_SLOT, cell.held)?;
@@ -407,6 +412,9 @@ fn read_derived(lua: &Lua, ud: &mlua::AnyUserData) -> mlua::Result<Value> {
             let fresh = source_at(ud, FIRST_SOURCE_SLOT)?.get_value(lua)?;
             let mut cell = PulseCell { seen: ud.nth_user_value(HELD_SLOT)?, until: until.get() };
             let open = cell.fire(fresh, hold, Instant::now(), |at| arm_wake(lua, at));
+            if open {
+                note_unsettled(lua);
+            }
             until.set(cell.until);
             ud.set_nth_user_value(HELD_SLOT, cell.seen)?;
             Ok(Value::Boolean(open))
@@ -522,6 +530,7 @@ impl LiveSignalHandle {
     /// the clamped value next pass. Positioning itself uses the clamped value immediately.
     pub(crate) fn set_quiet(&self, value: Value) {
         *self.1.borrow_mut() = value;
+        note_write(self.0);
     }
 
     /// [`Self::set`] with equality deduplication. ADR-0062 decision 4 calls it for every
@@ -572,6 +581,7 @@ impl DirtyFlag {
 
     /// Marks a specific reactive cell dirty.
     pub(crate) fn mark_cell(&self, id: CellId) {
+        note_write(id);
         self.0.borrow_mut().cells.insert(id);
     }
 

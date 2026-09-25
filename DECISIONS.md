@@ -6567,3 +6567,57 @@ A layout error named its node by tree path alone (`row[0] > row[0] > text ...`),
 A config iterating a node table with `pairs` sees `__site`. Rejected: a Rust map keyed by table
 pointer, which a collected table's reused address would mislabel; recording sites only under
 `mantle check`, which would leave the live error log and `mantle.rescue` without them.
+
+## 0269. A `list` keeps its items while nothing its last build read has changed
+
+Before, every pass that re-resolved a surface called `itemfn` for every item of every visible
+`list` on it: a clock tick rebuilt a 30-item tray. Measured by `layout::scene::tests::list_pass_cost`
+(release, six nodes a row, one text, a `clock` text beside the list), p50 per pass:
+
+| rows | before, any write | after, `clock` written | after, `source` written |
+|---|---|---|---|
+| 12 | 0.30 ms | 0.17 ms | 0.29 ms |
+| 50 | 1.09 ms | 0.53 ms | 1.06 ms |
+| 125 | 2.66 ms | 1.25 ms | 2.57 ms |
+| 500 | 10.8 ms | 4.9 ms | 10.7 ms |
+| 125, no text | 2.14 ms | 0.97 ms | 2.11 ms |
+
+1. **The unit is the whole list.** A build opens a read frame (the one a `computed` uses) around
+   `source`, `itemfn`, `key` and the resolution of every item down its subtree, and keeps the
+   cells it read with the write clock it started at and its `source`, `itemfn` and `key` by
+   address and `limit` by value (`ListMemo`, on the retained node). A pass that finds all of
+   them unchanged lays the retained items out again through the tick's Lua-free walk
+   (`prepare_retained_children`) and notes the kept cells as the instance's reads, so the next
+   write to one still dirties it. Per item would also skip the items a push left alone, but needs
+   a read frame per item and a way to rebuild some items and keep others through
+   `pair_children_by_id_then_position`; not built until a measurement asks for it.
+2. **Skipping only `itemfn` was the smaller half.** Keeping the `VirtualNode`s and resolving,
+   retargeting and parsing each item as before saves the `list` span, about 20% of the pass
+   (ADR-0132's 19%). Keeping the resolved items saves about 53%; what is left is parse, solver
+   nodes and the solve.
+3. **Writes are stamped per cell, on one per-thread counter.** Every dirtying write goes through
+   `DirtyFlag::mark_cell`; the quiet ones, the scroll clamp and the `geometry` publish, stamp too,
+   so a layout write a build read is seen on the next pass whether or not it scheduled one. Per
+   thread because a capability push writes through a `LiveSignalHandle`, which holds no `Lua`.
+   `begin_evaluation` stamps every cell, so a reload rebuilds even a list whose functions survived it.
+4. **`source` is read by the list, not by `resolve_properties`**, so a kept list does not run a
+   filter bound to it. The field is raw like `hover` and `scroll`; the stub still says `Bound`.
+5. **A clock is a write nobody makes.** A `delay` holding a pending value or a `pulse` with its
+   window open marks the frame unsettled, and an unsettled list builds on every pass until both
+   settle.
+
+The cost is a contract. The engine sees signal reads only, so `itemfn`, `key` and every `map` bound
+inside an item that reads `os.time()`, a mutable upvalue or a `source` table changed in place shows
+what it read at the last build, until something it read through a signal changes. Before, those
+refreshed on any write to the surface. ADR-0044's amendment named this hole for per-surface
+invalidation; it is the same hole one level down, and `docs/nodes/list.md` states the contract.
+
+Rejected: comparing each item's output after building it (the build is the cost); comparing
+`source` by value (a capability push is a fresh table every time, and a table `:set` after an
+in-place edit is the same one); a cache keyed by `NodeId` beside the scene (rollback recycles ids);
+comparing `itemfn` by prototype and upvalues, so an `itemfn` written inside a function `child`,
+a new closure each pass, could keep its items. That list builds every pass, as before; the docs say
+to define it outside the builder.
+
+**Amends ADR-0044** (decision 3: a list's build is cached across passes, invalidated per written
+cell) **and ADR-0132** (item 3: the list half of delegate memoization is built, at the size above).

@@ -47,6 +47,10 @@ so everything since the rename from Obelisk sits under Unreleased.
 - Two surfaces with one `id`, or two different scalar seeds for one `state` name in one
   evaluation, fail the evaluation.
 - A `list` without `source` builds no items instead of raising.
+- A `list` keeps its items while nothing its last build read has changed, instead of calling
+  `itemfn` for every item on every pass: a write elsewhere on its surface costs about half as much.
+  `itemfn`, `key` and the maps inside items must read time and mutable data through signals, or
+  they show what they read at the last build ([when items rebuild](nodes/list.md#when-items-rebuild)).
 - **Breaking:** each capability action is a method, and `:invoke` is gone:
   `mantle.audio:set_volume(0.5)` replaces `mantle.audio:invoke("set_volume", 0.5)`. The editor
   stubs type each action's own arguments, so `mantle.audio:set_muted(0.5)` is flagged. An unknown

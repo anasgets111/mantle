@@ -59,10 +59,34 @@ Keyed workspace buttons from a capability: [workspaces cookbook](../cookbook/wor
 A `list` packs and aligns exactly like the `row` or `column` its `direction` names: its own
 `align_v` (vertical) or `align_h` (horizontal) packs the items.
 
-Every pass that re-resolves the list calls `itemfn` for every item, scrolled out of view or not.
-`key` keeps each item's state (tweens, a held image, a text field's draft) across reorders; it does
-not skip `itemfn`. Cap a long list with `limit` (a launcher's top 50 matches), or hide it while
+## When items rebuild
+
+A list keeps the items it built until something that build read changes. A pass that finds nothing
+changed calls no `itemfn` and reads none of the items' signals; it lays the kept items out again,
+about half the cost of building them. One change rebuilds every item, scrolled out of view or not.
+
+| Change | Rebuilds the items |
+| :--- | :--- |
+| A write to `source`, or to a signal under a `map` or `computed` bound to it | ✓ |
+| A write to a signal `itemfn` or `key` read with `:get()` | ✓ |
+| A write to a signal bound to a property of a built item, at any depth | ✓ |
+| A new `source`, `itemfn` or `key` value, a new `limit`, or a reload | ✓ |
+| A write to anything else, even on the same surface | |
+
+`key` carries each item's state (tweens, a held image, a text field's draft) onto its rebuilt node,
+and across reorders. Cap a long list with `limit` (a launcher's top 50 matches), or hide it while
 closed so it freezes.
+
+The engine sees signal reads only. `itemfn`, `key` and every `map` bound inside an item must
+answer from their arguments and the signals they read; anything else they read is taken as it was
+at the last build:
+
+| Read inside an item | Stays as built until the next rebuild | Instead |
+| :--- | :--- | :--- |
+| `os.time()`, `os.date()`, `os.clock()` | ✓ | Derive from `mantle.system`'s `time`, or a `state` a `timer` writes |
+| A local or global changed without `:set` | ✓ | Keep it in a `state` |
+| A `source` table changed in place | ✓ | `:set` the table again, or build a new one |
+| A `delay` or `pulse` | | Nothing: the list rebuilds on every pass while one is pending or open |
 
 ## How do I…
 
@@ -101,7 +125,9 @@ local items = list {
 
 | Trap | Fix |
 | :--- | :--- |
-| A 2000-item `list` makes every update slow | Every item is built on every pass, visible or not. Cap it with `limit`, filter the `source`, or hide the list while it is closed |
+| A 2000-item `list` makes every update slow | Every item is laid out on every pass, and built whenever anything it read changes, visible or not. Cap it with `limit`, filter the `source`, or hide the list while it is closed |
+| A `list` rebuilds on every pass though nothing it shows changed | Its `itemfn` or `key` is a new function each pass, as inside a function `child`. Define them once, outside the builder |
+| A relative time ("3 min ago") in an item stops updating | `itemfn` read the clock with `os.time()`. Bind the text to a `map` of `mantle.system` instead ([when items rebuild](#when-items-rebuild)) |
 | A `list` of more than 10000 elements is refused | Set `limit`, or page the `source` |
 | `duplicate key` error | `key` must return a different string for every element |
 | `key` returning a number is refused | Return a string: `tostring(item.id)` |

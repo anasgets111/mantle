@@ -88,6 +88,7 @@ impl ResolvedNode {
             tweens: Vec::new(),
             leaving: false,
             text_memo: None,
+            list_memo: None,
         }
     }
 }
@@ -230,6 +231,8 @@ pub struct ResolvedNode {
     pub leaving: bool,
     /// The last `(max_width, size)` a `text` node measured, carried so unchanged text skips shaping.
     pub text_memo: Option<(Option<f32>, taffy::Size<f32>)>,
+    /// What a `list` built its items from, so a pass that finds it unchanged keeps them.
+    pub list_memo: Option<node::ListMemo>,
 }
 
 impl ResolvedNode {
@@ -707,6 +710,8 @@ struct PreparedNode {
     tweens: Vec<Tween>,
     /// Children on their way out (ADR-0150), already advanced this pass. Not in the solver.
     leaving: Vec<ResolvedNode>,
+    /// Carried across the pass, or replaced by the build that ran; see [`ResolvedNode::list_memo`].
+    list_memo: Option<node::ListMemo>,
 }
 
 #[cfg(test)]
@@ -1329,22 +1334,24 @@ pub(super) mod tests {
     /// What one `list` pass costs at the sizes a wallpaper folder reaches:
     /// `cargo test -p renderer --release list_pass_cost -- --ignored --nocapture`. Ignored for the
     /// same reasons as [`read_seam_cost`]: it reports numbers, and only a release build's mean
-    /// anything.
+    /// anything. `MANTLE_PROFILE=1` adds the per-pass split.
     ///
-    /// Six nodes per row, one of them text, over a cached re-apply -- the per-capability-push
-    /// shape of ADR-0044 decision 2, not a cold start. On this machine:
+    /// Six nodes per row, one of them text, beside a `clock` text, over a cached re-apply -- the
+    /// per-capability-push shape of ADR-0044 decision 2, not a cold start. `clock` writes only the
+    /// clock, so the list keeps its items (ADR-0269); `source` writes the list's source, so it
+    /// builds them all. On this machine:
     ///
-    /// | rows | p50 | note |
-    /// |---|---|---|
-    /// | 12 | 0.28 ms | one viewport of a virtualized list |
-    /// | 50 | 1.14 ms | ADR-0132's fifty tiles |
-    /// | 125 | 2.81 ms | 500 wallpapers, four to a row |
-    /// | 500 | 11.8 ms | 2000 wallpapers |
-    /// | 125, no text | 2.36 ms | the text nodes are 16% of the 125-row figure |
+    /// | rows | `clock` p50 | `source` p50 | note |
+    /// |---|---|---|---|
+    /// | 12 | 0.17 ms | 0.29 ms | one viewport of a virtualized list |
+    /// | 50 | 0.51 ms | 1.15 ms | ADR-0132's fifty tiles |
+    /// | 125 | 1.23 ms | 2.79 ms | 500 wallpapers, four to a row |
+    /// | 500 | 4.8 ms | 11.2 ms | 2000 wallpapers |
+    /// | 125, no text | 0.93 ms | 2.31 ms | |
     ///
-    /// Linear in source length at roughly 22us a row: the one place in the tree where a config's
-    /// data size, not its structure, sets the frame time. ADR-0191 is
-    /// the design that would cut it to the first row of this table, and why it is not built yet.
+    /// Linear in source length either way: about 10us a row kept, 22us a row built. A kept list
+    /// still lays every item out; ADR-0191's viewport is the design that would cut it to the first
+    /// row of this table, and why it is not built yet.
     #[test]
     #[ignore]
     fn list_pass_cost() {
@@ -1352,40 +1359,59 @@ pub(super) mod tests {
             let label =
                 if text { r###"text { content = e.label, font_size = 14, foreground = "#ffffff" },"### } else { "" };
             format!(
-                r##"local entries = {{}}
+                r##"clock = state("clock", "0")
+                local entries = {{}}
                 for i = 1, {rows} do entries[i] = {{ id = "e" .. i, label = "wallpaper " .. i }} end
+                source = state("source", entries)
                 return panel {{
                     id = "picker",
-                    child = list {{
-                        width = "Fill", height = "Fill", spacing = 6,
-                        source = entries,
-                        key = function(e) return e.id end,
-                        itemfn = function(e)
-                            return row {{ width = "Fill", height = 96, spacing = 6, children = {{
-                                rect {{ width = 96, height = 96, background = "#202020", radius = 8 }},
-                                rect {{ width = 96, height = 96, background = "#202020", radius = 8 }},
-                                rect {{ width = 96, height = 96, background = "#202020", radius = 8 }},
-                                rect {{ width = 96, height = 96, background = "#202020", radius = 8 }},
-                                {label}
-                            }} }}
-                        end,
-                    }},
+                    child = column {{ width = "Fill", height = "Fill", children = {{
+                        text {{ content = clock, font_size = 14 }},
+                        list {{
+                            width = "Fill", height = "Fill", spacing = 6,
+                            source = source,
+                            key = function(e) return e.id end,
+                            itemfn = function(e)
+                                return row {{ width = "Fill", height = 96, spacing = 6, children = {{
+                                    rect {{ width = 96, height = 96, background = "#202020", radius = 8 }},
+                                    rect {{ width = 96, height = 96, background = "#202020", radius = 8 }},
+                                    rect {{ width = 96, height = 96, background = "#202020", radius = 8 }},
+                                    rect {{ width = 96, height = 96, background = "#202020", radius = 8 }},
+                                    {label}
+                                }} }}
+                            end,
+                        }},
+                    }} }},
                 }}"##
             )
         };
         let shaping = ShapingHandle::spawn();
         for (rows, text) in [(12usize, true), (50, true), (125, true), (500, true), (125, false)] {
-            let (lua, surface) = surface_from(&src(rows, text));
-            let mut scene = Scene::new();
-            apply_at(&mut scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
-            let mut samples = Vec::new();
-            for _ in 0..40 {
-                let started = std::time::Instant::now();
+            for (written, write) in [("clock", "clock:set(tostring(tick))"), ("source", "source:set(source:get())")] {
+                let (lua, surface) = surface_from(&src(rows, text));
+                let mut scene = Scene::new();
                 apply_at(&mut scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
-                samples.push(started.elapsed().as_secs_f64() * 1000.0);
+                scene.take_resolve_split();
+                let mut samples = Vec::new();
+                for tick in 0..40 {
+                    lua.globals().set("tick", tick).unwrap();
+                    lua.load(write).exec().unwrap();
+                    let started = std::time::Instant::now();
+                    apply_at(&mut scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
+                    samples.push(started.elapsed().as_secs_f64() * 1000.0);
+                }
+                samples.sort_by(|a, b| a.partial_cmp(b).unwrap());
+                let split = scene.take_resolve_split();
+                let per_pass = |d: std::time::Duration| d.as_secs_f64() * 1000.0 / 40.0;
+                println!(
+                    "{rows:4} rows text={text} write={written}: p50 {:.3} ms  p95 {:.3} ms  (list {:.3} resolve {:.3} solve {:.3})",
+                    samples[20],
+                    samples[38],
+                    per_pass(split.list),
+                    per_pass(split.resolve),
+                    per_pass(split.solve),
+                );
             }
-            samples.sort_by(|a, b| a.partial_cmp(b).unwrap());
-            println!("{rows:4} rows text={text}: p50 {:.3} ms  p95 {:.3} ms", samples[20], samples[38]);
         }
     }
 
