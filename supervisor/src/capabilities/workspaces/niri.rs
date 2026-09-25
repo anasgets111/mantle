@@ -5,7 +5,7 @@
 
 use std::collections::HashMap;
 
-use shared::{debug, error};
+use shared::{debug, error, warn};
 
 use super::controller::{FocusedWindow, StatePublisher, WorkspaceRow};
 use crate::capabilities::keyboard::layout::LayoutSink;
@@ -112,6 +112,10 @@ pub fn spawn_reader(mut publisher: StatePublisher, mut windows_publisher: Window
         loop {
             let event = match read_event() {
                 Ok(event) => event,
+                Err(err) if undecodable(&err) => {
+                    warn!("skipped a niri event this niri-ipc cannot decode: {err}");
+                    continue;
+                }
                 Err(err) => {
                     error!("niri event stream ended; workspaces and windows will no longer update: {err}");
                     return;
@@ -146,6 +150,12 @@ pub fn spawn_reader(mut publisher: StatePublisher, mut windows_publisher: Window
             }
         }
     });
+}
+
+/// A line niri sent but niri-ipc can't decode (a newer niri's event kind or shape), already
+/// consumed from the stream; socket end reads as `UnexpectedEof`, so it stays fatal.
+fn undecodable(err: &std::io::Error) -> bool {
+    err.kind() == std::io::ErrorKind::InvalidData
 }
 
 /// `workspaces:focus(id)`. `WorkspaceReferenceArg::Id`, not `Index`: `idx` shifts on reorder and
@@ -341,5 +351,15 @@ mod tests {
         let focused = focused_window(&map(vec![(2, bare)])).expect("a titleless window is still focused");
 
         assert_eq!((focused.title.as_str(), focused.app_id.as_str()), ("", ""));
+    }
+
+    /// niri-ipc's `read_events` turns a serde error into an `io::Error`; skipping relies on an
+    /// unknown event kind and socket end landing on different kinds.
+    #[test]
+    fn an_unknown_event_is_skippable_and_socket_end_is_not() {
+        let decode = |line: &str| std::io::Error::from(serde_json::from_str::<niri_ipc::Event>(line).unwrap_err());
+
+        assert!(undecodable(&decode(r#"{"ScreencastStarted":{"id":1}}"#)));
+        assert!(!undecodable(&decode("")), "read_line gives an empty line at socket end");
     }
 }

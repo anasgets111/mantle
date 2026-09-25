@@ -305,12 +305,14 @@ struct Burst {
 /// Blocks for one line, then takes every complete line already buffered. `None` at socket end.
 fn read_burst<R: std::io::Read>(reader: &mut BufReader<R>) -> std::io::Result<Option<Burst>> {
     let mut burst = Burst::default();
-    let mut line = String::new();
+    let mut line = Vec::new();
     loop {
         line.clear();
-        if reader.read_line(&mut line)? == 0 {
+        if reader.read_until(b'\n', &mut line)? == 0 {
             return Ok(None);
         }
+        // Lossy: `read_line` fails the whole stream on one title that isn't UTF-8.
+        let line = String::from_utf8_lossy(&line);
         let event = line.trim_end_matches('\n');
         match event.strip_prefix("windowtitlev2>>").and_then(|rest| rest.split_once(',')) {
             Some((address, title)) => burst.titles.push((format!("0x{address}"), title.to_string())),
@@ -740,6 +742,15 @@ mod tests {
             Burst { reread: false, layout: false, titles: vec![("0xa11ce".to_string(), "vim".to_string())] }
         );
         assert_eq!(read_burst(&mut reader).unwrap(), None, "socket end");
+    }
+
+    #[test]
+    fn a_title_that_is_not_utf8_keeps_the_stream_reading() {
+        let mut reader = BufReader::new(&b"windowtitlev2>>a11ce,caf\xe9\nworkspace>>2\n"[..]);
+
+        let burst = read_burst(&mut reader).unwrap().unwrap();
+        assert_eq!(burst.titles, [("0xa11ce".to_string(), "caf\u{fffd}".to_string())]);
+        assert!(burst.reread, "the line after it still counts");
     }
 
     #[test]
