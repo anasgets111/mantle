@@ -5,7 +5,7 @@
 -- `renderer/src/lua/nodes/properties.rs`, which the engine's name check and parsers read. Do not
 -- edit: change the table, run `just stubs` and commit what changes.
 --
--- `Bound` in a union means the property also takes a signal, resolved once per pass. It is
+-- `Bound` in a union means the property also takes a signal, read again once it is written. It is
 -- `userdata`, not `Signal`, so table payloads are not mistaken for signals. `id` and callbacks take
 -- no signal; `hover`, `scroll` and `geometry` take the handle itself. `[string]: "no such property"`
 -- makes a misspelled key a type error.

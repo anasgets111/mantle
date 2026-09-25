@@ -57,7 +57,8 @@ impl<T: Prop<Out = String>> Field<T> {
     }
 }
 
-/// `T`, or a signal of one, resolved once per pass (ADR-0044). The stubs spell it `T|Bound`.
+/// `T`, or a signal of one, resolved at most once per pass (ADR-0044) and kept until it is written
+/// (ADR-0270). The stubs spell it `T|Bound`.
 pub(crate) struct Bound<T>(PhantomData<T>);
 
 impl<T: LuaType> LuaType for Bound<T> {
