@@ -79,7 +79,7 @@ pub enum Motion {
 
 /// The name an `animate` entry eases, refused if `kind` does not have it. `animate` itself is not
 /// one: a block cannot ease the block.
-fn animatable_name(kind: &str, property: &str, field: &str) -> Result<&'static str, LayoutError> {
+pub(crate) fn animatable_name(kind: &str, property: &str, field: &str) -> Result<&'static str, LayoutError> {
     if property == "z" {
         return Err(invalid(field, "`z` snaps; it cannot animate"));
     }

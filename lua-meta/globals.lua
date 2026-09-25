@@ -108,7 +108,7 @@ function SessionProcessHandle:stop() end
 ---it at shutdown. Re-declaring a name returns the same handle and re-reads only `stop_signal`, so
 ---declare at a module's top level. Use `process.run` when you need its output.
 ---[docs](https://anasgets111.github.io/mantle/guide/processes.html#session_process)
----@param spec { name: string, stop_signal?: SignalName } `name` keys it in `mantle.processes`; empty raises. `stop_signal` defaults to `"TERM"`.
+---@param spec { name: string, stop_signal?: SignalName, [string]: "no such property" } `name` keys it in `mantle.processes`; empty raises. `stop_signal` defaults to `"TERM"`.
 ---@return SessionProcessHandle
 function session_process(spec) end
 
@@ -169,7 +169,7 @@ function PaletteHandle:cancel() end
 ---first, or `nil` on failure (logged). `cb` runs unbudgeted.
 ---[docs](https://anasgets111.github.io/mantle/guide/scripting.html#palettequantize)
 ---@param path string A local raster file; no SVG or URL.
----@param opts? { depth?: integer, rescale?: integer } `depth` 0 to 8, default 3: up to `2^depth` colours. `rescale` caps the longest edge before counting, default 128, `0` for full size. Out of range raises.
+---@param opts? { depth?: integer, rescale?: integer, [string]: "no such property" } `depth` 0 to 8, default 3: up to `2^depth` colours. `rescale` caps the longest edge before counting, default 128, `0` for full size. Out of range raises.
 ---@param cb fun(swatches: PaletteSwatch[]?)
 ---@return PaletteHandle
 function palette.quantize(path, opts, cb) end

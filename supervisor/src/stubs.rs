@@ -410,7 +410,7 @@ pub fn render() -> String {
         // an unbound `---@field` would check nothing.
         let base = if actions.is_none() { "ReadOnlyCapability" } else { "Capability" };
         out.push_str(&format!(
-            "\n---[docs]({DOCS}capabilities/{capability}.html)\n---@class {class}: {base}<{payload}>\n"
+            "\n---[docs]({DOCS}capabilities/{capability}.html)\n---@class {class}: {base}<{payload}>, userdata\n"
         ));
         out.push_str(hand_written_methods(capability));
         match actions {
@@ -552,14 +552,22 @@ const GENERATED_HEADER: &str = r#"---@meta
 -- Descriptions are the Rust doc comments on the supervisor's `Serialize` payload and action types:
 -- document a field there and regenerate. `mantle init` rewrites installed stubs that differ.
 --
--- Every capability reads `nil` until its first push. A JSON `null` arrives as an absent key
--- (ADR-0057), so `if item.app_icon then` guards an optional field.
+-- Every capability reads `nil` until its first push, so its `:get()` and `:map` see `T?`. A JSON
+-- `null` arrives as an absent key (ADR-0057), so `if item.app_icon then` guards an optional field.
+--
+-- Stub note: each class also names `userdata`. LuaLS does not follow a generic parent such as
+-- `Capability<AudioState>` when checking assignment, so without it a capability is refused where a
+-- `Signal` goes, though the engine takes one anywhere a signal goes.
 
----@class ReadOnlyCapability<T>: Signal<T>
----`:get()` and `:map()` read the pushed payload; `:set()` is refused. `:on_change(handler)` runs once
----per push with the new and previous payload (`nil` on the first), under the 5ms `map` budget, and
+---@class WatchedSignal<T>: Signal<T>
+---A `mantle` member the engine writes; `:set()` is refused. `:on_change(handler)` runs once per push
+---with the new and previous payload (`nil` on a capability's first), under the 5ms `map` budget, and
 ---may call actions or write state (ADR-0115).
----@field on_change fun(self: ReadOnlyCapability<T>, handler: fun(current: T, previous: T?))
+---@field on_change fun(self: WatchedSignal<T>, handler: fun(current: T, previous: T?))
+
+---@class ReadOnlyCapability<T>: WatchedSignal<T>
+---@field get fun(self: ReadOnlyCapability<T>): T? The last pushed payload; `nil` before the first push.
+---@field map fun(self: ReadOnlyCapability<T>, fn: fun(value: T?): any): Signal<any> As `Signal:map`; `fn` sees `nil` before the first push.
 
 ---@class Capability<T>: ReadOnlyCapability<T>
 "#;
@@ -622,8 +630,8 @@ const RENDERER_SOURCED: &str = r#"
 ---@field patch integer The Renderer's `CARGO_PKG_VERSION_PATCH`.
 "#;
 
-const MANTLE_TAIL: &str = r#"---@field screens ReadOnlyCapability<Screen[]> Connected outputs from the Renderer. `{}` rather than `nil` at first evaluation (ADR-0041). [docs]({DOCS}capabilities/index.html#renderer-members)
----@field rescue ReadOnlyCapability<RescueState> Whether the last evaluation, apply, live update or the session lock failed; the previous scene stays up (ADR-0046). [docs]({DOCS}capabilities/index.html#renderer-members)
+const MANTLE_TAIL: &str = r#"---@field screens WatchedSignal<Screen[]> Connected outputs from the Renderer. `{}` rather than `nil` at first evaluation (ADR-0041). [docs]({DOCS}capabilities/index.html#renderer-members)
+---@field rescue WatchedSignal<RescueState> Whether the last evaluation, apply, live update or the session lock failed; the previous scene stays up (ADR-0046). [docs]({DOCS}capabilities/index.html#renderer-members)
 ---@field version MantleVersion The engine's version. Not a signal. [docs]({DOCS}capabilities/index.html#renderer-members)
 ---@field config_dir string Directory `shell.lua` was loaded from, for naming files shipped beside it. Not a signal. [docs]({DOCS}capabilities/index.html#renderer-members)
 mantle = {}

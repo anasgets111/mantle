@@ -140,11 +140,26 @@ fn own(kinds: u16) -> impl Iterator<Item = &'static Property> {
     properties().filter(move |row| row.kinds & kinds != 0 && row.kinds != ALL && row.kinds != BOX)
 }
 
+/// `kind`'s `animate` field and the alias it names: only the properties `parse_animate` takes on
+/// `kind`, plus `exit`, so a misspelled or foreign name is a type error as it is a pass error.
+fn animate(kind: &str) -> (String, String) {
+    let name = format!("{}Animations", &class(kind)[..class(kind).len() - "Props".len()]);
+    let keys: String = super::accepted_properties(kind)
+        .into_iter()
+        .filter(|property| crate::layout::node::animatable_name(kind, property, "animate").is_ok())
+        .map(|property| format!("{property}?: Animation, "))
+        .collect();
+    let alias = format!("---@alias {name} {{ {keys}exit?: Exit, [string]: \"no such property\" }}\n");
+    let row = properties().find(|row| row.name == "animate" && row.kinds == ALL).expect("a common `animate` row");
+    (alias, field(row).replacen(" Animations|", &format!(" {name}|"), 1))
+}
+
 fn render_stub(header: &str, kinds: &[&str]) -> String {
     let mut out = header.to_string();
     for kind in kinds {
         let bases = if kind_bit(kind) & BOX != 0 { "NodeBase, BoxBase" } else { "NodeBase" };
-        out.push_str(&format!("\n---@class {}: {bases}\n", class(kind)));
+        let (alias, animate) = animate(kind);
+        out.push_str(&format!("\n{alias}---@class {}: {bases}\n{animate}", class(kind)));
         own(kind_bit(kind)).for_each(|row| out.push_str(&field(row)));
     }
     for kind in kinds {
@@ -172,7 +187,9 @@ fn nodes_lua() -> String {
     header = NODE_SHAPES.iter().fold(header, |header, fill| fill(header));
     for (class, kinds) in [("NodeBase", ALL), ("BoxBase", BOX)] {
         let marker = format!("{{{class}}}");
-        let fields: String = properties().filter(|row| row.kinds == kinds).map(field).collect();
+        // `animate` is each kind's own: its keys are that kind's properties.
+        let fields: String =
+            properties().filter(|row| row.kinds == kinds && row.name != "animate").map(field).collect();
         header = header.replace(&marker, fields.trim_end());
     }
     render_stub(&header, &KINDS[..11])
@@ -284,16 +301,16 @@ const NODES_HEADER: &str = r##"---@meta
 ---@alias Gradient { gradient: "Linear"|"Radial"|"Conic", angle?: number, stops: GradientStop[], [string]: "no such property" } At least 2 stops. `angle` is degrees clockwise from the top: Linear default `180`, Conic default `0`, Radial refuses it.
 ---@alias Mask { gradient?: "Linear"|"Radial"|"Conic", angle?: number, stops?: GradientStop[], source?: string, invert?: boolean, [string]: "no such property" } Exactly one of a `Gradient` or an image `source` path (alpha only, stretched over the box). `invert` swaps kept and cut.
 ---@alias EasingName {EASING} `Back` and `Elastic` overshoot, as does a Bezier `y` outside `[0, 1]`; the property's range clamps them.
----@alias Easing EasingName|[number, number, number, number]|{ steps: integer } A name, CSS `cubic-bezier` `{ x1, y1, x2, y2 }` with `x1`, `x2` in `[0, 1]`, or `{ steps = n }`, `n` in `[1, 1000]` (ADR-0151).
+---@alias Easing EasingName|[number, number, number, number]|{ steps: integer, [string]: "no such property" } A name, CSS `cubic-bezier` `{ x1, y1, x2, y2 }` with `x1`, `x2` in `[0, 1]`, or `{ steps = n }`, `n` in `[1, 1000]` (ADR-0151).
 ---@alias Keyframe {ANIMATABLE}|{Keyframe}
 ---@alias Spring {Spring}
----@alias Animation number|{ duration?: number, delay?: number, easing?: Easing, from?: number|string|Edges|Axes, spring?: Spring, keyframes?: Keyframe[], loops?: integer|"Infinite" } A bare number is `duration`.
+---@alias Animation number|{ duration?: number, delay?: number, easing?: Easing, from?: number|string|Edges|Axes, spring?: Spring, keyframes?: Keyframe[], loops?: integer|"Infinite", [string]: "no such property" } A bare number is `duration`.
 --- - `duration`: ms `[1, 60000]`, required unless `spring`. `easing` defaults to `"InOutQuad"`.
 --- - `delay`: ms `[0, 60000]` before it starts; offsets a sequence once, not per loop (ADR-0153).
 --- - `from`: start value when the node did not display the property last pass (a new node, or one that lacked it); otherwise the first value snaps (ADR-0146). Refused beside `keyframes`.
 --- - `spring`: replaces `duration`, `easing`, `keyframes` and `loops`, which are refused beside it.
 --- - `keyframes`: at least 2 values, no holes, at least one segment with time; walks instead of easing to the resolved value (ADR-0152). `loops` `[1, 10000]` or `"Infinite"`, default `1`, only with `keyframes`. Bind `animate` to start or stop one.
----@alias Animations table<string, Animation> Property name to animation. Names the node does not accept, `z` and `animate` are refused. Numbers, percents, colours and numeric `Edges`/`Axes` tween against the same shape; anything else snaps.
+---@alias Animations table<string, Animation> Property name to animation; each kind's `animate` field names its own, e.g. `RectAnimations`. Names the node does not accept, `z` and `animate` are refused. Numbers, percents, colours and numeric `Edges`/`Axes` tween against the same shape; anything else snaps.
 ---@alias Exit { duration?: number, delay?: number, easing?: Easing, spring?: Spring, [string]: any } `animate.exit`: timing as in `Animation` (`duration` or `spring` required once a target is named) plus `property = target` pairs the node eases to after a pass drops it (ADR-0150). A target starts from the shown value, or from the identity: `1` for `opacity`/`scale`, `0.5` for `origin`, alpha 0 for a colour, `0` otherwise.
 
 ---[docs]({DOCS}nodes/index.html#common-properties)

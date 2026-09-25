@@ -336,7 +336,7 @@ impl LuaType for StateSignal {
     const GENERIC: bool = true;
     fn classes(out: &mut Vec<String>) {
         out.push(
-            r#"---@class StateSignal<T>: Signal<T>
+            r#"---@class StateSignal<T>: Signal<T>, userdata
 ---What `state` returns: the only signal Lua writes.
 ---@field set fun(self: StateSignal<T>, value: T) Stores `value` and re-resolves its readers. Raises on NaN, infinity, an integer past ±(2^53−1) or a string over 64 KiB; tables are not checked. Types are checked by LuaLS only.
 "#
@@ -361,7 +361,7 @@ impl LuaType for ScrollSignal {
     }
     fn classes(out: &mut Vec<String>) {
         out.push(
-            r#"---@class ScrollSignal: Signal<number>
+            r#"---@class ScrollSignal: Signal<number>, userdata
 ---What `scroll` returns.
 ---@field reveal fun(self: ScrollSignal, index: integer) On the next pass, scrolls the least distance that shows the viewport's `index`-th visible child (1-based; a `list`'s items in source order), then the wheel takes over (ADR-0112). An index with no child does nothing; below 1 raises.
 "#

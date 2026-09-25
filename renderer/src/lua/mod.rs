@@ -671,8 +671,9 @@ pub(crate) mod tests {
 ---A read-only reactive `T`. Pass the signal itself to a node property to keep it live; `:get()` is a
 ---snapshot. `set` works only on a `state` and `reveal` only on a `scroll`; elsewhere they raise.
 ---Stub note: `: userdata` keeps tables out of signal-typed slots, and methods must stay `---@field`s
----or `T` does not bind in callbacks.
----@field get fun(self: Signal<T>): T The value now; `nil` before a capability's first push.
+---or `T` does not bind in callbacks. A subclass names `userdata` again: LuaLS does not follow a
+---generic parent such as `Signal<number>` when checking assignment.
+---@field get fun(self: Signal<T>): T The value now.
 ---@field map fun(self: Signal<T>, fn: fun(value: T): any): Signal<any> A derived signal of `fn(value)`. `fn` must be side-effect free and runs under the shared 5 ms CPU budget (ADR-0021). ponytail: returns `Signal<any>`, since a `---@field` cannot bind a second type parameter; only one hop is typed.
 
 ---A node property value: a literal or a signal carrying one. `userdata`, not `Signal`, because a
@@ -726,6 +727,19 @@ pub(crate) mod tests {
                 .collect();
             assert_eq!(engine, declared, "lua-meta's {classes:?} methods are out of step with `{sample}`");
         }
+    }
+
+    /// Every parser behind a global refuses a key it does not take, so an inline table a config
+    /// writes must say so, or LuaLS passes the misspelling the engine raises on.
+    #[test]
+    fn every_inline_parameter_table_refuses_an_unknown_key() {
+        let open: Vec<String> = stubs()
+            .lines()
+            .filter(|line| line.starts_with("---@param "))
+            .filter(|line| line.contains(" {") && !line.contains(r#"[string]: "no such property""#))
+            .map(str::to_string)
+            .collect();
+        assert!(open.is_empty(), "these parameter tables take any key: {open:#?}");
     }
 
     /// `class`'s declared methods and its parents'.

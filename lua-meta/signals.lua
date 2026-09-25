@@ -7,8 +7,9 @@
 ---A read-only reactive `T`. Pass the signal itself to a node property to keep it live; `:get()` is a
 ---snapshot. `set` works only on a `state` and `reveal` only on a `scroll`; elsewhere they raise.
 ---Stub note: `: userdata` keeps tables out of signal-typed slots, and methods must stay `---@field`s
----or `T` does not bind in callbacks.
----@field get fun(self: Signal<T>): T The value now; `nil` before a capability's first push.
+---or `T` does not bind in callbacks. A subclass names `userdata` again: LuaLS does not follow a
+---generic parent such as `Signal<number>` when checking assignment.
+---@field get fun(self: Signal<T>): T The value now.
 ---@field map fun(self: Signal<T>, fn: fun(value: T): any): Signal<any> A derived signal of `fn(value)`. `fn` must be side-effect free and runs under the shared 5 ms CPU budget (ADR-0021). ponytail: returns `Signal<any>`, since a `---@field` cannot bind a second type parameter; only one hop is typed.
 
 ---A node property value: a literal or a signal carrying one. `userdata`, not `Signal`, because a
@@ -43,7 +44,7 @@ function delay(source, ms) end
 ---@return Signal<boolean> # Read-only.
 function pulse(source, ms) end
 
----@class StateSignal<T>: Signal<T>
+---@class StateSignal<T>: Signal<T>, userdata
 ---What `state` returns: the only signal Lua writes.
 ---@field set fun(self: StateSignal<T>, value: T) Stores `value` and re-resolves its readers. Raises on NaN, infinity, an integer past ±(2^53−1) or a string over 64 KiB; tables are not checked. Types are checked by LuaLS only.
 
@@ -80,7 +81,7 @@ function hover_rect(name) end
 ---@return Signal<Rect>
 function geometry(name) end
 
----@class ScrollSignal: Signal<number>
+---@class ScrollSignal: Signal<number>, userdata
 ---What `scroll` returns.
 ---@field reveal fun(self: ScrollSignal, index: integer) On the next pass, scrolls the least distance that shows the viewport's `index`-th visible child (1-based; a `list`'s items in source order), then the wheel takes over (ADR-0112). An index with no child does nothing; below 1 raises.
 
@@ -100,6 +101,6 @@ function scroll(name) end
 ---A named JSON file read as signals (ADR-0136). The same file returns the same table across reloads.
 ---`defaults` fills only missing keys, so adding one keeps the user's values.
 ---[docs](https://anasgets111.github.io/mantle/guide/scripting.html#persistent_table)
----@param spec { path: string, name: string, defaults?: table } `path` is an absolute directory and `name` a file name without `/`; otherwise raises.
+---@param spec { path: string, name: string, defaults?: table, [string]: "no such property" } `path` is an absolute directory and `name` a file name without `/`; otherwise raises.
 ---@return PersistentTable
 function persistent_table(spec) end

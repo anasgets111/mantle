@@ -291,6 +291,16 @@ mod meta_stub_tests {
             let declared = fields_of(&classes, &class);
             let expected: BTreeSet<String> = super::accepted_properties(kind).into_iter().map(str::to_string).collect();
             assert_eq!(declared, expected, "lua-meta's {class} is out of step with the property table for `{kind}`");
+
+            // `animate` takes the kind's own names but `z` and `animate`, plus `exit`.
+            let alias = format!("---@alias {}Animations {{ ", capitalize(kind));
+            let line = source.lines().find_map(|line| line.strip_prefix(alias.as_str())).expect("an Animations alias");
+            let keys: BTreeSet<String> =
+                line.split(", ").filter_map(|entry| entry.split_once("?: ")).map(|(key, _)| key.to_string()).collect();
+            let mut expected: BTreeSet<String> =
+                expected.into_iter().filter(|name| !matches!(name.as_str(), "z" | "animate")).collect();
+            expected.insert("exit".to_string());
+            assert_eq!(keys, expected, "lua-meta's `animate` keys for `{kind}`");
         }
     }
 
@@ -579,7 +589,7 @@ mod meta_stub_tests {
     fn sample(field: &str, ty: &str) -> Option<String> {
         match (field, ty) {
             ("opacity", _) => return Some("0.5".to_string()),
-            ("animate", "Animations") => return Some("{ opacity = 200.5 }".to_string()),
+            ("animate", ty) if ty.ends_with("Animations") => return Some("{ opacity = 200.5 }".to_string()),
             ("scale", "Axes") | ("translate" | "shadow_offset", _) => return Some("{ x = 1, y = 2 }".to_string()),
             ("scale", _) => return Some("1.5".to_string()),
             ("rotate", _) => return Some("7.5".to_string()),
@@ -632,7 +642,7 @@ mod meta_stub_tests {
                 "Percent" => "\"50%\"",
                 "Edges" => "{ top = 1.5 }",
                 "[number, number, number, number]" => "{ 0.25, 0.1, 0.25, 1 }",
-                "{ steps: integer }" => "{ steps = 4 }",
+                "{ steps: integer, [string]: \"no such property\" }" => "{ steps = 4 }",
                 "Node" => "rect {}",
                 "Node[]" => "{ rect {} }",
                 "TextRun[]" => {

@@ -69,7 +69,7 @@ pub fn register(lua: &Lua) -> mlua::Result<()> {
 /// `session_process`'s `spec`, checked key by key with messages naming the call.
 struct Spec;
 
-spelled!(Spec => format!("{{ name: {}, stop_signal?: SignalName }}", String::lua()));
+spelled!(Spec => format!("{{ name: {}, stop_signal?: SignalName, [string]: \"no such property\" }}", String::lua()));
 
 /// What `session_process` returns: [`build_handle`]'s table, whose real fields are the methods and
 /// whose other keys are signals over the program's `mantle.processes` entry. The capability's entry

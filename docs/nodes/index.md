@@ -67,7 +67,7 @@ and box properties and stack their one `child` ([surfaces](../surfaces/index.md)
 
 | Rule | Detail |
 | :--- | :--- |
-| Types | A property table's Type column is the editor stubs' LuaCATS type. `Bound` means it also takes a signal; `Length` is a [size](#sizes); `Edges` is `{ top, right, bottom, left }` with missing edges 0; `Axes` is `{ x, y }` with a missing axis at the property's default; `Color` is a colour; `Animations` is per-property [tweens](../guide/animation.md). A range after the type is checked |
+| Types | A property table's Type column is the editor stubs' LuaCATS type. `Bound` means it also takes a signal; `Length` is a [size](#sizes); `Edges` is `{ top, right, bottom, left }` with missing edges 0; `Axes` is `{ x, y }` with a missing axis at the property's default; `Color` is a colour; `Animations` is per-property [tweens](../guide/animation.md), keyed by the node's own properties (`RectAnimations` on a `rect`). A range after the type is checked |
 | Signals | A property whose Type includes `Bound` takes a [signal](../guide/signals.md); `id` and callbacks do not. `hover`, `scroll` and `geometry` take the signal handle itself. A signal inside a table property is refused: derive the whole table |
 | `nil` | A signal reading `nil` leaves its property absent, at its default. Capabilities read `nil` until their first push, so binding one never fails layout |
 | Numbers | Finite. A value outside a property's range is an error, not a clamp |

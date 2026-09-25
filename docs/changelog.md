@@ -62,6 +62,13 @@ so everything since the rename from Obelisk sits under Unreleased.
   and a missing icon or undecodable image warns once per name.
 - The editor stubs flag a misspelled property or table key and a percent that is not a whole
   `"0%"` to `"100%"`, and type `children` as taking a signal, as the engine does.
+- The editor stubs type a capability's `:get()` as `T?`, so an unguarded read of a field warns;
+  `mantle.screens` and `mantle.rescue` stay non-nil. An `animate` key the node does not take (or
+  `z`), and an unknown key in an `animate` entry, `{ steps = n }`, `session_process`,
+  `persistent_table` or `palette.quantize` options, are flagged. Each node's `animate` is typed by
+  its own alias (`RectAnimations`, `TextAnimations`, ...); a wrapper that passes `animate` through
+  types it with that alias. A capability or `scroll(...)` handle passes where a `Signal` or a
+  `scroll` property is declared.
 - `translate`, `scale`, `rotate` and `origin` tweens repaint without relayout.
 - Hover callbacks fire on pointer entry.
 - An equal capability snapshot is not pushed again, except `tray` and `notifications`.

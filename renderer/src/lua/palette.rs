@@ -36,7 +36,7 @@ lua_shape! {
 /// `palette.quantize`'s `opts`, read field by field against its own ranges.
 struct Options;
 
-spelled!(Options => "{ depth?: integer, rescale?: integer }");
+spelled!(Options => r#"{ depth?: integer, rescale?: integer, [string]: "no such property" }"#);
 
 #[derive(Clone)]
 pub struct PaletteRegistry(Rc<RefCell<Inner>>);

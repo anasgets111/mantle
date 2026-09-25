@@ -65,7 +65,7 @@ pub fn register(lua: &Lua) -> mlua::Result<()> {
 /// `persistent_table`'s `spec`, checked key by key with messages naming the call.
 struct Spec;
 
-spelled!(Spec => "{ path: string, name: string, defaults?: table }");
+spelled!(Spec => r#"{ path: string, name: string, defaults?: table, [string]: "no such property" }"#);
 
 /// What `persistent_table` returns: [`build_store`]'s table, whose `set` is real and whose other
 /// keys are signals of the file's JSON values, whatever keys it holds; so the class block is written
