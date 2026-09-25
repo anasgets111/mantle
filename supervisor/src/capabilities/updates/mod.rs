@@ -1,10 +1,13 @@
 //! `mantle.updates` capability: package update checking and installation (ADR-0034).
 //!
 //! Separates scheduling from the backend abstraction (ADR-0134): `backend.rs` defines the trait and
-//! `pacman/` implements it for Arch. The scheduler is independent of `mantle.sysinfo` (ADR-0034).
+//! `pacman/` (Arch), `dnf/` (Fedora) and `apt/` (Debian, Ubuntu) implement it. The scheduler is
+//! independent of `mantle.sysinfo` (ADR-0034).
 
+pub mod apt;
 pub mod backend;
 pub mod controller;
+pub mod dnf;
 pub mod pacman;
 pub mod reboot;
 
@@ -18,8 +21,9 @@ pub enum UpdatesAction {
     Check,
     /// Sets the check schedule and AUR use, and seeds a remembered check.
     Configure { config: controller::UpdatesConfigure },
-    /// Runs a full upgrade, `pkexec pacman -Syu --noconfirm` or `aur_helper` when `aur` is on;
-    /// ignored while `installing`. Does not recheck afterwards.
+    /// Runs a full upgrade through `pkexec`: `pacman -Syu --noconfirm`, or `aur_helper` when `aur`
+    /// is on; `dnf upgrade -y --refresh`; `apt-get update` then `apt-get upgrade --with-new-pkgs`.
+    /// Ignored while `installing`. Does not recheck afterwards.
     Install,
 }
 

@@ -55,14 +55,14 @@ impl Backend for PacmanBackend {
     /// Root upgrade against real `/etc/pacman.conf` and `/var/lib/pacman`. `pkexec` triggers
     /// Mantle's registered polkit agent instead of requiring a terminal. An active AUR helper runs
     /// as the user instead and elevates itself (ADR-0250).
+    /// `LC_ALL=C` keeps the progress lines untranslated, and `pkexec` passes it on. It is set outside
+    /// `pkexec` so the program polkit sees stays `pacman`, which the packaged rule matches.
     fn install_command(&self) -> InstallCommand {
-        match self.active_helper() {
-            Some(helper) => InstallCommand { program: helper.to_string(), arguments: aur::install_arguments(helper) },
-            None => InstallCommand {
-                program: "pkexec".to_string(),
-                arguments: vec!["pacman".to_string(), "-Syu".to_string(), "--noconfirm".to_string()],
-            },
-        }
+        let tail = match self.active_helper() {
+            Some(helper) => [vec![helper.to_string()], aur::install_arguments(helper)].concat(),
+            None => ["pkexec", "pacman", "-Syu", "--noconfirm"].map(String::from).to_vec(),
+        };
+        InstallCommand { program: "env".to_string(), arguments: [vec!["LC_ALL=C".to_string()], tail].concat() }
     }
 
     fn parse_install_step(&self, line: &str) -> Option<InstallStep> {
@@ -146,19 +146,18 @@ mod tests {
         assert_eq!(backend.name(), "pacman");
 
         let command = backend.install_command();
-        assert_eq!(command.program, "pkexec", "elevation goes through polkit, so Mantle's own agent prompts");
-        assert_eq!(command.arguments, vec!["pacman", "-Syu", "--noconfirm"]);
+        assert_eq!(command.program, "env");
+        assert_eq!(command.arguments, ["LC_ALL=C", "pkexec", "pacman", "-Syu", "--noconfirm"]);
     }
 
     #[test]
     fn a_detected_helper_installs_only_once_aur_is_asked_for() {
         let backend = PacmanBackend::new(PathBuf::new(), PathBuf::new(), Some("paru"));
-        assert_eq!(backend.install_command().program, "pkexec");
+        assert_eq!(backend.install_command().arguments[1], "pkexec");
 
         assert_eq!(backend.set_aur(true), None);
         let command = backend.install_command();
-        assert_eq!(command.program, "paru");
-        assert_eq!(command.arguments, ["-Syu", "--noconfirm", "--sudo", "pkexec", "--nosudoloop"]);
+        assert_eq!(command.arguments, ["LC_ALL=C", "paru", "-Syu", "--noconfirm", "--sudo", "pkexec", "--nosudoloop"]);
     }
 
     #[test]
@@ -166,7 +165,7 @@ mod tests {
         let backend = PacmanBackend::new(PathBuf::new(), PathBuf::new(), None);
 
         assert_eq!(backend.set_aur(true).as_deref(), Some(aur::NO_HELPER));
-        assert_eq!(backend.install_command().program, "pkexec");
+        assert_eq!(backend.install_command().arguments[1], "pkexec");
         assert_eq!(backend.set_aur(false), None);
     }
 

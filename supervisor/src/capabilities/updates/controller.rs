@@ -41,7 +41,7 @@ pub struct UpdatesState {
     pub consecutive_check_failures: u32,
     /// An install is running; the `install_*` fields describe the latest run.
     pub installing: bool,
-    /// 1-based number of the package being installed, from the manager's `(2/5)`; `0` before the first.
+    /// 1-based number of the package being installed, e.g. pacman's `(2/5)`; `0` before the first.
     pub install_current_step: u32,
     /// Packages in the transaction; `0` until the first step line, so draw progress as indeterminate.
     pub install_total_steps: u32,

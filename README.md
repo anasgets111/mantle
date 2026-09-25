@@ -30,7 +30,7 @@ Docs: **<https://anasgets111.github.io/mantle/>**, built from [`docs/`](docs).
 | `idle` capability | `ext-idle-notify-v1` |
 | Capabilities over D-Bus | NetworkManager, BlueZ, UPower, power-profiles-daemon, logind, polkit ([per capability](docs/guide/installation.md#requirements)) |
 | Fonts | fontconfig (`fc-match`) |
-| `updates` capability | pacman; `pkexec` to install |
+| `updates` capability | pacman, dnf or apt; `pkexec` to install |
 | Build | Rust 1.89+, PipeWire, PAM, udev, EGL, GBM, xkbcommon, libwayland-client, libwayland-egl. Lua 5.4 is vendored |
 | `just check` | `lua-language-server`, `luac`, `python3` |
 
@@ -39,6 +39,9 @@ Docs: **<https://anasgets111.github.io/mantle/>**, built from [`docs/`](docs).
 On Arch, [`mantle-git`](https://aur.archlinux.org/packages/mantle-git) builds `main` and installs
 `/etc/pam.d/mantle`. [`packaging/`](packaging) holds that PAM stack (without it, unlock and polkit
 prompts fall back to `login`) and a polkit rule for `updates` installs.
+
+Fedora and Debian/Ubuntu build from source; their [build packages](docs/guide/installation.md#install)
+are listed, but running there is untested for now.
 
 | Recipe | Does |
 | :--- | :--- |

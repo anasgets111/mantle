@@ -452,7 +452,7 @@
 ---@field consecutive_check_failures integer Check failures in a row; a success resets it to `0`.
 ---@field count integer Always `#packages`.
 ---@field install_current_package string Package being installed; empty before the first step line.
----@field install_current_step integer 1-based number of the package being installed, from the manager's `(2/5)`; `0` before the first.
+---@field install_current_step integer 1-based number of the package being installed, e.g. pacman's `(2/5)`; `0` before the first.
 ---@field install_error? string Why the package manager could not be run or waited on, or `nil`. Its own failures are `install_exit_code`.
 ---@field install_exit_code? integer Package manager's exit code for the last install (`0` success); `nil` while running, before one, or when a signal killed it.
 ---@field install_finished_at? integer Unix seconds when the last install's process ended, whatever its status; `nil` while running, before one, or when it failed to spawn.
@@ -617,7 +617,7 @@ local PrivacyCapability = {}
 ---@class UpdatesCapability: Capability<UpdatesState>, userdata
 ---@field check fun(self: UpdatesCapability) Checks for upgrades now, even when dormant; ignored while `checking`.
 ---@field configure fun(self: UpdatesCapability, config: UpdatesConfigure) Sets the check schedule and AUR use, and seeds a remembered check.
----@field install fun(self: UpdatesCapability) Runs a full upgrade, `pkexec pacman -Syu --noconfirm` or `aur_helper` when `aur` is on; ignored while `installing`. Does not recheck afterwards.
+---@field install fun(self: UpdatesCapability) Runs a full upgrade through `pkexec`: `pacman -Syu --noconfirm`, or `aur_helper` when `aur` is on; `dnf upgrade -y --refresh`; `apt-get update` then `apt-get upgrade --with-new-pkgs`. Ignored while `installing`. Does not recheck afterwards.
 
 ---[docs](https://anasgets111.github.io/mantle/capabilities/workspaces.html)
 ---@class WorkspacesCapability: Capability<WorkspacesState>, userdata

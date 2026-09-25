@@ -4,6 +4,9 @@
 //! requirements.
 
 use std::path::PathBuf;
+use std::process::{Command, Stdio};
+
+use shared::warn;
 
 /// One installed package with a newer version.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -76,18 +79,53 @@ pub trait Backend: Send + Sync + 'static {
     }
 }
 
-/// Package manager supported on this machine, or `None`. Mirrors `command -v pacman` without a
-/// subprocess; if the list grows, a
-/// machine with two managers installed must put first the one that owns `/`.
+/// Package manager that owns `/`, or `None`. Fedora and Debian package `pacman`, Fedora `apt` and
+/// Debian `dnf` for building chroots, so pacman and apt count only with packages in their own db.
 pub fn detect() -> Option<Box<dyn Backend>> {
-    if on_path("pacman") {
+    let pacman_db = PathBuf::from("/var/lib/pacman");
+    if on_path("pacman") && std::fs::read_dir(pacman_db.join("local")).is_ok_and(|mut dir| dir.next().is_some()) {
         return Some(Box::new(super::pacman::PacmanBackend::new(
             PathBuf::from("/etc/pacman.conf"),
-            PathBuf::from("/var/lib/pacman"),
+            pacman_db,
             super::pacman::aur::detect_helper(),
         )));
     }
+    if on_path("apt-get") && std::fs::metadata("/var/lib/dpkg/status").is_ok_and(|status| status.len() > 0) {
+        return Some(Box::<super::apt::AptBackend>::default());
+    }
+    if on_path("dnf") {
+        return Some(Box::new(super::dnf::DnfBackend));
+    }
     None
+}
+
+/// Stdout of `command` in the C locale with no stdin. `failed` judges the exit code against
+/// stderr; the stderr of a success is logged as warnings.
+pub(super) fn run(command: &mut Command, failed: fn(Option<i32>, &str) -> bool) -> Result<String, String> {
+    let program = command.get_program().to_string_lossy().into_owned();
+    let output = command
+        .env("LC_ALL", "C")
+        .stdin(Stdio::null())
+        .output()
+        .map_err(|err| format!("failed to run {program}: {err}"))?;
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    if failed(output.status.code(), &stderr) {
+        let detail = stderr.trim();
+        return Err(if detail.is_empty() {
+            format!("{program} exited with {}", output.status)
+        } else {
+            format!("{program} failed: {detail}")
+        });
+    }
+    for line in stderr.lines().filter(|line| !line.trim().is_empty()) {
+        warn!("{line}");
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
+/// [`run`]'s `failed` for a manager whose every non-zero exit is a failure.
+pub(super) fn nonzero(code: Option<i32>, _stderr: &str) -> bool {
+    code != Some(0)
 }
 
 /// Whether `program` is a file in this process's `PATH`; avoids spawning a shell during capability

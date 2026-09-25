@@ -6,9 +6,7 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::process::{Command, Stdio};
 
-use shared::warn;
-
-use super::super::backend::UpdateCandidate;
+use super::super::backend::{UpdateCandidate, run};
 
 /// Each foreign package's installed name and version: in no synced repo.
 pub type Foreign = Vec<(String, String)>;
@@ -21,13 +19,14 @@ pub type Foreign = Vec<(String, String)>;
 pub fn sync(conf: &Path, db_path: &Path) -> Result<(), String> {
     let sync_dir = db_path.join("sync");
     std::fs::create_dir_all(&sync_dir).map_err(|err| format!("failed to create {}: {err}", sync_dir.display()))?;
-    let repos = run(Command::new("pacman-conf").arg("--config").arg(conf).arg("--repo-list"))?;
+    let repos = run(Command::new("pacman-conf").arg("--config").arg(conf).arg("--repo-list"), failed)?;
     if repos.trim().is_empty() {
         return Err(format!("no repos configured in {}", conf.display()));
     }
     for repo in repos.lines() {
         // `pacman-conf` has already expanded `Include`, `$repo` and `$arch`.
-        let servers = run(Command::new("pacman-conf").arg("--config").arg(conf).args(["--repo", repo, "Server"]))?;
+        let servers =
+            run(Command::new("pacman-conf").arg("--config").arg(conf).args(["--repo", repo, "Server"]), failed)?;
         fetch_db(&sync_dir, repo, servers.lines())?;
     }
     Ok(())
@@ -104,30 +103,16 @@ pub fn foreign(conf: &Path, db_path: &Path) -> Result<Foreign, String> {
 }
 
 fn pacman(conf: &Path, db_path: &Path, args: &[&str]) -> Result<String, String> {
-    run(Command::new("pacman")
-        .arg("--config")
-        .arg(conf)
-        .arg("--dbpath")
-        .arg(db_path)
-        .args(["--color", "never"])
-        .args(args))
-}
-
-/// Stdout of a command in the C locale. Warnings are logged, not fatal.
-fn run(command: &mut Command) -> Result<String, String> {
-    let output = command
-        .env("LC_ALL", "C")
-        .stdin(Stdio::null())
-        .output()
-        .map_err(|err| format!("failed to run {}: {err}", command.get_program().to_string_lossy()))?;
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    if failed(output.status.code(), &stderr) {
-        return Err(format!("{} failed: {}", command.get_program().to_string_lossy(), stderr.trim()));
-    }
-    for line in stderr.lines().filter(|line| !line.trim().is_empty()) {
-        warn!("{line}");
-    }
-    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+    run(
+        Command::new("pacman")
+            .arg("--config")
+            .arg(conf)
+            .arg("--dbpath")
+            .arg(db_path)
+            .args(["--color", "never"])
+            .args(args),
+        failed,
+    )
 }
 
 /// A query that matches nothing exits 1, so exit 1 fails only on a stderr line that is not a

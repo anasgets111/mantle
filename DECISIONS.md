@@ -6822,3 +6822,26 @@ up to ~5 KiB off; no `.db.sig` is fetched, so a `DatabaseRequired` repo fails th
 The `Backend` trait is unchanged, so a dnf or apt backend is a sibling module.
 
 **Supersedes ADR-0034.4** (the `alpm` crate) **and ADR-0127's trim** (libalpm's parse heap).
+
+## 0277. apt checks in a private list directory and upgrades without removing
+
+Debian and Ubuntu get an `apt` backend behind the ADR-0134 trait, found by `apt-get` on `PATH`
+and a non-empty `/var/lib/dpkg/status`, after `pacman` and before `dnf`, which Debian packages.
+
+1. **The check is `checkupdates` for apt.** As the user, `apt-get update` refreshes lists into
+   `$XDG_RUNTIME_DIR/mantle/apt` (`Dir::State::Lists`, `Dir::Cache`), and `apt-get -s` simulates
+   the upgrade against them and the real dpkg status. A repo that fails to refresh fails the
+   check (`--error-on=any`, apt 2.1.16+) rather than leaving its old lists read as current. A
+   non-root run takes only its own directory's lock and skips the `_apt` sandbox. A `-c` file
+   `#clear`s the `APT::Update` hooks, which would otherwise run as the user on every check and
+   poke PackageKit, command-not-found and the motd.
+2. **The upgrade is `upgrade --with-new-pkgs`, not `dist-upgrade`.** It installs new
+   dependencies (a kernel ABI package) and never removes one; unattended with `-y`, a removal is
+   the step a user should see first. A package that needs one is held back, listed by neither the
+   check nor the install, until the user runs `apt full-upgrade`. Ubuntu's phased updates are held
+   back by apt itself, the same way in the simulation and the install.
+3. **The install runs `apt-get update` as root first**, through `pkexec env ... sh -c`, rather than
+   reusing the check's lists: those are user-writable, and root would install from them.
+
+The ceiling: progress counts `Setting up` lines against the summary line, so the download shows as
+step `0`. `APT::Status-Fd` would report it, as a percentage the step fields do not hold.

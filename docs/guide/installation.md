@@ -42,7 +42,7 @@ needs its backend only from then. What each one does without it is in its page's
 | [`lock`](../capabilities/lock.md#backend) | `ext-session-lock-v1`, logind, the `mantle` PAM stack ([below](#install)) |
 | [`polkit`](../capabilities/polkit.md#backend) | polkitd with its helper socket `/run/polkit/agent-helper.socket`, `$XDG_SESSION_ID`, no other polkit agent running |
 | [`sysinfo`](../capabilities/sysinfo.md#backend) | hwmon `k10temp`, `coretemp` or `acpitz` for CPU temperature; `amdgpu`, `nouveau` or `nvidia` for GPU |
-| [`updates`](../capabilities/updates.md#backend) | `pacman` and the `curl` it depends on; `pkexec`, answered by the `polkit` agent; paru or yay for AUR |
+| [`updates`](../capabilities/updates.md#backend) | `pacman` and the `curl` it depends on, `dnf` or `apt-get`; `pkexec`, answered by the `polkit` agent; paru or yay for AUR |
 | [`applications`](../capabilities/applications.md#backend) | `$TERMINAL` for `Terminal=true` entries, `xdg-open` for `open_url` |
 
 `system`, `files`, `storage` and `processes` need nothing beyond the paths and programs the config
@@ -59,12 +59,26 @@ names.
 `mantle` starts `mantle-renderer` from its own directory, so both must come from one build
 ([binaries](cli.md#binaries)).
 
+A source build needs a C compiler and `pkg-config` for the vendored Lua, `clang` for PipeWire's
+bindings, and the development files of what the binaries link:
+
+| Distro | Packages |
+| :--- | :--- |
+| Arch | `base-devel clang pipewire pam systemd-libs wayland libxkbcommon libglvnd mesa` |
+| Fedora | `gcc pkgconf-pkg-config clang pipewire-devel pam-devel systemd-devel wayland-devel libxkbcommon-devel mesa-libEGL-devel mesa-libgbm-devel` |
+| Debian, Ubuntu | `build-essential pkg-config clang libclang-dev libpipewire-0.3-dev libpam0g-dev libudev-dev libwayland-dev libxkbcommon-dev libegl-dev libgbm-dev` |
+
+Rust 1.89 or later comes from [rustup](https://rustup.rs) where the distro's `cargo` is older.
+Mantle is developed and run on Arch. The Fedora and Debian lists build the workspace in a
+container; running the shell, and the `updates` capability's dnf and apt backends, are untested
+on Fedora and Ubuntu for now.
+
 Two optional system files ship in [`packaging/`](../../packaging):
 
 | File | Install to | Without it |
 | :--- | :--- | :--- |
 | `pam.d/mantle` | `/etc/pam.d/mantle` | Unlock authenticates against the `login` stack, whose `pam_nologin` or `pam_shells` may refuse the right password. Polkit prompts use polkit's own stack either way |
-| `polkit-1/rules.d/50-mantle-pacman.rules` | `/etc/polkit-1/rules.d/` | `updates` installs ask for the password on every `pkexec`; with it, a `wheel` user approves once per run |
+| `polkit-1/rules.d/50-mantle-pacman.rules` | `/etc/polkit-1/rules.d/` | `updates` installs through pacman ask for the password on every `pkexec`; with it, a `wheel` user approves once per run |
 
 ## Set up a config
 

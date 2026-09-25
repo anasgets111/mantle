@@ -29,6 +29,8 @@ so everything since the rename from Obelisk sits under Unreleased.
   instead of every second, or never with `0`; default `1` ([system](capabilities/system.md)).
 - `mantle stop [--pid | -c]` stops a running shell and waits for it to exit; `mantle.pid` is the
   shell's own pid, so a config can stop itself ([CLI](guide/cli.md#commands)).
+- `mantle.updates` runs on Fedora through `dnf` (dnf5 or dnf4) and on Debian and Ubuntu through
+  `apt-get`; `package_manager` is `"dnf"` or `"apt"` ([updates](capabilities/updates.md#backend)).
 
 ### Changed
 
