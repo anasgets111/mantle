@@ -108,17 +108,28 @@ impl Drop for Output {
 /// Computeds reading any of `cells`, directly or through another, that an instance reads, directly
 /// or through another. The rest, such as one the last resolve dropped, wait unread for collection.
 pub(super) fn downstream(lua: &Lua, cells: &FxHashSet<CellId>) -> Vec<CellId> {
+    if cells.is_empty() {
+        return Vec::new();
+    }
     let tracker = lua.app_data_ref::<ReadTracker>();
     WRITES.with_borrow(|log| {
         let inputs = |out: &CellId| log.computeds.get(out).map_or(&[][..], |(_, inputs)| inputs);
-        let found = grow(FxHashSet::default(), &log.computeds.keys().copied().collect::<Vec<_>>(), |out, found| {
+        let found = grow(FxHashSet::default(), log.computeds.keys().copied().collect(), |out, found| {
             inputs(out).iter().any(|cell| cells.contains(cell) || found.contains(cell))
         });
-        let read = found.iter().filter(|out| tracker.as_ref().is_some_and(|t| t.cell_readers.contains_key(out)));
-        let found: Vec<CellId> = found.iter().copied().collect();
-        let needed = grow(read.copied().collect(), &found, |out, needed| {
-            needed.iter().any(|reader| inputs(reader).contains(out))
-        });
+        let mut needed: FxHashSet<CellId> = found
+            .iter()
+            .filter(|out| tracker.as_ref().is_some_and(|t| t.cell_readers.contains_key(out)))
+            .copied()
+            .collect();
+        let mut worklist: Vec<CellId> = needed.iter().copied().collect();
+        while let Some(reader) = worklist.pop() {
+            for &input in inputs(&reader) {
+                if found.contains(&input) && needed.insert(input) {
+                    worklist.push(input);
+                }
+            }
+        }
         needed.into_iter().collect()
     })
 }
@@ -126,17 +137,23 @@ pub(super) fn downstream(lua: &Lua, cells: &FxHashSet<CellId>) -> Vec<CellId> {
 /// `set` plus every one of `candidates` that `joins` it, until none does.
 fn grow(
     mut set: FxHashSet<CellId>,
-    candidates: &[CellId],
+    mut remaining: Vec<CellId>,
     joins: impl Fn(&CellId, &FxHashSet<CellId>) -> bool,
 ) -> FxHashSet<CellId> {
-    loop {
-        let joining: Vec<CellId> =
-            candidates.iter().filter(|out| !set.contains(*out) && joins(out, &set)).copied().collect();
-        if joining.is_empty() {
-            return set;
-        }
-        set.extend(joining);
+    let mut added = true;
+    while added {
+        added = false;
+        remaining.retain(|out| {
+            if joins(out, &set) {
+                set.insert(*out);
+                added = true;
+                false
+            } else {
+                true
+            }
+        });
     }
+    set
 }
 
 /// `cell` and every computed reading it, directly or through another: what a reader of `cell`'s
@@ -145,7 +162,7 @@ pub(crate) fn with_derived(cell: CellId) -> FxHashSet<CellId> {
     WRITES.with_borrow(|log| {
         let outs: Vec<CellId> = log.computeds.keys().copied().collect();
         let start = FxHashSet::from_iter([cell]);
-        grow(start, &outs, |out, found| log.computeds[out].1.iter().any(|input| found.contains(input)))
+        grow(start, outs, |out, found| log.computeds[out].1.iter().any(|input| found.contains(input)))
     })
 }
 

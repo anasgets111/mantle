@@ -334,7 +334,7 @@ the top level every time.
 | :--- | :--- |
 | `return { require("a"), require("b") }` fails with `surface 3 is a string` | Bind each module to a local first |
 | `require("lib.json")` from a luarocks install is not found | Only the config directory is searched. Copy the pure-Lua module into it |
-| A map raises `exceeded the 5ms CPU budget` | Move the heavy work to the top level or to `process.run`. The map should only index and format |
+| A map raises `exceeded the 2.5ms CPU budget` | Move the heavy work to the top level or to `process.run`. The map should only index and format |
 | `dofile("/big/file")` stutters every frame it runs | Read files through `process.run` or `persistent_table` |
 | A global counter keeps growing across reloads | Globals live in the VM, and a reload reuses the VM. Use `local`, or `state` when it should persist on purpose |
 | After a broken save, `mantle call` says no action exists | A failed reload clears actions, timers and handlers. Fix the error and save again |
