@@ -267,8 +267,10 @@ impl ShapingHandle {
             .name("mantle-text-shaping".into())
             .spawn(move || {
                 fonts::FONTCONFIG_FILE.set(fontconfig);
+                // A handle dropped before its first request needs no font discovery.
+                let Ok(first) = rx.recv() else { return };
                 let mut fonts = WorkerFonts::new(fonts::DEFAULT_CHAIN);
-                while let Ok(request) = rx.recv() {
+                for request in std::iter::once(first).chain(rx) {
                     match request {
                         Request::Shape(req, glyphs, reply) => {
                             let family = fonts.family_for(req.font.as_ref(), &generation, &worker_ensured);

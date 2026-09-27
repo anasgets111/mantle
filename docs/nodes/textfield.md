@@ -57,7 +57,9 @@ return { panel { id = "launcher", layer = "Top", anchor = { top = true },
     keyboard_interactivity = "OnDemand", child = launcher } }
 ```
 
-The panel needs `keyboard_interactivity` for the field to get keys ([panel](../surfaces/panel.md)).
+The image shows the empty search field and unfiltered list. Typing updates the list through
+`on_change`. The panel needs `keyboard_interactivity` for the field to get keys
+([panel](../surfaces/panel.md)).
 
 ## Properties
 

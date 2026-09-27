@@ -70,6 +70,11 @@ pre > code { border-radius: 8px; }
 /* Tables: horizontal rules only, header on the sidebar tone, the wrapper rounds and scrolls. */
 .table-wrapper { margin-block: 1.2em; border: 1px solid var(--surface0); border-radius: 8px; }
 .content table { width: 100%; margin: 0; font-size: 0.94em; line-height: 1.5; }
+.content table:has(th:nth-child(4):last-child) { table-layout: fixed; }
+.content table:has(th:nth-child(4):last-child) th:nth-child(1) { width: 18%; }
+.content table:has(th:nth-child(4):last-child) th:nth-child(2) { width: 30%; }
+.content table:has(th:nth-child(4):last-child) th:nth-child(3) { width: 14%; }
+.content table:has(th:nth-child(4):last-child) td code { overflow-wrap: anywhere; }
 .content table th, .content table td { padding: 0.5em 0.9em; border: 0; border-block-start: 1px solid var(--surface0); text-align: start; vertical-align: top; }
 .content table thead th { border: 0; font-weight: 600; }
 
