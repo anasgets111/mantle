@@ -318,8 +318,16 @@ props! {
         content: Bound<Content> = absent(Lua(r#""""#));
         /// Family placed before the `fonts` chain (ADR-0144). `""` raises; an unknown family falls back to the chain.
         font: Bound<Font> = absent(Prose("the `fonts` chain"));
-        /// Each line is `1.2 × font_size` tall.
+        /// Text size in logical pixels.
         font_size: Bound<Num> = range(1.0, 8192.0).absent(Number(12.0));
+        /// Line height as a multiple of `font_size`.
+        line_height: Bound<Num> = range(0.1, 10.0).absent(Number(1.2));
+        /// Extra space between characters in logical pixels. Negative values tighten text.
+        letter_spacing: Bound<Num> = range(-100.0, 100.0).absent(Number(0.0));
+        /// Font weight from 1 to 1000. A run with `bold = true` uses weight 700.
+        font_weight: Bound<Num> = range(1.0, 1000.0).absent(Number(400.0));
+        /// Use the family's italic face when available. A run with `italic = true` stays italic.
+        italic: Bound<Flag> = absent(Bool(false));
         /// A run's `color` overrides it.
         ///
         /// Book: A [colour](../guide/paint.md#colours); a run's `color` overrides it

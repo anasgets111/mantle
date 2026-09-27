@@ -40,6 +40,10 @@ pub enum PaintStyle {
         /// Styled stretches of `content`, remapped when the scene rewrites it (ADR-0104).
         runs: Vec<StyleRun>,
         font_size: f32,
+        line_height: f32,
+        letter_spacing: f32,
+        font_weight: f32,
+        italic: bool,
         /// The family this node named, or `None` for the declared chain (ADR-0144).
         font: Option<Arc<str>>,
         color: Rgba,
@@ -104,10 +108,15 @@ pub fn paint_style(kind: &str, properties: &PropMap) -> Result<Option<PaintStyle
         },
         "text" => {
             let (content, runs) = text::content.read(properties)?;
+            let font_size = text::font_size.read(properties)?;
             PaintStyle::Text {
                 content: content.into(),
                 runs,
-                font_size: text::font_size.read(properties)?,
+                font_size,
+                line_height: font_size * text::line_height.read(properties)?,
+                letter_spacing: text::letter_spacing.read(properties)?,
+                font_weight: text::font_weight.read(properties)?,
+                italic: text::italic.read(properties)?,
                 font: text::font.read(properties)?,
                 color: text::foreground.read(properties)?.expect("`foreground` has a default"),
                 align: text::text_align.read(properties)?,

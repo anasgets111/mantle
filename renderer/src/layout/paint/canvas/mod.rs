@@ -213,17 +213,35 @@ fn run(painter: &mut TextPainter, walk: &mut Walk<'_, '_>, commands: &[DrawCmd],
                     walk.split.boxes += t0.elapsed();
                 }
             }
-            Draw::Text { content, runs, font_size, font, color, align, centered, caret, caret_on } => {
+            Draw::Text {
+                content,
+                runs,
+                font_size,
+                line_height,
+                letter_spacing,
+                font_weight,
+                italic,
+                font,
+                color,
+                align,
+                centered,
+                caret,
+                caret_on,
+            } => {
                 let t0 = timing.then(Instant::now);
                 let mut rect = rect;
                 if *centered {
-                    rect.y += ((rect.height - crate::text::shaping::line_height(*font_size)) / 2.0).max(0.0);
+                    rect.y += ((rect.height - *line_height) / 2.0).max(0.0);
                 }
                 painter.draw_text(
                     TextDraw {
                         text: content,
                         runs,
                         font_size: *font_size,
+                        line_height: *line_height,
+                        letter_spacing: *letter_spacing,
+                        font_weight: *font_weight,
+                        italic: *italic,
                         font: font.as_ref(),
                         color: *color,
                         align: *align,
@@ -954,6 +972,9 @@ pub(crate) mod tests {
     fn first_face(shaping: &ShapingHandle, family: Option<&str>) -> fontdb::ID {
         shaping
             .shape_glyphs(ShapeRequest {
+                letter_spacing: 0.0,
+                font_weight: 400.0,
+                italic: false,
                 text: "hello".into(),
                 font_size: 20.0,
                 line_height: crate::text::shaping::line_height(20.0),

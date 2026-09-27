@@ -100,7 +100,7 @@ mod tests {
     fn a_cluster_drawn_as_two_glyphs_puts_the_caret_at_the_whole_letter_s_edge() {
         let half = |x: f32| Glyph {
             face: fontdb::ID::dummy(),
-            weight: 400,
+            weight: 400.0,
             id: 0,
             x,
             y: 0.0,

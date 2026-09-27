@@ -18,7 +18,7 @@ use shared::debug;
 use crate::layout::node::{Rgba, StyleRun, TextAlign, font_runs};
 use crate::layout::paint::DrawCmd;
 use crate::text::shaping::{
-    FontFace, FontRun, Glyph, ShapeResult, ShapingHandle, caret_thickness, caret_visible_left, caret_x,
+    FontFace, FontRun, Glyph, ShapeResult, ShapingHandle, ShapingStyle, caret_thickness, caret_visible_left, caret_x,
 };
 
 use super::snap::{LogicalRect, snap_to_physical};
@@ -42,12 +42,23 @@ struct TextLineKey {
     text: String,
     runs: Vec<FontRun>,
     font_size_bits: u32,
+    line_height_bits: u32,
+    letter_spacing_bits: u32,
+    font_weight_bits: u32,
+    italic: bool,
     font: Option<Arc<str>>,
 }
 
 impl TextLineKey {
-    fn matches(&self, text: &str, runs: &[FontRun], font_size_bits: u32, font: Option<&Arc<str>>) -> bool {
-        self.font_size_bits == font_size_bits && self.text == text && self.font.as_ref() == font && self.runs == runs
+    fn matches(&self, text: &str, runs: &[FontRun], style: &TextDraw<'_>) -> bool {
+        self.font_size_bits == style.font_size.to_bits()
+            && self.line_height_bits == style.line_height.to_bits()
+            && self.letter_spacing_bits == style.letter_spacing.to_bits()
+            && self.font_weight_bits == style.font_weight.to_bits()
+            && self.italic == style.italic
+            && self.text == text
+            && self.font.as_ref() == style.font
+            && self.runs == runs
     }
 }
 
@@ -61,7 +72,7 @@ pub struct TextPainter {
     /// itself for its variation axes (ADR-0211).
     faces: HashMap<fontdb::ID, (FontId, FontFace)>,
     /// [`FontFace::coords`] per face and weight: deriving them parses the font's tables.
-    coords: HashMap<(fontdb::ID, u16), Vec<i16>>,
+    coords: HashMap<(fontdb::ID, u32), Vec<i16>>,
     /// The shaping worker's face-set generation this was built from, so [`TextPainter::sync`] can
     /// tell in one atomic load whether femtovg's registry is behind.
     generation: u64,
@@ -111,6 +122,10 @@ pub struct TextDraw<'a> {
     pub text: &'a str,
     pub runs: &'a [StyleRun],
     pub font_size: f32,
+    pub line_height: f32,
+    pub letter_spacing: f32,
+    pub font_weight: f32,
+    pub italic: bool,
     /// The family this node named (ADR-0144), the same one the box was measured under. `None` is
     /// the declared chain.
     pub font: Option<&'a Arc<str>>,
@@ -330,12 +345,25 @@ impl TextPainter {
     /// Rows are the glyphs [`ShapingHandle::shape_lines`] laid out, so measurement and paint share
     /// one shaper (ADR-0211); `runs` (ADR-0104) colour and underline by the byte each glyph came from.
     pub fn draw_text(&mut self, line: TextDraw<'_>, rect: LogicalRect, scale: f32) {
-        let TextDraw { text, runs, font_size, font, color, align, caret, caret_on } = line;
+        let TextDraw {
+            text,
+            runs,
+            font_size,
+            line_height,
+            letter_spacing,
+            font_weight,
+            italic,
+            font,
+            color,
+            align,
+            caret,
+            caret_on,
+        } = line;
         let physical = snap_to_physical(rect, scale);
         // ponytail: glyphs are placed at logical size in a physical-pixel canvas whose dpi is 1.0,
         // so on a fractional or 2x output every glyph in this shell draws at logical size. Upgrade
         // path: shape at the scaled size; only reachable with a HiDPI output to verify against.
-        let step = crate::text::shaping::line_height(font_size);
+        let step = line_height;
         let thickness = caret_thickness(font_size);
 
         let runs_key = font_runs(runs);
@@ -345,24 +373,42 @@ impl TextPainter {
             let mut hasher = std::collections::hash_map::DefaultHasher::new();
             text.hash(&mut hasher);
             font_size_bits.hash(&mut hasher);
+            line_height.to_bits().hash(&mut hasher);
+            letter_spacing.to_bits().hash(&mut hasher);
+            font_weight.to_bits().hash(&mut hasher);
+            italic.hash(&mut hasher);
             font.hash(&mut hasher);
             runs_key.hash(&mut hasher);
             hasher.finish()
         };
 
         let shaped_lines = if let Some(bucket) = self.lines_cache.get(&hash)
-            && let Some((_, lines)) = bucket.iter().find(|(k, _)| k.matches(text, &runs_key, font_size_bits, font))
+            && let Some((_, lines)) = bucket.iter().find(|(k, _)| k.matches(text, &runs_key, &line))
         {
             Arc::clone(lines)
         } else {
-            let lines = Arc::new(self.shaping.shape_lines(text, &runs_key, font_size, font));
+            let lines = Arc::new(self.shaping.shape_lines(
+                text,
+                &runs_key,
+                ShapingStyle { font_size, line_height, letter_spacing, font_weight, italic },
+                font,
+            ));
             // ponytail: 1024 entries bounds lines cache memory. Clears wholesale at cap like shaping cache. Upgrade path: per-frame generational epoch.
             if self.lines_cache_len >= 1024 {
                 self.lines_cache.clear();
                 self.lines_cache_len = 0;
             }
             self.lines_cache.entry(hash).or_default().push((
-                TextLineKey { text: text.to_string(), runs: runs_key, font_size_bits, font: font.cloned() },
+                TextLineKey {
+                    text: text.to_string(),
+                    runs: runs_key,
+                    font_size_bits,
+                    line_height_bits: line_height.to_bits(),
+                    letter_spacing_bits: letter_spacing.to_bits(),
+                    font_weight_bits: font_weight.to_bits(),
+                    italic,
+                    font: font.cloned(),
+                },
                 Arc::clone(&lines),
             ));
             self.lines_cache_len += 1;
@@ -433,13 +479,13 @@ impl TextPainter {
     /// Draws `glyphs` in `face` at `weight`; a face femtovg never registered draws nothing.
     fn fill_run(
         &mut self,
-        (id, weight, tint): (fontdb::ID, u16, Rgba),
+        (id, weight, tint): (fontdb::ID, f32, Rgba),
         glyphs: impl IntoIterator<Item = PositionedGlyph>,
         font_size: f32,
     ) {
         let Some((font, face)) = self.faces.get(&id) else { return };
         // A variable family's bold is an instance of one face, which Parley shaped at `weight`.
-        let coords = self.coords.entry((id, weight)).or_insert_with(|| face.coords(weight));
+        let coords = self.coords.entry((id, weight.to_bits())).or_insert_with(|| face.coords(weight));
         let mut paint = Paint::color(Color::rgbaf(tint.r, tint.g, tint.b, tint.a));
         paint.set_font_size(font_size);
         let _ = self.canvas.fill_glyph_run(*font, coords, glyphs, &paint);
@@ -483,7 +529,7 @@ mod tests {
     fn a_run_split_around_other_text_is_drawn_under_each_piece() {
         let glyph = |x: f32, start: usize| Glyph {
             face: fontdb::ID::dummy(),
-            weight: 400,
+            weight: 400.0,
             id: 0,
             x,
             y: 0.0,

@@ -41,6 +41,10 @@ pub(super) enum Measure {
         content: std::sync::Arc<str>,
         runs: Vec<shaping::FontRun>,
         font_size: f32,
+        line_height: f32,
+        letter_spacing: f32,
+        font_weight: f32,
+        italic: bool,
         /// The family the box is measured against, so the reserved width is the one the same
         /// family will paint into (ADR-0144).
         font: Option<std::sync::Arc<str>>,
@@ -275,7 +279,8 @@ pub(super) fn hold_leavers(
     tree.set_style(id, solver_style).map_err(taffy_failed)
 }
 
-pub(super) const TEXT_MEASURE_KEYS: &[&str] = &["content", "font_size", "font", "wrap", "max_lines"];
+pub(super) const TEXT_MEASURE_KEYS: &[&str] =
+    &["content", "font_size", "line_height", "letter_spacing", "font_weight", "italic", "font", "wrap", "max_lines"];
 
 pub(super) fn text_measure_matches(fresh: &PropMap, retained: &PropMap) -> bool {
     TEXT_MEASURE_KEYS.iter().all(|k| fresh.get(k) == retained.get(k))
@@ -298,13 +303,30 @@ pub(super) fn measure_for(
         // another kind here, so the arm is total, the same shape as `pass::children_of`'s
         // `unreachable!` arm.
         "text" => {
-            let Some(PaintStyle::Text { content, runs, font_size, font, wrap, max_lines, .. }) = paint else {
+            let Some(PaintStyle::Text {
+                content,
+                runs,
+                font_size,
+                line_height,
+                letter_spacing,
+                font_weight,
+                italic,
+                font,
+                wrap,
+                max_lines,
+                ..
+            }) = paint
+            else {
                 unreachable!("paint_style produces PaintStyle::Text for text nodes");
             };
             Some(Measure::Text {
                 content: content.clone(),
                 runs: node::font_runs(runs),
                 font_size: *font_size,
+                line_height: *line_height,
+                letter_spacing: *letter_spacing,
+                font_weight: *font_weight,
+                italic: *italic,
                 font: font.clone(),
                 wrap: *wrap,
                 max_lines: *max_lines,
@@ -361,7 +383,19 @@ pub(super) fn solve(
                 };
                 match measure {
                     Measure::Square(size) => taffy::Size { width: *size, height: *size },
-                    Measure::Text { content, runs, font_size, font, wrap, max_lines, memo } => {
+                    Measure::Text {
+                        content,
+                        runs,
+                        font_size,
+                        line_height,
+                        letter_spacing,
+                        font_weight,
+                        italic,
+                        font,
+                        wrap,
+                        max_lines,
+                        memo,
+                    } => {
                         // The wrap boundary: the width this box is already known to have, or the
                         // width on offer when it is not. `MaxContent`/`MinContent` mean taffy is
                         // asking what the string wants rather than offering it a box, and an
@@ -381,17 +415,19 @@ pub(super) fn solve(
                         {
                             return *size;
                         }
-                        let line_height = shaping::line_height(*font_size);
                         let shaped = shaping.shape(ShapeRequest {
                             text: content.to_string(),
                             font_size: *font_size,
-                            line_height,
+                            line_height: *line_height,
+                            letter_spacing: *letter_spacing,
+                            font_weight: *font_weight,
+                            italic: *italic,
                             max_width,
                             runs: runs.clone(),
                             font: font.clone(),
                         });
                         let lines = max_lines.map_or(shaped.lines.len(), |cap| shaped.lines.len().min(cap));
-                        let size = taffy::Size { width: shaped.width, height: lines as f32 * line_height };
+                        let size = taffy::Size { width: shaped.width, height: lines as f32 * *line_height };
                         *memo = Some((max_width, size));
                         size
                     }
@@ -1071,6 +1107,23 @@ mod tests {
         let text = &scene.surface("bar@TEST").unwrap().children[0];
         assert!(text.rect.width > 0.0);
         assert_eq!(text.rect.height, 12.0 * 1.2, "default font_size 12 * the 1.2 line-height multiplier");
+    }
+
+    #[test]
+    fn text_spacing_and_line_height_change_the_measured_box() {
+        let mut scene = Scene::new();
+        let shaping = ShapingHandle::spawn();
+        let (lua, surface) = surface_from(
+            r#"panel { id = "bar", child = column { children = {
+                text { content = "ABCD", font_size = 20 },
+                text { content = "ABCD", font_size = 20, line_height = 2, letter_spacing = 5 },
+            } } }"#,
+        );
+        apply_at(&mut scene, &[surface], full(), &shaping, &lua).unwrap();
+        let children = &scene.surface("bar@TEST").unwrap().children[0].children;
+        assert_eq!(children[0].rect.height, 24.0);
+        assert_eq!(children[1].rect.height, 40.0);
+        assert!(children[1].rect.width > children[0].rect.width + 5.0);
     }
 
     /// taffy 0.14 adds a flex container's own margin to its children's minimum cross size when it

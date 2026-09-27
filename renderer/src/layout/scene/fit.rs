@@ -1,7 +1,7 @@
 use std::ops::Range;
 
 use crate::layout::node::{self, PaintStyle, StyleRun};
-use crate::text::shaping::{self, ShapeRequest, ShapingHandle};
+use crate::text::shaping::{ShapeRequest, ShapingHandle};
 
 /// Rewrites a `text`'s content to what its box can actually show, which is the one thing paint
 /// cannot work out for itself.
@@ -16,7 +16,21 @@ pub(super) fn fit_text_to_box(
     unconstrained_width: Option<f32>,
     shaping: &ShapingHandle,
 ) {
-    let Some(PaintStyle::Text { content, runs, font_size, font, elide, wrap, max_lines, .. }) = paint.as_mut() else {
+    let Some(PaintStyle::Text {
+        content,
+        runs,
+        font_size,
+        line_height,
+        letter_spacing,
+        font_weight,
+        italic,
+        font,
+        elide,
+        wrap,
+        max_lines,
+        ..
+    }) = paint.as_mut()
+    else {
         return;
     };
     // Before the early returns below, and before any measurement: taffy's `compute_leaf_layout`
@@ -30,7 +44,14 @@ pub(super) fn fit_text_to_box(
     if content.is_empty() || content_width <= 0.0 {
         return;
     }
-    let face = Face { size: *font_size, family: font.clone() };
+    let face = Face {
+        size: *font_size,
+        line_height: *line_height,
+        letter_spacing: *letter_spacing,
+        font_weight: *font_weight,
+        italic: *italic,
+        family: font.clone(),
+    };
     // The output is taken off the builder before the borrow of `content` ends, which is what lets
     // the same two fields be overwritten below.
     let fitted: Option<(String, Vec<StyleRun>)> = match wrap {
@@ -144,7 +165,10 @@ fn wrapped_to_fit<'s>(
     let shaped = shaping.shape(ShapeRequest {
         text: content.to_string(),
         font_size: face.size,
-        line_height: shaping::line_height(face.size),
+        line_height: face.line_height,
+        letter_spacing: face.letter_spacing,
+        font_weight: face.font_weight,
+        italic: face.italic,
         max_width: Some(content_width),
         runs: node::font_runs(runs),
         font: face.family.clone(),
@@ -196,6 +220,10 @@ fn push_direction_mark(fitted: &mut Fitted<'_>, line: &str, rtl: bool) {
 #[derive(Clone)]
 struct Face {
     size: f32,
+    line_height: f32,
+    letter_spacing: f32,
+    font_weight: f32,
+    italic: bool,
     family: Option<std::sync::Arc<str>>,
 }
 
@@ -205,7 +233,10 @@ fn measured_width(text: &str, runs: &[StyleRun], face: &Face, shaping: &ShapingH
         .shape(ShapeRequest {
             text: text.to_string(),
             font_size: face.size,
-            line_height: shaping::line_height(face.size),
+            line_height: face.line_height,
+            letter_spacing: face.letter_spacing,
+            font_weight: face.font_weight,
+            italic: face.italic,
             max_width: None,
             runs: node::font_runs(runs),
             font: face.family.clone(),
@@ -393,10 +424,13 @@ mod tests {
         apply_at(&mut scene, &[surface], full(), &shaping, &lua).unwrap();
         let laid_out = scene.surface("bar@TEST").unwrap().children[0].children[0].rect.height;
 
-        let line_height = shaping::line_height(12.0);
+        let line_height = crate::text::shaping::line_height(12.0);
         let fresh = |max_width| {
             shaping
                 .shape(ShapeRequest {
+                    letter_spacing: 0.0,
+                    font_weight: 400.0,
+                    italic: false,
                     text: LONG.to_string(),
                     font_size: 12.0,
                     line_height,

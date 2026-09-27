@@ -5,7 +5,7 @@
 
 use crate::layout::node::{PaintStyle, apply_affine, fields, font_runs, invert_affine};
 use crate::layout::scene::ResolvedNode;
-use crate::text::shaping::{self, ShapingHandle};
+use crate::text::shaping::{self, ShapingHandle, ShapingStyle};
 use crate::text::snap::LogicalRect;
 use cursor_icon::CursorIcon;
 
@@ -54,14 +54,37 @@ pub fn hit_path(root: &ResolvedNode, point: LogicalPoint) -> Vec<&ResolvedNode> 
 /// apart, under the same alignment (ADR-0211); the run under the pointer holds the byte its glyph
 /// came from.
 pub fn link_under(node: &ResolvedNode, point: LogicalPoint, shaping: &ShapingHandle) -> Option<String> {
-    let Some(PaintStyle::Text { content, runs, font_size, font, align, .. }) = node.paint.as_ref() else {
+    let Some(PaintStyle::Text {
+        content,
+        runs,
+        font_size,
+        line_height,
+        letter_spacing,
+        font_weight,
+        italic,
+        font,
+        align,
+        ..
+    }) = node.paint.as_ref()
+    else {
         return None;
     };
     if runs.iter().all(|run| run.href.is_none()) || point.y < 0.0 {
         return None;
     }
-    let mut row = (point.y / shaping::line_height(*font_size)) as usize;
-    for (line_start, shaped) in shaping.shape_lines(content, &font_runs(runs), *font_size, font.as_ref()) {
+    let mut row = (point.y / *line_height) as usize;
+    for (line_start, shaped) in shaping.shape_lines(
+        content,
+        &font_runs(runs),
+        ShapingStyle {
+            font_size: *font_size,
+            line_height: *line_height,
+            letter_spacing: *letter_spacing,
+            font_weight: *font_weight,
+            italic: *italic,
+        },
+        font.as_ref(),
+    ) {
         let Some(laid) = shaped.shaped.get(row) else {
             row -= shaped.shaped.len();
             continue;
@@ -99,7 +122,21 @@ pub fn caret_at(
         return None;
     };
     let rect = absolute_rect(&path[..=depth])?;
-    let (_, shaped) = shaping.shape_lines(text, &[], *font_size, None).into_iter().next()?;
+    let (_, shaped) = shaping
+        .shape_lines(
+            text,
+            &[],
+            ShapingStyle {
+                font_size: *font_size,
+                line_height: shaping::line_height(*font_size),
+                letter_spacing: 0.0,
+                font_weight: 400.0,
+                italic: false,
+            },
+            None,
+        )
+        .into_iter()
+        .next()?;
     let laid = shaped.shaped.first()?;
     let left = rect.x + align.line_left(laid.rtl, 0.0, rect.width, laid.width);
     // The same slide paint applies, or a scrolled draft answers every press with the wrong byte.
@@ -374,6 +411,10 @@ mod tests {
             content: content.into(),
             runs,
             font_size: 14.0,
+            line_height: shaping::line_height(14.0),
+            letter_spacing: 0.0,
+            font_weight: 400.0,
+            italic: false,
             font: None,
             color: crate::layout::node::Rgba { r: 1.0, g: 1.0, b: 1.0, a: 1.0 },
             align,
@@ -391,6 +432,9 @@ mod tests {
     fn width_of(shaping: &ShapingHandle, text: &str) -> f32 {
         shaping
             .shape(ShapeRequest {
+                letter_spacing: 0.0,
+                font_weight: 400.0,
+                italic: false,
                 text: text.to_string(),
                 font_size: 14.0,
                 line_height: shaping::line_height(14.0),

@@ -170,16 +170,21 @@ pub(super) fn shape(
     builder.push_default(StyleProperty::FontFamily(family_list.as_slice().into()));
     builder.push_default(StyleProperty::FontSize(request.font_size));
     builder.push_default(StyleProperty::LineHeight(LineHeight::Absolute(request.line_height)));
+    builder.push_default(StyleProperty::LetterSpacing(request.letter_spacing));
+    builder.push_default(StyleProperty::FontWeight(FontWeight::new(request.font_weight)));
+    builder.push_default(StyleProperty::FontStyle(if request.italic { FontStyle::Italic } else { FontStyle::Normal }));
     for run in &request.runs {
         let start = run.range.start.min(request.text.len());
         let end = run.range.end.min(request.text.len());
         if start >= end || !request.text.is_char_boundary(start) || !request.text.is_char_boundary(end) {
             continue;
         }
-        builder
-            .push(StyleProperty::FontWeight(if run.bold { FontWeight::BOLD } else { FontWeight::NORMAL }), start..end);
-        builder
-            .push(StyleProperty::FontStyle(if run.italic { FontStyle::Italic } else { FontStyle::Normal }), start..end);
+        if run.bold {
+            builder.push(StyleProperty::FontWeight(FontWeight::BOLD), start..end);
+        }
+        if run.italic {
+            builder.push(StyleProperty::FontStyle(FontStyle::Italic), start..end);
+        }
     }
     let mut layout: Layout<()> = builder.build(&request.text);
     layout.break_all_lines(request.max_width);
@@ -207,7 +212,7 @@ pub(super) fn shape(
         for run in line.runs() {
             let key = (run.font().data.id(), run.font().index);
             let face = fonts.faces.get(&key).copied();
-            let weight = run.font_attrs().weight.value() as u16;
+            let weight = run.font_attrs().weight.value();
             for cluster in run.visual_clusters() {
                 let mut range = cluster.text_range();
                 range.end = range.end.min(request.text.len());
@@ -325,6 +330,9 @@ mod tests {
         let mut fonts = WorkerFonts::new(&["Noto Sans", "Noto Sans Mono"]);
 
         let request = ShapeRequest {
+            letter_spacing: 0.0,
+            font_weight: 400.0,
+            italic: false,
             text: "Mantle Engine Renderer".into(),
             font_size: 24.0,
             line_height: 28.8,

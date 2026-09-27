@@ -697,6 +697,22 @@ mod tests {
     }
 
     #[test]
+    fn text_style_defaults_and_bounds_are_parsed_before_shaping() {
+        let defaults = PropMap::default();
+        assert_eq!(fields::text::line_height.read(&defaults).unwrap(), 1.2);
+        assert_eq!(fields::text::letter_spacing.read(&defaults).unwrap(), 0.0);
+        assert_eq!(fields::text::font_weight.read(&defaults).unwrap(), 400.0);
+        assert!(!fields::text::italic.read(&defaults).unwrap());
+
+        let lua = mlua::Lua::new();
+        let table: mlua::Table =
+            lua.load(r#"return { kind = "text", line_height = 0, font_weight = 1001 }"#).eval().unwrap();
+        let props = props_from_table(&table);
+        assert!(fields::text::line_height.read(&props).is_err());
+        assert!(fields::text::font_weight.read(&props).is_err());
+    }
+
+    #[test]
     fn a_signal_resolving_to_a_number_satisfies_font_size_through_marshals_check_number() {
         let lua = mlua::Lua::new();
         crate::lua::signal::register(&lua, crate::lua::signal::DirtyFlag::new()).unwrap();

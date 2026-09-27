@@ -8,6 +8,7 @@ so everything since the rename from Obelisk sits under Unreleased.
 
 ### Added
 
+- `text` nodes accept `line_height` (font-size multiplier, default `1.2`), `letter_spacing` (pixels, default `0`), `font_weight` (1–1000, default `400`), and `italic` (default `false`).
 - Ctrl+C copies a plain textfield selection; Ctrl+V pastes up to 64 KiB of UTF-8 into plain or secure fields ([input](guide/input.md#text-fields)).
 - `secure_submit = { capability = "secrets", action = "store", name = "…" }` stores a named secret through the session Secret Service. `mantle.secrets.entries[name]` reports `pending`, `stored`, `unavailable`, or `timed_out` ([secrets](capabilities/secrets.md)).
 - `mantle.idle.compositor_hold_stale` marks a previously observed compositor hold as unconfirmed

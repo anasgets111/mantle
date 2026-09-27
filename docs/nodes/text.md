@@ -2,7 +2,8 @@
 
 One paragraph drawn in the [`fonts`](../guide/scripting.md#fonts) chain or a named family: labels,
 clocks, notification bodies. It sizes to its content, wraps and elides inside a bounded width, and
-mixes bold, italic, colour and links through [runs](#runs). For typing, use a [`textfield`](textfield.md).
+sets weight and italic style for the whole node, and mixes bold, italic, colour and links through
+[runs](#runs). For typing, use a [`textfield`](textfield.md).
 
 Two notification cards. In the first, the title elides and the body wraps to two lines, eliding the
 second; the second card's short texts fit.
@@ -35,6 +36,21 @@ return column { width = 340, spacing = 8, children = {
 
 The middle column is `"Fill"` so the texts have a bounded width; the icon keeps its 32 px.
 
+These node-level styles change line spacing, character spacing, and the selected font face:
+
+```lua,shot
+return column { width = 320, padding = 16, spacing = 10, radius = 12,
+    background = "#313244", children = {
+    text { content = "Default: One line\nSecond line", font_size = 16 },
+    text { content = "Taller lines: One line\nSecond line", font_size = 16,
+           line_height = 1.7, foreground = "#A6E3A1" },
+    text { content = "Wide letters", font_size = 16, letter_spacing = 3,
+           foreground = "#89B4FA" },
+    text { content = "Bold italic", font_size = 16, font_weight = 700,
+           italic = true, foreground = "#F9E2AF" },
+} }
+```
+
 ## Properties
 
 `text` takes the [common properties](index.md#common-properties), plus:
@@ -44,7 +60,11 @@ The middle column is `"Fill"` so the texts have a bounded width; the icon keeps 
 | :--- | :--- | :--- | :--- |
 | `content` | `string\|TextRun[]\|Bound` | `""` | A string, or an array of up to 10000 [runs](#runs), drawn as one paragraph |
 | `font` | `string\|Bound` | The `fonts` chain | Family placed before the `fonts` chain. `""` raises; an unknown family falls back to the chain |
-| `font_size` | `number\|Bound`, `[1, 8192]` | `12` | Each line is `1.2 × font_size` tall |
+| `font_size` | `number\|Bound`, `[1, 8192]` | `12` | Text size in logical pixels |
+| `line_height` | `number\|Bound`, `[0.1, 10]` | `1.2` | Line height as a multiple of `font_size` |
+| `letter_spacing` | `number\|Bound`, `[-100, 100]` | `0` | Extra space between characters in logical pixels. Negative values tighten text |
+| `font_weight` | `number\|Bound`, `[1, 1000]` | `400` | Font weight from 1 to 1000. A run with `bold = true` uses weight 700 |
+| `italic` | `boolean\|Bound` | `false` | Use the family's italic face when available. A run with `italic = true` stays italic |
 | `foreground` | `Color\|Bound` | `"#FFFFFF"` | A [colour](../guide/paint.md#colours); a run's `color` overrides it |
 | `text_align` | `"Start"\|"Center"\|"End"\|Bound` | `"Start"` | Aligns lines inside the node's own box; `Start`/`End` follow each line's reading direction. Matters only when the box is wider than the text |
 | `wrap` | `"None"\|"Word"\|Bound` | `"None"` | `"Word"` breaks at words, mid-word when one word is too wide. Needs a bounded width (`width`, `"Fill"` or a stretched cross axis) |
@@ -60,7 +80,7 @@ Each run in a `content` array is a table:
 | Field | Values | Default | Behaviour |
 | :--- | :--- | :--- | :--- |
 | `text` | String | Required | A run without it is refused; an empty one is skipped |
-| `bold`, `italic` | Boolean | `false` | Uses the family's bold or italic face when one exists |
+| `bold`, `italic` | Boolean | `false` | `bold` uses weight 700; `italic` enables italic. Other node-level styles carry through |
 | `underline` | Boolean | `false` | Underline in the run's colour |
 | `color` | [Colour](../guide/paint.md#colours) | The node's `foreground` | |
 | `href` | String | None | Handed to `on_link` on click; the pointer shows `"pointer"` over it. `""` is no link |
@@ -85,8 +105,9 @@ local body = text {
 
 ### Size
 
-A text node measures its content: one line per paragraph line, `1.2 × font_size` each, as wide as
-the widest line. `wrap` and `elide` need a box narrower than the text, so give the node a `width`,
+A text node measures its content: one line per paragraph line, `line_height × font_size` each, as wide as
+the widest line. The default ratio is `1.2`. `letter_spacing` changes both glyph placement and
+the width used for wrapping. `wrap` and `elide` need a box narrower than the text, so give the node a `width`,
 `"Fill"`, or a stretched cross axis (a text in a fixed-width `column` wraps at the column's width).
 In a content-sized `row`, the text measures one line and overflows instead.
 

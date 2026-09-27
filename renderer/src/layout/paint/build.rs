@@ -296,22 +296,38 @@ fn draw_for(
         // `wrap` and `max_lines` are absent on purpose: `Scene::apply` already rewrote `content` to
         // the string that fits (ellipsized, or line-broken with `\n`) in the only place the box
         // width and the shaping worker are both in reach.
-        PaintStyle::Text { content, runs, font_size, font, color, align, elide: _, wrap: _, max_lines: _ } => {
-            Some(Draw::Text {
-                content: content.clone(),
-                runs: runs
-                    .iter()
-                    .map(|run| StyleRun { color: run.color.map(|c| fade(c, opacity)), ..run.clone() })
-                    .collect(),
-                font_size: *font_size,
-                font: font.clone(),
-                color: fade(*color, opacity),
-                align: *align,
-                centered: false,
-                caret: None,
-                caret_on: false,
-            })
-        }
+        PaintStyle::Text {
+            content,
+            runs,
+            font_size,
+            line_height,
+            letter_spacing,
+            font_weight,
+            italic,
+            font,
+            color,
+            align,
+            elide: _,
+            wrap: _,
+            max_lines: _,
+        } => Some(Draw::Text {
+            content: content.clone(),
+            runs: runs
+                .iter()
+                .map(|run| StyleRun { color: run.color.map(|c| fade(c, opacity)), ..run.clone() })
+                .collect(),
+            font_size: *font_size,
+            line_height: *line_height,
+            letter_spacing: *letter_spacing,
+            font_weight: *font_weight,
+            italic: *italic,
+            font: font.clone(),
+            color: fade(*color, opacity),
+            align: *align,
+            centered: false,
+            caret: None,
+            caret_on: false,
+        }),
 
         // Icons use `Contain` and the shorter edge: `size` is a bounding-box diameter.
         PaintStyle::Icon { name, color } => Some(Draw::Icon {
@@ -394,6 +410,10 @@ fn draw_for(
                 content: content.into(),
                 runs: Vec::new(),
                 font_size: *font_size,
+                line_height: crate::text::shaping::line_height(*font_size),
+                letter_spacing: 0.0,
+                font_weight: 400.0,
+                italic: false,
                 // A `textfield` draws its placeholder and its masked content in the declared
                 // chain; nothing lets one name a family.
                 font: None,

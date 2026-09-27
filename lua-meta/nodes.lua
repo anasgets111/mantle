@@ -130,12 +130,16 @@
 ---@field spacing? number|Bound Default `0`. Px between visible children; negative values overlap them. Not range-checked.
 ---@field scroll? Bound A `scroll(name)` signal; makes this a scrolling viewport along its main axis.
 
----@alias TextAnimations { align_h?: Animation, align_v?: Animation, content?: Animation, content_blur?: Animation, cursor?: Animation, elide?: Animation, font?: Animation, font_size?: Animation, foreground?: Animation, geometry?: Animation, height?: Animation, hover?: Animation, id?: Animation, margin?: Animation, max_height?: Animation, max_lines?: Animation, max_width?: Animation, min_height?: Animation, min_width?: Animation, on_hover?: Animation, on_link?: Animation, opacity?: Animation, origin?: Animation, padding?: Animation, rotate?: Animation, scale?: Animation, shadow_blur?: Animation, shadow_color?: Animation, shadow_offset?: Animation, shadow_spread?: Animation, text_align?: Animation, translate?: Animation, visible?: Animation, width?: Animation, wrap?: Animation, exit?: Exit, [string]: "no such property" }
+---@alias TextAnimations { align_h?: Animation, align_v?: Animation, content?: Animation, content_blur?: Animation, cursor?: Animation, elide?: Animation, font?: Animation, font_size?: Animation, font_weight?: Animation, foreground?: Animation, geometry?: Animation, height?: Animation, hover?: Animation, id?: Animation, italic?: Animation, letter_spacing?: Animation, line_height?: Animation, margin?: Animation, max_height?: Animation, max_lines?: Animation, max_width?: Animation, min_height?: Animation, min_width?: Animation, on_hover?: Animation, on_link?: Animation, opacity?: Animation, origin?: Animation, padding?: Animation, rotate?: Animation, scale?: Animation, shadow_blur?: Animation, shadow_color?: Animation, shadow_offset?: Animation, shadow_spread?: Animation, text_align?: Animation, translate?: Animation, visible?: Animation, width?: Animation, wrap?: Animation, exit?: Exit, [string]: "no such property" }
 ---@class TextProps: NodeBase
 ---@field animate? TextAnimations|Bound Tween named properties to each newly resolved value without running Lua (ADR-0145). The `exit` key is an `Exit` block. Only a node already on screen animates, unless the entry has `from`.
 ---@field content? string|TextRun[]|Bound Default `""`. A string, or up to 10000 runs, drawn as one paragraph.
 ---@field font? string|Bound Default: the `fonts` chain. Family placed before the `fonts` chain (ADR-0144). `""` raises; an unknown family falls back to the chain.
----@field font_size? number|Bound `[1, 8192]`, default `12`. Each line is `1.2 × font_size` tall.
+---@field font_size? number|Bound `[1, 8192]`, default `12`. Text size in logical pixels.
+---@field line_height? number|Bound `[0.1, 10]`, default `1.2`. Line height as a multiple of `font_size`.
+---@field letter_spacing? number|Bound `[-100, 100]`, default `0`. Extra space between characters in logical pixels. Negative values tighten text.
+---@field font_weight? number|Bound `[1, 1000]`, default `400`. Font weight from 1 to 1000. A run with `bold = true` uses weight 700.
+---@field italic? boolean|Bound Default `false`. Use the family's italic face when available. A run with `italic = true` stays italic.
 ---@field foreground? Color|Bound Default `"#FFFFFF"`. A run's `color` overrides it.
 ---@field text_align? "Start"|"Center"|"End"|Bound Default `"Start"`. Aligns lines inside the node's own box; `Start`/`End` follow each line's reading direction (ADR-0211). Matters only when the box is wider than the text.
 ---@field wrap? "None"|"Word"|Bound Default `"None"`. `"Word"` breaks at words, mid-word when one word is too wide. Needs a bounded width (`width`, `"Fill"` or a stretched cross axis).

@@ -33,6 +33,9 @@ pub struct ShapeRequest {
     pub text: String,
     pub font_size: f32,
     pub line_height: f32,
+    pub letter_spacing: f32,
+    pub font_weight: f32,
+    pub italic: bool,
     /// Logical-pixel width to wrap at. `None` measures the text unconstrained, on one line.
     pub max_width: Option<f32>,
     /// The parts of `text` in another face than the regular one, in order, non-overlapping, on
@@ -43,6 +46,16 @@ pub struct ShapeRequest {
     /// declared chain, which is every node that says nothing. A measurement is only usable by the
     /// paint that draws the same family, which is why this is part of the cache key too.
     pub font: Option<Arc<str>>,
+}
+
+/// Styles shared by each separately painted paragraph of one text node.
+#[derive(Clone, Copy)]
+pub struct ShapingStyle {
+    pub font_size: f32,
+    pub line_height: f32,
+    pub letter_spacing: f32,
+    pub font_weight: f32,
+    pub italic: bool,
 }
 
 /// The measured result of shaping a request: its tight bounding box in logical pixels, plus the
@@ -84,7 +97,7 @@ pub struct ShapedLine {
 pub struct Glyph {
     pub face: fontdb::ID,
     /// What a variable face was shaped at ([`FontFace::coords`]).
-    pub weight: u16,
+    pub weight: f32,
     pub id: u16,
     pub x: f32,
     pub y: f32,
@@ -126,12 +139,12 @@ pub struct FontFace {
 impl FontFace {
     /// The normalized axis coordinates Parley shapes this face at for `weight`, in `fvar`
     /// order; empty for a face with no axes.
-    pub fn coords(&self, weight: u16) -> Vec<i16> {
+    pub fn coords(&self, weight: f32) -> Vec<i16> {
         use skrifa::{FontRef, MetadataProvider, Tag};
         let Ok(font) = FontRef::from_index(self.data.as_ref(), self.index) else {
             return Vec::new();
         };
-        let location = font.axes().location([(Tag::new(b"wght"), f32::from(weight))]);
+        let location = font.axes().location([(Tag::new(b"wght"), weight)]);
         location.coords().iter().map(|coord| coord.to_bits()).collect()
     }
 }
@@ -206,6 +219,9 @@ struct ShapeKey {
     text: String,
     font_size: u32,
     line_height: u32,
+    letter_spacing: u32,
+    font_weight: u32,
+    italic: bool,
     max_width: Option<u32>,
     runs: Vec<FontRun>,
     font: Option<Arc<str>>,
@@ -322,7 +338,7 @@ impl ShapingHandle {
         &self,
         text: &str,
         runs: &[FontRun],
-        font_size: f32,
+        style: ShapingStyle,
         font: Option<&Arc<str>>,
     ) -> Vec<(usize, ShapeResult)> {
         paragraph_ranges(text)
@@ -341,8 +357,11 @@ impl ShapingHandle {
                     .collect();
                 let shaped = self.shape_glyphs(ShapeRequest {
                     text: text[range.clone()].to_string(),
-                    font_size,
-                    line_height: line_height(font_size),
+                    font_size: style.font_size,
+                    line_height: style.line_height,
+                    letter_spacing: style.letter_spacing,
+                    font_weight: style.font_weight,
+                    italic: style.italic,
                     max_width: None,
                     runs,
                     font: font.cloned(),
@@ -359,6 +378,9 @@ impl ShapingHandle {
             text: request.text,
             font_size: request.font_size.to_bits(),
             line_height: request.line_height.to_bits(),
+            letter_spacing: request.letter_spacing.to_bits(),
+            font_weight: request.font_weight.to_bits(),
+            italic: request.italic,
             max_width: request.max_width.map(f32::to_bits),
             runs: request.runs,
             font: request.font,
@@ -377,6 +399,9 @@ impl ShapingHandle {
                     text: key.text.clone(),
                     font_size: f32::from_bits(key.font_size),
                     line_height: f32::from_bits(key.line_height),
+                    letter_spacing: f32::from_bits(key.letter_spacing),
+                    font_weight: f32::from_bits(key.font_weight),
+                    italic: key.italic,
                     max_width: key.max_width.map(f32::from_bits),
                     runs: key.runs.clone(),
                     font: key.font.clone(),
@@ -548,6 +573,9 @@ mod tests {
             text: text.into(),
             font_size,
             line_height: line_height(font_size),
+            letter_spacing: 0.0,
+            font_weight: 400.0,
+            italic: false,
             max_width: None,
             runs: Vec::new(),
             font: None,
@@ -842,6 +870,53 @@ mod tests {
         }
     }
 
+    #[test]
+    fn letter_spacing_changes_glyph_positions_and_wrap_width() {
+        let handle = ShapingHandle::spawn();
+        let plain = handle.shape_glyphs(req("AB CD", 20.0));
+        let spaced_request = ShapeRequest { letter_spacing: 5.0, ..req("AB CD", 20.0) };
+        let spaced = handle.shape_glyphs(ShapeRequest { letter_spacing: 5.0, ..req("AB CD", 20.0) });
+        assert!(spaced.width > plain.width + 5.0);
+        assert!(spaced.shaped[0].glyphs[1].x > plain.shaped[0].glyphs[1].x + 3.0);
+        let boundary = (plain.width + spaced.width) / 2.0;
+        assert_eq!(handle.shape(ShapeRequest { max_width: Some(boundary), ..req("AB CD", 20.0) }).lines.len(), 1);
+        assert!(handle.shape(ShapeRequest { max_width: Some(boundary), ..spaced_request }).lines.len() > 1);
+    }
+
+    #[test]
+    fn node_weight_and_italic_reach_glyphs_and_rich_runs_inherit_them() {
+        let handle = ShapingHandle::spawn();
+        let request = ShapeRequest {
+            font_weight: 600.0,
+            italic: true,
+            runs: vec![FontRun { range: 0..1, bold: false, italic: true }],
+            ..req("AB", 20.0)
+        };
+        let result = handle.shape_glyphs(request);
+        let a = result.shaped[0].glyphs.iter().find(|glyph| glyph.start == 0).unwrap();
+        assert_eq!(a.weight, 600.0, "an italic-only run keeps the node weight");
+        let bold = handle.shape_glyphs(ShapeRequest {
+            runs: vec![FontRun { range: 1..2, bold: true, italic: false }],
+            ..req("AB", 20.0)
+        });
+        let b = bold.shaped[0].glyphs.iter().find(|glyph| glyph.start == 1).unwrap();
+        assert_eq!(b.weight, 700.0, "a bold run overrides the regular node weight");
+        let fractional = handle.shape_glyphs(ShapeRequest { font_weight: 625.5, ..req("A", 20.0) });
+        assert_eq!(fractional.shaped[0].glyphs[0].weight, 625.5);
+    }
+
+    #[test]
+    fn node_italic_uses_the_installed_italic_face() {
+        if !fonts::fc_lists("Noto Sans:style=Italic") || !fonts::fc_lists("Noto Sans:style=Regular") {
+            return;
+        }
+        let handle = ShapingHandle::spawn();
+        handle.set_chain(&["Noto Sans".to_string()]);
+        let plain = handle.shape_glyphs(req("Mantle", 20.0));
+        let italic = handle.shape_glyphs(ShapeRequest { italic: true, ..req("Mantle", 20.0) });
+        assert_ne!(plain.shaped[0].glyphs[0].face, italic.shaped[0].glyphs[0].face);
+    }
+
     /// A right-to-left paragraph says so, and lays the letter it starts with out rightmost.
     #[test]
     fn a_right_to_left_line_reports_its_direction_and_starts_at_the_right() {
@@ -891,6 +966,9 @@ mod tests {
         let handle = ShapingHandle::spawn();
         let text = "first paragraph that wraps\nsecond";
         let result = handle.shape(ShapeRequest {
+            letter_spacing: 0.0,
+            font_weight: 400.0,
+            italic: false,
             text: text.into(),
             font_size: 14.0,
             line_height: line_height(14.0),
@@ -937,8 +1015,7 @@ mod tests {
     }
 
     /// The bug a subset key would cause: a hit that returns another request's box. Each of these
-    /// differs from the first in exactly one field, including `line_height`, which every caller
-    /// derives from `font_size` today and which a three-field key would therefore have dropped.
+    /// differs from the first in exactly one field. A subset key could reuse the wrong geometry.
     #[test]
     fn every_field_of_a_request_is_part_of_its_identity() {
         let handle = ShapingHandle::spawn();
@@ -947,6 +1024,9 @@ mod tests {
             (
                 "text",
                 ShapeRequest {
+                    letter_spacing: 0.0,
+                    font_weight: 400.0,
+                    italic: false,
                     text: "abd".into(),
                     font_size: 13.0,
                     line_height: 15.6,
@@ -958,6 +1038,9 @@ mod tests {
             (
                 "font_size",
                 ShapeRequest {
+                    letter_spacing: 0.0,
+                    font_weight: 400.0,
+                    italic: false,
                     text: "abc".into(),
                     font_size: 26.0,
                     line_height: 15.6,
@@ -969,6 +1052,9 @@ mod tests {
             (
                 "line_height",
                 ShapeRequest {
+                    letter_spacing: 0.0,
+                    font_weight: 400.0,
+                    italic: false,
                     text: "abc".into(),
                     font_size: 13.0,
                     line_height: 40.0,
@@ -980,6 +1066,9 @@ mod tests {
             (
                 "max_width",
                 ShapeRequest {
+                    letter_spacing: 0.0,
+                    font_weight: 400.0,
+                    italic: false,
                     text: "abc".into(),
                     font_size: 13.0,
                     line_height: 15.6,
@@ -988,6 +1077,9 @@ mod tests {
                     font: None,
                 },
             ),
+            ("letter_spacing", ShapeRequest { letter_spacing: 2.0, ..req("abc", 13.0) }),
+            ("font_weight", ShapeRequest { font_weight: 700.0, ..req("abc", 13.0) }),
+            ("italic", ShapeRequest { italic: true, ..req("abc", 13.0) }),
         ] {
             let before = handle.cached_len();
             handle.shape(request);
@@ -1037,6 +1129,9 @@ mod tests {
     fn shapes_nonempty_text_to_a_nonzero_box() {
         let handle = ShapingHandle::spawn();
         let result = handle.shape(ShapeRequest {
+            letter_spacing: 0.0,
+            font_weight: 400.0,
+            italic: false,
             text: "Mantle".into(),
             font_size: 14.0,
             line_height: 18.0,
@@ -1052,6 +1147,9 @@ mod tests {
     fn empty_text_measures_to_zero_width() {
         let handle = ShapingHandle::spawn();
         let result = handle.shape(ShapeRequest {
+            letter_spacing: 0.0,
+            font_weight: 400.0,
+            italic: false,
             text: String::new(),
             font_size: 14.0,
             line_height: 18.0,
@@ -1066,6 +1164,9 @@ mod tests {
     fn longer_text_measures_wider_than_shorter_text() {
         let handle = ShapingHandle::spawn();
         let short = handle.shape(ShapeRequest {
+            letter_spacing: 0.0,
+            font_weight: 400.0,
+            italic: false,
             text: "O".into(),
             font_size: 14.0,
             line_height: 18.0,
@@ -1074,6 +1175,9 @@ mod tests {
             font: None,
         });
         let long = handle.shape(ShapeRequest {
+            letter_spacing: 0.0,
+            font_weight: 400.0,
+            italic: false,
             text: "Mantle Engine".into(),
             font_size: 14.0,
             line_height: 18.0,
@@ -1150,6 +1254,9 @@ mod tests {
         assert_eq!(&*unconstrained.lines, [TEXT], "an unwrapped string is one line holding all of it");
 
         let wrapped = handle.shape(ShapeRequest {
+            letter_spacing: 0.0,
+            font_weight: 400.0,
+            italic: false,
             text: TEXT.into(),
             font_size: 14.0,
             line_height: line_height(14.0),
@@ -1172,6 +1279,9 @@ mod tests {
     fn the_measured_height_is_the_lines_it_reports() {
         let handle = ShapingHandle::spawn();
         let result = handle.shape(ShapeRequest {
+            letter_spacing: 0.0,
+            font_weight: 400.0,
+            italic: false,
             text: "Mantle Engine Renderer".into(),
             font_size: 14.0,
             line_height: 18.0,
@@ -1195,6 +1305,9 @@ mod tests {
     fn a_max_width_narrower_than_the_unconstrained_text_wraps_to_more_lines() {
         let handle = ShapingHandle::spawn();
         let unconstrained = handle.shape(ShapeRequest {
+            letter_spacing: 0.0,
+            font_weight: 400.0,
+            italic: false,
             text: "Mantle Engine Renderer".into(),
             font_size: 14.0,
             line_height: 18.0,
@@ -1203,6 +1316,9 @@ mod tests {
             font: None,
         });
         let wrapped = handle.shape(ShapeRequest {
+            letter_spacing: 0.0,
+            font_weight: 400.0,
+            italic: false,
             text: "Mantle Engine Renderer".into(),
             font_size: 14.0,
             line_height: 18.0,

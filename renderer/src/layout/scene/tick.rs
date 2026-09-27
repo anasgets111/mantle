@@ -275,8 +275,35 @@ fn repainted_keeping_fitted_text(old: Option<PaintStyle>, fresh: Option<PaintSty
     match (old, fresh) {
         (
             Some(PaintStyle::Text { content, runs, .. }),
-            Some(PaintStyle::Text { font_size, font, color, align, elide, wrap, max_lines, .. }),
-        ) => Some(PaintStyle::Text { content, runs, font_size, font, color, align, elide, wrap, max_lines }),
+            Some(PaintStyle::Text {
+                font_size,
+                line_height,
+                letter_spacing,
+                font_weight,
+                italic,
+                font,
+                color,
+                align,
+                elide,
+                wrap,
+                max_lines,
+                ..
+            }),
+        ) => Some(PaintStyle::Text {
+            content,
+            runs,
+            font_size,
+            line_height,
+            letter_spacing,
+            font_weight,
+            italic,
+            font,
+            color,
+            align,
+            elide,
+            wrap,
+            max_lines,
+        }),
         (_, fresh) => fresh,
     }
 }

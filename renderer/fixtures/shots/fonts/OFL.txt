@@ -2,6 +2,8 @@ Copyright 2022 The Noto Project Authors (https://github.com/notofonts/latin-gree
 
 NotoSans-Regular.ttf and NotoSans-Bold.ttf here are Noto Sans 2.015 cut to Latin-1 and common
 punctuation with pyftsubset.
+NotoSans-Italic.ttf and NotoSans-BoldItalic.ttf are the matching Noto Sans 2.015 faces, cut to
+U+0000-00FF and U+2000-206F with pyftsubset from the system Noto font package.
 
 Copyright 2022 The Noto Project Authors (https://github.com/notofonts/symbols)
 
