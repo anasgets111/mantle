@@ -209,7 +209,9 @@ impl Capability {
             Capability::Sysinfo => &["configure"],
             Capability::Storage => &["open", "set"],
             Capability::Polkit => &["cancel"],
-            Capability::Tray => &["activate", "secondary_activate", "scroll", "activate_menu_item", "menu_will_show"],
+            Capability::Tray => {
+                &["activate", "context_menu", "secondary_activate", "scroll", "activate_menu_item", "menu_will_show"]
+            }
             Capability::Updates => &["check", "configure", "install"],
             Capability::Workspaces => &["focus", "toggle_special"],
             Capability::Windows => &["focus", "close", "set_fullscreen", "set_minimized", "set_maximized"],

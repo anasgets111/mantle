@@ -6,7 +6,7 @@ use zbus::zvariant::Value;
 
 use super::proxies::DBusMenuProxy;
 use super::{MAX_MENU_NODES, MAX_TRAY_TEXT_BYTES};
-use crate::capabilities::truncate_utf8_bytes;
+use crate::capabilities::{shm_icons, truncate_utf8_bytes};
 
 /// One `tray.items[].menu` entry.
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]
@@ -20,7 +20,7 @@ pub struct MenuItem {
     pub label: Option<String>,
     /// `false` for a greyed-out entry; draw it, but clicking does nothing.
     pub enabled: bool,
-    /// Theme icon name, or `nil`. Icon pixmaps are not carried.
+    /// Theme icon name, a spooled PNG path from raw `icon-data`, or `nil`.
     pub icon_name: Option<String>,
     /// `"checkmark"`, `"radio"`, or `nil` for an entry that is not a toggle.
     pub toggle_type: Option<String>,
@@ -70,6 +70,31 @@ fn dict_str_key<'a>(key: &'a Value<'_>) -> Option<&'a str> {
     }
 }
 
+/// Maximum byte size for a menu item's raw `icon-data` PNG (512 KB).
+const MAX_MENU_ICON_BYTES: usize = 512 * 1024;
+
+/// 8-byte PNG file header.
+const PNG_MAGIC: &[u8] = b"\x89PNG\r\n\x1a\n";
+
+fn value_as_byte_array(value: &Value<'_>, max_bytes: usize) -> Option<Vec<u8>> {
+    match unwrap_variant(value) {
+        Value::Array(array) => {
+            if array.len() > max_bytes {
+                return None;
+            }
+            let mut bytes = Vec::with_capacity(array.len());
+            for elem in array.iter() {
+                match unwrap_variant(elem) {
+                    Value::U8(b) => bytes.push(*b),
+                    _ => return None,
+                }
+            }
+            Some(bytes)
+        }
+        _ => None,
+    }
+}
+
 /// Recursion cap for [`parse_menu_node`]. A session-bus peer controls `GetLayout`, so an encoded
 /// deep tree could otherwise stack-overflow this task. 32 is generous; real menus rarely nest more
 /// than a handful of levels.
@@ -84,7 +109,7 @@ const MAX_MENU_DEPTH: u32 = 32;
 /// `budget` is the shared [`MAX_MENU_NODES`] allowance for the whole reply, decremented once per
 /// node parsed. Depth alone leaves breadth unbounded, and it is breadth an application reaches for
 /// by accident: one level of a million siblings sits well inside [`MAX_MENU_DEPTH`].
-pub(super) fn parse_menu_node(value: &Value<'_>, depth: u32, budget: &mut usize) -> Option<MenuItem> {
+pub(super) fn parse_menu_node(value: &Value<'_>, depth: u32, budget: &mut usize, item_stem: &str) -> Option<MenuItem> {
     if *budget == 0 {
         return None;
     }
@@ -101,7 +126,9 @@ pub(super) fn parse_menu_node(value: &Value<'_>, depth: u32, budget: &mut usize)
     let mut menu_type = "standard".to_string();
     let mut label = None;
     let mut enabled = true;
+    let mut visible = true;
     let mut icon_name = None;
+    let mut icon_data = None;
     let mut toggle_type = None;
     let mut toggle_state_raw = None;
     if let Value::Dict(dict) = unwrap_variant(properties_field) {
@@ -118,11 +145,30 @@ pub(super) fn parse_menu_node(value: &Value<'_>, depth: u32, budget: &mut usize)
                         enabled = b;
                     }
                 }
+                Some("visible") => {
+                    if let Some(b) = value_as_bool(val) {
+                        visible = b;
+                    }
+                }
                 Some("icon-name") => icon_name = capped_str(val).filter(|s| !s.is_empty()),
+                Some("icon-data") => icon_data = Some(val),
                 Some("toggle-type") => toggle_type = capped_str(val).filter(|s| !s.is_empty()),
                 Some("toggle-state") => toggle_state_raw = value_as_i32(val),
                 _ => {}
             }
+        }
+    }
+    if !visible {
+        return None;
+    }
+    if icon_name.is_none()
+        && let Some(val) = icon_data
+        && let Some(bytes) = value_as_byte_array(val, MAX_MENU_ICON_BYTES)
+        && bytes.starts_with(PNG_MAGIC)
+    {
+        match shm_icons::write_png(super::icon::SPOOL_SUBDIR, &format!("{item_stem}_menu_{id}.png"), &bytes) {
+            Ok(path) => icon_name = Some(path),
+            Err(err) => debug!("failed to spool DBusMenu icon for node {id}: {err}"),
         }
     }
     let toggle_state = toggle_type.as_ref().map(|_| toggle_state_raw.unwrap_or(-1));
@@ -133,7 +179,9 @@ pub(super) fn parse_menu_node(value: &Value<'_>, depth: u32, budget: &mut usize)
         Vec::new()
     } else {
         match unwrap_variant(children_field) {
-            Value::Array(array) => array.iter().filter_map(|child| parse_menu_node(child, depth + 1, budget)).collect(),
+            Value::Array(array) => {
+                array.iter().filter_map(|child| parse_menu_node(child, depth + 1, budget, item_stem)).collect()
+            }
             _ => Vec::new(),
         }
     };
@@ -141,11 +189,11 @@ pub(super) fn parse_menu_node(value: &Value<'_>, depth: u32, budget: &mut usize)
     Some(MenuItem { id, menu_type, label, enabled, icon_name, toggle_type, toggle_state, children })
 }
 
-pub(super) async fn fetch_menu_via(menu: &DBusMenuProxy<'static>) -> zbus::Result<Vec<MenuItem>> {
+pub(super) async fn fetch_menu_via(menu: &DBusMenuProxy<'static>, item_stem: &str) -> zbus::Result<Vec<MenuItem>> {
     let (_, (_, _, children)) = menu.get_layout(0, -1, &[]).await?;
     // The root is one of the budgeted nodes, so the reply as a whole cannot exceed the cap.
     let mut budget = MAX_MENU_NODES - 1;
-    let items = children.iter().filter_map(|child| parse_menu_node(child, 1, &mut budget)).collect();
+    let items = children.iter().filter_map(|child| parse_menu_node(child, 1, &mut budget, item_stem)).collect();
     // Reported here rather than at the node that ran out: exhaustion stops every remaining sibling
     // and ancestor alike, so warning inside the recursion means one line per ancestor for one reply.
     if budget == 0 {
@@ -162,7 +210,7 @@ mod tests {
 
     /// Parses with the full node allowance, which is what every test but the cap's own wants.
     fn parse(value: &Value<'_>, depth: u32) -> Option<MenuItem> {
-        parse_menu_node(value, depth, &mut { MAX_MENU_NODES })
+        parse_menu_node(value, depth, &mut { MAX_MENU_NODES }, "stem")
     }
 
     // ---- parse_menu_node ----
@@ -327,7 +375,7 @@ mod tests {
         let root = menu_node_value(0, Vec::new(), children);
 
         let mut budget = MAX_MENU_NODES;
-        let parsed = parse_menu_node(&root, 0, &mut budget).expect("the root itself must still parse");
+        let parsed = parse_menu_node(&root, 0, &mut budget, "stem").expect("the root itself must still parse");
 
         // The root spends one, so the survivors are the rest of the allowance.
         assert_eq!(parsed.children.len(), MAX_MENU_NODES - 1);
@@ -344,7 +392,7 @@ mod tests {
         }
 
         let mut budget = 4;
-        parse_menu_node(&node, 0, &mut budget).expect("the root must parse");
+        parse_menu_node(&node, 0, &mut budget, "stem").expect("the root must parse");
         assert_eq!(budget, 0, "ten nested nodes must not spend more than the four allowed");
     }
 
@@ -368,5 +416,89 @@ mod tests {
         assert_eq!(item.menu_type.len(), MAX_TRAY_TEXT_BYTES);
         assert_eq!(item.icon_name.as_deref().map(str::len), Some(MAX_TRAY_TEXT_BYTES));
         assert_eq!(item.toggle_type.as_deref().map(str::len), Some(MAX_TRAY_TEXT_BYTES));
+    }
+
+    #[test]
+    fn parse_menu_node_filters_out_invisible_items() {
+        let invisible = menu_node_value(1, vec![("visible", Value::Bool(false))], Vec::new());
+        assert_eq!(parse(&invisible, 0), None);
+
+        let visible = menu_node_value(1, vec![("visible", Value::Bool(true))], Vec::new());
+        assert!(parse(&visible, 0).is_some());
+    }
+
+    // ---- icon-data ----
+
+    fn byte_array_value(bytes: &[u8]) -> Value<'_> {
+        let mut array = Array::new(&Signature::U8);
+        for &byte in bytes {
+            array.append(Value::U8(byte)).expect("append u8");
+        }
+        Value::Array(array)
+    }
+
+    fn init_test_spool() {
+        let temp = tempfile::tempdir().unwrap();
+        let _ = crate::capabilities::shm_icons::INSTANCE_DIR.set(temp.path().to_path_buf());
+        std::mem::forget(temp);
+    }
+
+    #[test]
+    fn parse_menu_node_spools_valid_png_icon_data_when_icon_name_absent() {
+        init_test_spool();
+        let png_bytes = b"\x89PNG\r\n\x1a\nfake_png_payload";
+        let value = menu_node_value(10, vec![("icon-data", byte_array_value(png_bytes))], vec![]);
+
+        let item = parse_menu_node(&value, 0, &mut { MAX_MENU_NODES }, "test_app").expect("must parse");
+        let path = item.icon_name.expect("spooled path must be set");
+        assert!(path.ends_with("test_app_menu_10.png"), "path was {path}");
+        let on_disk = std::fs::read(&path).expect("spooled file must exist");
+        assert_eq!(on_disk, png_bytes);
+    }
+
+    #[test]
+    fn parse_menu_node_rejects_non_png_icon_data() {
+        init_test_spool();
+        let value = menu_node_value(11, vec![("icon-data", byte_array_value(b"not-a-png"))], vec![]);
+        let item = parse_menu_node(&value, 0, &mut { MAX_MENU_NODES }, "test_app").expect("must parse");
+        assert_eq!(item.icon_name, None);
+    }
+
+    #[test]
+    fn parse_menu_node_rejects_oversized_icon_data() {
+        init_test_spool();
+        let mut oversized = Vec::with_capacity(MAX_MENU_ICON_BYTES + 1);
+        oversized.extend_from_slice(b"\x89PNG\r\n\x1a\n");
+        oversized.resize(MAX_MENU_ICON_BYTES + 1, 0);
+        let value = menu_node_value(12, vec![("icon-data", byte_array_value(&oversized))], vec![]);
+        let item = parse_menu_node(&value, 0, &mut { MAX_MENU_NODES }, "test_app").expect("must parse");
+        assert_eq!(item.icon_name, None);
+    }
+
+    #[test]
+    fn parse_menu_node_prefers_icon_name_over_icon_data() {
+        init_test_spool();
+        let png_bytes = b"\x89PNG\r\n\x1a\nfake_png_payload";
+        let value = menu_node_value(
+            13,
+            vec![("icon-name", Value::Str(Str::from("document-open"))), ("icon-data", byte_array_value(png_bytes))],
+            vec![],
+        );
+        let item = parse_menu_node(&value, 0, &mut { MAX_MENU_NODES }, "test_app").expect("must parse");
+        assert_eq!(item.icon_name, Some("document-open".to_string()));
+    }
+
+    #[test]
+    fn parse_menu_node_uses_icon_data_when_icon_name_is_empty() {
+        init_test_spool();
+        let png_bytes = b"\x89PNG\r\n\x1a\npayload";
+        let value = menu_node_value(
+            14,
+            vec![("icon-name", Value::Str(Str::from(""))), ("icon-data", byte_array_value(png_bytes))],
+            vec![],
+        );
+        let item = parse_menu_node(&value, 0, &mut { MAX_MENU_NODES }, "test_app").expect("must parse");
+        let path = item.icon_name.expect("spooled path must be set");
+        assert!(path.ends_with("test_app_menu_14.png"));
     }
 }

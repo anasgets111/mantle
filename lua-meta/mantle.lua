@@ -137,7 +137,7 @@
 ---One `tray.items[].menu` entry.
 ---@field children MenuItem[] Submenu entries, empty for a leaf. An app that fills submenus lazily sends them only after `menu_will_show`.
 ---@field enabled boolean `false` for a greyed-out entry; draw it, but clicking does nothing.
----@field icon_name? string Theme icon name, or `nil`. Icon pixmaps are not carried.
+---@field icon_name? string Theme icon name, a spooled PNG path from raw `icon-data`, or `nil`.
 ---@field id integer DBusMenu id, the second argument of `activate_menu_item` and `menu_will_show`.
 ---@field label? string Entry text as sent, or `nil`. `_` mnemonic markers remain (`"_Quit"`); strip them to draw.
 ---@field menu_type string `"standard"` (the default) or `"separator"`, as the application sent it.
@@ -608,6 +608,7 @@ local PrivacyCapability = {}
 ---[docs](https://anasgets111.github.io/mantle/capabilities/tray.html)
 ---@class TrayCapability: Capability<TrayState>, userdata
 ---@field activate fun(self: TrayCapability, id: string, x: integer, y: integer) Left-click activation at screen coordinates `x`, `y`; a no-op when `item_is_menu`.
+---@field context_menu fun(self: TrayCapability, id: string, x: integer, y: integer) Context-menu activation at screen coordinates `x`, `y`.
 ---@field secondary_activate fun(self: TrayCapability, id: string, x: integer, y: integer) Middle-click activation at screen coordinates `x`, `y` (ADR-0074).
 ---@field scroll fun(self: TrayCapability, id: string, delta: integer, orientation: string) Scrolls the icon by `delta`; `orientation` is `"vertical"` or `"horizontal"`, passed verbatim (ADR-0074).
 ---@field activate_menu_item fun(self: TrayCapability, id: string, menu_item_id: integer) Clicks the item's `MenuItem.id`.

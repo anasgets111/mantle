@@ -83,6 +83,8 @@ fn unix_timestamp_u32() -> u32 {
 pub enum TrayAction {
     /// Left-click activation at screen coordinates `x`, `y`; a no-op when `item_is_menu`.
     Activate { id: String, x: i32, y: i32 },
+    /// Context-menu activation at screen coordinates `x`, `y`.
+    ContextMenu { id: String, x: i32, y: i32 },
     /// Middle-click activation at screen coordinates `x`, `y` (ADR-0074).
     SecondaryActivate { id: String, x: i32, y: i32 },
     /// Scrolls the icon by `delta`; `orientation` is `"vertical"` or `"horizontal"`, passed verbatim (ADR-0074).
@@ -101,6 +103,7 @@ pub fn dispatch(controller: &TrayController, envelope: &shared::CommandEnvelope)
     tokio::spawn(async move {
         match action {
             TrayAction::Activate { id, x, y } => controller.activate(&id, x, y).await,
+            TrayAction::ContextMenu { id, x, y } => controller.context_menu(&id, x, y).await,
             TrayAction::SecondaryActivate { id, x, y } => controller.secondary_activate(&id, x, y).await,
             TrayAction::Scroll { id, delta, orientation } => controller.scroll(&id, delta, &orientation).await,
             TrayAction::ActivateMenuItem { id, menu_item_id } => controller.activate_menu_item(&id, menu_item_id).await,

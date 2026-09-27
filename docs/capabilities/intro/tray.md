@@ -33,13 +33,14 @@ registers itself as a host.
 | Removal | An item leaves, and its spooled PNGs are deleted, when its bus name loses its owner |
 | Icon | `IconName` found in the item's `IconThemePath`, then `IconName` as a theme name, then the largest valid pixmap: square, 1 to 128 px, exactly `w × h × 4` ARGB bytes, spooled as a PNG under `tray/` |
 | Bounds | Strings 256 bytes; menus 1024 nodes, depth 32 |
-| Menus | `com.canonical.dbusmenu`. `menu_will_show` sends `AboutToShow`, `activate_menu_item` sends `Event("clicked")` |
+| Menus | `com.canonical.dbusmenu`. Drops items with `visible = false`. Spools raw PNG `icon-data` (up to 512 KB) to shared memory as `icon_name`. `menu_will_show` sends `AboutToShow`, `activate_menu_item` sends `Event("clicked")` |
 
 ## Gotchas
 
 | Trap | Fix |
 | :--- | :--- |
 | `activate` does nothing on some items | The item set `item_is_menu`, and Mantle skips `Activate` for it. Open `menu` on left click |
-| A submenu is empty | Some apps fill submenus only after `AboutToShow`. Send `menu_will_show` with the submenu's `id` before drawing it |
+| A dynamic menu or submenu is empty | Some apps fill menus only after `AboutToShow`. Send `menu_will_show(item.id, 0)` when opening the root menu, and with `submenu_id` when expanding a submenu |
+| Right-clicking an item with no menu does nothing | The app provides no DBusMenu. Call `mantle.tray:context_menu(item.id, x, y)` on right click to trigger its native popup |
 
 See also: [System tray with menu](../cookbook/tray.md) recipe.

@@ -6845,3 +6845,22 @@ and a non-empty `/var/lib/dpkg/status`, after `pacman` and before `dnf`, which D
 
 The ceiling: progress counts `Setting up` lines against the summary line, so the download shows as
 step `0`. `APT::Status-Fd` would report it, as a percentage the step fields do not hold.
+
+## 0278. The tray exposes `ContextMenu`, spools menu icons, and filters invisible items
+
+Amends ADR-0031 §4, §5, §7 and ADR-0074.
+
+1. **`ContextMenu` fallback.** Applications without a DBusMenu rely on `org.kde.StatusNotifierItem.ContextMenu(x, y)`
+   to display their native popup menu on right-click. `mantle.tray:context_menu(id, x, y)` calls this method
+   verbatim, giving Lua shells a right-click fallback when `item.menu` is nil.
+2. **Filter invisible menu items.** DBusMenu defines `visible: bool`, defaulting to true. `parse_menu_node` drops
+   items where `visible == false` rather than passing them to Lua, matching Qt/GTK behaviour and preventing
+   hidden contextual items from cluttering menus.
+3. **Signal tracking.** Menus update on both `LayoutUpdated` and `ItemsPropertiesUpdated`, refreshing toggle states
+   and dynamic labels that change without bumping menu layout revision. `NewMenu` re-fetches the menu when Qt/KDE
+   applications replace the menu instance.
+4. **Spool DBusMenu `icon-data`.** Applications send raw PNG bytes under `icon-data` instead of theme names in
+   `icon-name`. When `icon-name` is absent or empty, Mantle validates the 8-byte PNG header and a 512 KB cap
+   (`MAX_MENU_ICON_BYTES`), writes the image to `/dev/shm` as `{stem}_menu_{id}.png`, and populates `MenuItem.icon_name`
+   with the path. The renderer's `icon` element accepts absolute file paths directly, so Lua shells require no second
+   node kind.

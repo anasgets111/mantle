@@ -19,6 +19,7 @@ local function open_menu(item, rect)
     expanded:set({})
     menu_anchor:set(rect)
     menu_open:set(true)
+    mantle.tray:menu_will_show(item.id, 0)
 end
 
 local function artwork(item)
@@ -53,12 +54,16 @@ local tray_items = list {
             padding = 4,
             radius = 6,
             on_click = function(rect, which)
+                local cx = math.floor(rect.x + rect.width / 2)
+                local cy = math.floor(rect.y + rect.height)
                 if item.menu and (which == "right" or item.item_is_menu) then
                     open_menu(item, rect)
+                elseif which == "right" then
+                    mantle.tray:context_menu(item.id, cx, cy)
                 elseif which == "left" then
-                    mantle.tray:activate(item.id, 0, 0)
+                    mantle.tray:activate(item.id, cx, cy)
                 elseif which == "middle" then
-                    mantle.tray:secondary_activate(item.id, 0, 0)
+                    mantle.tray:secondary_activate(item.id, cx, cy)
                 end
             end,
             on_wheel = function(_, steps)
@@ -201,8 +206,8 @@ return {
 - `tray.items` arrive in registration order with their whole DBusMenu tree in `menu` ([tray](../capabilities/tray.md)).
 - `on_click` gets the button's rect and the mouse button; the rect goes straight into the popup's `anchor_rect` ([pointer](../guide/input.md#pointer), [popup](../surfaces/popup.md)).
 - The popup grabs the pointer, so an outside click dismisses it and `on_dismiss` clears the state ([dismissal](../surfaces/popup.md#dismissal)).
-- The menu tree is flattened into one `list` with an indent per depth, so a submenu opens in place rather than in a second popup ([list](../nodes/list.md), [nested menus](../surfaces/popup.md#nested-menus) for the other way).
-- `menu_will_show` lets apps that fill submenus lazily send them before the row expands.
+- `menu_will_show` notifies apps when a menu opens (id `0`) or a submenu expands (`entry.id`), letting apps that build items lazily populate them.
+- Right-clicking an item with no DBusMenu calls `context_menu` with screen coordinates so native menus still appear.
 
 ## Variations
 

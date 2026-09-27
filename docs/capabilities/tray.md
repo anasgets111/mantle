@@ -41,7 +41,7 @@ One `tray.items[].menu` entry.
 | --- | --- | --- |
 | `children` | `MenuItem[]` | Submenu entries, empty for a leaf. An app that fills submenus lazily sends them only after `menu_will_show`. |
 | `enabled` | `boolean` | `false` for a greyed-out entry; draw it, but clicking does nothing. |
-| `icon_name?` | `string` | Theme icon name, or `nil`. Icon pixmaps are not carried. |
+| `icon_name?` | `string` | Theme icon name, a spooled PNG path from raw `icon-data`, or `nil`. |
 | `id` | `integer` | DBusMenu id, the second argument of `activate_menu_item` and `menu_will_show`. |
 | `label?` | `string` | Entry text as sent, or `nil`. `_` mnemonic markers remain (`"_Quit"`); strip them to draw. |
 | `menu_type` | `string` | `"standard"` (the default) or `"separator"`, as the application sent it. |
@@ -72,6 +72,7 @@ Call each as `mantle.tray:<action>(arguments...)`; `?` marks an argument you may
 | Action | Arguments | Description |
 | --- | --- | --- |
 | `activate` | `id: string, x: integer, y: integer` | Left-click activation at screen coordinates `x`, `y`; a no-op when `item_is_menu`. |
+| `context_menu` | `id: string, x: integer, y: integer` | Context-menu activation at screen coordinates `x`, `y`. |
 | `secondary_activate` | `id: string, x: integer, y: integer` | Middle-click activation at screen coordinates `x`, `y`. |
 | `scroll` | `id: string, delta: integer, orientation: string` | Scrolls the icon by `delta`; `orientation` is `"vertical"` or `"horizontal"`, passed verbatim. |
 | `activate_menu_item` | `id: string, menu_item_id: integer` | Clicks the item's `MenuItem.id`. |
@@ -89,14 +90,15 @@ registers itself as a host.
 | Removal | An item leaves, and its spooled PNGs are deleted, when its bus name loses its owner |
 | Icon | `IconName` found in the item's `IconThemePath`, then `IconName` as a theme name, then the largest valid pixmap: square, 1 to 128 px, exactly `w × h × 4` ARGB bytes, spooled as a PNG under `tray/` |
 | Bounds | Strings 256 bytes; menus 1024 nodes, depth 32 |
-| Menus | `com.canonical.dbusmenu`. `menu_will_show` sends `AboutToShow`, `activate_menu_item` sends `Event("clicked")` |
+| Menus | `com.canonical.dbusmenu`. Drops items with `visible = false`. Spools raw PNG `icon-data` (up to 512 KB) to shared memory as `icon_name`. `menu_will_show` sends `AboutToShow`, `activate_menu_item` sends `Event("clicked")` |
 
 ## Gotchas
 
 | Trap | Fix |
 | :--- | :--- |
 | `activate` does nothing on some items | The item set `item_is_menu`, and Mantle skips `Activate` for it. Open `menu` on left click |
-| A submenu is empty | Some apps fill submenus only after `AboutToShow`. Send `menu_will_show` with the submenu's `id` before drawing it |
+| A dynamic menu or submenu is empty | Some apps fill menus only after `AboutToShow`. Send `menu_will_show(item.id, 0)` when opening the root menu, and with `submenu_id` when expanding a submenu |
+| Right-clicking an item with no menu does nothing | The app provides no DBusMenu. Call `mantle.tray:context_menu(item.id, x, y)` on right click to trigger its native popup |
 
 See also: [System tray with menu](../cookbook/tray.md) recipe.
 

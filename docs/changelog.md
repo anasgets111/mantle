@@ -33,9 +33,11 @@ so everything since the rename from Obelisk sits under Unreleased.
   shell's own pid, so a config can stop itself ([CLI](guide/cli.md#commands)).
 - `mantle.updates` runs on Fedora through `dnf` (dnf5 or dnf4) and on Debian and Ubuntu through
   `apt-get`; `package_manager` is `"dnf"` or `"apt"` ([updates](capabilities/updates.md#backend)).
+- `mantle.tray:context_menu(id, x, y)` calls the StatusNotifierItem `ContextMenu` method for applications without a DBusMenu ([tray](capabilities/tray.md)).
 
 ### Changed
 
+- `mantle.tray` DBusMenu parsing drops invisible menu items (`visible = false`), spools raw PNG `icon-data` to shared memory as `icon_name` file paths, and refreshes live items on `ItemsPropertiesUpdated` and `NewMenu` ([tray](capabilities/tray.md)).
 - `mantle.updates` checks through `pacman`, `pacman-conf`, `curl` and `vercmp` instead of
   linking libalpm, so building no longer needs libalpm and the binary starts off Arch. `packages`
   leaves out `IgnorePkg` entries, and `installed_size` rounds to the two decimals pacman prints

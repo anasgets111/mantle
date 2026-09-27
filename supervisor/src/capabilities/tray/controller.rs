@@ -9,6 +9,7 @@ use tokio::sync::mpsc::UnboundedSender;
 use zbus::fdo::RequestNameFlags;
 use zbus::zvariant::{OwnedObjectPath, Value};
 
+use super::icon::icon_filename_stem;
 use super::menu::fetch_menu_via;
 use super::proxies::StatusNotifierWatcherClientProxy;
 use super::registration::{ResolvedRegistration, item_id, resolve_registration};
@@ -123,6 +124,14 @@ impl TrayController {
         }
     }
 
+    /// `tray:context_menu(id, x, y)`: right-click context menu for items that export no DBusMenu.
+    pub async fn context_menu(&self, id: &str, x: i32, y: i32) {
+        let Some(item) = self.find("context_menu", id, |_, entry| entry.item.clone()) else { return };
+        if let Err(err) = item.context_menu(x, y).await {
+            debug!("context_menu({id:?}) failed: {err}");
+        }
+    }
+
     /// `tray:secondary_activate(id, x, y)`: middle-click (ADR-0074). No `ItemIsMenu` gate: it
     /// constrains primary clicks only.
     pub async fn secondary_activate(&self, id: &str, x: i32, y: i32) {
@@ -173,7 +182,7 @@ impl TrayController {
             Ok(true) => {}
             Err(err) => debug!("menu_will_show({id:?}, {submenu_id}) AboutToShow failed: {err}"),
         }
-        match fetch_menu_via(&menu).await {
+        match fetch_menu_via(&menu, &icon_filename_stem(id)).await {
             Ok(items) => {
                 let mut guard = self.registry.lock().expect("mutex poisoned");
                 let changed = guard.get_mut(&key).is_some_and(|entry| store_menu(entry, items));
@@ -324,5 +333,12 @@ mod tests {
         assert!(!is_item_bus_name("org.kde.StatusNotifierItemRegistry"));
         assert!(!is_item_bus_name("org.kde.StatusNotifierItem"));
         assert!(!is_item_bus_name("com.example.org.kde.StatusNotifierItem-1-1"));
+    }
+
+    #[tokio::test]
+    async fn context_menu_on_an_unknown_id_does_not_panic() {
+        let (events, _) = tokio::sync::mpsc::unbounded_channel();
+        let controller = TrayController::inert(events);
+        controller.context_menu("unknown", 0, 0).await;
     }
 }

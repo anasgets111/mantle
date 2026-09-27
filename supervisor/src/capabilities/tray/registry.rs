@@ -15,11 +15,11 @@ use zbus::zvariant::OwnedObjectPath;
 use crate::capabilities::shm_icons;
 
 use super::TraySignal;
-use super::icon::SPOOL_SUBDIR;
+use super::icon::{SPOOL_SUBDIR, icon_filename_stem};
 use super::item::{TrayItem, fetch_tray_item_base};
 use super::menu::{MenuItem, fetch_menu_via};
 use super::proxies::{DBusMenuProxy, StatusNotifierItemProxy, bind_dbusmenu, bind_item};
-use super::registration::ResolvedRegistration;
+use super::registration::{ResolvedRegistration, item_id};
 
 /// Process-wide sequence for [`ItemEntry::registered`]. It only needs to increase; each registry
 /// still sees a monotonic order in tests.
@@ -84,7 +84,7 @@ pub(super) async fn register_item(
         _ => None,
     };
     if let Some(menu) = &menu {
-        match fetch_menu_via(menu).await {
+        match fetch_menu_via(menu, &icon_filename_stem(&tray_item.id)).await {
             Ok(items) => tray_item.menu = Some(items),
             Err(err) => debug!("GetLayout failed for {unique_name}: {err}"),
         }
@@ -182,34 +182,57 @@ fn spawn_item_signal_forwarder(
         let Ok(mut new_overlay_icon) = item.receive_new_overlay_icon().await else { return };
         let Ok(mut new_tool_tip) = item.receive_new_tool_tip().await else { return };
         let Ok(mut new_status) = item.receive_new_status().await else { return };
+        let Ok(mut new_menu) = item.receive_new_menu().await else { return };
+        let item_stem = icon_filename_stem(&item_id(key.0.as_str(), key.1.as_str()));
 
         loop {
-            let fired = tokio::select! {
-                Some(_) = new_title.next() => true,
-                Some(_) = new_icon.next() => true,
-                Some(_) = new_attention_icon.next() => true,
-                Some(_) = new_overlay_icon.next() => true,
-                Some(_) = new_tool_tip.next() => true,
-                Some(_) = new_status.next() => true,
-                else => false,
-            };
-            if !fired {
-                break;
+            enum ItemEvent {
+                Property,
+                Menu,
+                Closed,
             }
-
-            let Some(previous) = registry.lock().expect("mutex poisoned").get(&key).map(|e| e.last_known.clone())
-            else {
-                break;
+            let event = tokio::select! {
+                Some(_) = new_title.next() => ItemEvent::Property,
+                Some(_) = new_icon.next() => ItemEvent::Property,
+                Some(_) = new_attention_icon.next() => ItemEvent::Property,
+                Some(_) = new_overlay_icon.next() => ItemEvent::Property,
+                Some(_) = new_tool_tip.next() => ItemEvent::Property,
+                Some(_) = new_status.next() => ItemEvent::Property,
+                Some(_) = new_menu.next() => ItemEvent::Menu,
+                else => ItemEvent::Closed,
             };
-            let refreshed = fetch_tray_item_base(&item, &unique_name, &key.1, &previous).await;
+            match event {
+                ItemEvent::Closed => break,
+                ItemEvent::Menu => {
+                    let maybe_menu = registry.lock().expect("mutex poisoned").get(&key).and_then(|e| e.menu.clone());
+                    if let Some(menu) = maybe_menu
+                        && let Ok(items) = fetch_menu_via(&menu, &item_stem).await
+                    {
+                        let mut guard = registry.lock().expect("mutex poisoned");
+                        let changed = guard.get_mut(&key).is_some_and(|entry| store_menu(entry, items));
+                        drop(guard);
+                        if changed && events.send(TraySignal::RegistryChanged).is_err() {
+                            break;
+                        }
+                    }
+                }
+                ItemEvent::Property => {
+                    let Some(previous) =
+                        registry.lock().expect("mutex poisoned").get(&key).map(|e| e.last_known.clone())
+                    else {
+                        break;
+                    };
+                    let refreshed = fetch_tray_item_base(&item, &unique_name, &key.1, &previous).await;
 
-            let mut guard = registry.lock().expect("mutex poisoned");
-            let Some(entry) = guard.get_mut(&key) else { break };
-            let changed = keep_menu_across(entry, refreshed);
-            drop(guard);
+                    let mut guard = registry.lock().expect("mutex poisoned");
+                    let Some(entry) = guard.get_mut(&key) else { break };
+                    let changed = keep_menu_across(entry, refreshed);
+                    drop(guard);
 
-            if changed && events.send(TraySignal::RegistryChanged).is_err() {
-                break;
+                    if changed && events.send(TraySignal::RegistryChanged).is_err() {
+                        break;
+                    }
+                }
             }
         }
     })
@@ -224,8 +247,8 @@ pub(super) fn store_menu(entry: &mut ItemEntry, items: Vec<MenuItem>) -> bool {
     changed
 }
 
-/// Refetches the full menu on each `LayoutUpdated` and updates `menu` in place (ADR-0031). One
-/// task per menu-bearing item, aborted with the item task on unregistration.
+/// Refetches the full menu on each `LayoutUpdated` or `ItemsPropertiesUpdated` and updates `menu`
+/// in place (ADR-0031). One task per menu-bearing item, aborted with the item task on unregistration.
 fn spawn_menu_signal_forwarder(
     menu: DBusMenuProxy<'static>,
     key: ItemKey,
@@ -234,8 +257,18 @@ fn spawn_menu_signal_forwarder(
 ) -> JoinHandle<()> {
     tokio::spawn(async move {
         let Ok(mut layout_updated) = menu.receive_layout_updated().await else { return };
-        while layout_updated.next().await.is_some() {
-            match fetch_menu_via(&menu).await {
+        let Ok(mut props_updated) = menu.receive_items_properties_updated().await else { return };
+        let item_stem = icon_filename_stem(&item_id(key.0.as_str(), key.1.as_str()));
+        loop {
+            let fired = tokio::select! {
+                Some(_) = layout_updated.next() => true,
+                Some(_) = props_updated.next() => true,
+                else => false,
+            };
+            if !fired {
+                break;
+            }
+            match fetch_menu_via(&menu, &item_stem).await {
                 Ok(items) => {
                     let mut guard = registry.lock().expect("mutex poisoned");
                     let Some(entry) = guard.get_mut(&key) else { break };
@@ -245,7 +278,7 @@ fn spawn_menu_signal_forwarder(
                         break;
                     }
                 }
-                Err(err) => debug!(2; "GetLayout (LayoutUpdated refresh) failed: {err}"),
+                Err(err) => debug!(2; "GetLayout (menu signal refresh) failed: {err}"),
             }
         }
     })

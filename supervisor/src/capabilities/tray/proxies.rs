@@ -10,6 +10,9 @@ use zbus::zvariant::{OwnedObjectPath, OwnedValue, Value};
 pub(super) trait StatusNotifierItem {
     #[zbus(name = "Activate")]
     fn activate(&self, x: i32, y: i32) -> zbus::Result<()>;
+    /// Context-menu activation at screen coordinates `x`, `y`.
+    #[zbus(name = "ContextMenu")]
+    fn context_menu(&self, x: i32, y: i32) -> zbus::Result<()>;
     /// Middle-click, a separate spec method exported by Telegram, Chromium, and Qt tray.
     #[zbus(name = "SecondaryActivate")]
     fn secondary_activate(&self, x: i32, y: i32) -> zbus::Result<()>;
@@ -36,6 +39,8 @@ pub(super) trait StatusNotifierItem {
     fn new_tool_tip(&self);
     #[zbus(signal, name = "NewStatus")]
     fn new_status(&self, status: String);
+    #[zbus(signal, name = "NewMenu")]
+    fn new_menu(&self);
 }
 
 /// `GetLayout`'s `(ia{sv}av)` reply: id, properties, children. Typed rather than one `OwnedValue`,
@@ -60,6 +65,13 @@ pub(super) trait DBusMenu {
 
     #[zbus(signal, name = "LayoutUpdated")]
     fn layout_updated(&self, revision: u32, parent: i32);
+
+    #[zbus(signal, name = "ItemsPropertiesUpdated")]
+    fn items_properties_updated(
+        &self,
+        updated_props: Vec<(i32, HashMap<String, OwnedValue>)>,
+        removed_props: Vec<(i32, Vec<String>)>,
+    );
 }
 
 /// Calls `RegisterStatusNotifierHost` at the well-known watcher name, so D-Bus routes to whichever
@@ -110,5 +122,11 @@ mod tests {
         // The DBusMenu wire signature must match or every real `GetLayout` fails, even if local
         // tests pass.
         assert_eq!(RawMenuLayout::SIGNATURE.to_string(), "(ia{sv}av)");
+    }
+
+    #[test]
+    fn items_properties_updated_signatures_match_dbusmenu_spec() {
+        assert_eq!(<Vec<(i32, HashMap<String, OwnedValue>)> as Type>::SIGNATURE.to_string(), "a(ia{sv})");
+        assert_eq!(<Vec<(i32, Vec<String>)> as Type>::SIGNATURE.to_string(), "a(ias)");
     }
 }
