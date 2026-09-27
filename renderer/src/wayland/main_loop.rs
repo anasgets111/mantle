@@ -51,6 +51,7 @@ pub fn run(
     let background_effect = BackgroundEffectState::new(&globals, &qh);
     let output_state = OutputState::new(&globals, &qh);
     let seat_state = SeatState::new(&globals, &qh);
+    let data_device_manager = DataDeviceManagerState::bind(&globals, &qh).ok();
     // Mandatory: every compositor advertises `wl_shm`.
     let shm = Shm::bind(&globals, &qh)?;
     // Cannot fail: its `GlobalProxy` reports a missing lock global only when a lock is requested
@@ -69,6 +70,13 @@ pub fn run(
         shader_stage: crate::layout::image_shader::ShaderStage::default(),
         compositor_state,
         seat_state,
+        data_device_manager,
+        data_device: None,
+        clipboard_sources: Vec::new(),
+        clipboard_writers: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+        paste: None,
+        field_revision: 0,
+        waker: waker.clone(),
         layer_shell,
         background_effect,
         blur_supported: false,
@@ -170,6 +178,7 @@ pub fn run(
             }
             Err(err) => return Err(err.into()),
         };
+        app.finish_paste();
         if let Some(started) = dispatch_started
             && let Some(ended) = thread_cpu_time()
             && let Some(profile) = profile.as_mut()

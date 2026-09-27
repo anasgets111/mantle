@@ -445,9 +445,9 @@ props! {
         on_cancel(cleared: bool);
         /// Keys a single-line field does not use, for moving a list selection; repeats while held. `"left"`/`"right"` only when the caret cannot move that way and Shift is up (ADR-0236).
         on_navigate(key: NavigateKey);
-        /// Native target for the secret: `lock`/`authenticate`, `polkit`/`authenticate` or `network`/`connect` (ADR-0027); any other pair or key is an error. Makes the field masked.
+        /// Native target for the secret: `lock`/`authenticate`, `polkit`/`authenticate`, `network`/`connect`, or `secrets`/`store` with a `name`. Makes the field masked.
         ///
-        /// Book: Makes the field masked; keys never reach Lua. Both non-empty UTF-8 strings: only `lock`/`authenticate`, `polkit`/`authenticate` and `network`/`connect`; any other pair or key is an error ([secure fields](../guide/input.md#secure-fields))
+        /// Book: Makes the field masked; bytes never reach Lua. Targets: `lock`/`authenticate`, `polkit`/`authenticate`, `network`/`connect`, or `secrets`/`store` with a public `name` ([secure fields](../guide/input.md#secure-fields))
         secure_submit: Bound<SecureSubmitTarget>;
         /// Drawn per typed character in a `secure_submit` field. Only the first character counts; `""` hides the length.
         mask_character: Bound<Text> = absent(Lua(r#""•""#));

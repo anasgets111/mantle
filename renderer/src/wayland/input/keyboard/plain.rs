@@ -340,7 +340,7 @@ impl App {
     /// half-typed reply loses a sentence, not a secret, so there is no once-a-turn sweep matching
     /// [`App::drop_secure_focus_if_its_surface_is_gone`]; the check before each keystroke is
     /// enough, and a `leave` clears it anyway.
-    pub(super) fn prune_text_field_focus(&mut self) {
+    pub(in crate::wayland::input) fn prune_text_field_focus(&mut self) {
         let Some(field) = self.focused_text_field.as_ref() else {
             return;
         };
@@ -364,7 +364,7 @@ impl App {
     /// Whether a key arriving now belongs to `field`: a press chose it, and its surface is one the
     /// keyboard is on (ADR-0108). The same question decides the caret, so what is drawn as live is
     /// what a key would land in.
-    pub(super) fn text_field_takes_keys(&self, field: &FocusedTextField) -> bool {
+    pub(in crate::wayland::input) fn text_field_takes_keys(&self, field: &FocusedTextField) -> bool {
         plain_field_takes_keys(
             field.typing,
             self.keyboard_focus_scope().contains(&field.surface_id),
@@ -379,6 +379,10 @@ impl App {
     /// drop focus first, then call it (ADR-0102), so a callback changing the surface finds no stale
     /// focus.
     pub(super) fn apply_plain_key(&mut self, event: &KeyEvent, repeat: bool) {
+        self.apply_plain_action(key_action(event, repeat, self.ctrl_held));
+    }
+
+    pub(in crate::wayland::input) fn apply_plain_action(&mut self, action: KeyAction<'_>) {
         if !self.focused_text_field.as_ref().is_some_and(|field| self.text_field_takes_keys(field)) {
             return;
         }
@@ -387,13 +391,7 @@ impl App {
         let Some(field) = self.focused_text_field.as_mut() else {
             return;
         };
-        let edit = edit_plain_buffer(
-            &mut field.buffer,
-            &mut field.selection,
-            key_action(event, repeat, self.ctrl_held),
-            shift,
-            field.on_cancel.is_some(),
-        );
+        let edit = edit_plain_buffer(&mut field.buffer, &mut field.selection, action, shift, field.on_cancel.is_some());
         if edit == PlainEdit::NONE {
             return;
         }

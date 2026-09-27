@@ -8,6 +8,8 @@ so everything since the rename from Obelisk sits under Unreleased.
 
 ### Added
 
+- Ctrl+C copies a plain textfield selection; Ctrl+V pastes up to 64 KiB of UTF-8 into plain or secure fields ([input](guide/input.md#text-fields)).
+- `secure_submit = { capability = "secrets", action = "store", name = "…" }` stores a named secret through the session Secret Service. `mantle.secrets.entries[name]` reports `pending`, `stored`, `unavailable`, or `timed_out` ([secrets](capabilities/secrets.md)).
 - `mantle.idle.compositor_hold_stale` marks a previously observed compositor hold as unconfirmed
   while input continues; unconfirmed compositor holds are omitted from `inhibitors` until observed again
   ([idle](capabilities/idle.md#state)).

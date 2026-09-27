@@ -6864,3 +6864,17 @@ Amends ADR-0031 §4, §5, §7 and ADR-0074.
    (`MAX_MENU_ICON_BYTES`), writes the image to `/dev/shm` as `{stem}_menu_{id}.png`, and populates `MenuItem.icon_name`
    with the path. The renderer's `icon` element accepts absolute file paths directly, so Lua shells require no second
    node kind.
+
+## 0279. Named secure submissions use the session Secret Service
+
+`secure_submit = { capability = "secrets", action = "store", name = … }` sends UTF-8 bytes
+through the existing native secure frame. The Supervisor stores them with libsecret under schema
+`io.github.anasgets111.mantle.Secret` and public attribute `name`. This schema is the lookup
+contract for other applications, so changing it would strand stored entries. A duplicate name
+replaces its earlier item through libsecret's schema matching.
+
+No fallback file is written. An encrypted file would need a separate key source, and a plaintext
+file would break the secure submission contract. A missing or failing service publishes
+`unavailable` in `mantle.secrets.entries[name]`; the status contains no value bytes. After 30
+seconds the Supervisor requests cancellation and reports `timed_out`. It still holds the name
+until the worker returns, so a slow first write cannot overwrite a newer one.

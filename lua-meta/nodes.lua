@@ -208,7 +208,7 @@
 ---@field on_submit? fun(text: string) Enter with the full text; the field stays focused and clears. Never fires on a `secure_submit` field.
 ---@field on_cancel? fun(cleared: boolean) Escape; `cleared` says whether it removed text. A plain field clears (firing `on_change("")` only if there was text), gives up focus, then calls this. A `secure_submit` field scrubs and stays armed. Without it Escape clears and keeps focus (ADR-0102).
 ---@field on_navigate? fun(key: "up"|"down"|"left"|"right"|"page_up"|"page_down"|"tab"|"backtab") Keys a single-line field does not use, for moving a list selection; repeats while held. `"left"`/`"right"` only when the caret cannot move that way and Shift is up (ADR-0236).
----@field secure_submit? { capability: string, action: string, [string]: "no such property" }|Bound Native target for the secret: `lock`/`authenticate`, `polkit`/`authenticate` or `network`/`connect` (ADR-0027); any other pair or key is an error. Makes the field masked.
+---@field secure_submit? { capability: string, action: string, name?: string, [string]: "no such property" }|Bound Native target for the secret: `lock`/`authenticate`, `polkit`/`authenticate`, `network`/`connect`, or `secrets`/`store` with a `name`. Makes the field masked.
 ---@field mask_character? string|Bound Default `"•"`. Drawn per typed character in a `secure_submit` field. Only the first character counts; `""` hides the length.
 
 ---[docs](https://anasgets111.github.io/mantle/nodes/rect.html)

@@ -400,20 +400,20 @@ async fn run_supervisor(
                         warn!("dropped a `mantle call` answer: {why}");
                     }
                 }
-                RendererFrame::SecureSubmit(mut submit) if submit.capability == Capability::Polkit && submit.action == "authenticate" => {
+                RendererFrame::SecureSubmit(mut submit) if submit.capability == Capability::Polkit && submit.action == "authenticate" && submit.name.is_none() => {
                     // ADR-0028, ADR-0114. Before the catch-all arm because matches are ordered.
                     // `mem::take` gives plaintext to the worker, which zeroizes every return path.
                     let secret = std::mem::take(&mut submit.secret);
                     supervisor.begin_polkit_authentication(secret, submit.generation_id);
                 }
-                RendererFrame::SecureSubmit(mut submit) if submit.capability == Capability::Network && submit.action == "connect" => {
+                RendererFrame::SecureSubmit(mut submit) if submit.capability == Capability::Network && submit.action == "connect" && submit.name.is_none() => {
                     // ADR-0029: empty secret means open network; non-empty is the WPA-PSK password.
                     // Before the catch-all for the same ordering reason as polkit. `Zeroizing`
                     // scrubs it on every path, a dropped request included.
                     let secret = shared::Zeroizing::new(std::mem::take(&mut submit.secret));
                     supervisor.capabilities.connect_prompted(submit.generation_id, secret);
                 }
-                RendererFrame::SecureSubmit(mut submit) if submit.capability == Capability::Lock && submit.action == "authenticate" => {
+                RendererFrame::SecureSubmit(mut submit) if submit.capability == Capability::Lock && submit.action == "authenticate" && submit.name.is_none() => {
                     // ADR-0042, ADR-0052: this arm and `pam_outcomes` are the only unlock path,
                     // so `unlock_and_destroy` follows successful authentication at one call site.
                     // It must precede the catch-all. Unlike polkit/network, no pending intent is
@@ -443,6 +443,12 @@ async fn run_supervisor(
                             submit.generation_id
                         );
                         submit.secret.zeroize();
+                    }
+                }
+                RendererFrame::SecureSubmit(mut submit) if submit.capability == Capability::Secrets && submit.action == "store" => {
+                    if let Some(name) = submit.name.take().filter(|name| shared::valid_secret_name(name)) {
+                        supervisor.capabilities.start(Capability::Secrets).await;
+                        supervisor.capabilities.store_secret(name, shared::Zeroizing::new(std::mem::take(&mut submit.secret)));
                     }
                 }
                 RendererFrame::SecureSubmit(mut submit) => {

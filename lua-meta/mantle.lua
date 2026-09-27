@@ -254,6 +254,10 @@
 ---One app using a camera, microphone or screen capture.
 ---@field app_name string PipeWire `application.name`, else `/proc/<pid>/comm`, else `"pid 1234"` (or `"node 56"`); never empty.
 
+---@alias SecretStatus "pending"|"stored"|"unavailable"|"timed_out"
+---Status of one named write. `unavailable` includes a missing, locked, or failing service;
+---`timed_out` means the 30-second cancellation was requested and the write may still finish.
+
 ---@class SessionProcess
 ---One declared program: its current run, or what is left of its last one.
 ---@field exit_code? integer Exit status of the last run; `nil` while running, before any run, or when a signal killed it.
@@ -439,6 +443,9 @@
 ---@field wifi_enabled boolean Wi-Fi radio power (`WirelessEnabled`); can be `true` with no Wi-Fi hardware, see `wifi_present`.
 ---@field wifi_ip? string The Wi-Fi device's IPv4 address without prefix, or `nil`.
 ---@field wifi_present boolean A Wi-Fi device exists.
+
+---@class SecretsState
+---@field entries table<string, SecretStatus> Public lookup names and the result of their latest write.
 
 ---@class NotificationsState
 ---`mantle.notifications`'s payload (ADR-0033).
@@ -626,6 +633,10 @@ local IdleCapability = {}
 ---@field forget fun(self: NetworkCapability, ssid: string) Deletes every saved profile for this SSID.
 ---@field disconnect_wifi fun(self: NetworkCapability) Disconnects Wi-Fi; NetworkManager does not autoconnect it again until the next join.
 
+---[docs](https://anasgets111.github.io/mantle/capabilities/secrets.html)
+---@class SecretsCapability: ReadOnlyCapability<SecretsState>, userdata
+local SecretsCapability = {}
+
 ---[docs](https://anasgets111.github.io/mantle/capabilities/notifications.html)
 ---@class NotificationsCapability: Capability<NotificationsState>, userdata
 ---@field dismiss fun(self: NotificationsCapability, id: integer) Removes a queued notification.
@@ -728,6 +739,7 @@ local PrivacyCapability = {}
 ---@class Mantle
 ---@field audio AudioCapability PipeWire: output and input volume and mute, device lists, per-app streams and Bluetooth codecs.
 ---@field network NetworkCapability NetworkManager: connectivity, Wi-Fi and wired state, scanned access points and join progress.
+---@field secrets SecretsCapability Named Secret Service writes and their pending, stored or error status. Names are public metadata.
 ---@field bluetooth BluetoothCapability BlueZ: adapter power, discovery, connected, paired and discovered devices, and pairing prompts.
 ---@field tray TrayCapability StatusNotifierItem: registered tray items with artwork, status and menus.
 ---@field notifications NotificationsCapability The notification server: the newest 20 notifications and do-not-disturb.

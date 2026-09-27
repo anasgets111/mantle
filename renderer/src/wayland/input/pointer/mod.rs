@@ -890,7 +890,11 @@ mod tests {
 
     /// One `secure_submit` destination, as the parsers hand it back.
     fn secure_target() -> node::SecureSubmitTarget {
-        node::SecureSubmitTarget { capability: "session_lock".to_string(), action: "authenticate".to_string() }
+        node::SecureSubmitTarget {
+            capability: "session_lock".to_string(),
+            action: "authenticate".to_string(),
+            name: None,
+        }
     }
 
     /// A draft as [`App::focus_text_field`] holds one between presses.

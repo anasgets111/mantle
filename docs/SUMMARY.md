@@ -61,6 +61,7 @@
   - [power](capabilities/power.md)
   - [privacy](capabilities/privacy.md)
   - [processes](capabilities/processes.md)
+  - [secrets](capabilities/secrets.md)
   - [storage](capabilities/storage.md)
   - [sysinfo](capabilities/sysinfo.md)
   - [system](capabilities/system.md)

@@ -60,7 +60,7 @@ fn submit_frame_for(
         buffer.zeroize();
         return None;
     };
-    Some(secure_submit_frame(generation_id, capability, &target.action, buffer))
+    Some(secure_submit_frame(generation_id, capability, &target.action, target.name.as_deref(), buffer))
 }
 
 /// Sole writer of `focused_secure_submit`: `SecureBuffer` belongs to the field typed into, not its
@@ -116,12 +116,14 @@ fn secure_submit_frame(
     generation_id: u32,
     capability: shared::Capability,
     action: &str,
+    name: Option<&str>,
     buffer: &mut shared::SecureBuffer,
 ) -> RendererFrame {
     let frame = RendererFrame::SecureSubmit(SecureSubmit {
         generation_id,
         capability,
         action: action.to_string(),
+        name: name.map(str::to_owned),
         secret: buffer.expose_secret().to_vec(),
     });
     buffer.zeroize();
@@ -301,7 +303,7 @@ mod tests {
         let mut buffer = shared::SecureBuffer::new();
         buffer.push_str("hunter2");
 
-        let frame = secure_submit_frame(4, shared::Capability::Polkit, "authenticate", &mut buffer);
+        let frame = secure_submit_frame(4, shared::Capability::Polkit, "authenticate", None, &mut buffer);
 
         assert_eq!(
             frame,
@@ -309,6 +311,7 @@ mod tests {
                 generation_id: 4,
                 capability: shared::Capability::Polkit,
                 action: "authenticate".to_string(),
+                name: None,
                 secret: b"hunter2".to_vec(),
             })
         );
@@ -316,16 +319,33 @@ mod tests {
     }
 
     #[test]
+    fn named_secret_frame_has_only_a_public_name_beside_the_secret_bytes() {
+        let mut buffer = shared::SecureBuffer::new();
+        buffer.push_str("private");
+        let frame = secure_submit_frame(5, shared::Capability::Secrets, "store", Some("mail"), &mut buffer);
+        assert!(buffer.is_empty());
+        let RendererFrame::SecureSubmit(submit) = frame else { unreachable!() };
+        assert_eq!(submit.name.as_deref(), Some("mail"));
+        assert_eq!(submit.secret, b"private");
+        assert!(!format!("{submit:?}").contains("private"));
+    }
+
+    #[test]
     fn a_secure_fields_on_cancel_is_found_by_its_destination_while_reachable() {
         let lua = Lua::new();
-        let polkit = node::SecureSubmitTarget { capability: "polkit".to_string(), action: "authenticate".to_string() };
+        let polkit = node::SecureSubmitTarget {
+            capability: "polkit".to_string(),
+            action: "authenticate".to_string(),
+            name: None,
+        };
         let mut field = textfield(&lua, Some(secure_submit_table(&lua, "polkit", "authenticate")));
         let on_cancel = lua.create_function(|_, _cleared: bool| Ok(())).unwrap();
         field.properties.insert("on_cancel", Value::Function(on_cancel));
         let mut root = hit_node(&lua, "panel", (0.0, 0.0, 100.0, 32.0), false);
         root.children.push(field);
         assert!(secure_on_cancel(&root, &polkit).is_some());
-        let other = node::SecureSubmitTarget { capability: "lock".to_string(), action: "authenticate".to_string() };
+        let other =
+            node::SecureSubmitTarget { capability: "lock".to_string(), action: "authenticate".to_string(), name: None };
         assert!(secure_on_cancel(&root, &other).is_none(), "another destination's field");
         root.children[0].visible = false;
         assert!(secure_on_cancel(&root, &polkit).is_none(), "a hidden prompt was not the one dismissed");
@@ -386,7 +406,11 @@ mod tests {
     fn a_submit_with_a_focused_target_is_addressed_to_that_capability_and_action() {
         let mut buffer = shared::SecureBuffer::new();
         buffer.push_str("hunter2");
-        let target = node::SecureSubmitTarget { capability: "polkit".to_string(), action: "authenticate".to_string() };
+        let target = node::SecureSubmitTarget {
+            capability: "polkit".to_string(),
+            action: "authenticate".to_string(),
+            name: None,
+        };
 
         let frame = submit_frame_for(4, Some(&target), &mut buffer);
 
@@ -396,6 +420,7 @@ mod tests {
                 generation_id: 4,
                 capability: shared::Capability::Polkit,
                 action: "authenticate".to_string(),
+                name: None,
                 secret: b"hunter2".to_vec(),
             }))
         );
@@ -432,6 +457,7 @@ mod tests {
                 generation_id: 4,
                 capability: shared::Capability::Network,
                 action: "connect".to_string(),
+                name: None,
                 secret: Vec::new(),
             }))
         );

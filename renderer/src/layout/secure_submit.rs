@@ -140,7 +140,7 @@ mod tests {
     use super::*;
 
     fn target(capability: &str, action: &str) -> SecureSubmitTarget {
-        SecureSubmitTarget { capability: capability.to_string(), action: action.to_string() }
+        SecureSubmitTarget { capability: capability.to_string(), action: action.to_string(), name: None }
     }
 
     #[test]

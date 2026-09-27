@@ -428,6 +428,7 @@ mod tests {
         *target = Some(crate::layout::node::SecureSubmitTarget {
             capability: "session_lock".to_string(),
             action: "authenticate".to_string(),
+            name: None,
         });
         assert_eq!(caret_at(&[&field], LogicalPoint { x: 12.0, y: 5.0 }, text, 0, &shaping), None);
     }

@@ -15,6 +15,7 @@ use super::notifications::NotificationsSignal;
 use super::power::PowerSignal;
 use super::privacy::PrivacySignal;
 use super::processes::ProcessesSignal;
+use super::secrets::SecretsState;
 use super::storage::StorageSignal;
 use super::sysinfo::SysinfoSignal;
 use super::system::SystemSignal;
@@ -51,6 +52,7 @@ pub enum Signal {
     Updates,
     /// Carries inhibitor state directly; no controller reads it back (ADR-0141).
     Idle(IdleState),
+    Secrets(SecretsState),
 }
 
 /// The newest value queued on `rx`. Cancel-safe: `recv` is the only await.
@@ -156,6 +158,7 @@ capability_channels! {
         Processes => processes: ProcessesSignal, Some(ProcessesSignal::Changed) => Signal::Processes;
             // `idle/controller.rs`'s inhibitor watch owns and sends state, like `Audio` (ADR-0141).
         Idle => idle: IdleState, Some(state) => Signal::Idle(state);
+        Secrets => secrets: SecretsState, Some(state) => Signal::Secrets(state);
     }
     // `lock` has no channel: boot-built in `main.rs` for relock (ADR-0060), it reports through
     // existing `LockOutcome` frames, not a `StateSnapshot` (ADR-0052 decision 4).

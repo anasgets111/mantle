@@ -896,7 +896,7 @@ mod tests {
     // textfield masking
 
     fn lock_target() -> node::SecureSubmitTarget {
-        node::SecureSubmitTarget { capability: "lock".to_string(), action: "authenticate".to_string() }
+        node::SecureSubmitTarget { capability: "lock".to_string(), action: "authenticate".to_string(), name: None }
     }
 
     /// One surface holding a password field.
@@ -1121,7 +1121,8 @@ mod tests {
     #[test]
     fn a_field_addressed_to_another_capability_does_not_draw_the_focused_fields_characters() {
         let lua = Lua::new();
-        let elsewhere = node::SecureSubmitTarget { capability: "network".to_string(), action: "connect".to_string() };
+        let elsewhere =
+            node::SecureSubmitTarget { capability: "network".to_string(), action: "connect".to_string(), name: None };
         let list = build(&password_surface(&lua), 1.0, Some(&FieldFocus::Masked { target: &elsewhere, filled: 9 }));
         assert_eq!(
             drawn_text(&list),

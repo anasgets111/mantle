@@ -441,9 +441,10 @@ fn parse_list_children(properties: &PropMap, lua: &Lua, build: &mut ListMemo) ->
 pub struct SecureSubmitTarget {
     pub capability: String,
     pub action: String,
+    pub name: Option<String>,
 }
 
-spelled!(SecureSubmitTarget => r#"{ capability: string, action: string, [string]: "no such property" }"#);
+spelled!(SecureSubmitTarget => r#"{ capability: string, action: string, name?: string, [string]: "no such property" }"#);
 
 /// `secure_submit` is optional because an unread mask is unreadable from Lua, and it
 /// is non-structural, so signal-bound values arrive resolved. `capability`/`action` reject
@@ -458,7 +459,7 @@ impl Prop for SecureSubmitTarget {
         let Value::Table(table) = value else {
             return Err(invalid("secure_submit", format!("expected a table, got {}", preview_for_error(value))));
         };
-        only_keys("secure_submit", table, &["capability", "action"])?;
+        only_keys("secure_submit", table, &["capability", "action", "name"])?;
         let field = |key: &str| -> Result<String, LayoutError> {
             let v: Value = table.get(key).map_err(|e| invalid("secure_submit", e.to_string()))?;
             let s = match v {
@@ -492,14 +493,25 @@ impl Prop for SecureSubmitTarget {
                 format!("`{capability}`/`{action}` receives no password; it takes {}", known.join(", ")),
             ));
         }
-        Ok(Some(SecureSubmitTarget { capability, action }))
+        let name: Option<String> = table.get("name").map_err(|e| invalid("secure_submit", e.to_string()))?;
+        if capability == "secrets" {
+            if !name.as_deref().is_some_and(shared::valid_secret_name) {
+                return Err(invalid(
+                    "secure_submit",
+                    "`secrets`/`store` needs a `name` without control characters, at most 128 bytes",
+                ));
+            }
+        } else if name.is_some() {
+            return Err(invalid("secure_submit", "`name` is only valid for `secrets`/`store`"));
+        }
+        Ok(Some(SecureSubmitTarget { capability, action, name }))
     }
 }
 
 /// The pairs `supervisor/src/main.rs` routes a secret to; its fallback arm drops any other one, so
 /// a password typed into a field aimed elsewhere would vanish.
-const SECURE_SUBMIT_TARGETS: [(&str, &str); 3] =
-    [("lock", "authenticate"), ("network", "connect"), ("polkit", "authenticate")];
+const SECURE_SUBMIT_TARGETS: [(&str, &str); 4] =
+    [("lock", "authenticate"), ("network", "connect"), ("polkit", "authenticate"), ("secrets", "store")];
 
 #[cfg(test)]
 mod tests {
@@ -540,11 +552,11 @@ mod tests {
         for (source, expected) in [
             (
                 r#"{ capability = "lock", action = "connect" }"#,
-                "`lock`/`connect` receives no password; it takes `lock`/`authenticate`, `network`/`connect`, `polkit`/`authenticate`",
+                "`lock`/`connect` receives no password; it takes `lock`/`authenticate`, `network`/`connect`, `polkit`/`authenticate`, `secrets`/`store`",
             ),
             (
                 r#"{ capability = "lock", action = "authenticate", acton = "x" }"#,
-                "unknown key `acton`; it takes `capability`, `action`",
+                "unknown key `acton`; it takes `capability`, `action`, `name`",
             ),
         ] {
             let table: mlua::Table =
@@ -573,8 +585,23 @@ mod tests {
         let props = props_from_table(&table);
         assert_eq!(
             fields::textfield::secure_submit.read(&props).unwrap(),
-            Some(SecureSubmitTarget { capability: "network".to_string(), action: "connect".to_string() })
+            Some(SecureSubmitTarget { capability: "network".to_string(), action: "connect".to_string(), name: None })
         );
+    }
+
+    #[test]
+    fn secrets_store_requires_a_valid_name_and_other_targets_refuse_it() {
+        let lua = mlua::Lua::new();
+        for (target, valid) in [
+            (r#"{ capability = "secrets", action = "store", name = "mail" }"#, true),
+            (r#"{ capability = "secrets", action = "store" }"#, false),
+            (r#"{ capability = "secrets", action = "store", name = "\n" }"#, false),
+            (r#"{ capability = "lock", action = "authenticate", name = "mail" }"#, false),
+        ] {
+            let table: mlua::Table =
+                lua.load(format!("return {{ kind = 'textfield', secure_submit = {target} }}")).eval().unwrap();
+            assert_eq!(fields::textfield::secure_submit.read(&props_from_table(&table)).is_ok(), valid, "{target}");
+        }
     }
 
     #[test]

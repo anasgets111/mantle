@@ -106,7 +106,7 @@ pub(in crate::wayland) struct FocusedField {
 /// One key event's action for a focused `secure_submit`; borrow the SCTK `KeyEvent` text, avoiding
 /// another allocation.
 #[derive(Debug, PartialEq, Eq)]
-enum KeyAction<'a> {
+pub(super) enum KeyAction<'a> {
     Append(&'a str),
     /// How far one erase reaches, from the caret. A selection outranks it: what is highlighted is
     /// what goes, whichever key asked.
@@ -126,7 +126,7 @@ enum KeyAction<'a> {
 
 /// Where an arrow or Home/End puts the caret.
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
-enum Motion {
+pub(super) enum Motion {
     Left,
     Right,
     WordLeft,
@@ -275,9 +275,24 @@ impl KeyboardHandler for App {
         _conn: &Connection,
         _qh: &QueueHandle<Self>,
         _keyboard: &wl_keyboard::WlKeyboard,
-        _serial: u32,
+        serial: u32,
         event: KeyEvent,
     ) {
+        if self.ctrl_held {
+            self.prune_secure_focus();
+            self.prune_text_field_focus();
+            match event.raw_code {
+                46 => {
+                    self.copy_selection(serial);
+                    return;
+                }
+                47 => {
+                    self.start_paste();
+                    return;
+                }
+                _ => {}
+            }
+        }
         self.apply_key(&event, false);
         self.arm_repeat(event);
     }
@@ -446,7 +461,7 @@ mod tests {
 
     /// One `secure_submit` destination, as the parsers hand it back.
     pub(super) fn target(capability: &str, action: &str) -> node::SecureSubmitTarget {
-        node::SecureSubmitTarget { capability: capability.to_string(), action: action.to_string() }
+        node::SecureSubmitTarget { capability: capability.to_string(), action: action.to_string(), name: None }
     }
 
     /// A focused field as [`App::focus_secure_submit`] stores one: a destination *and* the instance
@@ -512,7 +527,11 @@ mod tests {
 
         assert_eq!(
             masked_target(&[&root, &outer, &inner]),
-            Some(node::SecureSubmitTarget { capability: "polkit".to_string(), action: "authenticate".to_string() })
+            Some(node::SecureSubmitTarget {
+                capability: "polkit".to_string(),
+                action: "authenticate".to_string(),
+                name: None
+            })
         );
     }
 
@@ -576,7 +595,11 @@ mod tests {
 
         assert_eq!(
             sole_secure_submit(&tree),
-            Some(node::SecureSubmitTarget { capability: "lock".to_string(), action: "authenticate".to_string() })
+            Some(node::SecureSubmitTarget {
+                capability: "lock".to_string(),
+                action: "authenticate".to_string(),
+                name: None
+            })
         );
     }
 

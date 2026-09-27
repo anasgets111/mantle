@@ -9,6 +9,7 @@ use mlua::{Function, Lua, Table, Value};
 use shared::{LockOutcome, LockReport, RendererFrame, SecureSubmit, Zeroize, error, warn};
 use smithay_client_toolkit::background_effect::{BackgroundEffectHandler, BackgroundEffectState};
 use smithay_client_toolkit::compositor::{CompositorHandler, CompositorState, FrameCallbackData, Region};
+use smithay_client_toolkit::data_device_manager::{DataDeviceManagerState, data_device::DataDevice};
 use smithay_client_toolkit::output::{OutputHandler, OutputState};
 use smithay_client_toolkit::registry::{ProvidesRegistryState, RegistryState};
 use smithay_client_toolkit::seat::keyboard::{
@@ -83,6 +84,13 @@ pub struct App {
     output_state: OutputState,
     compositor_state: CompositorState,
     seat_state: SeatState,
+    data_device_manager: Option<DataDeviceManagerState>,
+    data_device: Option<DataDevice>,
+    clipboard_sources: Vec<input::ClipboardSource>,
+    clipboard_writers: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    paste: Option<input::PendingPaste>,
+    field_revision: u64,
+    waker: crate::wake::Waker,
     layer_shell: LayerShell,
     /// `ext_background_effect_manager_v1` through SCTK's `GlobalProxy` (ADR-0195). A compositor
     /// without the global is not an error: `blur = true` there is silently nothing, the same answer

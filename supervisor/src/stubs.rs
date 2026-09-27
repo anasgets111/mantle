@@ -76,6 +76,7 @@ fn capability_schemas() -> Vec<(&'static str, Schema, Option<Schema>)> {
             schema_for!(crate::capabilities::network::NetworkState),
             Some(schema_for!(crate::capabilities::network::NetworkAction)),
         ),
+        ("secrets", schema_for!(crate::capabilities::secrets::SecretsState), None),
         (
             "notifications",
             schema_for!(crate::capabilities::notifications::NotificationsState),

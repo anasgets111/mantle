@@ -21,6 +21,7 @@ use super::notifications::{self, NotificationsController, NotificationsSignal};
 use super::power::{self, PowerController};
 use super::privacy::PrivacyController;
 use super::processes::{self, ProcessesController};
+use super::secrets::SecretsController;
 use super::signals::{Senders, Signal, Signals};
 use super::storage::{self, StorageController};
 use super::sysinfo::{self, SysinfoController};
@@ -56,6 +57,7 @@ pub struct Capabilities {
     applications: Option<ApplicationsController>,
     files: Option<FilesController>,
     storage: Option<StorageController>,
+    secrets: Option<SecretsController>,
     processes: Option<ProcessesController>,
     audio: Option<audio::mixer::AudioCommandSender>,
     idle: Option<IdleController>,
@@ -118,6 +120,7 @@ impl Capabilities {
             applications: None,
             files: None,
             storage: None,
+            secrets: None,
             processes: None,
             audio: None,
             idle: None,
@@ -477,6 +480,11 @@ impl Capabilities {
             }
             // `LockController` is boot-built in `main.rs` (ADR-0060); polkit starts its agent
             // there.
+            Capability::Secrets => {
+                if self.secrets.is_none() {
+                    self.secrets = Some(SecretsController::new(self.senders.secrets.clone()));
+                }
+            }
             Capability::Lock | Capability::Polkit => {}
         }
     }
@@ -605,6 +613,7 @@ impl Capabilities {
             }
             // Inhibitor watch sends state directly, like `Audio`.
             Signal::Idle(state) => push!(Capability::Idle, &state),
+            Signal::Secrets(state) => push!(Capability::Secrets, &state),
         }
     }
 
@@ -646,12 +655,18 @@ impl Capabilities {
             // beside the state push that cancel handling needs.
             Capability::Polkit => {}
             // Read-only: no action enum; a named command is malformed Renderer input.
-            Capability::Battery | Capability::Privacy => {
+            Capability::Battery | Capability::Privacy | Capability::Secrets => {
                 debug!(
                     "{capability}: read-only capability received a command from generation {}; dropping",
                     envelope.params.generation_id
                 )
             }
+        }
+    }
+
+    pub fn store_secret(&self, name: String, secret: shared::Zeroizing<Vec<u8>>) {
+        if let Some(secrets) = &self.secrets {
+            secrets.store(name, secret);
         }
     }
 }

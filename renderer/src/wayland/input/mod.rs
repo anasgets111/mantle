@@ -4,7 +4,9 @@
 use shared::{debug, error};
 
 use super::*;
+mod clipboard;
 mod keyboard;
+pub(super) use clipboard::{ClipboardSource, PendingPaste};
 pub(crate) use keyboard::NavigateKey;
 pub(crate) use pointer::{DragPhase, MouseButton};
 mod pointer;
@@ -62,6 +64,8 @@ impl SeatHandler for App {
                 Ok(keyboard) => {
                     debug!("keyboard capability acquired");
                     self.keyboard = Some(keyboard);
+                    self.data_device =
+                        self.data_device_manager.as_ref().map(|manager| manager.get_data_device(qh, &seat));
                 }
                 // Nonfatal, but `enter`/`leave` stop tracking focus and stale textfield focus may
                 // outlive the user.
@@ -104,6 +108,8 @@ impl SeatHandler for App {
                 // (ADR-0050 decision 4).
                 self.keyboard_focus = None;
                 self.focus_secure_submit(None);
+                self.data_device = None;
+                self.paste = None;
                 if let Some(keyboard) = self.keyboard.take() {
                     // `wl_keyboard::release` is `since="3"` too (wayland.xml).
                     if keyboard.version() >= 3 {
@@ -148,6 +154,7 @@ impl App {
     }
 
     pub(in crate::wayland) fn mark_field_input_changed(&mut self, surface_id: &str) {
+        self.field_revision = self.field_revision.wrapping_add(1);
         self.caret_epoch = std::time::Instant::now();
         self.caret_painted_on = true;
         if !self.field_input_surfaces.iter().any(|s| s == surface_id) {

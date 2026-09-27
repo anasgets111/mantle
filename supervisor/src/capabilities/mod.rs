@@ -40,6 +40,7 @@ pub mod power;
 pub mod privacy;
 pub mod processes;
 pub mod scale;
+pub mod secrets;
 pub(crate) mod shm_icons;
 mod signals;
 pub mod storage;

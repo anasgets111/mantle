@@ -340,6 +340,11 @@
       }
     }
   },
+  "secrets": {
+    "entries": {
+      "sample": "pending"
+    }
+  },
   "storage": {
     "files": {
       "sample": "sample"

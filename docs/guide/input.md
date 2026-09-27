@@ -177,12 +177,15 @@ a press.
 | Ctrl+Backspace, Ctrl+Delete | One word | Nothing |
 | Left, Right, Home, End | Move the caret; Ctrl+Left/Right by word; Shift selects. Left/Right with nowhere to go (and no Shift) call `on_navigate` | Nothing |
 | Ctrl+A | Selects all | Nothing |
+| Ctrl+C | Copies selected text | Nothing |
+| Ctrl+V | Replaces selection with clipboard text; `on_change` | Appends clipboard text to the native buffer |
 | Up, Down, Page Up, Page Down, Tab, Shift+Tab | `on_navigate` (`"backtab"` for Shift+Tab) | Nothing |
 | Any other Ctrl chord | Left to the compositor | Same |
 
-**Selection and clipboard.** Dragging or Shift+clicking with the pointer selects too. There is no
-clipboard in a field, and Tab does not move focus between fields; it only reaches `on_navigate`.
-Every key but Enter repeats while held.
+**Selection and clipboard.** Dragging or Shift+clicking with the pointer selects too. Paste accepts
+up to 64 KiB of valid UTF-8 without control characters. A paste is dropped if the selection, field,
+or keyboard focus changes before the read ends. Copy works only with a plain-field selection.
+Tab does not move focus between fields; it reaches `on_navigate`. Editing keys repeat while held.
 
 **Draft lifetime.** Clicking elsewhere, or the surface losing the keyboard, stops typing but keeps
 the draft; clicking the field again resumes it. Enter and Escape clear it. An `autofocus` arm
@@ -269,6 +272,7 @@ secret or its length.
 | `{ capability = "lock", action = "authenticate" }` | Checked by PAM; success unlocks the session. A `lock` surface needs exactly one reachable field with this target ([lock](../surfaces/lock.md)) |
 | `{ capability = "polkit", action = "authenticate" }` | Answers the current polkit request ([polkit](../capabilities/polkit.md)) |
 | `{ capability = "network", action = "connect" }` | The password for the network being joined ([network](../capabilities/network.md)) |
+| `{ capability = "secrets", action = "store", name = "mail" }` | Stores a named value in the session Secret Service ([secrets](../capabilities/secrets.md)) |
 | Any other pair | Refused when the field is laid out, so no password is typed into nowhere |
 
 | Rule | Detail |

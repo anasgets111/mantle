@@ -250,6 +250,7 @@ mod tests {
             generation_id: 4,
             capability: shared::Capability::Polkit,
             action: "authenticate".to_string(),
+            name: None,
             secret: b"hunter2".to_vec(),
         }))
         .await;
@@ -260,6 +261,7 @@ mod tests {
                 generation_id: 4,
                 capability: shared::Capability::Polkit,
                 action: "authenticate".to_string(),
+                name: None,
                 secret: b"hunter2".to_vec(),
             })
         );

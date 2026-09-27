@@ -116,6 +116,7 @@ macro_rules! roster {
 roster! {
     Audio => "audio", "PipeWire: output and input volume and mute, device lists, per-app streams and Bluetooth codecs.",
     Network => "network", "NetworkManager: connectivity, Wi-Fi and wired state, scanned access points and join progress.",
+    Secrets => "secrets", "Named Secret Service writes and their pending, stored or error status. Names are public metadata.",
     Bluetooth => "bluetooth", "BlueZ: adapter power, discovery, connected, paired and discovered devices, and pairing prompts.",
     Tray => "tray", "StatusNotifierItem: registered tray items with artwork, status and menus.",
     Notifications => "notifications", "The notification server: the newest 20 notifications and do-not-disturb.",
@@ -232,7 +233,7 @@ impl Capability {
             Capability::Workspaces => &["focus", "toggle_special"],
             Capability::Windows => &["focus", "close", "set_fullscreen", "set_minimized", "set_maximized"],
             Capability::System => &["configure"],
-            Capability::Battery | Capability::Idle | Capability::Privacy => &[],
+            Capability::Battery | Capability::Idle | Capability::Privacy | Capability::Secrets => &[],
         }
     }
 }
@@ -412,7 +413,27 @@ pub struct SecureSubmit {
     #[zeroize(skip)]
     pub capability: Capability,
     pub action: String,
+    /// Public lookup key. Secret Service attributes are not encrypted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
     pub secret: Vec<u8>,
+}
+
+/// Secret Service attributes are public; names are short lookup keys without control characters.
+pub fn valid_secret_name(name: &str) -> bool {
+    !name.trim().is_empty() && name.len() <= 128 && !name.chars().any(char::is_control)
+}
+
+#[cfg(test)]
+mod secret_name_tests {
+    #[test]
+    fn rejects_empty_control_and_oversized_names() {
+        assert!(super::valid_secret_name("mail"));
+        for name in ["", "  ", "mail\nother"] {
+            assert!(!super::valid_secret_name(name));
+        }
+        assert!(!super::valid_secret_name(&"x".repeat(129)));
+    }
 }
 
 /// Hand-written `Debug` prints only `secret`'s length. `RendererFrame` derives `Debug`, so deriving
@@ -424,6 +445,7 @@ impl std::fmt::Debug for SecureSubmit {
             .field("generation_id", &self.generation_id)
             .field("capability", &self.capability)
             .field("action", &self.action)
+            .field("name", &self.name.as_ref().map(|_| "<redacted>"))
             .field("secret", &format_args!("<{} bytes redacted>", self.secret.len()))
             .finish()
     }
@@ -643,6 +665,7 @@ mod tests {
             generation_id: 3,
             capability: Capability::Polkit,
             action: "authenticate".into(),
+            name: None,
             secret: b"hunter2".to_vec(),
         };
 
@@ -767,6 +790,7 @@ mod tests {
             generation_id: 4,
             capability: Capability::Polkit,
             action: "authenticate".to_string(),
+            name: None,
             secret: b"hunter2".to_vec(),
         });
         let wire = serde_json::to_value(&frame).unwrap();
@@ -790,6 +814,7 @@ mod tests {
             generation_id: 4,
             capability: Capability::Polkit,
             action: "authenticate".to_string(),
+            name: None,
             secret: b"hunter2".to_vec(),
         };
 
@@ -878,7 +903,7 @@ mod capability_tests {
     fn every_entry_round_trips_through_its_name() {
         // One `roster!` list makes omission from `ALL` or `as_str` unrepresentable; this pins
         // `from_name` agreeing with the two wire-facing matches.
-        assert_eq!(Capability::ALL.len(), 23, "a variant was added or removed; check every iterator over ALL");
+        assert_eq!(Capability::ALL.len(), 24, "a variant was added or removed; check every iterator over ALL");
         for capability in Capability::ALL {
             assert_eq!(Capability::from_name(capability.as_str()), Some(*capability));
         }
