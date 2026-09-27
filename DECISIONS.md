@@ -6886,3 +6886,11 @@ replacing the renderer's glyph painting path. Fontconfig still selects files, fo
 mapped bytes with Fontique and FemtoVG, and the worker keeps its shape cache (ADR-0043, ADR-0211).
 The trade-off is a larger dependency tree and slightly different text metrics; live CPU and memory
 tests showed no reliable performance gain, so styling is the reason to make this switch.
+
+## 0281. Invalidation memo handover and 2.5ms evaluation budget
+
+Tightens the per-evaluation Lua CPU cap from 5ms to 2.5ms and hands the evaluation memo over from invalidation scope calculation into the layout pass.
+
+1. **Memo handover across re-resolution.** `re_resolve_if_dirty` enters `EvaluationMemo` before taking the dirty scope and retains it through `Scene::apply_locked`. Computeds rerun during `take_scope` populate the memo table and are served directly during the layout pass instead of computing twice. Clean invalidations, empty filtered instances, or failed layout passes drop the memo and clear the table.
+2. **2.5ms CPU budget.** 5ms exceeds a 240Hz frame window (4.16ms) and consumes over 70% of a 144Hz window (6.94ms). Reducing `CPU_CAP` to 2500 µs bounds evaluation time to fit high-refresh display deadlines while preserving headroom for Lua signal chains.
+

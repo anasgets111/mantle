@@ -24,11 +24,14 @@ pub(crate) use globals::note_geometry_moved;
 pub use globals::{
     any_hover_registered, begin_evaluation, declared_states, promote_states, register, take_geometry_moved, write_state,
 };
+#[cfg(test)]
+pub(crate) use tracking::MemoTable;
 pub(crate) use tracking::{
-    ComputedFrame, begin_instance_resolve, end_instance_resolve, forget_instance, note_everything_written, note_read,
-    note_reads, note_write, reset_read_tracker, with_derived, write_clock, written_since,
+    ComputedFrame, EvaluationMemo, begin_instance_resolve, end_instance_resolve, forget_instance,
+    note_everything_written, note_read, note_reads, note_write, reset_read_tracker, with_derived, write_clock,
+    written_since,
 };
-use tracking::{Evaluation, EvaluationMemo, Output, ReadTracker, current_clock, downstream, outputs_written_since};
+use tracking::{Evaluation, Output, ReadTracker, current_clock, downstream, outputs_written_since};
 
 /// Globally unique identifier for a reactive cell, avoiding pointer recycling issues (ADR-0170).
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
@@ -665,7 +668,10 @@ impl DirtyFlag {
     /// Takes the invalidation scope: Clean, All, or targeted Instances based on ReadTracker.
     ///
     /// A computed reading a written cell runs again here, and its readers count only if its output
-    /// changed. ponytail: one that changed runs again in the pass too; handing its value over is the upgrade.
+    /// changed. When called inside an enclosing [`EvaluationMemo`] (e.g. during re-resolution),
+    /// computed values evaluated here are retained in the memo table and handed over into the
+    /// subsequent layout pass, preventing double-evaluation. Standalone calls evaluate under
+    /// their own memo and drop it immediately.
     pub fn take_scope(&self, lua: &Lua) -> DirtyScope {
         let (mut cells, taken_at) = {
             let mut state = self.0.borrow_mut();

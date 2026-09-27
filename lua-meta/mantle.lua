@@ -14,7 +14,7 @@
 
 ---@class WatchedSignal<T>: Signal<T>
 ---A `mantle` member the engine writes; `:set()` is refused. `:on_change(handler)` runs once per push
----with the new and previous payload (`nil` on a capability's first), under the 5ms `map` budget, and
+---with the new and previous payload (`nil` on a capability's first), under the 2.5ms `map` budget, and
 ---may call actions or write state (ADR-0115).
 ---@field on_change fun(self: WatchedSignal<T>, handler: fun(current: T, previous: T?))
 

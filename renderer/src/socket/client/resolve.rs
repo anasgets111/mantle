@@ -110,9 +110,14 @@ impl RendererClient {
         let Some(output) = self.state.applied_output.as_ref() else {
             return false;
         };
+        // Keeps the memo table alive across `take_scope` and the subsequent `apply_locked`,
+        // handing over evaluated computeds so they evaluate exactly once per dirty push.
+        // Dropped on clean, empty-instance, or failed exits, clearing the memo table.
+        let _memo = crate::lua::signal::EvaluationMemo::enter(self.loader.lua());
         // After a failure the read tracker is reset, so any mark retries the whole scene.
         let scope = if self.holds_session_lock || self.re_resolve_failure.is_some() {
             if !self.dirty.take() {
+                drop(_memo);
                 return false;
             }
             crate::lua::signal::DirtyScope::All
@@ -122,6 +127,7 @@ impl RendererClient {
         let (resolved_scope, instances) = match scope {
             // Also a follow-up whose moved rects nobody reads, which ends the chain.
             crate::lua::signal::DirtyScope::Clean => {
+                drop(_memo);
                 self.geometry_follow_up = false;
                 return false;
             }
@@ -134,6 +140,7 @@ impl RendererClient {
                     .cloned()
                     .collect();
                 if filtered.is_empty() {
+                    drop(_memo);
                     self.dirty.mark();
                     return false;
                 }
@@ -147,6 +154,7 @@ impl RendererClient {
             self.loader.lua(),
             self.holds_session_lock,
         );
+        drop(_memo);
         let failure = applied.err().map(|err| err.to_string());
         log_re_resolve(&mut self.re_resolve_failure, failure.clone());
         if let Some(err) = failure {
@@ -796,5 +804,78 @@ mod tests {
         assert!(client.re_resolve_if_dirty());
         assert_eq!(client.take_last_resolved(), Some(vec!["bar@TEST".to_string()]));
         assert!(!client.scene.surface("bar@TEST").unwrap().visible);
+    }
+
+    #[test]
+    fn a_dirty_capability_push_runs_a_computed_body_exactly_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_shell_lua(
+            dir.path(),
+            r#"
+            runs = 0
+            local sig = computed({mantle.network}, function(net)
+                runs = runs + 1
+                return net and net.connected and "online" or "offline"
+            end)
+            return panel { id = "status", layer = "Top", child = text { content = sig } }
+            "#,
+        );
+        let (mut client, _) = test_client(&path);
+        run_startup(&mut client);
+
+        let initial_runs: i64 = client.loader.lua().globals().get("runs").unwrap();
+        assert_eq!(initial_runs, 1, "startup must evaluate the computed once");
+
+        client
+            .apply_state_snapshot(StateSnapshot {
+                capability: "network".to_string(),
+                revision: 1,
+                payload: serde_json::json!({ "connected": true }),
+            })
+            .unwrap();
+
+        assert!(client.re_resolve_if_dirty(), "the dirty push must re-resolve");
+
+        let after_runs: i64 = client.loader.lua().globals().get("runs").unwrap();
+        assert_eq!(
+            after_runs, 2,
+            "the computed body must run exactly once across take_scope and the layout pass (was {after_runs})"
+        );
+
+        let table = client.loader.lua().app_data_ref::<crate::lua::signal::MemoTable>().unwrap();
+        assert!(table.map.is_empty(), "memo map must be empty after re-resolve");
+        assert_eq!(table.depth, 0, "memo depth must be 0 after re-resolve");
+    }
+
+    #[test]
+    fn a_clean_re_resolve_drops_the_memo_without_leaking() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_shell_lua(
+            dir.path(),
+            r#"
+            runs = 0
+            local sig = computed({mantle.network}, function(net)
+                runs = runs + 1
+                return net and net.connected and "online" or "offline"
+            end)
+            return panel { id = "status", layer = "Top", child = text { content = sig } }
+            "#,
+        );
+        let (mut client, _) = test_client(&path);
+        run_startup(&mut client);
+
+        client
+            .apply_state_snapshot(StateSnapshot {
+                capability: "network".to_string(),
+                revision: 1,
+                payload: serde_json::Value::Null,
+            })
+            .unwrap();
+
+        assert!(!client.re_resolve_if_dirty(), "unmodified state should not re-resolve");
+
+        let table = client.loader.lua().app_data_ref::<crate::lua::signal::MemoTable>().unwrap();
+        assert!(table.map.is_empty(), "memo map must be empty when scope is clean");
+        assert_eq!(table.depth, 0, "memo depth must be 0 when scope is clean");
     }
 }

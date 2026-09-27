@@ -198,7 +198,7 @@ it.
 
 | Limit | Value | Applies to | When exceeded |
 | :--- | :--- | :--- | :--- |
-| CPU budget | 5 ms of thread CPU time | Each `:map` and `computed` recompute, each `delay`/`pulse` read, each `on_change` handler, `action` handler and `timer` callback. Nested reads share the outermost deadline | The call raises `exceeded the 5ms CPU budget for one evaluation`. `pcall` inside the callback does not hide it |
+| CPU budget | 2.5 ms of thread CPU time | Each `:map` and `computed` recompute, each `delay`/`pulse` read, each `on_change` handler, `action` handler and `timer` callback. Nested reads share the outermost deadline | The call raises `exceeded the 2.5ms CPU budget for one evaluation`. `pcall` inside the callback does not hide it |
 | Signal nesting | 32 levels | Signal reads nested inside other signal reads (a `map` of a `map` of ..., a computed reading itself) | Raises `signal nesting exceeded its maximum depth of 32 levels` |
 | Layout pass | 2 s | One whole pass over the scene, including list `itemfn`s and function `child` builders | The pass fails and the previous scene stays |
 | Tree depth | 64 levels | Nested nodes in one surface | The pass fails |
@@ -224,7 +224,7 @@ index and a format inside the map:
 -- Evaluation has no CPU budget: build lookup tables here, once.
 local levels = { "empty", "low", "half", "high", "full" }
 
--- The map runs on every push, under 5 ms: one nil check, one index, one format.
+-- The map runs on every push, under 2.5 ms: one nil check, one index, one format.
 local battery_label = mantle.battery:map(function(battery)
     if not battery or not battery.present then
         return "" -- nil until the first push; no battery on a desktop
@@ -259,7 +259,7 @@ started `mantle` in the foreground also gets a copy.
 | Share values between modules | [Share values](#share-values-between-modules) |
 | Run something once, not on every reload | [Run once](#run-something-once-not-on-every-reload) |
 | Keep a program running across reloads | [`session_process`](processes.md#session_process). A reload kills every `process.run` child |
-| Do heavy work without blowing the 5 ms budget | Build tables at the top level and keep maps to an index and a format ([example](#limits-and-budgets)). Move anything slower into a program run with `process.run` |
+| Do heavy work without blowing the 2.5 ms budget | Build tables at the top level and keep maps to an index and a format ([example](#limits-and-budgets)). Move anything slower into a program run with `process.run` |
 | Name a file shipped beside `shell.lua` | `mantle.config_dir .. "/shaders/wave.frag"`. `os.getenv("HOME")` and the rest of the shell's environment work too |
 | Guard code that needs a newer engine | Compare `mantle.version.major`, `.minor` and `.patch` ([renderer members](../capabilities/index.md#renderer-members)) |
 | See what `print` wrote | `mantle log`, or `mantle check`, which prints it above its report when the config evaluates |

@@ -362,7 +362,7 @@ pub(crate) fn is_structural_property(kind: &str, property: &str) -> bool {
 /// `computed` signal's Lua closure, and a closure that is not a pure function of unchanged state
 /// (`os.clock()`, `math.random`, an accumulator upvalue) answers differently on every call, so one
 /// read per property makes the resolved tree a snapshot of one pass and stops ADR-0021's
-/// per-`get_value` 5ms budget being paid four times over for one property. The snapshot covers the
+/// per-`get_value` 2.5ms budget being paid four times over for one property. The snapshot covers the
 /// *signals* only: a plain table with an `__index` metamethod is copied through as-is, and each
 /// `table.get` a parser makes still runs it again; see `NumberOrEdges`'s read. Per entry: a key [`is_structural_property`] names for this node's
 /// `kind` is copied through raw, signal and all. A `Value::UserData` holding a `Signal` is read

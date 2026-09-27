@@ -193,7 +193,7 @@ mod tests {
         // write as a dead socket. One config's runaway return must not cost the connection.
         //
         // Built at registration, not in the handler: `string.rep` of a megabyte inside the call
-        // spends the 5ms CPU budget first, so the test would prove that cap rather than this one.
+        // spends the 2.5ms CPU budget first, so the test would prove that cap rather than this one.
         // A handler returning something it already held is also the case worth guarding.
         lua.load(format!(
             r#"local big = string.rep("x", {}) action("big", function() return big end)"#,

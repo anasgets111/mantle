@@ -46,6 +46,7 @@ so everything since the rename from Obelisk sits under Unreleased.
 
 ### Changed
 
+- The Lua CPU budget is tightened to 2.5 ms per evaluation (scaled for 144 Hz and 240 Hz displays). Computeds rerun on invalidation hand their memoized values over to the layout pass, running each computed body once per state push.
 - Text shaping uses Parley. Text widths and wrap points can shift slightly; glyphs still draw
   through FemtoVG with Swash hinting.
 - `mantle.tray` DBusMenu parsing drops invisible menu items (`visible = false`), spools raw PNG `icon-data` to shared memory as `icon_name` file paths, and refreshes live items on `ItemsPropertiesUpdated` and `NewMenu` ([tray](capabilities/tray.md)).

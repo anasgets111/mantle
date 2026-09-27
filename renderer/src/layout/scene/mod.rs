@@ -474,7 +474,7 @@ impl Scene {
     ) -> Result<(), LayoutError> {
         let next_id_snapshot = self.next_id;
         // One budget for the whole pass: the hook covers gaps where a resolved table's `__index`
-        // runs, and individually legal 5ms getters cannot add up without a pass deadline.
+        // runs, and individually legal 2.5ms getters cannot add up without a pass deadline.
         let budget = match crate::lua::signal::LayoutPassBudget::enter(lua) {
             Ok(budget) => budget,
             Err(err) => return Err(node::invalid("layout", err.to_string())),
@@ -1332,7 +1332,7 @@ pub(super) mod tests {
 
         let err = apply_at(&mut scene, &[surface], full(), &shaping, &lua).unwrap_err();
         let capped = matches!(err, LayoutError::TreeTooDeep { .. })
-            || matches!(&err, LayoutError::InvalidProperty { detail, .. } if detail.contains("5ms CPU budget"));
+            || matches!(&err, LayoutError::InvalidProperty { detail, .. } if detail.contains("2.5ms CPU budget"));
         assert!(capped, "a computed children signal generating fresh depth must be capped, not abort: {err:?}");
     }
 

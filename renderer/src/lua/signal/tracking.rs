@@ -158,9 +158,9 @@ pub(super) fn outputs_written_since(stamp: u64) -> Vec<CellId> {
 
 /// Values already produced during the current outermost [`Signal::get_value`](super::Signal::get_value).
 #[derive(Default)]
-pub(super) struct MemoTable {
-    pub(super) map: FxHashMap<CellId, Value>,
-    depth: usize,
+pub(crate) struct MemoTable {
+    pub(crate) map: FxHashMap<CellId, Value>,
+    pub(crate) depth: usize,
     pub(super) eval_stack: Vec<Vec<CellId>>,
     /// The write clock when the open pass began, the oldest write a value it serves can predate.
     pub(super) pass_opened: Option<u64>,
@@ -407,23 +407,24 @@ fn add_unique(frame: &mut Vec<CellId>, cells: &[CellId]) {
 /// says a derived readout sees the clamp next pass) and the `geometry(name)` publish (whose move
 /// schedules the follow-up pass `Scene::settle_geometry` runs). Both settle on the next pass, and
 /// both were previously answered one way above the writer and another way below it.
-pub(super) struct EvaluationMemo<'lua> {
+pub(crate) struct EvaluationMemo<'lua> {
     lua: &'lua Lua,
     owner: bool,
+    incremented: bool,
 }
 
 impl<'lua> EvaluationMemo<'lua> {
-    pub(super) fn enter(lua: &'lua Lua) -> Self {
+    pub(crate) fn enter(lua: &'lua Lua) -> Self {
         let in_pass = lua.app_data_ref::<PassDeadline>().is_some_and(|slot| slot.0.is_some());
-        let owner = if in_pass {
-            false
+        let (owner, incremented) = if in_pass {
+            (false, false)
         } else {
             let mut table = crate::lua::app_data_or_default::<MemoTable>(lua);
             let owner = table.depth == 0;
             table.depth += 1;
-            owner
+            (owner, true)
         };
-        Self { lua, owner }
+        Self { lua, owner, incremented }
     }
 
     /// A value already produced, with its cells noted as read by the active instance and the
@@ -470,7 +471,9 @@ impl<'lua> EvaluationMemo<'lua> {
 
 impl Drop for EvaluationMemo<'_> {
     fn drop(&mut self) {
-        if let Ok(Some(mut table)) = self.lua.try_app_data_mut::<MemoTable>() {
+        if self.incremented
+            && let Ok(Some(mut table)) = self.lua.try_app_data_mut::<MemoTable>()
+        {
             table.depth = table.depth.saturating_sub(1);
             if self.owner {
                 table.map.clear();
@@ -486,7 +489,7 @@ mod tests {
     use super::super::*;
     use super::*;
 
-    /// A launcher shape that once spent its whole 5ms budget in the field:
+    /// A launcher shape that once spent its whole 2.5ms budget in the field:
     /// `results` filters every application, `web_shown` reads `results`, `effective_selected` reads
     /// both, and each row's `background` reads that. One read of `background` used to run the
     /// filter twice; the memo makes the second reach `results` a lookup.
@@ -538,7 +541,7 @@ mod tests {
 
     /// ADR-0157. `node::resolve_properties` reads one property at a time, so before the pass owned
     /// the memo this shared computed ran once for every property of every node that reached it --
-    /// measured live at 1.35ms of CPU for a single cold getter, against a 5ms cap.
+    /// measured live at 1.35ms of CPU for a single cold getter, against a 2.5ms cap.
     #[test]
     fn a_computed_read_by_two_properties_in_one_pass_runs_its_body_once() {
         let (lua, _dirty) = lua_with_state();

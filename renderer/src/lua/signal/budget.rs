@@ -4,8 +4,8 @@ use mlua::Lua;
 
 use super::tracking::MemoTable;
 
-/// CPU runtime is capped at 5ms per evaluation.
-const CPU_CAP: Duration = Duration::from_millis(5);
+/// CPU runtime is capped at 2.5ms per evaluation.
+const CPU_CAP: Duration = Duration::from_micros(2500);
 
 /// Whole-`Scene::apply` cap, not per getter. It must exceed legitimate passes that run every getter
 /// and block on shaping per text measurement. A 2000-sibling row (up to 4000) measured release
@@ -53,14 +53,14 @@ pub(crate) fn thread_cpu_time() -> Option<Duration> {
 }
 
 /// VM instructions between checks. `HookTriggers` warns low values have high overhead; 1000 stays
-/// cheap and catches a runaway closure within roughly one batch of 5ms, not seconds later.
+/// cheap and catches a runaway closure within roughly one batch of 2.5ms, not seconds later.
 const CHECK_EVERY_N_INSTRUCTIONS: u32 = 1000;
 
 /// Max live [`Signal::get_value`](super::Signal::get_value) calls before `mlua::Error`, matching `layout::scene`'s
 /// `MAX_TREE_DEPTH`. [`CpuBudget::enter`] wraps dependency resolution, so it bounds body recursion
 /// and chains (`s:map(f):map(g):...`). A 200-link chain reaches depth 200 with Rust depth 1 if the
 /// deadline wraps only the closure; 5000 links abort with `fatal runtime error: stack overflow`,
-/// beyond the 5ms hook because the chain does no Lua work. 32 leaves headroom; scene measurements
+/// beyond the 2.5ms hook because the chain does no Lua work. 32 leaves headroom; scene measurements
 /// set both constants.
 const MAX_SIGNAL_NESTING_DEPTH: usize = 32;
 
@@ -70,13 +70,13 @@ const MAX_SIGNAL_NESTING_DEPTH: usize = 32;
 /// `capability::CapabilityHandle::notify_change`'s handlers, and the hook cannot tell which it
 /// interrupted. Each call site already prefixes what it was doing ("Signal getter failed: ...",
 /// "`on_change` handler raised, ignoring it: ...").
-const CPU_CAP_EXCEEDED: &str = "exceeded the 5ms CPU budget for one evaluation";
+const CPU_CAP_EXCEEDED: &str = "exceeded the 2.5ms CPU budget for one evaluation";
 
 /// Distinct pass-budget error so config knows which limit it hit. Plain `__index` without a signal
 /// reaches it, the hole this budget closes.
 const LAYOUT_PASS_CAP_EXCEEDED: &str = "the layout pass exceeded its 2s CPU budget";
 
-/// RAII claim on the 5ms budget for dependency resolution plus closure call. Deadlines stack in
+/// RAII claim on the 2.5ms budget for dependency resolution plus closure call. Deadlines stack in
 /// `app_data` because computed dependencies, body reads, and self/mutual cycles re-enter; a single
 /// mlua hook removed by an inner call would strip the outer cap. Install on 0->1 holders, remove on
 /// 1->0. `stack[0]`, not `last()`, is the outer evaluation's deadline and the minimum: LIFO pushes
@@ -115,9 +115,9 @@ pub(super) struct PassDeadline(pub(super) Option<Deadline>);
 
 /// RAII claim on [`LAYOUT_PASS_CAP`] for the whole pass. It covers metamethod-aware `Table::get`
 /// after [`CpuBudget`] drops its hook (a `while true` `margin.__index` once hung Wayland), and
-/// stops a margined tree buying one 5ms budget per `get_value` under ADR-0021. Runs beside
+/// stops a margined tree buying one 2.5ms budget per `get_value` under ADR-0021. Runs beside
 /// [`CpuBudget`]; the earlier
-/// [`expired_budget`] wins, preserving the 5ms cap and adding a pass ceiling.
+/// [`expired_budget`] wins, preserving the 2.5ms cap and adding a pass ceiling.
 pub(crate) struct LayoutPassBudget<'lua> {
     lua: &'lua Lua,
 }
@@ -169,7 +169,7 @@ impl<'lua> CpuBudget<'lua> {
         Ok(Self { lua })
     }
 
-    /// Second 5ms gate at Rust boundary. A `pcall` can catch the hook and return a partial `Ok`,
+    /// Second 2.5ms gate at Rust boundary. A `pcall` can catch the hook and return a partial `Ok`,
     /// measured at 7.5x the cap; this check turns it into `Err`. ponytail: a body that swallows the
     /// hook and never returns still spins. VM lacks preemption; upgrade path: evaluate in a separate
     /// process (ADR-0039).
@@ -216,7 +216,7 @@ mod tests {
         let elapsed = start.elapsed();
 
         assert!(result.is_err(), "a busy-loop computed must error, not return a value");
-        assert!(elapsed < Duration::from_secs(1), "the 5ms cap must abort well under a second, took {elapsed:?}");
+        assert!(elapsed < Duration::from_secs(1), "the 2.5ms cap must abort well under a second, took {elapsed:?}");
     }
 
     #[test]
@@ -232,7 +232,7 @@ mod tests {
         let elapsed = start.elapsed();
 
         assert!(result.is_err(), "the outer computed must still abort even though its body read a second Signal");
-        assert!(elapsed < Duration::from_secs(1), "the cap must still fire near 5ms, took {elapsed:?}");
+        assert!(elapsed < Duration::from_secs(1), "the cap must still fire near 2.5ms, took {elapsed:?}");
     }
 
     #[test]
@@ -328,7 +328,7 @@ mod tests {
     #[test]
     fn a_map_chain_at_the_nesting_cap_is_accepted_and_one_link_past_it_is_rejected() {
         // At most N levels are admitted, N+1 rejected. This distinguishes gates: CPU measures this
-        // thread, not descheduled wait, so a busy machine may hit 5ms at the admitted depth;
+        // thread, not descheduled wait, so a busy machine may hit 2.5ms at the admitted depth;
         // nesting must not reject a depth it promises.
         let lua = lua_with_signal("a", Value::Integer(7));
         match lua.load(map_chain_source(MAX_SIGNAL_NESTING_DEPTH)).eval::<i64>() {
@@ -349,7 +349,7 @@ mod tests {
     #[test]
     fn a_computed_descheduled_past_its_deadline_is_not_charged_for_time_it_did_not_run() {
         // Before the fix: 5 failures in 53 renderer-suite runs, a different test each time, across
-        // 630 tests/12 threads, each falsely raising the 5ms error while a quiet-machine config
+        // 630 tests/12 threads, each falsely raising the 2.5ms error while a quiet-machine config
         // was descheduled. `park` burns no CPU, so the CPU cap must not fire; the later loop
         // exercises both hook and return gates.
         let lua = lua_with_signal("a", Value::Integer(7));
@@ -453,7 +453,7 @@ mod tests {
         let lua = lua_with_signal("a", Value::Integer(1));
         let _: mlua::Result<i64> = lua.load("return computed({a}, function(x) while true do end end):get()").eval();
 
-        // A legitimate top-level script slower than 5ms must not inherit an aborted hook.
+        // A legitimate top-level script slower than 2.5ms must not inherit an aborted hook.
         let result: i64 = lua
             .load(
                 r#"

@@ -68,7 +68,7 @@ pub(crate) fn surface_specs(output: &LoadOutput) -> Result<Vec<SurfaceSpec>, Loa
     Ok(specs)
 }
 
-// ponytail: top-level evaluation is uncapped, unlike a `computed`/`map` 5ms hook (ADR-0021). A
+// ponytail: top-level evaluation is uncapped, unlike a `computed`/`map` 2.5ms hook (ADR-0021). A
 // slow evaluation blocks Wayland dispatch (ADR-0039), configure handling, and `app.exit`; `while
 // true do end` wedges the process. Upgrade by extending ADR-0021's hook over
 // `Loader::evaluate_file`.
