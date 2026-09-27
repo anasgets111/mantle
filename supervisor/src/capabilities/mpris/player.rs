@@ -11,8 +11,14 @@ use shared::debug;
 use tokio::task::JoinHandle;
 
 use super::MprisSignal;
+use super::collections::{
+    PlaylistsState, TrackListState, read_playlists, read_track_list, spawn_collections_forwarder,
+};
 use super::metadata::{TrackIdentity, parse_metadata, resolve_album_art_path};
-use super::proxies::{MprisPlayerProxy, MprisRootProxy, bind_player, bind_root};
+use super::proxies::{
+    MprisPlayerProxy, MprisPlaylistsProxy, MprisRootProxy, MprisTrackListProxy, bind_player, bind_playlists, bind_root,
+    bind_track_list,
+};
 use super::watcher::player_id;
 use tokio::sync::mpsc::UnboundedSender;
 
@@ -25,11 +31,43 @@ pub struct PlayerState {
     pub identity: String,
     /// `"Playing"`, `"Paused"` or `"Stopped"`; keeps the last value when a read fails, empty if none.
     pub play_state: String,
+    /// MPRIS `CanGoNext`.
+    pub can_go_next: bool,
+    /// MPRIS `CanGoPrevious`.
+    pub can_go_previous: bool,
+    /// MPRIS `CanSeek`.
+    pub can_seek: bool,
+    /// MPRIS `CanPlay`.
+    pub can_play: bool,
+    /// MPRIS `CanPause`.
+    pub can_pause: bool,
+    /// MPRIS `CanRaise` on the root interface.
+    pub can_raise: bool,
+    /// MPRIS `CanQuit` on the root interface.
+    pub can_quit: bool,
+    /// MPRIS volume. The protocol permits amplification above `1.0`.
+    pub volume: f64,
+    /// MPRIS loop mode: `None`, `Track`, or `Playlist`.
+    pub loop_status: String,
+    /// MPRIS shuffle setting.
+    pub shuffle: bool,
+    /// MPRIS playback rate.
+    pub rate: f64,
+    /// MPRIS minimum playback rate, or `0` when unavailable.
+    pub minimum_rate: f64,
+    /// MPRIS maximum playback rate, or `0` when unavailable.
+    pub maximum_rate: f64,
     /// Track title; empty when unset, normal between tracks.
     pub title: String,
     /// Artists joined with `", "`; empty when unset.
     pub artist: String,
-    /// Cover art as an existing absolute path, or empty; a remote `artUrl` is not fetched.
+    /// Album title; empty when unset.
+    pub album: String,
+    /// Album artists joined with `", "`; empty when unset.
+    pub album_artist: String,
+    /// Genres joined with `", "`; empty when unset.
+    pub genre: String,
+    /// Cover art as an existing local path, or empty when unavailable.
     pub album_art_path: String,
     /// Playback offset in microseconds as of `position_updated_at`, not polled while playing: add
     /// elapsed time. `-1` when unknown (ADR-0036).
@@ -43,6 +81,10 @@ pub struct PlayerState {
     pub url: String,
     /// The player's `.desktop` basename, e.g. `"firefox"`, for app matching; empty when unset.
     pub desktop_entry: String,
+    /// Nearby tracks from the optional MPRIS TrackList interface.
+    pub track_list: TrackListState,
+    /// One bounded page from the optional MPRIS Playlists interface.
+    pub playlists: PlaylistsState,
 }
 
 /// Allocates [`PlayerEntry::registered`] on the same terms as the tray counter.
@@ -50,6 +92,9 @@ static NEXT_REGISTRATION: AtomicU64 = AtomicU64::new(0);
 
 pub(super) struct PlayerEntry {
     pub(super) player: MprisPlayerProxy<'static>,
+    pub(super) root: MprisRootProxy<'static>,
+    pub(super) track_list: Option<MprisTrackListProxy<'static>>,
+    pub(super) playlists: Option<MprisPlaylistsProxy<'static>>,
     pub(super) last_known: PlayerState,
     /// First-seen order used by [`ordered_players`]. HashMap order once leaked into
     /// `mpris.players`, letting `players[1]` swap on an unrelated tick.
@@ -57,9 +102,12 @@ pub(super) struct PlayerEntry {
     track_identity: TrackIdentity,
     /// Cached `mpris:trackid` for `SetPosition` (ADR-0036); internal, not pushed to Lua.
     pub(super) cached_trackid: Option<String>,
+    pub(super) playlist_revision: u64,
+    pub(super) playlist_request: u64,
     /// `None` only between insertion and forwarder spawn; the first resync can fire immediately on
     /// subscribe, so insertion always comes first.
     forwarder: Option<JoinHandle<()>>,
+    collections_forwarder: Option<JoinHandle<()>>,
 }
 
 pub(super) type PlayerRegistry = Arc<Mutex<HashMap<String, PlayerEntry>>>;
@@ -90,6 +138,16 @@ struct Resynced {
     state: PlayerState,
     identity: TrackIdentity,
     trackid: Option<String>,
+}
+
+fn resolved_player_identity(read: zbus::Result<String>, previous: Option<&PlayerState>, bus_name: &str) -> String {
+    match read {
+        Ok(identity) => identity,
+        Err(err) => {
+            debug!("Identity read failed for {bus_name}; keeping the last known value this round: {err}");
+            previous.map(|state| state.identity.clone()).unwrap_or_default()
+        }
+    }
 }
 
 /// `resync`'s fallback fields: the three cached values relevant to degradation, not
@@ -163,8 +221,46 @@ async fn resync(
             previous.as_ref().map(|p| p.state.play_state.clone()).unwrap_or_default()
         }
     };
+    let previous_state = previous.as_ref().map(|p| &p.state);
+    let can_go_next = player.can_go_next().await.unwrap_or_else(|_| previous_state.is_some_and(|s| s.can_go_next));
+    let can_go_previous =
+        player.can_go_previous().await.unwrap_or_else(|_| previous_state.is_some_and(|s| s.can_go_previous));
+    let can_seek = player.can_seek().await.unwrap_or_else(|_| previous_state.is_some_and(|s| s.can_seek));
+    let can_play = player.can_play().await.unwrap_or_else(|_| previous_state.is_some_and(|s| s.can_play));
+    let can_pause = player.can_pause().await.unwrap_or_else(|_| previous_state.is_some_and(|s| s.can_pause));
+    let can_raise = root.can_raise().await.unwrap_or_else(|_| previous_state.is_some_and(|s| s.can_raise));
+    let can_quit = root.can_quit().await.unwrap_or_else(|_| previous_state.is_some_and(|s| s.can_quit));
+    let volume = player
+        .volume()
+        .await
+        .ok()
+        .filter(|value| value.is_finite() && *value >= 0.0)
+        .unwrap_or_else(|| previous_state.map_or(1.0, |s| s.volume));
+    let loop_status = player
+        .loop_status()
+        .await
+        .unwrap_or_else(|_| previous_state.map_or_else(String::new, |s| s.loop_status.clone()));
+    let shuffle = player.shuffle().await.unwrap_or_else(|_| previous_state.is_some_and(|s| s.shuffle));
+    let rate = player
+        .rate()
+        .await
+        .ok()
+        .filter(|value| value.is_finite() && *value > 0.0)
+        .unwrap_or_else(|| previous_state.map_or(1.0, |s| s.rate));
+    let minimum_rate = player
+        .minimum_rate()
+        .await
+        .ok()
+        .filter(|value| value.is_finite())
+        .unwrap_or_else(|| previous_state.map_or(0.0, |s| s.minimum_rate));
+    let maximum_rate = player
+        .maximum_rate()
+        .await
+        .ok()
+        .filter(|value| value.is_finite())
+        .unwrap_or_else(|| previous_state.map_or(0.0, |s| s.maximum_rate));
     // `player_identity` is MediaPlayer2.Identity, not the TrackIdentity key below.
-    let player_identity = root.identity().await.unwrap_or_default();
+    let player_identity = resolved_player_identity(root.identity().await, previous.as_ref().map(|p| p.state), bus_name);
     // Optional and absent on several players: an error means "I have none", not a stale value.
     let desktop_entry = root.desktop_entry().await.unwrap_or_default();
     let raw_position = player.position().await;
@@ -182,14 +278,32 @@ async fn resync(
             id: player_id(bus_name).to_string(),
             identity: player_identity,
             play_state,
+            can_go_next,
+            can_go_previous,
+            can_seek,
+            can_play,
+            can_pause,
+            can_raise,
+            can_quit,
+            volume,
+            loop_status,
+            shuffle,
+            rate,
+            minimum_rate,
+            maximum_rate,
             title: previous.as_ref().map(|p| p.state.title.clone()).unwrap_or_default(),
             artist: previous.as_ref().map(|p| p.state.artist.clone()).unwrap_or_default(),
+            album: previous.as_ref().map(|p| p.state.album.clone()).unwrap_or_default(),
+            album_artist: previous.as_ref().map(|p| p.state.album_artist.clone()).unwrap_or_default(),
+            genre: previous.as_ref().map(|p| p.state.genre.clone()).unwrap_or_default(),
             album_art_path: previous.as_ref().map(|p| p.state.album_art_path.clone()).unwrap_or_default(),
             position,
             position_updated_at,
             length: previous.as_ref().map(|p| p.state.length).unwrap_or(-1),
             url: previous.as_ref().map(|p| p.state.url.clone()).unwrap_or_default(),
             desktop_entry,
+            track_list: previous.as_ref().map(|p| p.state.track_list.clone()).unwrap_or_default(),
+            playlists: previous.as_ref().map(|p| p.state.playlists.clone()).unwrap_or_default(),
         };
         let identity = previous.as_ref().map(|p| p.identity.clone()).unwrap_or_default();
         let trackid = previous.as_ref().and_then(|p| p.trackid.clone());
@@ -200,10 +314,13 @@ async fn resync(
     let new_identity = parsed.track_identity();
     let same_track = previous.as_ref().is_some_and(|p| *p.identity == new_identity);
 
-    let album_art_path = match resolve_album_art_path(parsed.art_url.as_deref()) {
-        path if !path.is_empty() => path,
-        _ if same_track => previous.as_ref().map(|p| p.state.album_art_path.clone()).unwrap_or_default(),
-        _ => String::new(),
+    let local_art_path = resolve_album_art_path(parsed.art_url.as_deref());
+    let album_art_path = if !local_art_path.is_empty() {
+        local_art_path
+    } else if same_track {
+        previous.as_ref().map(|p| p.state.album_art_path.clone()).unwrap_or_default()
+    } else {
+        String::new()
     };
     let length = match parsed.length_us {
         Some(length) if length >= 0 => length,
@@ -219,8 +336,24 @@ async fn resync(
         id: player_id(bus_name).to_string(),
         identity: player_identity,
         play_state,
+        can_go_next,
+        can_go_previous,
+        can_seek,
+        can_play,
+        can_pause,
+        can_raise,
+        can_quit,
+        volume,
+        loop_status,
+        shuffle,
+        rate,
+        minimum_rate,
+        maximum_rate,
         title: parsed.title,
         artist: parsed.artist,
+        album: parsed.album,
+        album_artist: parsed.album_artist,
+        genre: parsed.genre,
         album_art_path,
         position,
         position_updated_at,
@@ -233,6 +366,8 @@ async fn resync(
             None => String::new(),
         },
         desktop_entry,
+        track_list: previous.as_ref().map(|p| p.state.track_list.clone()).unwrap_or_default(),
+        playlists: previous.as_ref().map(|p| p.state.playlists.clone()).unwrap_or_default(),
     };
     Resynced { state, identity: new_identity, trackid }
 }
@@ -264,6 +399,8 @@ pub(super) async fn register_player(
             return;
         }
     };
+    let track_list = bind_track_list(connection, &bus_name).await.ok();
+    let playlists = bind_playlists(connection, &bus_name).await.ok();
     match player.can_control().await {
         Ok(true) => {}
         Ok(false) => {
@@ -273,15 +410,32 @@ pub(super) async fn register_player(
         Err(err) => debug!("CanControl read failed for {bus_name} (tracking anyway): {err}"),
     }
 
-    let Resynced { state, identity, trackid } = resync(&bus_name, &player, &root, None).await;
+    let Resynced { mut state, identity, trackid } = resync(&bus_name, &player, &root, None).await;
+    if let Some(proxy) = &track_list
+        && let Ok(tracks) = read_track_list(proxy, trackid.as_deref()).await
+    {
+        state.track_list = tracks;
+    }
+    if let Some(proxy) = &playlists
+        && let Ok(playlists_state) =
+            read_playlists(proxy, 0, super::collections::PLAYLIST_PAGE_LIMIT, "", false, false).await
+    {
+        state.playlists = playlists_state;
+    }
 
     let mut entry = PlayerEntry {
         player: player.clone(),
+        root: root.clone(),
+        track_list: track_list.clone(),
+        playlists: playlists.clone(),
         last_known: state,
         registered: 0,
         track_identity: identity,
         cached_trackid: trackid,
+        playlist_revision: 0,
+        playlist_request: 0,
         forwarder: None,
+        collections_forwarder: None,
     };
     let previous = {
         let mut guard = registry.lock().expect("mutex poisoned");
@@ -292,18 +446,35 @@ pub(super) async fn register_player(
         };
         guard.insert(bus_name.clone(), entry)
     };
-    if let Some(previous) = previous
-        && let Some(handle) = previous.forwarder
-    {
-        handle.abort();
+    if let Some(previous) = previous {
+        if let Some(handle) = previous.forwarder {
+            handle.abort();
+        }
+        if let Some(handle) = previous.collections_forwarder {
+            handle.abort();
+        }
     }
 
-    let forwarder = spawn_player_forwarder(bus_name.clone(), player, root, registry.clone(), events.clone());
+    let (refresh_tx, refresh_rx) = tokio::sync::mpsc::unbounded_channel();
+    let forwarder =
+        spawn_player_forwarder(bus_name.clone(), player, root, registry.clone(), events.clone(), refresh_tx);
+    let collections_forwarder = spawn_collections_forwarder(
+        bus_name.clone(),
+        track_list,
+        playlists,
+        registry.clone(),
+        events.clone(),
+        refresh_rx,
+    );
     match registry.lock().expect("mutex poisoned").get_mut(&bus_name) {
         Some(entry) => entry.forwarder = Some(forwarder),
         // A real NameOwnerChanged departure raced insertion; abort the new forwarder rather than
         // leak an untracked, un-abortable task.
         None => forwarder.abort(),
+    }
+    match registry.lock().expect("mutex poisoned").get_mut(&bus_name) {
+        Some(entry) => entry.collections_forwarder = Some(collections_forwarder),
+        None => collections_forwarder.abort(),
     }
     let _ = events.send(MprisSignal::Changed);
 }
@@ -317,11 +488,30 @@ fn spawn_player_forwarder(
     root: MprisRootProxy<'static>,
     registry: PlayerRegistry,
     events: UnboundedSender<MprisSignal>,
+    collections_refresh: UnboundedSender<()>,
 ) -> JoinHandle<()> {
     tokio::spawn(async move {
         let mut playback_status = player.receive_playback_status_changed().await;
         let mut metadata = player.receive_metadata_changed().await;
-        let Ok(mut seeked) = player.receive_seeked().await else { return };
+        let mut seeked = match player.receive_seeked().await {
+            Ok(stream) => Some(stream),
+            Err(err) => {
+                debug!("Seeked subscription failed for {bus_name}; retrying while forwarding properties: {err}");
+                None
+            }
+        };
+        let mut retry_seeked_at = seeked.is_none().then(tokio::time::Instant::now);
+        let mut volume = player.receive_volume_changed().await;
+        let mut loop_status = player.receive_loop_status_changed().await;
+        let mut shuffle = player.receive_shuffle_changed().await;
+        let mut rate = player.receive_rate_changed().await;
+        let mut can_go_next = player.receive_can_go_next_changed().await;
+        let mut can_go_previous = player.receive_can_go_previous_changed().await;
+        let mut can_seek = player.receive_can_seek_changed().await;
+        let mut can_play = player.receive_can_play_changed().await;
+        let mut can_pause = player.receive_can_pause_changed().await;
+        let mut can_raise = root.receive_can_raise_changed().await;
+        let mut can_quit = root.receive_can_quit_changed().await;
 
         // Several players update `Position` at an indeterminate time *after* `PlaybackStatus`, so
         // the read taken while handling that signal answers with whatever the player held
@@ -330,30 +520,87 @@ fn spawn_player_forwarder(
         let mut recheck_at: Option<tokio::time::Instant> = None;
 
         loop {
+            #[derive(Clone, Copy)]
+            enum Wake {
+                PlaybackStatus,
+                Property,
+                Seeked(i64),
+                Recheck,
+                RetrySeeked,
+            }
             let deadline = recheck_at;
+            let retry_deadline = retry_seeked_at;
             let fired = tokio::select! {
-                Some(_) = playback_status.next() => Some(true),
-                Some(_) = metadata.next() => Some(false),
-                Some(_) = seeked.next() => Some(false),
+                Some(_) = playback_status.next() => Some(Wake::PlaybackStatus),
+                Some(_) = metadata.next() => Some(Wake::Property),
+                signal = async { match seeked.as_mut() { Some(stream) => stream.next().await, None => std::future::pending().await } } => {
+                    match signal {
+                        Some(message) => match message.args() {
+                            Ok(args) => Some(Wake::Seeked(args.position_us)),
+                            Err(_) => Some(Wake::Property),
+                        },
+                        None => {
+                            seeked = None;
+                            retry_seeked_at = Some(tokio::time::Instant::now() + std::time::Duration::from_secs(1));
+                            Some(Wake::Property)
+                        }
+                    }
+                },
+                Some(_) = volume.next() => Some(Wake::Property),
+                Some(_) = loop_status.next() => Some(Wake::Property),
+                Some(_) = shuffle.next() => Some(Wake::Property),
+                Some(_) = rate.next() => Some(Wake::Property),
+                Some(_) = can_go_next.next() => Some(Wake::Property),
+                Some(_) = can_go_previous.next() => Some(Wake::Property),
+                Some(_) = can_seek.next() => Some(Wake::Property),
+                Some(_) = can_play.next() => Some(Wake::Property),
+                Some(_) = can_pause.next() => Some(Wake::Property),
+                Some(_) = can_raise.next() => Some(Wake::Property),
+                Some(_) = can_quit.next() => Some(Wake::Property),
                 () = async move {
                     match deadline {
                         Some(deadline) => tokio::time::sleep_until(deadline).await,
                         None => std::future::pending().await,
                     }
-                } => Some(false),
+                } => Some(Wake::Recheck),
+                () = async move {
+                    match retry_deadline {
+                        Some(deadline) => tokio::time::sleep_until(deadline).await,
+                        None => std::future::pending().await,
+                    }
+                } => Some(Wake::RetrySeeked),
                 else => None,
             };
-            let Some(status_changed) = fired else {
+            let Some(fired) = fired else {
                 break;
             };
             // Only a status change arms it, and only the timer firing disarms it. Clearing on any
             // event let a `Metadata` change 20ms later cancel the correction, which is the one
             // case the delay exists for -- the player publishes the new state first and the
             // position that goes with it some indeterminate time after.
-            if status_changed {
+            let seeked_position = match fired {
+                Wake::Seeked(position) => Some(position),
+                _ => None,
+            };
+            if matches!(fired, Wake::PlaybackStatus) {
                 recheck_at = Some(tokio::time::Instant::now() + POSITION_RECHECK_DELAY);
             } else if deadline.is_some_and(|deadline| deadline <= tokio::time::Instant::now()) {
                 recheck_at = None;
+            }
+            if matches!(fired, Wake::RetrySeeked) {
+                match player.receive_seeked().await {
+                    Ok(stream) => {
+                        seeked = Some(stream);
+                        retry_seeked_at = None;
+                    }
+                    Err(err) => {
+                        debug!(
+                            "Seeked subscription failed for {bus_name}; retrying while forwarding properties: {err}"
+                        );
+                        retry_seeked_at = Some(tokio::time::Instant::now() + std::time::Duration::from_secs(1));
+                    }
+                }
+                continue;
             }
 
             let previous =
@@ -364,10 +611,20 @@ fn spawn_player_forwarder(
                 };
             let previous_ctx =
                 previous.as_ref().map(|(state, identity, trackid)| Previous { state, identity, trackid });
-            let Resynced { state, identity, trackid } = resync(&bus_name, &player, &root, previous_ctx).await;
+            let Resynced { mut state, identity, trackid } = resync(&bus_name, &player, &root, previous_ctx).await;
+            if let Some(position) = seeked_position {
+                publish_seeked_position(&mut state, position);
+            }
 
             let mut guard = registry.lock().expect("mutex poisoned");
             let Some(entry) = guard.get_mut(&bus_name) else { break };
+            let track_changed = entry.cached_trackid != trackid;
+            state.track_list = if track_changed {
+                TrackListState { current_track: trackid.clone().unwrap_or_default(), ..TrackListState::default() }
+            } else {
+                entry.last_known.track_list.clone()
+            };
+            state.playlists = entry.last_known.playlists.clone();
             // Record what `resync` found either way: `identity` and `trackid` can move while the
             // state compares equal -- the same track re-queued gets a fresh `mpris:trackid`, and a
             // stale one misaddresses `SetPosition`. Only the notification is worth skipping.
@@ -376,6 +633,9 @@ fn spawn_player_forwarder(
             entry.track_identity = identity;
             entry.cached_trackid = trackid;
             drop(guard);
+            if track_changed {
+                let _ = collections_refresh.send(());
+            }
             if unchanged {
                 continue;
             }
@@ -387,6 +647,11 @@ fn spawn_player_forwarder(
     })
 }
 
+fn publish_seeked_position(state: &mut PlayerState, position: i64) {
+    state.position = position;
+    state.position_updated_at = monotonic_micros();
+}
+
 /// Removes a departed `bus_name` (`NameOwnerChanged` with an empty new owner) and aborts its
 /// forwarder. No-op if untracked, including skipped `playerctld` or uncontrollable sources.
 pub(super) fn unregister_player(registry: &PlayerRegistry, bus_name: &str, events: &UnboundedSender<MprisSignal>) {
@@ -394,6 +659,9 @@ pub(super) fn unregister_player(registry: &PlayerRegistry, bus_name: &str, event
     if let Some(entry) = removed {
         debug!("MPRIS player departed: {bus_name}");
         if let Some(handle) = entry.forwarder {
+            handle.abort();
+        }
+        if let Some(handle) = entry.collections_forwarder {
             handle.abort();
         }
         let _ = events.send(MprisSignal::Changed);
@@ -466,6 +734,49 @@ mod position_tests {
         // ADR-0036: unavailable is not zero. Nothing has ever been read here.
         assert_eq!(resolve_position(Err(zbus::Error::InvalidReply), None, true, "", "test"), (-1, 0));
     }
+
+    #[test]
+    fn a_seeked_signal_to_zero_overrides_the_transient_zero_filter() {
+        let mut state = previous_at(340_000_000);
+        publish_seeked_position(&mut state, 0);
+        assert_eq!(state.position, 0);
+        assert_ne!(state.position_updated_at, 42);
+    }
+
+    #[test]
+    fn a_failed_identity_read_keeps_the_previous_identity() {
+        let previous = PlayerState { identity: "Player name".to_string(), ..PlayerState::default() };
+        assert_eq!(resolved_player_identity(Err(zbus::Error::InvalidReply), Some(&previous), "test"), "Player name");
+        assert_eq!(resolved_player_identity(Err(zbus::Error::InvalidReply), None, "test"), "");
+        assert_eq!(resolved_player_identity(Ok("New name".to_string()), Some(&previous), "test"), "New name");
+    }
+}
+
+#[cfg(test)]
+mod identity_tests {
+    use super::*;
+    use crate::capabilities::test_support::p2p_pair_serving;
+
+    struct Root;
+
+    #[zbus::interface(name = "org.mpris.MediaPlayer2")]
+    impl Root {
+        #[zbus(property)]
+        fn identity(&self) -> zbus::fdo::Result<String> {
+            Err(zbus::fdo::Error::Failed("Identity temporarily unavailable".to_string()))
+        }
+    }
+
+    #[tokio::test]
+    async fn a_failed_identity_property_read_uses_the_previous_state() {
+        let (connection, _peer) = p2p_pair_serving(|builder| builder.serve_at("/org/mpris/MediaPlayer2", Root)).await;
+        let root = bind_root(&connection, "org.mpris.MediaPlayer2.test").await.unwrap();
+        let read = root.identity().await;
+        assert!(read.is_err(), "fixture must return a D-Bus error");
+
+        let previous = PlayerState { identity: "Player name".to_string(), ..PlayerState::default() };
+        assert_eq!(resolved_player_identity(read, Some(&previous), "test"), "Player name");
+    }
 }
 
 #[cfg(test)]
@@ -480,11 +791,19 @@ mod ordering_tests {
             player: super::super::proxies::bind_player(connection, "org.mpris.MediaPlayer2.probe")
                 .await
                 .expect("binding makes no call"),
+            root: super::super::proxies::bind_root(connection, "org.mpris.MediaPlayer2.probe")
+                .await
+                .expect("binding makes no call"),
+            track_list: None,
+            playlists: None,
             last_known: PlayerState { id: id.to_string(), ..PlayerState::default() },
             registered,
             track_identity: TrackIdentity::default(),
             cached_trackid: None,
+            playlist_revision: 0,
+            playlist_request: 0,
             forwarder: None,
+            collections_forwarder: None,
         }
     }
 

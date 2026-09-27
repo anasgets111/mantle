@@ -9,8 +9,9 @@ local card_open = state("media_open", false)
 local card_anchor = state("media_anchor", { x = 0, y = 0, width = 1, height = 1 })
 -- Where `position` was last reported, in `mantle.system.monotonic` seconds.
 local position_mark = state("media_position_mark", { key = "", at = 0 })
+local selected_player = state("media_selected_player", "")
 
--- The playing player, else the longest-running one.
+-- Prefer a playing player. When all are paused, keep the selected one while it remains registered.
 local function pick(mpris)
     local players = mpris and mpris.players or {}
     for _, candidate in ipairs(players) do
@@ -18,10 +19,31 @@ local function pick(mpris)
             return candidate
         end
     end
+    for _, candidate in ipairs(players) do
+        if candidate.id == selected_player:get() then
+            return candidate
+        end
+    end
     return players[1]
 end
 
 local player = mantle.mpris:map(pick)
+
+mantle.mpris:on_change(function(mpris)
+    local players = mpris and mpris.players or {}
+    for _, candidate in ipairs(players) do
+        if candidate.play_state == "Playing" then
+            selected_player:set(candidate.id)
+            return
+        end
+    end
+    for _, candidate in ipairs(players) do
+        if candidate.id == selected_player:get() then
+            return
+        end
+    end
+    selected_player:set(players[1] and players[1].id or "")
+end)
 
 local function report_key(current)
     return current.id .. ":" .. current.position_updated_at
@@ -49,7 +71,9 @@ local position = computed({ player, position_mark, mantle.system }, function(cur
     if current.play_state == "Playing" and system and mark.key == report_key(current) then
         elapsed = (system.monotonic - mark.at) * 1000000
     end
-    local now = current.position + elapsed
+    local rate = current.rate or 1
+    if rate <= 0 then rate = 1 end
+    local now = current.position + elapsed * rate
     return current.length > 0 and math.min(now, current.length) or now
 end)
 
@@ -247,10 +271,10 @@ return {
 
 ## How it works
 
-- `players` is longest-running first; the map prefers one that is playing ([mpris](../capabilities/mpris.md)).
+- `players` is in registration order; the map prefers one that is playing and keeps it selected while paused ([mpris](../capabilities/mpris.md)).
 - `position` is a snapshot, not polled. `on_change` stamps each new report with `mantle.system.monotonic`, and a `computed` adds the seconds since ([system](../capabilities/system.md), [derived signals](../guide/signals.md#derived-signals)).
 - The fill is a `"NN%"` width in a rounded, clipped track; `on_drag` on the track seeks on release ([pointer](../guide/input.md#pointer), [clip](../guide/paint.md#clip)).
-- `album_art_path` is a local file or `""`, and an `image` with `source = ""` draws nothing over the placeholder `rect` ([image](../nodes/image.md)).
+- `album_art_path` is an existing local path or `""`. Remote artwork is unsupported. An `image` with `source = ""` draws nothing over the placeholder `rect` ([image](../nodes/image.md)).
 - The card is a grabbing [popup](../surfaces/popup.md) anchored to the pill's click rect; it also closes when the last player quits.
 
 ## Variations

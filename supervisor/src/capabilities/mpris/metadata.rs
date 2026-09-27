@@ -43,12 +43,14 @@ fn value_as_trackid(value: &Value<'_>) -> Option<String> {
     }
 }
 
-/// One `Metadata` dict reduced to `mantle.mpris`'s fields; album, disc/track number, genre, and
-/// other keys outside the IDL player shape are dropped.
+/// One `Metadata` dict reduced to the fields exposed by `mantle.mpris`.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(super) struct ParsedMetadata {
     pub(super) title: String,
     pub(super) artist: String,
+    pub(super) album: String,
+    pub(super) album_artist: String,
+    pub(super) genre: String,
     pub(super) art_url: Option<String>,
     pub(super) length_us: Option<i64>,
     pub(super) trackid: Option<String>,
@@ -60,6 +62,9 @@ pub(super) fn parse_metadata(metadata: &std::collections::HashMap<String, OwnedV
     ParsedMetadata {
         title: get("xesam:title").and_then(value_as_str).unwrap_or_default().to_string(),
         artist: get("xesam:artist").and_then(value_as_str_or_joined_array).unwrap_or_default(),
+        album: get("xesam:album").and_then(value_as_str).unwrap_or_default().to_string(),
+        album_artist: get("xesam:albumArtist").and_then(value_as_str_or_joined_array).unwrap_or_default(),
+        genre: get("xesam:genre").and_then(value_as_str_or_joined_array).unwrap_or_default(),
         art_url: get("mpris:artUrl").and_then(value_as_str).map(str::to_string),
         length_us: get("mpris:length").and_then(value_as_i64),
         trackid: get("mpris:trackid").and_then(value_as_trackid),
@@ -83,10 +88,9 @@ impl ParsedMetadata {
     }
 }
 
-/// `art_url` must be `file://` and canonicalize to an existing regular file (ADR-0036). No
-/// directory allowlist: players use varied locations, confirmed by Zen's
-/// `~/.config/zen/...` cache; the player already runs with the user's privileges. Other schemes,
-/// remote `http(s)://`, and missing/dangling paths become empty; no HTTP-fetch dependency exists.
+/// Resolves local `file://` artwork to an existing regular file (ADR-0036). No directory allowlist:
+/// players use varied locations, confirmed by Zen's `~/.config/zen/...` cache; the player already
+/// runs with the user's privileges. Remote URLs produce no path.
 pub(super) fn resolve_album_art_path(art_url: Option<&str>) -> String {
     let Some(path) = art_url.and_then(file_url_to_path) else { return String::new() };
     let Ok(canonical) = path.canonicalize() else { return String::new() };
@@ -184,6 +188,15 @@ mod tests {
         let mut map = HashMap::new();
         map.insert("xesam:title".to_string(), owned(Value::Str(Str::from("Track Title"))));
         map.insert("xesam:artist".to_string(), owned(Value::Array(artists)));
+        map.insert("xesam:album".to_string(), owned(Value::Str(Str::from("Record"))));
+        let mut album_artists = Array::new(&Signature::Str);
+        album_artists.append(Value::Str(Str::from("Producer A"))).unwrap();
+        album_artists.append(Value::Str(Str::from("Producer B"))).unwrap();
+        map.insert("xesam:albumArtist".to_string(), owned(Value::Array(album_artists)));
+        let mut genres = Array::new(&Signature::Str);
+        genres.append(Value::Str(Str::from("Rock"))).unwrap();
+        genres.append(Value::Str(Str::from("Folk"))).unwrap();
+        map.insert("xesam:genre".to_string(), owned(Value::Array(genres)));
         map.insert("mpris:artUrl".to_string(), owned(Value::Str(Str::from("file:///home/someone/art.png"))));
         map.insert("mpris:length".to_string(), owned(Value::I64(1_302_000_000)));
         map.insert(
@@ -199,6 +212,9 @@ mod tests {
         let parsed = parse_metadata(&real_metadata());
         assert_eq!(parsed.title, "Track Title");
         assert_eq!(parsed.artist, "Ahmed Ebrahim");
+        assert_eq!(parsed.album, "Record");
+        assert_eq!(parsed.album_artist, "Producer A, Producer B");
+        assert_eq!(parsed.genre, "Rock, Folk");
         assert_eq!(parsed.art_url.as_deref(), Some("file:///home/someone/art.png"));
         assert_eq!(parsed.length_us, Some(1_302_000_000));
         assert_eq!(parsed.trackid.as_deref(), Some("/org/mpris/MediaPlayer2/firefox"));

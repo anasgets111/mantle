@@ -164,17 +164,67 @@
   "mpris": {
     "players": [
       {
+        "album": "sample",
         "album_art_path": "sample",
+        "album_artist": "sample",
         "artist": "sample",
+        "can_go_next": true,
+        "can_go_previous": true,
+        "can_pause": true,
+        "can_play": true,
+        "can_quit": true,
+        "can_raise": true,
+        "can_seek": true,
         "desktop_entry": "sample",
+        "genre": "sample",
         "id": "sample",
         "identity": "sample",
         "length": 1,
+        "loop_status": "sample",
+        "maximum_rate": 0.5,
+        "minimum_rate": 0.5,
         "play_state": "sample",
+        "playlists": {
+          "active": {
+            "icon": "sample",
+            "id": "sample",
+            "name": "sample"
+          },
+          "count": 1,
+          "index": 1,
+          "order": "sample",
+          "orderings": [
+            "sample"
+          ],
+          "page_size": 1,
+          "playlists": [
+            {
+              "icon": "sample",
+              "id": "sample",
+              "name": "sample"
+            }
+          ],
+          "reverse": true
+        },
         "position": 1,
         "position_updated_at": 1,
+        "rate": 0.5,
+        "shuffle": true,
         "title": "sample",
-        "url": "sample"
+        "track_list": {
+          "can_edit": true,
+          "current_track": "sample",
+          "tracks": [
+            {
+              "artist": "sample",
+              "id": "sample",
+              "length": 1,
+              "title": "sample"
+            }
+          ]
+        },
+        "url": "sample",
+        "volume": 0.5
       }
     ]
   },

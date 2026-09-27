@@ -8,6 +8,9 @@ so everything since the rename from Obelisk sits under Unreleased.
 
 ### Added
 
+- `mantle.mpris` exposes bounded TrackList and Playlists state with track and playlist actions.
+- `mantle.mpris` exposes capability flags and `control(id, "stop")`, Raise, Quit, OpenUri, volume, loop, shuffle, and rate controls.
+- `mantle.mpris.players` exposes album, album artist and genre metadata.
 - x86_64 release builds: a `.deb`, an `.rpm` and a tarball, built in Ubuntu 26.04 by the `release`
   workflow on a `v*` tag ([install](guide/installation.md#install)).
 - This site: guide, one page per node, surface and capability, cookbook, glossary. Every Lua

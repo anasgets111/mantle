@@ -1,14 +1,17 @@
 //! [`MprisController`]: `mantle.mpris`'s write dispatcher and state owner.
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use serde::Serialize;
 use shared::debug;
 use tokio::sync::mpsc::UnboundedSender;
 
+use super::collections::{PlaylistsState, read_playlists};
 use super::metadata::clamp_seek_target;
 use super::player::PlayerState;
+use super::proxies::{MprisPlaylistsProxy, MprisTrackListProxy};
 use super::watcher::{service_name_for_id, spawn_discovery};
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]
@@ -28,6 +31,8 @@ pub enum MprisSignal {
 /// and `Error` impls bought nothing a constant does not: nothing matches on it and nothing returns
 /// it.
 const UNKNOWN_PLAYER: &str = "no MPRIS player with that id is currently tracked";
+const NO_TRACK: &str = "/org/mpris/MediaPlayer2/TrackList/NoTrack";
+static NEXT_PLAYLIST_REQUEST: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Debug, serde::Deserialize)]
 #[cfg_attr(test, derive(schemars::JsonSchema))]
@@ -38,6 +43,7 @@ pub enum PlayerCommand {
     PlayPause,
     Next,
     Previous,
+    Stop,
 }
 
 /// No `events` field, unlike `TrayController` (ADR-0031): `control`/`seek`/`seek_relative` issue
@@ -46,6 +52,7 @@ pub enum PlayerCommand {
 #[derive(Clone)]
 pub struct MprisController {
     registry: super::player::PlayerRegistry,
+    events: UnboundedSender<MprisSignal>,
 }
 
 impl MprisController {
@@ -53,20 +60,142 @@ impl MprisController {
     /// immediately; discovery fills the registry in background tasks.
     pub fn new(connection: zbus::Connection, events: UnboundedSender<MprisSignal>) -> Self {
         let registry: super::player::PlayerRegistry = Arc::new(Mutex::new(HashMap::new()));
-        tokio::spawn(spawn_discovery(connection, registry.clone(), events));
-        Self { registry }
+        tokio::spawn(spawn_discovery(connection, registry.clone(), events.clone()));
+        Self { registry, events }
     }
 
     /// Inert controller with an empty registry and no discovery task, used when the session-bus
     /// connection cannot be established.
     pub fn inert() -> Self {
-        Self { registry: Arc::new(Mutex::new(HashMap::new())) }
+        let (events, _) = tokio::sync::mpsc::unbounded_channel();
+        Self { registry: Arc::new(Mutex::new(HashMap::new())), events }
     }
 
     /// Re-derives `mpris.players` from the full registry. Synchronous because forwarders update
     /// each entry's `last_known` before sending an [`MprisSignal`].
     pub fn build_state(&self) -> MprisState {
         MprisState { players: super::player::ordered_players(&self.registry) }
+    }
+
+    pub async fn track_list_add_track(&self, id: &str, uri: &str, after: &str, set_as_current: bool) {
+        let Some(proxy) = self.find_track_list(id) else {
+            debug!("TrackList AddTrack for {id:?} failed: {}", UNKNOWN_PLAYER);
+            return;
+        };
+        if !matches!(proxy.can_edit_tracks().await, Ok(true)) {
+            debug!("TrackList AddTrack for {id:?} ignored because CanEditTracks is false or unavailable");
+            return;
+        }
+        let Ok(after) = zbus::zvariant::ObjectPath::try_from(after) else {
+            debug!("TrackList AddTrack for {id:?} ignored because after_track is not an object path");
+            return;
+        };
+        if let Err(err) = proxy.add_track(uri, after, set_as_current).await {
+            debug!("TrackList AddTrack for {id:?} failed: {err}");
+        }
+    }
+
+    pub async fn track_list_remove_track(&self, id: &str, track_id: &str) {
+        let Some(proxy) = self.find_track_list(id) else {
+            debug!("TrackList RemoveTrack for {id:?} failed: {}", UNKNOWN_PLAYER);
+            return;
+        };
+        if track_id == NO_TRACK {
+            debug!("TrackList RemoveTrack for {id:?} ignored because NoTrack is not removable");
+            return;
+        }
+        let Ok(track_id) = zbus::zvariant::ObjectPath::try_from(track_id) else {
+            debug!("TrackList RemoveTrack for {id:?} ignored because track_id is not an object path");
+            return;
+        };
+        if !matches!(proxy.can_edit_tracks().await, Ok(true)) {
+            debug!("TrackList RemoveTrack for {id:?} ignored because CanEditTracks is false or unavailable");
+            return;
+        }
+        if let Err(err) = proxy.remove_track(track_id).await {
+            debug!("TrackList RemoveTrack for {id:?} failed: {err}");
+        }
+    }
+
+    pub async fn track_list_go_to(&self, id: &str, track_id: &str) {
+        let Some(proxy) = self.find_track_list(id) else {
+            debug!("TrackList GoTo for {id:?} failed: {}", UNKNOWN_PLAYER);
+            return;
+        };
+        if track_id == NO_TRACK {
+            debug!("TrackList GoTo for {id:?} ignored because NoTrack is not a track");
+            return;
+        }
+        let Ok(track_id) = zbus::zvariant::ObjectPath::try_from(track_id) else {
+            debug!("TrackList GoTo for {id:?} ignored because track_id is not an object path");
+            return;
+        };
+        if let Err(err) = proxy.go_to(track_id).await {
+            debug!("TrackList GoTo for {id:?} failed: {err}");
+        }
+    }
+
+    pub async fn playlists_get(&self, id: &str, index: u32, count: u32, order: &str, reverse: bool) {
+        let bus_name = service_name_for_id(id);
+        let (proxy, request) = {
+            let mut guard = self.registry.lock().expect("mutex poisoned");
+            let Some(entry) = guard.get_mut(&bus_name) else {
+                debug!("GetPlaylists for {id:?} failed: {}", UNKNOWN_PLAYER);
+                return;
+            };
+            let Some(proxy) = entry.playlists.clone() else {
+                debug!("GetPlaylists for {id:?} failed: {}", UNKNOWN_PLAYER);
+                return;
+            };
+            let request = NEXT_PLAYLIST_REQUEST.fetch_add(1, Ordering::Relaxed);
+            entry.playlist_request = request;
+            entry.playlist_revision += 1;
+            (proxy, request)
+        };
+        let state = read_playlists(&proxy, index, count, order, reverse, false).await;
+        if let Err(err) = &state {
+            debug!("GetPlaylists for {id:?} failed: {err}");
+        }
+        self.store_playlists(&bus_name, request, state.ok());
+    }
+
+    pub async fn playlists_activate(&self, id: &str, playlist_id: &str) {
+        let Some(proxy) = self.find_playlists(id) else {
+            debug!("ActivatePlaylist for {id:?} failed: {}", UNKNOWN_PLAYER);
+            return;
+        };
+        let Ok(playlist_id) = zbus::zvariant::ObjectPath::try_from(playlist_id) else {
+            debug!("ActivatePlaylist for {id:?} ignored because playlist_id is not an object path");
+            return;
+        };
+        if let Err(err) = proxy.activate_playlist(playlist_id).await {
+            debug!("ActivatePlaylist for {id:?} failed: {err}");
+        }
+    }
+
+    fn find_track_list(&self, id: &str) -> Option<MprisTrackListProxy<'static>> {
+        let bus_name = service_name_for_id(id);
+        self.registry.lock().expect("mutex poisoned").get(&bus_name).and_then(|entry| entry.track_list.clone())
+    }
+
+    fn find_playlists(&self, id: &str) -> Option<MprisPlaylistsProxy<'static>> {
+        let bus_name = service_name_for_id(id);
+        self.registry.lock().expect("mutex poisoned").get(&bus_name).and_then(|entry| entry.playlists.clone())
+    }
+
+    fn store_playlists(&self, bus_name: &str, request: u64, state: Option<PlaylistsState>) {
+        let mut guard = self.registry.lock().expect("mutex poisoned");
+        if let Some(entry) = guard.get_mut(bus_name)
+            && entry.playlist_request == request
+        {
+            entry.playlist_request = 0;
+            if let Some(state) = state
+                && entry.last_known.playlists != state
+            {
+                entry.last_known.playlists = state;
+                let _ = self.events.send(MprisSignal::Changed);
+            }
+        }
     }
 
     pub async fn control(&self, id: &str, cmd: PlayerCommand) {
@@ -81,9 +210,89 @@ impl MprisController {
             PlayerCommand::PlayPause => player.play_pause().await,
             PlayerCommand::Next => player.next().await,
             PlayerCommand::Previous => player.previous().await,
+            PlayerCommand::Stop => player.stop().await,
         };
         if let Err(err) = result {
             debug!("send_command({id:?}, {cmd:?}) failed: {err}");
+        }
+    }
+
+    pub async fn raise(&self, id: &str) {
+        self.call_root(id, true).await;
+    }
+    pub async fn quit(&self, id: &str) {
+        self.call_root(id, false).await;
+    }
+
+    async fn call_root(&self, id: &str, raise: bool) {
+        let Some(root) = self.find_root(id) else {
+            debug!("root action for {id:?} failed: {}", UNKNOWN_PLAYER);
+            return;
+        };
+        let result = if raise { root.raise().await } else { root.quit().await };
+        if let Err(err) = result {
+            debug!("root action for {id:?} failed: {err}");
+        }
+    }
+
+    pub async fn open_uri(&self, id: &str, uri: &str) {
+        if !valid_uri(uri) {
+            debug!("OpenUri rejected an invalid URI for {id:?}");
+            return;
+        }
+        let Some(player) = self.find_player(id) else {
+            debug!("OpenUri for {id:?} failed: {}", UNKNOWN_PLAYER);
+            return;
+        };
+        if let Err(err) = player.open_uri(uri).await {
+            debug!("OpenUri for {id:?} failed: {err}");
+        }
+    }
+
+    pub async fn set_volume(&self, id: &str, value: f64) {
+        if !value.is_finite() || value < 0.0 {
+            debug!("invalid volume for {id:?}");
+            return;
+        }
+        if let Some(p) = self.find_player(id)
+            && let Err(err) = p.set_volume(value).await
+        {
+            debug!("set volume for {id:?} failed: {err}");
+        }
+    }
+    pub async fn set_rate(&self, id: &str, value: f64) {
+        let state = self.find_state(id);
+        let within_limits = state.as_ref().is_none_or(|s| {
+            let minimum = s.minimum_rate;
+            let maximum = s.maximum_rate;
+            (minimum <= 0.0 || value >= minimum) && (maximum <= 0.0 || value <= maximum)
+        });
+        if !value.is_finite() || value <= 0.0 || !within_limits {
+            debug!("invalid or unsupported rate for {id:?}");
+            return;
+        }
+        if let Some(p) = self.find_player(id)
+            && let Err(err) = p.set_rate(value).await
+        {
+            debug!("set rate for {id:?} failed: {err}");
+        }
+    }
+    pub async fn set_shuffle(&self, id: &str, value: bool) {
+        if let Some(p) = self.find_player(id)
+            && let Err(err) = p.set_shuffle(value).await
+        {
+            debug!("set shuffle for {id:?} failed: {err}");
+        }
+    }
+    pub async fn set_loop_status(&self, id: &str, value: &str) {
+        if !matches!(value, "None" | "Track" | "Playlist") {
+            debug!("invalid LoopStatus for {id:?}");
+            return;
+        }
+        if let Some(p) = self.find_player(id)
+            && let Err(err) = p.set_loop_status(value).await
+        {
+            debug!("set LoopStatus for {id:?} failed: {err}");
         }
     }
 
@@ -172,9 +381,21 @@ impl MprisController {
         self.registry.lock().expect("mutex poisoned").get(&bus_name).map(|entry| entry.player.clone())
     }
 
+    fn find_root(&self, id: &str) -> Option<super::proxies::MprisRootProxy<'static>> {
+        let bus_name = service_name_for_id(id);
+        let guard = self.registry.lock().expect("mutex poisoned");
+        let entry = guard.get(&bus_name)?;
+        Some(entry.root.clone())
+    }
+
     fn cached_position(&self, id: &str) -> Option<i64> {
         let bus_name = service_name_for_id(id);
         self.registry.lock().expect("mutex poisoned").get(&bus_name).map(|entry| entry.last_known.position)
+    }
+
+    fn find_state(&self, id: &str) -> Option<PlayerState> {
+        let bus_name = service_name_for_id(id);
+        self.registry.lock().expect("mutex poisoned").get(&bus_name).map(|entry| entry.last_known.clone())
     }
 
     fn find_seek_context(&self, id: &str) -> Option<SeekContext> {
@@ -190,10 +411,45 @@ impl MprisController {
     }
 }
 
+fn valid_uri(uri: &str) -> bool {
+    let Some((scheme, rest)) = uri.split_once(':') else {
+        return false;
+    };
+    !rest.is_empty()
+        && !scheme.is_empty()
+        && scheme.as_bytes()[0].is_ascii_alphabetic()
+        && scheme.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'+' | b'-' | b'.'))
+        && uri.is_ascii()
+        && !uri.bytes().any(|byte| byte.is_ascii_whitespace() || byte.is_ascii_control())
+        && uri.bytes().enumerate().all(|(i, byte)| {
+            byte != b'%'
+                || uri
+                    .as_bytes()
+                    .get(i + 1..i + 3)
+                    .is_some_and(|escape| escape.len() == 2 && escape.iter().all(u8::is_ascii_hexdigit))
+        })
+}
+
 /// [`MprisController::find_seek_context`]'s answer.
 struct SeekContext {
     bus_name: String,
     player: super::proxies::MprisPlayerProxy<'static>,
     trackid: Option<String>,
     length: i64,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::valid_uri;
+
+    #[test]
+    fn open_uri_requires_an_absolute_uri_without_control_characters() {
+        for uri in ["https://example.test/track", "file:///tmp/song.flac", "spotify:track:abc"] {
+            assert!(valid_uri(uri), "{uri:?}");
+        }
+        for uri in ["", "relative/path", ":missing-scheme", "1bad:value", "https://bad.test/\n", "https://bad.test/%Q0"]
+        {
+            assert!(!valid_uri(uri), "{uri:?}");
+        }
+    }
 }

@@ -202,20 +202,53 @@
 ---@field mac string The device's MAC address.
 ---@field name string The device's advertised name, or empty.
 
----@alias PlayerCommand "play"|"pause"|"play_pause"|"next"|"previous"
+---@alias PlayerCommand "play"|"pause"|"play_pause"|"next"|"previous"|"stop"
 
 ---@class PlayerState
----@field album_art_path string Cover art as an existing absolute path, or empty; a remote `artUrl` is not fetched.
+---@field album string Album title; empty when unset.
+---@field album_art_path string Cover art as an existing local path, or empty when unavailable.
+---@field album_artist string Album artists joined with `", "`; empty when unset.
 ---@field artist string Artists joined with `", "`; empty when unset.
+---@field can_go_next boolean MPRIS `CanGoNext`.
+---@field can_go_previous boolean MPRIS `CanGoPrevious`.
+---@field can_pause boolean MPRIS `CanPause`.
+---@field can_play boolean MPRIS `CanPlay`.
+---@field can_quit boolean MPRIS `CanQuit` on the root interface.
+---@field can_raise boolean MPRIS `CanRaise` on the root interface.
+---@field can_seek boolean MPRIS `CanSeek`.
 ---@field desktop_entry string The player's `.desktop` basename, e.g. `"firefox"`, for app matching; empty when unset.
+---@field genre string Genres joined with `", "`; empty when unset.
 ---@field id string Bus-name suffix after `org.mpris.MediaPlayer2.`, e.g. `"spotify"`; every action takes it.
 ---@field identity string Display name, e.g. `"Spotify"`; empty if unanswered.
 ---@field length integer Track length in microseconds, or `-1` when unknown, as for a live stream (ADR-0036).
+---@field loop_status string MPRIS loop mode: `None`, `Track`, or `Playlist`.
+---@field maximum_rate number MPRIS maximum playback rate, or `0` when unavailable.
+---@field minimum_rate number MPRIS minimum playback rate, or `0` when unavailable.
 ---@field play_state string `"Playing"`, `"Paused"` or `"Stopped"`; keeps the last value when a read fails, empty if none.
+---@field playlists PlaylistsState One bounded page from the optional MPRIS Playlists interface.
 ---@field position integer Playback offset in microseconds as of `position_updated_at`, not polled while playing: add elapsed time. `-1` when unknown (ADR-0036).
 ---@field position_updated_at integer `CLOCK_MONOTONIC` microseconds when `position` was read. No Lua clock shares this epoch (not `mantle.system.monotonic`); only compare it with itself.
+---@field rate number MPRIS playback rate.
+---@field shuffle boolean MPRIS shuffle setting.
 ---@field title string Track title; empty when unset, normal between tracks.
+---@field track_list TrackListState Nearby tracks from the optional MPRIS TrackList interface.
 ---@field url string `xesam:url` as sent, e.g. a `file://` path or an `https://` page; empty when unset (ADR-0137).
+---@field volume number MPRIS volume. The protocol permits amplification above `1.0`.
+
+---@class PlaylistSummary
+---@field icon string Icon URI, or empty if absent.
+---@field id string Stable playlist object path.
+---@field name string User-facing playlist name.
+
+---@class PlaylistsState
+---@field active? PlaylistSummary Active playlist, if the player reports one.
+---@field count integer Total playlists reported by the player.
+---@field index integer Index used for the current page.
+---@field order string Ordering used for the current page.
+---@field orderings string[] Ordering names accepted by `playlists_get`.
+---@field page_size integer Number of entries requested for the current page, at most 100.
+---@field playlists PlaylistSummary[] At most 100 playlist entries.
+---@field reverse boolean Whether the page is reversed.
 
 ---@class PrivacyUser
 ---One app using a camera, microphone or screen capture.
@@ -248,6 +281,17 @@
 ---@class SystemConfigure
 ---`system:configure`'s table. An absent `interval` keeps the current one.
 ---@field interval? integer Seconds between pushes, each on a multiple of it since the epoch, so `60` lands on every minute; `1` is the default and `0` stops them.
+
+---@class TrackListState
+---@field can_edit boolean Whether the player permits add and remove calls.
+---@field current_track string Current TrackList object path, or empty if unknown.
+---@field tracks TrackSummary[] At most 100 tracks around the current track; the full playlist remains player-owned.
+
+---@class TrackSummary
+---@field artist string Track artists joined with `", "`.
+---@field id string TrackList object path, used by `track_list_go_to` and `track_list_remove_track`.
+---@field length integer Track length in microseconds, or `-1` when unknown.
+---@field title string Track title, empty when the player has none.
 
 ---@class TrayItem
 ---@field attention_icon_name? string Artwork to draw while `status == "NeedsAttention"`, paired with `attention_icon_path` like the base icon; both `nil` when unset.
@@ -556,6 +600,18 @@ local IdleCapability = {}
 ---@field control fun(self: MprisCapability, id: string, cmd: PlayerCommand) Sends a playback command to `players[].id`.
 ---@field seek fun(self: MprisCapability, id: string, position_us: integer) Seeks to an absolute position in microseconds, clamped to `[0, length]` (only `>= 0` when `length` is `-1`).
 ---@field seek_relative fun(self: MprisCapability, id: string, offset_us: integer) Seeks by a signed offset in microseconds, unclamped; past the end may skip to the next track.
+---@field raise fun(self: MprisCapability, id: string) Calls Raise; check `players[].can_raise` before calling.
+---@field quit fun(self: MprisCapability, id: string) Calls Quit; check `players[].can_quit` before calling.
+---@field open_uri fun(self: MprisCapability, id: string, uri: string) Opens an absolute URI in the player.
+---@field set_volume fun(self: MprisCapability, id: string, value: number) Sets MPRIS `Volume`; finite values at or above zero are accepted.
+---@field set_loop_status fun(self: MprisCapability, id: string, value: string) Sets MPRIS `LoopStatus` to `None`, `Track`, or `Playlist`.
+---@field set_shuffle fun(self: MprisCapability, id: string, value: boolean) Sets MPRIS `Shuffle`.
+---@field set_rate fun(self: MprisCapability, id: string, value: number) Sets a positive finite MPRIS playback rate.
+---@field track_list_add_track fun(self: MprisCapability, id: string, uri: string, after_track: string, set_as_current: boolean) Inserts a URI after a track id, or after `/org/mpris/MediaPlayer2/TrackList/NoTrack` to prepend.
+---@field track_list_remove_track fun(self: MprisCapability, id: string, track_id: string) Removes a track by its TrackList object path.
+---@field track_list_go_to fun(self: MprisCapability, id: string, track_id: string) Starts the track identified by its TrackList object path.
+---@field playlists_get fun(self: MprisCapability, id: string, index: integer, count: integer, order: string, reverse: boolean) Reads a bounded playlist page into `players[].playlists`.
+---@field playlists_activate fun(self: MprisCapability, id: string, playlist_id: string) Activates a playlist by its object path.
 
 ---[docs](https://anasgets111.github.io/mantle/capabilities/network.html)
 ---@class NetworkCapability: Capability<NetworkState>, userdata
@@ -674,7 +730,7 @@ local PrivacyCapability = {}
 ---@field bluetooth BluetoothCapability BlueZ: adapter power, discovery, connected, paired and discovered devices, and pairing prompts.
 ---@field tray TrayCapability StatusNotifierItem: registered tray items with artwork, status and menus.
 ---@field notifications NotificationsCapability The notification server: the newest 20 notifications and do-not-disturb.
----@field mpris MprisCapability MPRIS: media players with track metadata, playback state and position.
+---@field mpris MprisCapability MPRIS: media players with metadata, controls, TrackList and Playlists.
 ---@field sysinfo SysinfoCapability CPU, memory and swap use, CPU and GPU temperatures. `nil` until `configure` sets intervals.
 ---@field keyboard KeyboardCapability Lock keys, the active layout and the keyboard backlight.
 ---@field privacy PrivacyCapability Apps using the camera, microphone or screen capture right now.

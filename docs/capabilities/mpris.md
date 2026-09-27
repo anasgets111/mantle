@@ -2,7 +2,7 @@
 
 # mpris
 
-MPRIS: media players with track metadata, playback state and position.
+MPRIS: media players with metadata, controls, TrackList and Playlists.
 
 ```lua
 local player = mantle.mpris:map(function(mpris)
@@ -28,6 +28,13 @@ button {
 }
 ```
 
+Each player may also expose `track_list` and `playlists`. `track_list.tracks` contains at most 100
+entries around the current track, each with an id, title, artist, and length. The full playlist
+remains player-owned. `playlists.playlists` contains a page of at most 100 entries. Call
+`playlists_get(id, index, count, order, reverse)` to fetch another page, and
+`playlists_activate(id, playlist_id)` to activate one. `track_list_add_track`,
+`track_list_remove_track`, and `track_list_go_to` call the corresponding TrackList methods.
+
 ## State
 
 `mantle.mpris:get()` returns `MprisState`, `nil` before the first push. A field marked `?` may be absent.
@@ -40,17 +47,73 @@ button {
 
 | Field | Type | Description |
 | --- | --- | --- |
-| `album_art_path` | `string` | Cover art as an existing absolute path, or empty; a remote `artUrl` is not fetched. |
+| `album` | `string` | Album title; empty when unset. |
+| `album_art_path` | `string` | Cover art as an existing local path, or empty when unavailable. |
+| `album_artist` | `string` | Album artists joined with `", "`; empty when unset. |
 | `artist` | `string` | Artists joined with `", "`; empty when unset. |
+| `can_go_next` | `boolean` | MPRIS `CanGoNext`. |
+| `can_go_previous` | `boolean` | MPRIS `CanGoPrevious`. |
+| `can_pause` | `boolean` | MPRIS `CanPause`. |
+| `can_play` | `boolean` | MPRIS `CanPlay`. |
+| `can_quit` | `boolean` | MPRIS `CanQuit` on the root interface. |
+| `can_raise` | `boolean` | MPRIS `CanRaise` on the root interface. |
+| `can_seek` | `boolean` | MPRIS `CanSeek`. |
 | `desktop_entry` | `string` | The player's `.desktop` basename, e.g. `"firefox"`, for app matching; empty when unset. |
+| `genre` | `string` | Genres joined with `", "`; empty when unset. |
 | `id` | `string` | Bus-name suffix after `org.mpris.MediaPlayer2.`, e.g. `"spotify"`; every action takes it. |
 | `identity` | `string` | Display name, e.g. `"Spotify"`; empty if unanswered. |
 | `length` | `integer` | Track length in microseconds, or `-1` when unknown, as for a live stream. |
+| `loop_status` | `string` | MPRIS loop mode: `None`, `Track`, or `Playlist`. |
+| `maximum_rate` | `number` | MPRIS maximum playback rate, or `0` when unavailable. |
+| `minimum_rate` | `number` | MPRIS minimum playback rate, or `0` when unavailable. |
 | `play_state` | `string` | `"Playing"`, `"Paused"` or `"Stopped"`; keeps the last value when a read fails, empty if none. |
+| `playlists` | `PlaylistsState` | One bounded page from the optional MPRIS Playlists interface. |
 | `position` | `integer` | Playback offset in microseconds as of `position_updated_at`, not polled while playing: add elapsed time. `-1` when unknown. |
 | `position_updated_at` | `integer` | `CLOCK_MONOTONIC` microseconds when `position` was read. No Lua clock shares this epoch (not `mantle.system.monotonic`); only compare it with itself. |
+| `rate` | `number` | MPRIS playback rate. |
+| `shuffle` | `boolean` | MPRIS shuffle setting. |
 | `title` | `string` | Track title; empty when unset, normal between tracks. |
+| `track_list` | `TrackListState` | Nearby tracks from the optional MPRIS TrackList interface. |
 | `url` | `string` | `xesam:url` as sent, e.g. a `file://` path or an `https://` page; empty when unset. |
+| `volume` | `number` | MPRIS volume. The protocol permits amplification above `1.0`. |
+
+### `PlaylistSummary`
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `icon` | `string` | Icon URI, or empty if absent. |
+| `id` | `string` | Stable playlist object path. |
+| `name` | `string` | User-facing playlist name. |
+
+### `PlaylistsState`
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `active?` | `PlaylistSummary` | Active playlist, if the player reports one. |
+| `count` | `integer` | Total playlists reported by the player. |
+| `index` | `integer` | Index used for the current page. |
+| `order` | `string` | Ordering used for the current page. |
+| `orderings` | `string[]` | Ordering names accepted by `playlists_get`. |
+| `page_size` | `integer` | Number of entries requested for the current page, at most 100. |
+| `playlists` | `PlaylistSummary[]` | At most 100 playlist entries. |
+| `reverse` | `boolean` | Whether the page is reversed. |
+
+### `TrackListState`
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `can_edit` | `boolean` | Whether the player permits add and remove calls. |
+| `current_track` | `string` | Current TrackList object path, or empty if unknown. |
+| `tracks` | `TrackSummary[]` | At most 100 tracks around the current track; the full playlist remains player-owned. |
+
+### `TrackSummary`
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `artist` | `string` | Track artists joined with `", "`. |
+| `id` | `string` | TrackList object path, used by `track_list_go_to` and `track_list_remove_track`. |
+| `length` | `integer` | Track length in microseconds, or `-1` when unknown. |
+| `title` | `string` | Track title, empty when the player has none. |
 
 ## Actions
 
@@ -61,18 +124,32 @@ Call each as `mantle.mpris:<action>(arguments...)`; `?` marks an argument you ma
 | `control` | `id: string, cmd: PlayerCommand` | Sends a playback command to `players[].id`. |
 | `seek` | `id: string, position_us: integer` | Seeks to an absolute position in microseconds, clamped to `[0, length]` (only `>= 0` when `length` is `-1`). |
 | `seek_relative` | `id: string, offset_us: integer` | Seeks by a signed offset in microseconds, unclamped; past the end may skip to the next track. |
+| `raise` | `id: string` | Calls Raise; check `players[].can_raise` before calling. |
+| `quit` | `id: string` | Calls Quit; check `players[].can_quit` before calling. |
+| `open_uri` | `id: string, uri: string` | Opens an absolute URI in the player. |
+| `set_volume` | `id: string, value: number` | Sets MPRIS `Volume`; finite values at or above zero are accepted. |
+| `set_loop_status` | `id: string, value: string` | Sets MPRIS `LoopStatus` to `None`, `Track`, or `Playlist`. |
+| `set_shuffle` | `id: string, value: boolean` | Sets MPRIS `Shuffle`. |
+| `set_rate` | `id: string, value: number` | Sets a positive finite MPRIS playback rate. |
+| `track_list_add_track` | `id: string, uri: string, after_track: string, set_as_current: boolean` | Inserts a URI after a track id, or after `/org/mpris/MediaPlayer2/TrackList/NoTrack` to prepend. |
+| `track_list_remove_track` | `id: string, track_id: string` | Removes a track by its TrackList object path. |
+| `track_list_go_to` | `id: string, track_id: string` | Starts the track identified by its TrackList object path. |
+| `playlists_get` | `id: string, index: integer, count: integer, order: string, reverse: boolean` | Reads a bounded playlist page into `players[].playlists`. |
+| `playlists_activate` | `id: string, playlist_id: string` | Activates a playlist by its object path. |
 
 ### `PlayerCommand`
 
-One of `"play"`, `"pause"`, `"play_pause"`, `"next"`, `"previous"`.
+One of `"play"`, `"pause"`, `"play_pause"`, `"next"`, `"previous"`, `"stop"`.
 
 ## Backend
 
 | Contract | Behavior |
 | :--- | :--- |
 | Discovery | Session bus `ListNames` once, then `NameOwnerChanged` for `org.mpris.MediaPlayer2.*`. Skips `playerctld` and any player reporting `CanControl = false` |
-| Pushes | On a `PlaybackStatus` or `Metadata` change and on `Seeked`. A status change re-reads `Position` 100 ms later. Nothing polls |
+| Pushes | On playback, metadata, control-property, TrackList or Playlists changes and on `Seeked`. A status change re-reads `Position` 100 ms later. Nothing polls |
 | Seek | `seek` calls `SetPosition` with the cached `mpris:trackid`. A player without one gets a relative `Seek` from a live `Position` read |
+| Controls | Read `can_*` before calling matching methods. Setters accept finite nonnegative volume, positive finite rate within advertised limits, and `None`, `Track`, or `Playlist` loop status |
+| Artwork | Uses existing local `file://` paths. Remote artwork URLs are unsupported |
 
 ## How do I…
 
@@ -88,5 +165,8 @@ One of `"play"`, `"pause"`, `"play_pause"`, `"next"`, `"previous"`.
 | `position_updated_at` compared with `mantle.system.monotonic` gives nonsense | Different clocks and units: `CLOCK_MONOTONIC` microseconds against seconds since `system` started. Only compare it with itself |
 
 See also: [Media player](../cookbook/media-player.md) recipe.
+
+Each player also exposes `album`, `album_artist`, and `genre`. Artist and genre arrays are joined
+with `", "`; missing metadata is an empty string.
 
 Source: [`supervisor/src/capabilities/mpris/`](../../supervisor/src/capabilities/mpris/)
