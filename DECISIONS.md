@@ -6878,3 +6878,11 @@ file would break the secure submission contract. A missing or failing service pu
 `unavailable` in `mantle.secrets.entries[name]`; the status contains no value bytes. After 30
 seconds the Supervisor requests cancellation and reports `timed_out`. It still holds the name
 until the worker returns, so a slow first write cannot overwrite a newer one.
+
+## 0280. Parley shapes text while FemtoVG keeps painting it
+
+Mantle uses Parley for shaping so Lua can gain line height, spacing and OpenType styling without
+replacing the renderer's glyph painting path. Fontconfig still selects files, fontdb shares their
+mapped bytes with Fontique and FemtoVG, and the worker keeps its shape cache (ADR-0043, ADR-0211).
+The trade-off is a larger dependency tree and slightly different text metrics; live CPU and memory
+tests showed no reliable performance gain, so styling is the reason to make this switch.

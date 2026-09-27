@@ -309,8 +309,7 @@ pub fn parse_radius(properties: &PropMap) -> Result<f32, LayoutError> {
 /// corners (`path.rs:458` treats under 0.1 as unrounded) and `border_width = -4` clamps to 0 and
 /// clears paint alpha.
 ///
-/// `font_size` alone floors at 1. `line_height` is `font_size * 1.2` and cosmic-text's
-/// `Buffer::new` asserts a non-zero line height, so a zero aborts the Renderer. Flooring in the
+/// `font_size` alone floors at 1. A zero size gives the shaper a zero line height. Flooring in the
 /// row rather than in a consumer covers the tween too, which clamps into this same range. Icon
 /// `size` needs no floor: it becomes a `Measure::Square` and the painter takes its pixels from the
 /// resolved box, so it never reaches a shaper.

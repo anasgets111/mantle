@@ -505,7 +505,7 @@ mod tests {
         assert_eq!(link_under(&node, LogicalPoint { x: 298.0, y: 5.0 }, &shaping), Some("https://d/".to_string()));
     }
 
-    /// cosmic-text ends a line at a lone `\r` and at `\n\r`, and either opens one row, not two.
+    /// The text path treats a lone `\r` and a `\n\r` pair as one line break.
     #[test]
     fn a_link_after_a_carriage_return_is_found_on_the_row_below() {
         let shaping = ShapingHandle::spawn();

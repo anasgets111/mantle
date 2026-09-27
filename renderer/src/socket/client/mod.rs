@@ -71,7 +71,7 @@ pub struct RendererClient {
     /// amendment). A moved rect in that pass gets no second follow-up, so a binding fed by its own
     /// measurement settles or stops, never spins.
     geometry_follow_up: bool,
-    /// Clone of `crate::wayland::App`'s `ShapingHandle`: one worker and `FontSystem` per process
+    /// Clone of `crate::wayland::App`'s `ShapingHandle`: one worker and font set per process
     /// (ADR-0023).
     shaping: ShapingHandle,
     /// Capability handles keyed by `StateSnapshot.capability` (ADR-0029), seeded from

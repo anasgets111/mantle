@@ -1,12 +1,5 @@
-//! Off-thread wrapper around `cosmic-text`'s font shaping, so measuring a dynamic string never
-//! blocks the render thread. The worker builds its `FontSystem` from `text::fonts::resolve_chain`'s
-//! declared chain, not `FontSystem::new()`, which takes up to ~1s per cosmic-text's own docs
-//! (ADR-0043 decision 2). A plain `std::thread` plus `mpsc` runs it rather than tokio's
-//! multi-thread runtime: this is one dedicated CPU-bound worker, and renderer's Cargo.toml only
-//! carries tokio's `rt`/`net`/`macros` features.
-//!
-//! `shape()` asks for `Family::Name(primary_family)`, the resolved chain's own first hit, and paint
-//! draws the faces it chose (ADR-0211).
+//! Off-thread Parley shaping. Fontconfig selects the declared chain, and the worker registers
+//! only those mapped files with Fontique. FemtoVG draws the faces Parley chose (ADR-0211).
 
 use std::collections::{HashMap, HashSet};
 use std::ops::Range;
@@ -14,7 +7,6 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError, mpsc};
 use std::thread;
 
-use cosmic_text::LineIter;
 use shared::debug;
 
 use super::fonts;
@@ -86,7 +78,7 @@ pub struct ShapedLine {
     pub glyphs: Box<[Glyph]>,
 }
 
-/// One placed glyph: the face, weight and glyph cosmic-text chose, its pen position from the line's
+/// One placed glyph: the face, weight and glyph Parley chose, its pen position from the line's
 /// left edge and baseline, its advance, and the byte of the request's text it came from.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Glyph {
@@ -117,15 +109,13 @@ pub fn line_height(font_size: f32) -> f32 {
 
 /// One font file's bytes, held once and shared by every reader. The inner `Arc` is `fontdb`'s:
 /// `Database::make_shared_face_data` maps the file and rewrites every face from it to point at
-/// the mapping, so cosmic-text (which owns the `Database`) and femtovg (handed this) read the
-/// same `Shared_Clean`, page-cache-backed pages instead of each holding a copy. The newtype exists
+/// the mapping, so Parley and FemtoVG read the same `Shared_Clean` pages. The newtype exists
 /// because femtovg's `add_shared_font_with_index` takes `T: AsRef<[u8]> + 'static` by value, and
 /// `Arc<dyn AsRef<[u8]>>` doesn't itself implement `AsRef<[u8]>`.
 #[derive(Clone)]
 pub struct FontData(std::sync::Arc<dyn AsRef<[u8]> + Send + Sync>);
 
-/// One face femtovg should load: its file's shared bytes, which face of the file, and the id
-/// cosmic-text's glyphs name it by (ADR-0211).
+/// One face FemtoVG should load: its file's shared bytes, collection index, and mapped fontdb id.
 #[derive(Clone)]
 pub struct FontFace {
     pub data: FontData,
@@ -134,10 +124,10 @@ pub struct FontFace {
 }
 
 impl FontFace {
-    /// The normalized axis coordinates cosmic-text shapes this face at for `weight`, in `fvar`
-    /// order, the way `cosmic_text::Font::new` derives them; empty for a face with no axes.
+    /// The normalized axis coordinates Parley shapes this face at for `weight`, in `fvar`
+    /// order; empty for a face with no axes.
     pub fn coords(&self, weight: u16) -> Vec<i16> {
-        use cosmic_text::skrifa::{FontRef, MetadataProvider, Tag};
+        use skrifa::{FontRef, MetadataProvider, Tag};
         let Ok(font) = FontRef::from_index(self.data.as_ref(), self.index) else {
             return Vec::new();
         };
@@ -171,7 +161,7 @@ enum Request {
     Shape(ShapeRequest, bool, mpsc::Sender<ShapeResult>),
     FontChainData(mpsc::Sender<Vec<FontFace>>),
     /// Replace the chain this worker measures against, once the config has said what it wants
-    /// (ADR-0043 decision 2). Replies once the new `FontSystem` is live, so the next
+    /// (ADR-0043 decision 2). Replies once the new font set is live, so the next
     /// `font_chain_data` call answers with the new faces.
     SetChain(Vec<String>, mpsc::Sender<()>),
     /// Resolve a family without measuring anything (ADR-0144). A `text` node with an explicit
@@ -223,9 +213,8 @@ struct ShapeKey {
 }
 
 /// A handle to a dedicated shaping worker thread and its warm font cache. `Clone` clones only the
-/// request `Sender`, so every clone addresses the one worker and `FontSystem`, letting
-/// `wayland::App` and the `RendererClient` it owns share a warm cache instead of each paying
-/// `FontSystem::new()`'s ~1s startup (ADR-0023, closed by ADR-0039 decision 3). The measurement
+/// request `Sender`, so every clone addresses the one worker and font set, letting
+/// `wayland::App` and the `RendererClient` it owns share a warm cache. The measurement
 /// cache is `Arc`-shared for the same reason, and lives on this side of the channel: a worker-side
 /// cache would still pay an `mpsc` round trip and thread wake per node, a real fraction of the
 /// 17us each costs on a 500-row list.
@@ -242,8 +231,7 @@ pub struct ShapingHandle {
 }
 
 impl ShapingHandle {
-    /// Spawns the worker thread and its own `FontSystem`, created inside the spawned closure
-    /// rather than moved into it, so this doesn't require `FontSystem: Send`.
+    /// Spawns the worker thread and creates its font contexts there.
     pub fn spawn() -> Self {
         Self::spawn_with(None)
     }
@@ -268,13 +256,13 @@ impl ShapingHandle {
                     match request {
                         Request::Shape(req, glyphs, reply) => {
                             let family = fonts.family_for(req.font.as_ref(), &generation, &worker_ensured);
-                            let (mut result, mut missing) = shape(&mut fonts.font_system, &family, &req, glyphs);
+                            let (mut result, mut missing) = shape(&mut fonts, &family, &req, glyphs);
                             // `any` is the whole loop control: it runs out of codepoints when none
                             // can be covered, and short-circuits on the first that can, which is
                             // exactly when shaping again is worth it. A codepoint nothing covers
                             // is remembered by `cover`, so neither branch can spin.
                             while missing.iter().any(|&ch| fonts.cover(ch, &generation)) {
-                                (result, missing) = shape(&mut fonts.font_system, &family, &req, glyphs);
+                                (result, missing) = shape(&mut fonts, &family, &req, glyphs);
                             }
                             // A dropped receiver just means the result is discarded.
                             let _ = reply.send(result);
@@ -325,7 +313,7 @@ impl ShapingHandle {
     }
 
     /// Each line of `text` shaped alone with its glyphs and `runs` re-based onto it, paired with the
-    /// byte it starts at (ADR-0211). Lines end where cosmic-text ends them, so paint draws the rows
+    /// byte it starts at (ADR-0211). Lines end where Parley ends them, so paint draws the rows
     /// measurement counted.
     ///
     /// ponytail: hit-testing asks per pointer event -- a memo hit that still allocates each line's
@@ -337,11 +325,8 @@ impl ShapingHandle {
         font_size: f32,
         font: Option<&Arc<str>>,
     ) -> Vec<(usize, ShapeResult)> {
-        // A trailing line ending opens one more, empty line, as `Buffer::set_text` does.
-        let trailing = text.is_empty() || text.ends_with(['\n', '\r']);
-        LineIter::new(text)
-            .map(|(range, _)| range)
-            .chain(trailing.then_some(text.len()..text.len()))
+        paragraph_ranges(text)
+            .into_iter()
             .map(|range| {
                 let runs = runs
                     .iter()
@@ -522,13 +507,36 @@ impl ShapingHandle {
     }
 
     /// Returns the font chain's resolved primary family: the same name `shape()` asks
-    /// cosmic-text for via `Family::Name`. Test-only. See `Request::ResolvedPrimaryFamily`.
+    /// Parley with highest priority. Test-only. See `Request::ResolvedPrimaryFamily`.
     #[cfg(test)]
     pub fn resolved_primary_family(&self) -> String {
         let (reply_tx, reply_rx) = mpsc::channel();
         self.requests.send(Request::ResolvedPrimaryFamily(reply_tx)).expect("mantle-text-shaping worker thread died");
         reply_rx.recv().expect("mantle-text-shaping worker thread died before replying")
     }
+}
+
+/// Paragraph boundaries for painting and hit testing. A CRLF or LFCR pair is one break.
+fn paragraph_ranges(text: &str) -> Vec<std::ops::Range<usize>> {
+    let bytes = text.as_bytes();
+    let mut ranges = Vec::new();
+    let mut start = 0;
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'\r' || bytes[i] == b'\n' {
+            ranges.push(start..i);
+            let first = bytes[i];
+            i += 1;
+            if i < bytes.len() && (bytes[i] == b'\r' || bytes[i] == b'\n') && bytes[i] != first {
+                i += 1;
+            }
+            start = i;
+        } else {
+            i += 1;
+        }
+    }
+    ranges.push(start..text.len());
+    ranges
 }
 
 #[cfg(test)]
@@ -816,7 +824,7 @@ mod tests {
 
     // ---- styled runs (ADR-0104) ----
 
-    /// Paint draws the faces cosmic-text chose, so every face a shape names has to be one the
+    /// Paint draws the faces Parley chose, so every face a shape names has to be one the
     /// painter is handed: the regular, a bold run's, and coverage like emoji and Arabic (ADR-0211).
     #[test]
     fn every_face_a_shape_names_is_one_the_painter_is_handed() {
@@ -1081,7 +1089,7 @@ mod tests {
         let handle = ShapingHandle::spawn();
         let chain = handle.font_chain_data();
         assert!(!chain.is_empty(), "the default chain must resolve to at least one loaded face");
-        use cosmic_text::skrifa::{FontRef, raw::TableProvider};
+        use skrifa::{FontRef, raw::TableProvider};
         for data in &chain {
             let font = FontRef::from_index(data.data.as_ref(), data.index)
                 .expect("every chain entry's bytes should parse as a font face");
@@ -1114,8 +1122,8 @@ mod tests {
     #[test]
     fn the_resolved_primary_family_is_findable_among_the_loaded_chain_fonts() {
         // Reconstructs a database from `font_chain_data()` -- the exact bytes
-        // `text::atlas::TextPainter` loads into femtovg -- and queries it the way `shape()`
-        // queries cosmic-text's. Comparing name records instead would pass for the wrong reason:
+        // `text::atlas::TextPainter` loads into femtovg -- and queries its face metadata.
+        // Comparing name records instead would pass for the wrong reason:
         // a font's `fontdb`-visible family and its raw TTF `FAMILY` record are different sources
         // of truth and aren't required to agree.
         let handle = ShapingHandle::spawn();
@@ -1133,9 +1141,7 @@ mod tests {
         );
     }
 
-    /// The trap `lines` was written into: cosmic-text's `LayoutRun::text` is the whole *source*
-    /// line, handed back once per visual line the wrap broke it into, so collecting it directly
-    /// yields the entire string N times over. Only the glyph cluster indices delimit a run.
+    /// A wrapped line must carry only its own source slice, not the whole paragraph.
     #[test]
     fn each_wrapped_line_is_its_own_slice_and_not_the_whole_string_again() {
         const TEXT: &str = "Mantle Engine Renderer";

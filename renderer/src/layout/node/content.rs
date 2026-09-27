@@ -326,8 +326,7 @@ keywords! {
         /// One line, however long.
         #[default]
         None,
-        /// Break at word boundaries, falling back to a glyph boundary for a word wider than the box,
-        /// using cosmic-text's `Wrap::WordOrGlyph`.
+        /// Break at word boundaries, falling back to a glyph boundary for a word wider than the box.
         Word,
     }
 }
@@ -640,8 +639,7 @@ mod tests {
         ));
     }
 
-    /// `line_height` is `font_size * 1.2`, and cosmic-text's `Buffer::new` asserts a non-zero line
-    /// height, so a zero here aborted the Renderer. `-0.0` counts: IEEE 754 says it equals `0.0`.
+    /// A zero font size gives the shaper a zero line height. `-0.0` counts: IEEE 754 says it equals `0.0`.
     #[test]
     fn font_size_of_zero_is_rejected_rather_than_reaching_the_shaper() {
         let lua = mlua::Lua::new();

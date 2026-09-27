@@ -123,7 +123,7 @@ pub struct App {
     shader_stage: crate::layout::image_shader::ShaderStage,
     conn: Connection,
     /// Process-wide shaping handle; `client` clones it, so content sizing and painting share one
-    /// worker and `FontSystem` (ADR-0039 decision 3).
+    /// worker and font set (ADR-0039 decision 3).
     shaping: ShapingHandle,
     text_painter: Option<TextPainter>,
     /// Process-wide image cache keyed by file path and pixel size, so repeated icons upload once

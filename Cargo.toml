@@ -19,7 +19,7 @@ resolver = "3"
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
-# cosmic-text 0.19's floor.
+# Keep the workspace buildable with Rust 1.89.
 rust-version = "1.89"
 
 # Versions shared by more than one member; features stay per member.
@@ -34,7 +34,7 @@ tempfile = "3.27.0"
 thiserror = "2.0.20"
 tokio = "1.53.1"
 # Deleting one grapheme cluster, not one scalar: a keystroke removes what the user sees as a
-# character. Already resolved through cosmic-text, so declaring it compiles no new crate.
+# character. Already resolved through Parley, so declaring it compiles no new crate.
 unicode-segmentation = "1.13.3"
 wayland-client = "0.31.15"
 wayland-protocols = "0.32.13"

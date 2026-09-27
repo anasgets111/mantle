@@ -45,6 +45,8 @@ so everything since the rename from Obelisk sits under Unreleased.
 
 ### Changed
 
+- Text shaping uses Parley. Text widths and wrap points can shift slightly; glyphs still draw
+  through FemtoVG with Swash hinting.
 - `mantle.tray` DBusMenu parsing drops invisible menu items (`visible = false`), spools raw PNG `icon-data` to shared memory as `icon_name` file paths, and refreshes live items on `ItemsPropertiesUpdated` and `NewMenu` ([tray](capabilities/tray.md)).
 - `mantle.updates` checks through `pacman`, `pacman-conf`, `curl` and `vercmp` instead of
   linking libalpm, so building no longer needs libalpm and the binary starts off Arch. `packages`

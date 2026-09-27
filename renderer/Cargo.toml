@@ -14,12 +14,11 @@ path = "src/main.rs"
 workspace = true
 
 [dependencies]
-# cosmic-text is reached only from `text/shaping/` and `text/fonts.rs`, for shaping and
-# measurement; its default features drag in a rasterizer nothing here calls. 157 to 151. No
-# `fontconfig` either: fonts resolve through `fc-match` (`text/fonts.rs`), not fontconfig's XML.
-cosmic-text = { version = "0.19.0", default-features = false, features = ["std"] }
+# Fontique receives only the files selected by `text/fonts.rs`; system discovery stays off.
+parley = { version = "0.11.1", default-features = false, features = ["std"] }
+skrifa = "0.44.0"
 # `swash` is what makes the text look hinted. Without the feature femtovg falls back to
-# `render_glyph`: it tessellates the `ttf-parser` outline and supersamples it 8x on the GPU, which
+# `render_glyph`: it tessellates the font outline and supersamples it 8x on the GPU, which
 # runs no hinting bytecode and throws the subpixel position away, so every stem lands as two
 # half-lit columns instead of one lit one. The feature swaps in `render_glyph_swash`, which scales
 # through skrifa with hinting on -- `HintingMode::Smooth`, the same slight hinting fontconfig hands
@@ -27,13 +26,13 @@ cosmic-text = { version = "0.19.0", default-features = false, features = ["std"]
 # machine's bar clock at 11px: whole-lit pixels 4.4% to 6.3% of the box for the same ink.
 #
 # Three crates, and only in this crate's tree: swash, zeno, yazi. skrifa, read-fonts and font-types
-# arrive with cosmic-text too, at 0.40 where swash takes 0.44, until cosmic-text moves up.
+# arrive through Parley too.
 #
-# No defaults: `textlayout` is femtovg's own shaper (cosmic-text shapes here) and `image-loading`
+# No defaults: `textlayout` is femtovg's own shaper (Parley shapes here) and `image-loading`
 # is `load_image_file` (`image` decodes here).
 femtovg = { version = "0.27.0", default-features = false, features = ["swash"] }
-# Default features minus `fontconfig`, as for cosmic-text.
-fontdb = { version = "0.23.0", default-features = false, features = ["std", "fs", "memmap"] }
+# Font discovery and mapped bytes shared by Parley and FemtoVG.
+fontdb = { version = "0.24.0", default-features = false, features = ["std", "fs", "memmap"] }
 # A wrapped line's own direction, for `layout::scene`'s direction mark (ADR-0211).
 unicode-bidi = "0.3.18"
 unicode-segmentation.workspace = true
@@ -58,8 +57,8 @@ mlua = { version = "0.12.0", features = ["lua54", "vendored", "serde"] }
 # "resource" is `getrusage`, read only by the env-gated `wayland::idle_profile` (ADR-0132) to
 # split the poll loop's CPU between this thread and the rest of the process.
 nix = { workspace = true, features = ["event", "fs", "poll", "resource", "time"] }
-# `svgz` adds no crate: flate2 is already here through `png`. Not `text`, which would link a second
-# fontdb (0.24 against cosmic-text's 0.23) and a second harfrust just for `<text>` (ADR-0234).
+# `svgz` adds no crate: flate2 is already here through `png`. Keep SVG `<text>` shaping off
+# (ADR-0234); Mantle draws its own text nodes.
 resvg = { version = "0.48.1", default-features = false, features = ["svgz"] }
 serde_json.workspace = true
 shared.workspace = true

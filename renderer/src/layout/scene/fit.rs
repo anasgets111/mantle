@@ -348,7 +348,7 @@ mod tests {
 
     /// The height half of the same round trip, and the behaviour change wrapping brought with it:
     /// a fixed-width `text` that does not ask to wrap now *measures* the one line it paints.
-    /// Before, it measured every line cosmic-text would have broken the string onto and painted
+    /// Before, it measured every line the shaper would have broken the string onto and painted
     /// one clipped run into a box several times too tall.
     fn text_box(lua_src: &str) -> (String, f32) {
         let mut scene = Scene::new();

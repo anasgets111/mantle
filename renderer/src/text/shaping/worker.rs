@@ -1,14 +1,13 @@
 use std::collections::{HashMap, HashSet};
-use std::env;
-use std::ops::Range;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 
-use cosmic_text::{Attrs, Buffer, Family, FontSystem, Metrics, Shaping, Style, Weight};
+use parley::fontique::{Blob, Collection, CollectionOptions};
+use parley::{FontContext, FontFamilyName, FontStyle, FontWeight, Layout, LayoutContext, LineHeight, StyleProperty};
 use shared::debug;
 
-use super::{FontData, FontFace, FontRun, Glyph, SHAPE_CACHE_CAPACITY, ShapeRequest, ShapeResult, ShapedLine};
+use super::{FontData, FontFace, Glyph, SHAPE_CACHE_CAPACITY, ShapeRequest, ShapeResult, ShapedLine};
 use crate::text::fonts::{self, ResolvedFonts};
 
 /// Everything the worker thread knows about fonts: the declared chain's database and primary, the
@@ -18,7 +17,13 @@ use crate::text::fonts::{self, ResolvedFonts};
 /// them together: a `families` map kept across a `set_chain` would point at faces that went down
 /// with the old database.
 pub(super) struct WorkerFonts {
-    pub(super) font_system: FontSystem,
+    db: fontdb::Database,
+    font_context: FontContext,
+    layout_context: LayoutContext<()>,
+    /// A Parley font is identified by its mapped file and collection index.
+    faces: HashMap<(u64, u32), fontdb::ID>,
+    blobs: HashMap<usize, Blob<u8>>,
+    family_names: Vec<String>,
     pub(super) primary_family: String,
     /// What each family a node named resolved to, or `None` for one nothing answered. Both
     /// outcomes are remembered, so a font that is simply not installed costs one `fc-match` rather
@@ -37,12 +42,25 @@ pub(super) struct WorkerFonts {
 impl WorkerFonts {
     pub(super) fn new(chain: &[&str]) -> Self {
         let ResolvedFonts { mut db, primary_family, loaded_paths } = fonts::resolve_chain(chain);
-        // Mapped once, before the `Database` reaches cosmic-text, so the mappings stay *in* the
-        // database instead of being mapped twice.
-        let families = HashMap::new();
+        // Map once in fontdb, then register the same bytes with Parley.
         let chain_data = font_chain_data(&mut db);
-        let font_system = FontSystem::new_with_locale_and_db(detect_locale(), db);
-        Self { font_system, primary_family, families, loaded_paths, probed: HashSet::new(), chain_data }
+        let mut font_context = FontContext::new();
+        font_context.collection = Collection::new(CollectionOptions { shared: false, system_fonts: false });
+        let mut worker = Self {
+            db,
+            font_context,
+            layout_context: LayoutContext::new(),
+            faces: HashMap::new(),
+            blobs: HashMap::new(),
+            family_names: Vec::new(),
+            primary_family,
+            families: HashMap::new(),
+            loaded_paths,
+            probed: HashSet::new(),
+            chain_data,
+        };
+        worker.register_faces();
+        worker
     }
 
     /// The family name to shape `asked` under, resolving it on first sight (ADR-0144).
@@ -70,9 +88,10 @@ impl WorkerFonts {
                 self.families.clear();
                 ensured.lock().unwrap_or_else(PoisonError::into_inner).clear();
             }
-            let hit = fonts::load_family(self.font_system.db_mut(), asked, &mut self.loaded_paths);
+            let hit = fonts::load_family(&mut self.db, asked, &mut self.loaded_paths);
             self.families.insert(Arc::clone(asked), hit);
-            self.chain_data = font_chain_data(self.font_system.db_mut());
+            self.chain_data = font_chain_data(&mut self.db);
+            self.register_faces();
             generation.fetch_add(1, Ordering::Release);
         }
         self.families[asked].clone().unwrap_or_else(|| self.primary_family.clone())
@@ -91,12 +110,32 @@ impl WorkerFonts {
         if self.probed.len() > SHAPE_CACHE_CAPACITY {
             self.probed.clear();
         }
-        if !fonts::load_covering(self.font_system.db_mut(), ch, &mut self.loaded_paths) {
+        if !fonts::load_covering(&mut self.db, ch, &mut self.loaded_paths) {
             return false;
         }
-        self.chain_data = font_chain_data(self.font_system.db_mut());
+        self.chain_data = font_chain_data(&mut self.db);
+        self.register_faces();
         generation.fetch_add(1, Ordering::Release);
         true
+    }
+
+    fn register_faces(&mut self) {
+        for face in &self.chain_data {
+            let blob = self.blobs.entry(face.data.addr()).or_insert_with(|| {
+                let blob = Blob::new(face.data.0.clone());
+                self.font_context.collection.register_fonts(blob.clone(), None);
+                blob
+            });
+            self.faces.insert((blob.id(), face.index), face.id);
+        }
+        self.family_names.clear();
+        for face in self.db.faces() {
+            for (name, _) in &face.families {
+                if !self.family_names.contains(name) {
+                    self.family_names.push(name.clone());
+                }
+            }
+        }
     }
 }
 
@@ -104,111 +143,111 @@ impl WorkerFonts {
 /// can go find faces for them (ADR-0239). All of them, not the first: one codepoint nothing on the
 /// system covers would otherwise hide every box after it in the same string.
 pub(super) fn shape(
-    font_system: &mut FontSystem,
+    fonts: &mut WorkerFonts,
     primary_family: &str,
     request: &ShapeRequest,
     glyphs: bool,
 ) -> (ShapeResult, Vec<char>) {
-    // cosmic-text panics ("no default font found") the moment it shapes a run against a database
-    // with no faces, which is what a machine with no fonts installed hands the worker.
-    if font_system.db().is_empty() {
-        let empty = ShapeResult {
-            width: 0.0,
-            height: 0.0,
-            lines: Vec::new().into(),
-            line_ranges: Vec::new().into(),
-            shaped: Vec::new().into(),
-        };
-        return (empty, Vec::new());
-    }
-    let metrics = Metrics::new(request.font_size, request.line_height);
-    let mut buffer = Buffer::new(font_system, metrics);
-    buffer.set_size(request.max_width, None);
-    let attrs = Attrs::new().family(Family::Name(primary_family));
-    if request.runs.is_empty() {
-        buffer.set_text(&request.text, &attrs, Shaping::Advanced, None);
-    } else {
-        buffer.set_rich_text(rich_spans(&request.text, &request.runs, &attrs), &attrs, Shaping::Advanced, None);
-    }
-    buffer.shape_until_scroll(font_system, false);
-
-    // Where each paragraph starts in the source. cosmic-text splits the text into one
-    // `BufferLine` per paragraph and a layout run's glyph offsets count from *its* paragraph, so
-    // turning them into offsets into the whole string means adding the paragraph's own start --
-    // its predecessors' text plus whichever line ending each of them was split on.
-    let mut paragraph_starts = Vec::with_capacity(buffer.lines.len());
-    let mut cursor = 0usize;
-    for line in &buffer.lines {
-        paragraph_starts.push(cursor);
-        cursor += line.text().len() + line.ending().as_str().len();
-    }
-
-    let mut width = 0.0f32;
-    let mut missing: Vec<char> = Vec::new();
-    let mut lines: Vec<String> = Vec::new();
-    let mut line_ranges: Vec<Range<usize>> = Vec::new();
-    let mut shaped: Vec<ShapedLine> = Vec::new();
-    for run in buffer.layout_runs() {
-        width = width.max(run.line_w);
-        // `run.text` is cosmic-text's "original text line" -- the whole source paragraph, handed
-        // back again for every visual line the wrap broke it into. The glyphs are what say which
-        // slice of it this run is. Read as min/max over the cluster indices rather than as the
-        // first and last glyph's, because a bidi run's glyphs come in visual order and its byte
-        // range is not theirs to be sorted by.
-        let (start, slice) = match (run.glyphs.iter().map(|g| g.start).min(), run.glyphs.iter().map(|g| g.end).max()) {
-            (Some(start), Some(end)) => (start, &run.text[start..end]),
-            // A blank line carries no glyphs and still takes up its height.
-            _ => (0, ""),
-        };
-        // Trailing whitespace only: a word wrap leaves the break's space on the line it broke, and
-        // a trailing space shifts a centred or right-aligned line by its own advance. Leading
-        // space is the author's own indentation and stays.
-        let trimmed = slice.trim_end();
-        let paragraph_start = paragraph_starts.get(run.line_i).copied().unwrap_or(0);
-        line_ranges.push(paragraph_start + start..paragraph_start + start + trimmed.len());
-        lines.push(trimmed.to_string());
-
-        // Glyph 0 is `.notdef`, every sfnt font's box. Read whether or not this request keeps its
-        // glyphs, because a string measured as a box and painted as a letter is laid out wrong.
-        // Repeats are left in: `cover` dedupes them against every codepoint it has already tried.
-        missing.extend(
-            run.glyphs
-                .iter()
-                .filter(|glyph| glyph.glyph_id == 0)
-                .filter_map(|glyph| run.text[glyph.start..glyph.end].chars().next()),
+    if fonts.chain_data.is_empty() {
+        return (
+            ShapeResult {
+                width: 0.0,
+                height: 0.0,
+                lines: Vec::new().into(),
+                line_ranges: Vec::new().into(),
+                shaped: Vec::new().into(),
+            },
+            Vec::new(),
         );
+    }
 
-        // Positions from the line's own left edge: paint places the line by its alignment.
-        let left = run.glyphs.iter().map(|glyph| glyph.x).fold(f32::INFINITY, f32::min);
-        let placed = match glyphs {
-            true => run
-                .glyphs
-                .iter()
-                .map(|glyph| Glyph {
-                    face: glyph.font_id,
-                    weight: glyph.font_weight.0,
-                    id: glyph.glyph_id,
-                    x: glyph.x + glyph.x_offset * glyph.font_size - left,
-                    y: glyph.y - glyph.y_offset * glyph.font_size,
-                    advance: glyph.w,
-                    start: paragraph_start + glyph.start,
-                    end: paragraph_start + glyph.end,
-                    rtl: glyph.level.is_rtl(),
-                })
-                .collect(),
-            false => Box::default(),
-        };
+    // Fontique has no system fallback when discovery is disabled. Give Parley the same loaded
+    // chain, with the requested family first; a newly rescued face joins on the next shape.
+    let mut family_names = vec![primary_family];
+    family_names.extend(fonts.family_names.iter().map(String::as_str));
+    let family_list: Vec<_> = family_names.into_iter().map(FontFamilyName::named).collect();
+    let mut builder = fonts.layout_context.ranged_builder(&mut fonts.font_context, &request.text, 1.0, false);
+    builder.push_default(StyleProperty::FontFamily(family_list.as_slice().into()));
+    builder.push_default(StyleProperty::FontSize(request.font_size));
+    builder.push_default(StyleProperty::LineHeight(LineHeight::Absolute(request.line_height)));
+    for run in &request.runs {
+        let start = run.range.start.min(request.text.len());
+        let end = run.range.end.min(request.text.len());
+        if start >= end || !request.text.is_char_boundary(start) || !request.text.is_char_boundary(end) {
+            continue;
+        }
+        builder
+            .push(StyleProperty::FontWeight(if run.bold { FontWeight::BOLD } else { FontWeight::NORMAL }), start..end);
+        builder
+            .push(StyleProperty::FontStyle(if run.italic { FontStyle::Italic } else { FontStyle::Normal }), start..end);
+    }
+    let mut layout: Layout<()> = builder.build(&request.text);
+    layout.break_all_lines(request.max_width);
+
+    let mut width = 0.0_f32;
+    let mut lines = Vec::new();
+    let mut line_ranges = Vec::new();
+    let mut shaped = Vec::new();
+    let mut missing = Vec::new();
+    let bidi = unicode_bidi::BidiInfo::new(&request.text, None);
+    for line in layout.lines() {
+        let mut source_range = line.text_range();
+        source_range.end = source_range.end.min(request.text.len());
+        source_range.start = source_range.start.min(source_range.end);
+        let source = &request.text[source_range.clone()];
+        let trimmed = source.trim_end_matches(char::is_whitespace);
+        let end = source_range.start + trimmed.len();
+        lines.push(trimmed.to_string());
+        line_ranges.push(source_range.start..end);
+        let metrics = line.metrics();
+        let line_width = (metrics.advance - metrics.trailing_whitespace).max(0.0);
+        width = width.max(line_width);
+        let mut placed = Vec::new();
+        let mut pen = metrics.inline_min_coord + metrics.offset;
+        for run in line.runs() {
+            let key = (run.font().data.id(), run.font().index);
+            let face = fonts.faces.get(&key).copied();
+            let weight = run.font_attrs().weight.value() as u16;
+            for cluster in run.visual_clusters() {
+                let mut range = cluster.text_range();
+                range.end = range.end.min(request.text.len());
+                range.start = range.start.min(range.end);
+                for glyph in cluster.glyphs() {
+                    if glyph.id == 0 {
+                        missing.extend(request.text.get(range.clone()).and_then(|text| text.chars().next()));
+                    }
+                    if glyphs && let Some(face) = face {
+                        placed.push(Glyph {
+                            face,
+                            weight,
+                            id: glyph.id as u16,
+                            x: pen + glyph.x,
+                            y: glyph.y,
+                            advance: glyph.advance,
+                            start: range.start,
+                            end: range.end,
+                            rtl: run.is_rtl(),
+                        });
+                    }
+                    pen += glyph.advance;
+                }
+            }
+        }
+        let rtl = bidi
+            .paragraphs
+            .iter()
+            .find(|paragraph| paragraph.range.contains(&source_range.start))
+            .map_or_else(|| layout.is_rtl(), |paragraph| paragraph.level.is_rtl());
         shaped.push(ShapedLine {
-            rtl: run.rtl,
-            width: run.line_w,
-            baseline: run.line_y - run.line_top,
-            glyphs: placed,
+            rtl,
+            width: line_width,
+            baseline: metrics.baseline - metrics.block_min_coord,
+            glyphs: placed.into_boxed_slice(),
         });
     }
-
     let result = ShapeResult {
         width,
-        height: lines.len() as f32 * metrics.line_height,
+        height: lines.len() as f32 * request.line_height,
         lines: lines.into(),
         line_ranges: line_ranges.into(),
         shaped: shaped.into(),
@@ -216,51 +255,19 @@ pub(super) fn shape(
     (result, missing)
 }
 
-/// `text` as the `(slice, attrs)` spans `Buffer::set_rich_text` takes: each run in a face of its
-/// own weight and style, and the text between runs in `base`. A run reaching past the end of the
-/// text, or one that would start before the previous ended, is clamped rather than refused: the
-/// ranges are built by `layout` from the same string, so neither happens, and a shaper that panics
-/// on a range is a worse outcome than one that measures a character in the wrong weight.
-fn rich_spans<'t, 'a>(text: &'t str, runs: &[FontRun], base: &Attrs<'a>) -> Vec<(&'t str, Attrs<'a>)> {
-    let mut spans = Vec::with_capacity(runs.len() * 2 + 1);
-    let mut cursor = 0usize;
-    for run in runs {
-        let start = run.range.start.clamp(cursor, text.len());
-        let end = run.range.end.clamp(start, text.len());
-        if !text.is_char_boundary(start) || !text.is_char_boundary(end) {
-            continue;
-        }
-        if start > cursor {
-            spans.push((&text[cursor..start], base.clone()));
-        }
-        let mut attrs = base.clone();
-        attrs.weight = if run.bold { Weight::BOLD } else { Weight::NORMAL };
-        attrs.style = if run.italic { Style::Italic } else { Style::Normal };
-        spans.push((&text[start..end], attrs));
-        cursor = end;
-    }
-    if cursor < text.len() {
-        spans.push((&text[cursor..], base.clone()));
-    }
-    spans
-}
-
-/// Every face in the database, for femtovg to load (ADR-0211). Paint draws the faces cosmic-text
-/// chose, and cosmic-text may choose any face the database holds -- a collection's second face, a
-/// bold, a named family's -- so the painter is handed all of them. The database holds only the
-/// chain's files and the families nodes named, so this maps no file nothing asked for.
+/// Every loaded face for FemtoVG (ADR-0211). Parley may choose a collection's second face,
+/// a bold face, or a named family's face, so the painter receives all of them.
 ///
 /// Maps rather than reads, the entire memory story here: `Noto Color Emoji` is an 11MB CBDT bitmap
 /// font, and the `data.to_vec()` this replaces held it three times over (worker `Vec<Vec<u8>>`,
-/// femtovg's `add_font_mem` copy, cosmic-text's own mapping); dropping it on an idle eleven-surface
+/// FemtoVG's `add_font_mem` copy, and the shaper's mapping); dropping it on an idle eleven-surface
 /// session cut the Renderer's private-dirty memory from 49.7MB to 22.7MB. `make_shared_face_data`
-/// rewrites every face sharing the path to `Source::SharedFile`, so this is also cosmic-text's map,
-/// and asking it for two faces of one file maps the file once.
+/// rewrites every face sharing the path to `Source::SharedFile`. Parley receives that same mapping.
 ///
 /// SAFETY: `make_shared_face_data` is `unsafe` because a font file rewritten on disk changes
 /// under the mapping, which can fault or produce nonsense glyphs. That is the same bargain
-/// cosmic-text already makes internally for every font it renders, and the alternative is paying
-/// a private copy per font per process to defend against someone editing a system font in place.
+/// A private copy per font would defend against someone editing a system font in place at a
+/// substantial memory cost.
 ///
 /// A face whose mapping cannot be established is skipped rather than fatal, matching
 /// `resolve_chain`'s own treatment of an entry it can't honor: losing the emoji font is a missing
@@ -271,33 +278,13 @@ fn font_chain_data(db: &mut fontdb::Database) -> Vec<FontFace> {
     let mut data = Vec::with_capacity(ids.len());
     for id in ids {
         // SAFETY: mapping a font file the process does not own, as the doc comment above spells
-        // out. A rewrite in place changes the bytes under the mapping. Same bargain cosmic-text
-        // already makes for every font it renders.
+        // out. A rewrite in place changes the bytes under the mapping.
         match unsafe { db.make_shared_face_data(id) } {
             Some((bytes, index)) => data.push(FontFace { data: FontData(bytes), index, id }),
             None => debug!(2; "font chain: face {id:?} could not be mapped, skipped"),
         }
     }
     data
-}
-
-/// The process locale, read the way glibc's own env-var chain does: `LC_ALL`, then `LC_CTYPE`,
-/// then `LANG`, defaulting to `"en-US"` when none are set (or all name `"C"`/`"POSIX"`). Replaces
-/// the `sys_locale` lookup `FontSystem::new()` does internally, now that construction bypasses it.
-fn detect_locale() -> String {
-    let raw = env::var("LC_ALL").or_else(|_| env::var("LC_CTYPE")).or_else(|_| env::var("LANG")).unwrap_or_default();
-
-    // `en_US.UTF-8@euro` -> `en-US`: cosmic-text's fallback tables key off the language and
-    // region subtags, not the encoding or modifier, so both are dropped rather than parsed.
-    let without_modifier = raw.split('@').next().unwrap_or("");
-    let without_encoding = without_modifier.split('.').next().unwrap_or("");
-    let normalized = without_encoding.replace('_', "-");
-
-    if normalized.is_empty() || normalized.eq_ignore_ascii_case("C") || normalized.eq_ignore_ascii_case("POSIX") {
-        "en-US".to_string()
-    } else {
-        normalized
-    }
 }
 
 #[cfg(test)]
@@ -307,8 +294,21 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_ligature_continuation_does_not_add_advance_twice() {
+        if !fonts::fc_lists("Noto Sans") {
+            return;
+        }
+        let mut fonts = WorkerFonts::new(&["Noto Sans"]);
+        let (result, _) = shape(&mut fonts, "Noto Sans", &req("finished", 20.0), true);
+        let glyphs = &result.shaped[0].glyphs;
+        let fi = glyphs.iter().find(|glyph| glyph.start == 0).unwrap();
+        let n = glyphs.iter().find(|glyph| glyph.start == 2).unwrap();
+        assert!((n.x - (fi.x + fi.advance)).abs() < 1.0, "a ligature's zero-glyph continuation adds no pen advance");
+    }
+
+    #[test]
     fn shape_measures_under_the_family_it_is_given() {
-        // `shape()` is called twice against the *same* `FontSystem` -- built once, over a
+        // `shape()` is called twice against the same font set, built once over a
         // database holding two Latin faces with very different metrics -- varying only the
         // `primary_family` argument. Holding the database fixed isolates that argument: varying
         // the chain instead (two separate `resolve_chain` calls) would also vary the database's
@@ -322,8 +322,7 @@ mod tests {
             return;
         }
 
-        let ResolvedFonts { db, .. } = fonts::resolve_chain(&["Noto Sans", "Noto Sans Mono"]);
-        let mut font_system = FontSystem::new_with_locale_and_db(detect_locale(), db);
+        let mut fonts = WorkerFonts::new(&["Noto Sans", "Noto Sans Mono"]);
 
         let request = ShapeRequest {
             text: "Mantle Engine Renderer".into(),
@@ -333,8 +332,8 @@ mod tests {
             runs: Vec::new(),
             font: None,
         };
-        let (proportional, _) = shape(&mut font_system, "Noto Sans", &request, false);
-        let (monospace, _) = shape(&mut font_system, "Noto Sans Mono", &request, false);
+        let (proportional, _) = shape(&mut fonts, "Noto Sans", &request, false);
+        let (monospace, _) = shape(&mut fonts, "Noto Sans Mono", &request, false);
 
         // Near-equal widths would mean the family argument did nothing; 10% clears rounding noise.
         let diff = (proportional.width - monospace.width).abs();
@@ -350,12 +349,12 @@ mod tests {
     }
 
     /// A machine with no font files installed: `fonts::resolve_chain` hands back an empty
-    /// database, and cosmic-text's shaper panics outright on one ("no default font found"),
-    /// taking the worker thread with it.
+    /// database. It must measure nothing without asking Parley to select a face.
     #[test]
     fn shaping_against_an_empty_database_measures_nothing_rather_than_panicking() {
-        let mut font_system = FontSystem::new_with_locale_and_db(detect_locale(), fontdb::Database::new());
-        let (measured, missing) = shape(&mut font_system, "", &req("Mantle", 14.0), true);
+        let mut fonts = WorkerFonts::new(fonts::DEFAULT_CHAIN);
+        fonts.chain_data.clear();
+        let (measured, missing) = shape(&mut fonts, "", &req("Mantle", 14.0), true);
         assert_eq!((measured.width, measured.height), (0.0, 0.0));
         assert!(measured.lines.is_empty() && measured.shaped.is_empty());
         assert!(missing.is_empty(), "a database with nothing in it has no codepoint to go looking for");

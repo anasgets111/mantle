@@ -3,7 +3,7 @@
 //! FemtoVG owns its glyph atlas entirely internally (see ADR-0012): rasterized glyphs pack
 //! into private atlas pages that start at a fixed size and grow by adding further pages, not by
 //! expanding one large texture. There is no public API to configure a single fixed-size page.
-//! What it draws is cosmic-text's (ADR-0211): `fill_glyph_run` takes glyphs another shaper placed,
+//! What it draws is Parley's (ADR-0211): `fill_glyph_run` takes glyphs another shaper placed,
 //! so femtovg rasterizes and packs, and shapes nothing.
 
 use std::collections::HashMap;
@@ -57,7 +57,7 @@ type CachedLineEntry = (TextLineKey, Arc<Vec<(usize, ShapeResult)>>);
 /// shaping worker can place a glyph in registered and ready to draw with.
 pub struct TextPainter {
     canvas: Canvas<OpenGl>,
-    /// femtovg's id for each face, keyed by the id cosmic-text's glyphs name it by, with the face
+    /// femtovg's id for each face, keyed by the worker's mapped fontdb id, with the face
     /// itself for its variation axes (ADR-0211).
     faces: HashMap<fontdb::ID, (FontId, FontFace)>,
     /// [`FontFace::coords`] per face and weight: deriving them parses the font's tables.
@@ -438,7 +438,7 @@ impl TextPainter {
         font_size: f32,
     ) {
         let Some((font, face)) = self.faces.get(&id) else { return };
-        // A variable family's bold is an instance of one face, which cosmic-text shaped at `weight`.
+        // A variable family's bold is an instance of one face, which Parley shaped at `weight`.
         let coords = self.coords.entry((id, weight)).or_insert_with(|| face.coords(weight));
         let mut paint = Paint::color(Color::rgbaf(tint.r, tint.g, tint.b, tint.a));
         paint.set_font_size(font_size);

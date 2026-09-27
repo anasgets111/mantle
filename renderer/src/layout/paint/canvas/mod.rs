@@ -1016,7 +1016,7 @@ pub(crate) mod tests {
         assert!(painter.font_id(face).is_some());
     }
 
-    /// A variable family ships bold as one file's `wght` axis: cosmic-text shapes a bold run at 700,
+    /// A variable family ships bold as one file's `wght` axis: Parley shapes a bold run at 700,
     /// so paint must draw that instance, not the file's default, or bold spacing holds regular ink.
     #[test]
     fn a_bold_run_in_a_variable_family_draws_the_bold_instance() {

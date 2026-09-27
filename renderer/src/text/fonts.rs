@@ -1,11 +1,9 @@
 //! Resolves the shell's declared font chain to concrete font files and loads only those
 //! into a `fontdb::Database` (ADR-0043 decision 2).
 //!
-//! `cosmic_text::FontSystem::new()` calls `Database::load_system_fonts()`, which parses face
-//! metadata for the whole system set (2648 faces on the dev machine ADR-0043 measured against,
-//! roughly a second of cold-cache I/O) to use a handful of them. This module is the fix: ask
-//! fontconfig which file backs each requested family, and load only those files. cosmic-text shapes against them
-//! (`text::shaping`) and femtovg draws the faces it chose (`text::atlas`, ADR-0211).
+//! Ask fontconfig for each requested family and load only those files. A full system scan took
+//! roughly one second on the machine measured in ADR-0043. Parley shapes against the loaded
+//! faces; FemtoVG draws the same faces (`text::atlas`, ADR-0211).
 
 use std::collections::HashSet;
 use std::path::PathBuf;
@@ -30,7 +28,7 @@ const GENERIC_ALIASES: &[&str] = &["sans-serif", "serif", "monospace", "cursive"
 pub const DEFAULT_CHAIN: &[&str] = &["sans-serif", "Noto Sans CJK JP", "Noto Color Emoji"];
 
 /// A font chain resolved to loaded faces: the database holding exactly those faces, and the
-/// family name shaping asks cosmic-text for via `Family::Name`.
+/// family name shaping puts first in Parley's ordered family list.
 pub struct ResolvedFonts {
     pub db: Database,
     pub primary_family: String,
@@ -65,7 +63,7 @@ pub fn resolve_chain(chain: &[&str]) -> ResolvedFonts {
 }
 
 /// Loads one family a node named by hand into an already-built database, and returns the family
-/// name shaping should ask cosmic-text for (ADR-0144).
+/// name shaping should ask Parley for (ADR-0144).
 ///
 /// The counterpart to `resolve_chain` for `text { font = "..." }`: same `fc_match`, same
 /// hit-versus-substitution check, same bold/italic variant load, into the database the declared

@@ -52,9 +52,11 @@ pub fn caret_at(line: &ShapedLine, x: f32, text_len: usize) -> usize {
 /// `لا` moves the caret without moving the mark. Both this and the boundary tie-break above want
 /// the same upgrade: a caret that carries which side of a boundary it sits on.
 pub fn caret_x(line: &ShapedLine, offset: usize) -> f32 {
-    // The first cluster in visual order that `offset` touches decides the edge, so a boundary
-    // between two runs stays with the earlier one.
-    let Some(cluster) = clusters(&line.glyphs).find(|cluster| (cluster[0].start..=cluster[0].end).contains(&offset))
+    // Parley yields visual runs left to right. At a direction boundary, the preceding text's
+    // trailing edge wins even if its visual run follows the next one.
+    let Some(cluster) = clusters(&line.glyphs)
+        .filter(|cluster| (cluster[0].start..=cluster[0].end).contains(&offset))
+        .min_by_key(|cluster| cluster[0].start == offset)
     else {
         return match line.rtl {
             true => line.width,
