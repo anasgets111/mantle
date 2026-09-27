@@ -137,6 +137,7 @@
     }
   },
   "idle": {
+    "compositor_hold_stale": true,
     "inhibited": true,
     "inhibitors": [
       {

@@ -8,6 +8,9 @@ so everything since the rename from Obelisk sits under Unreleased.
 
 ### Added
 
+- `mantle.idle.compositor_hold_stale` marks a previously observed compositor hold as unconfirmed
+  while input continues; unconfirmed compositor holds are omitted from `inhibitors` until observed again
+  ([idle](capabilities/idle.md#state)).
 - `mantle.mpris` exposes bounded TrackList and Playlists state with track and playlist actions.
 - `mantle.mpris` exposes capability flags and `control(id, "stop")`, Raise, Quit, OpenUri, volume, loop, shuffle, and rate controls.
 - `mantle.mpris.players` exposes album, album artist and genre metadata.

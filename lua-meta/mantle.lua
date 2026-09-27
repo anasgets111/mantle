@@ -374,8 +374,9 @@
 
 ---@class IdleState
 ---`mantle.idle`'s payload (ADR-0141).
----@field inhibited boolean Something holds the session awake: a logind inhibitor (this shell's included), a `ScreenSaver` client (ADR-0231) or a Wayland inhibitor (ADR-0160). No threshold fires while true.
----@field inhibitors IdleInhibitor[] Holders other than this shell, `ScreenSaver` clients included. The compositor's hold has an empty `who`; draw `why` then.
+---@field compositor_hold_stale boolean The compositor last withheld idle notifications, but input resumed before it could answer again. Its hold may have ended; a fresh idle period clears this uncertainty.
+---@field inhibited boolean True when logind blocks idle, a `ScreenSaver` client holds it (ADR-0231), or the compositor was last observed withholding idle notifications (ADR-0160). The compositor answer can remain true after a release while the seat is active; the next idle threshold refreshes it.
+---@field inhibitors IdleInhibitor[] Holders other than this shell, `ScreenSaver` clients included. The compositor's hold has an empty `who`; draw `why` then. An unconfirmed compositor hold is omitted.
 
 ---@class BluetoothState
 ---@field available boolean BlueZ has an adapter; `false` without one or without `bluetoothd`.

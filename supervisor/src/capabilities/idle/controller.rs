@@ -36,6 +36,7 @@ pub struct PublishedIdle {
     logind_blocked: bool,
     logind_inhibitors: Vec<super::state::IdleInhibitor>,
     wayland_inhibited: bool,
+    wayland_observed: bool,
     screensaver: Vec<super::state::IdleInhibitor>,
     last_sent: IdleState,
 }
@@ -44,13 +45,14 @@ impl PublishedIdle {
     /// The merged payload. Nothing can name the compositor's half. No protocol lists
     /// idle-inhibitor holders, and the withholding has causes besides a surface inhibitor (see
     /// `notify::wayland_inhibited`). So it is an inhibitor with an empty `who`, the shape a config
-    /// already draws for a logind holder that gave none, and a `why` stating the observation.
+    /// already draws for a logind holder that gave none, and a `why` stating the observation. An
+    /// observation made before input resumed is kept in `inhibited`, but omitted from the roster.
     fn merged(&self) -> IdleState {
         let mut inhibitors = self.logind_inhibitors.clone();
         // Ours by the time logind hears of them, and `foreign_idle_inhibitors` drops this shell's
         // own row, so the names can only come from here (ADR-0231).
         inhibitors.extend(self.screensaver.iter().cloned());
-        if self.wayland_inhibited {
+        if self.wayland_inhibited && self.wayland_observed {
             inhibitors.push(super::state::IdleInhibitor {
                 who: String::new(),
                 why: "the compositor is holding off idle notifications".to_string(),
@@ -58,6 +60,7 @@ impl PublishedIdle {
         }
         IdleState {
             inhibited: self.logind_blocked || self.wayland_inhibited || !self.screensaver.is_empty(),
+            compositor_hold_stale: self.wayland_inhibited && !self.wayland_observed,
             inhibitors,
         }
     }
@@ -72,9 +75,10 @@ impl PublishedIdle {
         Some(next)
     }
 
-    /// `None` means the compositor gave no evidence this round, so the last answer stands; see
-    /// `notify::wayland_inhibited`.
+    /// `None` means input resumed and the compositor gave no current inhibitor answer. Keep the
+    /// last gate value, but publish that its hold is unconfirmed; see `notify::wayland_inhibited`.
     pub(crate) fn set_wayland_inhibited(&mut self, held: Option<bool>) -> Option<IdleState> {
+        self.wayland_observed = held.is_some();
         self.wayland_inhibited = held.unwrap_or(self.wayland_inhibited);
         self.settle()
     }
@@ -556,17 +560,22 @@ async fn watch_idle_inhibitors(
 mod tests {
     use super::*;
 
-    /// The contract `reset_registrations` leans on when it reaps the last listener: `None` latches
-    /// the previous answer, so only an explicit one clears a `true` nothing will contradict.
+    /// An active seat gives no compositor answer. Keep the last gate value but stop presenting its
+    /// unnamed holder as current; the next idle period can confirm or clear it.
     #[test]
     fn no_evidence_keeps_the_last_compositor_answer_and_only_an_explicit_one_replaces_it() {
         let mut published = PublishedIdle::default();
         published.set_wayland_inhibited(Some(true));
+        assert!(!published.merged().compositor_hold_stale);
+        assert_eq!(published.merged().inhibitors.len(), 1);
 
-        published.set_wayland_inhibited(None);
-        assert!(published.merged().inhibited, "no evidence must leave the held answer standing");
+        let stale = published.set_wayland_inhibited(None).expect("the Renderer must hear that the hold is unconfirmed");
+        assert!(stale.inhibited, "no evidence must leave the held answer standing");
+        assert!(stale.compositor_hold_stale);
+        assert!(stale.inhibitors.is_empty(), "an unconfirmed holder must not be named as current");
 
         published.set_wayland_inhibited(Some(false));
         assert!(!published.merged().inhibited, "a reap with no listeners left must be able to clear it");
+        assert!(!published.merged().compositor_hold_stale);
     }
 }

@@ -28,11 +28,15 @@ pub struct IdleInhibitor {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 #[cfg_attr(test, derive(schemars::JsonSchema))]
 pub struct IdleState {
-    /// Something holds the session awake: a logind inhibitor (this shell's included), a
-    /// `ScreenSaver` client (ADR-0231) or a Wayland inhibitor (ADR-0160). No threshold fires while true.
+    /// True when logind blocks idle, a `ScreenSaver` client holds it (ADR-0231), or the compositor
+    /// was last observed withholding idle notifications (ADR-0160). The compositor answer can
+    /// remain true after a release while the seat is active; the next idle threshold refreshes it.
     pub inhibited: bool,
+    /// The compositor last withheld idle notifications, but input resumed before it could answer
+    /// again. Its hold may have ended; a fresh idle period clears this uncertainty.
+    pub compositor_hold_stale: bool,
     /// Holders other than this shell, `ScreenSaver` clients included. The compositor's hold has an
-    /// empty `who`; draw `why` then.
+    /// empty `who`; draw `why` then. An unconfirmed compositor hold is omitted.
     pub inhibitors: Vec<IdleInhibitor>,
 }
 

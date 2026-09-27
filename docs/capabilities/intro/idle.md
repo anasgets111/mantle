@@ -36,7 +36,7 @@ end)
 | Inhibit | Every hold, from any generation, shares one logind `Inhibit("idle", "block")` fd, closed when the last hold goes |
 | ScreenSaver | Hosts `org.freedesktop.ScreenSaver` when the name is free. A browser's video hold arrives here, directly or through xdg-desktop-portal, and takes the same fd. A client that leaves the bus loses its holds |
 | Gate | Mantle, not logind, acts on idle, so it honours inhibitors itself. While logind's `BlockInhibited` names `idle`, idled thresholds get `on_resume` and none fire; on release, ones still idle get `on_idle` again |
-| Compositor holds | A Wayland idle inhibitor shows when the shortest threshold's input-only twin fires and the normal notification does not, so it needs a registered threshold and an idle seat. It sets `inhibited` and adds one holder with an empty `who` |
+| Compositor holds | A Wayland idle inhibitor shows when the shortest threshold's input-only twin fires and the normal notification does not, so it needs a registered threshold and an idle seat. It sets `inhibited` and adds one holder with an empty `who`. After a detected hold, input resuming sets `compositor_hold_stale`, removes the unconfirmed holder from `inhibitors`, and keeps `inhibited` at its last value until the next idle threshold |
 
 ## How do I…
 

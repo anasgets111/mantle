@@ -26,8 +26,9 @@ end)
 
 | Field | Type | Description |
 | --- | --- | --- |
-| `inhibited` | `boolean` | Something holds the session awake: a logind inhibitor (this shell's included), a `ScreenSaver` client or a Wayland inhibitor. No threshold fires while true. |
-| `inhibitors` | `IdleInhibitor[]` | Holders other than this shell, `ScreenSaver` clients included. The compositor's hold has an empty `who`; draw `why` then. |
+| `compositor_hold_stale` | `boolean` | The compositor last withheld idle notifications, but input resumed before it could answer again. Its hold may have ended; a fresh idle period clears this uncertainty. |
+| `inhibited` | `boolean` | True when logind blocks idle, a `ScreenSaver` client holds it, or the compositor was last observed withholding idle notifications. The compositor answer can remain true after a release while the seat is active; the next idle threshold refreshes it. |
+| `inhibitors` | `IdleInhibitor[]` | Holders other than this shell, `ScreenSaver` clients included. The compositor's hold has an empty `who`; draw `why` then. An unconfirmed compositor hold is omitted. |
 
 ### `IdleInhibitor`
 
@@ -64,7 +65,7 @@ None: read-only, so any method but `get`, `map` and `on_change` raises.
 | Inhibit | Every hold, from any generation, shares one logind `Inhibit("idle", "block")` fd, closed when the last hold goes |
 | ScreenSaver | Hosts `org.freedesktop.ScreenSaver` when the name is free. A browser's video hold arrives here, directly or through xdg-desktop-portal, and takes the same fd. A client that leaves the bus loses its holds |
 | Gate | Mantle, not logind, acts on idle, so it honours inhibitors itself. While logind's `BlockInhibited` names `idle`, idled thresholds get `on_resume` and none fire; on release, ones still idle get `on_idle` again |
-| Compositor holds | A Wayland idle inhibitor shows when the shortest threshold's input-only twin fires and the normal notification does not, so it needs a registered threshold and an idle seat. It sets `inhibited` and adds one holder with an empty `who` |
+| Compositor holds | A Wayland idle inhibitor shows when the shortest threshold's input-only twin fires and the normal notification does not, so it needs a registered threshold and an idle seat. It sets `inhibited` and adds one holder with an empty `who`. After a detected hold, input resuming sets `compositor_hold_stale`, removes the unconfirmed holder from `inhibitors`, and keeps `inhibited` at its last value until the next idle threshold |
 
 ## How do I…
 
