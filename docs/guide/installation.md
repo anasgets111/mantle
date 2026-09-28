@@ -19,7 +19,7 @@ mantle log -f         # follow its output
 | `capture` node | `ext-image-copy-capture-v1`, else `wlr-screencopy-v1` |
 | `blur = true` | `ext-background-effect-v1`; ignored when absent |
 | Fonts | fontconfig (`fc-match`) |
-| Build | Rust 1.89+, PipeWire, PAM, udev, EGL, GBM, xkbcommon, libwayland-client, libwayland-egl. Lua 5.4 is vendored |
+| Build | Rust 1.98.1+, PipeWire, PAM, udev, EGL, GBM, xkbcommon, libwayland-client, libwayland-egl. Lua 5.4 is vendored |
 | Editor completion | lua-language-server |
 
 A [capability](../capabilities/index.md) starts on the config's first `mantle.<name>` read and
@@ -70,7 +70,7 @@ bindings, and the development files of what the binaries link:
 | Fedora | `gcc pkgconf-pkg-config clang pipewire-devel pam-devel systemd-devel wayland-devel libxkbcommon-devel mesa-libEGL-devel mesa-libgbm-devel` |
 | Debian, Ubuntu | `build-essential pkg-config clang libclang-dev libpipewire-0.3-dev libpam0g-dev libudev-dev libwayland-dev libxkbcommon-dev libegl-dev libgbm-dev` |
 
-Rust 1.89 or later comes from [rustup](https://rustup.rs) where the distro's `cargo` is older.
+Rust 1.98.1 or later comes from [rustup](https://rustup.rs) where the distro's `cargo` is older.
 Mantle is developed and run on Arch. The Fedora and Debian lists build the workspace in a
 container; running the shell, and the `updates` capability's dnf and apt backends, are untested
 on Fedora and Ubuntu for now.

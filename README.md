@@ -31,7 +31,7 @@ Docs: **<https://anasgets111.github.io/mantle/>**, built from [`docs/`](docs).
 | Capabilities over D-Bus | NetworkManager, BlueZ, UPower, power-profiles-daemon, logind, polkit ([per capability](docs/guide/installation.md#requirements)) |
 | Fonts | fontconfig (`fc-match`) |
 | `updates` capability | pacman, dnf or apt; `pkexec` to install |
-| Build | Rust 1.89+, PipeWire, PAM, udev, EGL, GBM, xkbcommon, libwayland-client, libwayland-egl. Lua 5.4 is vendored |
+| Build | Rust 1.98.1+, PipeWire, PAM, udev, EGL, GBM, xkbcommon, libwayland-client, libwayland-egl. Lua 5.4 is vendored |
 | `just check` | `lua-language-server`, `luac`, `python3` |
 
 ## Install and build
