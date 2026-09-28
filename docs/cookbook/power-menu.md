@@ -4,6 +4,7 @@ A full-screen overlay with lock, suspend, log out, restart and power off. The la
 second click before they run, and a click outside the buttons closes the menu. A bar button opens
 it, and so does `mantle toggle power_menu_open` from a keybind.
 
+<!-- shot-alt: Five power choices in a centered row, with Power off selected. -->
 ```lua,shot
 local open = state("power_menu_open", false)
 local pending = state("power_menu_pending", "") -- the action waiting for its second click

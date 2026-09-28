@@ -18,7 +18,7 @@ stays within one page is in that page's Gotchas table.
 | No surface appears at all after starting | The startup evaluation raised, so there is no scene. The error is in the log | [Evaluation, reload and generations](runtime.md#evaluation-reload-and-generations) |
 | `mantle check` passes, but a surface is empty or lays out wrong | `check` lays out on a 1920x1080 output with every capability `nil`, then with one sample value each, so a branch that needs a particular value, or a smaller output, went unchecked. The running shell reports those in `mantle log` | [What check covers](cli.md#what-check-covers), then the [layout dump](cli.md#how-do-i) and the [layout model](../nodes/index.md) |
 | A node shows before its data arrives | The map returns `nil` for `visible`, which counts as absent, and `visible` defaults to `true` | [signals gotchas](signals.md#gotchas) |
-| Two bars on screen | Two shells are running, one per `mantle` start | [cli gotchas](cli.md#gotchas) |
+| Two bars on screen | Two shells are running, one per `mantle` start | `mantle list`, then `mantle stop --pid <pid>` ([shell selection](cli.md#which-config-and-which-shell)) |
 | The shell vanishes and comes back only after 30 s | The Renderer died three times within 60 s, so the next respawn waits | Fix the error in `mantle log` ([limits](runtime.md#limits-and-budgets)) |
 
 ## A save or a click does nothing
@@ -29,7 +29,7 @@ stays within one page is in that page's Gotchas table.
 | After a broken save, `mantle call` says the action does not exist, timers stop and `on_change` goes quiet | A failed reload drops every action, timer, handler and idle threshold the last evaluation registered | [Evaluation, reload and generations](runtime.md#evaluation-reload-and-generations) |
 | An `on_change`, `timer`, `process.run`, `palette` or idle callback does nothing | Its error, a blown CPU budget included, is a warning. Read `mantle log` | [Output and logging](runtime.md#output-and-logging) |
 | `mantle.<cap>:<action>(...)` returns `nil` and nothing changes | Actions are fire and forget; a wrong argument type or count is dropped with a log line | [actions](../capabilities/index.md#actions) |
-| A keybind running `mantle set` or `mantle toggle` does nothing | It was refused (an undeclared name, a bare `toggle` on a non-boolean). The compositor discards the error; `mantle log` keeps it | [cli gotchas](cli.md#gotchas) |
+| A keybind running `mantle set` or `mantle toggle` does nothing | It may have been refused (an undeclared name, a bare `toggle` on a non-boolean). The compositor discards the error | Run the command in a terminal or read `mantle log` ([values and arguments](cli.md#values-and-arguments)) |
 | Saving a `.json` or an image beside `shell.lua` does not reload | Only `.lua` and `.frag` changes reload; a byte-identical save and an unreadable directory (`changes inside it will not reload`) do not either | [Evaluation, reload and generations](runtime.md#evaluation-reload-and-generations) |
 | An edit to `fonts { ... }` does nothing | The font chain is read when the Renderer starts | Restart the shell ([fonts](scripting.md#fonts)) |
 | A `textfield` shows no caret and takes no keys | The panel does not take keyboard focus | [text fields](input.md#text-fields), [panel](../surfaces/panel.md) |

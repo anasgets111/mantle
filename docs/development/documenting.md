@@ -78,6 +78,7 @@ block has to return a node or surfaces.
 | Image | Every visible surface stacked top to bottom 8 px apart, each popup where its `anchor_rect`, `anchor`, `gravity`, `offset` and `SlideX` put it on its parent, at scale 1 over Catppuccin Mocha crust `#11111b`. Cropped to the painted pixels plus 16 px; a shot that paints nothing fails |
 | Still | Drawn with every tween finished |
 | `<!-- shot: frames=0..400/20 -->` on the line above | An animated PNG: one frame per time, in ms after the last tween started. `frames=0,50,120` lists them |
+| `<!-- shot-alt: ... -->` immediately above a shot or its frame directive | Describes the visible result for readers who cannot see the image. Name the state or motion the example demonstrates, not the code syntax |
 | `docs/images/<section>/<page>.fakes.lua` | Runs before each shot on the page. `fakes = { battery = {...} }` is pushed as each capability's first push, `on_change` included. `__pointer = { surface = "bar", x = 40, y = 12 }` rests the pointer there after the first layout, in that surface's logical px (`surface` defaults to the first), so `hover()`, its rect and `on_hover` answer as for a real pointer. A `__after` function runs after the first layout, then the shot lays out again: that is how an OSD shows or a card leaves. A popup a click opens needs its anchor state set to the rect that click would pass |
 | `<!-- file: shaders/glow.frag -->` on the line above any fenced block | That block is written to that path in each shot's config directory, `mantle.config_dir`, so a page's shots load the file the page shows |
 | Pinned | Fonts, icons and images come from `renderer/fixtures/shots`, `os.time()` is 2026-09-24 12:45 UTC and `os.date` reads UTC, `$USER` is `user` |
@@ -141,8 +142,13 @@ with every key required. The book describes a shape in prose on the page.
 
 ## Page shape
 
-One or two sentences on what the page is for, a small complete example, reference tables, a
-`How do I…` table (`Task | Answer`), a `Gotchas` table (`Trap | Fix`), See also, then a `Source:`
-line of code links. Each fact lives on one page; link to it elsewhere. Links to code go out of
-`docs/` as relative paths (`../../renderer/src/...` from `docs/<dir>/x.md`); the book turns them
-into GitHub links and fails the build on a missing target.
+Start with the action or example a reader came for. Put prerequisites and implementation detail
+after it. A reference page can then give property tables; a tutorial can explain the example in
+small steps. Add `How do I…` or `Gotchas` only when they answer questions the page owns. The
+introduction, sidebar and FAQ already route readers to topics and symptoms, so do not repeat their
+indexes on every page.
+
+Keep each behavioral fact on one page and link to it elsewhere. End technical pages with a
+`Source:` line of code links. Links to code go out of `docs/` as relative paths
+(`../../renderer/src/...` from `docs/<dir>/x.md`); the book turns them into GitHub links and fails
+the build on a missing target.

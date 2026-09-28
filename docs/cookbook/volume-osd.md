@@ -3,6 +3,7 @@
 A card near the bottom of the focused monitor that shows the volume for a moment whenever it
 changes, whether from a media key, `wpctl` or a mixer. It fades and slides in, then out.
 
+<!-- shot-alt: A volume card sliding in with a blue level meter and 42% label. -->
 <!-- shot: frames=0..210/30 -->
 ```lua,shot
 -- The last change worth showing. A fresh table on every set, so each change counts as new.

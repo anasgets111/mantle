@@ -7,6 +7,7 @@ simpler.
 
 A scrolling thumbnail grid: a vertical list of two-image rows, decoded off-thread.
 
+<!-- shot-alt: Four landscape thumbnails arranged in two columns. -->
 ```lua,shot
 local paths = state("wallpapers", { "/usr/share/backgrounds/a.jpg", "/usr/share/backgrounds/b.jpg",
     "/usr/share/backgrounds/c.jpg", "/usr/share/backgrounds/d.jpg" })

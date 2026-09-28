@@ -4,6 +4,7 @@ A lock screen on every monitor with a large clock, the date and a password card 
 checking and wrong passwords. It fades in when the session locks and out after a correct password.
 It locks from a keybind (`mantle call lock`) and after five minutes idle.
 
+<!-- shot-alt: A lock screen with a clock, date, and password field. -->
 ```lua,shot
 local FADE_MS = 250
 

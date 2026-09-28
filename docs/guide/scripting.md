@@ -111,7 +111,7 @@ tick()
 | :--- | :--- |
 | Signature | `timer(ms, fn)` → handle |
 | `ms` | `1` to `86400000` (one day), fractions allowed, monotonic clock; outside raises |
-| `fn` | Called with no arguments under the 5 ms CPU budget. A raise or blown budget is logged as a warning |
+| `fn` | Called with no arguments under the [Lua CPU budget](runtime.md#limits-and-budgets). A raise or blown budget is logged as a warning |
 | Handle | `handle:cancel()` disarms it. A no-op once fired or cancelled. Dropping the handle does not disarm |
 | Order | Timers due at the same moment fire in the order they were armed; one may cancel another in the same batch |
 | Lifetime | Every evaluation clears all timers, including chains armed from callbacks. Timers armed during an evaluation start only once its result is applied |
@@ -142,7 +142,7 @@ end)
 | Signature | `action(name, fn)` → nothing |
 | `name` | Any non-empty string; nothing splits on `.`. Empty, or declared twice in one evaluation, raises |
 | Arguments, return, failure | As [values and arguments](cli.md#values-and-arguments): each argument JSON-decoded when it parses, the return printed bare or as JSON. A return that is not convertible to JSON fails the call |
-| Limits | 5 ms CPU budget |
+| Limits | [Lua CPU budget](runtime.md#limits-and-budgets) |
 | Lifetime | Cleared before every evaluation and again when one fails, so declare at the top level |
 
 CLI flags such as `--pid`: [cli](cli.md).
@@ -217,12 +217,14 @@ Tie order is the caller's: `table.sort` is unstable, so end the comparator on a 
 
 ## palette.quantize
 
-Median-cut dominant colours of an image, computed on a background thread.
+Median-cut dominant colours of an image, computed on a background thread. Put a raster image at
+`wallpaper.png` in your config directory, or change the path below to an existing image. The book
+checks this file-dependent snippet's syntax; the callback runs only in a live Renderer.
 
-```lua
+```lua,fragment
 local swatches = state("swatches", {})
 
-palette.quantize("/usr/share/backgrounds/default.png", { depth = 3 }, function(found)
+palette.quantize(mantle.config_dir .. "/wallpaper.png", { depth = 3 }, function(found)
     swatches:set(found or {})
 end)
 

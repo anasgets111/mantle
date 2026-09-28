@@ -8,6 +8,7 @@ sets weight and italic style for the whole node, and mixes bold, italic, colour 
 Two notification cards. In the first, the title elides and the body wraps to two lines, eliding the
 second; the second card's short texts fit.
 
+<!-- shot-alt: Two notification cards showing wrapped and truncated text. -->
 ```lua,shot
 local function card(icon_name, title, body)
     return row {
@@ -38,6 +39,7 @@ The middle column is `"Fill"` so the texts have a bounded width; the icon keeps 
 
 These node-level styles change line spacing, character spacing, and the selected font face:
 
+<!-- shot-alt: A card comparing line spacing, letter spacing, bold, and italic text. -->
 ```lua,shot
 return column { width = 320, padding = 16, spacing = 10, radius = 12,
     background = "#313244", children = {

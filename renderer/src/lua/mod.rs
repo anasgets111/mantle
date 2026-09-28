@@ -723,7 +723,7 @@ return { panel { id = "a", layer = "Top" }, missing, panel { id = "c", layer = "
 ---or `T` does not bind in callbacks. A subclass names `userdata` again: LuaLS does not follow a
 ---generic parent such as `Signal<number>` when checking assignment.
 ---@field get fun(self: Signal<T>): T The value now.
----@field map fun(self: Signal<T>, fn: fun(value: T): any): Signal<any> A derived signal of `fn(value)`. `fn` must be side-effect free and runs under the shared 5 ms CPU budget (ADR-0021). ponytail: returns `Signal<any>`, since a `---@field` cannot bind a second type parameter; only one hop is typed.
+---@field map fun(self: Signal<T>, fn: fun(value: T): any): Signal<any> A derived signal of `fn(value)`. `fn` must be side-effect free and runs under the shared Lua CPU budget (ADR-0021). ponytail: returns `Signal<any>`, since a `---@field` cannot bind a second type parameter; only one hop is typed.
 
 ---A node property value: a literal or a signal carrying one. `userdata`, not `Signal`, because a
 ---class in a union admits any table.

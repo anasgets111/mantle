@@ -4,6 +4,7 @@ Notification cards stacked in the top-right corner, newest first. Each card show
 summary, the formatted body and the sender's action buttons; clicking it runs the default action,
 the × dismisses it, and hovering the stack pauses every countdown.
 
+<!-- shot-alt: Two notification cards entering a corner stack, with actions on the first card. -->
 <!-- shot: frames=0..210/30 -->
 ```lua,shot
 local MAX_CARDS = 4

@@ -26,7 +26,7 @@ function os.getenv(name) end
 
 ---Declares what `mantle call <name> [args...]` runs (ADR-0197). Each argument arrives JSON-decoded,
 ---or as a string when it is not JSON. The return prints as JSON (≤ 1 MiB), a string bare and `nil`
----as nothing; a raise or an unconvertible return fails the call. Runs under the 5 ms CPU budget.
+---as nothing; a raise or an unconvertible return fails the call. Runs under the Lua CPU budget.
 ---Every evaluation clears all actions, so declare at the top level.
 ---[docs](https://anasgets111.github.io/mantle/guide/scripting.html#action)
 ---@param name string Non-empty and unique per evaluation, else raises. Opaque: nothing splits on `.`.
@@ -118,7 +118,7 @@ local TimerHandle = {}
 ---Disarms the timer. A no-op once it has fired or been cancelled, and inside its own callback.
 function TimerHandle:cancel() end
 
----Runs `callback` once, `ms` from now, on a monotonic clock, under the 5 ms CPU budget (ADR-0203).
+---Runs `callback` once, `ms` from now, on a monotonic clock, under the Lua CPU budget (ADR-0203).
 ---Repeat by re-arming inside `callback`. Every evaluation clears all timers, so arm at the top level;
 ---a discarded handle still fires.
 ---[docs](https://anasgets111.github.io/mantle/guide/scripting.html#timer)

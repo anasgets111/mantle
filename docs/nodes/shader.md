@@ -6,6 +6,7 @@ use an [image transition](image.md#transition).
 
 A band that glows in over 400 ms when `pulse_on` turns true:
 
+<!-- shot-alt: A horizontal blue glow band brightens over 400 milliseconds. -->
 <!-- shot: frames=0..420/60 -->
 ```lua,shot
 local pulse_on = state("pulse_on", false)

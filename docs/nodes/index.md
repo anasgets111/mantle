@@ -8,6 +8,7 @@ and the properties every kind shares; each kind's page covers what it adds. How 
 
 A bar with a left group, a centred clock and a right group:
 
+<!-- shot-alt: A bar with left, center, and right groups. -->
 ```lua,shot
 local clock = state("clock", "12:00")
 
@@ -246,6 +247,7 @@ Views swapped through a `children` signal, each with its own `id`, so the outgoi
 while the incoming one fades in. The parent is a `rect`, so the two overlap during the swap instead
 of stacking. The shot switches `tab` to `"bluetooth"`:
 
+<!-- shot-alt: A Wi-Fi view crossfades into a Bluetooth devices view. -->
 <!-- shot: frames=0..150/30 -->
 ```lua,shot
 local tab = state("tab", "wifi")

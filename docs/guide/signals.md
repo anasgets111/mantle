@@ -9,20 +9,35 @@ to it re-resolves only the surfaces that read it.
 A property that holds a signal stays live. A property that holds a plain value, including
 whatever `:get()` returned, keeps that value until the next reload.
 
-```lua
-local clock = mantle.system:map(function(system)
-  if not system then return "--:--" end -- nil until the first push
-  return os.date("%H:%M", system.time)
-end)
+<!-- shot-alt: After one click, the live clock reads 12:46 while the snapshot still reads 12:45. -->
+```lua,shot
+local minute = state("minute", 45)
+local clock = minute:map(function(value) return string.format("12:%02d", value) end)
 
-return panel {
-  id = "bar", layer = "Top", anchor = { top = true, left = true, right = true }, height = 28,
-  child = row { spacing = 12, children = {
-    text { content = clock },       -- live: follows every push
-    text { content = clock:get() }, -- snapshot: "--:--" until the next reload
-  } },
+return row {
+  spacing = 12,
+  padding = 10,
+  background = "#1e1e2e",
+  children = {
+    button {
+      padding = 8,
+      background = "#313244",
+      on_click = function() minute:set(minute:get() + 1) end,
+      children = { text { content = "Next minute", foreground = "#cdd6f4" } },
+    },
+    column { children = {
+      text { content = "Live", foreground = "#a6adc8" },
+      text { content = clock, foreground = "#cdd6f4" },
+    } },
+    column { children = {
+      text { content = "Snapshot", foreground = "#a6adc8" },
+      text { content = string.format("12:%02d", minute:get()), foreground = "#cdd6f4" },
+    } },
+  },
 }
 ```
+
+Click Next minute to update only the Live column. The screenshot captures that first click.
 
 | Property value | Behaviour |
 | :--- | :--- |
@@ -36,76 +51,50 @@ until its first snapshot arrives (hydration), and in `mantle check`'s first pass
 Every function that reads a capability must handle `nil`. When a signal resolves to `nil`, its
 property counts as absent and takes the property's default.
 
-## Reference
+For values your config writes, start with [named state](#named-state). To transform or
+combine live values, use [derived signals](#derived-signals). The full API and error messages are
+in the [reference](#reference).
 
-| Expression | Returns | Contract |
-| :--- | :--- | :--- |
-| `sig:get()` | value | The current value, read once. `nil` before a capability's first push |
-| `sig:map(fn)` | signal | `fn(value)`, run again on every read. Works on capabilities |
-| `sig:set(value)` | nothing | State signals only; see [who writes each kind](#who-writes-each-kind) |
-| `sig:reveal(index)` | nothing | `scroll` signals only; scrolls the `index`-th child into view ([input](input.md)) |
-| `cap:on_change(fn)`, `cap:<action>(...)` | nothing | Capabilities only ([capabilities](../capabilities/index.md)) |
-| `computed({ a, b, ... }, fn)` | signal | `fn(a_value, b_value, ...)`: the values in list order, not the signals. Each entry must be a signal or capability: a `nil`, another value or a named key raises, naming the entry |
-| `state(name, initial)` | state signal | Writable [named state](#named-state), written with `:set(value)` |
-| `delay(sig, ms)` | signal | `sig`'s value once a new value has held for `ms`, and the old value until then. A change that reverts sooner is dropped |
-| `pulse(sig, ms)` | boolean signal | `true` for `ms` after `sig` changes, `false` otherwise. A change inside the window restarts it. Starts `false` |
-| `geometry(name)` | rect signal | Bind it as a node's `geometry`. Layout writes that node's `{ x, y, width, height }` in surface coordinates. Zero until the first layout |
+## Named state
 
-`delay` and `pulse` take `ms` in `[1, 60000]` rounded to whole milliseconds, and raise outside that
-range. Both compare values with `==`, so a table value (every capability payload, for example)
-counts as a new value on every push.
+`state(name, initial)` is the config's own writable value. Its identity is its name. Every call
+with the same name returns the same signal, from any module and across reloads.
 
-### Who writes each kind
+```lua
+local open = state("details_open", false)
 
-Only `state` can be written from Lua. `:set` on any other kind raises an error that names the kind.
-`:reveal` works only on a `scroll` signal.
+column { children = {
+  button {
+    on_click = function() open:set(not open:get()) end,
+    children = { text { content = "Details" } },
+  },
+  text { content = "More information", visible = open },
+} }
+```
 
-| Kind | Made by | `:set` | `:reveal` | Written by |
-| :--- | :--- | :---: | :---: | :--- |
-| State | `state(name, initial)` | ✓ | | The config, `mantle set`, `mantle toggle` |
-| Capability | `mantle.<name>` | | | The capability's snapshot pushes |
-| Derived | `:map`, `computed`, `delay`, `pulse` | | | Nobody: recomputed on read |
-| Stored | A `persistent_table` key ([scripting](scripting.md)) | | | The table's own `:set(key, value)` |
-| Geometry | `geometry(name)` | | | Layout |
-| Hover | `hover(name)`, `hover_rect(name)` ([input](input.md)) | | | The pointer |
-| Scroll | `scroll(name)` ([input](input.md)) | | ✓ | The wheel and the layout clamp |
+The click writes `open`; `visible = open` reads it again. `visible = open:get()` would take only a
+snapshot.
 
-`:set` refuses the scalars outside the engine's [value limits](runtime.md#limits-and-budgets) and
-leaves tables unchecked. It checks no types: `state("x", 1):set({})` succeeds, and only
-LuaLS flags it. A `:set` of what the state already holds changes nothing: `1` over `1` is
-skipped, `1.0` over `1` is a write. A fresh plain-data table (no metatable, only scalars and such
-tables inside, 256 entries in all) equal entry for entry is skipped too; the same table written
-again after changing it in place is a write.
-
-### Errors
-
-| Message starts with | Cause |
+| Rule | Detail |
 | :--- | :--- |
-| `computed() dependency 2 is nil` / `is a table` | That `computed` list entry is not a signal or capability; `nil` is often a misspelled variable |
-| `computed() dependencies: key` | The `computed` list has a named key; list the signals in `fn`'s order |
-| `delay() takes a Signal` / `pulse() takes a Signal` | The first argument is not a signal or capability |
-| `delay() hold must be within [1, 60000] ms` / `pulse() window must be within` | `ms` out of range, or rounds to 0 |
-| `signal:set() is only valid on a state(name, initial) signal` | `:set` on a derived, capability, hover, scroll or geometry signal |
-| `signal:set() refused its value at the marshalling boundary` | NaN, infinity, an integer past ±(2^53−1) or a string over 64 KiB |
-| `state("name", ...) refused its initial value` | The same checks on `initial` |
-| `signal:reveal() is only valid on a scroll(name) signal` / `takes a 1-based child index` | `:reveal` on another kind, or an index below 1 |
-| `signal nesting exceeded its maximum depth of 32 levels` | A derived chain deeper than 32, or one that reads itself |
-| `exceeded the 2.5ms CPU budget for one evaluation` | A map or computed body ran too long ([runtime](runtime.md)) |
-| `a Signal resolved to another Signal` | A map returned a signal; return a plain value |
-| `` `x` is a Signal handle, not a plain value `` | A signal in a structural property or inside a property table (see [gotchas](#gotchas)) |
+| Identity | One name, one signal. `hover`, `scroll` and `geometry` names are separate namespaces |
+| Reload | Keeps its value across in-place reloads. Lost when the [Renderer](../glossary.md#processes) process is replaced (a crash respawn or a shell restart) |
+| Changed seed | A scalar `initial` (nil, boolean, number, string) that differs from the last evaluation's re-seeds the value. `0` and `0.0` are equal. Two different scalar seeds for one name in one evaluation raise |
+| Table seed | Never re-seeds: tables compare by identity, so a fresh table cannot count as a change |
+| Types | Not checked at runtime; `initial` is the type LuaLS infers |
+| CLI | `mantle set <name> <value>` and `mantle toggle <name> [value]` write it ([cli](cli.md)). A bare toggle needs a boolean. Toggling to the value it already holds restores `initial` |
+
+Derived signals (`:map`, `computed`, `delay`, `pulse`) have no name. Each evaluation builds them
+fresh, so a reload drops a pending `delay` and closes an open `pulse` window. See
+[runtime](runtime.md) for everything else a reload keeps.
 
 ## Derived signals
 
-`:map` and `computed` run again once a signal they read is written, and their readers re-resolve
-only when the result changed ([what a node reads again](#what-a-node-reads-again)): a scalar or a
-plain-data table by value, anything holding a function, signal or metatable on every run. An
-`HH:MM` label or a `{ { text = hour, bold = true } }` run list mapped from a per-second snapshot
-re-resolves once a minute. Table comparison stops after 256 entries; larger results count as
-changed on each input write. Within one pass, a derived signal read by
-several properties runs once. Keep their functions cheap and side-effect free: no `:set`, no
-process, no action. They run under the CPU budget and nesting limit described in
-[runtime](runtime.md). Side effects belong in `on_click`, a capability's
-`on_change` ([capabilities](../capabilities/index.md)) or a `timer` ([scripting](scripting.md)).
+Use `:map(fn)` to turn one signal's value into another value. Use `computed({ a, b }, fn)` when
+the result needs several signals. Both return a signal you can bind to a property. Their functions
+should only calculate a value: write state or run commands from `on_click`, a capability's
+[`on_change`](../capabilities/index.md) or a [`timer`](scripting.md). The functions run under the
+[CPU budget](runtime.md#limits-and-budgets).
 
 A derived colour:
 
@@ -197,24 +186,6 @@ column { width = 200, children = {
 } }
 ```
 
-## Named state
-
-`state(name, initial)` is the config's own writable value. Its identity is its name. Every call
-with the same name returns the same signal, from any module and across reloads.
-
-| Rule | Detail |
-| :--- | :--- |
-| Identity | One name, one signal. `hover`, `scroll` and `geometry` names are separate namespaces |
-| Reload | Keeps its value across in-place reloads. Lost when the [Renderer](../glossary.md#processes) process is replaced (a crash respawn or a shell restart) |
-| Changed seed | A scalar `initial` (nil, boolean, number, string) that differs from the last evaluation's re-seeds the value. `0` and `0.0` are equal. Two different scalar seeds for one name in one evaluation raise |
-| Table seed | Never re-seeds: tables compare by identity, so a fresh table cannot count as a change |
-| Types | Not checked at runtime; `initial` is the type LuaLS infers |
-| CLI | `mantle set <name> <value>` and `mantle toggle <name> [value]` write it ([cli](cli.md)). A bare toggle needs a boolean. Toggling to the value it already holds restores `initial` |
-
-Derived signals (`:map`, `computed`, `delay`, `pulse`) have no name. Each evaluation builds them
-fresh, so a reload drops a pending `delay` and closes an open `pulse` window. See
-[runtime](runtime.md) for everything else a reload keeps.
-
 ## How re-resolution works
 
 While a surface instance (one surface on one output) resolves, the engine records every signal it
@@ -231,6 +202,12 @@ dirty, and the next pass re-resolves only the instances that read it.
 | A wheel over a container whose `scroll` signal nothing else reads | Nothing: its children move where they are |
 | Any write while the session is locked | Every instance |
 | A reload, or a re-resolve that failed | Every instance |
+
+Readers of a `:map` or `computed` result update only when the result changes. Scalars and plain
+data tables compare by value. A table holding a function, signal or metatable counts as changed on
+every run; comparison also stops after 256 table entries. For example, an `HH:MM` label mapped
+from a per-second clock push updates once a minute. Within one pass, several properties reading
+the same derived signal calculate it once.
 
 A node reads its `children` or `child` table once and keeps what it read while it holds that same
 table. A node table or `children` array changed in place is not seen; a signal answering a new table
@@ -274,6 +251,64 @@ nothing.
 place. For views that replace each other, bind the parent's `children` to a signal that returns
 only the current view. The old view leaves the tree, playing its `animate.exit`, and the new one
 builds fresh. Give each view its own `id`: [switching views with ids](../nodes/index.md#switching-views-with-ids).
+
+## Reference
+
+| Expression | Returns | Contract |
+| :--- | :--- | :--- |
+| `sig:get()` | value | The current value, read once. `nil` before a capability's first push |
+| `sig:map(fn)` | signal | `fn(value)`, run again on every read. Works on capabilities |
+| `sig:set(value)` | nothing | State signals only; see [who writes each kind](#who-writes-each-kind) |
+| `sig:reveal(index)` | nothing | `scroll` signals only; scrolls the `index`-th child into view ([input](input.md)) |
+| `cap:on_change(fn)`, `cap:<action>(...)` | nothing | Capabilities only ([capabilities](../capabilities/index.md)) |
+| `computed({ a, b, ... }, fn)` | signal | `fn(a_value, b_value, ...)`: the values in list order, not the signals. Each entry must be a signal or capability: a `nil`, another value or a named key raises, naming the entry |
+| `state(name, initial)` | state signal | Writable [named state](#named-state), written with `:set(value)` |
+| `delay(sig, ms)` | signal | `sig`'s value once a new value has held for `ms`, and the old value until then. A change that reverts sooner is dropped |
+| `pulse(sig, ms)` | boolean signal | `true` for `ms` after `sig` changes, `false` otherwise. A change inside the window restarts it. Starts `false` |
+| `geometry(name)` | rect signal | Bind it as a node's `geometry`. Layout writes that node's `{ x, y, width, height }` in surface coordinates. Zero until the first layout |
+
+`delay` and `pulse` take `ms` in `[1, 60000]` rounded to whole milliseconds, and raise outside that
+range. Both compare values with `==`, so a table value (every capability payload, for example)
+counts as a new value on every push.
+
+### Who writes each kind
+
+Only `state` can be written from Lua. `:set` on any other kind raises an error that names the kind.
+`:reveal` works only on a `scroll` signal.
+
+| Kind | Made by | `:set` | `:reveal` | Written by |
+| :--- | :--- | :---: | :---: | :--- |
+| State | `state(name, initial)` | ✓ | | The config, `mantle set`, `mantle toggle` |
+| Capability | `mantle.<name>` | | | The capability's snapshot pushes |
+| Derived | `:map`, `computed`, `delay`, `pulse` | | | Nobody: recomputed on read |
+| Stored | A `persistent_table` key ([scripting](scripting.md)) | | | The table's own `:set(key, value)` |
+| Geometry | `geometry(name)` | | | Layout |
+| Hover | `hover(name)`, `hover_rect(name)` ([input](input.md)) | | | The pointer |
+| Scroll | `scroll(name)` ([input](input.md)) | | ✓ | The wheel and the layout clamp |
+
+`:set` refuses the scalars outside the engine's [value limits](runtime.md#limits-and-budgets) and
+leaves tables unchecked. It checks no types: `state("x", 1):set({})` succeeds, and only
+LuaLS flags it. A `:set` of what the state already holds changes nothing: `1` over `1` is
+skipped, `1.0` over `1` is a write. A fresh plain-data table (no metatable, only scalars and such
+tables inside, 256 entries in all) equal entry for entry is skipped too; the same table written
+again after changing it in place is a write.
+
+### Errors
+
+| Message starts with | Cause |
+| :--- | :--- |
+| `computed() dependency 2 is nil` / `is a table` | That `computed` list entry is not a signal or capability; `nil` is often a misspelled variable |
+| `computed() dependencies: key` | The `computed` list has a named key; list the signals in `fn`'s order |
+| `delay() takes a Signal` / `pulse() takes a Signal` | The first argument is not a signal or capability |
+| `delay() hold must be within [1, 60000] ms` / `pulse() window must be within` | `ms` out of range, or rounds to 0 |
+| `signal:set() is only valid on a state(name, initial) signal` | `:set` on a derived, capability, hover, scroll or geometry signal |
+| `signal:set() refused its value at the marshalling boundary` | NaN, infinity, an integer past ±(2^53−1) or a string over 64 KiB |
+| `state("name", ...) refused its initial value` | The same checks on `initial` |
+| `signal:reveal() is only valid on a scroll(name) signal` / `takes a 1-based child index` | `:reveal` on another kind, or an index below 1 |
+| `signal nesting exceeded its maximum depth of 32 levels` | A derived chain deeper than 32, or one that reads itself |
+| `exceeded the 2.5ms CPU budget for one evaluation` | A map or computed body ran too long ([runtime](runtime.md)) |
+| `a Signal resolved to another Signal` | A map returned a signal; return a plain value |
+| `` `x` is a Signal handle, not a plain value `` | A signal in a structural property or inside a property table (see [gotchas](#gotchas)) |
 
 ## How do I…
 

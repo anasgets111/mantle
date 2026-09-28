@@ -5,6 +5,7 @@ compositor places it against a rectangle in the parent, keeps it on screen and, 
 [grab](#grab), dismisses it on an outside click, which a second panel cannot do. A hidden popup has
 no Wayland object. Rules every role shares are in [surfaces](index.md).
 
+<!-- shot-alt: A Settings and Log out menu beneath a top bar. -->
 ```lua,shot
 local menu_open = state("menu_open", false)
 local menu_anchor = state("menu_anchor", { x = 0, y = 0, width = 1, height = 1 })

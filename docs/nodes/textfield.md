@@ -7,6 +7,7 @@ draft's lifetime and password fields are on [input](../guide/input.md#text-field
 A launcher: the field filters a list as the user types, the arrow keys move a selection, Enter
 launches.
 
+<!-- shot-alt: A search field with a list of matching apps below it. -->
 ```lua,shot
 local apps = { "Firefox", "Files", "Terminal", "Text Editor", "Settings" }
 local query = state("query", "")

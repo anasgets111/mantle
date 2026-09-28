@@ -6,6 +6,7 @@ Which button wins, when a click cancels and when a drag ends are on [input](../g
 
 A volume chip: left click mutes, the wheel changes the level.
 
+<!-- shot-alt: A button with a speaker icon and 50% label. -->
 ```lua,shot
 local muted = state("muted", false)
 local volume = state("volume", 0.5)

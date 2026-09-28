@@ -5,6 +5,7 @@ OSDs, launcher overlays, notification stacks. Rules every role shares are in [su
 
 A 32 px bar across the top of every output, reserving its height so windows start below it:
 
+<!-- shot-alt: A top bar with Workspaces, a centered clock, and Tray. -->
 ```lua,shot
 local clock = mantle.system:map(function(system)
     return system and os.date("%H:%M", system.time) or ""
@@ -108,6 +109,7 @@ Hiding a panel destroys its layer surface and showing creates a fresh one, so a 
 the panel stays shown. This launcher opens on `mantle toggle launcher_open` from a compositor
 keybind, on the output the compositor picks, and closes on Escape:
 
+<!-- shot-alt: A launcher overlay covering the screen, with a search field. -->
 ```lua,shot
 local open = state("launcher_open", false)
 
@@ -185,6 +187,7 @@ with a handler takes input ([input region](index.md#input-region)), so the deskt
 A card bottom-centre on the output the compositor picks, shown for 1.5 s after the level
 changes. No `left`/`right` anchor, so the width is measured and the protocol centres it:
 
+<!-- shot-alt: A volume card with a blue level meter. -->
 ```lua,shot
 local level = state("osd_level", 0.5)
 
@@ -241,6 +244,7 @@ animate the root's `translate`, not the surface ([animation](../guide/animation.
 Floating 8 px above the bottom edge. The zone is the dock's 48 px plus its 8 px margin;
 `exclusive = true` would reserve only the 48 px ([exclusive zones](#exclusive-zones)):
 
+<!-- shot-alt: A dock with three app icons. -->
 ```lua,shot
 local dock = panel {
     id = "dock",
@@ -300,6 +304,7 @@ card's own buttons or on nothing; it never reaches the catcher.
 
 Anchored to two edges, so both axes are measured and the panel grows with its cards:
 
+<!-- shot-alt: Two notification cards stacked in a screen corner. -->
 ```lua,shot
 local items = state("toasts", { "Build finished", "Battery at 20%" })
 

@@ -6,6 +6,7 @@ icons, use an [`icon`](icon.md).
 
 A wallpaper that crossfades when the path changes:
 
+<!-- shot-alt: A landscape illustration with layered hills and a sun. -->
 ```lua,shot
 local path = state("wallpaper", "/usr/share/backgrounds/a.jpg")
 

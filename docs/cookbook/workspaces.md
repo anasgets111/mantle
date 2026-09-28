@@ -4,6 +4,7 @@ A bar on every monitor listing that monitor's workspaces, on Hyprland and niri a
 workspace is a wide pill, occupied ones are brighter, a click focuses one and the wheel steps
 through them. On Hyprland, special workspaces get their own toggles.
 
+<!-- shot-alt: A top bar with workspace pills on the left. -->
 ```lua,shot
 -- The workspaces of one output, `nil` until the compositor answers.
 local function output_of(workspaces, name)

@@ -4,6 +4,7 @@ How a node looks: fills, gradients, corners, borders, clipping, masks, shadows a
 blurs. Layout and per-kind properties are on [Nodes](../nodes/index.md); easing any of these
 values is on [Animation](animation.md).
 
+<!-- shot-alt: A rounded battery card with a translucent fill, border, and shadow. -->
 ```lua,shot
 column {
     padding = 16,
@@ -77,6 +78,7 @@ colours and no short `#RGB` form.
 A uniform border (same width and colour on all four edges) on a round corner follows `radius`.
 A per-edge border, or any border on a scoop, draws as four straight rectangles with square corners:
 
+<!-- shot-alt: Three borders: rounded, scooped, and flat along the bottom edge. -->
 ```lua,shot
 local function tile(label, props)
     props.width, props.height, props.radius = 88, 56, 14
@@ -119,6 +121,7 @@ background = {
 | `Radial` | An ellipse from the centre out to the box's edges, not its corners |
 | `Conic` | A turn around the centre, starting at `angle` |
 
+<!-- shot-alt: Linear, radial, and conic gradient tiles. -->
 ```lua,shot
 local stops = { { 0, "#CBA6F7" }, { 0.5, "#F38BA8" }, { 1, "#89B4FA" } }
 
@@ -169,6 +172,7 @@ Name exactly one of `source` or a gradient. A masked box draws its subtree offsc
 and always cuts children to its box (to `radius` too under `clip = "Rounded"`), even with
 `clip = "None"`.
 
+<!-- shot-alt: A scrolling list whose top and bottom rows fade under a gradient mask. -->
 ```lua,shot
 local items = {}
 for i = 1, 12 do
@@ -207,6 +211,7 @@ A shadow draws when `shadow_color` has alpha above 0 and at least one of `shadow
 Non-box nodes (`text`, `icon`, `image`, ...) have no box to cast, so their shadow is always the
 content's: text gets a glyph-shaped shadow. The same unfilled, bordered box in each mode:
 
+<!-- shot-alt: Box and content shadows cast by two bordered cards. -->
 ```lua,shot
 local function card(mode)
     return column {
@@ -280,6 +285,7 @@ panel {
 
 A bar whose 60% fill tints the compositor-blurred desktop behind it.
 
+<!-- shot-alt: A frosted clock pill over a mountain illustration. -->
 ```lua,shot
 rect {
     width = 320,
@@ -415,6 +421,7 @@ A radius past half the height makes the ends round whatever the label's width.
 
 ### Gradient border
 
+<!-- shot-alt: A rounded button made with a gradient border. -->
 ```lua,shot
 rect {
     padding = 2,
@@ -436,6 +443,7 @@ rect {
 
 ### Circular avatar
 
+<!-- shot-alt: A circular avatar cropped from an image. -->
 ```lua,shot
 rect {
     width = 64,

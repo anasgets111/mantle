@@ -67,6 +67,7 @@ click (if the button also has `on_click`) after it; a leave ends the drag and ca
 notch's 39 px. Horizontal motion never reaches `on_wheel`. The innermost `on_wheel` button or
 [scroll container](#scroll) under the pointer takes the whole event, with no chaining to a parent.
 
+<!-- shot-alt: A blue slider filled to half its track. -->
 ```lua,shot
 local level = state("level", 0.5)
 local function clamp(value) return math.max(0, math.min(1, value)) end
@@ -331,6 +332,7 @@ return lock {
 take its grab. The menu hangs from the button, not the click point: no handler reports the pointer
 position of a click.
 
+<!-- shot-alt: A context menu open beneath a Files button. -->
 ```lua,shot
 local menu_open = state("context_open", false)
 local menu_at = state("context_at", { x = 0, y = 0, width = 1, height = 1 })

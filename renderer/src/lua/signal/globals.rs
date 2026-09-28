@@ -156,7 +156,7 @@ pub fn register(lua: &Lua, dirty: DirtyFlag) -> mlua::Result<()> {
     lua_fn!(
         lua,
         /// A signal of `fn` over its dependencies' values, recomputed on read. `fn` must be side-effect free
-        /// and runs under the shared 5 ms CPU budget (ADR-0021). ponytail: `fn`'s parameters are untyped,
+        /// and runs under the shared Lua CPU budget (ADR-0021). ponytail: `fn`'s parameters are untyped,
         /// since typing them needs an overload per arity; prefer `:map` for one source.
         /// [docs](https://anasgets111.github.io/mantle/guide/signals.html#derived-signals)
         fn computed(

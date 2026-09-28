@@ -194,7 +194,7 @@ prints one.
 | `nil` or nothing | Nothing | 0 |
 | A string | The string, unquoted | 0 |
 | Any other value | JSON | 0 |
-| Raises, blows the 5 ms budget, is not declared, or returns over 1 MiB | `` `name` failed: <reason> `` on stderr | 1 |
+| Raises, blows the [Lua CPU budget](runtime.md#limits-and-budgets), is not declared, or returns over 1 MiB | `` `name` failed: <reason> `` on stderr | 1 |
 | No answer within 5 s | A timeout message. The call may still have run | 1 |
 
 The handler contract is in [action](scripting.md#action).
@@ -321,10 +321,8 @@ value, and a non-zero exit means it failed.
 | Trap | Fix |
 | :--- | :--- |
 | `mantle set label true` stores a boolean, `mantle set count 3` a number | Quote JSON strings: `mantle set label '"true"'` |
-| A keybind does nothing and the terminal shows no error | The compositor discards the command's stderr. Run it in a terminal, or `mantle log` and look for `asked to write state` |
 | `mantle toggle modal` is refused on a string state | A bare toggle needs a boolean. Pass the value: `mantle toggle modal settings` |
 | `mantle call x` says no action exists after a broken save | A failed reload clears actions. Fix the config and save ([runtime](runtime.md#evaluation-reload-and-generations)) |
-| Two bars on screen | Two shells are running. `mantle list`, then `mantle stop --pid <pid>` |
 | `mantle -c dir list` is refused | `list` shows every config's shells; drop `-c` |
 | `mantle log -f` exits at once | That shell has stopped. The command printed its last run |
 | `XDG_RUNTIME_DIR is not set` | The command runs in an environment without it. Start the compositor from a proper login session |

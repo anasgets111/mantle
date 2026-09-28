@@ -7,28 +7,44 @@ The engine runs every tween on its own surface's compositor frames, so a panel o
 moves at 60 Hz beside one at 165 Hz; no Lua runs between the pass that starts a tween and its last
 frame.
 
-```lua
-local open = hover("tray")
+Six bars grow from 12 to 200 px over 600 ms. Each uses a different easing; `OutBack` passes the
+target and comes back:
 
-return panel {
-    id = "bar",
-    layer = "Top",
-    anchor = { top = true },
-    child = row {
-        hover = open,
-        height = 28,
-        radius = 14,
-        background = "#313244",
-        width = open:map(function(on) return on and 160 or 28 end),
-        spacing = open:map(function(on) return on and 6 or 0 end),
-        animate = { width = { duration = 200, easing = "OutCubic" }, spacing = 200 },
+<!-- shot-alt: Six bars expand under different easing curves, showing their progress at the same times. -->
+<!-- shot: frames=0..630/35 -->
+```lua,shot
+local go = state("go", false)
+
+local function race(label, easing)
+    return row {
+        spacing = 8,
         children = {
-            icon { name = "network-wireless-symbolic", size = 16, margin = 6 },
-            icon { name = "bluetooth-active-symbolic", size = 16, margin = 6 },
+            text { content = label, width = 80, font_size = 12, foreground = "#a6adc8" },
+            rect {
+                height = 12,
+                radius = 6,
+                background = "#89b4fa",
+                width = go:map(function(on) return on and 200 or 12 end),
+                animate = { width = { duration = 600, easing = easing } },
+            },
         },
+    }
+end
+
+return column {
+    spacing = 6,
+    children = {
+        race("Linear", "Linear"),
+        race("InOutQuad", "InOutQuad"),
+        race("OutCubic", "OutCubic"),
+        race("OutBack", "OutBack"),
+        race("OutBounce", "OutBounce"),
+        race("steps = 4", { steps = 4 }),
     },
 }
 ```
+
+Run `mantle set go true` to start the race in your shell, then `mantle set go false` to reset it.
 
 ## How a tween starts
 
@@ -116,41 +132,6 @@ range clamp above catches it; `Bounce` stays inside the range.
 | `{ x1, y1, x2, y2 }` | CSS `cubic-bezier`. `x1` and `x2` in `[0, 1]`; `y` is free, so a curve may overshoot |
 | `{ steps = n }` | `n` equal jumps, whole `n` in `[1, 1000]`, like CSS `steps(n, end)`: the target lands only at the end |
 
-The same 600 ms width change under six easings. `OutBack` passes the target and comes back:
-
-<!-- shot: frames=0..630/35 -->
-```lua,shot
-local go = state("go", false)
-
-local function race(label, easing)
-    return row {
-        spacing = 8,
-        children = {
-            text { content = label, width = 80, font_size = 12, foreground = "#a6adc8" },
-            rect {
-                height = 12,
-                radius = 6,
-                background = "#89b4fa",
-                width = go:map(function(on) return on and 200 or 12 end),
-                animate = { width = { duration = 600, easing = easing } },
-            },
-        },
-    }
-end
-
-return column {
-    spacing = 6,
-    children = {
-        race("Linear", "Linear"),
-        race("InOutQuad", "InOutQuad"),
-        race("OutCubic", "OutCubic"),
-        race("OutBack", "OutBack"),
-        race("OutBounce", "OutBounce"),
-        race("steps = 4", { steps = 4 }),
-    },
-}
-```
-
 ## Spring
 
 A spring has no duration: `stiffness` and `damping` decide how it settles. Use one for a target
@@ -170,6 +151,7 @@ travel and never runs longer than 60 s.
 The same `translate` change on three springs of `stiffness = 400`, where critical damping is 40.
 The underdamped knob passes the others' resting point and swings back:
 
+<!-- shot-alt: Three knobs move along tracks with ringing, critical, and slow spring damping. -->
 <!-- shot: frames=0..1200/40 -->
 ```lua,shot
 local go = state("go", false)
@@ -227,6 +209,7 @@ owns the property: the value the pass resolves is ignored.
 To replay a finished run, take the entry away and put it back. [`pulse`](signals.md#pulse-mark-a-change) does both in
 one expression: it reads `true` for a window after its source changes.
 
+<!-- shot-alt: A star button grows and shrinks in a short bounce. -->
 <!-- shot: frames=0..360/30 -->
 ```lua,shot
 local taps = state("taps", 0)
@@ -253,6 +236,7 @@ return panel {
 
 An endless spinner needs no signal. A hidden spinner stops requesting frames by itself:
 
+<!-- shot-alt: A refresh icon rotates in an endless loop. -->
 <!-- shot: frames=0..950/50 -->
 ```lua,shot
 local busy = state("busy", true)
@@ -299,6 +283,7 @@ Hiding a surface skips the exit, so drop the child from `children` and hold the 
 [`delay`](signals.md#delay-hold-a-value) until the exit has played. The card below slides up and
 fades in on show; the shot plays the hide, down and out over 150 ms:
 
+<!-- shot-alt: A volume card slides down and fades away. -->
 <!-- shot: frames=0..210/30 -->
 ```lua,shot
 local shown = state("osd_shown", false)
@@ -392,6 +377,7 @@ return {
 Give each item a `delay` that grows with its index. `delay` holds
 the `from` value, so a card waits invisible for its turn.
 
+<!-- shot-alt: Three notification cards fade and slide into place one after another. -->
 <!-- shot: frames=0..420/30 -->
 ```lua,shot
 local go = state("go", false)
@@ -431,6 +417,7 @@ return column {
 Removing an item from a keyed [`list`](../nodes/list.md) makes it
 leave. The remaining cards close up at once; only the leaving one moves.
 
+<!-- shot-alt: The middle notification slides right and fades while the others close the gap. -->
 <!-- shot: frames=0..210/30 -->
 ```lua,shot
 local notes = state("notes", { "Battery low", "Update ready", "Download complete" })

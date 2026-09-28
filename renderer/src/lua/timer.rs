@@ -105,7 +105,7 @@ lua_class! {
 pub fn register(lua: &Lua) -> mlua::Result<()> {
     lua_fn!(
         lua,
-        /// Runs `callback` once, `ms` from now, on a monotonic clock, under the 5 ms CPU budget (ADR-0203).
+        /// Runs `callback` once, `ms` from now, on a monotonic clock, under the Lua CPU budget (ADR-0203).
         /// Repeat by re-arming inside `callback`. Every evaluation clears all timers, so arm at the top level;
         /// a discarded handle still fires.
         /// [docs](https://anasgets111.github.io/mantle/guide/scripting.html#timer)

@@ -58,7 +58,7 @@ Wanted, but each needs a consumer or a decision first.
 | Rust widgets (sliders, calendars, launchers, settings) | Lua components over existing nodes | — |
 | Framework settings schema | `persistent_table` with config-declared files | — |
 | Per-panel IPC commands | `mantle set`, `toggle` and `call` | — |
-| Deferred surface loader | Wayland objects are created when shown; the 5 ms cap guards one signal resolve, not a whole evaluation | 0157 |
+| Deferred surface loader | Wayland objects are created when shown; the [Lua CPU budget](guide/runtime.md#limits-and-budgets) guards one signal resolve, not a whole evaluation | 0157 |
 | Shaders over a subtree or as a persistent filter | `image.transition` and the input-less `shader` node keep a stable contract. Fixed blur or shadow is `content_blur` and `shadow_*` | 0184, 0253, 0254 |
 | Display manager (PAM as root, sessions, seats) | greetd; see Greeter | — |
 | X11 or i3 | The target is a Wayland session shell | — |

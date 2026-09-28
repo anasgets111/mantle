@@ -7,6 +7,7 @@ ratio, use an [`image`](image.md).
 The focused window's icon and title. [`mantle.applications`](../capabilities/applications.md) maps a
 window's `app_id` to its desktop entry, whose `icon` is a theme name:
 
+<!-- shot-alt: A small status icon beside a truncated file path. -->
 ```lua,shot
 local focused_icon = computed({ mantle.applications, mantle.workspaces }, function(apps, workspaces)
     local client = workspaces and workspaces.active_client

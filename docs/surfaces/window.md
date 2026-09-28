@@ -4,6 +4,7 @@ An `xdg_toplevel`: an application window the compositor places, tiles, decorates
 for a settings window or a dialog; use a [panel](panel.md) for anything pinned to the desktop.
 Rules every role shares are in [surfaces](index.md).
 
+<!-- shot-alt: A settings window with a left navigation list and main content area. -->
 ```lua,shot
 local open = state("settings_open", false)
 local page = state("settings_page", "General")

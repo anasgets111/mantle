@@ -6,6 +6,7 @@ one node over another. Side by side needs a [`row` or `column`](row-column.md) i
 
 A bell icon with an unread badge in its top-right corner:
 
+<!-- shot-alt: A notification bell with a count badge in its upper right corner. -->
 ```lua,shot
 local unread = state("unread", 3)
 

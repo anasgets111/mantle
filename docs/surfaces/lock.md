@@ -6,6 +6,7 @@ long as the compositor holds the session locked. Declaring a `lock` does not loc
 The lock's state (`active`, `authenticating`, `attempts`, `error`, `unlocking`) and actions are on
 the [lock capability](../capabilities/lock.md). Rules every role shares are in [surfaces](index.md).
 
+<!-- shot-alt: A lock screen with a password field beneath a clock. -->
 ```lua,shot
 mantle.lock:set_unlock_animation(250)
 

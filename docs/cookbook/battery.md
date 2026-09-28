@@ -4,6 +4,7 @@ A bar pill with a battery icon and percentage that turns red when low, a tooltip
 state and time left, and a desktop notification when the charge drops past 15%. On a desktop with
 no battery the pill hides itself.
 
+<!-- shot-alt: A top bar with a battery icon, 82% charge, and time remaining. -->
 ```lua,shot
 local LOW = 15
 local pill_hover = hover("battery")

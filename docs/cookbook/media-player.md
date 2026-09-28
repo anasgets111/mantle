@@ -4,6 +4,7 @@ A now-playing pill in the bar for any MPRIS player (Spotify, mpv, a browser tab)
 card with cover art, title, artist, a seekable progress bar and previous, play/pause and next
 buttons. It prefers whichever player is playing and hides when none runs.
 
+<!-- shot-alt: A music bar and a player card with artwork, progress, and controls. -->
 ```lua,shot
 local card_open = state("media_open", false)
 local card_anchor = state("media_anchor", { x = 0, y = 0, width = 1, height = 1 })

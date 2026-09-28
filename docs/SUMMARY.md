@@ -7,6 +7,20 @@
 - [Installation](guide/installation.md)
 - [CLI](guide/cli.md)
 
+# Cookbook
+
+- [Cookbook](cookbook/index.md)
+  - [Clock bar](cookbook/clock-bar.md)
+  - [Battery indicator](cookbook/battery.md)
+  - [Volume OSD](cookbook/volume-osd.md)
+  - [Workspaces](cookbook/workspaces.md)
+  - [Lock screen](cookbook/lock-screen.md)
+  - [Power menu](cookbook/power-menu.md)
+  - [Notification popups](cookbook/notifications.md)
+  - [App launcher](cookbook/launcher.md)
+  - [System tray with menu](cookbook/tray.md)
+  - [Media player](cookbook/media-player.md)
+
 # Concepts
 
 - [Runtime](guide/runtime.md)
@@ -69,20 +83,6 @@
   - [updates](capabilities/updates.md)
   - [windows](capabilities/windows.md)
   - [workspaces](capabilities/workspaces.md)
-
-# Cookbook
-
-- [Cookbook](cookbook/index.md)
-  - [Clock bar](cookbook/clock-bar.md)
-  - [Battery indicator](cookbook/battery.md)
-  - [Volume OSD](cookbook/volume-osd.md)
-  - [Workspaces](cookbook/workspaces.md)
-  - [Lock screen](cookbook/lock-screen.md)
-  - [Power menu](cookbook/power-menu.md)
-  - [Notification popups](cookbook/notifications.md)
-  - [App launcher](cookbook/launcher.md)
-  - [System tray with menu](cookbook/tray.md)
-  - [Media player](cookbook/media-player.md)
 
 # Reference
 

@@ -35,7 +35,7 @@ a property and the property stays live. Each push replaces the whole snapshot.
 | :--- | :--- |
 | `:get()` | The last pushed snapshot; `nil` before the first |
 | `:map(fn)` | Derived signal; `fn` must handle `nil`. A capability also works as a `computed` dependency |
-| `:on_change(fn)` | `fn(current, previous)` once per push, after it lands; `previous` is `nil` on the first. Runs under the 5 ms callback budget and may call actions, `process.run` or write state. A raise logs a warning and the next handler still runs. Every evaluation clears them before `shell.lua` registers its own |
+| `:on_change(fn)` | `fn(current, previous)` once per push, after it lands; `previous` is `nil` on the first. Runs under the [Lua CPU budget](../guide/runtime.md#limits-and-budgets) and may call actions, `process.run` or write state. A raise logs a warning and the next handler still runs. Every evaluation clears them before `shell.lua` registers its own |
 | `:<action>(...)` | One method per action on the capability's page, e.g. `mantle.audio:set_volume(0.5)`. Queues one command and returns nothing. Read the state it changes for the outcome. Call it with `:`; a `.` call raises |
 
 There is no `:set` on the state; `mantle.brightness:set` and `mantle.storage:set` are actions. `mantle.idle` has no actions; it takes [methods](idle.md#methods) instead.

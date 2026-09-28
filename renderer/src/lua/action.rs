@@ -35,7 +35,7 @@ pub fn register(lua: &Lua) -> mlua::Result<()> {
         lua,
         /// Declares what `mantle call <name> [args...]` runs (ADR-0197). Each argument arrives JSON-decoded,
         /// or as a string when it is not JSON. The return prints as JSON (≤ 1 MiB), a string bare and `nil`
-        /// as nothing; a raise or an unconvertible return fails the call. Runs under the 5 ms CPU budget.
+        /// as nothing; a raise or an unconvertible return fails the call. Runs under the Lua CPU budget.
         /// Every evaluation clears all actions, so declare at the top level.
         /// [docs](https://anasgets111.github.io/mantle/guide/scripting.html#action)
         fn action(

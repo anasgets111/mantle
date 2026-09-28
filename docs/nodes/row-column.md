@@ -6,6 +6,7 @@ properties and differ only in their main axis. For children built from data, use
 
 A meter: a `"Fill"`-wide track with a percentage-wide fill that follows a signal.
 
+<!-- shot-alt: A blue progress bar half filling a dark track. -->
 ```lua,shot
 local volume = state("volume", 0.45)
 
@@ -65,6 +66,7 @@ How the container packs its children:
 
 A `"Fill"` child takes the space its siblings leave, so a bare `rect` makes a spacer:
 
+<!-- shot-alt: Wi-Fi aligned left and Connected aligned right in one row. -->
 ```lua,shot
 local header = row {
     width = 300,
