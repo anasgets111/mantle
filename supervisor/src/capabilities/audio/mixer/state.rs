@@ -101,10 +101,9 @@ pub(super) struct MixerState {
     /// `Audio/Source` id -> the same `Props`-backed entry used for master volume.
     pub(super) sources: HashMap<u32, DeviceEntry>,
     pub(super) source_nodes: HashMap<u32, (pw::node::Node, pw::node::NodeListener)>,
-    /// Bound ALSA `Device` proxies/listeners for writes. Hardware volume lives on `Route`, not
-    /// the node; without these, `set_volume` is accepted and silently discarded.
+    /// Bound ALSA `Device` proxies/listeners for writes. BlueZ proxies live in `bluez_devices`.
     pub(super) devices: HashMap<u32, (Rc<pw::device::Device>, pw::device::DeviceListener)>,
-    /// `(device global id, card.profile.device)` -> active `Route` from the device.
+    /// `(device global id, card.profile.device)` -> active ALSA or BlueZ `Route`.
     pub(super) device_routes: HashMap<(u32, i32), master::ActiveRoute>,
     /// BlueZ `Device` id -> its MAC and profiles, for [`AudioState::bluetooth`].
     pub(super) bluez_cards: HashMap<u32, BluezCard>,
@@ -175,6 +174,16 @@ impl MixerState {
         master::resolve_default_device(name, entries.iter().map(|(&id, entry)| (id, entry.names.node_name.as_str())))
     }
 
+    /// A routed device's card Props are authoritative when the node only mirrors them.
+    pub(super) fn device_props(&self, kind: DefaultDevice, id: u32) -> Option<&master::RawSinkProps> {
+        let entry = self.device_entries(kind).get(&id)?;
+        entry
+            .route
+            .and_then(|route| self.device_routes.get(&(route.device_id, route.profile_device)))
+            .and_then(|route| route.props.as_ref())
+            .or(entry.props.as_ref())
+    }
+
     /// Publishes even if the receiver is absent; that is startup or shutdown, not a tracking error.
     ///
     /// Silent until [`MixerState::hydrated`], so the first snapshot is complete: volumes, device and privacy lists.
@@ -183,9 +192,7 @@ impl MixerState {
             return;
         }
         let (sink, source) = (self.default_node(DefaultDevice::Sink), self.default_node(DefaultDevice::Source));
-        let measured = |kind, id: Option<u32>| {
-            self.device_entries(kind).get(&id?)?.props.as_ref().map(master::master_volume_from_props)
-        };
+        let measured = |kind, id: Option<u32>| self.device_props(kind, id?).map(master::master_volume_from_props);
         let (master, source_master) = (measured(DefaultDevice::Sink, sink), measured(DefaultDevice::Source, source));
         // Join here: identity and volume arrive on unordered PipeWire `info` and `param` events;
         // folding volume in at info time could overwrite a reading already landed.
@@ -525,6 +532,29 @@ mod tests {
         // The source's Props use the master's cube-root conversion.
         assert!((published.source_volume.unwrap() - 0.6).abs() < 1e-6, "got {:?}", published.source_volume);
         assert!(published.source_muted);
+    }
+
+    #[test]
+    fn a_routed_source_uses_card_props_and_falls_back_to_node_props_before_the_route_arrives() {
+        let (updates, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let (privacy_updates, _privacy_rx) = watch::channel(PrivacySources::default());
+        let mut state = mixer_state(updates, privacy_updates);
+        let mut source = sink_at("bluez_input.headset", None, Some(props_at(1.0, false)));
+        source.route = Some(super::super::devices::DeviceRoute { device_id: 80, profile_device: 0 });
+        state.sources.insert(91, source);
+        state.default_source_name = Some("bluez_input.headset".to_string());
+
+        state.publish_audio();
+        assert!(!rx.try_recv().unwrap().source_muted);
+
+        state
+            .device_routes
+            .insert((80, 0), master::ActiveRoute { index: 0, port: None, props: Some(props_at(0.4, true)) });
+        state.publish_audio();
+        let published = rx.try_recv().unwrap();
+        assert!(published.source_muted);
+        assert!((published.source_volume.unwrap() - 0.4).abs() < 1e-6);
+        assert!(state.device_props(DefaultDevice::Source, 91).unwrap().mute);
     }
 
     #[test]

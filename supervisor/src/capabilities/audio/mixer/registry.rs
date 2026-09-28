@@ -135,8 +135,9 @@ fn run_inner(
             state.source_nodes.remove(&id);
             state.app_props.remove(&id);
             state.bluez_cards.remove(&id);
-            state.bluez_devices.remove(&id);
-            if state.devices.remove(&id).is_some() {
+            let was_alsa = state.devices.remove(&id).is_some();
+            let was_bluez = state.bluez_devices.remove(&id).is_some();
+            if was_alsa || was_bluez {
                 // Remove all route indices keyed by this device id, so a reused id inherits none.
                 state.device_routes.retain(|&(device_id, _), _| device_id != id);
             }
@@ -209,6 +210,19 @@ fn run_inner(
 /// A `param` event's pod as a value tree; `None` for an absent or undecodable one.
 fn decode(param: Option<&pw::spa::pod::Pod>) -> Option<Value> {
     PodDeserializer::deserialize_from::<Value>(param?.as_bytes()).ok().map(|(_, value)| value)
+}
+
+fn record_route(state: &Rc<RefCell<MixerState>>, device_id: u32, value: &Value) {
+    let Some((profile_device, route)) = master::extract_route_target(value) else { return };
+    let previous = state.borrow_mut().device_routes.insert((device_id, profile_device), route.clone());
+    if previous.as_ref() == Some(&route) {
+        return;
+    }
+    // ponytail: the first push can lack `port` until Route answers; upgrade: fold Route into hydration.
+    state.borrow_mut().publish_audio();
+    if previous.map(|previous| previous.index) != Some(route.index) {
+        cap_default_sink(state);
+    }
 }
 
 /// Routes `Node`, `Device`, and `default` `Metadata` globals to their binders; ignores the rest.
@@ -483,19 +497,7 @@ fn bind_device(state: &Rc<RefCell<MixerState>>, registry: &pw::registry::Registr
                 return;
             }
             let Some(value) = decode(param) else { return };
-            let Some((profile_device, route)) = master::extract_route_target(&value) else {
-                return;
-            };
-            let previous =
-                state_for_param.borrow_mut().device_routes.insert((device_id, profile_device), route.clone());
-            if previous.as_ref() == Some(&route) {
-                return;
-            }
-            // ponytail: the first push can lack `port` until Route answers; upgrade: fold Route into hydration.
-            state_for_param.borrow_mut().publish_audio();
-            if previous.map(|previous| previous.index) != Some(route.index) {
-                cap_default_sink(&state_for_param);
-            }
+            record_route(&state_for_param, device_id, &value);
         })
         // Re-asks on every param change, including the first `info` a bind always answers with.
         // A profile switch or a plugged headset moves the active route.
@@ -512,9 +514,9 @@ fn bind_device(state: &Rc<RefCell<MixerState>>, registry: &pw::registry::Registr
     state.borrow_mut().devices.insert(device_id, (device, listener));
 }
 
-/// Binds a BlueZ `Device` for its codec profiles, keyed by MAC for a Bluetooth join; its
-/// `Route` is never read. Enumerated from `info` (ADR-0200). `Profile` is asked after `EnumProfile`,
-/// so its answer ends the enumeration and publishes only on a change. Answers are matched by that
+/// Binds a BlueZ `Device` for its codec profiles and mixer routes, keyed by MAC for a Bluetooth join.
+/// Enumerated from `info` (ADR-0200). `Profile` is asked after `EnumProfile`,
+/// so its answer ends the profile enumeration and publishes only on a change. Answers are matched by that
 /// order, not by seq: protocol-native's `device_marshal_enum_params` sends
 /// `SPA_RESULT_RETURN_ASYNC(msg->seq)` and ignores the caller's (a live `enum_params(7, ..)` came
 /// back as 1073741828).
@@ -546,6 +548,10 @@ fn bind_bluez_device(
         .add_listener_local()
         .param(move |_seq, param_type, _index, _next, param| {
             let Some(value) = decode(param) else { return };
+            if param_type == pw::spa::param::ParamType::Route {
+                record_route(&state_for_param, device_id, &value);
+                return;
+            }
             let Some(profile) = master::extract_profile(&value) else { return };
             let mut state = state_for_param.borrow_mut();
             let Some(card) = state.bluez_cards.get_mut(&device_id) else { return };
@@ -564,6 +570,7 @@ fn bind_bluez_device(
             if let Some(device) = device_for_info.upgrade() {
                 device.enum_params(0, Some(pw::spa::param::ParamType::EnumProfile), 0, u32::MAX);
                 device.enum_params(0, Some(pw::spa::param::ParamType::Profile), 0, u32::MAX);
+                device.enum_params(0, Some(pw::spa::param::ParamType::Route), 0, u32::MAX);
             }
         })
         .register();

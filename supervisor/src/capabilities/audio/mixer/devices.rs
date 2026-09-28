@@ -146,7 +146,7 @@ pub(super) struct DeviceEntry {
     pub(super) route: Option<DeviceRoute>,
 }
 
-/// Where an ALSA-backed volume lives: `device_id` is the node's `device.id` global;
+/// Where a routed device's volume lives: `device_id` is the node's `device.id` global;
 /// `profile_device` is `card.profile.device`, matching a `Route.device`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct DeviceRoute {
@@ -263,7 +263,8 @@ mod tests {
             (59, "alsa_output.analog", Some("Built-in Audio Analog Stereo")),
         ]);
         entries.get_mut(&59).unwrap().route = Some(DeviceRoute { device_id: 51, profile_device: 3 });
-        let routes = HashMap::from([((51, 3), master::ActiveRoute { index: 5, port: Some("hdmi".to_string()) })]);
+        let routes =
+            HashMap::from([((51, 3), master::ActiveRoute { index: 5, port: Some("hdmi".to_string()), props: None })]);
 
         let devices = device_list(&entries, &routes, Some(70));
 

@@ -91,10 +91,8 @@ fn set_default_muted(state: &Rc<RefCell<MixerState>>, kind: DefaultDevice, muted
     // A toggle needs the current value; an explicit set does not, so only the toggle waits for
     // the first `Props`. Requiring it for both dropped a mute keypress during startup.
     //
-    // Not a total fix: a hardware sink whose `Route` has not arrived yet still looks node-owned
-    // here, and `write_node_props` addresses the node rather than the device. That window is
-    // narrower than the one this closes, and the write is attempted rather than refused.
-    let current = || state.borrow().device_entries(kind).get(&node_id)?.props.as_ref().map(|props| !props.mute);
+    // A routed device still needs its Route index before the write can be sent.
+    let current = || state.borrow().device_props(kind, node_id).map(|props| !props.mute);
     let Some(muted) = muted.or_else(current) else {
         debug!("a {kind:?} mute toggle has no Props on node {node_id} to read; ignored");
         return;
@@ -106,12 +104,12 @@ fn set_default_muted(state: &Rc<RefCell<MixerState>>, kind: DefaultDevice, muted
 fn resolve_default(state: &Rc<RefCell<MixerState>>, kind: DefaultDevice) -> Option<(u32, master::RawSinkProps)> {
     let state = state.borrow();
     let node_id = state.default_node(kind)?;
-    Some((node_id, state.device_entries(kind).get(&node_id)?.props.clone()?))
+    Some((node_id, state.device_props(kind, node_id)?.clone()))
 }
 
 /// Writes through the owning object. A hardware sink's node `Props` accepts
 /// `pw-cli set-param 59 Props '{ mute: true }'` but does nothing, while a stream write works;
-/// the volume lives on the ALSA `Device` `Route`, and node `channelVolumes` only mirrors it.
+/// the volume lives on the `Device` `Route`, and node `channelVolumes` only mirrors it.
 /// Live `pw-cli set-param 49 Route '{ index: 2, device: 7, props: { channelVolumes: [...] },
 /// save: true }'` moved the volume. Use a known route, or node `Props` for virtual/null sinks.
 fn write_device_volume(
@@ -142,7 +140,7 @@ fn write_device_route(
         state.borrow().device_routes.get(&(route.device_id, route.profile_device)).map(|active| active.index)
     else {
         debug!(
-            "sink {node_id} routes through device {} port {}, whose active Route index has not been seen; ignored",
+            "node {node_id} routes through device {} port {}, whose active Route index has not been seen; ignored",
             route.device_id, route.profile_device
         );
         return;
@@ -150,7 +148,9 @@ fn write_device_route(
     let object = master::route_object(index, route.profile_device, channel_volumes, muted);
     with_pod(&object, format_args!("a Route object for device {}", route.device_id), |pod| {
         let state = state.borrow();
-        let Some((device, _listener)) = state.devices.get(&route.device_id) else {
+        let Some((device, _listener)) =
+            state.devices.get(&route.device_id).or_else(|| state.bluez_devices.get(&route.device_id))
+        else {
             debug!("device {} is not bound; cannot write its Route", route.device_id);
             return;
         };
