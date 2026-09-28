@@ -5,7 +5,10 @@ node trees; Rust owns platform connections, input, layout and rendering. A confi
 takes the session down, and saving a `.lua` file reloads in place, keeping signal state.
 
 Mantle ships no shell of its own. [`share/starter`](share/starter) is a one-clock bar;
-[anasgets111/dotfiles](https://github.com/anasgets111/dotfiles) is a full shell built on it:
+[anasgets111/dotfiles](https://github.com/anasgets111/dotfiles) is a full shell built on it.
+
+The demo below builds a shell from the starter, one save at a time. A Mantle shell,
+[`demo/director`](demo/director), types it, captions it and records it; `just demo` re-records it:
 
 https://github.com/user-attachments/assets/6eea81f4-9755-468e-aa2d-f8151c25e2f5
 
@@ -47,6 +50,7 @@ are listed, but running there is untested for now.
 | `just docs` / `just book` | Serve the docs site locally / build it and check every link |
 | `just fmt` | Formats Rust and Lua |
 | `just swap` | Optimised build into `$CARGO_HOME/bin`, then restarts the running shell detached |
+| `just demo [out]` | Records the demo video to `out` (default `~/Videos/mantle-demo.mp4`), stopping and then restarting your running shells; needs `gpu-screen-recorder` |
 
 Autostart: `spawn-at-startup "mantle"` in niri, `exec-once = mantle` in Hyprland.
 

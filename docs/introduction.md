@@ -10,6 +10,9 @@ workspaces, the clock) pushes new state.
 
 <video src="https://github.com/user-attachments/assets/6eea81f4-9755-468e-aa2d-f8151c25e2f5" controls muted playsinline preload="metadata"></video>
 
+The video is itself a Mantle shell: [`demo/director`](../demo/director/shell.lua) types each save,
+captions it and records the take. `just demo` records it again.
+
 Build the first shell below, then find the rest by [topic](#topic-index) or by
 [task](#how-do-i). The [glossary](glossary.md) defines every term.
 
