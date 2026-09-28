@@ -667,7 +667,7 @@ mod tests {
     /// The 2026-09-08 lockout: the worker vanished and "early eof" was the entire diagnosis.
     #[tokio::test]
     async fn a_worker_that_dies_without_answering_reports_how_it_died() {
-        for (script, expected) in [("exit 3", "exited with status 3"), ("kill -SEGV $$", "was killed by signal 11")] {
+        for (script, expected) in [("exit 3", "exited with status 3"), ("kill -KILL $$", "was killed by signal 9")] {
             let child =
                 crate::process::spawn_group_leader_stdio_piped("sh", &["-c".to_string(), script.to_string()], &[])
                     .expect("failed to spawn the fake worker");
