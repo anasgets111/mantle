@@ -231,7 +231,9 @@ impl Capability {
             }
             Capability::Updates => &["check", "configure", "install"],
             Capability::Workspaces => &["focus", "toggle_special"],
-            Capability::Windows => &["focus", "close", "set_fullscreen", "set_minimized", "set_maximized"],
+            Capability::Windows => {
+                &["focus", "close", "set_fullscreen", "set_minimized", "set_maximized", "move_to_workspace"]
+            }
             Capability::System => &["configure"],
             Capability::Battery | Capability::Idle | Capability::Privacy | Capability::Secrets => &[],
         }

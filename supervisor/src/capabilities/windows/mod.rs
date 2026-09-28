@@ -41,6 +41,12 @@ pub enum WindowsAction {
         id: String,
         maximized: bool,
     },
+    /// Moves a window to a workspace.
+    MoveToWorkspace {
+        #[serde(deserialize_with = "crate::capabilities::non_empty")]
+        id: String,
+        workspace_id: u64,
+    },
 }
 
 /// `mantle.windows` action dispatch (ADR-0037).
@@ -52,5 +58,6 @@ pub fn dispatch(controller: &WindowsController, envelope: &shared::CommandEnvelo
         WindowsAction::SetFullscreen { id, fullscreen } => controller.set_fullscreen(&id, fullscreen),
         WindowsAction::SetMinimized { id, minimized } => controller.set_minimized(&id, minimized),
         WindowsAction::SetMaximized { id, maximized } => controller.set_maximized(&id, maximized),
+        WindowsAction::MoveToWorkspace { id, workspace_id } => controller.move_to_workspace(&id, workspace_id),
     }
 }

@@ -275,6 +275,7 @@
 ---@field name string Full name, `"special:scratch"` or `"special"`; the argument of `"toggle_special"`.
 ---@field populated boolean Whether at least one window sits on it.
 ---@field shown_on? string Connector showing it, or `nil` while hidden.
+---@field window_id? string `window_id` of its representative window, chosen as `WorkspaceEntry::app_id` is.
 
 ---@class SysinfoConfigure
 ---`sysinfo:configure`'s table. Absent keys keep their interval; one wrong-typed key drops the call.
@@ -350,6 +351,7 @@
 ---@field idx integer Label number: niri's 1-based position on the output, renumbered on reorder; Hyprland's workspace number, equal to `id` up to `255`, where it saturates.
 ---@field name? string Workspace name; `nil` when unnamed, or on Hyprland when the name is just the number.
 ---@field populated boolean Whether a window sits here (ADR-0117).
+---@field window_id? string `window_id` of a window here, chosen as `WorkspaceEntry::app_id` is. `nil` when empty.
 
 ---@class ApplicationsState
 ---`mantle.applications` payload (ADR-0061, ADR-0252).
@@ -700,6 +702,7 @@ local PrivacyCapability = {}
 ---@field set_fullscreen fun(self: WindowsCapability, id: string, fullscreen: boolean) Sets fullscreen on or off; no-op on niri.
 ---@field set_minimized fun(self: WindowsCapability, id: string, minimized: boolean) Sets minimized on or off; wlr only.
 ---@field set_maximized fun(self: WindowsCapability, id: string, maximized: boolean) Sets maximized on or off; no-op on niri.
+---@field move_to_workspace fun(self: WindowsCapability, id: string, workspace_id: integer) Moves a window to a workspace.
 
 --- Off-roster members ---------------------------------------------------------------------------
 -- Written by hand in `stubs.rs`: `Screen` and `RescueState` come from the Renderer, not a capability.

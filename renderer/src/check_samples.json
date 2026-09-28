@@ -459,7 +459,8 @@
             "id": 1,
             "idx": 1,
             "name": "sample",
-            "populated": true
+            "populated": true,
+            "window_id": "sample"
           }
         ]
       }
@@ -470,7 +471,8 @@
         "app_id": "sample",
         "name": "sample",
         "populated": true,
-        "shown_on": "sample"
+        "shown_on": "sample",
+        "window_id": "sample"
       }
     ]
   }

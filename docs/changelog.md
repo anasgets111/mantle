@@ -8,6 +8,8 @@ so everything since the rename from Obelisk sits under Unreleased.
 
 ### Added
 
+- `mantle.windows:move_to_workspace(id, workspace_id)` moves a window to a workspace on Hyprland and niri ([windows](capabilities/windows.md#actions)).
+- `mantle.workspaces` entries and `special` workspaces expose `window_id` for their representative window ([workspaces](capabilities/workspaces.md#workspaceentry)).
 - `text` nodes accept `line_height` (font-size multiplier, default `1.2`), `letter_spacing` (pixels, default `0`), `font_weight` (1–1000, default `400`), and `italic` (default `false`).
 - Ctrl+C copies a plain textfield selection; Ctrl+V pastes up to 64 KiB of UTF-8 into plain or secure fields ([input](guide/input.md#text-fields)).
 - `secure_submit = { capability = "secrets", action = "store", name = "…" }` stores a named secret through the session Secret Service. `mantle.secrets.entries[name]` reports `pending`, `stored`, `unavailable`, or `timed_out` ([secrets](capabilities/secrets.md)).

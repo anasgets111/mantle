@@ -46,6 +46,9 @@ pub struct SpecialWorkspace {
     /// `app_id` of its representative window, chosen as [`WorkspaceEntry::app_id`] is.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub app_id: Option<String>,
+    /// `window_id` of its representative window, chosen as [`WorkspaceEntry::app_id`] is.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub window_id: Option<String>,
     /// Connector showing it, or `nil` while hidden.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub shown_on: Option<String>,
@@ -84,6 +87,9 @@ pub struct WorkspaceEntry {
     /// on niri the focused one, else the lowest id, `nil` if that one has no `app_id`. `nil` when empty.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub app_id: Option<String>,
+    /// `window_id` of a window here, chosen as [`WorkspaceEntry::app_id`] is. `nil` when empty.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub window_id: Option<String>,
 }
 
 /// The focused window.
@@ -119,6 +125,7 @@ pub struct WorkspaceRow {
     /// it from its private window list; an empty id is `None`.
     pub populated: bool,
     pub app_id: Option<String>,
+    pub window_id: Option<String>,
 }
 
 /// The focused toplevel reduced to the three `active_client` fields.
@@ -165,6 +172,7 @@ pub fn derive_state(workspaces: &[WorkspaceRow], focused: Option<&FocusedWindow>
                     name: workspace.name.clone(),
                     populated: workspace.populated,
                     app_id: workspace.app_id.clone(),
+                    window_id: workspace.window_id.clone(),
                 })
                 .collect();
             Some(OutputWorkspaces { name: name.to_string(), active_workspace, focused_workspace, workspaces })
@@ -300,6 +308,7 @@ mod tests {
             is_focused,
             populated: false,
             app_id: None,
+            window_id: None,
         }
     }
 
@@ -332,6 +341,7 @@ mod tests {
         let mut busy = workspace(5, 1, "eDP-1", true, true);
         busy.populated = true;
         busy.app_id = Some("firefox".to_string());
+        busy.window_id = Some("42".to_string());
         let workspaces = [busy, workspace(7, 2, "eDP-1", false, false)];
 
         let state = derive_state(&workspaces, None);
@@ -339,9 +349,11 @@ mod tests {
 
         assert!(entries[0].populated);
         assert_eq!(entries[0].app_id.as_deref(), Some("firefox"));
+        assert_eq!(entries[0].window_id.as_deref(), Some("42"));
         assert!(!entries[1].populated);
         let json = serde_json::to_value(&entries[1]).unwrap();
         assert!(json.get("app_id").is_none(), "an empty workspace has no app_id key: {json}");
+        assert!(json.get("window_id").is_none(), "an empty workspace has no window_id key: {json}");
         assert_eq!(json["populated"], false);
     }
 
@@ -467,6 +479,7 @@ mod tests {
             name: name.to_string(),
             populated: true,
             app_id: None,
+            window_id: None,
             shown_on: shown_on.map(str::to_string),
         }
     }
@@ -503,16 +516,15 @@ mod tests {
         assert_eq!(json["compositor"], "niri");
         assert!(json.get("special").is_none(), "no key at all: `special == nil` is the feature test");
 
-        assert!(publisher.publish(
-            &workspaces,
-            None,
-            Some(&[special("special:term", Some("eDP-1")), special("special", None)]),
-            None
-        ));
+        let mut term = special("special:term", Some("eDP-1"));
+        term.window_id = Some("0xabc".to_string());
+        assert!(publisher.publish(&workspaces, None, Some(&[term, special("special", None)]), None));
         let json = serde_json::to_value(publisher.state.lock().unwrap().clone()).unwrap();
         assert_eq!(json["special"][0]["name"], "special");
+        assert!(json["special"][0].get("window_id").is_none());
         assert_eq!(json["special"][1]["name"], "special:term");
         assert_eq!(json["special"][1]["shown_on"], "eDP-1");
+        assert_eq!(json["special"][1]["window_id"], "0xabc");
         assert!(json["special"][0].get("shown_on").is_none());
 
         assert!(publisher.publish(&workspaces, None, Some(&[]), None));

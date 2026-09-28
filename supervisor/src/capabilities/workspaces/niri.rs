@@ -37,6 +37,7 @@ fn workspace_rows(
                 is_focused: workspace.is_focused,
                 populated: standing.is_some(),
                 app_id: standing.and_then(|window| window.app_id.clone()).filter(|id| !id.is_empty()),
+                window_id: standing.map(|w| w.id.to_string()),
             }
         })
         .collect()
@@ -181,6 +182,21 @@ pub fn close_window(id: &str) {
     crate::compositor::niri_action(niri_ipc::Action::CloseWindow { id: Some(id) }, "windows");
 }
 
+pub fn move_window_to_workspace(id: &str, workspace_id: u64) {
+    let Ok(id) = id.parse::<u64>() else {
+        debug!("move_window_to_workspace({id:?}, {workspace_id}) is not a niri window id; ignored");
+        return;
+    };
+    crate::compositor::niri_action(
+        niri_ipc::Action::MoveWindowToWorkspace {
+            window_id: Some(id),
+            reference: niri_ipc::WorkspaceReferenceArg::Id(workspace_id),
+            focus: false,
+        },
+        "windows",
+    );
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -231,6 +247,7 @@ mod tests {
                 is_focused: true,
                 populated: true,
                 app_id: Some("kitty".to_string()),
+                window_id: Some("2".to_string()),
             }]
         );
     }
@@ -249,14 +266,18 @@ mod tests {
 
         let rows = workspace_rows(&workspaces, &windows);
         let app_of = |id: u64| rows.iter().find(|row| row.id == id).unwrap().app_id.clone();
+        let window_of = |id: u64| rows.iter().find(|row| row.id == id).unwrap().window_id.clone();
 
         assert_eq!(app_of(5).as_deref(), Some("kitty"), "focus wins over a lower id");
+        assert_eq!(window_of(5).as_deref(), Some("2"));
         assert_eq!(app_of(6).as_deref(), Some("slack"));
+        assert_eq!(window_of(6).as_deref(), Some("30"));
 
         let mut unfocused = windows.clone();
         unfocused.get_mut(&2).unwrap().is_focused = false;
         let rows = workspace_rows(&workspaces, &unfocused);
         assert_eq!(rows.iter().find(|row| row.id == 5).unwrap().app_id.as_deref(), Some("kitty"), "lowest id");
+        assert_eq!(rows.iter().find(|row| row.id == 5).unwrap().window_id.as_deref(), Some("2"));
     }
 
     #[test]
@@ -270,11 +291,14 @@ mod tests {
         let row_of = |id: u64| rows.iter().find(|row| row.id == id).unwrap();
 
         assert_eq!(
-            (row_of(5).populated, row_of(5).app_id.as_deref()),
-            (true, None),
+            (row_of(5).populated, row_of(5).app_id.as_deref(), row_of(5).window_id.as_deref()),
+            (true, None, Some("2")),
             "a window with no id still populates"
         );
-        assert_eq!((row_of(6).populated, row_of(6).app_id.as_deref()), (false, None));
+        assert_eq!(
+            (row_of(6).populated, row_of(6).app_id.as_deref(), row_of(6).window_id.as_deref()),
+            (false, None, None)
+        );
     }
 
     #[test]

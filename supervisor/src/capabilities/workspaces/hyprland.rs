@@ -146,12 +146,11 @@ fn fullscreen_mode<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<
 }
 
 /// Workspace representative: mapped, classed, and most recently focused.
-fn standing_app_id(clients: &[HyprlandClient], workspace_id: i64) -> Option<String> {
+fn standing_client(clients: &[HyprlandClient], workspace_id: i64) -> Option<&HyprlandClient> {
     clients
         .iter()
         .filter(|client| client.mapped && client.workspace.id == workspace_id && !client.class.is_empty())
         .min_by_key(|client| client.focus_history_id)
-        .map(|client| client.class.clone())
 }
 
 /// The three lists reduced to the input rows; see the module doc for mappings.
@@ -167,7 +166,9 @@ fn workspace_rows(
             let monitor = monitors.iter().find(|monitor| monitor.name == workspace.monitor);
             let is_active = monitor.is_some_and(|monitor| monitor.active_workspace.id == workspace.id);
             let is_focused = is_active && monitor.is_some_and(|monitor| monitor.focused);
-            let app_id = standing_app_id(clients, workspace.id);
+            let standing = standing_client(clients, workspace.id);
+            let app_id = standing.map(|client| client.class.clone());
+            let window_id = standing.map(|client| client.address.clone());
             let number = workspace.id.to_string();
             WorkspaceRow {
                 // Payload ids are `u64`; the filter above keeps this positive.
@@ -179,6 +180,7 @@ fn workspace_rows(
                 is_focused,
                 populated: workspace.windows > 0,
                 app_id,
+                window_id,
             }
         })
         .collect()
@@ -194,14 +196,18 @@ fn special_list(
     workspaces
         .iter()
         .filter(|workspace| workspace.id <= 0 && workspace.name.starts_with("special"))
-        .map(|workspace| SpecialWorkspace {
-            name: workspace.name.clone(),
-            populated: workspace.windows > 0,
-            app_id: standing_app_id(clients, workspace.id),
-            shown_on: monitors
-                .iter()
-                .find(|monitor| monitor.special_workspace.name == workspace.name)
-                .map(|monitor| monitor.name.clone()),
+        .map(|workspace| {
+            let standing = standing_client(clients, workspace.id);
+            SpecialWorkspace {
+                name: workspace.name.clone(),
+                populated: workspace.windows > 0,
+                app_id: standing.map(|client| client.class.clone()),
+                window_id: standing.map(|client| client.address.clone()),
+                shown_on: monitors
+                    .iter()
+                    .find(|monitor| monitor.special_workspace.name == workspace.name)
+                    .map(|monitor| monitor.name.clone()),
+            }
         })
         .collect()
 }
@@ -499,6 +505,15 @@ fn window_dispatch(dispatcher: &str, id: &str, mode: Option<&str>) {
     dispatch(window_dispatch_command(dispatcher, id, mode), Capability::Windows.as_str());
 }
 
+fn move_window_to_workspace_command(id: &str, workspace_id: u64) -> String {
+    let id = lua_escape(id);
+    format!(r#"hl.dsp.window.move({{ window = "address:{id}", workspace = {workspace_id}, follow = false }})"#)
+}
+
+pub fn move_window_to_workspace(id: &str, workspace_id: u64) {
+    dispatch(move_window_to_workspace_command(id, workspace_id), Capability::Windows.as_str());
+}
+
 /// `workspaces:toggle_special(name)`.
 pub fn toggle_special(name: &str) {
     dispatch(toggle_special_command(name), Capability::Workspaces.as_str());
@@ -602,6 +617,7 @@ mod tests {
                 is_focused: true,
                 populated: true,
                 app_id: Some("kitty".to_string()),
+                window_id: Some("0x55d1c0a3b2c0".to_string()),
             }]
         );
     }
@@ -842,9 +858,12 @@ mod tests {
             ["special:term", "special"]
         );
         assert_eq!(specials[0].app_id.as_deref(), Some("kitty"));
+        assert_eq!(specials[0].window_id.as_deref(), Some("0x55d1c0a3b2c0"));
         assert!(specials[0].populated);
         assert_eq!(specials[0].shown_on.as_deref(), Some("DP-1"));
         assert!(!specials[1].populated);
+        assert_eq!(specials[1].app_id, None);
+        assert_eq!(specials[1].window_id, None);
         assert_eq!(specials[1].shown_on, None, "exists but is hidden");
     }
 
@@ -902,6 +921,14 @@ mod tests {
         assert_eq!(
             window_dispatch_command("hl.dsp.window.fullscreen", "0xa11ce", Some("maximized")),
             r#"hl.dsp.window.fullscreen({ window = "address:0xa11ce", mode = "maximized" })"#
+        );
+        assert_eq!(
+            move_window_to_workspace_command("0x55d1c0a3b2c0", 3),
+            r#"hl.dsp.window.move({ window = "address:0x55d1c0a3b2c0", workspace = 3, follow = false })"#
+        );
+        assert_eq!(
+            move_window_to_workspace_command(r#"0x"bad"#, 1),
+            r#"hl.dsp.window.move({ window = "address:0x\"bad", workspace = 1, follow = false })"#
         );
     }
 }

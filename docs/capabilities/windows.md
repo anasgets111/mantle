@@ -60,6 +60,7 @@ Call each as `mantle.windows:<action>(arguments...)`; `?` marks an argument you 
 | `set_fullscreen` | `id: string, fullscreen: boolean` | Sets fullscreen on or off; no-op on niri. |
 | `set_minimized` | `id: string, minimized: boolean` | Sets minimized on or off; wlr only. |
 | `set_maximized` | `id: string, maximized: boolean` | Sets maximized on or off; no-op on niri. |
+| `move_to_workspace` | `id: string, workspace_id: integer` | Moves a window to a workspace. |
 
 ## Backend
 
@@ -68,9 +69,9 @@ niri and Hyprland share the `workspaces` reader; any other compositor needs
 
 | Backend | Reports | Writes |
 | :--- | :--- | :--- |
-| niri | `floating` | `focus`, `close` |
-| Hyprland | `floating`, `fullscreen`, `maximized` | `focus`, `close`, `set_fullscreen`, `set_maximized` |
-| wlr foreign-toplevel | `fullscreen`, `maximized`, `minimized` | Every action |
+| niri | `floating` | `focus`, `close`, `move_to_workspace` |
+| Hyprland | `floating`, `fullscreen`, `maximized` | `focus`, `close`, `set_fullscreen`, `set_maximized`, `move_to_workspace` |
+| wlr foreign-toplevel | `fullscreen`, `maximized`, `minimized` | `focus`, `close`, `set_fullscreen`, `set_minimized`, `set_maximized` |
 
 A flag a backend does not report is `nil`; an action it lacks is logged at debug level and dropped.
 
