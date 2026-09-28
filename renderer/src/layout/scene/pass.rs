@@ -427,7 +427,7 @@ fn children_this_pass(
     // ADR-0269: nothing the list's own build read has changed, so it keeps its items, in order.
     if let Some(memo) = node.list_memo.as_mut()
         && memo.items.len() == node.frozen.len()
-        && memo.still_holds(&node.properties, lua)
+        && memo.still_holds(&node.properties, lua)?
         && let Some(fresh) = written_items(memo, &node.frozen, &node.properties, lua)?
     {
         return Ok((fresh, std::mem::take(&mut node.frozen).into_iter().map(Some).collect(), Vec::new()));
@@ -1007,6 +1007,43 @@ mod tests {
 
         lua.load(r#"items:set({ "b" })"#).exec().unwrap();
         assert_eq!(dirty.take_scope(&lua), crate::lua::signal::DirtyScope::Instances(vec!["bar@TEST".into()]));
+    }
+
+    #[test]
+    fn a_list_keeps_items_when_a_computed_table_stays_equal() {
+        let mut scene = Scene::new();
+        let shaping = ShapingHandle::spawn();
+        let (lua, surface) = surface_from(
+            r#"built = 0
+            snapshot = state("snapshot", { disks = { { name = "sda", used = 1 } }, net = 0 })
+            return panel { id = "bar", child = list {
+                source = snapshot:map(function(s)
+                    if s.net == "bad" then error("bad disk source") end
+                    return s.disks
+                end),
+                key = function(disk) return disk.name end,
+                itemfn = function(disk)
+                    built = built + 1
+                    return text { content = disk.name .. disk.used }
+                end,
+            } }"#,
+        );
+        let apply =
+            |scene: &mut Scene| apply_at(scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
+        apply(&mut scene);
+        assert_eq!(lua.globals().get::<i64>("built").unwrap(), 1);
+        lua.load(r#"snapshot:set({ disks = { { name = "sda", used = 1 } }, net = 2 })"#).exec().unwrap();
+        apply(&mut scene);
+        assert_eq!(lua.globals().get::<i64>("built").unwrap(), 1);
+        lua.load(r#"snapshot:set({ disks = { { name = "sda", used = 2 } }, net = 2 })"#).exec().unwrap();
+        apply(&mut scene);
+        assert_eq!(lua.globals().get::<i64>("built").unwrap(), 2);
+        lua.load(r#"snapshot:set({ disks = { { name = "sda", used = 2 } }, net = "bad" })"#).exec().unwrap();
+        let err = apply_at(&mut scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap_err();
+        assert!(err.to_string().contains("bad disk source"));
+        lua.load(r#"snapshot:set({ disks = { { name = "sda", used = 2 } }, net = 3 })"#).exec().unwrap();
+        apply(&mut scene);
+        assert_eq!(lua.globals().get::<i64>("built").unwrap(), 2);
     }
 
     /// A failed pass rolls back to the last good items and their memo, which predates the write

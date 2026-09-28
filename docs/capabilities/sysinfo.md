@@ -2,7 +2,7 @@
 
 # sysinfo
 
-CPU, memory and swap use, CPU and GPU temperatures. `nil` until `configure` sets intervals.
+CPU, memory, swap, disks, GPU, network and temperatures. `nil` until `configure` sets intervals.
 
 ```lua
 mantle.sysinfo:configure({ cpu_interval = 2, ram_interval = 5 })
@@ -27,10 +27,49 @@ Pushes only on a change.
 | Field | Type | Description |
 | --- | --- | --- |
 | `cpu_percent` | `integer` | CPU utilization across all cores, `0` to `100`, rounded down; `0` until two samples form a delta. |
+| `disks` | `DiskDevice[]` | Physical block devices and their mounted partitions. |
+| `gpu?` | `GpuTelemetry` | GPU telemetry (load, VRAM, temperature) if a supported backend was detected; `nil` otherwise. |
+| `net_rx_bytes_sec` | `integer` | Download rate across active non-loopback interfaces in bytes per second; 0 until two samples form a delta. |
+| `net_tx_bytes_sec` | `integer` | Upload rate across active non-loopback interfaces in bytes per second; 0 until two samples form a delta. |
 | `ram_percent` | `integer` | Physical memory in use (`MemTotal - MemAvailable`), `0` to `100`, rounded down. |
 | `swap_percent` | `integer` | Swap in use, `0` to `100`, rounded down; also `0` without swap. |
 | `temp_cores` | `integer[]` | CPU temperatures in whole Celsius: per core (`coretemp`) or per CCD (`k10temp`), else one package or `acpitz` reading; empty without a sensor. An unreadable sensor is skipped. |
-| `temp_gpu` | `integer` | `amdgpu`, `nouveau` or `nvidia` hwmon temperature in whole Celsius, or `-1` without a readable one. |
+| `temp_gpu` | `integer` | `amdgpu`, `nouveau`, `nvidia`, `i915` or `xe` hwmon temperature in whole Celsius, or `-1` without a readable one. |
+
+### `DiskDevice`
+
+One physical block device and its mounted partitions.
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `name` | `string` | Kernel block device name, e.g. "nvme0n1" or "sda". |
+| `partitions` | `DiskPartition[]` | Mounted partitions under this block device. |
+| `percent` | `integer` | Aggregate percentage in use, 0 to 100. |
+| `total_bytes` | `integer` | Aggregate total bytes across mounted partitions. |
+| `used_bytes` | `integer` | Aggregate bytes in use across mounted partitions. |
+
+### `DiskPartition`
+
+One mounted partition under a physical block device.
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `mount_point` | `string` | Mountpoint path, e.g. "/" or "/home". |
+| `percent` | `integer` | Percentage in use, 0 to 100. |
+| `total_bytes` | `integer` | Total bytes on this filesystem. |
+| `used_bytes` | `integer` | Bytes in use on this filesystem. |
+
+### `GpuTelemetry`
+
+Telemetry metrics for the first detected GPU device.
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `mem_total?` | `integer` | Total VRAM in bytes, or `nil` if shared or unavailable. |
+| `mem_used?` | `integer` | Dedicated/used VRAM in bytes, or `nil` if shared or unavailable. |
+| `name` | `string` | Device model name reported by driver/tool, e.g. "Raptor Lake-P (Iris Xe Graphics)" or "NVIDIA GeForce RTX 4070". |
+| `temp?` | `integer` | GPU temperature in whole Celsius, or `nil` if no sensor reported. |
+| `util_percent?` | `integer` | GPU core utilization percentage, 0 to 100. |
 
 ## Actions
 
@@ -47,6 +86,9 @@ Call each as `mantle.sysinfo:<action>(arguments...)`; `?` marks an argument you 
 | Field | Type | Description |
 | --- | --- | --- |
 | `cpu_interval?` | `integer` | Seconds between CPU reads; `0` (the default) stops them. |
+| `disk_interval?` | `integer` | Seconds between disk space reads; `0` (the default) stops them. |
+| `gpu_interval?` | `integer` | Seconds between GPU telemetry reads; `0` (the default) stops them. |
+| `net_interval?` | `integer` | Seconds between network throughput reads; `0` (the default) stops them. |
 | `ram_interval?` | `integer` | Seconds between memory and swap reads; `0` (the default) stops them. |
 | `temp_interval?` | `integer` | Seconds between temperature reads; `0` (the default) stops them. |
 
@@ -57,7 +99,10 @@ Call each as `mantle.sysinfo:<action>(arguments...)`; `?` marks an argument you 
 | `cpu_percent` | `/proc/stat`'s `cpu` line, the delta between two reads | `cpu_interval` |
 | `ram_percent`, `swap_percent` | `/proc/meminfo` | `ram_interval` |
 | `temp_cores` | hwmon `k10temp` `Tccd*` or `coretemp` `Core *` sensors, else that chip's first sensor, else `acpitz`'s | `temp_interval` |
-| `temp_gpu` | The first sensor of hwmon `amdgpu`, `nouveau` or `nvidia` | `temp_interval` |
+| `temp_gpu` | The first sensor of hwmon `amdgpu`, `nouveau`, `nvidia`, `i915` or `xe` | `temp_interval` |
+| `disks` | `lsblk --json --bytes` block devices and mounted partitions (`FSUSED` and `FSSIZE`) | `disk_interval` |
+| `gpu` | `nvtop -s`, `nvidia-smi` or DRM sysfs | `gpu_interval` |
+| `net_rx_bytes_sec`, `net_tx_bytes_sec` | `/proc/net/dev` non-loopback interface counter deltas | `net_interval` |
 
 The chips are picked once, when `sysinfo` starts; a driver loaded later needs a Supervisor
 restart. A reading pushes only when it changed a field. Intervals live in the Supervisor, so they
@@ -65,11 +110,40 @@ outlast reloads until the next `configure`. Each read runs on the wall-clock sec
 next one after `configure`, so it lands with `mantle.system.time`'s tick and the two can share one
 layout pass.
 
+## How do I…
+
+### Show GPU, disk, and network transfer rates
+
+```lua
+mantle.sysinfo:configure({ disk_interval = 30, gpu_interval = 2, net_interval = 1 })
+
+text {
+    content = mantle.sysinfo:map(function(sysinfo)
+        if sysinfo == nil then
+            return ""
+        end
+        local gpu_str = sysinfo.gpu and sysinfo.gpu.util_percent and
+            string.format("GPU %d%%", sysinfo.gpu.util_percent) or "GPU --"
+        local disk = sysinfo.disks[1]
+        local disk_str = disk and string.format("Disk %d%%", disk.percent) or "Disk --"
+        local down_kib = sysinfo.net_rx_bytes_sec // 1024
+        local up_kib = sysinfo.net_tx_bytes_sec // 1024
+        return string.format("%s  %s  ↓%d KiB/s ↑%d KiB/s", gpu_str, disk_str, down_kib, up_kib)
+    end),
+}
+```
+
 ## Gotchas
 
 | Trap | Fix |
 | :--- | :--- |
 | `sysinfo` stays `nil` | Nothing is read until `configure`. With only `temp_interval` set on a machine without sensors, every reading equals the defaults and nothing pushes |
 | `ram_percent` stays `0` while `cpu_percent` moves | Each field updates on its own interval, and an unset one is `0` (off). Set `ram_interval` too |
+| `gpu` stays `nil` | No supported GPU tool (`nvtop`, `nvidia-smi`) or DRM sysfs was found, or `gpu_interval` is unset |
+| `disks` stays empty | `lsblk` is missing or returned no mounted partitions, or `disk_interval` is unset |
+| `net_rx_bytes_sec` stays `0` | Rate calculation needs two consecutive samples. Set `net_interval` to `1` or higher |
+| Network rates look high with bridges or tunnels | The counters include every non-loopback interface, including virtual ones; the same traffic may cross more than one |
+
+See also: [system](system.md) for clock time; [battery](battery.md) for charge and power; [network](network.md) for Wi-Fi and connectivity.
 
 Source: [`supervisor/src/capabilities/sysinfo/`](../../supervisor/src/capabilities/sysinfo/)

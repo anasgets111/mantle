@@ -41,7 +41,7 @@ needs its backend only from then. What each one does without it is in its page's
 | [`idle`](../capabilities/idle.md#backend) | `ext-idle-notify-v1`, logind |
 | [`lock`](../capabilities/lock.md#backend) | `ext-session-lock-v1`, logind, the `mantle` PAM stack ([below](#install)) |
 | [`polkit`](../capabilities/polkit.md#backend) | polkitd with its helper socket `/run/polkit/agent-helper.socket`, `$XDG_SESSION_ID`, no other polkit agent running |
-| [`sysinfo`](../capabilities/sysinfo.md#backend) | hwmon `k10temp`, `coretemp` or `acpitz` for CPU temperature; `amdgpu`, `nouveau` or `nvidia` for GPU |
+| [`sysinfo`](../capabilities/sysinfo.md#backend) | hwmon `k10temp`, `coretemp` or `acpitz` for CPU temperature; `amdgpu`, `nouveau`, `nvidia`, `i915` or `xe` for GPU temperature; `lsblk` for disks; `nvtop`, `nvidia-smi` or DRM sysfs for GPU telemetry; `/proc/net/dev` for network throughput |
 | [`updates`](../capabilities/updates.md#backend) | `pacman` and the `curl` it depends on, `dnf` or `apt-get`; `pkexec`, answered by the `polkit` agent; paru or yay for AUR |
 | [`applications`](../capabilities/applications.md#backend) | `$TERMINAL` for `Terminal=true` entries, `xdg-open` for `open_url` |
 

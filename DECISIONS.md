@@ -6894,3 +6894,11 @@ Tightens the per-evaluation Lua CPU cap from 5ms to 2.5ms and hands the evaluati
 1. **Memo handover across re-resolution.** `re_resolve_if_dirty` enters `EvaluationMemo` before taking the dirty scope and retains it through `Scene::apply_locked`. Computeds rerun during `take_scope` populate the memo table and are served directly during the layout pass instead of computing twice. Clean invalidations, empty filtered instances, or failed layout passes drop the memo and clear the table.
 2. **2.5ms CPU budget.** 5ms exceeds a 240Hz frame window (4.16ms) and consumes over 70% of a 144Hz window (6.94ms). Reducing `CPU_CAP` to 2500 µs bounds evaluation time to fit high-refresh display deadlines while preserving headroom for Lua signal chains.
 
+## 0282. Sysinfo capability: disk, GPU, and network throughput telemetry
+
+Extends `mantle.sysinfo` with `disks`, `gpu`, and network throughput telemetry (`net_rx_bytes_sec`, `net_tx_bytes_sec`), configurable via `disk_interval`, `gpu_interval`, and `net_interval` (ADR-0035).
+
+1. **Storage telemetry.** Queries `lsblk --json --bytes` to extract physical block devices and their mounted partitions, counting each filesystem once even when it has multiple mountpoints.
+2. **GPU telemetry normalization.** Linux lacks a unified GPU kernel telemetry interface. The supervisor detects available backends (`nvtop -s`, `nvidia-smi`, or AMD DRM sysfs) and maps load, memory, and temperature into `GpuTelemetry`. When no tool or device is found, `gpu` remains `nil`.
+3. **Intel Arc temperature.** Adds `"i915"` and `"xe"` to `GPU_TEMP_PREFERENCE` in `temp.rs` so discrete Intel cards report hwmon temperature alongside AMD and NVIDIA.
+4. **Network throughput.** Samples `/proc/net/dev` across non-loopback interfaces. The first tick stores baseline counters; later ticks compute transfer rates over elapsed monotonic time.

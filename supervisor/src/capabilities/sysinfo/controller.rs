@@ -1,5 +1,4 @@
-//! [`SysinfoController`] runs three configurable poll tasks, for cpu, ram+swap, and
-//! temp_cores+temp_gpu, feeding one `SysinfoState` (ADR-0035).
+//! [`SysinfoController`] runs configurable metric poll tasks feeding one `SysinfoState`.
 
 use std::time::Duration;
 
@@ -19,16 +18,34 @@ pub struct SysinfoState {
     /// CPU temperatures in whole Celsius: per core (`coretemp`) or per CCD (`k10temp`), else one
     /// package or `acpitz` reading; empty without a sensor. An unreadable sensor is skipped.
     pub temp_cores: Vec<i64>,
-    /// `amdgpu`, `nouveau` or `nvidia` hwmon temperature in whole Celsius, or `-1` without a
+    /// `amdgpu`, `nouveau`, `nvidia`, `i915` or `xe` hwmon temperature in whole Celsius, or `-1` without a
     /// readable one.
     pub temp_gpu: i64,
+    /// Physical block devices and their mounted partitions.
+    pub disks: Vec<super::disk::DiskDevice>,
+    /// GPU telemetry (load, VRAM, temperature) if a supported backend was detected; `nil` otherwise.
+    pub gpu: Option<super::gpu::GpuTelemetry>,
+    /// Download rate across active non-loopback interfaces in bytes per second; 0 until two samples form a delta.
+    pub net_rx_bytes_sec: u64,
+    /// Upload rate across active non-loopback interfaces in bytes per second; 0 until two samples form a delta.
+    pub net_tx_bytes_sec: u64,
 }
 
 impl Default for SysinfoState {
-    /// Pre-first-sample sentinels (ADR-0035): `0` for the three percent fields; `temp_gpu` uses
-    /// its IDL-mandated `-1`.
+    /// Pre-first-sample sentinels (ADR-0035, ADR-0282): `0` for the three percent fields; `temp_gpu` uses
+    /// its IDL-mandated `-1`; `disks` empty; `gpu` None; net rates 0.
     fn default() -> Self {
-        Self { cpu_percent: 0, ram_percent: 0, swap_percent: 0, temp_cores: Vec::new(), temp_gpu: -1 }
+        Self {
+            cpu_percent: 0,
+            ram_percent: 0,
+            swap_percent: 0,
+            temp_cores: Vec::new(),
+            temp_gpu: -1,
+            disks: Vec::new(),
+            gpu: None,
+            net_rx_bytes_sec: 0,
+            net_tx_bytes_sec: 0,
+        }
     }
 }
 
@@ -64,19 +81,28 @@ pub struct SysinfoConfigure {
     pub ram_interval: Option<u64>,
     /// Seconds between temperature reads; `0` (the default) stops them.
     pub temp_interval: Option<u64>,
+    /// Seconds between disk space reads; `0` (the default) stops them.
+    pub disk_interval: Option<u64>,
+    /// Seconds between GPU telemetry reads; `0` (the default) stops them.
+    pub gpu_interval: Option<u64>,
+    /// Seconds between network throughput reads; `0` (the default) stops them.
+    pub net_interval: Option<u64>,
 }
 
-/// Owns the three poll tasks and their state. Not `Clone`: synchronous, non-blocking `configure`
+/// Owns the poll tasks and their state. Not `Clone`: synchronous, non-blocking `configure`
 /// uses `&SysinfoController` directly.
 pub struct SysinfoController {
     state: std::sync::Arc<std::sync::Mutex<SysinfoState>>,
     cpu_interval: tokio::sync::watch::Sender<Duration>,
     ram_interval: tokio::sync::watch::Sender<Duration>,
     temp_interval: tokio::sync::watch::Sender<Duration>,
+    disk_interval: tokio::sync::watch::Sender<Duration>,
+    gpu_interval: tokio::sync::watch::Sender<Duration>,
+    net_interval: tokio::sync::watch::Sender<Duration>,
 }
 
 impl SysinfoController {
-    /// Spawns all three dormant (`Duration::ZERO`) until Lua calls `configure`. They share
+    /// Spawns dormant tasks (`Duration::ZERO`) until Lua calls `configure`. They share
     /// `signal_tx` and signal only after real-tick state updates. Resolve temp inputs once here;
     /// `hwmon_root` is not threaded into the task.
     pub fn new(
@@ -89,6 +115,9 @@ impl SysinfoController {
         let (cpu_interval, cpu_rx) = tokio::sync::watch::channel(Duration::ZERO);
         let (ram_interval, ram_rx) = tokio::sync::watch::channel(Duration::ZERO);
         let (temp_interval, temp_rx) = tokio::sync::watch::channel(Duration::ZERO);
+        let (disk_interval, disk_rx) = tokio::sync::watch::channel(Duration::ZERO);
+        let (gpu_interval, gpu_rx) = tokio::sync::watch::channel(Duration::ZERO);
+        let (net_interval, net_rx) = tokio::sync::watch::channel(Duration::ZERO);
 
         let core_inputs = super::temp::resolve_temp_cores_inputs(&hwmon_root);
         if core_inputs.is_empty() {
@@ -100,16 +129,39 @@ impl SysinfoController {
         }
 
         tokio::spawn(run_cpu_task(proc_root.clone(), cpu_rx, std::sync::Arc::clone(&state), signal_tx.clone()));
-        tokio::spawn(run_ram_task(proc_root, ram_rx, std::sync::Arc::clone(&state), signal_tx.clone()));
-        tokio::spawn(run_temp_task(core_inputs, gpu_input, temp_rx, std::sync::Arc::clone(&state), signal_tx));
+        tokio::spawn(run_ram_task(proc_root.clone(), ram_rx, std::sync::Arc::clone(&state), signal_tx.clone()));
+        tokio::spawn(run_temp_task(
+            core_inputs,
+            gpu_input.clone(),
+            temp_rx,
+            std::sync::Arc::clone(&state),
+            signal_tx.clone(),
+        ));
+        tokio::spawn(run_disk_task(disk_rx, std::sync::Arc::clone(&state), signal_tx.clone()));
+        tokio::spawn(run_gpu_task(
+            hwmon_root.parent().unwrap_or(&hwmon_root).join("drm"),
+            gpu_input,
+            gpu_rx,
+            std::sync::Arc::clone(&state),
+            signal_tx.clone(),
+        ));
+        tokio::spawn(run_net_task(proc_root, net_rx, std::sync::Arc::clone(&state), signal_tx));
 
-        Self { state, cpu_interval, ram_interval, temp_interval }
+        Self { state, cpu_interval, ram_interval, temp_interval, disk_interval, gpu_interval, net_interval }
     }
 
     /// Applies parsed `sysinfo:configure(cfg)`: present intervals wake, retime, or suspend their
     /// task at `0`; absent ones stay unchanged. `send` errors only after task panic, logged here.
     pub fn configure(&self, cfg: SysinfoConfigure) {
-        debug!("configure: cpu={:?} ram={:?} temp={:?}", cfg.cpu_interval, cfg.ram_interval, cfg.temp_interval);
+        debug!(
+            "configure: cpu={:?} ram={:?} temp={:?} disk={:?} gpu={:?} net={:?}",
+            cfg.cpu_interval,
+            cfg.ram_interval,
+            cfg.temp_interval,
+            cfg.disk_interval,
+            cfg.gpu_interval,
+            cfg.net_interval
+        );
         let send = |seconds: Option<u64>, sender: &tokio::sync::watch::Sender<Duration>, name: &str| {
             if let Some(sec) = seconds
                 // Capped because tokio's `interval` adds it to an `Instant`, which aborts near `i64::MAX` seconds.
@@ -121,6 +173,9 @@ impl SysinfoController {
         send(cfg.cpu_interval, &self.cpu_interval, "cpu");
         send(cfg.ram_interval, &self.ram_interval, "ram");
         send(cfg.temp_interval, &self.temp_interval, "temp");
+        send(cfg.disk_interval, &self.disk_interval, "disk");
+        send(cfg.gpu_interval, &self.gpu_interval, "gpu");
+        send(cfg.net_interval, &self.net_interval, "net");
     }
 
     /// Current combined state for `main.rs`'s signal-channel `select!` snapshot push.
@@ -181,6 +236,39 @@ async fn run_ticker<T>(mut interval_rx: tokio::sync::watch::Receiver<Duration>, 
                                 return;
                             }
                             break; // interval reconfigured -- rebuild dormant/ticking in the outer loop
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// The same schedule for reads that wait on child processes.
+async fn run_async_ticker<F, Fut>(mut interval_rx: tokio::sync::watch::Receiver<Duration>, mut tick: F)
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = ()>,
+{
+    loop {
+        let interval = *interval_rx.borrow_and_update();
+        match poll_mode(interval) {
+            PollMode::Dormant => {
+                if interval_rx.changed().await.is_err() {
+                    return;
+                }
+            }
+            PollMode::Ticking(duration) => {
+                let mut ticker = tokio::time::interval_at(
+                    crate::capabilities::system::controller::next_wall_clock_second(),
+                    duration,
+                );
+                loop {
+                    tokio::select! {
+                        _ = ticker.tick() => tick().await,
+                        changed = interval_rx.changed() => {
+                            if changed.is_err() { return; }
+                            break;
                         }
                     }
                 }
@@ -258,6 +346,76 @@ async fn run_temp_task(
     .await
 }
 
+/// `disks` task. Each tick queries storage topology via `disk::read_disks`.
+async fn run_disk_task(
+    interval_rx: tokio::sync::watch::Receiver<Duration>,
+    state: std::sync::Arc<std::sync::Mutex<SysinfoState>>,
+    signal_tx: tokio::sync::mpsc::UnboundedSender<SysinfoSignal>,
+) {
+    run_async_ticker(interval_rx, || async {
+        let disks = super::disk::read_disks().await;
+        publish_if_changed(&state, &signal_tx, |state| {
+            let changed = state.disks != disks;
+            state.disks = disks;
+            changed
+        });
+    })
+    .await
+}
+
+/// `gpu` telemetry task. Each tick samples GPU load, VRAM, and temperature via `gpu::sample_gpu`.
+async fn run_gpu_task(
+    drm_root: std::path::PathBuf,
+    gpu_input: Option<std::path::PathBuf>,
+    interval_rx: tokio::sync::watch::Receiver<Duration>,
+    state: std::sync::Arc<std::sync::Mutex<SysinfoState>>,
+    signal_tx: tokio::sync::mpsc::UnboundedSender<SysinfoSignal>,
+) {
+    run_async_ticker(interval_rx, || {
+        let temp_gpu = super::temp::read_temp_gpu(gpu_input.as_deref());
+        let (drm_root, state, signal_tx) = (&drm_root, &state, &signal_tx);
+        async move {
+            let gpu = super::gpu::sample_gpu(drm_root, temp_gpu).await;
+            publish_if_changed(state, signal_tx, |state| {
+                let changed = state.gpu != gpu;
+                state.gpu = gpu;
+                changed
+            });
+        }
+    })
+    .await
+}
+
+/// `net_rx_bytes_sec`/`net_tx_bytes_sec` task. The first tick stores a baseline sample; later ticks
+/// compute bytes per second over elapsed monotonic time.
+async fn run_net_task(
+    proc_root: std::path::PathBuf,
+    interval_rx: tokio::sync::watch::Receiver<Duration>,
+    state: std::sync::Arc<std::sync::Mutex<SysinfoState>>,
+    signal_tx: tokio::sync::mpsc::UnboundedSender<SysinfoSignal>,
+) {
+    run_ticker(interval_rx, |previous: &mut Option<(super::net::NetSample, std::time::Instant)>| {
+        match super::net::read_sample(&proc_root) {
+            Ok(sample) => {
+                let now = std::time::Instant::now();
+                if let Some((prev_sample, prev_time)) = previous.take() {
+                    let elapsed = (now - prev_time).as_secs_f64();
+                    let (rx, tx) = super::net::delta_rate(&prev_sample, &sample, elapsed);
+                    publish_if_changed(&state, &signal_tx, |state| {
+                        let changed = state.net_rx_bytes_sec != rx || state.net_tx_bytes_sec != tx;
+                        state.net_rx_bytes_sec = rx;
+                        state.net_tx_bytes_sec = tx;
+                        changed
+                    });
+                }
+                *previous = Some((sample, now));
+            }
+            Err(err) => debug!("failed to read /proc/net/dev: {err}"),
+        }
+    })
+    .await
+}
+
 #[cfg(test)]
 mod tests {
     #[test]
@@ -314,5 +472,9 @@ mod tests {
         assert_eq!(state.swap_percent, 0);
         assert_eq!(state.temp_cores, Vec::<i64>::new());
         assert_eq!(state.temp_gpu, -1, "matches the IDL's own -1 undetected sentinel, not 0");
+        assert!(state.disks.is_empty());
+        assert_eq!(state.gpu, None);
+        assert_eq!(state.net_rx_bytes_sec, 0);
+        assert_eq!(state.net_tx_bytes_sec, 0);
     }
 }

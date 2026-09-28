@@ -107,7 +107,7 @@ pages. On the LuaLS library path, `mantle.audio:get().` completes fields and
 | [`processes`](processes.md) | Programs declared with `session_process` | Use [`session_process`](../guide/processes.md#session_process), not its actions |
 | [`secrets`](secrets.md) | Status of named Secret Service writes | Values go through `secure_submit`, never Lua |
 | [`storage`](storage.md) | Each `persistent_table` file | Use [`persistent_table`](../guide/scripting.md#persistent_table), not its actions |
-| [`sysinfo`](sysinfo.md) | CPU, memory, swap, temperatures | `nil` until `configure` |
+| [`sysinfo`](sysinfo.md) | CPU, memory, swap, temperatures, disks, GPU, network throughput | `nil` until `configure` |
 | [`system`](system.md) | Wall and monotonic clocks, once a second | |
 | [`tray`](tray.md) | Tray items, artwork, menus | Mantle hosts the StatusNotifierWatcher |
 | [`updates`](updates.md) | Pending packages, install progress, reboot needed | No schedule until `configure` |

@@ -113,6 +113,21 @@
 ---@field name string Advertised name, often empty when the device broadcasts only an address.
 ---@field paired boolean Always `false`.
 
+---@class DiskDevice
+---One physical block device and its mounted partitions.
+---@field name string Kernel block device name, e.g. "nvme0n1" or "sda".
+---@field partitions DiskPartition[] Mounted partitions under this block device.
+---@field percent integer Aggregate percentage in use, 0 to 100.
+---@field total_bytes integer Aggregate total bytes across mounted partitions.
+---@field used_bytes integer Aggregate bytes in use across mounted partitions.
+
+---@class DiskPartition
+---One mounted partition under a physical block device.
+---@field mount_point string Mountpoint path, e.g. "/" or "/home".
+---@field percent integer Percentage in use, 0 to 100.
+---@field total_bytes integer Total bytes on this filesystem.
+---@field used_bytes integer Bytes in use on this filesystem.
+
 ---@class FileEntry
 ---@field modified integer Modification time in Unix seconds; `0` when unavailable.
 ---@field name string File name, e.g. `"sunrise.jpg"`.
@@ -122,6 +137,14 @@
 ---@field entries FileEntry[] Files (and symlinks to files) directly inside, minus dotfiles, filtered by extension and sorted case-insensitively by name. Relisted 200 ms after the last change.
 ---@field error? string Why listing failed, e.g. `"No such file or directory (os error 2)"`; `nil` on success. A missing or deleted folder is not watched for reappearing.
 ---@field ready boolean `false` until the first listing lands, then `true` even when empty or failed.
+
+---@class GpuTelemetry
+---Telemetry metrics for the first detected GPU device.
+---@field mem_total? integer Total VRAM in bytes, or `nil` if shared or unavailable.
+---@field mem_used? integer Dedicated/used VRAM in bytes, or `nil` if shared or unavailable.
+---@field name string Device model name reported by driver/tool, e.g. "Raptor Lake-P (Iris Xe Graphics)" or "NVIDIA GeForce RTX 4070".
+---@field temp? integer GPU temperature in whole Celsius, or `nil` if no sensor reported.
+---@field util_percent? integer GPU core utilization percentage, 0 to 100.
 
 ---@class IdleInhibitor
 ---One holder blocking idle.
@@ -280,6 +303,9 @@
 ---@class SysinfoConfigure
 ---`sysinfo:configure`'s table. Absent keys keep their interval; one wrong-typed key drops the call.
 ---@field cpu_interval? integer Seconds between CPU reads; `0` (the default) stops them.
+---@field disk_interval? integer Seconds between disk space reads; `0` (the default) stops them.
+---@field gpu_interval? integer Seconds between GPU telemetry reads; `0` (the default) stops them.
+---@field net_interval? integer Seconds between network throughput reads; `0` (the default) stops them.
 ---@field ram_interval? integer Seconds between memory and swap reads; `0` (the default) stops them.
 ---@field temp_interval? integer Seconds between temperature reads; `0` (the default) stops them.
 
@@ -471,10 +497,14 @@
 ---`mantle.sysinfo`'s payload; `nil` until `configure` sets an interval and a reading changes a field.
 ---Pushes only on a change (ADR-0035).
 ---@field cpu_percent integer CPU utilization across all cores, `0` to `100`, rounded down; `0` until two samples form a delta.
+---@field disks DiskDevice[] Physical block devices and their mounted partitions.
+---@field gpu? GpuTelemetry GPU telemetry (load, VRAM, temperature) if a supported backend was detected; `nil` otherwise.
+---@field net_rx_bytes_sec integer Download rate across active non-loopback interfaces in bytes per second; 0 until two samples form a delta.
+---@field net_tx_bytes_sec integer Upload rate across active non-loopback interfaces in bytes per second; 0 until two samples form a delta.
 ---@field ram_percent integer Physical memory in use (`MemTotal - MemAvailable`), `0` to `100`, rounded down.
 ---@field swap_percent integer Swap in use, `0` to `100`, rounded down; also `0` without swap.
 ---@field temp_cores integer[] CPU temperatures in whole Celsius: per core (`coretemp`) or per CCD (`k10temp`), else one package or `acpitz` reading; empty without a sensor. An unreadable sensor is skipped.
----@field temp_gpu integer `amdgpu`, `nouveau` or `nvidia` hwmon temperature in whole Celsius, or `-1` without a readable one.
+---@field temp_gpu integer `amdgpu`, `nouveau`, `nvidia`, `i915` or `xe` hwmon temperature in whole Celsius, or `-1` without a readable one.
 
 ---@class SystemState
 ---`mantle.system`'s payload, pushed on each tick of `interval`.
@@ -747,7 +777,7 @@ local PrivacyCapability = {}
 ---@field tray TrayCapability StatusNotifierItem: registered tray items with artwork, status and menus.
 ---@field notifications NotificationsCapability The notification server: the newest 20 notifications and do-not-disturb.
 ---@field mpris MprisCapability MPRIS: media players with metadata, controls, TrackList and Playlists.
----@field sysinfo SysinfoCapability CPU, memory and swap use, CPU and GPU temperatures. `nil` until `configure` sets intervals.
+---@field sysinfo SysinfoCapability CPU, memory, swap, disks, GPU, network and temperatures. `nil` until `configure` sets intervals.
 ---@field keyboard KeyboardCapability Lock keys, the active layout and the keyboard backlight.
 ---@field privacy PrivacyCapability Apps using the camera, microphone or screen capture right now.
 ---@field updates UpdatesCapability Pending package upgrades (pacman, optionally AUR), install progress and whether a reboot is due.

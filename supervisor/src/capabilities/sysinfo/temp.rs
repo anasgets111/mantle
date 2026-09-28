@@ -75,8 +75,8 @@ const CPU_TEMP_PREFERENCE: &[&str] = &["k10temp", "coretemp"];
 /// Generic ACPI thermal-zone fallback when neither `k10temp` nor `coretemp` exists; every machine
 /// has this, and its one sensor becomes a one-element array.
 const GENERIC_TEMP_FALLBACK: &str = "acpitz";
-/// Controller-construction preference for `temp_gpu` (ADR-0035).
-const GPU_TEMP_PREFERENCE: &[&str] = &["amdgpu", "nouveau", "nvidia"];
+/// Controller-construction preference for `temp_gpu` (ADR-0035, ADR-0282).
+const GPU_TEMP_PREFERENCE: &[&str] = &["amdgpu", "nouveau", "nvidia", "i915", "xe"];
 
 /// `temp_cores` inputs: a CPU chip's per-core sensors, else its primary one, else `acpitz`'s
 /// (ADR-0035). Resolved once; onboard sensors do not hotplug.
@@ -252,6 +252,14 @@ mod tests {
         write_chip(dir.path(), "hwmon2", "amdgpu");
         write_sensor(&dir.path().join("hwmon2"), 1, "edge", 45000);
         assert_eq!(resolve_and_read_temp_gpu(dir.path()), 45);
+    }
+
+    #[test]
+    fn read_temp_gpu_reads_intel_arc_sensor() {
+        let dir = tempfile::tempdir().unwrap();
+        write_chip(dir.path(), "hwmon3", "xe");
+        write_sensor(&dir.path().join("hwmon3"), 1, "", 52000);
+        assert_eq!(resolve_and_read_temp_gpu(dir.path()), 52);
     }
 
     #[test]

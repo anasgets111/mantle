@@ -447,6 +447,20 @@ pub fn resolve_properties(mut properties: PropMap, kind: &str, lua: &Lua) -> Res
     Ok(properties)
 }
 
+/// Settle derived property outputs before a retained node checks whether its reads changed.
+pub(crate) fn settle_property_signals(properties: &PropMap, kind: &str, lua: &Lua) -> Result<(), LayoutError> {
+    let mut keys: Vec<_> = properties.keys().copied().collect();
+    keys.sort_unstable();
+    for property in keys {
+        if !is_structural_property(kind, property)
+            && let Some(signal) = signal_at(properties, property)
+        {
+            resolve_signal(&signal, kind, property, lua)?;
+        }
+    }
+    Ok(())
+}
+
 /// `signal`'s value for `property`, `None` for nil: the property is absent.
 fn resolve_signal(
     signal: &signal::Signal,

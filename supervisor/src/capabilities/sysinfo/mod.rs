@@ -3,6 +3,9 @@
 
 pub mod controller;
 pub mod cpu;
+pub mod disk;
+pub mod gpu;
+pub mod net;
 pub mod ram;
 pub mod temp;
 

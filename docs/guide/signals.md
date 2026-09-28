@@ -100,7 +100,8 @@ again after changing it in place is a write.
 only when the result changed ([what a node reads again](#what-a-node-reads-again)): a scalar or a
 plain-data table by value, anything holding a function, signal or metatable on every run. An
 `HH:MM` label or a `{ { text = hour, bold = true } }` run list mapped from a per-second snapshot
-re-resolves once a minute. Within one pass, a derived signal read by
+re-resolves once a minute. Table comparison stops after 256 entries; larger results count as
+changed on each input write. Within one pass, a derived signal read by
 several properties runs once. Keep their functions cheap and side-effect free: no `:set`, no
 process, no action. They run under the CPU budget and nesting limit described in
 [runtime](runtime.md). Side effects belong in `on_click`, a capability's

@@ -121,7 +121,7 @@ roster! {
     Tray => "tray", "StatusNotifierItem: registered tray items with artwork, status and menus.",
     Notifications => "notifications", "The notification server: the newest 20 notifications and do-not-disturb.",
     Mpris => "mpris", "MPRIS: media players with metadata, controls, TrackList and Playlists.",
-    Sysinfo => "sysinfo", "CPU, memory and swap use, CPU and GPU temperatures. `nil` until `configure` sets intervals.",
+    Sysinfo => "sysinfo", "CPU, memory, swap, disks, GPU, network and temperatures. `nil` until `configure` sets intervals.",
     Keyboard => "keyboard", "Lock keys, the active layout and the keyboard backlight.",
     Privacy => "privacy", "Apps using the camera, microphone or screen capture right now.",
     Updates => "updates", "Pending package upgrades (pacman, optionally AUR), install progress and whether a reboot is due.",

@@ -276,16 +276,25 @@ impl ListMemo {
     /// Whether a build now would read the same elements and keys the last one did. When it would,
     /// those reads are noted as this pass's, so the instance stays a reader of what the skipped
     /// build read; each kept item notes its own through [`ItemMemo::holds`].
-    pub fn still_holds(&self, properties: &PropMap, lua: &Lua) -> bool {
+    pub fn still_holds(&self, properties: &PropMap, lua: &Lua) -> Result<bool, LayoutError> {
         let same = |a: &Value, b: &Value| a.type_name() == b.type_name() && a.to_pointer() == b.to_pointer();
-        let holds = self.lua == lua.weak()
+        let same_inputs = self.lua == lua.weak()
             && self.inputs.iter().zip(&list_inputs(properties)).all(|(a, b)| same(a, b))
-            && list::limit.read(properties).is_ok_and(|limit| limit == self.limit)
-            && !signal::written_since(self.stamp, &self.cells);
+            && list::limit.read(properties).is_ok_and(|limit| limit == self.limit);
+        if !same_inputs {
+            return Ok(false);
+        }
+        if signal::written_since(self.stamp, &self.cells)
+            && let Some(source) = signal_at(properties, "source")
+        {
+            // Settle a mapped source before deciding whether its output changed.
+            resolve_signal(&source, "list", "source", lua)?;
+        }
+        let holds = !signal::written_since(self.stamp, &self.cells);
         if holds {
             signal::note_reads(lua, &self.cells);
         }
-        holds
+        Ok(holds)
     }
 
     /// Whether the last build read `cell`, for the list or any of its items.

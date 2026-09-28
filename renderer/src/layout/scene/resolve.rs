@@ -12,8 +12,8 @@ use crate::layout::node::{self, LayoutError, PaintStyle, PropMap, Tween};
 use crate::lua::signal::{self, CellId, ComputedFrame};
 
 /// What a node's properties were last resolved from: its raw declaration, the write clock taken
-/// before the resolve read anything, and every cell it read. While the declaration is the same and
-/// none of the cells has been written, a resolve now would answer what the last one did.
+/// before the resolve read anything, and every cell it read. With the same declaration, a resolve
+/// can be skipped when those cells still hold after derived property outputs have settled.
 ///
 /// Exact for signals and blind to anything else a getter reads: `os.time()`, an upvalue, a file.
 /// That is the contract `docs/guide/signals.md` states.
@@ -58,13 +58,21 @@ pub(super) fn resolve(
     if let Some(slot) = node::signal_at(&raw, "scroll").and_then(|signal| signal.cell_id()) {
         signal::note_reads(lua, &[slot]);
     }
-    if let Some(r) = retained.as_deref_mut()
-        && let Some(memo) = r.resolve_memo.take_if(|memo| {
-            memo.lua == lua.weak()
-                && !signal::written_since(memo.stamp, &memo.cells)
-                && same_declaration(&memo.raw, &raw)
-        })
+    let keep = if let Some(memo) = retained.as_deref().and_then(|r| r.resolve_memo.as_ref())
+        && memo.lua == lua.weak()
+        && same_declaration(&memo.raw, &raw)
     {
+        if signal::written_since(memo.stamp, &memo.cells) {
+            node::settle_property_signals(&raw, kind, lua)?;
+        }
+        !signal::written_since(memo.stamp, &memo.cells)
+    } else {
+        false
+    };
+    if let Some(r) = retained.as_deref_mut()
+        && keep
+    {
+        let memo = r.resolve_memo.take().expect("keep requires a resolve memo");
         signal::note_reads(lua, &memo.cells);
         let text_memo = if text_measure_tweening(kind, &r.tweens) { None } else { r.text_memo };
         let mut properties = std::mem::take(&mut r.properties);
@@ -197,6 +205,28 @@ mod tests {
         bar.run(r##"accent:set("#202020")"##);
         assert_eq!(bar.runs(), 2);
         assert_eq!(string(bar.child(1), "background"), "#202020");
+    }
+
+    #[test]
+    fn a_node_keeps_its_parse_when_a_mapped_value_stays_equal() {
+        let mut bar = Fixture::new(
+            r#"snapshot = state("snapshot", { width = 10, net = 0 })
+            return panel { id = "bar", child = column { children = {
+                rect { width = snapshot:map(function(s)
+                    if s.net == "bad" then error("bad width") end
+                    return s.width
+                end):map(function(width) return width end), height = 10 },
+            } } }"#,
+        );
+        let before = bar.child(0).resolve_memo.as_ref().unwrap().clone();
+        bar.run(r#"snapshot:set({ width = 10, net = 2 })"#);
+        assert!(std::rc::Rc::ptr_eq(&before, bar.child(0).resolve_memo.as_ref().unwrap()));
+        bar.run(r#"snapshot:set({ width = 20, net = 2 })"#);
+        assert_eq!(bar.child(0).rect.width, 20.0);
+        bar.lua.load(r#"snapshot:set({ width = 20, net = "bad" })"#).exec().unwrap();
+        assert!(bar.apply().unwrap_err().to_string().contains("bad width"));
+        bar.run(r#"snapshot:set({ width = 20, net = 3 })"#);
+        assert_eq!(bar.child(0).rect.width, 20.0);
     }
 
     /// `hover` and `scroll` are copied raw and read off the retained node, so a kept node has to

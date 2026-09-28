@@ -352,6 +352,31 @@
   },
   "sysinfo": {
     "cpu_percent": 1,
+    "disks": [
+      {
+        "name": "sample",
+        "partitions": [
+          {
+            "mount_point": "sample",
+            "percent": 1,
+            "total_bytes": 1,
+            "used_bytes": 1
+          }
+        ],
+        "percent": 1,
+        "total_bytes": 1,
+        "used_bytes": 1
+      }
+    ],
+    "gpu": {
+      "mem_total": 1,
+      "mem_used": 1,
+      "name": "sample",
+      "temp": 1,
+      "util_percent": 1
+    },
+    "net_rx_bytes_sec": 1,
+    "net_tx_bytes_sec": 1,
     "ram_percent": 1,
     "swap_percent": 1,
     "temp_cores": [
