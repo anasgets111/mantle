@@ -1,0 +1,33 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 3440 1440" width="3440" height="1440" preserveAspectRatio="xMidYMid slice">
+<defs>
+<linearGradient id="base" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#0a1416"/><stop offset=".6" stop-color="#0c1719"/><stop offset="1" stop-color="#071012"/></linearGradient>
+<radialGradient id="teal"><stop offset="0" stop-color="#94e2d5" stop-opacity=".36"/><stop offset=".45" stop-color="#94e2d5" stop-opacity=".12"/><stop offset="1" stop-color="#94e2d5" stop-opacity="0"/></radialGradient>
+<radialGradient id="green"><stop offset="0" stop-color="#a6e3a1" stop-opacity=".22"/><stop offset=".45" stop-color="#a6e3a1" stop-opacity=".075"/><stop offset="1" stop-color="#a6e3a1" stop-opacity="0"/></radialGradient>
+<radialGradient id="sapphire"><stop offset="0" stop-color="#74c7ec" stop-opacity=".26"/><stop offset=".45" stop-color="#74c7ec" stop-opacity=".09"/><stop offset="1" stop-color="#74c7ec" stop-opacity="0"/></radialGradient>
+<pattern id="dots" width="36" height="36" patternUnits="userSpaceOnUse"><circle cx="18" cy="18" r="1.4" fill="#94e2d5" fill-opacity=".16"/></pattern>
+<radialGradient id="fade" cx=".22" cy=".3" r=".5"><stop offset="0" stop-color="#fff"/><stop offset="1" stop-color="#000"/></radialGradient>
+<mask id="dotmask"><rect width="100%" height="100%" fill="url(#fade)"/></mask>
+<filter id="grain" x="0" y="0" width="100%" height="100%"><feTurbulence type="fractalNoise" baseFrequency=".85" numOctaves="2" stitchTiles="stitch"/><feColorMatrix type="saturate" values="0"/><feComponentTransfer><feFuncA type="table" tableValues="0 .07"/></feComponentTransfer></filter>
+</defs>
+<rect width="3440" height="1440" fill="url(#base)"/>
+<ellipse cx="960" cy="560" rx="900" ry="640" fill="url(#teal)"/>
+<ellipse cx="200" cy="1300" rx="900" ry="600" fill="url(#green)"/>
+<ellipse cx="3000" cy="220" rx="1000" ry="700" fill="url(#sapphire)"/>
+<rect width="3440" height="1440" fill="url(#dots)" mask="url(#dotmask)"/>
+<path d="M0 1040 C600 900 1200 1180 1800 1060 S3000 900 3440 1020 V1440 H0 Z" fill="#94e2d5" fill-opacity=".07"/>
+<path d="M0 1140 C700 1020 1300 1300 2000 1180 S3000 1060 3440 1160 V1440 H0 Z" fill="#a6e3a1" fill-opacity=".06"/>
+<path d="M0 1260 C500 1180 1400 1380 2100 1290 S3000 1220 3440 1300 V1440 H0 Z" fill="#74c7ec" fill-opacity=".08"/>
+<g fill="none" stroke-linecap="round">
+<path d="M0 1040 C600 900 1200 1180 1800 1060 S3000 900 3440 1020" stroke="#94e2d5" stroke-opacity=".28" stroke-width="2.4"/>
+<path d="M0 1140 C700 1020 1300 1300 2000 1180 S3000 1060 3440 1160" stroke="#a6e3a1" stroke-opacity=".22" stroke-width="2"/>
+<path d="M0 1260 C500 1180 1400 1380 2100 1290 S3000 1220 3440 1300" stroke="#74c7ec" stroke-opacity=".26" stroke-width="2.4"/>
+</g>
+<g transform="translate(674 250) scale(1.1)" stroke-linejoin="round">
+<path d="M0 420 V110 Q0 10 95 40 L260 175 V265 L125 150 V420 Z" fill="#94e2d5" fill-opacity=".04" stroke="#94e2d5" stroke-opacity=".4" stroke-width="3"/>
+<path d="M0 420 V110 Q0 10 95 40 L260 175 V265 L125 150 V420 Z" fill="#94e2d5" fill-opacity=".04" stroke="#94e2d5" stroke-opacity=".4" stroke-width="3" transform="translate(520 0) scale(-1 1)"/>
+<path d="M150 262 L260 334 L370 262 L370 292 L260 364 L150 292 Z" fill="#94e2d5" fill-opacity=".3"/>
+<path d="M150 314 L260 386 L370 314 L370 344 L260 416 L150 344 Z" fill="#a6e3a1" fill-opacity=".22"/>
+<path d="M150 366 L260 438 L370 366 L370 396 L260 468 L150 396 Z" fill="#74c7ec" fill-opacity=".16"/>
+</g>
+<rect width="3440" height="1440" filter="url(#grain)"/>
+</svg>

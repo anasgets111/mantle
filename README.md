@@ -50,7 +50,7 @@ are listed, but running there is untested for now.
 | `just docs` / `just book` | Serve the docs site locally / build it and check every link |
 | `just fmt` | Formats Rust and Lua |
 | `just swap` | Optimised build into `$CARGO_HOME/bin`, then restarts the running shell detached |
-| `just demo [out]` | Records the demo video to `out` (default `~/Videos/mantle-demo.mp4`), stopping and then restarting your running shells; needs `gpu-screen-recorder` |
+| `just demo [out]` | Records the demo video to `out` (default `~/Videos/mantle-demo.mp4`), stopping and then restarting your running shells; needs `gpu-screen-recorder` and `rsvg-convert` |
 
 Autostart: `spawn-at-startup "mantle"` in niri, `exec-once = mantle` in Hyprland.
 

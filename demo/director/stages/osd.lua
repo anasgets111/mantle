@@ -1,5 +1,6 @@
 -- The cookbook's volume OSD, sized for the recording and centred on the 56% of the screen the
 -- director's code pane leaves open.
+local theme = require("theme")
 local osd = state("volume_osd", { volume = 0, muted = false })
 
 mantle.audio:on_change(function(audio, previous)
@@ -33,9 +34,9 @@ return panel {
         padding = { left = 22, right = 22 },
         align_v = "Center",
         radius = 32,
-        background = "#1e1e2ef2",
+        background = theme.fade("base", "f2"),
         border_width = 1,
-        border_color = "#45475a",
+        border_color = theme.overlay,
         opacity = shown:map(function(on) return on and 1 or 0 end),
         translate = shown:map(function(on) return { y = on and 0 or -16 } end),
         animate = {
@@ -43,18 +44,18 @@ return panel {
             translate = { duration = 260, easing = "OutBack", from = { y = -16 } },
         },
         children = {
-            icon { name = "audio-volume-high-symbolic", size = 28, foreground = "#cdd6f4", align_v = "Center" },
+            icon { name = "audio-volume-high-symbolic", size = 28, foreground = theme.text, align_v = "Center" },
             rect {
                 width = "Fill",
                 height = 8,
                 radius = 4,
                 align_v = "Center",
-                background = "#45475a",
+                background = theme.overlay,
                 children = {
                     rect {
                         height = "Fill",
                         radius = 4,
-                        background = "#89b4fa",
+                        background = theme.accent,
                         width = osd:map(function(entry) return percent(entry) .. "%" end),
                         animate = { width = { duration = 160, easing = "OutCubic" } },
                     },
@@ -66,7 +67,7 @@ return panel {
                 text_align = "End",
                 align_v = "Center",
                 font_size = 20,
-                foreground = "#cdd6f4",
+                foreground = theme.text,
             },
         },
     },

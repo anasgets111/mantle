@@ -1,6 +1,7 @@
 -- Demo: the director feeds `mock_notifications` in `mantle.notifications`' shape and types into
 -- `reply_draft` with `mantle set`, so no real notification of yours reaches the take. A real shell
 -- reads `mantle.notifications` and answers with `mantle.notifications:reply(id, text)`.
+local theme = require("theme")
 local feed = state("mock_notifications", { dnd = false, feed = {} })
 local draft = state("reply_draft", "")
 local sent = state("reply_sent", false)
@@ -22,8 +23,6 @@ local function body_text(entry)
     return table.concat(out)
 end
 
-local AVATARS = { "#f5c2e7", "#94e2d5", "#fab387", "#89dceb", "#cba6f7" }
-
 local function avatar(name)
     local sum = 0
     for k = 1, #name do
@@ -33,7 +32,7 @@ local function avatar(name)
         width = 64,
         height = 64,
         radius = 32,
-        background = AVATARS[sum % #AVATARS + 1],
+        background = theme.avatar(sum % 5 + 1),
         children = {
             text {
                 content = name:match("^[%z\1-\127\194-\244][\128-\191]*") or "?",
@@ -41,7 +40,7 @@ local function avatar(name)
                 align_v = "Center",
                 font_size = 28,
                 font_weight = 700,
-                foreground = "#11111b",
+                foreground = theme.crust,
             },
         },
     }
@@ -52,7 +51,7 @@ local function caret()
         width = 2,
         height = 26,
         align_v = "Center",
-        background = "#f5e0dc",
+        background = theme.cursor,
         opacity = 1,
         animate = {
             opacity = { duration = 1000, keyframes = { 1, { value = 1, duration = 500 }, 0, 1 }, loops = "Infinite" },
@@ -70,9 +69,11 @@ local function reply_field(entry)
                 width = "Fill",
                 height = "Fill",
                 radius = 14,
-                background = "#11111b",
+                background = theme.crust,
                 border_width = 1,
-                border_color = draft:map(function(d) return d == "" and "#45475a" or "#89b4fa" end),
+                border_color = computed({ draft, theme.overlay, theme.accent }, function(d, idle, typing)
+                    return d == "" and idle or typing
+                end),
                 animate = { border_color = 200 },
                 padding = { left = 18, right = 18 },
                 children = draft:map(function(d)
@@ -81,7 +82,7 @@ local function reply_field(entry)
                         content = typed and d or (entry.reply_placeholder or "Reply"),
                         align_v = "Center",
                         font_size = 22,
-                        foreground = typed and "#cdd6f4" or "#6c7086",
+                        foreground = typed and theme.text or theme.muted,
                     }
                     local line = rtl(typed and d or body_text(entry))
                         and { rect { width = "Fill" }, caret(), label }
@@ -93,7 +94,10 @@ local function reply_field(entry)
                 width = 96,
                 height = "Fill",
                 radius = 14,
-                background = sent:map(function(s) return s and "#a6e3a1" or "#89b4fa" end),
+                background = computed({ sent, theme.success, theme.accent }, function(s, done, ready)
+                    return s and done or
+                        ready
+                end),
                 opacity = draft:map(function(d) return d == "" and 0.4 or 1 end),
                 animate = { background = 200, opacity = 200 },
                 children = {
@@ -102,7 +106,7 @@ local function reply_field(entry)
                         size = 26,
                         align_h = "Center",
                         align_v = "Center",
-                        foreground = "#11111b",
+                        foreground = theme.crust,
                     },
                 },
             },
@@ -114,8 +118,8 @@ local function action_button(action)
     return rect {
         padding = { left = 18, right = 18, top = 10, bottom = 10 },
         radius = 12,
-        background = "#313244",
-        children = { text { content = action.label, font_size = 20, foreground = "#cdd6f4" } },
+        background = theme.surface,
+        children = { text { content = action.label, font_size = 20, foreground = theme.text } },
     }
 end
 
@@ -130,9 +134,9 @@ local function card(entry)
         padding = 22,
         spacing = 16,
         radius = 22,
-        background = "#1e1e2ef5",
+        background = theme.fade("base", "f5"),
         border_width = 1,
-        border_color = "#45475a",
+        border_color = theme.overlay,
         opacity = sent:map(function(s) return s and 0 or 1 end),
         translate = { x = 0, y = 0 },
         animate = {
@@ -145,9 +149,9 @@ local function card(entry)
                 spacing = 10,
                 children = {
                     icon { name = entry.app_icon or "dialog-information", size = 26, align_v = "Center" },
-                    text { content = entry.app_name, align_v = "Center", font_size = 18, foreground = "#a6adc8" },
+                    text { content = entry.app_name, align_v = "Center", font_size = 18, foreground = theme.subtext },
                     rect { width = "Fill" },
-                    text { content = "now", align_v = "Center", font_size = 18, foreground = "#6c7086" },
+                    text { content = "now", align_v = "Center", font_size = 18, foreground = theme.muted },
                 },
             },
             row {
@@ -166,7 +170,7 @@ local function card(entry)
                                 text_align = "Start",
                                 font_size = 26,
                                 font_weight = 700,
-                                foreground = "#cdd6f4",
+                                foreground = theme.text,
                             },
                             text {
                                 content = body_text(entry),
@@ -174,7 +178,7 @@ local function card(entry)
                                 wrap = "Word",
                                 text_align = "Start",
                                 font_size = 22,
-                                foreground = "#bac2de",
+                                foreground = theme.subtext1,
                             },
                         },
                     },

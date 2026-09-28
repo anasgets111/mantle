@@ -1,0 +1,36 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 3440 1440" width="3440" height="1440" preserveAspectRatio="xMidYMid slice">
+<defs>
+<linearGradient id="base" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#0f0b18"/><stop offset=".7" stop-color="#1a1024"/><stop offset="1" stop-color="#120b1a"/></linearGradient>
+<radialGradient id="mauve"><stop offset="0" stop-color="#cba6f7" stop-opacity=".3"/><stop offset=".45" stop-color="#cba6f7" stop-opacity=".1"/><stop offset="1" stop-color="#cba6f7" stop-opacity="0"/></radialGradient>
+<radialGradient id="pink"><stop offset="0" stop-color="#f5c2e7" stop-opacity=".26"/><stop offset=".45" stop-color="#f5c2e7" stop-opacity=".09"/><stop offset="1" stop-color="#f5c2e7" stop-opacity="0"/></radialGradient>
+<linearGradient id="sun" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#f5c2e7" stop-opacity=".55"/><stop offset=".5" stop-color="#eba0ac" stop-opacity=".4"/><stop offset="1" stop-color="#cba6f7" stop-opacity=".2"/></linearGradient>
+<g id="tile"><path d="M0 420 V110 Q0 10 95 40 L260 175 V265 L125 150 V420 Z"/><path d="M0 420 V110 Q0 10 95 40 L260 175 V265 L125 150 V420 Z" transform="translate(520 0) scale(-1 1)"/><path d="M150 262 L260 334 L370 262 L370 292 L260 364 L150 292 Z"/></g>
+<pattern id="marks" width="170" height="150" patternUnits="userSpaceOnUse"><use href="#tile" transform="translate(54 47) scale(.12)" fill="#f5c2e7" fill-opacity=".06"/></pattern>
+<radialGradient id="fade" cx=".75" cy=".25" r=".55"><stop offset="0" stop-color="#fff"/><stop offset="1" stop-color="#000"/></radialGradient>
+<mask id="markmask"><rect width="100%" height="100%" fill="url(#fade)"/></mask>
+<mask id="bands"><rect width="100%" height="100%" fill="#fff"/><g fill="#000">
+<rect x="0" y="1120" width="3440" height="5"/>
+<rect x="0" y="1170" width="3440" height="8"/>
+<rect x="0" y="1216" width="3440" height="11"/>
+<rect x="0" y="1258" width="3440" height="14"/>
+<rect x="0" y="1296" width="3440" height="18"/>
+<rect x="0" y="1332" width="3440" height="22"/>
+<rect x="0" y="1370" width="3440" height="70"/>
+</g></mask>
+<filter id="grain" x="0" y="0" width="100%" height="100%"><feTurbulence type="fractalNoise" baseFrequency=".85" numOctaves="2" stitchTiles="stitch"/><feColorMatrix type="saturate" values="0"/><feComponentTransfer><feFuncA type="table" tableValues="0 .07"/></feComponentTransfer></filter>
+</defs>
+<rect width="3440" height="1440" fill="url(#base)"/>
+<ellipse cx="2700" cy="300" rx="1100" ry="700" fill="url(#mauve)"/>
+<ellipse cx="960" cy="1200" rx="1300" ry="700" fill="url(#pink)"/>
+<rect width="3440" height="1440" fill="url(#marks)" mask="url(#markmask)"/>
+<circle cx="960" cy="1250" r="620" fill="url(#sun)" mask="url(#bands)"/>
+<path d="M0 1370 H3440" stroke="#f5c2e7" stroke-opacity=".22" stroke-width="2"/>
+<g transform="translate(648 380) scale(1.2)" stroke-linejoin="round">
+<path d="M0 420 V110 Q0 10 95 40 L260 175 V265 L125 150 V420 Z" fill="#120b1a" fill-opacity=".88" stroke="#f5c2e7" stroke-opacity=".34" stroke-width="3"/>
+<path d="M0 420 V110 Q0 10 95 40 L260 175 V265 L125 150 V420 Z" fill="#120b1a" fill-opacity=".88" stroke="#f5c2e7" stroke-opacity=".34" stroke-width="3" transform="translate(520 0) scale(-1 1)"/>
+<path d="M150 262 L260 334 L370 262 L370 292 L260 364 L150 292 Z" fill="#f5c2e7" fill-opacity=".42"/>
+<path d="M150 314 L260 386 L370 314 L370 344 L260 416 L150 344 Z" fill="#eba0ac" fill-opacity=".3"/>
+<path d="M150 366 L260 438 L370 366 L370 396 L260 468 L150 396 Z" fill="#cba6f7" fill-opacity=".2"/>
+</g>
+<rect width="3440" height="1440" filter="url(#grain)"/>
+</svg>

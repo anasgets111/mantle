@@ -6,6 +6,7 @@ local syntax = require("lua_syntax")
 local edits = require("edits")
 local session = require("session")
 local mockups = require("mockups")
+local theme = require("stages.theme")
 
 fonts {
     "CaskaydiaCove Nerd Font Propo",
@@ -32,12 +33,29 @@ local OUT = env("MANTLE_DEMO_OUT", env("HOME", "") .. "/Videos/mantle-demo.mp4")
 local STAGES = mantle.config_dir .. "/stages/"
 local WORDMARK = mantle.config_dir .. "/../../docs/theme/m.png"
 local WALLPAPER = mantle.config_dir .. "/wallpaper.svg"
+local POINTER = mantle.config_dir .. "/pointer.svg"
+local COVERS = mantle.config_dir .. "/covers"
 local STAGE_NAMES = {
-    "00-starter", "01-style", "02-workspaces", "03-launcher", "04-restyle", "05-shader", "06-osd",
-    "07-notifications", "08-privacy", "09-idle", "10-banner",
+    "00-starter", "01-style", "02-workspaces", "03-launcher", "04-restyle", "05-search", "06-shader",
+    "07-wallpaper", "08-taskbar", "09-overview", "10-osd", "11-media", "12-control", "13-notifications",
+    "14-privacy", "15-idle", "16-updates", "17-lock", "18-sysinfo", "19-banner",
 }
 -- Copied beside the demo's shell.lua at setup, for the stages that require or read them.
-local MODULES = { "banner.lua", "osd.lua", "notifications.lua", "privacy.lua", "idle.lua", "aurora.frag" }
+local MODULES = {
+    "banner.lua", "osd.lua", "notifications.lua", "privacy.lua", "idle.lua", "wallpaper.lua", "theme.lua",
+    "taskbar.lua", "overview.lua", "targets.lua", "media.lua", "tray.lua", "control.lua", "updates.lua",
+    "polkit.lua", "lock.lua", "sysinfo.lua",
+    "aurora.frag", "chevron.frag",
+}
+-- Rendered to PNG in the demo's `wallpapers/` at setup: `palette.quantize` reads no SVG. `mantle`
+-- is the logo art the take opens on, so the last pick comes back to it.
+local WALLPAPERS = {
+    dusk = mantle.config_dir .. "/wallpapers/dusk.svg",
+    ember = mantle.config_dir .. "/wallpapers/ember.svg",
+    tide = mantle.config_dir .. "/wallpapers/tide.svg",
+    mantle = WALLPAPER,
+}
+local WALLPAPER_ASPECT = 3440 / 1440
 
 -- The buffer lives in these locals; `version` is the signal that says it changed.
 local lines = {}
@@ -53,11 +71,14 @@ local status = state("demo_status", "saved")
 local caption = state("demo_caption", "")
 local detail = state("demo_detail", "")
 local keys = state("demo_keys", "")
+local key_command = state("demo_key_command", "")
 local card = state("demo_card", "title")
 local card_shown = state("demo_card_shown", true)
 local char_box = geometry("demo_char_box")
 local meter = state("demo_meter", "")
 local meter_hot = state("demo_meter_hot", false)
+-- The picked wallpaper, for the cards and the browser mockup; the logo art until the first pick.
+local backdrop = state("demo_backdrop", WALLPAPER)
 
 local function bump() version:set(version:get() + 1) end
 
@@ -76,12 +97,12 @@ end
 -- Code pane ---------------------------------------------------------------------------------
 
 -- Only the lines in view: a translated full-length text is not cut by its parent's clip.
-local code = computed({ version, top }, function(_, first)
+local code = computed({ version, top, theme.state }, function(_, first, t)
     local runs = {}
     for n = first + 1, math.min(#lines, first + rows()) do
-        runs[#runs + 1] = { text = string.format("%4d  ", n), color = n == caret.line and "#a6adc8" or "#45475a" }
+        runs[#runs + 1] = { text = string.format("%4d  ", n), color = n == caret.line and t.subtext or t.overlay }
         for _, run in ipairs(syntax.highlight(lines[n])) do
-            runs[#runs + 1] = run
+            runs[#runs + 1] = { text = run.text, color = t[syntax.roles[run.kind]] }
         end
         runs[#runs + 1] = { text = "\n" }
     end
@@ -90,7 +111,8 @@ end)
 
 local caret_row = computed({ version, top }, function(_, first) return (caret.line - first - 1) * LINE end)
 
-local caret_at = computed({ caret_row, char_box }, function(y, box)
+-- `version` as well: typing along one line moves `caret.col` but leaves `caret_row` unchanged.
+local caret_at = computed({ version, caret_row, char_box }, function(_, y, box)
     local width = (box and box.width or 0) / 100
     return { x = (GUTTER + caret.col - 1) * width, y = y + 5 }
 end)
@@ -106,7 +128,7 @@ local code_pane = panel {
     margin = { top = 16, right = 16, bottom = 16 },
     width = pane_width,
     height = "Fill",
-    background = "#11111bf2",
+    background = theme.fade("crust", "f2"),
     radius = 18,
     child = column {
         width = "Fill",
@@ -118,7 +140,7 @@ local code_pane = panel {
                 padding = { left = 24, right = 24 },
                 spacing = 12,
                 children = {
-                    text { content = "shell.lua", align_v = "Center", font = MONO, font_size = 20, foreground = "#cdd6f4" },
+                    text { content = "shell.lua", align_v = "Center", font = MONO, font_size = 20, foreground = theme.text },
                     rect { width = "Fill" },
                     rect {
                         visible = meter:map(function(m) return m ~= "" end),
@@ -126,7 +148,10 @@ local code_pane = panel {
                         align_v = "Center",
                         padding = { left = 16, right = 16 },
                         radius = 12,
-                        background = meter_hot:map(function(hot) return hot and "#a6e3a1" or "#1e1e2e" end),
+                        background = computed({ meter_hot, theme.success, theme.base }, function(hot, on, off)
+                            return hot and
+                                on or off
+                        end),
                         scale = meter_hot:map(function(hot) return hot and 1.08 or 1 end),
                         animate = { background = 300, scale = { duration = 400, easing = "OutBack" } },
                         children = {
@@ -135,14 +160,19 @@ local code_pane = panel {
                                 align_v = "Center",
                                 font = MONO,
                                 font_size = 18,
-                                foreground = meter_hot:map(function(hot) return hot and "#11111b" or "#a6adc8" end),
+                                foreground = computed({ meter_hot, theme.crust, theme.subtext }, function(hot, on, off)
+                                    return
+                                        hot and on or off
+                                end),
                                 animate = { foreground = 300 },
                             },
                         },
                     },
                     text {
                         content = status:map(function(s) return s == "unsaved" and "●  unsaved" or "✓  saved" end),
-                        foreground = status:map(function(s) return s == "unsaved" and "#fab387" or "#a6e3a1" end),
+                        foreground = computed({ status, theme.warm, theme.success }, function(s, dirty, clean)
+                            return s == "unsaved" and dirty or clean
+                        end),
                         animate = { foreground = 200 },
                         align_v = "Center",
                         font = MONO,
@@ -150,7 +180,7 @@ local code_pane = panel {
                     },
                 },
             },
-            rect { width = "Fill", height = 1, background = "#313244" },
+            rect { width = "Fill", height = 1, background = theme.surface },
             rect {
                 width = "Fill",
                 height = "Fill",
@@ -167,7 +197,7 @@ local code_pane = panel {
                     rect {
                         width = "Fill",
                         height = LINE,
-                        background = "#cdd6f40a",
+                        background = theme.fade("text", "0a"),
                         translate = caret_row:map(function(y) return { x = 0, y = y } end),
                         animate = { translate = 80 },
                     },
@@ -176,12 +206,12 @@ local code_pane = panel {
                         font = MONO,
                         font_size = CODE_SIZE,
                         line_height = 1.5,
-                        foreground = syntax.palette.text,
+                        foreground = theme.text,
                     },
                     rect {
                         width = 3,
                         height = LINE - 10,
-                        background = "#f5e0dc",
+                        background = theme.cursor,
                         translate = caret_at,
                         animate = { translate = 60 },
                     },
@@ -197,29 +227,29 @@ local function chip(label)
     return rect {
         padding = { left = 16, right = 16, top = 8, bottom = 8 },
         radius = 10,
-        background = "#313244",
+        background = theme.surface,
         border_width = 1,
-        border_color = "#585b70",
+        border_color = theme.overlay2,
         scale = 1,
         animate = { scale = { duration = 260, easing = "OutBack", from = 0.6 } },
-        children = { text { content = label, font = MONO, font_size = 24, foreground = "#cdd6f4" } },
+        children = { text { content = label, font = MONO, font_size = 24, foreground = theme.text } },
     }
 end
 
-local key_row = keys:map(function(combo)
+local key_row = computed({ keys, key_command }, function(combo, command)
     local out = {}
     for key in combo:gmatch("[^+]+") do
         if #out > 0 then
-            out[#out + 1] = text { content = "+", align_v = "Center", font_size = 24, foreground = "#6c7086" }
+            out[#out + 1] = text { content = "+", align_v = "Center", font_size = 24, foreground = theme.muted }
         end
         out[#out + 1] = chip(key)
     end
     out[#out + 1] = text {
-        content = "→  mantle toggle launcher_open",
+        content = "→  " .. command,
         align_v = "Center",
         font = MONO,
         font_size = 22,
-        foreground = "#89b4fa",
+        foreground = theme.accent,
     }
     return out
 end)
@@ -236,7 +266,7 @@ local caption_pane = panel {
             padding = { left = 30, right = 30, top = 24, bottom = 24 },
             spacing = 12,
             radius = 18,
-            background = "#11111be6",
+            background = theme.fade("crust", "e6"),
             opacity = 1,
             translate = { x = 0, y = 0 },
             animate = {
@@ -244,12 +274,12 @@ local caption_pane = panel {
                 translate = { duration = 500, easing = "OutCubic", from = { x = 0, y = 30 } },
             },
             children = {
-                text { content = title, font_size = 52, font_weight = 800, foreground = "#cdd6f4" },
+                text { content = title, font_size = 52, font_weight = 800, foreground = theme.text },
                 text {
                     content = detail,
                     visible = detail:map(function(d) return d ~= "" end),
                     font_size = 26,
-                    foreground = "#a6adc8",
+                    foreground = theme.subtext,
                 },
                 row {
                     visible = keys:map(function(k) return k ~= "" end),
@@ -268,20 +298,21 @@ local function line_of(content, size, color, font)
     return text { content = content, align_h = "Center", font = font, font_size = size, foreground = color }
 end
 
+-- What the take showed, two rows of six so a 1920 px screen fits them.
 local FEATURES = {
-    "Signals", "Animations", "Shaders", "Lock screen", "Notifications", "Tray",
-    "Audio", "Network", "Bluetooth", "MPRIS", "Idle", "Updates",
+    "Signals", "Shaders", "Wallpapers", "Screen capture", "Notifications", "MPRIS",
+    "Tray", "Network", "Bluetooth", "Updates", "Lock screen", "Sysinfo",
 }
 
 -- Each chip holds invisible for its turn, then fades up: a stagger without a timer per chip.
 local function feature_chip(index, label)
-    local wait_ms = 500 + index * 90
+    local wait_ms = 250 + index * 60
     return rect {
         padding = { left = 20, right = 20, top = 10, bottom = 10 },
         radius = 22,
-        background = "#313244cc",
+        background = theme.fade("surface", "cc"),
         border_width = 1,
-        border_color = "#45475a",
+        border_color = theme.overlay,
         opacity = 1,
         translate = { x = 0, y = 0 },
         animate = {
@@ -296,7 +327,7 @@ local function feature_chip(index, label)
                 },
             },
         },
-        children = { text { content = label, font_size = 24, foreground = "#cdd6f4" } },
+        children = { text { content = label, font_size = 24, foreground = theme.text } },
     }
 end
 
@@ -308,17 +339,18 @@ end
 local card_lines = {
     title = {
         image { source = WORDMARK, width = 191, height = 160, fit = "contain", align_h = "Center" },
-        line_of("Mantle", 132, "#cdd6f4"),
-        line_of("Desktop shells in Lua, on Wayland.", 44, "#a6adc8"),
-        line_of("Save the file. The shell changes.", 30, "#6c7086"),
+        line_of("Mantle", 132, theme.text),
+        line_of("Desktop shells in Lua, on Wayland.", 44, theme.subtext),
+        line_of("Save the file. The shell changes.", 30, theme.muted),
     },
     ["end"] = {
         image { source = WORDMARK, width = 143, height = 120, fit = "contain", align_h = "Center" },
-        line_of("Write your shell in Lua.", 64, "#cdd6f4"),
-        row { align_h = "Center", margin = { top = 12, bottom = 12 }, spacing = 12, children = chips },
-        line_of("anasgets111.github.io/mantle", 34, "#89b4fa", MONO),
-        line_of("AUR: mantle-git", 30, "#a6adc8", MONO),
-        line_of("Typed, reloaded, captioned and recorded by a Mantle shell.", 24, "#6c7086"),
+        line_of("Write your shell in Lua.", 64, theme.text),
+        row { align_h = "Center", margin = { top = 12 }, spacing = 12, children = { table.unpack(chips, 1, 6) } },
+        row { align_h = "Center", margin = { bottom = 12 }, spacing = 12, children = { table.unpack(chips, 7, 12) } },
+        line_of("anasgets111.github.io/mantle", 34, theme.accent, MONO),
+        line_of("AUR: mantle-git", 30, theme.subtext, MONO),
+        line_of("Typed, reloaded, captioned and recorded by a Mantle shell.", 24, theme.muted),
     },
 }
 
@@ -329,7 +361,7 @@ local wallpaper = panel {
     width = "Fill",
     height = "Fill",
     exclusive = "Ignore",
-    child = image { source = WALLPAPER, width = "Fill", height = "Fill", fit = "cover" },
+    child = image { source = backdrop, width = "Fill", height = "Fill", fit = "cover" },
 }
 
 local card_pane = panel {
@@ -348,8 +380,8 @@ local card_pane = panel {
             opacity = card_shown:map(function(on) return on and 1 or 0 end),
             animate = { opacity = { duration = 700, easing = "OutCubic", from = 0 } },
             children = {
-                image { source = WALLPAPER, width = "Fill", height = "Fill", fit = "cover" },
-                rect { width = "Fill", height = "Fill", background = "#0b0b14b8" },
+                image { source = backdrop, width = "Fill", height = "Fill", fit = "cover" },
+                rect { width = "Fill", height = "Fill", background = theme.fade("crust", "b8") },
                 column {
                     align_h = "Center",
                     align_v = "Center",
@@ -373,9 +405,9 @@ end
 
 local function pause_after(op)
     if op.kind == "type" then
-        return 34 + math.random(0, 40) + (op.text == " " and 20 or 0)
+        return 24 + math.random(0, 26) + (op.text == " " and 14 or 0)
     elseif op.kind == "erase" then
-        return 45
+        return 32
     elseif op.kind == "paste_line" then
         return 55
     end
@@ -423,15 +455,18 @@ end
 -- Each edit in take order, planned in `prepare` from a process callback: a diff overruns the
 -- 2.5 ms budget a timer callback gets.
 local EDITS = {
-    "01-style", "02-workspaces", "03-launcher", "04-restyle", "05-shader", "06-osd",
-    "07-notifications", "08-privacy", "09-idle", "10-banner", "typo", "fix",
+    "01-style", "02-workspaces", "03-launcher", "04-restyle", "05-search", "06-shader", "07-wallpaper",
+    "08-taskbar", "09-overview", "10-osd", "11-media", "12-control", "13-notifications", "14-privacy",
+    "15-idle", "16-updates", "17-lock", "18-sysinfo", "19-banner", "typo", "fix",
 }
 local planned = {}
 
 local function prepare()
-    local good = texts["10-banner"]
-    local _, paren = good:find("s and s.time)", 1, true)
-    texts.typo = good:sub(1, paren - 1) .. good:sub(paren + 1)
+    local good = texts["19-banner"]
+    -- The clock's `align_v`, misspelt: the rescue banner shows the engine's "did you mean".
+    local clock = good:find('return os.date("%a', 1, true)
+    local at = good:find("align_v", clock, true)
+    texts.typo = good:sub(1, at - 1) .. "aling_v" .. good:sub(at + #"align_v")
     texts.fix = good
     local from = texts["00-starter"]
     for _, name in ipairs(EDITS) do
@@ -461,10 +496,67 @@ local function toggle(name)
     end
 end
 
+-- Picks a wallpaper as a keybind would, and captions the command that did it. The director
+-- quantizes the same thumbnail the demo shell does, so its own panes re-theme in step.
+local function pick(file)
+    return function(next)
+        detail:set("click, or: mantle call wallpaper " .. file)
+        backdrop:set(DEMO_DIR .. "/wallpapers/" .. file)
+        theme.choose(DEMO_DIR .. "/wallpapers/thumbs/" .. file)
+        session.run("mantle", { "-c", DEMO_DIR, "call", "wallpaper", file }, function() next() end)
+    end
+end
+
 -- Mock feeds -------------------------------------------------------------------------------
 
 local function feed(name, value)
     return function(next) session.set_state(DEMO_DIR, name, value, function() next() end) end
+end
+
+-- The take's windows in `mantle.windows`' shape: a terminal and an editor, then the mock apps. The
+-- browser's title follows the page its mockup shows.
+local WINDOWS = {
+    { id = "0xa1", app_id = "kitty",                title = "~/Work/mantle" },
+    { id = "0xa2", app_id = "dev.zed.Zed",          title = "overview.lua" },
+    { id = "0xa3", app_id = "org.telegram.desktop", title = "Telegram" },
+    { id = "0xa4", app_id = "zen",                  title = "Zen Browser" },
+}
+local APP_WINDOW = { [""] = "0xa1", chat = "0xa3", call = "0xa4", browser = "0xa4" }
+local BROWSER_TITLE = { call = "Meet · Weekly sync", browser = "Aurora timelapse · 4K" }
+local windows = { count = 0, focused = "0xa1", page = "" }
+
+local function feed_windows(next)
+    local out = {}
+    for k = 1, windows.count do
+        local w = WINDOWS[k]
+        local title = w.id == "0xa4" and BROWSER_TITLE[windows.page] or w.title
+        out[k] = { id = w.id, app_id = w.app_id, title = title, focused = w.id == windows.focused }
+    end
+    feed("mock_windows", { source = "hyprland", windows = out })(next)
+end
+
+-- Opens one window more, focused, as an app starting would.
+local function launch(next)
+    windows.count = windows.count + 1
+    windows.focused = WINDOWS[windows.count].id
+    feed_windows(next)
+end
+
+-- Moves focus without opening anything: the overview's selection.
+local function select_window(id)
+    return function(next)
+        windows.focused = id
+        feed_windows(next)
+    end
+end
+
+-- Opens mockup `id` ("" closes it) and focuses its window, so the taskbar follows the take.
+local function open_app(id)
+    return function(next)
+        windows.focused = APP_WINDOW[id]
+        if BROWSER_TITLE[id] then windows.page = id end
+        feed_windows(function() mockups.open(id)(next) end)
+    end
 end
 
 local function notify(n)
@@ -491,18 +583,18 @@ local function notify(n)
     end
 end
 
--- Types `reply` into the card's field one character at a time, as `mantle set` writes.
-local function type_reply(reply)
+-- Types `text` into state `name` one character at a time, as `mantle set` writes.
+local function type_into(name, text)
     return function(next)
         local chars = {}
-        for c in reply:gmatch("[%z\1-\127\194-\244][\128-\191]*") do
+        for c in text:gmatch("[%z\1-\127\194-\244][\128-\191]*") do
             chars[#chars + 1] = c
         end
         local function at(k)
             progress = progress + 1
             if k > #chars then return next() end
-            session.set_state(DEMO_DIR, "reply_draft", table.concat(chars, "", 1, k), function()
-                timer(45 + math.random(0, 55) + (chars[k] == " " and 30 or 0), function() at(k + 1) end)
+            session.set_state(DEMO_DIR, name, table.concat(chars, "", 1, k), function()
+                timer(32 + math.random(0, 36) + (chars[k] == " " and 20 or 0), function() at(k + 1) end)
             end)
         end
         at(1)
@@ -517,7 +609,7 @@ local function deliver(who, rtl, theirs, mine)
                 feed("mock_notifications", { dnd = false, feed = {} })(function()
                     feed("reply_sent", false)(function()
                         mockups.chat:set({ name = who, rtl = rtl, messages = { { mine = false, text = theirs } } })
-                        mockups.open("chat")(function()
+                        open_app("chat")(function()
                             timer(900, function()
                                 mockups.chat:set({
                                     name = who,
@@ -534,9 +626,237 @@ local function deliver(who, rtl, theirs, mine)
     end
 end
 
+-- A password's length only, one key at a time: the mocks draw dots, never text.
+local function type_dots(name, count)
+    return function(next)
+        local function at(k)
+            progress = progress + 1
+            if k > count then return next() end
+            feed(name, k)(function() timer(70 + math.random(0, 50), function() at(k + 1) end) end)
+        end
+        at(1)
+    end
+end
+
+local TRACKS = {
+    {
+        title = "Night Signals",
+        artist = "Low Orbit",
+        album = "Chevrons",
+        art = "night-signals.svg",
+        length = 214,
+    },
+    { title = "Warm Reload", artist = "Save State", album = "Hot Path", art = "warm-reload.svg", length = 187 },
+}
+
+-- Plays track `k` from `from` seconds for `seconds`, one `mock_media` push a second as a player's
+-- position would advance.
+local function play_track(k, from, seconds)
+    return function(next)
+        local track = TRACKS[k]
+        local function at(t)
+            progress = progress + 1
+            if t > seconds then return next() end
+            feed("mock_media", {
+                players = {
+                    {
+                        id = "spotify",
+                        identity = "Spotify",
+                        title = track.title,
+                        artist = track.artist,
+                        album = track.album,
+                        album_art_path = DEMO_DIR .. "/covers/" .. track.art,
+                        length = track.length * 1000000,
+                        position = (from + t) * 1000000,
+                        play_state = "Playing",
+                    },
+                },
+            })(function() timer(1000, function() at(t + 1) end) end)
+        end
+        at(0)
+    end
+end
+
+local TRAY = {
+    { id = "1", name = "Steam",    icon_name = "steam",                status = "Active" },
+    { id = "2", name = "Vesktop",  icon_name = "vesktop",              status = "Active" },
+    { id = "3", name = "Telegram", icon_name = "org.telegram.desktop", status = "Active" },
+}
+
+local function tray_items(count, calling)
+    local out = {}
+    for k = 1, count do
+        local item = TRAY[k]
+        out[k] = {
+            id = item.id,
+            name = item.name,
+            icon_name = item.icon_name,
+            status = item.name == calling and "NeedsAttention" or item.status,
+        }
+    end
+    return { items = out }
+end
+
+local PACKAGES = {
+    { name = "linux",      old_version = "7.2.7.arch1-1", new_version = "7.2.8.arch1-1" },
+    { name = "mesa",       old_version = "1:26.1.2-1",    new_version = "1:26.1.3-1" },
+    { name = "mantle-git", old_version = "r1830",         new_version = "r1842" },
+}
+
+local function updates_state(step)
+    if step == nil then return { count = #PACKAGES, packages = PACKAGES, installing = false } end
+    if step > #PACKAGES then return { count = 0, packages = {}, installing = false } end
+    return {
+        count = #PACKAGES,
+        packages = {},
+        installing = true,
+        install_current_step = step,
+        install_total_steps = #PACKAGES,
+        install_current_package = PACKAGES[step].name,
+    }
+end
+
+local function install(next)
+    local function at(step)
+        progress = progress + 1
+        feed("mock_updates", updates_state(step))(function()
+            if step > #PACKAGES then return next() end
+            timer(700, function() at(step + 1) end)
+        end)
+    end
+    at(1)
+end
+
+local function lock_state(fields)
+    local out = { active = true, attempts = 0, error = "", unlocking = false }
+    for k, v in pairs(fields or {}) do
+        out[k] = v
+    end
+    return out
+end
+
+-- Runs `mantle call name arg` on the demo shell, as a keybind would.
+local function call(name, arg)
+    return function(next) session.run("mantle", { "-c", DEMO_DIR, "call", name, arg }, function() next() end) end
+end
+
+-- Captions the switches file as the demo shell saved it.
+local function show_settings(next)
+    session.run("cat", { DEMO_DIR .. "/state/settings.json" }, function(code, out)
+        local saved = code == 0 and table.concat(out, " "):gsub("%s+", " ") or "(not saved yet)"
+        caption:set("Switches that outlive restarts.")
+        detail:set("persistent_table wrote state/settings.json:  " .. saved)
+        next()
+    end)
+end
+
 local function privacy_users(camera, mic, screen)
     local function users(on) return on and { { app_name = "Meet" } } or {} end
     return { camera_users = users(camera), microphone_users = users(mic), screencast_users = users(screen) }
+end
+
+-- Pointer ------------------------------------------------------------------------------------
+
+-- A drawn pointer, so a click the director fakes reads as one. The tip is the image's top left.
+local pointer = state("demo_pointer", { x = 0, y = 0, shown = false })
+local pointer_clicks = state("demo_pointer_clicks", 0)
+local pressed = pulse(pointer_clicks, 320)
+local pointer_at = pointer:map(function(p) return { x = p.x, y = p.y } end)
+
+local pointer_pane = panel {
+    id = "pointer",
+    layer = "Overlay",
+    anchor = { top = true, bottom = true, left = true, right = true },
+    width = "Fill",
+    height = "Fill",
+    exclusive = "Ignore",
+    visible = pointer:map(function(p) return p.shown end),
+    child = rect {
+        width = "Fill",
+        height = "Fill",
+        children = {
+            rect {
+                width = 44,
+                height = 44,
+                radius = 22,
+                border_width = 3,
+                border_color = theme.accent,
+                translate = pointer:map(function(p) return { x = p.x - 22, y = p.y - 22 } end),
+                opacity = pressed:map(function(on) return on and 1 or 0 end),
+                scale = pressed:map(function(on) return on and 1 or 0.4 end),
+                animate = {
+                    translate = { duration = 600, easing = "InOutCubic" },
+                    opacity = 220,
+                    scale = { duration = 320, easing = "OutCubic" },
+                },
+            },
+            image {
+                source = POINTER,
+                width = 34,
+                height = 44,
+                translate = pointer_at,
+                scale = pressed:map(function(on) return on and 0.86 or 1 end),
+                origin = { x = 0, y = 0 },
+                shadow_color = "#00000066",
+                shadow_blur = 8,
+                shadow_offset = { y = 2 },
+                animate = {
+                    translate = { duration = 600, easing = "InOutCubic" },
+                    scale = { duration = 160, easing = "OutCubic" },
+                },
+            },
+        },
+    },
+}
+
+-- Each demo surface's top-left on screen, from the same margins the stage modules compute.
+local function origin_of(surface)
+    local screen = mantle.screens:get()[1] or { width = 1920, height = 1080 }
+    local open = math.floor(screen.width * 0.56)
+    local top = BAR + 24
+    if surface == "picker" then return { x = math.floor((screen.width * 0.56 - 1340) / 2), y = top } end
+    if surface == "overview" then
+        local sheet = math.floor(screen.width * 0.56 * 0.86)
+        return { x = math.floor((screen.width * 0.56 - sheet) / 2), y = top }
+    end
+    if surface == "media" then return { x = math.floor((screen.width * 0.56 - 760) / 2), y = top } end
+    if surface == "control" or surface == "updates" then return { x = open - 620 - 40, y = top } end
+    return { x = 0, y = 0 }
+end
+
+-- Glides the pointer onto the demo shell's node `name` on `surface`, then clicks. It maps again
+-- first: a surface mapped later stacks above it, and the demo's popups open after it shows.
+local function point(name, surface)
+    return function(next)
+        session.run("mantle", { "-c", DEMO_DIR, "call", "where", name }, function(code, out)
+            local ok, box = pcall(json.decode, table.concat(out or {}, "\n"))
+            if code ~= 0 or not ok or type(box) ~= "table" or not box.width then
+                log.warn("no pointer target", name)
+                return next()
+            end
+            local o = origin_of(surface)
+            local x, y = o.x + box.x + box.width / 2, o.y + box.y + box.height / 2
+            local last = pointer:get()
+            local from = last.x ~= 0 and last or { x = x + 180, y = y + 240 }
+            pointer:set({ x = from.x, y = from.y, shown = false })
+            timer(34, function()
+                pointer:set({ x = from.x, y = from.y, shown = true })
+                timer(50, function()
+                    pointer:set({ x = x, y = y, shown = true })
+                    timer(640, function()
+                        pointer_clicks:set(pointer_clicks:get() + 1)
+                        timer(240, next)
+                    end)
+                end)
+            end)
+        end)
+    end
+end
+
+local function hide_pointer(next)
+    local p = pointer:get()
+    pointer:set({ x = p.x, y = p.y, shown = false })
+    next()
 end
 
 -- Cost meter -------------------------------------------------------------------------------
@@ -592,7 +912,7 @@ local function say_cost(title)
             demo.cpu
         ))
         meter_hot:set(true)
-        timer(4200, function()
+        timer(3400, function()
             meter_hot:set(false)
             next()
         end)
@@ -732,18 +1052,47 @@ local function setup(next)
     end)
 end
 
+-- Wide enough that `fit = "cover"` never upscales on a screen narrower than the art's aspect; the
+-- 300 px copy is the picker tile and what `palette.quantize` decodes.
+local function render_wallpapers(done)
+    local screen = mantle.screens:get()[1] or { width = 1920, height = 1080 }
+    local width = tostring(math.max(screen.width, math.ceil(screen.height * WALLPAPER_ASPECT)))
+    local sizes = { [""] = width, ["thumbs/"] = "300" }
+    local pending = 0
+    for _ in pairs(WALLPAPERS) do
+        pending = pending + 2
+    end
+    for name, svg in pairs(WALLPAPERS) do
+        for dir, w in pairs(sizes) do
+            local out = DEMO_DIR .. "/wallpapers/" .. dir .. name .. ".png"
+            session.run("rsvg-convert", { "-w", w, "-o", out, svg }, function(code)
+                if code ~= 0 then log.warn("rsvg-convert could not render", out) end
+                pending = pending - 1
+                if pending == 0 then done() end
+            end)
+        end
+    end
+end
+
 local function stage(next)
     local sources = {}
     for k, name in ipairs(MODULES) do
         sources[k] = STAGES .. name
     end
     sources[#sources + 1] = DEMO_DIR .. "/"
-    session.run("mkdir", { "-p", DEMO_DIR }, function()
-        session.run("cp", sources, function()
-            set_text(texts["00-starter"])
-            session.write(DEMO_DIR .. "/shell.lua", current, function()
-                session.demo_shell:start("mantle", { "-c", DEMO_DIR })
-                timer(2500, next)
+    -- The last take's saved switches would start this one with them on.
+    session.run("rm", { "-rf", DEMO_DIR .. "/state" }, function()
+        session.run("mkdir", { "-p", DEMO_DIR .. "/wallpapers/thumbs" }, function()
+            session.run("cp", { "-r", COVERS, DEMO_DIR .. "/" }, function()
+                session.run("cp", sources, function()
+                    render_wallpapers(function()
+                        set_text(texts["00-starter"])
+                        session.write(DEMO_DIR .. "/shell.lua", current, function()
+                            session.demo_shell:start("mantle", { "-c", DEMO_DIR })
+                            timer(2500, next)
+                        end)
+                    end)
+                end)
             end)
         end)
     end)
@@ -769,8 +1118,9 @@ end
 local function press(combo, name)
     return function(next)
         keys:set(combo)
+        key_command:set("mantle toggle " .. name)
         timer(700, function()
-            toggle(name)(function() timer(1600, next) end)
+            toggle(name)(function() timer(1200, next) end)
         end)
     end
 end
@@ -779,13 +1129,13 @@ local script = {
     setup,
     stage,
     record,
-    wait(2200),
+    wait(600),
     hide_card,
     say("This is the whole shell.", "One Lua file. Mantle ships no shell of its own: you write it."),
-    wait(3200),
+    wait(2600),
     say("Save, and it's live.", "No restart. The file reloads in place."),
     edit("01-style"),
-    wait(2400),
+    wait(1800),
     say("Live system state.", "Workspaces from the compositor, as signals the bar redraws from."),
     edit("02-workspaces"),
     wait(1200),
@@ -799,22 +1149,154 @@ local script = {
         keys:set("")
         next()
     end,
-    say("Reloads keep state.", "The launcher stays open while you restyle it."),
+    say("Reloads keep state.", "The launcher stays open while you restyle it, and blur = true asks for glass."),
     edit("04-restyle"),
-    wait(3600),
+    wait(2200),
+    say("Fuzzy search, built in.", "fuzzy() scores each app as fzf does; the ranking stays in Lua."),
+    edit("05-search"),
+    wait(400),
+    type_into("launcher_query", "tele"),
+    wait(1600),
+    feed("launcher_query", ""),
+    type_into("launcher_query", "files"),
+    wait(1600),
+    feed("launcher_query", ""),
     toggle("launcher_open"),
     wait(700),
     say("Shaders on any node.", "A GLSL fragment behind the whole desktop, animated by the engine."),
-    edit("05-shader"),
-    wait(4000),
+    edit("06-shader"),
+    wait(3000),
+    say("Wallpapers that theme the shell.",
+        "mantle.files lists the folder; palette.quantize takes the accent from each picture."),
+    edit("07-wallpaper"),
+    wait(600),
+    toggle("picker_open"),
+    wait(900),
+    point("thumb:dusk.png", "picker"),
+    pick("dusk.png"),
+    wait(2000),
+    point("thumb:ember.png", "picker"),
+    pick("ember.png"),
+    wait(2000),
+    point("thumb:tide.png", "picker"),
+    pick("tide.png"),
+    wait(2000),
+    point("thumb:mantle.png", "picker"),
+    pick("mantle.png"),
+    wait(2200),
+    hide_pointer,
+    toggle("picker_open"),
+    wait(900),
+
+    say("Every window, as a list.", "mantle.windows: app, title and focus from the compositor; a click focuses."),
+    edit("08-taskbar"),
+    wait(500),
+    launch,
+    wait(350),
+    launch,
+    wait(350),
+    launch,
+    wait(350),
+    launch,
+    wait(1200),
+    point("task:0xa3", "bar"),
+    open_app("chat"),
+    wait(1100),
+    point("task:0xa4", "bar"),
+    open_app("browser"),
+    wait(1100),
+    point("task:0xa1", "bar"),
+    open_app(""),
+    hide_pointer,
+    wait(900),
+
+    say("An overview from a screen capture.", "capture draws any output through screencopy, the code pane included."),
+    edit("09-overview"),
+    wait(600),
+    press("Super+Tab", "overview_open"),
+    select_window("0xa2"),
+    wait(650),
+    select_window("0xa3"),
+    wait(650),
+    select_window("0xa4"),
+    wait(650),
+    select_window("0xa3"),
+    wait(500),
+    point("card:0xa3", "overview"),
+    hide_pointer,
+    toggle("overview_open"),
+    function(next)
+        keys:set("")
+        mockups.chat:set({ name = "Mantle devs", rtl = false, messages = { { mine = false, text = "v0.9 is out" } } })
+        next()
+    end,
+    open_app("chat"),
+    wait(1300),
+    open_app(""),
+    wait(500),
+
     say("React to the system.", 'require("osd"): a volume OSD that follows every change, from any app.'),
-    edit("06-osd"),
+    edit("10-osd"),
     wait(900),
     nudge_volume,
     wait(1400),
 
+    say("Now playing, from MPRIS.", "mantle.mpris: title, artist and cover art from any player. The card is yours."),
+    edit("11-media"),
+    wait(500),
+    play_track(1, 61, 1),
+    point("media", "bar"),
+    toggle("media_open"),
+    play_track(1, 63, 2),
+    point("media:next", "media"),
+    play_track(2, 0, 2),
+    hide_pointer,
+    toggle("media_open"),
+    wait(400),
+    say("A tray, too.", "mantle.tray: every StatusNotifierItem and its menu. One of them wants you."),
+    feed("mock_tray", tray_items(1)),
+    wait(350),
+    feed("mock_tray", tray_items(2)),
+    wait(350),
+    feed("mock_tray", tray_items(3)),
+    wait(800),
+    feed("mock_tray", tray_items(3, "Telegram")),
+    wait(2000),
+    feed("mock_tray", tray_items(3)),
+
+    say("Quick settings.", "mantle.network, mantle.bluetooth and mantle.brightness, drawn as tiles."),
+    edit("12-control"),
+    wait(500),
+    press("Super+C", "control_open"),
+    function(next)
+        keys:set("")
+        next()
+    end,
+    feed("mock_network", { wifi_enabled = true, connected = false, strength = 0 }),
+    feed("mock_bluetooth", { enabled = true, connected_devices = {} }),
+    wait(800),
+    feed("mock_network", { wifi_enabled = true, connected = true, ssid = "Home", strength = 82 }),
+    feed("mock_bluetooth", { enabled = true, connected_devices = { { name = "WH-1000XM5", battery = 80 } } }),
+    wait(600),
+    feed("mock_brightness", { percent = 85 }),
+    wait(600),
+    point("control:dnd", "control"),
+    call("setting", "dnd"),
+    wait(400),
+    point("control:night_light", "control"),
+    call("setting", "night_light"),
+    wait(800),
+    show_settings,
+    wait(2800),
+    point("control:dnd", "control"),
+    call("setting", "dnd"),
+    hide_pointer,
+    wait(500),
+    toggle("control_open"),
+    wait(500),
+
     say("Your notification server.", "Mantle serves org.freedesktop.Notifications. The popup is yours to draw."),
-    edit("07-notifications"),
+    edit("13-notifications"),
     wait(600),
     notify {
         id = 1,
@@ -823,14 +1305,14 @@ local script = {
         placeholder = "Reply to Sarah",
         read = "Mark as read",
     },
-    wait(2000),
+    wait(1500),
     say("Reply inline.", "has_reply marks a sender that takes mantle.notifications:reply(id, text)."),
-    type_reply("On my way, see you in ten!"),
-    wait(500),
+    type_into("reply_draft", "On my way, see you in ten!"),
+    wait(400),
     deliver("Sarah", false, "Still on for tonight? 8 pm at the usual place.", "On my way, see you in ten!"),
-    wait(2400),
-    mockups.open(""),
-    wait(500),
+    wait(1800),
+    open_app(""),
+    wait(400),
 
     say("Any script, either direction.", "Arabic shapes and runs right to left in the same text node."),
     notify {
@@ -840,76 +1322,116 @@ local script = {
         placeholder = "رد على أحمد",
         read = "تحديد كمقروء",
     },
-    wait(2000),
-    type_reply("خمس دقائق وأكون عندكم"),
-    wait(500),
+    wait(1500),
+    type_into("reply_draft", "خمس دقائق وأكون عندكم"),
+    wait(400),
     deliver("أحمد", true, "وصلت؟ الكل بانتظارك", "خمس دقائق وأكون عندكم"),
-    wait(2600),
-    mockups.open(""),
-    wait(500),
+    wait(2000),
+    open_app(""),
+    wait(400),
 
     say("Know who's watching and listening.", "mantle.privacy: every app on the camera, the mic or a screen share."),
-    edit("08-privacy"),
+    edit("14-privacy"),
     wait(500),
-    mockups.open("call"),
+    open_app("call"),
     wait(700),
     feed("mock_privacy", privacy_users(true, true, false)),
-    wait(2600),
+    wait(2000),
     function(next)
         mockups.sharing:set(true)
         feed("mock_privacy", privacy_users(true, true, true))(next)
     end,
-    wait(2600),
+    wait(2000),
     feed("mock_privacy", privacy_users(false, false, false)),
     function(next)
         mockups.sharing:set(false)
-        mockups.open("")(next)
+        open_app("")(next)
     end,
-    wait(1200),
+    wait(800),
 
     say("Idle, on your terms.", "mantle.idle names whoever keeps the screen awake."),
-    edit("09-idle"),
+    edit("15-idle"),
     wait(500),
     function(next)
         mockups.playing:set(true)
-        mockups.open("browser")(next)
+        open_app("browser")(next)
     end,
     wait(700),
     feed("mock_idle", { inhibited = true, inhibitors = { { who = "Zen Browser", why = "Playing video" } } }),
-    wait(3000),
+    wait(2400),
     function(next)
         mockups.playing:set(false)
         feed("mock_idle", { inhibited = false, inhibitors = {} })(next)
     end,
+    wait(900),
+    open_app(""),
+    wait(600),
+
+    say("Updates, through your polkit agent.",
+        "mantle.updates checks pacman, dnf or apt. The password prompt is Lua too."),
+    edit("16-updates"),
+    wait(500),
+    feed("mock_updates", updates_state()),
+    wait(700),
+    point("updates", "bar"),
+    toggle("updates_open"),
+    wait(1100),
+    point("updates:install", "updates"),
+    hide_pointer,
+    feed("mock_polkit", {
+        active = true,
+        user = env("USER", "you"),
+        message = "Authentication is required to update the system's packages.",
+    }),
+    wait(700),
+    type_dots("polkit_typed", 9),
+    wait(500),
+    feed("mock_polkit", { active = false, user = env("USER", "you"), message = "" }),
+    feed("polkit_typed", 0),
+    install,
     wait(1400),
-    mockups.open(""),
-    wait(600),
-    say("Then it steps away.",
-        "register_threshold(seconds, on_idle, on_resume) drives your away screen. A real lock stays behind PAM."),
-    wait(2600),
-    feed("away", "on"),
-    wait(3600),
-    feed("away", "leaving"),
-    wait(600),
-    feed("away", "off"),
-    wait(800),
+    toggle("updates_open"),
+    wait(500),
+
+    say("A lock screen, drawn in Lua.",
+        "The real one holds the session through ext-session-lock and PAM. This take mocks it."),
+    edit("17-lock"),
+    wait(500),
+    feed("mock_lock", lock_state()),
+    wait(1500),
+    type_dots("lock_typed", 7),
+    wait(300),
+    feed("lock_typed", 0),
+    feed("mock_lock", lock_state({ attempts = 1, error = "authentication failed" })),
+    wait(1400),
+    type_dots("lock_typed", 10),
+    wait(300),
+    feed("mock_lock", lock_state({ attempts = 1, unlocking = true })),
+    wait(900),
+    feed("lock_typed", 0),
+    feed("mock_lock", lock_state({ active = false })),
+    wait(700),
+
+    say("Real numbers, no polling code.", "mantle.sysinfo reads /proc for you: this machine's CPU and memory, live."),
+    edit("18-sysinfo"),
+    wait(3000),
 
     say_cost("Light by design."),
     wait(600),
 
     say("Draw your own error banner.", "mantle.rescue holds the error of the last failed reload."),
-    edit("10-banner"),
-    wait(1200),
-    say("Now break it.", "A typo never takes the desktop down."),
+    edit("19-banner"),
+    wait(900),
+    say("Now break it.", "A typo never takes the desktop down, and the error says what it meant."),
     edit("typo"),
-    wait(4200),
+    wait(4400),
     say("Fix it, and it's back.", "The next good save clears the error."),
     edit("fix"),
-    wait(2600),
+    wait(2000),
     say_made_with(),
-    wait(4500),
+    wait(3800),
     show_card("end"),
-    wait(5500),
+    wait(5000),
 }
 
 -- A callback that raises or overruns its budget is dropped, which would leave the take and the
@@ -925,21 +1447,24 @@ local function watchdog(seen)
     end)
 end
 
-local function load_stages(done)
-    local pending = #STAGE_NAMES
-    for _, name in ipairs(STAGE_NAMES) do
-        session.run("cat", { STAGES .. name .. ".lua" }, function(code, out)
-            if code == 0 then texts[name] = table.concat(out, "\n") .. "\n" end
-            pending = pending - 1
-            if pending == 0 then done() end
-        end)
-    end
+-- One at a time: each output line is a frame, and all stages at once overflow the Supervisor's
+-- 1024-frame queue, which then drops this Renderer as wedged.
+local function load_stages(done, k)
+    k = k or 1
+    local name = STAGE_NAMES[k]
+    if not name then return done() end
+    session.run("cat", { STAGES .. name .. ".lua" }, function(code, out)
+        if code == 0 then texts[name] = table.concat(out, "\n") .. "\n" end
+        load_stages(done, k + 1)
+    end)
 end
 
 -- A reload restarts the take from the top, so it first clears what the last one left running.
 math.randomseed(7)
 caption:set("")
 keys:set("")
+key_command:set("")
+pointer:set({ x = 0, y = 0, shown = false })
 status:set("saved")
 card:set("title")
 card_shown:set(true)
@@ -967,10 +1492,10 @@ timer(1, function()
 end)
 
 local surfaces = { wallpaper }
-for _, window in ipairs(mockups.panels(WALLPAPER)) do
+for _, window in ipairs(mockups.panels(backdrop)) do
     surfaces[#surfaces + 1] = window
 end
-for _, pane in ipairs({ card_pane, caption_pane, code_pane }) do
+for _, pane in ipairs({ card_pane, caption_pane, code_pane, pointer_pane }) do
     surfaces[#surfaces + 1] = pane
 end
 return surfaces

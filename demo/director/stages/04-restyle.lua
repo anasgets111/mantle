@@ -61,8 +61,9 @@ local launcher = panel {
     margin = { top = 12, left = 12 },
     visible = launcher_open,
     width = 560,
-    background = "#313244f2",
+    background = "#31324470",
     radius = 24,
+    blur = true,
     child = list {
         width = "Fill",
         padding = 10,

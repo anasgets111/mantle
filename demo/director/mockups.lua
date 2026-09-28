@@ -1,6 +1,8 @@
 -- Props: app windows the director draws on the open 56% of the screen, so the notification,
 -- privacy and idle beats have something to react to. They are not part of the demo shell.
 
+local theme = require("stages.theme")
+
 local BAR = 56
 local TITLE = 52
 
@@ -40,7 +42,7 @@ local function initial_avatar(name, color, px)
                 align_v = "Center",
                 font_size = math.floor(px * 0.42),
                 font_weight = 700,
-                foreground = "#11111b",
+                foreground = theme.crust,
             },
         },
     }
@@ -58,9 +60,9 @@ local function window(id, title, app_icon, body)
             height = size:map(function(s) return s.height end),
             radius = 18,
             clip = "Box",
-            background = "#1e1e2e",
+            background = theme.base,
             border_width = 1,
-            border_color = "#45475a",
+            border_color = theme.overlay,
             opacity = shown:map(function(on) return on and 1 or 0 end),
             scale = shown:map(function(on) return on and 1 or 0.97 end),
             animate = {
@@ -73,14 +75,14 @@ local function window(id, title, app_icon, body)
                     height = TITLE,
                     padding = { left = 18, right = 18 },
                     spacing = 12,
-                    background = "#181825",
+                    background = theme.mantle,
                     children = {
                         icon { name = app_icon, size = 26, align_v = "Center" },
-                        label(title, 19, "#bac2de"),
+                        label(title, 19, theme.subtext1),
                         rect { width = "Fill" },
-                        rect { width = 14, height = 14, radius = 7, align_v = "Center", background = "#45475a" },
-                        rect { width = 14, height = 14, radius = 7, align_v = "Center", background = "#45475a" },
-                        rect { width = 14, height = 14, radius = 7, align_v = "Center", background = "#f38ba8" },
+                        rect { width = 14, height = 14, radius = 7, align_v = "Center", background = theme.overlay },
+                        rect { width = 14, height = 14, radius = 7, align_v = "Center", background = theme.overlay },
+                        rect { width = 14, height = 14, radius = 7, align_v = "Center", background = theme.danger },
                     },
                 },
                 body,
@@ -92,10 +94,10 @@ end
 -- Chat ----------------------------------------------------------------------------------------
 
 local CHATS = {
-    { name = "Sarah", preview = "Still on for tonight?", color = "#f5c2e7" },
-    { name = "أحمد", preview = "وصلت؟", color = "#94e2d5" },
-    { name = "Mantle devs", preview = "v0.9 is out", color = "#89b4fa" },
-    { name = "Family", preview = "Photos from Sunday", color = "#fab387" },
+    { name = "Sarah", preview = "Still on for tonight?", color = theme.avatar(1) },
+    { name = "أحمد", preview = "وصلت؟", color = theme.avatar(2) },
+    { name = "Mantle devs", preview = "v0.9 is out", color = theme.avatar(3) },
+    { name = "Family", preview = "Photos from Sunday", color = theme.avatar(4) },
 }
 
 local function sidebar()
@@ -104,7 +106,7 @@ local function sidebar()
         height = "Fill",
         padding = 14,
         spacing = 6,
-        background = "#181825",
+        background = theme.mantle,
         children = chat:map(function(c)
             local rows = {}
             for k, entry in ipairs(CHATS) do
@@ -113,7 +115,7 @@ local function sidebar()
                     padding = 12,
                     spacing = 14,
                     radius = 14,
-                    background = entry.name == c.name and "#313244" or "#00000000",
+                    background = entry.name == c.name and theme.surface or "#00000000",
                     children = {
                         initial_avatar(entry.name, entry.color, 52),
                         column {
@@ -121,8 +123,8 @@ local function sidebar()
                             spacing = 4,
                             align_v = "Center",
                             children = {
-                                label(entry.name, 21, "#cdd6f4", { width = "Fill", text_align = "Start" }),
-                                label(entry.preview, 18, "#7f849c", { width = "Fill", text_align = "Start" }),
+                                label(entry.name, 21, theme.text, { width = "Fill", text_align = "Start" }),
+                                label(entry.preview, 18, theme.subtle, { width = "Fill", text_align = "Start" }),
                             },
                         },
                     },
@@ -138,7 +140,7 @@ local function bubble(message, rtl)
     local node = rect {
         padding = { left = 20, right = 20, top = 12, bottom = 12 },
         radius = 20,
-        background = mine and "#89b4fa" or "#313244",
+        background = mine and theme.accent or theme.surface,
         opacity = 1,
         translate = { x = 0, y = 0 },
         animate = {
@@ -146,7 +148,7 @@ local function bubble(message, rtl)
             translate = { duration = 350, easing = "OutCubic", from = { x = 0, y = 16 } },
         },
         children = {
-            label(message.text .. (mine and "   ✓✓" or ""), 22, mine and "#11111b" or "#cdd6f4"),
+            label(message.text .. (mine and "   ✓✓" or ""), 22, mine and theme.crust or theme.text),
         },
     }
     -- A right-to-left chat mirrors: your own messages sit on the left.
@@ -173,7 +175,7 @@ local chat_window = window("chat", "Telegram", "org.telegram.desktop", row {
                     padding = { left = 24, right = 24 },
                     spacing = 14,
                     children = chat:map(function(c)
-                        local color = "#f5c2e7"
+                        local color = CHATS[1].color
                         for _, entry in ipairs(CHATS) do
                             if entry.name == c.name then color = entry.color end
                         end
@@ -183,14 +185,14 @@ local chat_window = window("chat", "Telegram", "org.telegram.desktop", row {
                                 align_v = "Center",
                                 spacing = 2,
                                 children = {
-                                    label(c.name, 22, "#cdd6f4", { font_weight = 700 }),
-                                    label(c.rtl and "متصل الآن" or "online", 17, "#a6e3a1"),
+                                    label(c.name, 22, theme.text, { font_weight = 700 }),
+                                    label(c.rtl and "متصل الآن" or "online", 17, theme.success),
                                 },
                             },
                         }
                     end),
                 },
-                rect { width = "Fill", height = 1, background = "#313244" },
+                rect { width = "Fill", height = 1, background = theme.surface },
                 column {
                     width = "Fill",
                     height = "Fill",
@@ -212,13 +214,13 @@ local chat_window = window("chat", "Telegram", "org.telegram.desktop", row {
                             width = "Fill",
                             height = 54,
                             radius = 27,
-                            background = "#181825",
+                            background = theme.mantle,
                             padding = { left = 24, right = 24 },
                             children = {
                                 label(
                                     chat:map(function(c) return c.rtl and "اكتب رسالة" or "Write a message" end),
                                     20,
-                                    "#6c7086",
+                                    theme.muted,
                                     { width = "Fill", text_align = "Start", height = "Fill" }
                                 ),
                             },
@@ -233,12 +235,13 @@ local chat_window = window("chat", "Telegram", "org.telegram.desktop", row {
 -- Call ----------------------------------------------------------------------------------------
 
 local PEOPLE = {
-    { name = "You",   color = "#cba6f7", tint = "#2a2340" },
-    { name = "Sarah", color = "#f5c2e7", tint = "#3a2433" },
-    { name = "Omar",  color = "#94e2d5", tint = "#1f3533" },
-    { name = "Lina",  color = "#fab387", tint = "#3a2c22" },
+    { name = "You",   color = theme.avatar(5), tint = theme.avatar_dim(5) },
+    { name = "Sarah", color = theme.avatar(1), tint = theme.avatar_dim(1) },
+    { name = "Omar",  color = theme.avatar(2), tint = theme.avatar_dim(2) },
+    { name = "Lina",  color = theme.avatar(4), tint = theme.avatar_dim(4) },
 }
 
+-- `speaking` is the colour its border pulses in: keyframes take literals, so a re-theme rebuilds it.
 local function tile(person, speaking)
     return rect {
         width = "Fill",
@@ -246,12 +249,12 @@ local function tile(person, speaking)
         radius = 16,
         background = person.tint,
         border_width = speaking and 3 or 0,
-        border_color = "#a6e3a1",
+        border_color = speaking or "#00000000",
         opacity = 1,
         animate = speaking and {
             border_color = {
                 duration = 1400,
-                keyframes = { "#a6e3a1", "#a6e3a100", "#a6e3a1" },
+                keyframes = { speaking, speaking .. "00", speaking },
                 loops = "Infinite",
             },
         } or nil,
@@ -263,21 +266,21 @@ local function tile(person, speaking)
                 align_v = "End",
                 margin = { left = 18, bottom = 14 },
                 font_size = 20,
-                foreground = "#cdd6f4",
+                foreground = theme.text,
             },
         },
     }
 end
 
-local function control(icon_name, background, active)
+local function control(icon_name, background)
     return rect {
         width = 64,
         height = 64,
         radius = 32,
-        background = active or background,
+        background = background,
         animate = { background = 200 },
         children = {
-            icon { name = icon_name, size = 28, align_h = "Center", align_v = "Center", foreground = "#cdd6f4" },
+            icon { name = icon_name, size = 28, align_h = "Center", align_v = "Center", foreground = theme.text },
         },
     }
 end
@@ -287,13 +290,13 @@ local call_window = window("call", "Meet · Weekly sync", "camera-web-symbolic",
     height = "Fill",
     padding = 18,
     spacing = 14,
-    background = "#11111b",
+    background = theme.crust,
     children = {
         row {
             width = "Fill",
             height = "Fill",
             spacing = 14,
-            children = { tile(PEOPLE[1]), tile(PEOPLE[2], true) },
+            children = theme.success:map(function(c) return { tile(PEOPLE[1]), tile(PEOPLE[2], c) } end),
         },
         row {
             width = "Fill",
@@ -305,10 +308,13 @@ local call_window = window("call", "Meet · Weekly sync", "camera-web-symbolic",
             align_h = "Center",
             spacing = 18,
             children = {
-                control("audio-input-microphone-symbolic", "#313244"),
-                control("camera-web-symbolic", "#313244"),
-                control("screen-shared-symbolic", "#313244", sharing:map(function(s) return s and "#89b4fa" or "#313244" end)),
-                control("call-stop-symbolic", "#e64553"),
+                control("audio-input-microphone-symbolic", theme.surface),
+                control("camera-web-symbolic", theme.surface),
+                control(
+                    "screen-shared-symbolic",
+                    computed({ sharing, theme.accent, theme.surface }, function(s, on, off) return s and on or off end)
+                ),
+                control("call-stop-symbolic", theme.danger),
             },
         },
     },
@@ -326,26 +332,26 @@ local function browser_window(wallpaper)
                 height = 58,
                 padding = { left = 16, right = 16 },
                 spacing = 12,
-                background = "#181825",
+                background = theme.mantle,
                 children = {
                     rect {
                         width = 360,
                         height = 40,
                         radius = 10,
                         align_v = "Center",
-                        background = "#313244",
+                        background = theme.surface,
                         padding = { left = 16, right = 16 },
-                        children = { label("Aurora timelapse · 4K", 18, "#cdd6f4", { height = "Fill" }) },
+                        children = { label("Aurora timelapse · 4K", 18, theme.text, { height = "Fill" }) },
                     },
                     rect {
                         width = "Fill",
                         height = 40,
                         radius = 20,
                         align_v = "Center",
-                        background = "#11111b",
+                        background = theme.crust,
                         padding = { left = 20, right = 20 },
                         children = {
-                            label("videos.example/watch?v=aurora", 18, "#a6adc8", {
+                            label("videos.example/watch?v=aurora", 18, theme.subtext, {
                                 height = "Fill",
                                 font = "CaskaydiaCove Nerd Font Mono",
                             }),
@@ -366,7 +372,7 @@ local function browser_window(wallpaper)
                         radius = 60,
                         align_h = "Center",
                         align_v = "Center",
-                        background = "#11111bcc",
+                        background = theme.fade("crust", "cc"),
                         visible = playing:map(function(p) return not p end),
                         children = {
                             icon {
@@ -374,7 +380,7 @@ local function browser_window(wallpaper)
                                 size = 56,
                                 align_h = "Center",
                                 align_v = "Center",
-                                foreground = "#cdd6f4",
+                                foreground = theme.text,
                             },
                         },
                     },
@@ -389,7 +395,7 @@ local function browser_window(wallpaper)
                             rect {
                                 height = "Fill",
                                 radius = 4,
-                                background = "#f38ba8",
+                                background = theme.danger,
                                 width = playing:map(function(p) return p and "100%" or "46%" end),
                                 animate = {
                                     width = { duration = 9000, easing = "Linear", from = "20%" },

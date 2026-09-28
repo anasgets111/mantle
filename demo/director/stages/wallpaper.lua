@@ -1,0 +1,93 @@
+-- A picker over the PNGs in `wallpapers/` that re-themes the shell from the chosen one.
+-- `mantle call wallpaper <file>` picks one the way a click on its thumbnail does.
+-- Tiles and the quantizer read the small copies in `wallpapers/thumbs/`, not the screen-sized files.
+local theme = require("theme")
+local target = require("targets")
+local DIR = mantle.config_dir .. "/wallpapers"
+local THUMBS = DIR .. "/thumbs/"
+mantle.files:watch(DIR, { "png" })
+
+local current = state("wallpaper", "")
+local open = state("picker_open", false)
+local mapped = computed({ open, delay(open, 300) }, function(now, was) return now or was end)
+
+local function choose(name)
+    current:set(name)
+    theme.choose(THUMBS .. name)
+    return name
+end
+action("wallpaper", choose)
+
+local image_node = image {
+    id = "wallpaper",
+    width = "Fill",
+    height = "Fill",
+    async = true,
+    source = current:map(function(name) return name ~= "" and DIR .. "/" .. name or "" end),
+    transition = { duration = 1400, easing = "InOutSine", shader = mantle.config_dir .. "/chevron.frag" },
+    opacity = current:map(function(name) return name ~= "" and 1 or 0 end),
+    animate = { opacity = 600 },
+}
+
+local function thumbnail(entry)
+    local chosen = current:map(function(name) return name == entry.name end)
+    return button {
+        geometry = target("thumb:" .. entry.name),
+        padding = 4,
+        radius = 18,
+        border_width = 3,
+        border_color = computed({ chosen, theme.accent }, function(on, color) return on and color or "#00000000" end),
+        scale = chosen:map(function(on) return on and 1 or 0.92 end),
+        animate = { border_color = 250, scale = { spring = { stiffness = 320, damping = 16 } } },
+        on_click = function() choose(entry.name) end,
+        children = {
+            rect {
+                width = 300,
+                height = 126,
+                radius = 14,
+                clip = "Rounded",
+                children = {
+                    image { source = THUMBS .. entry.name, async = true, width = "Fill", height = "Fill" },
+                },
+            },
+        },
+    }
+end
+
+local picker = panel {
+    id = "picker",
+    layer = "Overlay",
+    anchor = { top = true, left = true },
+    margin = mantle.screens:map(function(screens)
+        local width = screens[1] and screens[1].width or 1920
+        return { top = 24, left = math.floor((width * 0.56 - 1340) / 2) }
+    end),
+    visible = mapped,
+    child = row {
+        padding = 16,
+        radius = 26,
+        background = theme.fade("crust", "e6"),
+        border_width = 1,
+        border_color = theme.overlay,
+        opacity = open:map(function(on) return on and 1 or 0 end),
+        translate = open:map(function(on) return { y = on and 0 or -20 } end),
+        animate = {
+            opacity = { duration = 200, from = 0 },
+            translate = { duration = 320, easing = "OutBack", from = { y = -20 } },
+        },
+        children = {
+            list {
+                direction = "Horizontal",
+                spacing = 16,
+                source = mantle.files:map(function(files)
+                    local folder = files and files.folders[DIR]
+                    return folder and folder.entries or {}
+                end),
+                key = function(entry) return entry.name end,
+                itemfn = thumbnail,
+            },
+        },
+    },
+}
+
+return { image = image_node, picker = picker }

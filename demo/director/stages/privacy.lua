@@ -1,5 +1,6 @@
 -- Demo: the director feeds `mock_privacy` in `mantle.privacy`'s shape with `mantle set`, so the
 -- take opens no real camera or microphone. A real shell reads `mantle.privacy` itself.
+local theme = require("theme")
 local privacy = state("mock_privacy", { camera_users = {}, microphone_users = {}, screencast_users = {} })
 
 local KINDS = {
@@ -19,14 +20,14 @@ return rect {
     align_v = "Center",
     padding = { left = 16, right = 18 },
     radius = 20,
-    background = "#f38ba8",
+    background = theme.danger,
     scale = 1,
     animate = { scale = { duration = 320, easing = "OutBack", from = 0.5 } },
     children = privacy:map(function(p)
         local children, names, seen = {}, {}, {}
         for _, kind in ipairs(KINDS) do
             if #p[kind.field] > 0 then
-                children[#children + 1] = icon { name = kind.icon, size = 24, align_v = "Center", foreground = "#11111b" }
+                children[#children + 1] = icon { name = kind.icon, size = 24, align_v = "Center", foreground = theme.crust }
             end
             for _, user in ipairs(p[kind.field]) do
                 if not seen[user.app_name] then
@@ -41,7 +42,7 @@ return rect {
             align_v = "Center",
             font_size = 20,
             font_weight = 700,
-            foreground = "#11111b",
+            foreground = theme.crust,
         }
         return { row { height = "Fill", spacing = 8, children = children } }
     end),

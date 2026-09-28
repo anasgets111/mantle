@@ -1,8 +1,10 @@
 -- The keystrokes that turn one file into the next: a line diff, then per changed line the
 -- backspaces and characters between their common prefix and suffix. A hunk adding more than
--- PASTE_LINES lines streams in line by line, as a paste would; typing it out would outlast the shot.
+-- PASTE_LINES lines streams in line by line, as a paste would, and a changed line needing more than
+-- RETYPE_KEYS keystrokes is replaced whole; typing either out would outlast the shot.
 
 local PASTE_LINES = 3
+local RETYPE_KEYS = 16
 
 local function split(text)
     local lines = {}
@@ -88,7 +90,14 @@ local function plan(old_text, new_text)
         else
             local paired = math.min(#hunk.removed, #hunk.added)
             for k = 1, paired do
-                retype(ops, line + k - 1, hunk.removed[k], hunk.added[k])
+                local keys = {}
+                retype(keys, line + k - 1, hunk.removed[k], hunk.added[k])
+                if #keys > RETYPE_KEYS then
+                    ops[#ops + 1] = { kind = "remove_line", line = line + k - 1 }
+                    ops[#ops + 1] = { kind = "paste_line", line = line + k - 1, text = hunk.added[k] }
+                else
+                    table.move(keys, 1, #keys, #ops + 1, ops)
+                end
             end
             for _ = paired + 1, #hunk.removed do
                 ops[#ops + 1] = { kind = "remove_line", line = line + paired }

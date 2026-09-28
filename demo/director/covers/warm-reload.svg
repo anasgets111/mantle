@@ -1,0 +1,26 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 1200" width="1200" height="1200">
+<defs>
+<linearGradient id="bg" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#2b1422"/><stop offset="1" stop-color="#150a12"/></linearGradient>
+<linearGradient id="sun" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#f9e2af"/><stop offset=".5" stop-color="#fab387"/><stop offset="1" stop-color="#f38ba8"/></linearGradient>
+<mask id="bands"><rect width="1200" height="1200" fill="#fff"/><g fill="#000">
+<rect x="0" y="640" width="1200" height="12"/>
+<rect x="0" y="700" width="1200" height="18"/>
+<rect x="0" y="762" width="1200" height="24"/>
+<rect x="0" y="828" width="1200" height="30"/>
+<rect x="0" y="900" width="1200" height="300"/>
+</g></mask>
+</defs>
+<rect width="1200" height="1200" fill="url(#bg)"/>
+<circle cx="600" cy="580" r="360" fill="url(#sun)" mask="url(#bands)"/>
+<g transform="translate(418 360) scale(.7)" fill="#22101b" stroke-linejoin="round">
+<path d="M0 420 V110 Q0 10 95 40 L260 175 V265 L125 150 V420 Z"/>
+<path d="M0 420 V110 Q0 10 95 40 L260 175 V265 L125 150 V420 Z" transform="translate(520 0) scale(-1 1)"/>
+<path d="M150 262 L260 334 L370 262 L370 292 L260 364 L150 292 Z"/>
+<path d="M150 314 L260 386 L370 314 L370 344 L260 416 L150 344 Z"/>
+</g>
+<g fill="none" stroke="#fab387" stroke-linecap="round">
+<path d="M120 960 H1080" stroke-opacity=".5" stroke-width="6"/>
+<path d="M220 1030 H980" stroke-opacity=".32" stroke-width="6"/>
+<path d="M340 1100 H860" stroke-opacity=".18" stroke-width="6"/>
+</g>
+</svg>

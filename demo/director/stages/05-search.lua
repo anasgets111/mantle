@@ -5,7 +5,7 @@ fonts {
 }
 
 local launcher_open = state("launcher_open", false)
-local osd = require("osd")
+local query = state("launcher_query", "")
 
 local workspaces = list {
     direction = "Horizontal",
@@ -46,13 +46,26 @@ local PINNED = {
     "org.telegram.desktop", "vesktop", "steam",
 }
 
-local apps = mantle.applications:map(function(a)
+-- Pinned apps until you type, then the best fuzzy matches.
+local apps = computed({ mantle.applications, query }, function(a, needle)
     local out = {}
-    for _, id in ipairs(PINNED) do
-        local index = a and a.by_app_id[id]
-        if index then out[#out + 1] = a.entries[index] end
+    if needle == "" then
+        for _, id in ipairs(PINNED) do
+            local index = a and a.by_app_id[id]
+            if index then out[#out + 1] = a.entries[index] end
+        end
+        return out
     end
-    return out
+    for _, entry in ipairs(a and a.entries or {}) do
+        local score = fuzzy(entry.name, needle)
+        if score then out[#out + 1] = { entry = entry, score = score } end
+    end
+    table.sort(out, function(l, r) return l.score > r.score or (l.score == r.score and l.entry.id < r.entry.id) end)
+    local best = {}
+    for k = 1, math.min(#out, 6) do
+        best[k] = out[k].entry
+    end
+    return best
 end)
 
 local launcher = panel {
@@ -62,56 +75,49 @@ local launcher = panel {
     margin = { top = 12, left = 12 },
     visible = launcher_open,
     width = 560,
-    background = "#313244f2",
+    background = "#31324470",
     radius = 24,
-    child = list {
+    blur = true,
+    child = column {
         width = "Fill",
         padding = 10,
-        spacing = 2,
-        source = apps,
-        key = function(app) return app.id end,
-        itemfn = function(app)
-            return button {
-                width = "Fill",
+        spacing = 6,
+        children = {
+            text {
+                content = query:map(function(q) return q == "" and "Search apps" or q end),
                 padding = 12,
-                radius = 12,
-                on_click = function() mantle.applications:launch(app.id) end,
-                children = {
-                    row {
-                        spacing = 14,
+                font_size = 26,
+                foreground = "#cdd6f4",
+                opacity = query:map(function(q) return q == "" and 0.45 or 1 end),
+            },
+            list {
+                width = "Fill",
+                spacing = 2,
+                source = apps,
+                key = function(app) return app.id end,
+                itemfn = function(app)
+                    return button {
+                        width = "Fill",
+                        padding = 12,
+                        radius = 12,
+                        on_click = function() mantle.applications:launch(app.id) end,
                         children = {
-                            icon { name = app.icon or "application-x-executable", size = 52 },
-                            text { content = app.name, align_v = "Center", font_size = 26 },
+                            row {
+                                spacing = 14,
+                                children = {
+                                    icon { name = app.icon or "application-x-executable", size = 52 },
+                                    text { content = app.name, align_v = "Center", font_size = 26 },
+                                },
+                            },
                         },
-                    },
-                },
-            }
-        end,
-    },
-}
-
-local aurora = panel {
-    id = "aurora",
-    layer = "Background",
-    anchor = { top = true, bottom = true, left = true, right = true },
-    width = "Fill",
-    height = "Fill",
-    exclusive = "Ignore",
-    child = shader {
-        width = "Fill",
-        height = "Fill",
-        source = mantle.config_dir .. "/aurora.frag",
-        params = { tint_a = { 0.54, 0.71, 0.98 }, tint_b = { 0.80, 0.65, 0.97 } },
-        progress = 0,
-        animate = {
-            progress = { duration = 16000, easing = "Linear", keyframes = { 0, 1 }, loops = "Infinite" },
+                    }
+                end,
+            },
         },
     },
 }
 
 return {
-    aurora,
-    osd,
     launcher,
     panel {
         id = "bar",
