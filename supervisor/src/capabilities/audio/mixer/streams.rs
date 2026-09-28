@@ -21,8 +21,9 @@ const VIDEO_SOURCE: &str = "Video/Source";
 /// setting that says nothing about whether anything is listening.
 const STREAM_INPUT_AUDIO: &str = "Stream/Input/Audio";
 
-/// `media.class` for screen-capture producers (ADR-0137). A camera is a `Video/Source` device;
-/// video streams identify screen capture without portal or compositor names.
+/// `media.class` for screen-capture producers (ADR-0137). Most compositors and portals advertise
+/// `Stream/Output/Video`; portals advertising `Video/Source` (e.g. `xdg-desktop-portal-hyprland`)
+/// are classified through [`is_screencast_source`].
 ///
 /// ponytail: `wf-recorder`, `grim`, and other wlr-screencopy clients never reach PipeWire. Catching
 /// them needs compositor-reported screencopy clients, which niri-ipc does not provide.
@@ -31,6 +32,29 @@ const STREAM_OUTPUT_VIDEO: &str = "Stream/Output/Video";
 /// A capture reading a sink monitor, as cava and every visualiser does; the property beats a name list.
 fn is_monitor_capture(props: &impl PropsLookup) -> bool {
     props.get_prop(*keys::STREAM_CAPTURE_SINK) == Some("true")
+}
+
+/// Screen-capture producers from portals that advertise `Video/Source` (e.g. `xdg-desktop-portal-hyprland`)
+/// rather than `Stream/Output/Video`. A physical webcam is a hardware device (`device.api = "v4l2"`
+/// or `media.role = "Camera"`).
+fn is_screencast_source(props: &impl PropsLookup) -> bool {
+    if props.get_prop(*keys::MEDIA_ROLE) == Some("Camera")
+        || props.get_prop(*keys::DEVICE_API).is_some()
+        || props.get_prop("api.v4l2.path").is_some()
+    {
+        return false;
+    }
+    let matches_screencast = |val: &str| {
+        val.starts_with("xdph-")
+            || val.starts_with("xdpw-")
+            || val.contains("portal")
+            || val.contains("screencast")
+            || val.contains("screencopy")
+    };
+    props.get_prop(*keys::NODE_NAME).is_some_and(matches_screencast)
+        || props.get_prop(*keys::MEDIA_NAME).is_some_and(matches_screencast)
+        || props.get_prop(*keys::APP_NAME).is_some_and(matches_screencast)
+        || props.get_prop(*keys::APP_PROCESS_BINARY).is_some_and(matches_screencast)
 }
 
 /// One app's playback or recording stream (ADR-0053). Streams without a pid are left out.
@@ -73,7 +97,7 @@ pub(super) enum NodeKind {
 pub(super) fn classify(props: &impl PropsLookup) -> Option<NodeKind> {
     match props.get_prop(*keys::MEDIA_CLASS) {
         Some(STREAM_OUTPUT_AUDIO) => Some(NodeKind::Audio),
-        Some(VIDEO_SOURCE) => Some(NodeKind::Video),
+        Some(VIDEO_SOURCE) => Some(if is_screencast_source(props) { NodeKind::Screencast } else { NodeKind::Video }),
         Some(STREAM_INPUT_AUDIO) => Some(NodeKind::Microphone),
         Some(STREAM_OUTPUT_VIDEO) => Some(NodeKind::Screencast),
         _ => None,
@@ -210,7 +234,7 @@ fn parse_capture_props(node_id: u32, kind: NodeKind, props: &impl PropsLookup) -
     Some(CaptureApp {
         node_id,
         pid: props.get_prop(*keys::APP_PROCESS_ID).and_then(|pid| pid.parse().ok()),
-        app_name: props.get_prop(*keys::APP_NAME).map(str::to_string),
+        app_name: props.get_prop(*keys::APP_NAME).or_else(|| props.get_prop(*keys::NODE_NAME)).map(str::to_string),
         // Set by the caller from this `info` event.
         running: false,
     })
@@ -315,6 +339,64 @@ mod tests {
         }
         let props = HashMap::from([("media.class".to_string(), "Audio/Sink".to_string())]);
         assert_eq!(classify(&props), None, "a sink is bound by the device path, not this one");
+    }
+
+    #[test]
+    fn a_portal_screencast_with_client_props_is_classified_and_tracked() {
+        let props = HashMap::from([
+            ("media.class".to_string(), "Video/Source".to_string()),
+            ("node.name".to_string(), "xdph-streaming-1234".to_string()),
+            ("application.name".to_string(), "xdg-desktop-portal-hyprland".to_string()),
+            ("application.process.binary".to_string(), "xdg-desktop-portal-hyprland".to_string()),
+            ("application.process.id".to_string(), "42".to_string()),
+        ]);
+        assert_eq!(classify(&props), Some(NodeKind::Screencast));
+
+        let mut apps = BTreeMap::new();
+        apply_capture_info_event(&mut apps, 1, NodeKind::Screencast, true, Some(&props), true);
+        assert_eq!(
+            running(&apps),
+            vec![CaptureApp {
+                node_id: 1,
+                pid: Some(42),
+                app_name: Some("xdg-desktop-portal-hyprland".to_string()),
+                running: true,
+            }]
+        );
+    }
+
+    #[test]
+    fn classify_leaves_a_camera_with_camera_role_or_device_api_as_video() {
+        let mut props = camera_stream_props();
+        props.insert("media.role".to_string(), "Camera".to_string());
+        props.insert("node.name".to_string(), "xdph-streaming-1".to_string());
+        assert_eq!(classify(&props), Some(NodeKind::Video));
+
+        let mut v4l2_props = camera_stream_props();
+        v4l2_props.insert("device.api".to_string(), "v4l2".to_string());
+        assert_eq!(classify(&v4l2_props), Some(NodeKind::Video));
+    }
+
+    #[test]
+    fn classify_and_track_live_hyprland_portal_node() {
+        let props = HashMap::from([
+            ("media.class".to_string(), "Video/Source".to_string()),
+            ("media.name".to_string(), "xdph-streaming-628754".to_string()),
+            ("node.name".to_string(), "xdg-desktop-portal-hyprland".to_string()),
+        ]);
+        assert_eq!(classify(&props), Some(NodeKind::Screencast));
+
+        let mut apps = BTreeMap::new();
+        apply_capture_info_event(&mut apps, 104, NodeKind::Screencast, true, Some(&props), true);
+        assert_eq!(
+            running(&apps),
+            vec![CaptureApp {
+                node_id: 104,
+                pid: None,
+                app_name: Some("xdg-desktop-portal-hyprland".to_string()),
+                running: true,
+            }]
+        );
     }
 
     /// A browser tab holds capture open between calls; publishing idle would light privacy forever.

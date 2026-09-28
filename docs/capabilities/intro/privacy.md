@@ -17,7 +17,7 @@ rect {
 | Source | Feeds |
 | :--- | :--- |
 | Running `Stream/Input/Audio` PipeWire nodes | `microphone_users` |
-| Running `Stream/Output/Video` PipeWire nodes | `screencast_users` |
+| Running `Stream/Output/Video` and portal `Video/Source` PipeWire nodes | `screencast_users` |
 | `/proc/*/fd` links to a `/dev/videoN`, rescanned on each inotify open or close of the device | `camera_users`. A PipeWire `Video/Source` from the same pid only supplies the name |
 
 The PipeWire half shares [`audio`'s thread](audio.md#backend). `privacy` pushes its first `/proc`
