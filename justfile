@@ -17,6 +17,13 @@ release:
 run config="share/starter": build
     target/debug/mantle -c {{config}}
 
+# Records the demo video to `out` (default ~/Videos/mantle-demo.mp4). `demo/director` stops every
+# running shell for the take, drives a scratch one on camera, then restarts yours. `PATH` puts this
+# build first, so the demo shell it starts and the `mantle` commands it runs are this build too.
+demo out="":
+    cargo build --workspace --profile swap
+    PATH="$PWD/target/swap:$PATH" MANTLE_DEMO_OUT="{{out}}" target/swap/mantle -c demo/director
+
 # Everything a change has to pass before it is done, on what would be committed.
 check:
     just staged-only just fmt-check test lint rustdoc lua types
@@ -111,7 +118,7 @@ types:
     check lua-meta --configpath "$log/meta.luarc.json"
     echo "lua-meta type-checks, and the starter type-checks against it"
 
-lua_dirs := "lua-meta share"
+lua_dirs := "lua-meta share demo"
 
 # Here, not beside `cargo fmt`, so `lua_dirs` is written once and a Lua-only commit is gated by
 # `just lua types` alone. `tools/luafmt.py` says why the formatter is a language server.
