@@ -8,11 +8,7 @@ Each surface holds a tree of [nodes](nodes/index.md), and any node property can 
 [signal](guide/signals.md) that updates itself when a [capability](capabilities/index.md) (audio,
 workspaces, the clock) pushes new state.
 
-<video src="https://github.com/user-attachments/assets/b4a56c2f-a946-44f9-9bfd-2c6046d7a72f" controls muted loop playsinline preload="metadata"></video>
-
-<video src="https://github.com/user-attachments/assets/038ee763-d7b6-4df9-9f79-2f131d4f0dcd" controls muted loop playsinline preload="metadata"></video>
-
-<video src="https://github.com/user-attachments/assets/5533b578-1d9e-484e-bb18-4b4fae1da50d" controls muted loop playsinline preload="metadata"></video>
+<video src="https://github.com/user-attachments/assets/6eea81f4-9755-468e-aa2d-f8151c25e2f5" controls muted playsinline preload="metadata"></video>
 
 Build the first shell below, then find the rest by [topic](#topic-index) or by
 [task](#how-do-i). The [glossary](glossary.md) defines every term.
