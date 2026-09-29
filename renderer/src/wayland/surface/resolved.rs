@@ -25,8 +25,7 @@ enum VisibilityAction {
 }
 
 impl App {
-    /// Apply resolved state to every tracked surface after a changed scene; ADR-0044 decision 2
-    /// has one dirty flag for the whole scene.
+    /// Apply resolved state to every tracked surface after a changed scene.
     pub(in crate::wayland) fn apply_resolved_surface_state(&mut self) {
         for index in 0..self.surfaces.len() {
             self.apply_resolved_state(index);

@@ -628,6 +628,8 @@ pub enum DirtyScope {
 struct DirtyState {
     all: bool,
     cells: rustc_hash::FxHashSet<CellId>,
+    /// Instances whose own inputs changed with no cell written, such as their configured size.
+    instances: rustc_hash::FxHashSet<String>,
     /// The write clock at the last take: a computed stamped since then has readers to re-resolve.
     taken_at: u64,
 }
@@ -641,12 +643,15 @@ impl DirtyFlag {
         Self(Rc::new(RefCell::new(DirtyState::default())))
     }
 
-    /// `configure` changing one surface's size invalidates resolved geometry like a capability
-    /// push;
-    /// `RendererClient::set_instance_size` marks this flag rather than adding a second mechanism
-    /// (ADR-0044 decision 2).
+    /// Every surface must re-resolve: a reload, or a change no instance can be named for.
     pub(crate) fn mark(&self) {
         self.0.borrow_mut().all = true;
+    }
+
+    /// One instance must re-resolve, for a change that is its own and written no cell: `configure`
+    /// changing its size (ADR-0044 decision 2).
+    pub(crate) fn mark_instance(&self, instance_id: &str) {
+        self.0.borrow_mut().instances.insert(instance_id.to_string());
     }
 
     /// Marks a specific reactive cell dirty.
@@ -659,7 +664,7 @@ impl DirtyFlag {
     /// (ADR-0044 decision 2).
     pub fn take(&self) -> bool {
         let mut state = self.0.borrow_mut();
-        if state.all || !state.cells.is_empty() {
+        if state.all || !state.cells.is_empty() || !state.instances.is_empty() {
             *state = DirtyState { taken_at: current_clock(), ..DirtyState::default() };
             true
         } else {
@@ -675,23 +680,23 @@ impl DirtyFlag {
     /// subsequent layout pass, preventing double-evaluation. Standalone calls evaluate under
     /// their own memo and drop it immediately.
     pub fn take_scope(&self, lua: &Lua) -> DirtyScope {
-        let (mut cells, taken_at) = {
+        let (mut cells, marked, taken_at) = {
             let mut state = self.0.borrow_mut();
-            if !state.all && state.cells.is_empty() {
+            if !state.all && state.cells.is_empty() && state.instances.is_empty() {
                 return DirtyScope::Clean;
             }
             if state.all {
                 *state = DirtyState { taken_at: current_clock(), ..DirtyState::default() };
                 return DirtyScope::All;
             }
-            (std::mem::take(&mut state.cells), state.taken_at)
+            (std::mem::take(&mut state.cells), std::mem::take(&mut state.instances), state.taken_at)
         };
         // Unborrowed: a computed may `set` a state, which marks this flag.
         rerun_computeds(lua, &cells);
         cells.extend(outputs_written_since(taken_at));
         self.0.borrow_mut().taken_at = current_clock();
         let tracker = lua.app_data_ref::<ReadTracker>();
-        let mut instances = rustc_hash::FxHashSet::default();
+        let mut instances = marked;
         if let Some(tracker) = tracker {
             for cell_id in cells {
                 if let Some(readers) = tracker.cell_readers.get(&cell_id) {

@@ -379,7 +379,7 @@ impl RendererClient {
             return;
         }
         instance.available = bounded;
-        self.dirty.mark();
+        self.dirty.mark_instance(instance_id);
     }
 
     /// Forces a whole-scene pass, for a surface state change no signal carries.
@@ -387,8 +387,8 @@ impl RendererClient {
         self.dirty.mark();
     }
 
-    /// Replaces one instance's compositor-configured `available` size and dirties the scene through
-    /// ADR-0044 decision 2's [`DirtyFlag`] (ADR-0023). Ignore unknown ids instead of dirtying a
+    /// Replaces one instance's compositor-configured `available` size and marks that instance
+    /// dirty ([`DirtyFlag::mark_instance`], ADR-0023). Ignore unknown ids instead of dirtying a
     /// nonexistent surface.
     ///
     /// A measured axis is left alone (`SurfaceInstance::measured_axes`). The compositor's answer
@@ -408,7 +408,7 @@ impl RendererClient {
             return;
         }
         instance.available = size;
-        self.dirty.mark();
+        self.dirty.mark_instance(instance_id);
     }
 
     /// Retained scene; `paint_surface` looks up the resolved tree by the `"{id}@{output}"` id in
@@ -2045,6 +2045,28 @@ mod tests {
             32.0,
             "the surface must now resolve against the size the compositor actually configured, not the whole output"
         );
+    }
+
+    #[test]
+    fn a_configure_for_one_surface_re_resolves_only_that_instance() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_shell_lua(
+            dir.path(),
+            r#"return {
+                panel { id = "bar", layer = "Top", width = "Fill", height = "Fill" },
+                panel { id = "b", layer = "Top" },
+                panel { id = "c", layer = "Top" },
+                panel { id = "d", layer = "Top" },
+            }"#,
+        );
+        let (mut client, _outbound_rx) = test_client(&path);
+        assert!(run_startup(&mut client));
+        client.take_last_resolved();
+
+        client.set_instance_size("bar@TEST", layout::LogicalSize { width: 1920.0, height: 32.0 });
+        assert!(client.re_resolve_if_dirty());
+
+        assert_eq!(client.take_last_resolved(), Some(vec!["bar@TEST".to_string()]), "None means all four instances");
     }
 
     #[test]

@@ -530,9 +530,8 @@ mod tests {
 
     #[test]
     fn a_popup_that_is_already_open_is_left_alone_on_every_later_re_resolve() {
-        // Not a degenerate case: ADR-0044 decision 2's dirty flag is one flag for the whole scene,
-        // so `apply_resolved_state` runs for every surface on every capability push, and an open
-        // popup passes through here several times a second.
+        // Not a degenerate case: `apply_resolved_surface_state` visits every surface after any
+        // changed scene, so an open popup passes through here several times a second.
         assert_eq!(popup_visibility_action(true, true, None, 4), PopupAction::Nothing);
     }
 
