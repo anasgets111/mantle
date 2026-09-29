@@ -1206,6 +1206,85 @@ mod tests {
         );
     }
 
+    #[test]
+    fn one_motion_clock_reverses_layout_and_shader_progress_together() {
+        let mut scene = Scene::new();
+        let shaping = ShapingHandle::spawn();
+        let (lua, surface) = surface_from(
+            r##"local m = motion("shared", 0, 100)
+                 shared_clock = m
+                 return panel { id = "bar", child = row { children = {
+                     rect { width = 100, height = 20, background = "#ffffff",
+                            animate = { width = { clock = m, from = 20 } } },
+                     shader { width = 20, height = 20, source = "/s.frag", progress = 1,
+                              animate = { progress = { clock = m, from = 0 } } },
+                 } } }"##,
+        );
+        apply_at(&mut scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
+        let clock = crate::lua::motion::from_value(&lua.globals().get::<Value>("shared_clock").unwrap()).unwrap();
+        let start = Instant::now() + Duration::from_secs(1);
+        clock.to(1.0, start).unwrap();
+        apply_at(&mut scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
+        let instances = [instance_at(&surface, full())];
+        scene.tick(&instances, &shaping, &lua, start + Duration::from_millis(50));
+        let row = &scene.surface("bar@TEST").unwrap().children[0];
+        assert!((row.children[0].rect.width - 60.0).abs() < 0.01);
+        let Some(PaintStyle::Shader { progress, .. }) = row.children[1].paint else { panic!("shader paint missing") };
+        assert!((progress - 0.5).abs() < 0.01);
+
+        clock.to(0.0, start + Duration::from_millis(50)).unwrap();
+        apply_at(&mut scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
+        scene.tick(&instances, &shaping, &lua, start + Duration::from_millis(100));
+        let row = &scene.surface("bar@TEST").unwrap().children[0];
+        assert!((row.children[0].rect.width - 20.0).abs() < 0.01);
+        let Some(PaintStyle::Shader { progress, .. }) = row.children[1].paint else { panic!("shader paint missing") };
+        assert!(progress.abs() < 0.01);
+    }
+
+    #[test]
+    fn eased_shared_clock_retraces_keyframes_without_restarting_them() {
+        let mut scene = Scene::new();
+        let shaping = ShapingHandle::spawn();
+        let (lua, surface) = surface_from(
+            r##"local m = motion("shared", 0, 100, "OutCubic")
+                 shared_clock = m
+                 return panel { id = "bar", child = row { children = {
+                     rect { width = 100, height = 20, background = "#ffffff",
+                            animate = { width = { clock = m, from = 20 } } },
+                     shader { width = 20, height = 20, source = "/s.frag", progress = 1,
+                              animate = { progress = { clock = m, from = 0 } } },
+                     rect { width = 20, height = 20, background = "#ffffff",
+                            animate = { opacity = { clock = m, keyframes = { 0, 1, 0 } } } },
+                 } } }"##,
+        );
+        apply_at(&mut scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
+        let clock = crate::lua::motion::from_value(&lua.globals().get::<Value>("shared_clock").unwrap()).unwrap();
+        let start = Instant::now() + Duration::from_secs(1);
+        clock.to(1.0, start).unwrap();
+        apply_at(&mut scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
+        let instances = [instance_at(&surface, full())];
+        let sample = |scene: &Scene| {
+            let row = &scene.surface("bar@TEST").unwrap().children[0];
+            let Some(PaintStyle::Shader { progress, .. }) = row.children[1].paint else {
+                panic!("shader paint missing")
+            };
+            (row.children[0].rect.width, progress, row.children[2].opacity)
+        };
+        scene.tick(&instances, &shaping, &lua, start + Duration::from_millis(50));
+        let (width, progress, badge) = sample(&scene);
+        assert!((width - 90.0).abs() < 0.01);
+        assert!((progress - 0.875).abs() < 0.01);
+        assert!((badge - 0.25).abs() < 0.01);
+
+        clock.to(0.0, start + Duration::from_millis(50)).unwrap();
+        apply_at(&mut scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
+        scene.tick(&instances, &shaping, &lua, start + Duration::from_millis(75));
+        let (width, progress, badge) = sample(&scene);
+        assert!((width - 66.25).abs() < 0.01);
+        assert!((progress - 0.578125).abs() < 0.01);
+        assert!((badge - 0.84375).abs() < 0.01, "keyframes must follow progress backward");
+    }
+
     /// ADR-0261. A `translate` and `scale` loop ticks without a relayout, and the input region
     /// follows it.
     #[test]

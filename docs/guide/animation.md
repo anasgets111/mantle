@@ -59,10 +59,63 @@ values: a signal nested in an entry does not resolve.
 | Number, `"NN%"` size, `"#rrggbb[aa]"` colour, number edge table `{ top, right, bottom, left }`, `{ x, y }` table | Tweens against a new value of the same shape. A missing edge or axis reads as `0` (`1` for `scale`, `0.5` for `origin`) |
 | `"Fill"`, booleans, strings that are not colours, per-edge colour tables, gradients, or a change of shape (`2` to `{ x = 2 }`, `"50%"` to `"Fill"`) | Snaps |
 | New node, or a property the node did not set last pass | Starts at the entry's `from`, else snaps. `from` needs the node to set the property itself |
-| Target changes mid-flight | Eased and keyframe motion start over from the value on screen. A spring keeps its velocity ([spring](#spring)) |
+| Target changes mid-flight | An eased tween returning to its prior endpoint shortens the run according to the progress already covered. Other eased targets and keyframe entries start over from the value on screen. A spring keeps its velocity ([spring](#spring)); shared motion keeps the clock's phase |
 | Property removed from `animate` | Its tween stops and the property snaps to the resolved value |
 | Hidden subtree (`visible = false`) | Tweens freeze and request no frames; they settle when it shows again |
 | `z`, `animate`, or a name the node kind does not accept | Refused: the pass fails with an error naming the entry |
+
+## Shared motion
+
+`motion(name, initial, duration, easing?)` creates a named progress clock. `initial` is within
+`[0, 1]`; `duration` is milliseconds for the full 0 to 1 distance. `easing` accepts the same
+names and Bezier or steps tables as `animate`, and defaults to `"Linear"`. A button can call
+`:to(0)` or `:to(1)`. Reversing at phase 0.4 takes 40% of the duration to return to 0 and
+retraces the same easing curve. The scene advances the clock on compositor frames without
+calling Lua.
+
+Bind an `animate` entry with `clock` and either `from` or `keyframes`. With `from`, the property's
+value is the progress 1 endpoint and `from` is the progress 0 endpoint. With `keyframes`, the clock
+samples one walk through the list, including on reversal. Segment `duration` values divide the
+clock's span by relative weight; without them, segments are equal. Each frame can still name its
+own `easing`. Several properties, including `shader.progress`, can use the same handle.
+The endpoints stay fixed while the clock moves. An entry using `clock` cannot set its own
+`duration`, `delay`, `easing`, `spring`, or `loops`. A keyframe sequence holds its first or last
+value during easing overshoot.
+
+```lua
+local morph = motion("morph", 0, 240, "OutCubic")
+
+return panel {
+    id = "motion",
+    layer = "Top",
+    child = column { children = {
+        rect {
+            width = 260,
+            height = 40,
+            opacity = 1,
+            background = "#89b4fa",
+            animate = {
+                width = { clock = morph, from = 120 },
+                opacity = { clock = morph, from = 0.4 },
+            },
+        },
+        rect {
+            width = 24,
+            height = 24,
+            background = "#f5c2e7",
+            animate = { opacity = { clock = morph, keyframes = { 0, 1, 0 } } },
+        },
+        button {
+            on_click = function() morph:to(1) end,
+            children = { text { content = "Expand" } },
+        },
+        button {
+            on_click = function() morph:to(0) end,
+            children = { text { content = "Collapse" } },
+        },
+    } },
+}
+```
 
 ### What can animate
 
@@ -100,18 +153,19 @@ Both skip layout; `width` and `margin` lay out the surface on every animation fr
 ## Entry keys
 
 An entry is a bare number (a duration in ms with the default easing) or a table. Every entry picks
-one of three motions: eased (`duration`), keyframes (`keyframes` + `duration`) or spring
-(`spring`).
+one of four motions: eased (`duration`), keyframes (`keyframes` + `duration`), spring
+(`spring`), or shared (`clock`).
 
 | Key | Values | Rules |
 | :--- | :--- | :--- |
-| `duration` | Whole ms, `[1, 60000]` | Required unless `spring` is set. With `keyframes` it is the default length of each segment |
-| `easing` | A name, `{ x1, y1, x2, y2 }`, or `{ steps = n }` | Default `"InOutQuad"`. Not with `spring` |
+| `duration` | Whole ms, `[1, 60000]` | Required for eased and ordinary keyframe entries. With ordinary `keyframes` it is the default length of each segment |
+| `easing` | A name, `{ x1, y1, x2, y2 }`, or `{ steps = n }` | Default `"InOutQuad"`. Not with `spring` or `clock` |
 | `delay` | Whole ms, `[0, 60000]` | Holds the start value first, like CSS `transition-delay`. Offsets a keyframe run once, not each loop |
 | `from` | A value of the property's shape | Start value for a property with nothing on screen yet. Refused with `keyframes` |
 | `spring` | `{ stiffness, damping }` | `stiffness` in `(0, 100000]`, `damping` in `(0, 10000]`, both required. Refuses `duration`, `easing`, `keyframes` and `loops` |
 | `keyframes` | At least 2 frames | See [keyframes](#keyframes) |
 | `loops` | Whole count `[1, 10000]` or `"Infinite"` | Default 1. Only with `keyframes` |
+| `clock` | A `motion()` handle | Requires `from` or `keyframes`; the clock owns timing and easing ([shared motion](#shared-motion)) |
 
 A `duration` or `delay` that is not a number (`"200"`) is refused rather than read as absent.
 

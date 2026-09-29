@@ -45,6 +45,13 @@ impl Sequence {
         (!cycle.is_zero()).then_some(Self { frames: frames.into(), loops, cycle })
     }
 
+    /// A shared clock walks this list once. Segment durations divide the 0..1 span by weight;
+    /// its own duration controls wall time.
+    pub(super) fn at_progress(&self, progress: f32, property: &str) -> Animatable {
+        let elapsed = self.cycle.mul_f64(f64::from(progress.clamp(0.0, 1.0)));
+        self.at(elapsed, property)
+    }
+
     /// The value `elapsed` into the run: the segment holding that instant, eased. A segment of no
     /// duration is a jump rather than a stop, so it is stepped over and its value shows only as
     /// the start of whatever follows.
@@ -246,6 +253,27 @@ mod tests {
         assert!(!endless.done(Duration::from_secs(3_600)));
     }
 
+    #[test]
+    fn a_shared_clock_uses_keyframe_durations_as_segment_weights() {
+        let lua = Lua::new();
+        let sequence = parse_animate(
+            "rect",
+            &rect_props(
+                &lua,
+                r#"return { animate = { opacity = { duration = 1, easing = "Linear", keyframes = {
+                    0, { value = 1, duration = 1 }, { value = 0, duration = 3 } } } } }"#,
+            ),
+        )
+        .unwrap()
+        .remove("opacity")
+        .unwrap()
+        .sequence()
+        .unwrap();
+        assert_eq!(sequence.at_progress(0.25, "opacity"), Animatable::Number(1.0));
+        assert_eq!(sequence.at_progress(0.625, "opacity"), Animatable::Number(0.5));
+        assert_eq!(sequence.at_progress(1.25, "opacity"), Animatable::Number(0.0));
+    }
+
     /// A frame of no duration is a jump, not a stop: it is stepped over, and its value shows as
     /// the start of whatever follows.
     #[test]
@@ -359,7 +387,15 @@ mod tests {
         let started = Instant::now();
         let Motion::Sequence(ref sequence) = spec.motion else { panic!("a sequence") };
         let first = sequence.frames[0].value;
-        let tween = Tween { property: "width", from: first, to: first, started, spec: spec.clone(), resting: false };
+        let tween = Tween {
+            property: "width",
+            from: first,
+            to: first,
+            started,
+            spec: spec.clone(),
+            reversal: None,
+            resting: false,
+        };
         assert_eq!(tween.at(started), Animatable::Number(40.0), "the lead-in holds the first frame");
         assert_eq!(tween.at(started + Duration::from_millis(999)), Animatable::Number(40.0), "for all of it");
         assert_eq!(tween.at(started + Duration::from_millis(1000)), Animatable::Number(0.0), "then the jump lands");
@@ -407,6 +443,7 @@ mod tests {
             to: Animatable::Number(1.0),
             started,
             spec: specs["opacity"].clone(),
+            reversal: None,
             resting: false,
         };
         let at = |ms| match tween.at(started + Duration::from_millis(ms)) {

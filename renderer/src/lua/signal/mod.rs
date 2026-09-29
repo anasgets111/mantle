@@ -37,7 +37,7 @@ use tracking::{Evaluation, Output, ReadTracker, current_clock, downstream, outpu
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub(crate) struct CellId(u64);
 
-fn next_cell_id() -> CellId {
+pub(crate) fn next_cell_id() -> CellId {
     static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
     CellId(NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed))
 }

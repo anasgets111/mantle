@@ -6902,6 +6902,7 @@ Extends `mantle.sysinfo` with `disks`, `gpu`, and network throughput telemetry (
 2. **GPU telemetry normalization.** Linux lacks a unified GPU kernel telemetry interface. The supervisor detects available backends (`nvtop -s`, `nvidia-smi`, or AMD DRM sysfs) and maps load, memory, and temperature into `GpuTelemetry`. When no tool or device is found, `gpu` remains `nil`.
 3. **Intel Arc temperature.** Adds `"i915"` and `"xe"` to `GPU_TEMP_PREFERENCE` in `temp.rs` so discrete Intel cards report hwmon temperature alongside AMD and NVIDIA.
 4. **Network throughput.** Samples `/proc/net/dev` across non-loopback interfaces. The first tick stores baseline counters; later ticks compute transfer rates over elapsed monotonic time.
+
 ## 0283. Shader nodes may supply a vertex stage
 
 A `shader` may name a `.vert` file to calculate values once per quad vertex and pass them to its
@@ -6922,3 +6923,29 @@ leaving, masked, and inert fields. The first matching field in document order wi
 The request restores a retained draft and caret for the same field and calls no edit callback.
 `autofocus` keeps its separate empty-draft behavior. Requests outside a click are ignored so an
 unrelated later pointer serial cannot give a stale callback authority over keyboard focus.
+
+## 0285. Named motion clocks share progress across property tweens
+
+`motion(name, initial, duration, easing?)` owns a linear 0..1 phase. An `animate` entry may bind to
+it with `clock` and a progress-0 `from`; the ordinary property value is the progress-1 endpoint.
+Several nodes and shader progress read that same clock during compositor frame ticks, with no Lua
+callback per frame. A retarget starts at the sampled position and travels at one full-range unit per
+duration, so reversal keeps position and speed. The clock's named identity survives re-evaluation.
+
+The clock applies easing when properties sample its phase. Reversal retraces the same curve with
+no inverse easing or Lua callback per frame. The shared entry remains retained at rest so a later
+target can wake it without recreating the node.
+
+A clock-bound `animate` entry accepts either `from` and the property's target, or `keyframes`.
+Keyframes walk once across the clock's progress; their segment durations are relative weights,
+and absent durations have weight 1. Per-frame easing still applies inside each segment. `loops`
+and entry-level timing remain invalid because the clock alone owns the run. Easing that overshoots
+the clock's endpoints holds a keyframe sequence at its first or last value.
+
+## 0286. Eased `animate` reversals shorten their run
+
+An eased tween returning to its previous endpoint uses the CSS transition reversing-shortening
+factor. It retains the logical start and factor across repeated reversals and unrelated layout
+passes. The new tween still starts from the value on screen and applies its easing over the shorter
+duration. A different target or changed timing starts a full run. Springs keep their velocity and
+keyframe sequences keep their own run rules; shared `motion` clocks retain exact phase reversal.

@@ -304,12 +304,13 @@ const NODES_HEADER: &str = r##"---@meta
 ---@alias Easing EasingName|[number, number, number, number]|{ steps: integer, [string]: "no such property" } A name, CSS `cubic-bezier` `{ x1, y1, x2, y2 }` with `x1`, `x2` in `[0, 1]`, or `{ steps = n }`, `n` in `[1, 1000]` (ADR-0151).
 ---@alias Keyframe {ANIMATABLE}|{Keyframe}
 ---@alias Spring {Spring}
----@alias Animation number|{ duration?: number, delay?: number, easing?: Easing, from?: number|string|Edges|Axes, spring?: Spring, keyframes?: Keyframe[], loops?: integer|"Infinite", [string]: "no such property" } A bare number is `duration`.
+---@alias Animation number|{ duration?: number, delay?: number, easing?: Easing, from?: number|string|Edges|Axes, spring?: Spring, keyframes?: Keyframe[], loops?: integer|"Infinite", clock?: MotionHandle, [string]: "no such property" } A bare number is `duration`.
 --- - `duration`: ms `[1, 60000]`, required unless `spring`. `easing` defaults to `"InOutQuad"`.
 --- - `delay`: ms `[0, 60000]` before it starts; offsets a sequence once, not per loop (ADR-0153).
 --- - `from`: start value when the node did not display the property last pass (a new node, or one that lacked it); otherwise the first value snaps (ADR-0146). Refused beside `keyframes`.
 --- - `spring`: replaces `duration`, `easing`, `keyframes` and `loops`, which are refused beside it.
 --- - `keyframes`: at least 2 values, no holes, at least one segment with time; walks instead of easing to the resolved value (ADR-0152). `loops` `[1, 10000]` or `"Infinite"`, default `1`, only with `keyframes`. Bind `animate` to start or stop one.
+--- - `clock`: a `motion()` handle shared across properties. Use `from` and the property's target as endpoints, or `keyframes` for one sampled sequence. Entry timing, spring and loops are refused.
 ---@alias Animations table<string, Animation> Property name to animation; each kind's `animate` field names its own, e.g. `RectAnimations`. Names the node does not accept, `z` and `animate` are refused. Numbers, percents, colours and numeric `Edges`/`Axes` tween against the same shape; anything else snaps.
 ---@alias Exit { duration?: number, delay?: number, easing?: Easing, spring?: Spring, [string]: any } `animate.exit`: timing as in `Animation` (`duration` or `spring` required once a target is named) plus `property = target` pairs the node eases to after a pass drops it (ADR-0150). A target starts from the shown value, or from the identity: `1` for `opacity`/`scale`, `0.5` for `origin`, alpha 0 for a colour, `0` otherwise.
 

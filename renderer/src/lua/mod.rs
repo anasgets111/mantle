@@ -13,6 +13,7 @@ pub(crate) mod location;
 pub mod log;
 pub(crate) mod luacats;
 pub mod marshal;
+pub(crate) mod motion;
 pub mod namespace;
 pub mod nodes;
 pub mod palette;
@@ -201,7 +202,8 @@ impl Loader {
         fonts::register(&lua)?;
         fuzzy::register(&lua)?;
         focus::register(&lua)?;
-        signal::register(&lua, dirty)?;
+        signal::register(&lua, dirty.clone())?;
+        motion::register(&lua, dirty)?;
         store::register(&lua)?;
         session_process::register(&lua)?;
         timer::register(&lua)?;

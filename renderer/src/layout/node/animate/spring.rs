@@ -384,6 +384,7 @@ mod tests {
             to: Animatable::Number(100.0),
             started,
             spec: sprung.clone(),
+            reversal: None,
             resting: false,
         };
         let midway = started + Duration::from_millis(50);
@@ -421,6 +422,7 @@ mod tests {
             to: Animatable::Number(100.0),
             started,
             spec: AnimationSpec { motion: Motion::Spring(spring), delay: Duration::ZERO, from: None },
+            reversal: None,
             resting: false,
         };
         // 220 ms in, an underdamped spring of these constants is past its target and coming back,
@@ -451,6 +453,7 @@ mod tests {
             to: Animatable::Number(300.0),
             started,
             spec: AnimationSpec { motion: Motion::Spring(carried), delay: Duration::ZERO, from: None },
+            reversal: None,
             resting: false,
         }];
         let shown: PropMap = PropMap::from_iter([("width", Value::Number(120.0))]);
