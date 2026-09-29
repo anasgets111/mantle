@@ -58,8 +58,9 @@ There is no `:set` on the state; `mantle.brightness:set` and `mantle.storage:set
 ### Actions
 
 Arguments are positional, in the order each page's Actions table lists them, and JSON-shaped:
-numbers, strings, booleans and tables. The Renderer checks the action name and marshalling; the
-Supervisor checks types and count.
+numbers, strings, booleans and tables. The Renderer checks the name, type and count of each
+argument before sending; the Supervisor checks what needs its live state, such as whether an ID
+still exists.
 
 | Mistake | Result |
 | :--- | :--- |
@@ -68,9 +69,11 @@ Supervisor checks types and count.
 | Any other unknown name | Raises at the read, listing the actions the capability takes |
 | Any other method but `get`, `map` and `on_change` on `battery`, `privacy` or `system` | Raises: they have no actions |
 | A function or userdata argument | Raises at the call, naming its slot |
-| Wrong type or argument count | Logged (`mantle log`) and dropped |
-| A float where an `integer` goes | Dropped: `5.0` is refused, `5` works. `math.floor(x + 0.5)` returns an integer |
-| Arguments to an action that takes none | Dropped: `mantle.network:scan(1)` is refused |
+| Wrong type or argument count | Raises at the call: `mantle.audio:set_volume: invalid type: string "loud", expected f32` |
+| A value the type rules out | Raises at the call: an empty name, a relative `files:watch` path, a negative `hold_expiry` |
+| A float where an `integer` goes | Raises: `5.0` is refused, `5` works. `math.floor(x + 0.5)` returns an integer |
+| Arguments to an action that takes none | Raises: `mantle.network:scan(1)` is refused |
+| An ID, profile or MAC the Supervisor does not know | Does not raise: logged (`mantle log`) or ignored, as the capability's page says |
 
 A trailing `nil` counts as omitted, so an optional last argument can be passed as `nil`.
 
@@ -173,8 +176,9 @@ Five members come from the Renderer, not a backend, so they are never `nil` and 
 | :--- | :--- |
 | `attempt to index a nil value` in a `:map` at startup | Guard the whole payload before its fields |
 | An optional field is `nil` | A JSON `null` arrives as an absent key. Fields marked `?` need their own guard (`audio.volume` with no default sink) |
-| `local ok = mantle.audio:set_volume(...)` is always `nil` | Bind the state the action changes; read `mantle log` for dropped commands |
-| An action silently does nothing | Wrong argument type or count, often a float where an `integer` goes (`keyboard:switch_layout(1.0)`). Check `mantle log` |
+| `local ok = mantle.audio:set_volume(...)` is always `nil` | Bind the state the action changes; read `mantle log` for refused commands |
+| An action raises `invalid type` or `invalid length` | Wrong argument type or count, often a float where an `integer` goes (`keyboard:switch_layout(1.0)`) |
+| An action silently does nothing | Its target is stale or unknown to the Supervisor, such as a closed window's ID. Check `mantle log` |
 | `on_change` fires at startup with `previous == nil` | That push is learned state, not a change; return early. A replacement Renderer gets every snapshot replayed the same way. An in-place reload keeps the last value, so its next push has a real `previous` |
 | `on_change` fires with nothing visibly changed | Every push carries the whole snapshot. Compare the fields you care about |
 
@@ -185,5 +189,5 @@ for what each backend needs.
 Source: [namespace](../../renderer/src/lua/namespace.rs), [capability](../../renderer/src/lua/capability.rs),
 [idle](../../renderer/src/lua/idle.rs), [screens](../../renderer/src/wayland/output.rs),
 [lazy start and dispatch](../../supervisor/src/capabilities/lifecycle.rs),
-[argument decoding](../../supervisor/src/action.rs), payload and action types under
-[`supervisor/src/capabilities/`](../../supervisor/src/capabilities/).
+[argument decoding](../../shared/src/action/mod.rs), [action types](../../shared/src/action/catalog.rs),
+payload types under [`supervisor/src/capabilities/`](../../supervisor/src/capabilities/).

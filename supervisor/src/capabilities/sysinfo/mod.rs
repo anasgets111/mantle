@@ -10,15 +10,7 @@ pub mod ram;
 pub mod temp;
 
 pub use controller::{SysinfoController, SysinfoSignal};
-
-#[derive(Debug, serde::Deserialize)]
-#[cfg_attr(test, derive(schemars::JsonSchema))]
-#[serde(rename_all = "snake_case")]
-pub enum SysinfoAction {
-    /// Sets poll intervals; every one starts at `0`, so nothing is read until this. The first
-    /// reading lands on the next wall-clock second (CPU: one interval after it).
-    Configure { intervals: controller::SysinfoConfigure },
-}
+use shared::action::SysinfoAction;
 
 /// `configure` is synchronous: it rewrites shared config under its lock and nudges watch channels
 /// (ADR-0037, ADR-0035).

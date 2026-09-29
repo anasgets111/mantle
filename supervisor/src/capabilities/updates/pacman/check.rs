@@ -6,7 +6,9 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::process::{Command, Stdio};
 
-use super::super::backend::{UpdateCandidate, run};
+use shared::action::UpdateCandidate;
+
+use super::super::backend::run;
 
 /// Each foreign package's installed name and version: in no synced repo.
 pub type Foreign = Vec<(String, String)>;

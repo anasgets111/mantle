@@ -6,6 +6,7 @@ use shared::{debug, error, warn};
 use tokio::sync::mpsc::UnboundedSender;
 
 use super::state::{LockEvent, LockState, accepts_outcome, apply, may_authenticate, releases};
+use shared::action::LockAction;
 
 /// Owns [`LockState`] and the outbound `SetSessionLock` queue. Not `Clone`: `main.rs` mutates it
 /// inline in `select!` (unlike `KeyboardController`).
@@ -154,21 +155,6 @@ impl LockController {
             warn!("the command channel is closed; dropping {command:?}");
         }
     }
-}
-
-/// `mantle.lock` actions. There is no `unlock`; only a correct password unlocks (ADR-0042).
-#[derive(Debug, serde::Deserialize)]
-#[cfg_attr(test, derive(schemars::JsonSchema))]
-#[serde(rename_all = "snake_case")]
-pub enum LockAction {
-    /// Locks the session; a no-op while `active`.
-    Lock,
-    /// Keeps the lock up `ms` after a correct password for an out-animation (ADR-0190). Clamped to
-    /// 600; omitted is `0`.
-    SetUnlockAnimation {
-        #[serde(default)]
-        ms: Option<u64>,
-    },
 }
 
 /// The longest a lock may stay up after a correct password.

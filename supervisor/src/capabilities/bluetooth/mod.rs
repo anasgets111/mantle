@@ -18,6 +18,7 @@
 //! deferred mechanics; a strict session-scoped list is the upgrade if hardware shows it wrong.
 
 use serde::Serialize;
+use shared::action::BluetoothAction;
 
 /// Object path where this Supervisor exports `org.bluez.Agent1` on its unique connection name.
 pub const AGENT_OBJECT_PATH: &str = "/org/mantle/Bluez/Agent1";
@@ -179,32 +180,6 @@ fn class_to_category(class: u32) -> &'static str {
         },
         _ => "generic",
     }
-}
-
-#[derive(Debug, serde::Deserialize)]
-#[cfg_attr(test, derive(schemars::JsonSchema))]
-#[serde(rename_all = "snake_case")]
-pub enum BluetoothAction {
-    /// Powers the adapter on or off.
-    SetEnabled { enabled: bool },
-    /// Makes the adapter findable by other devices, or not.
-    SetDiscoverable { discoverable: bool },
-    /// Clears `discovered_devices` and scans. The request holds, so a scan starts once the adapter
-    /// powers on and pauses while a `pair` runs.
-    StartDiscovery,
-    /// Stops discovery; `discovered_devices` stays.
-    StopDiscovery,
-    /// Pairs a discovered device, then trusts and connects it.
-    Pair { mac: String },
-    /// Trusts and connects a paired device.
-    Connect { mac: String },
-    /// Disconnects a connected device.
-    Disconnect { mac: String },
-    /// Removes a device from BlueZ, unpairing it.
-    Forget { mac: String },
-    /// Accepts or rejects the `pairing_request` for `mac`; a yes within 750 ms of it appearing is
-    /// ignored.
-    AnswerPairing { mac: String, accept: bool },
 }
 
 /// `mantle.bluetooth` action dispatch (ADR-0037): `tokio::spawn`s each write action rather than

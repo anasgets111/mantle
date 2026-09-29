@@ -10,7 +10,7 @@ A feature missing from a user config is not an engine gap.
 | --- | --- |
 | `supervisor/` | `mantle` binary: CLI, capabilities, generations, stub generator |
 | `renderer/` | `mantle-renderer`: Wayland, Lua VM, layout, paint, text |
-| `shared/` | Wire types, paths, log macros |
+| `shared/` | Wire types, capability actions, paths, log macros |
 | `lua-meta/` | LuaLS stubs for config authors |
 | `demo/director/` | The Mantle config `just demo` runs: `stages/` are the files it types on camera, `mockups.lua` the prop windows |
 | `share/starter/` | `shell.lua`, the starter config `just run` and `just types` use; `include_str!`'d into the engine |

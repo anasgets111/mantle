@@ -1401,8 +1401,11 @@ mod tests {
             .unwrap_err()
             .to_string();
 
-        assert!(err.contains("session_process: stop_signal"), "got {err}");
-        assert!(outbound_rx.try_recv().is_err(), "the invalid declaration must not reach the Supervisor");
+        assert!(err.contains("mantle.processes:declare: unknown variant `TEM`"), "got {err}");
+        assert!(
+            crate::lua::capability::tests::queued_command(&mut outbound_rx).is_none(),
+            "the invalid declaration must not reach the Supervisor"
+        );
     }
 
     #[test]

@@ -24,6 +24,7 @@ mod proxies;
 mod scan;
 
 pub use controller::NetworkController;
+use shared::action::NetworkAction;
 
 /// One scanned network in `available_networks`.
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -131,32 +132,6 @@ pub enum NetworkSignal {
 
 fn root_object_path() -> ObjectPath<'static> {
     ObjectPath::try_from("/").expect("\"/\" is always a valid D-Bus object path")
-}
-
-#[derive(Debug, serde::Deserialize)]
-#[cfg_attr(test, derive(schemars::JsonSchema))]
-#[serde(rename_all = "snake_case")]
-pub enum NetworkAction {
-    /// Turns NetworkManager networking on or off.
-    SetNetworkingEnabled { enabled: bool },
-    /// Powers the Wi-Fi radio.
-    SetWifiEnabled { enabled: bool },
-    /// `false` disconnects every wired device; `true` activates each one's autoconnect profile, and a
-    /// device without one stays down.
-    SetEthernetEnabled { enabled: bool },
-    /// Requests a Wi-Fi scan; a no-op without Wi-Fi hardware.
-    Scan,
-    /// Joins a network. Without a saved profile, a secured, `hidden` or out-of-range one sets
-    /// `password_ssid` and waits for a key.
-    Connect { ssid: String, hidden: bool },
-    /// Drops the password request `password_ssid` names; a join already running continues.
-    CancelConnect,
-    /// Stops the join `connecting_ssid` names, deleting a profile the join created.
-    AbortConnect,
-    /// Deletes every saved profile for this SSID.
-    Forget { ssid: String },
-    /// Disconnects Wi-Fi; NetworkManager does not autoconnect it again until the next join.
-    DisconnectWifi,
 }
 
 /// `mantle.network` dispatch (ADR-0037). Writes spawn rather than await inline (ADR-0029);

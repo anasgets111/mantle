@@ -5,7 +5,9 @@ use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::process::{Command, Stdio};
 
-use super::super::backend::{UpdateCandidate, program_is_in};
+use shared::action::UpdateCandidate;
+
+use super::super::backend::program_is_in;
 
 /// Detection order when several are installed.
 const HELPERS: [&str; 2] = ["paru", "yay"];

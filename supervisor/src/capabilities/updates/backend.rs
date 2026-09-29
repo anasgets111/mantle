@@ -6,26 +6,8 @@
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 
+use shared::action::UpdateCandidate;
 use shared::warn;
-
-/// One installed package with a newer version.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[cfg_attr(test, derive(schemars::JsonSchema))]
-pub struct UpdateCandidate {
-    /// Package name.
-    pub name: String,
-    /// Installed version.
-    pub old_version: String,
-    /// Version on offer.
-    pub new_version: String,
-    /// Bytes to fetch; `0` when already cached.
-    pub download_size: i64,
-    /// Bytes the new version occupies installed; not a delta.
-    pub installed_size: i64,
-    /// Source repository, e.g. `"extra"` or `"aur"`; empty in a seeded list that lacks it.
-    #[serde(default)]
-    pub repository: String,
-}
 
 /// One successful check. `aur_error` means the AUR half failed; `packages` still holds the repos'.
 #[derive(Debug, Clone, PartialEq, Eq)]

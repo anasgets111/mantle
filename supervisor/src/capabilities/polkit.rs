@@ -8,6 +8,7 @@ use shared::{error, info, warn};
 use tokio::sync::oneshot;
 
 use crate::polkit::{AgentError, BeginAuthenticationCall, first_unix_user_uid};
+use shared::action::PolkitAction;
 
 /// `mantle.polkit`'s payload (ADR-0114). Every other field is empty while `active` is false.
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize)]
@@ -26,14 +27,6 @@ pub struct PolkitState {
     pub authenticating: bool,
     /// Drawable reason for the last failure, e.g. `"authentication failed"`. The prompt stays open to retry.
     pub error: String,
-}
-
-#[derive(Debug, Clone, Copy, serde::Deserialize)]
-#[cfg_attr(test, derive(schemars::JsonSchema))]
-#[serde(rename_all = "snake_case")]
-pub enum PolkitAction {
-    /// Dismisses the prompt; the requesting program sees the request cancelled.
-    Cancel,
 }
 
 /// polkitd's pending `BeginAuthentication` call and its completing reply.

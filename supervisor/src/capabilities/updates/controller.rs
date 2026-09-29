@@ -9,10 +9,11 @@ use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::sync::mpsc::UnboundedSender;
 use tokio::sync::watch;
 
-use super::backend::{Backend, UpdateCandidate};
+use super::backend::Backend;
 use super::reboot::{REBOOT_MARKER, run_reboot_marker_task};
 use crate::capabilities::system::controller::epoch_seconds;
 use crate::process;
+use shared::action::{UpdateCandidate, UpdatesConfigure};
 
 /// `mantle.updates`'s payload.
 #[derive(Debug, Clone, Default, PartialEq, serde::Serialize)]
@@ -67,26 +68,6 @@ pub struct UpdatesState {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UpdatesSignal {
     Changed,
-}
-
-/// `configure`'s table. One wrong-typed key drops the whole call (ADR-0034).
-#[derive(Debug, serde::Deserialize)]
-#[cfg_attr(test, derive(schemars::JsonSchema))]
-pub struct UpdatesConfigure {
-    /// Seconds between scheduled checks, the first at once unless `last_successful_check` is
-    /// younger; `0` checks only on `check`.
-    #[serde(rename = "interval")]
-    pub interval_secs: u64,
-    /// Persisted Unix seconds of the last successful check. Seeds `last_successful_check` only
-    /// while that is `nil`, so a restart need not recheck at once.
-    pub checked_at: Option<i64>,
-    /// Persisted `packages` from that check, seeded on the same terms; ignored without `checked_at`.
-    #[serde(default, deserialize_with = "crate::capabilities::lua_list")]
-    pub packages: Vec<UpdateCandidate>,
-    /// Also check the AUR and install through `aur_helper` (ADR-0250). Sends every foreign package
-    /// name to aur.archlinux.org and builds without PKGBUILD review.
-    #[serde(default)]
-    pub aur: bool,
 }
 
 /// Tail length for [`UpdatesState::install_log`]. Enough to hold a failure and nearby lines; a

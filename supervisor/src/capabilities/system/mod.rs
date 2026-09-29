@@ -5,15 +5,7 @@
 pub mod controller;
 
 pub use controller::{SystemController, SystemSignal};
-
-#[derive(Debug, serde::Deserialize)]
-#[cfg_attr(test, derive(schemars::JsonSchema))]
-#[serde(rename_all = "snake_case")]
-pub enum SystemAction {
-    /// Sets the push interval, `1` second until this. Each push lands on a wall-clock multiple of
-    /// it, and one lands at once.
-    Configure { settings: controller::SystemConfigure },
-}
+use shared::action::SystemAction;
 
 pub fn dispatch(controller: &SystemController, envelope: &shared::CommandEnvelope) {
     let Some(action) = crate::parse_action::<SystemAction>(&envelope.params) else { return };

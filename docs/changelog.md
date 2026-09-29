@@ -52,6 +52,7 @@ so everything since the rename from Obelisk sits under Unreleased.
 
 ### Changed
 
+- A capability action with a wrongly typed or invalid argument raises at the call (`mantle.audio:set_volume: invalid type: …`) instead of logging in the Supervisor ([actions](capabilities/index.md#actions)).
 - `brightness:set` and `keyboard:set_backlight` take any number: fractions round to the nearest raw step, negatives clamp to `0` (before, a float or negative was dropped) ([brightness](capabilities/brightness.md)).
 - `session_process` raises on an unknown `stop_signal` instead of the Supervisor dropping the declaration ([processes](guide/processes.md)).
 - `mantle set` and `mantle toggle` refuse a state a reload removed, exit 1 with "declares no state" ([cli](guide/cli.md)).

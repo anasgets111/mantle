@@ -11,43 +11,7 @@ pub mod controller;
 pub use controller::{ProcessesController, ProcessesSignal};
 
 use nix::sys::signal::Signal;
-use shared::SignalName;
-
-#[derive(Debug, serde::Deserialize)]
-#[cfg_attr(test, derive(schemars::JsonSchema))]
-#[serde(rename_all = "snake_case")]
-pub enum ProcessesAction {
-    /// Registers `name` (required before `start`) and sets its stop signal, default `TERM`.
-    /// Redeclaring updates the signal without touching a running program.
-    Declare {
-        #[serde(deserialize_with = "crate::capabilities::non_empty")]
-        name: String,
-        #[serde(default)]
-        stop_signal: Option<SignalName>,
-    },
-    /// Runs `cmd` with `args` (no shell) as its own process group. No-op while `running` or when
-    /// `name` is undeclared.
-    Start {
-        #[serde(deserialize_with = "crate::capabilities::non_empty")]
-        name: String,
-        #[serde(deserialize_with = "crate::capabilities::non_empty")]
-        cmd: String,
-        #[serde(default, deserialize_with = "crate::capabilities::lua_list")]
-        args: Vec<String>,
-    },
-    /// Sends `signal` to the program's process (not its group); no-op when not running.
-    Signal {
-        #[serde(deserialize_with = "crate::capabilities::non_empty")]
-        name: String,
-        signal: SignalName,
-    },
-    /// Sends the declared stop signal to the process group, then `KILL` if it is still up 5 s
-    /// later; no-op when not running.
-    Stop {
-        #[serde(deserialize_with = "crate::capabilities::non_empty")]
-        name: String,
-    },
-}
+use shared::action::{ProcessesAction, SignalName};
 
 fn signal_of(name: SignalName) -> Signal {
     match name {

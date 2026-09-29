@@ -75,25 +75,6 @@ pub fn truncate_utf8_bytes(input: &str, max_bytes: usize) -> String {
     input[..end].to_string()
 }
 
-/// A list that may be omitted or `nil`; mlua sends an empty Lua table as `{}`.
-pub fn lua_list<'de, D, T>(deserializer: D) -> Result<Vec<T>, D::Error>
-where
-    D: serde::Deserializer<'de>,
-    T: serde::de::DeserializeOwned,
-{
-    match <Option<serde_json::Value> as serde::Deserialize>::deserialize(deserializer)? {
-        None => Ok(Vec::new()),
-        Some(serde_json::Value::Object(map)) if map.is_empty() => Ok(Vec::new()),
-        Some(value) => serde_json::from_value(value).map_err(serde::de::Error::custom),
-    }
-}
-
-/// A string argument used as a key, where empty would name nothing.
-pub fn non_empty<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<String, D::Error> {
-    let value = <String as serde::Deserialize>::deserialize(deserializer)?;
-    if value.is_empty() { Err(serde::de::Error::custom("expected a non-empty string")) } else { Ok(value) }
-}
-
 /// Binds a macro-generated zbus proxy at `path`. A generated `<Proxy>::new` ties the proxy to
 /// `&Connection` even though its builder clones the connection, so stored proxies go through the
 /// builder to stay `'static`.

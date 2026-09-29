@@ -81,7 +81,7 @@ Call each as `mantle.sysinfo:<action>(arguments...)`; `?` marks an argument you 
 
 ### `SysinfoConfigure`
 
-`sysinfo:configure`'s table. Absent keys keep their interval; one wrong-typed key drops the call.
+`sysinfo:configure`'s table. Absent keys keep their interval; one wrong-typed key raises at the call.
 
 | Field | Type | Description |
 | --- | --- | --- |

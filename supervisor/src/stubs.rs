@@ -8,9 +8,9 @@
 //! Payloads are derived: each `*State` already has `Serialize`; adding `JsonSchema` makes each
 //! field's Rust doc comment its LuaCATS description.
 //!
-//! Commands work the same way: `#[derive(Deserialize, JsonSchema)]` action enums sit beside
-//! `dispatch`, socket-boundary `parse_action` decodes `(action, arguments)` into their variants,
-//! and each variant becomes one typed method on its capability class. Mismatches fail the build rather
+//! Commands work the same way: `#[derive(Deserialize, JsonSchema)]` action enums in
+//! `shared::action` decode `(action, arguments)` into their variants in both binaries, and each
+//! variant becomes one typed method on its capability class. Mismatches fail the build rather
 //! than the golden test.
 
 use std::collections::BTreeMap;
@@ -20,113 +20,110 @@ mod samples;
 use schemars::{Schema, schema_for};
 
 /// The sole capability-to-payload/action mapping. `push_snapshot` takes `&impl Serialize`, so
-/// payload types are inferred at each call site; action enums are named only by their `dispatch`.
+/// payload types are inferred at each call site; action enums are named by `shared::action::check`
+/// and each `dispatch`.
 /// `every_capability_has_a_schema` checks `shared::Capability::ALL`. `None` means no actions.
 fn capability_schemas() -> Vec<(&'static str, Schema, Option<Schema>)> {
     vec![
         (
             "applications",
             schema_for!(crate::capabilities::applications::controller::ApplicationsState),
-            Some(schema_for!(crate::capabilities::applications::ApplicationsAction)),
+            Some(schema_for!(shared::action::ApplicationsAction)),
         ),
         (
             "audio",
             schema_for!(crate::capabilities::audio::mixer::AudioState),
-            Some(schema_for!(crate::capabilities::audio::AudioAction)),
+            Some(schema_for!(shared::action::AudioAction)),
         ),
         ("battery", schema_for!(crate::capabilities::battery::controller::BatteryState), None),
         ("idle", schema_for!(crate::capabilities::idle::IdleState), None),
         (
             "bluetooth",
             schema_for!(crate::capabilities::bluetooth::BluetoothState),
-            Some(schema_for!(crate::capabilities::bluetooth::BluetoothAction)),
+            Some(schema_for!(shared::action::BluetoothAction)),
         ),
         (
             "brightness",
             schema_for!(crate::capabilities::brightness::controller::BrightnessState),
-            Some(schema_for!(crate::capabilities::brightness::BrightnessAction)),
+            Some(schema_for!(shared::action::BrightnessAction)),
         ),
         (
             "files",
             schema_for!(crate::capabilities::files::controller::FilesState),
-            Some(schema_for!(crate::capabilities::files::FilesAction)),
+            Some(schema_for!(shared::action::FilesAction)),
         ),
         (
             "processes",
             schema_for!(crate::capabilities::processes::controller::ProcessesState),
-            Some(schema_for!(crate::capabilities::processes::ProcessesAction)),
+            Some(schema_for!(shared::action::ProcessesAction)),
         ),
         (
             "keyboard",
             schema_for!(crate::capabilities::keyboard::controller::KeyboardState),
-            Some(schema_for!(crate::capabilities::keyboard::KeyboardAction)),
+            Some(schema_for!(shared::action::KeyboardAction)),
         ),
         (
             "lock",
             schema_for!(crate::capabilities::lock::state::LockState),
-            Some(schema_for!(crate::capabilities::lock::controller::LockAction)),
+            Some(schema_for!(shared::action::LockAction)),
         ),
         (
             "mpris",
             schema_for!(crate::capabilities::mpris::controller::MprisState),
-            Some(schema_for!(crate::capabilities::mpris::MprisAction)),
+            Some(schema_for!(shared::action::MprisAction)),
         ),
         (
             "network",
             schema_for!(crate::capabilities::network::NetworkState),
-            Some(schema_for!(crate::capabilities::network::NetworkAction)),
+            Some(schema_for!(shared::action::NetworkAction)),
         ),
         ("secrets", schema_for!(crate::capabilities::secrets::SecretsState), None),
         (
             "notifications",
             schema_for!(crate::capabilities::notifications::NotificationsState),
-            Some(schema_for!(crate::capabilities::notifications::NotificationsAction)),
+            Some(schema_for!(shared::action::NotificationsAction)),
         ),
         (
             "power",
             schema_for!(crate::capabilities::power::controller::PowerState),
-            Some(schema_for!(crate::capabilities::power::PowerAction)),
+            Some(schema_for!(shared::action::PowerAction)),
         ),
         ("privacy", schema_for!(crate::capabilities::privacy::controller::PrivacyState), None),
         (
             "sysinfo",
             schema_for!(crate::capabilities::sysinfo::controller::SysinfoState),
-            Some(schema_for!(crate::capabilities::sysinfo::SysinfoAction)),
+            Some(schema_for!(shared::action::SysinfoAction)),
         ),
         (
             "system",
             schema_for!(crate::capabilities::system::controller::SystemState),
-            Some(schema_for!(crate::capabilities::system::SystemAction)),
+            Some(schema_for!(shared::action::SystemAction)),
         ),
         (
             "storage",
             schema_for!(crate::capabilities::storage::controller::StorageState),
-            Some(schema_for!(crate::capabilities::storage::StorageAction)),
+            Some(schema_for!(shared::action::StorageAction)),
         ),
         (
             "polkit",
             schema_for!(crate::capabilities::polkit::PolkitState),
-            Some(schema_for!(crate::capabilities::polkit::PolkitAction)),
+            Some(schema_for!(shared::action::PolkitAction)),
         ),
-        (
-            "tray",
-            schema_for!(crate::capabilities::tray::TrayState),
-            Some(schema_for!(crate::capabilities::tray::TrayAction)),
-        ),
+        ("tray", schema_for!(crate::capabilities::tray::TrayState), Some(schema_for!(shared::action::TrayAction))),
         (
             "updates",
             schema_for!(crate::capabilities::updates::controller::UpdatesState),
-            Some(schema_for!(crate::capabilities::updates::UpdatesAction)),
+            Some(schema_for!(shared::action::UpdatesAction)),
         ),
         (
             "workspaces",
             schema_for!(crate::capabilities::workspaces::controller::WorkspacesState),
-            Some(schema_for!(crate::capabilities::workspaces::WorkspacesAction)),
+            Some(schema_for!(shared::action::WorkspacesAction)),
         ),
         (
             "windows",
             schema_for!(crate::capabilities::windows::controller::WindowsState),
-            Some(schema_for!(crate::capabilities::windows::WindowsAction)),
+            Some(schema_for!(shared::action::WindowsAction)),
         ),
     ]
 }

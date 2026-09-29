@@ -274,7 +274,7 @@ impl UserData for Capability {
 }
 
 impl Capability {
-    /// Marshals `args` and queues `action`. State itself has no `set` (ADR-0044 decision 5).
+    /// Marshals and checks `args`, then queues `action`. State itself has no `set` (ADR-0044 decision 5).
     fn send_action(&self, lua: &Lua, receiver: &Value, action: &str, args: MultiValue) -> mlua::Result<()> {
         // A dot call would send its first argument as the receiver's slot.
         let bound =
@@ -287,9 +287,7 @@ impl Capability {
         }
         let mut arguments = Vec::with_capacity(args.len());
         for (index, value) in args.into_iter().enumerate() {
-            // Names only here: the Supervisor's serde enums own argument checks
-            // (`supervisor/src/action.rs`). Rejecting an unmarshallable slot names argument 3
-            // instead of sending a malformed command.
+            // A function or userdata has no JSON form, so only here can the error name its slot.
             let json = lua.from_value::<serde_json::Value>(value).map_err(|err| {
                 mlua::Error::runtime(format!(
                     "mantle.{}:{action} could not marshal argument {}: {err}",
@@ -299,6 +297,10 @@ impl Capability {
             })?;
             arguments.push(json);
         }
+        // The Supervisor decodes again (ADR-0291); this one is for the config line that sent it.
+        let roster = shared::Capability::from_name(&self.name).expect("an action resolves only on a roster name");
+        shared::action::check(roster, action, &arguments)
+            .map_err(|err| mlua::Error::runtime(format!("mantle.{}:{action}: {err}", self.name)))?;
         self.commands.send(&self.name, action, arguments, self.revision.get());
         Ok(())
     }
@@ -392,6 +394,19 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn a_wrongly_typed_argument_is_a_config_error_naming_the_action_and_queues_nothing() {
+        let lua = Lua::new();
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (lock, _) = Capability::new("lock", DirtyFlag::new(), CommandSender::new(0, tx));
+        lua.globals().set("lock", lock).unwrap();
+
+        let err = lua.load(r#"lock:set_unlock_animation("fast")"#).exec().unwrap_err();
+
+        assert!(err.to_string().contains(r#"mantle.lock:set_unlock_animation: invalid type: string "fast""#), "{err}");
+        assert!(queued_command(&mut rx).is_none(), "a refused argument must not reach the Supervisor");
+    }
+
+    #[test]
     fn an_unknown_or_read_only_action_is_a_config_error_and_queues_nothing() {
         let (lua, _handle, mut rx) = lua_with_capability(0);
         let err = lua.load(r#"mantle.probe:set_volumee(1)"#).exec().unwrap_err();
@@ -448,9 +463,17 @@ pub(crate) mod tests {
             let (member, _) = Capability::new(capability.as_str(), DirtyFlag::new(), commands.clone());
             lua.globals().set("cap", member).unwrap();
             for action in capability.actions() {
-                lua.load(format!("cap:{action}()")).exec().unwrap();
-                let sent = queued_command(&mut rx).expect("an action method must queue a command");
-                assert_eq!(sent.params.action, *action, "mantle.{capability}:{action} is shadowed");
+                // Most actions refuse no arguments; the refusal naming the action proves it reached `send_action`.
+                match lua.load(format!("cap:{action}()")).exec() {
+                    Ok(()) => {
+                        let sent = queued_command(&mut rx).expect("an action method must queue a command");
+                        assert_eq!(sent.params.action, *action, "mantle.{capability}:{action} is shadowed");
+                    }
+                    Err(err) => assert!(
+                        err.to_string().contains(&format!("mantle.{capability}:{action}: invalid length 0")),
+                        "mantle.{capability}:{action} is shadowed: {err}"
+                    ),
+                }
             }
         }
     }

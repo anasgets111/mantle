@@ -14,14 +14,7 @@
 pub mod controller;
 
 pub use controller::{PowerController, PowerSignal};
-
-#[derive(Debug, serde::Deserialize)]
-#[cfg_attr(test, derive(schemars::JsonSchema))]
-#[serde(rename_all = "snake_case")]
-pub enum PowerAction {
-    /// Switches to one of `profiles`. Not validated here; a rejected name is logged and `active_profile` stays.
-    SetProfile { name: String },
-}
+use shared::action::PowerAction;
 
 /// `set_profile` writes a D-Bus property and is spawned (ADR-0037, ADR-0029), like
 /// `brightness::dispatch`.

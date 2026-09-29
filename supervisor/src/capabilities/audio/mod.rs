@@ -11,36 +11,7 @@ pub mod master;
 pub mod mixer;
 
 use mixer::{AudioCommand, AudioCommandSender};
-
-#[derive(Debug, serde::Deserialize)]
-#[cfg_attr(test, derive(schemars::JsonSchema))]
-#[serde(rename_all = "snake_case")]
-pub enum AudioAction {
-    /// Sets master output volume, clamped to `[0.0, 1.5]`.
-    SetVolume { volume: f32 },
-    /// Sets master output mute.
-    SetMuted { muted: bool },
-    /// Toggles master output mute.
-    ToggleMute,
-    /// Sets default output balance, `-1.0` (left) to `1.0` (right), clamped; the louder side keeps its level.
-    SetBalance { balance: f32 },
-    /// Makes this `sinks[].id` the default output.
-    SetDefaultSink { id: u32 },
-    /// Makes this `sources[].id` the default input.
-    SetDefaultSource { id: u32 },
-    /// Sets default input volume, clamped to `[0.0, 1.0]`.
-    SetSourceVolume { volume: f32 },
-    /// Sets default input mute.
-    SetSourceMuted { muted: bool },
-    /// Toggles default input mute.
-    ToggleSourceMute,
-    /// Sets an `apps[].id` stream's volume, clamped to `[0.0, 1.0]`.
-    SetAppVolume { id: u32, volume: f32 },
-    /// Sets an `apps[].id` stream's mute.
-    SetAppMuted { id: u32, muted: bool },
-    /// Switches a `bluetooth[].device` to one of its `codecs[].index`.
-    SetBluetoothProfile { device: u32, index: i32 },
-}
+use shared::action::AudioAction;
 
 /// Unlike every other capability's adapter, this has no controller to call. It dispatches each
 /// action as an [`AudioCommand`] on the PipeWire thread (ADR-0037); no result is awaited here.

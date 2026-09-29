@@ -20,43 +20,8 @@ pub mod player;
 pub mod proxies;
 pub mod watcher;
 
-pub use controller::{MprisController, MprisSignal, PlayerCommand};
-
-#[derive(Debug, serde::Deserialize)]
-#[cfg_attr(test, derive(schemars::JsonSchema))]
-#[serde(rename_all = "snake_case")]
-pub enum MprisAction {
-    /// Sends a playback command to `players[].id`.
-    Control { id: String, cmd: PlayerCommand },
-    /// Seeks to an absolute position in microseconds, clamped to `[0, length]` (only `>= 0` when `length` is `-1`).
-    Seek { id: String, position_us: i64 },
-    /// Seeks by a signed offset in microseconds, unclamped; past the end may skip to the next track.
-    SeekRelative { id: String, offset_us: i64 },
-    /// Calls Raise; check `players[].can_raise` before calling.
-    Raise { id: String },
-    /// Calls Quit; check `players[].can_quit` before calling.
-    Quit { id: String },
-    /// Opens an absolute URI in the player.
-    OpenUri { id: String, uri: String },
-    /// Sets MPRIS `Volume`; finite values at or above zero are accepted.
-    SetVolume { id: String, value: f64 },
-    /// Sets MPRIS `LoopStatus` to `None`, `Track`, or `Playlist`.
-    SetLoopStatus { id: String, value: String },
-    /// Sets MPRIS `Shuffle`.
-    SetShuffle { id: String, value: bool },
-    /// Sets a positive finite MPRIS playback rate.
-    SetRate { id: String, value: f64 },
-    /// Inserts a URI after a track id, or after `/org/mpris/MediaPlayer2/TrackList/NoTrack` to prepend.
-    TrackListAddTrack { id: String, uri: String, after_track: String, set_as_current: bool },
-    /// Removes a track by its TrackList object path.
-    TrackListRemoveTrack { id: String, track_id: String },
-    /// Starts the track identified by its TrackList object path.
-    TrackListGoTo { id: String, track_id: String },
-    /// Reads a bounded playlist page into `players[].playlists`.
-    PlaylistsGet { id: String, index: u32, count: u32, order: String, reverse: bool },
-    /// Activates a playlist by its object path.
-    PlaylistsActivate { id: String, playlist_id: String },
-}
+pub use controller::{MprisController, MprisSignal};
+use shared::action::MprisAction;
 
 /// `mantle.mpris` action dispatch (ADR-0037): `tokio::spawn`s each write action
 /// (ADR-0036/ADR-0029). Seeks are unclamped here; each command clamps, or declines to, where it runs.

@@ -301,7 +301,7 @@
 ---@field window_id? string `window_id` of its representative window, chosen as `WorkspaceEntry::app_id` is.
 
 ---@class SysinfoConfigure
----`sysinfo:configure`'s table. Absent keys keep their interval; one wrong-typed key drops the call.
+---`sysinfo:configure`'s table. Absent keys keep their interval; one wrong-typed key raises at the call.
 ---@field cpu_interval? integer Seconds between CPU reads; `0` (the default) stops them.
 ---@field disk_interval? integer Seconds between disk space reads; `0` (the default) stops them.
 ---@field gpu_interval? integer Seconds between GPU telemetry reads; `0` (the default) stops them.
@@ -348,7 +348,7 @@
 ---@field repository? string Source repository, e.g. `"extra"` or `"aur"`; empty in a seeded list that lacks it.
 
 ---@class UpdatesConfigure
----`configure`'s table. One wrong-typed key drops the whole call (ADR-0034).
+---`configure`'s table. One wrong-typed key raises at the call.
 ---@field aur? boolean Also check the AUR and install through `aur_helper` (ADR-0250). Sends every foreign package name to aur.archlinux.org and builds without PKGBUILD review.
 ---@field checked_at? integer Persisted Unix seconds of the last successful check. Seeds `last_successful_check` only while that is `nil`, so a restart need not recheck at once.
 ---@field interval integer Seconds between scheduled checks, the first at once unless `last_successful_check` is younger; `0` checks only on `check`.

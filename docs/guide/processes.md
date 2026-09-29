@@ -240,7 +240,7 @@ return panel {
 | `exit_cb` never arrives | It waits for stdout and stderr to close, and a backgrounded grandchild holding the pipes keeps them open. Redirect the grandchild's output |
 | A `process.run` child that must outlive a save | A reload kills it. Use [`session_process`](#session_process) |
 | A failure logged on every save | A reload's kill calls `exit_cb(nil)`. Report only a non-zero `code` |
-| Invalid `stop_signal` | `session_process` raises `session_process: stop_signal ...` and declares nothing. Use a name from the list above |
+| Invalid `stop_signal`, or `signal(name)` with one | Raises `mantle.processes:declare: unknown variant ...` (or `:signal:`) and sends nothing. Use a name from the list above |
 
 See also: [scripting](scripting.md) (`timer`, `json`, `log`, `persistent_table`), [runtime](runtime.md)
 (reloads, logging), [signals](signals.md) (`state`), [processes capability](../capabilities/processes.md)

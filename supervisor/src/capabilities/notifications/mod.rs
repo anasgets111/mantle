@@ -30,35 +30,8 @@ pub mod sound;
 
 pub use controller::NotificationsController;
 use icon::RawImageData;
+use shared::action::{NotificationsAction, Urgency};
 pub use sound::run_sound_player;
-
-#[derive(Debug, serde::Deserialize)]
-#[cfg_attr(test, derive(schemars::JsonSchema))]
-#[serde(rename_all = "snake_case")]
-pub enum NotificationsAction {
-    /// Removes a queued notification.
-    Dismiss { id: u32 },
-    /// Invokes an `actions[].key`, or `"default"`; removes the notification unless it is resident.
-    InvokeAction {
-        id: u32,
-        #[serde(deserialize_with = "crate::capabilities::non_empty")]
-        key: String,
-    },
-    /// Sends reply text to a notification with `has_reply`; removes it unless it is resident.
-    Reply { id: u32, text: String },
-    /// Sets an urgency tier's sound: an existing file under `/usr/share`, `/usr/local/share`, `/opt`
-    /// or `$XDG_DATA_HOME`, else ignored. Only Ogg Vorbis and 16-bit PCM WAV play.
-    SetSound { urgency: Urgency, path: String },
-    /// Gates non-critical notification sounds.
-    SetDnd { enabled: bool },
-    /// Mutes non-critical sounds like `set_dnd`, without changing `dnd`.
-    SetQuiet { enabled: bool },
-    /// Silences every sound from an app, critical included, matched exactly on `app_name` or
-    /// `desktop_entry`.
-    SetAppMuted { app: String, muted: bool },
-    /// Pauses every expiry countdown for `seconds`, capped at 300; `0` releases the hold.
-    HoldExpiry { seconds: u64 },
-}
 
 /// Dispatch (ADR-0037): signal-emitting `dismiss`/`invoke_action`/`reply` use `tokio::spawn`
 /// (ADR-0029); locked state writes run inline (ADR-0033).
@@ -168,19 +141,6 @@ pub struct NotificationAction {
     pub label: String,
     /// Theme icon name (the key) when the sender set `action-icons`, else `nil`. Never a path.
     pub icon_name: Option<String>,
-}
-
-/// Notification urgency, also the `set_sound` tier.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, serde::Deserialize)]
-#[cfg_attr(test, derive(schemars::JsonSchema))]
-pub enum Urgency {
-    #[serde(rename = "low")]
-    Low,
-    #[default]
-    #[serde(rename = "normal")]
-    Normal,
-    #[serde(rename = "critical")]
-    Critical,
 }
 
 /// Maps raw urgency byte 0/1/2; absent or malformed hints default to `Normal` (ADR-0033).

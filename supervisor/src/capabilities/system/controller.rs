@@ -7,6 +7,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use nix::sys::time::TimeSpec;
 use nix::sys::timerfd::{ClockId, Expiration, TimerFd, TimerFlags, TimerSetTimeFlags};
+use shared::action::SystemConfigure;
 use shared::{debug, error};
 use tokio::io::unix::AsyncFd;
 use tokio::sync::mpsc::UnboundedSender;
@@ -33,15 +34,6 @@ pub enum SystemSignal {
 /// `SystemTime::now()`'s epoch truncated to whole seconds for `time`; one pinned seam.
 pub fn epoch_seconds(now: SystemTime) -> i64 {
     now.duration_since(UNIX_EPOCH).map(|elapsed| elapsed.as_secs() as i64).unwrap_or(0)
-}
-
-/// `system:configure`'s table. An absent `interval` keeps the current one.
-#[derive(Debug, serde::Deserialize)]
-#[cfg_attr(test, derive(schemars::JsonSchema))]
-pub struct SystemConfigure {
-    /// Seconds between pushes, each on a multiple of it since the epoch, so `60` lands on every
-    /// minute; `1` is the default and `0` stops them.
-    pub interval: Option<u64>,
 }
 
 /// The first epoch second after `now` that is a multiple of `interval` (non-zero).

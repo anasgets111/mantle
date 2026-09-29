@@ -7,47 +7,7 @@ pub mod controller;
 mod wlr;
 
 pub use controller::{WindowsController, WindowsSignal};
-
-// An action a backend does not support logs at debug and does nothing.
-#[derive(Debug, serde::Deserialize)]
-#[cfg_attr(test, derive(schemars::JsonSchema))]
-#[serde(rename_all = "snake_case")]
-pub enum WindowsAction {
-    /// Focuses a window.
-    Focus {
-        #[serde(deserialize_with = "crate::capabilities::non_empty")]
-        id: String,
-    },
-    /// Asks the compositor to close the window.
-    Close {
-        #[serde(deserialize_with = "crate::capabilities::non_empty")]
-        id: String,
-    },
-    /// Sets fullscreen on or off; no-op on niri.
-    SetFullscreen {
-        #[serde(deserialize_with = "crate::capabilities::non_empty")]
-        id: String,
-        fullscreen: bool,
-    },
-    /// Sets minimized on or off; wlr only.
-    SetMinimized {
-        #[serde(deserialize_with = "crate::capabilities::non_empty")]
-        id: String,
-        minimized: bool,
-    },
-    /// Sets maximized on or off; no-op on niri.
-    SetMaximized {
-        #[serde(deserialize_with = "crate::capabilities::non_empty")]
-        id: String,
-        maximized: bool,
-    },
-    /// Moves a window to a workspace.
-    MoveToWorkspace {
-        #[serde(deserialize_with = "crate::capabilities::non_empty")]
-        id: String,
-        workspace_id: u64,
-    },
-}
+use shared::action::WindowsAction;
 
 /// `mantle.windows` action dispatch (ADR-0037).
 pub fn dispatch(controller: &WindowsController, envelope: &shared::CommandEnvelope) {

@@ -16,20 +16,7 @@ use shared::warn;
 
 pub use controller::{ApplicationsController, ApplicationsSignal, LaunchError, OpenUrlError};
 pub use scan::application_dirs;
-
-#[derive(Debug, serde::Deserialize)]
-#[cfg_attr(test, derive(schemars::JsonSchema))]
-#[serde(rename_all = "snake_case")]
-pub enum ApplicationsAction {
-    /// Rescans installed desktop entries. The directories are watched, so only a failed watch
-    /// (logged) needs this.
-    Refresh,
-    /// Launches `entries[].id`, detached; `Terminal=true` entries run in `$TERMINAL`.
-    Launch { id: String },
-    /// Opens an `http`, `https` or `mailto` URL with `xdg-open` (ADR-0103). One over 2048 bytes or
-    /// holding whitespace or a control character is refused.
-    OpenUrl { url: String },
-}
+use shared::action::ApplicationsAction;
 
 /// `mantle.applications` action dispatch (ADR-0037). `refresh` calls `spawn_blocking`; `launch`
 /// and `open_url` spawn detached children without waiting.

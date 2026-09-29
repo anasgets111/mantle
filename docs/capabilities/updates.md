@@ -74,7 +74,7 @@ Call each as `mantle.updates:<action>(arguments...)`; `?` marks an argument you 
 
 ### `UpdatesConfigure`
 
-`configure`'s table. One wrong-typed key drops the whole call.
+`configure`'s table. One wrong-typed key raises at the call.
 
 | Field | Type | Description |
 | --- | --- | --- |

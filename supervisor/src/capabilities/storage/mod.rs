@@ -7,26 +7,7 @@
 pub mod controller;
 
 pub use controller::{StorageController, StorageSignal};
-
-#[derive(Debug, serde::Deserialize)]
-#[cfg_attr(test, derive(schemars::JsonSchema))]
-#[serde(rename_all = "snake_case")]
-pub enum StorageAction {
-    /// Loads an absolute JSON file into `files[path]`, filling missing top-level keys from
-    /// `defaults`. `persistent_table` sends this; stored values win over defaults.
-    Open {
-        path: String,
-        #[serde(default)]
-        defaults: Option<serde_json::Map<String, serde_json::Value>>,
-    },
-    /// Sets `key` in a declared file, `nil` deleting it; saved 1 s after the last write.
-    Set {
-        path: String,
-        key: String,
-        #[serde(default)]
-        value: serde_json::Value,
-    },
-}
+use shared::action::StorageAction;
 
 /// `mantle.storage` action dispatch (ADR-0037). Synchronous: actions touch memory and schedule the
 /// save task.

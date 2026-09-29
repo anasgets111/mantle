@@ -4,7 +4,9 @@
 use std::collections::HashMap;
 use std::process::Command;
 
-use super::super::backend::{UpdateCandidate, nonzero, run};
+use shared::action::UpdateCandidate;
+
+use super::super::backend::{nonzero, run};
 
 /// Space-separated because no field holds a space. dnf4 adds its own newline, leaving blank lines.
 const UPGRADE_FORMAT: &str = "%{name} %{arch} %{evr} %{repoid} %{downloadsize} %{installsize}\n";

@@ -6,16 +6,7 @@ pub mod layout;
 pub mod locks;
 
 pub use controller::{KeyboardController, KeyboardState};
-
-#[derive(Debug, serde::Deserialize)]
-#[cfg_attr(test, derive(schemars::JsonSchema))]
-#[serde(rename_all = "snake_case")]
-pub enum KeyboardAction {
-    /// Sets the keyboard backlight, `0` to `100`, fractions allowed; values outside clamp to it.
-    SetBacklight { percent: f64 },
-    /// Switches to the 0-based configured layout `index`.
-    SwitchLayout { index: usize },
-}
+use shared::action::KeyboardAction;
 
 /// `set_backlight` is a spawned D-Bus write (ADR-0037, ADR-0029); `switch_layout` forwards
 /// synchronously through the compositor link (ADR-0034).

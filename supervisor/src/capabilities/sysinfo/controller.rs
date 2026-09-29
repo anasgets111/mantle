@@ -2,6 +2,7 @@
 
 use std::time::Duration;
 
+use shared::action::SysinfoConfigure;
 use shared::debug;
 
 /// `mantle.sysinfo`'s payload; `nil` until `configure` sets an interval and a reading changes a field.
@@ -69,24 +70,6 @@ pub fn poll_mode(interval: Duration) -> PollMode {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SysinfoSignal {
     Changed,
-}
-
-/// `sysinfo:configure`'s table. Absent keys keep their interval; one wrong-typed key drops the call.
-#[derive(Debug, serde::Deserialize)]
-#[cfg_attr(test, derive(schemars::JsonSchema))]
-pub struct SysinfoConfigure {
-    /// Seconds between CPU reads; `0` (the default) stops them.
-    pub cpu_interval: Option<u64>,
-    /// Seconds between memory and swap reads; `0` (the default) stops them.
-    pub ram_interval: Option<u64>,
-    /// Seconds between temperature reads; `0` (the default) stops them.
-    pub temp_interval: Option<u64>,
-    /// Seconds between disk space reads; `0` (the default) stops them.
-    pub disk_interval: Option<u64>,
-    /// Seconds between GPU telemetry reads; `0` (the default) stops them.
-    pub gpu_interval: Option<u64>,
-    /// Seconds between network throughput reads; `0` (the default) stops them.
-    pub net_interval: Option<u64>,
 }
 
 /// Owns the poll tasks and their state. Not `Clone`: synchronous, non-blocking `configure`

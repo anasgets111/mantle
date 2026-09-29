@@ -12,20 +12,7 @@ pub mod pacman;
 pub mod reboot;
 
 pub use controller::{UpdatesController, UpdatesSignal};
-
-#[derive(Debug, serde::Deserialize)]
-#[cfg_attr(test, derive(schemars::JsonSchema))]
-#[serde(rename_all = "snake_case")]
-pub enum UpdatesAction {
-    /// Checks for upgrades now, even when dormant; ignored while `checking`.
-    Check,
-    /// Sets the check schedule and AUR use, and seeds a remembered check.
-    Configure { config: controller::UpdatesConfigure },
-    /// Runs a full upgrade through `pkexec`: `pacman -Syu --noconfirm`, or `aur_helper` when `aur`
-    /// is on; `dnf upgrade -y --refresh`; `apt-get update` then `apt-get upgrade --with-new-pkgs`.
-    /// Ignored while `installing`. Does not recheck afterwards.
-    Install,
-}
+use shared::action::UpdatesAction;
 
 /// `mantle.updates` dispatch (ADR-0037): `check`/`configure` send scheduler requests synchronously
 /// (ADR-0034); `install` spawns the package-manager child.

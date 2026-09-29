@@ -16,6 +16,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use serde::Serialize;
 
 use item::TrayItem;
+use shared::action::TrayAction;
 
 /// Well-known bus name and object path for `org.kde.StatusNotifierWatcher`.
 const WATCHER_BUS_NAME: &str = "org.kde.StatusNotifierWatcher";
@@ -75,25 +76,6 @@ pub enum TraySignal {
 
 fn unix_timestamp_u32() -> u32 {
     SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs() as u32).unwrap_or(0)
-}
-
-#[derive(Debug, serde::Deserialize)]
-#[cfg_attr(test, derive(schemars::JsonSchema))]
-#[serde(rename_all = "snake_case")]
-pub enum TrayAction {
-    /// Left-click activation at screen coordinates `x`, `y`; a no-op when `item_is_menu`.
-    Activate { id: String, x: i32, y: i32 },
-    /// Context-menu activation at screen coordinates `x`, `y`.
-    ContextMenu { id: String, x: i32, y: i32 },
-    /// Middle-click activation at screen coordinates `x`, `y` (ADR-0074).
-    SecondaryActivate { id: String, x: i32, y: i32 },
-    /// Scrolls the icon by `delta`; `orientation` is `"vertical"` or `"horizontal"`, passed verbatim (ADR-0074).
-    Scroll { id: String, delta: i32, orientation: String },
-    /// Clicks the item's `MenuItem.id`.
-    ActivateMenuItem { id: String, menu_item_id: i32 },
-    /// Tells the application submenu `submenu_id` is opening, then refetches the menu unless it
-    /// answers that nothing changed.
-    MenuWillShow { id: String, submenu_id: i32 },
 }
 
 /// `mantle.tray` dispatch (ADR-0037): spawns every write action (ADR-0031).

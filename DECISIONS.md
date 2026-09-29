@@ -7038,3 +7038,29 @@ ponytail: steady-state churn still sweeps inside getters, 1.1 ms at 2 MiB live a
 points.
 
 Amends ADR-0271.
+
+## 0291. The Renderer decodes capability action arguments before sending them
+
+A wrong argument (`mantle.lock:set_unlock_animation("fast")`, an empty `processes:start` name, a
+relative `files:watch` path) reached only the Supervisor's `parse_action`, as a warning after the
+click; the config line that sent it never learned. ADR-0264 named that gap.
+
+1. One definition, two decodes. The `*Action` enums, their field types, the positional decoder and
+   the `non_empty`/`lua_list`/`absolute` helpers live in `shared::action`. `Capability::send_action`
+   runs `shared::action::check` on each call and raises `mantle.<cap>:<action>: <serde error>`,
+   sending nothing.
+2. The Supervisor still decodes. The Renderer is untrusted (ADR-0114): its check is for the author,
+   the Supervisor's for safety.
+3. Only shape errors raise. Checks that need live state (an unknown profile, MAC or ID) stay in the
+   Supervisor log.
+4. `SignalName`'s targeted move and `session_process`'s own `stop_signal` check fold into this.
+5. `IdleAction` stays in the Supervisor: `mantle.idle` has no Lua actions, and the Renderer's idle
+   registry builds those commands from typed Rust values.
+
+Cost: ~500 lines moved to `shared` with no new dependency; an enum edit rebuilds both binaries.
+
+Rejected: a generated per-action schema validated in the Renderer (a second source of truth and a
+validator dependency); an asynchronous error frame (no Lua line to report against); the status quo
+with LuaLS types (cannot see `non_empty`, `absolute` or out-of-range values).
+
+Amends ADR-0215 decision 2 and ADR-0264.

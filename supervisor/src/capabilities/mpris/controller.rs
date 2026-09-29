@@ -13,6 +13,7 @@ use super::metadata::clamp_seek_target;
 use super::player::PlayerState;
 use super::proxies::{MprisPlaylistsProxy, MprisTrackListProxy};
 use super::watcher::{service_name_for_id, spawn_discovery};
+use shared::action::PlayerCommand;
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]
 #[cfg_attr(test, derive(schemars::JsonSchema))]
@@ -33,18 +34,6 @@ pub enum MprisSignal {
 const UNKNOWN_PLAYER: &str = "no MPRIS player with that id is currently tracked";
 const NO_TRACK: &str = "/org/mpris/MediaPlayer2/TrackList/NoTrack";
 static NEXT_PLAYLIST_REQUEST: AtomicU64 = AtomicU64::new(1);
-
-#[derive(Debug, serde::Deserialize)]
-#[cfg_attr(test, derive(schemars::JsonSchema))]
-#[serde(rename_all = "snake_case")]
-pub enum PlayerCommand {
-    Play,
-    Pause,
-    PlayPause,
-    Next,
-    Previous,
-    Stop,
-}
 
 /// No `events` field, unlike `TrayController` (ADR-0031): `control`/`seek`/`seek_relative` issue
 /// real D-Bus calls and never self-send a signal (ADR-0036); the next player event triggers the
