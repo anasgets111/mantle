@@ -45,8 +45,8 @@ local launcher = column { width = 320, padding = 12, spacing = 8, background = "
         itemfn = function(name)
             return rect {
                 width = "Fill", padding = { left = 10, right = 10, top = 6, bottom = 6 }, radius = 8,
-                background = selected:map(function(index)
-                    return matches:get()[index] == name and "#45475A" or "#00000000"
+                background = computed({ matches, selected }, function(found, index)
+                    return found[index] == name and "#45475A" or "#00000000"
                 end),
                 children = { text { content = name, foreground = "#CDD6F4" } },
             }

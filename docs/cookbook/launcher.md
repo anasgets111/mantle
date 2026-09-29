@@ -49,14 +49,6 @@ local matches = computed({ mantle.applications, query }, function(applications, 
     return out
 end)
 
-local rows = computed({ matches, selected }, function(entries, current)
-    local out = {}
-    for index, entry in ipairs(entries) do
-        out[index] = { entry = entry, selected = index == current }
-    end
-    return out
-end)
-
 local function launch(entry)
     if entry then
         mantle.applications:launch(entry.id)
@@ -109,15 +101,18 @@ local results = list {
     max_height = 400,
     spacing = 2,
     scroll = results_scroll,
-    source = rows,
-    key = function(row_data) return row_data.entry.id end,
-    itemfn = function(row_data)
-        local entry = row_data.entry
+    source = matches,
+    key = function(entry) return entry.id end,
+    itemfn = function(entry)
         return button {
             width = "Fill",
             padding = 8,
             radius = 8,
-            background = row_data.selected and "#45475a" or "#00000000",
+            -- Per row, so a move reruns this and builds no row.
+            background = computed({ matches, selected }, function(entries, current)
+                local picked = entries[current]
+                return picked and picked.id == entry.id and "#45475a" or "#00000000"
+            end),
             on_click = function() launch(entry) end,
             children = {
                 row {
@@ -201,7 +196,8 @@ launcher_open` on Hyprland or `Mod+Space { spawn "mantle" "toggle" "launcher_ope
 
 - `applications.entries` holds every visible desktop entry and follows installs and removals; `launch` takes its `id` and runs it detached ([applications](../capabilities/applications.md)).
 - `fuzzy` scores one candidate; ranking, the tiebreak and the cap stay in Lua ([fuzzy](../guide/scripting.md#fuzzy)).
-- `computed` joins the capability with the query, and a second one marks the selected row ([derived signals](../guide/signals.md#derived-signals)).
+- `computed` joins the capability with the query ([derived signals](../guide/signals.md#derived-signals)).
+- Each row derives its own highlight from `matches` and `selected`. An arrow key reruns those 50 small functions and builds no row; folding the selection into `source` would call `itemfn` for all 50 on every keypress ([when items rebuild](../nodes/list.md#when-items-rebuild)).
 - The `textfield` owns the typed text and reports it through `on_change`; `on_navigate` gets the arrow and Tab keys ([textfield](../nodes/textfield.md), [text fields](../guide/input.md#text-fields)).
 - `scroll(name):reveal(index)` keeps the selected row in view inside the `max_height` list ([scroll](../guide/input.md#scroll), [list](../nodes/list.md)).
 - `reset_on_close` returns the query, the selection and the scroll to their start whenever the launcher closes, including by `mantle toggle` ([reset on close](../surfaces/index.md#reset-on-close)).

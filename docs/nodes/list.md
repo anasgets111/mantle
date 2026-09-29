@@ -80,7 +80,9 @@ that binds it and calls no `itemfn`.
 
 So bind a shared signal such as a theme color as the property, `background = theme.bg`, rather than
 reading it in `itemfn` with `theme.bg:get()`: flipping the theme then costs one getter per row, not
-one `itemfn` per row.
+one `itemfn` per row. A selection highlight follows the same rule: derive it per row,
+`background = computed({ results, selected }, ...)`, rather than folding the selection into
+`source`, which builds every row on each move.
 
 `key` carries each item's state (tweens, a held image, a text field's draft) onto its rebuilt node,
 and across reorders. Cap a long list with `limit` (a launcher's top 50 matches), or hide it while
