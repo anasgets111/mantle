@@ -26,7 +26,7 @@ cited as ADR-NNNN for the why behind behavior the code confirms.
 | **Shader node** | No input textures (ADR-0253). |
 | **Capture node** | Has its own texture cache (ADR-0248). |
 | **Input signal** | `HoverRegistry`, `ScrollRegistry`, `GeometryRegistry` (ADR-0062, ADR-0069). |
-| **Change handler** | ADR-0115. |
+| **Change handler** | Capability pushes run it in place (ADR-0115); a `state` write queues it for the drain before the next pass (ADR-0288). |
 | **Idle threshold** | The Supervisor keeps each duration's `ext_idle_notify` listeners across reloads and fans events out per generation (ADR-0158, ADR-0232). |
 | **Idle inhibit** | One logind inhibitor (ADR-0231). |
 | **Session process** | ADR-0175. |

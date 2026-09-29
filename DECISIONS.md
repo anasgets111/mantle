@@ -6965,3 +6965,55 @@ Both shipped without a need that the rest of the engine could not already meet.
 
 The one case `motion()` alone served is a staged keyframe run that unwinds mid-flight. Revisit with
 a concrete config that needs it; the clock design in ADR-0285 still applies.
+
+## 0288. Named state takes `on_change`, queued after the write
+
+`mantle set`/`toggle` write named state from outside Lua (ADR-0112), so an effect that must follow
+a state had no Lua on that path. Capabilities have `on_change` (ADR-0115); state was the one
+writable kind without it.
+
+1. `s:on_change(fn(current, previous))` on a `state` signal. Any other signal kind raises, so maps
+   stay side-effect free.
+2. Every write path queues it: `:set`, `mantle set`, `mantle toggle`. Declaration and a reload's
+   re-seed do not.
+3. The queue runs once per turn before the layout pass, not inside the writer: one drain covers
+   clicks, timers, process output, capability handlers and socket frames. A written state fires
+   once per round, compared against its value before its first write; a change undone before the
+   drain fires nothing.
+4. A handler's write queues the next round. After 8 rounds the rest are dropped with a logged
+   error: deeper than a hand-written chain, and a loop costs at most 8 rounds of 2.5 ms budgets.
+5. ADR-0115 decisions 3 and 4 hold: cleared with capability handlers before each evaluation and
+   after a failed one, with the queue; each handler budgeted; a raise is logged, the value kept.
+
+Rejected: an `action` routing open/close plus `mantle call` keybinds. It leaves `mantle set`/`toggle`
+bypassing the effect and cannot cover a write it does not own. Resetting a surface's own state when
+it closes is ADR-0289's `reset_on_close`, not this hook.
+
+Consequences: a handler sees the value at drain time, not per write. A candidate evaluation that
+applies no scene keeps its handlers, as its capability handlers and actions do.
+
+## 0289. A surface resets the state it lists when it closes: `reset_on_close`
+
+Named state keeps its value while its surface is hidden, so a reopened menu showed its last query
+or an armed confirmation. The surface owns the open/close lifecycle, so it declares what to reset.
+
+1. `reset_on_close = { ... }` on `panel`, `window`, `popup`; not `lock`. Entries are `state` and
+   `scroll` handles; anything else fails the evaluation naming the surface and entry.
+2. A state returns to the `initial` the evaluation on screen declares (what `mantle toggle`
+   restores); a scroll to offset 0. Each is an ordinary write: readers re-resolve and a changed
+   state runs its `on_change` (ADR-0288).
+3. Closing is a declared surface losing its last shown instance, checked once per turn after the
+   turn's shows and hides: `visible` false, removed by a reload, last output gone, a popup's parent
+   closed. A surface never shown, a failed reload, a same-id rebuild, occlusion and focus loss are
+   not closes. The list comes from the evaluation that showed the surface, so a reload that drops
+   it still resets.
+4. The reset runs after the unmap, so the closed surface never paints it; a reset owes the loop one
+   more pass before it sleeps.
+5. Plain `state` keeps its value; listing it is the opt-in. `textfield` drafts are unchanged.
+
+Rejected: a surface-owned state kind. State is declared at the config's top level before any
+surface exists, and a named value stays reachable by `mantle set` and while debugging. `on_change`
+alone cannot see a surface whose `visible` is derived or whose output disappears.
+
+Consequences: the check is one pass over tracked surfaces per turn. A state listed by several
+surfaces resets when any of them closes.

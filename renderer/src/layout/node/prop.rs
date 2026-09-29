@@ -120,6 +120,33 @@ impl Prop for Handle {
     }
 }
 
+/// `reset_on_close`'s list of `state` and `scroll` handles (ADR-0289); raw, since the engine writes
+/// the handles rather than reading their values.
+pub(crate) struct Resets;
+
+spelled!(Resets => "(StateSignal<any>|ScrollSignal)[]");
+
+impl Prop for Resets {
+    type Out = Vec<signal::Signal>;
+    const RAW: bool = true;
+    fn read(row: &Property, value: Option<&Value>) -> Result<Self::Out, LayoutError> {
+        let expected = "expected a list of state(...) and scroll(...) handles";
+        let Some(value) = value else { return Ok(Vec::new()) };
+        let Value::Table(table) = value else {
+            return Err(invalid(row.name, format!("{expected}, got {}", preview_for_error(value))));
+        };
+        let entries =
+            crate::lua::marshal::list_entries(table).map_err(|why| invalid(row.name, format!("{expected}: {why}")))?;
+        (1..)
+            .zip(&entries)
+            .map(|(index, entry)| {
+                signal::reset_target(entry)
+                    .map_err(|got| invalid(row.name, format!("entry {index} is {got}; {expected}")))
+            })
+            .collect()
+    }
+}
+
 /// A named plain-field target. It stays raw so the handle can be matched after a click's pass.
 pub(crate) struct Focus;
 

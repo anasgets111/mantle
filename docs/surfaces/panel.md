@@ -61,6 +61,7 @@ update it in place ([reload](index.md#reload-and-structural-fields)).
 | `margin` | `number\|Edges\|Bound` | `0` | Offset from the anchored edges, not layout margin; one on an edge the panel is not anchored to does nothing |
 | `visible` | `boolean\|Bound` | `true` | Hiding destroys the layer surface; showing recreates it |
 | `child` | `Node\|fun(output: string): Node?\|Bound` | None | The root's content. A function runs per output instance with its connector name; `nil` leaves that instance empty ([per-output child](index.md#per-output-child)) |
+| `reset_on_close` | `(StateSignal<any>\|ScrollSignal)[]` | `{}` | `state` and `scroll` handles written back when the surface stops being shown: a state to its `initial`, a scroll to the top ([reset on close](index.md#reset-on-close)) |
 <!-- End of the generated table. -->
 
 ## monitor

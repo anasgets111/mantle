@@ -78,6 +78,7 @@ and `on_dismiss` takes a signal.
 | `grab` | `boolean\|Bound` | `true` | Takes an input grab so an outside click dismisses it ([grab](#grab)). `false` for a tooltip |
 | `on_dismiss` | `fun()` | None | The compositor closed it (click outside, denied grab, parent gone); not called when the config hides it. Set `visible = false` here, or it reopens on the next click |
 | `visible` | `boolean\|Bound` | `true` | Opens and closes the popup; state and `id` survive |
+| `reset_on_close` | `(StateSignal<any>\|ScrollSignal)[]` | `{}` | `state` and `scroll` handles written back when the surface stops being shown: a state to its `initial`, a scroll to the top ([reset on close](index.md#reset-on-close)) |
 | `child` | `Node\|Bound` | None | The one root node; a function `child` is refused |
 <!-- End of the generated table. -->
 

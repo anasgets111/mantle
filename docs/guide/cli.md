@@ -206,6 +206,10 @@ on stderr, exits 1 and is also a warning in `mantle log`. What `toggle <name> <v
 [named state](signals.md#named-state): scalars compare by value (`1` equals `1.0`), and a table
 never equals, so toggling to a table always sets it.
 
+A write that changes the value runs the state's [`on_change`](signals.md#on_change-react-to-a-write)
+handlers before the shell repaints, the same as a write from Lua. They run after the command has
+its answer, so a raising handler is a warning in `mantle log`, not a refusal.
+
 ## What check covers
 
 `mantle check` evaluates `shell.lua` and its `require`s exactly as a start does, with no

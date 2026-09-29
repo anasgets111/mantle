@@ -7,6 +7,7 @@
 use std::path::Path;
 
 use crate::layout::{self, node::SurfaceSpec};
+use crate::lua::nodes::properties::closable;
 use crate::lua::{LoadOutput, Loader, LoaderError};
 
 /// Parses every declared root role and returns the roster. Field type errors are
@@ -41,6 +42,11 @@ pub(crate) fn surface_specs(output: &LoadOutput) -> Result<Vec<SurfaceSpec>, Loa
             // cannot reach a generation unvalidated.
             other => return Err(LoaderError::InvalidTopology(format!("`{other}` is not a surface role"))),
         });
+        if surface.kind != "lock" {
+            let id = specs.last().map_or("", SurfaceSpec::declared_id);
+            let named = |err| LoaderError::InvalidTopology(format!("surface `{id}`: {err}"));
+            closable::reset_on_close.read(&surface.properties).map_err(named)?;
+        }
     }
     // Instances are keyed `id@output`, so a second surface with one id shadowed the first.
     let mut ids = std::collections::HashSet::new();

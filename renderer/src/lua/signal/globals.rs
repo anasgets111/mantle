@@ -43,7 +43,55 @@ pub fn write_state(lua: &Lua, set: &shared::SetState) -> Result<(), String> {
             if literal_was_edited(&current, &wanted) == Some(false) { initial } else { wanted }
         }
     };
-    signal.reseed(value).map_err(|err| format!("refused at the marshalling boundary: {err}"))
+    let previous = signal.reseed(value).map_err(|err| format!("refused at the marshalling boundary: {err}"))?;
+    super::state_handlers::note_write(lua, &signal, previous);
+    Ok(())
+}
+
+/// A `reset_on_close` entry (ADR-0289): a `state` or a `scroll` handle, the two a closing surface
+/// can write back; anything else is refused by kind.
+pub(crate) fn reset_target(value: &Value) -> Result<Signal, String> {
+    let signal = match value {
+        Value::UserData(ud) => from_userdata(ud),
+        _ => None,
+    };
+    match signal {
+        Some(signal @ Signal(SignalKind::State { .. } | SignalKind::Scroll { .. })) => Ok(signal),
+        Some(other) => Err(format!("{} signal", other.0.describe())),
+        None => Err(a_type(value)),
+    }
+}
+
+/// Writes `signal` back when the surface listing it closes: a state to the initial its latest
+/// declaration gave, which is what `mantle toggle` restores, as an ordinary write that runs its
+/// `on_change`; a scroll to the top.
+pub(crate) fn reset(lua: &Lua, signal: &Signal) {
+    match &signal.0 {
+        SignalKind::Scroll { .. } => {
+            if let Some(handle) = signal.scroll_handle() {
+                handle.set_changed(Value::Number(0.0));
+            }
+        }
+        SignalKind::State { id, cell, .. } => {
+            let initial = lua.app_data_ref::<StateRegistry>().and_then(|registry| {
+                registry.0.values().find(|(held, _)| held.cell_id() == Some(*id)).map(|(_, initial)| initial.clone())
+            });
+            let Some(initial) = initial.filter(|initial| !super::same_value(&cell.borrow(), initial)) else { return };
+            if let Ok(previous) = signal.reseed(initial) {
+                super::state_handlers::note_write(lua, signal, previous);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// The name `state` gave the cell `id`, for a handler's log line.
+pub(super) fn state_name(lua: &Lua, id: CellId) -> String {
+    let registry = lua.app_data_ref::<StateRegistry>();
+    let named = registry.as_ref().and_then(|registry| {
+        registry.0.iter().find(|(_, (signal, _))| signal.cell_id() == Some(id)).map(|(name, _)| name.clone())
+    });
+    named.unwrap_or_else(|| "?".to_string())
 }
 
 /// The evaluation's output reached the screen, so its names are the ones a bare `mantle set` lists.
@@ -368,6 +416,7 @@ impl LuaType for StateSignal {
             r#"---@class StateSignal<T>: Signal<T>, userdata
 ---What `state` returns: the only signal Lua writes.
 ---@field set fun(self: StateSignal<T>, value: T) Stores `value` and re-resolves its readers. Raises on NaN, infinity, an integer past ±(2^53−1) or a string over 64 KiB; tables are not checked. Types are checked by LuaLS only.
+---@field on_change fun(self: StateSignal<T>, fn: fun(current: T, previous: T)) Runs `fn` after a write that changes the value, from Lua or `mantle set`/`toggle`, before the next layout pass; not on declaration or reload (ADR-0288). `fn` may act and write state; a write it makes runs handlers in turn, up to 8 rounds. Each runs under the CPU budget; a raise is logged and the value kept. Cleared before each evaluation.
 "#
             .to_string(),
         );

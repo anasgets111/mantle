@@ -647,6 +647,8 @@ mod meta_stub_tests {
             ("geometry", _) => return Some("geometry(\"probe\")".to_string()),
             ("scroll", _) => return Some("scroll(\"probe\")".to_string()),
             ("focus", _) => return Some("focus(\"probe\")".to_string()),
+            ("reset_on_close", "ScrollSignal") => return Some("scroll(\"probe_reset\")".to_string()),
+            ("reset_on_close", _) => return Some("state(\"probe_reset\", 1)".to_string()),
             // Literal-array `list.source` is fixed for the pass; real lists therefore use the
             // adjacent signal (ADR-0113 decision 3).
             ("source", "any[]") => return Some("{ 1, 2 }".to_string()),

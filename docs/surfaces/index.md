@@ -92,6 +92,40 @@ properties inside it rather than reading them with `:get()`, and key per-output 
 `state("wallpaper_" .. output, ...)`. Returning `nil` leaves that output's instance empty. A `window`, `popup` or `monitor = "Active"` panel has no output name and refuses a
 function `child`. Example: [per-output wallpaper](panel.md#per-output-content).
 
+## Reset on close
+
+Named state keeps its value while a surface is hidden, so a reopened menu shows what it showed
+last. List the state a `panel`, `window` or `popup` owns in `reset_on_close` to start it fresh
+instead: when the surface stops being shown, each `state` goes back to its declared `initial` and
+each `scroll` to the top.
+
+```lua
+local open = state("picker_open", true)
+local query = state("picker_query", "")
+local list_scroll = scroll("picker_list")
+
+return panel {
+  id = "picker",
+  layer = "Overlay",
+  visible = open,
+  reset_on_close = { query, list_scroll },
+  child = textfield { width = 300, height = 32, on_change = function(text) query:set(text) end },
+}
+```
+
+| Rule | Detail |
+| :--- | :--- |
+| Takes | `state(...)` and `scroll(...)` handles. A map, a capability, another signal kind or a plain value fails the evaluation, naming the surface and the entry |
+| Closes | `visible` turns false, a reload removes the surface, its last output goes away, or (a popup) its parent closes |
+| Does not close | A surface never shown, a failed reload, a reload that rebuilds it under the same id, being covered, losing the keyboard |
+| Per-output panel | Resets when its last instance closes |
+| Resets to | The `initial` the evaluation on screen declares, the value `mantle toggle` returns to; a scroll to offset 0 |
+| Timing | The turn the surface is unmapped, after it is gone, so the closed surface never paints the reset value |
+| Write | An ordinary write: readers re-resolve, and a state that changed runs its [`on_change`](../guide/signals.md#on_change-react-to-a-write). A state listed by several surfaces resets when any of them closes |
+
+A `textfield`'s draft is the engine's and is not state; it follows its own
+[lifetime](../guide/input.md#text-fields).
+
 ## Input region
 
 A surface takes pointer input only where its content is solid; everywhere else clicks, hover and
@@ -118,6 +152,7 @@ on_click = ... }` there ([click outside to close](panel.md#close-an-overlay-on-a
 | Pick a role | The table at the top |
 | Put a bar on every monitor | The example at the top |
 | Show and hide a surface | Bind `visible` to [named state](../guide/signals.md#named-state), then `mantle toggle <name>` |
+| Start a surface fresh each time it opens | [Reset on close](#reset-on-close) |
 | Keep different state per monitor | [Per-output child](#per-output-child) |
 | See which surfaces a config declares | `mantle check -c <dir>` prints each role and id ([CLI](../guide/cli.md)) |
 | Let clicks through the empty part of a surface | Nothing to do; see [input region](#input-region) |

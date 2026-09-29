@@ -47,6 +47,7 @@ function pulse(source, ms) end
 ---@class StateSignal<T>: Signal<T>, userdata
 ---What `state` returns: the only signal Lua writes.
 ---@field set fun(self: StateSignal<T>, value: T) Stores `value` and re-resolves its readers. Raises on NaN, infinity, an integer past ±(2^53−1) or a string over 64 KiB; tables are not checked. Types are checked by LuaLS only.
+---@field on_change fun(self: StateSignal<T>, fn: fun(current: T, previous: T)) Runs `fn` after a write that changes the value, from Lua or `mantle set`/`toggle`, before the next layout pass; not on declaration or reload (ADR-0288). `fn` may act and write state; a write it makes runs handlers in turn, up to 8 rounds. Each runs under the CPU budget; a raise is logged and the value kept. Cleared before each evaluation.
 
 ---Named writable state that survives reloads. A changed scalar `initial` re-seeds it; a table
 ---`initial` never does (ADR-0044). `mantle set <name> <value>` and `mantle toggle <name> [value]`

@@ -752,21 +752,28 @@ return { panel { id = "a", layer = "Top" }, missing, panel { id = "c", layer = "
             let declared: std::collections::BTreeSet<String> =
                 classes.iter().flat_map(|class| stub_methods(&source, class)).collect();
             let methods = match loader.lua().load(sample).eval::<Value>().unwrap() {
-                Value::UserData(handle) if handle.is::<capability::Capability>() => {
-                    // A capability's `__index` is a function answering its actions, so there is no
-                    // table to list: its actions and every declared name must resolve.
-                    let name = handle.borrow::<capability::Capability>().unwrap().name().to_string();
-                    let actions = shared::Capability::from_name(&name).unwrap().actions();
-                    let names = actions.iter().map(|a| a.to_string()).chain(declared.iter().cloned());
-                    let table = loader.lua().create_table().unwrap();
-                    for name in names {
+                Value::UserData(handle) => match handle.metatable().unwrap().get::<Value>("__index").unwrap() {
+                    Value::Table(methods) => methods,
+                    // A function `__index` (a capability's actions, a state's `on_change` field) has no
+                    // table to list: every declared name, and a capability's actions, must resolve.
+                    _ => {
+                        let actions = handle.borrow::<capability::Capability>().map_or(Vec::new(), |cap| {
+                            shared::Capability::from_name(cap.name())
+                                .unwrap()
+                                .actions()
+                                .iter()
+                                .map(|a| a.to_string())
+                                .collect()
+                        });
+                        let table = loader.lua().create_table().unwrap();
+                        for name in actions.into_iter().chain(declared.iter().cloned()) {
+                            table
+                                .set(name.clone(), mlua::ObjectLike::get::<Value>(&handle, name).unwrap_or(Value::Nil))
+                                .unwrap();
+                        }
                         table
-                            .set(name.clone(), mlua::ObjectLike::get::<Value>(&handle, name).unwrap_or(Value::Nil))
-                            .unwrap();
                     }
-                    table
-                }
-                Value::UserData(handle) => handle.metatable().unwrap().get::<Table>("__index").unwrap(),
+                },
                 Value::Table(handle) => handle,
                 other => panic!("`{sample}` gave {other:?}"),
             };

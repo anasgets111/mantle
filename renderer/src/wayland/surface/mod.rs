@@ -433,6 +433,16 @@ impl App {
         self.client.forget_surface(instance_id);
     }
 
+    /// Once per turn, after this turn's shows and hides: a surface with a role object is shown, so
+    /// one that lost it since the last call resets its `reset_on_close` list (ADR-0289).
+    pub(in crate::wayland) fn reset_closed_surfaces(&mut self) {
+        let shown: Vec<&str> = (self.surfaces.iter())
+            .filter(|surface| surface.map_state != MapState::Unmapped)
+            .map(|surface| surface.surface_id.as_str())
+            .collect();
+        self.client.reset_closed_surfaces(&shown);
+    }
+
     /// Drops one tracked surface's role object and entry, keeping its retained tree for a same-id
     /// rebuild (ADR-0216).
     pub(super) fn untrack_surface(&mut self, instance_id: &str) {

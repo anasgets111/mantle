@@ -1,6 +1,7 @@
 //! The Wayland thread's half: [`RendererClient`], which services each frame [`pump`](super::pump)
 //! decodes.
 
+mod reset;
 mod resolve;
 
 use std::cell::RefCell;
@@ -110,6 +111,11 @@ pub struct RendererClient {
     /// The last dirty re-resolve's failure and its unlogged repeats; `None` once a pass applies.
     re_resolve_failure: Option<(String, u32)>,
     state: ReloadState,
+    /// Each shown declared surface's `reset_on_close` list, from the evaluation that showed it, so
+    /// a reload that removes the surface still knows what to write back (ADR-0289).
+    shown_resets: HashMap<String, Vec<lua::signal::Signal>>,
+    /// A reset wrote after this turn's pass, so the loop owes another before it sleeps.
+    owes_pass: bool,
     /// `mantle` table for lazy members. Above `loader` for drop order.
     mantle: mlua::Table,
     /// Last, load-bearing; see the struct docs.
@@ -185,6 +191,8 @@ impl RendererClient {
             last_resolved: None,
             re_resolve_failure: None,
             state: ReloadState { applied_specs: Vec::new(), applied_output: None, pending: None },
+            shown_resets: HashMap::new(),
+            owes_pass: false,
             mantle: namespace.table,
             loader,
         })
@@ -235,7 +243,7 @@ impl RendererClient {
 
     /// Before each `shell.lua` evaluation, clear what the last one registered: `process.run` children,
     /// whose `exit_cb(nil)` runs first so anything it arms is cleared too, `on_change` handlers
-    /// (ADR-0115) and `action` exports (ADR-0197). Evaluation registers them afresh; retaining them
+    /// (ADR-0115, ADR-0288) and `action` exports (ADR-0197). Evaluation registers them afresh; retaining them
     /// doubles side effects after a config save, and all are closures over locals that evaluation
     /// is about to replace.
     ///
@@ -248,6 +256,7 @@ impl RendererClient {
         for handle in self.capabilities.borrow().values().chain([&self.rescue_handle, &self.screens_handle]) {
             handle.clear_handlers();
         }
+        lua::signal::clear_state_handlers(self.loader.lua());
         lua::action::clear(self.loader.lua());
         lua::timer::begin_evaluation(self.loader.lua());
     }
@@ -563,9 +572,10 @@ impl RendererClient {
     pub fn next_wake_deadline(&self) -> Option<std::time::Instant> {
         let signals = crate::lua::signal::next_wake_deadline(self.loader.lua());
         let timers = crate::lua::timer::next_deadline(self.loader.lua());
+        let reset = self.owes_pass.then(std::time::Instant::now);
         // Scheduled apart because only one of them is answered by re-reading the scene: a due
         // signal dirties the tree, a due timer runs config code (ADR-0203).
-        signals.into_iter().chain(timers).min()
+        signals.into_iter().chain(timers).chain(reset).min()
     }
 
     /// Runs the config callbacks whose deadline has passed, before this turn's dirty-tree
@@ -2426,6 +2436,47 @@ mod tests {
         assert!(client.reevaluate());
         client.set_screens(screens_json(&["eDP-1"]));
         assert_eq!(client.loader.lua().globals().get::<String>("seen").unwrap(), "1->2", "the dropped handler ran");
+    }
+
+    /// ADR-0288: a `mantle set` runs the state's handler before the pass that paints it, and a
+    /// re-evaluation, applied or failed, drops what the last one registered.
+    #[test]
+    fn a_state_write_over_the_socket_runs_on_change_before_the_pass_and_a_re_evaluation_drops_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_shell_lua(
+            dir.path(),
+            r#"
+            local open = state("open", false)
+            local hint = state("hint", "idle")
+            open:on_change(function(now) hint:set(now and "open" or "closed") end)
+            return panel { id = "bar", layer = "Top", child = text { content = hint } }
+            "#,
+        );
+        let (mut client, _outbound_rx) = test_client(&path);
+        assert!(run_startup(&mut client));
+        let content = |client: &RendererClient| {
+            client.scene.surface("bar@TEST").unwrap().children[0]
+                .properties
+                .get("content")
+                .unwrap()
+                .as_string()
+                .unwrap()
+                .to_string_lossy()
+        };
+        let toggle = |client: &mut RendererClient| {
+            let set = shared::SetState { name: "open".into(), write: shared::StateWrite::Toggle };
+            assert_eq!(client.handle_frame(SupervisorFrame::SetState { id: 1, set }), FrameOutcome::Handled);
+        };
+
+        toggle(&mut client);
+        assert!(client.re_resolve_if_dirty());
+        assert_eq!(content(&client), "open", "the handler's write lands in the same pass");
+
+        std::fs::write(&path, r#"error("half a config") state("open", false):on_change(function() end)"#).unwrap();
+        assert!(!client.reevaluate());
+        toggle(&mut client);
+        client.re_resolve_if_dirty();
+        assert_eq!(content(&client), "open", "neither the old handler nor the failed one ran");
     }
 
     #[test]

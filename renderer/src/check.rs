@@ -536,6 +536,7 @@ os.getenv = function(name) return ({{ USER = "user", HOME = "/home/user" }})[nam
                 handle.notify_change(lua, previous);
             }
         }
+        crate::lua::signal::run_state_handlers(lua);
         let (mut scene, instances) = super::lay_out(&output, &specs, &loader, shaping, OUTPUT)?;
         let pointer = lua.globals().get::<mlua::Table>("__pointer").ok();
         let after = lua.globals().get::<mlua::Function>("__after").ok();
@@ -548,6 +549,7 @@ os.getenv = function(name) return ({{ USER = "user", HOME = "/home/user" }})[nam
             }
             if let Some(after) = after {
                 after.call::<()>(()).map_err(|err| format!("__after: {err}"))?;
+                crate::lua::signal::run_state_handlers(lua);
             }
             scene
                 .apply_locked(&output.surfaces, &instances, shaping, lua, false)

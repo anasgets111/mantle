@@ -83,6 +83,36 @@ snapshot.
 | Table seed | Never re-seeds: tables compare by identity, so a fresh table cannot count as a change |
 | Types | Not checked at runtime; `initial` is the type LuaLS infers |
 | CLI | `mantle set <name> <value>` and `mantle toggle <name> [value]` write it ([cli](cli.md)). A bare toggle needs a boolean. Toggling to the value it already holds restores `initial` |
+| Surface closes | Keeps its value. List it in the surface's [`reset_on_close`](../surfaces/index.md#reset-on-close) to return it to `initial` instead |
+
+### on_change: react to a write
+
+`s:on_change(fn)` runs `fn(current, previous)` after a write changes the state, whoever wrote it:
+a click, a timer, another handler, or `mantle set`/`mantle toggle` from outside the shell. Use it
+for an effect that must follow the state however it changed, such as another surface's state or a
+command.
+
+```lua
+local mode = state("mode", "balanced")
+local last = state("last_mode", "balanced")
+
+-- `mantle set mode '"performance"'` from a keybind runs this too.
+mode:on_change(function(_, previous) last:set(previous) end)
+
+return button {
+  on_click = function() mode:set(last:get()) end,
+  children = { text { content = last:map(function(m) return "Back to " .. m end) } },
+}
+```
+
+| Rule | Detail |
+| :--- | :--- |
+| When | After the write's callback returns, before the next layout pass, so the pass paints what the handler wrote |
+| Change only | A write of the held value runs nothing, nor does a change undone before the handlers run. Declaring the state, and a reload re-seeding it, run nothing |
+| Chains | A handler may write state, which runs that state's handlers next. After 8 rounds the rest are dropped with a logged error, so two handlers undoing each other stop |
+| Failure | Each handler runs under the [CPU budget](runtime.md#limits-and-budgets). A raise is logged; the value stays written and the other handlers still run |
+| Reload | Handlers are dropped before each evaluation, which registers them again. Several per state are allowed |
+| Kinds | State signals and [capabilities](../capabilities/index.md) only. On a derived, hover, scroll or geometry signal it raises |
 
 Derived signals (`:map`, `computed`, `delay`, `pulse`) have no name. Each evaluation builds them
 fresh, so a reload drops a pending `delay` and closes an open `pulse` window. See
@@ -92,8 +122,8 @@ fresh, so a reload drops a pending `delay` and closes an open `pulse` window. Se
 
 Use `:map(fn)` to turn one signal's value into another value. Use `computed({ a, b }, fn)` when
 the result needs several signals. Both return a signal you can bind to a property. Their functions
-should only calculate a value: write state or run commands from `on_click`, a capability's
-[`on_change`](../capabilities/index.md) or a [`timer`](scripting.md). The functions run under the
+should only calculate a value: write state or run commands from `on_click`, an
+[`on_change`](#on_change-react-to-a-write) or a [`timer`](scripting.md). The functions run under the
 [CPU budget](runtime.md#limits-and-budgets).
 
 A derived colour:
@@ -260,7 +290,8 @@ builds fresh. Give each view its own `id`: [switching views with ids](../nodes/i
 | `sig:map(fn)` | signal | `fn(value)`, run again on every read. Works on capabilities |
 | `sig:set(value)` | nothing | State signals only; see [who writes each kind](#who-writes-each-kind) |
 | `sig:reveal(index)` | nothing | `scroll` signals only; scrolls the `index`-th child into view ([input](input.md)) |
-| `cap:on_change(fn)`, `cap:<action>(...)` | nothing | Capabilities only ([capabilities](../capabilities/index.md)) |
+| `sig:on_change(fn)` | nothing | State signals and capabilities only; `fn(current, previous)` after each change ([state](#on_change-react-to-a-write), [capabilities](../capabilities/index.md)) |
+| `cap:<action>(...)` | nothing | Capabilities only ([capabilities](../capabilities/index.md)) |
 | `computed({ a, b, ... }, fn)` | signal | `fn(a_value, b_value, ...)`: the values in list order, not the signals. Each entry must be a signal or capability: a `nil`, another value or a named key raises, naming the entry |
 | `state(name, initial)` | state signal | Writable [named state](#named-state), written with `:set(value)` |
 | `delay(sig, ms)` | signal | `sig`'s value once a new value has held for `ms`, and the old value until then. A change that reverts sooner is dropped |
@@ -302,6 +333,7 @@ again after changing it in place is a write.
 | `delay() takes a Signal` / `pulse() takes a Signal` | The first argument is not a signal or capability |
 | `delay() hold must be within [1, 60000] ms` / `pulse() window must be within` | `ms` out of range, or rounds to 0 |
 | `signal:set() is only valid on a state(name, initial) signal` | `:set` on a derived, capability, hover, scroll or geometry signal |
+| `signal:on_change() is only valid on a state(name, initial) signal` | `:on_change` on a derived, hover, scroll or geometry signal |
 | `signal:set() refused its value at the marshalling boundary` | NaN, infinity, an integer past ±(2^53−1) or a string over 64 KiB |
 | `state("name", ...) refused its initial value` | The same checks on `initial` |
 | `signal:reveal() is only valid on a scroll(name) signal` / `takes a 1-based child index` | `:reveal` on another kind, or an index below 1 |
@@ -325,7 +357,7 @@ again after changing it in place is a write.
 | Switch tabs | [Switching views with ids](../nodes/index.md#switching-views-with-ids) |
 | Size one node from another's layout | [geometry](#geometry-read-a-nodes-laid-out-rect) |
 | Keep a toggle across shell restarts | Named state is lost with the Renderer; use `persistent_table` ([scripting](scripting.md)) |
-| Run a side effect when a capability changes | `on_change` ([capabilities](../capabilities/index.md)), never a map |
+| Run a side effect when a capability or a state changes | `on_change` ([state](#on_change-react-to-a-write), [capabilities](../capabilities/index.md)), never a map |
 
 ### Derive from two capabilities
 

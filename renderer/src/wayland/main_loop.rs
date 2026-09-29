@@ -315,6 +315,7 @@ pub fn run(
         if state.popup_latch {
             app.apply_popup_visibility_for_armed_input();
         }
+        app.reset_closed_surfaces();
         if re_resolved {
             // Hover signals follow layout; `on_hover` follows the pointer (ADR-0112 amendment).
             app.refresh_hover_after_layout();

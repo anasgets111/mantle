@@ -64,6 +64,7 @@ opens.
 | `visible` | `boolean\|Bound` | `true` | Opens and closes the window; state and `id` survive |
 | `width` | `Length\|Bound`, `[0, 8192]` | Fill the window | The root's size inside the window, not the window's ([size](#size)) |
 | `height` | `Length\|Bound`, `[0, 8192]` | Fill the window | As `width` |
+| `reset_on_close` | `(StateSignal<any>\|ScrollSignal)[]` | `{}` | `state` and `scroll` handles written back when the surface stops being shown: a state to its `initial`, a scroll to the top ([reset on close](index.md#reset-on-close)) |
 | `child` | `Node\|Bound` | None | The one root node; a function `child` is refused |
 <!-- End of the generated table. -->
 

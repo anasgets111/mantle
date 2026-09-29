@@ -14,8 +14,8 @@ use Absent::{Bool, Choice, Lua, Number, Prose, Required, Unset};
 use crate::image::Fit;
 use crate::layout::hit::LogicalPoint;
 use crate::layout::node::prop::{
-    Bound, Callback, Color, Field, Flag, Focus, Handle, Id, Name, Num, OneOf, Path, Pixels, Prop, Refused, Structural,
-    Text,
+    Bound, Callback, Color, Field, Flag, Focus, Handle, Id, Name, Num, OneOf, Path, Pixels, Prop, Refused, Resets,
+    Structural, Text,
 };
 use crate::layout::node::{
     Align, Anchor, AnchorRect, Animations, Axes, Children, ClipShape, ColorOrEdges, ConstraintAdjustment, Content,
@@ -555,6 +555,12 @@ props! {
         on_dismiss();
         /// Opens and closes the popup; state and `id` survive (ADR-0049).
         visible: Bound<Flag> = absent(Bool(true));
+    }
+    mod closable(PANEL | WINDOW | POPUP) {
+        /// `state` and `scroll` handles written back when this surface stops being shown: `visible` turning false, a reload removing it, its last output leaving, or its parent closing (a popup). A state returns to its declared `initial`, running its `on_change`; a scroll to the top. Anything else in the list fails the evaluation (ADR-0289).
+        ///
+        /// Book: `state` and `scroll` handles written back when the surface stops being shown: a state to its `initial`, a scroll to the top ([reset on close](index.md#reset-on-close))
+        reset_on_close: Resets = absent(Lua("{}"));
     }
     mod toplevel(WINDOW | POPUP) {
         /// The one root node; a function `child` is refused.

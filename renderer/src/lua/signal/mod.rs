@@ -8,6 +8,7 @@
 
 mod budget;
 mod globals;
+mod state_handlers;
 mod tracking;
 
 use std::cell::{Cell, RefCell};
@@ -20,10 +21,11 @@ use crate::lua::location::Site;
 use crate::lua::marshal;
 
 pub(crate) use budget::{CpuBudget, LayoutPassBudget, thread_cpu_time};
-pub(crate) use globals::note_geometry_moved;
 pub use globals::{
     any_hover_registered, begin_evaluation, declared_states, promote_states, register, take_geometry_moved, write_state,
 };
+pub(crate) use globals::{note_geometry_moved, reset, reset_target};
+pub use state_handlers::{clear as clear_state_handlers, run as run_state_handlers};
 #[cfg(test)]
 pub(crate) use tracking::MemoTable;
 pub(crate) use tracking::{
@@ -253,17 +255,17 @@ impl Signal {
     }
 
     /// Replaces a state value when the config changed its literal (ADR-0044 amendment), so the file
-    /// wins over prior `set`; marks the same dirty flag. Only `State` belongs to the registry; any
-    /// other kind is a caller bug, not config error.
-    pub fn reseed(&self, value: Value) -> Result<(), marshal::MarshalError> {
+    /// wins over prior `set`; marks the same dirty flag and returns the replaced value. Only
+    /// `State` belongs to the registry; any other kind is a caller bug, not config error.
+    pub fn reseed(&self, value: Value) -> Result<Value, marshal::MarshalError> {
         check_lua_authored(&value)?;
         let SignalKind::State { id, cell, dirty } = &self.0 else {
             debug_assert!(false, "reseed on {} signal, which the state registry cannot hold", self.0.describe());
-            return Ok(());
+            return Ok(Value::Nil);
         };
-        *cell.borrow_mut() = value;
+        let previous = cell.replace(value);
         dirty.mark_cell(*id);
-        Ok(())
+        Ok(previous)
     }
 
     /// Rust-pushed signal via [`LiveSignalHandle`]. Values are serde-serialized Rust data, so Lua
@@ -722,6 +724,22 @@ fn rerun_computeds(lua: &Lua, cells: &rustc_hash::FxHashSet<CellId>) {
 }
 
 impl UserData for Signal {
+    // Named state's side-effect hook, the counterpart of a capability's (ADR-0115). A field, not a
+    // method: a derived signal reads `nil`, so a config can test `signal.on_change` for either kind.
+    fn add_fields<F: mlua::UserDataFields<Self>>(fields: &mut F) {
+        fields.add_field_method_get("on_change", |lua, this| {
+            let SignalKind::State { id, .. } = &this.0 else {
+                return Ok(Value::Nil);
+            };
+            let id = *id;
+            lua.create_function(move |lua, (_, handler): (mlua::AnyUserData, Function)| {
+                state_handlers::add(lua, id, handler);
+                Ok(())
+            })
+            .map(Value::Function)
+        });
+    }
+
     fn add_methods<M: UserDataMethods<Self>>(methods: &mut M) {
         // Functions, not methods: a derived signal's read needs the userdata its user values hang
         // off, which a method's `&Self` has lost.
@@ -746,7 +764,7 @@ impl UserData for Signal {
         // ADR-0044 decision 5's only Lua write path. Other kinds refuse by name, so
         // `network:set(...)`
         // says why.
-        methods.add_method("set", |_, this, value: Value| {
+        methods.add_method("set", |lua, this, value: Value| {
             let SignalKind::State { id, cell, dirty } = &this.0 else {
                 return Err(mlua::Error::runtime(format!(
                     "signal:set() is only valid on a state(name, initial) signal, and this is {} signal: every other signal kind is read-only to Lua (ADR-0044 decision 5)",
@@ -759,8 +777,9 @@ impl UserData for Signal {
                 mlua::Error::runtime(format!("signal:set() refused its value at the marshalling boundary: {err}"))
             })?;
             if !same_value(&cell.borrow(), &value) {
-                *cell.borrow_mut() = value;
+                let previous = cell.replace(value);
                 dirty.mark_cell(*id);
+                state_handlers::note_write(lua, this, previous);
             }
             Ok(())
         });

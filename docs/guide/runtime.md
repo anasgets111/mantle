@@ -182,7 +182,7 @@ return panel {
 | `process.run` child | Killed with its process group, failed reloads included. Its `exit_cb(nil)` runs before the new evaluation; no `out_cb` follows | Killed with its process group | Killed |
 | `process.detach` program | Unaffected | Unaffected | Unaffected |
 | `timer` | Cleared. The new evaluation's timers start when its result is applied | Cleared | Gone |
-| `action`, `mantle.<cap>:on_change` | Cleared, re-registered by the new evaluation | Cleared | Gone |
+| `action`, `mantle.<cap>:on_change`, `state:on_change` | Cleared, re-registered by the new evaluation | Cleared | Gone |
 | `mantle.idle` thresholds | Cleared, re-registered | Cleared | Gone |
 | `fonts { ... }` chain | Not re-read | Re-read | Gone |
 | Capability state (`mantle.<cap>`) | Unchanged | Replayed from the Supervisor's last snapshot | Gone |

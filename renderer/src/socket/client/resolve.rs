@@ -105,6 +105,9 @@ impl RendererClient {
     /// Called once per poll turn after inbound frames; `DirtyFlag::take` coalesces pushes. Returns
     /// whether it re-resolved; `false` means clean or failed.
     pub fn re_resolve_if_dirty(&mut self) -> bool {
+        // Every writer of this turn has returned, so no handler runs inside one (ADR-0288).
+        lua::signal::run_state_handlers(self.loader.lua());
+        self.owes_pass = false;
         // Check before taking the flag: a failed first apply must not swallow pushes and stay blank
         // until an inotify edit forces reevaluation.
         let Some(output) = self.state.applied_output.as_ref() else {

@@ -15,8 +15,6 @@ local results_scroll = scroll("launcher_results")
 
 local function close()
     open:set(false)
-    query:set("")
-    selected:set(1)
 end
 
 -- Best score of the name, generic name and keywords; nil when none match.
@@ -159,6 +157,7 @@ return {
         height = "Fill",
         exclusive = "Ignore",
         visible = open,
+        reset_on_close = { query, selected, results_scroll }, -- however it closed, it reopens fresh
         keyboard_interactivity = "Exclusive", -- hiding destroys the surface, so no binding needed
         child = rect {
             width = "Fill",
@@ -205,6 +204,7 @@ launcher_open` on Hyprland or `Mod+Space { spawn "mantle" "toggle" "launcher_ope
 - `computed` joins the capability with the query, and a second one marks the selected row ([derived signals](../guide/signals.md#derived-signals)).
 - The `textfield` owns the typed text and reports it through `on_change`; `on_navigate` gets the arrow and Tab keys ([textfield](../nodes/textfield.md), [text fields](../guide/input.md#text-fields)).
 - `scroll(name):reveal(index)` keeps the selected row in view inside the `max_height` list ([scroll](../guide/input.md#scroll), [list](../nodes/list.md)).
+- `reset_on_close` returns the query, the selection and the scroll to their start whenever the launcher closes, including by `mantle toggle` ([reset on close](../surfaces/index.md#reset-on-close)).
 - `"Exclusive"` hands the panel the keyboard when it maps, and `autofocus` gives it to the field ([keyboard focus](../surfaces/panel.md#keyboard-focus)).
 - A full-size transparent `button` under the card closes it on an outside click ([close an overlay](../surfaces/panel.md#close-an-overlay-on-an-outside-click)).
 
