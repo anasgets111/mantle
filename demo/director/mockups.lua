@@ -1,7 +1,7 @@
 -- Props: app windows the director draws on the open 56% of the screen, so the notification,
 -- privacy and idle beats have something to react to. They are not part of the demo shell.
 
-local theme = require("stages.theme")
+local theme = require("theme")
 
 local BAR = 56
 local TITLE = 52

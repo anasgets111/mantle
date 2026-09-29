@@ -6,7 +6,7 @@ local syntax = require("lua_syntax")
 local edits = require("edits")
 local session = require("session")
 local mockups = require("mockups")
-local theme = require("stages.theme")
+local theme = require("theme")
 
 fonts {
     "CaskaydiaCove Nerd Font Propo",
@@ -42,7 +42,7 @@ local STAGE_NAMES = {
 }
 -- Copied beside the demo's shell.lua at setup, for the stages that require or read them.
 local MODULES = {
-    "banner.lua", "osd.lua", "notifications.lua", "privacy.lua", "idle.lua", "wallpaper.lua", "theme.lua",
+    "banner.lua", "osd.lua", "notifications.lua", "privacy.lua", "idle.lua", "wallpaper.lua",
     "taskbar.lua", "overview.lua", "targets.lua", "media.lua", "tray.lua", "control.lua", "updates.lua",
     "polkit.lua", "lock.lua", "sysinfo.lua",
     "aurora.frag", "chevron.frag",
@@ -1075,9 +1075,9 @@ local function render_wallpapers(done)
 end
 
 local function stage(next)
-    local sources = {}
-    for k, name in ipairs(MODULES) do
-        sources[k] = STAGES .. name
+    local sources = { mantle.config_dir .. "/theme.lua" }
+    for _, name in ipairs(MODULES) do
+        sources[#sources + 1] = STAGES .. name
     end
     sources[#sources + 1] = DEMO_DIR .. "/"
     -- The last take's saved switches would start this one with them on.
