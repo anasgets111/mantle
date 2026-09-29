@@ -362,7 +362,7 @@ pub fn register(lua: &Lua) -> mlua::Result<()> {
         /// Scores compare only against the same needle; non-ASCII input takes a cruder scorer.
         /// [docs](https://anasgets111.github.io/mantle/guide/scripting.html#fuzzy)
         fn fuzzy(
-            _lua,
+            lua,
             /// Non-UTF-8 bytes score as no match.
             haystack: mlua::LuaString,
             /// Empty scores `0, 0`.
@@ -373,6 +373,7 @@ pub fn register(lua: &Lua) -> mlua::Result<()> {
             /// best-scoring one for a one-character needle). For tiebreaks, not highlighting.
             start: Option<usize>,
         ) {
+            super::signal::anchor_cpu_budget(lua);
             let (Ok(haystack), Ok(needle)) = (haystack.to_str(), needle.to_str()) else {
                 return Ok((None, None));
             };

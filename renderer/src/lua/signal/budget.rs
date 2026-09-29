@@ -1,3 +1,4 @@
+use std::cell::Cell;
 use std::time::{Duration, Instant};
 
 use mlua::Lua;
@@ -22,25 +23,58 @@ const LAYOUT_PASS_CAP: Duration = Duration::from_secs(2);
 /// `CLOCK_THREAD_CPUTIME_ID`'s 170.4ns. Wall alone charged descheduled work: on 12 threads it fired
 /// 5 times in 53 suite runs for configs a quiet machine evaluates in microseconds. A parked thread
 /// fires no hook, and ADR-0048 removes blocking calls (`io` absent; four `os` calls never wait).
-#[derive(Clone, Copy)]
+///
+/// A signal deadline anchors its CPU clock lazily, at the first hook tick ([`Deadline::expired`]
+/// with `anchor`), not at entry: a getter that ends inside one 1000-instruction batch never reads
+/// the CPU clock, and the anchor lands at most one batch (microseconds) late.
+#[derive(Clone)]
 pub(super) struct Deadline {
     wall: Instant,
-    /// `None` when the CPU clock is unreadable; wall remains authoritative.
-    cpu: Option<Duration>,
+    cap: Duration,
+    /// Outer `None`: not anchored yet. Inner `None`: the CPU clock is unreadable; wall remains
+    /// authoritative.
+    cpu: Cell<Option<Option<Duration>>>,
 }
 
 impl Deadline {
-    /// `cap` from now on both clocks. Anchoring CPU here and not at wall expiry is what keeps the
-    /// cap a cap: read later, the deadline would be `cap` of CPU *after* the wall cap, doubling it.
-    fn lasting(cap: Duration) -> Self {
-        Self { wall: Instant::now() + cap, cpu: thread_cpu_time().map(|used| used + cap) }
+    /// `cap` from now on wall; CPU anchors on the first tick. Anchoring CPU at wall expiry instead
+    /// would make the deadline `cap` of CPU *after* the wall cap, doubling it.
+    fn lazy(cap: Duration) -> Self {
+        Self { wall: Instant::now() + cap, cap, cpu: Cell::new(None) }
     }
 
-    fn expired(&self) -> bool {
+    /// `cap` from now on both clocks.
+    fn lasting(cap: Duration) -> Self {
+        let deadline = Self::lazy(cap);
+        deadline.start_cpu();
+        deadline
+    }
+
+    fn anchor(&self) {
+        if self.cpu.get().is_none() {
+            self.start_cpu();
+        }
+    }
+
+    fn start_cpu(&self) {
+        self.cpu.set(Some(thread_cpu_time().map(|used| used + self.cap)));
+    }
+
+    /// `anchor` is true from the hook, which starts the CPU clock; the Rust-boundary gate passes
+    /// false so a getter that never ticked stays syscall-free. Native calls that run long between
+    /// ticks call [`anchor_cpu_budget`] at entry. ponytail: a getter whose only long call is Lua's
+    /// own C library (a huge `string.rep`) overruns unseen when wall has expired too, since no
+    /// baseline exists; the pass cap still bounds it. Upgrade: anchor at entry.
+    fn expired(&self, anchor: bool) -> bool {
+        let Some(cpu) = self.cpu.get() else {
+            if anchor {
+                self.start_cpu();
+            }
+            return false;
+        };
         // Past wall pre-filter, so CPU decides. An unreadable clock expires; an unmeasurable cap
         // must fire rather than disappear.
-        Instant::now() > self.wall
-            && self.cpu.is_none_or(|deadline| thread_cpu_time().is_none_or(|used| used > deadline))
+        Instant::now() > self.wall && cpu.is_none_or(|deadline| thread_cpu_time().is_none_or(|used| used > deadline))
     }
 }
 
@@ -48,9 +82,14 @@ impl Deadline {
 /// entering Wayland thread (ADR-0039); process-wide time would charge shaping.
 /// `crate::wayland::idle_profile` charges blocks of its loop against the same per-thread scope.
 pub(crate) fn thread_cpu_time() -> Option<Duration> {
+    #[cfg(test)]
+    CLOCK_READS.with(|reads| reads.set(reads.get() + 1));
     let spent = nix::time::clock_gettime(nix::time::ClockId::CLOCK_THREAD_CPUTIME_ID).ok()?;
     Some(Duration::new(spent.tv_sec().try_into().ok()?, spent.tv_nsec().try_into().ok()?))
 }
+
+#[cfg(test)]
+thread_local!(static CLOCK_READS: Cell<usize> = const { Cell::new(0) });
 
 /// VM instructions between checks. `HookTriggers` warns low values have high overhead; 1000 stays
 /// cheap and catches a runaway closure within roughly one batch of 2.5ms, not seconds later.
@@ -102,11 +141,20 @@ pub(crate) struct CpuBudget<'lua> {
 pub(crate) fn install_hook(lua: &Lua) -> mlua::Result<()> {
     lua.set_global_hook(
         mlua::HookTriggers { every_nth_instruction: Some(CHECK_EVERY_N_INSTRUCTIONS), ..mlua::HookTriggers::new() },
-        |lua, _| match expired_budget(lua) {
+        |lua, _| match expired_budget(lua, true) {
             Some(message) => Err(mlua::Error::runtime(message)),
             None => Ok(mlua::VmState::Continue),
         },
     )
+}
+
+/// Starts the outer evaluation's CPU clock, if it has not started. A no-op with no evaluation live
+/// or after the first tick; call it at entry of a native function that can run past one hook batch
+/// (`fuzzy`, `json.decode`), where no tick would anchor the budget before the work is spent.
+pub(crate) fn anchor_cpu_budget(lua: &Lua) {
+    if let Some(deadline) = lua.app_data_ref::<Vec<Deadline>>().as_ref().and_then(|stack| stack.first()) {
+        deadline.anchor();
+    }
 }
 
 /// Whole-`Scene::apply` deadline, when a pass is in flight.
@@ -136,7 +184,7 @@ impl<'lua> LayoutPassBudget<'lua> {
     /// Rust-boundary gate: config `pcall` can swallow the hook's ordinary Lua error in `__index` or
     /// a getter, but cannot swallow this check.
     pub(crate) fn exceeded(&self) -> bool {
-        self.lua.app_data_ref::<PassDeadline>().and_then(|slot| slot.0).is_some_and(|d| d.expired())
+        self.lua.app_data_ref::<PassDeadline>().and_then(|slot| slot.0.clone()).is_some_and(|d| d.expired(true))
     }
 }
 
@@ -164,7 +212,7 @@ impl<'lua> CpuBudget<'lua> {
                 "signal nesting exceeded its maximum depth of {MAX_SIGNAL_NESTING_DEPTH} levels -- a computed/map chain recursing into itself, or a dependency chain that long?"
             )));
         }
-        let deadline = stack.first().copied().unwrap_or_else(|| Deadline::lasting(CPU_CAP));
+        let deadline = stack.first().cloned().unwrap_or_else(|| Deadline::lazy(CPU_CAP));
         stack.push(deadline);
         Ok(Self { lua })
     }
@@ -174,7 +222,7 @@ impl<'lua> CpuBudget<'lua> {
     /// hook and never returns still spins. VM lacks preemption; upgrade path: evaluate in a separate
     /// process (ADR-0039).
     pub(crate) fn check_not_exceeded(&self) -> mlua::Result<()> {
-        match expired_budget(self.lua) {
+        match expired_budget(self.lua, false) {
             Some(message) => Err(mlua::Error::runtime(message)),
             None => Ok(()),
         }
@@ -191,13 +239,12 @@ impl Drop for CpuBudget<'_> {
 
 /// Returns the earlier expired signal/pass deadline. Signal uses outermost `first()`; pass stays
 /// separate so that lookup remains O(1). No deadline means no expiry, allowing hook installation.
-fn expired_budget(lua: &Lua) -> Option<&'static str> {
-    let signal = lua.app_data_ref::<Vec<Deadline>>().and_then(|stack| stack.first().copied());
-    if signal.is_some_and(|deadline| deadline.expired()) {
+fn expired_budget(lua: &Lua, anchor: bool) -> Option<&'static str> {
+    if lua.app_data_ref::<Vec<Deadline>>().and_then(|stack| stack.first().map(|d| d.expired(anchor))) == Some(true) {
         return Some(CPU_CAP_EXCEEDED);
     }
-    let pass = lua.app_data_ref::<PassDeadline>().and_then(|slot| slot.0);
-    pass.filter(Deadline::expired).map(|_| LAYOUT_PASS_CAP_EXCEEDED)
+    let pass = lua.app_data_ref::<PassDeadline>()?;
+    pass.0.as_ref().filter(|d| d.expired(anchor)).map(|_| LAYOUT_PASS_CAP_EXCEEDED)
 }
 
 #[cfg(test)]
@@ -465,5 +512,56 @@ mod tests {
             .eval()
             .unwrap();
         assert_eq!(result, 2_000_001_000_000);
+    }
+
+    fn clock_reads() -> usize {
+        CLOCK_READS.with(Cell::get)
+    }
+
+    #[test]
+    fn short_getters_read_the_cpu_clock_zero_times() {
+        // Short getters end inside one hook batch, so none reads the CPU clock.
+        const GETTERS: usize = 500;
+        let lua = lua_with_signal("a", Value::Integer(7));
+        let before = clock_reads();
+        let sum: i64 = lua
+            .load(format!(
+                "local n = 0 for _ = 1, {GETTERS} do n = n + a:map(function(v) return v end):get() end return n"
+            ))
+            .eval()
+            .unwrap();
+        // The loop itself ticks the hook, but only inside no budget: those ticks find no deadline.
+        assert_eq!(sum, 7 * GETTERS as i64);
+        assert_eq!(clock_reads() - before, 0, "getters ending before a hook tick must not read the CPU clock");
+    }
+
+    #[test]
+    fn a_long_getter_reads_the_cpu_clock_once_and_a_runaway_still_names_its_error() {
+        let lua = lua_with_signal("a", Value::Integer(1));
+        let before = clock_reads();
+        let n: i64 = lua
+            .load("return a:map(function(v) local n = 0 for i = 1, 100000 do n = n + 1 end return n end):get()")
+            .eval()
+            .unwrap();
+        assert_eq!(n, 100_000);
+        assert_eq!(clock_reads() - before, 1, "one anchor at the first tick, none per later tick");
+
+        let err = lua.load("return computed({a}, function(x) while true do end end):get()").eval::<i64>().unwrap_err();
+        assert!(err.to_string().contains(CPU_CAP_EXCEEDED), "the runaway must name the CPU budget: {err}");
+    }
+
+    #[test]
+    fn one_long_native_call_in_a_getter_is_still_stopped_at_the_budget() {
+        // No hook tick runs before or during the call, so only the call's own entry can anchor.
+        let lua = lua_with_signal("a", Value::Integer(1));
+        crate::lua::fuzzy::register(&lua).unwrap();
+        lua.globals().set("haystack", "ab".repeat(400_000)).unwrap();
+        let start = Instant::now();
+        let err = lua
+            .load(r#"return computed({a}, function(x) return fuzzy(haystack, "bbbbbbbbbbbbbbbbbbbbbbbb") end):get()"#)
+            .eval::<Value>()
+            .unwrap_err();
+        assert!(err.to_string().contains(CPU_CAP_EXCEEDED), "the long call must be stopped and named: {err}");
+        assert!(start.elapsed() > CPU_CAP, "the haystack must outlast the cap for this to prove anything");
     }
 }

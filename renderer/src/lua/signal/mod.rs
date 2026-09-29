@@ -20,7 +20,7 @@ use mlua::{Function, Lua, MultiValue, UserData, UserDataMethods, Value};
 use crate::lua::location::Site;
 use crate::lua::marshal;
 
-pub(crate) use budget::{CpuBudget, LayoutPassBudget, thread_cpu_time};
+pub(crate) use budget::{CpuBudget, LayoutPassBudget, anchor_cpu_budget, thread_cpu_time};
 pub use globals::{
     any_hover_registered, begin_evaluation, declared_states, promote_states, register, take_geometry_moved, write_state,
 };

@@ -63,6 +63,7 @@ pub fn register(lua: &Lua) -> mlua::Result<()> {
         /// and a `null` array element leaves a hole that stops `ipairs` (ADR-0057). There is no encoder.
         /// [docs](https://anasgets111.github.io/mantle/guide/scripting.html#jsondecode)
         fn json.decode(lua, text: mlua::LuaString) -> (value: Value, error: Option<String>) as Result<Value, String> {
+            super::signal::anchor_cpu_budget(lua);
             Ok(decode(lua, &text.as_bytes()))
         }
     )
