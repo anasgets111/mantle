@@ -15,7 +15,8 @@
 //! Pool decodes use [`thumbnails`]: read a current thumbnail instead of the file, and leave one
 //! after a full decode for later opens and other cache users.
 //!
-//! Eviction has two bounds (ADR-0123): [`CACHE_CAPACITY`] entries, oldest insert first, and
+//! Eviction has two bounds (ADR-0123): [`CACHE_CAPACITY`] entries, least recently asked for first and
+//! never one asked for since the current paint began (the map may exceed it while more are visible), and
 //! [`ImageCache::set_texture_budget`] bytes of textures not shown by a mapped surface, least recently asked-for
 //! first. `wayland::App` triggers it after each paint using pins from surfaces' last lists.
 //! [`ImageCache::release_evicted`] frees textures at the next paint's start, never mid-frame.
@@ -290,6 +291,8 @@ pub struct ImageCache {
     resident_bytes: usize,
     /// Lamport clock incremented per [`ImageCache::image`], avoiding `Instant` and frame state.
     tick: u64,
+    /// `tick` when the current paint began: entries with a later `last_hit` were asked for by it.
+    paint_start: u64,
     pool: Pool,
     /// Decodes taken by [`ImageCache::poll`] but not uploaded: `poll` runs in the main-loop turn,
     /// where no canvas is current.
@@ -351,6 +354,7 @@ impl ImageCache {
             entries: HashMap::new(),
             evicted: Vec::new(),
             evicted_total: 0,
+            paint_start: 0,
             landed_total: 0,
             failed_total: 0,
             resident_bytes: 0,
@@ -390,9 +394,15 @@ impl ImageCache {
     /// femtovg resolves `ImageId` at `flush`, not `fill_path`; mid-walk deletion unbinds a texture
     /// a recorded command still names, drawing blank.
     pub fn release_evicted(&mut self, canvas: &mut Canvas<OpenGl>) {
+        self.begin_paint();
         for id in self.evicted.drain(..) {
             canvas.delete_image(id);
         }
+    }
+
+    /// Marks what is asked for from here as this paint's, which the capacity bound never evicts.
+    fn begin_paint(&mut self) {
+        self.paint_start = self.tick;
     }
 
     /// Takes finished background decodes and returns landed files as the repaint cue. No canvas is
@@ -615,7 +625,16 @@ impl ImageCache {
             // ponytail: a linear scan of at most `CACHE_CAPACITY` entries, on the insert that hits
             // the bound and not on the others. A heap would order it in log time and would have to
             // be reordered on every hit, which is the common case; this is the rarer one.
-            let Some(coldest) = self.entries.iter().min_by_key(|(_, entry)| entry.last_hit).map(|(key, _)| key.clone())
+            //
+            // Never one this paint asked for: with more images visible than the cap, evicting them
+            // re-decodes every one on each repaint. The map exceeds the cap until they go unused;
+            // `trim` still bounds the bytes.
+            let Some(coldest) = self
+                .entries
+                .iter()
+                .filter(|(_, entry)| entry.last_hit <= self.paint_start)
+                .min_by_key(|(_, entry)| entry.last_hit)
+                .map(|(key, _)| key.clone())
             else {
                 break;
             };
@@ -807,6 +826,7 @@ mod tests {
         }
 
         // Asked for again, the way a mapped surface asks for what it draws every frame.
+        cache.begin_paint();
         cache.tick += 1;
         let hit = cache.tick;
         cache.entries.get_mut(&first).unwrap().last_hit = hit;
@@ -827,11 +847,46 @@ mod tests {
         }
     }
 
+    /// A repaint that draws more images than the cap must not evict what it just drew, or every
+    /// repaint re-decodes the overflow. Ready slots need a canvas, so `Failed` ones stand in.
+    #[test]
+    fn a_paint_never_evicts_what_it_drew_and_unused_entries_shrink_back_to_the_cap() {
+        let visible = CACHE_CAPACITY + 40;
+        let k = |n: usize| key(format!("/tmp/{n}.png"), 0, FileVersion::default());
+        let mut cache = ImageCache::new();
+        for frame in 0..4 {
+            cache.begin_paint();
+            for n in 0..visible {
+                if cache.entries.contains_key(&k(n)) {
+                    cache.tick += 1;
+                    let hit = cache.tick;
+                    cache.entries.get_mut(&k(n)).unwrap().last_hit = hit;
+                } else {
+                    cache.insert(k(n), Slot::Failed);
+                }
+            }
+            assert_eq!(cache.entries.len(), visible, "frame {frame}: the visible set stays whole");
+            // Failed slots free nothing, so re-decodes show as re-inserts.
+            assert_eq!(cache.census().failed, visible, "frame {frame}: nothing was evicted and re-inserted");
+        }
+        // A different set replaces it: the old one is unused, so the map returns to the cap.
+        cache.begin_paint();
+        for n in visible..visible + CACHE_CAPACITY {
+            cache.insert(k(n), Slot::Failed);
+        }
+        assert_eq!(cache.entries.len(), CACHE_CAPACITY);
+        assert!((visible..visible + CACHE_CAPACITY).all(|n| cache.entries.contains_key(&k(n))));
+    }
+
     /// Eviction frees a `Failed` slot's memory; it does not un-fail the load.
     #[test]
     fn failed_census_survives_capacity_eviction_of_old_failed_entries() {
         let mut cache = ImageCache::new();
-        for n in 0..(CACHE_CAPACITY + 10) {
+        for n in 0..CACHE_CAPACITY {
+            cache.insert(key(format!("/tmp/{n}.png"), 0, FileVersion::default()), Slot::Failed);
+        }
+        cache.begin_paint();
+        for n in CACHE_CAPACITY..(CACHE_CAPACITY + 10) {
             cache.insert(key(format!("/tmp/{n}.png"), 0, FileVersion::default()), Slot::Failed);
         }
         assert_eq!(cache.entries.len(), CACHE_CAPACITY, "the ten coldest were evicted to stay at the bound");
