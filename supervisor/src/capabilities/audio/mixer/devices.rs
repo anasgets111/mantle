@@ -17,7 +17,8 @@ pub struct AudioDevice {
     pub id: u32,
     /// `node.description`, e.g. `"Built-in Audio Analog Stereo"`, else `node.nick`, else `node.name`.
     pub name: String,
-    /// This is the default output or input; with no default known, the lowest `id` is.
+    /// This is the default output or input; with no default known, or one not in this list, the lowest
+    /// `id` is.
     pub active: bool,
     /// `device.icon-name` theme name, e.g. `"audio-card-analog"`.
     #[serde(skip_serializing_if = "Option::is_none")]

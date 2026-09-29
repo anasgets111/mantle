@@ -194,8 +194,9 @@ the draft; clicking the field again resumes it. Enter and Escape clear it. An `a
 starts it empty. It is dropped when the field's node leaves the tree or its surface closes.
 
 To return typing to a field after a button changes the view, give both the field and button the
-same handle. Requests outside a button's `on_click`, to a hidden or masked field, or across
-surfaces do nothing.
+same handle. `focus("")` and a `focus` property that is not a handle raise. Requests outside a
+button's `on_click`, to a hidden or masked field, or to a surface other than the focused one and its
+popups do nothing.
 
 ```lua
 local search_focus = focus("search")

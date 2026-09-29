@@ -1,8 +1,9 @@
 # System tray with menu
 
-Tray icons in the bar. A left click activates the app, a middle click sends its secondary action,
-the wheel scrolls it and a right click opens its menu in a dropdown. Submenus expand in place,
-check marks and radio dots follow the app, and disabled entries are drawn greyed out.
+Tray icons in the bar. A left click activates the app (or opens the menu of a menu-only item), a
+middle click sends its secondary action, the wheel scrolls it and a right click opens its menu in a
+dropdown. Submenus expand in place, check marks and radio dots follow the app, and disabled entries
+are drawn greyed out.
 
 <!-- shot-alt: A top bar with tray icons and an open app menu. -->
 ```lua,shot
@@ -208,7 +209,7 @@ return {
 - `on_click` gets the button's rect and the mouse button; the rect goes straight into the popup's `anchor_rect` ([pointer](../guide/input.md#pointer), [popup](../surfaces/popup.md)).
 - The popup grabs the pointer, so an outside click dismisses it and `on_dismiss` clears the state ([dismissal](../surfaces/popup.md#dismissal)).
 - `menu_will_show` notifies apps when a menu opens (id `0`) or a submenu expands (`entry.id`), letting apps that build items lazily populate them.
-- Right-clicking an item with no DBusMenu calls `context_menu` with screen coordinates so native menus still appear.
+- Right-clicking an item with no DBusMenu calls `context_menu` at the button's bottom centre so native menus still appear. The coordinates are the bar's own, not the screen's.
 
 ## Variations
 

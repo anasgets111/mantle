@@ -54,12 +54,12 @@ Every kind accepts the [common properties](#common-properties). Box kinds also a
 | `row`, `column` | [row and column](row-column.md) | ✓ | Flow | `children`, `spacing`, `scroll` |
 | `button` | [button](button.md) | ✓ | Stacked | `children`, `on_click`, `on_drag`, `on_wheel`, `submit` |
 | `list` | [list](list.md) | | Flow, from data | `source`, `itemfn`, `key`, `limit`, `direction`, `spacing`, `scroll` |
-| `text` | [text](text.md) | | Leaf | `content`, `font`, `font_size`, `foreground`, `text_align`, `elide`, `wrap`, `max_lines`, `on_link` |
+| `text` | [text](text.md) | | Leaf | `content`, `font`, `font_size`, `line_height`, `letter_spacing`, `font_weight`, `italic`, `foreground`, `text_align`, `wrap`, `max_lines`, `elide`, `on_link` |
 | `icon` | [icon](icon.md) | | Leaf | `name`, `size`, `foreground` |
 | `image` | [image](image.md) | | Leaf | `source`, `fit`, `async`, `retain`, `transition`, `source_blur` |
 | `capture` | [capture](capture.md) | | Leaf | `output`, `fit`, `live`, `region`, `paint_cursor` |
 | `shader` | [shader](shader.md) | | Leaf | `source`, `progress`, `params` |
-| `textfield` | [textfield](textfield.md) | | Leaf | `placeholder`, `font_size`, `foreground`, `text_align`, `autofocus`, `on_change`, `on_submit`, `on_cancel`, `on_navigate`, `secure_submit`, `mask_character` |
+| `textfield` | [textfield](textfield.md) | | Leaf | `focus`, `placeholder`, `font_size`, `foreground`, `text_align`, `autofocus`, `on_change`, `on_submit`, `on_cancel`, `on_navigate`, `secure_submit`, `mask_character` |
 
 The four surface roles (`panel`, `window`, `popup`, `lock`) are node kinds too: they take the common
 and box properties and stack their one `child` ([surfaces](../surfaces/index.md)).

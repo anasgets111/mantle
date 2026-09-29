@@ -29,6 +29,9 @@ remains player-owned. `playlists.playlists` contains a page of at most 100 entri
 `playlists_activate(id, playlist_id)` to activate one. `track_list_add_track`,
 `track_list_remove_track`, and `track_list_go_to` call the corresponding TrackList methods.
 
+Each player also exposes `album`, `album_artist`, and `genre`. Artist and genre arrays are joined
+with `", "`; missing metadata is an empty string.
+
 <!-- reference -->
 
 ## Backend
@@ -55,6 +58,3 @@ remains player-owned. `playlists.playlists` contains a page of at most 100 entri
 | `position_updated_at` compared with `mantle.system.monotonic` gives nonsense | Different clocks and units: `CLOCK_MONOTONIC` microseconds against seconds since `system` started. Only compare it with itself |
 
 See also: [Media player](../cookbook/media-player.md) recipe.
-
-Each player also exposes `album`, `album_artist`, and `genre`. Artist and genre arrays are joined
-with `", "`; missing metadata is an empty string.

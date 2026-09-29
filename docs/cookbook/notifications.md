@@ -173,7 +173,7 @@ return {
 
 - `feed` is the newest 20, expired ones included; the map keeps the live ones and caps them ([notifications](../capabilities/notifications.md)).
 - `dnd` only mutes sounds, so hiding popups during it is the config's filter; critical ones still show.
-- `key` by `id` keeps each card's node when a newer one arrives above it, so only the new one animates in; a dismissed card fades out through `animate.exit` ([identity](../nodes/index.md#identity-and-reconciliation), [exit](../guide/animation.md#exit)).
+- `key` by `id` keeps each card's node when a newer one arrives above it, so only the new one animates in; a dismissed card fades out through `animate.exit`, except the last one, which leaves with its hidden panel ([identity](../nodes/index.md#identity-and-reconciliation), [exit](../guide/animation.md#exit)).
 - A body's text spans pass to `text` as runs unchanged; `on_link` hands a clicked `href` to `open_url` ([text runs](../nodes/text.md#runs), [applications](../capabilities/applications.md)).
 - The × is a `button` inside the card's `button`: the innermost one with a handler takes the click ([pointer](../guide/input.md#pointer)).
 - `on_hover` on the stack calls `hold_expiry`, so a card cannot expire while being read ([hover](../guide/input.md#hover)).

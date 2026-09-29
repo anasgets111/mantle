@@ -99,6 +99,7 @@ follows the node, so give the field a stable `id` when siblings before it come a
 | Filter a list as the user types | The example above: `on_change` sets a state, the list's `source` maps it |
 | Move a selection with the arrow keys | `on_navigate`, as above; pair it with `scroll(name):reveal` to keep the row in view ([input](../guide/input.md#text-fields)) |
 | Focus the field when a panel opens | `autofocus = true` and a panel with `keyboard_interactivity` |
+| Return keys to the field after a button click | One `local h = focus("name")`: `focus = h` on the field, `h:request()` in the button's `on_click` ([input](../guide/input.md#text-fields)) |
 | Close on a second Escape | `on_cancel(cleared)`: close only when `cleared` is `false` |
 | Ask for a password | `secure_submit = { capability = "lock", action = "authenticate" }` ([secure fields](../guide/input.md#secure-fields)) |
 | Submit a password from a button | A [`button`](button.md) with `submit = true` |

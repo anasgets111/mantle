@@ -30,11 +30,11 @@ list {
 | Field | Type | Description |
 | --- | --- | --- |
 | `apps` | `AppStream[]` | Apps playing or recording audio, excluding pid-less streams, notification sounds, meters and monitor captures. |
-| `balance?` | `number` | Default output balance, `-1.0` (left) to `1.0` (right); `nil` for mono or an unknown channel map. |
+| `balance?` | `number` | Default output balance, `-1.0` (left) to `1.0` (right); `nil` with no sink, for mono or an unknown channel map. |
 | `bluetooth` | `BluetoothCodecs[]` | BlueZ audio devices PipeWire knows, with their codecs, ordered by `device`. |
-| `muted` | `boolean` | Default output mute; `false` with no default sink. |
+| `muted` | `boolean` | Default output mute; `false` with no default sink or before its first report. |
 | `sinks` | `AudioDevice[]` | Every output device. |
-| `source_muted` | `boolean` | Default input (microphone) mute; `false` with no default source. |
+| `source_muted` | `boolean` | Default input (microphone) mute; `false` with no default source or before its first report. |
 | `source_volume?` | `number` | Default input volume, `1.0` is 100%; `set_source_volume` caps at `1.0`, another client may not. `nil` with no source or before its first volume report. |
 | `sources` | `AudioDevice[]` | Every input device. |
 | `volume?` | `number` | Default output volume, `0.0` to `1.5` (`1.0` is 100%), loudest channel; louder writes by other clients are pulled back to `1.5`. `nil` with no sink or before its first volume report. |
@@ -61,7 +61,7 @@ One `sinks` or `sources` entry.
 
 | Field | Type | Description |
 | --- | --- | --- |
-| `active` | `boolean` | This is the default output or input; with no default known, the lowest `id` is. |
+| `active` | `boolean` | This is the default output or input; with no default known, or one not in this list, the lowest `id` is. |
 | `bus?` | `string` | `device.bus`, e.g. `"pci"`, `"usb"`, `"bluetooth"`. |
 | `form_factor?` | `string` | `device.form-factor`, e.g. `"headset"`. |
 | `icon?` | `string` | `device.icon-name` theme name, e.g. `"audio-card-analog"`. |
@@ -118,11 +118,16 @@ PipeWire's native API, on one thread shared with [`privacy`](privacy.md#backend)
 | `Audio/Sink`, `Audio/Source` nodes and the `default` metadata's `default.audio.sink`/`source` | `sinks`, `sources`, `volume`, `muted`, `balance`, `source_volume`, `source_muted` |
 | `Stream/Output/Audio`, `Stream/Input/Audio` nodes | `apps`, minus the streams its field lists |
 | `bluez_card.*` devices and their profiles | `bluetooth` |
+| Each ALSA and BlueZ device's active `Route` | `port`, and a hardware sink's or source's volume, mute and balance, Bluetooth microphones included. The node's `Props` only mirror the `Route`: they are read until it arrives, and a write before then is dropped. A virtual device has no `Route` and uses its node's `Props` |
 
 The first push waits until PipeWire has reported every object and its volume, so a machine with no
 audio hardware still gets one push of empty lists. An unreachable PipeWire is logged and `audio`
 stays `nil`. Nothing reconnects: a PipeWire restart freezes `audio` at its last push until the
 Supervisor restarts.
+
+Writes are not optimistic: state changes when PipeWire reports the new value. An action with no
+target (a stale `id`, no default device, or a volume write or mute toggle before that device's first
+report) is dropped with a `debug` log.
 
 ## How do I…
 

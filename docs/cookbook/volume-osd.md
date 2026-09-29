@@ -6,7 +6,7 @@ changes, whether from a media key, `wpctl` or a mixer. It fades and slides in, t
 <!-- shot-alt: A volume card sliding in with a blue level meter and 42% label. -->
 <!-- shot: frames=0..210/30 -->
 ```lua,shot
--- The last change worth showing. A fresh table on every set, so each change counts as new.
+-- The last change worth showing. Set only on a real change: `:set` skips a table equal to the held one.
 local osd = state("volume_osd", { volume = 0, muted = false })
 
 mantle.audio:on_change(function(audio, previous)

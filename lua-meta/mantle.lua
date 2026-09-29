@@ -65,7 +65,7 @@
 
 ---@class AudioDevice
 ---One `sinks` or `sources` entry.
----@field active boolean This is the default output or input; with no default known, the lowest `id` is.
+---@field active boolean This is the default output or input; with no default known, or one not in this list, the lowest `id` is.
 ---@field bus? string `device.bus`, e.g. `"pci"`, `"usb"`, `"bluetooth"`.
 ---@field form_factor? string `device.form-factor`, e.g. `"headset"`.
 ---@field icon? string `device.icon-name` theme name, e.g. `"audio-card-analog"`.
@@ -387,11 +387,11 @@
 ---@class AudioState
 ---`mantle.audio`'s payload (ADR-0053).
 ---@field apps AppStream[] Apps playing or recording audio, excluding pid-less streams, notification sounds, meters and monitor captures.
----@field balance? number Default output balance, `-1.0` (left) to `1.0` (right); `nil` for mono or an unknown channel map.
+---@field balance? number Default output balance, `-1.0` (left) to `1.0` (right); `nil` with no sink, for mono or an unknown channel map.
 ---@field bluetooth BluetoothCodecs[] BlueZ audio devices PipeWire knows, with their codecs, ordered by `device`.
----@field muted boolean Default output mute; `false` with no default sink.
+---@field muted boolean Default output mute; `false` with no default sink or before its first report.
 ---@field sinks AudioDevice[] Every output device.
----@field source_muted boolean Default input (microphone) mute; `false` with no default source.
+---@field source_muted boolean Default input (microphone) mute; `false` with no default source or before its first report.
 ---@field source_volume? number Default input volume, `1.0` is 100%; `set_source_volume` caps at `1.0`, another client may not. `nil` with no source or before its first volume report.
 ---@field sources AudioDevice[] Every input device.
 ---@field volume? number Default output volume, `0.0` to `1.5` (`1.0` is 100%), loudest channel; louder writes by other clients are pulled back to `1.5`. `nil` with no sink or before its first volume report.

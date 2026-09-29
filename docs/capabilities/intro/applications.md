@@ -15,11 +15,12 @@ text {
 
 ## Backend
 
-Reads `applications/` under `$XDG_DATA_HOME`, then each `$XDG_DATA_DIRS` entry (default
-`/usr/local/share:/usr/share`), subdirectories included. The first file for a desktop id wins, so a
+Reads `applications/` under `$XDG_DATA_HOME` (default `~/.local/share`), then each absolute `$XDG_DATA_DIRS`
+entry (default `/usr/local/share:/usr/share`), subdirectories included, four levels deep. The first file for a desktop id wins, so a
 copy under `~/.local/share/applications` overrides the system one. `Type=Application` entries with
-`Name` and `Exec` are listed; `NoDisplay=true` and `Hidden=true` ones are not. inotify watches every
-directory, including ones created later.
+`Name` and a non-empty `Exec` are listed; `NoDisplay=true` and `Hidden=true` ones are not. inotify watches every
+directory, including ones created later. `launch` spawns the `Exec` command detached, dropping field
+codes such as `%u`; a `Terminal=true` entry runs as `$TERMINAL -e command args`.
 
 ## How do I…
 

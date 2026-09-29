@@ -26,11 +26,16 @@ PipeWire's native API, on one thread shared with [`privacy`](privacy.md#backend)
 | `Audio/Sink`, `Audio/Source` nodes and the `default` metadata's `default.audio.sink`/`source` | `sinks`, `sources`, `volume`, `muted`, `balance`, `source_volume`, `source_muted` |
 | `Stream/Output/Audio`, `Stream/Input/Audio` nodes | `apps`, minus the streams its field lists |
 | `bluez_card.*` devices and their profiles | `bluetooth` |
+| Each ALSA and BlueZ device's active `Route` | `port`, and a hardware sink's or source's volume, mute and balance, Bluetooth microphones included. The node's `Props` only mirror the `Route`: they are read until it arrives, and a write before then is dropped. A virtual device has no `Route` and uses its node's `Props` |
 
 The first push waits until PipeWire has reported every object and its volume, so a machine with no
 audio hardware still gets one push of empty lists. An unreachable PipeWire is logged and `audio`
 stays `nil`. Nothing reconnects: a PipeWire restart freezes `audio` at its last push until the
 Supervisor restarts.
+
+Writes are not optimistic: state changes when PipeWire reports the new value. An action with no
+target (a stale `id`, no default device, or a volume write or mute toggle before that device's first
+report) is dropped with a `debug` log.
 
 ## How do I…
 

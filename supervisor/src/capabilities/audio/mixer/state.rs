@@ -21,16 +21,17 @@ pub struct AudioState {
     /// are pulled back to `1.5`. `nil` with no sink or before its first volume report.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub volume: Option<f32>,
-    /// Default output mute; `false` with no default sink.
+    /// Default output mute; `false` with no default sink or before its first report.
     pub muted: bool,
-    /// Default output balance, `-1.0` (left) to `1.0` (right); `nil` for mono or an unknown channel map.
+    /// Default output balance, `-1.0` (left) to `1.0` (right); `nil` with no sink, for mono or an unknown
+    /// channel map.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub balance: Option<f32>,
     /// Default input volume, `1.0` is 100%; `set_source_volume` caps at `1.0`, another client may not.
     /// `nil` with no source or before its first volume report.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub source_volume: Option<f32>,
-    /// Default input (microphone) mute; `false` with no default source.
+    /// Default input (microphone) mute; `false` with no default source or before its first report.
     pub source_muted: bool,
     /// Every output device.
     pub sinks: Vec<AudioDevice>,

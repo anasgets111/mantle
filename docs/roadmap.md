@@ -35,7 +35,7 @@ Wanted, but each needs a consumer or a decision first.
 | Process control | Start, stream and signal exist. No child stdin, cwd or env | 0175, 0188 |
 | Panel root sizing | A panel spanning an axis sizes the surface but not its root node, while window and lock roots fill theirs (`forced_root_size`). Decide whether panel roots fill too | — |
 | Move transitions | A sibling closing a gap snaps. Needs the solver's old and new rects per sibling | — |
-| Text field editing | No undo, paste or IME; the secure field edits only at its end. On RTL or mixed lines a click lands one cluster off and the caret does not move inside a ligature | 0236 |
+| Text field editing | No undo or IME; the secure field edits only at its end. On RTL or mixed lines a click lands one cluster off and the caret does not move inside a ligature | 0236 |
 | Animated WebP and APNG | Only GIF animates; the others draw their first frame. `AnimationDecoder` covers both | 0233 |
 | Localization | No translation API; desktop entry `Name`, `GenericName` and `Keywords` are read unlocalized | 0112 |
 | Wayland and input extras | No shortcut inhibition, per-surface idle inhibition, touch gestures, cross-app drag and drop, pointer buttons past left, right and middle, or a click position inside a button. logind and ScreenSaver inhibition work | — |

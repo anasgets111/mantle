@@ -200,11 +200,12 @@ prints one.
 The handler contract is in [action](scripting.md#action).
 
 `set` and `toggle` wait for the shell to apply the write, up to 5 s like `call`. The shell refuses
-a write to an undeclared name, a bare `toggle` on a non-boolean, or a value that fails the
+a write to a name it never declared, a bare `toggle` on a non-boolean, or a value that fails the
 [scalar checks](runtime.md#limits-and-budgets). A refusal prints `` state `name` refused: <reason> ``
 on stderr, exits 1 and is also a warning in `mantle log`. What `toggle <name> <value>` compares and restores follows
 [named state](signals.md#named-state): scalars compare by value (`1` equals `1.0`), and a table
-never equals, so toggling to a table always sets it.
+never equals, so toggling to a table always sets it. A name a reload removed is not refused: the
+write lands on the orphaned state, exits 0 and logs nothing.
 
 ## What check covers
 

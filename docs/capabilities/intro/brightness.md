@@ -25,7 +25,7 @@ button {
 
 | Contract | Behavior |
 | :--- | :--- |
-| Device | One `/sys/class/backlight` device with `max_brightness > 0`, chosen on the first read: `firmware`, then `platform`, then `raw`, then by name. External monitors are not covered |
+| Device | One `/sys/class/backlight` device with `max_brightness > 0`, chosen once at startup: `firmware`, then `platform`, then `raw`, then by name. External monitors are not covered |
 | No device | Stays `nil` for good; `set` is logged and ignored |
 | Updates | A udev `backlight` watch re-reads sysfs `brightness` and pushes on change. If the watch cannot start, a 30 s poll replaces it |
 | Writes | logind's `Session.SetBrightness`, so no udev rule or group is needed. logind refuses it from an inactive session; the refusal is logged |

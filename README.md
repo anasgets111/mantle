@@ -39,8 +39,10 @@ On Arch, [`mantle-git`](https://aur.archlinux.org/packages/mantle-git) builds `m
 `/etc/pam.d/mantle`. [`packaging/`](packaging) holds that PAM stack (without it, unlock and polkit
 prompts fall back to `login`) and a polkit rule for `updates` installs.
 
-Fedora and Debian/Ubuntu build from source; their [build packages](docs/guide/installation.md#install)
-are listed, but running there is untested for now.
+Ubuntu 26.04 and Fedora 44 or later install a `.deb` or `.rpm` from the
+[releases](https://github.com/anasgets111/mantle/releases) ([install](docs/guide/installation.md#install)).
+Fedora and Debian/Ubuntu [build packages](docs/guide/installation.md#build-from-source) are listed;
+running there is untested for now.
 
 | Recipe | Does |
 | :--- | :--- |
@@ -73,14 +75,15 @@ else `~/.config/mantle`. `require` resolves inside it, and saving any `.lua` in 
 | :--- | :--- |
 | `mantle [-d] [-v…] [--profile[=SECS]]` | Run the shell; `-d` detaches |
 | `mantle init [--force]` | Write `shell.lua` and `.luarc.json` |
-| `mantle check` | Evaluate the config, validate each surface's own properties (not the node tree), and exit |
+| `mantle check` | Evaluate and lay out the config with no Wayland, and exit |
 | `mantle log [-f]` | Print or follow the shell's output |
 | `mantle list` | Running shells: PID, uptime, runtime dir, config |
+| `mantle stop` | Stop a running shell and wait for it to exit |
 | `mantle set NAME VALUE` | Write `state(NAME)` |
 | `mantle toggle NAME [VALUE]` | Flip a boolean, or alternate between VALUE and the initial value |
 | `mantle call NAME [ARGS…]` | Run `action(NAME)` and print its return |
 
-Keybinds drive a running shell with `toggle` and `call`. `-c` and `--pid` pick the shell; `-V`
+Keybinds drive a running shell with `toggle` and `call`. `-c` and `--pid` pick the shell (`--pid` also for `stop`); `-V`
 and `-h` print version and help. Full contract: [CLI](docs/guide/cli.md).
 
 ## Docs
