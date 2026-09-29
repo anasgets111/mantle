@@ -551,6 +551,9 @@ impl RendererClient {
         match evaluate_and_specs(&self.loader, &self.shell_lua_path) {
             Ok((output, specs)) => {
                 debug!("shell.lua evaluated; applying it");
+                // Finish the collector's cycle here, outside every budget: otherwise the apply's
+                // getters pay for sweeping the old evaluation's garbage (ADR-0290).
+                let _ = self.loader.lua().gc_collect();
                 self.state.pending = Some((output, specs));
                 true
             }

@@ -7017,3 +7017,24 @@ alone cannot see a surface whose `visible` is derived or whose output disappears
 
 Consequences: the check is one pass over tracked surfaces per turn. A state listed by several
 surfaces resets when any of them closes.
+
+## 0290. A re-evaluation finishes the collector's cycle before its pass
+
+Lua 5.4's incremental collector runs in whatever allocation crosses its debt, and a sweep step
+counts one unit per object while freeing costs about 1 ms per MiB. After a reload, the pass's
+getters paid for sweeping the old evaluation: across 100 reloads of a real config, a trivial
+getter's charge reached 1.65-3.5 ms, over the 2.5 ms cap, in 1 of 5 quiet runs.
+
+1. A successful re-evaluation runs a full collect before its apply. The pass starts with a heap's
+   worth of credit: max charge fell to 47-178 µs; the collect costs 3.6-5 ms per reload and reload
+   CPU rose 0-8%.
+2. Rejected: `gc_stop` around each budget. `LUA_GCRESTART` zeroes the debt, so every restart begins
+   a cycle: 2.5x reload CPU, 4-10x under steady churn. Also rejected: generational mode (7.6 ms
+   charges at 8 MiB live), a smaller step size alone (not a bound: 4.7 ms at 8 MiB), and
+   subtracting GC time from the charge (Lua exposes no GC hook or counter).
+
+ponytail: steady-state churn still sweeps inside getters, 1.1 ms at 2 MiB live and up to 9 ms at
+32 MiB. Upgrade: `step_size(10)` (2-4x lower max at equal CPU), or collect at other bulk-release
+points.
+
+Amends ADR-0271.
