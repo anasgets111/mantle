@@ -439,9 +439,11 @@ fn draw_for(
             })
         }
 
-        PaintStyle::Shader { source, progress, params } => (!source.is_empty()).then(|| Draw::Shader {
+        PaintStyle::Shader { source, vertex, progress, params } => (!source.is_empty()).then(|| Draw::Shader {
             source: source.into(),
             version: crate::image::FileVersion::read(source.as_ref()),
+            vertex: (!vertex.is_empty()).then(|| vertex.into()),
+            vertex_version: (!vertex.is_empty()).then(|| crate::image::FileVersion::read(vertex.as_ref())),
             progress: *progress,
             params: params.clone(),
             alpha: opacity,

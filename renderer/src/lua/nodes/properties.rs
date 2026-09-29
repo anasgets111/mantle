@@ -396,6 +396,8 @@ props! {
         ///
         /// Book: Absolute `.frag` path; relative is refused, `""` draws nothing. Compiling, errors and reloads: [the .frag file](#the-frag-file)
         source: Bound<Path> = absent(Lua(r#""""#));
+        /// Optional absolute `.vert` path. Runs once per quad vertex after the engine sets `v_uv` and `gl_Position`; write `void main()` and pass custom values to the fragment through matching `flat out`/`flat in` declarations. `u_progress`, `u_size`, `a_uv`, `a_pos` and `params` uniforms are available.
+        vertex: Bound<Path> = absent(Lua(r#""""#));
         /// `u_progress`. There is no clock uniform: animate this for motion; the wide range lets a spring overshoot.
         ///
         /// Book: Becomes `u_progress`. There is no clock uniform: [animate](../guide/animation.md) this for motion; the wide range lets a spring overshoot

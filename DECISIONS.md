@@ -6902,3 +6902,12 @@ Extends `mantle.sysinfo` with `disks`, `gpu`, and network throughput telemetry (
 2. **GPU telemetry normalization.** Linux lacks a unified GPU kernel telemetry interface. The supervisor detects available backends (`nvtop -s`, `nvidia-smi`, or AMD DRM sysfs) and maps load, memory, and temperature into `GpuTelemetry`. When no tool or device is found, `gpu` remains `nil`.
 3. **Intel Arc temperature.** Adds `"i915"` and `"xe"` to `GPU_TEMP_PREFERENCE` in `temp.rs` so discrete Intel cards report hwmon temperature alongside AMD and NVIDIA.
 4. **Network throughput.** Samples `/proc/net/dev` across non-loopback interfaces. The first tick stores baseline counters; later ticks compute transfer rates over elapsed monotonic time.
+## 0283. Shader nodes may supply a vertex stage
+
+A `shader` may name a `.vert` file to calculate values once per quad vertex and pass them to its
+fragment stage. The engine still supplies the quad position and UV, and binds `progress`, `size`
+and `params` to both stages. The pair is cached by both file versions. This keeps particular SDF
+shapes in config code while avoiding repeated shape placement for every fragment.
+
+Compositor blur regions remain defined by boxes. A shader's painted alpha is only available on the
+GPU; sampling it for a Wayland region would require a synchronous readback on animated frames.

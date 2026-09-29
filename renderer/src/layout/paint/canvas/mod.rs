@@ -305,6 +305,7 @@ fn run(painter: &mut TextPainter, walk: &mut Walk<'_, '_>, commands: &[DrawCmd],
                                 let params = shader.as_ref().map_or(&[][..], |(_, params)| params.as_slice());
                                 let run = image_shader::Run {
                                     cross: Some(image_shader::Cross { from, to, from_rect, to_rect }),
+                                    vertex: None,
                                     rect,
                                     transform: frame.transform,
                                     clip: scissor,
@@ -367,10 +368,11 @@ fn run(painter: &mut TextPainter, walk: &mut Walk<'_, '_>, commands: &[DrawCmd],
                     painter.canvas_mut().fill_path(&path, &paint);
                 }
             }
-            Draw::Shader { source, progress, params, alpha, .. } => {
+            Draw::Shader { source, vertex, progress, params, alpha, .. } => {
                 if let Some(shaders) = walk.shaders.as_mut() {
                     let run = image_shader::Run {
                         cross: None,
+                        vertex: vertex.as_deref(),
                         rect,
                         transform: frame.transform,
                         clip: scissor,

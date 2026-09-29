@@ -81,7 +81,7 @@ pub enum PaintStyle {
     /// draws nothing, the same answer `image`'s empty `source` gets.
     Capture { output: String, fit: Fit, live: Option<f32>, paint_cursor: bool, region: Option<LogicalRect> },
     /// `shader` (ADR-0253): a config fragment shader with no inputs but `progress` and `params`.
-    Shader { source: String, progress: f32, params: Vec<ShaderParam> },
+    Shader { source: String, vertex: String, progress: f32, params: Vec<ShaderParam> },
     /// `target` is `None` when no `secure_submit` is declared. Malformed targets fail here, not at
     /// the press path.
     TextField {
@@ -148,6 +148,7 @@ pub fn paint_style(kind: &str, properties: &PropMap) -> Result<Option<PaintStyle
         },
         "shader" => PaintStyle::Shader {
             source: shader::source.read(properties)?,
+            vertex: shader::vertex.read(properties)?,
             progress: shader::progress.read(properties)?,
             params: shader::params.read(properties)?,
         },
@@ -281,6 +282,7 @@ mod tests {
             parsed,
             PaintStyle::Shader {
                 source: "/s.frag".to_string(),
+                vertex: String::new(),
                 progress: -0.1,
                 params: vec![("a".to_string(), [2.0, 0.0, 0.0, 0.0], 1), ("b".to_string(), [1.0, 2.0, 3.0, 0.0], 3)],
             }

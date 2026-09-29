@@ -8,6 +8,8 @@ so everything since the rename from Obelisk sits under Unreleased.
 
 ### Added
 
+- `shader.vertex` computes shared geometry in an optional vertex shader ([shader](nodes/shader.md)).
+
 - `mantle.sysinfo` exposes `disks`, `gpu`, and network throughput telemetry (`net_rx_bytes_sec`, `net_tx_bytes_sec`), configurable via `disk_interval`, `gpu_interval`, and `net_interval` in `sysinfo:configure` ([sysinfo](capabilities/sysinfo.md)).
 - `mantle.windows:move_to_workspace(id, workspace_id)` moves a window to a workspace on Hyprland and niri ([windows](capabilities/windows.md#actions)).
 - `mantle.workspaces` entries and `special` workspaces expose `window_id` for their representative window ([workspaces](capabilities/workspaces.md#workspaceentry)).

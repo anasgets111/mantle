@@ -307,7 +307,12 @@ mod tests {
     /// inside its fully open box would otherwise swallow clicks meant for what is behind it.
     #[test]
     fn a_shader_node_claims_no_input() {
-        let paint = Some(PaintStyle::Shader { source: "/s.frag".into(), progress: 0.0, params: Vec::new() });
+        let paint = Some(PaintStyle::Shader {
+            source: "/s.frag".into(),
+            vertex: String::new(),
+            progress: 0.0,
+            params: Vec::new(),
+        });
         assert!(!takes_input_as_a_box(&region_node(1, "shader", (0.0, 0.0, 10.0, 10.0), paint, Vec::new()), true));
     }
 
