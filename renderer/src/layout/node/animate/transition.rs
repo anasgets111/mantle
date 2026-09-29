@@ -4,7 +4,7 @@ use std::time::{Duration, Instant};
 use mlua::Value;
 
 use super::easing::Easing;
-use super::{parse_easing, parse_millis};
+use super::parse::{parse_easing, parse_millis};
 use crate::layout::node::prop::Prop;
 use crate::layout::node::{LayoutError, invalid, only_keys, preview_for_error, value_as_f32};
 use crate::lua::luacats::{lua_shape, spelled};

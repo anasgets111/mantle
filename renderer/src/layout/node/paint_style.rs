@@ -151,15 +151,19 @@ pub fn paint_style(kind: &str, properties: &PropMap) -> Result<Option<PaintStyle
             progress: shader::progress.read(properties)?,
             params: shader::params.read(properties)?,
         },
-        "textfield" => PaintStyle::TextField {
-            target: textfield::secure_submit.read(properties)?,
-            placeholder: textfield::placeholder.read(properties)?,
-            // Drawn once per typed character: `""` draws nothing, a longer string its first one.
-            mask: textfield::mask_character.read(properties)?.chars().next().map(String::from).unwrap_or_default(),
-            font_size: textfield::font_size.read(properties)?,
-            color: textfield::foreground.read(properties)?.expect("`foreground` has a default"),
-            align: textfield::text_align.read(properties)?,
-        },
+        "textfield" => {
+            // Only a click reads `focus`; read here too so a value that is not a handle fails the pass.
+            textfield::focus.read(properties)?;
+            PaintStyle::TextField {
+                target: textfield::secure_submit.read(properties)?,
+                placeholder: textfield::placeholder.read(properties)?,
+                // Drawn once per typed character: `""` draws nothing, a longer string its first one.
+                mask: textfield::mask_character.read(properties)?.chars().next().map(String::from).unwrap_or_default(),
+                font_size: textfield::font_size.read(properties)?,
+                color: textfield::foreground.read(properties)?.expect("`foreground` has a default"),
+                align: textfield::text_align.read(properties)?,
+            }
+        }
         _ => return Ok(None),
     };
     Ok(Some(style))
@@ -189,6 +193,14 @@ mod tests {
         );
         let err = style(&lua, r#"return { kind = "text", content = "hi", text_align = 1 }"#).unwrap_err();
         assert!(matches!(&err, LayoutError::InvalidProperty { property, .. } if property == "text_align"));
+    }
+
+    /// `focus = "search"` would otherwise leave a field no click can ever focus.
+    #[test]
+    fn a_textfield_focus_that_is_not_a_handle_fails_the_pass() {
+        let lua = Lua::new();
+        let err = style(&lua, r#"return { kind = "textfield", focus = "search" }"#).unwrap_err();
+        assert!(matches!(&err, LayoutError::InvalidProperty { property, .. } if property == "focus"), "got {err:?}");
     }
 
     /// A `text` that says nothing draws in the declared chain, which is most nodes.

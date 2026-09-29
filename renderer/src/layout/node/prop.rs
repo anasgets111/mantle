@@ -128,8 +128,11 @@ spelled!(Focus => "FocusHandle");
 impl Prop for Focus {
     type Out = Option<String>;
     const RAW: bool = true;
-    fn read(_: &Property, value: Option<&Value>) -> Result<Self::Out, LayoutError> {
-        Ok(value.and_then(crate::lua::focus::name))
+    fn read(row: &Property, value: Option<&Value>) -> Result<Self::Out, LayoutError> {
+        let Some(value) = value else { return Ok(None) };
+        crate::lua::focus::name(value).map(Some).ok_or_else(|| {
+            invalid(row.name, format!("expected a focus(name) handle, got {}", preview_for_error(value)))
+        })
     }
 }
 

@@ -32,14 +32,13 @@ pub(crate) fn register(lua: &Lua) -> mlua::Result<()> {
         /// Names a plain textfield that a button can focus with `:request()`.
         /// [docs](https://anasgets111.github.io/mantle/guide/input.html#text-fields)
         fn focus(
-            lua,
+            _lua,
             /// Shared with the textfield's `focus` property.
             name: String,
         ) -> FocusHandle {
             if name.is_empty() {
                 return Err(mlua::Error::runtime("focus() requires a nonempty name"));
             }
-            let _ = lua;
             Ok(FocusHandle(name))
         }
     )

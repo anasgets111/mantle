@@ -274,7 +274,7 @@ impl App {
         let Some((surface_id, name)) = crate::lua::focus::take_request(self.client.lua()) else {
             return;
         };
-        if self.keyboard_focus.as_deref() != Some(surface_id.as_str())
+        if !self.keyboard_focus_scope().contains(&surface_id)
             || !self.surface_is_live(&surface_id)
             || self.focused_secure_submit.is_some()
         {

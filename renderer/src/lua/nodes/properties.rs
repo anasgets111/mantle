@@ -436,7 +436,7 @@ props! {
     }
     /// Single-line text input. Reads `wl_keyboard`, not an input method, so no CJK composition or dead keys. With `secure_submit` it is masked: keys never reach Lua and go to the capability (ADR-0005, ADR-0092). Otherwise `on_change` or `on_submit` makes it plain; with neither it never takes focus. A press focuses it; the surface needs `keyboard_interactivity`. The draft lives as long as the node; losing focus keeps it (ADR-0108). No intrinsic size: set `width`/`height`.
     mod textfield(TEXTFIELD) {
-        /// A `focus(name)` target. A button's `on_click` can call `:request()` to return keys after its state change; the field must be visible on that click's keyboard-focused surface.
+        /// A `focus(name)` target. A button's `on_click` can call `:request()` to return keys after its state change; the field must be visible on that click's keyboard-focused surface or a popup under it. Any other value fails the pass.
         focus: Focus;
         /// Shown while the field is empty, focused or not (ADR-0135). Never submitted.
         placeholder: Bound<Text> = absent(Lua(r#""""#));

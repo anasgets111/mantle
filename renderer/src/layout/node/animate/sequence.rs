@@ -3,8 +3,9 @@ use std::time::Duration;
 
 use mlua::Value;
 
+use super::Animatable;
 use super::easing::Easing;
-use super::{Animatable, parse_easing, parse_millis};
+use super::parse::{parse_easing, parse_millis};
 use crate::layout::node::{LayoutError, invalid, only_keys, preview_for_error, value_as_f32};
 use crate::lua::luacats::lua_shape;
 

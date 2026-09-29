@@ -69,7 +69,7 @@ The image shows the empty search field and unfiltered list. Typing updates the l
 <!-- Generated from renderer/src/lua/nodes/properties.rs by `just stubs`: edit the table there. -->
 | Property | Type | Default | Behaviour |
 | :--- | :--- | :--- | :--- |
-| `focus` | `FocusHandle` | None | A `focus(name)` target. A button's `on_click` can call `:request()` to return keys after its state change; the field must be visible on that click's keyboard-focused surface |
+| `focus` | `FocusHandle` | None | A `focus(name)` target. A button's `on_click` can call `:request()` to return keys after its state change; the field must be visible on that click's keyboard-focused surface or a popup under it. Any other value fails the pass |
 | `placeholder` | `string\|Bound` | `""` | Shown while the field is empty, focused or not. Never submitted |
 | `font_size` | `number\|Bound`, `[1, 8192]` | `12` | Size of the text and placeholder |
 | `foreground` | `Color\|Bound` | `"#FFFFFF"` | Colour of the text and placeholder |

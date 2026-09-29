@@ -8,7 +8,7 @@ so everything since the rename from Obelisk sits under Unreleased.
 
 ### Added
 
-- `focus(name)` lets a button return typing to a visible plain `textfield` on its keyboard-focused surface without clearing the draft or caret ([input](guide/input.md#text-fields)).
+- `focus(name)` lets a button return typing to a visible plain `textfield` on its keyboard-focused surface, or a popup under it, without clearing the draft or caret ([input](guide/input.md#text-fields)).
 - `mantle.sysinfo` exposes `disks`, `gpu`, and network throughput telemetry (`net_rx_bytes_sec`, `net_tx_bytes_sec`), configurable via `disk_interval`, `gpu_interval`, and `net_interval` in `sysinfo:configure` ([sysinfo](capabilities/sysinfo.md)).
 - `mantle.windows:move_to_workspace(id, workspace_id)` moves a window to a workspace on Hyprland and niri ([windows](capabilities/windows.md#actions)).
 - `mantle.workspaces` entries and `special` workspaces expose `window_id` for their representative window ([workspaces](capabilities/workspaces.md#workspaceentry)).
@@ -50,6 +50,7 @@ so everything since the rename from Obelisk sits under Unreleased.
 
 ### Changed
 
+- A held Escape clears a textfield once instead of repeating ([input](guide/input.md#text-fields)).
 - An eased `animate` tween reversing toward its prior endpoint takes a shorter run, including after repeated reversals ([animation](guide/animation.md#how-a-tween-starts)).
 - `mantle.sysinfo` temperature probe recognizes Intel GPU hwmon chips named `i915` or `xe` for `temp_gpu` ([sysinfo](capabilities/sysinfo.md#backend)).
 - The Lua CPU budget is tightened to 2.5 ms per evaluation (scaled for 144 Hz and 240 Hz displays). Computeds rerun on invalidation hand their memoized values over to the layout pass, running each computed body once per state push.
