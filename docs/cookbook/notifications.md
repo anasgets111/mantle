@@ -176,7 +176,7 @@ return {
 - `key` by `id` keeps each card's node when a newer one arrives above it, so only the new one animates in; a dismissed card fades out through `animate.exit`, except the last one, which leaves with its hidden panel ([identity](../nodes/index.md#identity-and-reconciliation), [exit](../guide/animation.md#exit)).
 - A body's text spans pass to `text` as runs unchanged; `on_link` hands a clicked `href` to `open_url` ([text runs](../nodes/text.md#runs), [applications](../capabilities/applications.md)).
 - The × is a `button` inside the card's `button`: the innermost one with a handler takes the click ([pointer](../guide/input.md#pointer)).
-- `on_hover` on the stack calls `hold_expiry`, so a card cannot expire while being read ([hover](../guide/input.md#hover)).
+- `on_hover` on the stack calls `hold_expiry`, so a card cannot expire while being read; the hold lapses after 300 s of continuous hover ([hover](../guide/input.md#hover)).
 - The panel is anchored to two edges, so it measures its content and grows with the stack ([corner stack](../surfaces/panel.md#corner-stack)).
 
 ## Variations

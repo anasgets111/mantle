@@ -16,16 +16,13 @@ pub fn percent_from_raw(brightness: i32, max: i32) -> i32 {
 }
 
 /// Converts `[0, 100]` percent to the raw `[0, max]` scale for `SetBrightness`, rounding half
-/// away from zero and clamping. `pct` is unvalidated `u64`; clamping happens here.
-pub fn raw_from_percent(pct: u64, max: i32) -> i32 {
+/// away from zero. `pct` is unvalidated: Lua numbers arrive as floats, and out-of-range values
+/// clamp here. NaN reads as 0 (the `as` cast), which the wire cannot carry anyway.
+pub fn raw_from_percent(pct: f64, max: i32) -> i32 {
     if max <= 0 {
         return 0;
     }
-    // i64 intermediates avoid the same overflow as `percent_from_raw`.
-    let pct = pct.min(100) as i64;
-    let max64 = i64::from(max);
-    let scaled = pct * max64;
-    (((scaled + 50) / 100) as i32).clamp(0, max)
+    ((pct.clamp(0.0, 100.0) * f64::from(max) / 100.0).round() as i32).clamp(0, max)
 }
 
 #[cfg(test)]
@@ -65,30 +62,38 @@ mod tests {
 
     #[test]
     fn raw_from_percent_scales_zero_to_one_hundred_across_zero_to_max() {
-        assert_eq!(raw_from_percent(0, 3), 0);
-        assert_eq!(raw_from_percent(100, 3), 3);
+        assert_eq!(raw_from_percent(0.0, 3), 0);
+        assert_eq!(raw_from_percent(100.0, 3), 3);
     }
 
     #[test]
     fn raw_from_percent_rounds_half_away_from_zero() {
         // 33% of 3 -> 1; 67% -> 2.
-        assert_eq!(raw_from_percent(33, 3), 1);
-        assert_eq!(raw_from_percent(67, 3), 2);
+        assert_eq!(raw_from_percent(33.0, 3), 1);
+        assert_eq!(raw_from_percent(67.0, 3), 2);
     }
 
     #[test]
     fn raw_from_percent_clamps_a_percent_above_one_hundred() {
-        assert_eq!(raw_from_percent(150, 3), 3);
+        assert_eq!(raw_from_percent(150.0, 3), 3);
+    }
+
+    #[test]
+    fn raw_from_percent_takes_a_fraction_and_clamps_a_negative_or_non_finite_percent() {
+        assert_eq!(raw_from_percent(12.5, 8), 1);
+        assert_eq!(raw_from_percent(-30.0, 3), 0);
+        assert_eq!(raw_from_percent(f64::INFINITY, 3), 3);
+        assert_eq!(raw_from_percent(f64::NAN, 3), 0);
     }
 
     #[test]
     fn raw_from_percent_does_not_overflow_on_a_malformed_near_i32_max_max() {
-        assert_eq!(raw_from_percent(100, i32::MAX), i32::MAX);
-        assert_eq!(raw_from_percent(50, i32::MAX), i32::MAX / 2 + 1);
+        assert_eq!(raw_from_percent(100.0, i32::MAX), i32::MAX);
+        assert_eq!(raw_from_percent(50.0, i32::MAX), i32::MAX / 2 + 1);
     }
 
     #[test]
     fn raw_from_percent_is_zero_when_max_is_not_positive() {
-        assert_eq!(raw_from_percent(50, 0), 0);
+        assert_eq!(raw_from_percent(50.0, 0), 0);
     }
 }

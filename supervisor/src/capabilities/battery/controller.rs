@@ -129,17 +129,9 @@ fn from_properties(all: &HashMap<String, OwnedValue>) -> BatteryState {
     }
 }
 
-/// Reads once, pushes, then follows `PropertiesChanged`. Every wake re-reads all five fields, as
-/// `power::controller` does, keeping them consistent instead of patching one property.
-///
-/// One `org.freedesktop.DBus.Properties` subscription covers the object. It batches a percentage
-/// move and state flip into one message.
-///
-/// **No timer, per ADR-0080.** sysfs misses capacity changes the kernel does not announce: a plug
-/// event can arrive, then `capacity` fall 69 to 65 with zero `power_supply` uevents. UPower already polls and emits refreshes for other clients.
-/// UPower also emitted a spurious mains `Percentage` of 0 for one push, emptying the pill. After a
-/// nonzero reading, retain a mains zero while
-/// not draining. A real on-battery zero is indistinguishable from the glitch and passes through.
+/// UPower once emitted a spurious mains `Percentage` of 0 for one push, emptying the pill. After a
+/// nonzero reading, retain a mains zero while not draining. A real on-battery zero is
+/// indistinguishable from the glitch and passes through.
 fn hold_through_glitch(previous: BatteryState, current: BatteryState) -> BatteryState {
     let draining = matches!(current.state, BatteryStatus::Discharging | BatteryStatus::Empty);
     if current.present && !draining && current.percent == 0 && previous.percent > 0 {
@@ -149,6 +141,17 @@ fn hold_through_glitch(previous: BatteryState, current: BatteryState) -> Battery
     }
 }
 
+/// Reads once, pushes, then follows `PropertiesChanged` and owner changes. Every wake re-reads all
+/// five fields, as `power::controller` does, keeping them consistent instead of patching one
+/// property.
+///
+/// One `org.freedesktop.DBus.Properties` subscription covers the object. It batches a percentage
+/// move and state flip into one message. A UPower that exits or restarts ends no stream, so an owner
+/// change re-reads too: no owner fails `GetAll` (not present), a new one answers fresh.
+///
+/// **No timer, per ADR-0080.** sysfs misses capacity changes the kernel does not announce: a plug
+/// event can arrive, then `capacity` fall 69 to 65 with zero `power_supply` uevents. UPower already
+/// polls and emits refreshes for other clients.
 async fn run_battery_task(
     system_bus: zbus::Connection,
     state: Arc<Mutex<BatteryState>>,
@@ -181,14 +184,23 @@ async fn run_battery_task(
         return;
     };
 
+    let Ok(mut owner) = properties.inner().receive_owner_changed().await else {
+        error!("cannot watch who owns org.freedesktop.UPower; giving up on the DisplayDevice");
+        return;
+    };
+
     let mut previous = read_state(&properties).await;
     *state.lock().expect("battery state mutex poisoned") = previous;
     if events.send(BatterySignal::Changed).is_err() {
         return;
     }
 
-    // UPower going away drops the proxies and ends the task; parking on a dead stream leaks it.
-    while changed.next().await.is_some() {
+    loop {
+        tokio::select! {
+            Some(_) = changed.next() => {}
+            Some(_) = owner.next() => {}
+            else => return,
+        }
         let current = hold_through_glitch(previous, read_state(&properties).await);
         if current != previous {
             *state.lock().expect("battery state mutex poisoned") = current;

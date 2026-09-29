@@ -128,7 +128,7 @@ impl BrightnessController {
     }
 
     /// `brightness:set(pct)`. Logs and returns when this machine has no backlight device.
-    pub async fn set(&self, pct: u64) {
+    pub async fn set(&self, pct: f64) {
         let Some(device) = self.device.as_ref() else {
             debug!("set called but no backlight device was found; ignored");
             return;

@@ -50,6 +50,9 @@ so everything since the rename from Obelisk sits under Unreleased.
 
 ### Changed
 
+- `brightness:set` and `keyboard:set_backlight` take any number: fractions round to the nearest raw step, negatives clamp to `0` (before, a float or negative was dropped) ([brightness](capabilities/brightness.md)).
+- `session_process` raises on an unknown `stop_signal` instead of the Supervisor dropping the declaration ([processes](guide/processes.md)).
+- `mantle set` and `mantle toggle` refuse a state a reload removed, exit 1 with "declares no state" ([cli](guide/cli.md)).
 - A held Escape clears a textfield once instead of repeating ([input](guide/input.md#text-fields)).
 - An eased `animate` tween reversing toward its prior endpoint takes a shorter run, including after repeated reversals ([animation](guide/animation.md#how-a-tween-starts)).
 - `mantle.sysinfo` temperature probe recognizes Intel GPU hwmon chips named `i915` or `xe` for `temp_gpu` ([sysinfo](capabilities/sysinfo.md#backend)).

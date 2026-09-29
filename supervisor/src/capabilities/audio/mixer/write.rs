@@ -49,8 +49,15 @@ pub(super) fn apply_command(state: &Rc<RefCell<MixerState>>, command: AudioComma
             };
             write_node_props(state, id, Some(channel_volumes), None);
         }
-        // Mute needs no channel count; write_node_props still rejects an unbound id.
-        AudioCommand::SetAppMuted { id, muted } => write_node_props(state, id, None, Some(muted)),
+        // Mute needs no channel count, but `write_node_props` also binds sinks and sources: a device
+        // id must not mute a whole sink.
+        AudioCommand::SetAppMuted { id, muted } => {
+            if !state.borrow().apps.contains_key(&id) {
+                debug!("set_app_muted({id}, {muted}) names no tracked stream; ignored");
+                return;
+            }
+            write_node_props(state, id, None, Some(muted));
+        }
         AudioCommand::SetDefaultSink(id) => write_default_device(state, DefaultDevice::Sink, id),
         AudioCommand::SetDefaultSource(id) => write_default_device(state, DefaultDevice::Source, id),
         AudioCommand::SetBluetoothProfile { device, index } => write_bluetooth_profile(state, device, index),

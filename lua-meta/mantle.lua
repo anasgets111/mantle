@@ -610,7 +610,7 @@ local IdleCapability = {}
 
 ---[docs](https://anasgets111.github.io/mantle/capabilities/brightness.html)
 ---@class BrightnessCapability: Capability<BrightnessState>, userdata
----@field set fun(self: BrightnessCapability, percent: integer) Sets the screen backlight, `0` to `100`; higher clamps to `100`.
+---@field set fun(self: BrightnessCapability, percent: number) Sets the screen backlight, `0` to `100`, fractions allowed; values outside clamp to it.
 
 ---[docs](https://anasgets111.github.io/mantle/capabilities/files.html)
 ---@class FilesCapability: Capability<FilesState>, userdata
@@ -626,7 +626,7 @@ local IdleCapability = {}
 
 ---[docs](https://anasgets111.github.io/mantle/capabilities/keyboard.html)
 ---@class KeyboardCapability: Capability<KeyboardState>, userdata
----@field set_backlight fun(self: KeyboardCapability, percent: integer) Sets the keyboard backlight, `0` to `100`; higher clamps to `100`.
+---@field set_backlight fun(self: KeyboardCapability, percent: number) Sets the keyboard backlight, `0` to `100`, fractions allowed; values outside clamp to it.
 ---@field switch_layout fun(self: KeyboardCapability, index: integer) Switches to the 0-based configured layout `index`.
 
 ---[docs](https://anasgets111.github.io/mantle/capabilities/lock.html)

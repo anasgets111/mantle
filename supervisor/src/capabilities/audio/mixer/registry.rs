@@ -220,9 +220,8 @@ fn record_route(state: &Rc<RefCell<MixerState>>, device_id: u32, value: &Value) 
     }
     // ponytail: the first push can lack `port` until Route answers; upgrade: fold Route into hydration.
     state.borrow_mut().publish_audio();
-    if previous.map(|previous| previous.index) != Some(route.index) {
-        cap_default_sink(state);
-    }
+    // Node Props can arrive before their Route, when the cap has no route to write through.
+    cap_default_sink(state);
 }
 
 /// Routes `Node`, `Device`, and `default` `Metadata` globals to their binders; ignores the rest.

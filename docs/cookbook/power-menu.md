@@ -2,7 +2,7 @@
 
 A full-screen overlay with lock, suspend, log out, restart and power off. The last three ask for a
 second click before they run, and a click outside the buttons closes the menu. A bar button opens
-it, and so does `mantle toggle power_menu_open` from a keybind.
+it, and so does `mantle call power_menu` from a keybind.
 
 <!-- shot-alt: Five power choices in a centered row, with Power off selected. -->
 ```lua,shot
@@ -13,6 +13,12 @@ local function close()
     open:set(false)
     pending:set("")
 end
+
+-- Open and close share `close`'s reset, so a reopened menu never starts armed.
+local function toggle()
+    if open:get() then close() else open:set(true) end
+end
+action("power_menu", toggle)
 
 local function log_out()
     local workspaces = mantle.workspaces:get()
@@ -105,7 +111,7 @@ return {
                     align_v = "Center",
                     padding = 6,
                     radius = 6,
-                    on_click = function() open:set(true) end,
+                    on_click = toggle,
                     children = { icon { name = "system-shutdown-symbolic", size = 16, foreground = "#f38ba8" } },
                 },
             },
@@ -140,6 +146,7 @@ return {
 - `process.detach` runs `systemctl` and the compositor's quit command as programs that outlive the shell, so a shutdown is never cut short by the shell exiting ([process.detach](../guide/processes.md#processdetach)).
 - Log out branches on `mantle.workspaces`' `compositor` field ([workspaces](../capabilities/workspaces.md)).
 - Lock goes through the lock capability, which needs a declared lock screen ([lock screen](lock-screen.md), [lock](../capabilities/lock.md)).
+- `power_menu` is one [action](../guide/scripting.md#action) that opens or closes the menu and clears `pending`, so a keybind and the bar button behave alike and a reopened menu never starts armed.
 - One named state, `pending`, holds the armed action; a second click on the same button runs it ([named state](../guide/signals.md#named-state)).
 - A full-size `button` under the row closes the menu; the row is declared after it, so it is on top ([close an overlay](../surfaces/panel.md#close-an-overlay-on-an-outside-click)).
 - `hover` drives the tint and a `scale` tween, which does not re-lay out the row ([hover](../guide/input.md#hover), [animation](../guide/animation.md)).
@@ -152,4 +159,4 @@ return {
 | Hibernate | Add `{ key = "hibernate", label = "Hibernate", glyph = "drive-harddisk-symbolic", confirm = true, run = function() process.detach("systemctl", { "hibernate" }) end }` |
 | Hyprland with a Lua config | `process.detach("hyprctl", { "dispatch", "hl.dsp.exit()" })` |
 | Vertical list | `column` instead of `row`, and `width = 240, height = 56` on each button with a `row` inside |
-| Open from a keybind | Bind `mantle toggle power_menu_open` |
+| Open from a keybind | Bind `mantle call power_menu` |

@@ -1376,6 +1376,23 @@ mod tests {
     }
 
     #[test]
+    fn a_session_process_with_an_unknown_stop_signal_raises_and_declares_nothing() {
+        let missing = std::path::PathBuf::from("/no/such/shell.lua");
+        let (client, mut outbound_rx) = test_client(&missing);
+
+        let err = client
+            .loader
+            .lua()
+            .load(r#"session_process { name = "rec", stop_signal = "TEM" }"#)
+            .exec()
+            .unwrap_err()
+            .to_string();
+
+        assert!(err.contains("session_process: stop_signal"), "got {err}");
+        assert!(outbound_rx.try_recv().is_err(), "the invalid declaration must not reach the Supervisor");
+    }
+
+    #[test]
     fn a_session_processs_fields_read_what_the_supervisor_pushed_for_that_name() {
         let missing = std::path::PathBuf::from("/no/such/shell.lua");
         let (client, _outbound_rx) = test_client(&missing);

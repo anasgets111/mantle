@@ -14,8 +14,8 @@ pub use controller::{BrightnessController, BrightnessSignal};
 #[cfg_attr(test, derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum BrightnessAction {
-    /// Sets the screen backlight, `0` to `100`; higher clamps to `100`.
-    Set { percent: u64 },
+    /// Sets the screen backlight, `0` to `100`, fractions allowed; values outside clamp to it.
+    Set { percent: f64 },
 }
 
 /// `set` makes a logind D-Bus call, so dispatch spawns it (ADR-0037, ADR-0029).

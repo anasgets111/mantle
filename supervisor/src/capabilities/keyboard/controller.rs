@@ -113,7 +113,7 @@ impl KeyboardController {
     }
 
     /// `keyboard:set_backlight(pct)`. Logs and returns without keyboard-backlight hardware.
-    pub async fn set_backlight(&self, pct: u64) {
+    pub async fn set_backlight(&self, pct: f64) {
         let Some(led) = self.backlight.as_ref() else {
             debug!("set_backlight called but this machine has no keyboard backlight; ignored");
             return;

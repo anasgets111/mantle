@@ -174,7 +174,7 @@ Five members come from the Renderer, not a backend, so they are never `nil` and 
 | `attempt to index a nil value` in a `:map` at startup | Guard the whole payload before its fields |
 | An optional field is `nil` | A JSON `null` arrives as an absent key. Fields marked `?` need their own guard (`audio.volume` with no default sink) |
 | `local ok = mantle.audio:set_volume(...)` is always `nil` | Bind the state the action changes; read `mantle log` for dropped commands |
-| An action silently does nothing | Wrong argument type or count, often a float where an `integer` goes (`brightness:set(50.0)`). Check `mantle log` |
+| An action silently does nothing | Wrong argument type or count, often a float where an `integer` goes (`keyboard:switch_layout(1.0)`). Check `mantle log` |
 | `on_change` fires at startup with `previous == nil` | That push is learned state, not a change; return early. A replacement Renderer gets every snapshot replayed the same way. An in-place reload keeps the last value, so its next push has a real `previous` |
 | `on_change` fires with nothing visibly changed | Every push carries the whole snapshot. Compare the fields you care about |
 

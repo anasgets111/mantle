@@ -5,7 +5,7 @@ button {
     on_wheel = function(_, steps)
         local brightness = mantle.brightness:get()
         if brightness then
-            local percent = brightness.percent + math.floor(steps * 5) -- math.floor returns an integer
+            local percent = brightness.percent + steps * 5 -- fractions round to the nearest raw step
             mantle.brightness:set(math.max(1, math.min(100, percent)))
         end
     end,

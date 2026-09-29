@@ -11,7 +11,7 @@ button {
     on_wheel = function(_, steps)
         local brightness = mantle.brightness:get()
         if brightness then
-            local percent = brightness.percent + math.floor(steps * 5) -- math.floor returns an integer
+            local percent = brightness.percent + steps * 5 -- fractions round to the nearest raw step
             mantle.brightness:set(math.max(1, math.min(100, percent)))
         end
     end,
@@ -41,7 +41,7 @@ Call each as `mantle.brightness:<action>(arguments...)`; `?` marks an argument y
 
 | Action | Arguments | Description |
 | --- | --- | --- |
-| `set` | `percent: integer` | Sets the screen backlight, `0` to `100`; higher clamps to `100`. |
+| `set` | `percent: number` | Sets the screen backlight, `0` to `100`, fractions allowed; values outside clamp to it. |
 
 ## Backend
 

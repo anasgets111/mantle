@@ -51,6 +51,7 @@ zbus_polkit = { version = "5.1.0", default-features = false, features = ["tokio"
 [dev-dependencies]
 # The JsonSchema derives exist only for the test-only stub generator (`stubs.rs`).
 schemars = "1.2.2"
+shared = { workspace = true, features = ["schema"] }
 tempfile.workspace = true
 # Only `test-util`, so tests build the tokio that ships. It is what `start_paused = true` needs:
 # `battery::controller`'s loop is on a 30s timer, so testing it in real time is not testing it.

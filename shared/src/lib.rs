@@ -13,6 +13,23 @@ pub use paths::{
 pub use secure_buffer::SecureBuffer;
 pub use zeroize::{Zeroize, Zeroizing};
 
+// In `shared` so the renderer rejects a bad `stop_signal` at the call, where the config can see it.
+/// A signal name without the `SIG` prefix.
+#[derive(Debug, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(rename_all = "UPPERCASE")]
+pub enum SignalName {
+    Term,
+    Int,
+    Hup,
+    Quit,
+    Usr1,
+    Usr2,
+    Kill,
+    Stop,
+    Cont,
+}
+
 /// std's `eprintln!`/`eprint!` panic on a failed write, and under `panic = "abort"` a full log tmpfs
 /// (ADR-0199) would kill lock authority. Both binaries import these over std's with `#[macro_use]`.
 ///

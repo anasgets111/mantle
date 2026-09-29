@@ -11,6 +11,7 @@ pub mod controller;
 pub use controller::{ProcessesController, ProcessesSignal};
 
 use nix::sys::signal::Signal;
+use shared::SignalName;
 
 #[derive(Debug, serde::Deserialize)]
 #[cfg_attr(test, derive(schemars::JsonSchema))]
@@ -48,35 +49,17 @@ pub enum ProcessesAction {
     },
 }
 
-/// A signal name without the `SIG` prefix.
-#[derive(Debug, serde::Deserialize)]
-#[cfg_attr(test, derive(schemars::JsonSchema))]
-#[serde(rename_all = "UPPERCASE")]
-pub enum SignalName {
-    Term,
-    Int,
-    Hup,
-    Quit,
-    Usr1,
-    Usr2,
-    Kill,
-    Stop,
-    Cont,
-}
-
-impl From<SignalName> for Signal {
-    fn from(name: SignalName) -> Self {
-        match name {
-            SignalName::Term => Signal::SIGTERM,
-            SignalName::Int => Signal::SIGINT,
-            SignalName::Hup => Signal::SIGHUP,
-            SignalName::Quit => Signal::SIGQUIT,
-            SignalName::Usr1 => Signal::SIGUSR1,
-            SignalName::Usr2 => Signal::SIGUSR2,
-            SignalName::Kill => Signal::SIGKILL,
-            SignalName::Stop => Signal::SIGSTOP,
-            SignalName::Cont => Signal::SIGCONT,
-        }
+fn signal_of(name: SignalName) -> Signal {
+    match name {
+        SignalName::Term => Signal::SIGTERM,
+        SignalName::Int => Signal::SIGINT,
+        SignalName::Hup => Signal::SIGHUP,
+        SignalName::Quit => Signal::SIGQUIT,
+        SignalName::Usr1 => Signal::SIGUSR1,
+        SignalName::Usr2 => Signal::SIGUSR2,
+        SignalName::Kill => Signal::SIGKILL,
+        SignalName::Stop => Signal::SIGSTOP,
+        SignalName::Cont => Signal::SIGCONT,
     }
 }
 
@@ -86,10 +69,10 @@ pub fn dispatch(controller: &ProcessesController, envelope: &shared::CommandEnve
     let Some(action) = crate::parse_action::<ProcessesAction>(&envelope.params) else { return };
     match action {
         ProcessesAction::Declare { name, stop_signal } => {
-            controller.declare(&name, stop_signal.map_or(Signal::SIGTERM, Signal::from))
+            controller.declare(&name, stop_signal.map_or(Signal::SIGTERM, signal_of))
         }
         ProcessesAction::Start { name, cmd, args } => controller.start(&name, &cmd, &args),
-        ProcessesAction::Signal { name, signal } => controller.signal(&name, signal.into()),
+        ProcessesAction::Signal { name, signal } => controller.signal(&name, signal_of(signal)),
         ProcessesAction::Stop { name } => controller.stop(&name),
     }
 }

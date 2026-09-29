@@ -47,7 +47,7 @@ Call each as `mantle.keyboard:<action>(arguments...)`; `?` marks an argument you
 
 | Action | Arguments | Description |
 | --- | --- | --- |
-| `set_backlight` | `percent: integer` | Sets the keyboard backlight, `0` to `100`; higher clamps to `100`. |
+| `set_backlight` | `percent: number` | Sets the keyboard backlight, `0` to `100`, fractions allowed; values outside clamp to it. |
 | `switch_layout` | `index: integer` | Switches to the 0-based configured layout `index`. |
 
 ## Backend

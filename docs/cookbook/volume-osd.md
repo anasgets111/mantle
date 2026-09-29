@@ -6,15 +6,15 @@ changes, whether from a media key, `wpctl` or a mixer. It fades and slides in, t
 <!-- shot-alt: A volume card sliding in with a blue level meter and 42% label. -->
 <!-- shot: frames=0..210/30 -->
 ```lua,shot
--- The last change worth showing. Set only on a real change: `:set` skips a table equal to the held one.
-local osd = state("volume_osd", { volume = 0, muted = false })
+-- The last change worth showing. `n` makes every write differ: `:set` skips a table equal to the held one.
+local osd = state("volume_osd", { volume = 0, muted = false, n = 0 })
 
 mantle.audio:on_change(function(audio, previous)
-    if previous == nil or audio.volume == nil then
+    if previous == nil or previous.volume == nil or audio.volume == nil then
         return -- the first push is learned state, not a change
     end
     if audio.volume ~= previous.volume or audio.muted ~= previous.muted then
-        osd:set({ volume = audio.volume, muted = audio.muted })
+        osd:set({ volume = audio.volume, muted = audio.muted, n = osd:get().n + 1 })
     end
 end)
 
@@ -96,8 +96,8 @@ Bind the volume keys to anything that changes the default sink, for example
 
 ## How it works
 
-- `on_change` reacts to each audio push and skips the first one, which is learned state ([on_change](../capabilities/index.md#reading-and-acting), [audio](../capabilities/audio.md)).
-- It writes a fresh table into a [named state](../guide/signals.md#named-state); `pulse` reads `true` for a while after each change ([pulse](../guide/signals.md#pulse-mark-a-change)).
+- `on_change` reacts to each audio push and skips the first one, and a sink appearing (`previous.volume` is `nil`), which is learned state ([on_change](../capabilities/index.md#reading-and-acting), [audio](../capabilities/audio.md)).
+- It writes a fresh table, counted by `n`, into a [named state](../guide/signals.md#named-state); `pulse` reads `true` for a while after each change ([pulse](../guide/signals.md#pulse-mark-a-change)).
 - A longer second `pulse` keeps the surface mapped while the card fades, since hiding a surface plays no exit ([delay](../guide/signals.md#delay-hold-a-value) is the general form).
 - `monitor = "Active"` shows it on the output the compositor picks, usually the focused one, and a bottom-only anchor centres it ([panel monitor](../surfaces/panel.md#monitor), [OSD](../surfaces/panel.md#osd)).
 - The fill is a `"NN%"` width inside a fixed track ([sizes](../nodes/index.md#sizes)); `translate` and `opacity` animate without re-laying out ([animation](../guide/animation.md)).

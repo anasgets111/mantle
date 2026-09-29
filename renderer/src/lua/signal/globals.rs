@@ -22,6 +22,7 @@ use super::{
 pub fn write_state(lua: &Lua, set: &shared::SetState) -> Result<(), String> {
     let (signal, initial) = lua
         .app_data_ref::<StateRegistry>()
+        .filter(|registry| registry.2.contains(&set.name))
         .and_then(|registry| registry.0.get(&set.name).cloned())
         .ok_or_else(|| format!("this config declares no state({:?}, ...)", set.name))?;
     let value = match &set.write {
@@ -46,7 +47,8 @@ pub fn write_state(lua: &Lua, set: &shared::SetState) -> Result<(), String> {
 }
 
 /// The evaluation's output reached the screen, so its names are the ones a bare `mantle set` lists.
-/// Listing only: `write_state` reaches every name the VM ever declared, before and after this.
+/// Also the names `write_state` accepts. The registry itself keeps a removed state's value, so
+/// redeclaring it after a reload finds it there.
 pub fn promote_states(lua: &Lua) {
     if let Some(mut registry) = lua.app_data_mut::<StateRegistry>() {
         registry.2 = registry.1.clone();
@@ -591,6 +593,7 @@ mod tests {
         let dirty = DirtyFlag::new();
         register(&lua, dirty.clone()).unwrap();
         lua.load(r#"OPEN = state("launcher_open", false); KIND = state("panel_kind", "none")"#).exec().unwrap();
+        promote_states(&lua);
         dirty.take();
 
         write_state(&lua, &shared::SetState { name: "launcher_open".into(), write: shared::StateWrite::Toggle })
@@ -617,6 +620,14 @@ mod tests {
         write_state(&lua, &shared::SetState { name: "panel_kind".into(), write: to_launcher() }).unwrap();
         assert_eq!(lua.load("return KIND:get()").eval::<String>().unwrap(), "none", "already it: back to the initial");
         assert!(dirty.take());
+
+        // A reload that no longer declares the name refuses it, though the VM still holds its value.
+        begin_evaluation(&lua);
+        lua.load(r#"state("launcher_open", false)"#).exec().unwrap();
+        promote_states(&lua);
+        let removed =
+            write_state(&lua, &shared::SetState { name: "panel_kind".into(), write: shared::StateWrite::Toggle });
+        assert!(removed.unwrap_err().contains("declares no state"));
     }
 
     /// A bare `mantle set` lists the names the shell on screen declared, with values `set` reads back.

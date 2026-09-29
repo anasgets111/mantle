@@ -14,7 +14,7 @@
 
 use std::collections::HashMap;
 
-use mlua::{IntoLua, Lua, ObjectLike, Table, Value};
+use mlua::{IntoLua, Lua, LuaSerdeExt, ObjectLike, Table, Value};
 
 use super::luacats::{As, LuaType, lua_fn, spelled};
 use super::store::{capability, index_entry_signals};
@@ -48,6 +48,8 @@ pub fn register(lua: &Lua) -> mlua::Result<()> {
                 ));
             }
             let stop_signal: Value = spec.get("stop_signal")?;
+            lua.from_value::<Option<shared::SignalName>>(stop_signal.clone())
+                .map_err(|error| mlua::Error::runtime(format!("session_process: stop_signal: {error}")))?;
 
             let processes = capability(lua, "session_process", "processes")?;
             // Sent every evaluation, like `storage:open`: the Supervisor keeps the entry it has

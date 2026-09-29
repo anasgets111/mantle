@@ -11,8 +11,8 @@ pub use controller::{KeyboardController, KeyboardState};
 #[cfg_attr(test, derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum KeyboardAction {
-    /// Sets the keyboard backlight, `0` to `100`; higher clamps to `100`.
-    SetBacklight { percent: u64 },
+    /// Sets the keyboard backlight, `0` to `100`, fractions allowed; values outside clamp to it.
+    SetBacklight { percent: f64 },
     /// Switches to the 0-based configured layout `index`.
     SwitchLayout { index: usize },
 }
