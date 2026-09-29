@@ -176,7 +176,13 @@ fn key_action<'a>(event: &'a KeyEvent, repeat: bool, ctrl: bool) -> KeyAction<'a
         Keysym::BackSpace => KeyAction::Erase(Motion::Left),
         Keysym::Delete | Keysym::KP_Delete => KeyAction::Erase(Motion::Right),
         // PAM counts wrong attempts; Escape clears a mistyped password without Backspace-per-char.
-        Keysym::Escape => KeyAction::Clear,
+        Keysym::Escape => {
+            if repeat {
+                KeyAction::Ignore
+            } else {
+                KeyAction::Clear
+            }
+        }
         Keysym::Left | Keysym::KP_Left => KeyAction::Move(Motion::Left),
         Keysym::Right | Keysym::KP_Right => KeyAction::Move(Motion::Right),
         Keysym::Home | Keysym::KP_Home => KeyAction::Move(Motion::Start),
@@ -706,6 +712,7 @@ mod tests {
         // Backspace per character as the only way to abandon a mistyped password -- on the surface
         // where a wrong guess costs a counted PAM attempt and a `pam_unix` failure delay.
         assert_eq!(key_action(&key(Keysym::Escape, Some("\u{1b}")), false, false), KeyAction::Clear);
+        assert_eq!(key_action(&key(Keysym::Escape, Some("\u{1b}")), true, false), KeyAction::Ignore);
     }
 
     /// Left and Right step over a cluster, not a scalar, so one press of each returns the caret to
