@@ -26,8 +26,9 @@ list {
 | `active_profile`, `profiles` | power-profiles-daemon: `org.freedesktop.UPower.PowerProfiles`, else `net.hadess.PowerProfiles` | Both fields absent; `set_profile` is logged and ignored |
 | `on_battery`, `energy_rate` | UPower's `OnBattery` and its `DisplayDevice`'s `EnergyRate` | Both fields absent |
 
-Every `OnBattery`, `EnergyRate` or `ActiveProfile` change re-reads all four fields. With neither
-service the push is an empty table.
+Every `OnBattery`, `EnergyRate` or `ActiveProfile` change re-reads all four fields, and so does
+either daemon stopping or restarting: a stopped one's fields are absent, a restarted one's are read
+fresh. With neither service the push is an empty table.
 
 ## Gotchas
 

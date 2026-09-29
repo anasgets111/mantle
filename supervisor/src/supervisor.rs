@@ -175,7 +175,7 @@ impl Supervisor {
     pub(crate) fn handle_polkit_request(&mut self, request: AgentRequest) {
         let changed = match request {
             AgentRequest::Begin { call, reply } => self.polkit.begin(call, reply),
-            AgentRequest::Cancel { cookie } => self.polkit.cancel(Some(&cookie)),
+            AgentRequest::Cancel { cookie } => self.polkit.cancel(cookie.as_deref()),
         };
         if changed {
             self.push_polkit_state();

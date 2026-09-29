@@ -81,14 +81,19 @@ pub(super) async fn bind_object_manager(
     zbus::fdo::ObjectManagerProxy::builder(connection).destination("org.bluez")?.path("/")?.build().await
 }
 
-/// Returns live `InterfacesAdded`/`InterfacesRemoved` streams before `GetManagedObjects()`
-/// hydration, so changes between subscription and hydration are not missed.
+/// `InterfacesAdded`, `InterfacesRemoved` and `org.bluez`'s owner changes.
+pub(super) type ObjectManagerStreams =
+    (zbus::fdo::InterfacesAddedStream, zbus::fdo::InterfacesRemovedStream, zbus::proxy::OwnerChangedStream<'static>);
+
+/// Returns live [`ObjectManagerStreams`] before `GetManagedObjects()` hydration, so changes between
+/// subscription and hydration are not missed.
 pub(super) async fn subscribe_object_manager(
     object_manager: &zbus::fdo::ObjectManagerProxy<'static>,
-) -> zbus::Result<(zbus::fdo::InterfacesAddedStream, zbus::fdo::InterfacesRemovedStream)> {
+) -> zbus::Result<ObjectManagerStreams> {
     let added = object_manager.receive_interfaces_added().await?;
     let removed = object_manager.receive_interfaces_removed().await?;
-    Ok((added, removed))
+    let owners = object_manager.inner().receive_owner_changed().await?;
+    Ok((added, removed, owners))
 }
 
 pub(super) async fn bind_agent_manager(connection: &zbus::Connection) -> zbus::Result<AgentManager1Proxy<'static>> {

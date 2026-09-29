@@ -22,7 +22,7 @@ BlueZ on the system bus.
 
 | Contract | Behavior |
 | :--- | :--- |
-| State | `org.bluez`'s `ObjectManager` plus property changes. An adapter added later is picked up. BlueZ is looked up once, on the first read: a `bluetoothd` started after it is not seen, and a restarted one keeps no pairing agent, until the Supervisor restarts. Without BlueZ, `available` is `false`, the lists stay empty and every action does nothing |
+| State | `org.bluez`'s `ObjectManager` plus property changes. An adapter added later is picked up. A `bluetoothd` that starts late or restarts is read afresh and gets the pairing agent again; what the old one reported, and its open `pairing_request`, are dropped. Without BlueZ, `available` is `false`, the lists stay empty and every action does nothing |
 | Agent | Mantle registers the default `DisplayYesNo` agent at `/org/mantle/Bluez/Agent1`. A confirmation, authorization or displayed code becomes `pairing_request` only while the adapter is discoverable or Mantle is pairing that device. A `"service"` request asks only for a paired device. One request shows at a time: a second is rejected, unless the first only displays a code and the second needs an answer. PIN and passkey entry are rejected |
 | Discovery | `start_discovery` clears `discovered_devices`, but the next device change refills it with every unpaired device BlueZ still holds, earlier scans' included; `stop_discovery` keeps it |
 | Battery, category | `Battery1` gives `battery`; the `Class` major and minor bits give `category` |

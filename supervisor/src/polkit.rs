@@ -12,6 +12,8 @@
 
 use std::collections::HashMap;
 
+use futures_util::StreamExt;
+
 use shared::{debug, error, warn};
 use tokio::sync::mpsc::UnboundedSender;
 use tokio::sync::oneshot;
@@ -29,12 +31,12 @@ pub enum AgentError {
 
 /// polkitd request forwarded to `main.rs`, which owns the answer.
 ///
-/// `Begin` carries the reply. polkitd treats an early return as failed authentication, so
+/// `Cancel` without a cookie is polkitd leaving the bus. `Begin` carries the reply. polkitd treats an early return as failed authentication, so
 /// `begin_authentication` awaits the answer before returning to the bus. Dropping the sender
 /// cancels.
 pub enum AgentRequest {
     Begin { call: BeginAuthenticationCall, reply: oneshot::Sender<Result<(), AgentError>> },
-    Cancel { cookie: String },
+    Cancel { cookie: Option<String> },
 }
 
 /// Export path on our unique connection. Any path we control is valid; the spec leaves it to the
@@ -88,7 +90,7 @@ pub fn first_unix_user_uid(identities: &[(String, HashMap<String, OwnedValue>)])
         .and_then(|v| u32::try_from(v.clone()).ok())
 }
 
-/// `org.freedesktop.PolicyKit1.AuthenticationAgent`, called by polkitd after [`register_agent`].
+/// `org.freedesktop.PolicyKit1.AuthenticationAgent`, called by polkitd after [`PolkitAgent::register`].
 ///
 /// Forwards only. The challenge becomes `mantle.polkit` state; the root helper runs PAM after
 /// `secure_submit("polkit", "authenticate")`, and `main.rs` releases the held reply when it answers
@@ -123,15 +125,12 @@ impl AuthenticationAgent {
     }
 
     async fn cancel_authentication(&self, cookie: String) {
-        let _ = self.requests.send(AgentRequest::Cancel { cookie });
+        let _ = self.requests.send(AgentRequest::Cancel { cookie: Some(cookie) });
     }
 }
 
 /// Authentication agent, unregistered until config reads `mantle.polkit` or names it in
 /// `secure_submit` (ADR-0070 decisions 5 and 6, ADR-0114).
-///
-/// Log registration failures rather than propagating them: another agent for the subject is normal
-/// elsewhere and must not stop the shell.
 pub struct PolkitAgent {
     /// Taken by the first [`Self::register`], making later calls no-ops instead of duplicate wire
     /// registrations.
@@ -143,8 +142,8 @@ impl PolkitAgent {
         PolkitAgent { agent: Some(AuthenticationAgent::new(requests)) }
     }
 
-    /// Registers once, in a spawned task so a slow polkitd cannot hold the Supervisor loop.
-    /// Failures log and disable this process's agent, costing only its challenges.
+    /// Registers once, in a spawned task so a slow polkitd cannot hold the Supervisor loop, and
+    /// again whenever polkitd restarts, since it forgets its agents.
     pub fn register(&mut self, connection: &zbus::Connection) {
         match current_session_subject() {
             Ok(subject) => self.register_for(connection, subject),
@@ -165,34 +164,49 @@ impl PolkitAgent {
         };
         let connection = connection.clone();
         tokio::spawn(async move {
-            match register_agent(&connection, agent, &subject, "en_US.UTF-8", AGENT_OBJECT_PATH).await {
-                Ok(()) => debug!("registered as this session's authentication agent"),
-                Err(err) => warn!(
-                    "RegisterAuthenticationAgent failed, so another agent answers this session; disabled for this run: {err}"
-                ),
+            if let Err(err) = serve_agent(&connection, agent, &subject).await {
+                warn!("cannot export the authentication agent, so another agent answers this session: {err}");
             }
         });
     }
 }
 
-/// Exports `agent` before calling `RegisterAuthenticationAgent`, so an immediate callback finds a
-/// live object.
-pub async fn register_agent(
-    connection: &zbus::Connection,
-    agent: AuthenticationAgent,
-    subject: &Subject,
-    locale: &str,
-    object_path: &str,
-) -> zbus::Result<()> {
-    connection.object_server().at(object_path, agent).await?;
+/// Exports `agent` before the first `RegisterAuthenticationAgent`, so an immediate callback finds a
+/// live object, then registers it with every polkitd that takes the name.
+///
+/// ponytail: a caller reaching a restarted polkitd before the re-registration finds no agent, the
+/// same window libpolkitagent leaves. Closing it would need polkitd to announce its agents, which it
+/// does not.
+async fn serve_agent(connection: &zbus::Connection, agent: AuthenticationAgent, subject: &Subject) -> zbus::Result<()> {
+    let requests = agent.requests.clone();
+    connection.object_server().at(AGENT_OBJECT_PATH, agent).await?;
     let authority = AuthorityProxy::new(connection).await?;
-    authority.register_authentication_agent(subject, locale, object_path).await
+    // Subscribed before the first registration, so a restart in between is not missed.
+    let mut owners = authority.inner().receive_owner_changed().await?;
+    register_with(&authority, subject).await;
+    while let Some(owner) = owners.next().await {
+        // A challenge the old polkitd held died with it, and a held one refuses every new one.
+        let _ = requests.send(AgentRequest::Cancel { cookie: None });
+        if owner.is_some() {
+            register_with(&authority, subject).await;
+        }
+    }
+    Ok(())
+}
+
+/// Logs a failure rather than propagating it: another agent for the subject is normal elsewhere
+/// and must not stop the shell.
+async fn register_with(authority: &AuthorityProxy<'_>, subject: &Subject) {
+    match authority.register_authentication_agent(subject, "en_US.UTF-8", AGENT_OBJECT_PATH).await {
+        Ok(()) => debug!("registered as this session's authentication agent"),
+        Err(err) => warn!("RegisterAuthenticationAgent failed, so another agent answers this session: {err}"),
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::capabilities::test_support::p2p_pair_serving;
+    use crate::capabilities::test_support::{p2p_pair_serving, private_bus, within};
     use tokio::sync::mpsc;
 
     /// Stand-in Authority on the p2p peer, exercising the real wire call without a system bus.
@@ -213,33 +227,6 @@ mod tests {
         Subject { subject_kind: "unix-session".to_string(), subject_details }
     }
 
-    #[tokio::test]
-    async fn register_agent_sends_register_authentication_agent_with_the_right_args() {
-        let (calls_tx, mut calls_rx) = mpsc::unbounded_channel();
-        let (agent_side, _authority_side) = p2p_pair_serving(|peer| {
-            peer.serve_at("/org/freedesktop/PolicyKit1/Authority", MockAuthority { calls: calls_tx })
-        })
-        .await;
-
-        let (challenges_tx, _challenges_rx) = mpsc::unbounded_channel();
-        let agent = AuthenticationAgent::new(challenges_tx);
-        let subject = test_subject();
-
-        register_agent(&agent_side, agent, &subject, "en_US.UTF-8", AGENT_OBJECT_PATH)
-            .await
-            .expect("registration against the mock Authority should succeed");
-
-        let (received_subject, locale, object_path) =
-            calls_rx.recv().await.expect("mock Authority never received RegisterAuthenticationAgent");
-        assert_eq!(received_subject.subject_kind, "unix-session");
-        assert_eq!(
-            received_subject.subject_details.get("session-id").cloned().and_then(|v| String::try_from(v).ok()),
-            Some("c1".to_string())
-        );
-        assert_eq!(locale, "en_US.UTF-8");
-        assert_eq!(object_path, AGENT_OBJECT_PATH);
-    }
-
     /// A second registration would ask polkitd for another agent on one subject. Every generation
     /// sends its own starts, so it is reachable (ADR-0070 decision 3).
     #[tokio::test]
@@ -257,6 +244,59 @@ mod tests {
 
         calls_rx.recv().await.expect("the first register must reach the Authority");
         assert!(calls_rx.try_recv().is_err(), "the second register must be a no-op");
+    }
+
+    /// polkitd forgets its agents when it restarts, and a challenge it held died with it.
+    #[tokio::test]
+    async fn a_restarted_polkitd_gets_the_agent_again_and_the_held_challenge_is_cancelled() {
+        let bus = private_bus().await;
+        let (calls_tx, mut calls_rx) = mpsc::unbounded_channel();
+        let authority = |calls: mpsc::UnboundedSender<(Subject, String, String)>| {
+            bus.builder()
+                .serve_at("/org/freedesktop/PolicyKit1/Authority", MockAuthority { calls })
+                .unwrap()
+                .name("org.freedesktop.PolicyKit1")
+                .unwrap()
+                .build()
+        };
+        let first = authority(calls_tx.clone()).await.unwrap();
+        let agent_side = bus.connection().await;
+        let (requests_tx, mut requests) = mpsc::unbounded_channel();
+        PolkitAgent::new(requests_tx).register_for(&agent_side, test_subject());
+
+        let (subject, locale, object_path) = within(calls_rx.recv()).await.unwrap();
+        assert_eq!(subject.subject_kind, "unix-session");
+        assert_eq!(
+            subject.subject_details.get("session-id").cloned().and_then(|v| String::try_from(v).ok()),
+            Some("c1".to_string())
+        );
+        assert_eq!((locale.as_str(), object_path.as_str()), ("en_US.UTF-8", AGENT_OBJECT_PATH));
+        let identities: Vec<(String, HashMap<String, OwnedValue>)> = vec![];
+        let caller = bus.connection().await;
+        let agent_name = agent_side.unique_name().unwrap().to_owned();
+        let begin = tokio::spawn(async move {
+            caller
+                .call_method(
+                    Some(agent_name),
+                    AGENT_OBJECT_PATH,
+                    Some("org.freedesktop.PolicyKit1.AuthenticationAgent"),
+                    "BeginAuthentication",
+                    &("a", "m", "i", HashMap::<String, String>::new(), "cookie-1", identities),
+                )
+                .await
+        });
+        let Some(AgentRequest::Begin { reply: _held, .. }) = within(requests.recv()).await else {
+            panic!("BeginAuthentication was not forwarded");
+        };
+
+        drop(first);
+        assert!(
+            matches!(within(requests.recv()).await, Some(AgentRequest::Cancel { cookie: None })),
+            "polkitd leaving must cancel the challenge it held"
+        );
+        let _second = authority(calls_tx).await.unwrap();
+        within(calls_rx.recv()).await.expect("the new polkitd must get RegisterAuthenticationAgent");
+        begin.abort();
     }
 
     /// Tests [`session_subject`] rather than `$XDG_SESSION_ID`, which parallel tests would race on.
@@ -349,7 +389,9 @@ mod tests {
             .call_method("CancelAuthentication", &("cookie-123",))
             .await
             .expect("CancelAuthentication call should succeed");
-        assert!(matches!(rx.recv().await, Some(AgentRequest::Cancel { cookie }) if cookie == "cookie-123"));
+        assert!(
+            matches!(rx.recv().await, Some(AgentRequest::Cancel { cookie: Some(cookie) }) if cookie == "cookie-123")
+        );
     }
 
     fn unix_user_identity(uid: u32) -> (String, HashMap<String, OwnedValue>) {

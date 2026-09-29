@@ -204,10 +204,8 @@ impl BluetoothAgent {
     async fn release(&self) {}
 }
 
-/// Exports [`BluetoothAgent`] and registers it as the system default `"DisplayYesNo"` agent, so
-/// pairing started elsewhere asks here too and BlueZ runs numeric comparison, not Just Works. Each
-/// step logs and continues, since a missing `bluetoothd` must not take down the Supervisor.
-pub(super) async fn register_agent_best_effort(
+/// Exports [`BluetoothAgent`] once; [`register_with_bluez`] offers it to each `bluetoothd`.
+pub(super) async fn export_agent(
     connection: &zbus::Connection,
     prompts: PromptSlot,
     devices: DeviceRegistry,
@@ -217,8 +215,14 @@ pub(super) async fn register_agent_best_effort(
     let agent = BluetoothAgent { prompts, devices, invited, events };
     if let Err(err) = connection.object_server().at(AGENT_OBJECT_PATH, agent).await {
         error!("failed to export the Agent1 object at {AGENT_OBJECT_PATH}: {err}");
-        return;
     }
+}
+
+/// Registers the exported agent as the system default `"DisplayYesNo"` agent, so pairing started
+/// elsewhere asks here too and BlueZ runs numeric comparison, not Just Works. Runs for every
+/// `bluetoothd`, which forgets its agents when it exits. Each step logs and continues, since a
+/// missing `bluetoothd` must not take down the Supervisor.
+pub(super) async fn register_with_bluez(connection: &zbus::Connection) {
     let agent_manager = match bind_agent_manager(connection).await {
         Ok(proxy) => proxy,
         Err(err) => {
@@ -226,13 +230,7 @@ pub(super) async fn register_agent_best_effort(
             return;
         }
     };
-    let path = match ObjectPath::try_from(AGENT_OBJECT_PATH) {
-        Ok(path) => path,
-        Err(err) => {
-            error!("{AGENT_OBJECT_PATH} is not a valid object path: {err}");
-            return;
-        }
-    };
+    let path = ObjectPath::from_static_str_unchecked(AGENT_OBJECT_PATH);
     if let Err(err) = agent_manager.register_agent(&path, "DisplayYesNo").await {
         error!("RegisterAgent failed: {err}");
         return;

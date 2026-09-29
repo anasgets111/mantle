@@ -4,10 +4,11 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-use futures_util::{Stream, StreamExt};
+use futures_util::{Stream, StreamExt, stream, stream_select};
 use serde::Serialize;
 use shared::{debug, error, warn};
 use tokio::sync::mpsc::UnboundedSender;
+use zbus::proxy::CacheProperties;
 use zbus::zvariant::OwnedValue;
 
 /// `mantle.power`'s payload. Profile fields are `nil` without power-profiles-daemon, the rest without UPower;
@@ -114,7 +115,7 @@ impl PowerController {
     }
 
     /// `power:set_profile(p)`. Build a fresh proxy per click, not a cached one that must survive a
-    /// daemon restart. Do not update locally; `ActiveProfile`'s property stream reports both this
+    /// daemon restart. Do not update locally; the `PropertiesChanged` that follows reports both this
     /// write and external switches.
     pub async fn set_profile(&self, profile: &str) {
         let Some(proxy) = connect_power_profiles(&self.system_bus).await else {
@@ -138,6 +139,7 @@ async fn connect_power_profiles(system_bus: &zbus::Connection) -> Option<PowerPr
             .ok()?
             .interface(interface)
             .ok()?
+            .cache_properties(CacheProperties::No)
             .build()
             .await;
         match built {
@@ -155,17 +157,15 @@ async fn connect_power_profiles(system_bus: &zbus::Connection) -> Option<PowerPr
 /// Reads every available field. Failed reads become `None`, not stale values: a stopped daemon is
 /// worth showing, and this codebase has hit the live-looking stale-number failure three times.
 async fn read_state(
-    upower: Option<&UPowerProxy<'static>>,
-    device: Option<&DisplayDeviceProxy<'static>>,
+    upower: &UPowerProxy<'static>,
+    device: &DisplayDeviceProxy<'static>,
     profiles: Option<&PowerProfilesProxy<'static>>,
 ) -> PowerState {
-    let mut state = PowerState::default();
-    if let Some(upower) = upower {
-        state.on_battery = upower.on_battery().await.ok();
-    }
-    if let Some(device) = device {
-        state.energy_rate = device.energy_rate().await.ok();
-    }
+    let mut state = PowerState {
+        on_battery: upower.on_battery().await.ok(),
+        energy_rate: device.energy_rate().await.ok(),
+        ..PowerState::default()
+    };
     if let Some(profiles) = profiles {
         state.active_profile = profiles.active_profile().await.ok();
         state.profiles = profiles.profiles().await.ok().map(|raw| profile_names(&raw));
@@ -173,90 +173,80 @@ async fn read_state(
     state
 }
 
-/// `select!` needs a future per arm. A never-completing future represents a missing service; its
-/// arm never wins while the other half runs.
-async fn next_change<S: Stream + Unpin>(stream: &mut Option<S>) -> Option<S::Item> {
-    match stream {
-        Some(stream) => stream.next().await,
-        None => std::future::pending().await,
-    }
+/// Every `PropertiesChanged` for `proxy`'s object, from whichever process owns its name.
+async fn properties_changed(proxy: &zbus::Proxy<'static>) -> zbus::Result<impl Stream<Item = ()> + use<>> {
+    let properties = zbus::fdo::PropertiesProxy::builder(proxy.connection())
+        .destination(proxy.destination().to_owned())?
+        .path(proxy.path().to_owned())?
+        .build()
+        .await?;
+    Ok(properties.receive_properties_changed().await?.map(drop))
 }
 
-/// Reads once, pushes, then follows all three property streams. Every wake re-reads the payload
-/// instead of patching one field.
+/// Every change worth a re-read: a property of any of the three objects, or UPower or
+/// power-profiles-daemon changing owner. A missing daemon merges an empty stream.
+async fn changes(
+    upower: &UPowerProxy<'static>,
+    device: &DisplayDeviceProxy<'static>,
+    profiles: Option<&PowerProfilesProxy<'static>>,
+) -> zbus::Result<impl Stream<Item = ()> + use<>> {
+    let (profile_properties, profile_owner) = match profiles {
+        Some(proxy) => (
+            Some(properties_changed(proxy.inner()).await?),
+            Some(proxy.inner().receive_owner_changed().await?.map(drop)),
+        ),
+        None => (None, None),
+    };
+    // `stream_select!` can re-poll a stream that already ended, so each input is fused.
+    Ok(stream_select!(
+        properties_changed(upower.inner()).await?.fuse(),
+        properties_changed(device.inner()).await?.fuse(),
+        upower.inner().receive_owner_changed().await?.map(drop).fuse(),
+        stream::iter(profile_properties).flatten().fuse(),
+        stream::iter(profile_owner).flatten().fuse()
+    ))
+}
+
+/// Reads once, pushes, then re-reads the whole payload on every [`changes`] item.
 ///
-/// The UPower proxies build without contacting the bus (zbus's lazy property cache), so a host
-/// without UPower still pushes, every UPower field absent. Only when every proxy fails to build
-/// is no signal sent: `mantle.power` stays `nil` (ADR-0037) and the task exits instead of parking
-/// on a dead stream.
+/// The proxies cache nothing: zbus's cache keeps the last owner's values after a restart, and one
+/// built while its service was absent never answers. A property stream on an uncached proxy ends
+/// at once, hence `PropertiesChanged` itself. UPower is followed even while absent, since a later
+/// start brings it; a power-profiles-daemon absent at startup is not installed, as it is
+/// activatable, so it is not probed again.
 async fn run_power_task(
     system_bus: zbus::Connection,
     state: Arc<Mutex<PowerState>>,
     events: UnboundedSender<PowerSignal>,
 ) {
-    let upower = match UPowerProxy::new(&system_bus).await {
-        Ok(proxy) => Some(proxy),
-        Err(err) => {
-            debug!("no UPower manager reachable ({err}); on_battery will not be reported this run");
-            None
-        }
-    };
-    let device = match DisplayDeviceProxy::new(&system_bus).await {
-        Ok(proxy) => Some(proxy),
-        Err(err) => {
-            debug!("no UPower DisplayDevice reachable ({err}); energy_rate will not be reported this run");
-            None
-        }
-    };
     let profiles = connect_power_profiles(&system_bus).await;
     if profiles.is_none() {
         debug!("no power-profiles-daemon reachable; active_profile and profiles will not be reported this run");
     }
-    if upower.is_none() && device.is_none() && profiles.is_none() {
-        debug!("nothing on this host can answer any of mantle.power's fields; power reporting disabled for this run");
-        return;
-    }
-
     // Subscribe before the first read. A charger unplugged during the round trip must not land
     // between a read and a subscription that does not exist yet.
-    let mut on_battery_changed = match upower.as_ref() {
-        Some(proxy) => Some(proxy.receive_on_battery_changed().await),
-        None => None,
+    let subscribed = async {
+        let upower = UPowerProxy::builder(&system_bus).cache_properties(CacheProperties::No).build().await?;
+        let device = DisplayDeviceProxy::builder(&system_bus).cache_properties(CacheProperties::No).build().await?;
+        let changes = changes(&upower, &device, profiles.as_ref()).await?;
+        zbus::Result::Ok((upower, device, changes))
     };
-    let mut energy_rate_changed = match device.as_ref() {
-        Some(proxy) => Some(proxy.receive_energy_rate_changed().await),
-        None => None,
+    let (upower, device, changes) = match subscribed.await {
+        Ok(subscribed) => subscribed,
+        Err(err) => {
+            error!("cannot follow UPower on the system bus, so mantle.power stays unset this run: {err}");
+            return;
+        }
     };
-    let mut active_profile_changed = match profiles.as_ref() {
-        Some(proxy) => Some(proxy.receive_active_profile_changed().await),
-        None => None,
-    };
+    let mut changes = std::pin::pin!(changes);
 
-    let mut previous = read_state(upower.as_ref(), device.as_ref(), profiles.as_ref()).await;
+    let mut previous = read_state(&upower, &device, profiles.as_ref()).await;
     *state.lock().expect("power state mutex poisoned") = previous.clone();
     if events.send(PowerSignal::Changed).is_err() {
         return;
     }
-
-    loop {
-        tokio::select! {
-            change = next_change(&mut on_battery_changed) => {
-                if change.is_none() { on_battery_changed = None; }
-            }
-            change = next_change(&mut energy_rate_changed) => {
-                if change.is_none() { energy_rate_changed = None; }
-            }
-            change = next_change(&mut active_profile_changed) => {
-                if change.is_none() { active_profile_changed = None; }
-            }
-        }
-        // All streams ended; parking would leak the proxies and their connection references.
-        if on_battery_changed.is_none() && energy_rate_changed.is_none() && active_profile_changed.is_none() {
-            error!("every property stream ended; power will no longer update this run");
-            return;
-        }
-
-        let current = read_state(upower.as_ref(), device.as_ref(), profiles.as_ref()).await;
+    while changes.next().await.is_some() {
+        let current = read_state(&upower, &device, profiles.as_ref()).await;
         if current != previous {
             *state.lock().expect("power state mutex poisoned") = current.clone();
             previous = current;
@@ -271,7 +261,75 @@ async fn run_power_task(
 mod tests {
     use super::*;
 
+    use tokio::sync::mpsc;
     use zbus::zvariant::Value;
+
+    use crate::capabilities::test_support::{PrivateBus, private_bus, within};
+
+    struct FakeUPower {
+        on_battery: bool,
+    }
+
+    #[zbus::interface(name = "org.freedesktop.UPower")]
+    impl FakeUPower {
+        #[zbus(property)]
+        fn on_battery(&self) -> bool {
+            self.on_battery
+        }
+    }
+
+    struct FakeDisplayDevice {
+        energy_rate: f64,
+    }
+
+    #[zbus::interface(name = "org.freedesktop.UPower.Device")]
+    impl FakeDisplayDevice {
+        #[zbus(property)]
+        fn energy_rate(&self) -> f64 {
+            self.energy_rate
+        }
+    }
+
+    async fn serve_upower(bus: &PrivateBus, on_battery: bool, energy_rate: f64) -> zbus::Connection {
+        bus.builder()
+            .serve_at("/org/freedesktop/UPower", FakeUPower { on_battery })
+            .unwrap()
+            .serve_at("/org/freedesktop/UPower/devices/DisplayDevice", FakeDisplayDevice { energy_rate })
+            .unwrap()
+            .name("org.freedesktop.UPower")
+            .unwrap()
+            .build()
+            .await
+            .unwrap()
+    }
+
+    /// upowerd restarts on upgrade, and one started late is the same case: each owner is read fresh.
+    #[tokio::test]
+    async fn every_upower_owner_is_read_fresh_and_its_absence_clears_the_fields() {
+        let bus = private_bus().await;
+        let (events, mut changed) = mpsc::unbounded_channel();
+        let power = PowerController::new(bus.connection().await, events);
+        within(changed.recv()).await;
+        assert_eq!(power.snapshot(), PowerState::default(), "no UPower yet");
+
+        let first = serve_upower(&bus, false, 5.0).await;
+        within(changed.recv()).await;
+        assert_eq!((power.snapshot().on_battery, power.snapshot().energy_rate), (Some(false), Some(5.0)));
+
+        drop(first);
+        within(changed.recv()).await;
+        assert_eq!(power.snapshot(), PowerState::default(), "a vanished UPower leaves no stale reading");
+
+        let second = serve_upower(&bus, true, 7.5).await;
+        within(changed.recv()).await;
+        assert_eq!((power.snapshot().on_battery, power.snapshot().energy_rate), (Some(true), Some(7.5)));
+
+        let upower = second.object_server().interface::<_, FakeUPower>("/org/freedesktop/UPower").await.unwrap();
+        upower.get_mut().await.on_battery = false;
+        upower.get().await.on_battery_changed(upower.signal_emitter()).await.unwrap();
+        within(changed.recv()).await;
+        assert_eq!(power.snapshot().on_battery, Some(false), "the new owner's PropertiesChanged is followed");
+    }
 
     fn entry(pairs: &[(&str, Value<'static>)]) -> HashMap<String, OwnedValue> {
         pairs.iter().map(|(key, value)| (key.to_string(), OwnedValue::try_from(value.clone()).unwrap())).collect()

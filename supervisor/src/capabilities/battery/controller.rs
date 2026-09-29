@@ -216,6 +216,63 @@ async fn run_battery_task(
 mod tests {
     use super::*;
 
+    use tokio::sync::mpsc;
+
+    use crate::capabilities::test_support::{PrivateBus, private_bus, within};
+
+    struct FakeDisplayDevice {
+        percentage: f64,
+    }
+
+    #[zbus::interface(name = "org.freedesktop.UPower.Device")]
+    impl FakeDisplayDevice {
+        #[zbus(property, name = "Type")]
+        fn kind(&self) -> u32 {
+            UPOWER_TYPE_BATTERY
+        }
+        #[zbus(property)]
+        fn is_present(&self) -> bool {
+            true
+        }
+        #[zbus(property)]
+        fn percentage(&self) -> f64 {
+            self.percentage
+        }
+        #[zbus(property)]
+        fn state(&self) -> u32 {
+            2
+        }
+    }
+
+    async fn serve_upower(bus: &PrivateBus, percentage: f64) -> zbus::Connection {
+        bus.builder()
+            .serve_at(DISPLAY_DEVICE, FakeDisplayDevice { percentage })
+            .unwrap()
+            .name("org.freedesktop.UPower")
+            .unwrap()
+            .build()
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn a_vanished_upower_reads_absent_and_its_successor_reads_fresh() {
+        let bus = private_bus().await;
+        let first = serve_upower(&bus, 70.0).await;
+        let (events, mut changed) = mpsc::unbounded_channel();
+        let battery = BatteryController::new(bus.connection().await, events);
+        within(changed.recv()).await;
+        assert_eq!((battery.snapshot().present, battery.snapshot().percent), (true, 70));
+
+        drop(first);
+        within(changed.recv()).await;
+        assert!(!battery.snapshot().present);
+
+        let _second = serve_upower(&bus, 40.0).await;
+        within(changed.recv()).await;
+        assert_eq!((battery.snapshot().present, battery.snapshot().percent), (true, 40));
+    }
+
     /// Each state is distinct to a user; a `charging` boolean would collapse the middle rows.
     #[test]
     fn every_upower_state_maps_to_its_own_name() {

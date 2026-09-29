@@ -100,7 +100,7 @@ under `UPDATE_STUBS=1` and otherwise fails on a stale file.
 - Never hardcode `/sys` or `/proc`: readers take `sys_root`/`proc_root`, tests pass a tempdir.
 - Every `lua` block in `docs/` runs as a test and every `lua,shot` must match its image in
   `docs/images/` (`renderer/src/check.rs`). `just shots` rewrites every stale image, not only yours.
-- D-Bus tests use `p2p_pair()` from `supervisor/src/capabilities/test_support.rs`, never the session bus.
+- D-Bus tests use `p2p_pair()` from `supervisor/src/capabilities/test_support.rs`, or `private_bus()` there when they need `NameOwnerChanged`; never the session or system bus.
 
 ## Skills
 

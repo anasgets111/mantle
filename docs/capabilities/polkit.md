@@ -66,8 +66,9 @@ Call each as `mantle.polkit:<action>(arguments...)`; `?` marks an argument you m
 ## Backend
 
 On first read, registers as the authentication agent for `$XDG_SESSION_ID`'s session, at
-`/org/mantle/PolicyKit1/AuthenticationAgent` with locale `en_US.UTF-8`. If another agent already
-answers, it stays off for the run. polkitd accepts an answer only from uid 0, so the
+`/org/mantle/PolicyKit1/AuthenticationAgent` with locale `en_US.UTF-8`, and again each time polkitd
+restarts, cancelling the challenge the old polkitd held. If another agent already answers, it stays
+off until polkitd restarts. polkitd accepts an answer only from uid 0, so the
 [PAM worker](../../supervisor/src/pam_worker.rs) hands the password to polkit's root helper at
 `/run/polkit/agent-helper.socket`. The agent is [`polkit.rs`](../../supervisor/src/polkit.rs).
 

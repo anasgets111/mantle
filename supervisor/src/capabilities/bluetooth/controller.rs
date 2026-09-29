@@ -9,9 +9,9 @@ use shared::{debug, error, warn};
 use tokio::sync::mpsc::UnboundedSender;
 use zbus::zvariant::OwnedObjectPath;
 
-use super::agent::{self, Invited, PromptSlot, register_agent_best_effort};
+use super::agent::{self, Invited, PromptSlot, export_agent, register_with_bluez};
 use super::proxies::{Adapter1Proxy, Battery1Proxy, Device1Proxy, bind_object_manager, subscribe_object_manager};
-use super::registry::{AdapterSlot, DeviceRegistry, spawn_object_manager_forwarder, track_interfaces};
+use super::registry::{AdapterSlot, DeviceRegistry, hydrate, spawn_object_manager_forwarder};
 use super::{
     BluetoothSignal, BluetoothState, ConnectedDevice, DeviceAction, DiscoveredDevice, PairedDevice, class_to_category,
 };
@@ -49,58 +49,9 @@ impl BluetoothController {
     /// `GetManagedObjects()` call (ADR-0030), starts signal forwarders, and registers the
     /// pairing agent. `events` is passed in because hydration starts each device forwarder.
     pub async fn new(connection: zbus::Connection, events: UnboundedSender<BluetoothSignal>) -> Self {
-        let object_manager = match bind_object_manager(&connection).await {
-            Ok(object_manager) => Some(object_manager),
-            Err(err) => {
-                debug!("failed to bind org.bluez's ObjectManager (bluetoothd not running?): {err}");
-                None
-            }
-        };
-
-        let devices: DeviceRegistry = Arc::new(Mutex::new(HashMap::new()));
-        let adapter = AdapterSlot::default();
-
-        // Subscribe before GetManagedObjects(): a device changing between them would be missed.
-        let object_manager_streams = match &object_manager {
-            Some(object_manager) => match subscribe_object_manager(object_manager).await {
-                Ok(streams) => Some(streams),
-                Err(err) => {
-                    error!("failed to subscribe to ObjectManager signals: {err}");
-                    None
-                }
-            },
-            None => None,
-        };
-
-        if let Some(object_manager) = &object_manager {
-            match object_manager.get_managed_objects().await {
-                Ok(objects) => {
-                    for (path, interfaces) in objects {
-                        let has = |name: &str| interfaces.keys().any(|k| k.as_str() == name);
-                        track_interfaces(&connection, &devices, &adapter, path, has, &events).await;
-                    }
-                }
-                Err(err) => error!("GetManagedObjects failed: {err}"),
-            }
-        }
-
-        if adapter.lock().expect("mutex poisoned").is_none() {
-            debug!("no adapter found; bluetooth stays unavailable until BlueZ adds one");
-        }
-        if let Some((added, removed)) = object_manager_streams {
-            spawn_object_manager_forwarder(
-                connection.clone(),
-                added,
-                removed,
-                devices.clone(),
-                adapter.clone(),
-                events.clone(),
-            );
-        }
-
         let controller = Self {
-            adapter,
-            devices,
+            adapter: AdapterSlot::default(),
+            devices: Arc::new(Mutex::new(HashMap::new())),
             state: Arc::new(Mutex::new(BluetoothState::default())),
             busy: Arc::default(),
             discovery_wanted: Arc::default(),
@@ -111,7 +62,7 @@ impl BluetoothController {
             let controller = controller.clone();
             Arc::new(move |mac: &str| controller.invited(mac))
         };
-        register_agent_best_effort(
+        export_agent(
             &connection,
             controller.prompts.clone(),
             controller.devices.clone(),
@@ -119,6 +70,36 @@ impl BluetoothController {
             controller.events.clone(),
         )
         .await;
+
+        // Subscribe before GetManagedObjects(): a device changing between them would be missed.
+        let subscribed = match bind_object_manager(&connection).await {
+            Ok(object_manager) => match subscribe_object_manager(&object_manager).await {
+                Ok(streams) => Some((object_manager, streams)),
+                Err(err) => {
+                    error!("failed to subscribe to ObjectManager signals: {err}");
+                    None
+                }
+            },
+            Err(err) => {
+                debug!("failed to bind org.bluez's ObjectManager: {err}");
+                None
+            }
+        };
+        if let Some((object_manager, streams)) = subscribed {
+            hydrate(&object_manager, &controller.devices, &controller.adapter, &controller.events).await;
+            if controller.adapter().is_none() {
+                debug!("no adapter found; bluetooth stays unavailable until BlueZ adds one");
+            }
+            spawn_object_manager_forwarder(
+                object_manager,
+                streams,
+                controller.devices.clone(),
+                controller.adapter.clone(),
+                controller.prompts.clone(),
+                controller.events.clone(),
+            );
+        }
+        register_with_bluez(&connection).await;
 
         // Hydrate before returning, because the forwarders above are already queueing and zbus
         // yields a cached property's current value as its stream's first item: one of them writes
@@ -455,6 +436,7 @@ impl Drop for BusyGuard<'_> {
 mod tests {
     use super::super::registry::DeviceEntry;
     use super::*;
+    use crate::capabilities::test_support::{PrivateBus, private_bus, within};
 
     fn controller() -> (BluetoothController, tokio::sync::mpsc::UnboundedReceiver<BluetoothSignal>) {
         let (events, receiver) = tokio::sync::mpsc::unbounded_channel();
@@ -600,5 +582,134 @@ mod tests {
         let (controller, connects, _caller, _served) = with_headset(usize::MAX).await;
         controller.connect("AA").await;
         assert_eq!(connects.load(Ordering::SeqCst), 1);
+    }
+
+    struct FakeAdapter;
+
+    #[zbus::interface(name = "org.bluez.Adapter1")]
+    impl FakeAdapter {
+        #[zbus(property)]
+        fn powered(&self) -> bool {
+            true
+        }
+        #[zbus(property)]
+        fn discovering(&self) -> bool {
+            false
+        }
+        #[zbus(property)]
+        fn discoverable(&self) -> bool {
+            false
+        }
+    }
+
+    struct FakeDevice {
+        mac: &'static str,
+        paired: bool,
+    }
+
+    #[zbus::interface(name = "org.bluez.Device1")]
+    impl FakeDevice {
+        #[zbus(property)]
+        fn address(&self) -> String {
+            self.mac.to_string()
+        }
+        #[zbus(property)]
+        fn name(&self) -> String {
+            String::new()
+        }
+        #[zbus(property)]
+        fn class(&self) -> u32 {
+            0
+        }
+        #[zbus(property)]
+        fn paired(&self) -> bool {
+            self.paired
+        }
+        #[zbus(property)]
+        fn connected(&self) -> bool {
+            false
+        }
+        #[zbus(property)]
+        fn blocked(&self) -> bool {
+            false
+        }
+    }
+
+    struct FakeAgentManager {
+        registered: tokio::sync::mpsc::UnboundedSender<()>,
+    }
+
+    #[zbus::interface(name = "org.bluez.AgentManager1")]
+    impl FakeAgentManager {
+        fn register_agent(&self, _agent: zbus::zvariant::ObjectPath<'_>, _capability: &str) {
+            let _ = self.registered.send(());
+        }
+        fn request_default_agent(&self, _agent: zbus::zvariant::ObjectPath<'_>) {}
+    }
+
+    /// A `bluetoothd` with one adapter and `devices` as `(mac, paired)`.
+    async fn serve_bluez(
+        bus: &PrivateBus,
+        devices: &[(&'static str, bool)],
+        registered: tokio::sync::mpsc::UnboundedSender<()>,
+    ) -> zbus::Connection {
+        let mut builder = bus
+            .builder()
+            .serve_at("/", zbus::fdo::ObjectManager)
+            .unwrap()
+            .serve_at("/org/bluez", FakeAgentManager { registered })
+            .unwrap()
+            .serve_at("/org/bluez/hci0", FakeAdapter)
+            .unwrap();
+        for &(mac, paired) in devices {
+            let path = format!("/org/bluez/hci0/dev_{}", mac.replace(':', "_"));
+            builder = builder.serve_at(path, FakeDevice { mac, paired }).unwrap();
+        }
+        builder.name("org.bluez").unwrap().build().await.unwrap()
+    }
+
+    /// Applies signals as the main loop does until `done` holds for the state they build.
+    async fn until(
+        controller: &BluetoothController,
+        signals: &mut tokio::sync::mpsc::UnboundedReceiver<BluetoothSignal>,
+        done: impl Fn(&BluetoothState) -> bool,
+    ) {
+        loop {
+            let signal = within(signals.recv()).await.expect("the controller is alive");
+            if done(&controller.handle_signal(signal).await) {
+                return;
+            }
+        }
+    }
+
+    fn macs(state: &BluetoothState) -> Vec<&str> {
+        let paired = state.paired_devices.iter().map(|device| device.mac.as_str());
+        let discovered = state.discovered_devices.iter().map(|device| device.mac.as_str());
+        let mut macs: Vec<&str> = paired.chain(discovered).collect();
+        macs.sort_unstable();
+        macs
+    }
+
+    /// bluetoothd forgets the agent when it restarts, and a device removed while it was down sends
+    /// no `InterfacesRemoved`.
+    #[tokio::test]
+    async fn a_restarted_bluetoothd_is_hydrated_afresh_and_gets_the_agent_again() {
+        let bus = private_bus().await;
+        let (registered, mut registrations) = tokio::sync::mpsc::unbounded_channel();
+        let first =
+            serve_bluez(&bus, &[("AA:AA:AA:AA:AA:AA", true), ("BB:BB:BB:BB:BB:BB", false)], registered.clone()).await;
+        let (events, mut signals) = tokio::sync::mpsc::unbounded_channel();
+        let controller = BluetoothController::new(bus.connection().await, events).await;
+        within(registrations.recv()).await;
+        let state = controller.state.lock().unwrap().clone();
+        assert!(state.available);
+        assert_eq!(macs(&state), ["AA:AA:AA:AA:AA:AA", "BB:BB:BB:BB:BB:BB"]);
+
+        drop(first);
+        until(&controller, &mut signals, |state| !state.available && macs(state).is_empty()).await;
+
+        let _second = serve_bluez(&bus, &[("CC:CC:CC:CC:CC:CC", true)], registered).await;
+        until(&controller, &mut signals, |state| state.available && macs(state) == ["CC:CC:CC:CC:CC:CC"]).await;
+        within(registrations.recv()).await.expect("the new bluetoothd gets RegisterAgent");
     }
 }

@@ -9,10 +9,6 @@
 //! log and produce an inert controller: `enabled`/`discovering` are `false`, lists are empty, and
 //! writes log and no-op.
 //!
-//! ponytail: an adapter BlueZ adds later is picked up, but a `bluetoothd` that starts after the
-//! Supervisor is not, because the `ObjectManager` binding and agent registration happen once.
-//! Upgrade path: watch `org.bluez`'s `NameOwnerChanged` and rebuild.
-//!
 //! ponytail: After `start_discovery` clears the list and pushes a fresh snapshot, matching the
 //! `last_snapshots` bookkeeping used by every capability, any
 //! `DeviceRegistryChanged` rebuilds both lists from the entire registry, not only devices newly
