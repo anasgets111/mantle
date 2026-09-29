@@ -80,6 +80,19 @@ function fonts(chain) end
 ---@return integer? start 0-based byte offset of the needle's first character at its earliest in-order hit (the best-scoring one for a one-character needle). For tiebreaks, not highlighting.
 function fuzzy(haystack, needle) end
 
+---@class FocusHandle
+---A named plain textfield focus target.
+local FocusHandle = {}
+
+---Give this field the keyboard after the current button click updates its surface.
+function FocusHandle:request() end
+
+---Names a plain textfield that a button can focus with `:request()`.
+---[docs](https://anasgets111.github.io/mantle/guide/input.html#text-fields)
+---@param name string Shared with the textfield's `focus` property.
+---@return FocusHandle
+function focus(name) end
+
 ---@class SessionProcessHandle
 ---A program declared with `session_process`. Each field is a signal over its `mantle.processes`
 ---entry, `nil` before the first push; while `running` is false they describe the finished run.

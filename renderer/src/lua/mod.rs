@@ -4,6 +4,7 @@
 //! Supervisor-triggered `Reevaluate`.
 pub mod action;
 pub mod capability;
+pub(crate) mod focus;
 pub mod fonts;
 pub mod fuzzy;
 pub mod idle;
@@ -199,6 +200,7 @@ impl Loader {
         log::register(&lua)?;
         fonts::register(&lua)?;
         fuzzy::register(&lua)?;
+        focus::register(&lua)?;
         signal::register(&lua, dirty)?;
         store::register(&lua)?;
         session_process::register(&lua)?;

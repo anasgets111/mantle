@@ -643,9 +643,11 @@ impl App {
     /// ADR-0046 rescue is for failed evaluation, not a misbehaving callback.
     fn fire_on_click(&mut self, instance_id: &str, rect: LogicalRect, button: &str, on_click: &Function) {
         // `signal:set()` marks its own dirty flag (ADR-0044 decision 5); this call need not.
+        crate::lua::focus::begin_click(self.client.lua(), instance_id);
         if let Err((what, e)) = call_on_click(self.client.lua(), on_click, rect, button) {
             warn!("{instance_id}: {what}: {}", crate::lua::describe(&e));
         }
+        crate::lua::focus::end_click(self.client.lua());
     }
 }
 

@@ -120,6 +120,19 @@ impl Prop for Handle {
     }
 }
 
+/// A named plain-field target. It stays raw so the handle can be matched after a click's pass.
+pub(crate) struct Focus;
+
+spelled!(Focus => "FocusHandle");
+
+impl Prop for Focus {
+    type Out = Option<String>;
+    const RAW: bool = true;
+    fn read(_: &Property, value: Option<&Value>) -> Result<Self::Out, LayoutError> {
+        Ok(value.and_then(crate::lua::focus::name))
+    }
+}
+
 /// A number, the row's default when absent and within its range when it has one.
 pub(crate) struct Num;
 

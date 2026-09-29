@@ -273,6 +273,7 @@ pub fn run(
         phases.mark_tick();
         phases.mark_tick_split(app.client.take_tick_split());
         let re_resolved = passed || !ticked.is_empty();
+        app.apply_focus_request();
         // Take unconditionally so a keystroke arriving with a push is covered by this repaint, not
         // repeated next turn.
         app.repaint_caret_if_it_flipped();

@@ -166,6 +166,7 @@ a press.
 | `on_cancel(cleared)` | Escape. The draft clears, the field drops focus, `on_change("")` fires if there was text, then `on_cancel` gets whether text was removed. Without `on_cancel`, Escape clears and the field keeps focus |
 | `on_navigate(key)` | `"up"`, `"down"`, `"page_up"`, `"page_down"`, `"tab"`, `"backtab"`, and `"left"`/`"right"` when the caret cannot move that way and Shift is up. Repeats while held. The draft is untouched |
 | `autofocus` | `true`: take the keys, with an empty draft and a call to `on_change("")`, when the surface gains keyboard focus or the field appears under it. The first visible such field in document order wins. It never takes over from a field that is already typing, and never re-takes a field the user just clicked away from |
+| `focus` | A `focus(name)` handle. A button click can call `:request()` to focus the first visible plain field with that name on the same keyboard-focused surface, after the click's state changes appear. It keeps that field's draft and caret and does not call `on_change` |
 | `secure_submit`, `mask_character` | See [secure fields](#secure-fields) |
 | `placeholder`, `font_size`, `foreground`, `text_align` | Appearance; see [textfield](../nodes/textfield.md) |
 
@@ -191,6 +192,33 @@ Tab does not move focus between fields; it reaches `on_navigate`. Editing keys r
 **Draft lifetime.** Clicking elsewhere, or the surface losing the keyboard, stops typing but keeps
 the draft; clicking the field again resumes it. Enter and Escape clear it. An `autofocus` arm
 starts it empty. It is dropped when the field's node leaves the tree or its surface closes.
+
+To return typing to a field after a button changes the view, give both the field and button the
+same handle. Requests outside a button's `on_click`, to a hidden or masked field, or across
+surfaces do nothing.
+
+```lua
+local search_focus = focus("search")
+
+return panel {
+    id = "search",
+    layer = "Top",
+    keyboard_interactivity = "OnDemand",
+    child = row { children = {
+        textfield {
+            focus = search_focus,
+            autofocus = true,
+            width = 180,
+            height = 32,
+            on_change = function() end,
+        },
+        button {
+            on_click = function() search_focus:request() end,
+            children = { text { content = "Return to search" } },
+        },
+    } },
+}
+```
 
 ```lua
 local APPS = { "firefox", "foot", "nautilus", "pavucontrol", "thunderbird", "zed" }

@@ -646,6 +646,7 @@ mod meta_stub_tests {
             ("hover", _) => return Some("hover(\"probe\")".to_string()),
             ("geometry", _) => return Some("geometry(\"probe\")".to_string()),
             ("scroll", _) => return Some("scroll(\"probe\")".to_string()),
+            ("focus", _) => return Some("focus(\"probe\")".to_string()),
             // Literal-array `list.source` is fixed for the pass; real lists therefore use the
             // adjacent signal (ADR-0113 decision 3).
             ("source", "any[]") => return Some("{ 1, 2 }".to_string()),
@@ -720,6 +721,7 @@ mod meta_stub_tests {
         let lua = mlua::Lua::new();
         super::register_node_constructors(&lua).map_err(|e| e.to_string())?;
         crate::lua::signal::register(&lua, crate::lua::signal::DirtyFlag::new()).map_err(|e| e.to_string())?;
+        crate::lua::focus::register(&lua).map_err(|e| e.to_string())?;
         let table: mlua::Table = lua.load(format!("return {surface}")).eval().map_err(|e| e.to_string())?;
         let virtual_node = super::deserialize_lua_table(&table).map_err(|e| format!("{e:?}"))?;
         // Topology (`layer`, popup `anchor`, ...) is validated here and never read by `Scene::apply`.

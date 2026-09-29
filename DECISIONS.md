@@ -6911,3 +6911,14 @@ shapes in config code while avoiding repeated shape placement for every fragment
 
 Compositor blur regions remain defined by boxes. A shader's painted alpha is only available on the
 GPU; sampling it for a Wayland region would require a synchronous readback on animated frames.
+
+## 0284. Button clicks may request plain textfield focus
+
+`focus(name)` returns a handle for a plain `textfield`; `:request()` is accepted during a button's
+`on_click`. The renderer applies the request after that click's state has resolved and before
+autofocus or repaint. It searches only the click's keyboard-focused surface and skips hidden,
+leaving, masked, and inert fields. The first matching field in document order wins.
+
+The request restores a retained draft and caret for the same field and calls no edit callback.
+`autofocus` keeps its separate empty-draft behavior. Requests outside a click are ignored so an
+unrelated later pointer serial cannot give a stale callback authority over keyboard focus.

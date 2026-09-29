@@ -14,21 +14,60 @@ use crate::layout::node::prop::Keyword;
 /// the closed ones hidden beside the open one.
 fn autofocus_field_in_scope(scope: &[(&str, &layout::ResolvedNode)]) -> Option<(String, FieldTarget)> {
     for (surface_id, tree) in scope {
-        let mut stack = vec![*tree];
-        while let Some(node) = stack.pop() {
-            if !node.visible || node.leaving {
-                continue;
-            }
-            if node.kind == "textfield"
-                && node::fields::textfield::autofocus.read(&node.properties).is_ok_and(|on| on)
-                && let Some(target @ FieldTarget::Plain { .. }) = focused_field(&[node])
-            {
-                return Some((surface_id.to_string(), target));
-            }
-            stack.extend(node.children.iter().rev());
+        if let Some(target) =
+            first_plain_field(tree, |node| node::fields::textfield::autofocus.read(&node.properties).is_ok_and(|on| on))
+        {
+            return Some((surface_id.to_string(), target));
         }
     }
     None
+}
+
+/// First visible plain field bound to `name` on this one surface.
+fn requested_field(tree: &layout::ResolvedNode, name: &str) -> Option<FieldTarget> {
+    first_plain_field(tree, |node| {
+        node::fields::textfield::focus.read(&node.properties).ok().flatten().as_deref() == Some(name)
+    })
+}
+
+fn first_plain_field(
+    tree: &layout::ResolvedNode,
+    matches: impl Fn(&layout::ResolvedNode) -> bool,
+) -> Option<FieldTarget> {
+    let mut stack = vec![tree];
+    while let Some(node) = stack.pop() {
+        if !node.visible || node.leaving {
+            continue;
+        }
+        if node.kind == "textfield"
+            && matches(node)
+            && let Some(target @ FieldTarget::Plain { .. }) = focused_field(&[node])
+        {
+            return Some(target);
+        }
+        stack.extend(node.children.iter().rev());
+    }
+    None
+}
+
+fn requested_focus(surface_id: String, target: FieldTarget, previous: Option<&FocusedTextField>) -> FocusedTextField {
+    let FieldTarget::Plain { id, on_change, on_submit, on_cancel, on_navigate } = target else {
+        unreachable!("requested_field only returns plain targets")
+    };
+    let retained = previous.filter(|field| field.surface_id == surface_id && field.id == id);
+    let (buffer, selection) = retained.map_or((String::new(), (0, 0)), |field| (field.buffer.clone(), field.selection));
+    FocusedTextField {
+        surface_id,
+        id,
+        buffer,
+        selection,
+        typing: true,
+        selecting: false,
+        on_change,
+        on_submit,
+        on_cancel,
+        on_navigate,
+    }
 }
 
 /// One plain-field key edit before callbacks (ADR-0092, ADR-0102); split from
@@ -229,6 +268,25 @@ fn caret_phase(
 }
 
 impl App {
+    /// A button press already stopped typing. Restore it after the click's state has resolved,
+    /// before autofocus and repaint, so a newly shown field can receive the next key.
+    pub(in crate::wayland) fn apply_focus_request(&mut self) {
+        let Some((surface_id, name)) = crate::lua::focus::take_request(self.client.lua()) else {
+            return;
+        };
+        if self.keyboard_focus.as_deref() != Some(surface_id.as_str())
+            || !self.surface_is_live(&surface_id)
+            || self.focused_secure_submit.is_some()
+        {
+            return;
+        }
+        let Some(target) = self.client.scene().surface(&surface_id).and_then(|tree| requested_field(tree, &name))
+        else {
+            return;
+        };
+        self.focus_text_field(Some(requested_focus(surface_id, target, self.focused_text_field.as_ref())));
+    }
+
     /// Give keys to `autofocus` with a fresh empty buffer (ADR-0112). ADR-0108 preserves drafts
     /// when the user returns manually; automatic handoff must not append to a forgotten search.
     /// Fire `on_change("")` on every arm so launchers reset selection/scroll and state clears.
@@ -773,5 +831,43 @@ mod tests {
         mute.properties.insert("autofocus", Value::Boolean(true));
         let none = tree_with(&lua, vec![masked, mute, plain_textfield(&lua)]);
         assert!(autofocus_field_in_scope(&[("launcher@eDP-1", &none)]).is_none());
+    }
+
+    #[test]
+    fn request_finds_only_a_visible_plain_field_and_restores_its_caret() {
+        let lua = Lua::new();
+        crate::lua::focus::register(&lua).unwrap();
+        let handle = Value::UserData(lua.load("return focus('search')").eval().unwrap());
+        let mut hidden = plain_textfield(&lua);
+        hidden.visible = false;
+        hidden.properties.insert("focus", handle.clone());
+        let mut masked = textfield(&lua, Some(secure_submit_table(&lua, "lock", "authenticate")));
+        masked.properties.insert("focus", handle.clone());
+        let mut shown = plain_textfield(&lua);
+        shown.properties.insert("focus", handle);
+        let id = shown.id;
+        let tree = tree_with(&lua, vec![hidden, masked, shown]);
+        let target = requested_field(&tree, "search").expect("visible plain field");
+        assert!(matches!(target, FieldTarget::Plain { id: found, .. } if found == id));
+        assert!(requested_field(&tree, "missing").is_none());
+
+        let previous = FocusedTextField {
+            surface_id: "panel@TEST".into(),
+            id,
+            buffer: "draft".into(),
+            selection: (2, 4),
+            typing: false,
+            selecting: false,
+            on_change: None,
+            on_submit: None,
+            on_cancel: None,
+            on_navigate: None,
+        };
+        let target = requested_field(&tree, "search").unwrap();
+        let resumed = requested_focus("panel@TEST".into(), target, Some(&previous));
+        assert_eq!((resumed.buffer.as_str(), resumed.selection, resumed.typing), ("draft", (2, 4), true));
+        let target = requested_field(&tree, "search").unwrap();
+        let other = requested_focus("other@TEST".into(), target, Some(&previous));
+        assert_eq!((other.buffer.as_str(), other.selection), ("", (0, 0)));
     }
 }
