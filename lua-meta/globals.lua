@@ -93,23 +93,6 @@ function FocusHandle:request() end
 ---@return FocusHandle
 function focus(name) end
 
----@class MotionHandle
----A named clock shared by animated properties and shader progress.
-local MotionHandle = {}
-
----Move to 0 or 1 at a fixed full-range rate. Reversing midway keeps the current position.
----@param target number
-function MotionHandle:to(target) end
-
----A named 0..1 clock for `animate = { width = { clock = handle, from = 100 } }`.
----[docs](https://anasgets111.github.io/mantle/guide/animation.html#shared-motion)
----@param name string Clock identity across re-evaluations.
----@param initial number Initial progress, 0..1.
----@param duration number Milliseconds for the full 0..1 distance, 1..60000.
----@param easing? Easing Optional easing curve, default `"Linear"`. Reversing retraces the same curve.
----@return MotionHandle
-function motion(name, initial, duration, easing) end
-
 ---@class SessionProcessHandle
 ---A program declared with `session_process`. Each field is a signal over its `mantle.processes`
 ---entry, `nil` before the first push; while `running` is false they describe the finished run.

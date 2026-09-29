@@ -21,7 +21,6 @@ use style::parse_radius;
 pub use animate::Animatable;
 pub(crate) use animate::{Animations, Params};
 pub use animate::{Dissolve, ShaderParam, TransitionSpec, Tween, advance, depart, is_paint_only, retarget};
-pub(crate) use animate::{Easing, parse_easing};
 #[cfg(test)]
 pub(crate) use animate::{Keyframe, SpringConstants, animatable_name, easing_names};
 #[cfg(test)]

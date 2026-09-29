@@ -1,7 +1,7 @@
 //! Supervisor-side config-file watcher (`CONTEXT.md`, Watcher; ADR-0047 decision 3).
 //!
 //! Watches the whole config directory tree (`~/.config/mantle/` by default), not just `shell.lua`,
-//! for `.lua`, `.frag` and `.vert` changes. Coalesces save bursts
+//! for `.lua` and `.frag` changes. Coalesces save bursts
 //! (`CREATE`+`CLOSE_WRITE`, or atomic-save `MOVED_TO`) and triggers after the debounce
 //! window since the last relevant event. Watches directories, not inodes, because atomic-save
 //! editors unlink/recreate files.
@@ -114,7 +114,7 @@ fn hash_file(path: &Path) -> Option<u64> {
 /// How often to re-add the root once the config tree has vanished; see the module comment.
 const REWATCH_RETRY: Duration = Duration::from_secs(1);
 
-/// Watches `dir`'s tree for `.lua`, `.frag` and `.vert` changes, debounced by `debounce`, and emits one `()` per settled
+/// Watches `dir`'s tree for `.lua` and `.frag` changes, debounced by `debounce`, and emits one `()` per settled
 /// burst. See the module comment for irrelevant events.
 pub fn spawn_watcher(dir: &Path, debounce: Duration) -> io::Result<mpsc::UnboundedReceiver<()>> {
     let inotify = Inotify::init()?;
@@ -174,8 +174,8 @@ pub fn spawn_watcher(dir: &Path, debounce: Duration) -> io::Result<mpsc::Unbound
                                 continue; // a directory itself is never a config file.
                             }
 
-                            // Shader sources need a pass to rebuild the display list (ADR-0253).
-                            if !matches!(path.extension().and_then(OsStr::to_str), Some("lua" | "frag" | "vert")) {
+                            // `.frag` for a `shader` node, whose list only a pass rebuilds (ADR-0253).
+                            if !matches!(path.extension().and_then(OsStr::to_str), Some("lua" | "frag")) {
                                 continue; // not a config file: README, script, or editor swap.
                             }
 
@@ -231,16 +231,6 @@ pub fn spawn_watcher(dir: &Path, debounce: Duration) -> io::Result<mpsc::Unbound
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[tokio::test]
-    async fn editing_a_vertex_shader_reloads_the_config() {
-        let dir = tempfile::tempdir().unwrap();
-        let vertex = dir.path().join("shape.vert");
-        std::fs::write(&vertex, "void main() {}").unwrap();
-        let mut rx = spawn_watcher(dir.path(), SHORT_DEBOUNCE).unwrap();
-        std::fs::write(&vertex, "void main() { gl_Position = vec4(1.0); }").unwrap();
-        assert!(recv_within(&mut rx, WAIT).await.is_some());
-    }
 
     /// A moved directory emits no child DELETEs, only one MOVED_FROM; `forget_subtree` clears its
     /// hashes.

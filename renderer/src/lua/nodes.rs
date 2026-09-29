@@ -635,8 +635,8 @@ mod meta_stub_tests {
             ("anchor", shape) if shape.starts_with('{') => return Some("{ top = true, left = true }".to_string()),
             ("min_size" | "max_size", _) => return Some("{ width = 8.5, height = 8.5 }".to_string()),
             ("offset", _) => return Some("{ x = 1.5, y = 1 }".to_string()),
-            // Shader sources refuse relative paths; image sources also accept absolute paths.
-            ("source" | "vertex", "string") => return Some("\"/x\"".to_string()),
+            // `shader.source` refuses a relative path; `image.source` takes either.
+            ("source", "string") => return Some("\"/x\"".to_string()),
             ("params", _) => return Some("{ a = 0.5, b = { 1, 2, 3, 4 } }".to_string()),
             ("secure_submit", _) => {
                 return Some("{ capability = \"lock\", action = \"authenticate\" }".to_string());

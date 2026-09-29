@@ -6913,6 +6913,8 @@ shapes in config code while avoiding repeated shape placement for every fragment
 Compositor blur regions remain defined by boxes. A shader's painted alpha is only available on the
 GPU; sampling it for a Wayland region would require a synchronous readback on animated frames.
 
+Superseded by ADR-0287: the vertex stage is removed.
+
 ## 0284. Button clicks may request plain textfield focus
 
 `focus(name)` returns a handle for a plain `textfield`; `:request()` is accepted during a button's
@@ -6942,6 +6944,8 @@ and absent durations have weight 1. Per-frame easing still applies inside each s
 and entry-level timing remain invalid because the clock alone owns the run. Easing that overshoots
 the clock's endpoints holds a keyframe sequence at its first or last value.
 
+Superseded by ADR-0287: `motion()` is removed.
+
 ## 0286. Eased `animate` reversals shorten their run
 
 An eased tween returning to its previous endpoint uses the CSS transition reversing-shortening
@@ -6949,3 +6953,15 @@ factor. It retains the logical start and factor across repeated reversals and un
 passes. The new tween still starts from the value on screen and applies its easing over the shorter
 duration. A different target or changed timing starts a full run. Springs keep their velocity and
 keyframe sequences keep their own run rules; shared `motion` clocks retain exact phase reversal.
+
+## 0287. Remove `shader.vertex` and `motion()`
+
+Both shipped without a need that the rest of the engine could not already meet.
+
+| Feature | Covered by | Cost removed |
+| --- | --- | --- |
+| `shader.vertex` (ADR-0283) | The quad has four corners, so a vertex stage yields either a per-quad constant, which `params` passes, or a corner blend, which the fragment derives from `v_uv` | A second GLSL contract, a two-file cache key, `.vert` watching |
+| `motion()` (ADR-0285) | ADR-0286: entries sharing a duration and easing start in one pass and reverse together | A second animation model, a global, `Motion::Shared` |
+
+The one case `motion()` alone served is a staged keyframe run that unwinds mid-flight. Revisit with
+a concrete config that needs it; the clock design in ADR-0285 still applies.

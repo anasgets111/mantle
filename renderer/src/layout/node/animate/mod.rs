@@ -20,13 +20,12 @@ use super::{
     preview_for_error, value_as_f32,
 };
 use crate::lua::luacats::spelled;
-use crate::lua::motion::{self, MotionHandle};
 
 mod easing;
 mod sequence;
 mod spring;
 mod transition;
-pub(crate) use easing::Easing;
+use easing::Easing;
 
 /// The named easings, the `EasingName` alias's members.
 #[cfg(test)]
@@ -62,7 +61,7 @@ pub struct AnimationSpec {
     pub from: Option<Animatable>,
 }
 
-/// How a property gets where it is going. These are exclusive, and which one an entry names
+/// How a property gets where it is going. The three are exclusive, and which one an entry names
 /// decides which of its other keys mean anything -- a `duration` beside `keyframes` is the frames'
 /// default, and beside a `spring` it is nothing at all, which the parser refuses rather than let
 /// this enum carry a dead field (ADR-0154).
@@ -76,8 +75,6 @@ pub enum Motion {
     /// A mass on a spring: no duration, and it carries its velocity through a change of target
     /// (ADR-0154).
     Spring(Spring),
-    /// A shared 0..1 clock; `from` and the property target, or keyframes, supply values.
-    Shared { clock: MotionHandle, sequence: Option<Sequence> },
 }
 
 /// The name an `animate` entry eases, refused if `kind` does not have it. `animate` itself is not
@@ -126,7 +123,7 @@ pub fn parse_animate(kind: &str, properties: &PropMap) -> Result<BTreeMap<&'stat
             only_keys(
                 &format!("animate.{name}"),
                 spec,
-                &["duration", "delay", "easing", "from", "keyframes", "loops", "spring", "clock"],
+                &["duration", "delay", "easing", "from", "keyframes", "loops", "spring"],
             )?;
         }
         out.insert(name, parse_spec(name, &entry)?);
@@ -155,8 +152,8 @@ impl Prop for Animations {
 }
 
 /// One entry's spec: a bare duration, or `{ duration, easing, from }`, or those beside a
-/// `keyframes` list and a `loops` count (ADR-0152), a `spring` instead of any timing at all
-/// (ADR-0154), or a shared `clock` (ADR-0285). `from` is read as a value of `property`.
+/// `keyframes` list and a `loops` count (ADR-0152), or a `spring` instead of any timing at all
+/// (ADR-0154). `from` is read as a value of `property`.
 fn parse_spec(property: &str, entry: &Value) -> Result<AnimationSpec, LayoutError> {
     let field = format!("animate.{property}");
     // The bare form says the duration and nothing else: `animate = { width = 200 }`.
@@ -175,24 +172,6 @@ fn parse_spec(property: &str, entry: &Value) -> Result<AnimationSpec, LayoutErro
         })?),
     };
     let delay = parse_millis(&field, "delay", &get("delay")?, 0)?.unwrap_or(Duration::ZERO);
-
-    let clock = get("clock")?;
-    if !clock.is_nil() {
-        let Some(handle) = motion::from_value(&clock) else {
-            return Err(invalid(&field, "`clock` must be a motion() handle"));
-        };
-        for name in ["duration", "delay", "easing", "loops", "spring"] {
-            if !get(name)?.is_nil() {
-                return Err(invalid(&field, format!("a shared clock has no `{name}`; motion() owns its timing")));
-            }
-        }
-        let sequence =
-            parse_sequence(property, &field, spec, &get("keyframes")?, Duration::from_millis(1), Easing::Linear)?;
-        if sequence.is_some() == from.is_some() {
-            return Err(invalid(&field, "a shared clock needs either `from` or `keyframes`"));
-        }
-        return Ok(AnimationSpec { motion: Motion::Shared { clock: handle, sequence }, delay: Duration::ZERO, from });
-    }
 
     // Which motion this is decides which of the timing fields are read at all, so the ones
     // belonging to another are refused rather than parsed and dropped. That is the rule ADR-0152
@@ -276,7 +255,7 @@ type ExitBlock = (AnimationSpec, Vec<(&'static str, Animatable)>);
 
 /// A spec's `easing`: a name, a four-number table read as CSS `cubic-bezier(x1, y1, x2, y2)`, or
 /// `{ steps = n }` (ADR-0151). Absent is `InOutQuad`.
-pub(crate) fn parse_easing(field: &str, value: &Value) -> Result<Easing, LayoutError> {
+fn parse_easing(field: &str, value: &Value) -> Result<Easing, LayoutError> {
     match value {
         Value::Nil => Ok(Easing::default()),
         Value::String(name) => {
@@ -405,16 +384,6 @@ pub enum Animatable {
 spelled!(Animatable => format!("{}|{}|{}|{}", f32::lua(), String::lua(), EdgeInsets::lua(), Axes::lua()));
 
 impl Animatable {
-    fn same_shape(self, other: Self) -> bool {
-        match (self, other) {
-            (Self::Number(_), Self::Number(_))
-            | (Self::Percent(_), Self::Percent(_))
-            | (Self::Color(_), Self::Color(_)) => true,
-            (Self::Fields { keys, .. }, Self::Fields { keys: other, .. }) => keys == other,
-            _ => false,
-        }
-    }
-
     /// `property`'s value when it is not set, in this value's shape: `1` for `opacity` and
     /// `scale`, `0` otherwise, per axis or edge for a table. A percent or a colour has no identity
     /// to speak of and stays where it is.
@@ -570,13 +539,6 @@ impl Tween {
     }
 
     pub fn at(&self, now: Instant) -> Animatable {
-        if let Motion::Shared { clock, sequence } = &self.spec.motion {
-            let progress = clock.at(now);
-            return sequence.as_ref().map_or_else(
-                || self.from.lerp(self.to, progress, self.property),
-                |sequence| sequence.at_progress(progress, self.property),
-            );
-        }
         let elapsed = self.progressed(now);
         let progress = match &self.spec.motion {
             // The lead-in holds the value the run opens on. `progressed` saturates to zero through
@@ -595,7 +557,6 @@ impl Tween {
                 easing.apply((elapsed.as_secs_f32() / self.eased_duration(*duration).as_secs_f32()).min(1.0))
             }
             Motion::Spring(spring) => spring.at(elapsed),
-            Motion::Shared { .. } => unreachable!("handled above"),
         };
         self.from.lerp(self.to, progress, self.property)
     }
@@ -606,7 +567,6 @@ impl Tween {
             Motion::Sequence(sequence) => sequence.done(elapsed),
             Motion::Eased { duration, .. } => elapsed >= self.eased_duration(*duration),
             Motion::Spring(spring) => spring.done(elapsed),
-            Motion::Shared { clock, .. } => !clock.moving(now),
         }
     }
 }
@@ -633,28 +593,6 @@ pub fn retarget(
     let (running, shown) = retained.map_or((&[][..], None), |(running, shown)| (running, Some(shown)));
     let mut tweens = Vec::with_capacity(specs.len());
     for (property, spec) in specs {
-        if let Motion::Shared { clock, sequence } = &spec.motion {
-            clock.note_read(lua);
-            let (from, to) = match sequence {
-                Some(sequence) => {
-                    (sequence.frames[0].value, sequence.frames.last().expect("a parsed sequence has frames").value)
-                }
-                None => {
-                    let from = spec.from.expect("a shared clock without keyframes requires `from`");
-                    let to = Animatable::from_value(property, properties.get(property))?.ok_or_else(|| {
-                        invalid("animate", format!("`{property}` needs a tweenable progress-1 target"))
-                    })?;
-                    if !from.same_shape(to) {
-                        return Err(invalid("animate", format!("`{property}` has endpoints of different shapes")));
-                    }
-                    (from, to)
-                }
-            };
-            let tween = Tween { property, from, to, started: now, resting: !clock.moving(now), spec, reversal: None };
-            properties.insert(property, tween.at(now).to_value(lua).map_err(|e| invalid("animate", e.to_string()))?);
-            tweens.push(tween);
-            continue;
-        }
         let running = running.iter().find(|t| t.property == property);
         // A sequence drives the property rather than easing to it (ADR-0152), so it needs no
         // target and reads nothing the pass resolved. The same list going round again is the same
@@ -812,9 +750,9 @@ pub fn advance(tweens: &mut Vec<Tween>, properties: &mut PropMap, now: Instant, 
         // `retarget` wrote the key when it started the tween, so this never inserts.
         *properties.get_mut(tween.property).expect("a tween's property is in the map it was started from") =
             tween.at(now).to_value(lua).map_err(|e| invalid("animate", e.to_string()))?;
-        tween.resting = matches!(tween.spec.motion, Motion::Sequence(_) | Motion::Shared { .. }) && tween.done(now);
+        tween.resting = matches!(tween.spec.motion, Motion::Sequence(_)) && tween.done(now);
     }
-    tweens.retain(|tween| matches!(tween.spec.motion, Motion::Sequence(_) | Motion::Shared { .. }) || !tween.done(now));
+    tweens.retain(|tween| matches!(tween.spec.motion, Motion::Sequence(_)) || !tween.done(now));
     Ok(())
 }
 

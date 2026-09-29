@@ -103,8 +103,6 @@ pub enum Draw {
     Shader {
         source: std::path::PathBuf,
         version: crate::image::FileVersion,
-        vertex: Option<std::path::PathBuf>,
-        vertex_version: Option<crate::image::FileVersion>,
         progress: f32,
         params: Vec<node::ShaderParam>,
         alpha: f32,

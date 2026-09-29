@@ -45,7 +45,6 @@ void main() {
 | Property | Type | Default | Behaviour |
 | :--- | :--- | :--- | :--- |
 | `source` | `string\|Bound` | `""` | Absolute `.frag` path; relative is refused, `""` draws nothing. Compiling, errors and reloads: [the .frag file](#the-frag-file) |
-| `vertex` | `string\|Bound` | `""` | Optional absolute `.vert` path. Runs once per quad vertex after the engine sets `v_uv` and `gl_Position`; write `void main()` and pass custom values to the fragment through matching `flat out`/`flat in` declarations. `u_progress`, `u_size`, `a_uv`, `a_pos` and `params` uniforms are available |
 | `progress` | `number\|Bound`, `[-8192, 8192]` | `0` | Becomes `u_progress`. There is no clock uniform: [animate](../guide/animation.md) this for motion; the wide range lets a spring overshoot |
 | `params` | `table<string, number\|number[]>\|Bound` | `{}` | Uniforms by name: a finite number for `float`, 2-4 numbers for `vec2`-`vec4`. Missing ones are `0`. Not tweened |
 <!-- End of the generated table. -->
@@ -53,16 +52,6 @@ void main() {
 It has no intrinsic size: without `width` and `height` it draws nothing. `opacity`, transforms,
 `shadow_*` and `content_blur` apply to it. Place animated boxes with `blur = true` beneath a
 shader when the desktop behind it should blur ([blurs](../guide/paint.md#blurs)).
-
-## The .vert file
-
-`vertex` optionally names an absolute GLSL ES 3.00 source file. The engine declares `a_pos`
-(clip-space quad position), `a_uv` (node UV), `v_uv`, `u_progress` and `u_size`. Write `void main()`
-to compute values shared by the fragment shader. Declare each value with matching `flat out` in
-the vertex file and `flat in` in the fragment file. The engine initializes `v_uv` and
-`gl_Position` before calling your function. `params` uniforms are available in either stage.
-All four vertices should assign the same values to `flat` outputs; the fragment receives one
-vertex's values for the whole quad. A shader node without `vertex` uses the engine's default quad.
 
 ## The .frag file
 
@@ -84,7 +73,7 @@ other type, such as an `int` or a `sampler2D`, refuses the whole shader.
 | Event | Result |
 | :--- | :--- |
 | Compile or link fails | Logged once, draws nothing until the file changes |
-| A `.frag` or `.vert` under the config directory is saved | The config reloads, which recompiles it. A file elsewhere recompiles at the surface's next pass |
+| A `.frag` under the config directory is saved | The config reloads, which recompiles it. A file elsewhere recompiles at the surface's next pass |
 | `mantle check` | Passes: it has no GPU and compiles no GLSL. The first compile is in the running shell |
 | The shader hangs the GPU | The session hangs. It is config code, as trusted as `process.run` |
 

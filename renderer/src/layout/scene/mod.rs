@@ -766,9 +766,7 @@ pub(super) mod tests {
     pub(super) fn surface_from(lua_src: &str) -> (mlua::Lua, VirtualNode) {
         let lua = mlua::Lua::new();
         register_node_constructors(&lua).unwrap();
-        let dirty = crate::lua::signal::DirtyFlag::new();
-        crate::lua::signal::register(&lua, dirty.clone()).unwrap();
-        crate::lua::motion::register(&lua, dirty).unwrap();
+        crate::lua::signal::register(&lua, crate::lua::signal::DirtyFlag::new()).unwrap();
         let table: mlua::Table = lua.load(lua_src).set_name("@shell.lua").eval().unwrap();
         let node = deserialize_lua_table(&table).unwrap();
         (lua, node)

@@ -120,7 +120,7 @@ void main() {
 "#;
 
 /// One quad covering the node's box, in clip space, with the node-space `v_uv` the prelude reads.
-/// The default vertex stage when a shader node supplies no custom source.
+/// The engine owns the vertex stage so that a config shader is a fragment and nothing else.
 const VERTEX: &str = r#"#version 300 es
 precision highp float;
 layout(location = 0) in vec2 a_pos;
@@ -129,26 +129,6 @@ out vec2 v_uv;
 void main() {
     v_uv = a_uv;
     gl_Position = vec4(a_pos, 0.0, 1.0);
-}
-"#;
-
-const VERTEX_PRELUDE: &str = r#"#version 300 es
-precision highp float;
-layout(location = 0) in vec2 a_pos;
-layout(location = 1) in vec2 a_uv;
-out vec2 v_uv;
-uniform float u_progress;
-uniform vec2 u_size;
-#define main mantle_vertex
-#line 1
-"#;
-
-const VERTEX_EPILOGUE: &str = r#"
-#undef main
-void main() {
-    v_uv = a_uv;
-    gl_Position = vec4(a_pos, 0.0, 1.0);
-    mantle_vertex();
 }
 "#;
 
@@ -170,9 +150,6 @@ struct Program {
     params: HashMap<String, (glow::UniformLocation, usize, std::cell::Cell<bool>)>,
 }
 
-type ProgramKey = (PathBuf, Option<PathBuf>, bool);
-type ProgramVersions = (crate::image::FileVersion, Option<crate::image::FileVersion>);
-
 /// A transition's two endpoint textures, and where each sits inside the node's box after its
 /// `fit`.
 pub struct Cross {
@@ -187,8 +164,6 @@ pub struct Cross {
 pub struct Run<'a> {
     /// `None` for a `shader` node (ADR-0253), compiled without [`SAMPLERS`].
     pub cross: Option<Cross>,
-    /// Optional vertex source for a `shader` node.
-    pub vertex: Option<&'a Path>,
     /// The node's box, absolute in the surface.
     pub rect: LogicalRect,
     /// The node's paint-only affine (ADR-0149), about its own origin, or `None` for no transform.
@@ -219,7 +194,7 @@ pub struct ShaderStage {
     /// restarting the shell.
     /// The flag is whether it was built with [`SAMPLERS`]: one file may be both a transition and a
     /// `shader` node, and the two assemble differently.
-    programs: HashMap<ProgramKey, (ProgramVersions, Option<Program>)>,
+    programs: HashMap<(PathBuf, bool), (crate::image::FileVersion, Option<Program>)>,
     /// [`FADE`], compiled on first use. `None` until then; `Some(None)` if the engine's own shader
     /// would not build, which is not tried again -- the same shape `programs` uses, and the point
     /// where a node drops back to the two-draw approximation.
@@ -265,12 +240,11 @@ impl ShaderStage {
         // SAFETY: caller's contract.
         let Some(quad) = (unsafe { self.ensure_quad(gl) }) else { return false };
         // SAFETY: caller's contract.
-        let chosen = effect.filter(|path| unsafe { self.ensure_program(gl, path, run.vertex, run.cross.is_some()) });
+        let chosen = effect.filter(|path| unsafe { self.ensure_program(gl, path, run.cross.is_some()) });
         let program = match chosen {
-            Some(path) => self
-                .programs
-                .get(&(path.to_path_buf(), run.vertex.map(Path::to_path_buf), run.cross.is_some()))
-                .and_then(|(_, program)| program.as_ref()),
+            Some(path) => {
+                self.programs.get(&(path.to_path_buf(), run.cross.is_some())).and_then(|(_, program)| program.as_ref())
+            }
             // A `shader` node has nothing to fall back to.
             None if run.cross.is_none() => return false,
             None => {
@@ -307,7 +281,7 @@ impl ShaderStage {
             return;
         }
         // SAFETY: caller's contract.
-        let built = unsafe { self.build(gl, Path::new("<engine cross-dissolve>"), FADE, None, true) };
+        let built = unsafe { self.build(gl, Path::new("<engine cross-dissolve>"), FADE, true) };
         self.fade = Some(built);
     }
 
@@ -330,15 +304,9 @@ impl ShaderStage {
     /// # Safety
     ///
     /// The context is current.
-    unsafe fn ensure_program(
-        &mut self,
-        gl: &glow::Context,
-        path: &Path,
-        vertex: Option<&Path>,
-        textured: bool,
-    ) -> bool {
-        let version = (crate::image::FileVersion::read(path), vertex.map(crate::image::FileVersion::read));
-        let key = (path.to_path_buf(), vertex.map(Path::to_path_buf), textured);
+    unsafe fn ensure_program(&mut self, gl: &glow::Context, path: &Path, textured: bool) -> bool {
+        let version = crate::image::FileVersion::read(path);
+        let key = (path.to_path_buf(), textured);
         if let Some((known, program)) = self.programs.get(&key)
             && *known == version
         {
@@ -350,19 +318,11 @@ impl ShaderStage {
             // SAFETY: caller's contract.
             unsafe { gl.delete_program(stale.program) };
         }
-        let vertex_source = vertex.map(std::fs::read_to_string).transpose();
-        let built = match (std::fs::read_to_string(path), vertex_source) {
+        let built = match std::fs::read_to_string(path) {
             // SAFETY: caller's contract.
-            (Ok(source), Ok(vertex_source)) => unsafe {
-                self.build(gl, path, &source, vertex_source.as_deref(), textured)
-            },
-            (fragment, vertex_source) => {
-                if let Err(err) = fragment {
-                    error!("{}: {err}", path.display());
-                }
-                if let (Some(path), Err(err)) = (vertex, vertex_source) {
-                    error!("{}: {err}", path.display());
-                }
+            Ok(source) => unsafe { self.build(gl, path, &source, textured) },
+            Err(err) => {
+                error!("{}: {err}", path.display());
                 None
             }
         };
@@ -374,18 +334,11 @@ impl ShaderStage {
     /// # Safety
     ///
     /// The context is current.
-    unsafe fn build(
-        &mut self,
-        gl: &glow::Context,
-        path: &Path,
-        source: &str,
-        vertex: Option<&str>,
-        textured: bool,
-    ) -> Option<Program> {
+    unsafe fn build(&mut self, gl: &glow::Context, path: &Path, source: &str, textured: bool) -> Option<Program> {
         // SAFETY: caller's contract. Every object created here is deleted on the paths that fail
         // after creating it, and by `destroy` at teardown.
         unsafe {
-            let program = self.link(gl, path, &assemble(source, textured), vertex)?;
+            let program = self.link(gl, path, &assemble(source, textured))?;
             let named = |name: &str| gl.get_uniform_location(program, name);
             let mut params = HashMap::new();
             for index in 0..gl.get_active_uniforms(program) {
@@ -432,38 +385,21 @@ impl ShaderStage {
     /// # Safety
     ///
     /// The context is current.
-    unsafe fn link(
-        &mut self,
-        gl: &glow::Context,
-        path: &Path,
-        fragment: &str,
-        vertex_source: Option<&str>,
-    ) -> Option<glow::Program> {
+    unsafe fn link(&mut self, gl: &glow::Context, path: &Path, fragment: &str) -> Option<glow::Program> {
         // SAFETY: caller's contract. Every object created here is deleted on the paths that fail
         // after creating it, and by `destroy` at teardown.
         unsafe {
-            let vertex = match vertex_source {
-                Some(source) => compile(gl, glow::VERTEX_SHADER, &assemble_vertex(source), path)?,
-                None => match self.vertex {
-                    Some(vertex) => vertex,
-                    None => {
-                        let vertex = compile(gl, glow::VERTEX_SHADER, VERTEX, Path::new("<engine vertex stage>"))?;
-                        self.vertex = Some(vertex);
-                        vertex
-                    }
-                },
-            };
-            let Some(fragment) = compile(gl, glow::FRAGMENT_SHADER, fragment, path) else {
-                if vertex_source.is_some() {
-                    gl.delete_shader(vertex);
+            let vertex = match self.vertex {
+                Some(vertex) => vertex,
+                None => {
+                    let vertex = compile(gl, glow::VERTEX_SHADER, VERTEX, Path::new("<engine vertex stage>"))?;
+                    self.vertex = Some(vertex);
+                    vertex
                 }
-                return None;
             };
+            let fragment = compile(gl, glow::FRAGMENT_SHADER, fragment, path)?;
             let Ok(program) = gl.create_program() else {
                 gl.delete_shader(fragment);
-                if vertex_source.is_some() {
-                    gl.delete_shader(vertex);
-                }
                 return None;
             };
             gl.attach_shader(program, vertex);
@@ -472,9 +408,6 @@ impl ShaderStage {
             gl.detach_shader(program, vertex);
             gl.detach_shader(program, fragment);
             gl.delete_shader(fragment);
-            if vertex_source.is_some() {
-                gl.delete_shader(vertex);
-            }
             if !gl.get_program_link_status(program) {
                 error!("{}: {}", path.display(), gl.get_program_info_log(program));
                 gl.delete_program(program);
@@ -626,10 +559,6 @@ impl ShaderStage {
 fn assemble(source: &str, textured: bool) -> String {
     let samplers = if textured { SAMPLERS } else { "" };
     format!("{PRELUDE}{samplers}{RENAME}{source}{EPILOGUE}")
-}
-
-fn assemble_vertex(source: &str) -> String {
-    format!("{VERTEX_PRELUDE}{source}{VERTEX_EPILOGUE}")
 }
 
 /// A finite, positive dimension, or `None`. Sizes below one are legitimate and must not be clamped

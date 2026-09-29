@@ -45,13 +45,6 @@ impl Sequence {
         (!cycle.is_zero()).then_some(Self { frames: frames.into(), loops, cycle })
     }
 
-    /// A shared clock walks this list once. Segment durations divide the 0..1 span by weight;
-    /// its own duration controls wall time.
-    pub(super) fn at_progress(&self, progress: f32, property: &str) -> Animatable {
-        let elapsed = self.cycle.mul_f64(f64::from(progress.clamp(0.0, 1.0)));
-        self.at(elapsed, property)
-    }
-
     /// The value `elapsed` into the run: the segment holding that instant, eased. A segment of no
     /// duration is a jump rather than a stop, so it is stepped over and its value shows only as
     /// the start of whatever follows.
@@ -251,27 +244,6 @@ mod tests {
         );
         assert!((at(&endless, 250) - 0.5).abs() < 1e-5, "back round the first segment: got {}", at(&endless, 250));
         assert!(!endless.done(Duration::from_secs(3_600)));
-    }
-
-    #[test]
-    fn a_shared_clock_uses_keyframe_durations_as_segment_weights() {
-        let lua = Lua::new();
-        let sequence = parse_animate(
-            "rect",
-            &rect_props(
-                &lua,
-                r#"return { animate = { opacity = { duration = 1, easing = "Linear", keyframes = {
-                    0, { value = 1, duration = 1 }, { value = 0, duration = 3 } } } } }"#,
-            ),
-        )
-        .unwrap()
-        .remove("opacity")
-        .unwrap()
-        .sequence()
-        .unwrap();
-        assert_eq!(sequence.at_progress(0.25, "opacity"), Animatable::Number(1.0));
-        assert_eq!(sequence.at_progress(0.625, "opacity"), Animatable::Number(0.5));
-        assert_eq!(sequence.at_progress(1.25, "opacity"), Animatable::Number(0.0));
     }
 
     /// A frame of no duration is a jump, not a stop: it is stepped over, and its value shows as

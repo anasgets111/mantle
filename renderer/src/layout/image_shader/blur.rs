@@ -135,7 +135,7 @@ impl ShaderStage {
     unsafe fn build_blur(&mut self, gl: &glow::Context) -> Option<Blur> {
         // SAFETY: caller's contract.
         unsafe {
-            let program = self.link(gl, Path::new("<engine blur>"), BLUR, None)?;
+            let program = self.link(gl, Path::new("<engine blur>"), BLUR)?;
             let Ok(framebuffer) = gl.create_framebuffer() else {
                 gl.delete_program(program);
                 return None;
