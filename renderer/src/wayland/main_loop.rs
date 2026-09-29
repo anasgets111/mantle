@@ -124,7 +124,11 @@ pub fn run(
         surfaces_drawn: 0,
         repaint_split: surface::RepaintSplit::default(),
         current_egl_surface: None,
-        pending_trim: true,
+        trim: {
+            let mut trim = trim::Trim::default();
+            trim.request(std::time::Instant::now());
+            trim
+        },
     };
 
     // Binding delivers outputs and seat capabilities as a burst; two roundtrips populate the
@@ -343,7 +347,7 @@ pub fn run(
         // for fields.
         let active = dispatched || re_resolved || typed || !landed.is_empty();
         if passed && shed_nodes(&mut node_high_water, app.client.scene().census().1) {
-            app.pending_trim = true;
+            app.trim.request(std::time::Instant::now());
         }
         // Disarm after the turn, not only when active: `dispatch_pending` armed this serial and
         // `apply_resolved_surface_state` is its only reader. This enforces ADR-0049's one-turn
@@ -407,11 +411,24 @@ pub fn run(
         }
         if let Some(guard) = event_queue.prepare_read() {
             let fd = guard.connection_fd();
+            // Collect Lua garbage and hand glibc's free lists back to the OS once something freed in
+            // bulk and the releases stopped, whatever timer is pending: a text tick frees nothing
+            // worth a full GC. Before the deadline so a trim that just ran leaves no wake behind.
+            // ponytail: a trim can land between two animation frames, one frame's hitch per release.
+            if app.trim.take_due(std::time::Instant::now()) {
+                let _ = app.client.lua().gc_collect();
+                // SAFETY: plain one-integer FFI. `malloc_trim` locks the arenas itself and only
+                // `madvise`s pages the allocator already holds free, never live chunks.
+                unsafe {
+                    libc::malloc_trim(0);
+                }
+            }
             // No timeout while idle (ADR-0124): Wayland events use the connection fd; Supervisor
             // frames, landed decodes, and socket-thread exit use the waker. The one timeout is a
             // pending `delay(signal, ms)` or an open `pulse(signal, ms)` window (ADR-0146,
-            // ADR-0153) or an animated image's next frame (ADR-0233), armed only while one is
-            // running, the way a frame callback is requested only while a tween is.
+            // ADR-0153), an animated image's next frame (ADR-0233) or a pending trim (ADR-0292),
+            // armed only while one is running, the way a frame callback is requested only while a
+            // tween is.
             let mut fds = [
                 nix::poll::PollFd::new(fd, nix::poll::PollFlags::POLLIN),
                 nix::poll::PollFd::new(waker.fd(), nix::poll::PollFlags::POLLIN),
@@ -424,6 +441,7 @@ pub fn run(
                 .chain(app.next_repeat_deadline())
                 .chain(app.next_caret_deadline())
                 .chain(app.captures.next_request_deadline())
+                .chain(app.trim.deadline())
                 .min();
             let timeout = deadline.map_or(nix::poll::PollTimeout::NONE, |due| {
                 // Rounded up: `as_millis` on the last fraction of a hold is 0, and a zero timeout
@@ -433,17 +451,6 @@ pub fn run(
                 nix::poll::PollTimeout::try_from(millis.min(i32::MAX as u128) as i32)
                     .unwrap_or(nix::poll::PollTimeout::NONE)
             });
-            // Collect Lua garbage and hand glibc's free lists back to the OS once something freed in
-            // bulk, whatever timer is pending: a text tick frees nothing worth a full GC.
-            // ponytail: a trim can land between two animation frames, one frame's hitch per release.
-            if std::mem::take(&mut app.pending_trim) {
-                let _ = app.client.lua().gc_collect();
-                // SAFETY: plain one-integer FFI. `malloc_trim` locks the arenas itself and only
-                // `madvise`s pages the allocator already holds free, never live chunks.
-                unsafe {
-                    libc::malloc_trim(0);
-                }
-            }
             let woke = matches!(nix::poll::poll(&mut fds, timeout), Ok(n) if n > 0);
             let wayland_ready = woke && fds[0].any().unwrap_or(false);
             if let Some(profile) = profile.as_mut() {

@@ -269,7 +269,7 @@ impl App {
             return;
         }
         // The replaced evaluation's tables are garbage now.
-        self.pending_trim = true;
+        self.trim.request(std::time::Instant::now());
         for instance_id in &reconcile.removed {
             if reconcile.added.iter().any(|added| &added.instance_id == instance_id) {
                 // Same id: keep the tree the apply just built.

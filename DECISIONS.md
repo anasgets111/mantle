@@ -7064,3 +7064,17 @@ validator dependency); an asynchronous error frame (no Lua line to report agains
 with LuaLS types (cannot see `non_empty`, `absolute` or out-of-range values).
 
 Amends ADR-0215 decision 2 and ADR-0264.
+
+## 0292. The bulk-release trim waits for quiet and keeps 5 s apart
+
+ADR-0271's trim (full Lua GC plus `malloc_trim(0)`) ran before the next sleep after any request. A
+list filter that narrows the scene a quarter per keystroke requested one per key: 2.4% of busy main
+time on a 1000-row list, plus a stall per key.
+
+1. `wayland::trim::Trim` holds one due time. Each request restarts a 1 s settle wait, never earlier
+   than 5 s after the last trim; the loop's poll deadline wakes it.
+2. A burst of N requests costs one trim after it ends.
+
+ponytail: steady typing defers the trim until it stops. Upgrade: cap the deferral.
+
+Amends ADR-0271.

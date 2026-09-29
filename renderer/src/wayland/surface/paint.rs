@@ -80,7 +80,7 @@ impl App {
         // `BoundSurface`'s drop sends `wl_egl_window_destroy`.
         drop(bound);
         self.surfaces[index].configured_size = (0, 0);
-        self.pending_trim = true;
+        self.trim.request(std::time::Instant::now());
     }
 
     /// Lazily builds the process-wide EGL state on the first drawable surface (ADR-0071). Failure

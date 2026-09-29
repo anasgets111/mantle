@@ -71,6 +71,7 @@ mod main_loop;
 mod memory_profile;
 mod output;
 mod surface;
+mod trim;
 mod turn;
 mod xdg_shell;
 
@@ -237,8 +238,8 @@ pub struct App {
     repaint_split: surface::RepaintSplit,
     current_egl_surface: Option<EglSurface>,
     /// Something freed memory in bulk (startup, a reload, a surface's EGL buffers, a shed tree);
-    /// the loop collects Lua garbage and trims glibc before it next sleeps.
-    pending_trim: bool,
+    /// the loop collects Lua garbage and trims glibc once things settle (`trim::Trim`).
+    trim: trim::Trim,
 }
 
 impl ProvidesRegistryState for App {
