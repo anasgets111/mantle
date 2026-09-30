@@ -4,6 +4,7 @@ use std::path::Path;
 
 use super::decode::{read_capped, take_capped};
 use crate::layout::node::Rgba;
+use crate::text::shaping::FontDatabase;
 
 /// Bytes an SVG source may occupy before it is refused unparsed. `usvg` parses the whole document
 /// into a tree with no ceiling of its own, and an icon that is not a few hundred kilobytes is not
@@ -11,9 +12,12 @@ use crate::layout::node::Rgba;
 const MAX_SVG_BYTES: u64 = 8 * 1024 * 1024;
 
 /// Rasterizes with longest edge `box_px`; [`fitted_rect`](super::fitted_rect) handles placement.
-/// ponytail: `resvg/text` is off, so `<text>` draws nothing (ADR-0234). Upgrade: convert it to
-/// paths in the asset, or link a second fontdb and key the image cache on the font generation.
-pub(super) fn rasterize_svg(path: &Path, box_px: u32, tint: Option<Rgba>) -> Result<(Vec<u8>, u32, u32), String> {
+pub(super) fn rasterize_svg(
+    path: &Path,
+    box_px: u32,
+    tint: Option<Rgba>,
+    fonts: &FontDatabase,
+) -> Result<(Vec<u8>, u32, u32), String> {
     // Read through a limited reader rather than checking `metadata` and then reading: the file can
     // grow between the two, and the read is what allocates. `usvg` parses whatever it is handed
     // into a tree with no ceiling of its own (see `MAX_SVG_BYTES`).
@@ -33,7 +37,14 @@ pub(super) fn rasterize_svg(path: &Path, box_px: u32, tint: Option<Rgba>) -> Res
         Some(tint) => tinted_svg(&data, tint),
         None => data,
     };
-    let tree = resvg::usvg::Tree::from_data(&data, &resvg::usvg::Options::default()).map_err(|err| err.to_string())?;
+    // ponytail: SVG text uses the fonts already loaded by Mantle. Assets needing other families
+    // declare them in fonts {}; runtime discovery would need to join the shaping worker's queue.
+    let options = resvg::usvg::Options {
+        fontdb: fonts.db.clone(),
+        font_family: fonts.primary_family.clone(),
+        ..Default::default()
+    };
+    let tree = resvg::usvg::Tree::from_data(&data, &options).map_err(|err| err.to_string())?;
     let size = tree.size();
     let longest = size.width().max(size.height());
     // Check finiteness as well as sign: `<= 0.0` lets NaN reach `scale` and a zero-sized pixmap,
@@ -113,9 +124,100 @@ fn rewrite_color_declarations(text: &str, hex: &str) -> String {
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use super::super::tests::GRADIENT_SVG;
     use super::*;
+
+    pub(crate) fn fixture_shaping() -> crate::text::shaping::ShapingHandle {
+        let config = Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures/shots/fonts/fonts.conf");
+        let shaping = crate::text::shaping::ShapingHandle::spawn_with(Some(config));
+        shaping.set_chain(&["Noto Sans".into()]);
+        shaping
+    }
+
+    #[test]
+    fn svg_text_uses_the_configured_faces_and_survives_chain_replacement() {
+        let shaping = fixture_shaping();
+        let fonts = shaping.font_database();
+        assert_eq!(fonts.primary_family, "Noto Sans");
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("text.svg");
+        let render = |attrs: &str, snapshot: &FontDatabase| {
+            std::fs::write(&path, format!(
+                r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 240 60"><text x="4" y="45" font-size="40" {attrs}>Mantle ffi</text></svg>"#
+            )).unwrap();
+            rasterize_svg(&path, 240, None, snapshot).unwrap().0
+        };
+        let plain = render("", &fonts);
+        assert!(plain.as_chunks::<4>().0.iter().filter(|p| p[3] > 0).count() > 500);
+        assert_eq!(plain, render(r#"font-family="Noto Sans""#, &fonts));
+        assert_eq!(plain, render(r#"font-family="Missing Fixture Family""#, &fonts));
+        assert_ne!(plain, render(r#"font-weight="700""#, &fonts));
+        assert_ne!(plain, render(r#"font-style="italic""#, &fonts));
+        shaping.set_chain(&["Noto Sans Symbols 2".into()]);
+        let replacement = shaping.font_database();
+        assert!(replacement.generation > fonts.generation);
+        assert_eq!(replacement.primary_family, "Noto Sans Symbols 2");
+        assert_ne!(plain, render("", &replacement));
+        drop(shaping);
+        assert_eq!(plain, render("", &fonts), "a queued decode retains its original mapped faces");
+    }
+
+    #[test]
+    fn svg_generic_families_keep_the_declared_alias_and_serif_fallback() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = dir.path().join("fonts.conf");
+        let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures/shots/fonts");
+        std::fs::write(
+            &config,
+            format!(
+                r#"<fontconfig><dir>{}</dir>
+            <alias binding="strong"><family>monospace</family><prefer><family>Noto Sans Symbols 2</family></prefer></alias>
+            <alias binding="strong"><family>serif</family><prefer><family>Noto Sans Symbols 2</family></prefer></alias>
+            </fontconfig>"#,
+                fixtures.display()
+            ),
+        )
+        .unwrap();
+        let shaping = crate::text::shaping::ShapingHandle::spawn_with(Some(config));
+        shaping.set_chain(&["Noto Sans".into(), "monospace".into(), "serif".into()]);
+        let fonts = shaping.font_database();
+        let named = fonts
+            .db
+            .query(&fontdb::Query { families: &[fontdb::Family::Name("Noto Sans Symbols 2")], ..Default::default() })
+            .unwrap();
+        for family in [fontdb::Family::Monospace, fontdb::Family::Serif] {
+            assert_eq!(fonts.db.query(&fontdb::Query { families: &[family], ..Default::default() }), Some(named));
+        }
+        let svg = dir.path().join("text.svg");
+        let render = |family: &str| {
+            std::fs::write(&svg, format!(r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 240 60"><text x="4" y="45" font-size="40" font-family="{family}">Mantle</text></svg>"#)).unwrap();
+            rasterize_svg(&svg, 240, None, &fonts).unwrap().0
+        };
+        assert_eq!(render("Missing Fixture Family"), render("Noto Sans Symbols 2"));
+        assert_eq!(render("monospace"), render("Noto Sans Symbols 2"));
+        assert_eq!(render("serif"), render("Noto Sans Symbols 2"));
+    }
+
+    #[test]
+    fn svg_text_obeys_current_color_and_svg_masks() {
+        let fonts = fixture_shaping().font_database();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("mask.svg");
+        std::fs::write(
+            &path,
+            r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 240 60">
+            <defs><mask id="letters"><text x="4" y="45" font-size="40" fill="white">Mantle</text></mask></defs>
+            <rect width="240" height="60" fill="currentColor" mask="url(#letters)"/>
+        </svg>"##,
+        )
+        .unwrap();
+        let red = Rgba { r: 1.0, g: 0.0, b: 0.0, a: 1.0 };
+        let (pixels, _, _) = rasterize_svg(&path, 240, Some(red), &fonts).unwrap();
+        assert!(pixels.as_chunks::<4>().0.iter().filter(|p| p[3] > 0).count() > 500);
+        assert!(pixels.as_chunks::<4>().0.iter().all(|p| p[0] == p[3] && p[1] == 0 && p[2] == 0));
+        assert_eq!(&pixels[..4], &[0, 0, 0, 0]);
+    }
 
     #[test]
     fn a_kde_symbolic_icon_is_recoloured_through_its_own_stylesheet() {
@@ -180,7 +282,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let svg = dir.path().join("gradient.svg");
         std::fs::write(&svg, GRADIENT_SVG).unwrap();
-        let (pixels, width, height) = rasterize_svg(&svg, 128, None).expect("the fixture should parse");
+        let (pixels, width, height) =
+            rasterize_svg(&svg, 128, None, &FontDatabase::default()).expect("the fixture should parse");
         // 1920x1080 viewBox, longest edge 128, preserves the aspect ratio.
         assert_eq!((width, height), (128, 72));
         assert_eq!(pixels.len(), (width * height * 4) as usize);
@@ -199,7 +302,8 @@ mod tests {
         let zipped = dir.path().join("gradient.svgz");
         std::fs::write(&plain, GRADIENT_SVG).unwrap();
         std::fs::write(&zipped, gzip(GRADIENT_SVG.as_bytes())).unwrap();
-        assert_eq!(rasterize_svg(&zipped, 64, None).unwrap(), rasterize_svg(&plain, 64, None).unwrap());
+        let fonts = FontDatabase::default();
+        assert_eq!(rasterize_svg(&zipped, 64, None, &fonts).unwrap(), rasterize_svg(&plain, 64, None, &fonts).unwrap());
     }
 
     #[test]
@@ -210,7 +314,8 @@ mod tests {
         let bomb = dir.path().join("bomb.svgz");
         std::fs::write(&bomb, gzip(&vec![b' '; MAX_SVG_BYTES as usize + 1])).unwrap();
         assert!(std::fs::metadata(&bomb).unwrap().len() < MAX_SVG_BYTES, "the compressed file passes the read cap");
-        let err = rasterize_svg(&bomb, 24, None).expect_err("an inflating svgz must be refused");
+        let err =
+            rasterize_svg(&bomb, 24, None, &FontDatabase::default()).expect_err("an inflating svgz must be refused");
         assert!(err.contains("inflates past"), "the refusal should say why: {err}");
     }
 
@@ -227,7 +332,8 @@ mod tests {
         let bloated = dir.path().join("huge.svg");
         // One byte over, so the refusal is the size check and not a parse failure.
         std::fs::write(&bloated, vec![b' '; MAX_SVG_BYTES as usize + 1]).unwrap();
-        let err = rasterize_svg(&bloated, 24, None).expect_err("an oversized svg must be refused");
+        let err =
+            rasterize_svg(&bloated, 24, None, &FontDatabase::default()).expect_err("an oversized svg must be refused");
         assert!(err.contains("over the"), "the refusal should say why: {err}");
     }
 }

@@ -17,7 +17,7 @@ use crate::text::fonts::{self, ResolvedFonts};
 /// them together: a `families` map kept across a `set_chain` would point at faces that went down
 /// with the old database.
 pub(super) struct WorkerFonts {
-    db: fontdb::Database,
+    pub(super) db: fontdb::Database,
     font_context: FontContext,
     layout_context: LayoutContext<()>,
     /// A Parley font is identified by its mapped file and collection index.

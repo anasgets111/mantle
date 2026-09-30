@@ -133,6 +133,14 @@ fn load_chain(db: &mut Database, chain: &[&str], loaded_paths: &mut HashSet<Path
             }
         }
 
+        match name.to_ascii_lowercase().as_str() {
+            "serif" => db.set_serif_family(resolved_family.clone()),
+            "sans-serif" => db.set_sans_serif_family(resolved_family.clone()),
+            "monospace" => db.set_monospace_family(resolved_family.clone()),
+            "cursive" => db.set_cursive_family(resolved_family.clone()),
+            "fantasy" => db.set_fantasy_family(resolved_family.clone()),
+            _ => {}
+        }
         if primary_family.is_none() {
             load_variants(db, name, &resolved_family, loaded_paths);
             primary_family = Some(resolved_family);

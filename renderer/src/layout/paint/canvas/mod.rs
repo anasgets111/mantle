@@ -876,6 +876,45 @@ pub(crate) mod tests {
         assert_eq!(inverted, [(0, 0, 0, 0), (255, 255, 255, 255), (0, 0, 0, 0), (255, 0, 0, 255)]);
     }
 
+    #[test]
+    fn svg_text_draws_through_images_icons_and_file_masks() {
+        let instance = init_headless_egl(64, 64).expect("SVG integration test requires headless EGL");
+        let config = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures/shots/fonts/fonts.conf");
+        let shaping = ShapingHandle::spawn_with(Some(config));
+        shaping.set_chain(&["Noto Sans".into()]);
+        let mut painter = text_painter(&instance, &shaping, 64, 64).expect("FemtoVG context");
+        let mut images = ImageCache::inline().with_fonts(shaping.clone());
+        let dir = tempfile::tempdir().unwrap();
+        let svg = dir.path().join("letter.svg");
+        std::fs::write(&svg, r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><text x="4" y="50" font-size="48" fill="currentColor">M</text></svg>"#).unwrap();
+        let lua = Lua::new();
+        let mut coverage = Vec::new();
+        for child in [
+            format!(r#"image {{ source = "{}", width = 64, height = 64 }}"#, svg.display()),
+            format!(r##"icon {{ name = "{}", size = 64, foreground = "#FF0000" }}"##, svg.display()),
+            format!(
+                r##"rect {{ width = 64, height = 64, background = "#00FF00", mask = {{ source = "{}" }} }}"##,
+                svg.display()
+            ),
+        ] {
+            let root = resolved_surface(
+                &lua,
+                &format!("return panel {{ id = 'bar', width = 64, height = 64, child = {child} }}"),
+                LogicalSize { width: 64.0, height: 64.0 },
+            );
+            paint_tree(&mut painter, &mut images, &root, 1.0);
+            let shot = painter.canvas_mut().screenshot().unwrap();
+            let (pixels, ..) = shot.as_ref().to_contiguous_buf();
+            let alpha: Vec<_> = pixels.iter().map(|px| px.a).collect();
+            assert!(alpha.iter().filter(|&&a| a > 0).count() > 300);
+            coverage.push(alpha);
+        }
+        assert_eq!(coverage[0], coverage[1]);
+        assert_eq!(coverage[0], coverage[2]);
+        shaping.set_chain(&["Noto Sans Symbols 2".into()]);
+        assert!(!images.poll().is_empty(), "unchanged SVG paths still owe a repaint after fonts change");
+    }
+
     /// An SVG mask is how a config cuts a subtree to a shape no `radius` draws.
     #[test]
     fn an_image_mask_keeps_only_what_its_alpha_covers() {

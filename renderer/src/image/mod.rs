@@ -42,6 +42,7 @@ use svg::packed_rgb;
 use texture::{Animation, upload_or_log};
 
 use crate::layout::node::Rgba;
+use crate::text::shaping::{FontDatabase, ShapingHandle};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Receiver, SyncSender, TryRecvError};
@@ -128,6 +129,7 @@ struct CacheKey {
     /// file and box are different slots. Zero for every kind but a static `image`; `decode_gif`
     /// never reads it, so an animated source is keyed as if it were always zero.
     blur_px: u32,
+    font_generation: u64,
 }
 
 crate::layout::node::prop::keywords! {
@@ -201,6 +203,7 @@ struct Entry {
 /// A queued decode's key, so a late result lands in the right slot, plus its tint and the
 /// animation ceiling read when it was queued.
 struct Job {
+    fonts: FontDatabase,
     key: CacheKey,
     tint: Option<Rgba>,
     animation_bytes: usize,
@@ -236,6 +239,8 @@ pub struct ImageCacheCensus {
 /// Path/size to uploaded texture for one generation (`CONTEXT.md`, **Image cache**). Not shared or
 /// persisted: a replaced Renderer starts cold (ADR-0054).
 pub struct ImageCache {
+    shaping: Option<ShapingHandle>,
+    fonts: FontDatabase,
     entries: HashMap<CacheKey, Entry>,
     /// Evicted since [`ImageCache::release_evicted`], not yet freed.
     evicted: Vec<ImageId>,
@@ -309,6 +314,8 @@ impl ImageCache {
 
     fn build(waker: Option<crate::wake::Waker>, max_workers: usize) -> Self {
         ImageCache {
+            shaping: None,
+            fonts: FontDatabase::default(),
             entries: HashMap::new(),
             evicted: Vec::new(),
             evicted_total: 0,
@@ -323,6 +330,29 @@ impl ImageCache {
             texture_budget: STARTING_TEXTURE_BUDGET,
             pool: Pool::spawn(waker, max_workers),
             landed: Vec::new(),
+        }
+    }
+
+    /// Shares the text worker's font selection with SVG decoding.
+    pub fn with_fonts(mut self, shaping: ShapingHandle) -> Self {
+        self.fonts = shaping.font_database();
+        self.shaping = Some(shaping);
+        self
+    }
+
+    fn sync_fonts(&mut self) {
+        let Some(shaping) = &self.shaping else { return };
+        if shaping.font_generation() == self.fonts.generation {
+            return;
+        }
+        self.fonts = shaping.font_database();
+        let stale: Vec<_> = self.entries.keys().filter(|key| is_vector(&key.path)).cloned().collect();
+        for key in stale {
+            // poll's existing file invalidation also reaches retained image and mask layers.
+            if !matches!(self.entries[&key].slot, Slot::Pending) {
+                self.cancelled.push(key.path.clone());
+            }
+            self.evict(&key);
         }
     }
 
@@ -366,6 +396,7 @@ impl ImageCache {
     /// Takes finished background decodes and returns landed files as the repaint cue. No canvas is
     /// current here, so pixels wait in `landed` for the following paint.
     pub fn poll(&mut self) -> Vec<PathBuf> {
+        self.sync_fonts();
         let mut files = Vec::new();
         loop {
             match self.pool.results.try_recv() {
@@ -468,8 +499,10 @@ impl ImageCache {
         fit: Fit,
         blur_px: u32,
     ) -> Option<ImageId> {
+        self.sync_fonts();
         let vector = is_vector(path);
         let key = CacheKey {
+            font_generation: if vector { self.fonts.generation } else { 0 },
             path: path.to_path_buf(),
             box_px: cache_box(path, box_px),
             version: FileVersion::read(path),
@@ -493,8 +526,15 @@ impl ImageCache {
                 // Counted against the same ceiling the workers wait on, but never waiting for it:
                 // this is the dispatch thread (ADR-0187). Nothing is queued, so nothing can be
                 // evicted mid-decode and the request is still wanted by definition.
-                let decoded =
-                    decode(&key, tint, None, Charge::Immediate(&self.pool.budget), &|| true, self.animation_bytes());
+                let decoded = decode(
+                    &key,
+                    tint,
+                    None,
+                    Charge::Immediate(&self.pool.budget),
+                    &|| true,
+                    self.animation_bytes(),
+                    &self.fonts,
+                );
                 let slot = upload_or_log(canvas, &key.path, decoded);
                 self.insert(key.clone(), slot);
                 self.showing(canvas, &key)
@@ -506,7 +546,12 @@ impl ImageCache {
                 if !self.admit(&key) {
                     return None;
                 }
-                match self.pool.jobs.try_send(Job { key: key.clone(), tint, animation_bytes: self.animation_bytes() }) {
+                match self.pool.jobs.try_send(Job {
+                    fonts: self.fonts.clone(),
+                    key: key.clone(),
+                    tint,
+                    animation_bytes: self.animation_bytes(),
+                }) {
                     Ok(()) => {
                         self.insert(key, Slot::Pending);
                     }
@@ -816,7 +861,15 @@ mod tests {
     }
 
     pub(super) fn key(path: impl Into<PathBuf>, px: u32, version: FileVersion) -> CacheKey {
-        CacheKey { path: path.into(), box_px: (px, px), version, tint: None, cropped: false, blur_px: 0 }
+        CacheKey {
+            path: path.into(),
+            box_px: (px, px),
+            version,
+            tint: None,
+            cropped: false,
+            blur_px: 0,
+            font_generation: 0,
+        }
     }
 
     #[test]
@@ -985,6 +1038,57 @@ mod tests {
     }
 
     #[test]
+    fn changing_fonts_cancels_svg_jobs_preserves_rasters_and_rejects_late_pixels() {
+        let shaping = svg::tests::fixture_shaping();
+        let mut cache = ImageCache::inline().with_fonts(shaping.clone());
+        let (results_tx, results_rx) = std::sync::mpsc::channel();
+        cache.pool.results = results_rx;
+        let vector =
+            CacheKey { font_generation: cache.fonts.generation, ..key("fixture.svg", 24, FileVersion::default()) };
+        let raster = key("fixture.png", 24, FileVersion::default());
+        cache.admit(&vector);
+        cache.insert(vector.clone(), Slot::Pending);
+        cache.insert(raster.clone(), Slot::Failed);
+        shaping.set_chain(&["Noto Sans Symbols 2".into()]);
+        assert_eq!(cache.poll(), vec![vector.path.clone()]);
+        assert!(!cache.entries.contains_key(&vector));
+        assert!(cache.entries.contains_key(&raster));
+        assert!(!cache.pool.wanted.lock().unwrap().contains(&vector));
+        let fresh = CacheKey { font_generation: cache.fonts.generation, ..vector.clone() };
+        assert_ne!(fresh, vector, "old results cannot match a replacement pending slot");
+        cache.insert(fresh.clone(), Slot::Pending);
+        results_tx.send((vector, Err("old generation".into()))).unwrap();
+        assert!(cache.poll().is_empty(), "a late old result is not a current repaint cue");
+        assert!(cache.landed.is_empty(), "old pixels never reach the upload queue");
+        assert!(matches!(cache.entries[&fresh].slot, Slot::Pending));
+    }
+
+    #[test]
+    fn the_pool_rasterizes_svg_text_with_its_queued_font_snapshot() {
+        let shaping = svg::tests::fixture_shaping();
+        let mut cache = ImageCache::new().with_fonts(shaping);
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("text.svg");
+        std::fs::write(&path, r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 40"><text x="2" y="30" font-size="28">Mantle</text></svg>"#).unwrap();
+        let key = CacheKey { font_generation: cache.fonts.generation, ..key(&path, 120, FileVersion::read(&path)) };
+        assert!(cache.admit(&key));
+        cache.insert(key.clone(), Slot::Pending);
+        cache
+            .pool
+            .jobs
+            .send(Job { fonts: cache.fonts.clone(), key, tint: None, animation_bytes: STARTING_TEXTURE_BUDGET })
+            .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while cache.poll().is_empty() {
+            assert!(Instant::now() < deadline, "the SVG decode never landed");
+            std::thread::yield_now();
+        }
+        let decoded = cache.landed[0].1.as_ref().unwrap();
+        assert!(decoded.premultiplied);
+        assert!(decoded.base.as_chunks::<4>().0.iter().filter(|p| p[3] > 0).count() > 200);
+    }
+
+    #[test]
     fn the_pool_decodes_a_job_off_thread_and_poll_reports_it_landed() {
         let dir = tempfile::tempdir().unwrap();
         let png = dir.path().join("fixture.png");
@@ -995,7 +1099,16 @@ mod tests {
         // A worker skips a job nobody wants, so this stands in for what `image` records when it
         // queues one.
         cache.pool.wanted.lock().unwrap().insert(key.clone());
-        cache.pool.jobs.send(Job { key: key.clone(), tint: None, animation_bytes: STARTING_TEXTURE_BUDGET }).unwrap();
+        cache
+            .pool
+            .jobs
+            .send(Job {
+                fonts: FontDatabase::default(),
+                key: key.clone(),
+                tint: None,
+                animation_bytes: STARTING_TEXTURE_BUDGET,
+            })
+            .unwrap();
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
         let mut files = cache.poll();
         while files.is_empty() {

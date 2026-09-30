@@ -57,9 +57,8 @@ mlua = { version = "0.12.1", features = ["lua54", "vendored", "serde"] }
 # "resource" is `getrusage`, read only by the env-gated `wayland::idle_profile` (ADR-0132) to
 # split the poll loop's CPU between this thread and the rest of the process.
 nix = { workspace = true, features = ["event", "fs", "poll", "resource", "time"] }
-# `svgz` adds no crate: flate2 is already here through `png`. Keep SVG `<text>` shaping off
-# (ADR-0234); Mantle draws its own text nodes.
-resvg = { version = "0.48.1", default-features = false, features = ["svgz"] }
+# SVG text uses a snapshot of Mantle's configured fonts. `svgz` reuses flate2 from `png`.
+resvg = { version = "0.48.1", default-features = false, features = ["svgz", "text"] }
 serde_json.workspace = true
 shared.workspace = true
 # No `calloop`: the event loop is our own poll (`wake.rs`). 154 to 150.

@@ -456,7 +456,8 @@ os.getenv = function(name) return ({{ USER = "user", HOME = "/home/user" }})[nam
                 .expect("the docs screenshots need headless EGL (Mesa or NVIDIA)");
             let painter = text_painter(&instance, shaping, MAX_EDGE, MAX_EDGE).expect("no FemtoVG context");
             let gl = test_gl(&instance);
-            let (stage, images, captures) = (ShaderStage::default(), ImageCache::inline(), CaptureCache::default());
+            let (stage, images, captures) =
+                (ShaderStage::default(), ImageCache::inline().with_fonts(shaping.clone()), CaptureCache::default());
             Gpu { painter, gl, stage, images, captures, paints: 0 }
         }
 

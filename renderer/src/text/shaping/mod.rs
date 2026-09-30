@@ -169,10 +169,19 @@ impl AsRef<[u8]> for FontData {
     }
 }
 
+/// Immutable view of the shaping worker's loaded fonts. Shared mappings survive chain replacement.
+#[derive(Clone, Default)]
+pub(crate) struct FontDatabase {
+    pub generation: u64,
+    pub primary_family: String,
+    pub db: Arc<fontdb::Database>,
+}
+
 enum Request {
     /// The `bool` keeps each line's glyphs ([`ShapingHandle::shape_glyphs`]).
     Shape(ShapeRequest, bool, mpsc::Sender<ShapeResult>),
     FontChainData(mpsc::Sender<Vec<FontFace>>),
+    FontDatabase(mpsc::Sender<FontDatabase>),
     /// Replace the chain this worker measures against, once the config has said what it wants
     /// (ADR-0043 decision 2). Replies once the new font set is live, so the next
     /// `font_chain_data` call answers with the new faces.
@@ -288,6 +297,22 @@ impl ShapingHandle {
                         Request::EnsureFamily(asked, reply) => {
                             fonts.family_for(Some(&asked), &generation, &worker_ensured);
                             let _ = reply.send(());
+                        }
+                        Request::FontDatabase(reply) => {
+                            let mut db = fonts.db.clone();
+                            // usvg falls back through serif. Preserve a loaded generic declaration;
+                            // otherwise use the primary without loading another family.
+                            if db
+                                .query(&fontdb::Query { families: &[fontdb::Family::Serif], ..Default::default() })
+                                .is_none()
+                            {
+                                db.set_serif_family(fonts.primary_family.clone());
+                            }
+                            let _ = reply.send(FontDatabase {
+                                generation: generation.load(Ordering::Acquire),
+                                primary_family: fonts.primary_family.clone(),
+                                db: Arc::new(db),
+                            });
                         }
                         Request::FontChainData(reply) => {
                             let _ = reply.send(fonts.chain_data.clone());
@@ -498,6 +523,13 @@ impl ShapingHandle {
         let (reply_tx, reply_rx) = mpsc::channel();
         self.requests.send(Request::FontChainData(reply_tx)).expect("mantle-text-shaping worker thread died");
         reply_rx.recv().expect("mantle-text-shaping worker thread died before replying")
+    }
+
+    /// Snapshot for SVG decoding, taken on the same worker that changes the font generation.
+    pub(crate) fn font_database(&self) -> FontDatabase {
+        let (tx, rx) = mpsc::channel();
+        self.requests.send(Request::FontDatabase(tx)).expect("mantle-text-shaping worker thread died");
+        rx.recv().expect("mantle-text-shaping worker thread died before replying")
     }
 
     /// Resolves `family` without measuring anything, so a node that names one is drawn in it even

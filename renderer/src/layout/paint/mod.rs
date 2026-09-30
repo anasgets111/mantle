@@ -232,15 +232,20 @@ fn mask_file(draw: &Draw) -> Option<&str> {
 }
 
 impl DisplayList {
-    /// Whether any `image` in this list draws one of `files` (ADR-0122). A background decode
+    /// Whether any image, icon or file mask in this list draws one of `files` (ADR-0122). A background decode
     /// landing changes no list, since a list names the file and not the texture, so this is how
     /// `wayland::App` tells which surfaces' skipped repaint is now stale.
     pub fn draws_any_of(&self, files: &[std::path::PathBuf]) -> bool {
+        if files.is_empty() {
+            return false;
+        }
         any_draw_matches(&self.commands, |draw| {
             matches!(draw, Draw::Image { source, retained, .. } if files.iter().any(|file| {
                 file.as_os_str() == source.as_str()
                     || retained.as_ref().is_some_and(|cover| file.as_os_str() == cover.as_str())
-            })) || mask_file(draw).is_some_and(|mask| files.iter().any(|file| file.as_os_str() == mask))
+            })) || matches!(draw, Draw::Icon { name, px, .. } if image::icons::resolve(name, (*px).min(512) as u16)
+                .is_some_and(|path| files.contains(&path)))
+                || mask_file(draw).is_some_and(|mask| files.iter().any(|file| file.as_os_str() == mask))
         })
     }
 
@@ -532,6 +537,29 @@ mod tests {
         let mut pinned = Vec::new();
         list.drawn_images(&mut pinned);
         assert_eq!(pinned, vec![(std::path::PathBuf::from("/tmp/a.png"), (100, 40))]);
+    }
+
+    #[test]
+    fn changed_svg_files_invalidate_absolute_and_theme_icons_in_nested_groups() {
+        let dir = tempfile::tempdir().unwrap();
+        let svg = dir.path().join("letters.svg");
+        std::fs::write(&svg, r#"<svg xmlns="http://www.w3.org/2000/svg"><text>Icon</text></svg>"#).unwrap();
+        for name in [svg.to_str().unwrap(), "letters"] {
+            let src = format!(
+                r#"return panel {{ id='bar', width=64, height=64,
+                child=rect {{ width=64, height=64, rotate=15, radius=8, clip='Rounded',
+                    children={{icon {{name={name:?}, size=64}}}} }} }}"#
+            );
+            let list =
+                build(&resolved_surface(&Lua::new(), &src, LogicalSize { width: 64.0, height: 64.0 }), 1.0, None);
+            let previous = image::icons::FIXTURE_ICONS.replace(Some(dir.path().to_path_buf()));
+            let matches = list.draws_any_of(std::slice::from_ref(&svg));
+            let unrelated = list.draws_any_of(&[dir.path().join("other.svg")]);
+            let empty = list.draws_any_of(&[]);
+            image::icons::FIXTURE_ICONS.replace(previous);
+            assert!(matches, "{name}: an unchanged icon must repaint when its font-dependent SVG is evicted");
+            assert!(!unrelated && !empty, "{name}: unrelated files must not repaint the icon");
+        }
     }
 
     /// `child` in a 96x48 panel, built at scale 1.

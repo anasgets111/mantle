@@ -4,6 +4,12 @@ A picture from a file: wallpapers, album art, avatars, thumbnails. It can decode
 the previous picture while a new one loads, and cross-fade or run a shader between them. For theme
 icons, use an [`icon`](icon.md).
 
+SVG and SVGZ `<text>` use the fonts loaded by Mantle. Declare required families in `fonts { ... }`;
+text without a family uses the chain's primary font. Generic names use the families declared in
+the chain. An unavailable family falls back to the loaded serif family, or the primary if none
+is loaded. SVG text uses SVG layout and shaping, so its spacing can differ from a `text` node. Images, icons and file masks
+share this behavior, including background decoding.
+
 A wallpaper that crossfades when the path changes:
 
 <!-- shot-alt: A landscape illustration with layered hills and a sun. -->

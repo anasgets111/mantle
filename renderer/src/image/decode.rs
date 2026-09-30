@@ -57,6 +57,7 @@ impl Pool {
                         Charge::Waiting(&budget),
                         &still_wanted,
                         job.animation_bytes,
+                        &job.fonts,
                     );
                     if result_tx.send((job.key, result)).is_err() {
                         return;
@@ -98,12 +99,13 @@ pub(super) fn decode(
     charge: Charge<'_>,
     still_wanted: &dyn Fn() -> bool,
     animation_bytes: usize,
+    fonts: &crate::text::shaping::FontDatabase,
 ) -> Result<Decoded, String> {
     let CacheKey { path, box_px, cropped, blur_px, .. } = key;
     // An SVG rasterizes to `box_px`, not to whatever the file declares, so it is bounded by the
     // request and never approaches the pool budget. `MAX_SVG_BYTES` is what bounds the parse.
     if is_vector(path) {
-        let (pixels, width, height) = rasterize_svg(path, box_px.0.max(box_px.1), tint)?;
+        let (pixels, width, height) = rasterize_svg(path, box_px.0.max(box_px.1), tint, fonts)?;
         let pixels = blur_rgba(pixels, width, height, *blur_px, true)?;
         return Ok(Decoded {
             base: pixels,
@@ -884,8 +886,9 @@ mod tests {
         let sharp = key(&path, 4, FileVersion::read(&path));
         let blurred = CacheKey { blur_px: 50, ..sharp.clone() };
 
-        let a = decode(&sharp, None, None, Charge::Free, &|| true, STARTING_TEXTURE_BUDGET).unwrap();
-        let b = decode(&blurred, None, None, Charge::Free, &|| true, STARTING_TEXTURE_BUDGET).unwrap();
+        let fonts = crate::text::shaping::FontDatabase::default();
+        let a = decode(&sharp, None, None, Charge::Free, &|| true, STARTING_TEXTURE_BUDGET, &fonts).unwrap();
+        let b = decode(&blurred, None, None, Charge::Free, &|| true, STARTING_TEXTURE_BUDGET, &fonts).unwrap();
         assert_eq!(a.base, b.base, "an animated source keeps playing sharp regardless of source_blur");
         assert_eq!(a.deltas.len(), b.deltas.len());
         for (sharp, blurred) in a.deltas.iter().zip(&b.deltas) {
@@ -913,8 +916,9 @@ mod tests {
 
         let sharp = key(&path, w, FileVersion::read(&path));
         let blurred = CacheKey { blur_px: 3, ..sharp.clone() };
-        let a = decode(&sharp, None, None, Charge::Free, &|| true, STARTING_TEXTURE_BUDGET).unwrap();
-        let b = decode(&blurred, None, None, Charge::Free, &|| true, STARTING_TEXTURE_BUDGET).unwrap();
+        let fonts = crate::text::shaping::FontDatabase::default();
+        let a = decode(&sharp, None, None, Charge::Free, &|| true, STARTING_TEXTURE_BUDGET, &fonts).unwrap();
+        let b = decode(&blurred, None, None, Charge::Free, &|| true, STARTING_TEXTURE_BUDGET, &fonts).unwrap();
 
         // The last black pixel before the edge, on the middle row.
         let at = ((h / 2 * w + w / 2 - 1) * 4) as usize;
