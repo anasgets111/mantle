@@ -5,7 +5,9 @@
 use std::io;
 use std::os::fd::{AsFd, BorrowedFd};
 use std::sync::Arc;
+use std::time::Duration;
 
+use nix::poll::PollTimeout;
 use nix::sys::eventfd::{EfdFlags, EventFd};
 
 /// Cloneable handle on the shared fd.
@@ -34,6 +36,12 @@ impl Waker {
     }
 }
 
+/// Poll timeout for `remaining`, rounded up: truncating the last fraction of a wait to 0 ms makes
+/// poll return at once, and the caller spins until the deadline. Overflow waits without a timeout.
+pub fn poll_timeout(remaining: Duration) -> PollTimeout {
+    PollTimeout::try_from(remaining.as_micros().div_ceil(1000)).unwrap_or(PollTimeout::NONE)
+}
+
 /// Wakes poll when the socket thread drops its `Sender`, which the loop reads as Supervisor exit.
 pub struct WakeOnDrop(pub Waker);
 
@@ -50,6 +58,13 @@ mod tests {
     fn readable(waker: &Waker) -> bool {
         let mut fds = [nix::poll::PollFd::new(waker.fd(), nix::poll::PollFlags::POLLIN)];
         matches!(nix::poll::poll(&mut fds, nix::poll::PollTimeout::ZERO), Ok(1))
+    }
+
+    #[test]
+    fn a_sub_millisecond_remainder_polls_for_one_millisecond_not_zero() {
+        assert_eq!(poll_timeout(Duration::from_micros(300)), PollTimeout::from(1u8));
+        assert_eq!(poll_timeout(Duration::from_millis(5)), PollTimeout::from(5u8));
+        assert_eq!(poll_timeout(Duration::ZERO), PollTimeout::ZERO);
     }
 
     #[test]

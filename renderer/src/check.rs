@@ -20,15 +20,6 @@ use crate::lua::signal::DirtyFlag;
 use crate::lua::{Loader, surfaces::evaluate_and_specs};
 use crate::text::shaping::ShapingHandle;
 
-fn role_of(spec: &SurfaceSpec) -> &'static str {
-    match spec {
-        SurfaceSpec::Panel(_) => "panel",
-        SurfaceSpec::Window(_) => "window",
-        SurfaceSpec::Popup(_) => "popup",
-        SurfaceSpec::Lock(_) => "lock",
-    }
-}
-
 /// Evaluates and lays out `shell.lua` under `config_dir` and returns the report, or the error a
 /// config author needs to read.
 ///
@@ -43,7 +34,7 @@ pub fn run(config_dir: &Path) -> Result<String, String> {
     })?;
     let mut report = format!("{}: ok, {} surface(s)\n", shell_lua.display(), specs.len());
     for spec in &specs {
-        report.push_str(&format!("  {:<7} {}\n", role_of(spec), spec.declared_id()));
+        report.push_str(&format!("  {:<7} {}\n", spec.role(), spec.declared_id()));
     }
     Ok(report)
 }

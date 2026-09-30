@@ -192,11 +192,11 @@ pub(super) struct Placement {
 }
 
 impl Placement {
-    /// What `spec` asks for, with its `Content` axes resolved against `root`, the box the layout
-    /// pass measured for this surface (see [`popup_requested_size`]).
-    pub(super) fn of(spec: &PopupSpec, root: crate::text::snap::LogicalRect) -> Self {
+    /// What `spec` asks for at `size`, the pair `apply_resolved_state` measured for it (see
+    /// [`popup_requested_size`]).
+    pub(super) fn of(spec: &PopupSpec, size: (f32, f32)) -> Self {
         Self {
-            size: popup_requested_size(spec, root),
+            size,
             anchor_rect: spec.anchor_rect,
             anchor: spec.anchor,
             gravity: spec.gravity,
@@ -336,18 +336,16 @@ fn starting_visible(resolved: Option<bool>, roster: &SurfaceSpec) -> bool {
         SurfaceSpec::Window(_) | SurfaceSpec::Popup(_) | SurfaceSpec::Lock(_) => false,
     })
 }
-/// Re-derive a surface spec from resolved properties, using `roster` only for the role and log
-/// label (ADR-0049 amendment). `kind` built the roster, so taking the role from properties could
-/// hide a reconcile bug. [`App::create_surfaces`] is the caller; later passes parse inline by role.
-fn resolved_surface_spec(
-    roster: &SurfaceSpec,
-    properties: &PropMap,
-) -> (&'static str, Result<SurfaceSpec, layout::node::LayoutError>) {
+/// Re-derive a surface spec from resolved properties, using `roster` only for the role
+/// (ADR-0049 amendment). `kind` built the roster, so taking the role from properties could hide a
+/// reconcile bug. [`App::create_surfaces`] is the caller; [`App::apply_resolved_state`] parses by
+/// the tracked role instead.
+fn resolved_surface_spec(roster: &SurfaceSpec, properties: &PropMap) -> Result<SurfaceSpec, layout::node::LayoutError> {
     match roster {
-        SurfaceSpec::Panel(_) => ("panel", node::panel_spec(properties).map(SurfaceSpec::Panel)),
-        SurfaceSpec::Window(_) => ("window", node::window_spec(properties).map(SurfaceSpec::Window)),
-        SurfaceSpec::Popup(_) => ("popup", node::popup_spec(properties).map(SurfaceSpec::Popup)),
-        SurfaceSpec::Lock(_) => ("lock", node::lock_spec(properties).map(SurfaceSpec::Lock)),
+        SurfaceSpec::Panel(_) => node::panel_spec(properties).map(SurfaceSpec::Panel),
+        SurfaceSpec::Window(_) => node::window_spec(properties).map(SurfaceSpec::Window),
+        SurfaceSpec::Popup(_) => node::popup_spec(properties).map(SurfaceSpec::Popup),
+        SurfaceSpec::Lock(_) => node::lock_spec(properties).map(SurfaceSpec::Lock),
     }
 }
 
@@ -380,7 +378,7 @@ impl App {
             .enumerate()
             .filter_map(|(index, output)| {
                 let info = self.output_state.info(&output)?;
-                Some((info.name.unwrap_or_else(|| format!("output-{index}")), output))
+                Some((super::output::output_name(index, info.name.as_deref()), output))
             })
             .collect();
 
@@ -395,9 +393,9 @@ impl App {
             // `PopupSpec` field is consumed by `get_popup`, and no `xdg_popup.reposition` exists,
             // so a raw signal placeholder (`DEFERRED_POPUP_EXTENT`, 1x1 at 0,0) lasts its life.
             let spec = match tree.map(|tree| resolved_surface_spec(roster, &tree.properties)) {
-                Some((_, Ok(fresh))) => fresh,
-                Some((role, Err(err))) => {
-                    log_invalid_re_resolve(&instance.instance_id, role, err);
+                Some(Ok(fresh)) => fresh,
+                Some(Err(err)) => {
+                    log_invalid_re_resolve(&instance.instance_id, roster.role(), err);
                     roster.clone()
                 }
                 None => roster.clone(),
@@ -589,21 +587,32 @@ mod tests {
         spec.width = node::SizeMode::Content;
         spec.height = node::SizeMode::Content;
 
-        let opened = Placement::of(&spec, card);
-        assert_eq!(opened, Placement::of(&spec, card), "an unchanged pass is not a reposition");
+        let opened = Placement::of(&spec, popup_requested_size(&spec, card));
+        assert_eq!(
+            opened,
+            Placement::of(&spec, popup_requested_size(&spec, card)),
+            "an unchanged pass is not a reposition"
+        );
 
         let grown = LogicalRect { width: 253.0, ..card };
-        assert_ne!(opened, Placement::of(&spec, grown), "the words grew, so the surface must follow");
+        assert_ne!(
+            opened,
+            Placement::of(&spec, popup_requested_size(&spec, grown)),
+            "the words grew, so the surface must follow"
+        );
 
         // Placement, not just size: an indicator that moves takes its tooltip with it.
         let mut slid = spec.clone();
         slid.anchor_rect = LogicalRect { x: 400.0, ..spec.anchor_rect };
-        assert_ne!(opened, Placement::of(&slid, card));
+        assert_ne!(opened, Placement::of(&slid, popup_requested_size(&slid, card)));
 
         // And a declared axis is deaf to the measurement, so a fixed popup never repositions for
         // it.
         let fixed = popup_spec_fixture();
-        assert_eq!(Placement::of(&fixed, card), Placement::of(&fixed, grown));
+        assert_eq!(
+            Placement::of(&fixed, popup_requested_size(&fixed, card)),
+            Placement::of(&fixed, popup_requested_size(&fixed, grown))
+        );
     }
 
     #[test]
@@ -615,12 +624,18 @@ mod tests {
         spec.width = node::SizeMode::Content;
         spec.height = node::SizeMode::Content;
         let nothing = LogicalRect::default();
-        assert!(!Placement::of(&spec, nothing).is_measured());
-        assert!(Placement::of(&spec, LogicalRect { x: 0.0, y: 0.0, width: 169.0, height: 36.0 }).is_measured());
+        assert!(!Placement::of(&spec, popup_requested_size(&spec, nothing)).is_measured());
+        assert!(
+            Placement::of(
+                &spec,
+                popup_requested_size(&spec, LogicalRect { x: 0.0, y: 0.0, width: 169.0, height: 36.0 })
+            )
+            .is_measured()
+        );
 
         // One axis measured is not enough; `set_size` takes both.
         let half = LogicalRect { x: 0.0, y: 0.0, width: 169.0, height: 0.0 };
-        assert!(!Placement::of(&spec, half).is_measured());
+        assert!(!Placement::of(&spec, popup_requested_size(&spec, half)).is_measured());
     }
 
     fn popup_spec_fixture() -> PopupSpec {
@@ -713,9 +728,8 @@ mod tests {
         let mut placeholder = popup_spec_fixture();
         placeholder.anchor_rect = LogicalRect { x: 0.0, y: 0.0, width: 1.0, height: 1.0 };
 
-        let (role, spec) = resolved_surface_spec(&SurfaceSpec::Popup(placeholder), &properties);
-        assert_eq!(role, "popup");
-        let SurfaceSpec::Popup(spec) = spec.unwrap() else {
+        let SurfaceSpec::Popup(spec) = resolved_surface_spec(&SurfaceSpec::Popup(placeholder), &properties).unwrap()
+        else {
             panic!("the role comes from the roster, not from the properties")
         };
         assert_eq!(spec.anchor_rect, LogicalRect { x: 40.0, y: 4.0, width: 86.0, height: 24.0 });
@@ -730,8 +744,6 @@ mod tests {
             ("id", Value::String(lua.create_string("bar").unwrap())),
             ("exclusive", Value::Number(32.0)),
         ]);
-        let (role, spec) = resolved_surface_spec(&SurfaceSpec::Panel(panel("bar")), &properties);
-        assert_eq!(role, "panel");
-        assert!(spec.is_err());
+        assert!(resolved_surface_spec(&SurfaceSpec::Panel(panel("bar")), &properties).is_err());
     }
 }

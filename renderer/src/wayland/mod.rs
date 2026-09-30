@@ -170,10 +170,6 @@ pub struct App {
     keyboard: Option<wl_keyboard::WlKeyboard>,
     /// Focused surface instance id (ADR-0050); `input::keyboard::focus_is_still_armed` requires a
     /// `secure_submit` field's declaring surface to match it.
-    ///
-    /// ponytail: nothing else consumes it (there is no `on_key` property; ADR-0050 declines to
-    /// invent one). Upgrade path: an IDL key-handler property, dispatching into this surface's
-    /// tree.
     keyboard_focus: Option<String>,
     /// Press waiting for release (ADR-0050 decision 2, [`ArmedClick`]).
     armed: Option<ArmedClick>,

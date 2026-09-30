@@ -53,13 +53,7 @@ fn read_offer(mut pipe: ReadPipe) -> Option<Zeroizing<Vec<u8>>> {
             return None;
         }
         let mut fds = [nix::poll::PollFd::new(pipe.as_fd(), nix::poll::PollFlags::POLLIN)];
-        if nix::poll::poll(
-            &mut fds,
-            nix::poll::PollTimeout::try_from(timeout.as_millis().min(i32::MAX as u128) as i32).ok()?,
-        )
-        .ok()?
-            == 0
-        {
+        if nix::poll::poll(&mut fds, crate::wake::poll_timeout(timeout)).ok()? == 0 {
             return None;
         }
         let n = pipe.read(&mut chunk[..]).ok()?;
@@ -100,13 +94,7 @@ fn write_copy(mut fd: WritePipe, text: Arc<str>) {
             return;
         }
         let mut fds = [nix::poll::PollFd::new(fd.as_fd(), nix::poll::PollFlags::POLLOUT)];
-        if nix::poll::poll(
-            &mut fds,
-            nix::poll::PollTimeout::try_from(timeout.as_millis().min(i32::MAX as u128) as i32).unwrap(),
-        )
-        .ok()
-            != Some(1)
-        {
+        if nix::poll::poll(&mut fds, crate::wake::poll_timeout(timeout)).ok() != Some(1) {
             return;
         }
         match fd.write(&remaining[..remaining.len().min(4096)]) {

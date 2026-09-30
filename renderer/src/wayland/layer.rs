@@ -203,36 +203,35 @@ fn spec_update(
         exclusive: (fresh.exclusive != applied.exclusive).then_some(fresh.exclusive),
     }
 }
-/// Parameters for [`App::spawn_layer`], bundled for clippy's argument-count limit.
-pub(super) struct LayerSpec<'a> {
-    layer_type: Layer,
-    /// Compositor-visible namespace (default `"mantle-{id}"`), matched by `layerrule`.
-    namespace: &'a str,
-    /// `None` lets the compositor pick (ADR-0246); otherwise one surface per `(surface, output)`
-    /// pair (ADR-0038 decision 3).
-    output: Option<&'a wl_output::WlOutput>,
-    anchor: Anchor,
-    size: (u32, u32),
-    margin: node::EdgeInsets,
-    keyboard_interactivity: KeyboardInteractivity,
-}
-
 impl App {
-    /// Creates and configures (but does not commit) a layer-shell surface.
-    pub(super) fn spawn_layer(&mut self, qh: &QueueHandle<App>, spec: LayerSpec) -> LayerSurface {
+    /// Creates, configures and commits one layer-shell surface for `spec`. `output` `None` lets the
+    /// compositor pick (ADR-0246); otherwise one surface per `(surface, output)` pair (ADR-0038
+    /// decision 3). The exclusive zone uses the configure-time size.
+    fn spawn_panel_layer(
+        &self,
+        qh: &QueueHandle<App>,
+        spec: &PanelSpec,
+        output: Option<&wl_output::WlOutput>,
+        size: (u32, u32),
+    ) -> LayerSurface {
         let surface = self.compositor_state.create_surface(qh);
-        let layer =
-            self.layer_shell.create_layer_surface(qh, surface, spec.layer_type, Some(spec.namespace), spec.output);
-        layer.set_anchor(spec.anchor);
-        layer.set_size(spec.size.0, spec.size.1);
-        layer.set_keyboard_interactivity(spec.keyboard_interactivity);
+        let layer = self.layer_shell.create_layer_surface(
+            qh,
+            surface,
+            layer_for(spec.topology.layer),
+            Some(&spec.topology.namespace),
+            output,
+        );
+        layer.set_anchor(anchor_for(spec.topology.anchor));
+        layer.set_size(size.0, size.1);
+        layer.set_keyboard_interactivity(keyboard_interactivity_for(spec.keyboard_interactivity));
         layer.set_margin(
             spec.margin.top as i32,
             spec.margin.right as i32,
             spec.margin.bottom as i32,
             spec.margin.left as i32,
         );
-        // The exclusive zone uses the configure-time size.
+        layer.commit();
         layer
     }
 
@@ -282,22 +281,7 @@ impl App {
             );
             return;
         }
-        let layer = (!deferred).then(|| {
-            let layer = self.spawn_layer(
-                qh,
-                LayerSpec {
-                    layer_type: layer_for(spec.topology.layer),
-                    namespace: &spec.topology.namespace,
-                    output,
-                    anchor: anchor_for(spec.topology.anchor),
-                    size,
-                    margin: spec.margin,
-                    keyboard_interactivity: keyboard_interactivity_for(spec.keyboard_interactivity),
-                },
-            );
-            layer.commit();
-            layer
-        });
+        let layer = (!deferred).then(|| self.spawn_panel_layer(qh, spec, output, size));
 
         self.surfaces.push(TrackedSurface {
             map_state: if visible { MapState::AwaitingConfigure } else { MapState::Unmapped },
@@ -347,29 +331,7 @@ impl App {
             );
             return;
         }
-        // Owned copies, because `spawn_layer` takes `&mut self` and a `LayerSpec` borrows from the
-        // role this index owns. A `wl_output` is a refcounted proxy, so its clone is a handle.
-        let (layer_type, namespace, anchor, margin, interactivity, output) = (
-            layer_for(spec.topology.layer),
-            spec.topology.namespace.clone(),
-            anchor_for(spec.topology.anchor),
-            spec.margin,
-            keyboard_interactivity_for(spec.keyboard_interactivity),
-            output.clone(),
-        );
-        let fresh = self.spawn_layer(
-            qh,
-            LayerSpec {
-                layer_type,
-                namespace: &namespace,
-                output: output.as_ref(),
-                anchor,
-                size,
-                margin,
-                keyboard_interactivity: interactivity,
-            },
-        );
-        fresh.commit();
+        let fresh = self.spawn_panel_layer(qh, spec, output.as_ref(), size);
         if let TrackedRole::Panel { layer, requested, .. } = &mut self.surfaces[index].role {
             *layer = Some(fresh);
             *requested = size;

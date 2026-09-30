@@ -185,7 +185,7 @@ impl App {
         // An open popup whose placement has moved since its positioner was given one, so an open
         // popup follows its size instead of keeping the one it opened at.
         let moved = (visible && popup.is_some())
-            .then(|| Placement { size: *requested, ..Placement::of(spec, LogicalRect::default()) })
+            .then(|| Placement::of(spec, *requested))
             .filter(|placement| placement.is_measured() && Some(*placement) != *positioned);
         let action = popup_visibility_action(visible, popup.is_some(), *dismissed_at, self.pointer_input_count);
         if !visible && let TrackedRole::Popup { dismissed_at, refusal_logged, .. } = &mut self.surfaces[index].role {
@@ -227,10 +227,7 @@ impl App {
             return;
         };
         let spec = spec.clone();
-        let placement = Placement::of(&spec, LogicalRect::default());
-        // `requested` is what `apply_resolved_state` measured; `Placement::of` above cannot know
-        // it, so take the measured pair and keep the placement fields it did read.
-        let placement = Placement { size: *requested, ..placement };
+        let placement = Placement::of(&spec, *requested);
 
         // Nothing measured on a `Content` axis yet, so there is no size to ask for. Decline and
         // let the next pass open it, rather than inventing one the surface would then cut.
@@ -288,14 +285,9 @@ impl App {
         // Log the selected parent, observable mainly on multi-monitor sessions.
         let parent_id = parent_index.map_or("<none>", |parent| self.surfaces[parent].surface_id.as_str()).to_string();
 
-        let positioner = match XdgPositioner::new(xdg_shell) {
-            Ok(positioner) => positioner,
-            Err(err) => {
-                log_bind_failure(&surface_id, "xdg_wm_base::create_positioner", err);
-                return;
-            }
+        let Some(positioner) = self.positioner_for(&surface_id, &placement) else {
+            return;
         };
-        configure_positioner(&positioner, &placement);
 
         let surface = self.compositor_state.create_surface(qh);
         let rooted_at_creation = match &parent {
@@ -335,6 +327,21 @@ impl App {
         );
     }
 
+    /// A positioner carrying `placement`; `None` when the compositor has no `xdg_wm_base` or
+    /// refuses the object (logged).
+    fn positioner_for(&self, surface_id: &str, placement: &Placement) -> Option<XdgPositioner> {
+        match XdgPositioner::new(self.xdg_shell.as_ref()?) {
+            Ok(positioner) => {
+                configure_positioner(&positioner, placement);
+                Some(positioner)
+            }
+            Err(err) => {
+                log_bind_failure(surface_id, "xdg_wm_base::create_positioner", err);
+                None
+            }
+        }
+    }
+
     /// Give an open popup a new positioner (`xdg_popup.reposition`), which is the only way to
     /// change a size or a placement that `get_popup` already consumed.
     ///
@@ -364,17 +371,9 @@ impl App {
             }
             return;
         }
-        let Some(xdg_shell) = self.xdg_shell.as_ref() else {
+        let Some(positioner) = self.positioner_for(&surface_id, &placement) else {
             return;
         };
-        let positioner = match XdgPositioner::new(xdg_shell) {
-            Ok(positioner) => positioner,
-            Err(err) => {
-                log_bind_failure(&surface_id, "xdg_wm_base::create_positioner", err);
-                return;
-            }
-        };
-        configure_positioner(&positioner, &placement);
         self.reposition_token = self.reposition_token.wrapping_add(1);
         let token = self.reposition_token;
         let was = if let TrackedRole::Popup { popup: Some(popup), positioned, .. } = &mut self.surfaces[index].role {

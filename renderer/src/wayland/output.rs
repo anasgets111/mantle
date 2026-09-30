@@ -67,6 +67,12 @@ pub(super) fn texture_budget(screens: &[Screen]) -> usize {
     screens.iter().map(screenful).sum::<usize>().max(MIN_TEXTURE_BUDGET)
 }
 
+/// The id surfaces and `screens` know an output by: its compositor name, or its position below
+/// `wl_output` v4 (see [`screen_entry`]).
+pub(super) fn output_name(index: usize, name: Option<&str>) -> String {
+    name.map_or_else(|| format!("output-{index}"), str::to_owned)
+}
+
 /// One `screens` entry, or `None` if size is unknown. Prefer `logical_size` (`xdg_output`/
 /// `wl_output` v4 compositor space), then the current `Mode` dimensions; never invent a size.
 /// ponytail: below `wl_output` v4, nameless outputs use positional `"output-{index}"` ids, so
@@ -74,7 +80,7 @@ pub(super) fn texture_budget(screens: &[Screen]) -> usize {
 fn screen_entry(index: usize, facts: &OutputFacts) -> Option<Screen> {
     let (width, height) = facts.logical_size.or_else(|| facts.current_mode.map(|(dimensions, _)| dimensions))?;
     Some(Screen {
-        name: facts.name.clone().unwrap_or_else(|| format!("output-{index}")),
+        name: output_name(index, facts.name.as_deref()),
         x: facts.position.0,
         y: facts.position.1,
         width,

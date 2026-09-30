@@ -47,6 +47,16 @@ pub enum SurfaceSpec {
 }
 
 impl SurfaceSpec {
+    /// The role's name, as the config and the logs spell it.
+    pub fn role(&self) -> &'static str {
+        match self {
+            SurfaceSpec::Panel(_) => "panel",
+            SurfaceSpec::Window(_) => "window",
+            SurfaceSpec::Popup(_) => "popup",
+            SurfaceSpec::Lock(_) => "lock",
+        }
+    }
+
     /// The declared id used to match a `SurfaceInstance` back to its `VirtualNode`.
     pub fn declared_id(&self) -> &str {
         match self {

@@ -460,9 +460,10 @@ impl App {
 
     /// The output named `name`, resolved like `panel.monitor` (ADR-0246).
     fn wl_output_named(&self, name: &str) -> Option<wl_output::WlOutput> {
-        self.output_state
-            .outputs()
-            .find(|output| self.output_state.info(output).and_then(|info| info.name).as_deref() == Some(name))
+        self.output_state.outputs().enumerate().find_map(|(index, output)| {
+            let info = self.output_state.info(&output)?;
+            (super::output::output_name(index, info.name.as_deref()) == name).then_some(output)
+        })
     }
 
     /// Starts one capture request for `id`, whose pacing already said it wants one. An ext source

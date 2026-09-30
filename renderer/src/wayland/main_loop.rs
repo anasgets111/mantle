@@ -10,11 +10,8 @@ use super::*;
 use crate::lua::signal::thread_cpu_time;
 use crate::socket::FrameOutcome;
 
-/// Renderer main thread: Wayland, EGL, Lua, the retained `Scene`, and live signals (ADR-0039).
-/// `inbound_rx` carries socket-decoded `SupervisorFrame`s; `outbound_tx` carries every frame this
-/// thread sends back, including replies and lock reports. Ends
-/// the process on a dead Wayland connection, like the `EXIT_SUPERVISOR_GONE` arm below and for the
-/// same reason: `std::process::exit` skips destructors. Returning an error instead unwinds `App`,
+/// Ends the process on a dead Wayland connection, like the `EXIT_SUPERVISOR_GONE` arm below and for
+/// the same reason: `std::process::exit` skips destructors. Returning an error instead unwinds `App`,
 /// whose EGL surfaces and `wl_surface`s talk to the compositor that just left, which is how a log
 /// out became a `khronos-egl` `unwrap()` panic and exit code 101.
 fn exit_because_the_compositor_is_gone(what_failed: &str, err: &dyn std::fmt::Display) -> ! {
@@ -22,6 +19,9 @@ fn exit_because_the_compositor_is_gone(what_failed: &str, err: &dyn std::fmt::Di
     std::process::exit(shared::EXIT_COMPOSITOR_GONE);
 }
 
+/// Renderer main thread: Wayland, EGL, Lua, the retained `Scene`, and live signals (ADR-0039).
+/// `inbound_rx` carries socket-decoded `SupervisorFrame`s; `outbound_tx` carries every frame this
+/// thread sends back, including replies and lock reports.
 pub fn run(
     generation_id: u32,
     mut inbound_rx: tokio::sync::mpsc::Receiver<SupervisorFrame>,
@@ -444,12 +444,7 @@ pub fn run(
                 .chain(app.trim.deadline())
                 .min();
             let timeout = deadline.map_or(nix::poll::PollTimeout::NONE, |due| {
-                // Rounded up: `as_millis` on the last fraction of a hold is 0, and a zero timeout
-                // returns at once to a turn that finds the deadline still a few hundred
-                // microseconds away, hundreds of times over.
-                let millis = due.saturating_duration_since(std::time::Instant::now()).as_micros().div_ceil(1000);
-                nix::poll::PollTimeout::try_from(millis.min(i32::MAX as u128) as i32)
-                    .unwrap_or(nix::poll::PollTimeout::NONE)
+                crate::wake::poll_timeout(due.saturating_duration_since(std::time::Instant::now()))
             });
             let woke = matches!(nix::poll::poll(&mut fds, timeout), Ok(n) if n > 0);
             let wayland_ready = woke && fds[0].any().unwrap_or(false);
