@@ -2,7 +2,7 @@
 
 use wayland_client::{Dispatch, WEnum};
 
-use super::shm::{keep_first_supported, negotiate_buffer, stage_landed};
+use super::shm::{keep_supported, negotiate_buffer, stage_landed};
 use super::*;
 
 impl Dispatch<ext_image_capture_source_v1::ExtImageCaptureSourceV1, NodeId> for App {
@@ -21,14 +21,16 @@ impl Dispatch<ext_image_capture_source_v1::ExtImageCaptureSourceV1, NodeId> for 
 impl Dispatch<ext_image_copy_capture_session_v1::ExtImageCopyCaptureSessionV1, NodeId> for App {
     fn event(
         state: &mut Self,
-        _proxy: &ext_image_copy_capture_session_v1::ExtImageCopyCaptureSessionV1,
+        proxy: &ext_image_copy_capture_session_v1::ExtImageCopyCaptureSessionV1,
         event: ext_image_copy_capture_session_v1::Event,
         id: &NodeId,
         _: &Connection,
         _: &QueueHandle<Self>,
     ) {
         use ext_image_copy_capture_session_v1::Event;
-        let Some(CaptureSource { proto: Some(Proto::Ext(ext)), .. }) = state.captures.sources.get_mut(id) else {
+        let Some(CaptureSource { proto: Some(Proto::Ext(ext)), target, .. }) =
+            state.captures.sources.get_mut(id).filter(|source| source.owns(proxy))
+        else {
             return;
         };
         match event {
@@ -38,7 +40,8 @@ impl Dispatch<ext_image_copy_capture_session_v1::ExtImageCopyCaptureSessionV1, N
             }
             Event::ShmFormat { format: WEnum::Value(format) } => {
                 let (width, height, current) = ext.negotiating.unwrap_or((0, 0, None));
-                ext.negotiating = Some((width, height, keep_first_supported(current, format)));
+                ext.negotiating =
+                    Some((width, height, keep_supported(current, format, matches!(target, CaptureTarget::Output(_)))));
             }
             Event::ShmFormat { format: WEnum::Unknown(_) } => {}
             Event::DmabufFormat { format, modifiers } => {
@@ -67,16 +70,7 @@ impl Dispatch<ext_image_copy_capture_session_v1::ExtImageCopyCaptureSessionV1, N
                 }
                 state.apply_ext_done(*id, offer);
             }
-            Event::Stopped => {
-                if let Some(source) = state.captures.sources.get_mut(id) {
-                    if let Some(Proto::Ext(ext)) = source.proto.take()
-                        && let Some(session) = ext.session
-                    {
-                        session.destroy();
-                    }
-                    source.in_flight = false;
-                }
-            }
+            Event::Stopped => state.stop_capture(*id),
             _ => {}
         }
     }
@@ -92,6 +86,10 @@ impl Dispatch<ext_image_copy_capture_frame_v1::ExtImageCopyCaptureFrameV1, NodeI
         _: &QueueHandle<Self>,
     ) {
         use ext_image_copy_capture_frame_v1::Event;
+        let current = state.captures.sources.get(id).is_some_and(|source| source.owns(proxy));
+        if !current {
+            return;
+        }
         match event {
             Event::Damage { x, y, width, height } => {
                 if let Some(CaptureSource { proto: Some(Proto::Ext(ext)), .. }) = state.captures.sources.get_mut(id) {

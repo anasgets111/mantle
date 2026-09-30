@@ -352,8 +352,8 @@ fn run(painter: &mut TextPainter, walk: &mut Walk<'_, '_>, commands: &[DrawCmd],
             // `captures.upload_landed` above already put them on the GPU this turn. Nothing yet
             // (unknown output, or no frame has arrived) draws nothing, matching `image`'s empty
             // `source`.
-            Draw::Capture { node, fit, alpha, .. } => {
-                if let Some((id, width, height)) = walk.captures.get(*node)
+            Draw::Capture { node, target, fit, alpha, .. } => {
+                if let Some((id, width, height)) = walk.captures.get_for_target(*node, target)
                     && let Some((fill, at)) =
                         image::capture::placement(rect, width, height, walk.captures.crop(*node), *fit)
                 {
@@ -832,6 +832,53 @@ pub(crate) mod tests {
             (255, 0, 0, 255),
             "the first surface's own framebuffer must be untouched by what was drawn into the second"
         );
+    }
+
+    #[test]
+    fn a_capture_target_change_never_paints_the_old_targets_pixels() {
+        use crate::image::capture::{DamageRect, PendingFrame};
+        let instance = init_headless_egl(64, 64).expect("capture regression requires headless EGL");
+        let lua = Lua::new();
+        let shaping = ShapingHandle::spawn();
+        let mut painter = text_painter(&instance, &shaping, 64, 64).unwrap();
+        let root = |target: &str| {
+            resolved_surface(
+                &lua,
+                &format!(
+                    "return panel {{ id = 'bar', width = 64, height = 64, child = capture {{ {target}, width = 64, height = 64 }} }}"
+                ),
+                LogicalSize { width: 64.0, height: 64.0 },
+            )
+        };
+        let before = build(&root("output = 'DP-1'"), 1.0, None);
+        let after = build(&root("window = '0xa11ce'"), 1.0, None);
+        let mut sources = Vec::new();
+        before.capture_nodes(&mut sources);
+        let old = sources.pop().unwrap();
+        after.capture_nodes(&mut sources);
+        assert_eq!(old.node, sources[0].node);
+        let mut captures = CaptureCache::default();
+        captures.set_target(old.node, old.target.clone());
+        captures.stage(
+            old.node,
+            PendingFrame {
+                has_alpha: false,
+                width: 64,
+                height: 64,
+                y_offset: 0,
+                pixels: [0, 0, 255, 255].repeat(64 * 64),
+                damage: vec![DamageRect::full(64, 64)],
+            },
+        );
+        let mut images = ImageCache::inline();
+        let region = [PhysicalRect { x0: 0, y0: 0, x1: 64, y1: 64 }];
+        execute("preview", &mut painter, &mut images, &mut captures, &before, 1.0, (64.0, 64.0), &region, None);
+        assert_eq!(pixel_at(painter.canvas_mut(), 32, 32), (255, 0, 0, 255));
+        execute("preview", &mut painter, &mut images, &mut captures, &after, 1.0, (64.0, 64.0), &region, None);
+        assert_eq!(pixel_at(painter.canvas_mut(), 32, 32), (0, 0, 0, 0));
+        assert!(captures.get(old.node).is_some(), "the old texture still exists before protocol reconciliation");
+        captures.forget(old.node);
+        assert!(captures.poll().contains(&old.node), "closing a target clears even a static preview");
     }
 
     #[test]

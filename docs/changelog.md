@@ -11,6 +11,7 @@ so everything since the rename from Obelisk sits under Unreleased.
 - Experimental `path` nodes draw bounded move, line and Bézier commands with fills and strokes.
 - Box masks accept `node` naming a direct child whose subtree supplies alpha without receiving input.
 - SVG and SVGZ text renders with Mantle's loaded fonts in images, icons and file masks.
+- `capture.window` previews a `mantle.windows` ID on Hyprland through exact toplevel mapping and ext capture; it shares output capture's pacing, buffers and effects.
 - Every node kind takes `on_click`, `on_drag`, `on_wheel` and `submit`: a `row`, `text` or `icon` is clickable itself, the innermost node with a handler wins, and it shows the `"pointer"` cursor ([pointer](guide/input.md#pointer)).
 - `panel`, `window` and `popup` take `reset_on_close = { ... }`: the listed `state` handles return to their `initial` and `scroll` handles to the top when the surface stops being shown ([surfaces](surfaces/index.md#reset-on-close)).
 - `state(...)` signals take `:on_change(fn(current, previous))`, run after any write that changes the value, including `mantle set`/`mantle toggle`, before the next layout pass ([signals](guide/signals.md#on_change-react-to-a-write)).
@@ -57,6 +58,8 @@ so everything since the rename from Obelisk sits under Unreleased.
 
 ### Changed
 
+- The first dma-buf capture frame now wakes an idle preview for texture import; window captures preserve alpha on both buffer paths.
+- Shared-memory capture preserves changes across frames waiting to paint and refreshes the full texture after dma-buf fallback.
 - Node `padding` values outside `[0, 8192]` now fail layout validation. Use a negative `margin` for overflow.
 - A write to a signal bound to a `list` item's property, such as `background = theme.bg`, runs that
   property's getter in each item and no longer calls `itemfn` again; `itemfn` runs again only when

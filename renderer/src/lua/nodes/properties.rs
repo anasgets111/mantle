@@ -389,15 +389,17 @@ props! {
         /// Book: Blur sigma in px, baked into the pixels once at decode (three box passes approximating a Gaussian); see [blurs](../guide/paint.md#blurs). Animated GIFs ignore it. Under `async`, a change blanks the image until the re-decode lands; `retain` does not cover it
         source_blur: Bound<Num> = range(0.0, 8192.0).absent(Number(0.0));
     }
-    /// Live preview of one output (ADR-0248). No intrinsic size: without `width`/`height` it draws nothing.
+    /// Preview of one output or window (ADR-0248). No intrinsic size: without `width`/`height` it draws nothing.
     mod capture(CAPTURE) {
         /// Connector name, e.g. `"DP-1"`; `""` draws nothing. An unknown name draws nothing and warns once. Changing it starts a fresh capture.
         output: Bound<Text> = absent(Lua(r#""""#));
+        /// A `mantle.windows` entry's `id`; `""` draws nothing. Currently requires Hyprland's exact toplevel mapping and ext capture protocols. Cannot combine with a nonempty `output` or `region`. A closed window clears its preview.
+        window: Bound<Text> = absent(Lua(r#""""#));
         /// As `image.fit`.
         ///
         /// Book: As on [`image`](image.md)
         fit: Bound<OneOf<Fit>> = absent(Choice("cover"));
-        /// `false`: capture on show and on each `output` change. `true`: every frame, one in flight. A number: at most that many fps, `(0, 1000]` (ADR-0263). Hiding the node or unmapping its surface drops the capture; showing starts a fresh one.
+        /// `false`: capture on show and on each target change. `true`: every frame, one in flight. A number: at most that many fps, `(0, 1000]` (ADR-0263). Hiding the node or unmapping its surface drops the capture; showing starts a fresh one.
         live: Bound<Live> = absent(Bool(false));
         /// Part of the output in its logical px, placed by `fit` as the whole frame. Every key is required and in that range; the size is non-zero.
         region: Bound<Region> = range(0.0, 8192.0).absent(Prose("the whole output"));

@@ -4,7 +4,6 @@
 use smithay_client_toolkit::shm::slot::{Buffer, SlotPool};
 
 use super::*;
-use crate::image::capture::PendingFrame;
 
 /// A capture's negotiated shm buffer, reused across frames while size, stride and format match
 /// (ADR-0248 decision 3).
@@ -26,9 +25,16 @@ pub(super) fn pick_format(candidates: &[wl_shm::Format]) -> Option<wl_shm::Forma
 }
 
 /// One `ShmFormat` event's contribution to a negotiation batch: last-event-wins would let a later
-/// unsupported format overwrite an earlier supported pick with `None`, so `current` wins once it
-/// is `Some`.
-pub(super) fn keep_first_supported(current: Option<wl_shm::Format>, offered: wl_shm::Format) -> Option<wl_shm::Format> {
+/// unsupported format overwrite an earlier supported pick with `None`. Windows prefer ARGB
+/// regardless of event order; output capture keeps the first supported format.
+pub(super) fn keep_supported(
+    current: Option<wl_shm::Format>,
+    offered: wl_shm::Format,
+    opaque: bool,
+) -> Option<wl_shm::Format> {
+    if !opaque && offered == wl_shm::Format::Argb8888 {
+        return Some(offered);
+    }
     current.or_else(|| pick_format(&[offered]))
 }
 
@@ -53,9 +59,7 @@ pub(super) fn negotiate_buffer(
     Some(NegotiatedBuffer { pool, buffer, width, height, stride, format })
 }
 
-/// Reads `negotiated`'s pool memory and stages it for the next canvas-current upload. Copies only
-/// the damaged rows unless the size changed or nothing was reported, when the whole buffer is
-/// needed anyway.
+/// Hands completed pool memory to the texture cache, which retains damage until upload.
 pub(super) fn stage_landed(
     cache: &mut CaptureCache,
     id: NodeId,
@@ -64,21 +68,7 @@ pub(super) fn stage_landed(
 ) {
     let (width, height, stride) = (negotiated.width, negotiated.height, negotiated.stride as usize);
     let Some(buffer) = negotiated.pool.canvas(&negotiated.buffer) else { return };
-    let resized = cache.get(id).is_none_or(|(_, w, h)| (w, h) != (width, height));
-    let (y0, y1) = if resized || damage.is_empty() {
-        (0, height)
-    } else {
-        let lo = damage.iter().map(|r| r.y).min().unwrap_or(0).min(height);
-        let hi = damage.iter().map(|r| r.y.saturating_add(r.height).min(height)).max().unwrap_or(height).max(lo);
-        (lo, hi)
-    };
-    let row_bytes = width as usize * 4;
-    let mut pixels = Vec::with_capacity(row_bytes * (y1 - y0) as usize);
-    for row in y0..y1 {
-        let start = row as usize * stride;
-        pixels.extend_from_slice(&buffer[start..start + row_bytes]);
-    }
-    cache.stage(id, PendingFrame { width, height, y_offset: y0, pixels, damage });
+    cache.stage_shm(id, buffer, (width, height), stride, negotiated.format == wl_shm::Format::Argb8888, damage);
 }
 
 #[cfg(test)]
@@ -94,15 +84,19 @@ mod tests {
 
     #[test]
     fn a_later_unsupported_shm_format_does_not_overwrite_an_earlier_supported_one() {
-        let first = keep_first_supported(None, wl_shm::Format::Xrgb8888);
+        let first = keep_supported(None, wl_shm::Format::Xrgb8888, true);
         assert_eq!(first, Some(wl_shm::Format::Xrgb8888));
-        assert_eq!(keep_first_supported(first, wl_shm::Format::Bgr888), Some(wl_shm::Format::Xrgb8888));
+        assert_eq!(keep_supported(first, wl_shm::Format::Bgr888, true), Some(wl_shm::Format::Xrgb8888));
+        let alpha = keep_supported(first, wl_shm::Format::Argb8888, false);
+        assert_eq!(alpha, Some(wl_shm::Format::Argb8888));
+        assert_eq!(keep_supported(alpha, wl_shm::Format::Xrgb8888, false), alpha);
+        assert_eq!(keep_supported(alpha, wl_shm::Format::Bgr888, false), alpha);
     }
 
     #[test]
     fn an_unsupported_first_format_still_lets_a_later_supported_one_through() {
-        let first = keep_first_supported(None, wl_shm::Format::Bgr888);
+        let first = keep_supported(None, wl_shm::Format::Bgr888, true);
         assert_eq!(first, None);
-        assert_eq!(keep_first_supported(first, wl_shm::Format::Argb8888), Some(wl_shm::Format::Argb8888));
+        assert_eq!(keep_supported(first, wl_shm::Format::Argb8888, true), Some(wl_shm::Format::Argb8888));
     }
 }

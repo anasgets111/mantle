@@ -169,12 +169,13 @@
 ---@field transition? Transition|Bound Cross-fade from the held picture to a newly decoded `source` (ADR-0181, ADR-0186). Implies `retain`; needs `async = true` and a stable `id`. The first picture appears without one.
 ---@field source_blur? number|Bound `[0, 8192]`, default `0`. Blur sigma in px (a fast box approximation), applied once at decode (ADR-0240). Runs on the decoding thread, so pair large images with `async`; under `async` a change blanks the image until the re-decode lands, and `retain` does not cover it (same `source`). Animated GIFs ignore it.
 
----@alias CaptureAnimations { align_h?: Animation, align_v?: Animation, content_blur?: Animation, cursor?: Animation, fit?: Animation, geometry?: Animation, height?: Animation, hover?: Animation, id?: Animation, live?: Animation, margin?: Animation, max_height?: Animation, max_width?: Animation, min_height?: Animation, min_width?: Animation, on_click?: Animation, on_drag?: Animation, on_hover?: Animation, on_wheel?: Animation, opacity?: Animation, origin?: Animation, output?: Animation, padding?: Animation, paint_cursor?: Animation, region?: Animation, rotate?: Animation, scale?: Animation, shadow_blur?: Animation, shadow_color?: Animation, shadow_offset?: Animation, shadow_spread?: Animation, submit?: Animation, translate?: Animation, visible?: Animation, width?: Animation, exit?: Exit, [string]: "no such property" }
+---@alias CaptureAnimations { align_h?: Animation, align_v?: Animation, content_blur?: Animation, cursor?: Animation, fit?: Animation, geometry?: Animation, height?: Animation, hover?: Animation, id?: Animation, live?: Animation, margin?: Animation, max_height?: Animation, max_width?: Animation, min_height?: Animation, min_width?: Animation, on_click?: Animation, on_drag?: Animation, on_hover?: Animation, on_wheel?: Animation, opacity?: Animation, origin?: Animation, output?: Animation, padding?: Animation, paint_cursor?: Animation, region?: Animation, rotate?: Animation, scale?: Animation, shadow_blur?: Animation, shadow_color?: Animation, shadow_offset?: Animation, shadow_spread?: Animation, submit?: Animation, translate?: Animation, visible?: Animation, width?: Animation, window?: Animation, exit?: Exit, [string]: "no such property" }
 ---@class CaptureProps: NodeBase
 ---@field animate? CaptureAnimations|Bound Tween named properties to each newly resolved value without running Lua (ADR-0145). The `exit` key is an `Exit` block. Only a node already on screen animates, unless the entry has `from`.
 ---@field output? string|Bound Default `""`. Connector name, e.g. `"DP-1"`; `""` draws nothing. An unknown name draws nothing and warns once. Changing it starts a fresh capture.
+---@field window? string|Bound Default `""`. A `mantle.windows` entry's `id`; `""` draws nothing. Currently requires Hyprland's exact toplevel mapping and ext capture protocols. Cannot combine with a nonempty `output` or `region`. A closed window clears its preview.
 ---@field fit? "cover"|"contain"|"stretch"|Bound Default `"cover"`. As `image.fit`.
----@field live? boolean|number|Bound Default `false`. `false`: capture on show and on each `output` change. `true`: every frame, one in flight. A number: at most that many fps, `(0, 1000]` (ADR-0263). Hiding the node or unmapping its surface drops the capture; showing starts a fresh one.
+---@field live? boolean|number|Bound Default `false`. `false`: capture on show and on each target change. `true`: every frame, one in flight. A number: at most that many fps, `(0, 1000]` (ADR-0263). Hiding the node or unmapping its surface drops the capture; showing starts a fresh one.
 ---@field region? Rect|Bound `[0, 8192]`, default: the whole output. Part of the output in its logical px, placed by `fit` as the whole frame. Every key is required and in that range; the size is non-zero.
 ---@field paint_cursor? boolean|Bound Default `false`. Include the pointer in the frame.
 
@@ -250,7 +251,7 @@ function icon(props) end
 ---@return Node
 function image(props) end
 
----Live preview of one output (ADR-0248). No intrinsic size: without `width`/`height` it draws nothing.
+---Preview of one output or window (ADR-0248). No intrinsic size: without `width`/`height` it draws nothing.
 ---[docs](https://anasgets111.github.io/mantle/nodes/capture.html)
 ---@param props CaptureProps
 ---@return Node

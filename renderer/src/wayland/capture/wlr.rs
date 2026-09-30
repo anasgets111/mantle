@@ -22,6 +22,10 @@ impl Dispatch<zwlr_screencopy_frame_v1::ZwlrScreencopyFrameV1, NodeId> for App {
         _: &QueueHandle<Self>,
     ) {
         use zwlr_screencopy_frame_v1::Event;
+        let current = state.captures.sources.get(id).is_some_and(|source| source.owns(proxy));
+        if !current {
+            return;
+        }
         match event {
             Event::Buffer { format: WEnum::Value(format), width, height, stride } => {
                 let valid = wlr_buffer_valid(format, width, stride);

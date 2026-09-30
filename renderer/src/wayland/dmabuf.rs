@@ -30,8 +30,19 @@ pub struct FormatModifier {
 
 /// Picks a format/modifier both sides can use: preferred fourcc first, first shared modifier
 /// otherwise any shared pair (ADR-0248 amendment decision 1).
-pub fn pick_dmabuf_format(offered: &[FormatModifier], importable: &[FormatModifier]) -> Option<FormatModifier> {
+pub fn pick_dmabuf_format(
+    offered: &[FormatModifier],
+    importable: &[FormatModifier],
+    opaque: bool,
+) -> Option<FormatModifier> {
     let shared = |fourcc: u32| offered.iter().find(|o| o.fourcc == fourcc && importable.contains(o)).copied();
+    if !opaque {
+        // ponytail: window dma-buf accepts 8/10-bit ARGB/ABGR. Other formats use shm until
+        // their alpha semantics are covered here; an opaque format must not discard window alpha.
+        return [gbm::Format::Argb8888, gbm::Format::Abgr8888, gbm::Format::Argb2101010, gbm::Format::Abgr2101010]
+            .into_iter()
+            .find_map(|format| shared(format as u32));
+    }
     PREFERRED_FOURCC.into_iter().find_map(shared).or_else(|| offered.iter().find(|o| importable.contains(o)).copied())
 }
 
@@ -167,6 +178,7 @@ pub fn import(
     gl: &glow::Context,
     canvas: &mut Canvas<OpenGl>,
     buffer: &mut DmabufBuffer,
+    opaque: bool,
 ) -> Option<()> {
     if buffer.texture.is_some() {
         return Some(());
@@ -200,8 +212,10 @@ pub fn import(
         let texture = gl.create_texture().ok()?;
         gl.bind_texture(glow::TEXTURE_2D, Some(texture));
         support.entry_points.image_target_texture_2d_oes(egl_image);
-        // EGL already maps the fourcc's byte order; only an X channel needs forcing opaque.
-        gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_SWIZZLE_A, glow::ONE as i32);
+        // EGL maps the fourcc channels. Windows keep alpha; outputs retain opaque capture.
+        if opaque {
+            gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_SWIZZLE_A, glow::ONE as i32);
+        }
         gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_MIN_FILTER, glow::LINEAR as i32);
         gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_MAG_FILTER, glow::LINEAR as i32);
         gl.bind_texture(glow::TEXTURE_2D, None);
@@ -312,19 +326,27 @@ mod tests {
     fn preferred_fourcc_wins_even_when_offered_first_in_a_different_order() {
         let offered = [fm(gbm::Format::Argb8888 as u32, 0), fm(gbm::Format::Xrgb8888 as u32, 0)];
         let importable = offered;
-        assert_eq!(pick_dmabuf_format(&offered, &importable), Some(fm(gbm::Format::Xrgb8888 as u32, 0)));
+        assert_eq!(pick_dmabuf_format(&offered, &importable, true), Some(fm(gbm::Format::Xrgb8888 as u32, 0)));
+        assert_eq!(pick_dmabuf_format(&offered, &importable, false), Some(fm(gbm::Format::Argb8888 as u32, 0)));
+        let ten_bit = [fm(gbm::Format::Xrgb8888 as u32, 0), fm(gbm::Format::Argb2101010 as u32, 0)];
+        assert_eq!(pick_dmabuf_format(&ten_bit, &ten_bit, false), Some(ten_bit[1]));
+        assert_eq!(
+            pick_dmabuf_format(&ten_bit[..1], &ten_bit[..1], false),
+            None,
+            "opaque-only dma-buf offers use shm for windows"
+        );
     }
 
     #[test]
     fn an_unpreferred_shared_format_is_still_picked() {
         let weird = fm(0x1234_5678, 7);
-        assert_eq!(pick_dmabuf_format(&[weird], &[weird]), Some(weird));
+        assert_eq!(pick_dmabuf_format(&[weird], &[weird], true), Some(weird));
     }
 
     #[test]
     fn nothing_shared_is_no_format() {
         let offered = [fm(gbm::Format::Xrgb8888 as u32, 1)];
         let importable = [fm(gbm::Format::Xrgb8888 as u32, 2)];
-        assert_eq!(pick_dmabuf_format(&offered, &importable), None);
+        assert_eq!(pick_dmabuf_format(&offered, &importable, true), None);
     }
 }

@@ -97,12 +97,12 @@ pub enum Draw {
         /// never distinguishes from a request it decided not to run.
         blur_px: u32,
     },
-    /// An output's live contents (ADR-0248). `wayland::capture` owns the texture, keyed by `node`;
+    /// An output or window's contents (ADR-0248). `wayland::capture` owns the texture, keyed by `node`;
     /// this carries what a draw places it with and what the capture registry paces a source by,
     /// the same split `Draw::Image` makes between pixels and policy.
     Capture {
         node: NodeId,
-        output: String,
+        target: node::CaptureTarget,
         fit: Fit,
         alpha: f32,
         live: Option<f32>,
@@ -179,7 +179,7 @@ pub struct DrawCmd {
 #[derive(Debug, Clone, PartialEq)]
 pub struct CaptureNode {
     pub node: NodeId,
-    pub output: String,
+    pub target: node::CaptureTarget,
     pub live: Option<f32>,
     pub paint_cursor: bool,
     pub region: Option<LogicalRect>,
@@ -261,10 +261,10 @@ impl DisplayList {
         fn walk(commands: &[DrawCmd], out: &mut Vec<CaptureNode>) {
             for command in commands {
                 match &command.draw {
-                    Draw::Capture { node, output, live, paint_cursor, region, .. } => {
+                    Draw::Capture { node, target, live, paint_cursor, region, .. } => {
                         out.push(CaptureNode {
                             node: *node,
-                            output: output.clone(),
+                            target: target.clone(),
                             live: *live,
                             paint_cursor: *paint_cursor,
                             region: *region,

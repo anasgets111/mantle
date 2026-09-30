@@ -1,6 +1,6 @@
 //! `capture` node protocol client (ADR-0248): ext-image-copy-capture-v1 first, wlr-screencopy
 //! fallback or for a `region`. Hand-dispatched beside SCTK, like ADR-0009's text-input-v3. dma-buf negotiation
-//! (ADR-0248 amendment) lives in `wayland::dmabuf`; this module only decides when to attempt it.
+//! (ADR-0248 amendment) and texture lifecycle live in `gpu`, using `wayland::dmabuf`.
 //!
 //! Only the decision functions and teardown are unit tested; the rest is thin
 //! protocol translation a mock isn't worth writing.
@@ -12,7 +12,7 @@ use femtovg::ImageId;
 use khronos_egl as khr;
 use wayland_client::globals::GlobalList;
 use wayland_client::protocol::{wl_output, wl_shm};
-use wayland_client::{Connection, QueueHandle, delegate_noop};
+use wayland_client::{Connection, Proxy, QueueHandle, delegate_noop};
 use wayland_protocols::ext::image_capture_source::v1::client::{
     ext_image_capture_source_v1, ext_output_image_capture_source_manager_v1,
 };
@@ -25,26 +25,30 @@ use wayland_protocols_wlr::screencopy::v1::client::{zwlr_screencopy_frame_v1, zw
 use shared::warn;
 
 use crate::image::capture::{CaptureCache, DamageRect, crop_fraction};
+use crate::layout::node::CaptureTarget;
 use crate::layout::paint::CaptureNode;
 use crate::layout::scene::NodeId;
 use crate::text::snap::LogicalRect;
 
 use super::App;
-use super::dmabuf::{self, DmabufBuffer, DmabufShape, DmabufSupport, DmabufSwapchain, FormatModifier};
+use super::dmabuf::{DmabufShape, DmabufSwapchain, FormatModifier};
 use super::egl::EglState;
 
 mod ext;
+mod gpu;
 mod shm;
+mod windows;
 mod wlr;
 
+pub(super) use gpu::import_ready_dmabufs;
+use gpu::{DmabufOffer, DmabufProbe, land_dmabuf_frame};
 use shm::NegotiatedBuffer;
 
 /// The capture protocols this compositor offers, bound once at startup (ADR-0248 decision 1).
 struct Backend {
-    ext: Option<(
-        ext_image_copy_capture_manager_v1::ExtImageCopyCaptureManagerV1,
-        ext_output_image_capture_source_manager_v1::ExtOutputImageCaptureSourceManagerV1,
-    )>,
+    ext: Option<ext_image_copy_capture_manager_v1::ExtImageCopyCaptureManagerV1>,
+    outputs: Option<ext_output_image_capture_source_manager_v1::ExtOutputImageCaptureSourceManagerV1>,
+    windows: Option<windows::Windows>,
     wlr: Option<zwlr_screencopy_manager_v1::ZwlrScreencopyManagerV1>,
 }
 
@@ -135,7 +139,7 @@ enum Proto {
 }
 
 struct CaptureSource {
-    output: String,
+    target: CaptureTarget,
     /// Frames per second, `None` one-shot (ADR-0263).
     live: Option<f32>,
     paint_cursor: bool,
@@ -147,12 +151,12 @@ struct CaptureSource {
     last_request: Option<Instant>,
     /// Wants a frame its cap does not yet allow; `CaptureRegistry::next_request_deadline` wakes for it.
     deferred: bool,
-    /// Whether a frame has landed for the current `output`; a one-shot source reads this to want
+    /// Whether a frame has landed for the current target; a one-shot source reads this to want
     /// no more once it has one.
     captured: bool,
     proto: Option<Proto>,
-    /// Set on `Failed`, to stop a persistent failure from retrying every turn. Cleared when the
-    /// output list changes, since that is when a failure is likely to have a different answer.
+    /// Stops a persistent failure from retrying every turn. Outputs retry on topology changes;
+    /// windows need a new target or node, so a reused address cannot revive a closed source.
     failed: bool,
     warned_missing_output: bool,
     warned_rotated: bool,
@@ -163,14 +167,14 @@ struct CaptureSource {
     /// through shm.
     dmabuf_shape: Option<DmabufShape>,
     /// Set on any dma-buf failure, permanent for this source (amendment decision 4): no env
-    /// escape hatch, no retry short of the source being recreated for a new `output`.
+    /// escape hatch, no retry short of the source being recreated for a new target.
     dmabuf_failed: bool,
 }
 
 impl CaptureSource {
     fn new(node: &CaptureNode, protocol: Protocol) -> Self {
         CaptureSource {
-            output: node.output.clone(),
+            target: node.target.clone(),
             live: node.live,
             paint_cursor: node.paint_cursor,
             region: node.region,
@@ -189,33 +193,17 @@ impl CaptureSource {
         }
     }
 
-    /// Marks this source's dma-buf attempt permanently failed (amendment decision 4): warned
-    /// once, shm from here on until the source is recreated for a new `output`.
-    fn fail_dmabuf(&mut self, why: &str) {
-        if !self.dmabuf_failed {
-            warn!("capture on `{}` {why}; using shm", self.output);
+    /// Node IDs survive target replacement; only the current protocol objects may change it.
+    fn owns(&self, proxy: &impl Proxy) -> bool {
+        let id = proxy.id();
+        match &self.proto {
+            Some(Proto::Ext(ext)) => {
+                ext.session.as_ref().is_some_and(|p| p.id() == id) || ext.frame.as_ref().is_some_and(|p| p.id() == id)
+            }
+            Some(Proto::Wlr(wlr)) => wlr.frame.as_ref().is_some_and(|p| p.id() == id),
+            None => false,
         }
-        self.dmabuf_failed = true;
-        self.dmabuf_shape = None;
     }
-}
-
-/// What a compositor offered for one source's negotiation batch (ADR-0248 amendment decision 1).
-struct DmabufOffer<'a> {
-    id: NodeId,
-    width: u32,
-    height: u32,
-    offered: &'a [FormatModifier],
-}
-
-/// Process-wide dma-buf capability, probed once EGL exists and memoized: `Pending` retries on the
-/// next negotiation, `Unsupported`/`Supported` are final for the process's lifetime.
-#[derive(Default)]
-enum DmabufProbe {
-    #[default]
-    Pending,
-    Unsupported,
-    Supported(DmabufSupport),
 }
 
 /// Per-node capture sources for this generation's live `capture` nodes (ADR-0248).
@@ -228,7 +216,7 @@ pub(super) struct CaptureRegistry {
     dmabuf_manager: Option<zwp_linux_dmabuf_v1::ZwpLinuxDmabufV1>,
     dmabuf_probe: DmabufProbe,
     /// Nodes whose current front buffer has no texture yet; drained once the canvas's GL context
-    /// is current (ADR-0039), by `App::import_ready_dmabufs`.
+    /// is current (ADR-0039), by `import_ready_dmabufs`.
     pending_import: Vec<NodeId>,
     /// Textures and `EGLImage`s a discarded buffer left behind, freed at the same point.
     pending_free: Vec<(khr::Image, ImageId, glow::NativeTexture)>,
@@ -237,20 +225,11 @@ pub(super) struct CaptureRegistry {
 impl CaptureRegistry {
     /// Binds each protocol the compositor offers; [`pick_protocol`] chooses per source.
     pub(super) fn bind(globals: &GlobalList, qh: &QueueHandle<App>) -> Self {
-        let ext = globals
-            .bind::<ext_image_copy_capture_manager_v1::ExtImageCopyCaptureManagerV1, _, _>(qh, 1..=1, ())
-            .ok()
-            .zip(
-                globals
-                    .bind::<ext_output_image_capture_source_manager_v1::ExtOutputImageCaptureSourceManagerV1, _, _>(
-                        qh,
-                        1..=1,
-                        (),
-                    )
-                    .ok(),
-            );
+        let ext = globals.bind(qh, 1..=1, ()).ok();
+        let outputs = globals.bind(qh, 1..=1, ()).ok();
+        let windows = windows::Windows::bind(globals, qh);
         let wlr = globals.bind::<zwlr_screencopy_manager_v1::ZwlrScreencopyManagerV1, _, _>(qh, 1..=3, ()).ok();
-        let backend = Backend { ext, wlr };
+        let backend = Backend { ext, outputs, windows, wlr };
         let dmabuf_manager = globals.bind::<zwp_linux_dmabuf_v1::ZwpLinuxDmabufV1, _, _>(qh, 2..=2, ()).ok();
         CaptureRegistry {
             backend,
@@ -261,6 +240,32 @@ impl CaptureRegistry {
             pending_import: Vec::new(),
             pending_free: Vec::new(),
         }
+    }
+
+    fn forget(&mut self, id: NodeId, cache: &mut CaptureCache) {
+        if let Some(mut source) = self.sources.remove(&id) {
+            self.pending_free.extend(source.dmabuf.take_textures());
+            destroy_proto(source.proto);
+            self.pending_import.retain(|pending| *pending != id);
+            cache.forget(id);
+        }
+    }
+
+    fn reconcile_source(&mut self, node: &CaptureNode, protocol: Option<Protocol>, cache: &mut CaptureCache) -> bool {
+        if self
+            .sources
+            .get(&node.node)
+            .is_some_and(|source| source.target != node.target || Some(source.protocol) != protocol)
+        {
+            self.forget(node.node, cache);
+        }
+        let Some(protocol) = protocol else { return false };
+        let source = self.sources.entry(node.node).or_insert_with(|| CaptureSource::new(node, protocol));
+        source.live = node.live;
+        source.paint_cursor = node.paint_cursor;
+        source.region = node.region;
+        cache.set_target(node.node, node.target.clone());
+        true
     }
 
     /// The soonest a deferred source's cap allows its next request, for the loop's poll timeout.
@@ -275,87 +280,10 @@ impl CaptureRegistry {
     /// Gives a failed source another chance: an output topology change is the case decision 3's
     /// backoff exists for (unplug mid-capture), so it is also the signal to retry.
     pub(super) fn clear_failures(&mut self) {
-        for source in self.sources.values_mut() {
+        for source in self.sources.values_mut().filter(|source| matches!(source.target, CaptureTarget::Output(_))) {
             source.failed = false;
             source.warned_missing_output = false;
         }
-    }
-
-    /// Probes process-wide dma-buf support the first time EGL exists; a `None` `egl` (too early
-    /// in startup) leaves the probe pending for the next call instead of failing it outright.
-    fn ensure_probed(&mut self, egl: Option<&EglState>) {
-        if matches!(self.dmabuf_probe, DmabufProbe::Pending)
-            && let Some(egl) = egl
-        {
-            self.dmabuf_probe = match DmabufSupport::probe(egl) {
-                Some(support) => DmabufProbe::Supported(support),
-                None => {
-                    warn!("this GPU/driver offers no usable dma-buf import; `capture` nodes use the slower shm path");
-                    DmabufProbe::Unsupported
-                }
-            };
-        }
-    }
-
-    fn support(&self) -> Option<&DmabufSupport> {
-        match &self.dmabuf_probe {
-            DmabufProbe::Supported(support) => Some(support),
-            _ => None,
-        }
-    }
-
-    /// Picks a format from `offer.offered` and allocates `offer.id`'s back slot for it (ADR-0248
-    /// amendment decisions 1 and 3). `false` means shm should run instead this round; if dma-buf
-    /// support exists at all, that also marks the source permanently shm-only, warned once
-    /// (amendment decision 4).
-    fn negotiate_dmabuf(&mut self, egl: Option<&EglState>, qh: &QueueHandle<App>, offer: DmabufOffer<'_>) -> bool {
-        let DmabufOffer { id, width, height, offered } = offer;
-        self.ensure_probed(egl);
-        let support_available = matches!(self.dmabuf_probe, DmabufProbe::Supported(_));
-        let previously_failed = self.sources.get(&id).is_some_and(|source| source.dmabuf_failed);
-        if !(support_available && !previously_failed) || self.dmabuf_manager.is_none() {
-            return false;
-        }
-        let (DmabufProbe::Supported(support), Some(egl)) = (&self.dmabuf_probe, egl) else { return false };
-        let picked = (!offered.is_empty())
-            .then(|| {
-                let mut seen = std::collections::HashSet::new();
-                let importable: Vec<FormatModifier> = offered
-                    .iter()
-                    .filter(|candidate| seen.insert(candidate.fourcc))
-                    .flat_map(|candidate| support.importable_modifiers(egl, candidate.fourcc))
-                    .collect();
-                dmabuf::pick_dmabuf_format(offered, &importable)
-            })
-            .flatten();
-        let Some(source) = self.sources.get_mut(&id) else { return false };
-        let Some(format) = picked else {
-            source.fail_dmabuf("cannot use dma-buf (no shared format)");
-            return false;
-        };
-        source.dmabuf_shape = Some(DmabufShape { width, height, format });
-        self.ensure_dmabuf_back(qh, id)
-    }
-
-    /// Re-checks `id`'s already-negotiated dma-buf shape (the routine per-frame path once
-    /// negotiation has run once): a no-op unless the back slot has never been allocated.
-    fn ensure_dmabuf_back(&mut self, qh: &QueueHandle<App>, id: NodeId) -> bool {
-        let CaptureRegistry { sources, dmabuf_manager, pending_free, dmabuf_probe, .. } = self;
-        let Some(source) = sources.get_mut(&id) else { return false };
-        let Some(shape) = source.dmabuf_shape else { return false };
-        let (DmabufProbe::Supported(support), Some(manager)) = (&*dmabuf_probe, dmabuf_manager.as_ref()) else {
-            return false;
-        };
-        let (ok, discarded) = source.dmabuf.ensure_back(shape, || dmabuf::allocate(support, manager, qh, shape));
-        if let Some(mut discarded) = discarded
-            && let Some(freed) = discarded.take_texture()
-        {
-            pending_free.push(freed);
-        }
-        if !ok {
-            source.fail_dmabuf("failed a dma-buf allocation");
-        }
-        ok
     }
 }
 
@@ -377,37 +305,33 @@ impl App {
 
         let gone: Vec<NodeId> = self.captures.sources.keys().copied().filter(|id| !wanted.contains_key(id)).collect();
         for id in gone {
-            if let Some(mut source) = self.captures.sources.remove(&id) {
-                self.captures.pending_free.extend(source.dmabuf.take_textures());
-                destroy_proto(source.proto);
-            }
-            self.capture_cache.forget(id);
+            self.captures.forget(id, &mut self.capture_cache);
         }
 
-        let (has_ext, has_wlr) = (self.captures.backend.ext.is_some(), self.captures.backend.wlr.is_some());
-        if !has_ext && !has_wlr {
-            if !wanted.is_empty() && !self.captures.warned_no_backend {
-                warn!(
-                    "a `capture` node is declared but this compositor offers no screencopy protocol; drawing nothing"
-                );
-                self.captures.warned_no_backend = true;
-            }
-            return;
-        }
-
+        let (has_ext, has_wlr) = (
+            self.captures.backend.ext.is_some() && self.captures.backend.outputs.is_some(),
+            self.captures.backend.wlr.is_some(),
+        );
+        let has_windows = self.captures.backend.ext.is_some() && self.captures.backend.windows.is_some();
         for (id, node) in wanted {
-            let Some(protocol) = pick_protocol(node.region.is_some(), has_ext, has_wlr) else { continue };
-            let source = self.captures.sources.entry(id).or_insert_with(|| CaptureSource::new(&node, protocol));
-            source.live = node.live;
-            source.paint_cursor = node.paint_cursor;
-            source.region = node.region;
-            if source.output != node.output || source.protocol != protocol {
-                let mut stale = std::mem::replace(source, CaptureSource::new(&node, protocol));
-                self.captures.pending_free.extend(stale.dmabuf.take_textures());
-                destroy_proto(stale.proto);
-                self.capture_cache.forget(id);
+            let protocol = match &node.target {
+                CaptureTarget::Output(_) => pick_protocol(node.region.is_some(), has_ext, has_wlr),
+                CaptureTarget::Window(_) => has_windows.then_some(Protocol::Ext),
+            };
+            if !self.captures.reconcile_source(&node, protocol, &mut self.capture_cache) {
+                if !self.captures.warned_no_backend {
+                    warn!("capture target `{:?}` has no supported capture protocol; drawing nothing", node.target);
+                    self.captures.warned_no_backend = true;
+                }
+                continue;
             }
-            let info = self.wl_output_named(&node.output).and_then(|output| self.output_state.info(&output));
+            let protocol = protocol.expect("reconciled a supported protocol");
+            let info = match &node.target {
+                CaptureTarget::Output(name) => {
+                    self.wl_output_named(name).and_then(|output| self.output_state.info(&output))
+                }
+                CaptureTarget::Window(_) => None,
+            };
             let crop = match (protocol, node.region, info) {
                 (Protocol::Ext, Some(region), Some(info)) => {
                     let (width, height) = info.logical_size.unwrap_or_default();
@@ -418,7 +342,7 @@ impl App {
                     {
                         warn!(
                             "capture on `{}` cannot crop a rotated or flipped output; drawing all of it",
-                            node.output
+                            node.target.name()
                         );
                     }
                     crop
@@ -469,18 +393,25 @@ impl App {
     /// Starts one capture request for `id`, whose pacing already said it wants one. An ext source
     /// with a live session of the same `paint_cursor` reuses it; anything else starts fresh.
     fn request_frame(&mut self, id: NodeId) {
-        let Some(output_name) = self.captures.sources.get(&id).map(|source| source.output.clone()) else {
-            return;
+        let Some(target) = self.captures.sources.get(&id).map(|source| source.target.clone()) else { return };
+        let output = match &target {
+            CaptureTarget::Output(name) => self.wl_output_named(name),
+            _ => None,
         };
-        let Some(output) = self.wl_output_named(&output_name) else {
+        let window = match &target {
+            CaptureTarget::Window(name) => {
+                self.captures.backend.windows.as_ref().and_then(|windows| windows.handle(name))
+            }
+            _ => None,
+        };
+        if output.is_none() && window.is_none() {
             if let Some(source) = self.captures.sources.get_mut(&id)
-                && !source.warned_missing_output
+                && !std::mem::replace(&mut source.warned_missing_output, true)
             {
-                warn!("capture node names output `{output_name}`, which is not connected; drawing nothing");
-                source.warned_missing_output = true;
+                warn!("capture target `{}` is not available; drawing nothing", target.name());
             }
             return;
-        };
+        }
         let Some(source) = self.captures.sources.get_mut(&id) else { return };
         source.in_flight = true;
         source.last_request =
@@ -505,8 +436,16 @@ impl App {
         }
 
         match (protocol, &self.captures.backend) {
-            (Protocol::Ext, Backend { ext: Some((manager, sources)), .. }) => {
-                let capture_source = sources.create_source(&output, &qh, id);
+            (Protocol::Ext, Backend { ext: Some(manager), outputs, windows, .. }) => {
+                let capture_source = match (&output, &window) {
+                    (Some(output), _) => {
+                        outputs.as_ref().expect("output protocol selected").create_source(output, &qh, id)
+                    }
+                    (_, Some(window)) => {
+                        windows.as_ref().expect("window protocol selected").sources.create_source(window, &qh, id)
+                    }
+                    _ => return,
+                };
                 let options = if paint_cursor {
                     ext_image_copy_capture_manager_v1::Options::PaintCursors
                 } else {
@@ -520,6 +459,7 @@ impl App {
                 }
             }
             (Protocol::Wlr, Backend { wlr: Some(manager), .. }) => {
+                let Some(output) = output else { return };
                 let overlay_cursor = i32::from(paint_cursor);
                 let frame = match region {
                     // Output-logical pixels; the compositor scales to buffer pixels and clips.
@@ -550,46 +490,25 @@ impl App {
         }
     }
 
+    /// A closed/stopped source must clear its texture even when no new frame can land.
+    fn stop_capture(&mut self, id: NodeId) {
+        if let Some(source) = self.captures.sources.get_mut(&id) {
+            destroy_proto(source.proto.take());
+            self.captures.pending_free.extend(source.dmabuf.take_textures());
+            source.dmabuf = DmabufSwapchain::default();
+            source.dmabuf_shape = None;
+            source.captured = false;
+            source.failed = true;
+            source.in_flight = false;
+            source.deferred = false;
+        }
+        self.captures.pending_import.retain(|pending| *pending != id);
+        self.capture_cache.forget(id);
+    }
+
     fn request_next_if_live(&mut self, id: NodeId) {
         if self.captures.sources.get(&id).is_some_and(|source| source.live.is_some()) {
             self.request_when_due(id);
-        }
-    }
-}
-
-/// Imports every dma-buf frame that landed with no texture yet, and frees any texture a discarded
-/// buffer left behind. Must run with the canvas's GL context current (ADR-0039); a free function,
-/// not an `App` method, so `wayland::surface::paint_surface` can call it while its own borrow of
-/// `self.text_painter` supplies `canvas`.
-pub(super) fn import_ready_dmabufs(
-    captures: &mut CaptureRegistry,
-    capture_cache: &mut CaptureCache,
-    egl: Option<&EglState>,
-    gl: Option<&glow::Context>,
-    canvas: &mut femtovg::Canvas<femtovg::renderer::OpenGl>,
-) {
-    if let (Some(egl), Some(gl)) = (egl, gl) {
-        for freed in std::mem::take(&mut captures.pending_free) {
-            dmabuf::free_texture(egl, gl, canvas, freed);
-        }
-    }
-    let pending = std::mem::take(&mut captures.pending_import);
-    if pending.is_empty() {
-        return;
-    }
-    let (Some(egl), Some(gl)) = (egl, gl) else { return };
-    let CaptureRegistry { sources, dmabuf_probe, .. } = captures;
-    let DmabufProbe::Supported(support) = dmabuf_probe else { return };
-    for id in pending {
-        let Some(source) = sources.get_mut(&id) else { continue };
-        let Some(buffer) = source.dmabuf.front_mut() else { continue };
-        if dmabuf::import(support, egl, gl, canvas, buffer).is_none() {
-            source.fail_dmabuf("failed to import a dma-buf texture");
-            continue;
-        }
-        if let Some(image) = buffer.image() {
-            let shape = buffer.shape();
-            capture_cache.install_texture(id, image, shape.width, shape.height);
         }
     }
 }
@@ -612,8 +531,7 @@ delegate_noop!(App: ext_image_copy_capture_manager_v1::ExtImageCopyCaptureManage
 delegate_noop!(App: ext_output_image_capture_source_manager_v1::ExtOutputImageCaptureSourceManagerV1);
 delegate_noop!(App: zwlr_screencopy_manager_v1::ZwlrScreencopyManagerV1);
 
-/// Marks `id`'s source failed (ADR-0248 decision 3's backoff): idle, warned once, no retry short
-/// of the output list changing. Shared by the ext and wlr `Failed` handlers.
+/// Marks `id`'s source failed (ADR-0248 decision 3's backoff): idle and warned once. Outputs retry on topology changes; windows need a new target or node. Shared by the ext and wlr `Failed` handlers.
 fn fail_source(captures: &mut CaptureRegistry, id: &NodeId) {
     let Some(source) = captures.sources.get_mut(id) else { return };
     match source.proto.as_mut() {
@@ -630,39 +548,77 @@ fn fail_source(captures: &mut CaptureRegistry, id: &NodeId) {
     }
     source.in_flight = false;
     if !source.failed {
-        warn!("capture on `{}` failed; pausing until the output list changes", source.output);
+        warn!("capture on `{}` failed; pausing capture", source.target.name());
     }
     source.failed = true;
-}
-
-/// A dma-buf frame landed for `id`: advances its swapchain (the buffer just filled becomes the
-/// front) and either repoints `capture_cache` at its already-imported texture, or queues the
-/// import for the next canvas-current pass (ADR-0039, ADR-0248 amendment decision 3). The front
-/// slot's `ImageId` changes on every landed frame, alternating between the two slots, so
-/// `capture_cache` is repointed every time, not only on the first import.
-fn land_dmabuf_frame(captures: &mut CaptureRegistry, capture_cache: &mut CaptureCache, id: &NodeId) {
-    let Some(source) = captures.sources.get_mut(id) else { return };
-    // Nothing uploads on this path, so the damage the compositor still sends is dropped.
-    match source.proto.as_mut() {
-        Some(Proto::Ext(ext)) => ext.damage.clear(),
-        Some(Proto::Wlr(wlr)) => wlr.damage.clear(),
-        None => {}
-    }
-    source.dmabuf.advance();
-    source.captured = true;
-    source.in_flight = false;
-    match source.dmabuf.front().and_then(DmabufBuffer::image) {
-        Some(image) => {
-            let shape = source.dmabuf.front().expect("front just returned Some").shape();
-            capture_cache.install_texture(*id, image, shape.width, shape.height);
-        }
-        None => captures.pending_import.push(*id),
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn registry() -> CaptureRegistry {
+        CaptureRegistry {
+            backend: Backend { ext: None, outputs: None, windows: None, wlr: None },
+            sources: HashMap::new(),
+            warned_no_backend: false,
+            dmabuf_manager: None,
+            dmabuf_probe: DmabufProbe::Pending,
+            pending_import: Vec::new(),
+            pending_free: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn first_dmabuf_frame_requests_a_paint_before_texture_import() {
+        let mut registry = registry();
+        let mut cache = CaptureCache::default();
+        let node = CaptureNode {
+            node: NodeId::test(7),
+            target: CaptureTarget::Window("0xa11ce".into()),
+            live: None,
+            paint_cursor: false,
+            region: None,
+        };
+        assert!(registry.reconcile_source(&node, Some(Protocol::Ext), &mut cache));
+        assert!(cache.poll().is_empty());
+        land_dmabuf_frame(&mut registry, &mut cache, &node.node);
+        assert!(cache.get(node.node).is_none());
+        assert_eq!(registry.pending_import, [node.node]);
+        assert_eq!(cache.poll(), [node.node], "an idle surface must paint before it can import its first texture");
+    }
+
+    #[test]
+    fn switching_capture_targets_retires_old_pixels_even_when_the_new_backend_is_missing() {
+        let mut registry = registry();
+        let mut cache = CaptureCache::default();
+        let mut node = CaptureNode {
+            node: NodeId::test(7),
+            target: CaptureTarget::Output("DP-1".into()),
+            live: Some(30.0),
+            paint_cursor: false,
+            region: None,
+        };
+        assert!(registry.reconcile_source(&node, Some(Protocol::Wlr), &mut cache));
+        registry.sources.get_mut(&node.node).unwrap().captured = true;
+        registry.pending_import.push(node.node);
+        node.target = CaptureTarget::Window("0xa11ce".into());
+        assert!(!registry.reconcile_source(&node, None, &mut cache));
+        assert!(registry.sources.is_empty());
+        assert!(registry.pending_import.is_empty());
+        assert_eq!(cache.poll(), [node.node]);
+        assert!(!registry.reconcile_source(&node, None, &mut cache));
+        assert!(cache.poll().is_empty(), "an unsupported target cannot create a repaint loop");
+        assert!(registry.reconcile_source(&node, Some(Protocol::Ext), &mut cache));
+        assert!(!registry.sources[&node.node].captured);
+        registry.sources.get_mut(&node.node).unwrap().failed = true;
+        registry.clear_failures();
+        assert!(registry.sources[&node.node].failed, "an output change must not revive a closed window address");
+        node.target = CaptureTarget::Window("0xb0b".into());
+        assert!(registry.reconcile_source(&node, Some(Protocol::Ext), &mut cache));
+        assert!(!registry.sources[&node.node].failed);
+        assert_eq!(registry.sources[&node.node].live, Some(30.0));
+    }
 
     /// A late wake keeps the request on the 1/fps grid; over a period late, the grid restarts at
     /// the wake rather than bursting to catch up.
@@ -719,6 +675,27 @@ mod tests {
         server.set_nonblocking(true).unwrap();
         let _ = server.read(&mut sink);
 
+        let node = CaptureNode {
+            node: NodeId::test(3),
+            target: CaptureTarget::Window("0xa11ce".into()),
+            live: None,
+            paint_cursor: false,
+            region: None,
+        };
+        let mut source = CaptureSource::new(&node, Protocol::Ext);
+        source.proto = Some(Proto::Ext(ExtProto {
+            session: Some(session.clone()),
+            frame: Some(ext_frame.clone()),
+            ..Default::default()
+        }));
+        assert!(source.owns(&session));
+        assert!(source.owns(&ext_frame));
+        source.proto = Some(Proto::Wlr(WlrProto { frame: Some(wlr_frame.clone()), ..Default::default() }));
+        assert!(!source.owns(&session), "old-session negotiation/stopped events are ignored");
+        assert!(!source.owns(&ext_frame), "old-frame ready/failed events are ignored");
+        assert!(source.owns(&wlr_frame));
+        source.proto = None;
+        assert!(!source.owns(&wlr_frame), "closed sources ignore late callbacks");
         let ext_proto = ExtProto { session: Some(session), frame: Some(ext_frame), ..Default::default() };
         destroy_proto(Some(Proto::Ext(ext_proto)));
         destroy_proto(Some(Proto::Wlr(WlrProto { frame: Some(wlr_frame), ..Default::default() })));

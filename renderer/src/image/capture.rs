@@ -9,6 +9,7 @@ use femtovg::{Canvas, ImageFlags, ImageId, ImageSource};
 use shared::warn;
 
 use crate::image::{Fit, fitted_rect};
+use crate::layout::node::CaptureTarget;
 use crate::layout::scene::NodeId;
 use crate::text::snap::LogicalRect;
 
@@ -66,13 +67,15 @@ pub(crate) fn fits_budget(resident_before: usize, bytes: usize, budget: usize) -
 }
 
 /// wl_shm's `Argb8888`/`Xrgb8888` are BGRX in memory on a little-endian machine; femtovg wants
-/// RGBA. Alpha is forced opaque: screen content carries none worth keeping.
+/// RGBA. Outputs and XRGB buffers are opaque; an ARGB window keeps its premultiplied alpha.
 ///
 /// ponytail: only these two formats are ever requested (`wayland::capture`'s format pick).
-pub(crate) fn bgrx_to_rgba(pixels: &mut [u8]) {
+pub(crate) fn bgrx_to_rgba(pixels: &mut [u8], opaque: bool) {
     for pixel in pixels.as_chunks_mut::<4>().0 {
         pixel.swap(0, 2);
-        pixel[3] = 0xFF;
+        if opaque {
+            pixel[3] = 0xFF;
+        }
     }
 }
 
@@ -119,6 +122,7 @@ pub(crate) fn placement(
 /// `pixels` covers rows `[y_offset, y_offset + pixels.len() / (width * 4))`; the caller sends only
 /// the damaged band unless the size changed or nothing was reported, when it is the whole frame.
 pub struct PendingFrame {
+    pub has_alpha: bool,
     pub width: u32,
     pub height: u32,
     pub y_offset: u32,
@@ -143,6 +147,7 @@ struct Entry {
 /// node with nothing landed yet has no entry and draws nothing.
 #[derive(Default)]
 pub struct CaptureCache {
+    targets: HashMap<NodeId, CaptureTarget>,
     entries: HashMap<NodeId, Entry>,
     pending: HashMap<NodeId, PendingFrame>,
     to_free: Vec<ImageId>,
@@ -157,6 +162,20 @@ pub struct CaptureCache {
 }
 
 impl CaptureCache {
+    /// A changed target must not draw its predecessor while protocol reconciliation catches up.
+    pub(crate) fn set_target(&mut self, node: NodeId, target: CaptureTarget) {
+        self.targets.insert(node, target);
+    }
+
+    pub(crate) fn get_for_target(&self, node: NodeId, target: &CaptureTarget) -> Option<(ImageId, u32, u32)> {
+        (self.targets.get(&node) == Some(target)).then(|| self.get(node)).flatten()
+    }
+
+    /// Schedules a paint even when a dma-buf frame still awaits its first GPU import.
+    pub(crate) fn invalidate(&mut self, node: NodeId) {
+        self.landed.push(node);
+    }
+
     /// A changed crop is a repaint cue, as a landed frame is.
     pub(crate) fn set_crop(&mut self, node: NodeId, crop: Option<LogicalRect>) {
         let old = match crop {
@@ -164,7 +183,7 @@ impl CaptureCache {
             None => self.crops.remove(&node),
         };
         if old != crop {
-            self.landed.push(node);
+            self.invalidate(node);
         }
     }
 
@@ -176,11 +195,46 @@ impl CaptureCache {
         self.texture_budget = budget;
     }
 
+    /// Copies completed shm pixels, stripping row padding before the canvas-current upload.
+    pub(crate) fn stage_shm(
+        &mut self,
+        node: NodeId,
+        buffer: &[u8],
+        (width, height): (u32, u32),
+        stride: usize,
+        has_alpha: bool,
+        mut damage: Vec<DamageRect>,
+    ) {
+        // Pending patches and borrowed textures cannot be the base of a partial shm update.
+        if self.pending.contains_key(&node)
+            || self
+                .entries
+                .get(&node)
+                .is_none_or(|entry| !entry.owned || (entry.width, entry.height) != (width, height))
+        {
+            damage = vec![DamageRect::full(width, height)];
+        }
+        let (y0, y1) = if damage.is_empty() {
+            (0, height)
+        } else {
+            let lo = damage.iter().map(|r| r.y).min().unwrap_or(0).min(height);
+            let hi = damage.iter().map(|r| r.y.saturating_add(r.height).min(height)).max().unwrap_or(height).max(lo);
+            (lo, hi)
+        };
+        let row_bytes = width as usize * 4;
+        let mut pixels = Vec::with_capacity(row_bytes * (y1 - y0) as usize);
+        for row in y0..y1 {
+            let start = row as usize * stride;
+            pixels.extend_from_slice(&buffer[start..start + row_bytes]);
+        }
+        self.stage(node, PendingFrame { has_alpha, width, height, y_offset: y0, pixels, damage });
+    }
+
     /// Replaces whichever frame is still waiting: a source landing faster than it paints only
     /// shows the latest.
     pub(crate) fn stage(&mut self, node: NodeId, frame: PendingFrame) {
         self.pending.insert(node, frame);
-        self.landed.push(node);
+        self.invalidate(node);
     }
 
     /// Nodes with a frame waiting to be painted. Draining: called once per turn.
@@ -220,13 +274,15 @@ impl CaptureCache {
         {
             self.to_free.push(old.image);
         }
-        self.landed.push(node);
+        self.invalidate(node);
         true
     }
 
     /// Drops a node's texture and any pixels still waiting for one. Freed at the next
     /// [`Self::upload_landed`], the same one-turn lag `ImageCache::release_evicted` accepts.
     pub(crate) fn forget(&mut self, node: NodeId) {
+        self.invalidate(node);
+        self.targets.remove(&node);
         self.pending.remove(&node);
         self.over_budget_warned.remove(&node);
         self.crops.remove(&node);
@@ -253,7 +309,8 @@ impl CaptureCache {
         }
         let pending: Vec<(NodeId, PendingFrame)> = self.pending.drain().collect();
         for (node, mut frame) in pending {
-            bgrx_to_rgba(&mut frame.pixels);
+            let opaque = !frame.has_alpha || !matches!(self.targets.get(&node), Some(CaptureTarget::Window(_)));
+            bgrx_to_rgba(&mut frame.pixels, opaque);
             let bytes = rgba_bytes(frame.width, frame.height);
             if !self.admits(node, bytes, frame.width, frame.height) {
                 continue;
@@ -300,6 +357,48 @@ impl CaptureCache {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn shm_staging_keeps_pending_damage_and_recovers_from_dmabuf() {
+        use crate::layout::paint::{init_headless_egl, text_painter};
+        use crate::text::shaping::ShapingHandle;
+        let instance = init_headless_egl(8, 8).expect("capture regression requires headless EGL");
+        let shaping = ShapingHandle::spawn();
+        let mut painter = text_painter(&instance, &shaping, 8, 8).unwrap();
+        let canvas = painter.canvas_mut();
+        let node = NodeId::test(1);
+        let mut cache = CaptureCache::default();
+        cache.set_target(node, CaptureTarget::Window("0xa11ce".into()));
+        let mut pixels = [0; 36]; // Two pixels per row, with four padding bytes.
+        let damage = |y| vec![DamageRect { x: 0, y, width: 2, height: 1 }];
+        cache.stage_shm(node, &pixels, (2, 3), 12, true, vec![]);
+        cache.upload_landed(canvas);
+
+        pixels[..8].copy_from_slice(&[0, 0, 255, 255].repeat(2));
+        cache.stage_shm(node, &pixels, (2, 3), 12, true, damage(0));
+        pixels[24..32].copy_from_slice(&[255, 0, 0, 255].repeat(2));
+        cache.stage_shm(node, &pixels, (2, 3), 12, true, damage(2));
+        let pending = &cache.pending[&node];
+        assert_eq!(pending.damage, [DamageRect::full(2, 3)], "both unpainted changes must reach the texture");
+        assert_eq!(pending.y_offset, 0);
+        assert_eq!(&pending.pixels[..8], &pixels[..8]);
+        assert_eq!(&pending.pixels[16..24], &pixels[24..32]);
+        cache.upload_landed(canvas);
+
+        cache.stage_shm(node, &pixels, (2, 3), 12, true, damage(1));
+        assert_eq!(cache.pending[&node].y_offset, 1, "ordinary frames still copy only damaged rows");
+        assert_eq!(cache.pending[&node].pixels.len(), 8);
+        cache.upload_landed(canvas);
+
+        let native = canvas.create_image_empty(2, 3, femtovg::PixelFormat::Rgba8, ImageFlags::empty()).unwrap();
+        assert!(cache.install_texture(node, native, 2, 3));
+        cache.stage_shm(node, &pixels, (2, 3), 12, true, damage(2));
+        assert_eq!(cache.pending[&node].damage, [DamageRect::full(2, 3)], "shm must replace the borrowed texture");
+        assert_eq!(cache.pending[&node].pixels.len(), 24);
+        cache.upload_landed(canvas);
+        assert_ne!(cache.get(node).unwrap().0, native);
+        canvas.delete_image(native);
+    }
 
     #[test]
     fn no_damage_reported_uploads_the_whole_buffer() {
@@ -359,9 +458,16 @@ mod tests {
     }
 
     #[test]
+    fn an_argb_window_keeps_its_premultiplied_alpha() {
+        let mut pixels = [10, 20, 30, 40, 0, 0, 0, 0];
+        bgrx_to_rgba(&mut pixels, false);
+        assert_eq!(pixels, [30, 20, 10, 40, 0, 0, 0, 0]);
+    }
+
+    #[test]
     fn bgrx_to_rgba_swaps_the_colour_channels_and_forces_opaque() {
         let mut pixels = vec![0x10, 0x20, 0x30, 0x00, 0xAA, 0xBB, 0xCC, 0x7F];
-        bgrx_to_rgba(&mut pixels);
+        bgrx_to_rgba(&mut pixels, true);
         assert_eq!(pixels, vec![0x30, 0x20, 0x10, 0xFF, 0xCC, 0xBB, 0xAA, 0xFF]);
     }
 

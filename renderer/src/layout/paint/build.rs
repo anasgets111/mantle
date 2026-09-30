@@ -441,12 +441,11 @@ fn draw_for(
             })
         }
 
-        // `capture` (ADR-0248): empty `output` draws nothing, the same rule `image`'s empty
-        // `source` follows.
-        PaintStyle::Capture { output, fit, live, paint_cursor, region } => {
-            (!output.is_empty()).then(|| Draw::Capture {
+        // An empty capture target draws nothing, as an empty image source does.
+        PaintStyle::Capture { target, fit, live, paint_cursor, region } => {
+            (!target.name().is_empty()).then(|| Draw::Capture {
                 node: node_id,
-                output: output.clone(),
+                target: target.clone(),
                 fit: *fit,
                 alpha: opacity,
                 live: *live,

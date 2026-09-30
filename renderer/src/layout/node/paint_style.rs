@@ -15,6 +15,21 @@ use crate::text::snap::LogicalRect;
 use super::*;
 use fields::{capture, icon, image, paint, path, shader, text, textfield};
 
+/// Exactly one capture source. Window IDs stay opaque outside their compositor adapter.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CaptureTarget {
+    Output(String),
+    Window(String),
+}
+
+impl CaptureTarget {
+    pub fn name(&self) -> &str {
+        match self {
+            Self::Output(name) | Self::Window(name) => name,
+        }
+    }
+}
+
 /// Parsed paint properties with no `mlua::Value`. A kind admitted by
 /// `layout::scene::ensure_supported_kind` but absent here draws nothing. Lua tables compare by
 /// identity, so keeping one here would make a signal-resolved table repaint forever (ADR-0063).
@@ -83,10 +98,9 @@ pub enum PaintStyle {
         /// pixels, and which `image` does not accept.
         source_blur: f32,
     },
-    /// `capture` (ADR-0248): an output's live contents. `output` empty or naming nothing connected
-    /// draws nothing, the same answer `image`'s empty `source` gets.
+    /// `capture` (ADR-0248): one output or window. An empty or unavailable target draws nothing.
     Capture {
-        output: String,
+        target: CaptureTarget,
         fit: Fit,
         live: Option<f32>,
         paint_cursor: bool,
@@ -161,13 +175,24 @@ pub fn paint_style(kind: &str, properties: &PropMap) -> Result<Option<PaintStyle
                 source_blur: image::source_blur.read(properties)?,
             }
         }
-        "capture" => PaintStyle::Capture {
-            output: capture::output.read(properties)?,
-            fit: capture::fit.read(properties)?,
-            live: capture::live.read(properties)?,
-            paint_cursor: capture::paint_cursor.read(properties)?,
-            region: capture::region.read(properties)?,
-        },
+        "capture" => {
+            let output = capture::output.read(properties)?;
+            let window = capture::window.read(properties)?;
+            let region = capture::region.read(properties)?;
+            if !window.is_empty() && (!output.is_empty() || region.is_some()) {
+                return Err(LayoutError::InvalidProperty {
+                    property: "capture.window".into(),
+                    detail: "cannot combine a window with output or region".into(),
+                });
+            }
+            PaintStyle::Capture {
+                target: if window.is_empty() { CaptureTarget::Output(output) } else { CaptureTarget::Window(window) },
+                fit: capture::fit.read(properties)?,
+                live: capture::live.read(properties)?,
+                paint_cursor: capture::paint_cursor.read(properties)?,
+                region,
+            }
+        }
         "shader" => PaintStyle::Shader {
             source: shader::source.read(properties)?,
             progress: shader::progress.read(properties)?,
@@ -284,13 +309,33 @@ mod tests {
     }
 
     #[test]
+    fn window_capture_rejects_output_and_region_but_keeps_live_options() {
+        let lua = Lua::new();
+        let parsed = style(&lua, r#"return { kind = "capture", window = "0xa11ce", live = 30, paint_cursor = true }"#)
+            .unwrap()
+            .unwrap();
+        assert!(
+            matches!(parsed, PaintStyle::Capture { target: CaptureTarget::Window(ref id), live: Some(30.0), paint_cursor: true, region: None, .. } if id == "0xa11ce")
+        );
+        for fields in [
+            r#"window = "0xa11ce", output = "DP-1""#,
+            r#"window = "0xa11ce", region = { x = 0, y = 0, width = 20, height = 20 }"#,
+            r#"window = 42"#,
+            r#"window = "0xa11ce", live = 0"#,
+        ] {
+            assert!(style(&lua, &format!("return {{ kind = 'capture', {fields} }}")).is_err(), "{fields}");
+        }
+        assert!(style(&lua, r#"return { kind = "capture", window = "", output = "DP-1", region = { x = 0, y = 0, width = 20, height = 20 } }"#).is_ok());
+    }
+
+    #[test]
     fn capture_parses_output_fit_live_and_paint_cursor() {
         let lua = Lua::new();
         let parsed = style(&lua, r#"return { kind = "capture", output = "DP-1", live = true }"#).unwrap().unwrap();
         assert_eq!(
             parsed,
             PaintStyle::Capture {
-                output: "DP-1".to_string(),
+                target: CaptureTarget::Output("DP-1".to_string()),
                 fit: Fit::Cover,
                 live: Some(f32::INFINITY),
                 paint_cursor: false,

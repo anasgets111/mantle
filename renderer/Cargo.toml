@@ -67,9 +67,11 @@ taffy = { version = "0.14.0", default-features = false, features = ["std", "flex
 thiserror.workspace = true
 tokio = { workspace = true, features = ["rt", "net", "macros", "sync"] }
 wayland-client.workspace = true
+# Generate the Hyprland address mapping extension; already used by wayland-client.
+wayland-scanner = "0.31.10"
 wayland-egl = "0.32.11"
 wayland-protocols = { workspace = true, features = ["client", "staging"] }
-# `zwlr_screencopy_manager_v1`: Hyprland has not shipped `ext-image-copy-capture-v1` (ADR-0248).
+# Output capture fallback and source-side region cropping (ADR-0248, ADR-0263).
 wayland-protocols-wlr = { workspace = true, features = ["client"] }
 md5 = "0.8"
 png.workspace = true

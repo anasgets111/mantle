@@ -5903,6 +5903,9 @@ a node next to `image`, not a capability.
 
 Deferred: window capture by ADR-0247's window `id`.
 
+Amendment, ADR-0298: exact Hyprland window IDs now select ext capture sources; windows preserve
+alpha and remain stopped after closure or failure.
+
 Rejected: building this as a capability. Rendering output is what `image` already is; a
 `Capability`'s payload is platform state, not a stream of pixels.
 
@@ -7192,3 +7195,17 @@ content render through two pooled targets, and allocation failure draws neither,
 content cannot leak unmasked.
 
 Amends ADR-0255's exclusion of node masks and decision 7 for node masks.
+
+## 0298. Window capture joins exact Hyprland IDs in the renderer
+
+`capture.window` accepts the existing window ID by joining Hyprland's address mapping to an ext
+foreign-toplevel capture handle on the renderer's connection. This keeps buffers, pacing and
+painting in output capture's pipeline; title or app-ID matching is ambiguous, and other
+backends need an exact ID bridge and a window capture protocol before they can support it.
+
+Window buffers preserve alpha through shm and dma-buf while output captures remain opaque.
+Closure or failure clears or stops the preview until the target changes or the node hides and
+shows again; output topology changes cannot revive a closed window whose address may be reused.
+
+Amends ADR-0248's deferred window capture, decision 3's retry trigger and the dma-buf amendment's
+opaque-alpha import rule. The existing dma-buf double buffer remains shared by both targets.
