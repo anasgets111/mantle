@@ -130,7 +130,7 @@ a ceiling overflows; a `scroll` on the same node scrolls it ([scroll](../guide/i
 | `spacing` | Gap between visible children of a `row`, `column` or `list`. Negative values overlap them |
 
 `padding` and `margin` take a number for all four edges or `{ top, right, bottom, left }` with
-missing edges 0. Neither is range-checked, so negatives are accepted. A hidden child adds no gap.
+missing edges 0. Negative margin is accepted; each padding edge must be within `[0, 8192]`. A hidden child adds no gap.
 
 ### Alignment
 
@@ -166,7 +166,7 @@ one lets the event through to the node around it ([pointer](../guide/input.md#po
 | `min_width` | `number\|Bound`, `[0, 8192]` | None | Pixel floor, CSS `min-width`; wins over a lower `max_width` |
 | `min_height` | `number\|Bound`, `[0, 8192]` | None | Pixel floor, as `min_width` |
 | `margin` | `number\|Edges\|Bound` | `0` | Outside the box; part of the room the node takes in its parent. A number sets all four edges; not range-checked ([spacing](#spacing-padding-and-margin)) |
-| `padding` | `number\|Edges\|Bound` | `0` | Inside the box, around its children or text. A number sets all four edges; not range-checked ([spacing](#spacing-padding-and-margin)) |
+| `padding` | `number\|Edges\|Bound`, `[0, 8192]` | `0` | Inside the box, around its children or text. A number sets all four edges; each edge is within `[0, 8192]` ([spacing](#spacing-padding-and-margin)) |
 | `align_h` | `"Start"\|"Center"\|"End"\|"Stretch"\|Bound` | `"Start"` | See [alignment](#alignment) |
 | `align_v` | `"Start"\|"Center"\|"End"\|"Stretch"\|Bound` | `"Start"` | See [alignment](#alignment) |
 | `visible` | `boolean\|Bound` | `true` | `false` removes the node from layout, paint and spacing and freezes its subtree ([showing and hiding](#showing-hiding-and-switching)) |

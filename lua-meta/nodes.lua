@@ -48,7 +48,7 @@
 ---@field min_width? number|Bound `[0, 8192]`. Pixel floor, CSS `min-width`; wins over a lower `max_width`.
 ---@field min_height? number|Bound `[0, 8192]`. Pixel floor, as `min_width`.
 ---@field margin? number|Edges|Bound Default `0`. Outer spacing; a number sets all four edges. Not range-checked.
----@field padding? number|Edges|Bound Default `0`. Inner spacing; a number sets all four edges. Not range-checked.
+---@field padding? number|Edges|Bound `[0, 8192]`, default `0`. Inner spacing; a number sets all four edges. Each edge must be within `[0, 8192]`.
 ---@field align_h? Align|Bound Default `"Start"`. Places the node in its parent: both axes under a stacking parent, only the cross axis under a `row`/`column`/`list`. On a `row` it also packs the children, which ignore their own (`"Stretch"` packs as `"Start"`). `"Stretch"` overrides a pixel size; `"Fill"` off the parent's flow axis overrides alignment.
 ---@field align_v? Align|Bound Default `"Start"`. As `align_h` with the axes swapped: packs a `column`'s children.
 ---@field visible? boolean|Bound Default `true`. `false` removes the node from layout, paint and spacing but keeps its subtree frozen in memory (ADR-0124); to switch views, bind the parent's `children`.

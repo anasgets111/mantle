@@ -54,6 +54,7 @@ so everything since the rename from Obelisk sits under Unreleased.
 
 ### Changed
 
+- Node `padding` values outside `[0, 8192]` now fail layout validation. Use a negative `margin` for overflow.
 - A write to a signal bound to a `list` item's property, such as `background = theme.bg`, runs that
   property's getter in each item and no longer calls `itemfn` again; `itemfn` runs again only when
   the source, `key`, or something `itemfn` itself read changed ([list](nodes/list.md#when-items-rebuild)).

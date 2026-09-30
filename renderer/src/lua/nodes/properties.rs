@@ -193,10 +193,10 @@ props! {
         ///
         /// Book: Outside the box; part of the room the node takes in its parent. A number sets all four edges; not range-checked ([spacing](#spacing-padding-and-margin))
         margin: Bound<NumberOrEdges> = absent(Number(0.0));
-        /// Inner spacing; a number sets all four edges. Not range-checked.
+        /// Inner spacing; a number sets all four edges. Each edge must be within `[0, 8192]`.
         ///
-        /// Book: Inside the box, around its children or text. A number sets all four edges; not range-checked ([spacing](#spacing-padding-and-margin))
-        padding: Bound<NumberOrEdges> = absent(Number(0.0));
+        /// Book: Inside the box, around its children or text. A number sets all four edges; each edge is within `[0, 8192]` ([spacing](#spacing-padding-and-margin))
+        padding: Bound<NumberOrEdges> = range(0.0, 8192.0).absent(Number(0.0));
         /// Places the node in its parent: both axes under a stacking parent, only the cross axis under a `row`/`column`/`list`. On a `row` it also packs the children, which ignore their own (`"Stretch"` packs as `"Start"`). `"Stretch"` overrides a pixel size; `"Fill"` off the parent's flow axis overrides alignment.
         ///
         /// Book: See [alignment](#alignment)

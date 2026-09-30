@@ -121,10 +121,11 @@ pub fn parse_radius(properties: &PropMap) -> Result<f32, LayoutError> {
 
 /// The range an overshooting easing is clamped into: the property table's `range`, else
 /// `[0, 8192]`; `margin`, which no parser bounds, tweens through negatives as `translate` does.
-/// The tween clamps every numeric property, while `spacing`, icon `size`, `margin` and `padding`
-/// take no parser bound: out of range there is a layout the solver absorbs, not a crash, and
-/// `snap_to_physical` bounds the coordinates that reach `wl_region`. Give a row a range only where a
-/// consumer refuses the value.
+/// The tween clamps every numeric property, even those without a row range. `spacing`, icon
+/// `size`, and `margin` accept negatives. `padding` takes the `[0, 8192]` range, though the solver
+/// would absorb a negative: overflow is spelled with a negative `margin`, so padding only insets.
+/// `snap_to_physical` bounds the coordinates that reach `wl_region`. Otherwise, give a row a range
+/// only where a consumer refuses the value.
 ///
 /// `radius` and `border_width` share the `8192` ceiling with `width`/`height`. It is
 /// femtovg 0.26's: above roughly 8.4e6 `curve_divisions` (`path/cache.rs:911`) divides by
@@ -468,13 +469,17 @@ mod tests {
     }
 
     #[test]
-    fn padding_negative_value_is_accepted() {
+    fn negative_padding_is_invalid_property() {
         let lua = mlua::Lua::new();
         let table: mlua::Table = lua.load(r#"return { kind = "rect", padding = -10 }"#).eval().unwrap();
         let props = props_from_table(&table);
-        assert_eq!(
-            fields::common::padding.read(&props).unwrap(),
-            EdgeInsets { top: -10.0, right: -10.0, bottom: -10.0, left: -10.0 }
+        assert!(
+            matches!(fields::common::padding.read(&props), Err(LayoutError::InvalidProperty { property, .. }) if property == "padding")
+        );
+        let table: mlua::Table = lua.load(r#"return { kind = "rect", padding = { left = -10 } }"#).eval().unwrap();
+        let props = props_from_table(&table);
+        assert!(
+            matches!(fields::common::padding.read(&props), Err(LayoutError::InvalidProperty { property, .. }) if property == "padding")
         );
     }
 
