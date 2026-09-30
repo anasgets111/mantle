@@ -654,6 +654,8 @@ mod meta_stub_tests {
             ("offset", _) => return Some("{ x = 1.5, y = 1 }".to_string()),
             // `shader.source` refuses a relative path; `image.source` takes either.
             ("source", "string") => return Some("\"/x\"".to_string()),
+            ("commands", "PathCommand[]") => return Some("{ { op = \"M\", points = { 1, 2 } } }".to_string()),
+            ("fill" | "stroke", "Gradient") => return sample("background", "Gradient"),
             ("params", _) => return Some("{ a = 0.5, b = { 1, 2, 3, 4 } }".to_string()),
             ("secure_submit", _) => {
                 return Some("{ capability = \"lock\", action = \"authenticate\" }".to_string());

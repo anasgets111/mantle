@@ -25,8 +25,19 @@ use crate::text::snap::{LogicalRect, PhysicalRect, snap_to_physical};
 /// kept: mlua table identity would make a signal-resolved table unequal every pass.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Draw {
+    Path {
+        commands: Vec<node::PathCommand>,
+        fill: Option<Fill>,
+        stroke: Option<Fill>,
+        stroke_width: f32,
+    },
     /// Box fill, then border, for containers and all surface roles.
-    Box { background: Option<Fill>, radius: f32, colors: BorderColor, widths: EdgeInsets },
+    Box {
+        background: Option<Fill>,
+        radius: f32,
+        colors: BorderColor,
+        widths: EdgeInsets,
+    },
     Text {
         content: std::sync::Arc<str>,
         /// Byte ranges drawn in another face, underlined, or recoloured (ADR-0104).
@@ -110,20 +121,39 @@ pub enum Draw {
     /// A subtree masked by the declaring node's rounded arc and, if it has one, its `mask` with
     /// the physical box an image mask is cached under (ADR-0255). Rectangular clips flatten into
     /// each command; rounded clips and masks stay grouped for [`execute`].
-    Clipped { radius: f32, mask: Option<(node::Mask, (u32, u32))>, commands: Vec<DrawCmd> },
+    Clipped {
+        radius: f32,
+        mask: Option<(node::Mask, (u32, u32))>,
+        commands: Vec<DrawCmd>,
+    },
     /// The subtree of a node with a `scale`/`rotate`/`translate` (ADR-0149), drawn under its
     /// affine. Coordinates inside are the untransformed absolute ones.
-    Transformed { matrix: node::Affine, commands: Vec<DrawCmd> },
+    Transformed {
+        matrix: node::Affine,
+        commands: Vec<DrawCmd>,
+    },
     /// A box's shadow as one gradient quad under its fill (ADR-0254), cut out under the box when
     /// `knockout` (ADR-0260). `shadow.color` carries the inherited opacity.
-    Shadow { shadow: node::Shadow, radius: f32, knockout: bool },
+    Shadow {
+        shadow: node::Shadow,
+        radius: f32,
+        knockout: bool,
+    },
     /// A subtree drawn offscreen, then composited over its own shadow and through `content_blur`
     /// (ADR-0254). `rect` is the node's box; `clip` covers everything the effect reaches. A
     /// `silhouette` is a scoop's fill, and only its shadow draws, cut out under the box (ADR-0260).
-    Layer { effect: node::Effect, silhouette: bool, commands: Vec<DrawCmd> },
+    Layer {
+        effect: node::Effect,
+        silhouette: bool,
+        commands: Vec<DrawCmd>,
+    },
     /// What the target already holds under the node's box, blurred by `sigma` logical pixels and
     /// drawn through its `radius` at `alpha` (ADR-0256). `clip` covers the 3 sigma the blur reads.
-    Backdrop { sigma: f32, radius: f32, alpha: f32 },
+    Backdrop {
+        sigma: f32,
+        radius: f32,
+        alpha: f32,
+    },
 }
 
 /// One drawable node: what, where, and its precomputed ancestor clip. Intersections are axis

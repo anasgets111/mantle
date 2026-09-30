@@ -236,6 +236,12 @@ fn takes_input_as_a_box(node: &ResolvedNode, paint_claims: bool) -> bool {
             Some(PaintStyle::Box { background, widths, .. }) => {
                 background.is_some() || [widths.top, widths.right, widths.bottom, widths.left].iter().any(|w| *w > 0.0)
             }
+            Some(PaintStyle::Path { commands, fill, stroke, stroke_width }) => {
+                (fill.is_some() || stroke.is_some() && *stroke_width > 0.0)
+                    && commands
+                        .iter()
+                        .any(|command| matches!(command.op, node::PathOp::L | node::PathOp::Q | node::PathOp::C))
+            }
             // Its alpha is the GPU's to know; a config gives it a pointer handler for a hit area (ADR-0253).
             Some(PaintStyle::Shader { .. }) | None => false,
             Some(_) => true,
@@ -532,6 +538,32 @@ mod tests {
         let regions = overlay_input_regions(&root, 1.0);
         assert_eq!(regions.len(), 1);
         assert_eq!(regions[0], PhysicalRect { x0: 0, y0: 0, x1: 10, y1: 10 });
+    }
+
+    #[test]
+    fn paths_claim_input_only_when_painted_or_interactive() {
+        let lua = mlua::Lua::new();
+        for (fields, painted) in [
+            ("", false),
+            ("fill = '#ffffff', commands = {{ op = 'M', points = {1, 1} }}", false),
+            ("commands = {{ op = 'M', points = {1, 1} }, { op = 'L', points = {10, 10} }}", false),
+            (
+                "stroke = '#ffffff', stroke_width = 0, commands = {{ op = 'M', points = {1, 1} }, { op = 'L', points = {10, 10} }}",
+                false,
+            ),
+            ("stroke = '#ffffff', commands = {{ op = 'M', points = {1, 1} }, { op = 'L', points = {10, 10} }}", true),
+        ] {
+            let table: mlua::Table = lua.load(format!("return {{ kind = 'path', {fields} }}")).eval().unwrap();
+            let properties = node::props_from_table(&table);
+            let paint = node::paint_style("path", &properties).unwrap();
+            let child = region_node(1, "path", (0.0, 0.0, 20.0, 20.0), paint, Vec::new());
+            let mut root = region_node(2, "panel", (0.0, 0.0, 20.0, 20.0), None, vec![child]);
+            assert_eq!(!overlay_input_regions(&root, 1.0).is_empty(), painted, "{fields}");
+            root.children[0]
+                .properties
+                .insert("on_click", Value::Function(lua.create_function(|_, ()| Ok(())).unwrap()));
+            assert_eq!(overlay_input_regions(&root, 1.0), [PhysicalRect { x0: 0, y0: 0, x1: 20, y1: 20 }]);
+        }
     }
 
     #[test]

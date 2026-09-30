@@ -8,6 +8,7 @@ so everything since the rename from Obelisk sits under Unreleased.
 
 ### Added
 
+- Experimental `path` nodes draw bounded move, line and Bézier commands with fills and strokes.
 - Every node kind takes `on_click`, `on_drag`, `on_wheel` and `submit`: a `row`, `text` or `icon` is clickable itself, the innermost node with a handler wins, and it shows the `"pointer"` cursor ([pointer](guide/input.md#pointer)).
 - `panel`, `window` and `popup` take `reset_on_close = { ... }`: the listed `state` handles return to their `initial` and `scroll` handles to the top when the surface stops being shown ([surfaces](surfaces/index.md#reset-on-close)).
 - `state(...)` signals take `:on_change(fn(current, previous))`, run after any write that changes the value, including `mantle set`/`mantle toggle`, before the next layout pass ([signals](guide/signals.md#on_change-react-to-a-write)).

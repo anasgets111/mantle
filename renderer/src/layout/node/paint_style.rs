@@ -13,13 +13,19 @@ use crate::image::{Fit, Load};
 use crate::text::snap::LogicalRect;
 
 use super::*;
-use fields::{capture, icon, image, paint, shader, text, textfield};
+use fields::{capture, icon, image, paint, path, shader, text, textfield};
 
 /// Parsed paint properties with no `mlua::Value`. A kind admitted by
 /// `layout::scene::ensure_supported_kind` but absent here draws nothing. Lua tables compare by
 /// identity, so keeping one here would make a signal-resolved table repaint forever (ADR-0063).
 #[derive(Debug, Clone, PartialEq)]
 pub enum PaintStyle {
+    Path {
+        commands: Vec<PathCommand>,
+        fill: Option<Fill>,
+        stroke: Option<Fill>,
+        stroke_width: f32,
+    },
     /// Box fill/border for containers and all four surface roles. `clip` travels with `radius`
     /// because it changes how the node's shape clips descendants.
     /// A negative `radius` is a scoop (`node::parse_radius`). `mask` covers the node's own paint
@@ -79,9 +85,19 @@ pub enum PaintStyle {
     },
     /// `capture` (ADR-0248): an output's live contents. `output` empty or naming nothing connected
     /// draws nothing, the same answer `image`'s empty `source` gets.
-    Capture { output: String, fit: Fit, live: Option<f32>, paint_cursor: bool, region: Option<LogicalRect> },
+    Capture {
+        output: String,
+        fit: Fit,
+        live: Option<f32>,
+        paint_cursor: bool,
+        region: Option<LogicalRect>,
+    },
     /// `shader` (ADR-0253): a config fragment shader with no inputs but `progress` and `params`.
-    Shader { source: String, progress: f32, params: Vec<ShaderParam> },
+    Shader {
+        source: String,
+        progress: f32,
+        params: Vec<ShaderParam>,
+    },
     /// `target` is `None` when no `secure_submit` is declared. Malformed targets fail here, not at
     /// the press path.
     TextField {
@@ -105,6 +121,12 @@ pub fn paint_style(kind: &str, properties: &PropMap) -> Result<Option<PaintStyle
             widths: paint::border_width.read(properties)?,
             clip: paint::clip.read(properties)?,
             mask: paint::mask.read(properties)?,
+        },
+        "path" => PaintStyle::Path {
+            commands: path::commands.read(properties)?,
+            fill: path::fill.read(properties)?,
+            stroke: path::stroke.read(properties)?,
+            stroke_width: path::stroke_width.read(properties)?,
         },
         "text" => {
             let (content, runs) = text::content.read(properties)?;

@@ -44,6 +44,7 @@
   - [image](nodes/image.md)
   - [capture](nodes/capture.md)
   - [shader](nodes/shader.md)
+  - [path](nodes/path.md)
   - [list](nodes/list.md)
   - [textfield](nodes/textfield.md)
 

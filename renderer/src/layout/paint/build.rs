@@ -245,6 +245,16 @@ fn fade(color: Rgba, opacity: f32) -> Rgba {
     Rgba { a: color.a * opacity, ..color }
 }
 
+fn fade_fill(fill: &Fill, opacity: f32) -> Fill {
+    match fill {
+        Fill::Color(color) => Fill::Color(fade(*color, opacity)),
+        Fill::Gradient(gradient) => Fill::Gradient(node::Gradient {
+            stops: gradient.stops.iter().map(|(at, color)| (*at, fade(*color, opacity))).collect(),
+            ..*gradient
+        }),
+    }
+}
+
 /// Multiplies border-edge alpha; absent edges stay absent.
 fn fade_border(colors: BorderColor, opacity: f32) -> BorderColor {
     BorderColor {
@@ -272,17 +282,17 @@ fn draw_for(
     let retained = node.displayed_source.as_deref();
     let dissolve = node.dissolve.as_deref();
     match node.paint.as_ref()? {
+        PaintStyle::Path { commands, fill, stroke, stroke_width } => Some(Draw::Path {
+            commands: commands.clone(),
+            fill: fill.as_ref().map(|fill| fade_fill(fill, opacity)),
+            stroke: stroke.as_ref().map(|fill| fade_fill(fill, opacity)),
+            stroke_width: *stroke_width,
+        }),
         // The shared paint of `rect`/`row`/`column` and all four surface roles: background
         // fill, then borders. `clip` is not read here: it decides what this node's *children* are
         // cut to, `build_node`'s question, not this one's.
         PaintStyle::Box { background, radius, colors, widths, clip: _, mask: _ } => Some(Draw::Box {
-            background: background.as_ref().map(|fill| match fill {
-                Fill::Color(color) => Fill::Color(fade(*color, opacity)),
-                Fill::Gradient(gradient) => Fill::Gradient(node::Gradient {
-                    stops: gradient.stops.iter().map(|(at, color)| (*at, fade(*color, opacity))).collect(),
-                    ..*gradient
-                }),
-            }),
+            background: background.as_ref().map(|fill| fade_fill(fill, opacity)),
             radius: *radius,
             colors: fade_border(*colors, opacity),
             widths: *widths,

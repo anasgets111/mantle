@@ -24,6 +24,7 @@
 ---@alias BorderColors { top?: Color, right?: Color, bottom?: Color, left?: Color, [string]: "no such property" } Per-edge colours; a signal inside is refused.
 ---@alias Axes { x?: number, y?: number, [string]: "no such property" } A missing axis takes the property's default.
 ---@alias GradientStop [number, Color] Position `[0, 1]` and colour. Positions ascend.
+---@alias PathCommand { op: "M"|"L"|"Q"|"C"|"Z", points: number[], [string]: "no such property" } Node-local logical pixels. Q has one control point, C has two, then the endpoint.
 ---@alias Gradient { gradient: "Linear"|"Radial"|"Conic", angle?: number, stops: GradientStop[], [string]: "no such property" } At least 2 stops. `angle` is degrees clockwise from the top: Linear default `180`, Conic default `0`, Radial refuses it.
 ---@alias Mask { gradient?: "Linear"|"Radial"|"Conic", angle?: number, stops?: GradientStop[], source?: string, invert?: boolean, [string]: "no such property" } Exactly one of a `Gradient` or an image `source` path (alpha only, stretched over the box). `invert` swaps kept and cut.
 ---@alias EasingName "Linear"|"InQuad"|"OutQuad"|"InOutQuad"|"InCubic"|"OutCubic"|"InOutCubic"|"InQuart"|"OutQuart"|"InOutQuart"|"InQuint"|"OutQuint"|"InOutQuint"|"InSine"|"OutSine"|"InOutSine"|"InExpo"|"OutExpo"|"InOutExpo"|"InCirc"|"OutCirc"|"InOutCirc"|"InBack"|"OutBack"|"InOutBack"|"InElastic"|"OutElastic"|"InOutElastic"|"InBounce"|"OutBounce"|"InOutBounce" `Back` and `Elastic` overshoot, as does a Bezier `y` outside `[0, 1]`; the property's range clamps them.
@@ -211,6 +212,14 @@
 ---@field secure_submit? { capability: string, action: string, name?: string, [string]: "no such property" }|Bound Native target for the secret: `lock`/`authenticate`, `polkit`/`authenticate`, `network`/`connect`, or `secrets`/`store` with a `name`. Makes the field masked.
 ---@field mask_character? string|Bound Default `"•"`. Drawn per typed character in a `secure_submit` field. Only the first character counts; `""` hides the length.
 
+---@alias PathAnimations { align_h?: Animation, align_v?: Animation, commands?: Animation, content_blur?: Animation, cursor?: Animation, fill?: Animation, geometry?: Animation, height?: Animation, hover?: Animation, id?: Animation, margin?: Animation, max_height?: Animation, max_width?: Animation, min_height?: Animation, min_width?: Animation, on_click?: Animation, on_drag?: Animation, on_hover?: Animation, on_wheel?: Animation, opacity?: Animation, origin?: Animation, padding?: Animation, rotate?: Animation, scale?: Animation, shadow_blur?: Animation, shadow_color?: Animation, shadow_offset?: Animation, shadow_spread?: Animation, stroke?: Animation, stroke_width?: Animation, submit?: Animation, translate?: Animation, visible?: Animation, width?: Animation, exit?: Exit, [string]: "no such property" }
+---@class PathProps: NodeBase
+---@field animate? PathAnimations|Bound Tween named properties to each newly resolved value without running Lua (ADR-0145). The `exit` key is an `Exit` block. Only a node already on screen animates, unless the entry has `from`.
+---@field commands? PathCommand[]|Bound Default `{}`. Up to 4096 commands. Each has op M/L/Q/C/Z and points containing 2/2/4/6/0 numbers. Begin each subpath with M. Coordinates are in [-8192, 8192].
+---@field fill? Color|Gradient|Bound Fill colour or gradient across the node box. Open subpaths close for filling.
+---@field stroke? Color|Gradient|Bound Stroke colour or gradient across the node box. Butt caps and miter joins.
+---@field stroke_width? number|Bound `[0, 8192]`, default `1`. Stroke width in logical pixels; centered on the path.
+
 ---[docs](https://anasgets111.github.io/mantle/nodes/rect.html)
 ---@param props RectProps
 ---@return Node
@@ -263,3 +272,9 @@ function list(props) end
 ---@param props TextfieldProps
 ---@return Node
 function textfield(props) end
+
+---A vector path in node-local logical pixels. Set width and height; there is no intrinsic size.
+---[docs](https://anasgets111.github.io/mantle/nodes/path.html)
+---@param props PathProps
+---@return Node
+function path(props) end

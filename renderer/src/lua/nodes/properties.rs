@@ -20,7 +20,7 @@ use crate::layout::node::prop::{
 use crate::layout::node::{
     Align, Anchor, AnchorRect, Animations, Axes, Children, ClipShape, ColorOrEdges, ConstraintAdjustment, Content,
     CornerShape, Cursor, Direction, Elide, Exclusive, Fill, Font, Items, KeyboardInteractivity, LayerKind, Limit, Live,
-    Mask, MaxLines, NumberOrEdges, Params, PopupAnchor, PopupExtent, PopupOffset, Region, Root, Scale,
+    Mask, MaxLines, NumberOrEdges, Params, PathCommands, PopupAnchor, PopupExtent, PopupOffset, Region, Root, Scale,
     SecureSubmitTarget, ShadowMode, SizeHint, SizeMode, TextAlign, TransitionSpec, Wrap,
 };
 use crate::lua::VirtualNode;
@@ -129,7 +129,7 @@ macro_rules! props {
 
 /// Every node kind, in constructor order. The last four are root roles (ADR-0040); declaring a
 /// `lock` does not lock (ADR-0052 decision 2).
-pub(crate) const KINDS: [&str; 14] = [
+pub(crate) const KINDS: [&str; 15] = [
     "rect",
     "row",
     "column",
@@ -140,6 +140,7 @@ pub(crate) const KINDS: [&str; 14] = [
     "shader",
     "list",
     "textfield",
+    "path",
     "panel",
     "window",
     "popup",
@@ -156,10 +157,11 @@ const CAPTURE: u16 = 1 << 6;
 const SHADER: u16 = 1 << 7;
 const LIST: u16 = 1 << 8;
 const TEXTFIELD: u16 = 1 << 9;
-const PANEL: u16 = 1 << 10;
-const WINDOW: u16 = 1 << 11;
-const POPUP: u16 = 1 << 12;
-const LOCK: u16 = 1 << 13;
+const PATH: u16 = 1 << 10;
+const PANEL: u16 = 1 << 11;
+const WINDOW: u16 = 1 << 12;
+const POPUP: u16 = 1 << 13;
+const LOCK: u16 = 1 << 14;
 pub(crate) const SURFACES: u16 = PANEL | WINDOW | POPUP | LOCK;
 /// The common rows: every kind takes them, and `layout::scene` reads them without checking kind. A
 /// root role's own row of the same name overrides one in its stub and docs.
@@ -414,6 +416,17 @@ props! {
         progress: Bound<Num> = range(-8192.0, 8192.0).absent(Number(0.0));
         /// Uniforms by name: a finite number for `float`, 2-4 numbers for `vec2`-`vec4`. Missing ones are `0`. Not tweened.
         params: Bound<Params> = absent(Lua("{}"));
+    }
+    /// A vector path in node-local logical pixels. Set width and height; there is no intrinsic size.
+    mod path(PATH) {
+        /// Up to 4096 commands. Each has op M/L/Q/C/Z and points containing 2/2/4/6/0 numbers. Begin each subpath with M. Coordinates are in [-8192, 8192].
+        commands: Bound<PathCommands> = absent(Lua("{}"));
+        /// Fill colour or gradient across the node box. Open subpaths close for filling.
+        fill: Bound<Fill>;
+        /// Stroke colour or gradient across the node box. Butt caps and miter joins.
+        stroke: Bound<Fill>;
+        /// Stroke width in logical pixels; centered on the path.
+        stroke_width: Bound<Num> = range(0.0, 8192.0).absent(Number(1.0));
     }
     mod list(LIST) {
         /// Array; bind a signal to rebuild on change. Missing or `nil` (a capability before its first push) is an empty list; a `nil` hole ends it. More than 10000 items without `limit` is an error.

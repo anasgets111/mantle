@@ -9,6 +9,8 @@ mod animate;
 mod content;
 pub(crate) mod input;
 mod paint_style;
+mod vector_path;
+pub(crate) use vector_path::{PathCommand, PathCommands, PathOp};
 pub(crate) mod prop;
 mod spec;
 mod style;

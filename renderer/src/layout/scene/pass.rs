@@ -30,7 +30,7 @@ fn children_of(kind: &str, properties: &PropMap) -> Result<Vec<VirtualNode>, Lay
         "rect" => fields::stack::children.read(properties),
         "row" | "column" => fields::flow::children.read(properties),
         "list" => unreachable!("`prepare` builds a list's items through `node::list_children`"),
-        "text" | "icon" | "image" | "capture" | "shader" | "textfield" => Ok(Vec::new()),
+        "text" | "icon" | "image" | "capture" | "shader" | "path" | "textfield" => Ok(Vec::new()),
         other => unreachable!("ensure_supported_kind already rejected `{other}`"),
     }
 }

@@ -91,11 +91,15 @@ pub(super) fn fill_rect(canvas: &mut Canvas<OpenGl>, rect: LogicalRect, radius: 
     if rect.is_empty() {
         return;
     }
-    let paint = match fill {
+    let paint = fill_paint(fill, rect);
+    canvas.fill_path(&box_path(rect, radius), &paint);
+}
+
+pub(super) fn fill_paint(fill: &Fill, rect: LogicalRect) -> Paint {
+    match fill {
         Fill::Color(color) => Paint::color(Color::rgbaf(color.r, color.g, color.b, color.a)),
         Fill::Gradient(gradient) => gradient_paint(gradient, rect),
-    };
-    canvas.fill_path(&box_path(rect, radius), &paint);
+    }
 }
 
 /// `gradient` laid over `rect` with CSS's geometry (ADR-0255).

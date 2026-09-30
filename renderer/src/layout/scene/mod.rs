@@ -1113,6 +1113,38 @@ pub(super) mod tests {
     }
 
     #[test]
+    fn path_signal_replacement_changes_paint_and_preserves_layout() {
+        let mut scene = Scene::new();
+        let shaping = ShapingHandle::spawn();
+        let (lua, surface) = surface_from(
+            r##"panel { id='bar', child=path {
+            id='chart', width=64, height=32, stroke='#ffffff', commands=state('commands', {
+                {op='M',points={2,2}}, {op='L',points={30,20}}
+            })
+        }}"##,
+        );
+        apply_at(&mut scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
+        let root = scene.surface("bar@TEST").unwrap();
+        let before = crate::layout::paint::build(root, 1.0, None);
+        let (id, rect) = (root.children[0].id, root.children[0].rect);
+        lua.load("state('commands', {}):set({{op='M',points={2,20}},{op='L',points={30,2}}})").exec().unwrap();
+        apply_at(&mut scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
+        let root = scene.surface("bar@TEST").unwrap();
+        assert_eq!((root.children[0].id, root.children[0].rect), (id, rect));
+        assert_eq!((rect.width, rect.height), (64.0, 32.0));
+        let after = crate::layout::paint::build(root, 1.0, None);
+        assert_ne!(before, after);
+        assert!(!after.damage_since(&before, true).is_empty());
+        apply_at(&mut scene, &[surface], full(), &shaping, &lua).unwrap();
+        assert_eq!(after, crate::layout::paint::build(scene.surface("bar@TEST").unwrap(), 1.0, None));
+        let (lua, surface) = surface_from("panel { id='bar', child=path {} }");
+        apply_at(&mut scene, &[surface], full(), &shaping, &lua).unwrap();
+        let path = &scene.surface("bar@TEST").unwrap().children[0];
+        assert!(path.children.is_empty());
+        assert_eq!((path.rect.width, path.rect.height), (0.0, 0.0));
+    }
+
+    #[test]
     fn capture_is_a_supported_leaf_with_no_intrinsic_size() {
         let mut scene = Scene::new();
         let shaping = ShapingHandle::spawn();

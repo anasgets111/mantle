@@ -10,13 +10,14 @@ use super::properties::{ALL, Absent, BOX, KINDS, Property, SURFACES, kind_doc, p
 use crate::layout::node::prop::Keyword;
 use crate::layout::node::{
     Align, Animatable, AnimationSpec, Animations, Axes, BorderColor, Easing, EdgesInput, ExitBlock, Gradient,
-    GradientStop, KeyframeInput, Mask, PopupAnchor, SpringConstants, TextRun, TransitionInput,
+    GradientStop, KeyframeInput, Mask, PathCommand, PopupAnchor, SpringConstants, TextRun, TransitionInput,
 };
 use crate::lua::luacats::LuaType;
 use crate::text::snap::LogicalRect;
 
 /// The input shapes [`NODES_HEADER`] names as `{Name}`, each supplied by its parser's type.
-const NODE_SHAPES: [fn(String) -> String; 13] = [
+const NODE_SHAPES: [fn(String) -> String; 14] = [
+    fill::<PathCommand>,
     fill::<EdgesInput>,
     fill::<BorderColor>,
     fill::<Axes>,
@@ -200,13 +201,16 @@ fn nodes_lua() -> String {
             properties().filter(|row| row.kinds == kinds && row.name != "animate").map(field).collect();
         header = header.replace(&marker, fields.trim_end());
     }
-    render_stub(&header, &KINDS[..10])
+    render_stub(&header, &KINDS.iter().copied().filter(|kind| kind_bit(kind) & SURFACES == 0).collect::<Vec<_>>())
 }
 
 /// `lua-meta/surfaces.lua`.
 fn surfaces_lua() -> String {
     let header = SURFACES_HEADER.replace("{POPUP_ANCHOR}", &union(PopupAnchor::NAMES));
-    render_stub(&SURFACE_SHAPES.iter().fold(header, |header, fill| fill(header)), &KINDS[10..])
+    render_stub(
+        &SURFACE_SHAPES.iter().fold(header, |header, fill| fill(header)),
+        &KINDS.iter().copied().filter(|kind| kind_bit(kind) & SURFACES != 0).collect::<Vec<_>>(),
+    )
 }
 
 /// A doc string as a Markdown table cell: no `(ADR-NNNN)` pointers, which are history, and `|`
@@ -304,6 +308,7 @@ const NODES_HEADER: &str = r##"---@meta
 ---@alias BorderColors {BorderColors}
 ---@alias Axes {Axes}
 ---@alias GradientStop {GradientStop} Position `[0, 1]` and colour. Positions ascend.
+---@alias PathCommand {PathCommand}
 ---@alias Gradient {Gradient} At least 2 stops. `angle` is degrees clockwise from the top: Linear default `180`, Conic default `0`, Radial refuses it.
 ---@alias Mask {Mask} Exactly one of a `Gradient` or an image `source` path (alpha only, stretched over the box). `invert` swaps kept and cut.
 ---@alias EasingName {EASING} `Back` and `Elastic` overshoot, as does a Bezier `y` outside `[0, 1]`; the property's range clamps them.

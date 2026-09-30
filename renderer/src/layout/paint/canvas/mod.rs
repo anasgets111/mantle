@@ -3,6 +3,7 @@
 
 mod effects;
 mod shape;
+mod vector_path;
 
 use std::time::{Duration, Instant};
 
@@ -194,6 +195,9 @@ fn run(painter: &mut TextPainter, walk: &mut Walk<'_, '_>, commands: &[DrawCmd],
         }
         let rect = command.rect;
         match &command.draw {
+            Draw::Path { commands, fill, stroke, stroke_width } => {
+                vector_path::paint(painter.canvas_mut(), rect, commands, fill.as_ref(), stroke.as_ref(), *stroke_width);
+            }
             Draw::Box { background, radius, colors, widths } => {
                 let t0 = timing.then(Instant::now);
                 // `None` skips the fill; alpha 0 remains an explicit transparent rect.
