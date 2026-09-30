@@ -924,7 +924,8 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn svg_text_draws_through_images_icons_and_file_masks() {
+    fn svg_text_draws_through_images_icons_and_masks_with_paths_and_window_capture() {
+        use crate::image::capture::{DamageRect, PendingFrame};
         let instance = init_headless_egl(64, 64).expect("SVG integration test requires headless EGL");
         let config = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures/shots/fonts/fonts.conf");
         let shaping = ShapingHandle::spawn_with(Some(config));
@@ -943,13 +944,44 @@ pub(crate) mod tests {
                 r##"rect {{ width = 64, height = 64, background = "#00FF00", mask = {{ source = "{}" }} }}"##,
                 svg.display()
             ),
+            format!(
+                r##"rect {{ width = 64, height = 64, mask = {{ node = "shape" }}, children = {{
+                    rect {{ id = "shape", width = 64, height = 64, mask = {{ source = "{}" }}, children = {{
+                        path {{ width = 64, height = 64, fill = "#FFFFFF", commands = {{
+                            {{ op = "M", points = {{0, 0}} }}, {{ op = "L", points = {{64, 0}} }},
+                            {{ op = "L", points = {{64, 64}} }}, {{ op = "L", points = {{0, 64}} }},
+                            {{ op = "Z", points = {{}} }} }} }} }} }},
+                    capture {{ window = "0xa11ce", width = 64, height = 64 }} }} }}"##,
+                svg.display()
+            ),
         ] {
             let root = resolved_surface(
                 &lua,
                 &format!("return panel {{ id = 'bar', width = 64, height = 64, child = {child} }}"),
                 LogicalSize { width: 64.0, height: 64.0 },
             );
-            paint_tree(&mut painter, &mut images, &root, 1.0);
+            let list = build(&root, 1.0, None);
+            assert!(list.draws_any_of(std::slice::from_ref(&svg)), "SVG invalidation reaches nested masks");
+            let mut sources = Vec::new();
+            list.capture_nodes(&mut sources);
+            let mut captures = CaptureCache::default();
+            for source in sources {
+                assert!(list.captures_any_of(&[source.node]));
+                captures.set_target(source.node, source.target);
+                captures.stage(
+                    source.node,
+                    PendingFrame {
+                        has_alpha: true,
+                        width: 64,
+                        height: 64,
+                        y_offset: 0,
+                        pixels: [0, 0, 255, 255].repeat(64 * 64),
+                        damage: vec![DamageRect::full(64, 64)],
+                    },
+                );
+            }
+            let regions = [PhysicalRect { x0: 0, y0: 0, x1: 64, y1: 64 }];
+            execute("svg", &mut painter, &mut images, &mut captures, &list, 1.0, (64.0, 64.0), &regions, None);
             let shot = painter.canvas_mut().screenshot().unwrap();
             let (pixels, ..) = shot.as_ref().to_contiguous_buf();
             let alpha: Vec<_> = pixels.iter().map(|px| px.a).collect();
@@ -958,6 +990,7 @@ pub(crate) mod tests {
         }
         assert_eq!(coverage[0], coverage[1]);
         assert_eq!(coverage[0], coverage[2]);
+        assert_eq!(coverage[0], coverage[3], "path alpha and SVG text mask the captured window together");
         shaping.set_chain(&["Noto Sans Symbols 2".into()]);
         assert!(!images.poll().is_empty(), "unchanged SVG paths still owe a repaint after fonts change");
     }
