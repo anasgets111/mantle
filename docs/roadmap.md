@@ -15,7 +15,6 @@ Defects or missing pieces a config cannot work around.
 | Keyboard focus and accessibility | Only `textfield` holds focus; Tab reaches the config as `on_navigate("tab")`. Needs focusable controls, keyboard activation and an accessibility tree | — |
 | Blocking `dofile` / `loadfile` | The base library keeps both, and they read files on the Wayland thread outside the CPU budget, against ADR-0048's intent. Remove them or route them through `require`'s resolver | 0048 |
 | HiDPI | Paint scale is fixed at `1.0`, so every surface on a scaled output is upscaled and soft. Needs `set_buffer_scale` (or fractional-scale plus viewporter) with a matching EGL resize and glyph raster scale | — |
-| Hyprland layout switch | `keyboard/layout.rs` sends `switchxkblayout`, which Hyprland 0.56's Lua socket likely rejects; the other Hyprland writes already use `hl.dsp.*` | — |
 | Multi-prompt PAM | The worker relays every masked prompt, but `LockState` and `secure_submit` carry one password, answered to every prompt. Fingerprint, 2FA and expired passwords fail. Echo-on prompts stay refused | 0241 |
 
 ## Later
@@ -41,7 +40,7 @@ Wanted, but each needs a consumer or a decision first.
 | Window capture | `capture` takes an output. A window source would take `windows` ids | 0247, 0248 |
 | Native I/O | No HTTP, sockets, watched file contents or `json.encode`; JSON storage and folder watching exist. Native only for a measured latency or volume need | — |
 | KDE Connect | No device or plugin model. A capability or a streaming helper, not unrestricted D-Bus | — |
-| Derived nested stub shapes | `Gradient`, `GradientStop`, `Mask`, `Easing`, `Animation`, `Animations` and `Exit` are still hand-written in `nodes.lua`'s header, since no struct holds their keys, so a parser change can leave them stale. Derive them with `lua_shape!` like `Edges` and `Transition` once their parsers fill one | — |
+| Nested stub schema duplication | The header in `nodes/stubs.rs` repeats gradient, mask, easing and animation input shapes. Easing names and per-kind animation keys are already derived; nested fields can still drift beyond the stub probe's samples. Share fixed record fields with parsers through `lua_shape!`; tuples, unions and dynamic exit targets need separate handling | — |
 | Dynamic topology | A reload rebuilds only what changed. Revisit only if dynamic windows need a different lifetime | 0216 |
 
 ## Won't do
