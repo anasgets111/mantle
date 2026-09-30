@@ -526,7 +526,7 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::wayland::input::rect_table;
+    use crate::lua::marshal::rect_table;
 
     fn panel(id: &str) -> PanelSpec {
         PanelSpec {

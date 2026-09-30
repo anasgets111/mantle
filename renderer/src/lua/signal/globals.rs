@@ -6,7 +6,7 @@ use std::time::Duration;
 use mlua::{AnyUserData, IntoLua, Lua, LuaSerdeExt, Table, Value, Variadic};
 
 use crate::lua::luacats::{As, Generic, LuaType, SignalOf, lua_fn};
-use crate::lua::marshal::{a_type, list_entries};
+use crate::lua::marshal::{a_type, list_entries, rect_table};
 use crate::text::snap::LogicalRect;
 
 use super::budget::install_hook;
@@ -365,10 +365,7 @@ pub fn register(lua: &Lua, dirty: DirtyFlag) -> mlua::Result<()> {
             if let Some(signal) = existing {
                 return Ok(SignalOf::new(signal));
             }
-            let zero = lua.create_table()?;
-            for key in ["x", "y", "width", "height"] {
-                zero.set(key, 0.0)?;
-            }
+            let zero = rect_table(lua, LogicalRect::default())?;
             let signal = Signal(SignalKind::Geometry(next_cell_id(), Rc::new(RefCell::new(Value::Table(zero)))));
             crate::lua::app_data_or_default::<GeometryRegistry>(lua).0.insert(name, signal.clone());
             Ok(SignalOf::new(signal))
@@ -411,6 +408,7 @@ impl LuaType for StateSignal {
         "StateSignal<T>".to_string()
     }
     const GENERIC: bool = true;
+    #[cfg(test)]
     fn classes(out: &mut Vec<String>) {
         out.push(
             r#"---@class StateSignal<T>: Signal<T>, userdata
@@ -437,6 +435,7 @@ impl LuaType for ScrollSignal {
     fn lua() -> String {
         "ScrollSignal".to_string()
     }
+    #[cfg(test)]
     fn classes(out: &mut Vec<String>) {
         out.push(
             r#"---@class ScrollSignal: Signal<number>, userdata
@@ -457,21 +456,13 @@ fn hover_slot(lua: &Lua, dirty: &DirtyFlag, name: String) -> mlua::Result<(Signa
     if let Some(slot) = existing {
         return Ok(slot);
     }
-    let slot = Signal::new_hover(dirty.clone(), Value::Table(unhovered_rect(lua)?));
+    // Pre-pointer `hover_rect(name)`: a real 1x1 origin table. Non-zero because zero `anchor_rect`
+    // is rejected; `visible = hover(name)` stays false, so a tooltip waits invisibly at origin
+    // until the pointer event supplies the real rect.
+    let unhovered = rect_table(lua, LogicalRect { x: 0.0, y: 0.0, width: 1.0, height: 1.0 })?;
+    let slot = Signal::new_hover(dirty.clone(), Value::Table(unhovered));
     crate::lua::app_data_or_default::<HoverRegistry>(lua).0.insert(name, slot.clone());
     Ok(slot)
-}
-
-/// Pre-pointer `hover_rect(name)`: real 1x1 origin table. Non-zero because zero `anchor_rect` is
-/// rejected; `visible = hover(name)` stays false, so a tooltip waits invisibly at origin until
-/// the pointer event supplies the real rect.
-fn unhovered_rect(lua: &Lua) -> mlua::Result<mlua::Table> {
-    let rect = lua.create_table()?;
-    rect.set("x", 0.0)?;
-    rect.set("y", 0.0)?;
-    rect.set("width", 1.0)?;
-    rect.set("height", 1.0)?;
-    Ok(rect)
 }
 
 #[cfg(test)]

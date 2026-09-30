@@ -619,11 +619,8 @@ pub(super) fn publish_geometry(
             _ => false,
         };
         if !same {
-            let rect = lua.create_table_with_capacity(0, 4)?;
-            for (key, v) in KEYS.into_iter().zip(fresh) {
-                rect.set(key, v)?;
-            }
-            *cell.borrow_mut() = Value::Table(rect);
+            let rect = crate::text::snap::LogicalRect { x, y, ..node.rect };
+            *cell.borrow_mut() = Value::Table(crate::lua::marshal::rect_table(lua, rect)?);
             crate::lua::signal::note_write(id);
             if !quiet {
                 crate::lua::signal::note_geometry_moved(lua, id);

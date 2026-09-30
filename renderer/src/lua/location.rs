@@ -5,7 +5,8 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::path::Path;
 
-use mlua::{Lua, Table, Value};
+use mlua::{IntoLuaMulti, Lua, Table, Value};
+use shared::warn;
 
 /// Replaces Lua's file searcher, `package.searchers[2]`, with one that names the chunk as
 /// [`chunk_name`] does. Lua's names it by the absolute path, which `LUA_IDSIZE` (60 bytes) cuts to
@@ -59,6 +60,20 @@ pub(crate) fn describe(err: &mlua::Error) -> String {
         lines.pop();
     }
     lines.join("\n")
+}
+
+/// Logs a config callback's raise as `{what} raised, ignoring it: ...`; `Ok` is silent. A callback
+/// nothing waits on must not take the turn with it.
+pub(crate) fn warn_raised(outcome: mlua::Result<()>, what: impl std::fmt::Display) {
+    if let Err(err) = outcome {
+        warn!("{what} raised, ignoring it: {}", describe(&err));
+    }
+}
+
+/// Calls `f` for its side effects and logs a raise through [`warn_raised`]. Unbudgeted: for the
+/// callbacks that run no CPU cap, see [`CpuBudget::call`](super::signal::CpuBudget::call) for those that do.
+pub(crate) fn call_logged(f: &mlua::Function, args: impl IntoLuaMulti, what: impl std::fmt::Display) {
+    warn_raised(f.call(args), what);
 }
 
 /// A line of config code, `widgets/bar.lua:12` once displayed: where a node or derived signal was

@@ -7,7 +7,9 @@
 //! properties until a cell it read is written (ADR-0270), so only signal reads invalidate.
 
 mod budget;
+mod dirty;
 mod globals;
+mod held;
 mod state_handlers;
 mod tracking;
 
@@ -21,10 +23,12 @@ use crate::lua::location::Site;
 use crate::lua::marshal;
 
 pub(crate) use budget::{CpuBudget, LayoutPassBudget, anchor_cpu_budget, thread_cpu_time};
+pub use dirty::{DirtyFlag, DirtyScope, LiveSignalHandle};
 pub use globals::{
     any_hover_registered, begin_evaluation, declared_states, promote_states, register, take_geometry_moved, write_state,
 };
 pub(crate) use globals::{note_geometry_moved, reset, reset_target};
+pub use held::{next_wake_deadline, take_due_wake};
 pub use state_handlers::{clear as clear_state_handlers, run as run_state_handlers};
 #[cfg(test)]
 pub(crate) use tracking::MemoTable;
@@ -33,7 +37,7 @@ pub(crate) use tracking::{
     note_everything_written, note_read, note_reads, note_write, reset_read_tracker, with_derived, write_clock,
     written_since,
 };
-use tracking::{Evaluation, Output, ReadTracker, current_clock, downstream, outputs_written_since};
+use tracking::{Evaluation, Output};
 
 /// Globally unique identifier for a reactive cell, avoiding pointer recycling issues (ADR-0170).
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
@@ -85,7 +89,7 @@ enum SignalKind {
     /// rather than dirtying the scene it was measured in.
     Geometry(CellId, Rc<RefCell<Value>>),
     /// `delay(signal, ms)` (ADR-0146): follows `source` once it has held a new value for `hold`.
-    /// A read notes the pending value and its due time, arms a wake through [`WakeDeadline`], and
+    /// A read notes the pending value and its due time, arms a wake through `held::WakeDeadline`, and
     /// keeps answering the held value until a read after the due time adopts the new one; the
     /// wake writes `cell`, so its readers make that read (ADR-0275). A source that returns to the
     /// held value before then cancels the change, which makes this a trailing debounce as well
@@ -98,45 +102,6 @@ enum SignalKind {
     /// (ADR-0152). A read compares against the value it last saw, arms the wake, and falls back to
     /// `false` on the read after the window closes, which the wake writing `cell` prompts.
     Pulse { hold: Duration, until: Rc<Cell<Option<Instant>>>, cell: CellId },
-}
-
-struct DelayCell {
-    held: Value,
-    pending: Option<(Value, Instant)>,
-}
-
-struct PulseCell {
-    /// The source value this signal last read. Seeded at construction, so a pulse starts low and
-    /// fires on the first change rather than on the pass that built it.
-    seen: Value,
-    /// When the window closes, while one is open.
-    until: Option<Instant>,
-}
-
-/// The earliest moment a clock-driven signal has to be re-read -- a `delay`'s hold coming due or
-/// a `pulse`'s window closing -- read by the poll loop as its timeout; `None` keeps the loop
-/// timeout-free (ADR-0124). One entry per signal: its due wake writes its cell, so only its
-/// readers resolve again (ADR-0275).
-#[derive(Default)]
-struct WakeDeadline(Vec<(Instant, CellId)>);
-
-fn arm_wake(lua: &Lua, due: Instant, cell: CellId) {
-    let mut slot = super::app_data_or_default::<WakeDeadline>(lua);
-    slot.0.retain(|(_, armed)| *armed != cell);
-    slot.0.push((due, cell));
-}
-
-/// When the poll loop has to wake for a pending `delay` or `pulse`, if any.
-pub fn next_wake_deadline(lua: &Lua) -> Option<Instant> {
-    lua.app_data_ref::<WakeDeadline>().and_then(|slot| slot.0.iter().map(|(due, _)| *due).min())
-}
-
-/// Takes the cells of the signals come due; the caller writes them.
-pub fn take_due_wake(lua: &Lua, now: Instant) -> Vec<CellId> {
-    let Some(mut slot) = lua.app_data_mut::<WakeDeadline>() else { return Vec::new() };
-    let (due, later): (Vec<_>, Vec<_>) = slot.0.drain(..).partition(|(at, _)| *at <= now);
-    slot.0 = later;
-    due.into_iter().map(|(_, cell)| cell).collect()
 }
 
 impl SignalKind {
@@ -361,16 +326,21 @@ impl Signal {
         Some(LiveSignalHandle(*rect_id, Rc::clone(rect), dirty.clone()))
     }
 
-    /// Reactive cell identifier for targeted invalidation tracking, if this signal is backed by a cell.
-    pub(crate) fn cell_id(&self) -> Option<CellId> {
+    /// The stored value and its id, for every kind that holds one; `None` for the derived kinds.
+    fn cell(&self) -> Option<(CellId, &Rc<RefCell<Value>>)> {
         match &self.0 {
-            SignalKind::Live { id, .. }
-            | SignalKind::Hover { id, .. }
-            | SignalKind::Scroll { id, .. }
-            | SignalKind::State { id, .. }
-            | SignalKind::Geometry(id, _) => Some(*id),
+            SignalKind::Live { id, cell }
+            | SignalKind::Hover { id, cell, .. }
+            | SignalKind::Scroll { id, cell, .. }
+            | SignalKind::State { id, cell, .. }
+            | SignalKind::Geometry(id, cell) => Some((*id, cell)),
             _ => None,
         }
+    }
+
+    /// Reactive cell identifier for targeted invalidation tracking, if this signal is backed by a cell.
+    pub(crate) fn cell_id(&self) -> Option<CellId> {
+        self.cell().map(|(id, _)| id)
     }
 
     /// `map(f)` as a one-dependency `Computed`, recomputed on every read (ADR-0044 decision 3).
@@ -386,19 +356,16 @@ impl Signal {
     /// is threaded because `Computed` needs it for [`CpuBudget`] and mlua 0.12 cannot recover Lua
     /// from `AnyUserData`/`Value`.
     pub(crate) fn get_value(&self, lua: &Lua) -> mlua::Result<Value> {
+        if let Some((id, cell)) = self.cell() {
+            note_read(lua, id);
+            return Ok(cell.borrow().clone());
+        }
         match &self.0 {
-            SignalKind::Live { id, cell }
-            | SignalKind::Hover { id, cell, .. }
-            | SignalKind::Scroll { id, cell, .. }
-            | SignalKind::State { id, cell, .. }
-            | SignalKind::Geometry(id, cell) => {
-                note_read(lua, *id);
-                Ok(cell.borrow().clone())
-            }
+            SignalKind::Derived(ud) => read_derived(lua, ud),
             SignalKind::Computed { .. } | SignalKind::Delayed { .. } | SignalKind::Pulse { .. } => Err(
                 mlua::Error::runtime("a derived signal was read without the userdata holding its function and sources"),
             ),
-            SignalKind::Derived(ud) => read_derived(lua, ud),
+            _ => unreachable!("`cell` holds every stored kind"),
         }
     }
 }
@@ -459,32 +426,8 @@ fn source_at(ud: &mlua::AnyUserData, slot: usize) -> mlua::Result<Signal> {
 fn read_derived(lua: &Lua, ud: &mlua::AnyUserData) -> mlua::Result<Value> {
     let kind = ud.borrow::<Signal>()?.0.clone();
     match kind {
-        // Both recurse into their source, so both claim a nesting level for the reason
-        // `Computed` does. Unguarded, a long enough chain exhausted the Rust stack and
-        // aborted `mantle check` before any cap could answer.
-        SignalKind::Delayed { hold, due, cell: own } => {
-            let _budget = CpuBudget::enter(lua)?;
-            let fresh = source_at(ud, FIRST_SOURCE_SLOT)?.get_value(lua)?;
-            let pending = due.get().map(|at| mlua::Result::Ok((ud.nth_user_value(PENDING_SLOT)?, at))).transpose()?;
-            let mut cell = DelayCell { held: ud.nth_user_value(HELD_SLOT)?, pending };
-            note_read(lua, own);
-            let answer = cell.follow(fresh, hold, Instant::now(), |at| arm_wake(lua, at, own));
-            let (pending, at) = cell.pending.unzip();
-            due.set(at);
-            ud.set_nth_user_value(HELD_SLOT, cell.held)?;
-            ud.set_nth_user_value(PENDING_SLOT, pending)?;
-            Ok(answer)
-        }
-        SignalKind::Pulse { hold, until, cell: own } => {
-            let _budget = CpuBudget::enter(lua)?;
-            let fresh = source_at(ud, FIRST_SOURCE_SLOT)?.get_value(lua)?;
-            let mut cell = PulseCell { seen: ud.nth_user_value(HELD_SLOT)?, until: until.get() };
-            note_read(lua, own);
-            let open = cell.fire(fresh, hold, Instant::now(), |at| arm_wake(lua, at, own));
-            until.set(cell.until);
-            ud.set_nth_user_value(HELD_SLOT, cell.seen)?;
-            Ok(Value::Boolean(open))
-        }
+        SignalKind::Delayed { hold, due, cell } => held::read_delayed(lua, ud, hold, &due, cell),
+        SignalKind::Pulse { hold, until, cell } => held::read_pulse(lua, ud, hold, &until, cell),
         SignalKind::Computed { out, arity } => {
             // A repeat within this evaluation costs one hash lookup and no Lua. Checked before
             // `CpuBudget::enter` on purpose: a hit does no work, so it must not spend a nesting
@@ -527,204 +470,6 @@ fn read_derived(lua: &Lua, ud: &mlua::AnyUserData) -> mlua::Result<Value> {
             Ok(value)
         }
         other => Signal(other).get_value(lua),
-    }
-}
-
-impl DelayCell {
-    /// One read: the value to answer now, and whether to arm a wake for later. Split from the
-    /// signal so the clock is a parameter.
-    fn follow(&mut self, fresh: Value, hold: Duration, now: Instant, arm: impl FnOnce(Instant)) -> Value {
-        if fresh == self.held {
-            self.pending = None;
-            return self.held.clone();
-        }
-        let due = match &self.pending {
-            Some((pending, due)) if *pending == fresh => *due,
-            _ => now + hold,
-        };
-        if now >= due {
-            self.held = fresh;
-            self.pending = None;
-        } else {
-            self.pending = Some((fresh, due));
-            arm(due);
-        }
-        self.held.clone()
-    }
-}
-
-impl PulseCell {
-    /// One read: whether the window is open now, and whether to arm a wake for its close. Split
-    /// from the signal so the clock is a parameter, the way [`DelayCell::follow`] is.
-    ///
-    /// A change while a window is already open restarts it rather than extending the old one,
-    /// which is what `restart()` does to a running `SequentialAnimation`. The window is not
-    /// re-armed once it has closed, so a source that holds its new value pulses once.
-    fn fire(&mut self, fresh: Value, hold: Duration, now: Instant, arm: impl FnOnce(Instant)) -> bool {
-        if fresh != self.seen {
-            self.seen = fresh;
-            self.until = Some(now + hold);
-        }
-        if let Some(until) = self.until.filter(|until| now < *until) {
-            arm(until);
-            true
-        } else {
-            self.until = None;
-            false
-        }
-    }
-}
-
-/// Rust handle for [`Signal::new_live`] storage, used for `StateSnapshot` pushes. Lua reads the
-/// latest value, with no memoization.
-#[derive(Clone)]
-pub struct LiveSignalHandle(CellId, Rc<RefCell<Value>>, DirtyFlag);
-
-impl LiveSignalHandle {
-    /// Last value, for `CapabilityHandle::hydrate` to pass as `on_change`'s replaced value.
-    pub fn get(&self) -> Value {
-        self.1.borrow().clone()
-    }
-
-    /// Writes and marks the cell dirty.
-    pub fn set(&self, value: Value) {
-        *self.1.borrow_mut() = value;
-        self.2.mark_cell(self.0);
-    }
-
-    /// Writes without dirtying for `layout::scene`'s clamp, which derives the value from geometry
-    /// just measured. Another pass would observe the same idempotent clamp; cost is one frame of
-    /// staleness only when clamping: same-pass `scroll("x")` sees wheel input, derived readouts see
-    /// the clamped value next pass. Positioning itself uses the clamped value immediately.
-    pub(crate) fn set_quiet(&self, value: Value) {
-        *self.1.borrow_mut() = value;
-        note_write(self.0);
-    }
-
-    /// [`Self::set`] with equality deduplication. ADR-0062 decision 4 calls it for every
-    /// device-rate `wl_pointer` motion; compare first to re-resolve only on boundary crossings.
-    pub fn set_changed(&self, value: Value) -> bool {
-        let unchanged = *self.1.borrow() == value;
-        if unchanged {
-            return false;
-        }
-        self.set(value);
-        true
-    }
-}
-
-/// Which surfaces an invalidation marks dirty.
-#[derive(Debug, PartialEq, Eq)]
-pub enum DirtyScope {
-    /// No change since the last take.
-    Clean,
-    /// Scene-wide change or unknown cell dependency; every surface must re-resolve.
-    All,
-    /// Targeted set of instance IDs whose nodes actually read the modified cells.
-    Instances(Vec<String>),
-}
-
-#[derive(Default)]
-struct DirtyState {
-    all: bool,
-    cells: rustc_hash::FxHashSet<CellId>,
-    /// Instances whose own inputs changed with no cell written, such as their configured size.
-    instances: rustc_hash::FxHashSet<String>,
-    /// The write clock at the last take: a computed stamped since then has readers to re-resolve.
-    taken_at: u64,
-}
-
-/// Shared invalidation flag tracking scene-wide or cell-targeted dirty marks.
-#[derive(Clone, Default)]
-pub struct DirtyFlag(Rc<RefCell<DirtyState>>);
-
-impl DirtyFlag {
-    pub fn new() -> Self {
-        Self(Rc::new(RefCell::new(DirtyState::default())))
-    }
-
-    /// Every surface must re-resolve: a reload, or a change no instance can be named for.
-    pub(crate) fn mark(&self) {
-        self.0.borrow_mut().all = true;
-    }
-
-    /// One instance must re-resolve, for a change that is its own and written no cell: `configure`
-    /// changing its size (ADR-0044 decision 2).
-    pub(crate) fn mark_instance(&self, instance_id: &str) {
-        self.0.borrow_mut().instances.insert(instance_id.to_string());
-    }
-
-    /// Marks a specific reactive cell dirty.
-    pub(crate) fn mark_cell(&self, id: CellId) {
-        note_write(id);
-        self.0.borrow_mut().cells.insert(id);
-    }
-
-    /// Reads and clears atomically: drain inbound frames, then re-resolve once
-    /// (ADR-0044 decision 2).
-    pub fn take(&self) -> bool {
-        let mut state = self.0.borrow_mut();
-        if state.all || !state.cells.is_empty() || !state.instances.is_empty() {
-            *state = DirtyState { taken_at: current_clock(), ..DirtyState::default() };
-            true
-        } else {
-            false
-        }
-    }
-
-    /// Takes the invalidation scope: Clean, All, or targeted Instances based on ReadTracker.
-    ///
-    /// A computed reading a written cell runs again here, and its readers count only if its output
-    /// changed. When called inside an enclosing [`EvaluationMemo`] (e.g. during re-resolution),
-    /// computed values evaluated here are retained in the memo table and handed over into the
-    /// subsequent layout pass, preventing double-evaluation. Standalone calls evaluate under
-    /// their own memo and drop it immediately.
-    pub fn take_scope(&self, lua: &Lua) -> DirtyScope {
-        let (mut cells, marked, taken_at) = {
-            let mut state = self.0.borrow_mut();
-            if !state.all && state.cells.is_empty() && state.instances.is_empty() {
-                return DirtyScope::Clean;
-            }
-            if state.all {
-                *state = DirtyState { taken_at: current_clock(), ..DirtyState::default() };
-                return DirtyScope::All;
-            }
-            (std::mem::take(&mut state.cells), std::mem::take(&mut state.instances), state.taken_at)
-        };
-        // Unborrowed: a computed may `set` a state, which marks this flag.
-        rerun_computeds(lua, &cells);
-        cells.extend(outputs_written_since(taken_at));
-        self.0.borrow_mut().taken_at = current_clock();
-        let tracker = lua.app_data_ref::<ReadTracker>();
-        let mut instances = marked;
-        if let Some(tracker) = tracker {
-            for cell_id in cells {
-                if let Some(readers) = tracker.cell_readers.get(&cell_id) {
-                    for reader in readers {
-                        instances.insert(reader.to_string());
-                    }
-                }
-            }
-        }
-        if instances.is_empty() { DirtyScope::Clean } else { DirtyScope::Instances(instances.into_iter().collect()) }
-    }
-}
-
-/// Runs every computed downstream of `cells` once, which stamps each whose output changed. One that
-/// fails counts as changed, so the pass meets the same error and reports it.
-fn rerun_computeds(lua: &Lua, cells: &rustc_hash::FxHashSet<CellId>) {
-    let outs = downstream(lua, cells);
-    if outs.is_empty() {
-        return;
-    }
-    let Ok(table) = computeds(lua) else { return };
-    let _memo = EvaluationMemo::enter(lua);
-    for out in outs {
-        if let Ok(Some(ud)) = table.raw_get::<Option<mlua::AnyUserData>>(out.0)
-            && read(lua, &ud).is_err()
-        {
-            note_write(out);
-        }
     }
 }
 
@@ -838,99 +583,6 @@ mod tests {
     }
 
     /// VM whose `state` marks the flag `RendererClient` drains.
-    #[test]
-    fn a_delayed_signal_answers_the_old_value_until_the_source_has_held_the_new_one() {
-        let mut cell = DelayCell { held: Value::Boolean(true), pending: None };
-        let t0 = Instant::now();
-        let hold = Duration::from_millis(147);
-        let mut armed = None;
-        assert_eq!(cell.follow(Value::Boolean(false), hold, t0, |due| armed = Some(due)), Value::Boolean(true));
-        assert_eq!(armed, Some(t0 + hold), "the first read of a change arms the wake");
-        assert_eq!(cell.follow(Value::Boolean(false), hold, t0 + hold / 2, |_| ()), Value::Boolean(true));
-        assert_eq!(cell.follow(Value::Boolean(false), hold, t0 + hold, |_| ()), Value::Boolean(false));
-        // A change that returns before its hold elapses is cancelled outright.
-        let later = t0 + hold + Duration::from_millis(1);
-        cell.follow(Value::Boolean(true), hold, later, |_| ());
-        assert_eq!(
-            cell.follow(Value::Boolean(false), hold, later + Duration::from_millis(1), |_| ()),
-            Value::Boolean(false)
-        );
-        assert!(cell.pending.is_none());
-        assert_eq!(cell.follow(Value::Boolean(false), hold, later + hold, |_| ()), Value::Boolean(false));
-    }
-
-    #[test]
-    fn delay_is_a_global_that_holds_a_state_write_and_arms_the_poll_deadline() {
-        let (lua, _dirty) = lua_with_state();
-        lua.load(r#"open = state("open", false) held = delay(open, 1)"#).exec().unwrap();
-        lua.load("open:set(true)").exec().unwrap();
-        assert!(!lua.load("return held:get()").eval::<bool>().unwrap());
-        assert!(next_wake_deadline(&lua).is_some());
-        std::thread::sleep(Duration::from_millis(5));
-        assert!(!take_due_wake(&lua, Instant::now()).is_empty());
-        assert!(lua.load("return held:get()").eval::<bool>().unwrap());
-        assert!(next_wake_deadline(&lua).is_none(), "an adopted value leaves nothing armed");
-        for refused in ["delay(open, 0)", "delay(open, 0.1)"] {
-            // 0.1 ms rounds to no milliseconds at all, so a hold that reads as positive would
-            // adopt on the very next poll and never hold anything.
-            let err = lua.load(refused).exec().unwrap_err().to_string();
-            assert!(err.contains("[1, 60000]"), "{refused}: {err}");
-        }
-    }
-
-    /// The clock is a parameter, so the window is exercised without sleeping through it.
-    #[test]
-    fn a_pulse_opens_on_a_change_restarts_on_the_next_one_and_closes_by_itself() {
-        let hold = Duration::from_millis(100);
-        let start = Instant::now();
-        let mut cell = PulseCell { seen: Value::Integer(0), until: None };
-
-        assert!(!cell.fire(Value::Integer(0), hold, start, |_| ()), "an unchanged source never fires");
-        let mut armed = None;
-        assert!(cell.fire(Value::Integer(1), hold, start, |due| armed = Some(due)));
-        assert_eq!(armed, Some(start + hold), "an open window arms the close");
-        // The source holds its new value: the window stays open on its own, then shuts once.
-        assert!(cell.fire(Value::Integer(1), hold, start + Duration::from_millis(50), |_| ()));
-        assert!(!cell.fire(Value::Integer(1), hold, start + hold, |_| ()), "the window closes at its due time");
-        assert!(!cell.fire(Value::Integer(1), hold, start + hold * 2, |_| ()), "and does not reopen");
-
-        // A second change mid-window restarts it rather than extending the first, which is what
-        // `restart()` does to a running animation.
-        let reopened = start + hold * 2;
-        assert!(cell.fire(Value::Integer(2), hold, reopened, |_| ()));
-        let mut armed = None;
-        assert!(cell.fire(Value::Integer(3), hold, reopened + Duration::from_millis(60), |due| armed = Some(due)));
-        assert_eq!(armed, Some(reopened + Duration::from_millis(60) + hold));
-    }
-
-    #[test]
-    fn pulse_is_a_global_that_starts_low_fires_on_a_write_and_arms_the_poll_deadline() {
-        let (lua, _dirty) = lua_with_state();
-        lua.load(r#"clicks = state("clicks", 0) flashing = pulse(clicks, 50)"#).exec().unwrap();
-        assert!(!lua.load("return flashing:get()").eval::<bool>().unwrap(), "a pulse starts low");
-        assert!(next_wake_deadline(&lua).is_none(), "and arms nothing until something changes");
-
-        lua.load("clicks:set(1)").exec().unwrap();
-        assert!(lua.load("return flashing:get()").eval::<bool>().unwrap());
-        assert!(next_wake_deadline(&lua).is_some());
-        std::thread::sleep(Duration::from_millis(60));
-        assert!(!take_due_wake(&lua, Instant::now()).is_empty());
-        assert!(!lua.load("return flashing:get()").eval::<bool>().unwrap(), "the window closed");
-
-        for refused in ["pulse(clicks, 0)", "pulse(clicks, 0.1)"] {
-            let err = lua.load(refused).exec().unwrap_err().to_string();
-            assert!(err.contains("[1, 60000]"), "{refused}: {err}");
-        }
-        lua.globals().set("handle", lua.create_any_userdata(7u32).unwrap()).unwrap();
-        let err = lua.load("pulse(handle, 50)").exec().unwrap_err().to_string();
-        assert!(err.contains("Signal"), "{err}");
-
-        // Read-only for the same reason every other engine-written signal is: the only thing that
-        // may open the window is the source changing.
-        let err = lua.load("flashing:set(true)").exec().unwrap_err().to_string();
-        assert!(err.contains("a pulse"), "{err}");
-    }
-
     pub(super) fn lua_with_state() -> (Lua, DirtyFlag) {
         let lua = Lua::new();
         let dirty = DirtyFlag::new();

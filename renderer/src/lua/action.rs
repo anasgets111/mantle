@@ -79,12 +79,7 @@ pub fn dispatch(lua: &Lua, name: &str, arguments: &[serde_json::Value]) -> share
     }
     // The same cap a capability's `on_change` handler runs under: config code reached from outside
     // is still config code, and a handler that spins must not take the frame with it.
-    let returned = CpuBudget::enter(lua).and_then(|budget| {
-        let value = handler.call::<Value>(MultiValue::from_vec(args))?;
-        budget.check_not_exceeded()?;
-        Ok(value)
-    });
-    match returned {
+    match CpuBudget::call::<_, Value>(lua, &handler, MultiValue::from_vec(args)) {
         // `nil` and no return at all are the same value here, because Lua cannot tell them apart.
         // `from_value`, as a capability action marshals its arguments: one conversion for both
         // directions across this boundary.

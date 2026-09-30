@@ -1,8 +1,9 @@
 //! `window` (`xdg_toplevel`): creation, size negotiation and live property updates.
 
-use shared::{debug, error, warn};
+use shared::{debug, error};
 
 use super::*;
+use crate::lua::call_logged;
 use crate::wayland::surface::MapState;
 use crate::wayland::surface::TrackedRole;
 
@@ -172,9 +173,7 @@ impl WindowHandler for App {
             );
             return;
         };
-        if let Err(e) = on_close.call::<()>(()) {
-            warn!("{surface_id}: on_close raised, ignoring it: {}", crate::lua::describe(&e));
-        }
+        call_logged(&on_close, (), format_args!("{surface_id}: on_close"));
     }
 
     /// SCTK has acked this configure. `new_size` may leave axes to the client; client-side

@@ -13,10 +13,11 @@
 use std::time::{Duration, Instant};
 
 use mlua::{Function, Lua};
-use shared::{debug, warn};
+use shared::debug;
 
 use super::luacats::{lua_class, lua_fn};
 use super::signal::CpuBudget;
+use crate::lua::warn_raised;
 
 /// Range of `ms`, one millisecond to one day. Deliberately not `delay`/`pulse`'s 60-second ceiling:
 /// an idle suspend delay is measured in hours.
@@ -163,13 +164,7 @@ pub fn dispatch_due(lua: &Lua, now: Instant) {
         // The cap `action` and `on_change` handlers run under. ponytail: per callback, not per
         // batch, so a config arming many timers for one moment can still spend that many budgets in
         // one turn -- the same ceiling a capability with many `on_change` handlers already has.
-        let outcome = CpuBudget::enter(lua).and_then(|budget| {
-            callback.call::<()>(())?;
-            budget.check_not_exceeded()
-        });
-        if let Err(err) = outcome {
-            warn!("timer callback raised, ignoring it: {}", crate::lua::describe(&err));
-        }
+        warn_raised(CpuBudget::call(lua, &callback, ()), "timer callback");
     }
     if let Some(mut registry) = lua.app_data_mut::<TimerRegistry>() {
         registry.firing.clear();

@@ -86,6 +86,7 @@ impl LuaType for SessionProcessHandle {
     fn lua() -> String {
         "SessionProcessHandle".to_string()
     }
+    #[cfg(test)]
     fn classes(out: &mut Vec<String>) {
         out.push(
             r#"---@class SessionProcessHandle

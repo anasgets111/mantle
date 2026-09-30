@@ -15,12 +15,13 @@ use std::collections::BTreeMap;
 use std::rc::Rc;
 
 use mlua::{Function, Lua};
-use shared::{ProcessStream, warn};
+use shared::ProcessStream;
 
 use super::luacats::{lua_class, lua_fn};
 use crate::layout::node::prop::{Keyword, keywords};
 
 use super::capability::CommandSender;
+use crate::lua::call_logged;
 
 /// One `process.run` callback pair, retained until matching `SupervisorFrame::ProcessExited`.
 struct PendingProcess {
@@ -80,9 +81,7 @@ impl ProcessRegistry {
     pub fn dispatch_output(&self, id: u64, stream: ProcessStream, line: String) {
         let out_cb = self.pending.borrow().get(&id).map(|p| p.out_cb.clone());
         let Some(out_cb) = out_cb else { return };
-        if let Err(err) = out_cb.call::<()>((line, stream_name(stream))) {
-            warn!("process.run(id={id}): out_cb raised an error: {}", crate::lua::describe(&err));
-        }
+        call_logged(&out_cb, (line, stream_name(stream)), format_args!("process.run(id={id}): out_cb"));
     }
 
     /// Dispatches `SupervisorFrame::ProcessExited`, invokes `exit_cb`, then forgets the id
@@ -90,9 +89,7 @@ impl ProcessRegistry {
     pub fn dispatch_exit(&self, id: u64, code: Option<i32>) {
         let exit_cb = self.pending.borrow_mut().remove(&id).map(|p| p.exit_cb);
         let Some(exit_cb) = exit_cb else { return };
-        if let Err(err) = exit_cb.call::<()>(code) {
-            warn!("process.run(id={id}): exit_cb raised an error: {}", crate::lua::describe(&err));
-        }
+        call_logged(&exit_cb, code, format_args!("process.run(id={id}): exit_cb"));
     }
 }
 

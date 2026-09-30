@@ -1,11 +1,12 @@
 //! Plain `textfield`s: which one `autofocus` arms, the draft and selection a key edits, the
 //! caret's blink, and the edits delivered to Lua (ADR-0092).
 
-use shared::{debug, warn};
+use shared::debug;
 use unicode_segmentation::UnicodeSegmentation;
 
 use super::*;
 use crate::layout::node::prop::Keyword;
+use crate::lua::call_logged;
 
 /// First plain `autofocus = true` field in scope document order (ADR-0112). Skip masked fields and
 /// fields without callbacks; unlike two `secure_submit` fields, duplicate search boxes are a config
@@ -231,23 +232,21 @@ fn deliver_plain_edit(surface_id: &str, edit: PlainEdit, text: String, callbacks
     let PlainCallbacks { on_change, on_submit, on_cancel } = callbacks;
     if edit.submitted
         && let Some(on_submit) = on_submit
-        && let Err(e) = on_submit.call::<()>(text.clone())
     {
-        warn!("{surface_id}: on_submit raised, ignoring it: {}", crate::lua::describe(&e));
+        call_logged(&on_submit, text.clone(), format_args!("{surface_id}: on_submit"));
     }
     if edit.changed
         && let Some(on_change) = on_change
-        && let Err(e) = on_change.call::<()>(if edit.submitted { String::new() } else { text })
     {
-        warn!("{surface_id}: on_change raised, ignoring it: {}", crate::lua::describe(&e));
+        let text = if edit.submitted { String::new() } else { text };
+        call_logged(&on_change, text, format_args!("{surface_id}: on_change"));
     }
     // `edit.changed` is the one thing a config cannot work out for itself: the autofocus arm fires
     // `on_change("")` too, so counting empty changes cannot tell a cleared field from an opened one.
     if edit.cancelled
         && let Some(on_cancel) = on_cancel
-        && let Err(e) = on_cancel.call::<()>(edit.changed)
     {
-        warn!("{surface_id}: on_cancel raised, ignoring it: {}", crate::lua::describe(&e));
+        call_logged(&on_cancel, edit.changed, format_args!("{surface_id}: on_cancel"));
     }
 }
 
@@ -317,10 +316,8 @@ impl App {
             on_cancel,
             on_navigate,
         }));
-        if let Some(on_change) = opened
-            && let Err(e) = on_change.call::<()>(String::new())
-        {
-            warn!("{surface_id}: on_change raised, ignoring it: {}", crate::lua::describe(&e));
+        if let Some(on_change) = opened {
+            call_logged(&on_change, String::new(), format_args!("{surface_id}: on_change"));
         }
     }
 
@@ -472,10 +469,8 @@ impl App {
         };
         // Navigation changes neither text nor caret, so it needs no repaint.
         if let Some(key) = edit.navigated {
-            if let Some(on_navigate) = on_navigate
-                && let Err(e) = on_navigate.call::<()>(key.name())
-            {
-                warn!("{surface_id}: on_navigate raised, ignoring it: {}", crate::lua::describe(&e));
+            if let Some(on_navigate) = on_navigate {
+                call_logged(&on_navigate, key.name(), format_args!("{surface_id}: on_navigate"));
             }
             return;
         }

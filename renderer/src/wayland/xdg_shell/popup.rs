@@ -4,6 +4,7 @@
 use shared::{debug, error, warn};
 
 use super::*;
+use crate::lua::call_logged;
 use crate::wayland::surface::MapState;
 use crate::wayland::surface::Placement;
 use crate::wayland::surface::PopupParent;
@@ -490,9 +491,7 @@ impl PopupHandler for App {
             // No handler is fine; the latch still prevents a livelock.
             return;
         };
-        if let Err(e) = on_dismiss.call::<()>(()) {
-            warn!("{surface_id}: on_dismiss raised, ignoring it: {}", crate::lua::describe(&e));
-        }
+        call_logged(&on_dismiss, (), format_args!("{surface_id}: on_dismiss"));
     }
 }
 

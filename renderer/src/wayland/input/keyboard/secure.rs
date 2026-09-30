@@ -5,6 +5,7 @@ use shared::{debug, error, warn};
 
 use super::*;
 use crate::layout::secure_submit::{sole_secure_submit_in_scope, typable_secure_submit_targets};
+use crate::lua::call_logged;
 
 /// `on_cancel` of the reachable field addressing `target`. Escape reaches Lua; the secret never does
 /// (ADR-0005).
@@ -247,9 +248,8 @@ impl App {
                         .scene()
                         .surface(&field.surface_id)
                         .and_then(|tree| secure_on_cancel(tree, &field.target))
-                    && let Err(e) = on_cancel.call::<()>(cleared)
                 {
-                    warn!("{}: on_cancel raised, ignoring it: {}", field.surface_id, crate::lua::describe(&e));
+                    call_logged(&on_cancel, cleared, format_args!("{}: on_cancel", field.surface_id));
                 }
             }
             KeyAction::Submit => self.finish_secure_submit(),

@@ -34,8 +34,9 @@ use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 use mlua::{Function, UserData, UserDataMethods};
-use shared::{debug, warn};
+use shared::debug;
 
+use crate::lua::call_logged;
 use crate::lua::capability::Capability;
 
 /// The longest threshold ext-idle-notify's u32 millisecond timeout holds.
@@ -100,10 +101,9 @@ impl IdleRegistry {
         self.state.commands().start_capability("idle");
         self.state.commands().send("idle", "register", vec![serde_json::json!(sec)], 0);
         // The seat has been idle past `sec` already: run now, as the event it joined late would have.
-        if let Some(on_idle) = catch_up
-            && let Err(err) = on_idle.call::<()>(())
-        {
-            warn!("mantle.idle:register_threshold({sec}): on_idle raised an error: {}", crate::lua::describe(&err));
+        if let Some(on_idle) = catch_up {
+            let what = format_args!("mantle.idle:register_threshold({sec}): on_idle");
+            call_logged(&on_idle, (), what);
         }
         id
     }
@@ -163,16 +163,12 @@ impl IdleRegistry {
             callbacks
         };
         for callback in callbacks {
-            if let Err(err) = callback.call::<()>(()) {
-                let which = match state {
-                    shared::IdleState::Idled => "on_idle",
-                    shared::IdleState::Resumed => "on_resume",
-                };
-                warn!(
-                    "mantle.idle:register_threshold({threshold_sec}): {which} raised an error: {}",
-                    crate::lua::describe(&err)
-                );
-            }
+            let which = match state {
+                shared::IdleState::Idled => "on_idle",
+                shared::IdleState::Resumed => "on_resume",
+            };
+            let what = format_args!("mantle.idle:register_threshold({threshold_sec}): {which}");
+            call_logged(&callback, (), what);
         }
     }
 

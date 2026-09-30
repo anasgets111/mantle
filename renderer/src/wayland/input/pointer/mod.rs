@@ -7,6 +7,8 @@ use super::keyboard::{FieldTarget, focused_field};
 use super::*;
 use crate::layout::node::fields::pointer;
 use crate::layout::node::prop::{Keyword, keywords};
+use crate::lua::call_logged;
+use crate::lua::marshal::rect_table;
 
 mod wheel;
 
@@ -270,17 +272,6 @@ fn call_on_drag(
     on_drag.call::<()>((rect_argument, pointer, phase.name())).map_err(|e| ("on_drag raised, ignoring it", e))
 }
 
-/// Build `on_click`'s node rect `{ x, y, width, height }` in surface logical coordinates
-/// (ADR-0050 decision 3).
-pub(in crate::wayland) fn rect_table(lua: &Lua, rect: LogicalRect) -> mlua::Result<Table> {
-    let table = lua.create_table()?;
-    table.set("x", rect.x)?;
-    table.set("y", rect.y)?;
-    table.set("width", rect.width)?;
-    table.set("height", rect.height)?;
-    Ok(table)
-}
-
 /// Writes one node's hover answer: the boolean, the rect it was crossed at, then its `on_hover`.
 ///
 /// The rect precedes the callback because a handler is documented to read `hover_rect(name)` for
@@ -310,11 +301,8 @@ pub(crate) fn apply_hover_write(lua: &Lua, write: layout::hover::HoverWrite, fir
     }
     // Fire only on edges (ADR-0095): device-rate motion could call a handler hundreds of
     // times across one node. Swallow handler errors like `fire_on_click`.
-    if fires_on_hover
-        && let Some(on_hover) = &write.on_hover
-        && let Err(err) = on_hover.call::<()>(write.hovered)
-    {
-        warn!("{surface_id}: on_hover handler raised: {}", crate::lua::describe(&err));
+    if fires_on_hover && let Some(on_hover) = &write.on_hover {
+        call_logged(on_hover, write.hovered, format_args!("{surface_id}: on_hover handler"));
     }
 }
 
@@ -415,9 +403,7 @@ impl PointerHandler for App {
                         match (clickable.link, clickable.handler) {
                             // Links take `href`, not the paragraph rect; a link has no `submit`.
                             (Some(href), Some(handler)) => {
-                                if let Err(e) = handler.call::<()>(href) {
-                                    warn!("{instance_id}: on_link raised, ignoring it: {}", crate::lua::describe(&e));
-                                }
+                                call_logged(&handler, href, format_args!("{instance_id}: on_link"));
                             }
                             (_, handler) => {
                                 if clickable.submit {
@@ -646,6 +632,7 @@ impl App {
 mod tests {
     use super::super::tests::hit_node;
     use super::*;
+    use mlua::Table;
 
     #[test]
     fn pointer_hover_updates_fire_callbacks_but_layout_refreshes_do_not() {

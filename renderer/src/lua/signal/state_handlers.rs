@@ -3,9 +3,10 @@
 
 use mlua::{Function, Lua, Value};
 use rustc_hash::FxHashMap;
-use shared::{error, warn};
+use shared::error;
 
 use super::{CellId, CpuBudget, Signal, same_value};
+use crate::lua::warn_raised;
 
 /// Rounds per [`run`] (ADR-0288). A handler's write queues the next round, so a chain takes one
 /// round per link; eight is deeper than a hand-written chain, and a loop stops after eight rounds
@@ -52,14 +53,10 @@ pub fn run(lua: &Lua) {
             // Cloned out: a handler may register another or write state, both of which borrow.
             let handlers = lua.app_data_ref::<StateHandlers>().and_then(|registry| registry.handlers.get(&id).cloned());
             for handler in handlers.unwrap_or_default() {
-                let outcome = CpuBudget::enter(lua).and_then(|budget| {
-                    handler.call::<()>((current.clone(), previous.clone()))?;
-                    budget.check_not_exceeded()
-                });
-                if let Err(err) = outcome {
-                    let name = super::globals::state_name(lua, id);
-                    warn!("state({name:?}):on_change handler raised, ignoring it: {}", crate::lua::describe(&err));
-                }
+                warn_raised(
+                    CpuBudget::call(lua, &handler, (current.clone(), previous.clone())),
+                    format_args!("state({:?}):on_change handler", super::globals::state_name(lua, id)),
+                );
             }
         }
     }

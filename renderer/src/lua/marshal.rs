@@ -2,6 +2,8 @@
 //! and `String`. `mlua` maps shape but does not reject NaN, unsafe integers, or oversized
 //! strings.
 
+use crate::text::snap::LogicalRect;
+
 /// `2^53 - 1`, the largest exact integer in Lua's IEEE-754-double `number`, even when its integer
 /// subtype holds it.
 const MAX_SAFE_INTEGER: i64 = (1i64 << 53) - 1;
@@ -9,6 +11,17 @@ const MIN_SAFE_INTEGER: i64 = -MAX_SAFE_INTEGER;
 
 /// Maximum string size: 64KB.
 pub(crate) const MAX_STRING_BYTES: usize = 64 * 1024;
+
+/// A rect as the `{ x, y, width, height }` table Lua reads: `on_click`'s argument, `hover_rect` and
+/// `geometry` (ADR-0050 decision 3).
+pub(crate) fn rect_table(lua: &mlua::Lua, rect: LogicalRect) -> mlua::Result<mlua::Table> {
+    let table = lua.create_table()?;
+    table.set("x", rect.x)?;
+    table.set("y", rect.y)?;
+    table.set("width", rect.width)?;
+    table.set("height", rect.height)?;
+    Ok(table)
+}
 
 #[derive(Debug, PartialEq, Eq, thiserror::Error)]
 pub enum MarshalError {

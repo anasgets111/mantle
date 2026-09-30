@@ -41,9 +41,9 @@ pub(crate) fn build(
     commands: &CommandSender,
     shell_lua_path: &Path,
 ) -> mlua::Result<Namespace> {
-    let table = loader.create_table()?;
+    let table = loader.lua().create_table()?;
     let mut capabilities = HashMap::new();
-    let pending = loader.create_table()?;
+    let pending = loader.lua().create_table()?;
     // `idle` alone bypasses `pending`: its three callbacks cannot cross the wire as actions, so
     // `lua::idle` wraps it directly (ADR-0141). Its handle remains in `capabilities`, letting an
     // `idle` `StateSnapshot` hydrate the signal the wrapper reads.
@@ -63,11 +63,12 @@ pub(crate) fn build(
     let idle = IdleRegistry::new(idle_state);
     table.set("idle", idle.member())?;
     loader.register_idle(idle.clone());
-    let rescue = register_rescue_signal(loader, &table, dirty.clone(), commands)?;
+    let rescue_state = mlua::Value::Table(rescue_table(loader, false, "")?);
+    let rescue = seeded_member("rescue", rescue_state, &table, dirty.clone(), commands)?;
     // Seed with an empty list, not `nil`, so `mantle.screens` loops zero times; pass it to
     // `new_live` rather than `set` so initialization does not dirty an unapplied scene.
     let screens_payload = serde_json::Value::Array(Vec::new());
-    let screens = register_screens_signal(loader, &table, dirty.clone(), commands, &screens_payload)?;
+    let screens = seeded_member("screens", loader.to_lua_value(&screens_payload)?, &table, dirty.clone(), commands)?;
     table.set("version", version_table(loader)?)?;
     // Parent of the loaded `shell.lua`, so config can name adjacent files without disagreeing with
     // `shared::config_dir()`. Static string beside `version`, not a pushing capability.
@@ -75,7 +76,7 @@ pub(crate) fn build(
         .set("config_dir", shell_lua_path.parent().map(|dir| dir.to_string_lossy().into_owned()).unwrap_or_default())?;
     // The Supervisor spawns every Renderer itself, so its parent is the shell `mantle stop --pid` names.
     table.set("pid", std::os::unix::process::parent_id())?;
-    loader.set_global("mantle", table.clone())?;
+    loader.lua().globals().set("mantle", table.clone())?;
     Ok(Namespace { table, capabilities, rescue, idle, screens, screens_payload })
 }
 
@@ -104,39 +105,25 @@ fn install_capability_index(
         commands.start_capability(&name);
         Ok(member)
     })?;
-    let meta = loader.create_table()?;
+    let meta = loader.lua().create_table()?;
     meta.set("__index", index)?;
     mantle.set_metatable(Some(meta))?;
     Ok(())
 }
 
-/// `mantle.rescue`, returning its update handle. Renderer-sourced, so it has no roster entry.
-fn register_rescue_signal(
-    loader: &Loader,
-    mantle: &mlua::Table,
-    dirty: DirtyFlag,
-    commands: &CommandSender,
-) -> mlua::Result<CapabilityHandle> {
-    let table = rescue_table(loader, false, "")?;
-    let (member, handle) = Capability::seeded("rescue", mlua::Value::Table(table), dirty, commands.clone());
-    mantle.set("rescue", member)?;
-    Ok(handle)
-}
-
-/// Registers reactive `mantle.screens` (ADR-0041 decision 2), seeded with `initial`.
-///
-/// Deliberately outside `shared::Capability::ALL` and its map: `smithay_client_toolkit`'s
-/// `OutputState` sources it in the Renderer, not the Supervisor's `StateSnapshot` roster
+/// A renderer-sourced `mantle.<name>`, seeded with `initial` and returning its update handle. Not in
+/// `shared::Capability::ALL` or the Supervisor's `StateSnapshot` roster: `mantle.rescue` is the
+/// engine's own state, and `smithay_client_toolkit`'s `OutputState` sources `mantle.screens`
 /// (ADR-0037/ADR-0041 decision 2).
-fn register_screens_signal(
-    loader: &Loader,
+fn seeded_member(
+    name: &str,
+    initial: mlua::Value,
     mantle: &mlua::Table,
     dirty: DirtyFlag,
     commands: &CommandSender,
-    initial: &serde_json::Value,
 ) -> mlua::Result<CapabilityHandle> {
-    let (member, handle) = Capability::seeded("screens", loader.to_lua_value(initial)?, dirty, commands.clone());
-    mantle.set("screens", member)?;
+    let (member, handle) = Capability::seeded(name, initial, dirty, commands.clone());
+    mantle.set(name, member)?;
     Ok(handle)
 }
 
@@ -148,7 +135,7 @@ fn register_screens_signal(
 /// Use the Renderer's version, not the Supervisor's. They match today, but this process hosts the
 /// VM and defines the config API if workspace versions diverge.
 fn version_table(loader: &Loader) -> mlua::Result<mlua::Table> {
-    let table = loader.create_table()?;
+    let table = loader.lua().create_table()?;
     let [major, minor, patch] = version_parts();
     table.set("major", major)?;
     table.set("minor", minor)?;
@@ -169,7 +156,7 @@ fn version_parts() -> [u32; 3] {
 /// `mantle.rescue`'s `{ is_rescue, error_log }` table, rebuilt by
 /// `RendererClient::set_rescue_state` on each genuine rescue transition.
 pub(crate) fn rescue_table(loader: &Loader, is_rescue: bool, error_log: &str) -> mlua::Result<mlua::Table> {
-    let table = loader.create_table()?;
+    let table = loader.lua().create_table()?;
     table.set("is_rescue", is_rescue)?;
     table.set("error_log", error_log)?;
     Ok(table)

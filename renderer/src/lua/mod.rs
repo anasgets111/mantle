@@ -23,7 +23,7 @@ pub mod store;
 pub mod surfaces;
 pub mod timer;
 
-pub(crate) use location::describe;
+pub(crate) use location::{call_logged, describe, warn_raised};
 pub use nodes::VirtualNode;
 use std::cell::RefCell;
 
@@ -235,25 +235,14 @@ impl Loader {
         Ok(LoadOutput { surfaces: collect_surfaces(value)? })
     }
 
-    /// Fresh empty table on this VM, for [`signal::Signal::new_live`] initial values.
-    pub fn create_table(&self) -> mlua::Result<Table> {
-        self.lua.create_table()
-    }
-
     /// The VM for resolving a `Signal` (ADR-0044 decision 1); `layout::Scene::apply` needs it for
     /// `signal::Signal::get_value`.
     pub fn lua(&self) -> &Lua {
         &self.lua
     }
 
-    /// Registers `value` as a global visible to later evaluations, exposing [`Loader::new`]'s
-    /// constructor/computed mechanism to callers outside this module.
-    pub fn set_global<T: mlua::IntoLua>(&self, name: &str, value: T) -> mlua::Result<()> {
-        self.lua.globals().set(name, value)
-    }
-
-    /// Registers the `process` table (`process.run`/`ProcessHandle:kill()`); a table with a closure
-    /// cannot go through [`Self::set_global`] and [`Self::create_table`] alone.
+    /// Registers the `process` table (`process.run`/`ProcessHandle:kill()`), whose closures need
+    /// the registry.
     pub fn register_process(&self, registry: process::ProcessRegistry) -> mlua::Result<()> {
         process::register(&self.lua, registry)
     }
@@ -489,7 +478,7 @@ pub(crate) mod tests {
         let (idle_state, _idle_handle) =
             capability::Capability::new("idle", signal::DirtyFlag::new(), commands.clone());
         let registry = idle::IdleRegistry::new(idle_state);
-        loader.set_global("idle", registry.member()).unwrap();
+        loader.lua().globals().set("idle", registry.member()).unwrap();
         loader.register_idle(registry.clone());
         let source = r#"
             runs = (runs or 0)
@@ -954,10 +943,10 @@ return { panel { id = "a", layer = "Top" }, missing, panel { id = "c", layer = "
     }
 
     #[test]
-    fn set_global_registers_a_value_a_later_evaluate_can_see() {
+    fn a_global_set_on_the_vm_is_seen_by_a_later_evaluate() {
         let loader = test_loader();
         let (signal, handle) = signal::Signal::new_live(Value::Integer(7), signal::DirtyFlag::new());
-        loader.set_global("audio", signal).unwrap();
+        loader.lua().globals().set("audio", signal).unwrap();
 
         assert_eq!(probe::<i64>(&loader, "reading = audio:get()", "reading"), 7);
 
@@ -970,7 +959,7 @@ return { panel { id = "a", layer = "Top" }, missing, panel { id = "c", layer = "
         let loader = test_loader();
         let json = serde_json::json!({ "volume": 0.5, "muted": false });
         let value = loader.to_lua_value(&json).unwrap();
-        loader.set_global("state", value).unwrap();
+        loader.lua().globals().set("state", value).unwrap();
 
         assert_eq!(probe::<f64>(&loader, "volume = state.volume", "volume"), 0.5);
         assert!(!probe::<bool>(&loader, "muted = state.muted", "muted"));
@@ -987,7 +976,7 @@ return { panel { id = "a", layer = "Top" }, missing, panel { id = "c", layer = "
             "icon_path": null,
         });
         let value = loader.to_lua_value(&json).unwrap();
-        loader.set_global("item", value).unwrap();
+        loader.lua().globals().set("item", value).unwrap();
 
         let setup = r#"
             key_count = 0
@@ -1007,7 +996,7 @@ return { panel { id = "a", layer = "Top" }, missing, panel { id = "c", layer = "
         let loader = test_loader();
         let json = serde_json::json!({ "icon_path": null });
         let value = loader.to_lua_value(&json).unwrap();
-        loader.set_global("payload", value).unwrap();
+        loader.lua().globals().set("payload", value).unwrap();
 
         let result: String =
             loader.lua().load(r#"if payload.icon_path then return "truthy" else return "falsy" end"#).eval().unwrap();
@@ -1028,7 +1017,7 @@ return { panel { id = "a", layer = "Top" }, missing, panel { id = "c", layer = "
             ]
         });
         let value = loader.to_lua_value(&json).unwrap();
-        loader.set_global("tray", value).unwrap();
+        loader.lua().globals().set("tray", value).unwrap();
 
         let result: String = loader
             .lua()
@@ -1046,7 +1035,7 @@ return { panel { id = "a", layer = "Top" }, missing, panel { id = "c", layer = "
         let loader = test_loader();
         let json = serde_json::json!({ "xs": [1, null, 3] });
         let value = loader.to_lua_value(&json).unwrap();
-        loader.set_global("state", value).unwrap();
+        loader.lua().globals().set("state", value).unwrap();
 
         let ipairs_count: i64 =
             loader.lua().load("local n = 0 for _ in ipairs(state.xs) do n = n + 1 end return n").eval().unwrap();
@@ -1068,7 +1057,7 @@ return { panel { id = "a", layer = "Top" }, missing, panel { id = "c", layer = "
             "tags": ["a", "b"],
         });
         let value = loader.to_lua_value(&json).unwrap();
-        loader.set_global("state", value).unwrap();
+        loader.lua().globals().set("state", value).unwrap();
 
         let setup = "volume, muted, label, second_tag = state.volume, state.muted, state.label, state.tags[2]";
         assert_eq!(probe::<f64>(&loader, setup, "volume"), 0.5);

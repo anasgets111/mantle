@@ -1,7 +1,7 @@
 use std::cell::Cell;
 use std::time::{Duration, Instant};
 
-use mlua::Lua;
+use mlua::{FromLuaMulti, Function, IntoLuaMulti, Lua};
 
 use super::tracking::MemoTable;
 
@@ -215,6 +215,15 @@ impl<'lua> CpuBudget<'lua> {
         let deadline = stack.first().cloned().unwrap_or_else(|| Deadline::lazy(CPU_CAP));
         stack.push(deadline);
         Ok(Self { lua })
+    }
+
+    /// Calls `f` under its own budget, erroring when the call raised or ran past the cap: the one
+    /// way an `on_change` handler, timer or `mantle call` handler reaches config code.
+    pub(crate) fn call<A: IntoLuaMulti, R: FromLuaMulti>(lua: &Lua, f: &Function, args: A) -> mlua::Result<R> {
+        let budget = CpuBudget::enter(lua)?;
+        let value = f.call(args)?;
+        budget.check_not_exceeded()?;
+        Ok(value)
     }
 
     /// Second 2.5ms gate at Rust boundary. A `pcall` can catch the hook and return a partial `Ok`,

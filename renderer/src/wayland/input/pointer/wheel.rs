@@ -3,6 +3,7 @@
 use shared::warn;
 
 use super::*;
+use crate::lua::call_logged;
 
 /// Mouse-wheel notch size in logical pixels (ADR-0069 decision 6): flat 39, about three
 /// lines of 13px text. A per-container step would need a font size. Touchpad pixels divide by it
@@ -69,11 +70,7 @@ impl App {
             let on_wheel = on_wheel.clone();
             drop(path);
             match rect_table(self.client.lua(), rect) {
-                Ok(rect) => {
-                    if let Err(e) = on_wheel.call::<()>((rect, steps)) {
-                        warn!("{surface_id}: on_wheel raised, ignoring it: {}", crate::lua::describe(&e));
-                    }
-                }
+                Ok(rect) => call_logged(&on_wheel, (rect, steps), format_args!("{surface_id}: on_wheel")),
                 Err(e) => warn!("{surface_id}: could not build on_wheel's rect argument: {e}"),
             }
             return;

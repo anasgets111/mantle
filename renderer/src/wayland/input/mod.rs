@@ -15,8 +15,6 @@ pub(super) use keyboard::{FocusedField, FocusedTextField};
 
 #[cfg(test)]
 pub(crate) use pointer::apply_hover_write;
-#[cfg(test)]
-pub(super) use pointer::rect_table;
 pub(super) use pointer::{ActiveDrag, ArmedClick, ArmedSerial};
 
 impl SeatHandler for App {

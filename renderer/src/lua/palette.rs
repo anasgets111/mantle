@@ -14,6 +14,7 @@ use shared::warn;
 
 use crate::image::quantize::quantize_file;
 use crate::image::thumbnails;
+use crate::lua::call_logged;
 
 const DEFAULT_DEPTH: i64 = 3;
 /// A freedesktop "normal" thumbnail's edge, so the default hits a thumbnail already on disk.
@@ -108,9 +109,7 @@ impl PaletteRegistry {
         let results: Vec<PaletteResult> = std::iter::from_fn(|| self.0.borrow().results.try_recv().ok()).collect();
         for (id, swatches) in results {
             let Some(cb) = self.0.borrow_mut().pending.remove(&id) else { continue };
-            if let Err(err) = cb.call::<()>(swatches) {
-                warn!("palette.quantize(id={id}): callback raised an error: {}", crate::lua::describe(&err));
-            }
+            call_logged(&cb, swatches, format_args!("palette.quantize(id={id}): callback"));
         }
     }
 }

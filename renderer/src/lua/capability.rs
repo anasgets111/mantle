@@ -14,11 +14,12 @@ use std::collections::HashSet;
 use std::rc::Rc;
 
 use mlua::{Function, Lua, LuaSerdeExt, MetaMethod, MultiValue, UserData, UserDataMethods, Value};
-use shared::{CommandEnvelope, CommandParams, RendererFrame, error, warn};
+use shared::{CommandEnvelope, CommandParams, RendererFrame, error};
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::lua::fuzzy::closest;
 use crate::lua::signal::{CpuBudget, DirtyFlag, LiveSignalHandle, Signal};
+use crate::lua::warn_raised;
 
 /// Builds the generation-guarded envelope and queues it for the socket thread. One sender per
 /// generation is cloned into every [`Capability`] on `mantle`.
@@ -216,13 +217,10 @@ impl CapabilityHandle {
         }
         let current = self.signal.get();
         for handler in handlers {
-            let outcome = CpuBudget::enter(lua).and_then(|budget| {
-                handler.call::<()>((current.clone(), previous.clone()))?;
-                budget.check_not_exceeded()
-            });
-            if let Err(err) = outcome {
-                warn!("mantle.{}:on_change handler raised, ignoring it: {}", self.name, crate::lua::describe(&err));
-            }
+            warn_raised(
+                CpuBudget::call(lua, &handler, (current.clone(), previous.clone())),
+                format_args!("mantle.{}:on_change handler", self.name),
+            );
         }
     }
 

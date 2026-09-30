@@ -1049,13 +1049,8 @@ mod tests {
                 let Some(rect) = write.rect else {
                     continue;
                 };
-                // Built here because `crate::wayland::input` is private. This is the popup's
-                // `anchor_rect`; a wrong shape fails the re-resolve below.
-                let table = client.lua().create_table().unwrap();
-                table.set("x", rect.x).unwrap();
-                table.set("y", rect.y).unwrap();
-                table.set("width", rect.width).unwrap();
-                table.set("height", rect.height).unwrap();
+                // The popup's `anchor_rect`; a wrong shape fails the re-resolve below.
+                let table = crate::lua::marshal::rect_table(client.lua(), rect).unwrap();
                 write.signal.hover_rect_handle().unwrap().set_changed(mlua::Value::Table(table));
             }
             client.re_resolve_if_dirty();
@@ -1142,7 +1137,7 @@ mod tests {
 
     #[test]
     fn no_rostered_capability_is_left_as_a_bare_global() {
-        // `set_global` never removes a bare seed; it would work until colliding with a node
+        // A global, once set, is never removed; a bare seed would work until colliding with a node
         // constructor as `lock` did (ADR-0052 decision 1).
         let missing = std::path::PathBuf::from("/no/such/shell.lua");
         let (client, _outbound_rx) = test_client(&missing);

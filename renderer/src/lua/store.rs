@@ -82,6 +82,7 @@ impl LuaType for PersistentTable {
     fn lua() -> String {
         "PersistentTable".to_string()
     }
+    #[cfg(test)]
     fn classes(out: &mut Vec<String>) {
         out.push(
             r#"---@class PersistentTable

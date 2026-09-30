@@ -5,7 +5,7 @@ use std::error::Error;
 use std::ffi::c_void;
 
 use khronos_egl::Surface as EglSurface;
-use mlua::{Function, Lua, Table, Value};
+use mlua::{Function, Lua, Value};
 use shared::{LockOutcome, LockReport, RendererFrame, SecureSubmit, Zeroize, error, warn};
 use smithay_client_toolkit::background_effect::{BackgroundEffectHandler, BackgroundEffectState};
 use smithay_client_toolkit::compositor::{CompositorHandler, CompositorState, FrameCallbackData, Region};
