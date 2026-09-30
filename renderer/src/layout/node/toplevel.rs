@@ -372,6 +372,7 @@ pub fn popup_spec(properties: &PropMap) -> Result<PopupSpec, LayoutError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::layout::node::signal_lua;
 
     #[test]
     fn window_spec_reads_every_toplevel_field_in_one_pass() {
@@ -498,8 +499,7 @@ mod tests {
 
     #[test]
     fn a_signal_in_a_window_title_resolves_because_set_title_is_valid_on_a_live_toplevel() {
-        let lua = mlua::Lua::new();
-        crate::lua::signal::register(&lua, crate::lua::signal::DirtyFlag::new()).unwrap();
+        let lua = signal_lua();
         let signal = crate::lua::signal::Signal::new_live(
             Value::String(lua.create_string("Now Playing").unwrap()),
             crate::lua::signal::DirtyFlag::new(),
@@ -513,8 +513,7 @@ mod tests {
 
     #[test]
     fn a_signal_in_a_window_app_id_resolves_because_set_app_id_is_valid_on_a_live_toplevel() {
-        let lua = mlua::Lua::new();
-        crate::lua::signal::register(&lua, crate::lua::signal::DirtyFlag::new()).unwrap();
+        let lua = signal_lua();
         let signal = crate::lua::signal::Signal::new_live(
             Value::String(lua.create_string("mantle.later").unwrap()),
             crate::lua::signal::DirtyFlag::new(),
@@ -528,8 +527,7 @@ mod tests {
 
     #[test]
     fn a_signal_in_a_window_id_is_still_rejected_because_id_is_every_kinds_reconcile_identity() {
-        let lua = mlua::Lua::new();
-        crate::lua::signal::register(&lua, crate::lua::signal::DirtyFlag::new()).unwrap();
+        let lua = signal_lua();
         let signal = crate::lua::signal::Signal::new_live(
             Value::String(lua.create_string("w").unwrap()),
             crate::lua::signal::DirtyFlag::new(),
@@ -850,8 +848,7 @@ mod tests {
 
     #[test]
     fn a_signal_in_a_popup_anchor_rect_resolves_because_the_positioner_is_rebuilt_on_every_open() {
-        let lua = mlua::Lua::new();
-        crate::lua::signal::register(&lua, crate::lua::signal::DirtyFlag::new()).unwrap();
+        let lua = signal_lua();
         let table: mlua::Table = lua
             .load(
                 r#"return { kind = "popup", id = "menu", parent = "bar", width = 200, height = 300,
@@ -920,8 +917,7 @@ mod tests {
 
     #[test]
     fn a_signal_in_a_window_title_app_id_or_size_hint_is_deferred_on_the_evaluation_pass_too() {
-        let lua = mlua::Lua::new();
-        crate::lua::signal::register(&lua, crate::lua::signal::DirtyFlag::new()).unwrap();
+        let lua = signal_lua();
         let table: mlua::Table = lua
             .load(
                 r#"return { kind = "window", id = "w", title = state("t", "Now Playing"),

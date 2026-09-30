@@ -10,7 +10,7 @@ use crate::layout::node::{self, BorderColor, ClipShape, EdgeInsets, Fill, PaintS
 use crate::layout::scene::{NodeId, ResolvedNode};
 use crate::text::snap::{LogicalRect, PhysicalRect, snap_to_physical};
 
-use super::{DisplayList, Draw, DrawCmd, UNCLIPPED, command_bounds, grow, is_empty, shadow_rect, union};
+use super::{DisplayList, Draw, DrawCmd, UNCLIPPED, command_bounds, grow, shadow_rect};
 
 /// Focused field and draw-safe content. Masked fields carry only destination and character count,
 /// never secret bytes (`shared::SecureBuffer::expose_secret`, ADR-0005). Plain fields use `NodeId`,
@@ -60,9 +60,7 @@ fn build_node(
         return;
     }
 
-    let x = origin_x + node.rect.x;
-    let y = origin_y + node.rect.y;
-    let rect = LogicalRect { x, y, width: node.rect.width, height: node.rect.height };
+    let rect = node.at(origin_x, origin_y);
 
     // Snap this box and intersect it with ancestor clips. Wrapped text is already rewritten by
     // `fit_text_to_box`; this remains a backstop for unwrapped overflow. Clips stay rectangular
@@ -93,15 +91,13 @@ fn build_node(
     let layered = node::Effect { shadow: effect.shadow.filter(|_| cast.is_none()), ..effect };
     let own = layer_bounds(rect, layered, scale);
     let reach = match cast.filter(|_| radius >= 0.0) {
-        Some(shadow) => union(
-            snap_to_physical(grow(shadow_rect(rect, rect, shadow), 1.5 * shadow.blur), scale),
-            if effect.blur > 0.0 { own } else { snap_to_physical(rect, scale) },
-        ),
+        Some(shadow) => snap_to_physical(grow(shadow_rect(rect, rect, shadow), 1.5 * shadow.blur), scale)
+            .union(if effect.blur > 0.0 { own } else { snap_to_physical(rect, scale) }),
         None if effect.shadow.is_some() || effect.blur > 0.0 => layer_bounds(rect, effect, scale),
         None => child_clip,
     };
     // A box just scrolled out still casts the shadow reaching back in; one whose shadow is out still draws.
-    if is_empty(parent_clip.intersect(reach)) {
+    if parent_clip.intersect(reach).is_empty() {
         return;
     }
 
@@ -109,7 +105,7 @@ fn build_node(
     // avoids the passwordless black lock screen ADR-0052 decision 3 rejects. Opacity is baked into
     // the list because ADR-0063 skips unchanged lists; applying it in `execute` would be invisible.
     // A fully clipped node draws nothing, and its children cut to its box return on their own.
-    let draw = if is_empty(clip) { None } else { draw_for(node, rect, scale, opacity, focus) };
+    let draw = if clip.is_empty() { None } else { draw_for(node, rect, scale, opacity, focus) };
 
     // A transformed node paints itself and its subtree as one group under its matrix
     // (ADR-0149), so the group is built into `out` and lifted out of it afterwards. Coordinates
@@ -129,7 +125,7 @@ fn build_node(
     if let Some(PaintStyle::Box { radius, .. }) = node.paint
         && effect.backdrop > 0.0
         && opacity > 0.0
-        && !is_empty(clip)
+        && !clip.is_empty()
     {
         let draw = Draw::Backdrop { sigma: effect.backdrop, radius, alpha: opacity };
         out.push(DrawCmd { rect, clip: parent_clip.intersect(read), draw });
@@ -199,7 +195,7 @@ fn build_node(
     if (layered.shadow.is_some() || layered.blur > 0.0) && out.len() > body {
         let commands: Vec<DrawCmd> = out.drain(body..).collect();
         // A transformed child overflowing the box keeps the overflow it has without the layer.
-        let bounds = commands.iter().map(command_bounds).filter(|r| !is_empty(*r)).fold(own, union);
+        let bounds = commands.iter().map(command_bounds).filter(|r| !r.is_empty()).fold(own, PhysicalRect::union);
         // ponytail: a negative spread pulls in content from further out than this. Upgrade path:
         // invert `shadow_rect` about the box.
         let pad = layered
@@ -478,7 +474,7 @@ fn layer_bounds(rect: LogicalRect, effect: node::Effect, scale: f32) -> Physical
     let shadow_reach = effect.shadow.map_or(0.0, |shadow| reach(shadow.blur / 2.0));
     let padded = grow(rect, shadow_reach.max(reach(effect.blur)));
     let own = snap_to_physical(padded, scale);
-    effect.shadow.map_or(own, |shadow| union(own, snap_to_physical(shadow_rect(rect, padded, shadow), scale)))
+    effect.shadow.map_or(own, |shadow| own.union(snap_to_physical(shadow_rect(rect, padded, shadow), scale)))
 }
 
 #[cfg(test)]
@@ -1315,10 +1311,7 @@ mod tests {
             .iter()
             .flat_map(|c| match &c.draw {
                 Draw::Box { background: Some(Fill::Color(color)), .. } => vec![(color.r * 255.0).round() as u8],
-                Draw::Clipped { commands, .. } | Draw::Layer { commands, .. } | Draw::Transformed { commands, .. } => {
-                    fill_order(commands)
-                }
-                _ => Vec::new(),
+                draw => draw.nested().map_or_else(Vec::new, fill_order),
             })
             .collect()
     }

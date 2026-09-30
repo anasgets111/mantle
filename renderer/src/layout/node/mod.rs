@@ -34,8 +34,8 @@ pub use spec::{ItemPass, ListMemo, SecureSubmitTarget, SurfaceSpec, list_childre
 #[cfg(test)]
 pub use spec::LockSpec;
 pub use style::{
-    Affine, BorderColor, ClipShape, Effect, Fill, Gradient, GradientShape, Mask, MaskSource, Shadow, Transform,
-    apply_affine, invert_affine, parse_effect, parse_transform,
+    Affine, BorderColor, ClipShape, Effect, Fill, Gradient, GradientShape, IDENTITY_AFFINE, Mask, MaskSource, Shadow,
+    Transform, apply_affine, compose_affine, invert_affine, parse_effect, parse_transform, transformed_bounds,
 };
 pub(crate) use style::{Axes, ColorOrEdges, CornerShape, Cursor, Direction, NumberOrEdges, Scale, ShadowMode};
 pub use surface::{Anchor, Exclusive, KeyboardInteractivity, LayerKind, PanelSpec, SurfaceTopology, panel_spec};
@@ -214,6 +214,12 @@ impl LayoutError {
 /// [`marshal::only_keys`] for a property's sub-table, naming the property.
 pub(crate) fn only_keys(property: &str, table: &mlua::Table, keys: &[&str]) -> Result<(), LayoutError> {
     marshal::only_keys(table, keys).map_err(|detail| invalid(property, detail))
+}
+
+/// Whether `a` and `b` are the same Lua object, by address, which is what a retained declaration
+/// or list input has to be to skip a rebuild. Not the signals' comparison of contents.
+pub(crate) fn same_lua_value(a: &Value, b: &Value) -> bool {
+    a.type_name() == b.type_name() && a.to_pointer() == b.to_pointer()
 }
 
 /// The `Signal` held unresolved in `property`, or `None` for any other value. A structural slot
@@ -523,6 +529,22 @@ pub(crate) fn rect_props(lua: &mlua::Lua, src: &str) -> PropMap {
     props_from_table(&table)
 }
 
+/// A VM with the signal globals (`state`, `computed`, ...) a property under test may bind.
+#[cfg(test)]
+pub(crate) fn signal_lua() -> mlua::Lua {
+    let lua = mlua::Lua::new();
+    crate::lua::signal::register(&lua, crate::lua::signal::DirtyFlag::new()).unwrap();
+    lua
+}
+
+/// [`signal_lua`] plus the node constructors (`row { ... }`), for a tree built from source.
+#[cfg(test)]
+pub(crate) fn scene_lua() -> mlua::Lua {
+    let lua = signal_lua();
+    crate::lua::nodes::register_node_constructors(&lua).unwrap();
+    lua
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -531,8 +553,7 @@ mod tests {
 
     #[test]
     fn a_signal_resolving_to_another_signal_is_an_error() {
-        let lua = mlua::Lua::new();
-        crate::lua::signal::register(&lua, crate::lua::signal::DirtyFlag::new()).unwrap();
+        let lua = signal_lua();
         let inner = crate::lua::signal::Signal::new_live(Value::Integer(5), crate::lua::signal::DirtyFlag::new()).0;
         let inner_userdata = lua.create_userdata(inner).unwrap();
         let outer =
@@ -597,8 +618,7 @@ mod tests {
 
     #[test]
     fn resolve_properties_copies_a_structural_field_through_raw_so_it_can_still_be_rejected() {
-        let lua = mlua::Lua::new();
-        crate::lua::signal::register(&lua, crate::lua::signal::DirtyFlag::new()).unwrap();
+        let lua = signal_lua();
         let signal = crate::lua::signal::Signal::new_live(Value::Boolean(true), crate::lua::signal::DirtyFlag::new()).0;
         let table = lua.create_table().unwrap();
         table.set("kind", "rect").unwrap();
@@ -618,8 +638,7 @@ mod tests {
     /// handler a config watches never fire.
     #[test]
     fn on_hover_without_a_hover_slot_is_refused() {
-        let lua = mlua::Lua::new();
-        crate::lua::signal::register(&lua, crate::lua::signal::DirtyFlag::new()).unwrap();
+        let lua = signal_lua();
         let table = lua.create_table().unwrap();
         table.set("kind", "rect").unwrap();
         table.set("on_hover", lua.create_function(|_, ()| Ok(())).unwrap()).unwrap();
@@ -648,8 +667,7 @@ mod tests {
 
     #[test]
     fn on_hover_alongside_a_hover_slot_resolves() {
-        let lua = mlua::Lua::new();
-        crate::lua::signal::register(&lua, crate::lua::signal::DirtyFlag::new()).unwrap();
+        let lua = signal_lua();
         let (over, _rect) = crate::lua::signal::Signal::new_hover(crate::lua::signal::DirtyFlag::new(), Value::Nil);
         let table = lua.create_table().unwrap();
         table.set("kind", "rect").unwrap();
@@ -667,8 +685,7 @@ mod tests {
     /// assertion is what keeps a hasher change from quietly making the second one vacuous.
     #[test]
     fn two_failing_properties_always_report_the_same_one() {
-        let lua = mlua::Lua::new();
-        crate::lua::signal::register(&lua, crate::lua::signal::DirtyFlag::new()).unwrap();
+        let lua = signal_lua();
         let table: mlua::Table = lua
             .load(
                 r#"

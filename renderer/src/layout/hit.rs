@@ -212,34 +212,29 @@ fn descend<'a>(
     if !node.in_flow() {
         return false;
     }
-    let x = origin_x + node.rect.x;
-    let y = origin_y + node.rect.y;
+    let rect = node.at(origin_x, origin_y);
     // A transformed node is hit where it is painted: map the pointer back into its untransformed
     // space (ADR-0149), and hand that point down, since children paint under the same matrix.
     // A degenerate matrix (zero scale) paints nothing and takes nothing.
     let point = if node.transform.is_identity() {
         point
     } else {
-        let Some(inverse) = invert_affine(node.transform.matrix(LogicalRect { x, y, ..node.rect })) else {
+        let Some(inverse) = invert_affine(node.transform.matrix(rect)) else {
             return false;
         };
         let (px, py) = apply_affine(inverse, point.x, point.y);
         LogicalPoint { x: px, y: py }
     };
-    let inside = contains(LogicalRect { x, y, ..node.rect }, point);
+    let inside = rect.contains(point);
     if !inside && node.clips_children() {
         return false;
     }
     path.push(node);
-    let child_hit = node.painted_children().rev().any(|child| descend(child, point, x, y, path));
+    let child_hit = node.painted_children().rev().any(|child| descend(child, point, rect.x, rect.y, path));
     if !inside && !child_hit {
         path.pop();
     }
     inside || child_hit
-}
-
-fn contains(rect: LogicalRect, point: LogicalPoint) -> bool {
-    point.x >= rect.x && point.x < rect.x + rect.width && point.y >= rect.y && point.y < rect.y + rect.height
 }
 
 #[cfg(test)]

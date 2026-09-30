@@ -610,16 +610,15 @@ pub(super) fn publish_geometry(
     if !node.in_flow() {
         return Ok(());
     }
-    let (x, y) = (origin_x + node.rect.x, origin_y + node.rect.y);
+    let rect = node.at(origin_x, origin_y);
     if let Some((id, cell)) = node::signal_at(&node.properties, "geometry").and_then(|signal| signal.geometry_cell()) {
         const KEYS: [&str; 4] = ["x", "y", "width", "height"];
-        let fresh = [x, y, node.rect.width, node.rect.height];
+        let fresh = [rect.x, rect.y, rect.width, rect.height];
         let same = match &*cell.borrow() {
             Value::Table(old) => KEYS.into_iter().zip(fresh).all(|(key, v)| old.get::<f32>(key).ok() == Some(v)),
             _ => false,
         };
         if !same {
-            let rect = crate::text::snap::LogicalRect { x, y, ..node.rect };
             *cell.borrow_mut() = Value::Table(crate::lua::marshal::rect_table(lua, rect)?);
             crate::lua::signal::note_write(id);
             if !quiet {
@@ -628,7 +627,7 @@ pub(super) fn publish_geometry(
         }
     }
     for child in &node.children {
-        publish_geometry(child, x, y, lua, quiet)?;
+        publish_geometry(child, rect.x, rect.y, lua, quiet)?;
     }
     Ok(())
 }
@@ -636,6 +635,7 @@ pub(super) fn publish_geometry(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::layout::node::scene_lua;
     use crate::layout::scene::tests::{apply_at, full, surface_from};
     use crate::layout::scene::*;
     use crate::lua::nodes::{deserialize_lua_table, register_node_constructors};
@@ -725,9 +725,7 @@ mod tests {
     fn a_function_child_on_a_window_is_refused_and_a_non_node_return_names_child() {
         let mut scene = Scene::new();
         let shaping = ShapingHandle::spawn();
-        let lua = mlua::Lua::new();
-        register_node_constructors(&lua).unwrap();
-        crate::lua::signal::register(&lua, crate::lua::signal::DirtyFlag::new()).unwrap();
+        let lua = scene_lua();
         let table: mlua::Table =
             lua.load(r#"return window { id = "w", child = function() return rect {} end }"#).eval().unwrap();
         let surface = deserialize_lua_table(&table).unwrap();
@@ -769,9 +767,7 @@ mod tests {
         // the retained children stay, ids included, so showing it again pairs against them.
         let mut scene = Scene::new();
         let shaping = ShapingHandle::spawn();
-        let lua = mlua::Lua::new();
-        register_node_constructors(&lua).unwrap();
-        crate::lua::signal::register(&lua, crate::lua::signal::DirtyFlag::new()).unwrap();
+        let lua = scene_lua();
         let table: mlua::Table = lua
             .load(
                 r#"
@@ -1051,8 +1047,7 @@ mod tests {
     fn a_pass_that_skips_a_list_still_leaves_its_surface_reading_the_source() {
         let mut scene = Scene::new();
         let shaping = ShapingHandle::spawn();
-        let lua = mlua::Lua::new();
-        register_node_constructors(&lua).unwrap();
+        let lua = scene_lua();
         let dirty = crate::lua::signal::DirtyFlag::new();
         crate::lua::signal::register(&lua, dirty.clone()).unwrap();
         let table: mlua::Table = lua
@@ -1353,9 +1348,7 @@ mod tests {
     #[test]
     fn a_failed_pass_reports_a_mistake_once_across_outputs_and_caps_the_list() {
         let shaping = ShapingHandle::spawn();
-        let lua = mlua::Lua::new();
-        register_node_constructors(&lua).unwrap();
-        crate::lua::signal::register(&lua, crate::lua::signal::DirtyFlag::new()).unwrap();
+        let lua = scene_lua();
         let surfaces: Vec<VirtualNode> = lua
             .load(
                 r#"local broken = {}
@@ -1660,9 +1653,7 @@ mod tests {
     fn a_signal_valued_id_is_rejected() {
         let mut scene = Scene::new();
         let shaping = ShapingHandle::spawn();
-        let lua = mlua::Lua::new();
-        register_node_constructors(&lua).unwrap();
-        crate::lua::signal::register(&lua, crate::lua::signal::DirtyFlag::new()).unwrap();
+        let lua = scene_lua();
         let signal = crate::lua::signal::Signal::new_live(
             Value::String(lua.create_string("x").unwrap()),
             crate::lua::signal::DirtyFlag::new(),
@@ -1989,9 +1980,7 @@ mod tests {
     fn every_getter_fires_exactly_once_in_the_order_the_config_wrote_it() {
         let mut scene = Scene::new();
         let shaping = ShapingHandle::spawn();
-        let lua = mlua::Lua::new();
-        register_node_constructors(&lua).unwrap();
-        crate::lua::signal::register(&lua, crate::lua::signal::DirtyFlag::new()).unwrap();
+        let lua = scene_lua();
         let table: mlua::Table = lua
             .load(
                 r#"
@@ -2044,9 +2033,7 @@ mod tests {
     fn the_resolved_tree_holds_a_signals_current_value_not_the_handle() {
         let mut scene = Scene::new();
         let shaping = ShapingHandle::spawn();
-        let lua = mlua::Lua::new();
-        register_node_constructors(&lua).unwrap();
-        crate::lua::signal::register(&lua, crate::lua::signal::DirtyFlag::new()).unwrap();
+        let lua = scene_lua();
         let white = lua.create_string("#FFFFFF").unwrap();
         let signal = crate::lua::signal::Signal::new_live(Value::String(white), crate::lua::signal::DirtyFlag::new()).0;
         lua.globals().set("bg", signal).unwrap();
@@ -2071,9 +2058,7 @@ mod tests {
     fn a_child_whose_kind_is_rejected_never_runs_its_property_getters() {
         let mut scene = Scene::new();
         let shaping = ShapingHandle::spawn();
-        let lua = mlua::Lua::new();
-        register_node_constructors(&lua).unwrap();
-        crate::lua::signal::register(&lua, crate::lua::signal::DirtyFlag::new()).unwrap();
+        let lua = scene_lua();
         let table: mlua::Table = lua
             .load(
                 r#"

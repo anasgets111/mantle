@@ -943,10 +943,6 @@ mod tests {
         assert!(!hover_row(&client).children[0].visible, "the pointer left, so it is hidden again");
     }
 
-    fn contains(rect: crate::text::snap::LogicalRect, point: layout::hit::LogicalPoint) -> bool {
-        point.x >= rect.x && point.x < rect.x + rect.width && point.y >= rect.y && point.y < rect.y + rect.height
-    }
-
     /// Absolute centres of `hover` nodes, accumulating parent-relative origins as `layout::hit`
     /// does.
     fn hover_region_centres(
@@ -1040,7 +1036,7 @@ mod tests {
             for write in &writes {
                 assert_eq!(
                     write.hovered,
-                    write.rect.is_some_and(|rect| contains(rect, centre)),
+                    write.rect.is_some_and(|rect| rect.contains(centre)),
                     "a region lights exactly when it contains the point"
                 );
             }

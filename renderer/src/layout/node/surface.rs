@@ -186,6 +186,7 @@ pub fn panel_spec(properties: &PropMap) -> Result<PanelSpec, LayoutError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::layout::node::signal_lua;
     use crate::lua::nodes::deserialize_lua_table;
 
     #[test]
@@ -269,8 +270,7 @@ mod tests {
 
     #[test]
     fn a_signal_in_namespace_on_a_panel_is_rejected_like_every_other_topology_field() {
-        let lua = mlua::Lua::new();
-        crate::lua::signal::register(&lua, crate::lua::signal::DirtyFlag::new()).unwrap();
+        let lua = signal_lua();
         let signal = crate::lua::signal::Signal::new_live(
             Value::String(lua.create_string("x").unwrap()),
             crate::lua::signal::DirtyFlag::new(),
@@ -305,8 +305,7 @@ mod tests {
 
     #[test]
     fn a_signal_in_keyboard_interactivity_resolves_rather_than_being_rejected() {
-        let lua = mlua::Lua::new();
-        crate::lua::signal::register(&lua, crate::lua::signal::DirtyFlag::new()).unwrap();
+        let lua = signal_lua();
         let signal = crate::lua::signal::Signal::new_live(
             Value::String(lua.create_string("Exclusive").unwrap()),
             crate::lua::signal::DirtyFlag::new(),
@@ -359,8 +358,7 @@ mod tests {
     /// answers are a wrong frame (a wallpaper over the bar, or every window shoved aside).
     #[test]
     fn a_signal_valued_exclusive_defers_to_respect_rather_than_guessing() {
-        let lua = mlua::Lua::new();
-        crate::lua::signal::register(&lua, crate::lua::signal::DirtyFlag::new()).unwrap();
+        let lua = signal_lua();
         let table: mlua::Table =
             lua.load(r#"return { kind = "panel", exclusive = state("hide_bar", true) }"#).eval().unwrap();
         assert_eq!(fields::panel::exclusive.read(&props_from_table(&table)).unwrap(), Exclusive::Respect);
@@ -403,8 +401,7 @@ mod tests {
 
     #[test]
     fn a_signal_in_a_panels_five_in_place_fields_is_deferred_on_the_evaluation_pass() {
-        let lua = mlua::Lua::new();
-        crate::lua::signal::register(&lua, crate::lua::signal::DirtyFlag::new()).unwrap();
+        let lua = signal_lua();
         let table: mlua::Table = lua
             .load(
                 r#"return { kind = "panel", id = "bar", layer = "Top",
@@ -426,8 +423,7 @@ mod tests {
 
     #[test]
     fn a_signal_in_a_panels_topology_fields_is_still_rejected_on_the_evaluation_pass() {
-        let lua = mlua::Lua::new();
-        crate::lua::signal::register(&lua, crate::lua::signal::DirtyFlag::new()).unwrap();
+        let lua = signal_lua();
         for property in ["layer", "anchor", "monitor", "namespace"] {
             let table: mlua::Table = lua
                 .load(format!(
@@ -444,8 +440,7 @@ mod tests {
 
     #[test]
     fn a_panel_roots_margin_is_the_anchor_offset_and_no_layout_pass_consumes_it() {
-        let lua = mlua::Lua::new();
-        crate::lua::nodes::register_node_constructors(&lua).unwrap();
+        let lua = scene_lua();
         let table: mlua::Table = lua
                 .load(r#"return panel { id = "bar", layer = "Top", width = 80, height = 20, margin = { top = 12, left = 30 } }"#)
                 .eval()
@@ -473,8 +468,7 @@ mod tests {
 
     #[test]
     fn a_signal_userdata_in_layer_is_rejected() {
-        let lua = mlua::Lua::new();
-        crate::lua::signal::register(&lua, crate::lua::signal::DirtyFlag::new()).unwrap();
+        let lua = signal_lua();
         let signal = crate::lua::signal::Signal::new_live(Value::Boolean(true), crate::lua::signal::DirtyFlag::new()).0;
         let table = lua.create_table().unwrap();
         table.set("kind", "panel").unwrap();
@@ -487,8 +481,7 @@ mod tests {
 
     #[test]
     fn a_surface_topology_field_on_a_non_panel_node_is_refused_rather_than_carried() {
-        let lua = mlua::Lua::new();
-        crate::lua::signal::register(&lua, crate::lua::signal::DirtyFlag::new()).unwrap();
+        let lua = signal_lua();
         for property in ["layer", "anchor", "monitor"] {
             let signal =
                 crate::lua::signal::Signal::new_live(Value::Boolean(true), crate::lua::signal::DirtyFlag::new()).0;
@@ -507,8 +500,7 @@ mod tests {
 
     #[test]
     fn a_signal_in_layer_on_a_panel_still_survives_raw_for_the_layer_field_to_reject() {
-        let lua = mlua::Lua::new();
-        crate::lua::signal::register(&lua, crate::lua::signal::DirtyFlag::new()).unwrap();
+        let lua = signal_lua();
         let signal = crate::lua::signal::Signal::new_live(Value::Boolean(true), crate::lua::signal::DirtyFlag::new()).0;
         let table = lua.create_table().unwrap();
         table.set("kind", "panel").unwrap();

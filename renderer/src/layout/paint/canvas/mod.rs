@@ -123,7 +123,7 @@ pub fn execute(
     let (width, height) = target_size;
     for region in regions {
         let region = region.intersect(PhysicalRect { x0: 0, y0: 0, x1: width as i32, y1: height as i32 });
-        if super::is_empty(region) {
+        if region.is_empty() {
             continue;
         }
         let PhysicalRect { x0, y0, x1, y1 } = region;
@@ -150,15 +150,7 @@ pub fn execute(
 
 /// Whether `layer` is in `commands`, at any depth.
 fn holds(commands: &[DrawCmd], layer: &DrawCmd) -> bool {
-    commands.iter().any(|command| {
-        command == layer
-            || match &command.draw {
-                Draw::Clipped { commands, .. } | Draw::Transformed { commands, .. } | Draw::Layer { commands, .. } => {
-                    holds(commands, layer)
-                }
-                _ => false,
-            }
-    })
+    commands.iter().any(|command| command == layer || command.draw.nested().is_some_and(|nested| holds(nested, layer)))
 }
 
 /// Flushes, then queues a fill so the next flush opens on a program switch (ADR-0256). Zero area,
@@ -188,7 +180,7 @@ fn run(painter: &mut TextPainter, walk: &mut Walk<'_, '_>, commands: &[DrawCmd],
         let scissor = clip.intersect(frame.region);
         // A transform's clip is untransformed; `repaint_region` took its drawn bounds whole or not at all.
         let bounds = if let Draw::Transformed { .. } = command.draw { super::command_bounds(command) } else { scissor };
-        if super::is_empty(bounds.intersect(frame.region)) {
+        if bounds.intersect(frame.region).is_empty() {
             continue;
         }
         if current_clip != Some(scissor) {

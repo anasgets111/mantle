@@ -88,7 +88,7 @@ pub(super) fn box_path(rect: LogicalRect, radius: f32) -> Path {
 /// half the box is its own shape rather than a `rounded_rect` argument.
 pub(super) fn fill_rect(canvas: &mut Canvas<OpenGl>, rect: LogicalRect, radius: f32, fill: &Fill) {
     // femtovg's antialias fringe paints an empty path as a 1px line.
-    if rect.width <= 0.0 || rect.height <= 0.0 {
+    if rect.is_empty() {
         return;
     }
     let paint = match fill {

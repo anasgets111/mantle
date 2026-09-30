@@ -262,6 +262,11 @@ impl ResolvedNode {
         self.visible && !self.leaving
     }
 
+    /// The node's box in surface coordinates, given the absolute origin of its parent.
+    pub(crate) fn at(&self, origin_x: f32, origin_y: f32) -> LogicalRect {
+        LogicalRect { x: origin_x + self.rect.x, y: origin_y + self.rect.y, ..self.rect }
+    }
+
     /// `clip = "None"` hands children the parent's clip instead of cutting them to this box.
     pub(super) fn clips_children(&self) -> bool {
         !matches!(self.paint, Some(PaintStyle::Box { clip: node::ClipShape::None, .. }))
@@ -696,10 +701,10 @@ impl Scene {
 /// Admits all four root roles as containers with one `child` tree, including a lock tree
 /// before the compositor has handed out a surface (ADR-0040 decision 1, ADR-0052 decision 2).
 fn ensure_supported_kind(kind: &str) -> Result<(), LayoutError> {
-    match kind {
-        "panel" | "window" | "popup" | "lock" | "rect" | "row" | "column" | "text" | "icon" | "image" | "capture"
-        | "shader" | "list" | "textfield" => Ok(()),
-        other => Err(LayoutError::UnsupportedNodeKind(other.to_string())),
+    if crate::lua::nodes::properties::KINDS.contains(&kind) {
+        Ok(())
+    } else {
+        Err(LayoutError::UnsupportedNodeKind(kind.to_string()))
     }
 }
 
@@ -751,7 +756,8 @@ struct PreparedNode {
 #[cfg(test)]
 pub(super) mod tests {
     use super::*;
-    use crate::lua::nodes::{deserialize_lua_table, register_node_constructors};
+    use crate::layout::node::scene_lua;
+    use crate::lua::nodes::deserialize_lua_table;
 
     #[test]
     fn a_closed_timing_span_accumulates_and_reopens_for_the_next_region() {
@@ -775,9 +781,7 @@ pub(super) mod tests {
     /// so callers must keep the returned `Lua` alive for as long as the `VirtualNode` (and
     /// anything resolved from it) is used.
     pub(super) fn surface_from(lua_src: &str) -> (mlua::Lua, VirtualNode) {
-        let lua = mlua::Lua::new();
-        register_node_constructors(&lua).unwrap();
-        crate::lua::signal::register(&lua, crate::lua::signal::DirtyFlag::new()).unwrap();
+        let lua = scene_lua();
         let table: mlua::Table = lua.load(lua_src).set_name("@shell.lua").eval().unwrap();
         let node = deserialize_lua_table(&table).unwrap();
         (lua, node)
@@ -819,9 +823,7 @@ pub(super) mod tests {
     fn a_signal_valued_width_resolves_to_its_current_value_in_the_resolved_node() {
         let mut scene = Scene::new();
         let shaping = ShapingHandle::spawn();
-        let lua = mlua::Lua::new();
-        register_node_constructors(&lua).unwrap();
-        crate::lua::signal::register(&lua, crate::lua::signal::DirtyFlag::new()).unwrap();
+        let lua = scene_lua();
         let signal = crate::lua::signal::Signal::new_live(Value::Integer(40), crate::lua::signal::DirtyFlag::new()).0;
         lua.globals().set("w", signal).unwrap();
         let table: mlua::Table =
@@ -840,9 +842,7 @@ pub(super) mod tests {
     fn a_landed_decode_moves_a_retaining_image_onto_the_source_it_named() {
         let mut scene = Scene::new();
         let shaping = ShapingHandle::spawn();
-        let lua = mlua::Lua::new();
-        register_node_constructors(&lua).unwrap();
-        crate::lua::signal::register(&lua, crate::lua::signal::DirtyFlag::new()).unwrap();
+        let lua = scene_lua();
         let table: mlua::Table = lua
             .load(
                 r#"return panel { id = "bar", child = rect { children = {
@@ -887,9 +887,7 @@ pub(super) mod tests {
     fn a_dissolve_holds_its_two_endpoints_from_the_draw_that_starts_it_until_it_ends() {
         let mut scene = Scene::new();
         let shaping = ShapingHandle::spawn();
-        let lua = mlua::Lua::new();
-        register_node_constructors(&lua).unwrap();
-        crate::lua::signal::register(&lua, crate::lua::signal::DirtyFlag::new()).unwrap();
+        let lua = scene_lua();
         let apply = |scene: &mut Scene, path: &str| {
             let table: mlua::Table = lua
                 .load(format!(
@@ -967,9 +965,7 @@ pub(super) mod tests {
     fn a_state_signal_in_a_property_resolves_at_layout_time_and_a_set_between_applies_moves_it() {
         let mut scene = Scene::new();
         let shaping = ShapingHandle::spawn();
-        let lua = mlua::Lua::new();
-        register_node_constructors(&lua).unwrap();
-        crate::lua::signal::register(&lua, crate::lua::signal::DirtyFlag::new()).unwrap();
+        let lua = scene_lua();
         let table: mlua::Table = lua
             .load(r#"return panel { id = "bar", child = rect { width = state("w", 40), height = 20 } }"#)
             .eval()
@@ -1267,9 +1263,7 @@ pub(super) mod tests {
         };
         let next_id_before = scene.next_id;
 
-        let lua2 = mlua::Lua::new();
-        register_node_constructors(&lua2).unwrap();
-        crate::lua::signal::register(&lua2, crate::lua::signal::DirtyFlag::new()).unwrap();
+        let lua2 = scene_lua();
         let table: mlua::Table = lua2
             .load(
                 r#"
@@ -1299,8 +1293,7 @@ pub(super) mod tests {
     fn a_self_referential_literal_tree_is_rejected_with_a_layout_error() {
         let mut scene = Scene::new();
         let shaping = ShapingHandle::spawn();
-        let lua = mlua::Lua::new();
-        register_node_constructors(&lua).unwrap();
+        let lua = scene_lua();
         let table: mlua::Table = lua
             .load(
                 r#"
@@ -1324,9 +1317,7 @@ pub(super) mod tests {
     fn a_computed_children_signal_generating_fresh_depth_is_rejected_with_a_layout_error() {
         let mut scene = Scene::new();
         let shaping = ShapingHandle::spawn();
-        let lua = mlua::Lua::new();
-        register_node_constructors(&lua).unwrap();
-        crate::lua::signal::register(&lua, crate::lua::signal::DirtyFlag::new()).unwrap();
+        let lua = scene_lua();
         let table: mlua::Table = lua
             .load(
                 r#"
@@ -1560,8 +1551,7 @@ pub(super) mod tests {
     #[ignore]
     fn read_seam_cost() {
         let shaping = ShapingHandle::spawn();
-        let lua = mlua::Lua::new();
-        register_node_constructors(&lua).unwrap();
+        let lua = scene_lua();
         let table: mlua::Table = lua
             .load(
                 r##"
@@ -1611,8 +1601,7 @@ pub(super) mod tests {
     fn a_tree_at_the_depth_cap_is_accepted_and_one_level_past_it_is_rejected() {
         let deepest = MAX_TREE_DEPTH as usize;
         let shaping = ShapingHandle::spawn();
-        let lua = mlua::Lua::new();
-        register_node_constructors(&lua).unwrap();
+        let lua = scene_lua();
 
         let mut scene = Scene::new();
         apply_at(&mut scene, &[surface_nested(&lua, deepest - 2)], full(), &shaping, &lua).unwrap();
@@ -1660,9 +1649,7 @@ pub(super) mod tests {
     fn a_departed_instance_is_forgotten_rather_than_left_resident() {
         let mut scene = Scene::new();
         let shaping = ShapingHandle::spawn();
-        let lua = mlua::Lua::new();
-        register_node_constructors(&lua).unwrap();
-        crate::lua::signal::register(&lua, crate::lua::signal::DirtyFlag::new()).unwrap();
+        let lua = scene_lua();
 
         let declared: mlua::Table =
             lua.load(r#"return panel { id = "bar", child = rect { width = 40, height = 10 } }"#).eval().unwrap();
@@ -1686,7 +1673,8 @@ pub(super) mod tests {
 mod pass_budget_tests {
     use super::tests::{apply_at, full};
     use super::*;
-    use crate::lua::nodes::{deserialize_lua_table, register_node_constructors};
+    use crate::layout::node::scene_lua;
+    use crate::lua::nodes::deserialize_lua_table;
     use crate::text::shaping::ShapingHandle;
 
     /// The config here contains no `Signal` at all:
@@ -1700,9 +1688,7 @@ mod pass_budget_tests {
     fn a_runaway_index_metamethod_fails_the_pass_instead_of_hanging_it() {
         let mut scene = Scene::new();
         let shaping = ShapingHandle::spawn();
-        let lua = mlua::Lua::new();
-        register_node_constructors(&lua).unwrap();
-        crate::lua::signal::register(&lua, crate::lua::signal::DirtyFlag::new()).unwrap();
+        let lua = scene_lua();
         let table: mlua::Table = lua
             .load(
                 r#"
@@ -1734,9 +1720,7 @@ mod pass_budget_tests {
     fn a_pass_refused_by_the_budget_leaves_the_scene_as_it_was() {
         let mut scene = Scene::new();
         let shaping = ShapingHandle::spawn();
-        let lua = mlua::Lua::new();
-        register_node_constructors(&lua).unwrap();
-        crate::lua::signal::register(&lua, crate::lua::signal::DirtyFlag::new()).unwrap();
+        let lua = scene_lua();
 
         let good: mlua::Table =
             lua.load(r#"return panel { id = "bar", child = rect { width = 40, height = 10 } }"#).eval().unwrap();

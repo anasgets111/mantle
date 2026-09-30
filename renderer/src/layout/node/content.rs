@@ -358,6 +358,7 @@ impl Prop for MaxLines {
 mod tests {
     use super::*;
     use crate::image::Fit;
+    use crate::layout::node::signal_lua;
     use crate::lua::nodes::deserialize_lua_table;
 
     /// `Start` and `End` are the line's own reading direction (ADR-0211); `Center` is either way, and
@@ -379,8 +380,7 @@ mod tests {
 
     #[test]
     fn a_signal_resolving_to_a_string_satisfies_content() {
-        let lua = mlua::Lua::new();
-        crate::lua::signal::register(&lua, crate::lua::signal::DirtyFlag::new()).unwrap();
+        let lua = signal_lua();
         let hello = lua.create_string("hello").unwrap();
         let signal = crate::lua::signal::Signal::new_live(Value::String(hello), crate::lua::signal::DirtyFlag::new()).0;
         let table = lua.create_table().unwrap();
@@ -395,8 +395,7 @@ mod tests {
 
     #[test]
     fn a_signal_resolving_to_a_number_reports_the_same_error_a_literal_number_would() {
-        let lua = mlua::Lua::new();
-        crate::lua::signal::register(&lua, crate::lua::signal::DirtyFlag::new()).unwrap();
+        let lua = signal_lua();
 
         let literal_table: mlua::Table = lua.load(r#"return { kind = "text", content = 5 }"#).eval().unwrap();
         let literal_props = props_from_table(&literal_table);
@@ -714,8 +713,7 @@ mod tests {
 
     #[test]
     fn a_signal_resolving_to_a_number_satisfies_font_size_through_marshals_check_number() {
-        let lua = mlua::Lua::new();
-        crate::lua::signal::register(&lua, crate::lua::signal::DirtyFlag::new()).unwrap();
+        let lua = signal_lua();
         let signal = crate::lua::signal::Signal::new_live(Value::Number(18.0), crate::lua::signal::DirtyFlag::new()).0;
         let table = lua.create_table().unwrap();
         table.set("kind", "text").unwrap();
@@ -749,8 +747,7 @@ mod tests {
 
     #[test]
     fn a_signal_userdata_in_node_id_is_rejected() {
-        let lua = mlua::Lua::new();
-        crate::lua::signal::register(&lua, crate::lua::signal::DirtyFlag::new()).unwrap();
+        let lua = signal_lua();
         let signal = crate::lua::signal::Signal::new_live(Value::Boolean(true), crate::lua::signal::DirtyFlag::new()).0;
         let table = lua.create_table().unwrap();
         table.set("kind", "rect").unwrap();

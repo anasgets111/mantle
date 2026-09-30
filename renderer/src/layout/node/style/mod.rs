@@ -9,7 +9,10 @@ use super::*;
 use crate::lua::luacats::lua_shape;
 
 mod transform;
-pub use transform::{Affine, Transform, apply_affine, invert_affine, parse_transform};
+pub use transform::{
+    Affine, IDENTITY_AFFINE, Transform, apply_affine, compose_affine, invert_affine, parse_transform,
+    transformed_bounds,
+};
 
 /// `"NN%"` (`^\d+(\.\d+)?%$`) as `SizeMode::Percent`. Not a confirmed spec syntax: the base
 /// property table only documents integer/`"Fill"` for width/height, though `Percent(f32)` is
@@ -549,6 +552,7 @@ impl Prop for Cursor {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::layout::node::signal_lua;
     use crate::lua::nodes::deserialize_lua_table;
 
     #[test]
@@ -689,8 +693,7 @@ mod tests {
 
     #[test]
     fn a_signal_userdata_in_a_geometry_slot_resolves_to_its_current_value() {
-        let lua = mlua::Lua::new();
-        crate::lua::signal::register(&lua, crate::lua::signal::DirtyFlag::new()).unwrap();
+        let lua = signal_lua();
         let signal =
             crate::lua::signal::Signal::new_live(Value::Boolean(false), crate::lua::signal::DirtyFlag::new()).0;
         let table = lua.create_table().unwrap();
@@ -1140,8 +1143,7 @@ mod tests {
 
     #[test]
     fn a_signal_nested_in_a_margin_edge_table_is_rejected_naming_the_edge() {
-        let lua = mlua::Lua::new();
-        crate::lua::signal::register(&lua, crate::lua::signal::DirtyFlag::new()).unwrap();
+        let lua = signal_lua();
         let signal = crate::lua::signal::Signal::new_live(Value::Integer(4), crate::lua::signal::DirtyFlag::new()).0;
         let table = lua.create_table().unwrap();
         table.set("kind", "rect").unwrap();
@@ -1220,8 +1222,7 @@ mod tests {
 
     #[test]
     fn a_signal_nested_in_a_border_color_edge_table_is_rejected_naming_the_edge() {
-        let lua = mlua::Lua::new();
-        crate::lua::signal::register(&lua, crate::lua::signal::DirtyFlag::new()).unwrap();
+        let lua = signal_lua();
         let hex = lua.create_string("#ff0000").unwrap();
         let signal = crate::lua::signal::Signal::new_live(Value::String(hex), crate::lua::signal::DirtyFlag::new()).0;
         let table = lua.create_table().unwrap();

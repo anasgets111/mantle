@@ -56,6 +56,36 @@ pub fn invert_affine([a, b, c, d, e, f]: Affine) -> Option<Affine> {
     Some([ia, ib, ic, id, -(ia * e + ic * f), -(ib * e + id * f)])
 }
 
+pub const IDENTITY_AFFINE: Affine = [1.0, 0.0, 0.0, 1.0, 0.0, 0.0];
+
+/// `outer` applied after `inner`, which is the order `layout::paint` nests its `Draw::Transformed`
+/// groups in.
+pub fn compose_affine(outer: Affine, inner: Affine) -> Affine {
+    let [a1, b1, c1, d1, e1, f1] = outer;
+    let [a2, b2, c2, d2, e2, f2] = inner;
+    [
+        a1 * a2 + c1 * b2,
+        b1 * a2 + d1 * b2,
+        a1 * c2 + c1 * d2,
+        b1 * c2 + d1 * d2,
+        a1 * e2 + c1 * f2 + e1,
+        b1 * e2 + d1 * f2 + f1,
+    ]
+}
+
+/// The axis-aligned bounds of `rect`'s four corners under `matrix`.
+pub fn transformed_bounds(matrix: Affine, rect: LogicalRect) -> LogicalRect {
+    let corners = [
+        apply_affine(matrix, rect.x, rect.y),
+        apply_affine(matrix, rect.x + rect.width, rect.y),
+        apply_affine(matrix, rect.x, rect.y + rect.height),
+        apply_affine(matrix, rect.x + rect.width, rect.y + rect.height),
+    ];
+    let (x0, y0) = corners.iter().fold((f32::MAX, f32::MAX), |(x, y), &(cx, cy)| (x.min(cx), y.min(cy)));
+    let (x1, y1) = corners.iter().fold((f32::MIN, f32::MIN), |(x, y), &(cx, cy)| (x.max(cx), y.max(cy)));
+    LogicalRect { x: x0, y: y0, width: x1 - x0, height: y1 - y0 }
+}
+
 pub fn parse_transform(properties: &PropMap) -> Result<Transform, LayoutError> {
     use fields::common;
     Ok(Transform {

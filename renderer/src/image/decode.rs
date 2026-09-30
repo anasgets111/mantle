@@ -249,13 +249,18 @@ fn decode_gif(
     Ok(Decoded { base, delays, deltas, width, height, premultiplied: false })
 }
 
+/// The byte index of pixel `(x, y)` in a `width`-wide RGBA8 buffer.
+fn offset(width: u32, x: u32, y: u32) -> usize {
+    (y as usize * width as usize + x as usize) * 4
+}
+
 /// Copies a `width`-wide RGBA8 buffer's rect out, row by row.
 fn read_rect(pixels: &[u8], width: u32, rect: (u32, u32, u32, u32)) -> Vec<u8> {
     let (left, top, w, h) = rect;
     let row = w as usize * 4;
     let mut out = Vec::with_capacity(row * h as usize);
     for y in 0..h {
-        let start = ((top + y) as usize * width as usize + left as usize) * 4;
+        let start = offset(width, left, top + y);
         out.extend_from_slice(&pixels[start..start + row]);
     }
     out
@@ -266,7 +271,7 @@ fn write_rect(pixels: &mut [u8], width: u32, rect: (u32, u32, u32, u32), src: &[
     let (left, top, w, h) = rect;
     let row = w as usize * 4;
     for y in 0..h {
-        let start = ((top + y) as usize * width as usize + left as usize) * 4;
+        let start = offset(width, left, top + y);
         pixels[start..start + row].copy_from_slice(&src[y as usize * row..(y as usize + 1) * row]);
     }
 }
@@ -277,7 +282,7 @@ fn write_rect(pixels: &mut [u8], width: u32, rect: (u32, u32, u32, u32), src: &[
 fn clear_rect(pixels: &mut [u8], width: u32, rect: (u32, u32, u32, u32)) {
     let (left, top, w, h) = rect;
     for y in 0..h {
-        let start = ((top + y) as usize * width as usize + left as usize) * 4;
+        let start = offset(width, left, top + y);
         pixels[start..start + w as usize * 4].fill(0);
     }
 }
@@ -294,8 +299,7 @@ fn blend_rect(pixels: &mut [u8], width: u32, rect: (u32, u32, u32, u32), src: &[
         if pixel[3] == 0 {
             continue;
         }
-        let (x, y) = (left as usize + i % w as usize, top as usize + i / w as usize);
-        let at = (y * width as usize + x) * 4;
+        let at = offset(width, left + i as u32 % w, top + i as u32 / w);
         pixels[at..at + 4].copy_from_slice(pixel);
     }
 }

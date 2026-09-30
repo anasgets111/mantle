@@ -101,7 +101,7 @@ pub(crate) fn placement(
     fit: Fit,
 ) -> Option<(LogicalRect, LogicalRect)> {
     let crop = crop.unwrap_or(LogicalRect { x: 0.0, y: 0.0, width: 1.0, height: 1.0 });
-    if crop.width <= 0.0 || crop.height <= 0.0 {
+    if crop.is_empty() {
         return None;
     }
     let fill = fitted_rect(box_rect, crop.width * width as f32, crop.height * height as f32, fit);

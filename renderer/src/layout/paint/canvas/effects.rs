@@ -10,7 +10,7 @@ use crate::layout::node::{self, Rgba};
 use crate::text::atlas::TextPainter;
 use crate::text::snap::{LogicalRect, PhysicalRect};
 
-use super::super::{UNCLIPPED, any_draw_matches, grow, is_empty, shadow_rect, transformed, volatile};
+use super::super::{UNCLIPPED, any_draw_matches, grow, shadow_rect, transformed, volatile};
 use super::shape::box_path;
 use super::{Draw, DrawCmd, Frame, Shaders, Walk, fill_image, flush, offscreen, scratch};
 
@@ -233,7 +233,7 @@ pub(super) fn read_target(
     let to_target = canvas.transform();
     let whole = PhysicalRect { x0: 0, y0: 0, x1: canvas.width() as i32, y1: canvas.height() as i32 };
     let region = transformed(to_target.0, area).intersect(whole);
-    if is_empty(region) {
+    if region.is_empty() {
         return None;
     }
     let size = ((region.x1 - region.x0) as usize, (region.y1 - region.y0) as usize);

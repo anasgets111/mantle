@@ -303,9 +303,8 @@ impl ListMemo {
     /// those reads are noted as this pass's, so the instance stays a reader of what the skipped
     /// build read; each kept item notes its own through [`ItemMemo::pass`].
     pub fn still_holds(&self, properties: &PropMap, lua: &Lua) -> Result<bool, LayoutError> {
-        let same = |a: &Value, b: &Value| a.type_name() == b.type_name() && a.to_pointer() == b.to_pointer();
         let same_inputs = self.lua == lua.weak()
-            && self.inputs.iter().zip(&list_inputs(properties)).all(|(a, b)| same(a, b))
+            && self.inputs.iter().zip(&list_inputs(properties)).all(|(a, b)| same_lua_value(a, b))
             && list::limit.read(properties).is_ok_and(|limit| limit == self.limit);
         if !same_inputs {
             return Ok(false);
@@ -569,6 +568,7 @@ const SECURE_SUBMIT_TARGETS: [(&str, &str); 4] =
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::layout::node::signal_lua;
 
     #[test]
     fn children_walks_nested_node_tables() {
@@ -803,8 +803,7 @@ mod tests {
 
     #[test]
     fn a_signal_bound_lock_property_is_refused_on_the_evaluation_pass_like_a_literal_one() {
-        let lua = mlua::Lua::new();
-        crate::lua::signal::register(&lua, crate::lua::signal::DirtyFlag::new()).unwrap();
+        let lua = signal_lua();
         let table: mlua::Table =
             lua.load(r#"return { kind = "lock", id = "screen-lock", visible = state("v", true) }"#).eval().unwrap();
         assert!(matches!(
@@ -815,8 +814,7 @@ mod tests {
 
     #[test]
     fn a_signal_in_a_lock_id_is_rejected_by_the_universal_structural_arm_with_no_new_carve_out() {
-        let lua = mlua::Lua::new();
-        crate::lua::signal::register(&lua, crate::lua::signal::DirtyFlag::new()).unwrap();
+        let lua = signal_lua();
         let table: mlua::Table =
             lua.load(r#"return { kind = "lock", id = state("i", "screen-lock") }"#).eval().unwrap();
         let resolved = resolve_properties(props_from_table(&table), "lock", &lua).unwrap();
@@ -838,8 +836,7 @@ mod tests {
     /// array is a Rust loop with no Lua in it, so the deadline hook never runs.
     #[test]
     fn a_children_array_wider_than_the_cap_is_a_config_error_rather_than_an_allocation() {
-        let lua = mlua::Lua::new();
-        crate::lua::nodes::register_node_constructors(&lua).unwrap();
+        let lua = scene_lua();
         let table: mlua::Table = lua
             .load(
                 r#"
@@ -867,8 +864,7 @@ mod tests {
     /// The cap must not be in the way of anything a real config builds.
     #[test]
     fn an_ordinary_children_array_is_unaffected() {
-        let lua = mlua::Lua::new();
-        crate::lua::nodes::register_node_constructors(&lua).unwrap();
+        let lua = scene_lua();
         let table: mlua::Table =
             lua.load(r#"return { rect { width = 1, height = 1 }, rect { width = 2, height = 2 } }"#).eval().unwrap();
         let mut properties = PropMap::default();
@@ -879,8 +875,7 @@ mod tests {
 
     #[test]
     fn list_children_bounds_to_limit_and_refuses_invalid_values() {
-        let lua = mlua::Lua::new();
-        crate::lua::nodes::register_node_constructors(&lua).unwrap();
+        let lua = scene_lua();
         let eval = |s: &str| -> Result<usize, LayoutError> {
             let t: mlua::Table = lua.load(s).eval().unwrap();
             list_children(&props_from_table(&t), &lua).map(|(children, _)| children.len())

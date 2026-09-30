@@ -206,9 +206,10 @@ fn scroll_offset(properties: &PropMap, content_main: f32, total_main: f32) -> f3
 
 #[cfg(test)]
 mod tests {
+    use crate::layout::node::scene_lua;
     use crate::layout::scene::tests::{apply_at, full, surface_from};
     use crate::layout::scene::*;
-    use crate::lua::nodes::{deserialize_lua_table, register_node_constructors};
+    use crate::lua::nodes::deserialize_lua_table;
 
     /// A leaving child sits at the rect it was dropped at, scroll offset and all. The pass that
     /// removed it re-solves the scroll for the children that are left, and the leaver does not
@@ -242,9 +243,7 @@ mod tests {
 
     /// ADR-0069. Scrolling moves children within a viewport the clip already cuts them to.
     fn scrolled(lua_src: &str, offset: f32) -> (mlua::Lua, Vec<f32>, f32) {
-        let lua = mlua::Lua::new();
-        register_node_constructors(&lua).unwrap();
-        crate::lua::signal::register(&lua, crate::lua::signal::DirtyFlag::new()).unwrap();
+        let lua = scene_lua();
         let table: mlua::Table = lua.load(lua_src).eval().unwrap();
         let surface = deserialize_lua_table(&table).unwrap();
         let signal: mlua::AnyUserData = lua.load(r#"return scroll("s")"#).eval().unwrap();
@@ -264,9 +263,7 @@ mod tests {
     } } }"#;
 
     fn revealed(index: usize, offset: f32) -> (Vec<f32>, f32) {
-        let lua = mlua::Lua::new();
-        register_node_constructors(&lua).unwrap();
-        crate::lua::signal::register(&lua, crate::lua::signal::DirtyFlag::new()).unwrap();
+        let lua = scene_lua();
         let table: mlua::Table = lua.load(SCROLLED_COLUMN).eval().unwrap();
         let surface = deserialize_lua_table(&table).unwrap();
         let signal: mlua::AnyUserData = lua.load(r#"return scroll("s")"#).eval().unwrap();
@@ -382,9 +379,7 @@ mod tests {
 
     #[test]
     fn a_row_scrolls_horizontally() {
-        let lua = mlua::Lua::new();
-        register_node_constructors(&lua).unwrap();
-        crate::lua::signal::register(&lua, crate::lua::signal::DirtyFlag::new()).unwrap();
+        let lua = scene_lua();
         let table: mlua::Table = lua
             .load(
                 r#"return panel { id = "bar", child = row { width = 100, height = 50, scroll = scroll("s"), children = {
@@ -427,9 +422,7 @@ mod tests {
 
     #[test]
     fn a_scroll_property_naming_something_that_is_not_a_scroll_signal_is_inert() {
-        let lua = mlua::Lua::new();
-        register_node_constructors(&lua).unwrap();
-        crate::lua::signal::register(&lua, crate::lua::signal::DirtyFlag::new()).unwrap();
+        let lua = scene_lua();
         let table: mlua::Table = lua
             .load(
                 r#"return panel { id = "bar", child = column { width = 100, height = 100, scroll = state("s", 120), children = {
@@ -454,8 +447,7 @@ mod tests {
         let ys = |scene: &Scene| -> Vec<f32> {
             scene.surface("bar@TEST").unwrap().children[0].children[0].children.iter().map(|c| c.rect.y).collect()
         };
-        let lua = mlua::Lua::new();
-        register_node_constructors(&lua).unwrap();
+        let lua = scene_lua();
         let dirty = crate::lua::signal::DirtyFlag::new();
         crate::lua::signal::register(&lua, dirty.clone()).unwrap();
         let table: mlua::Table = lua

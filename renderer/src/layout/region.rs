@@ -70,38 +70,8 @@ pub fn blur_regions(surface_root: &ResolvedNode, scale: f32) -> Vec<PhysicalRect
     // The root intersects itself on the first step, so this only has to not be the limit.
     let everything =
         LogicalRect { x: f32::MIN / 4.0, y: f32::MIN / 4.0, width: f32::MAX / 2.0, height: f32::MAX / 2.0 };
-    collect_blur_regions(surface_root, 0.0, 0.0, scale, IDENTITY_AFFINE, everything, 1.0, &mut regions);
+    collect_blur_regions(surface_root, 0.0, 0.0, scale, node::IDENTITY_AFFINE, everything, 1.0, &mut regions);
     regions
-}
-
-const IDENTITY_AFFINE: node::Affine = [1.0, 0.0, 0.0, 1.0, 0.0, 0.0];
-
-/// `outer` applied after `inner`, which is the order `layout::paint` nests its `Draw::Transformed`
-/// groups in.
-fn compose_affine(outer: node::Affine, inner: node::Affine) -> node::Affine {
-    let [a1, b1, c1, d1, e1, f1] = outer;
-    let [a2, b2, c2, d2, e2, f2] = inner;
-    [
-        a1 * a2 + c1 * b2,
-        b1 * a2 + d1 * b2,
-        a1 * c2 + c1 * d2,
-        b1 * c2 + d1 * d2,
-        a1 * e2 + c1 * f2 + e1,
-        b1 * e2 + d1 * f2 + f1,
-    ]
-}
-
-/// The axis-aligned bounds of `rect`'s four corners under `matrix`.
-pub(super) fn transformed_bounds(matrix: node::Affine, rect: LogicalRect) -> LogicalRect {
-    let corners = [
-        node::apply_affine(matrix, rect.x, rect.y),
-        node::apply_affine(matrix, rect.x + rect.width, rect.y),
-        node::apply_affine(matrix, rect.x, rect.y + rect.height),
-        node::apply_affine(matrix, rect.x + rect.width, rect.y + rect.height),
-    ];
-    let (x0, y0) = corners.iter().fold((f32::MAX, f32::MAX), |(x, y), &(cx, cy)| (x.min(cx), y.min(cy)));
-    let (x1, y1) = corners.iter().fold((f32::MIN, f32::MIN), |(x, y), &(cx, cy)| (x.max(cx), y.max(cy)));
-    LogicalRect { x: x0, y: y0, width: x1 - x0, height: y1 - y0 }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -120,16 +90,16 @@ fn collect_blur_regions(
     if !node.visible || opacity * node.opacity <= 0.0 {
         return;
     }
-    let rect = LogicalRect { x: origin_x + node.rect.x, y: origin_y + node.rect.y, ..node.rect };
+    let rect = node.at(origin_x, origin_y);
     let matrix =
-        if node.transform.is_identity() { matrix } else { compose_affine(matrix, node.transform.matrix(rect)) };
+        if node.transform.is_identity() { matrix } else { node::compose_affine(matrix, node.transform.matrix(rect)) };
     // Untransformed, exactly as `layout::paint::build_node` accumulates it: that walk intersects
     // boxes before any transform and hands the whole group to the canvas under one matrix, so a
     // node's painted area is its ancestors' clip *and then* the composed transform. Intersecting
     // transformed boxes instead loses a child that its parent's translate carries back into view.
-    let (parent_clip, clip) = (clip, intersect_logical(clip, rect));
+    let (parent_clip, clip) = (clip, clip.intersect(rect));
     let child_clip = if node.clips_children() { clip } else { parent_clip };
-    if child_clip.width <= 0.0 || child_clip.height <= 0.0 {
+    if child_clip.is_empty() {
         return;
     }
     if node.blur {
@@ -147,14 +117,14 @@ fn collect_blur_regions(
         // rectangle would round that edge too, pulling blur off the straight sides still on screen.
         let mut rounded = Vec::new();
         push_rounded_rect(
-            snap_to_physical(transformed_bounds(matrix, rect), scale),
+            snap_to_physical(node::transformed_bounds(matrix, rect), scale),
             radius * scale * grow,
             &mut rounded,
         );
-        let visible = snap_to_physical(transformed_bounds(matrix, clip), scale);
+        let visible = snap_to_physical(node::transformed_bounds(matrix, clip), scale);
         for strip in rounded {
             let cut = strip.intersect(visible);
-            if cut.x1 > cut.x0 && cut.y1 > cut.y0 {
+            if !cut.is_empty() {
                 out.push(cut);
             }
         }
@@ -162,15 +132,6 @@ fn collect_blur_regions(
     for child in &node.children {
         collect_blur_regions(child, rect.x, rect.y, scale, matrix, child_clip, opacity * node.opacity, out);
     }
-}
-
-/// The overlap of two untransformed absolute boxes, zero-sized when they miss.
-fn intersect_logical(a: LogicalRect, b: LogicalRect) -> LogicalRect {
-    let x = a.x.max(b.x);
-    let y = a.y.max(b.y);
-    let right = (a.x + a.width).min(b.x + b.width);
-    let bottom = (a.y + a.height).min(b.y + b.height);
-    LogicalRect { x, y, width: right - x, height: bottom - y }
 }
 
 /// A rounded rectangle as the axis-aligned rectangles a `wl_region` is made of, since the protocol
@@ -184,7 +145,7 @@ fn intersect_logical(a: LogicalRect, b: LogicalRect) -> LogicalRect {
 /// A negative radius is a scoop: the circle centres on the corner point, which is a rounded band
 /// mirrored top to bottom and side to side.
 fn push_rounded_rect(rect: PhysicalRect, radius: f32, out: &mut Vec<PhysicalRect>) {
-    if rect.x1 <= rect.x0 || rect.y1 <= rect.y0 {
+    if rect.is_empty() {
         return;
     }
     let height = rect.y1 - rect.y0;
@@ -240,10 +201,10 @@ fn collect_input_regions(
     if !node.in_flow() {
         return;
     }
-    let rect = LogicalRect { x: origin_x + node.rect.x, y: origin_y + node.rect.y, ..node.rect };
+    let rect = node.at(origin_x, origin_y);
     if takes_input_as_a_box(node, paint_claims) {
         let bounds = painted_bounds(node, rect);
-        if bounds.width > 0.0 && bounds.height > 0.0 {
+        if !bounds.is_empty() {
             out.push(snap_to_physical(bounds, scale));
         }
         if node.clips_children() {
@@ -263,7 +224,7 @@ fn painted_bounds(node: &ResolvedNode, rect: LogicalRect) -> LogicalRect {
     if node.transform.is_identity() {
         return rect;
     }
-    transformed_bounds(node.transform.matrix(rect), rect)
+    node::transformed_bounds(node.transform.matrix(rect), rect)
 }
 
 /// [`overlay_input_regions`]'s "solid" test. A `background` of `#00000000` counts: the IDL says it
@@ -324,7 +285,7 @@ mod tests {
             let mut strips = Vec::new();
             push_rounded_rect(PhysicalRect { x0: 0, y0: 0, x1: w, y1: h }, r, &mut strips);
             for s in &strips {
-                assert!(s.x1 > s.x0 && s.y1 > s.y0, "{w}x{h} r{r} emitted the empty rect {s:?}");
+                assert!(!s.is_empty(), "{w}x{h} r{r} emitted the empty rect {s:?}");
             }
             let covered: i32 = strips.iter().map(|s| (s.x1 - s.x0) * (s.y1 - s.y0)).sum();
             assert!(covered > 0, "{w}x{h} r{r} asked for no blur at all");
@@ -477,7 +438,7 @@ mod tests {
         // Every strip is inside the box, and none of them reaches a corner pixel.
         for s in &strips {
             assert!(s.x0 >= 0 && s.y0 >= 0 && s.x1 <= 600 && s.y1 <= 300, "{s:?} escapes the box");
-            assert!(s.x1 > s.x0 && s.y1 > s.y0, "{s:?} is empty");
+            assert!(!s.is_empty(), "{s:?} is empty");
         }
         let corner = strips.iter().any(|s| s.x0 == 0 && s.y0 == 0);
         assert!(!corner, "the top-left pixel belongs to the rounding, not to the region");

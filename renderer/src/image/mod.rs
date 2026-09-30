@@ -24,11 +24,17 @@
 mod budget;
 pub mod capture;
 mod decode;
+mod file;
+mod fit;
 pub mod icons;
 pub mod quantize;
 mod svg;
 mod texture;
 pub mod thumbnails;
+
+pub use file::FileVersion;
+pub(crate) use file::first_failure;
+pub use fit::{cache_box, fitted_rect};
 
 use budget::{Budget, Charge};
 use decode::{decode, is_animated, is_vector};
@@ -45,20 +51,6 @@ use std::time::{Duration, Instant};
 use femtovg::renderer::OpenGl;
 use femtovg::{Canvas, ImageId};
 use shared::{debug, error};
-
-use crate::text::snap::LogicalRect;
-
-/// Whether this is the first failure seen for `key`, an icon name or image path, so one drawn every
-/// frame warns once. ponytail: cleared wholesale at 1024 keys, like the icon memo, so a stream of
-/// novel failing names can repeat a warning; an LRU is the upgrade if that ever floods the log.
-pub(crate) fn first_failure(key: &str) -> bool {
-    static WARNED: std::sync::OnceLock<Mutex<HashSet<String>>> = std::sync::OnceLock::new();
-    let mut warned = WARNED.get_or_init(Default::default).lock().expect("warned set poisoned");
-    if warned.len() >= 1024 {
-        warned.clear();
-    }
-    warned.insert(key.to_string())
-}
 
 /// Maximum map entries, including `Failed` and `Pending`. The texture budget bounds bytes; this
 /// keeps a config cycling through a thousand failing paths from growing the map without bound.
@@ -136,40 +128,6 @@ struct CacheKey {
     /// file and box are different slots. Zero for every kind but a static `image`; `decode_gif`
     /// never reads it, so an animated source is keyed as if it were always zero.
     blur_px: u32,
-}
-
-/// File revision at a stable path (ADR-0031 deferred item): tray updates reuse
-/// `tray/{name}.png` in the instance dir, with no revision suffix. Use mtime and length, not a
-/// content hash: tmpfs mtime is nanosecond-precise, length is free, and hashing reads the file to
-/// decide whether to read it. Unstatable files use the default, so *missing* files retry.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
-pub struct FileVersion {
-    mtime_secs: i64,
-    mtime_nanos: i64,
-    len: u64,
-}
-
-impl FileVersion {
-    pub fn read(path: &Path) -> Self {
-        // ponytail: system assets under /usr, /nix, /var/lib/flatpak, or /opt are static.
-        // Skipping stat avoids thousands of redundant filesystem queries per second for theme icons.
-        if path.starts_with("/usr")
-            || path.starts_with("/nix")
-            || path.starts_with("/var/lib/flatpak")
-            || path.starts_with("/opt")
-        {
-            return FileVersion::default();
-        }
-        let Ok(metadata) = std::fs::metadata(path) else {
-            return FileVersion::default();
-        };
-        let modified = metadata.modified().ok().and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok());
-        FileVersion {
-            mtime_secs: modified.map(|d| d.as_secs() as i64).unwrap_or(-1),
-            mtime_nanos: modified.map(|d| i64::from(d.subsec_nanos())).unwrap_or(-1),
-            len: metadata.len(),
-        }
-    }
 }
 
 crate::layout::node::prop::keywords! {
@@ -672,18 +630,6 @@ impl ImageCache {
     }
 }
 
-/// The box a source is *stored* under, which is not always the box it is drawn into: a vector
-/// texture uses its longest edge, so 24x30 shares the 30x30 slot (ADR-0122).
-///
-/// Public because a pin has to name the same thing the entry does. `DisplayList::drawn_images`
-/// collects the drawn box, and before this an `image` pointing at an SVG pinned 200x40 while the
-/// entry sat under 200x200, so the exact comparison in [`victims`] missed it and evicted a texture
-/// a mapped surface was showing (ADR-0183).
-pub fn cache_box(path: &Path, box_px: (u32, u32)) -> (u32, u32) {
-    let box_px = (box_px.0.max(1), box_px.1.max(1));
-    if is_vector(path) { (box_px.0.max(box_px.1), box_px.0.max(box_px.1)) } else { box_px }
-}
-
 /// Evictions from `(key, bytes, last_hit)` to bring the *idle* bytes under `budget`: oldest ask
 /// first, skip `pinned` path/box pairs, stop at budget or when unpinned candidates end. Pure so the
 /// policy is testable without an `ImageId`, which femtovg cannot make outside a canvas.
@@ -711,34 +657,10 @@ fn victims(
     out
 }
 
-/// Image rect inside `box_rect` for its dimensions and [`Fit`]. `Cover` may exceed the box because
-/// `layout::paint`'s scissor crops overflow. femtovg clamps outside a paint extent unless
-/// `REPEAT_X`/`REPEAT_Y` are set; a smaller rect would smear edge pixels, while `Contain` returns
-/// the smaller rect.
-pub fn fitted_rect(box_rect: LogicalRect, image_width: f32, image_height: f32, fit: Fit) -> LogicalRect {
-    if fit == Fit::Stretch || image_width <= 0.0 || image_height <= 0.0 {
-        return box_rect;
-    }
-    let horizontal = box_rect.width / image_width;
-    let vertical = box_rect.height / image_height;
-    let scale = match fit {
-        Fit::Cover => horizontal.max(vertical),
-        Fit::Contain => horizontal.min(vertical),
-        Fit::Stretch => unreachable!("returned above"),
-    };
-    let width = image_width * scale;
-    let height = image_height * scale;
-    LogicalRect {
-        x: box_rect.x + (box_rect.width - width) / 2.0,
-        y: box_rect.y + (box_rect.height - height) / 2.0,
-        width,
-        height,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::text::snap::LogicalRect;
 
     fn box_rect() -> LogicalRect {
         LogicalRect { x: 10.0, y: 20.0, width: 100.0, height: 50.0 }

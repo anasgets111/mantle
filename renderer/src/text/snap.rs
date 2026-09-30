@@ -38,6 +38,42 @@ impl PhysicalRect {
             y1: self.y1.min(other.y1),
         }
     }
+
+    /// The smallest rect covering both.
+    pub fn union(self, other: Self) -> Self {
+        Self {
+            x0: self.x0.min(other.x0),
+            y0: self.y0.min(other.y0),
+            x1: self.x1.max(other.x1),
+            y1: self.y1.max(other.y1),
+        }
+    }
+
+    /// Whether it covers no pixel: an intersection that missed has an edge past its opposite.
+    pub fn is_empty(self) -> bool {
+        self.x1 <= self.x0 || self.y1 <= self.y0
+    }
+}
+
+impl LogicalRect {
+    /// Whether it covers no area; a NaN extent covers none.
+    pub fn is_empty(self) -> bool {
+        !(self.width > 0.0 && self.height > 0.0)
+    }
+
+    /// The overlap, zero-sized when the two miss.
+    pub fn intersect(self, other: Self) -> Self {
+        let x = self.x.max(other.x);
+        let y = self.y.max(other.y);
+        let right = (self.x + self.width).min(other.x + other.width);
+        let bottom = (self.y + self.height).min(other.y + other.height);
+        Self { x, y, width: right - x, height: bottom - y }
+    }
+
+    /// Whether `point` is inside; the left and top edges are, the right and bottom are not.
+    pub fn contains(self, point: crate::layout::hit::LogicalPoint) -> bool {
+        point.x >= self.x && point.x < self.x + self.width && point.y >= self.y && point.y < self.y + self.height
+    }
 }
 
 /// The coordinate ceiling a snapped edge saturates to, well inside `i32` so that a caller may

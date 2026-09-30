@@ -110,7 +110,7 @@ fn same_declaration(kept: &PropMap, fresh: &PropMap) -> bool {
             fresh.get(key).is_some_and(|b| match (a, b) {
                 (Value::String(a), Value::String(b)) => a.as_bytes() == b.as_bytes(),
                 (Value::Table(_) | Value::Function(_) | Value::UserData(_) | Value::Thread(_), _) => {
-                    a.type_name() == b.type_name() && a.to_pointer() == b.to_pointer()
+                    node::same_lua_value(a, b)
                 }
                 (a, b) => a == b,
             })

@@ -156,18 +156,25 @@ pub struct DisplayList {
     pub commands: Vec<DrawCmd>,
 }
 
-/// Walks `commands` for a draw `matches`, a group before its `Clipped`/`Transformed`/`Layer` subtree.
+impl Draw {
+    /// The subtree a `Clipped`, `Transformed` or `Layer` group draws, which every walk over a list
+    /// has to enter.
+    pub(super) fn nested(&self) -> Option<&[DrawCmd]> {
+        match self {
+            Draw::Clipped { commands, .. } | Draw::Transformed { commands, .. } | Draw::Layer { commands, .. } => {
+                Some(commands)
+            }
+            _ => None,
+        }
+    }
+}
+
+/// Walks `commands` for a draw `matches`, a group before its subtree.
 /// Shared by [`DisplayList::draws_any_of`] and [`DisplayList::captures_any_of`], which differ only
 /// in which `Draw` variant and field they compare.
 fn any_draw_matches(commands: &[DrawCmd], matches: impl Fn(&Draw) -> bool + Copy) -> bool {
     commands.iter().any(|command| {
-        matches(&command.draw)
-            || match &command.draw {
-                Draw::Clipped { commands, .. } | Draw::Transformed { commands, .. } | Draw::Layer { commands, .. } => {
-                    any_draw_matches(commands, matches)
-                }
-                _ => false,
-            }
+        matches(&command.draw) || command.draw.nested().is_some_and(|nested| any_draw_matches(nested, matches))
     })
 }
 
@@ -219,10 +226,7 @@ impl DisplayList {
                             region: *region,
                         });
                     }
-                    Draw::Clipped { commands, .. }
-                    | Draw::Transformed { commands, .. }
-                    | Draw::Layer { commands, .. } => walk(commands, out),
-                    _ => {}
+                    draw => draw.nested().into_iter().for_each(|nested| walk(nested, out)),
                 }
             }
         }
@@ -255,8 +259,7 @@ impl DisplayList {
                         }
                         walk(commands, out)
                     }
-                    Draw::Transformed { commands, .. } | Draw::Layer { commands, .. } => walk(commands, out),
-                    _ => {}
+                    draw => draw.nested().into_iter().for_each(|nested| walk(nested, out)),
                 }
             }
         }
@@ -272,7 +275,7 @@ impl DisplayList {
     /// command, and one for a run whose length changed.
     pub fn damage_since(&self, previous: &DisplayList, textures: bool) -> Vec<PhysicalRect> {
         fn merged(rects: impl Iterator<Item = PhysicalRect>) -> Option<PhysicalRect> {
-            rects.filter(|rect| !is_empty(*rect)).reduce(union)
+            rects.filter(|rect| !rect.is_empty()).reduce(PhysicalRect::union)
         }
         fn changed(old: &[DrawCmd], new: &[DrawCmd], out: &mut Vec<PhysicalRect>) {
             let prefix = old.iter().zip(new).take_while(|(a, b)| a == b).count();
@@ -307,7 +310,7 @@ impl DisplayList {
         if textures {
             textured(&self.commands, &mut damage);
         }
-        damage.retain(|r| !is_empty(*r));
+        damage.retain(|r| !r.is_empty());
         self.expand_backdrops(&mut damage);
         damage
     }
@@ -321,7 +324,7 @@ impl DisplayList {
                 Draw::Clipped { commands, .. } => grow(commands, region),
                 Draw::Transformed { .. } => {
                     let bounds = command_bounds(command);
-                    if is_empty(bounds.intersect(region)) { region } else { union(region, bounds) }
+                    if bounds.intersect(region).is_empty() { region } else { region.union(bounds) }
                 }
                 _ => region,
             })
@@ -329,7 +332,7 @@ impl DisplayList {
         // Grown until stable: a transform may reach a backdrop and a read area a transform.
         let mut grown = vec![grow(&self.commands, damage)];
         self.expand_backdrops(&mut grown);
-        let grown = grown.into_iter().reduce(union).unwrap_or(damage);
+        let grown = grown.into_iter().reduce(PhysicalRect::union).unwrap_or(damage);
         if grown == damage { damage } else { self.repaint_region(grown) }
     }
 
@@ -347,8 +350,7 @@ impl DisplayList {
                         reads(commands, matrices, out);
                         matrices.pop();
                     }
-                    Draw::Clipped { commands, .. } | Draw::Layer { commands, .. } => reads(commands, matrices, out),
-                    _ => {}
+                    draw => draw.nested().into_iter().for_each(|nested| reads(nested, matrices, out)),
                 }
             }
         }
@@ -356,7 +358,7 @@ impl DisplayList {
         reads(&self.commands, &mut Vec::new(), &mut pending);
         while let Some(at) = pending.iter().position(|read| {
             !damage.iter().any(|rect| rect.intersect(*read) == *read)
-                && damage.iter().any(|rect| !is_empty(rect.intersect(*read)))
+                && damage.iter().any(|rect| !rect.intersect(*read).is_empty())
         }) {
             damage.push(pending.swap_remove(at));
         }
@@ -369,20 +371,19 @@ const MAX_REGIONS: usize = 4;
 /// `rects` merged wherever a pair's union covers under 1.5x their summed area, which takes every
 /// overlap, then pairwise, cheapest first, down to [`MAX_REGIONS`] (ADR-0258).
 pub fn coalesce(mut rects: Vec<PhysicalRect>) -> Vec<PhysicalRect> {
-    rects.retain(|rect| !is_empty(*rect));
+    rects.retain(|rect| !rect.is_empty());
     // A relayout damages every command; the pairing below is quadratic per merge.
     if rects.len() > 32 {
-        return rects.into_iter().reduce(union).into_iter().collect();
+        return rects.into_iter().reduce(PhysicalRect::union).into_iter().collect();
     }
     let area = |r: PhysicalRect| i64::from(r.x1 - r.x0) * i64::from(r.y1 - r.y0);
     loop {
         let pairs = (0..rects.len()).flat_map(|i| (i + 1..rects.len()).map(move |j| (i, j)));
-        let cost = |&(i, j): &(usize, usize)| {
-            area(union(rects[i], rects[j])) as f64 / (area(rects[i]) + area(rects[j])) as f64
-        };
+        let cost =
+            |&(i, j): &(usize, usize)| area(rects[i].union(rects[j])) as f64 / (area(rects[i]) + area(rects[j])) as f64;
         match pairs.map(|pair| (cost(&pair), pair)).min_by(|a, b| a.0.total_cmp(&b.0)) {
             Some((cost, (i, j))) if cost < 1.5 || rects.len() > MAX_REGIONS => {
-                rects[i] = union(rects[i], rects[j]);
+                rects[i] = rects[i].union(rects[j]);
                 rects.swap_remove(j);
             }
             _ => return rects,
@@ -406,10 +407,10 @@ fn command_bounds(command: &DrawCmd) -> PhysicalRect {
             y1: clip.y1.saturating_add(PAD),
         };
     };
-    let Some(inner) = commands.iter().map(command_bounds).reduce(union) else {
+    let Some(inner) = commands.iter().map(command_bounds).reduce(PhysicalRect::union) else {
         return PhysicalRect { x0: 0, y0: 0, x1: 0, y1: 0 };
     };
-    union(inner, transformed(*matrix, inner))
+    inner.union(transformed(*matrix, inner))
 }
 
 /// `rect`'s bounds under `matrix`.
@@ -419,11 +420,7 @@ pub(crate) fn transformed(matrix: node::Affine, rect: PhysicalRect) -> PhysicalR
     }
     let (x, y) = (rect.x0 as f32, rect.y0 as f32);
     let rect = LogicalRect { x, y, width: rect.x1 as f32 - x, height: rect.y1 as f32 - y };
-    snap_to_physical(super::region::transformed_bounds(matrix, rect), 1.0)
-}
-
-pub(crate) fn union(a: PhysicalRect, b: PhysicalRect) -> PhysicalRect {
-    PhysicalRect { x0: a.x0.min(b.x0), y0: a.y0.min(b.y0), x1: a.x1.max(b.x1), y1: a.y1.max(b.y1) }
+    snap_to_physical(node::transformed_bounds(matrix, rect), 1.0)
 }
 
 fn grow(rect: LogicalRect, by: f32) -> LogicalRect {
@@ -446,10 +443,6 @@ fn shadow_rect(rect: LogicalRect, area: LogicalRect, shadow: node::Shadow) -> Lo
 
 /// Identity clip before any scissor is pushed.
 const UNCLIPPED: PhysicalRect = PhysicalRect { x0: i32::MIN, y0: i32::MIN, x1: i32::MAX, y1: i32::MAX };
-
-fn is_empty(clip: PhysicalRect) -> bool {
-    clip.x1 <= clip.x0 || clip.y1 <= clip.y0
-}
 
 #[cfg(test)]
 mod tests {
@@ -671,12 +664,12 @@ mod tests {
         let Draw::Clipped { commands, .. } = &clipped.draw else { unreachable!() };
         let inner = command_bounds(&commands[0]);
         let outer = command_bounds(list.commands.last().unwrap());
-        assert!(!is_empty(inner.intersect(outer)), "the two scaled boxes overlap: {inner:?} {outer:?}");
+        assert!(!inner.intersect(outer).is_empty(), "the two scaled boxes overlap: {inner:?} {outer:?}");
         let blurred = PhysicalRect { x0: 44, y0: 44, x1: 48, y1: 48 };
         assert_eq!(list.repaint_region(blurred), blurred);
         // Past the clipped one in list order, so only a second pass reaches it.
         let touching = PhysicalRect { x0: 125, y0: 44, x1: 127, y1: 48 };
-        assert_eq!(list.repaint_region(touching), union(inner, outer));
+        assert_eq!(list.repaint_region(touching), inner.union(outer));
     }
 
     /// A shadow moving repaints where it was and where it lands, not only the node's box.
