@@ -5,8 +5,8 @@ use shared::debug;
 
 use super::pass::{publish_geometry, solve_instance};
 use super::solver::{
-    MainAxis, Measure, hold_leavers, main_axis_of, measure_for, new_solver_node, new_solver_tree, taffy_failed,
-    taffy_style, text_measure_tweening,
+    MainAxis, Measure, hold_leavers, main_axis_of, measure_for, new_solver_node, set_solver_children, taffy_failed,
+    taffy_style, text_measure_tweening, update_solver_node,
 };
 use super::{LayoutStyle, LogicalSize, PreparedNode, ResolvedNode, Scene, close, open_span};
 use crate::layout::instance::SurfaceInstance;
@@ -61,7 +61,6 @@ impl Scene {
             // `animating`. Selecting afterwards would drop exactly that frame.
             relaid.push(key.to_string());
             if retained.tick_is_paint_only() {
-                self.solver_trees.remove(key);
                 let advanced = advance_paint_only(retained, now, lua)
                     .and_then(|()| if budget.exceeded() { Err(LayoutError::PassBudgetExceeded) } else { Ok(()) });
                 if let Err(err) = advanced {
@@ -75,15 +74,12 @@ impl Scene {
             // value can be refused. About 18us on the 162-node `tick_cost` tree; an undo
             // path through `prepare_retained` and `finish` is the upgrade if it ever dominates.
             let mut at = open_span();
-            let root = retained.clone();
+            let mut root = retained.clone();
             close(&mut at, &mut self.tick_split.clone);
-            let cached = self.solver_trees.remove(key);
-            let reuse = cached.is_some();
-            let mut solver = cached.unwrap_or_else(new_solver_tree);
+            let mut solver = Scene::take_solver_tree(&mut self.solver_trees, key, [&mut root]);
             let outcome = relayout_retained(
                 &mut solver,
                 root,
-                reuse,
                 instance.available,
                 shaping,
                 lua,
@@ -102,9 +98,7 @@ impl Scene {
                     if !tree.animating() {
                         note_settled_geometry(&tree, lua);
                     }
-                    if tree.animating() && !tree.tick_is_paint_only() {
-                        self.solver_trees.insert(key.to_string(), solver);
-                    }
+                    self.solver_trees.insert(key.to_string(), solver);
                     *retained = tree;
                 }
                 Err(err) => {
@@ -144,7 +138,6 @@ fn strip_tweens(node: &mut ResolvedNode) {
 fn relayout_retained(
     tree: &mut taffy::TaffyTree<Measure>,
     root: ResolvedNode,
-    reuse: bool,
     available: LogicalSize,
     shaping: &ShapingHandle,
     lua: &Lua,
@@ -152,7 +145,7 @@ fn relayout_retained(
     at: &mut Option<Instant>,
     split: &mut TickSplit,
 ) -> Result<ResolvedNode, LayoutError> {
-    let prepared = prepare_retained(tree, root, None, reuse, lua, now)?;
+    let prepared = prepare_retained(tree, root, None, lua, now)?;
     close(at, &mut split.prepare);
     let solved = solve_instance(tree, prepared, available, shaping);
     close(at, &mut split.solve);
@@ -161,14 +154,14 @@ fn relayout_retained(
 
 /// [`prepare`] over a retained tree: for a tick, and for a pass over a `list` item that would
 /// build the same (ADR-0269). Unchanged nodes reuse their parsed style and solver node; animated
-/// nodes update both. Hidden children stay frozen and tweens advance without reconciliation.
+/// nodes update both, and a node with no solver node yet gets one. Hidden children stay frozen and
+/// tweens advance without reconciliation.
 ///
 /// [`prepare`]: super::pass::prepare
 pub(super) fn prepare_retained(
     tree: &mut taffy::TaffyTree<Measure>,
     mut node: ResolvedNode,
     parent_axis: Option<MainAxis>,
-    reuse: bool,
     lua: &Lua,
     now: Instant,
 ) -> Result<PreparedNode, LayoutError> {
@@ -198,17 +191,18 @@ pub(super) fn prepare_retained(
     } = node;
     let text_memo = if text_tweening { None } else { text_memo };
     let paint = if changed || kind == "text" { node::paint_style(kind, &properties)? } else { old_paint };
-    let taffy_id = if reuse {
-        let id = old_taffy.expect("retained solver node");
-        if changed {
-            let measure = measure_for(kind, paint.as_ref(), &properties, text_memo)?;
-            tree.set_style(id, taffy_style(kind, &properties, &style, parent_axis)?).map_err(taffy_failed)?;
-            tree.set_node_context(id, measure).map_err(taffy_failed)?;
+    let taffy_id = match old_taffy {
+        Some(id) => {
+            if changed {
+                let measure = measure_for(kind, paint.as_ref(), &properties, text_memo)?;
+                update_solver_node(tree, id, kind, &properties, &style, parent_axis, measure)?;
+            }
+            id
         }
-        id
-    } else {
-        let measure = measure_for(kind, paint.as_ref(), &properties, text_memo)?;
-        new_solver_node(tree, kind, &properties, &style, parent_axis, measure)?
+        None => {
+            let measure = measure_for(kind, paint.as_ref(), &properties, text_memo)?;
+            new_solver_node(tree, kind, &properties, &style, parent_axis, measure)?
+        }
     };
     let node = PreparedNode {
         id,
@@ -230,7 +224,7 @@ pub(super) fn prepare_retained(
     if !node.style.visible {
         return Ok(node);
     }
-    prepare_retained_children(tree, node, parent_axis, reuse, lua, now)
+    prepare_retained_children(tree, node, parent_axis, lua, now)
 }
 
 /// `node`'s retained children, in `frozen`, laid out again as they are.
@@ -238,19 +232,18 @@ fn prepare_retained_children(
     tree: &mut taffy::TaffyTree<Measure>,
     mut node: PreparedNode,
     parent_axis: Option<MainAxis>,
-    reuse: bool,
     lua: &Lua,
     now: Instant,
 ) -> Result<PreparedNode, LayoutError> {
     let own_axis = main_axis_of(node.kind, &node.properties)?;
-    let had_leavers = reuse && node.frozen.iter().any(|child| child.leaving);
+    let had_leavers = node.frozen.iter().any(|child| child.leaving);
     for child in std::mem::take(&mut node.frozen) {
         if child.leaving {
             if let Some(child) = advance_leaving(child, now, lua)? {
                 node.leaving.push(child);
             }
         } else {
-            node.children.push(prepare_retained(tree, child, own_axis, reuse, lua, now)?);
+            node.children.push(prepare_retained(tree, child, own_axis, lua, now)?);
         }
     }
     if had_leavers {
@@ -258,10 +251,8 @@ fn prepare_retained_children(
             .map_err(taffy_failed)?;
     }
     hold_leavers(tree, node.taffy, &node.style, &node.leaving)?;
-    if !reuse {
-        let child_ids: Vec<taffy::NodeId> = node.children.iter().map(|child| child.taffy).collect();
-        tree.set_children(node.taffy, &child_ids).map_err(taffy_failed)?;
-    }
+    let child_ids: Vec<taffy::NodeId> = node.children.iter().map(|child| child.taffy).collect();
+    set_solver_children(tree, node.taffy, &child_ids)?;
     Ok(node)
 }
 
@@ -463,7 +454,6 @@ mod tests {
         assert!((child_width(&scene) - 40.0).abs() < 0.5, "the pass paints from where the node was");
         let tween = child_tween(&scene);
         assert_eq!(tween.to, node::Animatable::Number(90.0));
-        assert!(scene.solver_trees.contains_key("bar@TEST"));
 
         let instances = [instance_at(&surface, full())];
         assert!(
@@ -471,12 +461,11 @@ mod tests {
         );
         assert_eq!(child_width(&scene), 65.0, "halfway through a linear tween is the midpoint");
         assert!(scene.surface("bar@TEST").unwrap().animating());
-        assert!(scene.solver_trees.contains_key("bar@TEST"));
 
         scene.tick(&instances, &shaping, &lua, tween.started + std::time::Duration::from_millis(100));
         assert_eq!(child_width(&scene), 90.0);
         assert!(!scene.surface("bar@TEST").unwrap().animating(), "an arrived tween is dropped");
-        assert!(!scene.solver_trees.contains_key("bar@TEST"));
+        assert!(scene.solver_trees.contains_key("bar@TEST"), "the next pass starts from the settled tree");
         assert!(scene.tick(&instances, &shaping, &lua, tween.started + std::time::Duration::from_secs(1)).is_empty());
     }
 

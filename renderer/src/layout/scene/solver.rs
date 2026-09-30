@@ -1,10 +1,12 @@
-use super::{LayoutStyle, LogicalSize};
+use super::{LayoutStyle, LogicalSize, ResolvedNode};
 use crate::layout::node::{self, Align, LayoutError, PaintStyle, PropMap, SizeMode, Tween};
 use crate::text::shaping::{self, ShapeRequest, ShapingHandle};
+use taffy::TraversePartialTree;
 use taffy::prelude::{length, line, span};
 
-/// A solver tree. Layout animation ticks retain it. Geometry stays fractional until `text::snap` applies the
-/// surface scale at paint; taffy otherwise rounds layouts to whole numbers.
+/// A solver tree, one per surface instance, kept across passes and ticks so a node that did not
+/// change keeps taffy's layout cache (ADR-0294). Geometry stays fractional until `text::snap`
+/// applies the surface scale at paint; taffy otherwise rounds layouts to whole numbers.
 pub(super) fn new_solver_tree() -> taffy::TaffyTree<Measure> {
     let mut tree = taffy::TaffyTree::new();
     tree.disable_rounding();
@@ -35,6 +37,7 @@ pub(crate) fn main_axis_of(kind: &str, properties: &PropMap) -> Result<Option<Ma
 /// can return [`LayoutError`]; the measure callback returns only `Size<f32>`.
 ///
 /// [`prepare`]: super::pass::prepare
+#[derive(PartialEq)]
 pub(super) enum Measure {
     /// Shaped extent; `wrap` and `max_lines` change geometry, not only paint.
     Text {
@@ -250,6 +253,82 @@ pub(super) fn new_solver_node(
     .map_err(taffy_failed)
 }
 
+/// [`new_solver_node`] for a node the cached tree already holds, writing only what changed: a
+/// write dirties the node and its ancestors, and a pass that dirtied nothing is a pass taffy
+/// answers from its cache.
+///
+/// A parentless node is a surface root, whose size [`solve_instance`] patches in afterwards;
+/// compared here, that patch would dirty every such root on every pass. A `text` measured from the
+/// same inputs keeps the context it has, whose memo is the size the solver last got for them.
+///
+/// [`solve_instance`]: super::pass::solve_instance
+// ponytail: an unchanged node still rebuilds and compares its taffy style and measure, about
+// 0.3 us a node (ADR-0294). Upgrade: skip nodes the resolve kept whose parent kept its axis.
+pub(super) fn update_solver_node(
+    tree: &mut taffy::TaffyTree<Measure>,
+    id: taffy::NodeId,
+    kind: &str,
+    properties: &PropMap,
+    style: &LayoutStyle,
+    parent_axis: Option<MainAxis>,
+    mut measure: Option<Measure>,
+) -> Result<(), LayoutError> {
+    let mut solver_style = taffy_style(kind, properties, style, parent_axis)?;
+    let current = tree.style(id).map_err(taffy_failed)?;
+    if tree.parent(id).is_none() {
+        solver_style.size = current.size;
+    }
+    if *current != solver_style {
+        tree.set_style(id, solver_style).map_err(taffy_failed)?;
+    }
+    // Compared with the kept memo swapped in, so only the inputs decide.
+    let kept = match tree.get_node_context(id) {
+        Some(Measure::Text { memo, .. }) => *memo,
+        _ => None,
+    };
+    let fresh = match measure.as_mut() {
+        Some(Measure::Text { memo, .. }) => std::mem::replace(memo, kept),
+        _ => None,
+    };
+    if tree.get_node_context(id) != measure.as_ref() {
+        if let Some(Measure::Text { memo, .. }) = measure.as_mut() {
+            *memo = fresh;
+        }
+        tree.set_node_context(id, measure).map_err(taffy_failed)?;
+    }
+    Ok(())
+}
+
+/// Sets `parent`'s solver children unless it already has exactly these.
+pub(super) fn set_solver_children(
+    tree: &mut taffy::TaffyTree<Measure>,
+    parent: taffy::NodeId,
+    children: &[taffy::NodeId],
+) -> Result<(), LayoutError> {
+    if !tree.child_ids(parent).eq(children.iter().copied()) {
+        tree.set_children(parent, children).map_err(taffy_failed)?;
+    }
+    Ok(())
+}
+
+/// Takes `node`'s subtree out of the cached solver tree, for a node the scene drops or sends
+/// leaving: out of the solver for good, so its ids go with it.
+pub(super) fn release_solver_nodes(tree: &mut taffy::TaffyTree<Measure>, node: &mut ResolvedNode) {
+    if let Some(id) = node.taffy.take() {
+        // Ignored: the id is this tree's own, so `remove` cannot miss.
+        let _ = tree.remove(id);
+    }
+    node.children.iter_mut().for_each(|child| release_solver_nodes(tree, child));
+}
+
+/// Clears every solver id under `node`, for a retained tree about to be laid out in a new solver
+/// tree: the ids it holds name nodes of one that is gone, and one could name a live node of the
+/// new one. Recursive because a hidden node's frozen children keep theirs until they thaw.
+pub(super) fn forget_solver_nodes(node: &mut ResolvedNode) {
+    node.taffy = None;
+    node.children.iter_mut().for_each(forget_solver_nodes);
+}
+
 /// A content-sized axis of `id` grows to span its leavers' last rects (ADR-0150): they take no room
 /// in the flow, but a parent collapsing under a lone leaver would clip its exit away, and a
 /// content-sized surface with it. Fixed and `Fill` axes already had room for them.
@@ -343,7 +422,7 @@ pub(super) fn measure_for(
 }
 
 /// taffy's own errors are all "you handed me a node id I do not have", which the scene pass cannot do:
-/// every id comes from the tree it is used against, and the tree lives no longer than the pass. So
+/// every id comes from the tree it is used against, and `forget_solver_nodes` clears any other. So
 /// this is the `unreachable!` equivalent for a `Result` that has to be handled anyway, reported as
 /// a pass failure rather than a panic on the Wayland dispatch thread.
 pub(super) fn taffy_failed(err: taffy::TaffyError) -> LayoutError {
@@ -360,14 +439,18 @@ pub(super) fn taffy_failed(err: taffy::TaffyError) -> LayoutError {
 /// non-wrapping labels, so `Measure::Text` answers a repeat from its last `(max_width, size)`.
 /// `ShapingHandle`'s memo answers one only after hashing a `ShapeRequest` that owns a copy of the
 /// string: 10,000 of those are 1.1ms of a 7.4ms pass on a 500-row list. One entry, since a miss
-/// falls back on that memo, and no invalidation, since [`new_solver_tree`] builds the context
-/// fresh each pass. A `NaN` width never equals itself, so it re-measures rather than going stale.
+/// falls back on that memo, and [`update_solver_node`] replaces the context, memo and all, once an
+/// input changes. A `NaN` width never equals itself, so it re-measures rather than going stale.
 pub(super) fn solve(
     tree: &mut taffy::TaffyTree<Measure>,
     root: taffy::NodeId,
     available: LogicalSize,
     shaping: &ShapingHandle,
 ) -> Result<(), LayoutError> {
+    #[cfg(test)]
+    if tree.dirty(root).map_err(taffy_failed)? {
+        tests::SOLVES.set(tests::SOLVES.get() + 1);
+    }
     let space = taffy::Size {
         width: taffy::AvailableSpace::Definite(available.width),
         height: taffy::AvailableSpace::Definite(available.height),
@@ -450,10 +533,16 @@ fn flow_kind<'a>(kind: &'a str, properties: &PropMap) -> Result<&'a str, LayoutE
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use super::*;
     use crate::layout::scene::tests::{apply_at, full, surface_from};
     use crate::layout::scene::*;
+
+    thread_local! {
+        /// Solves on this thread that found something to lay out: [`solve`] on a clean tree is
+        /// taffy's cache answering at the root.
+        pub(in crate::layout::scene) static SOLVES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    }
 
     fn direction_props(lua: &mlua::Lua, direction: Option<&str>) -> PropMap {
         let mut properties = PropMap::default();

@@ -28,8 +28,8 @@ use crate::text::shaping::ShapingHandle;
 use crate::text::snap::LogicalRect;
 use pass::{build_child_for_output, prepare, publish_geometry, solve_instance};
 use resolve::{ResolveMemo, resolve};
-use solver::new_solver_tree;
 pub(crate) use solver::{MainAxis, main_axis_of};
+use solver::{forget_solver_nodes, new_solver_tree};
 
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct LogicalSize {
@@ -182,7 +182,7 @@ impl LayoutStyle {
 pub struct ResolvedNode {
     /// Cached for layout ticks; a pass replaces it after resolving properties.
     pub(crate) layout_style: std::rc::Rc<LayoutStyle>,
-    /// The solver node in `Scene::solver_trees`, valid only while that instance's tree is cached.
+    /// The solver node. `Some` only for a node of the instance's cached tree.
     pub(crate) taffy: Option<taffy::NodeId>,
     /// The identity its retained counterpart was reconciled under, carried so a later reader can
     /// say "this node, again" across passes. Stable by construction: `reconcile_node` keeps the
@@ -331,7 +331,9 @@ impl ResolvedNode {
 #[derive(Default)]
 pub struct Scene {
     surfaces: HashMap<String, ResolvedNode>,
-    /// Kept only while an instance has layout animation in flight.
+    /// One per instance, kept across passes and ticks: a node whose solver inputs did not change
+    /// keeps taffy's layout cache, so a pass that changed only paint lays nothing out. Dropped with
+    /// a failed pass or tick, whose writes it may hold.
     solver_trees: HashMap<String, taffy::TaffyTree<solver::Measure>>,
     next_id: u64,
     resolve_split: ResolveSplit,
@@ -339,7 +341,7 @@ pub struct Scene {
 }
 
 /// Where one resolve pass spends itself, split the three ways [`Scene::apply_one_instance`]
-/// divides into: saving the retained tree for rollback, running Lua and building the solver tree,
+/// divides into: saving the retained tree for rollback, running Lua and updating the solver tree,
 /// then solving and measuring. `ms resolve` is one number for all three plus the tween tick, which
 /// says the phase is expensive without saying which part is.
 ///
@@ -416,6 +418,19 @@ impl Scene {
     /// than whichever pass ran last.
     pub fn take_resolve_split(&mut self) -> ResolveSplit {
         std::mem::take(&mut self.resolve_split)
+    }
+
+    /// The instance's kept solver tree, or a new one after clearing the ids of the `retained`
+    /// trees, which name nodes of one that is gone (ADR-0294).
+    fn take_solver_tree<'a>(
+        trees: &mut HashMap<String, taffy::TaffyTree<solver::Measure>>,
+        key: &str,
+        retained: impl IntoIterator<Item = &'a mut ResolvedNode>,
+    ) -> taffy::TaffyTree<solver::Measure> {
+        trees.remove(key).unwrap_or_else(|| {
+            retained.into_iter().for_each(forget_solver_nodes);
+            new_solver_tree()
+        })
     }
 
     fn alloc_id(&mut self) -> NodeId {
@@ -587,17 +602,14 @@ impl Scene {
             build_child_for_output(properties, fresh.kind, &instance.output)
         })?;
 
-        // A failed walk drops its temporary solver tree without extra rollback state.
-        let mut tree = new_solver_tree();
+        // A failed walk drops the tree it was writing; the rollback's copy of `existing` names nodes
+        // of it, so the next pass starts a new one.
+        let mut tree = Self::take_solver_tree(&mut self.solver_trees, &key, existing.iter_mut());
         let prepared = prepare(self, &mut tree, existing, fresh.kind, resolved, None, false, lua, now, 0)?;
         close(&mut at, &mut self.resolve_split.resolve);
         let solved = solve_instance(&mut tree, prepared, available, shaping)?;
         publish_geometry(&solved, 0.0, 0.0, lua, false).map_err(|e| node::invalid("geometry", e.to_string()))?;
-        if solved.animating() && !solved.tick_is_paint_only() {
-            self.solver_trees.insert(key.clone(), tree);
-        } else {
-            self.solver_trees.remove(&key);
-        }
+        self.solver_trees.insert(key.clone(), tree);
         self.surfaces.insert(key, solved);
         close(&mut at, &mut self.resolve_split.solve);
         Ok(())

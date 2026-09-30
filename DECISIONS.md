@@ -1645,6 +1645,8 @@ its unrelated deferred features.
 Fresh solver tree per apply. Persistent caching needs another reconciliation lifetime and waits for
 measurement. ADR-0143 removes lease ownership in decision 1; transaction rollback stays.
 
+Amended by ADR-0294: the solver tree now outlives the pass.
+
 ## 0078. `exclusive` is three answers, not a boolean
 
 1. Add Ignore: reserve, respect reservations, or ignore without reserving, so backgrounds do not shrink
@@ -7105,3 +7107,33 @@ a `theme` state bound as one rect's `background` in each row, p50:
 Rejected: comparing rebuilt items (the build is the cost, as in ADR-0273).
 
 **Amends ADR-0273** decision 1.
+
+## 0294. An instance's solver tree outlives the pass
+
+Every pass built a new taffy tree and solved it, so a colour write paid for a full layout. On a
+1000-row column whose rows all read one colour, the solve was 3.6 ms of a 9.3 ms pass.
+
+1. `Scene::solver_trees` keeps one tree per instance across passes and ticks. `prepare` reuses a
+   retained node's solver node and writes its style, measure or children only when they differ, so
+   taffy's own dirty marks decide what lays out again. A pass that changed nothing the solver reads
+   is a cache hit at the root: the 3.6 ms solve became 0.6 ms, all of it the read-back. A text
+   change in one row fell from 3.6 to 1.0 ms.
+2. The test is the solver's inputs, not `PAINT_ONLY`. A property outside that list that does not
+   change the taffy style (`transform`, `cursor`) also lays nothing out, and the list stays the
+   tick's answer to a question a pass never asks.
+3. A `Some` solver id is always valid in the instance's cached tree. A pass or tick that finds no
+   cached tree clears every id in the retained tree first, frozen subtrees included; a failed pass
+   or tick drops the tree it wrote. A dropped or leaving node takes its subtree out of the tree.
+4. A surface root keeps the size `solve_instance` patched in; comparing it would dirty every
+   `window`, `lock` and `Fill` root on every pass.
+
+Cost: about 1.1 KiB per laid-out node stays resident (taffy's 552 B style, two 76 B layouts, a
+368 B cache), about 4.5 MiB for a 4000-node scene.
+
+ponytail: an unchanged node still builds its taffy style and measure to compare, about 0.3 µs a
+node. Upgrade: skip nodes the resolve kept whose parent kept its axis.
+
+Rejected: a pass-level paint-only classification beside the tick's. It would need a diff of every
+node's properties against a second list, and a layout write would still rebuild the whole tree.
+
+Amends ADR-0077's fresh tree per apply.

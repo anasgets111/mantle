@@ -7,7 +7,10 @@ use mlua::{Lua, Value};
 use super::fit::fit_text_to_box;
 use super::resolve::{Resolved, resolve};
 use super::scroll::scroll_children;
-use super::solver::{MainAxis, Measure, hold_leavers, main_axis_of, measure_for, new_solver_node, solve, taffy_failed};
+use super::solver::{
+    MainAxis, Measure, hold_leavers, main_axis_of, measure_for, new_solver_node, release_solver_nodes,
+    set_solver_children, solve, taffy_failed, update_solver_node,
+};
 use super::tick::{advance_leaving, advanced_dissolve, prepare_retained};
 use super::{LayoutStyle, LogicalSize, PreparedNode, ResolvedNode, Scene, close, ensure_node_admissible, open_span};
 use crate::layout::node::{self, LayoutError, PropMap, SizeMode, fields};
@@ -277,9 +280,9 @@ pub(super) fn prepare(
     let thawing = thawing || retained.as_ref().is_some_and(|r| !r.visible);
 
     let Resolved { properties, style, paint, tweens, memo: resolve_memo, text_memo } = resolved;
-    let (id, displayed_source, dissolve, old_children, list_memo, child_table) = match retained {
-        Some(r) => (r.id, r.displayed_source, r.dissolve, r.children, r.list_memo, r.child_table),
-        None => (scene.alloc_id(), None, None, Vec::new(), None, None),
+    let (id, old_taffy, displayed_source, dissolve, old_children, list_memo, child_table) = match retained {
+        Some(r) => (r.id, r.taffy, r.displayed_source, r.dissolve, r.children, r.list_memo, r.child_table),
+        None => (scene.alloc_id(), None, None, None, Vec::new(), None, None),
     };
     // Already leaving children are not paired again: a re-added id is a new node beside the one
     // still fading.
@@ -297,7 +300,13 @@ pub(super) fn prepare(
 
     // Before the children, so their ids attach afterwards, and so the `taffy::Style` behind it is
     // gone from the stack by the time this frame recurses (see `new_solver_node`).
-    let taffy_id = new_solver_node(tree, kind, &properties, &style, parent_axis, measure)?;
+    let taffy_id = match old_taffy {
+        Some(taffy_id) => {
+            update_solver_node(tree, taffy_id, kind, &properties, &style, parent_axis, measure)?;
+            taffy_id
+        }
+        None => new_solver_node(tree, kind, &properties, &style, parent_axis, measure)?,
+    };
 
     // A hidden node's subtree is frozen, not rebuilt (ADR-0124): the children it had keep their
     // ids, properties and last geometry, and none of their signals is read, no `list` item
@@ -388,6 +397,7 @@ pub(super) fn prepare(
         }
     }
     for mut child in unclaimed {
+        release_solver_nodes(tree, &mut child);
         if !thawing && child.visible && node::depart(child.kind, &mut child.tweens, &mut child.properties, now, lua)? {
             child.leaving = true;
             node.leaving.push(child);
@@ -396,7 +406,7 @@ pub(super) fn prepare(
     hold_leavers(tree, taffy_id, &node.style, &node.leaving)?;
 
     let child_ids: Vec<taffy::NodeId> = node.children.iter().map(|child| child.taffy).collect();
-    tree.set_children(taffy_id, &child_ids).map_err(taffy_failed)?;
+    set_solver_children(tree, taffy_id, &child_ids)?;
     Ok(node)
 }
 
@@ -411,7 +421,7 @@ fn keep_item(
     now: Instant,
 ) -> Result<(), LayoutError> {
     let kept = kept.take().expect("a kept item is paired with itself");
-    node.children.push(prepare_retained(tree, kept, own_axis, false, lua, now)?);
+    node.children.push(prepare_retained(tree, kept, own_axis, lua, now)?);
     Ok(())
 }
 
@@ -2419,5 +2429,79 @@ mod tests {
         let root = scene.surface("screen-lock@TEST").unwrap();
         assert_eq!((root.rect.width, root.rect.height), (2560.0, 1440.0));
         assert_eq!((root.children[0].rect.width, root.children[0].rect.height), (2560.0, 1440.0));
+    }
+
+    /// ADR-0294: the solver tree outlives the pass. A colour write reuses every solver node and lays
+    /// nothing out; a size, text, visibility or children write lays out what it moved, and a
+    /// dropped node leaves the solver tree with it.
+    #[test]
+    fn a_paint_only_pass_lays_nothing_out_and_a_layout_write_still_moves_geometry() {
+        use super::super::solver::tests::SOLVES;
+        let mut scene = Scene::new();
+        let shaping = ShapingHandle::spawn();
+        let (lua, surface) = surface_from(
+            r##"accent = state("accent", "#101010")
+            w = state("w", 10)
+            label = state("label", "a")
+            shown = state("shown", true)
+            local function tile(i) return row { height = 20, background = accent, children = {
+                rect { width = w, height = 10 }, text { content = i == 1 and label or "b" } } } end
+            kids = state("kids", { tile(1), row { visible = shown, height = 30 }, tile(3) })
+            return panel { id = "bar", child = column { children = kids } }"##,
+        );
+        let pass = |scene: &mut Scene, write: &str| {
+            lua.load(write).exec().unwrap();
+            SOLVES.set(0);
+            apply_at(scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
+            let root = scene.surface("bar@TEST").unwrap();
+            let solver = &scene.solver_trees["bar@TEST"];
+            let live = |node: &ResolvedNode| -> usize {
+                fn count(node: &ResolvedNode) -> usize {
+                    usize::from(node.taffy.is_some()) + node.children.iter().map(count).sum::<usize>()
+                }
+                count(node)
+            };
+            assert_eq!(solver.total_node_count(), live(root), "a dropped node leaves the solver tree");
+            fn ids(node: &ResolvedNode, out: &mut Vec<Option<taffy::NodeId>>) {
+                out.push(node.taffy);
+                node.children.iter().for_each(|child| ids(child, out));
+            }
+            let mut taffy = Vec::new();
+            ids(root, &mut taffy);
+            let column = &root.children[0];
+            let rects: Vec<LogicalRect> = column.children.iter().map(|tile| tile.rect).collect();
+            (SOLVES.get(), taffy, rects, column.children[0].children[1].rect.width)
+        };
+        let (_, before, rects, label_width) = pass(&mut scene, "");
+
+        let (solves, after, moved, _) = pass(&mut scene, r##"accent:set("#202020")"##);
+        assert_eq!(solves, 0, "a colour write lays nothing out");
+        assert_eq!(after, before, "and keeps every solver node");
+        assert_eq!(moved, rects);
+        assert_eq!(
+            scene.surface("bar@TEST").unwrap().children[0].children[0].properties["background"]
+                .as_string()
+                .unwrap()
+                .to_string_lossy(),
+            "#202020",
+            "the colour still lands"
+        );
+
+        let (solves, after, _, _) = pass(&mut scene, "w:set(50)");
+        assert_eq!((solves, &after), (1, &before), "a size write lays out the same solver nodes again");
+        let text_x = scene.surface("bar@TEST").unwrap().children[0].children[0].children[1].rect.x;
+        assert_eq!(text_x, 50.0, "and moves the sibling after the grown rect");
+
+        let (solves, _, _, wider) = pass(&mut scene, r#"label:set("a much longer label")"#);
+        assert_eq!(solves, 1);
+        assert!(wider > label_width, "a text write measures again: {label_width} -> {wider}");
+
+        let (_, _, hidden, _) = pass(&mut scene, "shown:set(false)");
+        assert_eq!(hidden[2].y, rects[1].y, "a hidden row gives up its slot");
+        let (_, _, thawed, _) = pass(&mut scene, "shown:set(true)");
+        assert_eq!(thawed[2].y, rects[2].y, "and takes it back when shown");
+
+        let (solves, _, dropped, _) = pass(&mut scene, "kids:set({ kids:get()[3] })");
+        assert_eq!((solves, dropped.len(), dropped[0].y), (1, 1, 0.0), "the kept row moves up to the top");
     }
 }

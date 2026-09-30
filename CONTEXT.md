@@ -68,6 +68,7 @@ cited as ADR-NNNN for the why behind behavior the code confirms.
 | **Dirty scope** | `DirtyScope`, what a pass re-resolves: `Clean` (written cells nobody read), `Instances` (those that read them), or `All` (a scene-wide mark from reload, resize or rollback, or any write while the session lock is held). ADR-0244. |
 | **Layout pass budget** | `LayoutPassBudget`, the 2 s CPU ceiling for one whole pass, beside the 2.5 ms per-callback budget. Exceeding it fails the pass. See [Runtime](docs/guide/runtime.md#limits-and-budgets). |
 | **Layout style** | A node's layout properties after signal resolution and validation (`LayoutStyle`), which the solver translates to a taffy style (ADR-0077). |
+| **Solver tree** | An instance's layout-solver state, kept for the instance's lifetime (ADR-0294). |
 | **Paint pass** | Drawing one surface instance from its resolved nodes without changing the scene. An unchanged `DisplayList` skips it (ADR-0063, ADR-0258). |
 | **Image cache** | A generation's decoded and uploaded textures (`CacheKey`: path, target box, file version, tint, crop, blur). A new generation starts cold. |
 | **Icon resolver** | `image::icons::resolve`: an icon theme name to an image file, memoized; an absolute path passes through (ADR-0054). |
