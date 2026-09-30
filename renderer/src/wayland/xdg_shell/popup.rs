@@ -504,17 +504,8 @@ mod tests {
         // ADR-0051 decision 2, and the one row the whole latch exists for: a compositor
         // dismissal leaves the resolved tree still saying `visible = true`, so without this the
         // next re-resolve creates a second popup for the same click-outside to dismiss, forever.
+        // With no `on_dismiss` and no further pointer input, the latch prevents that livelock.
         assert_eq!(popup_visibility_action(true, false, Some(4), 4), PopupAction::Nothing);
-    }
-
-    #[test]
-    fn a_dismissal_with_no_pointer_input_since_holds_the_latch_for_the_generations_life() {
-        // The livelock ADR-0051 decision 2 exists to stop, in the config that has no
-        // `on_dismiss` at all. Nothing new arrives, so the counter never moves and no re-resolve
-        // ever creates a replacement -- not for one turn, but forever.
-        for _ in 0..1000 {
-            assert_eq!(popup_visibility_action(true, false, Some(9), 9), PopupAction::Nothing);
-        }
     }
 
     #[test]

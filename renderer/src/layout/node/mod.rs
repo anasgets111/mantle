@@ -751,7 +751,7 @@ mod tests {
     }
 
     #[test]
-    fn oversized_string_property_error_message_is_bounded() {
+    fn oversized_string_property_error_still_names_type_and_shows_a_recognizable_prefix() {
         let lua = mlua::Lua::new();
         let table: mlua::Table =
             lua.load(r#"return { kind = "rect", radius = string.rep("Q", 20 * 1024 * 1024) }"#).eval().unwrap();
@@ -766,18 +766,6 @@ mod tests {
             "a 20 MB input must not produce a multi-megabyte error message, got {} bytes",
             detail.len()
         );
-    }
-
-    #[test]
-    fn oversized_string_property_error_still_names_type_and_shows_a_recognizable_prefix() {
-        let lua = mlua::Lua::new();
-        let table: mlua::Table =
-            lua.load(r#"return { kind = "rect", radius = string.rep("Q", 20 * 1024 * 1024) }"#).eval().unwrap();
-        let props = props_from_table(&table);
-        let err = parse_radius(&props).unwrap_err();
-        let LayoutError::InvalidProperty { detail, .. } = &err else {
-            panic!("expected InvalidProperty, got {err}");
-        };
         assert!(detail.contains("expected a number"), "{detail}");
         assert!(detail.contains("String("), "must still name the rejected type: {detail}");
         assert!(detail.contains("QQQ"), "must show a recognizable prefix of the value: {detail}");

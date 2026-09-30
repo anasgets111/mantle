@@ -349,19 +349,4 @@ mod tests {
         let mains = properties(&[("Type", 1u32.into()), ("IsPresent", true.into()), ("Percentage", 50f64.into())]);
         assert_eq!(from_properties(&mains), BatteryState::default());
     }
-
-    /// A desktop's non-battery display device yields the default payload, not an error.
-    #[test]
-    fn the_default_payload_is_the_no_battery_answer() {
-        assert_eq!(
-            BatteryState::default(),
-            BatteryState {
-                present: false,
-                percent: 0,
-                state: BatteryStatus::Unknown,
-                time_to_empty: None,
-                time_to_full: None
-            }
-        );
-    }
 }

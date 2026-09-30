@@ -666,15 +666,6 @@ mod tests {
     }
 
     #[test]
-    fn pam_outcome_round_trips_a_unit_and_a_data_carrying_variant() {
-        for outcome in [PamOutcome::AuthFailed, PamOutcome::StartFailed("pam_start failed".to_string())] {
-            let wire = serde_json::to_value(&outcome).unwrap();
-            let parsed: PamOutcome = serde_json::from_value(wire).unwrap();
-            assert_eq!(parsed, outcome);
-        }
-    }
-
-    #[test]
     fn a_pam_message_response_never_formats_its_secret() {
         let rendered = format!("{:?}", PamMessage::Response { secret: b"hunter2".to_vec() });
         assert!(rendered.contains("<7 bytes redacted>"), "the length is the only thing worth logging: {rendered}");

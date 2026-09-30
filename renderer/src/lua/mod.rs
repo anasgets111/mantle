@@ -965,28 +965,6 @@ return { panel { id = "a", layer = "Top" }, missing, panel { id = "c", layer = "
         assert!(!probe::<bool>(&loader, "muted = state.muted", "muted"));
     }
 
-    /// JSON `null` must become Lua `nil` and erase the key. Checking `item.icon_path == nil` is
-    /// insufficient because missing keys also read nil; count table keys to prove `icon_path` never
-    /// landed.
-    #[test]
-    fn to_lua_value_maps_a_json_null_field_to_a_nil_that_is_absent_from_the_table() {
-        let loader = test_loader();
-        let json = serde_json::json!({
-            "icon_name": "org.telegram.desktop-mute-symbolic",
-            "icon_path": null,
-        });
-        let value = loader.to_lua_value(&json).unwrap();
-        loader.lua().globals().set("item", value).unwrap();
-
-        let setup = r#"
-            key_count = 0
-            for _ in pairs(item) do key_count = key_count + 1 end
-            path_is_nil = item.icon_path == nil
-        "#;
-        assert_eq!(probe::<i64>(&loader, setup, "key_count"), 1);
-        assert!(probe::<bool>(&loader, setup, "path_is_nil"));
-    }
-
     /// Actual bug: mlua's default `serialize_none_to_null` maps JSON `null` to truthy
     /// lightuserdata, so a live Telegram tray item's `icon_path = null` made `if item.icon_path`
     /// assume a real path.

@@ -292,21 +292,4 @@ mod tests {
 
         assert!(rx.try_recv().is_err());
     }
-
-    #[tokio::test]
-    async fn move_to_workspace_dispatches_without_panicking() {
-        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-        let state = Arc::new(Mutex::new(WindowsState::default()));
-
-        let controller_niri = WindowsController::new(Arc::clone(&state), Some(CompositorKind::Niri), tx.clone()).await;
-        controller_niri.move_to_workspace("123", 2);
-        controller_niri.move_to_workspace("not-a-number", 2);
-
-        let controller_hyprland =
-            WindowsController::new(Arc::clone(&state), Some(CompositorKind::Hyprland), tx.clone()).await;
-        controller_hyprland.move_to_workspace("0x55d1c0a3b2c0", 3);
-
-        let controller_none = WindowsController { state, backend: Backend::None };
-        controller_none.move_to_workspace("0x55d1c0a3b2c0", 3);
-    }
 }

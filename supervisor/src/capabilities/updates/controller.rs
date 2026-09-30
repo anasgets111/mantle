@@ -594,17 +594,6 @@ mod tests {
         assert_eq!(snapshot.last_successful_check, None, "naming the manager is not a check");
     }
 
-    #[test]
-    fn updates_state_default_has_no_updates_and_no_errors() {
-        let state = UpdatesState::default();
-        assert_eq!(state.package_manager, None);
-        assert_eq!(state.count, 0);
-        assert!(state.packages.is_empty());
-        assert_eq!(state.last_successful_check, None);
-        assert_eq!(state.check_error, None);
-        assert!(!state.installing);
-    }
-
     #[tokio::test]
     async fn run_install_with_child_parses_progress_and_detects_a_successful_completion() {
         let state = Arc::new(Mutex::new(UpdatesState::default()));

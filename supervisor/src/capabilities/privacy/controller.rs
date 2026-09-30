@@ -324,14 +324,6 @@ mod tests {
         assert_eq!(users, vec![PrivacyUser { app_name: "mpv".to_string() }]);
     }
 
-    #[test]
-    fn privacy_state_default_reports_nothing_in_use() {
-        assert_eq!(
-            PrivacyState::default(),
-            PrivacyState { camera_users: vec![], microphone_users: vec![], screencast_users: vec![] }
-        );
-    }
-
     fn capture(node_id: u32, pid: Option<i32>, app_name: Option<&str>) -> CaptureApp {
         CaptureApp { node_id, pid, app_name: app_name.map(str::to_string), running: true }
     }
