@@ -243,12 +243,18 @@ pub(super) fn read_target(
     flush(canvas);
     // SAFETY: `paint_surface` made this context current, the flush left the target bound, and
     // femtovg's next flush rebinds every texture unit it uses.
+    // A blit, not `glCopyTexSubImage2D`: NVIDIA 615 stages that copy through a CPU buffer the size
+    // of the read and keeps it for the context's life, 14.7 MiB after one full-screen frost.
     unsafe {
-        gl.bind_texture(glow::TEXTURE_2D, Some(texture));
+        let target = gl.get_parameter_framebuffer(glow::DRAW_FRAMEBUFFER_BINDING);
+        let into = gl.create_framebuffer().ok()?;
+        gl.bind_framebuffer(glow::DRAW_FRAMEBUFFER, Some(into));
+        gl.framebuffer_texture_2d(glow::DRAW_FRAMEBUFFER, glow::COLOR_ATTACHMENT0, glow::TEXTURE_2D, Some(texture), 0);
         // GL rows run bottom up in a target and in a `FLIP_Y` image alike.
-        let (width, rows) = (size.0 as i32, size.1 as i32);
-        gl.copy_tex_sub_image_2d(glow::TEXTURE_2D, 0, 0, 0, region.x0, whole.y1 - region.y1, width, rows);
-        gl.bind_texture(glow::TEXTURE_2D, None);
+        let (x0, y0, width, rows) = (region.x0, whole.y1 - region.y1, size.0 as i32, size.1 as i32);
+        gl.blit_framebuffer(x0, y0, x0 + width, y0 + rows, 0, 0, width, rows, glow::COLOR_BUFFER_BIT, glow::NEAREST);
+        gl.bind_framebuffer(glow::DRAW_FRAMEBUFFER, target);
+        gl.delete_framebuffer(into);
     }
     // ponytail: approximate where a non-uniform `scale` meets a `rotate`, whose inverse skews and
     // an image paint cannot. Upgrade path: a raw-GL quad, as the shader stage draws.
