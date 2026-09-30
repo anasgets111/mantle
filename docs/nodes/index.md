@@ -311,7 +311,7 @@ return body
 | An `image`, `capture`, `shader` or `textfield` does not appear | They have no intrinsic size. Give `width` and `height`, or `"Fill"` in a sized parent |
 | A `"Fill"` child is 0 wide | Its parent is content-sized along that axis, or fixed siblings already overflow. Size the parent |
 | `"50%"` resolves to 0 | The parent has no definite size on that axis |
-| Items in a `button` or `rect` overlap | They stack their children; put a `row` inside for side by side |
+| Items in a `rect` overlap | They stack their children; put a `row` inside for side by side |
 | A switched view snaps in without its entry or exit animation | Same kind at the same position is reused, not replaced. Give each view its own `id` |
 | `duplicate id` error | Sibling ids, and `list` keys, must be unique |
 | A signal inside a table property (`padding = { top = sig }`) raises an error | Map the whole table: `padding = sig:map(function(v) return { top = v } end)` |

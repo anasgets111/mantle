@@ -13,7 +13,7 @@ list {
     end),
     key = function(item) return item.id end,
     itemfn = function(item)
-        return button {
+        return rect {
             on_click = function(_, which)
                 if which == "left" and not item.item_is_menu then
                     mantle.tray:activate(item.id, 0, 0) -- screen x, y; most apps ignore them

@@ -19,7 +19,7 @@ return row {
   padding = 10,
   background = "#1e1e2e",
   children = {
-    button {
+    rect {
       padding = 8,
       background = "#313244",
       on_click = function() minute:set(minute:get() + 1) end,
@@ -64,7 +64,7 @@ with the same name returns the same signal, from any module and across reloads.
 local open = state("details_open", false)
 
 column { children = {
-  button {
+  rect {
     on_click = function() open:set(not open:get()) end,
     children = { text { content = "Details" } },
   },
@@ -99,7 +99,7 @@ local last = state("last_mode", "balanced")
 -- `mantle set mode '"performance"'` from a keybind runs this too.
 mode:on_change(function(_, previous) last:set(previous) end)
 
-return button {
+return rect {
   on_click = function() mode:set(last:get()) end,
   children = { text { content = last:map(function(m) return "Back to " .. m end) } },
 }
@@ -147,7 +147,7 @@ local clock = computed({ mantle.system, show_seconds }, function(system, seconds
   return os.date(seconds and "%H:%M:%S" or "%H:%M", system.time)
 end)
 
-button {
+rect {
   on_click = function() show_seconds:set(not show_seconds:get()) end,
   children = { text { content = clock } },
 }
@@ -189,7 +189,7 @@ animation, which a config cannot restart any other way ([animation](animation.md
 local count = state("count", 0)
 local flash = pulse(count, 300) -- true for 300 ms after each change
 
-button {
+rect {
   padding = 6,
   background = flash:map(function(on) return on and "#f9e2af" or "#313244" end),
   animate = { background = 300 },

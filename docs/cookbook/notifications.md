@@ -55,7 +55,7 @@ end
 local function action_buttons(item)
     local buttons = {}
     for index, action in ipairs(item.actions) do
-        buttons[index] = button {
+        buttons[index] = rect {
             width = "Fill",
             padding = 6,
             radius = 6,
@@ -72,7 +72,7 @@ end
 local function card(item)
     local critical = item.urgency == "critical"
     local runs = body_runs(item.body)
-    return button {
+    return row {
         width = "Fill",
         padding = 12,
         radius = 12,
@@ -93,49 +93,44 @@ local function card(item)
                 mantle.notifications:dismiss(item.id)
             end
         end,
+        spacing = 10,
         children = {
-            row {
+            artwork(item),
+            column {
                 width = "Fill",
-                spacing = 10,
+                spacing = 4,
                 children = {
-                    artwork(item),
-                    column {
+                    row {
                         width = "Fill",
-                        spacing = 4,
+                        spacing = 6,
                         children = {
-                            row {
-                                width = "Fill",
-                                spacing = 6,
-                                children = {
-                                    text { content = item.app_name, width = "Fill", elide = "End", font_size = 11, foreground = "#a6adc8" },
-                                    button {
-                                        padding = { left = 4, right = 4 },
-                                        radius = 4,
-                                        on_click = function() mantle.notifications:dismiss(item.id) end,
-                                        children = { text { content = "×", font_size = 14, foreground = "#a6adc8" } },
-                                    },
-                                },
+                            text { content = item.app_name, width = "Fill", elide = "End", font_size = 11, foreground = "#a6adc8" },
+                            rect {
+                                padding = { left = 4, right = 4 },
+                                radius = 4,
+                                on_click = function() mantle.notifications:dismiss(item.id) end,
+                                children = { text { content = "×", font_size = 14, foreground = "#a6adc8" } },
                             },
-                            text {
-                                content = { { text = item.summary, bold = true } },
-                                width = "Fill",
-                                elide = "End",
-                                font_size = 13,
-                                foreground = "#cdd6f4",
-                            },
-                            text {
-                                content = runs,
-                                visible = #runs > 0,
-                                width = "Fill",
-                                wrap = "Word",
-                                max_lines = 4,
-                                elide = "End",
-                                foreground = "#bac2de",
-                                on_link = function(href) mantle.applications:open_url(href) end,
-                            },
-                            action_buttons(item),
                         },
                     },
+                    text {
+                        content = { { text = item.summary, bold = true } },
+                        width = "Fill",
+                        elide = "End",
+                        font_size = 13,
+                        foreground = "#cdd6f4",
+                    },
+                    text {
+                        content = runs,
+                        visible = #runs > 0,
+                        width = "Fill",
+                        wrap = "Word",
+                        max_lines = 4,
+                        elide = "End",
+                        foreground = "#bac2de",
+                        on_link = function(href) mantle.applications:open_url(href) end,
+                    },
+                    action_buttons(item),
                 },
             },
         },
@@ -175,7 +170,7 @@ return {
 - `dnd` only mutes sounds, so hiding popups during it is the config's filter; critical ones still show.
 - `key` by `id` keeps each card's node when a newer one arrives above it, so only the new one animates in; a dismissed card fades out through `animate.exit`, except the last one, which leaves with its hidden panel ([identity](../nodes/index.md#identity-and-reconciliation), [exit](../guide/animation.md#exit)).
 - A body's text spans pass to `text` as runs unchanged; `on_link` hands a clicked `href` to `open_url` ([text runs](../nodes/text.md#runs), [applications](../capabilities/applications.md)).
-- The × is a `button` inside the card's `button`: the innermost one with a handler takes the click ([pointer](../guide/input.md#pointer)).
+- The × is a clickable `rect` inside the clickable card: the innermost one with a handler takes the click ([pointer](../guide/input.md#pointer)).
 - `on_hover` on the stack calls `hold_expiry`, so a card cannot expire while being read; the hold lapses after 300 s of continuous hover ([hover](../guide/input.md#hover)).
 - The panel is anchored to two edges, so it measures its content and grows with the stack ([corner stack](../surfaces/panel.md#corner-stack)).
 

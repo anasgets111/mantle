@@ -32,7 +32,7 @@ column {
                 return polkit and polkit.error or ""
             end),
         },
-        button {
+        rect {
             on_click = function() mantle.polkit:cancel() end,
             children = { text { content = "Cancel" } },
         },

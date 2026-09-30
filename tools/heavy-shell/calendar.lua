@@ -15,7 +15,7 @@ end
 
 local function cell(day, in_month)
     theme.counters.cal_cell = theme.counters.cal_cell + 1
-    return button {
+    return rect {
         width = 40,
         height = 32,
         radius = 6,

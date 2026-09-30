@@ -8,7 +8,7 @@ The lock screen itself is a [`lock` surface](../surfaces/lock.md); this capabili
 session and reports the password attempt.
 
 ```lua
-button {
+rect {
     on_click = function() mantle.lock:lock() end,
     children = { text { content = "Lock" } },
 }

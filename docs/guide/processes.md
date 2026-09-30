@@ -33,7 +33,7 @@ refresh()
 
 return panel {
     id = "weather", layer = "Top", anchor = { top = true },
-    child = button {
+    child = rect {
         on_click = refresh,
         children = { text { content = temperature, font_size = 14 } },
     },
@@ -88,7 +88,7 @@ Starts a program that stops being the shell's: its own session, reparented to in
 ```lua
 return panel {
     id = "dock", layer = "Top", anchor = { bottom = true },
-    child = button {
+    child = rect {
         padding = 8,
         on_click = function()
             process.detach("xdg-open", { os.getenv("HOME") or "/" })
@@ -126,7 +126,7 @@ end
 
 return panel {
     id = "rec", layer = "Top", anchor = { top = true, right = true },
-    child = button {
+    child = rect {
         on_click = toggle,
         children = {
             text {

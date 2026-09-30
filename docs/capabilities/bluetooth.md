@@ -12,7 +12,7 @@ list {
     key = function(device) return device.mac end,
     itemfn = function(device)
         local battery = device.battery >= 0 and string.format(" %d%%", device.battery) or ""
-        return button {
+        return rect {
             on_click = function() mantle.bluetooth:disconnect(device.mac) end,
             children = { text { content = device.name .. battery } },
         }

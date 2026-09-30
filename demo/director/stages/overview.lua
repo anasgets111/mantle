@@ -22,7 +22,7 @@ local layout = mantle.screens:map(function(screens)
 end)
 
 local function card(w)
-    return button {
+    return column {
         geometry = target("card:" .. w.id),
         width = 200,
         padding = 18,
@@ -37,21 +37,16 @@ local function card(w)
             scale = { spring = { stiffness = 340, damping = 18 } },
         },
         on_click = function() mantle.windows:focus(w.id) end,
+        spacing = 12,
         children = {
-            column {
+            icon { name = taskbar.icon_of(w.app_id), size = 64, align_h = "Center" },
+            text {
+                content = w.title,
                 width = "Fill",
-                spacing = 12,
-                children = {
-                    icon { name = taskbar.icon_of(w.app_id), size = 64, align_h = "Center" },
-                    text {
-                        content = w.title,
-                        width = "Fill",
-                        wrap = "Word",
-                        text_align = "Center",
-                        font_size = 17,
-                        foreground = w.focused and theme.text or theme.subtext,
-                    },
-                },
+                wrap = "Word",
+                text_align = "Center",
+                font_size = 17,
+                foreground = w.focused and theme.text or theme.subtext,
             },
         },
     }

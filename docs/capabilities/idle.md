@@ -76,7 +76,7 @@ The hold survives reloads, so [named state](../guide/signals.md#named-state) rec
 ```lua
 local caffeine = state("caffeine", false)
 
-button {
+rect {
     on_click = function()
         if caffeine:get() then
             mantle.idle:release_inhibit()

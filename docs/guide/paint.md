@@ -404,7 +404,7 @@ around the card: the parent clips the shadow.
 
 ```lua
 local hovered = hover("save_hover")
-button {
+rect {
     hover = hovered,
     padding = { left = 16, right = 16, top = 6, bottom = 6 },
     radius = 999,

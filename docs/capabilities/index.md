@@ -5,7 +5,7 @@ a read-only signal, and its action methods ask its backend to act. This page hol
 capability shares; each capability's page holds its state, actions and backend.
 
 ```lua
-button {
+text {
     on_click = function() mantle.audio:toggle_mute() end,
     on_wheel = function(_, steps)
         local audio = mantle.audio:get()
@@ -13,16 +13,12 @@ button {
             mantle.audio:set_volume(audio.volume + steps * 0.05) -- clamped to [0, 1.5]
         end
     end,
-    children = {
-        text {
-            content = mantle.audio:map(function(audio)
-                if audio == nil or audio.volume == nil then
-                    return "--" -- nil before the first push; no volume without a default sink
-                end
-                return audio.muted and "muted" or string.format("%d%%", math.floor(audio.volume * 100 + 0.5))
-            end),
-        },
-    },
+    content = mantle.audio:map(function(audio)
+        if audio == nil or audio.volume == nil then
+            return "--" -- nil before the first push; no volume without a default sink
+        end
+        return audio.muted and "muted" or string.format("%d%%", math.floor(audio.volume * 100 + 0.5))
+    end),
 }
 ```
 

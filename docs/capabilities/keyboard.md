@@ -5,7 +5,7 @@
 Lock keys, the active layout and the keyboard backlight.
 
 ```lua
-button {
+rect {
     on_click = function()
         local keyboard = mantle.keyboard:get()
         if keyboard and keyboard.layout_count > 1 then

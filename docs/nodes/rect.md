@@ -91,7 +91,7 @@ their own `align_h`.
 | An empty `rect` draws nothing | With no children and no size it is 0 × 0. Give it `width` and `height` |
 | A `background` tween snaps in instead of fading | An absent `background` has no colour to tween from. Start from a transparent one, such as `"#89B4FA00"` ([animation](../guide/animation.md#what-can-animate)) |
 
-See also: [row and column](row-column.md), [button](button.md), [paint](../guide/paint.md).
+See also: [row and column](row-column.md), [paint](../guide/paint.md).
 
 Source: [vocabulary](../../renderer/src/lua/nodes.rs), [children](../../renderer/src/layout/node/spec.rs),
 [box paint](../../renderer/src/layout/node/paint_style.rs).

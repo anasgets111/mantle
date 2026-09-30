@@ -7,7 +7,7 @@ Pending package upgrades (pacman, optionally AUR), install progress and whether 
 ```lua
 mantle.updates:configure({ interval = 3600 })
 
-button {
+rect {
     on_click = function() mantle.updates:check() end,
     children = {
         text {

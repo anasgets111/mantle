@@ -13,7 +13,7 @@ return panel {
     id = "bar",
     layer = "Top",
     anchor = { top = true },
-    child = button {
+    child = rect {
         padding = 8,
         background = "#313244",
         on_click = function(rect, which)
@@ -80,7 +80,7 @@ return panel {
     id = "bar",
     layer = "Top",
     anchor = { top = true },
-    child = button {
+    child = rect {
         width = 200,
         height = 12,
         radius = 6,
@@ -121,7 +121,7 @@ return panel {
     id = "bar",
     layer = "Top",
     anchor = { top = true },
-    child = button {
+    child = rect {
         padding = 6,
         radius = 6,
         hover = over,
@@ -217,7 +217,7 @@ return panel {
             height = 32,
             on_change = function() end,
         },
-        button {
+        rect {
             on_click = function() search_focus:request() end,
             children = { text { content = "Return to search" } },
         },
@@ -336,7 +336,7 @@ return lock {
                 mask_character = "•",
                 secure_submit = { capability = "lock", action = "authenticate" },
             },
-            button {
+            rect {
                 padding = 8,
                 radius = 8,
                 background = "#89b4fa",
@@ -371,7 +371,7 @@ local menu_open = state("context_open", false)
 local menu_at = state("context_at", { x = 0, y = 0, width = 1, height = 1 })
 
 local function item(label, run)
-    return button {
+    return rect {
         width = "Fill",
         padding = 6,
         radius = 4,
@@ -383,7 +383,7 @@ local function item(label, run)
     }
 end
 
-local files = button {
+local files = rect {
     padding = 8,
     on_click = function(rect, which)
         if which == "right" then
@@ -437,7 +437,7 @@ local function index_of(name)
 end
 
 local function row_for(name)
-    return button {
+    return rect {
         width = 200,
         height = 28,
         padding = 6,
@@ -485,7 +485,7 @@ return panel {
 | Lua needs to prefill or clear a field | Not possible: the draft belongs to the engine. `autofocus` re-arms empty; Escape and Enter clear |
 | A typed password shows up in `on_change` | It cannot: a `secure_submit` field never calls it. Plain fields also stop taking keys while a secure field is armed |
 
-See also: [nodes](../nodes/index.md) ([`button`](../nodes/button.md), [`textfield`](../nodes/textfield.md), [`list`](../nodes/list.md)), [surfaces](../surfaces/index.md)
+See also: [nodes](../nodes/index.md) ([`textfield`](../nodes/textfield.md), [`list`](../nodes/list.md)), [surfaces](../surfaces/index.md)
 (`keyboard_interactivity`, popups, lock), [signals](signals.md) (state the handlers write),
 [animation](animation.md) (press and hover motion), [capabilities](../capabilities/index.md) ([`lock`](../capabilities/lock.md),
 [`polkit`](../capabilities/polkit.md), [`network`](../capabilities/network.md)).

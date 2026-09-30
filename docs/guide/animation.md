@@ -221,7 +221,7 @@ return panel {
     layer = "Top",
     anchor = { top = true },
     padding = 4, -- room for the overshoot: a scaled node paints past its box
-    child = button {
+    child = rect {
         width = 32,
         height = 32,
         radius = 8,
@@ -431,7 +431,7 @@ local function dismiss(title)
 end
 
 local function card(title)
-    return button {
+    return rect {
         width = 280,
         padding = 12,
         radius = 12,

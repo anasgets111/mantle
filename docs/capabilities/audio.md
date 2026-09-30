@@ -11,7 +11,7 @@ list {
     end),
     key = function(sink) return tostring(sink.id) end,
     itemfn = function(sink)
-        return button {
+        return rect {
             padding = 6,
             background = sink.active and "#45475A" or "#1E1E2E",
             on_click = function() mantle.audio:set_default_sink(sink.id) end,
@@ -136,7 +136,7 @@ report) is dropped with a `debug` log.
 A handler reads with `:get()`: it needs the value now, not a binding ([input](../guide/input.md)).
 
 ```lua
-button {
+rect {
     on_wheel = function(_, steps)
         local audio = mantle.audio:get()
         if audio == nil or audio.volume == nil then

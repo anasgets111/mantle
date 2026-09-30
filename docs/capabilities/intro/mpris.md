@@ -3,7 +3,7 @@ local player = mantle.mpris:map(function(mpris)
     return mpris and mpris.players[1]
 end)
 
-button {
+rect {
     on_click = function()
         local current = player:get()
         if current then

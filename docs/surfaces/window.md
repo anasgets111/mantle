@@ -10,7 +10,7 @@ local open = state("settings_open", false)
 local page = state("settings_page", "General")
 
 local function tab(name)
-    return button {
+    return rect {
         width = "Fill",
         padding = { left = 12, right = 12, top = 8, bottom = 8 },
         radius = 8,
@@ -118,10 +118,10 @@ local editor = window {
                 spacing = 8,
                 visible = confirming,
                 children = {
-                    button { padding = 8, background = "#f38ba8",
+                    rect { padding = 8, background = "#f38ba8",
                         on_click = function() confirming:set(false); open:set(false) end,
                         children = { text { content = "Discard" } } },
-                    button { padding = 8, background = "#313244",
+                    rect { padding = 8, background = "#313244",
                         on_click = function() confirming:set(false) end,
                         children = { text { content = "Cancel", foreground = "#cdd6f4" } } },
                 },

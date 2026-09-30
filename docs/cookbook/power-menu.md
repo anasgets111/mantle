@@ -38,7 +38,7 @@ local ACTIONS = {
 local function action_button(action)
     local over = hover("power_" .. action.key)
     local armed = pending:map(function(key) return key == action.key end)
-    return button {
+    return rect {
         width = 120,
         height = 120,
         radius = 20,
@@ -100,7 +100,7 @@ return {
             background = "#1e1e2e",
             children = {
                 rect { width = "Fill" },
-                button {
+                rect {
                     align_v = "Center",
                     padding = 6,
                     radius = 6,
@@ -127,7 +127,7 @@ return {
             opacity = 1, -- `from` needs the property set
             animate = { opacity = { duration = 150, from = 0 } },
             children = {
-                button { width = "Fill", height = "Fill", on_click = close }, -- outside click
+                rect { width = "Fill", height = "Fill", on_click = close }, -- outside click
                 row { align_h = "Center", align_v = "Center", spacing = 16, children = buttons },
             },
         },
@@ -142,7 +142,7 @@ return {
 - Lock goes through the lock capability, which needs a declared lock screen ([lock screen](lock-screen.md), [lock](../capabilities/lock.md)).
 - `reset_on_close = { pending }` disarms the menu whenever it closes, whether a click, a run action or `mantle toggle` closed it ([reset on close](../surfaces/index.md#reset-on-close)).
 - One named state, `pending`, holds the armed action; a second click on the same button runs it ([named state](../guide/signals.md#named-state)).
-- A full-size `button` under the row closes the menu; the row is declared after it, so it is on top ([close an overlay](../surfaces/panel.md#close-an-overlay-on-an-outside-click)).
+- A full-size `rect` under the row closes the menu; the row is declared after it, so it is on top ([close an overlay](../surfaces/panel.md#close-an-overlay-on-an-outside-click)).
 - `hover` drives the tint and a `scale` tween, which does not re-lay out the row ([hover](../guide/input.md#hover), [animation](../guide/animation.md)).
 
 ## Variations

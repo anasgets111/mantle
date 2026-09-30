@@ -75,7 +75,7 @@ local function tile(spec)
     local function pick(a, b)
         return computed({ on, a, b }, function(v, yes, no) return v and yes or no end)
     end
-    return button {
+    return row {
         geometry = target("control:" .. spec.key),
         width = "Fill",
         height = 96,
@@ -86,20 +86,15 @@ local function tile(spec)
         animate = { background = 220, scale = { spring = { stiffness = 380, damping = 20 } } },
         -- The radios are mocks: a click on them must not reach your real Wi-Fi or Bluetooth.
         on_click = spec.persisted and function() flip(spec.key) end or nil,
+        spacing = 16,
         children = {
-            row {
-                height = "Fill",
-                spacing = 16,
+            icon { name = spec.glyph, size = 30, align_v = "Center", foreground = pick(theme.crust, theme.text) },
+            column {
+                align_v = "Center",
+                spacing = 2,
                 children = {
-                    icon { name = spec.glyph, size = 30, align_v = "Center", foreground = pick(theme.crust, theme.text) },
-                    column {
-                        align_v = "Center",
-                        spacing = 2,
-                        children = {
-                            text { content = spec.title, font_size = 20, font_weight = 700, foreground = pick(theme.crust, theme.text) },
-                            text { content = spec.detail, font_size = 16, foreground = pick(theme.base, theme.subtext) },
-                        },
-                    },
+                    text { content = spec.title, font_size = 20, font_weight = 700, foreground = pick(theme.crust, theme.text) },
+                    text { content = spec.detail, font_size = 16, foreground = pick(theme.base, theme.subtext) },
                 },
             },
         },

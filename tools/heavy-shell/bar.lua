@@ -12,7 +12,7 @@ local function output_of(workspaces, name)
 end
 
 local function workspace_item(item)
-    return button {
+    return rect {
         width = item.active and 32 or 20,
         height = 18,
         radius = 9,

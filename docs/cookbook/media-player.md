@@ -91,7 +91,7 @@ local function control(command)
 end
 
 local function control_button(glyph, command, size)
-    return button {
+    return rect {
         align_v = "Center",
         padding = 8,
         radius = 20,
@@ -105,7 +105,7 @@ local play_glyph = player:map(function(current)
     return current and current.play_state == "Playing" and "media-playback-pause-symbolic" or "media-playback-start-symbolic"
 end)
 
-local pill = button {
+local pill = row {
     align_v = "Center",
     padding = { left = 10, right = 10, top = 4, bottom = 4 },
     radius = 12,
@@ -120,26 +120,22 @@ local pill = button {
         end
     end,
     on_wheel = function(_, steps) control(steps > 0 and "previous" or "next") end,
+    spacing = 6,
     children = {
-        row {
-            spacing = 6,
-            children = {
-                icon { name = play_glyph, size = 14, foreground = "#cdd6f4", align_v = "Center" },
-                text {
-                    max_width = 240,
-                    elide = "End",
-                    foreground = "#cdd6f4",
-                    content = player:map(function(current)
-                        if current == nil or current.title == "" then return "" end
-                        return current.artist ~= "" and current.artist .. " — " .. current.title or current.title
-                    end),
-                },
-            },
+        icon { name = play_glyph, size = 14, foreground = "#cdd6f4", align_v = "Center" },
+        text {
+            max_width = 240,
+            elide = "End",
+            foreground = "#cdd6f4",
+            content = player:map(function(current)
+                if current == nil or current.title == "" then return "" end
+                return current.artist ~= "" and current.artist .. " — " .. current.title or current.title
+            end),
         },
     },
 }
 
-local progress = button {
+local progress = rect {
     width = "Fill",
     height = 6,
     radius = 3,

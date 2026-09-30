@@ -39,7 +39,7 @@ CSS class, so every tag still highlights as Lua.
 A widget example needs no surface around it:
 
 ```lua
-button {
+rect {
     padding = 6,
     on_click = function() print("clicked") end,
     children = { text { content = "Click" } },

@@ -20,7 +20,7 @@ local bar = panel {
     child = row {
         width = "Fill", height = "Fill", background = "#1e1e2e",
         children = {
-            button {
+            rect {
                 padding = 8,
                 on_click = function(rect)
                     menu_anchor:set(rect)
@@ -127,7 +127,7 @@ left near the screen edge:
 local sub_open = state("sub_open", false)
 local sub_anchor = state("sub_anchor", { x = 0, y = 0, width = 1, height = 1 })
 
-local power_row = button {
+local power_row = rect {
     padding = 4,
     on_click = function(rect)
         sub_anchor:set(rect)

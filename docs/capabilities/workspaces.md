@@ -132,7 +132,7 @@ list {
             local output = workspaces and workspaces.outputs[1]
             return output ~= nil and output.active_workspace == workspace.id
         end)
-        return button {
+        return rect {
             padding = { left = 8, right = 8 },
             radius = 6,
             background = active:map(function(is_active) return is_active and "#89B4FA" or "#313244" end),

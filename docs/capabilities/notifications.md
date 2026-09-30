@@ -5,7 +5,7 @@
 The notification server: the newest 20 notifications and do-not-disturb.
 
 ```lua
-button {
+rect {
     on_click = function()
         local notifications = mantle.notifications:get()
         if notifications then
@@ -126,19 +126,15 @@ list {
     end),
     key = function(item) return tostring(item.id) end,
     itemfn = function(item)
-        return button {
+        return column {
             width = 320,
             padding = 8,
             radius = 8,
             background = "#1E1E2E",
             on_click = function() mantle.notifications:dismiss(item.id) end,
             children = {
-                column {
-                    children = {
-                        text { content = item.summary, font_size = 13, elide = "End", width = "Fill" },
-                        text { content = item.app_name, font_size = 11, foreground = "#A6ADC8" },
-                    },
-                },
+                text { content = item.summary, font_size = 13, elide = "End", width = "Fill" },
+                text { content = item.app_name, font_size = 11, foreground = "#A6ADC8" },
             },
         }
     end,

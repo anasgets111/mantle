@@ -19,7 +19,7 @@ local tooltip_text = mantle.system:map(function(system)
     return system and os.date("%A, %d %B %Y", system.time) or ""
 end)
 
-local clock = button {
+local clock = rect {
     align_v = "Center",
     padding = { left = 10, right = 10, top = 4, bottom = 4 },
     radius = 6,

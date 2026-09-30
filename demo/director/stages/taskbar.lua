@@ -22,7 +22,7 @@ local bar = list {
     source = windows:map(function(w) return w.windows end),
     key = function(w) return w.id end,
     itemfn = function(w)
-        return button {
+        return rect {
             geometry = target("task:" .. w.id),
             height = 44,
             padding = { left = 10, right = w.focused and 16 or 10 },

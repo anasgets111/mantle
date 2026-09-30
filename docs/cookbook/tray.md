@@ -52,7 +52,7 @@ local tray_items = list {
     end),
     key = function(item) return item.id end,
     itemfn = function(item)
-        return button {
+        return rect {
             padding = 4,
             radius = 6,
             on_click = function(rect, which)
@@ -122,7 +122,7 @@ local function menu_row(row_data)
     end
     local mark = marker(entry)
     local row_hover = hover("tray_menu_row_" .. entry.id .. "_" .. row_data.depth)
-    return button {
+    return row {
         width = "Fill",
         padding = { top = 6, bottom = 6, left = indent, right = 8 },
         radius = 6,
@@ -144,16 +144,11 @@ local function menu_row(row_data)
                 close_menu()
             end
         end,
+        spacing = 8,
         children = {
-            row {
-                width = "Fill",
-                spacing = 8,
-                children = {
-                    icon { name = entry.icon_name or "", size = 14, foreground = "#cdd6f4", visible = entry.icon_name ~= nil, align_v = "Center" },
-                    text { content = strip_mnemonic(entry.label), width = "Fill", elide = "End", foreground = "#cdd6f4" },
-                    text { content = mark, visible = mark ~= "", foreground = "#a6adc8" },
-                },
-            },
+            icon { name = entry.icon_name or "", size = 14, foreground = "#cdd6f4", visible = entry.icon_name ~= nil, align_v = "Center" },
+            text { content = strip_mnemonic(entry.label), width = "Fill", elide = "End", foreground = "#cdd6f4" },
+            text { content = mark, visible = mark ~= "", foreground = "#a6adc8" },
         },
     }
 end

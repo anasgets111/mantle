@@ -31,7 +31,7 @@ local image_node = image {
 
 local function thumbnail(entry)
     local chosen = current:map(function(name) return name == entry.name end)
-    return button {
+    return rect {
         geometry = target("thumb:" .. entry.name),
         padding = 4,
         radius = 18,

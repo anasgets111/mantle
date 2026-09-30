@@ -18,7 +18,7 @@ local workspaces = list {
     end),
     key = function(w) return tostring(w.id) end,
     itemfn = function(w)
-        return button {
+        return rect {
             width = w.active and 68 or 40,
             height = 40,
             radius = 20,

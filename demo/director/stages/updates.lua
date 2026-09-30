@@ -117,7 +117,7 @@ local popover = panel {
                 out[#out + 1] = package_row(p)
             end
             if not u.installing and u.count > 0 then
-                out[#out + 1] = button {
+                out[#out + 1] = rect {
                     geometry = target("updates:install"),
                     width = "Fill",
                     height = 56,

@@ -20,7 +20,7 @@ local workspaces = list {
     end),
     key = function(w) return tostring(w.id) end,
     itemfn = function(w)
-        return button {
+        return rect {
             width = w.active and 68 or 40,
             height = 40,
             radius = 20,
@@ -70,19 +70,15 @@ local launcher = panel {
         source = apps,
         key = function(app) return app.id end,
         itemfn = function(app)
-            return button {
+            return row {
                 width = "Fill",
                 padding = 12,
                 radius = 12,
                 on_click = function() mantle.applications:launch(app.id) end,
+                spacing = 14,
                 children = {
-                    row {
-                        spacing = 14,
-                        children = {
-                            icon { name = app.icon or "application-x-executable", size = 36 },
-                            text { content = app.name, align_v = "Center", font_size = 22 },
-                        },
-                    },
+                    icon { name = app.icon or "application-x-executable", size = 36 },
+                    text { content = app.name, align_v = "Center", font_size = 22 },
                 },
             }
         end,

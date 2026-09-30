@@ -267,7 +267,7 @@ return { dock }
 
 ### Close an overlay on an outside click
 
-A full-screen panel with a transparent `button` as its first child catches clicks everywhere; the
+A full-screen panel with a transparent `rect` as its first child catches clicks everywhere; the
 card, declared after it, is on top and takes its own clicks:
 
 ```lua
@@ -285,7 +285,7 @@ local overlay = panel {
         width = "Fill",
         height = "Fill",
         children = {
-            button { width = "Fill", height = "Fill", on_click = function() open:set(false) end },
+            rect { width = "Fill", height = "Fill", on_click = function() open:set(false) end },
             column {
                 width = 320, padding = 16, radius = 12, background = "#1e1e2e",
                 margin = { top = 40, left = 40 },

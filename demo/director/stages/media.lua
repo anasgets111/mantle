@@ -53,7 +53,7 @@ local chip = rect {
 }
 
 local function control(name, glyph, size, primary)
-    return button {
+    return rect {
         geometry = target("media:" .. name),
         width = primary and 72 or 56,
         height = primary and 72 or 56,

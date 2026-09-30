@@ -104,7 +104,7 @@ local results = list {
     source = matches,
     key = function(entry) return entry.id end,
     itemfn = function(entry)
-        return button {
+        return row {
             width = "Fill",
             padding = 8,
             radius = 8,
@@ -114,26 +114,21 @@ local results = list {
                 return picked and picked.id == entry.id and "#45475a" or "#00000000"
             end),
             on_click = function() launch(entry) end,
+            spacing = 12,
             children = {
-                row {
+                icon { name = entry.icon or "application-x-executable", size = 32, align_v = "Center" },
+                column {
                     width = "Fill",
-                    spacing = 12,
+                    align_v = "Center",
                     children = {
-                        icon { name = entry.icon or "application-x-executable", size = 32, align_v = "Center" },
-                        column {
+                        text { content = entry.name, width = "Fill", elide = "End", font_size = 14, foreground = "#cdd6f4" },
+                        text {
+                            content = entry.comment or entry.generic_name or "",
+                            visible = (entry.comment or entry.generic_name) ~= nil,
                             width = "Fill",
-                            align_v = "Center",
-                            children = {
-                                text { content = entry.name, width = "Fill", elide = "End", font_size = 14, foreground = "#cdd6f4" },
-                                text {
-                                    content = entry.comment or entry.generic_name or "",
-                                    visible = (entry.comment or entry.generic_name) ~= nil,
-                                    width = "Fill",
-                                    elide = "End",
-                                    font_size = 11,
-                                    foreground = "#a6adc8",
-                                },
-                            },
+                            elide = "End",
+                            font_size = 11,
+                            foreground = "#a6adc8",
                         },
                     },
                 },
@@ -160,7 +155,7 @@ return {
             background = "#11111b80",
             children = {
                 -- Catches clicks outside the card.
-                button { width = "Fill", height = "Fill", on_click = close },
+                rect { width = "Fill", height = "Fill", on_click = close },
                 column {
                     width = 560,
                     align_h = "Center",
@@ -202,7 +197,7 @@ launcher_open` on Hyprland or `Mod+Space { spawn "mantle" "toggle" "launcher_ope
 - `scroll(name):reveal(index)` keeps the selected row in view inside the `max_height` list ([scroll](../guide/input.md#scroll), [list](../nodes/list.md)).
 - `reset_on_close` returns the query, the selection and the scroll to their start whenever the launcher closes, including by `mantle toggle` ([reset on close](../surfaces/index.md#reset-on-close)).
 - `"Exclusive"` hands the panel the keyboard when it maps, and `autofocus` gives it to the field ([keyboard focus](../surfaces/panel.md#keyboard-focus)).
-- A full-size transparent `button` under the card closes it on an outside click ([close an overlay](../surfaces/panel.md#close-an-overlay-on-an-outside-click)).
+- A full-size transparent `rect` under the card closes it on an outside click ([close an overlay](../surfaces/panel.md#close-an-overlay-on-an-outside-click)).
 
 ## Variations
 

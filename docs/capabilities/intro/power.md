@@ -5,7 +5,7 @@ list {
         return power and power.profiles or {}
     end),
     itemfn = function(name)
-        return button {
+        return rect {
             padding = 6,
             background = mantle.power:map(function(power)
                 return (power and power.active_profile == name) and "#89B4FA" or "#313244"

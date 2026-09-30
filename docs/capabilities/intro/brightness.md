@@ -1,7 +1,7 @@
 Scroll to change the brightness by 5% a notch:
 
 ```lua
-button {
+rect {
     on_wheel = function(_, steps)
         local brightness = mantle.brightness:get()
         if brightness then

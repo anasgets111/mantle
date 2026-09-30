@@ -46,7 +46,7 @@ local clock_24h = settings.clock_24h:map(function(value) return value ~= false e
 
 return panel {
     id = "clock", layer = "Top", anchor = { top = true },
-    child = button {
+    child = rect {
         on_click = function() settings:set("clock_24h", not clock_24h:get()) end,
         children = {
             text { content = clock_24h:map(function(on) return on and "24h" or "12h" end) },

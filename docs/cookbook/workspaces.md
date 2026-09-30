@@ -32,7 +32,7 @@ local function focus_step(name, step)
 end
 
 local function strip(name)
-    return button {
+    return rect {
         align_v = "Center",
         -- Wheel up is positive; step towards lower numbers.
         on_wheel = function(_, steps) focus_step(name, steps > 0 and -1 or 1) end,
@@ -56,7 +56,7 @@ local function strip(name)
                 end),
                 key = function(item) return tostring(item.id) end,
                 itemfn = function(item)
-                    return button {
+                    return rect {
                         width = item.active and 36 or 22,
                         height = 20,
                         radius = 10,
@@ -90,7 +90,7 @@ local specials = list {
     key = function(special) return special.name end,
     itemfn = function(special)
         local short = special.name:gsub("^special:?", "") -- "special:scratch" -> "scratch"
-        return button {
+        return rect {
             padding = { left = 8, right = 8, top = 2, bottom = 2 },
             radius = 10,
             background = special.shown_on and "#f9e2af" or "#313244",
@@ -134,7 +134,7 @@ return {
 - `outputs[].name` matches that connector; `active_workspace` is the `id` shown there ([workspaces](../capabilities/workspaces.md)).
 - The `list` rebuilds its buttons from the mapped array, and `key` keeps each button's tweens when workspaces come and go ([list](../nodes/list.md)).
 - Labels draw `idx` and clicks send `id`: niri's ids are opaque ([workspaces gotchas](../capabilities/workspaces.md#gotchas)).
-- `on_wheel` on the outer button reads the live state with `:get()` inside the handler ([pointer](../guide/input.md#pointer)).
+- `on_wheel` on the outer `rect` reads the live state with `:get()` inside the handler ([pointer](../guide/input.md#pointer)).
 - The `width` tween makes the active pill grow in place ([animation](../guide/animation.md)).
 
 ## Variations
