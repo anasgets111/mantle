@@ -32,10 +32,16 @@ local function focus_step(name, step)
 end
 
 local function strip(name)
+    local wheel = 0 -- partial notches from a touchpad or high-resolution wheel
     return rect {
         align_v = "Center",
-        -- Wheel up is positive; step towards lower numbers.
-        on_wheel = function(_, steps) focus_step(name, steps > 0 and -1 or 1) end,
+        -- Wheel up is positive; step towards lower numbers, once per whole notch.
+        on_wheel = function(_, steps)
+            wheel = wheel + steps
+            if math.abs(wheel) < 1 then return end
+            focus_step(name, wheel > 0 and -1 or 1)
+            wheel = 0
+        end,
         children = {
             list {
                 direction = "Horizontal",

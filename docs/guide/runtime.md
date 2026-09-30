@@ -337,7 +337,7 @@ the top level every time.
 | A map raises `exceeded the 2.5ms CPU budget` | Move the heavy work to the top level or to `process.run`. The map should only index and format |
 | `dofile("/big/file")` stutters every frame it runs | Read files through `process.run` or `persistent_table` |
 | A global counter keeps growing across reloads | Globals live in the VM, and a reload reuses the VM. Use `local`, or `state` when it should persist on purpose |
-| After a broken save, `mantle call` says no action exists | A failed reload clears actions, timers and handlers. Fix the error and save again |
+| After a broken save, `mantle call` says no action exists | A failed evaluation clears actions, timers and handlers; a failed apply keeps the new actions. Fix the error and save again |
 | A config edit to `fonts { ... }` does nothing | The font chain is read when the Renderer starts. Restart the shell |
 | Saving a `.json` or an image beside `shell.lua` does not reload | Only `.lua` and `.frag` changes trigger a reload |
 

@@ -116,6 +116,65 @@ BlueZ on the system bus.
 | Battery, category | `Battery1` gives `battery`; the `Class` major and minor bits give `category` |
 | Codecs | PipeWire owns them: [`audio`](audio.md)`.bluetooth` lists each device's profiles and `set_bluetooth_profile` switches one |
 
+## How do I…
+
+### Pair a new device
+
+Scan, `pair` a discovered device, then answer the `pairing_request` it raises. A `"display"`
+request only shows a code to type on the device; the others take a yes or no, and a yes within
+750 ms of the prompt appearing is ignored so a stray click cannot accept it:
+
+```lua
+local function answer(accept)
+    return function()
+        local bluetooth = mantle.bluetooth:get()
+        local request = bluetooth and bluetooth.pairing_request
+        if request then
+            mantle.bluetooth:answer_pairing(request.mac, accept)
+        end
+    end
+end
+
+local function button(label, on_click)
+    return rect { padding = 4, on_click = on_click, children = { text { content = label } } }
+end
+
+return column {
+    spacing = 6,
+    children = {
+        button("Scan", function() mantle.bluetooth:start_discovery() end),
+        list {
+            source = mantle.bluetooth:map(function(bluetooth)
+                return bluetooth and bluetooth.discovered_devices or {}
+            end),
+            key = function(device) return device.mac end,
+            itemfn = function(device)
+                return button(device.name ~= "" and device.name or device.mac, function()
+                    mantle.bluetooth:pair(device.mac)
+                end)
+            end,
+        },
+        text {
+            content = mantle.bluetooth:map(function(bluetooth)
+                local request = bluetooth and bluetooth.pairing_request
+                if request == nil then
+                    return ""
+                end
+                return string.format("%s (%s) %s", request.name, request.kind, request.code or "")
+            end),
+        },
+        row {
+            visible = mantle.bluetooth:map(function(bluetooth)
+                local request = bluetooth and bluetooth.pairing_request
+                return request ~= nil and request.kind ~= "display"
+            end),
+            spacing = 6,
+            children = { button("Yes", answer(true)), button("No", answer(false)) },
+        },
+    },
+}
+```
+
 ## Gotchas
 
 | Trap | Fix |

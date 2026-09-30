@@ -137,7 +137,9 @@ range clamp above catches it; `Bounce` stays inside the range.
 A spring has no duration: `stiffness` and `damping` decide how it settles. Use one for a target
 that changes mid-flight, like a held volume key or a pointer-following highlight. The spring
 carries its velocity into the new motion; an eased tween restarts from a standstill and lags
-behind. A spring that replaces an eased tween starts at rest.
+behind. The carried velocity is capped at 100 times the new distance per second, so a target set
+almost where the value already is cannot fling it past. A spring that replaces an eased tween starts
+at rest.
 
 | Damping | Behaviour |
 | :--- | :--- |

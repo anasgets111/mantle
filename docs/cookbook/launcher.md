@@ -1,7 +1,7 @@
 # App launcher
 
 A centred search overlay for installed apps. Typing ranks desktop entries with fzf's scorer, the
-arrow keys move the selection, Enter or a click launches, and Escape or a click outside closes it.
+arrow keys move the selection, Enter or a click launches, Escape clears the query, then closes on a second press, and a click outside closes it.
 Open it from a compositor keybind with `mantle toggle launcher_open`.
 
 <!-- shot-alt: An app search overlay listing matches beneath a search field. -->

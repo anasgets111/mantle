@@ -111,7 +111,7 @@ return rect {
 | Change only | A write of the held value runs nothing, nor does a change undone before the handlers run. Declaring the state, and a reload re-seeding it, run nothing |
 | Chains | A handler may write state, which runs that state's handlers next. After 8 rounds the rest are dropped with a logged error, so two handlers undoing each other stop |
 | Failure | Each handler runs under the [CPU budget](runtime.md#limits-and-budgets). A raise is logged; the value stays written and the other handlers still run |
-| Reload | Handlers are dropped before each evaluation, which registers them again. Several per state are allowed |
+| Reload | Handlers are dropped before each evaluation, which registers them again. Several per state are allowed, and none can be removed: a call inside a callback adds another handler each time it runs, until the next reload |
 | Kinds | State signals and [capabilities](../capabilities/index.md) only. On a derived, hover, scroll or geometry signal it raises |
 
 Derived signals (`:map`, `computed`, `delay`, `pulse`) have no name. Each evaluation builds them
@@ -287,7 +287,7 @@ builds fresh. Give each view its own `id`: [switching views with ids](../nodes/i
 | Expression | Returns | Contract |
 | :--- | :--- | :--- |
 | `sig:get()` | value | The current value, read once. `nil` before a capability's first push |
-| `sig:map(fn)` | signal | `fn(value)`, run again on every read. Works on capabilities |
+| `sig:map(fn)` | signal | `fn(value)`, run again when read, at most once per layout pass. Works on capabilities |
 | `sig:set(value)` | nothing | State signals only; see [who writes each kind](#who-writes-each-kind) |
 | `sig:reveal(index)` | nothing | `scroll` signals only; scrolls the `index`-th child into view ([input](input.md)) |
 | `sig:on_change(fn)` | nothing | State signals and capabilities only; `fn(current, previous)` after each change ([state](#on_change-react-to-a-write), [capabilities](../capabilities/index.md)) |
@@ -346,16 +346,8 @@ again after changing it in place is a write.
 
 | Task | Answer |
 | :--- | :--- |
-| Show a live clock | [The one rule](#the-one-rule) |
-| Colour a node from a capability | [Derived signals](#derived-signals) |
-| Derive one value from two capabilities | [Below](#derive-from-two-capabilities) |
-| Debounce a search field | [Below](#debounce-a-search) |
 | Open a dropdown under a button | [Dismissal](../surfaces/popup.md) |
-| Keep a popup mapped while its exit plays | [delay](#delay-hold-a-value) |
-| Flash a node when a value changes | [pulse](#pulse-mark-a-change) |
-| Open or close UI from a compositor keybind | [Below](#drive-ui-from-a-keybind) |
 | Switch tabs | [Switching views with ids](../nodes/index.md#switching-views-with-ids) |
-| Size one node from another's layout | [geometry](#geometry-read-a-nodes-laid-out-rect) |
 | Keep a toggle across shell restarts | Named state is lost with the Renderer; use `persistent_table` ([scripting](scripting.md)) |
 | Run a side effect when a capability or a state changes | `on_change` ([state](#on_change-react-to-a-write), [capabilities](../capabilities/index.md)), never a map |
 

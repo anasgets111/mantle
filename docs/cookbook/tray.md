@@ -52,6 +52,7 @@ local tray_items = list {
     end),
     key = function(item) return item.id end,
     itemfn = function(item)
+        local wheel = 0 -- partial notches from a touchpad or high-resolution wheel
         return rect {
             padding = 4,
             radius = 6,
@@ -69,7 +70,10 @@ local tray_items = list {
                 end
             end,
             on_wheel = function(_, steps)
-                mantle.tray:scroll(item.id, steps > 0 and 1 or -1, "vertical")
+                wheel = wheel + steps
+                if math.abs(wheel) < 1 then return end
+                mantle.tray:scroll(item.id, wheel > 0 and 1 or -1, "vertical")
+                wheel = 0
             end,
             children = { artwork(item) },
         }
@@ -204,7 +208,7 @@ return {
 - `on_click` gets the button's rect and the mouse button; the rect goes straight into the popup's `anchor_rect` ([pointer](../guide/input.md#pointer), [popup](../surfaces/popup.md)).
 - The popup grabs the pointer, so an outside click dismisses it and `on_dismiss` clears the state ([dismissal](../surfaces/popup.md#dismissal)).
 - `menu_will_show` notifies apps when a menu opens (id `0`) or a submenu expands (`entry.id`), letting apps that build items lazily populate them.
-- Right-clicking an item with no DBusMenu calls `context_menu` at the button's bottom centre so native menus still appear. The coordinates are the bar's own, not the screen's.
+- Right-clicking an item with no DBusMenu calls `context_menu` at the button's bottom centre so native menus still appear. The coordinates are the bar's own: a layer surface cannot learn its screen position, so they match the screen only for a top bar on the output at the screen's origin.
 
 ## Variations
 

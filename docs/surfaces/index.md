@@ -42,16 +42,11 @@ return { bar }
 
 ## Properties every role takes
 
-Every surface takes `id` (required) and one `child` node. The root is itself a box node, so it
+Every surface takes `id` (required), one `child` node and, except `lock`, `visible`; each role's
+page has their table. The root is itself a box node, so it
 also takes the [common and box node properties](../nodes/index.md): its own `background`, `radius`,
 `padding`, `border_*`, [paint](../guide/paint.md) and [`animate`](../guide/animation.md). Any other
 key is refused, and the error names the closest accepted one or, with none close, lists them all.
-
-| Property | Values | Default | Behaviour |
-| :--- | :--- | :--- | :--- |
-| `id` | String | Required | The surface's identity across reloads and the prefix of its instance ids. Structural. Unique across every role; a duplicate is refused |
-| `child` | One node; `function(output)` on a `panel` or `lock` ([per-output child](#per-output-child)) | None | The root's one child. `nil` leaves the surface empty |
-| `visible` | Boolean or signal | `true` | Creates and destroys the protocol object, not a hidden map. Retained state and `id` survive. `lock` refuses it |
 
 ### The surface root
 

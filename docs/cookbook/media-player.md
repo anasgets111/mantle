@@ -32,6 +32,9 @@ local player = mantle.mpris:map(pick)
 
 mantle.mpris:on_change(function(mpris)
     local players = mpris and mpris.players or {}
+    if #players == 0 then
+        card_open:set(false) -- so the next player to appear does not reopen the card
+    end
     for _, candidate in ipairs(players) do
         if candidate.play_state == "Playing" then
             selected_player:set(candidate.id)

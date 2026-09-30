@@ -33,7 +33,8 @@ text {
 
 ### Ask for a Wi-Fi password
 
-Show the field while `password_ssid` is set. Escape clears a secure field and keeps it armed, then
+A click on an `available_networks` entry calls `mantle.network:connect(entry.ssid, false)`; a secured one without a
+saved profile then sets `password_ssid`. Show the field while it is set. Escape clears a secure field and keeps it armed, then
 calls its `on_cancel`, the place to call `cancel_connect`:
 
 ```lua

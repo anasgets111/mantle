@@ -225,73 +225,31 @@ return panel {
 }
 ```
 
+A search field that picks from a list moves the selection with `on_navigate` and closes on a second
+Escape. The [app launcher](../cookbook/launcher.md) recipe is the full version.
+
 ```lua
-local APPS = { "firefox", "foot", "nautilus", "pavucontrol", "thunderbird", "zed" }
 local query = state("query", "")
 local selected = state("selected", 1)
-local LIST = scroll("results")
 local open = state("launcher_open", true)
 
-local results = query:map(function(needle)
-    local found = {}
-    for _, app in ipairs(APPS) do
-        if fuzzy(app, needle) then found[#found + 1] = app end
-    end
-    return found
-end)
-
-local function pick(index)
-    selected:set(index)
-    LIST:reveal(index)
-end
-
-local search = textfield {
-    width = "Fill",
+return textfield {
+    width = 240,
     height = 32,
     placeholder = "Search apps",
     autofocus = true,
     on_change = function(text)
         query:set(text)
-        pick(1)
+        selected:set(1)
     end,
-    on_submit = function()
-        local app = results:get()[selected:get()]
-        if app then process.detach(app, {}) end
+    on_navigate = function(key)
+        local step = ({ up = -1, down = 1 })[key]
+        if step then selected:set(math.max(1, selected:get() + step)) end
     end,
     -- First Escape clears the text; a second one, on an empty field, closes.
     on_cancel = function(cleared)
         if not cleared then open:set(false) end
     end,
-    on_navigate = function(key)
-        local step = ({ up = -1, down = 1 })[key]
-        if step then pick(math.max(1, math.min(#results:get(), selected:get() + step))) end
-    end,
-}
-
-local function app_row(app)
-    return row {
-        width = "Fill",
-        padding = 6,
-        background = computed({ results, selected }, function(found, index)
-            return found[index] == app and "#45475a" or nil
-        end),
-        children = { text { content = app } },
-    }
-end
-
-return panel {
-    id = "launcher",
-    layer = "Overlay",
-    keyboard_interactivity = "OnDemand",
-    width = 320,
-    visible = open,
-    child = column {
-        width = "Fill",
-        children = {
-            search,
-            list { width = "Fill", height = 120, scroll = LIST, source = results, itemfn = app_row, key = function(app) return app end },
-        },
-    },
 }
 ```
 

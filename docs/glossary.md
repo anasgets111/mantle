@@ -19,11 +19,11 @@ scope, capability roster) lives in [`CONTEXT.md`](../CONTEXT.md).
 | Term | Meaning |
 | :--- | :--- |
 | **Evaluation** | One run of `shell.lua` and the modules it `require`s, producing the surface list. |
-| **In-place reload** | A re-evaluation in the same generation and VM after a saved `.lua` or `.frag` file or an output change, then one apply: the scene is reconciled, and surfaces whose fingerprint changed are destroyed or created. See [runtime](guide/runtime.md#evaluation-reload-and-generations). |
+| **In-place reload** | A re-evaluation in the same generation and VM, then one apply. See [runtime](guide/runtime.md#evaluation-reload-and-generations). |
 | **Surface fingerprint** | A declaration's creation-time fields (panel: `id`, `layer`, `anchor`, `monitor`, `namespace`; other roles: `id`). A change rebuilds that surface; other edits update it live. |
 | **Evaluation-scoped registration** | `action`, `on_change` (capability and `state`) and idle-threshold callbacks, cleared before each evaluation because they close over its locals. The `timer`s an evaluation arms go live only when its result applies. See [what survives a reload](guide/runtime.md#what-survives-a-reload). |
-| **Rollback** | A failed evaluation or apply keeps the previous scene and surfaces. A failed evaluation drops the timers, actions and change handlers it registered; a failed apply drops only its timers. |
-| **Rescue** | [`mantle.rescue`](capabilities/index.md#renderer-members), `{ is_rescue, error_log }`: set by a failed evaluation, apply or live update, or a refused or lost session lock; cleared by the next reload that applies. A failed startup apply or live update also clears when a later pass applies. |
+| **Rollback** | A failed evaluation or apply keeps the previous scene. What stays registered: [runtime](guide/runtime.md#evaluation-reload-and-generations). |
+| **Rescue** | [`mantle.rescue`](capabilities/index.md#renderer-members), `{ is_rescue, error_log }`, set while the shell runs on a scene it could not replace. See [runtime](guide/runtime.md#evaluation-reload-and-generations). |
 
 ## Surfaces
 

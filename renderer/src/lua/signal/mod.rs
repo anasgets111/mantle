@@ -343,9 +343,8 @@ impl Signal {
         self.cell().map(|(id, _)| id)
     }
 
-    /// `map(f)` as a one-dependency `Computed`, recomputed on every read (ADR-0044 decision 3).
-    /// Shared by
-    /// Lua and Rust so `lua::capability::Capability` makes `mantle.lock` read like bare
+    /// `map(f)` as a one-dependency `Computed`, memoized per layout pass like any `Computed`.
+    /// Shared by Lua and Rust so `lua::capability::Capability` makes `mantle.lock` read like bare
     /// capabilities.
     pub(crate) fn mapped(lua: &Lua, source: mlua::AnyUserData, func: Function) -> mlua::Result<mlua::AnyUserData> {
         new_derived(lua, SignalKind::Computed { out: Output::new(), arity: 1 }, Some(func), vec![source])

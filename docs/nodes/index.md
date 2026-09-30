@@ -48,17 +48,17 @@ Every kind accepts the [common properties](#common-properties). Box kinds also a
 [box properties](#box-properties). Any other key raises an error: a typo such as `aling_v` asks
 "did you mean `align_v`?", and a key close to nothing lists what the kind accepts.
 
-| Kind | Page | Box | Children | Own properties |
-| :--- | :--- | :---: | :--- | :--- |
-| `rect` | [rect](rect.md) | ✓ | Stacked | `children` |
-| `row`, `column` | [row and column](row-column.md) | ✓ | Flow | `children`, `spacing`, `scroll` |
-| `list` | [list](list.md) | | Flow, from data | `source`, `itemfn`, `key`, `limit`, `direction`, `spacing`, `scroll` |
-| `text` | [text](text.md) | | Leaf | `content`, `font`, `font_size`, `line_height`, `letter_spacing`, `font_weight`, `italic`, `foreground`, `text_align`, `wrap`, `max_lines`, `elide`, `on_link` |
-| `icon` | [icon](icon.md) | | Leaf | `name`, `size`, `foreground` |
-| `image` | [image](image.md) | | Leaf | `source`, `fit`, `async`, `retain`, `transition`, `source_blur` |
-| `capture` | [capture](capture.md) | | Leaf | `output`, `fit`, `live`, `region`, `paint_cursor` |
-| `shader` | [shader](shader.md) | | Leaf | `source`, `progress`, `params` |
-| `textfield` | [textfield](textfield.md) | | Leaf | `focus`, `placeholder`, `font_size`, `foreground`, `text_align`, `autofocus`, `on_change`, `on_submit`, `on_cancel`, `on_navigate`, `secure_submit`, `mask_character` |
+| Kind | Page | Box | Children |
+| :--- | :--- | :---: | :--- |
+| `rect` | [rect](rect.md) | ✓ | Stacked |
+| `row`, `column` | [row and column](row-column.md) | ✓ | Flow |
+| `list` | [list](list.md) | | Flow, from data |
+| `text` | [text](text.md) | | Leaf |
+| `icon` | [icon](icon.md) | | Leaf |
+| `image` | [image](image.md) | | Leaf |
+| `capture` | [capture](capture.md) | | Leaf |
+| `shader` | [shader](shader.md) | | Leaf |
+| `textfield` | [textfield](textfield.md) | | Leaf |
 
 The four surface roles (`panel`, `window`, `popup`, `lock`) are node kinds too: they take the common
 and box properties and stack their one `child` ([surfaces](../surfaces/index.md)).

@@ -22,16 +22,6 @@ rect {
 }
 ```
 
-Each player may also expose `track_list` and `playlists`. `track_list.tracks` contains at most 100
-entries around the current track, each with an id, title, artist, and length. The full playlist
-remains player-owned. `playlists.playlists` contains a page of at most 100 entries. Call
-`playlists_get(id, index, count, order, reverse)` to fetch another page, and
-`playlists_activate(id, playlist_id)` to activate one. `track_list_add_track`,
-`track_list_remove_track`, and `track_list_go_to` call the corresponding TrackList methods.
-
-Each player also exposes `album`, `album_artist`, and `genre`. Artist and genre arrays are joined
-with `", "`; missing metadata is an empty string.
-
 <!-- reference -->
 
 ## Backend

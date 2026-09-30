@@ -503,17 +503,9 @@ blur does not fade with `opacity`, so a fading scrim would blur at full strength
 
 | Trap | Fix |
 | :--- | :--- |
-| A shadow is cut off at one edge | The parent clips it. Pad the parent, or set `clip = "None"` on it |
-| `backdrop_blur` shows no desktop behind a translucent panel | It only reads this surface's pixels. Use `blur = true` |
-| `blur = true` does nothing | The compositor lacks `ext-background-effect-v1` or its blur capability. No error is raised |
-| A `blur = true` box fades out but its blur stays at full strength | The blur region ignores `opacity` until it reaches 0. Dim with a translucent colour, or let the blurred box pop |
-| A per-edge border or a border on a scoop has square corners | Only a uniform border follows `radius`, and a scoop's border is always square |
-| A border covers content | Borders take no layout space. Add padding at least the border's width |
 | `clip = "Rounded"` changes nothing | It needs a non-zero `radius`, and only clips children |
-| Children still clipped with `clip = "None"` and a `mask` | A mask always cuts to its box |
 | A gradient or a per-edge `border_color` jumps instead of easing under `animate` | Only single colours ease; see [Animation](animation.md) |
 | Rounded corners, scoops and masks still take clicks in the cut-away area | Hit-testing uses the rectangle. Shrink the clickable node or accept it |
-| A signal inside a gradient stop or border edge is refused | Map the whole table: `background = accent:map(function(c) return { gradient = "Linear", stops = { { 0, c }, { 1, "#00000000" } } } end)` |
 
 See also: [nodes](../nodes/index.md), [surfaces](../surfaces/index.md), [animation](animation.md), [input](input.md#hit-testing), [glossary](../glossary.md).
 

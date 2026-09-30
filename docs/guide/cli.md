@@ -129,7 +129,7 @@ name `MANTLE_LOG` filters on (`renderer/wayland: ...` is `wayland`).
 | :--- | :--- | :--- |
 | `MANTLE_CONFIG_DIR` | Every command | The config directory, below `-c` in [precedence](#which-config-and-which-shell) |
 | `XDG_CONFIG_HOME`, `HOME` | Every command | The default config directory, `$XDG_CONFIG_HOME/mantle` or `~/.config/mantle` |
-| `XDG_RUNTIME_DIR` | Run, `list`, `log`, `set`, `toggle`, `call` | Required. Instance directories live under `$XDG_RUNTIME_DIR/mantle/` |
+| `XDG_RUNTIME_DIR` | Run, `list`, `log`, `set`, `toggle`, `call`, `stop` | Required. Instance directories live under `$XDG_RUNTIME_DIR/mantle/` |
 | `XDG_DATA_HOME` | `init` | Where stubs go when no package provides them. Default `~/.local/share` |
 | `MANTLE_LOG` | Run | Log filter, as above. Overrides the `-v` level |
 | `MANTLE_DUMP_LAYOUT=<instance>` | Run, with `-vvv` | Logs every visible node's kind, rect and text on that surface instance (`bar@eDP-1`) after each layout pass |
@@ -326,7 +326,7 @@ value, and a non-zero exit means it failed.
 | :--- | :--- |
 | `mantle set label true` stores a boolean, `mantle set count 3` a number | Quote JSON strings: `mantle set label '"true"'` |
 | `mantle toggle modal` is refused on a string state | A bare toggle needs a boolean. Pass the value: `mantle toggle modal settings` |
-| `mantle call x` says no action exists after a broken save | A failed reload clears actions. Fix the config and save ([runtime](runtime.md#evaluation-reload-and-generations)) |
+| `mantle call x` says no action exists after a broken save | A Lua error in the config clears actions until an evaluation succeeds. Fix the config and save ([runtime](runtime.md#evaluation-reload-and-generations)) |
 | `mantle -c dir list` is refused | `list` shows every config's shells; drop `-c` |
 | `mantle log -f` exits at once | That shell has stopped. The command printed its last run |
 | `XDG_RUNTIME_DIR is not set` | The command runs in an environment without it. Start the compositor from a proper login session |
