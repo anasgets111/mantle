@@ -85,7 +85,7 @@ other type, such as an `int` or a `sampler2D`, refuses the whole shader.
 | Loop an animation | `animate = { progress = { keyframes = { 0, 1 }, duration = 2000, loops = "Infinite" } }` ([keyframes](../guide/animation.md#keyframes)) |
 | Pass a colour | A `vec3` or `vec4` uniform, `params = { tint = { r, g, b } }` in `0..1` |
 | Work in pixels | `v_uv * u_size` is the fragment's position in logical px |
-| Click a shader | Wrap it in a [`button`](button.md) |
+| Click a shader | Give it `on_click`; without a handler it is transparent to the pointer |
 | Round its corners | Wrap it in a `rect` with `radius` and `clip = "Rounded"` ([clip](../guide/paint.md#clip)) |
 
 ## Gotchas

@@ -1,7 +1,8 @@
 # button
 
-A box that takes clicks, left-button drags and the wheel; no other kind has these handlers. It
-stacks its children like a [`rect`](rect.md), so put a `row` inside for an icon beside a label.
+A [`rect`](rect.md) by another name: it stacks its children, and its `on_click`, `on_drag`,
+`on_wheel` and `submit` are the [common](index.md#common-properties) ones every node takes. Put
+them on a `rect`, `row` or `column` instead; `button` is going away.
 Which button wins, when a click cancels and when a drag ends are on [input](../guide/input.md#pointer).
 
 A volume chip: left click mutes, the wheel changes the level.
@@ -34,17 +35,12 @@ return mute_button
 ## Properties
 
 `button` takes the [common](index.md#common-properties) and [box](index.md#box-properties)
-properties, plus the ones below. `rect` in the callbacks is the button's surface-local laid-out box
-`{ x, y, width, height }`, before transforms.
+properties, plus the one below.
 
 <!-- Generated from renderer/src/lua/nodes/properties.rs by `just stubs`: edit the table there. -->
 | Property | Type | Default | Behaviour |
 | :--- | :--- | :--- | :--- |
 | `children` | `Node[]\|Bound` | None | Array of node tables, up to 10000; a `nil` or `false` entry is an error. Stacked in order: later children paint over earlier ones. Bind a signal of an array to [switch views](index.md#switching-views-with-ids) |
-| `on_click` | `fun(rect: Rect, button: "left"\|"right"\|"middle")` | None | On release over the same button that was pressed, with the same mouse button. `rect` is the button's surface-local box, before transforms |
-| `on_drag` | `fun(rect: Rect, pointer: { x: number, y: number }, phase: "start"\|"move"\|"end")` | None | Left-button drag. `pointer` is button-local and unclamped. `"start"` on press, `"end"` on release (before `on_click`) or when the pointer leaves the surface |
-| `on_wheel` | `fun(rect: Rect, steps: number)` | None | Vertical wheel in notches, positive away from the user, fractional on touchpads. The innermost handler or scroll container wins |
-| `submit` | `boolean\|Bound` | `false` | A click also submits the armed [secure field](../guide/input.md#secure-fields), like Enter. Works without `on_click` and runs before it |
 <!-- End of the generated table. -->
 
 A `button` with none of `on_click`, `on_drag`, `on_wheel` and `submit = true` ignores the pointer:

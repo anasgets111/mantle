@@ -177,7 +177,7 @@ pub struct App {
     keyboard_focus: Option<String>,
     /// Press waiting for release (ADR-0050 decision 2, [`ArmedClick`]).
     armed: Option<ArmedClick>,
-    /// Held left press on an `on_drag` button (ADR-0116 decision 1); `Motion` reports until release
+    /// Held left press on an `on_drag` node (ADR-0116 decision 1); `Motion` reports until release
     /// or `Leave`.
     drag: Option<input::ActiveDrag>,
     /// The serial for `xdg_popup.grab`, valid for one poll turn (ADR-0049 amendment).

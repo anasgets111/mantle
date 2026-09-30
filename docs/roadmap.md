@@ -37,7 +37,7 @@ Wanted, but each needs a consumer or a decision first.
 | Text field editing | No undo or IME; the secure field edits only at its end. On RTL or mixed lines a click lands one cluster off and the caret does not move inside a ligature | 0236 |
 | Animated WebP and APNG | Only GIF animates; the others draw their first frame. `AnimationDecoder` covers both | 0233 |
 | Localization | No translation API; desktop entry `Name`, `GenericName` and `Keywords` are read unlocalized | 0112 |
-| Wayland and input extras | No shortcut inhibition, per-surface idle inhibition, touch gestures, cross-app drag and drop, pointer buttons past left, right and middle, or a click position inside a button. logind and ScreenSaver inhibition work | — |
+| Wayland and input extras | No shortcut inhibition, per-surface idle inhibition, touch gestures, cross-app drag and drop, pointer buttons past left, right and middle, or a click position inside the clicked node. logind and ScreenSaver inhibition work | — |
 | Window capture | `capture` takes an output. A window source would take `windows` ids | 0247, 0248 |
 | Native I/O | No HTTP, sockets, watched file contents or `json.encode`; JSON storage and folder watching exist. Native only for a measured latency or volume need | — |
 | KDE Connect | No device or plugin model. A capability or a streaming helper, not unrestricted D-Bus | — |

@@ -1,4 +1,4 @@
-//! Named requests to return keyboard input to a plain field after a button click.
+//! Named requests to return keyboard input to a plain field after a click.
 
 use mlua::{Lua, Value};
 
@@ -15,7 +15,7 @@ pub(crate) struct FocusHandle(String);
 lua_class! {
     /// A named plain textfield focus target.
     impl FocusHandle {
-        /// Give this field the keyboard after the current button click updates its surface.
+        /// Give this field the keyboard after the current click updates its surface.
         fn request(lua, this) {
             let mut requests = super::app_data_or_default::<Requests>(lua);
             if let Some(surface) = requests.click_surface.clone() {
@@ -29,7 +29,7 @@ lua_class! {
 pub(crate) fn register(lua: &Lua) -> mlua::Result<()> {
     lua_fn!(
         lua,
-        /// Names a plain textfield that a button can focus with `:request()`.
+        /// Names a plain textfield that an `on_click` can focus with `:request()`.
         /// [docs](https://anasgets111.github.io/mantle/guide/input.html#text-fields)
         fn focus(
             _lua,

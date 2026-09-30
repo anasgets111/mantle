@@ -276,13 +276,12 @@ impl ResolvedNode {
         self.children.iter().filter(move |_| sorted).chain(resorted)
     }
 
-    /// A button with `submit = true` or a pointer handler (ADR-0214).
+    /// A node with `submit = true` or a pointer handler (ADR-0214).
     pub fn takes_pointer(&self) -> bool {
-        self.kind == "button"
-            && (matches!(self.properties.get("submit"), Some(Value::Boolean(true)))
-                || ["on_click", "on_drag", "on_wheel"]
-                    .iter()
-                    .any(|handler| matches!(self.properties.get(*handler), Some(Value::Function(_)))))
+        matches!(self.properties.get("submit"), Some(Value::Boolean(true)))
+            || ["on_click", "on_drag", "on_wheel"]
+                .iter()
+                .any(|handler| matches!(self.properties.get(*handler), Some(Value::Function(_))))
     }
 
     /// Whether any visible node in this tree is mid-tween, which is what asks the compositor for

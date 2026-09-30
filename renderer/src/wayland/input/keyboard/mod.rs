@@ -517,14 +517,14 @@ mod tests {
     #[test]
     fn a_press_landing_on_no_textfield_leaves_no_destination_focused() {
         let lua = Lua::new();
-        let button = hit_node(&lua, "button", (0.0, 0.0, 40.0, 24.0), true);
+        let clickable = hit_node(&lua, "rect", (0.0, 0.0, 40.0, 24.0), true);
         let root = hit_node(&lua, "panel", (0.0, 0.0, 100.0, 32.0), false);
-        assert!(focused_field(&[&root, &button]).is_none());
+        assert!(focused_field(&[&root, &clickable]).is_none());
     }
 
     #[test]
     fn the_innermost_textfield_on_the_path_is_the_one_that_owns_the_next_secret() {
-        // Same deep-end scan `clickable_button` makes, and for the same reason (ADR-0050
+        // Same deep-end scan `click_target` makes, and for the same reason (ADR-0050
         // decision 1): one traversal, two questions.
         let lua = Lua::new();
         let outer = textfield(&lua, Some(secure_submit_table(&lua, "network", "connect")));

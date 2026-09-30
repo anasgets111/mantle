@@ -522,7 +522,7 @@ mod tests {
     #[test]
     fn a_click_arriving_after_the_dismissal_clears_the_latch_in_the_same_turn() {
         // ADR-0051's first amendment. Under a grab niri delivers the closing click to the
-        // parent bar too, so `popup_done` and the button's `on_click` land in one batch and
+        // parent bar too, so `popup_done` and the opener's `on_click` land in one batch and
         // `visible` alone cannot separate the two cases -- but `popup_done` dispatches before the
         // pointer events that follow it, so the counter has already moved.
         assert_eq!(popup_visibility_action(true, false, Some(9), 10), PopupAction::Create);

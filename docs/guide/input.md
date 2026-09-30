@@ -1,6 +1,6 @@
 # Input
 
-Pointer and keyboard input: clicks, drags and the wheel on a `button`, hover, scrolling
+Pointer and keyboard input: clicks, drags and the wheel on any node, hover, scrolling
 containers, and typing into a `textfield`, including password fields whose keys never reach Lua.
 There is no key-handler property and no touch input; keys reach a config only through a focused
 `textfield`. A handler usually writes a [named state](signals.md#named-state), and the next
@@ -34,38 +34,42 @@ Every pointer event asks which nodes lie under the pointer, from the surface dow
 | Stacking | Siblings are asked topmost first: higher `z`, then later in declaration order |
 | Clipping | A point outside a node reaches none of its children, unless the node has `clip = "None"` |
 | Skipped | `visible = false` subtrees and nodes playing an [exit](animation.md#exit). `opacity = 0` is still hit |
-| Edges | Half-open: two buttons sharing an edge never both take it |
+| Edges | Half-open: two nodes sharing an edge never both take it |
 | Rects | Every `rect` argument and `hover_rect` value is the node's surface-local `{ x, y, width, height }` laid-out box, before transforms |
 
 ## Pointer
 
-Only a `button` takes clicks, drags and the wheel. For each event the innermost button with a
-handler for that event wins; a button without one is transparent, so a handle inside a draggable
-track leaves the track draggable.
+Any node takes clicks, drags and the wheel, hit-tested by its own box. For each event the innermost
+node with a handler for that event wins; a node without one is transparent, so a handle inside a
+draggable track leaves the track draggable, and a `text` with no handler passes the click to the
+`row` around it. A node with a handler or `submit = true` shows the `"pointer"` cursor unless it
+sets its own [`cursor`](../nodes/index.md#cursor-names).
 
 | Handler | Arguments | Contract |
 | :--- | :--- | :--- |
-| `on_click(rect, button)` | `button` is `"left"`, `"right"` or `"middle"` | Fires on release over the same button that was pressed, with the same mouse button. Other mouse buttons are ignored |
-| `on_drag(rect, pointer, phase)` | `pointer` is `{ x, y }` relative to the button, unclamped; `phase` is `"start"`, `"move"` or `"end"` | Left button only. See below |
+| `on_click(rect, button)` | `button` is `"left"`, `"right"` or `"middle"` | Fires on release over the same node that was pressed, with the same mouse button. Other mouse buttons are ignored |
+| `on_drag(rect, pointer, phase)` | `pointer` is `{ x, y }` relative to the node, unclamped; `phase` is `"start"`, `"move"` or `"end"` | Left button only. See below |
 | `on_wheel(rect, steps)` | `steps` is a number of wheel notches | Vertical wheel only. See below |
 | `submit = true` | — | Sends the armed [secure field](#secure-fields) on click, like Enter; works without `on_click` and runs before it |
 
-**Click.** A press arms the click and the release fires it. Leaving the button and coming back
+**Click.** A press arms the click and the release fires it. Leaving the node and coming back
 before release still clicks; the pointer leaving the surface cancels. The click also cancels if the
-button's laid-out box moved between press and release, so give press feedback with `scale` or
-`translate` rather than `width` or `margin`. A press on a `textfield` never clicks the button
-around it, and a link in a `text` (`on_link`) takes the click before any button around it.
+node's laid-out box moved between press and release, so give press feedback with `scale` or
+`translate` rather than `width` or `margin`. A press on a `textfield` that takes the keyboard never
+clicks, not even an `on_click` on the field or around it, and a link in a `text` (`on_link`) takes
+the click before any `on_click`, the text's own included.
 
-**Drag.** A left press on an `on_drag` button calls `"start"` at once, so clicking a slider track
+**Drag.** A left press on an `on_drag` node calls `"start"` at once, so clicking a slider track
 also seeks. Every pointer motion on that surface then calls `"move"`, wherever the pointer is.
 `"end"` comes on the left release, when the pointer leaves the surface, or when the surface closes.
 `rect` stays the box from the press for the whole drag. On release, `"end"` fires first and the
-click (if the button also has `on_click`) after it; a leave ends the drag and cancels the click.
+click (if the node also has `on_click`) after it; a leave ends the drag and cancels the click.
 
 **Wheel.** `steps` is positive away from the user (scroll up) and negative toward. One notch is
 `1`; high-resolution wheels send fractions of a notch, and touchpads send distance divided by one
-notch's 39 px. Horizontal motion never reaches `on_wheel`. The innermost `on_wheel` button or
-[scroll container](#scroll) under the pointer takes the whole event, with no chaining to a parent.
+notch's 39 px. Horizontal motion never reaches `on_wheel`. The innermost `on_wheel` node or
+[scroll container](#scroll) under the pointer takes the whole event, with no chaining to a parent;
+on a node that is both, the scroll wins.
 
 <!-- shot-alt: A blue slider filled to half its track. -->
 ```lua,shot
@@ -166,7 +170,7 @@ a press.
 | `on_cancel(cleared)` | Escape. The draft clears, the field drops focus, `on_change("")` fires if there was text, then `on_cancel` gets whether text was removed. Without `on_cancel`, Escape clears and the field keeps focus |
 | `on_navigate(key)` | `"up"`, `"down"`, `"page_up"`, `"page_down"`, `"tab"`, `"backtab"`, and `"left"`/`"right"` when the caret cannot move that way and Shift is up. Repeats while held. The draft is untouched |
 | `autofocus` | `true`: take the keys, with an empty draft and a call to `on_change("")`, when the surface gains keyboard focus or the field appears under it. The first visible such field in document order wins. It never takes over from a field that is already typing, and never re-takes a field the user just clicked away from |
-| `focus` | A `focus(name)` handle. A button click can call `:request()` to focus the first visible plain field with that name on the same keyboard-focused surface or a popup under it, after the click's state changes appear. It keeps that field's draft and caret and does not call `on_change` |
+| `focus` | A `focus(name)` handle. An `on_click` can call `:request()` to focus the first visible plain field with that name on the same keyboard-focused surface or a popup under it, after the click's state changes appear. It keeps that field's draft and caret and does not call `on_change` |
 | `secure_submit`, `mask_character` | See [secure fields](#secure-fields) |
 | `placeholder`, `font_size`, `foreground`, `text_align` | Appearance; see [textfield](../nodes/textfield.md) |
 
@@ -193,9 +197,9 @@ Tab does not move focus between fields; it reaches `on_navigate`. Editing keys r
 the draft; clicking the field again resumes it. Enter and Escape clear it. An `autofocus` arm
 starts it empty. It is dropped when the field's node leaves the tree or its surface closes.
 
-To return typing to a field after a button changes the view, give both the field and button the
-same handle. `focus("")` and a `focus` property that is not a handle raise. Requests outside a
-button's `on_click`, to a hidden or masked field, or to a surface other than the focused one and its
+To return typing to a field after a click changes the view, give the field the handle and call
+`:request()` from the `on_click`. `focus("")` and a `focus` property that is not a handle raise.
+Requests outside an `on_click`, to a hidden or masked field, or to a surface other than the focused one and its
 popups do nothing.
 
 ```lua
@@ -309,8 +313,8 @@ secret or its length.
 | :--- | :--- |
 | Arming | When the surface gains keyboard focus, the sole visible secure field in it (and in popups shown under it) is armed with no click. With two or more, a press picks one. A field revealed later under existing focus arms if none is armed |
 | Keys | Typed text appends, Backspace removes one character, Escape clears the buffer, stays armed and calls the field's `on_cancel(cleared)`. There is no caret, selection or `on_navigate`; `on_change` and `on_submit` never fire |
-| Sending | Enter, or a click on a `submit = true` button, sends the buffer and wipes it. An empty buffer is sent only to `network`/`connect`, where it joins an open network |
-| Focus | A click on anything but a field keeps the field armed, so a submit button works. Focusing another field, plain or secure, or the keyboard leaving the surface, disarms it and wipes the buffer |
+| Sending | Enter, or a click on a `submit = true` node, sends the buffer and wipes it. An empty buffer is sent only to `network`/`connect`, where it joins an open network |
+| Focus | A click on anything but a field keeps the field armed, so a `submit = true` node works. Focusing another field, plain or secure, or the keyboard leaving the surface, disarms it and wipes the buffer |
 | Priority | While a secure field is armed, plain fields in the same focus take no keys |
 | `mask_character` | Drawn once per typed character. Default `"•"`; only the first character counts; `""` draws nothing and hides the length. Only secure fields draw it. An empty field shows its `placeholder` |
 
@@ -356,9 +360,9 @@ return lock {
 | Open a menu on right click | Below |
 | Reorder a list by dragging | Below |
 
-**Right-click menu.** `on_click` reports the mouse button and the button's rect, which is what a
+**Right-click menu.** `on_click` reports the mouse button and the node's rect, which is what a
 [popup](../surfaces/popup.md)'s `anchor_rect` wants. The click is a pointer release, so the popup may
-take its grab. The menu hangs from the button, not the click point: no handler reports the pointer
+take its grab. The menu hangs from the node, not the click point: no handler reports the pointer
 position of a click.
 
 <!-- shot-alt: A context menu open beneath a Files button. -->
@@ -415,7 +419,7 @@ return {
 }
 ```
 
-**Drag to reorder.** Each row is an `on_drag` button in a keyed [`list`](../nodes/list.md). The drag
+**Drag to reorder.** Each row is an `on_drag` node in a keyed [`list`](../nodes/list.md). The drag
 keeps the row's box from the press, so `pointer.y` divided by the row pitch counts the rows moved.
 The dragged row jumps slot by slot rather than following the pointer; to make it follow, also bind
 its `translate` to the drag offset. There is no drag-and-drop between surfaces or applications, and
@@ -472,12 +476,12 @@ return panel {
 | A `textfield` is invisible or cannot be clicked | It has no intrinsic size. Give it `width` and `height` |
 | A field in a panel shows no caret and takes no keys | Set the panel's `keyboard_interactivity` to `"OnDemand"` (or `"Exclusive"` for a modal) |
 | A field with only `on_navigate`/`on_cancel` ignores clicks | Add `on_change` or `on_submit` |
-| The mouse wheel does nothing over a scrolling `row` | Rows scroll on the horizontal axis. Use a `column`, or an `on_wheel` button that moves the row |
+| The mouse wheel does nothing over a scrolling `row` | Rows scroll on the horizontal axis. Use a `column`, or an `on_wheel` on a node around it that moves the row |
 | A `scroll` container never scrolls | Bound its size on the scroll axis; content-sized means nothing overflows |
 | `on_hover` is refused | Add `hover = hover("name")` on the same node |
 | A container's hover stays on while the pointer is over a child | Hover covers the whole subtree. Give the child its own `hover` for innermost-only behaviour |
-| A click is lost when the button grows on press | The release must land on the same laid-out box. Animate `scale` instead |
-| A tooltip or menu anchored to a scaled button is off | Rects are laid-out boxes before transforms. Anchor on an untransformed parent |
+| A click is lost when the node grows on press | The release must land on the same laid-out box. Animate `scale` instead |
+| A tooltip or menu anchored to a scaled node is off | Rects are laid-out boxes before transforms. Anchor on an untransformed parent |
 | Lua needs to prefill or clear a field | Not possible: the draft belongs to the engine. `autofocus` re-arms empty; Escape and Enter clear |
 | A typed password shows up in `on_change` | It cannot: a `secure_submit` field never calls it. Plain fields also stop taking keys while a secure field is armed |
 

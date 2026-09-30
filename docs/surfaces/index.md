@@ -135,14 +135,14 @@ focus-follows-mouse pass through to what is below. The engine rebuilds this regi
 | :--- | :--- |
 | A box (`rect`, `row`, `column`, `button`) with a `background` or a non-zero `border_width` | Its whole box, painted bounds under its own transform. `#00000000` counts |
 | `text`, `icon`, `image`, `capture`, `textfield` | Its box |
-| A `button` with `on_click`, `on_drag`, `on_wheel` or `submit = true` | Its box, even with nothing painted |
-| A `shader` | Nothing; its alpha is unknown to the engine. Put a `button` over it for a hit area |
+| Any node with `on_click`, `on_drag`, `on_wheel` or `submit = true` | Its box, even with nothing painted |
+| A `shader` | Nothing; its alpha is unknown to the engine. Give it a handler for a hit area |
 | A transparent container | Nothing; its children are asked instead |
-| The surface root itself | Nothing, even with a `background` |
-| Anything on a `layer = "Background"` panel | Only such a `button` |
+| The surface root itself | Nothing, even with a `background`; with a handler, the whole surface |
+| Anything on a `layer = "Background"` panel | Only a node with a handler |
 
 A claiming box that clips its children ends the walk there; `visible = false` subtrees claim
-nothing. To make an empty area catch clicks, put a `button { width = "Fill", height = "Fill",
+nothing. To make an empty area catch clicks, put a `rect { width = "Fill", height = "Fill",
 on_click = ... }` there ([click outside to close](panel.md#close-an-overlay-on-an-outside-click)).
 
 ## How do I…
@@ -156,7 +156,7 @@ on_click = ... }` there ([click outside to close](panel.md#close-an-overlay-on-a
 | Keep different state per monitor | [Per-output child](#per-output-child) |
 | See which surfaces a config declares | `mantle check -c <dir>` prints each role and id ([CLI](../guide/cli.md)) |
 | Let clicks through the empty part of a surface | Nothing to do; see [input region](#input-region) |
-| Make a transparent area catch clicks | A full-size `button` with `on_click` ([input region](#input-region)) |
+| Make a transparent area catch clicks | A full-size `rect` with `on_click` ([input region](#input-region)) |
 | Change a panel's layer or anchors at run time | Declare two panels and toggle their `visible`, or edit the file |
 
 ## Gotchas

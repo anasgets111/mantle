@@ -633,12 +633,12 @@ mod tests {
     fn a_wrong_typed_callback_or_input_flag_is_refused_by_name() {
         let lua = mlua::Lua::new();
         for (source, property, expected) in [
-            (r#"{ kind = "button", on_click = "quit" }"#, "on_click", "expected a function, got String(\"quit\")"),
-            (r#"{ kind = "button", submit = 1 }"#, "submit", "expected a boolean, got Integer(1)"),
+            (r#"{ kind = "row", on_click = "quit" }"#, "on_click", "expected a function, got String(\"quit\")"),
+            (r#"{ kind = "icon", submit = 1 }"#, "submit", "expected a boolean, got Integer(1)"),
             (r#"{ kind = "textfield", autofocus = "yes" }"#, "autofocus", "expected a boolean, got String(\"yes\")"),
         ] {
             let table: mlua::Table = lua.load(format!("return {source}")).eval().unwrap();
-            let err = resolve_properties(props_from_table(&table), "button", &lua).unwrap_err();
+            let err = resolve_properties(props_from_table(&table), "rect", &lua).unwrap_err();
             assert!(
                 matches!(&err, LayoutError::InvalidProperty { property: p, detail } if p == property && detail == expected),
                 "{source}: {err}"

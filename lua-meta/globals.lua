@@ -84,10 +84,10 @@ function fuzzy(haystack, needle) end
 ---A named plain textfield focus target.
 local FocusHandle = {}
 
----Give this field the keyboard after the current button click updates its surface.
+---Give this field the keyboard after the current click updates its surface.
 function FocusHandle:request() end
 
----Names a plain textfield that a button can focus with `:request()`.
+---Names a plain textfield that an `on_click` can focus with `:request()`.
 ---[docs](https://anasgets111.github.io/mantle/guide/input.html#text-fields)
 ---@param name string Shared with the textfield's `focus` property.
 ---@return FocusHandle

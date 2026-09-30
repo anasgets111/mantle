@@ -15,7 +15,7 @@ use crate::text::snap::LogicalRect;
 /// `rect` is `Some` only when `hovered`, and it is the node's *absolute* rect in its surface's
 /// logical coordinates -- the same space `on_click` hands a config (ADR-0050 decision 3), so a
 /// tooltip `popup` binding `anchor_rect` to it lands over the node the way a dropdown lands over
-/// the button that opened it. Leaving it `None` on the way out is deliberate: the rect signal keeps
+/// the node that opened it. Leaving it `None` on the way out is deliberate: the rect signal keeps
 /// the last place the pointer was, so `anchor_rect` stays a valid non-zero rect (a zero one is
 /// refused) while the popup is closing.
 pub struct HoverWrite {
@@ -42,7 +42,7 @@ pub struct HoverWrite {
 ///
 /// **On the path, not the innermost node** (ADR-0062 decision 5). [`hit::hit_path`] already
 /// applies the three rules that matter -- containment gates descent, the topmost child wins, a node
-/// that is not visible is not entered -- so a `pill` wrapping a `button` wrapping a `text` reports
+/// that is not visible is not entered -- so a `pill` wrapping a clickable `rect` wrapping a `text` reports
 /// all three as hovered, which is what a config binding the pill's own signal needs.
 ///
 /// Duplicates are possible and deliberate: two nodes may name one signal, and the caller writes the
@@ -145,14 +145,14 @@ mod tests {
 
     #[test]
     fn an_ancestor_of_the_node_under_the_pointer_is_hovered_too() {
-        // ADR-0062 decision 5: a pill is a `row` wrapping a `button` wrapping a `text`, and the
+        // ADR-0062 decision 5: a pill is a `row` wrapping a clickable `rect` wrapping a `text`, and the
         // signal a config binds hangs off the outermost of the three. Innermost-only hover would report false for all of them.
         let lua = Lua::new();
         let (_outer_signal, outer) = hover_userdata(&lua);
         let (_inner_signal, inner) = hover_userdata(&lua);
         let tree = node((0.0, 0.0, 100.0, 20.0), Some(outer), vec![node((10.0, 5.0, 30.0, 10.0), Some(inner), vec![])]);
 
-        assert_eq!(answers(&hover_writes_at(&tree, at(20.0, 10.0))), vec![true, true], "both the pill and its button");
+        assert_eq!(answers(&hover_writes_at(&tree, at(20.0, 10.0))), vec![true, true], "both the pill and its rect");
         assert_eq!(answers(&hover_writes_at(&tree, at(80.0, 10.0))), vec![true, false], "the pill alone");
     }
 

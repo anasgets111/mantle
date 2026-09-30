@@ -8,9 +8,10 @@ so everything since the rename from Obelisk sits under Unreleased.
 
 ### Added
 
+- Every node kind takes `on_click`, `on_drag`, `on_wheel` and `submit`, not only `button`: a `row`, `text` or `icon` is clickable itself, the innermost node with a handler wins, and it shows the `"pointer"` cursor ([pointer](guide/input.md#pointer)).
 - `panel`, `window` and `popup` take `reset_on_close = { ... }`: the listed `state` handles return to their `initial` and `scroll` handles to the top when the surface stops being shown ([surfaces](surfaces/index.md#reset-on-close)).
 - `state(...)` signals take `:on_change(fn(current, previous))`, run after any write that changes the value, including `mantle set`/`mantle toggle`, before the next layout pass ([signals](guide/signals.md#on_change-react-to-a-write)).
-- `focus(name)` lets a button return typing to a visible plain `textfield` on its keyboard-focused surface, or a popup under it, without clearing the draft or caret ([input](guide/input.md#text-fields)).
+- `focus(name)` lets an `on_click` return typing to a visible plain `textfield` on its keyboard-focused surface, or a popup under it, without clearing the draft or caret ([input](guide/input.md#text-fields)).
 - `mantle.sysinfo` exposes `disks`, `gpu`, and network throughput telemetry (`net_rx_bytes_sec`, `net_tx_bytes_sec`), configurable via `disk_interval`, `gpu_interval`, and `net_interval` in `sysinfo:configure` ([sysinfo](capabilities/sysinfo.md)).
 - `mantle.windows:move_to_workspace(id, workspace_id)` moves a window to a workspace on Hyprland and niri ([windows](capabilities/windows.md#actions)).
 - `mantle.workspaces` entries and `special` workspaces expose `window_id` for their representative window ([workspaces](capabilities/workspaces.md#workspaceentry)).

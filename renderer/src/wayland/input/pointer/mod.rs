@@ -5,7 +5,7 @@ use shared::warn;
 
 use super::keyboard::{FieldTarget, focused_field};
 use super::*;
-use crate::layout::node::fields::button;
+use crate::layout::node::fields::pointer;
 use crate::layout::node::prop::{Keyword, keywords};
 
 mod wheel;
@@ -22,7 +22,7 @@ impl HoverUpdate {
 }
 
 /// One press waiting for its release (ADR-0050 decision 2). The rect stands in for identity:
-/// moving the button between press and release cancels the click.
+/// moving the node between press and release cancels the click.
 #[derive(Debug, Clone, PartialEq)]
 pub(in crate::wayland) struct ArmedClick {
     instance_id: String,
@@ -49,16 +49,13 @@ pub(in crate::wayland) struct ArmedSerial {
     pub(in crate::wayland) instance_id: String,
 }
 
-/// Innermost `button` with callable `on_click` in a hit path (ADR-0050 decision 1). Scan inward:
-/// the deepest node is normally the button's `text` child. A button without a handler is
-/// transparent; `layout::node::resolve_properties` refuses an `on_click` that is not a function.
-fn clickable_button(path: &[&layout::ResolvedNode]) -> Option<(LogicalRect, Option<Function>, bool)> {
+/// Innermost node with callable `on_click` or `submit = true` in a hit path (ADR-0050 decision 1).
+/// Scan inward: the deepest node is often an unhandled `text` child, and a node without a handler
+/// is transparent. `layout::node::resolve_properties` refuses an `on_click` that is not a function.
+fn click_target(path: &[&layout::ResolvedNode]) -> Option<(LogicalRect, Option<Function>, bool)> {
     path.iter().enumerate().rev().find_map(|(depth, node)| {
-        if node.kind != "button" {
-            return None;
-        }
-        let on_click = button::on_click.read(&node.properties).ok().flatten();
-        let submit = button::submit.read(&node.properties).is_ok_and(|on| on);
+        let on_click = pointer::on_click.read(&node.properties).ok().flatten();
+        let submit = pointer::submit.read(&node.properties).is_ok_and(|on| on);
         if on_click.is_none() && !submit {
             return None;
         }
@@ -66,30 +63,24 @@ fn clickable_button(path: &[&layout::ResolvedNode]) -> Option<(LogicalRect, Opti
     })
 }
 
-/// Innermost `button` with callable `on_drag` (ADR-0116 decision 1); unhandled buttons are
-/// transparent, so a handle inside a draggable track leaves the track draggable.
-fn draggable_button(path: &[&layout::ResolvedNode]) -> Option<(LogicalRect, Function)> {
+/// Innermost node with callable `on_drag` (ADR-0116 decision 1); unhandled nodes are transparent,
+/// so a handle inside a draggable track leaves the track draggable.
+fn drag_target(path: &[&layout::ResolvedNode]) -> Option<(LogicalRect, Function)> {
     path.iter().enumerate().rev().find_map(|(depth, node)| {
-        if node.kind != "button" {
-            return None;
-        }
-        let on_drag = button::on_drag.read(&node.properties).ok().flatten()?;
+        let on_drag = pointer::on_drag.read(&node.properties).ok().flatten()?;
         Some((layout::hit::absolute_rect(&path[..=depth])?, on_drag))
     })
 }
 
-/// Innermost `button` with callable `on_wheel` (ADR-0116 decision 2).
-fn wheel_button(path: &[&layout::ResolvedNode]) -> Option<(usize, LogicalRect, Function)> {
+/// Innermost node with callable `on_wheel` (ADR-0116 decision 2).
+fn wheel_target(path: &[&layout::ResolvedNode]) -> Option<(usize, LogicalRect, Function)> {
     path.iter().enumerate().rev().find_map(|(depth, node)| {
-        if node.kind != "button" {
-            return None;
-        }
-        let on_wheel = button::on_wheel.read(&node.properties).ok().flatten()?;
+        let on_wheel = pointer::on_wheel.read(&node.properties).ok().flatten()?;
         Some((depth, layout::hit::absolute_rect(&path[..=depth])?, on_wheel))
     })
 }
 
-/// Left press on a button with `on_drag`, held until release (ADR-0116 decision 1). Every Motion
+/// Left press on a node with `on_drag`, held until release (ADR-0116 decision 1). Every Motion
 /// calls it wherever the pointer goes; config clamping keeps a slider pinned at its end.
 pub(in crate::wayland) struct ActiveDrag {
     instance_id: String,
@@ -104,13 +95,13 @@ struct Clickable {
     handler: Option<Function>,
     link: Option<String>,
     /// `submit = true` sends the scope's armed `secure_submit` field on release, like Enter
-    /// (ADR-0114); it is the only button path to a password, with no Lua callback.
+    /// (ADR-0114); it is the only pointer path to a password, with no Lua callback.
     submit: bool,
 }
 
-/// Links precede buttons (ADR-0106): a text `on_link` with an `href` under `point` wins over an
-/// ancestor button, while plain text is transparent. A `textfield` similarly arms no click
-/// (ADR-0092 decision 7).
+/// Links precede `on_click` (ADR-0106): a text `on_link` with an `href` under `point` wins over any
+/// `on_click`, the text's own included, while plain words pass through. A `textfield` similarly
+/// arms no click (ADR-0092 decision 7).
 fn clickable(
     path: &[&layout::ResolvedNode],
     point: layout::hit::LogicalPoint,
@@ -127,19 +118,19 @@ fn clickable(
         Some(Clickable { rect, handler: Some(on_link), link: Some(href), submit: false })
     });
     link.or_else(|| {
-        clickable_button(path).map(|(rect, on_click, submit)| Clickable { rect, handler: on_click, link: None, submit })
+        click_target(path).map(|(rect, on_click, submit)| Clickable { rect, handler: on_click, link: None, submit })
     })
 }
 
 /// Both targets from decision 1's single [`layout::hit::hit_path`] traversal. Two walks could
 /// re-resolve between them and give one event two answers.
 struct PointerHit {
-    button: Option<Clickable>,
+    click: Option<Clickable>,
     field: Option<FieldTarget>,
     /// Byte offset under the point in the plain `textfield` it landed in (ADR-0236), decided on
     /// this same walk so one event cannot get two answers.
     caret: Option<usize>,
-    /// `on_drag` button under the press, with its rect (ADR-0116 decision 1).
+    /// `on_drag` node under the press, with its rect (ADR-0116 decision 1).
     drag: Option<(LogicalRect, Function)>,
 }
 
@@ -185,9 +176,9 @@ fn release_ends_press(armed: Option<&ArmedClick>, button: u32) -> bool {
     armed.is_some_and(|armed| armed.button == button)
 }
 
-/// Whether a release completes `armed` (ADR-0050 decision 2). It must hit a handled button with the
+/// Whether a release completes `armed` (ADR-0050 decision 2). It must hit a clickable node with the
 /// same instance, rect, link, and button; matching coordinates on a re-resolved plain rect is not
-/// the original click. `released_on` comes from [`clickable_button`], not raw position.
+/// the original click. `released_on` comes from [`click_target`], not raw position.
 fn release_completes_click(
     armed: Option<&ArmedClick>,
     instance_id: &str,
@@ -249,7 +240,7 @@ fn press_chooses_focus(
     }
 }
 
-/// Call `on_click` with its button rect in surface logical coordinates (ADR-0050 decision 3). The
+/// Call `on_click` with its node rect in surface logical coordinates (ADR-0050 decision 3). The
 /// rect round-trips to popup `anchor_rect` through Lua. Error labels distinguish building the
 /// engine's argument from a raised config handler.
 fn call_on_click(
@@ -262,7 +253,7 @@ fn call_on_click(
     on_click.call::<()>((argument, button)).map_err(|e| ("on_click raised, ignoring it", e))
 }
 
-/// Call `on_drag` with the rect, pointer in button-local coordinates, and gesture phase (ADR-0116
+/// Call `on_drag` with the rect, pointer in node-local coordinates, and gesture phase (ADR-0116
 /// decision 1). Local coordinates avoid repeated subtraction in handlers; unclamped coordinates
 /// let each config apply its own `min`/`max`.
 fn call_on_drag(
@@ -279,7 +270,7 @@ fn call_on_drag(
     on_drag.call::<()>((rect_argument, pointer, phase.name())).map_err(|e| ("on_drag raised, ignoring it", e))
 }
 
-/// Build `on_click`'s button rect `{ x, y, width, height }` in surface logical coordinates
+/// Build `on_click`'s node rect `{ x, y, width, height }` in surface logical coordinates
 /// (ADR-0050 decision 3).
 pub(in crate::wayland) fn rect_table(lua: &Lua, rect: LogicalRect) -> mlua::Result<Table> {
     let table = lua.create_table()?;
@@ -318,7 +309,7 @@ pub(crate) fn apply_hover_write(lua: &Lua, write: layout::hover::HoverWrite, fir
         }
     }
     // Fire only on edges (ADR-0095): device-rate motion could call a handler hundreds of
-    // times across one button. Swallow handler errors like `fire_on_click`.
+    // times across one node. Swallow handler errors like `fire_on_click`.
     if fires_on_hover
         && let Some(on_hover) = &write.on_hover
         && let Err(err) = on_hover.call::<()>(write.hovered)
@@ -372,10 +363,10 @@ impl PointerHandler for App {
                     // Reassign through the zeroizing transition seam.
                     self.focus_secure_submit(masked);
                     self.focus_text_field(plain);
-                    // A textfield press arms no click, so an ancestor button cannot fire
+                    // A textfield press arms no click, so an ancestor `on_click` cannot fire
                     // (ADR-0092); `textfield` is a leaf. This keeps notification reply boxes
                     // from also activating the card.
-                    self.armed = hit.button.filter(|_| !pressed_a_field).map(|clickable| ArmedClick {
+                    self.armed = hit.click.filter(|_| !pressed_a_field).map(|clickable| ArmedClick {
                         instance_id: instance_id.clone(),
                         rect: clickable.rect,
                         link: clickable.link,
@@ -409,7 +400,7 @@ impl PointerHandler for App {
                     if button == BTN_LEFT {
                         self.fire_on_drag(&instance_id, event.position, DragPhase::End);
                     }
-                    let hit = self.hit_under(index, event.position).button;
+                    let hit = self.hit_under(index, event.position).click;
                     let fires = release_completes_click(
                         self.armed.as_ref(),
                         &instance_id,
@@ -422,7 +413,7 @@ impl PointerHandler for App {
                     }
                     if let Some(clickable) = hit.filter(|_| fires) {
                         match (clickable.link, clickable.handler) {
-                            // Links take `href`, not the paragraph rect; a link is not a button.
+                            // Links take `href`, not the paragraph rect; a link has no `submit`.
                             (Some(href), Some(handler)) => {
                                 if let Err(e) = handler.call::<()>(href) {
                                     warn!("{instance_id}: on_link raised, ignoring it: {}", crate::lua::describe(&e));
@@ -491,13 +482,13 @@ impl PointerHandler for App {
 }
 
 impl App {
-    /// One hit-test answers button, field, and drag (ADR-0050 decisions 1/4). Coordinates are
+    /// One hit-test answers click, field, and drag (ADR-0050 decisions 1/4). Coordinates are
     /// logical surface-local while `paint_surface` remains scale `1.0`; a future HiDPI change must
     /// move this conversion with `paint_surface` and `apply_input_region`. Handlers and targets are
     /// cloned out of the lent tree; the tree itself is not.
     fn hit_under(&self, index: usize, position: (f64, f64)) -> PointerHit {
         let Some(tree) = self.client.scene().surface(&self.surfaces[index].surface_id) else {
-            return PointerHit { button: None, field: None, caret: None, drag: None };
+            return PointerHit { click: None, field: None, caret: None, drag: None };
         };
         let point = layout::hit::LogicalPoint { x: position.0 as f32, y: position.1 as f32 };
         let path = layout::hit::hit_path(tree, point);
@@ -510,13 +501,13 @@ impl App {
             .as_ref()
             .filter(|held| matches!(&field, Some(FieldTarget::Plain { id, .. }) if *id == held.id));
         PointerHit {
-            button: clickable(&path, point, &self.shaping),
+            click: clickable(&path, point, &self.shaping),
             // Its own caret too, not just its draft: a draft too wide to fit is drawn slid to
             // follow the caret, and a press reads the byte under where it actually landed.
             caret: held
                 .and_then(|held| layout::hit::caret_at(&path, point, &held.buffer, held.selection.1, &self.shaping)),
             field,
-            drag: draggable_button(&path).map(|(rect, handler)| (rect, handler.clone())),
+            drag: drag_target(&path).map(|(rect, handler)| (rect, handler.clone())),
         }
     }
 
@@ -614,7 +605,7 @@ impl App {
 
     /// Write all `hover` signals from the pointer's hit `path`, empty off the surface (ADR-0062). Collect writes before
     /// `set_changed` because the tree borrow must end; only moved values dirty the scene (decision
-    /// 4), so a stationary pointer inside one button re-resolves nothing while device-rate motion
+    /// 4), so a stationary pointer inside one node re-resolves nothing while device-rate motion
     /// continues (ADR-0044 decision 2). Pointer updates enable `on_hover`; layout refreshes do not.
     ///
     /// Takes the tree and path rather than finding them so one lookup serves this and the cursor.
@@ -639,7 +630,7 @@ impl App {
         }
     }
 
-    /// Call a button's `on_click` with its rect (ADR-0050 decision 3); swallow handler raises.
+    /// Call a node's `on_click` with its rect (ADR-0050 decision 3); swallow handler raises.
     /// ADR-0046 rescue is for failed evaluation, not a misbehaving callback.
     fn fire_on_click(&mut self, instance_id: &str, rect: LogicalRect, button: &str, on_click: &Function) {
         // `signal:set()` marks its own dirty flag (ADR-0044 decision 5); this call need not.
@@ -692,23 +683,31 @@ mod tests {
     }
 
     #[test]
-    fn the_innermost_on_drag_button_is_the_one_that_takes_the_drag_and_a_bare_button_is_transparent() {
+    fn the_innermost_on_drag_or_on_wheel_node_takes_it_and_a_bare_node_is_transparent() {
         let lua = Lua::new();
-        let inner = hit_node(&lua, "button", (5.0, 2.0, 20.0, 20.0), true);
-        let mut track = hit_node(&lua, "button", (10.0, 4.0, 40.0, 24.0), false);
-        track.properties.insert("on_drag", Value::Function(lua.create_function(|_, ()| Ok(())).unwrap()));
-        track.children.push(inner);
+        let handler = || Value::Function(lua.create_function(|_, ()| Ok(())).unwrap());
+        let mut thumb = hit_node(&lua, "icon", (5.0, 2.0, 20.0, 20.0), true);
+        thumb.properties.insert("on_wheel", handler());
+        let mut track = hit_node(&lua, "row", (10.0, 4.0, 40.0, 24.0), false);
+        track.properties.insert("on_drag", handler());
+        track.properties.insert("on_wheel", handler());
+        track.children.push(thumb);
         let mut root = hit_node(&lua, "panel", (0.0, 0.0, 100.0, 32.0), false);
         root.children.push(track);
 
-        let path = layout::hit::hit_path(&root, layout::hit::LogicalPoint { x: 20.0, y: 12.0 });
-        let (rect, _) = draggable_button(&path).expect("the track carries the on_drag");
+        let on_thumb = layout::hit::hit_path(&root, layout::hit::LogicalPoint { x: 20.0, y: 12.0 });
+        let (rect, _) = drag_target(&on_thumb).expect("the track carries the on_drag");
         assert_eq!(rect, LogicalRect { x: 10.0, y: 4.0, width: 40.0, height: 24.0 });
-        assert!(wheel_button(&path).is_none(), "nothing on this path declares on_wheel");
+        let (depth, rect, _) = wheel_target(&on_thumb).expect("the thumb carries an on_wheel");
+        assert_eq!((depth, rect), (2, LogicalRect { x: 15.0, y: 6.0, width: 20.0, height: 20.0 }), "innermost");
+        let beside = layout::hit::hit_path(&root, layout::hit::LogicalPoint { x: 45.0, y: 12.0 });
+        assert_eq!(wheel_target(&beside).map(|(depth, ..)| depth), Some(1), "the track, past the thumb");
+        let bare = hit_node(&lua, "column", (0.0, 0.0, 100.0, 32.0), false);
+        assert!(drag_target(&[&bare]).is_none() && wheel_target(&[&bare]).is_none());
     }
 
     #[test]
-    fn on_drag_is_handed_the_pointer_in_the_buttons_own_coordinates() {
+    fn on_drag_is_handed_the_pointer_in_the_nodes_own_coordinates() {
         let lua = Lua::new();
         let seen = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
         let sink = std::rc::Rc::clone(&seen);
@@ -731,37 +730,54 @@ mod tests {
     }
 
     #[test]
-    fn the_innermost_handled_button_under_the_pointer_is_the_one_that_would_fire() {
-        // The shape decision 1 exists for: the deepest node is the `text`, and the outer `row`
-        // is not a button, so only the middle node answers.
+    fn the_innermost_handled_node_of_any_kind_under_the_pointer_is_the_one_that_would_fire() {
+        // The shape decision 1 exists for: the deepest node is an unhandled `text`, and the outer
+        // `column` has no handler, so only the `row` between them answers.
         let lua = Lua::new();
-        let mut button = hit_node(&lua, "button", (10.0, 4.0, 40.0, 24.0), true);
-        button.children.push(hit_node(&lua, "text", (6.0, 5.0, 28.0, 14.0), false));
-        let mut row = hit_node(&lua, "row", (0.0, 0.0, 100.0, 32.0), false);
-        row.children.push(button);
+        let mut row = hit_node(&lua, "row", (10.0, 4.0, 40.0, 24.0), true);
+        row.children.push(hit_node(&lua, "text", (6.0, 5.0, 28.0, 14.0), false));
+        let mut column = hit_node(&lua, "column", (0.0, 0.0, 100.0, 32.0), false);
+        column.children.push(row);
         let mut root = hit_node(&lua, "panel", (0.0, 0.0, 100.0, 32.0), false);
-        root.children.push(row);
+        root.children.push(column.clone());
 
         let path = layout::hit::hit_path(&root, layout::hit::LogicalPoint { x: 20.0, y: 12.0 });
-        let (rect, ..) = clickable_button(&path).expect("the button carries an on_click");
+        let (rect, ..) = click_target(&path).expect("the row carries an on_click");
         assert_eq!(rect, LogicalRect { x: 10.0, y: 4.0, width: 40.0, height: 24.0 });
+
+        // The same `text` leaf with its own `on_click` is now the innermost handler.
+        column.children[0].children[0] = hit_node(&lua, "text", (6.0, 5.0, 28.0, 14.0), true);
+        root.children[0] = column;
+        let path = layout::hit::hit_path(&root, layout::hit::LogicalPoint { x: 20.0, y: 12.0 });
+        let (rect, ..) = click_target(&path).expect("the text carries an on_click");
+        assert_eq!(rect, LogicalRect { x: 16.0, y: 9.0, width: 28.0, height: 14.0 });
     }
 
     #[test]
-    fn a_button_with_no_on_click_is_transparent_rather_than_a_barrier() {
-        // An unhandled `button` nested inside a handled one must not swallow the click: the scan
+    fn a_node_with_no_on_click_is_transparent_rather_than_a_barrier() {
+        // An unhandled node nested inside a handled one must not swallow the click: the scan
         // keeps walking outwards past it.
         let lua = Lua::new();
-        let inner = hit_node(&lua, "button", (5.0, 2.0, 20.0, 20.0), false);
-        let mut outer = hit_node(&lua, "button", (10.0, 4.0, 40.0, 24.0), true);
+        let inner = hit_node(&lua, "rect", (5.0, 2.0, 20.0, 20.0), false);
+        let mut outer = hit_node(&lua, "rect", (10.0, 4.0, 40.0, 24.0), true);
         outer.children.push(inner);
         let mut root = hit_node(&lua, "panel", (0.0, 0.0, 100.0, 32.0), false);
         root.children.push(outer);
 
         let path = layout::hit::hit_path(&root, layout::hit::LogicalPoint { x: 20.0, y: 12.0 });
-        assert_eq!(path.len(), 3, "the inner button is still on the path");
-        let (rect, ..) = clickable_button(&path).expect("the outer button carries the on_click");
+        assert_eq!(path.len(), 3, "the inner rect is still on the path");
+        let (rect, ..) = click_target(&path).expect("the outer rect carries the on_click");
         assert_eq!(rect, LogicalRect { x: 10.0, y: 4.0, width: 40.0, height: 24.0 });
+    }
+
+    /// ADR-0114: `submit = true` alone makes a node a click target, with no Lua handler to call.
+    #[test]
+    fn submit_alone_makes_any_node_a_click_target() {
+        let lua = Lua::new();
+        let mut row = hit_node(&lua, "row", (0.0, 0.0, 40.0, 24.0), false);
+        row.properties.insert("submit", Value::Boolean(true));
+        let (_, on_click, submit) = click_target(&[&row]).expect("submit arms a click");
+        assert!(on_click.is_none() && submit);
     }
 
     #[test]

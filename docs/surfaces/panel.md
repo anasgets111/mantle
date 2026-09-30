@@ -180,8 +180,8 @@ return { wallpaper }
 ```
 
 `mantle set wallpaper_DP-1 /path/to/picture.jpg` changes one output's picture
-([CLI](../guide/cli.md), [image](../nodes/image.md)). On the `Background` layer only a `button`
-with a handler takes input ([input region](index.md#input-region)), so the desktop stays click-through.
+([CLI](../guide/cli.md), [image](../nodes/image.md)). On the `Background` layer only a node
+with a pointer handler takes input ([input region](index.md#input-region)), so the desktop stays click-through.
 
 ## OSD
 

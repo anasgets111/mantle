@@ -56,7 +56,7 @@ change shows after a shell restart, not a reload. Files load as PNG, JPEG, WebP,
 | Tint a symbolic icon | `foreground = "#CDD6F4"` on a `-symbolic` name |
 | Show a tray item's icon | `name = item.icon_name or item.icon_path`: both spellings work ([tray](../capabilities/tray.md)) |
 | Show a notification's app icon | `name = notification.app_icon` ([notifications](../capabilities/notifications.md)) |
-| Make an icon button | Put the `icon` in a [`button`](button.md) |
+| Make an icon button | Give the `icon` an `on_click`, or put it in a `rect` with padding and `on_click` for a bigger target |
 | Put a badge on an icon | Layer them in a [`rect`](rect.md) |
 
 ## Gotchas

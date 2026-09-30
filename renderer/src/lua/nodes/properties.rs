@@ -256,9 +256,22 @@ props! {
         /// Pointer shape over this node; the innermost node that sets one wins (ADR-0107).
         ///
         /// Book: One of the [cursor names](#cursor-names). The innermost node under the pointer that sets one wins
-        cursor: Bound<Cursor> = absent(Prose(r#"`"pointer"` on a `button` with a handler or `submit` and on a link, `"text"` on a `textfield`, else the arrow"#));
+        cursor: Bound<Cursor> = absent(Prose(r#"`"pointer"` on a node with `on_click`, `on_drag`, `on_wheel` or `submit` and on a link, `"text"` on a `textfield`, else the arrow"#));
         /// Called on each hover edge from pointer Enter, Motion or Leave; layout changes under a still pointer do not call it. Refused without `hover` on the same node.
         on_hover(hovered: bool);
+    }
+    /// The pointer handlers. The innermost node under the pointer with a handler for the event takes it (ADR-0050); a node with none is transparent to it.
+    mod pointer(ALL) {
+        /// On release over the same node that was pressed, with the same mouse button. `rect` is the node's surface-local box, before transforms. A press on a `textfield` that takes the keyboard goes to the field instead.
+        on_click(rect: LogicalRect, button: MouseButton);
+        /// Left-button drag (ADR-0116). `pointer` is node-local and unclamped. `"start"` on press, `"end"` on release (before `on_click`) or when the pointer leaves the surface.
+        on_drag(rect: LogicalRect, pointer: LogicalPoint, phase: DragPhase);
+        /// Vertical wheel in notches, positive away from the user, fractional on touchpads (ADR-0116). The innermost handler or scroll container wins; on one node, the `scroll`.
+        on_wheel(rect: LogicalRect, steps: f64);
+        /// A click also submits the armed `secure_submit` field, like Enter (ADR-0114). Works without `on_click` and runs before it.
+        ///
+        /// Book: A click also submits the armed [secure field](../guide/input.md#secure-fields), like Enter. Works without `on_click` and runs before it
+        submit: Bound<Flag> = absent(Bool(false));
     }
     mod paint(BOX) {
         /// Absent draws nothing, unlike an explicit transparent `"#00000000"`. A gradient snaps under `animate`.
@@ -341,7 +354,7 @@ props! {
         max_lines: Bound<MaxLines> = absent(Number(0.0));
         /// `"End"` ends an over-long line with an ellipsis; under `wrap` it applies to the last kept line.
         elide: Bound<OneOf<Elide>> = absent(Choice("None"));
-        /// Click on a run with an `href` (ADR-0106); the engine never opens it. Takes the click from any ancestor `button`; plain text passes it through.
+        /// Click on a run with an `href` (ADR-0106); the engine never opens it. Takes the click from any `on_click`, the text's own included; plain words pass it on.
         on_link(href: String);
     }
     mod icon(ICON) {
@@ -391,7 +404,7 @@ props! {
         /// Include the pointer in the frame.
         paint_cursor: Bound<Flag> = absent(Bool(false));
     }
-    /// A config fragment shader over the node's box, with no input textures (ADR-0253). No intrinsic size and no input; wrap it for clicks. Reads `v_uv`, `u_size` and `u_progress` as in `Transition.shader`, writes premultiplied `fragColor`; `opacity`, `shadow_*` and `content_blur` apply.
+    /// A config fragment shader over the node's box, with no input textures (ADR-0253). No intrinsic size; without a pointer handler it is transparent to the pointer. Reads `v_uv`, `u_size` and `u_progress` as in `Transition.shader`, writes premultiplied `fragColor`; `opacity`, `shadow_*` and `content_blur` apply.
     mod shader(SHADER) {
         /// Absolute `.frag` path; relative is refused, `""` draws nothing. Saving the file recompiles it; one that fails to build logs once and draws nothing.
         ///
@@ -403,18 +416,6 @@ props! {
         progress: Bound<Num> = range(-8192.0, 8192.0).absent(Number(0.0));
         /// Uniforms by name: a finite number for `float`, 2-4 numbers for `vec2`-`vec4`. Missing ones are `0`. Not tweened.
         params: Bound<Params> = absent(Lua("{}"));
-    }
-    mod button(BUTTON) {
-        /// On release over the same button that was pressed, with the same mouse button. `rect` is the button's surface-local box, before transforms.
-        on_click(rect: LogicalRect, button: MouseButton);
-        /// Left-button drag (ADR-0116). `pointer` is button-local and unclamped. `"start"` on press, `"end"` on release (before `on_click`) or when the pointer leaves the surface.
-        on_drag(rect: LogicalRect, pointer: LogicalPoint, phase: DragPhase);
-        /// Vertical wheel in notches, positive away from the user, fractional on touchpads (ADR-0116). The innermost handler or scroll container wins.
-        on_wheel(rect: LogicalRect, steps: f64);
-        /// A click also submits the armed `secure_submit` field, like Enter (ADR-0114). Works without `on_click` and runs before it.
-        ///
-        /// Book: A click also submits the armed [secure field](../guide/input.md#secure-fields), like Enter. Works without `on_click` and runs before it
-        submit: Bound<Flag> = absent(Bool(false));
     }
     mod list(LIST) {
         /// Array; bind a signal to rebuild on change. Missing or `nil` (a capability before its first push) is an empty list; a `nil` hole ends it. More than 10000 items without `limit` is an error.
@@ -436,7 +437,7 @@ props! {
     }
     /// Single-line text input. Reads `wl_keyboard`, not an input method, so no CJK composition or dead keys. With `secure_submit` it is masked: keys never reach Lua and go to the capability (ADR-0005, ADR-0092). Otherwise `on_change` or `on_submit` makes it plain; with neither it never takes focus. A press focuses it; the surface needs `keyboard_interactivity`. The draft lives as long as the node; losing focus keeps it (ADR-0108). No intrinsic size: set `width`/`height`.
     mod textfield(TEXTFIELD) {
-        /// A `focus(name)` target. A button's `on_click` can call `:request()` to return keys after its state change; the field must be visible on that click's keyboard-focused surface or a popup under it. Any other value fails the pass.
+        /// A `focus(name)` target. An `on_click` can call `:request()` to return keys after its state change; the field must be visible on that click's keyboard-focused surface or a popup under it. Any other value fails the pass.
         focus: Focus;
         /// Shown while the field is empty, focused or not (ADR-0135). Never submitted.
         placeholder: Bound<Text> = absent(Lua(r#""""#));

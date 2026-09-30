@@ -72,7 +72,7 @@ return column { width = 320, padding = 16, spacing = 10, radius = 12,
 | `wrap` | `"None"\|"Word"\|Bound` | `"None"` | `"Word"` breaks at words, mid-word when one word is too wide. Needs a bounded width (`width`, `"Fill"` or a stretched cross axis) |
 | `max_lines` | `number\|Bound` | `0` | Line cap under `wrap = "Word"`; `0` is unlimited, a negative value is refused. Ignored without `wrap` |
 | `elide` | `"None"\|"End"\|Bound` | `"None"` | `"End"` ends an over-long line with an ellipsis; under `wrap` it applies to the last kept line |
-| `on_link` | `fun(href: string)` | None | Click on a run with an `href`; the engine never opens it. Takes the click from any ancestor `button`; plain text passes it through |
+| `on_link` | `fun(href: string)` | None | Click on a run with an `href`; the engine never opens it. Takes the click from any `on_click`, the text's own included; plain words pass it on |
 <!-- End of the generated table. -->
 
 ### Runs
@@ -134,7 +134,7 @@ In a content-sized `row`, the text measures one line and overflows instead.
 | `max_lines` has no effect | It applies only under `wrap = "Word"` |
 | `text_align = "Center"` does nothing | The box is exactly as wide as the text. Give it a `width`, or centre the node with `align_h` |
 | `font = ""` raises | Omit `font` to use the chain |
-| A link run is not clickable | Links need `on_link` on the same `text`; without it the click goes to the button around it |
+| A link run is not clickable | Links need `on_link` on the same `text`; without it the click goes to the `on_click` around it |
 | `content = 42` raises | `content` takes a string or runs: `tostring(n)` |
 
 See also: [textfield](textfield.md), [fonts](../guide/scripting.md#fonts), [icon](icon.md).

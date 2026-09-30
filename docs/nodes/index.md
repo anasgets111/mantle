@@ -52,7 +52,7 @@ Every kind accepts the [common properties](#common-properties). Box kinds also a
 | :--- | :--- | :---: | :--- | :--- |
 | `rect` | [rect](rect.md) | ✓ | Stacked | `children` |
 | `row`, `column` | [row and column](row-column.md) | ✓ | Flow | `children`, `spacing`, `scroll` |
-| `button` | [button](button.md) | ✓ | Stacked | `children`, `on_click`, `on_drag`, `on_wheel`, `submit` |
+| `button` | [button](button.md) | ✓ | Stacked | `children` |
 | `list` | [list](list.md) | | Flow, from data | `source`, `itemfn`, `key`, `limit`, `direction`, `spacing`, `scroll` |
 | `text` | [text](text.md) | | Leaf | `content`, `font`, `font_size`, `line_height`, `letter_spacing`, `font_weight`, `italic`, `foreground`, `text_align`, `wrap`, `max_lines`, `elide`, `on_link` |
 | `icon` | [icon](icon.md) | | Leaf | `name`, `size`, `foreground` |
@@ -153,6 +153,10 @@ inside the node's own box, and matters only when that box is wider than the text
 
 ## Common properties
 
+The pointer handlers `on_click`, `on_drag`, `on_wheel` and `submit` are here, so any node takes
+clicks: the innermost node under the pointer with a handler for the event wins, and a node without
+one lets the event through to the node around it ([pointer](../guide/input.md#pointer)).
+
 <!-- Generated from renderer/src/lua/nodes/properties.rs by `just stubs`: edit the table there. -->
 | Property | Type | Default | Behaviour |
 | :--- | :--- | :--- | :--- |
@@ -182,8 +186,12 @@ inside the node's own box, and matters only when that box is wider than the text
 | `id` | `string` | None | Unique among siblings; matches this node across passes ([identity](#identity-and-reconciliation)). Never a signal |
 | `hover` | `Bound` | None | A `hover(name)` signal the engine sets while the pointer is over this node or its children ([hover](../guide/input.md#hover)) |
 | `geometry` | `Bound` | None | A `geometry(name)` signal the pass writes this node's surface-local rect into ([geometry](../guide/signals.md#geometry-read-a-nodes-laid-out-rect)) |
-| `cursor` | `Cursor\|Bound` | `"pointer"` on a `button` with a handler or `submit` and on a link, `"text"` on a `textfield`, else the arrow | One of the [cursor names](#cursor-names). The innermost node under the pointer that sets one wins |
+| `cursor` | `Cursor\|Bound` | `"pointer"` on a node with `on_click`, `on_drag`, `on_wheel` or `submit` and on a link, `"text"` on a `textfield`, else the arrow | One of the [cursor names](#cursor-names). The innermost node under the pointer that sets one wins |
 | `on_hover` | `fun(hovered: boolean)` | None | Called on each hover edge from pointer Enter, Motion or Leave; layout changes under a still pointer do not call it. Refused without `hover` on the same node |
+| `on_click` | `fun(rect: Rect, button: "left"\|"right"\|"middle")` | None | On release over the same node that was pressed, with the same mouse button. `rect` is the node's surface-local box, before transforms. A press on a `textfield` that takes the keyboard goes to the field instead |
+| `on_drag` | `fun(rect: Rect, pointer: { x: number, y: number }, phase: "start"\|"move"\|"end")` | None | Left-button drag. `pointer` is node-local and unclamped. `"start"` on press, `"end"` on release (before `on_click`) or when the pointer leaves the surface |
+| `on_wheel` | `fun(rect: Rect, steps: number)` | None | Vertical wheel in notches, positive away from the user, fractional on touchpads. The innermost handler or scroll container wins; on one node, the `scroll` |
+| `submit` | `boolean\|Bound` | `false` | A click also submits the armed [secure field](../guide/input.md#secure-fields), like Enter. Works without `on_click` and runs before it |
 <!-- End of the generated table. -->
 
 `scale`, `rotate` and `translate` act like CSS `transform`: the subtree draws moved, while layout,
@@ -285,7 +293,7 @@ return body
 | Push items to the far end of a row | [row and column](row-column.md#push-items-apart): a `"Fill"` spacer |
 | Show a progress bar | The [meter](row-column.md): a percentage-width `rect` in a `"Fill"` track |
 | Truncate long text | `width` (or `"Fill"`) plus `elide = "End"`; see [text](text.md) |
-| Make something clickable | Wrap it in a [`button`](button.md) with `on_click` |
+| Make something clickable | Give it `on_click`; to make a whole row clickable, put `on_click` on the `row` ([pointer](../guide/input.md#pointer)) |
 | Build rows from data, or a grid | [list](list.md) |
 | Scroll a long list | [list: scroll a long list](list.md#scroll-a-long-list) |
 | Show an app's icon | [icon](icon.md) |

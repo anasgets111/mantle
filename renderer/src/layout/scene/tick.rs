@@ -504,7 +504,7 @@ mod tests {
             local function bar() return rect { width = v:map(function(x) return x .. "%" end), height = "Fill",
                 opacity = o, animate = { opacity = { duration = 100, easing = "Linear" } },
                 children = { row { width = w, height = "Fill", animate = { width = { duration = 100, easing = "Linear" } } } } } end
-            return panel { id = "bar", child = button { width = w, height = 20, clip = "Rounded", radius = 4,
+            return panel { id = "bar", child = rect { width = w, height = 20, clip = "Rounded", radius = 4,
                 animate = { width = { duration = 100, easing = "Linear" } },
                 children = { bar(), row { width = "Fill", height = "Fill", children = { rect { width = "100%" } } } } } }"#,
         );
@@ -1072,7 +1072,7 @@ mod tests {
             r#"local open = state("open", true)
             local linger = computed({ open, delay(open, 147) }, function(now, was) return now or was end)
             return panel { id = "host", visible = linger, child = rect { width = "Fill", height = "Fill", children = {
-                button { width = "Fill", height = "Fill" },
+                rect { width = "Fill", height = "Fill" },
                 column { width = 100, margin = open:map(function(o) return { left = 30, top = o and 4 or -44 } end),
                     opacity = open:map(function(o) return o and 1 or 0 end),
                     animate = { opacity = { duration = 147, from = 0 }, margin = { duration = 147, easing = "OutQuad" } },

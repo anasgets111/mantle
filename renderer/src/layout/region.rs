@@ -10,9 +10,9 @@ use crate::text::snap::{LogicalRect, PhysicalRect, snap_to_physical};
 /// the only place a Wayland object exists to push to.
 ///
 /// A visible node claims its whole box when it is *solid*: it paints something (a box with a
-/// background or a border, or any text, icon, image or field), or it is a `button` with a pointer
-/// handler (`on_click`, `on_drag`, `on_wheel`), which is invisible by design but still pressable
-/// (a full-surface click-outside catcher). Transparent containers claim nothing and are walked
+/// background or a border, or any text, icon, image or field), or it has a pointer handler
+/// (`on_click`, `on_drag`, `on_wheel`) or `submit`, which may be invisible by design but is still
+/// pressable (a full-surface click-outside catcher). Transparent containers claim nothing and are walked
 /// into, so a full-surface `column` holding two cards yields the cards. Everything else is
 /// click-through and, under focus-follows-mouse, focus-through; the popup's empty space below its
 /// cards therefore takes neither clicks nor keyboard focus.
@@ -30,6 +30,11 @@ pub fn overlay_input_regions(surface_root: &ResolvedNode, scale: f32) -> Vec<Phy
     let paint_claims =
         !matches!(node::fields::panel::layer.read(&surface_root.properties), Ok(node::LayerKind::Background));
     let mut regions = Vec::new();
+    // A root's paint claims nothing, but its handler asks for the whole surface.
+    if surface_root.takes_pointer() {
+        collect_input_regions(surface_root, 0.0, 0.0, scale, paint_claims, &mut regions);
+        return regions;
+    }
     for child in &surface_root.children {
         collect_input_regions(child, 0.0, 0.0, scale, paint_claims, &mut regions);
     }
@@ -270,7 +275,7 @@ fn takes_input_as_a_box(node: &ResolvedNode, paint_claims: bool) -> bool {
             Some(PaintStyle::Box { background, widths, .. }) => {
                 background.is_some() || [widths.top, widths.right, widths.bottom, widths.left].iter().any(|w| *w > 0.0)
             }
-            // Its alpha is the GPU's to know; a config adds a `button` for a hit area (ADR-0253).
+            // Its alpha is the GPU's to know; a config gives it a pointer handler for a hit area (ADR-0253).
             Some(PaintStyle::Shader { .. }) | None => false,
             Some(_) => true,
         };
@@ -334,7 +339,7 @@ mod tests {
         let lua = mlua::Lua::new();
         let mut card = region_node(1, "rect", (200.0, 260.0, 620.0, 260.0), solid_paint(), Vec::new());
         card.blur = true;
-        let mut catcher = region_node(2, "button", (0.0, 0.0, 1920.0, 1161.0), None, Vec::new());
+        let mut catcher = region_node(2, "rect", (0.0, 0.0, 1920.0, 1161.0), None, Vec::new());
         catcher.properties.insert("on_click", Value::Function(lua.create_function(|_, ()| Ok(())).unwrap()));
         let root = region_node(3, "panel", (0.0, 0.0, 1920.0, 1161.0), None, vec![catcher, card]);
 
@@ -497,7 +502,7 @@ mod tests {
         }
     }
 
-    /// ADR-0109: a transparent container is walked into; a solid child claims its box; a `button`
+    /// ADR-0109: a transparent container is walked into; a solid child claims its box; a node
     /// with a handler claims its box with nothing painted; a transparent leaf claims nothing.
     #[test]
     fn overlay_input_regions_come_from_what_is_drawn_and_what_is_clickable() {
@@ -512,23 +517,33 @@ mod tests {
             "the cards, at their surface-local positions, and not the column"
         );
 
-        let mut catcher = region_node(5, "button", (0.0, 0.0, 120.0, 520.0), None, Vec::new());
+        let mut catcher = region_node(5, "column", (0.0, 0.0, 120.0, 520.0), None, Vec::new());
         catcher.properties.insert("on_click", Value::Function(lua.create_function(|_, ()| Ok(())).unwrap()));
         let root = region_node(6, "panel", (0.0, 0.0, 120.0, 520.0), None, vec![catcher]);
         assert_eq!(overlay_input_regions(&root, 1.0), [PhysicalRect { x0: 0, y0: 0, x1: 120, y1: 520 }]);
 
-        let idle_button = region_node(7, "button", (0.0, 0.0, 120.0, 520.0), None, Vec::new());
-        let root = region_node(8, "panel", (0.0, 0.0, 120.0, 520.0), None, vec![idle_button]);
-        assert!(overlay_input_regions(&root, 1.0).is_empty(), "a button with no handler is as transparent as a rect");
+        let idle = region_node(7, "row", (0.0, 0.0, 120.0, 520.0), None, Vec::new());
+        let root = region_node(8, "panel", (0.0, 0.0, 120.0, 520.0), None, vec![idle]);
+        assert!(overlay_input_regions(&root, 1.0).is_empty(), "a row with no handler is as transparent as a rect");
 
         let label = region_node(9, "rect", (10.0, 10.0, 50.0, 20.0), solid_paint(), Vec::new());
-        let mut submit = region_node(10, "button", (0.0, 0.0, 120.0, 40.0), None, vec![label]);
+        let mut submit = region_node(10, "row", (0.0, 0.0, 120.0, 40.0), None, vec![label]);
         submit.properties.insert("submit", Value::Boolean(true));
         let root = region_node(11, "panel", (0.0, 0.0, 120.0, 40.0), None, vec![submit]);
         assert_eq!(
             overlay_input_regions(&root, 1.0),
             [PhysicalRect { x0: 0, y0: 0, x1: 120, y1: 40 }],
-            "a submit button claims its box, not only its label"
+            "a submit row claims its box, not only its label"
+        );
+
+        let card = region_node(12, "rect", (10.0, 10.0, 50.0, 20.0), solid_paint(), Vec::new());
+        let mut root = region_node(13, "panel", (0.0, 0.0, 120.0, 40.0), solid_paint(), vec![card]);
+        assert_eq!(overlay_input_regions(&root, 1.0), [PhysicalRect { x0: 10, y0: 10, x1: 60, y1: 30 }]);
+        root.properties.insert("on_wheel", Value::Function(lua.create_function(|_, ()| Ok(())).unwrap()));
+        assert_eq!(
+            overlay_input_regions(&root, 1.0),
+            [PhysicalRect { x0: 0, y0: 0, x1: 120, y1: 40 }],
+            "a painted root claims nothing, a root with a handler the whole surface"
         );
     }
 

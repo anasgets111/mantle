@@ -19,10 +19,9 @@ pub struct LogicalPoint {
 
 /// Every node containing `point`, root-first and deepest-last; empty if the point misses `root`.
 ///
-/// A path, not a topmost node: the supported tree is a `button` whose `text` child has no
-/// `on_click`; returning only the deepest node would mean no button ever fires (ADR-0050
-/// decision 1).
-/// Callers scan from the deep end for the kind they want.
+/// A path, not a topmost node: the supported tree is a clickable node whose `text` child has no
+/// `on_click`; returning only the deepest node would mean no container's handler ever fires
+/// (ADR-0050 decision 1). Callers scan from the deep end for the handler or kind they want.
 ///
 /// Three rules, all load-bearing:
 ///
@@ -33,7 +32,7 @@ pub struct LogicalPoint {
 ///   clip rect.
 /// - **Children in reverse.** `run` paints in [`ResolvedNode::painted_children`] order, so the
 ///   last is on top and is asked first; the first child that yields a hit wins.
-/// - **Half-open bounds**, `rect.x <= point.x < rect.x + rect.width`. Two buttons sharing an edge
+/// - **Half-open bounds**, `rect.x <= point.x < rect.x + rect.width`. Two nodes sharing an edge
 ///   must not both claim it, and a zero-area rect must contain nothing.
 ///
 /// `ResolvedNode::rect` is parent-relative. [`absolute_rect`] recovers a hit node's absolute rect
@@ -152,7 +151,7 @@ pub fn caret_at(
 
 /// The shape the pointer should take over `path`'s deepest node (ADR-0107). Innermost wins, and
 /// at each node an explicit `cursor` property beats what the node is: a `text` with `on_link` over
-/// a link's own words is a `pointer`, a `textfield` is `text`, a button that
+/// a link's own words is a `pointer`, a `textfield` is `text`, a node that
 /// [`ResolvedNode::takes_pointer`] is a `pointer`, and nothing else says anything, so the arrow is
 /// what is left.
 ///
@@ -167,14 +166,16 @@ pub fn cursor_under(path: &[&ResolvedNode], point: LogicalPoint, shaping: &Shapi
             if let Some(cursor) = fields::common::cursor.read(&node.properties).ok().flatten() {
                 return Some(cursor);
             }
+            let over_link = || {
+                node.kind == "text"
+                    && fields::text::on_link.read(&node.properties).is_ok_and(|on_link| on_link.is_some())
+                    && absolute_rect(&path[..=depth]).is_some_and(|rect| {
+                        link_under(node, LogicalPoint { x: point.x - rect.x, y: point.y - rect.y }, shaping).is_some()
+                    })
+            };
             match node.kind {
-                "text" if fields::text::on_link.read(&node.properties).is_ok_and(|on_link| on_link.is_some()) => {
-                    let rect = absolute_rect(&path[..=depth])?;
-                    let local = LogicalPoint { x: point.x - rect.x, y: point.y - rect.y };
-                    link_under(node, local, shaping).map(|_| CursorIcon::Pointer)
-                }
                 "textfield" => Some(CursorIcon::Text),
-                _ if node.takes_pointer() => Some(CursorIcon::Pointer),
+                _ if node.takes_pointer() || over_link() => Some(CursorIcon::Pointer),
                 _ => None,
             }
         })
@@ -259,13 +260,13 @@ mod tests {
         Value::Function(lua.create_function(|_, ()| Ok(())).unwrap())
     }
 
-    /// ADR-0149: a scaled node is hit where it is painted. A 20px button scaled 2x about its
+    /// ADR-0149: a scaled node is hit where it is painted. A 20px node scaled 2x about its
     /// centre covers 10px beyond its laid-out box on every side, and its children are found
     /// through the same inverse.
     #[test]
     fn a_scaled_node_takes_the_pointer_where_it_is_painted() {
         let mut scaled = ResolvedNode::test(
-            "button",
+            "column",
             (100.0, 100.0, 20.0, 20.0),
             vec![ResolvedNode::test("rect", (0.0, 0.0, 10.0, 20.0), vec![])],
         );
@@ -273,11 +274,11 @@ mod tests {
         let tree = ResolvedNode::test("panel", (0.0, 0.0, 400.0, 400.0), vec![scaled]);
         // Inside the painted box (90..130), outside the laid-out one (100..120).
         let path = hit_path(&tree, LogicalPoint { x: 92.0, y: 95.0 });
-        assert_eq!(path.len(), 3, "the button and its left child, which paints over 90..110");
+        assert_eq!(path.len(), 3, "the node and its left child, which paints over 90..110");
         assert_eq!(path[2].kind, "rect");
         assert_eq!(hit_path(&tree, LogicalPoint { x: 125.0, y: 105.0 }).len(), 2, "the right half has no child");
         assert_eq!(hit_path(&tree, LogicalPoint { x: 135.0, y: 105.0 }).len(), 1, "past the painted box");
-        let mut flat = ResolvedNode::test("button", (100.0, 100.0, 20.0, 20.0), vec![]);
+        let mut flat = ResolvedNode::test("column", (100.0, 100.0, 20.0, 20.0), vec![]);
         flat.transform.scale = (0.0, 1.0);
         let tree = ResolvedNode::test("panel", (0.0, 0.0, 400.0, 400.0), vec![flat]);
         assert_eq!(hit_path(&tree, LogicalPoint { x: 110.0, y: 110.0 }).len(), 1, "a zero scale takes nothing");
@@ -287,14 +288,14 @@ mod tests {
     #[test]
     fn the_higher_z_sibling_takes_the_pointer_where_siblings_overlap() {
         let tree = |z: f32| {
-            let mut first = ResolvedNode::test("button", (0.0, 0.0, 20.0, 20.0), vec![]);
+            let mut first = ResolvedNode::test("column", (0.0, 0.0, 20.0, 20.0), vec![]);
             first.z = z;
             let second = ResolvedNode::test("rect", (10.0, 0.0, 20.0, 20.0), vec![]);
             ResolvedNode::test("panel", (0.0, 0.0, 400.0, 400.0), vec![first, second])
         };
         let top = |tree: &ResolvedNode| hit_path(tree, LogicalPoint { x: 15.0, y: 5.0 }).last().unwrap().kind;
         assert_eq!(top(&tree(0.0)), "rect", "equal z: the later sibling is on top");
-        assert_eq!(top(&tree(1.0)), "button");
+        assert_eq!(top(&tree(1.0)), "column");
     }
 
     /// A child laid out past a `clip = "None"` parent is painted there, so it is hit there, with the
@@ -302,7 +303,7 @@ mod tests {
     #[test]
     fn a_child_overflowing_an_unclipped_parent_is_hit_where_it_paints() {
         let overflowing = || vec![ResolvedNode::test("rect", (30.0, 0.0, 10.0, 10.0), vec![])];
-        let mut open = ResolvedNode::test("button", (0.0, 0.0, 20.0, 20.0), overflowing());
+        let mut open = ResolvedNode::test("column", (0.0, 0.0, 20.0, 20.0), overflowing());
         open.paint = Some(PaintStyle::Box {
             background: None,
             radius: 0.0,
@@ -313,16 +314,16 @@ mod tests {
         });
         let tree = ResolvedNode::test("panel", (0.0, 0.0, 400.0, 400.0), vec![open]);
         let path = hit_path(&tree, LogicalPoint { x: 35.0, y: 5.0 });
-        assert_eq!(path.iter().map(|n| n.kind).collect::<Vec<_>>(), ["panel", "button", "rect"]);
+        assert_eq!(path.iter().map(|n| n.kind).collect::<Vec<_>>(), ["panel", "column", "rect"]);
         assert_eq!(hit_path(&tree, LogicalPoint { x: 25.0, y: 5.0 }).len(), 1, "between them is nothing");
 
-        let clipped = ResolvedNode::test("button", (0.0, 0.0, 20.0, 20.0), overflowing());
+        let clipped = ResolvedNode::test("column", (0.0, 0.0, 20.0, 20.0), overflowing());
         let tree = ResolvedNode::test("panel", (0.0, 0.0, 400.0, 400.0), vec![clipped]);
         assert_eq!(hit_path(&tree, LogicalPoint { x: 35.0, y: 5.0 }).len(), 1, "a clipping parent hides it");
     }
 
     #[test]
-    fn a_button_with_a_handler_is_a_pointer_and_one_without_is_the_arrow() {
+    fn a_node_of_any_kind_with_a_handler_is_a_pointer_and_one_without_is_the_arrow() {
         let shaping = ShapingHandle::spawn();
         let lua = mlua::Lua::new();
         let handled = ResolvedNode::test(
@@ -331,14 +332,14 @@ mod tests {
             vec![
                 with(
                     ResolvedNode::test(
-                        "button",
+                        "column",
                         (0.0, 0.0, 50.0, 20.0),
                         vec![ResolvedNode::test("text", (0.0, 0.0, 30.0, 20.0), vec![])],
                     ),
                     "on_click",
                     function(&lua),
                 ),
-                ResolvedNode::test("button", (50.0, 0.0, 50.0, 20.0), vec![]),
+                ResolvedNode::test("column", (50.0, 0.0, 50.0, 20.0), vec![]),
             ],
         );
         let point = LogicalPoint { x: 10.0, y: 10.0 };
@@ -347,11 +348,13 @@ mod tests {
         assert_eq!(cursor_under(&hit_path(&handled, point), point, &shaping), CursorIcon::Default);
         assert_eq!(cursor_under(&[], point, &shaping), CursorIcon::Default, "off every node");
 
-        let submit = with(ResolvedNode::test("button", (0.0, 0.0, 50.0, 20.0), vec![]), "submit", Value::Boolean(true));
+        let submit = with(ResolvedNode::test("column", (0.0, 0.0, 50.0, 20.0), vec![]), "submit", Value::Boolean(true));
         let point = LogicalPoint { x: 10.0, y: 10.0 };
         assert_eq!(cursor_under(&hit_path(&submit, point), point, &shaping), CursorIcon::Pointer, "submit = true");
-        let wheel = with(ResolvedNode::test("button", (0.0, 0.0, 50.0, 20.0), vec![]), "on_wheel", function(&lua));
+        let wheel = with(ResolvedNode::test("column", (0.0, 0.0, 50.0, 20.0), vec![]), "on_wheel", function(&lua));
         assert_eq!(cursor_under(&hit_path(&wheel, point), point, &shaping), CursorIcon::Pointer, "on_wheel only");
+        let leaf = with(ResolvedNode::test("icon", (0.0, 0.0, 16.0, 16.0), vec![]), "on_drag", function(&lua));
+        assert_eq!(cursor_under(&hit_path(&leaf, point), point, &shaping), CursorIcon::Pointer, "a leaf, on_drag only");
     }
 
     #[test]
@@ -359,7 +362,7 @@ mod tests {
         let shaping = ShapingHandle::spawn();
         let lua = mlua::Lua::new();
         let disabled = with(
-            with(ResolvedNode::test("button", (0.0, 0.0, 50.0, 20.0), vec![]), "on_click", function(&lua)),
+            with(ResolvedNode::test("column", (0.0, 0.0, 50.0, 20.0), vec![]), "on_click", function(&lua)),
             "cursor",
             Value::String(lua.create_string("not-allowed").unwrap()),
         );
@@ -384,7 +387,7 @@ mod tests {
     }
 
     #[test]
-    fn a_link_word_is_a_pointer_and_the_plain_word_beside_it_falls_through_to_the_button() {
+    fn a_link_word_is_a_pointer_and_the_plain_word_beside_it_is_whatever_the_text_itself_is() {
         let shaping = ShapingHandle::spawn();
         let lua = mlua::Lua::new();
         let text = with(
@@ -392,15 +395,17 @@ mod tests {
             "on_link",
             function(&lua),
         );
-        let card = ResolvedNode::test("button", (0.0, 0.0, 300.0, 60.0), vec![text]);
+        let card = ResolvedNode::test("column", (0.0, 0.0, 300.0, 60.0), vec![text.clone()]);
         let plain = LogicalPoint { x: 2.0, y: 5.0 };
         assert_eq!(
             cursor_under(&hit_path(&card, plain), plain, &shaping),
             CursorIcon::Default,
-            "plain word, button has no handler"
+            "plain word, nothing on the path has a handler"
         );
         let on_link = LogicalPoint { x: width_of(&shaping, "see ") + width_of(&shaping, "this page") / 2.0, y: 5.0 };
         assert_eq!(cursor_under(&hit_path(&card, on_link), on_link, &shaping), CursorIcon::Pointer);
+        let clickable = with(text, "on_click", function(&lua));
+        assert_eq!(cursor_under(&[&clickable], plain, &shaping), CursorIcon::Pointer, "the text's own on_click");
     }
 
     // ---- link_under (ADR-0106) ----
@@ -592,7 +597,7 @@ mod tests {
         let root = ResolvedNode::test(
             "panel",
             (0.0, 0.0, 100.0, 32.0),
-            vec![ResolvedNode::test("button", (10.0, 4.0, 20.0, 24.0), vec![])],
+            vec![ResolvedNode::test("column", (10.0, 4.0, 20.0, 24.0), vec![])],
         );
         let path = hit_path(&root, LogicalPoint { x: 80.0, y: 16.0 });
         assert_eq!(kinds(&path), ["panel"]);
@@ -606,11 +611,11 @@ mod tests {
             vec![ResolvedNode::test(
                 "row",
                 (0.0, 0.0, 100.0, 32.0),
-                vec![ResolvedNode::test("button", (10.0, 4.0, 20.0, 24.0), vec![])],
+                vec![ResolvedNode::test("column", (10.0, 4.0, 20.0, 24.0), vec![])],
             )],
         );
         let path = hit_path(&root, LogicalPoint { x: 15.0, y: 10.0 });
-        assert_eq!(kinds(&path), ["panel", "row", "button"]);
+        assert_eq!(kinds(&path), ["panel", "row", "column"]);
     }
 
     #[test]
@@ -621,10 +626,10 @@ mod tests {
             vec![ResolvedNode::test(
                 "row",
                 (40.0, 0.0, 60.0, 32.0),
-                vec![ResolvedNode::test("button", (10.0, 4.0, 20.0, 24.0), vec![])],
+                vec![ResolvedNode::test("column", (10.0, 4.0, 20.0, 24.0), vec![])],
             )],
         );
-        assert_eq!(kinds(&hit_path(&root, LogicalPoint { x: 55.0, y: 10.0 })), ["panel", "row", "button"]);
+        assert_eq!(kinds(&hit_path(&root, LogicalPoint { x: 55.0, y: 10.0 })), ["panel", "row", "column"]);
         assert_eq!(kinds(&hit_path(&root, LogicalPoint { x: 15.0, y: 10.0 })), ["panel"]);
     }
 
@@ -636,7 +641,7 @@ mod tests {
             vec![ResolvedNode::test(
                 "row",
                 (40.0, 2.0, 60.0, 30.0),
-                vec![ResolvedNode::test("button", (10.0, 4.0, 20.0, 24.0), vec![])],
+                vec![ResolvedNode::test("column", (10.0, 4.0, 20.0, 24.0), vec![])],
             )],
         );
         let path = hit_path(&root, LogicalPoint { x: 55.0, y: 10.0 });
@@ -650,7 +655,7 @@ mod tests {
         let mut hidden = ResolvedNode::test(
             "row",
             (0.0, 0.0, 100.0, 32.0),
-            vec![ResolvedNode::test("button", (10.0, 4.0, 20.0, 24.0), vec![])],
+            vec![ResolvedNode::test("column", (10.0, 4.0, 20.0, 24.0), vec![])],
         );
         hidden.visible = false;
         let root = ResolvedNode::test("panel", (0.0, 0.0, 100.0, 32.0), vec![hidden]);
@@ -699,19 +704,19 @@ mod tests {
     }
 
     #[test]
-    fn a_text_inside_a_button_still_leaves_the_button_findable_from_the_deep_end() {
+    fn a_text_inside_a_column_still_leaves_the_column_findable_from_the_deep_end() {
         let root = ResolvedNode::test(
             "panel",
             (0.0, 0.0, 100.0, 32.0),
             vec![ResolvedNode::test(
-                "button",
+                "column",
                 (10.0, 4.0, 40.0, 24.0),
                 vec![ResolvedNode::test("text", (6.0, 5.0, 28.0, 14.0), vec![])],
             )],
         );
         let path = hit_path(&root, LogicalPoint { x: 20.0, y: 12.0 });
-        assert_eq!(kinds(&path), ["panel", "button", "text"]);
-        let index = path.iter().rposition(|node| node.kind == "button").expect("the button must be findable");
+        assert_eq!(kinds(&path), ["panel", "column", "text"]);
+        let index = path.iter().rposition(|node| node.kind == "column").expect("the column must be findable");
         assert_eq!(absolute_rect(&path[..=index]), Some(LogicalRect { x: 10.0, y: 4.0, width: 40.0, height: 24.0 }));
     }
 }

@@ -30,7 +30,7 @@ fn wheel_steps(pixels: f64, value120: i32) -> f32 {
 }
 
 impl App {
-    /// Apply one wheel event to the deepest scrollable or `on_wheel` button (ADR-0116 decision 2).
+    /// Apply one wheel event to the deepest scrollable or `on_wheel` node (ADR-0116 decision 2).
     /// Use touchpad pixels or `value120` (ADR-0069 decision 6); ignore deprecated `discrete`,
     /// which compositors that still send also accompany with `value120`.
     /// Innermost wins with no parent chaining: a wheel over a list stops there at its end, unlike
@@ -58,7 +58,7 @@ impl App {
             let axis = layout::scene::main_axis_of(node.kind, &node.properties).ok()??;
             Some((depth, signal, axis))
         });
-        let wheel = wheel_button(&path);
+        let wheel = wheel_target(&path);
         if let Some((depth, rect, on_wheel)) = wheel
             && scrollable.as_ref().is_none_or(|(scroll_depth, ..)| depth > *scroll_depth)
         {

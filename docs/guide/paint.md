@@ -512,7 +512,7 @@ blur does not fade with `opacity`, so a fading scrim would blur at full strength
 | `clip = "Rounded"` changes nothing | It needs a non-zero `radius`, and only clips children |
 | Children still clipped with `clip = "None"` and a `mask` | A mask always cuts to its box |
 | A gradient or a per-edge `border_color` jumps instead of easing under `animate` | Only single colours ease; see [Animation](animation.md) |
-| Rounded corners, scoops and masks still take clicks in the cut-away area | Hit-testing uses the rectangle. Shrink the `button` or accept it |
+| Rounded corners, scoops and masks still take clicks in the cut-away area | Hit-testing uses the rectangle. Shrink the clickable node or accept it |
 | A signal inside a gradient stop or border edge is refused | Map the whole table: `background = accent:map(function(c) return { gradient = "Linear", stops = { { 0, c }, { 1, "#00000000" } } } end)` |
 
 See also: [nodes](../nodes/index.md), [surfaces](../surfaces/index.md), [animation](animation.md), [input](input.md#hit-testing), [glossary](../glossary.md).

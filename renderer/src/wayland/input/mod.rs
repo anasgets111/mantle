@@ -54,7 +54,7 @@ impl SeatHandler for App {
                     }
                     // Nonfatal: painting, reload, and keyboard input remain; only `on_click` stops.
                     Err(e) => {
-                        error!("wl_seat::get_pointer failed; no button's on_click will ever fire: {e}")
+                        error!("wl_seat::get_pointer failed; no on_click will ever fire: {e}")
                     }
                 }
             }

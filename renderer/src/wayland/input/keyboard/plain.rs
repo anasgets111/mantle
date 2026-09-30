@@ -268,7 +268,7 @@ fn caret_phase(
 }
 
 impl App {
-    /// A button press already stopped typing. Restore it after the click's state has resolved,
+    /// A pointer press already stopped typing. Restore it after the click's state has resolved,
     /// before autofocus and repaint, so a newly shown field can receive the next key.
     pub(in crate::wayland) fn apply_focus_request(&mut self) {
         let Some((surface_id, name)) = crate::lua::focus::take_request(self.client.lua()) else {

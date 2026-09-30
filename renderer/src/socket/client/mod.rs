@@ -457,7 +457,7 @@ impl RendererClient {
         self.instances.retain(|instance| instance.instance_id != instance_id);
     }
 
-    /// This generation's `Lua` builds the `button` `on_click` argument (ADR-0050 decision 3):
+    /// This generation's `Lua` builds the `on_click` argument (ADR-0050 decision 3):
     /// `crate::wayland::App` holds the `mlua::Function`, not a VM. Do not hold the borrow across
     /// the call; see [`crate::wayland::App::fire_on_click`].
     pub fn lua(&self) -> &mlua::Lua {
@@ -663,7 +663,7 @@ mod tests {
                     anchor = { top = true, bottom = true, left = true, right = true },
                     exclusive = false, width = "Fill", height = "Fill",
                     child = rect { width = "Fill", height = "Fill", children = {
-                        button { width = "Fill", height = "Fill", on_click = function() end },
+                        rect { width = "Fill", height = "Fill", on_click = function() end },
                         column { margin = { top = 260, left = 200 }, children = {
                             rect {
                                 width = 620, height = 260, radius = 0,
@@ -710,7 +710,7 @@ mod tests {
                     child = rect {
                         width = "Fill", height = "Fill", background = "#202020ff",
                         children = {
-                            button { width = 120, height = 40, on_click = function() end },
+                            rect { width = 120, height = 40, on_click = function() end },
                         },
                     },
                 },
@@ -742,7 +742,7 @@ mod tests {
                     child = rect {
                         width = "Fill", height = "Fill", background = "#202020ff",
                         children = {
-                            button { width = 120, height = 40, on_click = function() end },
+                            rect { width = 120, height = 40, on_click = function() end },
                         },
                     },
                 },
