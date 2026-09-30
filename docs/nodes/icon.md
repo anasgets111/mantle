@@ -1,6 +1,6 @@
 # icon
 
-A square icon from the desktop icon theme, or from a file path. Reach for it for app icons, status
+A square icon from the desktop icon theme, or from a file path. Use it for app icons, status
 glyphs and tray items. Symbolic (SVG) icons take a tint. For photos and artwork at their own aspect
 ratio, use an [`image`](image.md).
 

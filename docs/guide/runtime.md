@@ -144,10 +144,15 @@ How each failure ends:
 | The Renderer crashes | The Supervisor starts a new generation. After three crashes within 60 s, it waits 30 s before the next respawn |
 | The compositor goes away | The Renderer exits with code 71 and the Supervisor shuts down instead of respawning |
 
-A failed reload keeps only the scene. The actions, timers, `on_change` handlers and idle
-thresholds of the evaluation that drew it are already cleared ([what survives](#what-survives-a-reload)).
-A failed evaluation leaves none registered. A failed apply keeps the new evaluation's actions,
-handlers and thresholds but no timers. Fix and save to get them back.
+A failed reload keeps the old scene, but not the old evaluation's actions, timers, `on_change`
+handlers or idle thresholds ([what survives](#what-survives-a-reload)):
+
+| Failure | Registered afterwards |
+| :--- | :--- |
+| Evaluation (a Lua error) | Nothing |
+| Apply | The new evaluation's actions, handlers and thresholds; no timers |
+
+Fix and save to get them back.
 
 `mantle.rescue` clears when a reload applies. A rescue from a failed live update or startup apply
 also clears when a later pass over the same scene applies. A config can draw its own error banner:

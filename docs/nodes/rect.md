@@ -1,7 +1,7 @@
 # rect
 
 A plain box that stacks its children: each one gets the whole content box and places itself with
-`align_h`/`align_v`. Reach for it for a filled shape, a background behind something, or layering
+`align_h`/`align_v`. Use it for a filled shape, a background behind something, or layering
 one node over another. Side by side needs a [`row` or `column`](row-column.md) instead.
 
 A bell icon with an unread badge in its top-right corner:

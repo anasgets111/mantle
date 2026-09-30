@@ -353,7 +353,7 @@ One node paints in this order, each step over the last:
 | Fade a list's edges | The [edge-fade mask](#mask) |
 | Circular avatar | [Avatar](#circular-avatar) |
 | Dim the background behind a modal | [Scrim](#dim-the-background-behind-a-modal) |
-| Tint a gradient from a signal | Map the whole table; see [Gotchas](#gotchas) |
+| Tint a gradient from a signal | Map the whole table; see [who takes what](#who-takes-what) |
 
 ### Frosted glass panel
 

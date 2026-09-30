@@ -1,7 +1,7 @@
 # capture
 
 A live preview of one output (monitor) through `ext-image-copy-capture-v1`, else `wlr-screencopy`.
-Reach for it for an overview, a monitor picker or a screenshot preview. Without either protocol it
+Use it for an overview, a monitor picker or a screenshot preview. Without either protocol it
 draws nothing and logs one warning.
 
 A rounded preview of the first screen at up to 30 frames per second:

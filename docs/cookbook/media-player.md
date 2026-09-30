@@ -108,6 +108,7 @@ local play_glyph = player:map(function(current)
     return current and current.play_state == "Playing" and "media-playback-pause-symbolic" or "media-playback-start-symbolic"
 end)
 
+local wheel = 0 -- partial notches from a touchpad or high-resolution wheel
 local pill = row {
     align_v = "Center",
     padding = { left = 10, right = 10, top = 4, bottom = 4 },
@@ -122,7 +123,14 @@ local pill = row {
             card_open:set(not card_open:get())
         end
     end,
-    on_wheel = function(_, steps) control(steps > 0 and "previous" or "next") end,
+    on_wheel = function(_, steps)
+        wheel = wheel + steps
+        local notches = math.modf(wheel) -- whole notches; the fraction carries over
+        wheel = wheel - notches
+        for _ = 1, math.abs(notches) do
+            control(notches > 0 and "previous" or "next")
+        end
+    end,
     spacing = 6,
     children = {
         icon { name = play_glyph, size = 14, foreground = "#cdd6f4", align_v = "Center" },

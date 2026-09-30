@@ -59,7 +59,7 @@ local tray_items = list {
             on_click = function(rect, which)
                 local cx = math.floor(rect.x + rect.width / 2)
                 local cy = math.floor(rect.y + rect.height)
-                if item.menu and (which == "right" or item.item_is_menu) then
+                if item.menu and (which == "right" or which == "left" and item.item_is_menu) then
                     open_menu(item, rect)
                 elseif which == "right" then
                     mantle.tray:context_menu(item.id, cx, cy)
@@ -71,9 +71,10 @@ local tray_items = list {
             end,
             on_wheel = function(_, steps)
                 wheel = wheel + steps
-                if math.abs(wheel) < 1 then return end
-                mantle.tray:scroll(item.id, wheel > 0 and 1 or -1, "vertical")
-                wheel = 0
+                local notches = math.modf(wheel) -- whole notches; the fraction carries over
+                if notches == 0 then return end
+                wheel = wheel - notches
+                mantle.tray:scroll(item.id, math.tointeger(notches), "vertical")
             end,
             children = { artwork(item) },
         }

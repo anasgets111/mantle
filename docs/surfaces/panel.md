@@ -101,7 +101,8 @@ the space they leave is clipped by the compositor.
 | Positive integer | That many px whatever the surface's size; for a tall surface whose top strip is the bar | No |
 | `"Ignore"` | Nothing | Yes |
 
-The zone counts from the output edge, so it includes the panel's `margin` on that edge.
+An integer zone counts from the output edge, so it must include the panel's `margin` on that edge;
+`true` reserves the size alone.
 
 ## Keyboard focus
 

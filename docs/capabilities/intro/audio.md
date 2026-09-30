@@ -106,6 +106,7 @@ local osd = panel {
     background = "#1E1E2ECC",
     child = text { content = osd_text, font_size = 16 },
 }
+return osd
 ```
 
 See also: [Volume OSD](../cookbook/volume-osd.md) recipe.

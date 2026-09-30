@@ -22,7 +22,7 @@ local function focus_step(name, step)
     end
     for index, workspace in ipairs(output.workspaces) do
         if workspace.id == output.active_workspace then
-            local target = output.workspaces[index + step]
+            local target = output.workspaces[math.max(1, math.min(#output.workspaces, index + step))]
             if target then
                 mantle.workspaces:focus(target.id)
             end
@@ -38,9 +38,10 @@ local function strip(name)
         -- Wheel up is positive; step towards lower numbers, once per whole notch.
         on_wheel = function(_, steps)
             wheel = wheel + steps
-            if math.abs(wheel) < 1 then return end
-            focus_step(name, wheel > 0 and -1 or 1)
-            wheel = 0
+            local notches = math.modf(wheel) -- whole notches; the fraction carries over
+            if notches == 0 then return end
+            wheel = wheel - notches
+            focus_step(name, -math.tointeger(notches))
         end,
         children = {
             list {

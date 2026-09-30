@@ -1,7 +1,7 @@
 # list
 
-A `row` or `column` whose children come from data: one `itemfn(item)` call per element of `source`.
-Reach for it for anything with a count you do not know up front: workspaces, notifications, search
+A `row` or `column` whose children come from data: one `itemfn(item)` call per element of `source`, up to `limit`.
+Use it for anything with a count you do not know up front: workspaces, notifications, search
 results, a thumbnail grid. For a fixed set of children, a [`row` or `column`](row-column.md) is
 simpler.
 

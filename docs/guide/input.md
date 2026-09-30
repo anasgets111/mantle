@@ -311,8 +311,8 @@ return lock {
 | Task | Answer |
 | :--- | :--- |
 | Make a slider | The example under [pointer](#pointer) |
-| Move a selection through a list with the arrow keys | The launcher under [text fields](#text-fields): `on_navigate` plus `scroll(name):reveal` |
-| Close a search box on a second Escape | The same launcher: `on_cancel(cleared)` closes only when `cleared` is `false` |
+| Move a selection through a list with the arrow keys | `on_navigate` under [text fields](#text-fields); the [app launcher](../cookbook/launcher.md) adds `scroll(name):reveal` |
+| Close a search box on a second Escape | The same example: `on_cancel(cleared)` closes only when `cleared` is `false` |
 | Ask for a password | The lock example under [secure fields](#secure-fields) |
 | Show a tooltip on hover | [Tooltip](../surfaces/popup.md), with `hover_rect` as the anchor |
 | Open a menu on right click | Below |

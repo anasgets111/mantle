@@ -161,7 +161,7 @@ Five members come from the Renderer, not a backend, so they are never `nil` and 
 | Give each monitor its own bar and workspaces | A function `child` gets the connector name; match it in `workspaces.outputs`: [workspaces](workspaces.md) |
 | Show CPU and memory use | `configure` once at top level, then map: [sysinfo](sysinfo.md) |
 | Name or iconify the focused app | `workspaces.active_client.class` through `applications.by_app_id`: [applications](applications.md) |
-| Play or pause whatever is playing | `control` on `players[1].id`: [mpris](mpris.md) |
+| Play or pause whatever is playing | `control` on the `id` of the player whose `play_state` is `"Playing"`: [mpris](mpris.md) |
 | Show a microphone or camera indicator | [privacy](privacy.md) |
 | Keep the screen awake (caffeine) | [idle](idle.md#how-do-i) |
 | Know whether an action worked | Watch the state it changes: [a failed Wi-Fi join](network.md#how-do-i) |
