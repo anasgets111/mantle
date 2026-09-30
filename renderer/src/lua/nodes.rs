@@ -90,6 +90,10 @@ pub enum DeserializeError {
     UnsupportedKind(String),
 }
 
+/// A removed kind and its replacement. Its constructor stays only to raise this, so a stale config
+/// fails at the call naming the fix instead of at "attempt to call a nil value" (ADR-0295).
+pub(crate) const REMOVED_KIND: (&str, &str) = ("button", "put on_click on a rect, row or column");
+
 /// Registers each [`node_kinds`] entry as a constructor that tags its props table with `kind`.
 pub fn register_node_constructors(lua: &Lua) -> mlua::Result<()> {
     for kind in node_kinds() {
@@ -102,7 +106,14 @@ pub fn register_node_constructors(lua: &Lua) -> mlua::Result<()> {
             })?,
         )?;
     }
-    Ok(())
+    let (removed, fix) = REMOVED_KIND;
+    lua.globals().set(
+        removed,
+        lua.create_function(move |lua, _: mlua::MultiValue| -> mlua::Result<()> {
+            let site = Site::of_caller(lua).map(|site| format!("{site}: ")).unwrap_or_default();
+            Err(mlua::Error::runtime(format!("{site}{removed} was removed: {fix}")))
+        })?,
+    )
 }
 
 /// Converts one Lua node table into a [`VirtualNode`]: pulls out `kind`, copies every other
@@ -171,6 +182,13 @@ mod tests {
             lua.load(r##"return rect { background = "#11111B", width = "Fill", height = 32 }"##).eval().unwrap();
         assert_eq!(table.get::<String>("kind").unwrap(), "rect");
         assert_eq!(table.get::<String>("background").unwrap(), "#11111B");
+    }
+
+    #[test]
+    fn the_removed_button_constructor_raises_the_fix() {
+        let lua = lua_with_constructors();
+        let err = lua.load(r#"return button { on_click = function() end }"#).eval::<Table>().unwrap_err();
+        assert!(err.to_string().contains("button was removed: put on_click on a rect, row or column"), "{err}");
     }
 
     /// Per-kind check: `layer` is root-role topology, not a `rect` property.

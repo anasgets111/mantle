@@ -39,7 +39,7 @@ scope, capability roster) lives in [`CONTEXT.md`](../CONTEXT.md).
 
 | Term | Meaning |
 | :--- | :--- |
-| **Node** | An element in a surface's tree: `row`, `text`, `button`, `list` and the other [kinds](nodes/index.md). |
+| **Node** | An element in a surface's tree: `row`, `text`, `list` and the other [kinds](nodes/index.md). |
 | **Node identity** | How a node is matched across evaluations, scoped to its parent: sibling `id` or list `key` (which wins), else position among id-less siblings. An unmatched node is new and starts fresh. |
 | **Paint-only property** | A property whose change repaints without relayout (`opacity`, colours, `radius`, shadows, blurs, transforms, `progress`). Its tweens tick without a layout pass. |
 | **Shader node** | [`shader`](nodes/shader.md): a config `.frag` drawn as a node. Editing the file reloads. |

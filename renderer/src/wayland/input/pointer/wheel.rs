@@ -1,4 +1,4 @@
-//! The wheel: a scroll signal's offset (ADR-0069) or a button's `on_wheel` (ADR-0116 decision 2).
+//! The wheel: a scroll signal's offset (ADR-0069) or a node's `on_wheel` (ADR-0116 decision 2).
 
 use shared::warn;
 

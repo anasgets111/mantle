@@ -52,7 +52,6 @@ Every kind accepts the [common properties](#common-properties). Box kinds also a
 | :--- | :--- | :---: | :--- | :--- |
 | `rect` | [rect](rect.md) | ✓ | Stacked | `children` |
 | `row`, `column` | [row and column](row-column.md) | ✓ | Flow | `children`, `spacing`, `scroll` |
-| `button` | [button](button.md) | ✓ | Stacked | `children` |
 | `list` | [list](list.md) | | Flow, from data | `source`, `itemfn`, `key`, `limit`, `direction`, `spacing`, `scroll` |
 | `text` | [text](text.md) | | Leaf | `content`, `font`, `font_size`, `line_height`, `letter_spacing`, `font_weight`, `italic`, `foreground`, `text_align`, `wrap`, `max_lines`, `elide`, `on_link` |
 | `icon` | [icon](icon.md) | | Leaf | `name`, `size`, `foreground` |
@@ -90,7 +89,7 @@ container either **flows** its children along one axis or **stacks** them on top
 | `row` | Flow left to right | Horizontal |
 | `column` | Flow top to bottom | Vertical |
 | `list` | Flow, generated from `source` | `direction`: vertical by default |
-| `rect`, `button`, every surface | Stack: each child gets the whole content box and aligns in it on its own. Later children paint over earlier ones | None |
+| `rect`, every surface | Stack: each child gets the whole content box and aligns in it on its own. Later children paint over earlier ones | None |
 | `text`, `icon`, `image`, `capture`, `shader`, `textfield` | None (leaves) | None |
 
 A stacking parent's content size is the union of its children, so a `rect` is how you layer a badge
@@ -215,7 +214,7 @@ The compositor draws the shape from its cursor theme.
 
 ## Box properties
 
-`rect`, `row`, `column`, `button` and the four surface roles also take `background`, `radius`,
+`rect`, `row`, `column` and the four surface roles also take `background`, `radius`,
 `corner_shape`, `border_color`, `border_width`, `clip`, `mask`, `blur`, `backdrop_blur` and
 `shadow_mode`. They are documented on [paint](../guide/paint.md#box-properties). Leaves and `list`
 take none of them: wrap one in a `rect` for a background, border or rounded clip.

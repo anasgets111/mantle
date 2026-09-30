@@ -787,13 +787,13 @@ mod tests {
         let armed = ArmedClick { instance_id: "bar@eDP-1".to_string(), rect, link: None, button: BTN_LEFT };
 
         assert!(release_completes_click(Some(&armed), "bar@eDP-1", Some((rect, None)), BTN_LEFT));
-        // Dragged off the button, then released: the release hits no button at all.
+        // Dragged off the node, then released: the release hits no clickable node at all.
         assert!(!release_completes_click(Some(&armed), "bar@eDP-1", None, BTN_LEFT));
-        // Dragged onto a different button on the same surface.
+        // Dragged onto a different clickable node on the same surface.
         assert!(!release_completes_click(Some(&armed), "bar@eDP-1", Some((moved, None)), BTN_LEFT));
-        // Same button geometry, different surface -- two panels can resolve identical rects.
+        // Same geometry, different surface -- two panels can resolve identical rects.
         assert!(!release_completes_click(Some(&armed), "notification_area@eDP-1", Some((rect, None)), BTN_LEFT));
-        // A release with nothing armed (a press that hit no button, or a `leave` in between).
+        // A release with nothing armed (a press that hit no clickable node, or a `leave` in between).
         assert!(!release_completes_click(None, "bar@eDP-1", Some((rect, None)), BTN_LEFT));
     }
 

@@ -2180,6 +2180,8 @@ default sink is written back to 1.5 when another client raises it past.
 Amendment to decision 4: `set_balance` and `balance` pan the default output on the same write path;
 the louder side keeps its level and never passes the cap.
 
+Amended by ADR-0295: drags and wheels go to any node kind; `button` is removed.
+
 ## 0117. A workspace knows whether it is empty and what runs on it
 
 1. Add populated and one representative app ID per workspace: focused window, else lowest window
@@ -4725,6 +4727,8 @@ a surface that cannot use it, and takes the desktop's focus-through with it.
 3. **A clickable wallpaper stays expressible.** A `button` with `on_click` claims its box on
    `Background` exactly as it does anywhere else.
 
+Amended by ADR-0295: any node with a pointer handler claims its box; `button` is removed.
+
 Rejected: dropping the paint proxy on every layer, so that only interactivity ever claims. It is the
 more uniform rule, and removing the paint/input coupling is the better long-term model, but as
 written it is wrong twice over. `hover` is not a pointer handler, and `dev-config`'s battery,
@@ -4941,6 +4945,8 @@ Amends ADR-0107 decision 2 and ADR-0109 decision 3.
 
 A transparent `submit` button claimed only its painted label, so 3800 of its 4800 px² passed clicks
 to the window behind, under an arrow cursor.
+
+Amended by ADR-0295: `takes_pointer` asks the same question of every node kind.
 
 ## 0215. A command decodes into a typed action variant
 
@@ -6928,6 +6934,8 @@ The request restores a retained draft and caret for the same field and calls no 
 `autofocus` keeps its separate empty-draft behavior. Requests outside a click are ignored so an
 unrelated later pointer serial cannot give a stale callback authority over keyboard focus.
 
+Amended by ADR-0295: any node's `on_click` may request focus; `button` is removed.
+
 ## 0285. Named motion clocks share progress across property tweens
 
 `motion(name, initial, duration, easing?)` owns a linear 0..1 phase. An `animate` entry may bind to
@@ -7137,3 +7145,31 @@ Rejected: a pass-level paint-only classification beside the tick's. It would nee
 node's properties against a second list, and a layout write would still rebuild the whole tree.
 
 Amends ADR-0077's fresh tree per apply.
+
+## 0295. Pointer handlers are common properties, and `button` is removed
+
+`on_click`, `on_drag`, `on_wheel` and `submit` were `button`'s own rows. They are now the
+`pointer(ALL)` group in `properties.rs`, so every kind takes them, and `button` was left a `rect`
+under another name.
+
+1. **Handlers are common.** Hit dispatch, the input region and the default `"pointer"` cursor read
+   the handler, not the kind: the innermost node with a handler for the event wins, as it did among
+   buttons.
+2. **`button` is removed, not aliased.** A clickable box is the `rect`, `row` or `column` it already
+   wraps: one node fewer per control, one kind fewer to document. Its constructor stays only to raise
+   `button was removed: put on_click on a rect, row or column`, so a stale config fails at the line
+   that calls it instead of at "attempt to call a nil value"; it has no stub.
+
+Consequences, each a case a `button` never reached:
+
+- A surface root with a handler claims its whole box as input region; a painted root without one
+  still claims only what it paints.
+- A press on a `textfield` that takes the keyboard goes to the field, even with `on_click` on the
+  field or around it.
+- A node that is both a `scroll` container and `on_wheel` scrolls; the handler never fires.
+- A `text` with `on_link` and `on_click`: a link run takes the click, the plain words fire `on_click`.
+
+Rejected: keeping `button` as an alias of `rect`. It costs a kind row, a page and a stub to say
+nothing a `rect` does not.
+
+Amends ADR-0116, ADR-0204, ADR-0214 and ADR-0284.

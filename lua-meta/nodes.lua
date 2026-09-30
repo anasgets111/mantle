@@ -74,7 +74,7 @@
 ---@field submit? boolean|Bound Default `false`. A click also submits the armed `secure_submit` field, like Enter (ADR-0114). Works without `on_click` and runs before it.
 ---@field [string] "no such property"
 
----Box paint for `rect`, `row`, `column`, `button` and every surface role.
+---Box paint for `rect`, `row`, `column` and every surface role.
 ---[docs](https://anasgets111.github.io/mantle/guide/paint.html#box-properties)
 ---@class BoxBase
 ---@field background? Color|Gradient|Bound Absent draws nothing, unlike an explicit transparent `"#00000000"`. A gradient snaps under `animate`.
@@ -184,11 +184,6 @@
 ---@field progress? number|Bound `[-8192, 8192]`, default `0`. `u_progress`. There is no clock uniform: animate this for motion; the wide range lets a spring overshoot.
 ---@field params? table<string, number|number[]>|Bound Default `{}`. Uniforms by name: a finite number for `float`, 2-4 numbers for `vec2`-`vec4`. Missing ones are `0`. Not tweened.
 
----@alias ButtonAnimations { align_h?: Animation, align_v?: Animation, backdrop_blur?: Animation, background?: Animation, blur?: Animation, border_color?: Animation, border_width?: Animation, children?: Animation, clip?: Animation, content_blur?: Animation, corner_shape?: Animation, cursor?: Animation, geometry?: Animation, height?: Animation, hover?: Animation, id?: Animation, margin?: Animation, mask?: Animation, max_height?: Animation, max_width?: Animation, min_height?: Animation, min_width?: Animation, on_click?: Animation, on_drag?: Animation, on_hover?: Animation, on_wheel?: Animation, opacity?: Animation, origin?: Animation, padding?: Animation, radius?: Animation, rotate?: Animation, scale?: Animation, shadow_blur?: Animation, shadow_color?: Animation, shadow_mode?: Animation, shadow_offset?: Animation, shadow_spread?: Animation, submit?: Animation, translate?: Animation, visible?: Animation, width?: Animation, exit?: Exit, [string]: "no such property" }
----@class ButtonProps: NodeBase, BoxBase
----@field animate? ButtonAnimations|Bound Tween named properties to each newly resolved value without running Lua (ADR-0145). The `exit` key is an `Exit` block. Only a node already on screen animates, unless the entry has `from`.
----@field children? Node[]|Bound Stacked in order: later children paint over earlier ones. At most 10000; a `nil` or `false` entry is an error.
-
 ---@alias ListAnimations { align_h?: Animation, align_v?: Animation, content_blur?: Animation, cursor?: Animation, direction?: Animation, geometry?: Animation, height?: Animation, hover?: Animation, id?: Animation, itemfn?: Animation, key?: Animation, limit?: Animation, margin?: Animation, max_height?: Animation, max_width?: Animation, min_height?: Animation, min_width?: Animation, on_click?: Animation, on_drag?: Animation, on_hover?: Animation, on_wheel?: Animation, opacity?: Animation, origin?: Animation, padding?: Animation, rotate?: Animation, scale?: Animation, scroll?: Animation, shadow_blur?: Animation, shadow_color?: Animation, shadow_offset?: Animation, shadow_spread?: Animation, source?: Animation, spacing?: Animation, submit?: Animation, translate?: Animation, visible?: Animation, width?: Animation, exit?: Exit, [string]: "no such property" }
 ---@class ListProps: NodeBase
 ---@field animate? ListAnimations|Bound Tween named properties to each newly resolved value without running Lua (ADR-0145). The `exit` key is an `Exit` block. Only a node already on screen animates, unless the entry has `from`.
@@ -257,11 +252,6 @@ function capture(props) end
 ---@param props ShaderProps
 ---@return Node
 function shader(props) end
-
----[docs](https://anasgets111.github.io/mantle/nodes/button.html)
----@param props ButtonProps
----@return Node
-function button(props) end
 
 ---[docs](https://anasgets111.github.io/mantle/nodes/list.html)
 ---@param props ListProps

@@ -192,13 +192,13 @@ fn nodes_lua() -> String {
             properties().filter(|row| row.kinds == kinds && row.name != "animate").map(field).collect();
         header = header.replace(&marker, fields.trim_end());
     }
-    render_stub(&header, &KINDS[..11])
+    render_stub(&header, &KINDS[..10])
 }
 
 /// `lua-meta/surfaces.lua`.
 fn surfaces_lua() -> String {
     let header = SURFACES_HEADER.replace("{POPUP_ANCHOR}", &union(PopupAnchor::NAMES));
-    render_stub(&SURFACE_SHAPES.iter().fold(header, |header, fill| fill(header)), &KINDS[11..])
+    render_stub(&SURFACE_SHAPES.iter().fold(header, |header, fill| fill(header)), &KINDS[10..])
 }
 
 /// A doc string as a Markdown table cell: no `(ADR-NNNN)` pointers, which are history, and `|`
@@ -318,7 +318,7 @@ const NODES_HEADER: &str = r##"---@meta
 {NodeBase}
 ---@field [string] "no such property"
 
----Box paint for `rect`, `row`, `column`, `button` and every surface role.
+---Box paint for `rect`, `row`, `column` and every surface role.
 ---[docs]({DOCS}guide/paint.html#box-properties)
 ---@class BoxBase
 {BoxBase}

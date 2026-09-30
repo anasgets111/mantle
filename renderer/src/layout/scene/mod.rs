@@ -698,7 +698,7 @@ impl Scene {
 fn ensure_supported_kind(kind: &str) -> Result<(), LayoutError> {
     match kind {
         "panel" | "window" | "popup" | "lock" | "rect" | "row" | "column" | "text" | "icon" | "image" | "capture"
-        | "shader" | "button" | "list" | "textfield" => Ok(()),
+        | "shader" | "list" | "textfield" => Ok(()),
         other => Err(LayoutError::UnsupportedNodeKind(other.to_string())),
     }
 }

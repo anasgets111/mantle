@@ -98,7 +98,7 @@ pub enum PaintStyle {
 pub fn paint_style(kind: &str, properties: &PropMap) -> Result<Option<PaintStyle>, LayoutError> {
     let style = match kind {
         // All containers and surface roles paint as a box.
-        "rect" | "row" | "column" | "button" | "panel" | "window" | "popup" | "lock" => PaintStyle::Box {
+        "rect" | "row" | "column" | "panel" | "window" | "popup" | "lock" => PaintStyle::Box {
             background: paint::background.read(properties)?,
             radius: parse_radius(properties)?,
             colors: paint::border_color.read(properties)?,

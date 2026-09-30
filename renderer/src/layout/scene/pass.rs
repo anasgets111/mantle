@@ -27,7 +27,7 @@ fn children_of(kind: &str, properties: &PropMap) -> Result<Vec<VirtualNode>, Lay
     match kind {
         "panel" | "lock" => Ok(fields::root::child.read(properties)?.into_iter().collect()),
         "window" | "popup" => Ok(fields::toplevel::child.read(properties)?.into_iter().collect()),
-        "rect" | "button" => fields::stack::children.read(properties),
+        "rect" => fields::stack::children.read(properties),
         "row" | "column" => fields::flow::children.read(properties),
         "list" => unreachable!("`prepare` builds a list's items through `node::list_children`"),
         "text" | "icon" | "image" | "capture" | "shader" | "textfield" => Ok(Vec::new()),

@@ -652,12 +652,13 @@ return { panel { id = "a", layer = "Top" }, missing, panel { id = "c", layer = "
             if !defined && stdlib.globals().contains_key(name.as_str()).unwrap() {
                 continue;
             }
-            // Node constructors and `mantle` belong to `nodes.lua` and `mantle.lua`.
+            // Node constructors and `mantle` belong to `nodes.lua` and `mantle.lua`; a removed kind to none.
             let is_node = || {
                 let node = lua.load(format!("return {name} {{}}")).eval::<Table>();
                 node.and_then(|node| node.get::<String>("kind")).is_ok_and(|kind| kind == name)
             };
-            assert!(defined || name == "mantle" || is_node(), "`{name}` was set without `define`");
+            let removed = name == nodes::REMOVED_KIND.0;
+            assert!(defined || name == "mantle" || removed || is_node(), "`{name}` was set without `define`");
             if let Value::Table(members) = value
                 && defined
             {

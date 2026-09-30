@@ -129,7 +129,7 @@ macro_rules! props {
 
 /// Every node kind, in constructor order. The last four are root roles (ADR-0040); declaring a
 /// `lock` does not lock (ADR-0052 decision 2).
-pub(crate) const KINDS: [&str; 15] = [
+pub(crate) const KINDS: [&str; 14] = [
     "rect",
     "row",
     "column",
@@ -138,7 +138,6 @@ pub(crate) const KINDS: [&str; 15] = [
     "image",
     "capture",
     "shader",
-    "button",
     "list",
     "textfield",
     "panel",
@@ -155,19 +154,18 @@ const ICON: u16 = 1 << 4;
 const IMAGE: u16 = 1 << 5;
 const CAPTURE: u16 = 1 << 6;
 const SHADER: u16 = 1 << 7;
-const BUTTON: u16 = 1 << 8;
-const LIST: u16 = 1 << 9;
-const TEXTFIELD: u16 = 1 << 10;
-const PANEL: u16 = 1 << 11;
-const WINDOW: u16 = 1 << 12;
-const POPUP: u16 = 1 << 13;
-const LOCK: u16 = 1 << 14;
+const LIST: u16 = 1 << 8;
+const TEXTFIELD: u16 = 1 << 9;
+const PANEL: u16 = 1 << 10;
+const WINDOW: u16 = 1 << 11;
+const POPUP: u16 = 1 << 12;
+const LOCK: u16 = 1 << 13;
 pub(crate) const SURFACES: u16 = PANEL | WINDOW | POPUP | LOCK;
 /// The common rows: every kind takes them, and `layout::scene` reads them without checking kind. A
 /// root role's own row of the same name overrides one in its stub and docs.
 pub(crate) const ALL: u16 = (1 << KINDS.len()) - 1;
 /// The box-paint rows: `node::paint_style`'s first arm paints these kinds alike.
-pub(crate) const BOX: u16 = RECT | ROW | COLUMN | BUTTON | SURFACES;
+pub(crate) const BOX: u16 = RECT | ROW | COLUMN | SURFACES;
 
 // A key in no row for its kind is refused, so a misspelled `aling_v` raises instead of being read by
 // nothing. Rows sharing a name agree on `choices`, `range` and a parser-read default
@@ -307,7 +305,7 @@ props! {
         /// Book: `"Box"` cuts children to the rectangle, `"Rounded"` also to `radius`, `"None"` leaves them on the parent's clip. See [Clip](#clip)
         clip: Bound<OneOf<ClipShape>> = absent(Choice("Box"));
     }
-    mod stack(RECT | BUTTON) {
+    mod stack(RECT) {
         /// Stacked in order: later children paint over earlier ones. At most 10000; a `nil` or `false` entry is an error.
         ///
         /// Book: Array of node tables, up to 10000; a `nil` or `false` entry is an error. Stacked in order: later children paint over earlier ones. Bind a signal of an array to [switch views](index.md#switching-views-with-ids)

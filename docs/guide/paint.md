@@ -29,7 +29,7 @@ A card: a translucent rounded fill, a hairline border and a soft shadow below it
 
 | Term | Meaning |
 | :--- | :--- |
-| Box kind | A node that paints a box: `rect`, `row`, `column`, `button` and the four [surface](../surfaces/index.md) roles (`panel`, `window`, `popup`, `lock`) |
+| Box kind | A node that paints a box: `rect`, `row`, `column` and the four [surface](../surfaces/index.md) roles (`panel`, `window`, `popup`, `lock`) |
 | Repaint | Mantle redraws the changed part of a surface's buffer; an unchanged surface is not redrawn |
 | Offscreen pass | The subtree is drawn into a temporary texture, filtered or masked, then composited back. Costs a texture and an extra draw |
 | Layer | The offscreen pass that `content_blur` and some shadows use. Unlike other offscreen passes, Mantle keeps it and reuses it while the subtree does not change |

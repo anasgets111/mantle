@@ -39,7 +39,6 @@
 - [Nodes](nodes/index.md)
   - [rect](nodes/rect.md)
   - [row and column](nodes/row-column.md)
-  - [button](nodes/button.md)
   - [text](nodes/text.md)
   - [icon](nodes/icon.md)
   - [image](nodes/image.md)
