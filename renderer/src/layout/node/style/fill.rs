@@ -2,11 +2,8 @@
 
 use mlua::Value;
 
-use super::{table_field, table_number};
-use crate::layout::node::prop::{Keyword, Prop, keywords};
-use crate::layout::node::{
-    LayoutError, Property, Rgba, checked_string, invalid, only_keys, parse_hex_color, preview_for_error, value_as_f32,
-};
+use crate::layout::node::prop::{Prop, keywords};
+use crate::layout::node::{LayoutError, Property, Rgba, checked_string, invalid, parse_hex_color, preview_for_error};
 use crate::lua::luacats::{LuaType, lua_shape, spelled};
 
 /// A box's fill: one colour, or a gradient across its box (ADR-0255).
@@ -63,8 +60,7 @@ keywords! {
 }
 
 lua_shape! {
-    #[alias = "Gradient"]
-    #[expect(dead_code, reason = "the parser's accepted keys and Lua input types")]
+    #[input = "Gradient"]
     struct GradientInput {
         gradient: GradientKind,
         angle: Option<f32>,
@@ -73,14 +69,34 @@ lua_shape! {
 }
 
 lua_shape! {
-    #[alias = "Mask"]
-    #[expect(dead_code, reason = "the parser's accepted keys and Lua input types")]
+    #[input = "Mask"]
     struct MaskInput {
         gradient: Option<GradientKind>,
         angle: Option<f32>,
         stops: Option<Vec<GradientStop>> as Option<Vec<StopAlias>>,
         source: Option<String>,
         invert: Option<bool>,
+    }
+}
+
+impl GradientInput {
+    fn into_gradient(self, property: &str) -> Result<Gradient, LayoutError> {
+        let shape = match (self.gradient, self.angle) {
+            (GradientKind::Linear, angle) => GradientShape::Linear { angle: angle.unwrap_or(180.0) },
+            (GradientKind::Conic, angle) => GradientShape::Conic { angle: angle.unwrap_or(0.0) },
+            (GradientKind::Radial, None) => GradientShape::Radial,
+            (GradientKind::Radial, Some(_)) => return Err(invalid(property, "a `Radial` gradient takes no `angle`")),
+        };
+        if let Some((at, _)) = self.stops.iter().find(|(at, _)| !(0.0..=1.0).contains(at)) {
+            return Err(invalid(property, format!("stop positions must be within [0, 1], got {at}")));
+        }
+        if self.stops.windows(2).any(|pair| pair[1].0 < pair[0].0) {
+            return Err(invalid(property, "stop positions must be ascending"));
+        }
+        if self.stops.len() < 2 {
+            return Err(invalid(property, "a gradient needs at least two stops"));
+        }
+        Ok(Gradient { shape, stops: self.stops })
     }
 }
 
@@ -98,8 +114,7 @@ impl Prop for Fill {
         match value {
             Value::String(s) => Ok(Some(Fill::Color(parse_hex_color(property, &checked_string(property, s)?)?))),
             Value::Table(table) => {
-                only_keys(property, table, GradientInput::KEYS)?;
-                Ok(Some(Fill::Gradient(parse_gradient(property, table)?)))
+                Ok(Some(Fill::Gradient(GradientInput::read(property, table)?.into_gradient(property)?)))
             }
             _ => Err(invalid(
                 property,
@@ -140,88 +155,23 @@ impl Prop for Mask {
         let Value::Table(table) = value else {
             return Err(invalid(property, format!("expected a table, got {}", preview_for_error(value))));
         };
-        only_keys(property, table, MaskInput::KEYS)?;
-        let field = |key: &str| table_field(property, table, key);
-        let invert = match field("invert")? {
-            Value::Nil => false,
-            Value::Boolean(b) => b,
-            other => {
-                return Err(invalid(
-                    property,
-                    format!("`invert` must be a boolean, got {}", preview_for_error(&other)),
-                ));
-            }
-        };
-        let gradient = ["gradient", "stops", "angle"].into_iter().map(field).collect::<Result<Vec<_>, _>>()?;
-        let source = match (field("source")?, gradient.iter().all(Value::is_nil)) {
-            (Value::Nil, false) => MaskSource::Gradient(parse_gradient(property, table)?),
-            (Value::String(s), true) => {
-                let path = checked_string(property, &s)?;
-                if path.is_empty() {
-                    return Err(invalid(property, "`source` must not be empty"));
-                }
-                MaskSource::Image(path)
-            }
-            (Value::Nil, true) | (Value::String(_), false) => {
+        let MaskInput { gradient, angle, stops, source, invert } = MaskInput::read(property, table)?;
+        let any_gradient = gradient.is_some() || angle.is_some() || stops.is_some();
+        let source = match (source, any_gradient) {
+            (Some(_), true) | (None, false) => {
                 return Err(invalid(property, "name exactly one of `source` or a gradient"));
             }
-            (other, _) => {
-                let got = preview_for_error(&other);
-                return Err(invalid(property, format!("`source` must be a path string, got {got}")));
+            (Some(path), false) if path.is_empty() => return Err(invalid(property, "`source` must not be empty")),
+            (Some(path), false) => MaskSource::Image(path),
+            (None, true) => {
+                let (Some(gradient), Some(stops)) = (gradient, stops) else {
+                    return Err(invalid(property, "a mask gradient needs both `gradient` and `stops`"));
+                };
+                MaskSource::Gradient(GradientInput { gradient, angle, stops }.into_gradient(property)?)
             }
         };
-        Ok(Some(Mask { source, invert }))
+        Ok(Some(Mask { source, invert: invert.unwrap_or(false) }))
     }
-}
-
-/// `{ gradient = "Linear"|"Radial"|"Conic", angle?, stops = { { position, colour }, ... } }`.
-fn parse_gradient(property: &str, table: &mlua::Table) -> Result<Gradient, LayoutError> {
-    let angle = table_number(property, table, "angle")?;
-    let value = table_field(property, table, "gradient")?;
-    let kind = match &value {
-        Value::String(name) => GradientKind::find(&name.as_bytes()),
-        _ => None,
-    }
-    .ok_or_else(|| {
-        let names = GradientKind::NAMES.iter().map(|name| format!("`{name}`")).collect::<Vec<_>>().join(", ");
-        invalid(property, format!("`gradient` must be one of {names}, got {}", preview_for_error(&value)))
-    })?;
-    let shape = match kind {
-        GradientKind::Linear => GradientShape::Linear { angle: angle.unwrap_or(180.0) },
-        GradientKind::Conic => GradientShape::Conic { angle: angle.unwrap_or(0.0) },
-        GradientKind::Radial if angle.is_none() => GradientShape::Radial,
-        GradientKind::Radial => return Err(invalid(property, "a `Radial` gradient takes no `angle`")),
-    };
-    let stops = parse_stops(property, &table_field(property, table, "stops")?)?;
-    Ok(Gradient { shape, stops })
-}
-
-fn parse_stops(property: &str, value: &Value) -> Result<Vec<GradientStop>, LayoutError> {
-    let Value::Table(list) = value else {
-        return Err(invalid(property, "`stops` must be a list of { position, colour } pairs"));
-    };
-    let mut stops: Vec<GradientStop> = Vec::new();
-    for stop in list.sequence_values::<Value>() {
-        let stop = stop.map_err(|e| invalid(property, e.to_string()))?;
-        let pair = match stop {
-            Value::Table(pair) => (table_field(property, &pair, 1)?, table_field(property, &pair, 2)?),
-            other => (other, Value::Nil),
-        };
-        let (Some(at), Value::String(color)) = (value_as_f32(property, &pair.0)?, &pair.1) else {
-            return Err(invalid(property, "each stop must be a { position, colour } pair"));
-        };
-        if !(0.0..=1.0).contains(&at) {
-            return Err(invalid(property, format!("stop positions must be within [0, 1], got {at}")));
-        }
-        if stops.last().is_some_and(|(last, _)| at < *last) {
-            return Err(invalid(property, "stop positions must be ascending"));
-        }
-        stops.push((at, parse_hex_color(property, &checked_string(property, color)?)?));
-    }
-    if stops.len() < 2 {
-        return Err(invalid(property, "a gradient needs at least two stops"));
-    }
-    Ok(stops)
 }
 
 #[cfg(test)]
@@ -293,7 +243,7 @@ mod tests {
         rejects(
             fields::paint::background.read(&with(r##"{ "#ffffff", "#000000" }"##)),
             "background",
-            "{ position, colour }",
+            "`stops[1]` must be [number, Color]",
         );
         rejects(fields::paint::background.read(&with("nil")), "background", "`stops`");
     }
@@ -305,10 +255,10 @@ mod tests {
         rejects(
             fields::paint::background.read(&eval_props(&lua, src)),
             "background",
-            "`gradient` must be one of `Linear`, `Radial`, `Conic`, got Nil",
+            r#"`gradient` must be "Linear"|"Radial"|"Conic", got Nil"#,
         );
         let src = r##"return { kind = "rect", background = { gradient = "Box", stops = {} } }"##;
-        rejects(fields::paint::background.read(&eval_props(&lua, src)), "background", "`Linear`, `Radial`, `Conic`");
+        rejects(fields::paint::background.read(&eval_props(&lua, src)), "background", r#""Linear"|"Radial"|"Conic""#);
         let src = r##"return { kind = "rect", background = { gradient = "Radial", angle = 45,
             stops = { { 0, "#ffffff" }, { 1, "#000000" } } } }"##;
         rejects(fields::paint::background.read(&eval_props(&lua, src)), "background", "angle");
@@ -331,6 +281,19 @@ mod tests {
         assert_eq!(
             fields::paint::mask.read(&eval_props(&lua, src)).unwrap(),
             Some(Mask { source: MaskSource::Image("/tmp/shape.svg".into()), invert: true })
+        );
+    }
+
+    /// A signal binds a whole property, never a key inside one, however deep.
+    #[test]
+    fn a_signal_nested_in_a_gradient_is_refused_by_its_path() {
+        let lua = crate::layout::node::signal_lua();
+        let src = r##"return { kind = "rect", background = { gradient = "Linear",
+            stops = { { 0, state("#ffffff") }, { 1, "#000000" } } } }"##;
+        let err = fields::paint::background.read(&eval_props(&lua, src)).unwrap_err();
+        assert!(
+            matches!(&err, LayoutError::UnsupportedSignalProperty(path) if path == "background.stops[1][2]"),
+            "{err:?}"
         );
     }
 
@@ -362,6 +325,6 @@ mod tests {
         let src = r#"return { kind = "rect", mask = { source = "/a.png", invert = 1 } }"#;
         rejects(fields::paint::mask.read(&eval_props(&lua, src)), "mask", "invert");
         let src = r#"return { kind = "rect", mask = { source = false, gradient = "Radial" } }"#;
-        rejects(fields::paint::mask.read(&eval_props(&lua, src)), "mask", "`source` must be a path string");
+        rejects(fields::paint::mask.read(&eval_props(&lua, src)), "mask", "`source` must be string");
     }
 }

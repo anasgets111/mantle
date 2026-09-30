@@ -7,6 +7,7 @@
 
 mod animate;
 mod content;
+mod input;
 mod paint_style;
 pub(crate) mod prop;
 mod spec;

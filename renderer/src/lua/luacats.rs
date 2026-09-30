@@ -466,12 +466,17 @@ pub(crate) use lua_class;
 /// for a header's `---@alias Name {Name}` line: LuaLS checks it inside a union, where a class admits
 /// any table, and it has no place for a field's words. `#[class = "Name"]` is one read as a
 /// `---@class` whose fields carry their words. Both refuse an unknown key, and `KEYS` is what the
-/// parser's `only_keys` accepts. `#[record = "Name"]` is a class handed to Lua, a table of its
-/// fields. `key: T as S` is a key Lua spells as `S`, as `Option<T>` for one Lua may leave out that
+/// parser's `only_keys` accepts. `#[input = "Name"]` is an alias that is also its own parser:
+/// `read` takes each key through its field type's `Input`. `#[record = "Name"]` is a class handed
+/// to Lua, a table of its fields. `key: T as S` is a key Lua spells as `S`, as `Option<T>` for one Lua may leave out that
 /// Rust holds defaulted.
 macro_rules! lua_shape {
     ($(#[doc = $doc:literal])* #[alias = $name:literal] $($rest:tt)*) => {
         $crate::lua::luacats::lua_shape!(@struct alias [$($doc)*] $name $($rest)*);
+    };
+    ($(#[doc = $doc:literal])* #[input = $name:literal] $($rest:tt)*) => {
+        $crate::lua::luacats::lua_shape!(@struct alias [$($doc)*] $name $($rest)*);
+        $crate::lua::luacats::lua_shape!(@read $($rest)*);
     };
     ($(#[doc = $doc:literal])* #[class = $name:literal] $($rest:tt)*) => {
         $crate::lua::luacats::lua_shape!(@struct class [$($doc)*] $name $($rest)*);
@@ -524,6 +529,20 @@ macro_rules! lua_shape {
                 let table = lua.create_table()?;
                 $(table.set(stringify!($field), self.$field)?;)+
                 Ok(mlua::Value::Table(table))
+            }
+        }
+    };
+    (@read $(#[$attr:meta])* $vis:vis struct $ty:ident {
+        $($(#[doc = $field_doc:literal])* $field_vis:vis $field:ident: $field_ty:ty $(as $lua:ty)?),+ $(,)?
+    }) => {
+        impl $ty {
+            /// `table`, refusing a key not in [`Self::KEYS`], each key read as its field's type.
+            pub(crate) fn read(
+                property: &str,
+                table: &mlua::Table,
+            ) -> Result<Self, $crate::layout::node::LayoutError> {
+                $crate::layout::node::only_keys(property, table, Self::KEYS)?;
+                Ok(Self { $($field: $crate::layout::node::input::field(property, table, stringify!($field))?),+ })
             }
         }
     };

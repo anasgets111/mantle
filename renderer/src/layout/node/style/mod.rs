@@ -4,6 +4,7 @@
 use cursor_icon::CursorIcon;
 use mlua::Value;
 
+use super::input::table_field;
 use super::prop::{keywords, within as row_within};
 use super::*;
 use crate::lua::luacats::lua_shape;
@@ -117,18 +118,6 @@ impl Prop for NumberOrEdges {
             row_within(row, n)?;
         }
         Ok(insets)
-    }
-}
-
-/// One field of a config table; a nested signal is refused.
-fn table_field(
-    property: &str,
-    table: &mlua::Table,
-    key: impl mlua::IntoLua + std::fmt::Display + Copy,
-) -> Result<Value, LayoutError> {
-    match table.get(key).map_err(|e| invalid(property, e.to_string()))? {
-        Value::UserData(_) => Err(LayoutError::UnsupportedSignalProperty(format!("{property}.{key}"))),
-        other => Ok(other),
     }
 }
 
