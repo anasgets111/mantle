@@ -1,101 +1,65 @@
 # Mantle
 
-A Wayland desktop-shell engine: a Lua config declares bars, popups, launchers and lock screens as
-node trees; Rust owns platform connections, input, layout and rendering. A config error never
-takes the session down, and saving a `.lua` file reloads in place, keeping signal state.
+A Rust engine for building Wayland desktop shells in Lua. Declare bars, popups, launchers and
+lock screens; save your Lua config to reload the shell.
+
+[Documentation](https://anasgets111.github.io/mantle/) ·
+[Examples](https://anasgets111.github.io/mantle/cookbook/) ·
+[Changelog](https://anasgets111.github.io/mantle/changelog.html)
+
+Pre-release. The Lua API changes without notice.
 
 Mantle ships no shell of its own. [`share/starter`](share/starter) is a one-clock bar;
 [anasgets111/dotfiles](https://github.com/anasgets111/dotfiles) is a full shell built on it.
 
-The demo below builds a shell from the starter, one save at a time. A Mantle shell,
-[`demo/director`](demo/director), types it, captions it and records it; `just demo` re-records it:
+The demo builds a shell from the starter, one save at a time. Mantle itself
+[types and records it](demo/director).
 
 https://github.com/user-attachments/assets/6eea81f4-9755-468e-aa2d-f8151c25e2f5
 
-Status: pre-release. The Lua API changes without notice; the [changelog](docs/changelog.md) lists what moved.
+- Built-in [capabilities](https://anasgets111.github.io/mantle/capabilities/) for audio, network,
+  Bluetooth, notifications, tray, workspaces and other desktop services.
+- [Signals](https://anasgets111.github.io/mantle/guide/signals.html) update widgets when values change.
+- `mantle check` catches Lua and layout errors before you run the shell.
+- `mantle init` sets up LuaLS completion and type checking for your config.
 
-Docs: **<https://anasgets111.github.io/mantle/>**, built from [`docs/`](docs).
+## Install
 
-## Requirements
+Requires a Wayland compositor with `wlr-layer-shell-v1`. Workspaces and keyboard layout use
+niri or Hyprland; lock screens need `ext-session-lock-v1`.
 
-| Feature | Needs |
+| Platform | Install |
 | :--- | :--- |
-| Surfaces | A Wayland compositor with `wlr-layer-shell-v1`; `ext-session-lock-v1` for `lock` |
-| Workspaces, keyboard layout | niri or Hyprland |
-| `windows` capability | niri or Hyprland IPC, else `wlr-foreign-toplevel-management-v1` |
-| `window`, `popup` surfaces | `xdg-shell`; skipped when absent |
-| `capture` node | `ext-image-copy-capture-v1`, else `wlr-screencopy-v1` |
-| `blur = true` | `ext-background-effect-v1`; ignored when absent |
-| `idle` capability | `ext-idle-notify-v1` |
-| Capabilities over D-Bus | NetworkManager, BlueZ, UPower, power-profiles-daemon, logind, polkit ([per capability](docs/guide/installation.md#requirements)) |
-| Fonts | fontconfig (`fc-match`) |
-| `updates` capability | pacman, dnf or apt; `pkexec` to install |
-| Build | Rust 1.98.1+, PipeWire, PAM, udev, EGL, GBM, xkbcommon, libwayland-client, libwayland-egl. Lua 5.4 is vendored |
-| `just check` | `lua-language-server`, `luac`, `python3` |
+| Arch | [`mantle-git`](https://aur.archlinux.org/packages/mantle-git) from the AUR |
+| From source | [Build instructions](https://anasgets111.github.io/mantle/guide/installation.html#build-from-source) |
 
-## Install and build
-
-On Arch, [`mantle-git`](https://aur.archlinux.org/packages/mantle-git) builds `main` and installs
-`/etc/pam.d/mantle`. [`packaging/`](packaging) holds that PAM stack (without it, unlock and polkit
-prompts fall back to `login`) and a polkit rule for `updates` installs.
-
-Ubuntu 26.04 and Fedora 44 or later install a `.deb` or `.rpm` from the
-[releases](https://github.com/anasgets111/mantle/releases) ([install](docs/guide/installation.md#install)).
-Fedora and Debian/Ubuntu [build packages](docs/guide/installation.md#build-from-source) are listed;
-running there is untested for now.
-
-| Recipe | Does |
-| :--- | :--- |
-| `just build` | `mantle` and `mantle-renderer` into `target/debug` |
-| `just run [config]` | Builds, then runs `config` (default `share/starter`), leaving `~/.config/mantle` alone |
-| `just check` | The gate (on the staged tree when there are also unstaged edits): rustfmt, tests, clippy, rustdoc, Lua parse and format, LuaLS types |
-| `just docs` / `just book` | Serve the docs site locally / build it and check every link |
-| `just fmt` | Formats Rust and Lua |
-| `just swap` | Optimised build into `$CARGO_HOME/bin`, then restarts the running shell detached |
-| `just demo [out]` | Records the demo video to `out` (default `~/Videos/mantle-demo.mp4`), stopping and then restarting your running shells; needs `gpu-screen-recorder` and `rsvg-convert` |
-
-Autostart: `spawn-at-startup "mantle"` in niri, `exec-once = mantle` in Hyprland.
+Developed and run on Arch. Running on Fedora and Ubuntu is untested.
+[Installation and requirements](https://anasgets111.github.io/mantle/guide/installation.html)
+cover dependencies and setup.
 
 ## Quick start
 
 ```sh
-mantle init           # shell.lua and a .luarc.json pointing LuaLS at the stubs
+mantle init           # create the starter config and editor settings
 $EDITOR ~/.config/mantle/shell.lua
-mantle check          # evaluate with no Wayland or subprocesses; exits 1 on error
+mantle check          # evaluate and lay out without Wayland; exits 1 on error
 mantle -d             # run detached
 mantle log -f         # follow its output
 ```
 
-The config is a directory: `-c DIR`, else `$MANTLE_CONFIG_DIR`, else `$XDG_CONFIG_HOME/mantle`,
-else `~/.config/mantle`. `require` resolves inside it, and saving any `.lua` in it reloads.
+Save a `.lua` file in the config directory to reload. Use `mantle stop` to stop the shell.
+See the [CLI guide](https://anasgets111.github.io/mantle/guide/cli.html) for config paths and
+compositor keybinds.
 
-## CLI
+## Development
 
-| Command | Does |
-| :--- | :--- |
-| `mantle [-d] [-v…] [--profile[=SECS]]` | Run the shell; `-d` detaches |
-| `mantle init [--force]` | Write `shell.lua` and `.luarc.json` |
-| `mantle check` | Evaluate and lay out the config with no Wayland, and exit |
-| `mantle log [-f]` | Print or follow the shell's output |
-| `mantle list` | Running shells: PID, uptime, runtime dir, config |
-| `mantle stop` | Stop a running shell and wait for it to exit |
-| `mantle set NAME VALUE` | Write `state(NAME)` |
-| `mantle toggle NAME [VALUE]` | Flip a boolean, or alternate between VALUE and the initial value |
-| `mantle call NAME [ARGS…]` | Run `action(NAME)` and print its return |
+`just run` builds both binaries and runs the starter. `just check` runs the full engine checks;
+see [AGENTS.md](AGENTS.md#checks-by-change) for checks by change. The full suite needs
+`lua-language-server`, `luac` and `python3` alongside the build dependencies.
+See the [justfile](justfile) for all recipes.
 
-Keybinds drive a running shell with `toggle` and `call`. `-c` and `--pid` pick the shell (`--pid` also for `stop`); `-V`
-and `-h` print version and help. Full contract: [CLI](docs/guide/cli.md).
-
-## Docs
-
-| Doc | For |
-| :--- | :--- |
-| [Site](https://anasgets111.github.io/mantle/) | Config authors: guide, nodes, surfaces, capabilities, cookbook. Source in [`docs/`](docs), entry [`introduction.md`](docs/introduction.md) |
-| [Changelog](docs/changelog.md) | User-facing Lua API and CLI changes |
-| [Decisions](DECISIONS.md) | ADRs: why each design, and what was rejected |
-| [Roadmap](docs/roadmap.md) | Open gaps, open questions and non-goals |
-| [Glossary](docs/glossary.md), [CONTEXT.md](CONTEXT.md) | Vocabulary: user-facing terms, then engine-internal ones |
-| [`lua-meta/`](lua-meta) | LuaLS stubs `mantle init` points the editor at |
+[Roadmap](https://anasgets111.github.io/mantle/roadmap.html) ·
+[Design decisions](DECISIONS.md) · [Docs source](docs/)
 
 ## License
 

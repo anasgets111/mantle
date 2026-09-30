@@ -5,6 +5,10 @@ Install both Mantle binaries, create a config, check it, and start the shell. Th
 
 ## Install
 
+No binary releases are published yet. Use the AUR or build from source. The package and tarball
+instructions below apply when [release artifacts](https://github.com/anasgets111/mantle/releases)
+are available.
+
 | Route | What to do |
 | :--- | :--- |
 | Arch | Install [`mantle-git`](https://aur.archlinux.org/packages/mantle-git) from the AUR. It builds `main` and installs the PAM stack |
