@@ -118,7 +118,7 @@ types:
     check lua-meta --configpath "$log/meta.luarc.json"
     echo "lua-meta type-checks, and the starter type-checks against it"
 
-lua_dirs := "lua-meta share demo"
+lua_dirs := "lua-meta share demo tools/heavy-shell"
 
 # Here, not beside `cargo fmt`, so `lua_dirs` is written once and a Lua-only commit is gated by
 # `just lua types` alone. `tools/luafmt.py` says why the formatter is a language server.
