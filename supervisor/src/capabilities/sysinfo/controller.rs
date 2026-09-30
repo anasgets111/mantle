@@ -65,13 +65,6 @@ pub fn poll_mode(interval: Duration) -> PollMode {
     if interval.is_zero() { PollMode::Dormant } else { PollMode::Ticking(interval) }
 }
 
-/// Wakes `main.rs`'s `select!` to push a `StateSnapshot`; a named single variant keeps the arm
-/// clear.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SysinfoSignal {
-    Changed,
-}
-
 /// Owns the poll tasks and their state. Not `Clone`: synchronous, non-blocking `configure`
 /// uses `&SysinfoController` directly.
 pub struct SysinfoController {
@@ -91,7 +84,7 @@ impl SysinfoController {
     pub fn new(
         proc_root: std::path::PathBuf,
         hwmon_root: std::path::PathBuf,
-        signal_tx: tokio::sync::mpsc::UnboundedSender<SysinfoSignal>,
+        signal_tx: tokio::sync::mpsc::UnboundedSender<()>,
     ) -> Self {
         let state = std::sync::Arc::new(std::sync::Mutex::new(SysinfoState::default()));
 
@@ -176,7 +169,7 @@ impl SysinfoController {
 /// counters for the next delta whether or not the rounded result moved.
 fn publish_if_changed(
     state: &std::sync::Mutex<SysinfoState>,
-    signal_tx: &tokio::sync::mpsc::UnboundedSender<SysinfoSignal>,
+    signal_tx: &tokio::sync::mpsc::UnboundedSender<()>,
     write: impl FnOnce(&mut SysinfoState) -> bool,
 ) {
     // Drop the lock before sending: the receiver hydrates a snapshot and must never wait on a
@@ -186,7 +179,7 @@ fn publish_if_changed(
         write(&mut state)
     };
     if changed {
-        let _ = signal_tx.send(SysinfoSignal::Changed);
+        let _ = signal_tx.send(());
     }
 }
 
@@ -265,7 +258,7 @@ async fn run_cpu_task(
     proc_root: std::path::PathBuf,
     interval_rx: tokio::sync::watch::Receiver<Duration>,
     state: std::sync::Arc<std::sync::Mutex<SysinfoState>>,
-    signal_tx: tokio::sync::mpsc::UnboundedSender<SysinfoSignal>,
+    signal_tx: tokio::sync::mpsc::UnboundedSender<()>,
 ) {
     run_ticker(interval_rx, |previous| match super::cpu::read_sample(&proc_root) {
         Ok(sample) => {
@@ -290,7 +283,7 @@ async fn run_ram_task(
     proc_root: std::path::PathBuf,
     interval_rx: tokio::sync::watch::Receiver<Duration>,
     state: std::sync::Arc<std::sync::Mutex<SysinfoState>>,
-    signal_tx: tokio::sync::mpsc::UnboundedSender<SysinfoSignal>,
+    signal_tx: tokio::sync::mpsc::UnboundedSender<()>,
 ) {
     run_ticker(interval_rx, |_: &mut Option<()>| match super::ram::read_meminfo(&proc_root) {
         Ok(info) => {
@@ -314,7 +307,7 @@ async fn run_temp_task(
     gpu_input: Option<std::path::PathBuf>,
     interval_rx: tokio::sync::watch::Receiver<Duration>,
     state: std::sync::Arc<std::sync::Mutex<SysinfoState>>,
-    signal_tx: tokio::sync::mpsc::UnboundedSender<SysinfoSignal>,
+    signal_tx: tokio::sync::mpsc::UnboundedSender<()>,
 ) {
     run_ticker(interval_rx, |_: &mut Option<()>| {
         let temp_cores = super::temp::read_temp_cores(&core_inputs);
@@ -333,7 +326,7 @@ async fn run_temp_task(
 async fn run_disk_task(
     interval_rx: tokio::sync::watch::Receiver<Duration>,
     state: std::sync::Arc<std::sync::Mutex<SysinfoState>>,
-    signal_tx: tokio::sync::mpsc::UnboundedSender<SysinfoSignal>,
+    signal_tx: tokio::sync::mpsc::UnboundedSender<()>,
 ) {
     run_async_ticker(interval_rx, || async {
         let disks = super::disk::read_disks().await;
@@ -352,7 +345,7 @@ async fn run_gpu_task(
     gpu_input: Option<std::path::PathBuf>,
     interval_rx: tokio::sync::watch::Receiver<Duration>,
     state: std::sync::Arc<std::sync::Mutex<SysinfoState>>,
-    signal_tx: tokio::sync::mpsc::UnboundedSender<SysinfoSignal>,
+    signal_tx: tokio::sync::mpsc::UnboundedSender<()>,
 ) {
     run_async_ticker(interval_rx, || {
         let temp_gpu = super::temp::read_temp_gpu(gpu_input.as_deref());
@@ -375,7 +368,7 @@ async fn run_net_task(
     proc_root: std::path::PathBuf,
     interval_rx: tokio::sync::watch::Receiver<Duration>,
     state: std::sync::Arc<std::sync::Mutex<SysinfoState>>,
-    signal_tx: tokio::sync::mpsc::UnboundedSender<SysinfoSignal>,
+    signal_tx: tokio::sync::mpsc::UnboundedSender<()>,
 ) {
     run_ticker(interval_rx, |previous: &mut Option<(super::net::NetSample, std::time::Instant)>| {
         match super::net::read_sample(&proc_root) {
@@ -414,8 +407,8 @@ mod tests {
     /// same way, so a helper keeps the four cases below to their point.
     fn state_and_channel() -> (
         std::sync::Arc<std::sync::Mutex<super::SysinfoState>>,
-        tokio::sync::mpsc::UnboundedSender<super::SysinfoSignal>,
-        tokio::sync::mpsc::UnboundedReceiver<super::SysinfoSignal>,
+        tokio::sync::mpsc::UnboundedSender<()>,
+        tokio::sync::mpsc::UnboundedReceiver<()>,
     ) {
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
         (std::sync::Arc::new(std::sync::Mutex::new(super::SysinfoState::default())), tx, rx)
@@ -429,7 +422,7 @@ mod tests {
             state.cpu_percent = 42;
             changed
         });
-        assert_eq!(rx.try_recv(), Ok(super::SysinfoSignal::Changed));
+        assert_eq!(rx.try_recv(), Ok(()));
         assert_eq!(state.lock().unwrap().cpu_percent, 42);
     }
 

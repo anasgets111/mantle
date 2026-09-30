@@ -11,6 +11,8 @@ use serde::Serialize;
 use shared::debug;
 use tokio::sync::mpsc::UnboundedSender;
 
+use crate::capabilities::publish;
+
 use crate::compositor::{CompositorKind, unsupported_session_report};
 
 use super::{hyprland, niri};
@@ -142,12 +144,6 @@ pub struct FocusedWindow {
     pub is_fullscreen: Option<bool>,
 }
 
-/// Shared signal, `Changed` only.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum WorkspacesSignal {
-    Changed,
-}
-
 /// Folds rows into the payload. Pure and unit-tested without a compositor. Sorts outputs by
 /// connector and workspaces by `idx`; omits an output with no active workspace rather than
 /// fabricating an id (should be unreachable).
@@ -194,16 +190,12 @@ pub fn derive_state(workspaces: &[WorkspaceRow], focused: Option<&FocusedWindow>
 /// through [`StatePublisher::publish`].
 pub struct StatePublisher {
     state: Arc<Mutex<WorkspacesState>>,
-    events: UnboundedSender<WorkspacesSignal>,
+    events: UnboundedSender<()>,
     compositor: CompositorKind,
 }
 
 impl StatePublisher {
-    pub fn new(
-        state: Arc<Mutex<WorkspacesState>>,
-        events: UnboundedSender<WorkspacesSignal>,
-        compositor: CompositorKind,
-    ) -> Self {
+    pub fn new(state: Arc<Mutex<WorkspacesState>>, events: UnboundedSender<()>, compositor: CompositorKind) -> Self {
         Self { state, events, compositor }
     }
 
@@ -228,13 +220,7 @@ impl StatePublisher {
             list.sort_by(|a, b| a.name.cmp(&b.name));
             list
         });
-        let mut state = self.state.lock().expect("workspaces state mutex poisoned");
-        if *state == current {
-            return true;
-        }
-        *state = current;
-        drop(state);
-        self.events.send(WorkspacesSignal::Changed).is_ok()
+        publish(&self.state, &self.events, current)
     }
 }
 
@@ -257,12 +243,12 @@ impl WorkspacesController {
     pub fn new(
         state: Arc<Mutex<WorkspacesState>>,
         compositor: Option<CompositorKind>,
-        events: UnboundedSender<WorkspacesSignal>,
+        events: UnboundedSender<()>,
     ) -> Self {
         if compositor.is_none() {
             debug!("{}; workspace reporting disabled for this run", unsupported_session_report());
         } else if *state.lock().expect("workspaces state mutex poisoned") != WorkspacesState::default() {
-            let _ = events.send(WorkspacesSignal::Changed);
+            let _ = events.send(());
         }
         Self { state, compositor }
     }
@@ -469,7 +455,7 @@ mod tests {
 
     // ---- StatePublisher ----
 
-    fn publisher() -> (StatePublisher, tokio::sync::mpsc::UnboundedReceiver<WorkspacesSignal>) {
+    fn publisher() -> (StatePublisher, tokio::sync::mpsc::UnboundedReceiver<()>) {
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
         (StatePublisher::new(Arc::new(Mutex::new(WorkspacesState::default())), tx, CompositorKind::Niri), rx)
     }
@@ -543,7 +529,7 @@ mod tests {
 
         let _controller = WorkspacesController::new(state, Some(CompositorKind::Niri), tx);
 
-        assert!(matches!(rx.try_recv(), Ok(WorkspacesSignal::Changed)));
+        assert!(matches!(rx.try_recv(), Ok(())));
     }
 
     #[test]

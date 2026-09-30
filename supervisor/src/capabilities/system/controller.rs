@@ -25,12 +25,6 @@ pub struct SystemState {
     pub monotonic: i64,
 }
 
-/// Wakes `main.rs`'s `select!` for a fresh `StateSnapshot`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SystemSignal {
-    Changed,
-}
-
 /// `SystemTime::now()`'s epoch truncated to whole seconds for `time`; one pinned seam.
 pub fn epoch_seconds(now: SystemTime) -> i64 {
     now.duration_since(UNIX_EPOCH).map(|elapsed| elapsed.as_secs() as i64).unwrap_or(0)
@@ -62,7 +56,7 @@ pub struct SystemController {
 impl SystemController {
     /// Seeds `time` immediately, so an early client sees the current second, not stale zero; the
     /// ticking task takes over afterward.
-    pub fn new(signal_tx: UnboundedSender<SystemSignal>) -> Self {
+    pub fn new(signal_tx: UnboundedSender<()>) -> Self {
         let started = Instant::now();
         let state = Arc::new(Mutex::new(SystemState { time: epoch_seconds(SystemTime::now()), monotonic: 0 }));
 
@@ -95,7 +89,7 @@ impl SystemController {
 /// timer, while the interval is `0`.
 async fn run_clock_task(
     state: Arc<Mutex<SystemState>>,
-    signal_tx: UnboundedSender<SystemSignal>,
+    signal_tx: UnboundedSender<()>,
     started: Instant,
     mut interval_rx: watch::Receiver<u64>,
 ) {
@@ -137,7 +131,7 @@ async fn run_clock_task(
         let sampled =
             SystemState { time: epoch_seconds(SystemTime::now()), monotonic: started.elapsed().as_secs() as i64 };
         *state.lock().expect("system state mutex poisoned") = sampled;
-        if signal_tx.send(SystemSignal::Changed).is_err() {
+        if signal_tx.send(()).is_err() {
             return; // main.rs's select! loop is gone; nothing left to notify
         }
     }

@@ -3,6 +3,8 @@
 
 use std::path::{Path, PathBuf};
 
+use super::super::read_attr;
+
 /// Converts milli-Celsius to whole Celsius, rounding half away from zero. Plain division makes
 /// `-500 / 1000 == 0`, silently reporting `0°C` instead of `-1°C`.
 fn round_milli_c(milli_c: i64) -> i64 {
@@ -34,11 +36,9 @@ fn core_inputs(chip_dir: &Path) -> Vec<PathBuf> {
         let file_name = entry.file_name();
         let Some(file_name) = file_name.to_str() else { continue };
         let Some(rest) = file_name.strip_suffix("_input") else { continue };
-        let label_path = chip_dir.join(format!("{rest}_label"));
-        let Ok(label) = std::fs::read_to_string(&label_path) else { continue };
+        let Some(label) = read_attr(chip_dir, &format!("{rest}_label")) else { continue };
         // `^(Core |Tccd)(\d+)$` without the regex. The digit check is what keeps `parse` from
         // accepting the leading `+` that `\d+` rejects; an empty remainder fails `parse` on its own.
-        let label = label.trim();
         let Some(core_index) = label
             .strip_prefix("Core ")
             .or_else(|| label.strip_prefix("Tccd"))

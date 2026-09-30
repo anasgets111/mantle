@@ -65,11 +65,6 @@ pub struct UpdatesState {
     pub reboot_required: bool,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum UpdatesSignal {
-    Changed,
-}
-
 /// Tail length for [`UpdatesState::install_log`]. Enough to hold a failure and nearby lines; a
 /// 2,000-package run belongs in a file, not a state payload reserialized on every progress line.
 const LOG_TAIL_LINES: usize = 200;
@@ -83,7 +78,7 @@ pub struct UpdatesController {
     interval_tx: watch::Sender<Duration>,
     /// `updates:check` nudge. Capacity one plus `try_send` collapses a burst into one check.
     check_now_tx: tokio::sync::mpsc::Sender<()>,
-    events: UnboundedSender<UpdatesSignal>,
+    events: UnboundedSender<()>,
 }
 
 impl UpdatesController {
@@ -91,18 +86,14 @@ impl UpdatesController {
     /// `updates:configure`. Pushes immediately so `package_manager` can decide indicator presence,
     /// including on machines with no backend and no later scheduler event. This makes the indicator
     /// appear at login rather than after the first check.
-    pub fn new(events: UnboundedSender<UpdatesSignal>) -> Self {
+    pub fn new(events: UnboundedSender<()>) -> Self {
         Self::with_backend(super::backend::detect().map(Arc::from), PathBuf::from(REBOOT_MARKER), events)
     }
 
     /// [`UpdatesController::new`] with a caller-supplied backend and marker path for tests. The
     /// path is a parameter because a real `/run` marker, written by any pacman run on the machine
     /// running the suite, otherwise pushes an extra `Changed` into every scheduler test.
-    fn with_backend(
-        backend: Option<Arc<dyn Backend>>,
-        reboot_marker: PathBuf,
-        events: UnboundedSender<UpdatesSignal>,
-    ) -> Self {
+    fn with_backend(backend: Option<Arc<dyn Backend>>, reboot_marker: PathBuf, events: UnboundedSender<()>) -> Self {
         let state = Arc::new(Mutex::new(UpdatesState {
             package_manager: backend.as_ref().map(|backend| backend.name().to_string()),
             aur_helper: backend.as_ref().and_then(|backend| backend.aur_helper()).map(String::from),
@@ -114,7 +105,7 @@ impl UpdatesController {
             tokio::spawn(run_check_task(backend, interval_rx, check_now_rx, Arc::clone(&state), events.clone()));
             tokio::spawn(run_reboot_marker_task(reboot_marker, Arc::clone(&state), events.clone()));
         }
-        let _ = events.send(UpdatesSignal::Changed);
+        let _ = events.send(());
         Self { backend, state, interval_tx, check_now_tx, events }
     }
 
@@ -138,7 +129,7 @@ impl UpdatesController {
         }
         drop(guard);
         if changed {
-            let _ = self.events.send(UpdatesSignal::Changed);
+            let _ = self.events.send(());
         }
         // Capped because tokio's `interval` adds it to an `Instant`, which aborts near `i64::MAX` seconds.
         if self.interval_tx.send(Duration::from_secs(configure.interval_secs.min(u32::MAX.into()))).is_err() {
@@ -186,7 +177,7 @@ impl UpdatesController {
             guard.install_finished_at = None;
             guard.install_log.clear();
         }
-        let _ = self.events.send(UpdatesSignal::Changed);
+        let _ = self.events.send(());
         run_install(backend, Arc::clone(&self.state), self.events.clone()).await;
     }
 
@@ -202,7 +193,7 @@ async fn run_check_task(
     mut interval_rx: watch::Receiver<Duration>,
     mut check_now_rx: tokio::sync::mpsc::Receiver<()>,
     state: Arc<Mutex<UpdatesState>>,
-    events: UnboundedSender<UpdatesSignal>,
+    events: UnboundedSender<()>,
 ) {
     loop {
         let interval = *interval_rx.borrow_and_update();
@@ -263,13 +254,9 @@ async fn run_check_task(
 /// Runs one scheduled or manual check. Pushes when `checking` rises and when the result is written,
 /// so the state is visible during the sync. Failures preserve `count`/`packages` and write
 /// only `check_error`.
-async fn run_one_check(
-    backend: &Arc<dyn Backend>,
-    state: &Arc<Mutex<UpdatesState>>,
-    events: &UnboundedSender<UpdatesSignal>,
-) {
+async fn run_one_check(backend: &Arc<dyn Backend>, state: &Arc<Mutex<UpdatesState>>, events: &UnboundedSender<()>) {
     state.lock().expect("mutex poisoned").checking = true;
-    let _ = events.send(UpdatesSignal::Changed);
+    let _ = events.send(());
 
     let backend = Arc::clone(backend);
     let result = tokio::task::spawn_blocking(move || backend.check()).await;
@@ -291,7 +278,7 @@ async fn run_one_check(
         }
     }
     drop(guard);
-    let _ = events.send(UpdatesSignal::Changed);
+    let _ = events.send(());
 }
 
 /// Whether the interval's immediate first tick should check or be consumed. Due with no process
@@ -305,11 +292,7 @@ fn first_check_is_due(last_successful_check: Option<i64>, now: i64, interval: Du
 /// atomic check-and-set. Runs `Backend::install_command` against the live system as root, reads
 /// stdout line by line, parses progress into `state`, and never exposes raw output to Lua
 /// (ADR-0034).
-async fn run_install(
-    backend: Arc<dyn Backend>,
-    state: Arc<Mutex<UpdatesState>>,
-    events: UnboundedSender<UpdatesSignal>,
-) {
+async fn run_install(backend: Arc<dyn Backend>, state: Arc<Mutex<UpdatesState>>, events: UnboundedSender<()>) {
     let command = backend.install_command();
     let child = match process::spawn_group_leader_piped(&command.program, &command.arguments) {
         Ok(child) => child,
@@ -320,19 +303,19 @@ async fn run_install(
             guard.installing = false;
             guard.install_error = Some(message);
             drop(guard);
-            let _ = events.send(UpdatesSignal::Changed);
+            let _ = events.send(());
             return;
         }
     };
     run_install_with_child(backend, state, events, child).await;
 }
 
-/// Testable stdout loop for [`run_install`]. Sends `UpdatesSignal::Changed` on every parsed line
+/// Testable stdout loop for [`run_install`]. Wakes `main.rs` on every parsed line
 /// (ADR-0034), not only at completion.
 async fn run_install_with_child(
     backend: Arc<dyn Backend>,
     state: Arc<Mutex<UpdatesState>>,
-    events: UnboundedSender<UpdatesSignal>,
+    events: UnboundedSender<()>,
     mut child: tokio::process::Child,
 ) {
     // Drain stderr concurrently: ~64KiB of warnings can fill the kernel pipe, block the
@@ -346,7 +329,7 @@ async fn run_install_with_child(
             while let Ok(Some(line)) = lines.next_line().await {
                 debug!(2; "install stderr: {line}");
                 push_log_line(&mut state.lock().expect("mutex poisoned").install_log, line);
-                let _ = events.send(UpdatesSignal::Changed);
+                let _ = events.send(());
             }
         })
     });
@@ -368,7 +351,7 @@ async fn run_install_with_child(
             // because pacman prints nothing per package without a tty (measured: its `wchar` does
             // not move for the whole download). A pty is the only cure and costs ANSI and `\r`
             // handling; `updates.count` and `download_size` cover the gap in config instead.
-            let _ = events.send(UpdatesSignal::Changed);
+            let _ = events.send(());
         }
     }
 
@@ -391,7 +374,7 @@ async fn run_install_with_child(
         Err(err) => guard.install_error = Some(format!("failed to wait on the install command: {err}")),
     }
     drop(guard);
-    let _ = events.send(UpdatesSignal::Changed);
+    let _ = events.send(());
 }
 
 /// Appends to the install-log tail, dropping its oldest line at capacity. Keep a `Vec`, not a
@@ -473,7 +456,7 @@ mod tests {
         assert_eq!(seeded.last_successful_check, Some(1_800_000_000));
         assert_eq!(seeded.packages, vec![candidate()]);
         assert_eq!(seeded.count, 1, "`count` is always `#packages`, seeded or checked");
-        assert_eq!(events_rx.recv().await, Some(UpdatesSignal::Changed), "a seed is Lua-visible, so it pushes");
+        assert_eq!(events_rx.recv().await, Some(()), "a seed is Lua-visible, so it pushes");
 
         // A second seed is a later config reload, not a later check: the slot is taken.
         controller.configure(UpdatesConfigure {
@@ -497,15 +480,15 @@ mod tests {
     ///
     /// The construction push is consumed here, so each test's own assertions start from the first
     /// signal it actually caused.
-    async fn failing_controller() -> (UpdatesController, tokio::sync::mpsc::UnboundedReceiver<UpdatesSignal>) {
+    async fn failing_controller() -> (UpdatesController, tokio::sync::mpsc::UnboundedReceiver<()>) {
         let (events_tx, mut events_rx) = tokio::sync::mpsc::unbounded_channel();
         let controller = UpdatesController::with_backend(Some(Arc::new(StubBackend)), no_marker(), events_tx);
-        assert_eq!(events_rx.recv().await, Some(UpdatesSignal::Changed), "construction pushes the backend's name");
+        assert_eq!(events_rx.recv().await, Some(()), "construction pushes the backend's name");
         (controller, events_rx)
     }
 
     /// The two pushes one check makes: `checking` up, then the answer.
-    async fn await_one_check(events_rx: &mut tokio::sync::mpsc::UnboundedReceiver<UpdatesSignal>) {
+    async fn await_one_check(events_rx: &mut tokio::sync::mpsc::UnboundedReceiver<()>) {
         for _ in 0..2 {
             events_rx.recv().await.expect("the check task must push at both edges of a check");
         }
@@ -581,7 +564,7 @@ mod tests {
         let (events_tx, mut events_rx) = tokio::sync::mpsc::unbounded_channel();
         let controller = UpdatesController::with_backend(None, no_marker(), events_tx);
 
-        assert_eq!(events_rx.recv().await, Some(UpdatesSignal::Changed));
+        assert_eq!(events_rx.recv().await, Some(()));
         assert_eq!(controller.snapshot().package_manager, None);
 
         controller.configure(UpdatesConfigure {

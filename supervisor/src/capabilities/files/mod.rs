@@ -7,7 +7,7 @@
 
 pub mod controller;
 
-pub use controller::{FilesController, FilesSignal};
+pub use controller::FilesController;
 use shared::action::FilesAction;
 
 /// `mantle.files`'s action dispatch (ADR-0037). Synchronous: `watch` spawns the listing and the

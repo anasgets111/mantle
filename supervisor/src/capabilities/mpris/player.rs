@@ -10,7 +10,6 @@ use serde::Serialize;
 use shared::debug;
 use tokio::task::JoinHandle;
 
-use super::MprisSignal;
 use super::collections::{
     PlaylistsState, TrackListState, read_playlists, read_track_list, spawn_collections_forwarder,
 };
@@ -382,7 +381,7 @@ async fn resync(
 pub(super) async fn register_player(
     connection: &zbus::Connection,
     registry: &PlayerRegistry,
-    events: &UnboundedSender<MprisSignal>,
+    events: &UnboundedSender<()>,
     bus_name: String,
 ) {
     let player = match bind_player(connection, &bus_name).await {
@@ -476,7 +475,7 @@ pub(super) async fn register_player(
         Some(entry) => entry.collections_forwarder = Some(collections_forwarder),
         None => collections_forwarder.abort(),
     }
-    let _ = events.send(MprisSignal::Changed);
+    let _ = events.send(());
 }
 
 /// Re-runs [`resync`] on each `PlaybackStatus`/`Metadata` change or `Seeked`, updating the entry in
@@ -487,7 +486,7 @@ fn spawn_player_forwarder(
     player: MprisPlayerProxy<'static>,
     root: MprisRootProxy<'static>,
     registry: PlayerRegistry,
-    events: UnboundedSender<MprisSignal>,
+    events: UnboundedSender<()>,
     collections_refresh: UnboundedSender<()>,
 ) -> JoinHandle<()> {
     tokio::spawn(async move {
@@ -640,7 +639,7 @@ fn spawn_player_forwarder(
                 continue;
             }
 
-            if events.send(MprisSignal::Changed).is_err() {
+            if events.send(()).is_err() {
                 break;
             }
         }
@@ -654,7 +653,7 @@ fn publish_seeked_position(state: &mut PlayerState, position: i64) {
 
 /// Removes a departed `bus_name` (`NameOwnerChanged` with an empty new owner) and aborts its
 /// forwarder. No-op if untracked, including skipped `playerctld` or uncontrollable sources.
-pub(super) fn unregister_player(registry: &PlayerRegistry, bus_name: &str, events: &UnboundedSender<MprisSignal>) {
+pub(super) fn unregister_player(registry: &PlayerRegistry, bus_name: &str, events: &UnboundedSender<()>) {
     let removed = registry.lock().expect("mutex poisoned").remove(bus_name);
     if let Some(entry) = removed {
         debug!("MPRIS player departed: {bus_name}");
@@ -664,7 +663,7 @@ pub(super) fn unregister_player(registry: &PlayerRegistry, bus_name: &str, event
         if let Some(handle) = entry.collections_forwarder {
             handle.abort();
         }
-        let _ = events.send(MprisSignal::Changed);
+        let _ = events.send(());
     }
 }
 

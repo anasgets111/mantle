@@ -26,11 +26,6 @@ pub struct StorageState {
     pub files: BTreeMap<String, Value>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum StorageSignal {
-    Changed,
-}
-
 /// Behind one lock, so a sync sees memory and the last disk copy together.
 #[derive(Default)]
 struct Stores {
@@ -53,12 +48,12 @@ pub struct StorageController {
     /// One pending save per file, replaced by its next write. Files debounce independently; one
     /// file written every second cannot starve another's save.
     saves: Mutex<HashMap<PathBuf, JoinHandle<()>>>,
-    signal_tx: UnboundedSender<StorageSignal>,
+    signal_tx: UnboundedSender<()>,
 }
 
 impl StorageController {
     /// Watches declared files for other writers, other shells included (ADR-0223).
-    pub fn new(signal_tx: UnboundedSender<StorageSignal>) -> Self {
+    pub fn new(signal_tx: UnboundedSender<()>) -> Self {
         let stores = Arc::new(Mutex::new(Stores::default()));
         match Inotify::init().and_then(|inotify| Ok((inotify.watches(), inotify.into_event_stream(vec![0u8; 4096])?))) {
             Ok((watches, mut events)) => {
@@ -134,7 +129,7 @@ impl StorageController {
             self.schedule_save(path);
         }
         if declared || changed {
-            let _ = self.signal_tx.send(StorageSignal::Changed);
+            let _ = self.signal_tx.send(());
         }
     }
 
@@ -178,7 +173,7 @@ impl StorageController {
         }
         self.schedule_save(path);
         if changed {
-            let _ = self.signal_tx.send(StorageSignal::Changed);
+            let _ = self.signal_tx.send(());
         }
     }
 
@@ -202,7 +197,7 @@ impl StorageController {
 
 /// Takes `path`'s disk copy whole when someone else changed it, dropping unsaved writes, pushes a
 /// difference, and writes when `save` asks or a just-fixed file lacks defaults (ADR-0223).
-fn sync(stores: &Mutex<Stores>, path: &Path, save: bool, signal_tx: &UnboundedSender<StorageSignal>) {
+fn sync(stores: &Mutex<Stores>, path: &Path, save: bool, signal_tx: &UnboundedSender<()>) {
     // Read to rename in turn, so a watch and a save cannot land out of order.
     static SERIAL: Mutex<()> = Mutex::new(());
     let _serial = SERIAL.lock().expect("storage sync mutex poisoned");
@@ -226,7 +221,7 @@ fn sync(stores: &Mutex<Stores>, path: &Path, save: bool, signal_tx: &UnboundedSe
             store.on_disk = Some(disk);
             if store.values != values {
                 store.values = values;
-                let _ = signal_tx.send(StorageSignal::Changed);
+                let _ = signal_tx.send(());
             }
         }
         if !(save || fixed && Some(&store.values) != store.on_disk.as_ref()) {
@@ -319,9 +314,10 @@ fn write(path: &Path, contents: &Map<String, Value>) -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::capabilities::test_support::within;
     use serde_json::json;
 
-    fn controller() -> (StorageController, tokio::sync::mpsc::UnboundedReceiver<StorageSignal>) {
+    fn controller() -> (StorageController, tokio::sync::mpsc::UnboundedReceiver<()>) {
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
         (StorageController::new(tx), rx)
     }
@@ -504,8 +500,8 @@ mod tests {
     }
 
     /// Waits for a push, or fails after the inotify round trip should long have landed.
-    async fn pushed(rx: &mut tokio::sync::mpsc::UnboundedReceiver<StorageSignal>) {
-        tokio::time::timeout(Duration::from_secs(5), rx.recv()).await.expect("no push arrived");
+    async fn pushed(rx: &mut tokio::sync::mpsc::UnboundedReceiver<()>) {
+        within(rx.recv()).await;
     }
 
     #[tokio::test]

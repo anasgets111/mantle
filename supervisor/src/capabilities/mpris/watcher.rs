@@ -7,7 +7,6 @@ use futures_util::StreamExt;
 use shared::{error, warn};
 use tokio::sync::mpsc::UnboundedSender;
 
-use super::MprisSignal;
 use super::player::{PlayerRegistry, register_player, unregister_player};
 
 pub(super) const MPRIS_SERVICE_PREFIX: &str = "org.mpris.MediaPlayer2.";
@@ -38,7 +37,7 @@ async fn discover_existing(
     connection: &zbus::Connection,
     dbus_proxy: &zbus::fdo::DBusProxy<'static>,
     registry: &PlayerRegistry,
-    events: &UnboundedSender<MprisSignal>,
+    events: &UnboundedSender<()>,
 ) {
     let names = match dbus_proxy.list_names().await {
         Ok(names) => names,
@@ -77,7 +76,7 @@ fn player_owner_rule() -> zbus::Result<zbus::MatchRule<'static>> {
 pub(super) async fn spawn_discovery(
     connection: zbus::Connection,
     registry: PlayerRegistry,
-    events: UnboundedSender<MprisSignal>,
+    events: UnboundedSender<()>,
 ) {
     let dbus_proxy = match zbus::fdo::DBusProxy::new(&connection).await {
         Ok(proxy) => proxy,

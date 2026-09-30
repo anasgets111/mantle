@@ -8,7 +8,7 @@ use inotify::{Inotify, WatchMask};
 use shared::{debug, warn};
 use tokio::sync::mpsc::UnboundedSender;
 
-use super::controller::{UpdatesSignal, UpdatesState};
+use super::controller::UpdatesState;
 
 /// Marker file for [`UpdatesState::reboot_required`]; anything may write it, a pacman hook for example.
 pub(super) const REBOOT_MARKER: &str = "/run/mantle-reboot-required";
@@ -22,7 +22,7 @@ pub(super) const REBOOT_MARKER: &str = "/run/mantle-reboot-required";
 pub(super) async fn run_reboot_marker_task(
     marker: PathBuf,
     state: Arc<Mutex<UpdatesState>>,
-    events: UnboundedSender<UpdatesSignal>,
+    events: UnboundedSender<()>,
 ) {
     let (Some(dir), Some(name)) = (marker.parent(), marker.file_name()) else {
         debug!("{} is not a file path; the reboot badge stays off", marker.display());
@@ -53,7 +53,7 @@ pub(super) async fn run_reboot_marker_task(
 
 /// Pushes only on a change: `/run` is busy and every push re-resolves every surface that reads
 /// `updates` (ADR-0244).
-fn publish_reboot_required(marker: &Path, state: &Arc<Mutex<UpdatesState>>, events: &UnboundedSender<UpdatesSignal>) {
+fn publish_reboot_required(marker: &Path, state: &Arc<Mutex<UpdatesState>>, events: &UnboundedSender<()>) {
     let required = marker.exists();
     let mut guard = state.lock().expect("mutex poisoned");
     if guard.reboot_required == required {
@@ -62,7 +62,7 @@ fn publish_reboot_required(marker: &Path, state: &Arc<Mutex<UpdatesState>>, even
     debug!("reboot required: {}", required);
     guard.reboot_required = required;
     drop(guard);
-    let _ = events.send(UpdatesSignal::Changed);
+    let _ = events.send(());
 }
 
 #[cfg(test)]
@@ -91,7 +91,7 @@ mod tests {
 
         std::fs::write(&marker, "").unwrap();
         wait_for_reboot_required(&state, true).await;
-        assert_eq!(events_rx.recv().await, Some(UpdatesSignal::Changed), "the badge is Lua-visible, so it pushes");
+        assert_eq!(events_rx.recv().await, Some(()), "the badge is Lua-visible, so it pushes");
 
         std::fs::remove_file(&marker).unwrap();
         wait_for_reboot_required(&state, false).await;

@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-use shared::{Capability, CommandEnvelope, debug, error};
+use shared::{Capability, CommandEnvelope, debug};
 use tokio::sync::mpsc::{UnboundedSender, unbounded_channel};
 use tokio::sync::watch;
 
@@ -15,21 +15,21 @@ use super::files::{self, FilesController};
 use super::idle::{self, IdleController};
 use super::keyboard::{self, KeyboardController};
 use super::lock::{self, LockController};
-use super::mpris::{self, MprisController, MprisSignal};
+use super::mpris::{self, MprisController};
 use super::network::{self, NetworkController};
-use super::notifications::{self, NotificationsController, NotificationsSignal};
+use super::notifications::{self, NotificationsController};
 use super::power::{self, PowerController};
 use super::privacy::PrivacyController;
 use super::processes::{self, ProcessesController};
 use super::secrets::SecretsController;
+use super::session_bus;
 use super::signals::{Senders, Signal, Signals};
 use super::storage::{self, StorageController};
 use super::sysinfo::{self, SysinfoController};
 use super::system::{self, SystemController};
-use super::tray::{self, TrayController, TraySignal};
+use super::tray::{self, TrayController};
 use super::updates::{self, UpdatesController};
 use super::windows::{self, WindowsController};
-use super::with_call_timeout;
 use super::worker::{Worker, queue, spawn_worker};
 use super::workspaces::{self, WorkspacesController};
 use crate::compositor::CompositorKind;
@@ -264,48 +264,37 @@ impl Capabilities {
             // built: with no item, notification or player they never speak.
             Capability::Tray => {
                 if self.tray.is_none() {
-                    self.tray = Some(match with_call_timeout(zbus::connection::Builder::session()).await {
-                        Ok(bus) => TrayController::new(bus, self.senders.tray.clone()).await,
-                        Err(err) => {
-                            error!("failed to connect to the session bus; tray host disabled for this run: {err}");
-                            TrayController::inert(self.senders.tray.clone())
-                        }
+                    self.tray = Some(match session_bus("tray host disabled").await {
+                        Some(bus) => TrayController::new(bus, self.senders.tray.clone()).await,
+                        None => TrayController::inert(self.senders.tray.clone()),
                     });
-                    let _ = self.senders.tray.send(TraySignal::RegistryChanged);
+                    let _ = self.senders.tray.send(());
                 }
             }
             // Own session bus (ADR-0033); an existing notification owner makes this inert via
             // RequestName's DoNotQueue.
             Capability::Notifications => {
                 if self.notifications.is_none() {
-                    self.notifications = Some(match with_call_timeout(zbus::connection::Builder::session()).await {
-                        Ok(bus) => {
+                    self.notifications = Some(match session_bus("notifications server disabled").await {
+                        Some(bus) => {
                             NotificationsController::new(bus, self.senders.notifications.clone(), self.sound_tx.clone())
                                 .await
                         }
-                        Err(err) => {
-                            error!(
-                                "failed to connect to the session bus; notifications server disabled for this run: {err}"
-                            );
+                        None => {
                             NotificationsController::inert(self.senders.notifications.clone(), self.sound_tx.clone())
                         }
                     });
-                    let _ = self.senders.notifications.send(NotificationsSignal::Changed);
+                    let _ = self.senders.notifications.send(());
                 }
             }
             // Own session bus (ADR-0036); `new` spawns discovery and returns.
             Capability::Mpris => {
                 if self.mpris.is_none() {
-                    self.mpris = Some(match with_call_timeout(zbus::connection::Builder::session()).await {
-                        Ok(bus) => MprisController::new(bus, self.senders.mpris.clone()),
-                        Err(err) => {
-                            error!(
-                                "failed to connect to the session bus; player discovery disabled for this run: {err}"
-                            );
-                            MprisController::inert()
-                        }
+                    self.mpris = Some(match session_bus("player discovery disabled").await {
+                        Some(bus) => MprisController::new(bus, self.senders.mpris.clone()),
+                        None => MprisController::inert(),
                     });
-                    let _ = self.senders.mpris.send(MprisSignal::Changed);
+                    let _ = self.senders.mpris.send(());
                 }
             }
             // Three dormant poll tasks until `sysinfo:configure` (ADR-0035).
@@ -328,7 +317,7 @@ impl Capabilities {
                     let sink = &self.compositor_reader.keyboard;
                     let _ = sink.events.set(events.clone());
                     // The reader may have written layout before this start, with nobody to signal.
-                    let _ = events.send(keyboard::controller::KeyboardSignal::Changed);
+                    let _ = events.send(());
                     let state = Arc::clone(&sink.state);
                     let connection = self.connection.clone();
                     let build = async move {
@@ -456,14 +445,7 @@ impl Capabilities {
             // serve `org.freedesktop.ScreenSaver` (ADR-0231); without it that half stays unserved.
             Capability::Idle => {
                 if self.idle.is_none() {
-                    let session_bus = with_call_timeout(zbus::connection::Builder::session())
-                        .await
-                        .inspect_err(|err| {
-                            error!(
-                                "failed to connect to the session bus; org.freedesktop.ScreenSaver inhibits are unavailable for this run: {err}"
-                            )
-                        })
-                        .ok();
+                    let session_bus = session_bus("org.freedesktop.ScreenSaver inhibits are unavailable").await;
                     self.idle = Some(
                         IdleController::new(
                             self.connection.clone(),
@@ -514,103 +496,46 @@ impl Capabilities {
                 push_snapshot(registry, generation_id, last_snapshots, $capability, $state)
             };
         }
+        macro_rules! push_held {
+            ($capability:ident, $held:expr) => {
+                if let Some(controller) = &$held {
+                    push!(Capability::$capability, &controller.snapshot());
+                }
+            };
+        }
         match signal {
             Signal::Audio(state) => push!(Capability::Audio, &state),
             Signal::Network(state) => push!(Capability::Network, &state),
             Signal::Bluetooth(state) => push!(Capability::Bluetooth, &state),
-            // No debounce: `build_state` already snapshots recomputed data (ADR-0031).
-            Signal::Tray => {
-                if let Some(tray) = &self.tray {
-                    push!(Capability::Tray, &tray.build_state());
-                }
-            }
+            // No debounce: `snapshot` already reads recomputed data (ADR-0031).
+            Signal::Tray => push_held!(Tray, self.tray),
             // No debounce (ADR-0036).
-            Signal::Mpris => {
-                if let Some(mpris) = &self.mpris {
-                    push!(Capability::Mpris, &mpris.build_state());
-                }
-            }
+            Signal::Mpris => push_held!(Mpris, self.mpris),
             // No debounce; each mutation re-derives notification state (ADR-0033).
-            Signal::Notifications => {
-                if let Some(notifications) = &self.notifications {
-                    push!(Capability::Notifications, &notifications.build_state());
-                }
-            }
+            Signal::Notifications => push_held!(Notifications, self.notifications),
             // Poll task already wrote fields under its lock; clone and push (ADR-0035).
-            Signal::Sysinfo => {
-                if let Some(sysinfo) = &self.sysinfo {
-                    push!(Capability::Sysinfo, &sysinfo.snapshot());
-                }
-            }
+            Signal::Sysinfo => push_held!(Sysinfo, self.sysinfo),
             Signal::Keyboard(state) => push!(Capability::Keyboard, &state),
-            Signal::Battery => {
-                if let Some(battery) = &self.battery {
-                    push!(Capability::Battery, &battery.snapshot());
-                }
-            }
+            Signal::Battery => push_held!(Battery, self.battery),
             // Only emitted when a backlight device exists (ADR-0053).
-            Signal::Brightness => {
-                if let Some(brightness) = &self.brightness {
-                    push!(Capability::Brightness, &brightness.snapshot());
-                }
-            }
+            Signal::Brightness => push_held!(Brightness, self.brightness),
             // Controller already filters compositor events to real changes.
-            Signal::Workspaces => {
-                if let Some(workspaces) = &self.workspaces {
-                    push!(Capability::Workspaces, &workspaces.snapshot());
-                }
-            }
-            Signal::Windows => {
-                if let Some(windows) = &self.windows {
-                    push!(Capability::Windows, &windows.snapshot());
-                }
-            }
+            Signal::Workspaces => push_held!(Workspaces, self.workspaces),
+            Signal::Windows => push_held!(Windows, self.windows),
             // Controller filters UPower's roughly once-per-minute EnergyRate repeats.
-            Signal::Power => {
-                if let Some(power) = &self.power {
-                    push!(Capability::Power, &power.snapshot());
-                }
-            }
-            Signal::Applications => {
-                if let Some(applications) = &self.applications {
-                    push!(Capability::Applications, &applications.snapshot());
-                }
-            }
+            Signal::Power => push_held!(Power, self.power),
+            Signal::Applications => push_held!(Applications, self.applications),
             // `watch`/`unwatch` and each settled folder-change burst.
-            Signal::Files => {
-                if let Some(files) = &self.files {
-                    push!(Capability::Files, &files.snapshot());
-                }
-            }
+            Signal::Files => push_held!(Files, self.files),
             // Every `open`/`set`, before debounced save (ADR-0136).
-            Signal::Storage => {
-                if let Some(storage) = &self.storage {
-                    push!(Capability::Storage, &storage.snapshot());
-                }
-            }
+            Signal::Storage => push_held!(Storage, self.storage),
             // Every declare, start, signal answered, and exit noticed.
-            Signal::Processes => {
-                if let Some(processes) = &self.processes {
-                    push!(Capability::Processes, &processes.snapshot());
-                }
-            }
+            Signal::Processes => push_held!(Processes, self.processes),
             // Once per clock tick (ADR-0053 decision 2).
-            Signal::System => {
-                if let Some(system) = &self.system {
-                    push!(Capability::System, &system.snapshot());
-                }
-            }
-            Signal::Privacy => {
-                if let Some(privacy) = &self.privacy {
-                    push!(Capability::Privacy, &privacy.snapshot());
-                }
-            }
+            Signal::System => push_held!(System, self.system),
+            Signal::Privacy => push_held!(Privacy, self.privacy),
             // Periodic checks and install progress updates.
-            Signal::Updates => {
-                if let Some(updates) = &self.updates {
-                    push!(Capability::Updates, &updates.snapshot());
-                }
-            }
+            Signal::Updates => push_held!(Updates, self.updates),
             // Inhibitor watch sends state directly, like `Audio`.
             Signal::Idle(state) => push!(Capability::Idle, &state),
             Signal::Secrets(state) => push!(Capability::Secrets, &state),

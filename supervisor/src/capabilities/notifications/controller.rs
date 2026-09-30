@@ -25,7 +25,7 @@ use super::queue::{
 use super::sound::{SoundSender, default_trusted_sound_roots, resolve_sound_name};
 use super::{
     Hints, MAX_APP_NAME_BYTES, MAX_SUMMARY_BYTES, NOTIFICATIONS_BUS_NAME, NOTIFICATIONS_CAPABILITIES,
-    NOTIFICATIONS_OBJECT_PATH, Notification, NotificationsSignal, NotificationsState, Urgency, desktop_entry_from_hint,
+    NOTIFICATIONS_OBJECT_PATH, Notification, NotificationsState, Urgency, desktop_entry_from_hint,
     reply_placeholder_from_hint, urgency_from_hint_byte,
 };
 use crate::capabilities::system::controller::epoch_seconds;
@@ -81,7 +81,7 @@ pub struct NotificationsController {
     /// signals no-ops while queue/DND/sound state remains functional.
     connection: Option<zbus::Connection>,
     state: Arc<Mutex<NotificationsQueueState>>,
-    events: UnboundedSender<NotificationsSignal>,
+    events: UnboundedSender<()>,
     sound_tx: SoundSender,
     trusted_roots: Arc<Vec<PathBuf>>,
     sound_roots: Arc<Vec<PathBuf>>,
@@ -93,11 +93,7 @@ pub struct NotificationsController {
 impl NotificationsController {
     /// Requests the bus name with `DoNotQueue`: an existing `mako`/`dunst` owner degrades this
     /// daemon to inert rather than queueing behind it (ADR-0033).
-    pub async fn new(
-        connection: zbus::Connection,
-        events: UnboundedSender<NotificationsSignal>,
-        sound_tx: SoundSender,
-    ) -> Self {
+    pub async fn new(connection: zbus::Connection, events: UnboundedSender<()>, sound_tx: SoundSender) -> Self {
         let live_connection = match connection
             .request_name_with_flags(NOTIFICATIONS_BUS_NAME, RequestNameFlags::DoNotQueue.into())
             .await
@@ -129,7 +125,7 @@ impl NotificationsController {
 
     /// No D-Bus connection but working queue/DND/sound state, used when the session bus is absent.
     /// Writes still work; only signals and D-Bus `Notify` are unavailable.
-    pub fn inert(events: UnboundedSender<NotificationsSignal>, sound_tx: SoundSender) -> Self {
+    pub fn inert(events: UnboundedSender<()>, sound_tx: SoundSender) -> Self {
         Self {
             connection: None,
             state: Arc::new(Mutex::new(NotificationsQueueState::new())),
@@ -200,7 +196,7 @@ impl NotificationsController {
             schedule_icon_deletion(path);
         }
         self.emit_notification_closed(id, CloseReason::Expired).await;
-        let _ = self.events.send(NotificationsSignal::Changed);
+        let _ = self.events.send(());
     }
 
     /// `notifications:dismiss(id)` removes the entry, lets its expiry task no-op on
@@ -218,7 +214,7 @@ impl NotificationsController {
             schedule_icon_deletion(path);
         }
         self.emit_notification_closed(id, CloseReason::Dismissed).await;
-        let _ = self.events.send(NotificationsSignal::Changed);
+        let _ = self.events.send(());
     }
 
     /// `notifications:reply(id, text)` requires `has_reply`, emits `NotificationReplied(id, text)`,
@@ -252,7 +248,7 @@ impl NotificationsController {
             }
             self.emit_notification_closed(id, CloseReason::Dismissed).await;
         }
-        let _ = self.events.send(NotificationsSignal::Changed);
+        let _ = self.events.send(());
     }
 
     /// `notifications:invoke_action(id, key)` (ADR-0090) validates that the sender declared
@@ -283,7 +279,7 @@ impl NotificationsController {
             }
             self.emit_notification_closed(id, CloseReason::ClosedByMethod).await;
         }
-        let _ = self.events.send(NotificationsSignal::Changed);
+        let _ = self.events.send(());
     }
 
     /// `notifications:set_sound(urgency, path)` (ADR-0033) registers an existing file under the
@@ -300,7 +296,7 @@ impl NotificationsController {
     /// `notifications:set_dnd(enabled)` (ADR-0033) flips the global sound gate; feed is unchanged.
     pub fn set_dnd(&self, enabled: bool) {
         self.state.lock().expect("mutex poisoned").dnd = enabled;
-        let _ = self.events.send(NotificationsSignal::Changed);
+        let _ = self.events.send(());
     }
 
     /// `notifications:set_quiet(enabled)` gates sound like DND, for a config's own rules (locked,
@@ -337,7 +333,7 @@ impl NotificationsController {
 
     /// Full re-derivation of `notifications.feed`/`notifications.dnd` from current state:
     /// synchronous, no D-Bus round trip needed.
-    pub fn build_state(&self) -> NotificationsState {
+    pub fn snapshot(&self) -> NotificationsState {
         let state = self.state.lock().expect("mutex poisoned");
         NotificationsState { feed: feed_view(&state.queue), dnd: state.dnd }
     }
@@ -504,7 +500,7 @@ impl NotificationsController {
             }
             None => {}
         }
-        let _ = self.events.send(NotificationsSignal::Changed);
+        let _ = self.events.send(());
 
         if let Some(duration) = resolve_expiry(urgency, expire_timeout) {
             // ponytail: replacing or dismissing a notification leaves this task sleeping rather
@@ -555,7 +551,7 @@ impl NotificationsController {
                 schedule_icon_deletion(path);
             }
             self.emit_notification_closed(id, CloseReason::ClosedByMethod).await;
-            let _ = self.events.send(NotificationsSignal::Changed);
+            let _ = self.events.send(());
         }
     }
 

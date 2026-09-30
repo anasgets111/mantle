@@ -6,4 +6,4 @@
 pub mod controller;
 pub mod video;
 
-pub use controller::{PrivacyController, PrivacySignal};
+pub use controller::PrivacyController;

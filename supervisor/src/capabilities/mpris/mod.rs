@@ -20,7 +20,7 @@ pub mod player;
 pub mod proxies;
 pub mod watcher;
 
-pub use controller::{MprisController, MprisSignal};
+pub use controller::MprisController;
 use shared::action::MprisAction;
 
 /// `mantle.mpris` action dispatch (ADR-0037): `tokio::spawn`s each write action

@@ -339,12 +339,6 @@ pub struct NotificationsState {
     pub dnd: bool,
 }
 
-/// Channel carrying queue/DND changes, matching `tray::TraySignal`'s single variant.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum NotificationsSignal {
-    Changed,
-}
-
 /// Shared by submodule tests.
 #[cfg(test)]
 mod test_support {

@@ -69,11 +69,6 @@ pub struct SessionProcess {
     pub start_error: String,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ProcessesSignal {
-    Changed,
-}
-
 /// What [`supervise`] accepts while its program is up.
 enum Request {
     /// One signal to the process itself, not its group: a pause or a reload is addressed to the
@@ -102,11 +97,11 @@ type Entries = Arc<Mutex<HashMap<String, Entry>>>;
 
 pub struct ProcessesController {
     entries: Entries,
-    signal_tx: UnboundedSender<ProcessesSignal>,
+    signal_tx: UnboundedSender<()>,
 }
 
 impl ProcessesController {
-    pub fn new(signal_tx: UnboundedSender<ProcessesSignal>) -> Self {
+    pub fn new(signal_tx: UnboundedSender<()>) -> Self {
         Self { entries: Arc::new(Mutex::new(HashMap::new())), signal_tx }
     }
 
@@ -130,7 +125,7 @@ impl ProcessesController {
             }
         }
         drop(guard);
-        let _ = self.signal_tx.send(ProcessesSignal::Changed);
+        let _ = self.signal_tx.send(());
     }
 
     /// Spawns `cmd`, replacing this name's last run. A name already up is left alone: `start`
@@ -174,7 +169,7 @@ impl ProcessesController {
             }
         }
         drop(guard);
-        let _ = self.signal_tx.send(ProcessesSignal::Changed);
+        let _ = self.signal_tx.send(());
     }
 
     /// Sends one signal to a running program. Silent when it is not up: a config acting on state
@@ -223,7 +218,7 @@ async fn supervise(
     mut child: Child,
     mut requests: UnboundedReceiver<Request>,
     entries: Entries,
-    signal_tx: UnboundedSender<ProcessesSignal>,
+    signal_tx: UnboundedSender<()>,
 ) {
     let Some(raw_pid) = child.id() else {
         error!("{name:?} spawned without a pid; nothing to supervise");
@@ -267,7 +262,7 @@ async fn supervise(
             entry.live = None;
         }
     }
-    let _ = signal_tx.send(ProcessesSignal::Changed);
+    let _ = signal_tx.send(());
 }
 
 /// The declared stop signal to the group, [`STOP_GRACE`], then `SIGKILL` to the group.
@@ -325,7 +320,7 @@ mod tests {
     use super::*;
 
     /// A controller whose signal channel is drained on demand; tests read `snapshot` instead.
-    fn controller() -> (ProcessesController, UnboundedReceiver<ProcessesSignal>) {
+    fn controller() -> (ProcessesController, UnboundedReceiver<()>) {
         let (tx, rx) = unbounded_channel();
         (ProcessesController::new(tx), rx)
     }

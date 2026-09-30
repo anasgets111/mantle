@@ -13,7 +13,7 @@
 
 pub mod controller;
 
-pub use controller::{PowerController, PowerSignal};
+pub use controller::PowerController;
 use shared::action::PowerAction;
 
 /// `set_profile` writes a D-Bus property and is spawned (ADR-0037, ADR-0029), like

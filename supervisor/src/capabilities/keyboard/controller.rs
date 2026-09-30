@@ -54,11 +54,6 @@ impl Default for KeyboardState {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum KeyboardSignal {
-    Changed,
-}
-
 /// A `*::kbd_backlight` LED and its `max_brightness`, which does not change at runtime.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct LedBacklight {
@@ -72,7 +67,7 @@ pub struct KeyboardController {
     backlight: Arc<Option<LedBacklight>>,
     layout: Arc<Option<Box<dyn CompositorLink>>>,
     system_bus: zbus::Connection,
-    events: UnboundedSender<KeyboardSignal>,
+    events: UnboundedSender<()>,
 }
 
 impl KeyboardController {
@@ -85,7 +80,7 @@ impl KeyboardController {
         leds_root: &Path,
         state: Arc<Mutex<KeyboardState>>,
         compositor: Option<CompositorKind>,
-        events_tx: UnboundedSender<KeyboardSignal>,
+        events_tx: UnboundedSender<()>,
     ) -> Self {
         let backlight = find_backlight(leds_root);
         match &backlight {
@@ -127,7 +122,7 @@ impl KeyboardController {
         }
         // `brightness_hw_changed` reports only hardware changes, so read this write back.
         self.state.lock().expect("mutex poisoned").backlight_pct = read_backlight_pct(led);
-        let _ = self.events.send(KeyboardSignal::Changed);
+        let _ = self.events.send(());
     }
 
     /// `keyboard:switch_layout(index)`. Logs and returns without a supported compositor.
@@ -157,7 +152,7 @@ fn read_backlight_pct(led: &LedBacklight) -> i32 {
 
 /// Opens `brightness_hw_changed` before the initial read so a hotkey in between is not lost, then
 /// re-reads on each `POLLPRI`, which the kernel raises only for hardware changes (ADR-0034.1).
-fn watch_backlight(led: LedBacklight, state: Arc<Mutex<KeyboardState>>, events: UnboundedSender<KeyboardSignal>) {
+fn watch_backlight(led: LedBacklight, state: Arc<Mutex<KeyboardState>>, events: UnboundedSender<()>) {
     let watch = std::fs::File::open(led.dir.join("brightness_hw_changed"))
         .and_then(|file| AsyncFd::with_interest(file, Interest::PRIORITY));
     state.lock().expect("mutex poisoned").backlight_pct = read_backlight_pct(&led);
@@ -180,7 +175,7 @@ fn watch_backlight(led: LedBacklight, state: Arc<Mutex<KeyboardState>>, events: 
             // Reading from offset 0 re-arms kernfs's `POLLPRI`.
             let _ = watch.get_ref().read_at(&mut [0; 8], 0);
             state.lock().expect("mutex poisoned").backlight_pct = read_backlight_pct(&led);
-            if events.send(KeyboardSignal::Changed).is_err() {
+            if events.send(()).is_err() {
                 break;
             }
         }
@@ -251,7 +246,7 @@ fn build_input_watch() -> std::io::Result<AsyncFd<MonitorSocket>> {
 async fn pump_leds(
     stream: &mut evdev::EventStream,
     state: &Mutex<KeyboardState>,
-    events: &UnboundedSender<KeyboardSignal>,
+    events: &UnboundedSender<()>,
 ) -> bool {
     loop {
         let event = match stream.next_event().await {
@@ -272,7 +267,7 @@ async fn pump_leds(
                 _ => continue,
             }
         }
-        if events.send(KeyboardSignal::Changed).is_err() {
+        if events.send(()).is_err() {
             return false;
         }
     }
@@ -281,11 +276,7 @@ async fn pump_leds(
 /// Re-opens the stream on every `input` uevent: a replugged keyboard is a new `/dev/input/event*`
 /// node, which the fd that died with the old one never sees. Without this the locks stay frozen
 /// where the unplug left them until the shell restarts.
-async fn watch_locks(
-    first: Option<evdev::EventStream>,
-    state: Arc<Mutex<KeyboardState>>,
-    events: UnboundedSender<KeyboardSignal>,
-) {
+async fn watch_locks(first: Option<evdev::EventStream>, state: Arc<Mutex<KeyboardState>>, events: UnboundedSender<()>) {
     let mut stream = first;
     let mut watch = build_input_watch()
         .inspect_err(|err| {
@@ -312,7 +303,7 @@ async fn watch_locks(
         for _event in guard.get_inner().iter() {}
         guard.clear_ready();
         stream = open_led_stream(&state);
-        if stream.is_some() && events.send(KeyboardSignal::Changed).is_err() {
+        if stream.is_some() && events.send(()).is_err() {
             return;
         }
     }

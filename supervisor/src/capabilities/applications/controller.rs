@@ -7,6 +7,8 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use tokio::sync::mpsc::UnboundedSender;
+
+use crate::capabilities::publish;
 use tokio::task::JoinHandle;
 
 use super::scan::{AppSummary, LaunchTarget, scan};
@@ -22,11 +24,6 @@ pub struct ApplicationsState {
     /// Window `app_id` to its 1-based index: `entries[by_app_id[app_id]]`. Keys are exact
     /// `StartupWMClass` and desktop ids, then lowercased and last-dot-segment guesses.
     pub by_app_id: BTreeMap<String, usize>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ApplicationsSignal {
-    Changed,
 }
 
 /// A URL `open_url` refuses to hand to the desktop opener, with the reason (ADR-0103).
@@ -112,7 +109,7 @@ impl ApplicationsController {
     /// The scan stays off `main`'s startup path: reading a few hundred `.desktop` files from a
     /// cold page cache costs real milliseconds before the first surface. Lua reads `nil` until it
     /// lands, as every capability does (`shared::Capability::ALL`), so no extra branch is needed.
-    pub fn new(dirs: Vec<PathBuf>, events: UnboundedSender<ApplicationsSignal>) -> Self {
+    pub fn new(dirs: Vec<PathBuf>, events: UnboundedSender<()>) -> Self {
         let state = Arc::new(Mutex::new(ApplicationsState::default()));
         let launch_targets = Arc::new(Mutex::new(HashMap::new()));
         let dirs = Arc::new(dirs);
@@ -122,13 +119,7 @@ impl ApplicationsController {
                 let result = scan(&dirs);
                 let next = ApplicationsState { entries: result.entries, by_app_id: result.by_app_id };
                 *launch_targets.lock().expect("applications launch map mutex poisoned") = result.launch;
-                let mut current = state.lock().expect("applications state mutex poisoned");
-                if *current == next {
-                    return;
-                }
-                *current = next;
-                drop(current);
-                let _ = events.send(ApplicationsSignal::Changed);
+                publish(&state, &events, next);
             })
         };
         let watch = tokio::spawn(watch::run(dirs, Arc::clone(&rescan)));
@@ -192,6 +183,7 @@ impl ApplicationsController {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::capabilities::test_support::within;
 
     #[test]
     fn a_web_or_mail_url_is_openable_whatever_the_schemes_case() {
@@ -237,10 +229,7 @@ mod tests {
         }
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
         let controller = ApplicationsController::new(vec![dir.path().to_path_buf()], tx);
-        tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv())
-            .await
-            .expect("the opening scan must signal")
-            .unwrap();
+        within(rx.recv()).await.unwrap();
         (controller, dir)
     }
 
@@ -331,10 +320,7 @@ mod tests {
         std::fs::write(dir.path().join("a.desktop"), runnable("A", "/bin/true")).unwrap();
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
         let controller = ApplicationsController::new(vec![dir.path().to_path_buf()], tx);
-        tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv())
-            .await
-            .expect("the opening scan signals")
-            .unwrap();
+        within(rx.recv()).await.unwrap();
 
         controller.refresh();
 
@@ -348,34 +334,27 @@ mod tests {
         std::fs::write(dir.path().join("a.desktop"), runnable("A", "/bin/true")).unwrap();
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
         let controller = ApplicationsController::new(vec![dir.path().to_path_buf()], tx);
-        tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv())
-            .await
-            .expect("the opening scan signals")
-            .unwrap();
+        within(rx.recv()).await.unwrap();
 
         std::fs::write(dir.path().join("b.desktop"), runnable("B", "/bin/true")).unwrap();
         controller.refresh();
 
-        tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv())
-            .await
-            .expect("a changed scan must push")
-            .unwrap();
+        within(rx.recv()).await.unwrap();
         assert_eq!(controller.snapshot().entries.len(), 2);
     }
 
     /// Waits for the watch's rescan to push `name`; the inotify round trip has no completion to await.
     async fn wait_for_entry(
         controller: &ApplicationsController,
-        rx: &mut tokio::sync::mpsc::UnboundedReceiver<ApplicationsSignal>,
+        rx: &mut tokio::sync::mpsc::UnboundedReceiver<()>,
         name: &str,
     ) {
-        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        within(async {
             while !controller.snapshot().entries.iter().any(|entry| entry.name == name) {
                 rx.recv().await.unwrap();
             }
         })
-        .await
-        .unwrap_or_else(|_| panic!("the watch never rescanned {name}"));
+        .await;
     }
 
     #[tokio::test]

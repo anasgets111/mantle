@@ -7,6 +7,8 @@ use futures_util::StreamExt;
 use inotify::{Inotify, WatchMask};
 use shared::{debug, warn};
 use tokio::sync::mpsc::UnboundedSender;
+
+use crate::capabilities::publish;
 use tokio::sync::watch;
 
 use crate::capabilities::audio::mixer::{CaptureApp, PrivacySources, VideoSourceApp};
@@ -34,11 +36,6 @@ pub struct PrivacyState {
     /// Apps with a running PipeWire screen-capture stream, one per name (ADR-0137).
     /// wlr-screencopy tools such as `wf-recorder` and `grim` never appear.
     pub screencast_users: Vec<PrivacyUser>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PrivacySignal {
-    Changed,
 }
 
 /// Names scanned opener pids against the latest PipeWire `Video/Source` snapshot. A matching
@@ -100,7 +97,7 @@ impl PrivacyController {
         proc_root: PathBuf,
         video4linux_root: &Path,
         sources: watch::Receiver<PrivacySources>,
-        events: UnboundedSender<PrivacySignal>,
+        events: UnboundedSender<()>,
     ) -> Self {
         let state = Arc::new(Mutex::new(PrivacyState::default()));
         let devices = super::video::enumerate_video_devices(video4linux_root);
@@ -125,7 +122,7 @@ async fn run_privacy_task(
     devices: Vec<PathBuf>,
     state: Arc<Mutex<PrivacyState>>,
     mut sources: watch::Receiver<PrivacySources>,
-    events: UnboundedSender<PrivacySignal>,
+    events: UnboundedSender<()>,
 ) {
     let mut inotify_stream = watch_video_devices(&devices);
     // Whatever the mixer last published, not an empty seed: this capability starts on first config
@@ -134,8 +131,8 @@ async fn run_privacy_task(
 
     // Scan once: a camera may already be open at startup. The other lists await PipeWire.
     let mut opener_pids = find_device_openers(&proc_root, &devices);
-    publish(&proc_root, &state, &opener_pids, &pipewire);
-    if events.send(PrivacySignal::Changed).is_err() {
+    *state.lock().expect("mutex poisoned") = rebuild(&proc_root, &opener_pids, &pipewire);
+    if events.send(()).is_err() {
         return;
     }
 
@@ -174,24 +171,20 @@ async fn run_privacy_task(
                 pipewire = sources.borrow_and_update().clone();
             }
         }
-        if publish(&proc_root, &state, &opener_pids, &pipewire) && events.send(PrivacySignal::Changed).is_err() {
+        if !publish(&state, &events, rebuild(&proc_root, &opener_pids, &pipewire)) {
             break;
         }
     }
 }
 
-/// Rebuilds all three lists every time and returns whether `state` changed. The PipeWire lists are
-/// cheap walks, and one write prevents a config observing one list a push behind.
-fn publish(proc_root: &Path, state: &Arc<Mutex<PrivacyState>>, opener_pids: &[u32], pipewire: &PrivacySources) -> bool {
-    let next = PrivacyState {
+/// Rebuilds all three lists every time. The PipeWire lists are cheap walks, and one write prevents
+/// a config observing one list a push behind.
+fn rebuild(proc_root: &Path, opener_pids: &[u32], pipewire: &PrivacySources) -> PrivacyState {
+    PrivacyState {
         camera_users: name_camera_users(proc_root, opener_pids, &pipewire.cameras),
         microphone_users: name_capture_users(proc_root, &pipewire.microphones),
         screencast_users: name_capture_users(proc_root, &pipewire.screencasts),
-    };
-    let mut state = state.lock().expect("mutex poisoned");
-    let changed = *state != next;
-    *state = next;
-    changed
+    }
 }
 
 /// Inotify stream for `/dev/videoN`, or `None` when no device exists or setup failed. Failure costs
@@ -246,6 +239,7 @@ async fn next_device_event(stream: &mut Option<DeviceEvents>) -> DeviceEvent {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::capabilities::test_support::within;
 
     fn video_source(pid: i32, app_name: &str) -> VideoSourceApp {
         VideoSourceApp { node_id: 1, pid, app_name: Some(app_name.to_string()) }
@@ -406,10 +400,9 @@ mod tests {
         let controller =
             PrivacyController::new(proc_root.path().to_path_buf(), video4linux_root.path(), sources, events_tx);
 
-        let signal = tokio::time::timeout(std::time::Duration::from_secs(2), events_rx.recv()).await;
         assert_eq!(
-            signal,
-            Ok(Some(PrivacySignal::Changed)),
+            within(events_rx.recv()).await,
+            Some(()),
             "must still announce an empty state when no camera hardware exists"
         );
         assert!(controller.snapshot().camera_users.is_empty());
@@ -424,7 +417,7 @@ mod tests {
         let state = Arc::new(Mutex::new(PrivacyState::default()));
         let devices = vec![device.path().to_path_buf()];
         tokio::spawn(run_privacy_task(proc_root.path().to_path_buf(), devices, Arc::clone(&state), sources, events_tx));
-        assert_eq!(events_rx.recv().await, Some(PrivacySignal::Changed), "the empty seed");
+        assert_eq!(events_rx.recv().await, Some(()), "the empty seed");
 
         drop(privacy_tx);
         tokio::task::yield_now().await;
@@ -433,8 +426,7 @@ mod tests {
         std::os::unix::fs::symlink(device.path(), fd_dir.join("5")).unwrap();
         std::fs::File::open(device.path()).unwrap();
 
-        let signal = tokio::time::timeout(std::time::Duration::from_secs(2), events_rx.recv()).await;
-        assert_eq!(signal, Ok(Some(PrivacySignal::Changed)));
+        assert_eq!(within(events_rx.recv()).await, Some(()));
         assert_eq!(state.lock().unwrap().camera_users, vec![PrivacyUser { app_name: "pid 1234".to_string() }]);
     }
 
@@ -448,7 +440,7 @@ mod tests {
 
         let controller =
             PrivacyController::new(proc_root.path().to_path_buf(), video4linux_root.path(), sources, events_tx);
-        assert_eq!(events_rx.recv().await, Some(PrivacySignal::Changed), "the empty seed");
+        assert_eq!(events_rx.recv().await, Some(()), "the empty seed");
 
         privacy_tx
             .send(PrivacySources {
@@ -457,8 +449,7 @@ mod tests {
             })
             .unwrap();
 
-        let signal = tokio::time::timeout(std::time::Duration::from_secs(2), events_rx.recv()).await;
-        assert_eq!(signal, Ok(Some(PrivacySignal::Changed)));
+        assert_eq!(within(events_rx.recv()).await, Some(()));
         assert_eq!(
             controller.snapshot().microphone_users,
             vec![PrivacyUser { app_name: "Firefox".to_string() }],

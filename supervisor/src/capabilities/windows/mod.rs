@@ -6,7 +6,7 @@
 pub mod controller;
 mod wlr;
 
-pub use controller::{WindowsController, WindowsSignal};
+pub use controller::WindowsController;
 use shared::action::WindowsAction;
 
 /// `mantle.windows` action dispatch (ADR-0037).

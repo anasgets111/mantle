@@ -23,11 +23,6 @@ pub struct MprisState {
     pub players: Vec<PlayerState>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum MprisSignal {
-    Changed,
-}
-
 /// Every command here fails the same one way, and only into a `debug!`. An enum with `Display`
 /// and `Error` impls bought nothing a constant does not: nothing matches on it and nothing returns
 /// it.
@@ -41,13 +36,13 @@ static NEXT_PLAYLIST_REQUEST: AtomicU64 = AtomicU64::new(1);
 #[derive(Clone)]
 pub struct MprisController {
     registry: super::player::PlayerRegistry,
-    events: UnboundedSender<MprisSignal>,
+    events: UnboundedSender<()>,
 }
 
 impl MprisController {
     /// Spawns discovery (`ListNames`, then `NameOwnerChanged`) on the session bus. Returns
     /// immediately; discovery fills the registry in background tasks.
-    pub fn new(connection: zbus::Connection, events: UnboundedSender<MprisSignal>) -> Self {
+    pub fn new(connection: zbus::Connection, events: UnboundedSender<()>) -> Self {
         let registry: super::player::PlayerRegistry = Arc::new(Mutex::new(HashMap::new()));
         tokio::spawn(spawn_discovery(connection, registry.clone(), events.clone()));
         Self { registry, events }
@@ -61,8 +56,8 @@ impl MprisController {
     }
 
     /// Re-derives `mpris.players` from the full registry. Synchronous because forwarders update
-    /// each entry's `last_known` before sending an [`MprisSignal`].
-    pub fn build_state(&self) -> MprisState {
+    /// each entry's `last_known` before waking `main.rs`.
+    pub fn snapshot(&self) -> MprisState {
         MprisState { players: super::player::ordered_players(&self.registry) }
     }
 
@@ -182,7 +177,7 @@ impl MprisController {
                 && entry.last_known.playlists != state
             {
                 entry.last_known.playlists = state;
-                let _ = self.events.send(MprisSignal::Changed);
+                let _ = self.events.send(());
             }
         }
     }

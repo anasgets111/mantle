@@ -3,7 +3,7 @@
 //! [`Capabilities`] owns every controller and channel, so `main.rs` does not grow per capability;
 //! exhaustive start, push, and dispatch matches fail to compile at a missing arm.
 //!
-//! No trait or boxed registry: controllers differ (`build_state`, `snapshot`, async
+//! No trait or boxed registry: controllers differ (`snapshot`, async
 //! `handle_signal`, or a channel), and `main.rs` needs concrete types. ADR-0037 decision 3 chose
 //! static calls.
 //!
@@ -12,6 +12,9 @@
 //! `crate::polkit`, and `shm_icons` beside its two consumers (ADR-0076).
 
 use std::path::Path;
+use std::sync::Mutex;
+
+use tokio::sync::mpsc::UnboundedSender;
 
 pub use lifecycle::Capabilities;
 pub use signals::Signal;
@@ -20,6 +23,14 @@ pub use signals::Signal;
 /// (ADR-0070 amendment).
 pub async fn with_call_timeout(builder: zbus::Result<zbus::connection::Builder<'_>>) -> zbus::Result<zbus::Connection> {
     builder?.method_timeout(std::time::Duration::from_secs(25)).build().await
+}
+
+/// The session bus, or `None` after one error line saying what `what` stays off this run.
+async fn session_bus(what: &str) -> Option<zbus::Connection> {
+    with_call_timeout(zbus::connection::Builder::session())
+        .await
+        .inspect_err(|err| shared::error!("failed to connect to the session bus; {what} for this run: {err}"))
+        .ok()
 }
 
 pub mod applications;
@@ -57,6 +68,24 @@ pub mod workspaces;
 /// Reads and trims a sysfs attribute under `entry_dir`; missing or unreadable means absent.
 pub fn read_attr(entry_dir: &Path, name: &str) -> Option<String> {
     std::fs::read_to_string(entry_dir.join(name)).ok().map(|text| text.trim().to_string())
+}
+
+/// [`read_attr`] parsed as `T`; absent and unparsable both mean `None`.
+pub fn read_parsed<T: std::str::FromStr>(entry_dir: &Path, name: &str) -> Option<T> {
+    read_attr(entry_dir, name)?.parse().ok()
+}
+
+/// Stores `next` and wakes `main.rs` when it differs from `state`; `false` once the receiver is
+/// gone, so a reader loop can stop. The lock drops before the send: the receiver hydrates a
+/// snapshot and must never wait on a task's mutex to do it.
+pub(super) fn publish<S: PartialEq>(state: &Mutex<S>, events: &UnboundedSender<()>, next: S) -> bool {
+    let mut current = state.lock().expect("capability state mutex poisoned");
+    if *current == next {
+        return true;
+    }
+    *current = next;
+    drop(current);
+    events.send(()).is_ok()
 }
 
 /// Truncates to `max_bytes`, backing off to a UTF-8 boundary (bytes, not chars).

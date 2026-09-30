@@ -112,10 +112,11 @@ pub(crate) async fn private_bus() -> PrivateBus {
     PrivateBus { address: address.trim().to_string(), _daemon: daemon, _dir: dir }
 }
 
-/// Awaits `future` for two seconds, for a bus event that must arrive; a missing one fails the test
-/// instead of wedging it.
+/// Awaits `future` for five seconds, for an event that must arrive; a missing one fails the test
+/// instead of wedging it. Five, not two: a cold-cache scan or an inotify round trip under a loaded
+/// `cargo test` needs it, and a passing test never waits it out.
 pub(crate) async fn within<T>(future: impl std::future::Future<Output = T>) -> T {
-    tokio::time::timeout(std::time::Duration::from_secs(2), future).await.expect("no bus event within two seconds")
+    tokio::time::timeout(std::time::Duration::from_secs(5), future).await.expect("nothing arrived within five seconds")
 }
 
 #[cfg(test)]

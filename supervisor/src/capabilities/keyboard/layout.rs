@@ -12,7 +12,7 @@ use tokio::sync::mpsc::UnboundedSender;
 
 use crate::compositor::{hyprland_command, hyprland_request, hyprland_socket_path, niri_action};
 
-use super::controller::{KeyboardSignal, KeyboardState};
+use super::controller::KeyboardState;
 
 /// `switch_layout` is synchronous fire-and-forget; state returns through the compositor reader. It
 /// is not `async fn` to preserve `Box<dyn CompositorLink>` object safety.
@@ -25,7 +25,7 @@ pub trait CompositorLink: Send + Sync {
 #[derive(Clone, Default)]
 pub struct LayoutSink {
     pub state: Arc<Mutex<KeyboardState>>,
-    pub events: Arc<OnceLock<UnboundedSender<KeyboardSignal>>>,
+    pub events: Arc<OnceLock<UnboundedSender<()>>>,
 }
 
 impl LayoutSink {
@@ -37,7 +37,7 @@ impl LayoutSink {
             guard.layout_count = layout_count;
         }
         if let Some(events) = self.events.get() {
-            let _ = events.send(KeyboardSignal::Changed);
+            let _ = events.send(());
         }
     }
 
@@ -212,7 +212,7 @@ mod tests {
 
         let guard = sink.state.lock().unwrap();
         assert_eq!((guard.active_layout.as_str(), guard.active_layout_index, guard.layout_count), ("Arabic", 1, 2));
-        assert_eq!(signals.try_recv(), Ok(KeyboardSignal::Changed));
+        assert_eq!(signals.try_recv(), Ok(()));
         assert!(signals.try_recv().is_err(), "the write before `keyboard` started sent nothing");
     }
 

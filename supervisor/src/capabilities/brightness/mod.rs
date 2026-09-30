@@ -2,13 +2,13 @@
 //! watch, and writes through logind (ADR-0053). Its write action is `brightness:set(pct)`, unlike
 //! read-only `battery`.
 //!
-//! No device means no [`controller::BrightnessSignal::Changed`], not a placeholder: `brightness`
+//! No device means no wake-up, not a placeholder: `brightness`
 //! has no absence sentinel, and `0` means "backlight is off", not "no hardware". Lua therefore
 //! keeps `mantle.brightness` `nil` forever (ADR-0037's nil-until-hydrated contract).
 
 pub mod controller;
 
-pub use controller::{BrightnessController, BrightnessSignal};
+pub use controller::BrightnessController;
 use shared::action::BrightnessAction;
 
 /// `set` makes a logind D-Bus call, so dispatch spawns it (ADR-0037, ADR-0029).

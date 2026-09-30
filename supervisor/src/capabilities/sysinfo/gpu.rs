@@ -2,6 +2,8 @@
 
 use std::path::Path;
 
+use super::super::{read_attr, read_parsed};
+
 /// Telemetry metrics for the first detected GPU device.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[cfg_attr(test, derive(schemars::JsonSchema))]
@@ -87,13 +89,11 @@ pub fn parse_nvidia_smi(csv_text: &str) -> Option<GpuTelemetry> {
 
 /// Reads AMD GPU metrics from DRM sysfs paths when available.
 pub fn read_amd_sysfs(drm_device: &Path) -> Option<GpuTelemetry> {
-    let busy_str = std::fs::read_to_string(drm_device.join("gpu_busy_percent")).ok()?;
-    let util_percent = busy_str.trim().parse::<u8>().ok().map(|u| u.min(100));
+    let busy = read_attr(drm_device, "gpu_busy_percent")?;
+    let util_percent = busy.parse::<u8>().ok().map(|u| u.min(100));
 
-    let mem_used =
-        std::fs::read_to_string(drm_device.join("mem_info_vram_used")).ok().and_then(|s| s.trim().parse::<u64>().ok());
-    let mem_total =
-        std::fs::read_to_string(drm_device.join("mem_info_vram_total")).ok().and_then(|s| s.trim().parse::<u64>().ok());
+    let mem_used = read_parsed(drm_device, "mem_info_vram_used");
+    let mem_total = read_parsed(drm_device, "mem_info_vram_total");
 
     Some(GpuTelemetry { name: "AMD GPU".to_string(), util_percent, temp: None, mem_used, mem_total })
 }

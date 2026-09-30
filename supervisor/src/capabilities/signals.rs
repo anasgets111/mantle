@@ -1,28 +1,12 @@
 use shared::Capability;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 
-use super::applications::ApplicationsSignal;
 use super::audio::mixer::AudioState;
-use super::battery::BatterySignal;
 use super::bluetooth::BluetoothState;
-use super::brightness::BrightnessSignal;
-use super::files::FilesSignal;
 use super::idle::IdleState;
 use super::keyboard::KeyboardState;
-use super::mpris::MprisSignal;
 use super::network::NetworkState;
-use super::notifications::NotificationsSignal;
-use super::power::PowerSignal;
-use super::privacy::PrivacySignal;
-use super::processes::ProcessesSignal;
 use super::secrets::SecretsState;
-use super::storage::StorageSignal;
-use super::sysinfo::SysinfoSignal;
-use super::system::SystemSignal;
-use super::tray::TraySignal;
-use super::updates::UpdatesSignal;
-use super::windows::WindowsSignal;
-use super::workspaces::WorkspacesSignal;
 
 /// A received signal waiting for [`Capabilities::push`](super::Capabilities::push).
 /// [`Signals::next`] only awaits `recv()`, so losing the `tokio::select!` race drops no signal.
@@ -136,26 +120,24 @@ capability_channels! {
         // Workers send finished state (see `spawn_worker`).
         Network => network: NetworkState, Some(state) => Signal::Network(state);
         Bluetooth => bluetooth: BluetoothState, Some(state) => Signal::Bluetooth(state);
-        // Other `Changed` signals collapse to unit `Signal` variants.
-        Tray => tray: TraySignal, Some(TraySignal::RegistryChanged) => Signal::Tray;
-        Mpris => mpris: MprisSignal, Some(MprisSignal::Changed) => Signal::Mpris;
-        Notifications => notifications: NotificationsSignal,
-            Some(NotificationsSignal::Changed) => Signal::Notifications;
-        Sysinfo => sysinfo: SysinfoSignal, Some(SysinfoSignal::Changed) => Signal::Sysinfo;
+        // Unit channels only wake a push: each push reads current state.
+        Tray => tray: (), Some(()) => Signal::Tray;
+        Mpris => mpris: (), Some(()) => Signal::Mpris;
+        Notifications => notifications: (), Some(()) => Signal::Notifications;
+        Sysinfo => sysinfo: (), Some(()) => Signal::Sysinfo;
         Keyboard => keyboard: KeyboardState, Some(state) => Signal::Keyboard(state);
-        Privacy => privacy: PrivacySignal, Some(PrivacySignal::Changed) => Signal::Privacy;
-        Updates => updates: UpdatesSignal, Some(UpdatesSignal::Changed) => Signal::Updates;
-        Battery => battery: BatterySignal, Some(BatterySignal::Changed) => Signal::Battery;
-        System => system: SystemSignal, Some(SystemSignal::Changed) => Signal::System;
-        Brightness => brightness: BrightnessSignal, Some(BrightnessSignal::Changed) => Signal::Brightness;
-        Workspaces => workspaces: WorkspacesSignal, Some(WorkspacesSignal::Changed) => Signal::Workspaces;
-        Windows => windows: WindowsSignal, Some(WindowsSignal::Changed) => Signal::Windows;
-        Power => power: PowerSignal, Some(PowerSignal::Changed) => Signal::Power;
-        Applications => applications: ApplicationsSignal,
-            Some(ApplicationsSignal::Changed) => Signal::Applications;
-        Files => files: FilesSignal, Some(FilesSignal::Changed) => Signal::Files;
-        Storage => storage: StorageSignal, Some(StorageSignal::Changed) => Signal::Storage;
-        Processes => processes: ProcessesSignal, Some(ProcessesSignal::Changed) => Signal::Processes;
+        Privacy => privacy: (), Some(()) => Signal::Privacy;
+        Updates => updates: (), Some(()) => Signal::Updates;
+        Battery => battery: (), Some(()) => Signal::Battery;
+        System => system: (), Some(()) => Signal::System;
+        Brightness => brightness: (), Some(()) => Signal::Brightness;
+        Workspaces => workspaces: (), Some(()) => Signal::Workspaces;
+        Windows => windows: (), Some(()) => Signal::Windows;
+        Power => power: (), Some(()) => Signal::Power;
+        Applications => applications: (), Some(()) => Signal::Applications;
+        Files => files: (), Some(()) => Signal::Files;
+        Storage => storage: (), Some(()) => Signal::Storage;
+        Processes => processes: (), Some(()) => Signal::Processes;
             // `idle/controller.rs`'s inhibitor watch owns and sends state, like `Audio` (ADR-0141).
         Idle => idle: IdleState, Some(state) => Signal::Idle(state);
         Secrets => secrets: SecretsState, Some(state) => Signal::Secrets(state);
@@ -173,7 +155,7 @@ mod tests {
     async fn a_burst_on_one_channel_is_one_signal_carrying_the_newest_state() {
         let (senders, mut signals) = Senders::channels();
         for n in 1..=3 {
-            senders.updates.send(UpdatesSignal::Changed).unwrap();
+            senders.updates.send(()).unwrap();
             senders.keyboard.send(KeyboardState { backlight_pct: n, ..KeyboardState::default() }).unwrap();
         }
         let mut seen = vec![signals.next().await.unwrap(), signals.next().await.unwrap()];

@@ -48,11 +48,6 @@ pub struct FileEntry {
     pub modified: i64,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum FilesSignal {
-    Changed,
-}
-
 /// A folder's listing task and filter. `unwatch` aborts the task; repeating the same filter is a
 /// no-op.
 struct Watch {
@@ -63,12 +58,12 @@ struct Watch {
 pub struct FilesController {
     state: Arc<Mutex<FilesState>>,
     watches: Arc<Mutex<HashMap<String, Watch>>>,
-    events: UnboundedSender<FilesSignal>,
+    events: UnboundedSender<()>,
 }
 
 impl FilesController {
     /// Builds with nothing watched. A config names folders on demand, so there is no startup scan.
-    pub fn new(events: UnboundedSender<FilesSignal>) -> Self {
+    pub fn new(events: UnboundedSender<()>) -> Self {
         FilesController {
             state: Arc::new(Mutex::new(FilesState::default())),
             watches: Arc::new(Mutex::new(HashMap::new())),
@@ -89,7 +84,7 @@ impl FilesController {
             let mut watches = self.watches.lock().expect("files watches mutex poisoned");
             if let Some(existing) = watches.get(&key) {
                 if existing.extensions == extensions {
-                    let _ = self.events.send(FilesSignal::Changed);
+                    let _ = self.events.send(());
                     return;
                 }
                 existing.task.abort();
@@ -108,7 +103,7 @@ impl FilesController {
             ));
             watches.insert(key, Watch { task, extensions });
         }
-        let _ = self.events.send(FilesSignal::Changed);
+        let _ = self.events.send(());
     }
 
     /// Drops every watch, for a generation that is gone: nothing else does, and its replacement
@@ -122,7 +117,7 @@ impl FilesController {
             watch.task.abort();
         }
         self.state.lock().expect("files state mutex poisoned").folders.clear();
-        let _ = self.events.send(FilesSignal::Changed);
+        let _ = self.events.send(());
     }
 
     /// Stops following `path` and removes it from the payload; an unwatched path is a no-op.
@@ -132,7 +127,7 @@ impl FilesController {
         let Some(watch) = removed else { return };
         watch.task.abort();
         self.state.lock().expect("files state mutex poisoned").folders.remove(&key);
-        let _ = self.events.send(FilesSignal::Changed);
+        let _ = self.events.send(());
     }
 }
 
@@ -183,13 +178,7 @@ pub fn list_folder(dir: &Path, extensions: &[String]) -> std::io::Result<Vec<Fil
     Ok(entries)
 }
 
-async fn relist(
-    dir: &Path,
-    key: &str,
-    extensions: &[String],
-    state: &Mutex<FilesState>,
-    events: &UnboundedSender<FilesSignal>,
-) {
+async fn relist(dir: &Path, key: &str, extensions: &[String], state: &Mutex<FilesState>, events: &UnboundedSender<()>) {
     let dir = dir.to_path_buf();
     let extensions = extensions.to_vec();
     let listed = tokio::task::spawn_blocking(move || list_folder(&dir, &extensions)).await;
@@ -211,7 +200,7 @@ async fn relist(
         }
     };
     if changed {
-        let _ = events.send(FilesSignal::Changed);
+        let _ = events.send(());
     }
 }
 
@@ -235,7 +224,7 @@ async fn follow_folder(
     key: String,
     extensions: Vec<String>,
     state: Arc<Mutex<FilesState>>,
-    events: UnboundedSender<FilesSignal>,
+    events: UnboundedSender<()>,
 ) {
     relist(&dir, &key, &extensions, &state, &events).await;
 

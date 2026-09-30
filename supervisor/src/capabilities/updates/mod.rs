@@ -11,7 +11,7 @@ pub mod dnf;
 pub mod pacman;
 pub mod reboot;
 
-pub use controller::{UpdatesController, UpdatesSignal};
+pub use controller::UpdatesController;
 use shared::action::UpdatesAction;
 
 /// `mantle.updates` dispatch (ADR-0037): `check`/`configure` send scheduler requests synchronously

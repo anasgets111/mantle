@@ -14,7 +14,6 @@ use zbus::zvariant::OwnedObjectPath;
 
 use crate::capabilities::shm_icons;
 
-use super::TraySignal;
 use super::icon::{SPOOL_SUBDIR, icon_filename_stem};
 use super::item::{TrayItem, fetch_tray_item_base};
 use super::menu::{MenuItem, fetch_menu_via};
@@ -53,7 +52,7 @@ pub(super) type ItemRegistry = Arc<Mutex<HashMap<ItemKey, ItemEntry>>>;
 pub(super) async fn register_item(
     connection: &zbus::Connection,
     registry: &ItemRegistry,
-    events: &UnboundedSender<TraySignal>,
+    events: &UnboundedSender<()>,
     resolved: ResolvedRegistration,
 ) -> Result<(), String> {
     let ResolvedRegistration { unique_name, destination, object_path } = resolved;
@@ -129,7 +128,7 @@ pub(super) async fn register_item(
             handle.abort();
         }
     }
-    let _ = events.send(TraySignal::RegistryChanged);
+    let _ = events.send(());
     Ok(())
 }
 
@@ -173,7 +172,7 @@ fn spawn_item_signal_forwarder(
     unique_name: OwnedUniqueName,
     key: ItemKey,
     registry: ItemRegistry,
-    events: UnboundedSender<TraySignal>,
+    events: UnboundedSender<()>,
 ) -> JoinHandle<()> {
     tokio::spawn(async move {
         let Ok(mut new_title) = item.receive_new_title().await else { return };
@@ -211,7 +210,7 @@ fn spawn_item_signal_forwarder(
                         let mut guard = registry.lock().expect("mutex poisoned");
                         let changed = guard.get_mut(&key).is_some_and(|entry| store_menu(entry, items));
                         drop(guard);
-                        if changed && events.send(TraySignal::RegistryChanged).is_err() {
+                        if changed && events.send(()).is_err() {
                             break;
                         }
                     }
@@ -229,7 +228,7 @@ fn spawn_item_signal_forwarder(
                     let changed = keep_menu_across(entry, refreshed);
                     drop(guard);
 
-                    if changed && events.send(TraySignal::RegistryChanged).is_err() {
+                    if changed && events.send(()).is_err() {
                         break;
                     }
                 }
@@ -253,7 +252,7 @@ fn spawn_menu_signal_forwarder(
     menu: DBusMenuProxy<'static>,
     key: ItemKey,
     registry: ItemRegistry,
-    events: UnboundedSender<TraySignal>,
+    events: UnboundedSender<()>,
 ) -> JoinHandle<()> {
     tokio::spawn(async move {
         let Ok(mut layout_updated) = menu.receive_layout_updated().await else { return };
@@ -274,7 +273,7 @@ fn spawn_menu_signal_forwarder(
                     let Some(entry) = guard.get_mut(&key) else { break };
                     let changed = store_menu(entry, items);
                     drop(guard);
-                    if changed && events.send(TraySignal::RegistryChanged).is_err() {
+                    if changed && events.send(()).is_err() {
                         break;
                     }
                 }
@@ -292,7 +291,7 @@ pub(super) fn spawn_name_owner_changed_forwarder(
     connection: zbus::Connection,
     dbus_proxy: zbus::fdo::DBusProxy<'static>,
     registry: ItemRegistry,
-    events: UnboundedSender<TraySignal>,
+    events: UnboundedSender<()>,
 ) -> JoinHandle<()> {
     tokio::spawn(async move {
         let Ok(mut stream) = dbus_proxy.receive_name_owner_changed_with_args(&[(2, "")]).await else { return };
@@ -332,7 +331,7 @@ pub(super) fn spawn_name_owner_changed_forwarder(
                     shm_icons::remove_png(SPOOL_SUBDIR, path);
                 }
             }
-            if events.send(TraySignal::RegistryChanged).is_err() {
+            if events.send(()).is_err() {
                 break;
             }
             // Emitted last, and never between the cleanup steps: a stalled D-Bus write would

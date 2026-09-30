@@ -7,6 +7,8 @@ use serde::Serialize;
 use shared::debug;
 use tokio::sync::mpsc::UnboundedSender;
 
+use crate::capabilities::publish;
+
 use crate::capabilities::workspaces::{hyprland, niri};
 use crate::compositor::{CompositorKind, unsupported_session_report};
 
@@ -54,21 +56,15 @@ pub struct WindowEntry {
     pub maximized: Option<bool>,
 }
 
-/// Shared signal, `Changed` only.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum WindowsSignal {
-    Changed,
-}
-
 /// Reduces, drops equal updates, stores, and wakes `main.rs`.
 pub struct StatePublisher {
     state: Arc<Mutex<WindowsState>>,
-    events: UnboundedSender<WindowsSignal>,
+    events: UnboundedSender<()>,
     source: &'static str,
 }
 
 impl StatePublisher {
-    pub fn new(state: Arc<Mutex<WindowsState>>, events: UnboundedSender<WindowsSignal>, source: &'static str) -> Self {
+    pub fn new(state: Arc<Mutex<WindowsState>>, events: UnboundedSender<()>, source: &'static str) -> Self {
         Self { state, events, source }
     }
 
@@ -76,13 +72,7 @@ impl StatePublisher {
     pub fn publish(&mut self, mut windows: Vec<WindowEntry>) -> bool {
         windows.sort_by_key(|window| window.workspace_id.unwrap_or(u64::MAX));
         let current = WindowsState { source: self.source.to_string(), windows };
-        let mut state = self.state.lock().expect("windows state mutex poisoned");
-        if *state == current {
-            return true;
-        }
-        *state = current;
-        drop(state);
-        self.events.send(WindowsSignal::Changed).is_ok()
+        publish(&self.state, &self.events, current)
     }
 }
 
@@ -109,7 +99,7 @@ impl WindowsController {
     pub async fn new(
         state: Arc<Mutex<WindowsState>>,
         compositor: Option<CompositorKind>,
-        events: UnboundedSender<WindowsSignal>,
+        events: UnboundedSender<()>,
     ) -> Self {
         let controller = match compositor {
             Some(kind) => Self { state, backend: Backend::Ipc(kind) },
@@ -122,7 +112,7 @@ impl WindowsController {
             },
         };
         if controller.snapshot() != WindowsState::default() {
-            let _ = events.send(WindowsSignal::Changed);
+            let _ = events.send(());
         }
         controller
     }
@@ -234,7 +224,7 @@ mod tests {
         }
     }
 
-    fn publisher() -> (StatePublisher, tokio::sync::mpsc::UnboundedReceiver<WindowsSignal>) {
+    fn publisher() -> (StatePublisher, tokio::sync::mpsc::UnboundedReceiver<()>) {
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
         (StatePublisher::new(Arc::new(Mutex::new(WindowsState::default())), tx, "niri"), rx)
     }
@@ -290,7 +280,7 @@ mod tests {
 
         let _controller = WindowsController::new(state, Some(CompositorKind::Niri), tx).await;
 
-        assert!(matches!(rx.try_recv(), Ok(WindowsSignal::Changed)));
+        assert!(matches!(rx.try_recv(), Ok(())));
     }
 
     #[tokio::test]

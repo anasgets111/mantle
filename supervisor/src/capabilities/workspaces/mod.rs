@@ -16,7 +16,7 @@ pub mod controller;
 pub mod hyprland;
 pub mod niri;
 
-pub use controller::{WorkspacesController, WorkspacesSignal};
+pub use controller::WorkspacesController;
 use shared::action::WorkspacesAction;
 
 /// `mantle.workspaces` action dispatch (ADR-0037): each action writes over a fresh compositor

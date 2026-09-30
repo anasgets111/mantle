@@ -14,7 +14,7 @@ mod watch;
 
 use shared::warn;
 
-pub use controller::{ApplicationsController, ApplicationsSignal, LaunchError, OpenUrlError};
+pub use controller::{ApplicationsController, LaunchError, OpenUrlError};
 pub use scan::application_dirs;
 use shared::action::ApplicationsAction;
 

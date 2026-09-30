@@ -6,7 +6,7 @@
 
 pub mod controller;
 
-pub use controller::{StorageController, StorageSignal};
+pub use controller::StorageController;
 use shared::action::StorageAction;
 
 /// `mantle.storage` action dispatch (ADR-0037). Synchronous: actions touch memory and schedule the

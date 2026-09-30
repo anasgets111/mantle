@@ -17,14 +17,12 @@ use super::registry::{
     ItemEntry, ItemKey, ItemRegistry, ordered_items, register_item, spawn_name_owner_changed_forwarder, store_menu,
 };
 use super::watcher::StatusNotifierWatcher;
-use super::{
-    DEFAULT_ITEM_OBJECT_PATH, TraySignal, TrayState, WATCHER_BUS_NAME, WATCHER_OBJECT_PATH, unix_timestamp_u32,
-};
+use super::{DEFAULT_ITEM_OBJECT_PATH, TrayState, WATCHER_BUS_NAME, WATCHER_OBJECT_PATH, unix_timestamp_u32};
 
 #[derive(Clone)]
 pub struct TrayController {
     registry: ItemRegistry,
-    events: UnboundedSender<TraySignal>,
+    events: UnboundedSender<()>,
 }
 
 impl TrayController {
@@ -34,7 +32,7 @@ impl TrayController {
     ///
     /// Exports [`WATCHER_OBJECT_PATH`] before claiming the name, so a call routed to the new owner
     /// finds the object. Awaits no app (ADR-0031 amendment).
-    pub async fn new(connection: zbus::Connection, events: UnboundedSender<TraySignal>) -> Self {
+    pub async fn new(connection: zbus::Connection, events: UnboundedSender<()>) -> Self {
         let registry: ItemRegistry = Arc::new(Mutex::new(HashMap::new()));
         let host_registered = Arc::new(Mutex::new(false));
         let watcher = StatusNotifierWatcher {
@@ -87,13 +85,13 @@ impl TrayController {
 
     /// Empty registry, no forwarders, and nothing exported. Used when the tray session-bus
     /// connection cannot be established; actions behave like a live controller with no items.
-    pub fn inert(events: UnboundedSender<TraySignal>) -> Self {
+    pub fn inert(events: UnboundedSender<()>) -> Self {
         Self { registry: Arc::new(Mutex::new(HashMap::new())), events }
     }
 
     /// Re-derives `tray.items` from the registry. Synchronous because forwarders update
-    /// `last_known` before sending [`TraySignal`].
-    pub fn build_state(&self) -> TrayState {
+    /// `last_known` before waking `main.rs`.
+    pub fn snapshot(&self) -> TrayState {
         TrayState { items: ordered_items(&self.registry) }
     }
 
@@ -188,7 +186,7 @@ impl TrayController {
                 let changed = guard.get_mut(&key).is_some_and(|entry| store_menu(entry, items));
                 drop(guard);
                 if changed {
-                    let _ = self.events.send(TraySignal::RegistryChanged);
+                    let _ = self.events.send(());
                 }
             }
             Err(err) => debug!("menu_will_show({id:?}, {submenu_id}) GetLayout failed: {err}"),
@@ -234,7 +232,7 @@ async fn adopt_existing_items(
     connection: &zbus::Connection,
     dbus_proxy: &zbus::fdo::DBusProxy<'_>,
     registry: &ItemRegistry,
-    events: &UnboundedSender<TraySignal>,
+    events: &UnboundedSender<()>,
 ) {
     let names = match dbus_proxy.list_names().await {
         Ok(names) => names,

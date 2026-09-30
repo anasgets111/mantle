@@ -40,7 +40,7 @@ pub type Handle = Arc<Wlr>;
 /// Establishes the dedicated connection, binds `zwlr_foreign_toplevel_manager_v1` if advertised,
 /// and spawns its dispatch thread. `None` when the global is absent (this compositor has no
 /// implementor here) or the connection fails.
-pub async fn connect(events: UnboundedSender<super::WindowsSignal>, state: Arc<Mutex<WindowsState>>) -> Option<Handle> {
+pub async fn connect(events: UnboundedSender<()>, state: Arc<Mutex<WindowsState>>) -> Option<Handle> {
     match tokio::time::timeout(WLR_SETUP_TIMEOUT, tokio::task::spawn_blocking(move || connect_blocking(events, state)))
         .await
     {
@@ -210,7 +210,7 @@ impl Dispatch<ZwlrForeignToplevelHandleV1, ()> for ThreadState {
     }
 }
 
-fn connect_blocking(events: UnboundedSender<super::WindowsSignal>, state: Arc<Mutex<WindowsState>>) -> Option<Handle> {
+fn connect_blocking(events: UnboundedSender<()>, state: Arc<Mutex<WindowsState>>) -> Option<Handle> {
     let connection = Connection::connect_to_env().ok()?;
     let (globals, mut event_queue) = registry_queue_init::<ThreadState>(&connection).ok()?;
     let qh = event_queue.handle();

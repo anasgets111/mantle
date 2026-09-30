@@ -9,8 +9,8 @@ use tokio::io::unix::AsyncFd;
 use tokio::sync::mpsc::UnboundedSender;
 use udev::MonitorSocket;
 
-use super::super::read_attr;
 use super::super::scale::{percent_from_raw, raw_from_percent};
+use super::super::{publish, read_attr};
 
 /// `mantle.brightness`'s payload; the capability stays `nil` on a machine with no backlight.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize)]
@@ -18,11 +18,6 @@ use super::super::scale::{percent_from_raw, raw_from_percent};
 pub struct BrightnessState {
     /// Screen backlight, `0` to `100`: the last requested level (sysfs `brightness`), not the mid-fade one.
     pub percent: u8,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum BrightnessSignal {
-    Changed,
 }
 
 /// Device preference from `Documentation/ABI/stable/sysfs-class-backlight`: firmware (0) <
@@ -101,11 +96,7 @@ impl BrightnessController {
     /// the Supervisor's existing connection used by [`Login1SessionProxy`]. No usable device
     /// leaves `device` as `None`, skips the read task, and emits no signal (see
     /// `brightness/mod.rs`).
-    pub fn new(
-        backlight_root: PathBuf,
-        system_bus: zbus::Connection,
-        events: UnboundedSender<BrightnessSignal>,
-    ) -> Self {
+    pub fn new(backlight_root: PathBuf, system_bus: zbus::Connection, events: UnboundedSender<()>) -> Self {
         let state = Arc::new(Mutex::new(BrightnessState::default()));
         let selected = select_backlight_device(&backlight_root);
         let device = selected.map(|(dir, max)| {
@@ -157,19 +148,19 @@ async fn run_brightness_task(
     device_dir: PathBuf,
     max: i32,
     state: Arc<Mutex<BrightnessState>>,
-    events: UnboundedSender<BrightnessSignal>,
+    events: UnboundedSender<()>,
 ) {
     let initial = read_percent(&device_dir, max);
     state.lock().expect("brightness state mutex poisoned").percent = initial;
-    if events.send(BrightnessSignal::Changed).is_err() {
+    if events.send(()).is_err() {
         return;
     }
 
     match build_backlight_watch() {
-        Ok(watch) => run_brightness_watch_loop(watch, device_dir, max, initial, state, events).await,
+        Ok(watch) => run_brightness_watch_loop(watch, device_dir, max, state, events).await,
         Err(err) => {
             warn!("failed to set up the udev backlight watch ({err}); falling back to a {POLL_INTERVAL:?} poll");
-            run_brightness_poll_loop(device_dir, max, initial, state, events).await;
+            run_brightness_poll_loop(device_dir, max, state, events).await;
         }
     }
 }
@@ -189,9 +180,8 @@ async fn run_brightness_watch_loop(
     mut watch: AsyncFd<MonitorSocket>,
     device_dir: PathBuf,
     max: i32,
-    mut previous: u8,
     state: Arc<Mutex<BrightnessState>>,
-    events: UnboundedSender<BrightnessSignal>,
+    events: UnboundedSender<()>,
 ) {
     loop {
         let mut guard = match watch.readable_mut().await {
@@ -200,19 +190,14 @@ async fn run_brightness_watch_loop(
                 warn!(
                     "the udev backlight watch's fd errored ({err}); falling back to a {POLL_INTERVAL:?} poll for the rest of this run"
                 );
-                return run_brightness_poll_loop(device_dir, max, previous, state, events).await;
+                return run_brightness_poll_loop(device_dir, max, state, events).await;
             }
         };
         for _event in guard.get_inner().iter() {}
         guard.clear_ready();
 
-        let current = read_percent(&device_dir, max);
-        if current != previous {
-            state.lock().expect("brightness state mutex poisoned").percent = current;
-            previous = current;
-            if events.send(BrightnessSignal::Changed).is_err() {
-                return;
-            }
+        if !publish(&state, &events, BrightnessState { percent: read_percent(&device_dir, max) }) {
+            return;
         }
     }
 }
@@ -221,22 +206,16 @@ async fn run_brightness_watch_loop(
 async fn run_brightness_poll_loop(
     device_dir: PathBuf,
     max: i32,
-    mut previous: u8,
     state: Arc<Mutex<BrightnessState>>,
-    events: UnboundedSender<BrightnessSignal>,
+    events: UnboundedSender<()>,
 ) {
     let mut ticker = tokio::time::interval(POLL_INTERVAL);
     ticker.tick().await; // tokio::time::interval's first tick fires immediately; the caller's initial (or pre-fallback) read already covers it
 
     loop {
         ticker.tick().await;
-        let current = read_percent(&device_dir, max);
-        if current != previous {
-            state.lock().expect("brightness state mutex poisoned").percent = current;
-            previous = current;
-            if events.send(BrightnessSignal::Changed).is_err() {
-                break;
-            }
+        if !publish(&state, &events, BrightnessState { percent: read_percent(&device_dir, max) }) {
+            break;
         }
     }
 }
@@ -244,7 +223,7 @@ async fn run_brightness_poll_loop(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::capabilities::test_support::p2p_pair;
+    use crate::capabilities::test_support::{p2p_pair, within};
 
     fn write_entry(root: &Path, name: &str, attrs: &[(&str, &str)]) {
         let dir = root.join(name);
@@ -338,10 +317,9 @@ mod tests {
 
         let controller = BrightnessController::new(root.path().to_path_buf(), caller_side, events_tx);
 
-        let signal = tokio::time::timeout(std::time::Duration::from_secs(2), events_rx.recv()).await;
         assert_eq!(
-            signal,
-            Ok(Some(BrightnessSignal::Changed)),
+            within(events_rx.recv()).await,
+            Some(()),
             "must announce the initial state without waiting for the first poll tick"
         );
         assert_eq!(controller.snapshot(), BrightnessState { percent: 50 });
@@ -356,8 +334,11 @@ mod tests {
         let controller = BrightnessController::new(root.path().to_path_buf(), caller_side, events_tx);
 
         // No device means `new` drops `events`; `recv` returns `None` instead of hanging.
-        let signal = tokio::time::timeout(std::time::Duration::from_secs(2), events_rx.recv()).await;
-        assert_eq!(signal, Ok(None), "no device means no signal is ever sent, not even the default state");
+        assert_eq!(
+            within(events_rx.recv()).await,
+            None,
+            "no device means no signal is ever sent, not even the default state"
+        );
         assert_eq!(controller.snapshot(), BrightnessState::default());
     }
 }

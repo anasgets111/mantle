@@ -8,7 +8,7 @@
 
 pub mod controller;
 
-pub use controller::{ProcessesController, ProcessesSignal};
+pub use controller::ProcessesController;
 
 use nix::sys::signal::Signal;
 use shared::action::{ProcessesAction, SignalName};

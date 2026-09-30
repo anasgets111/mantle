@@ -9,7 +9,7 @@ pub mod net;
 pub mod ram;
 pub mod temp;
 
-pub use controller::{SysinfoController, SysinfoSignal};
+pub use controller::SysinfoController;
 use shared::action::SysinfoAction;
 
 /// `configure` is synchronous: it rewrites shared config under its lock and nudges watch channels

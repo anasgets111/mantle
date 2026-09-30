@@ -4,7 +4,7 @@
 
 pub mod controller;
 
-pub use controller::{SystemController, SystemSignal};
+pub use controller::SystemController;
 use shared::action::SystemAction;
 
 pub fn dispatch(controller: &SystemController, envelope: &shared::CommandEnvelope) {

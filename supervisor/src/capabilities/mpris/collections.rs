@@ -6,7 +6,6 @@ use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 use tokio::task::JoinHandle;
 use zbus::zvariant::OwnedObjectPath;
 
-use super::MprisSignal;
 use super::metadata::parse_metadata;
 use super::player::PlayerRegistry;
 use super::proxies::{MprisPlaylistsProxy, MprisTrackListProxy};
@@ -165,7 +164,7 @@ pub(super) fn spawn_collections_forwarder(
     track_list: Option<MprisTrackListProxy<'static>>,
     playlists: Option<MprisPlaylistsProxy<'static>>,
     registry: PlayerRegistry,
-    events: UnboundedSender<MprisSignal>,
+    events: UnboundedSender<()>,
     mut refresh: UnboundedReceiver<()>,
 ) -> JoinHandle<()> {
     tokio::spawn(async move {
@@ -265,7 +264,7 @@ pub(super) fn spawn_collections_forwarder(
                 changed = true;
             }
             drop(guard);
-            if changed && events.send(MprisSignal::Changed).is_err() {
+            if changed && events.send(()).is_err() {
                 return;
             }
         }
@@ -276,7 +275,7 @@ pub(super) fn spawn_collections_forwarder(
 mod tests {
     use super::*;
     use crate::capabilities::mpris::proxies::{MprisPlaylistsProxy, MprisTrackListProxy};
-    use crate::capabilities::test_support::p2p_pair_serving;
+    use crate::capabilities::test_support::{p2p_pair_serving, within};
     use futures_util::StreamExt;
     use std::collections::HashMap;
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -426,7 +425,7 @@ mod tests {
         )
         .await
         .unwrap();
-        assert!(tokio::time::timeout(std::time::Duration::from_secs(1), replaced.next()).await.unwrap().is_some());
+        assert!(within(replaced.next()).await.is_some());
         tracks
             .add_track(
                 "file:///tmp/a.ogg",
@@ -451,9 +450,7 @@ mod tests {
         )
         .await
         .unwrap();
-        assert!(
-            tokio::time::timeout(std::time::Duration::from_secs(1), playlist_changes.next()).await.unwrap().is_some()
-        );
+        assert!(within(playlist_changes.next()).await.is_some());
         playlists.activate_playlist(ObjectPath::try_from("/playlist/0").unwrap()).await.unwrap();
         assert_eq!(
             *edits.lock().unwrap(),

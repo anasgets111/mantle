@@ -6,4 +6,4 @@
 
 pub mod controller;
 
-pub use controller::{BatteryController, BatterySignal};
+pub use controller::BatteryController;

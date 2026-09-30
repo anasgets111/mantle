@@ -5,15 +5,15 @@ use std::sync::{Arc, Mutex};
 use shared::{debug, warn};
 use tokio::sync::mpsc::UnboundedSender;
 
+use super::WATCHER_OBJECT_PATH;
 use super::registration::resolve_registration;
 use super::registry::{ItemRegistry, register_item};
-use super::{TraySignal, WATCHER_OBJECT_PATH};
 
 pub(super) struct StatusNotifierWatcher {
     pub(super) connection: zbus::Connection,
     pub(super) registry: ItemRegistry,
     pub(super) host_registered: Arc<Mutex<bool>>,
-    pub(super) events: UnboundedSender<TraySignal>,
+    pub(super) events: UnboundedSender<()>,
 }
 
 #[zbus::interface(name = "org.kde.StatusNotifierWatcher")]
@@ -120,7 +120,7 @@ pub(super) mod tests {
 
     use super::super::{DEFAULT_ITEM_OBJECT_PATH, RawIconPixmap, RawToolTip, WATCHER_OBJECT_PATH};
     use super::*;
-    use crate::capabilities::test_support::{p2p_pair, p2p_pair_serving};
+    use crate::capabilities::test_support::{p2p_pair, p2p_pair_serving, within};
 
     // ---- fabricated unique names must be rejected ----
 
@@ -263,7 +263,7 @@ pub(super) mod tests {
     }
 
     async fn wait_for_entries(registry: &ItemRegistry, count: usize) -> Vec<String> {
-        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        within(async {
             loop {
                 let paths: Vec<String> = registry
                     .lock()
@@ -278,7 +278,6 @@ pub(super) mod tests {
             }
         })
         .await
-        .expect("the registry never reached the expected size")
     }
 
     #[tokio::test]

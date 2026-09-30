@@ -8,6 +8,8 @@ use futures_util::StreamExt;
 use serde::Serialize;
 use shared::error;
 use tokio::sync::mpsc::UnboundedSender;
+
+use crate::capabilities::publish;
 use zbus::zvariant::OwnedValue;
 
 /// `battery.state`: UPower's `Device.State` by name, e.g. `b.state == "PendingCharge"`.
@@ -66,11 +68,6 @@ pub struct BatteryState {
     pub time_to_full: Option<u32>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum BatterySignal {
-    Changed,
-}
-
 /// UPower's `DisplayDevice`, the composite of every battery. Its documented path is fixed, so
 /// this reads it directly instead of calling `GetDisplayDevice()`.
 const DISPLAY_DEVICE: &str = "/org/freedesktop/UPower/devices/DisplayDevice";
@@ -83,7 +80,7 @@ pub struct BatteryController {
 }
 
 impl BatteryController {
-    pub fn new(system_bus: zbus::Connection, events: UnboundedSender<BatterySignal>) -> Self {
+    pub fn new(system_bus: zbus::Connection, events: UnboundedSender<()>) -> Self {
         let state = Arc::new(Mutex::new(BatteryState::default()));
         tokio::spawn(run_battery_task(system_bus, Arc::clone(&state), events));
         Self { state }
@@ -152,11 +149,7 @@ fn hold_through_glitch(previous: BatteryState, current: BatteryState) -> Battery
 /// **No timer, per ADR-0080.** sysfs misses capacity changes the kernel does not announce: a plug
 /// event can arrive, then `capacity` fall 69 to 65 with zero `power_supply` uevents. UPower already
 /// polls and emits refreshes for other clients.
-async fn run_battery_task(
-    system_bus: zbus::Connection,
-    state: Arc<Mutex<BatteryState>>,
-    events: UnboundedSender<BatterySignal>,
-) {
+async fn run_battery_task(system_bus: zbus::Connection, state: Arc<Mutex<BatteryState>>, events: UnboundedSender<()>) {
     // A live `GetAll`, never zbus's property cache: its refresh task listens to the same signal, so
     // our stream can win the race, read the pre-change cache, and leave a newly plugged charger
     // showing `Discharging` until a later property moves.
@@ -191,7 +184,7 @@ async fn run_battery_task(
 
     let mut previous = read_state(&properties).await;
     *state.lock().expect("battery state mutex poisoned") = previous;
-    if events.send(BatterySignal::Changed).is_err() {
+    if events.send(()).is_err() {
         return;
     }
 
@@ -202,12 +195,9 @@ async fn run_battery_task(
             else => return,
         }
         let current = hold_through_glitch(previous, read_state(&properties).await);
-        if current != previous {
-            *state.lock().expect("battery state mutex poisoned") = current;
-            previous = current;
-            if events.send(BatterySignal::Changed).is_err() {
-                return;
-            }
+        previous = current;
+        if !publish(&state, &events, current) {
+            return;
         }
     }
 }

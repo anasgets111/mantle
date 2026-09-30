@@ -8,6 +8,8 @@ use futures_util::{Stream, StreamExt, stream, stream_select};
 use serde::Serialize;
 use shared::{debug, error, warn};
 use tokio::sync::mpsc::UnboundedSender;
+
+use crate::capabilities::publish;
 use zbus::proxy::CacheProperties;
 use zbus::zvariant::OwnedValue;
 
@@ -28,11 +30,6 @@ pub struct PowerState {
     /// UPower's display-device `EnergyRate` in watts; direction is `mantle.battery.state`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub energy_rate: Option<f64>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PowerSignal {
-    Changed,
 }
 
 /// `OnBattery` is a manager-wide answer across all UPower supplies, not a device property. This
@@ -104,7 +101,7 @@ pub struct PowerController {
 impl PowerController {
     /// Returns immediately; proxies build inside the spawned task because construction is an async
     /// round trip that would serialize `main.rs` startup.
-    pub fn new(system_bus: zbus::Connection, events: UnboundedSender<PowerSignal>) -> Self {
+    pub fn new(system_bus: zbus::Connection, events: UnboundedSender<()>) -> Self {
         let state = Arc::new(Mutex::new(PowerState::default()));
         tokio::spawn(run_power_task(system_bus.clone(), Arc::clone(&state), events));
         Self { state, system_bus }
@@ -214,11 +211,7 @@ async fn changes(
 /// at once, hence `PropertiesChanged` itself. UPower is followed even while absent, since a later
 /// start brings it; a power-profiles-daemon absent at startup is not installed, as it is
 /// activatable, so it is not probed again.
-async fn run_power_task(
-    system_bus: zbus::Connection,
-    state: Arc<Mutex<PowerState>>,
-    events: UnboundedSender<PowerSignal>,
-) {
+async fn run_power_task(system_bus: zbus::Connection, state: Arc<Mutex<PowerState>>, events: UnboundedSender<()>) {
     let profiles = connect_power_profiles(&system_bus).await;
     if profiles.is_none() {
         debug!("no power-profiles-daemon reachable; active_profile and profiles will not be reported this run");
@@ -240,19 +233,13 @@ async fn run_power_task(
     };
     let mut changes = std::pin::pin!(changes);
 
-    let mut previous = read_state(&upower, &device, profiles.as_ref()).await;
-    *state.lock().expect("power state mutex poisoned") = previous.clone();
-    if events.send(PowerSignal::Changed).is_err() {
+    *state.lock().expect("power state mutex poisoned") = read_state(&upower, &device, profiles.as_ref()).await;
+    if events.send(()).is_err() {
         return;
     }
     while changes.next().await.is_some() {
-        let current = read_state(&upower, &device, profiles.as_ref()).await;
-        if current != previous {
-            *state.lock().expect("power state mutex poisoned") = current.clone();
-            previous = current;
-            if events.send(PowerSignal::Changed).is_err() {
-                return;
-            }
+        if !publish(&state, &events, read_state(&upower, &device, profiles.as_ref()).await) {
+            return;
         }
     }
 }
