@@ -394,7 +394,7 @@ mod tests {
         assert_eq!(controller.snapshot().files[&path], json!({}));
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn a_write_that_changes_nothing_pushes_nothing_and_still_saves() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("state.json").to_string_lossy().into_owned();
@@ -504,7 +504,7 @@ mod tests {
         within(rx.recv()).await;
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn a_second_shell_writing_after_the_first_saved_keeps_both_keys() {
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("state.json");
@@ -544,7 +544,7 @@ mod tests {
         assert_eq!(controller.snapshot().files[&path]["theme"], json!("frappe"));
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn a_fixed_malformed_file_wins_whole_over_writes_made_while_it_was_broken() {
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("state.json");

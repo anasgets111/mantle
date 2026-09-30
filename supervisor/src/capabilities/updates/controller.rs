@@ -674,6 +674,25 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn an_install_with_more_than_a_pipeful_of_stderr_finishes() {
+        let state = Arc::new(Mutex::new(UpdatesState::default()));
+        let script = "i=0; while [ \"$i\" -lt 80 ]; do printf '%01024d\\n' 0 >&2; i=$((i+1)); done; echo drained >&2";
+        let child = process::spawn_group_leader_piped("sh", &["-c".into(), script.into()]).unwrap();
+        let (events_tx, _events_rx) = tokio::sync::mpsc::unbounded_channel();
+
+        tokio::time::timeout(
+            Duration::from_secs(5),
+            run_install_with_child(Arc::new(StubBackend), Arc::clone(&state), events_tx, child),
+        )
+        .await
+        .expect("stderr drain blocked the installer");
+
+        let snapshot = state.lock().unwrap();
+        assert_eq!(snapshot.install_exit_code, Some(0));
+        assert_eq!(snapshot.install_log.last().map(String::as_str), Some("drained"));
+    }
+
     #[test]
     fn the_install_log_drops_the_oldest_line_once_it_is_full() {
         let mut log: Vec<String> = Vec::new();

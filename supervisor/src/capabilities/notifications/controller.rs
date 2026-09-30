@@ -596,6 +596,58 @@ impl NotificationsController {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::capabilities::test_support::{p2p_pair_serving, within};
+    use futures_util::StreamExt;
+
+    #[tokio::test]
+    async fn notify_and_close_notification_exchange_methods_and_signals_over_dbus() {
+        let (events, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let (sound_tx, _sound_rx) = std::sync::mpsc::sync_channel(1);
+        let mut controller = NotificationsController::inert(events, sound_tx);
+        let (client, server) =
+            p2p_pair_serving(|peer| peer.serve_at(NOTIFICATIONS_OBJECT_PATH, controller.clone())).await;
+        server
+            .object_server()
+            .interface::<_, NotificationsController>(NOTIFICATIONS_OBJECT_PATH)
+            .await
+            .unwrap()
+            .get_mut()
+            .await
+            .connection = Some(server.clone());
+        controller.connection = Some(server);
+
+        let proxy: zbus::Proxy<'_> = zbus::proxy::Builder::new(&client)
+            .destination(NOTIFICATIONS_BUS_NAME)
+            .unwrap()
+            .path(NOTIFICATIONS_OBJECT_PATH)
+            .unwrap()
+            .interface(NOTIFICATIONS_BUS_NAME)
+            .unwrap()
+            .build()
+            .await
+            .unwrap();
+        let mut invoked = proxy.receive_signal("ActionInvoked").await.unwrap();
+        let mut closed = proxy.receive_signal("NotificationClosed").await.unwrap();
+        let hints = HashMap::<String, zbus::zvariant::Value<'_>>::new();
+        let id: u32 = proxy
+            .call("Notify", &("app", 0u32, "", "summary", "body", vec!["open", "Open"], &hints, 0i32))
+            .await
+            .unwrap();
+        assert_eq!(controller.snapshot().feed.len(), 1);
+
+        controller.invoke_action(id, "open".into()).await;
+        let signal = within(invoked.next()).await.unwrap();
+        assert_eq!(signal.body().deserialize::<(u32, String)>().unwrap(), (id, "open".into()));
+        let signal = within(closed.next()).await.unwrap();
+        assert_eq!(signal.body().deserialize::<(u32, u32)>().unwrap(), (id, 3));
+
+        let next: u32 =
+            proxy.call("Notify", &("app", 0u32, "", "next", "body", Vec::<String>::new(), &hints, 0i32)).await.unwrap();
+        proxy.call::<_, _, ()>("CloseNotification", &(next,)).await.unwrap();
+        let signal = within(closed.next()).await.unwrap();
+        assert_eq!(signal.body().deserialize::<(u32, u32)>().unwrap(), (next, 3));
+        assert!(controller.snapshot().feed.is_empty());
+    }
 
     #[test]
     fn close_reason_maps_to_the_documented_wire_values() {

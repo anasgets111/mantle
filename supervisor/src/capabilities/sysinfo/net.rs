@@ -85,6 +85,14 @@ mod tests {
     }
 
     #[test]
+    fn nonpositive_elapsed_time_has_no_rate() {
+        let prev = NetSample { interfaces: [("eth0".into(), (100, 100))].into() };
+        let current = NetSample { interfaces: [("eth0".into(), (200, 300))].into() };
+        assert_eq!(delta_rate(&prev, &current, 0.0), (0, 0));
+        assert_eq!(delta_rate(&prev, &current, -1.0), (0, 0));
+    }
+
+    #[test]
     fn new_interface_does_not_add_lifetime_bytes_to_rate() {
         let prev = NetSample { interfaces: [("eth0".into(), (100, 100))].into() };
         let current =

@@ -209,14 +209,14 @@ mod tests {
     #[test]
     fn pulse_is_a_global_that_starts_low_fires_on_a_write_and_arms_the_poll_deadline() {
         let (lua, _dirty) = lua_with_state();
-        lua.load(r#"clicks = state("clicks", 0) flashing = pulse(clicks, 50)"#).exec().unwrap();
+        lua.load(r#"clicks = state("clicks", 0) flashing = pulse(clicks, 1)"#).exec().unwrap();
         assert!(!lua.load("return flashing:get()").eval::<bool>().unwrap(), "a pulse starts low");
         assert!(next_wake_deadline(&lua).is_none(), "and arms nothing until something changes");
 
         lua.load("clicks:set(1)").exec().unwrap();
         assert!(lua.load("return flashing:get()").eval::<bool>().unwrap());
         assert!(next_wake_deadline(&lua).is_some());
-        std::thread::sleep(Duration::from_millis(60));
+        std::thread::sleep(Duration::from_millis(5));
         assert!(!take_due_wake(&lua, Instant::now()).is_empty());
         assert!(!lua.load("return flashing:get()").eval::<bool>().unwrap(), "the window closed");
 

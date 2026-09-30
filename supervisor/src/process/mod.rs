@@ -341,4 +341,11 @@ mod tests {
         // And it is a session of its own, so a signal to this process's group cannot reach it.
         assert_ne!(parent, 0);
     }
+
+    #[tokio::test]
+    async fn a_nonexistent_detached_program_reports_an_error() {
+        let path = tempfile::tempdir().unwrap().path().join("missing-program");
+        let result = spawn_detached(path.to_str().unwrap(), &[]);
+        assert_eq!(result.unwrap_err().kind(), io::ErrorKind::NotFound);
+    }
 }

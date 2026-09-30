@@ -332,6 +332,18 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_frag_change_fires_a_reload_trigger() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("background.frag");
+        std::fs::write(&path, "first").unwrap();
+        let mut rx = spawn_watcher(dir.path(), SHORT_DEBOUNCE).unwrap();
+
+        std::fs::write(&path, "second").unwrap();
+
+        assert!(recv_within(&mut rx, WAIT).await.is_some());
+    }
+
+    #[tokio::test]
     async fn a_burst_of_rapid_writes_coalesces_into_one_trigger() {
         let dir = tempfile::tempdir().unwrap();
         // A loaded host stretched a 10ms gap past SHORT_DEBOUNCE and split the burst.

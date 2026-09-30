@@ -470,6 +470,7 @@ pub(crate) fn send_frame_logged(registry: &GenerationRegistry, generation_id: u3
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tokio::io::AsyncReadExt;
 
     fn command_frame(generation_id: u32) -> RendererFrame {
         RendererFrame::Command(shared::CommandEnvelope {
@@ -611,6 +612,39 @@ mod tests {
         })
         .await
         .expect("condition did not become true in time");
+    }
+
+    #[tokio::test]
+    async fn the_connection_after_the_limit_is_closed() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("control.sock");
+        let (_registry, _routes, _inbound, _connected) = spawn_listener(&path).unwrap();
+        let mut peers = Vec::new();
+        for _ in 0..MAX_CONNECTIONS {
+            peers.push(UnixStream::connect(&path).await.unwrap());
+            tokio::task::yield_now().await;
+        }
+
+        let mut excess = UnixStream::connect(&path).await.unwrap();
+        let mut byte = [0];
+        assert_eq!(tokio::time::timeout(Duration::from_secs(2), excess.read(&mut byte)).await.unwrap().unwrap(), 0);
+        assert!(
+            tokio::time::timeout(Duration::from_millis(10), peers.last_mut().unwrap().read(&mut byte)).await.is_err()
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_peer_without_a_handshake_is_closed_after_the_deadline() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("control.sock");
+        let (_registry, _routes, _inbound, _connected) = spawn_listener(&path).unwrap();
+        let mut peer = UnixStream::connect(&path).await.unwrap();
+        tokio::task::yield_now().await;
+        let mut byte = [0];
+        tokio::time::advance(HANDSHAKE_TIMEOUT - Duration::from_millis(2)).await;
+        assert!(tokio::time::timeout(Duration::from_millis(1), peer.read(&mut byte)).await.is_err());
+        tokio::time::advance(Duration::from_millis(2)).await;
+        assert_eq!(tokio::time::timeout(Duration::from_millis(50), peer.read(&mut byte)).await.unwrap().unwrap(), 0);
     }
 
     #[tokio::test]

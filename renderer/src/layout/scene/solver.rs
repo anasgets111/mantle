@@ -1188,6 +1188,20 @@ pub(super) mod tests {
     }
 
     #[test]
+    fn padding_larger_than_an_explicit_size_keeps_the_content_box_nonnegative() {
+        let shaping = ShapingHandle::spawn();
+        let mut scene = Scene::new();
+        let (lua, surface) = surface_from(
+            r#"panel { id = "bar", child = column { width = 20, height = 20, padding = 30,
+                children = { rect { width = 10, height = 10 } } } }"#,
+        );
+        apply_at(&mut scene, &[surface], full(), &shaping, &lua).unwrap();
+        let node = &scene.surface("bar@TEST").unwrap().children[0];
+        assert_eq!((node.rect.width, node.rect.height), (60.0, 60.0));
+        assert_eq!((node.children[0].rect.x, node.children[0].rect.y), (30.0, 30.0));
+    }
+
+    #[test]
     fn text_content_size_comes_from_a_real_shaping_round_trip() {
         let mut scene = Scene::new();
         let shaping = ShapingHandle::spawn();

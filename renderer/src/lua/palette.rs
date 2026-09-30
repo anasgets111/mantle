@@ -242,9 +242,8 @@ mod tests {
             .unwrap();
         lua.load("handle:cancel()").exec().unwrap();
 
-        // Give the background thread every chance to finish and enqueue its result before the
-        // assertion, so this proves suppression rather than a race that never reached `poll`.
-        std::thread::sleep(Duration::from_millis(200));
+        let result = registry.0.borrow().results.recv_timeout(Duration::from_secs(5)).unwrap();
+        registry.0.borrow().result_tx.send(result).unwrap();
         registry.poll();
         let is_nil: bool = lua.load("return probe == nil").eval().unwrap();
         assert!(is_nil, "a cancelled handle's callback must never run");
