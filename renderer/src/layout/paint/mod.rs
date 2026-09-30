@@ -132,6 +132,14 @@ pub enum Draw {
         matrix: node::Affine,
         commands: Vec<DrawCmd>,
     },
+    /// Commands before `split` supply alpha, the rest supply content. One nested list keeps
+    /// texture, capture and cache lifetime walks shared with every other painted group.
+    NodeMask {
+        invert: bool,
+        radius: f32,
+        split: usize,
+        commands: Vec<DrawCmd>,
+    },
     /// A box's shadow as one gradient quad under its fill (ADR-0254), cut out under the box when
     /// `knockout` (ADR-0260). `shadow.color` carries the inherited opacity.
     Shadow {
@@ -191,9 +199,10 @@ impl Draw {
     /// has to enter.
     pub(super) fn nested(&self) -> Option<&[DrawCmd]> {
         match self {
-            Draw::Clipped { commands, .. } | Draw::Transformed { commands, .. } | Draw::Layer { commands, .. } => {
-                Some(commands)
-            }
+            Draw::Clipped { commands, .. }
+            | Draw::Transformed { commands, .. }
+            | Draw::Layer { commands, .. }
+            | Draw::NodeMask { commands, .. } => Some(commands),
             _ => None,
         }
     }
@@ -352,7 +361,7 @@ impl DisplayList {
         fn grow(commands: &[DrawCmd], region: PhysicalRect) -> PhysicalRect {
             commands.iter().fold(region, |region, command| match &command.draw {
                 Draw::Clipped { commands, .. } => grow(commands, region),
-                Draw::Transformed { .. } => {
+                Draw::Transformed { .. } | Draw::NodeMask { .. } => {
                     let bounds = command_bounds(command);
                     if bounds.intersect(region).is_empty() { region } else { region.union(bounds) }
                 }

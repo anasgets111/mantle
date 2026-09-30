@@ -166,9 +166,10 @@ that reach the arc.
 | :--- | :--- |
 | A [gradient](#gradients) table | The gradient's colours' alpha, laid over the box. RGB is ignored |
 | `{ source = "/path.png" }` | The image's alpha, stretched over the box. A file that fails to load leaves the node unmasked |
-| Either, plus `invert = true` | The complement: kept and cut swap |
+| `{ node = "shape" }` | The named direct child's painted subtree; RGB is ignored |
+| Any form, plus `invert = true` | The complement: kept and cut swap |
 
-Name exactly one of `source` or a gradient. A masked box draws its subtree offscreen every repaint
+Name exactly one of `source`, `node`, or a gradient. A masked box draws its subtree offscreen every repaint
 and always cuts children to its box (to `radius` too under `clip = "Rounded"`), even with
 `clip = "None"`.
 
@@ -194,6 +195,28 @@ return column {
 ```
 
 A scrolling list whose rows fade out at the top and bottom edges.
+
+A mask can name an owned direct child by id with `mask = { node = "shape" }`.
+The child keeps its ordinary layout and reactive properties, but paints only into the
+mask and receives no input. Its RGB is ignored; transparent or hidden mask content
+cuts everything. `invert = true` reverses that alpha. Missing child ids fail the pass.
+The child's opacity multiplies the mask; the parent's opacity applies once to content.
+Mask subtrees can contain transforms, effects, and further masks.
+
+```lua
+rect {
+    width = 160, height = 80, background = "#3366ffff",
+    mask = { node = "shape" },
+    children = {
+        rect { id = "shape", width = 80, height = "Fill", radius = 24,
+            background = "#ffffffff" },
+    },
+}
+```
+
+The mask child contributes to `Content` sizing and flow spacing like other children.
+Use a stacking `rect` with explicit dimensions when the mask must not size the content.
+Mask alpha does not change the content's input or desktop blur region.
 
 ## Shadows
 

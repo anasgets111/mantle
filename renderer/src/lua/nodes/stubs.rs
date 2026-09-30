@@ -310,7 +310,7 @@ const NODES_HEADER: &str = r##"---@meta
 ---@alias GradientStop {GradientStop} Position `[0, 1]` and colour. Positions ascend.
 ---@alias PathCommand {PathCommand}
 ---@alias Gradient {Gradient} At least 2 stops. `angle` is degrees clockwise from the top: Linear default `180`, Conic default `0`, Radial refuses it.
----@alias Mask {Mask} Exactly one of a `Gradient` or an image `source` path (alpha only, stretched over the box). `invert` swaps kept and cut.
+---@alias Mask {Mask} Exactly one of a `Gradient`, an image `source` path (alpha only, stretched over the box), or `node` naming a direct child id (alpha in its laid-out position). `invert` swaps kept and cut.
 ---@alias EasingName {EASING} `Back` and `Elastic` overshoot, as does a Bezier `y` outside `[0, 1]`; the property's range clamps them.
 ---@alias Easing {Easing} A name, CSS `cubic-bezier` `{ x1, y1, x2, y2 }` with `x1`, `x2` in `[0, 1]`, or `{ steps = n }`, `n` in `[1, 1000]` (ADR-0151).
 ---@alias Keyframe {ANIMATABLE}|{Keyframe}

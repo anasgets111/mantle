@@ -35,7 +35,7 @@ pub fn overlay_input_regions(surface_root: &ResolvedNode, scale: f32) -> Vec<Phy
         collect_input_regions(surface_root, 0.0, 0.0, scale, paint_claims, &mut regions);
         return regions;
     }
-    for child in &surface_root.children {
+    for child in surface_root.content_children() {
         collect_input_regions(child, 0.0, 0.0, scale, paint_claims, &mut regions);
     }
     regions
@@ -129,7 +129,7 @@ fn collect_blur_regions(
             }
         }
     }
-    for child in &node.children {
+    for child in node.content_children() {
         collect_blur_regions(child, rect.x, rect.y, scale, matrix, child_clip, opacity * node.opacity, out);
     }
 }
@@ -211,7 +211,7 @@ fn collect_input_regions(
             return;
         }
     }
-    for child in &node.children {
+    for child in node.content_children() {
         collect_input_regions(child, rect.x, rect.y, scale, paint_claims, out);
     }
 }

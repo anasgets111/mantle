@@ -22,7 +22,7 @@ use crate::text::snap::{LogicalRect, PhysicalRect};
 
 #[cfg(test)]
 use super::build;
-use super::{DisplayList, Draw, DrawCmd};
+use super::{DisplayList, Draw, DrawCmd, UNCLIPPED};
 use effects::{draw_backdrop, draw_layer, paint_shadow, read_target, replace};
 use shape::{box_path, fill_rect, gradient_paint, paint_border};
 
@@ -380,6 +380,10 @@ fn run(painter: &mut TextPainter, walk: &mut Walk<'_, '_>, commands: &[DrawCmd],
                     unsafe { shaders.stage.draw(shaders.gl, painter.canvas_mut(), Some(source), &run) };
                 }
             }
+            Draw::NodeMask { invert, radius, split, commands } => {
+                draw_node_mask(painter, walk, rect, clip, *invert, *radius, *split, commands, target, frame);
+                current_clip = None;
+            }
             Draw::Clipped { radius, mask, commands } => {
                 draw_clipped(painter, walk, rect, clip, *radius, mask.as_ref(), commands, target, frame);
                 current_clip = None;
@@ -436,7 +440,8 @@ fn draw_clipped(
     let glass = mask.is_none() && super::any_draw_matches(commands, |draw| matches!(draw, Draw::Backdrop { .. }));
     let seed = if glass { read_target(painter, walk, clip) } else { None };
     let under = seed.as_ref().map(|(copy, _, paint)| paint(*copy, 1.0));
-    let Some(image) = offscreen(painter, walk, rect, clip, mask, under, commands, target, frame, frame.region) else {
+    let Some(image) = offscreen(painter, walk, rect, clip, mask, under, commands, target, frame, frame.region, true)
+    else {
         return;
     };
     let path = box_path(rect, radius);
@@ -446,6 +451,49 @@ fn draw_clipped(
         Some(_) => replace(painter.canvas_mut(), &path, &paint, 1.0),
         None => painter.canvas_mut().fill_path(&path, &paint),
     }
+}
+
+/// Both lists use the ordinary executor, so transforms, shaders, nested masks and effects share
+/// their existing implementation. The alpha texture covers the whole clip, including empty pixels.
+#[allow(clippy::too_many_arguments)]
+fn draw_node_mask(
+    painter: &mut TextPainter,
+    walk: &mut Walk<'_, '_>,
+    rect: LogicalRect,
+    clip: PhysicalRect,
+    invert: bool,
+    radius: f32,
+    split: usize,
+    commands: &[DrawCmd],
+    target: RenderTarget,
+    frame: Frame,
+) {
+    let (alpha, content) = commands.split_at(split);
+    let Some(alpha) = offscreen(painter, walk, rect, clip, None, None, alpha, target, frame, UNCLIPPED, false) else {
+        return;
+    };
+    let Some(content) = offscreen(painter, walk, rect, clip, None, None, content, target, frame, UNCLIPPED, false)
+    else {
+        return;
+    };
+    let (width, height) = ((clip.x1 - clip.x0) as f32, (clip.y1 - clip.y0) as f32);
+    let canvas = painter.canvas_mut();
+    canvas.save();
+    canvas.set_render_target(RenderTarget::Image(content));
+    canvas.reset_transform();
+    canvas.reset_scissor();
+    canvas.global_composite_operation(if invert {
+        CompositeOperation::DestinationOut
+    } else {
+        CompositeOperation::DestinationIn
+    });
+    let mut whole = Path::new();
+    whole.rect(0.0, 0.0, width, height);
+    canvas.fill_path(&whole, &Paint::image(alpha, 0.0, 0.0, width, height, 0.0, 1.0).with_anti_alias(false));
+    canvas.restore();
+    canvas.set_render_target(target);
+    let path = box_path(rect, radius);
+    canvas.fill_path(&path, &Paint::image(content, clip.x0 as f32, clip.y0 as f32, width, height, 0.0, 1.0));
 }
 
 /// A pooled render target of `size`, held until [`execute`] flushes; `None` when out of texture
@@ -478,6 +526,7 @@ fn offscreen(
     target: RenderTarget,
     frame: Frame,
     region: PhysicalRect,
+    unmasked_fallback: bool,
 ) -> Option<ImageId> {
     let (width, height) = ((clip.x1 - clip.x0) as usize, (clip.y1 - clip.y0) as usize);
     // A box with no area shows nothing, and asking for a 0xN render target leaves GL with an
@@ -487,10 +536,13 @@ fn offscreen(
         return None;
     }
     let Some(image) = scratch(painter, walk, (width, height)) else {
-        // Out of texture memory: preserve the subtree unmasked rather than drop it.
+        // A mask source must never fall back to drawing independently into its parent.
+        // Existing clips and effects preserve the subtree unmasked on allocation failure.
         // Into the parent's target, so it keeps the parent's frame: the clip this could not
         // allocate is not where these commands are going.
-        run(painter, walk, commands, target, frame);
+        if unmasked_fallback {
+            run(painter, walk, commands, target, frame);
+        }
         return None;
     };
 
@@ -524,6 +576,7 @@ fn offscreen(
     if let Some((mask, box_px)) = mask {
         let paint = match &mask.source {
             MaskSource::Gradient(gradient) => Some(gradient_paint(gradient, rect)),
+            MaskSource::Node(_) => None, // Lowered to Draw::NodeMask by build_node.
             // A missing mask image leaves the subtree unmasked, the answer an allocation failure
             // above gets too.
             MaskSource::Image(file) => walk
@@ -1535,5 +1588,61 @@ pub(crate) mod tests {
         }
         let worst = frames[0].buf().iter().zip(frames[1].buf()).map(|(a, b)| a.r.abs_diff(b.r).max(a.a.abs_diff(b.a)));
         assert!(worst.max().unwrap() <= 2, "the second frame drifts from the first");
+    }
+    #[test]
+    fn node_mask_alpha_invert_hidden_and_nested_transform() {
+        let child = |extra: &str, invert: bool| {
+            format!(
+                r##"rect {{ width = 64, height = 64,
+            opacity = 0.5, background = "#00FF00FF", mask = {{ node = "shape", invert = {invert} }},
+            children = {{ rect {{ id = "shape", width = 32, height = 64,
+                background = "#FF0000FF", {extra} }} }} }}"##
+            )
+        };
+        let Some(px) = paint_points(&child("", false), &[(8, 32), (48, 32)]) else { return };
+        assert_eq!(px, [(0, 127, 0, 127), (0, 0, 0, 0)], "mask colour does not paint and parent opacity applies once");
+        let Some(px) = paint_points(&child("", true), &[(8, 32), (48, 32)]) else { return };
+        assert_eq!(px, [(0, 0, 0, 0), (0, 127, 0, 127)]);
+        for invert in [false, true] {
+            let Some(px) = paint_points(&child("visible = false,", invert), &[(8, 32), (48, 32)]) else { return };
+            assert_eq!(px, if invert { vec![(0, 127, 0, 127); 2] } else { vec![(0, 0, 0, 0); 2] });
+        }
+        let nested = r##"opacity = 0.5, translate = { x = 16 }, content_blur = 1,
+            mask = { node = "inner" }, children = {
+                rect { id = "inner", width = 16, height = 64, background = "#FFFFFF" }
+            },"##;
+        let Some(px) = paint_points(&child(nested, false), &[(4, 32), (24, 32), (48, 32)]) else { return };
+        assert_eq!(px[0], (0, 0, 0, 0));
+        assert!((62..=65).contains(&px[1].3), "both opacities multiply: {px:?}");
+        assert_eq!(px[2], (0, 0, 0, 0));
+    }
+    #[test]
+    fn node_mask_reuses_two_targets_and_partial_damage_keeps_rounded_transform() {
+        let src = |width| {
+            format!(
+                r##"return panel {{ id = "bar", width = 96, height = 64,
+            background = "#FFFFFF", child = rect {{ width = 48, height = 48,
+                translate = {{ x = 12, y = 4 }}, radius = 16, clip = "Rounded", background = "#00FF00",
+                mask = {{ node = "shape" }}, children = {{ rect {{ id = "shape", width = {width}, height = 48,
+                    background = "#FFFFFF" }} }} }} }}"##
+            )
+        };
+        let (before, after) = (surface_96x64(&src(24)), surface_96x64(&src(40)));
+        let damage = after.damage_since(&before, false);
+        let regions: Vec<_> = damage.into_iter().map(|r| after.repaint_region(r)).collect();
+        assert_partial_repaint_matches(&before, &after, &regions);
+        let Some(instance) = init_headless_egl(96, 64) else { return };
+        let shaping = ShapingHandle::spawn();
+        let Some(mut painter) = text_painter(&instance, &shaping, 96, 64) else { return };
+        let root = resolved_surface(&Lua::new(), &src(40), LogicalSize { width: 96.0, height: 64.0 });
+        let mut images = ImageCache::new();
+        paint_tree(&mut painter, &mut images, &root, 1.0);
+        let first = painter.take_scratch((48, 48)).unwrap();
+        let second = painter.take_scratch((48, 48)).unwrap();
+        assert!(painter.take_scratch((48, 48)).is_none(), "exactly two offscreens even with rounded clipping");
+        painter.recycle_scratch([(first, (48, 48)), (second, (48, 48))]);
+        paint_tree(&mut painter, &mut images, &root, 1.0);
+        let reused = [painter.take_scratch((48, 48)).unwrap(), painter.take_scratch((48, 48)).unwrap()];
+        assert!(reused.contains(&first) && reused.contains(&second));
     }
 }

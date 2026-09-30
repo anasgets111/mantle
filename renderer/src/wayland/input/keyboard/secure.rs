@@ -23,7 +23,7 @@ fn secure_on_cancel(tree: &layout::ResolvedNode, target: &node::SecureSubmitTarg
                 _ => None,
             };
         }
-        stack.extend(node.children.iter().rev());
+        stack.extend(node.content_children().rev());
     }
     None
 }

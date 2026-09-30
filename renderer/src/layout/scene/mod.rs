@@ -88,6 +88,7 @@ impl ResolvedNode {
             effect: node::Effect::default(),
             properties: PropMap::default(),
             paint: None,
+            mask_target: None,
             displayed_source: None,
             dissolve: None,
             children,
@@ -223,6 +224,8 @@ pub struct ResolvedNode {
     /// This node's paint properties, parsed here rather than by `layout::paint` on every frame
     /// (`node::paint_style`'s module doc comment says why). `None` for a kind that draws nothing.
     pub paint: Option<PaintStyle>,
+    /// Resolved while Lua is live; paint and input never inspect a Lua id string.
+    pub(crate) mask_target: Option<NodeId>,
     /// The `source` this node last had a texture for, for an `image` declaring `retain`
     /// (ADR-0180). `layout::paint` draws it while a newly named source is still decoding, so the
     /// node holds its last picture instead of going blank; [`Scene::note_drawn_images`] moves it
@@ -272,13 +275,25 @@ impl ResolvedNode {
         !matches!(self.paint, Some(PaintStyle::Box { clip: node::ClipShape::None, .. }))
     }
 
+    /// The mask stays owned, reconciled and laid out among these children, but only paints as alpha.
+    pub(crate) fn mask_child(&self) -> Option<&ResolvedNode> {
+        self.children.iter().find(|child| Some(child.id) == self.mask_target)
+    }
+
+    /// Input and compositor regions exclude the mask, while lifetime walks retain all children.
+    pub(crate) fn content_children(&self) -> impl DoubleEndedIterator<Item = &ResolvedNode> {
+        let mask = self.mask_target;
+        self.children.iter().filter(move |child| Some(child.id) != mask)
+    }
+
     /// Children bottom to top: ascending `z`, declaration order among equals (ADR-0259).
     /// Allocates only when `z` reorders something.
     pub(super) fn painted_children(&self) -> impl DoubleEndedIterator<Item = &ResolvedNode> {
+        let mask = self.mask_target;
         let sorted = self.children.is_sorted_by(|a, b| a.z <= b.z);
         let mut resorted: Vec<&ResolvedNode> = if sorted { Vec::new() } else { self.children.iter().collect() };
         resorted.sort_by(|a, b| a.z.total_cmp(&b.z));
-        self.children.iter().filter(move |_| sorted).chain(resorted)
+        self.children.iter().filter(move |_| sorted).chain(resorted).filter(move |child| Some(child.id) != mask)
     }
 
     /// A node with `submit = true` or a pointer handler (ADR-0214).

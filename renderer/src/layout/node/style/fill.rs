@@ -45,6 +45,9 @@ pub enum MaskSource {
     Gradient(Gradient),
     /// An image file stretched over the box; only its alpha counts.
     Image(String),
+    /// Alpha from an owned direct child, selected by its sibling-unique id.
+    /// ponytail: participates in normal layout. Add a structural slot if out-of-flow masks are needed.
+    Node(String),
 }
 
 pub(crate) type GradientStop = (f32, Rgba);
@@ -75,6 +78,7 @@ lua_shape! {
         angle: Option<f32>,
         stops: Option<Vec<GradientStop>> as Option<Vec<StopAlias>>,
         source: Option<String>,
+        node: Option<String>,
         invert: Option<bool>,
     }
 }
@@ -155,8 +159,14 @@ impl Prop for Mask {
         let Value::Table(table) = value else {
             return Err(invalid(property, format!("expected a table, got {}", preview_for_error(value))));
         };
-        let MaskInput { gradient, angle, stops, source, invert } = MaskInput::read(property, table)?;
+        let MaskInput { gradient, angle, stops, source, node, invert } = MaskInput::read(property, table)?;
         let any_gradient = gradient.is_some() || angle.is_some() || stops.is_some();
+        if let Some(id) = node {
+            if source.is_some() || any_gradient || id.is_empty() {
+                return Err(invalid(property, "name exactly one nonempty `node`, `source` or gradient"));
+            }
+            return Ok(Some(Mask { source: MaskSource::Node(id), invert: invert.unwrap_or(false) }));
+        }
         let source = match (source, any_gradient) {
             (Some(_), true) | (None, false) => {
                 return Err(invalid(property, "name exactly one of `source` or a gradient"));
@@ -322,6 +332,10 @@ mod tests {
             "mask",
             "empty",
         );
+        for mask in [r#"node = """#, r#"node = "shape", source = "/a.png""#, r#"node = "shape", angle = 90"#] {
+            let src = format!("return {{ kind = \"rect\", mask = {{ {mask} }} }}");
+            rejects(fields::paint::mask.read(&eval_props(&lua, &src)), "mask", "exactly one");
+        }
         let src = r#"return { kind = "rect", mask = { source = "/a.png", invert = 1 } }"#;
         rejects(fields::paint::mask.read(&eval_props(&lua, src)), "mask", "invert");
         let src = r#"return { kind = "rect", mask = { source = false, gradient = "Radial" } }"#;

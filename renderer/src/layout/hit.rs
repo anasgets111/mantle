@@ -182,7 +182,7 @@ pub fn cursor_under(path: &[&ResolvedNode], point: LogicalPoint, shaping: &Shapi
         .unwrap_or(CursorIcon::Default)
 }
 
-/// Whether a node with `id` is still somewhere under `root`, visible or not. The question a held
+/// Whether a node with `id` is still under `root` outside mask subtrees, visible or not. The question a held
 /// draft asks of the tree it was typed into (ADR-0108): identity, not geometry, so a field that
 /// moved is still found and one that was removed is not.
 ///
@@ -190,7 +190,7 @@ pub fn cursor_under(path: &[&ResolvedNode], point: LogicalPoint, shaping: &Shapi
 /// its exit is still playing (ADR-0150), so a field inside one has nowhere to show a draft and its
 /// callbacks belong to a subtree that is gone -- which is the removal this answers `false` for.
 pub fn contains_node(root: &ResolvedNode, id: crate::layout::scene::NodeId) -> bool {
-    !root.leaving && (root.id == id || root.children.iter().any(|child| contains_node(child, id)))
+    !root.leaving && (root.id == id || root.content_children().any(|child| contains_node(child, id)))
 }
 
 /// The absolute (surface-local) rect of `path`'s last node, `None` for an empty path. It sums the

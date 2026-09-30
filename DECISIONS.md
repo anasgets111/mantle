@@ -6142,6 +6142,8 @@ lighter than an unmasked border's. Upgrade path: composite unantialiased when `r
 **Amends ADR-0079** (a mask needs no second target, and a masked leaf still groups) **and the roadmap's Drawing row.** The
 "shaders over an arbitrary subtree" won't-do row stands: a mask is a composite operation, not a shader.
 
+Amendment, ADR-0297: a direct child subtree can supply mask alpha through a second pooled target.
+
 ## 0256. `backdrop_blur` blurs what the surface already painted under a box
 
 CSS `backdrop-filter: blur()`, Qt's frosted glass. `blur` (ADR-0195) asks the compositor and sees the
@@ -7179,3 +7181,14 @@ Amends ADR-0116, ADR-0204, ADR-0214 and ADR-0284.
 A config table is read through its `lua_shape!` declaration and each field's `Input` type. The declaration supplies the parser, accepted keys and Lua stub. Range and cross-field checks stay in the shape's conversion function.
 
 Trade-off: type errors use the stub spelling instead of tailored prose.
+
+## 0297. A node mask owns a direct child subtree
+
+`mask = { node = "id" }` names a direct child, keeping layout, reconciliation and resource
+tracking in the existing child tree instead of adding cross-tree ownership and cycle detection.
+The mask child contributes to flow sizing but is excluded from content paint, input, focus and
+compositor regions; position it absolutely when it must not take flow space. Its alpha and the
+content render through two pooled targets, and allocation failure draws neither, so masked
+content cannot leak unmasked.
+
+Amends ADR-0255's exclusion of node masks and decision 7 for node masks.

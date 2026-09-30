@@ -55,7 +55,7 @@ fn targets(tree: &ResolvedNode, descend: impl Fn(&ResolvedNode) -> bool) -> Vec<
         if let Some(node::PaintStyle::TextField { target: Some(target), .. }) = &node.paint {
             found.push(target.clone());
         }
-        stack.extend(node.children.iter().rev());
+        stack.extend(node.content_children().rev());
     }
     found
 }

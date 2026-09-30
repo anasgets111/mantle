@@ -46,7 +46,7 @@ fn first_plain_field(
         {
             return Some(target);
         }
-        stack.extend(node.children.iter().rev());
+        stack.extend(node.content_children().rev());
     }
     None
 }
@@ -864,5 +864,23 @@ mod tests {
         let target = requested_field(&tree, "search").unwrap();
         let other = requested_focus("other@TEST".into(), target, Some(&previous));
         assert_eq!((other.buffer.as_str(), other.selection), ("", (0, 0)));
+    }
+    #[test]
+    fn node_mask_subtree_cannot_take_plain_or_secure_keyboard_focus() {
+        let lua = Lua::new();
+        let mut plain = plain_textfield(&lua);
+        plain.properties.insert("autofocus", Value::Boolean(true));
+        let secure = textfield(&lua, Some(secure_submit_table(&lua, "lock", "authenticate")));
+        let shape = layout::ResolvedNode {
+            id: layout::scene::NodeId::test(987),
+            ..layout::ResolvedNode::test("rect", (0.0, 0.0, 20.0, 20.0), vec![plain, secure])
+        };
+        let root = layout::ResolvedNode {
+            mask_target: Some(shape.id),
+            ..layout::ResolvedNode::test("rect", (0.0, 0.0, 20.0, 20.0), vec![shape])
+        };
+        assert!(first_plain_field(&root, |_| true).is_none());
+        assert!(autofocus_field_in_scope(&[("bar", &root)]).is_none());
+        assert!(layout::secure_submit::typable_secure_submit_targets(&root).is_empty());
     }
 }

@@ -279,6 +279,7 @@ pub(super) fn prepare(
     // Removed while hidden means removed off screen: no exit plays anywhere under a thaw.
     let thawing = thawing || retained.as_ref().is_some_and(|r| !r.visible);
 
+    let old_mask_target = retained.as_ref().and_then(|node| node.mask_target);
     let Resolved { properties, style, paint, tweens, memo: resolve_memo, text_memo } = resolved;
     let (id, old_taffy, displayed_source, dissolve, old_children, list_memo, child_table) = match retained {
         Some(r) => (r.id, r.taffy, r.displayed_source, r.dissolve, r.children, r.list_memo, r.child_table),
@@ -398,7 +399,12 @@ pub(super) fn prepare(
     }
     for mut child in unclaimed {
         release_solver_nodes(tree, &mut child);
-        if !thawing && child.visible && node::depart(child.kind, &mut child.tweens, &mut child.properties, now, lua)? {
+        // A detached mask must not reappear as independently painted exit content.
+        if Some(child.id) != old_mask_target
+            && !thawing
+            && child.visible
+            && node::depart(child.kind, &mut child.tweens, &mut child.properties, now, lua)?
+        {
             child.leaving = true;
             node.leaving.push(child);
         }
@@ -567,7 +573,20 @@ fn finish(
         (frozen, None, 0.0)
     };
 
+    let mask_target = match &paint {
+        Some(node::PaintStyle::Box { mask: Some(node::Mask { source: node::MaskSource::Node(id), .. }), .. }) => {
+            let target = children.iter().find(|child| {
+                !child.leaving && matches!(child.properties.get("id"), Some(mlua::Value::String(name)) if name.to_str().is_ok_and(|name| &*name == id))
+            }).map(|child| child.id);
+            if style.visible && target.is_none() {
+                return Err(node::invalid("mask", format!("no direct child with id `{id}`")));
+            }
+            target
+        }
+        _ => None,
+    };
     Ok(ResolvedNode {
+        mask_target,
         layout_style: std::rc::Rc::new(style),
         taffy: Some(taffy_id),
         id,
@@ -2485,5 +2504,73 @@ mod tests {
 
         let (solves, _, dropped, _) = pass(&mut scene, "kids:set({ kids:get()[3] })");
         assert_eq!((solves, dropped.len(), dropped[0].y), (1, 1, 0.0), "the kept row moves up to the top");
+    }
+    #[test]
+    fn node_mask_reconciles_reacts_and_refuses_missing_targets_transactionally() {
+        use crate::layout::{
+            hit::{LogicalPoint, contains_node, hit_path},
+            paint,
+        };
+        let mut scene = Scene::new();
+        let shaping = ShapingHandle::spawn();
+        let (lua, surface) = surface_from(
+            r##"
+            alpha = state("alpha", 1)
+            selected = state("selected", { node = "shape" })
+            kids = state("kids", {
+                rect { id = "shape", width = 20, height = 20, opacity = alpha,
+                    background = "#ffffff", on_click = function() end,
+                    children = { textfield { width = 10, height = 10, autofocus = true,
+                        on_change = function() end } } },
+                rect { id = "other", width = 10, height = 10, background = "#ffffff" }
+            })
+            return panel { id = "bar", child = rect { width = 40, height = 40,
+                background = "#ff0000", mask = selected, children = kids } }
+        "##,
+        );
+        let pass = |scene: &mut Scene| apply_at(scene, std::slice::from_ref(&surface), full(), &shaping, &lua);
+        pass(&mut scene).unwrap();
+        let root = scene.surface("bar@TEST").unwrap();
+        let id = root.children[0].mask_child().unwrap().id;
+        let old = paint::build(root, 1.0, None);
+        assert!(!contains_node(root, id));
+        assert!(!hit_path(root, LogicalPoint { x: 15.0, y: 15.0 }).iter().any(|n| n.id == id));
+        assert!(crate::layout::secure_submit::typable_secure_submit_targets(root).is_empty());
+        lua.load("alpha:set(0.25)").exec().unwrap();
+        pass(&mut scene).unwrap();
+        let root = scene.surface("bar@TEST").unwrap();
+        assert_eq!(root.children[0].mask_child().unwrap().id, id);
+        let new = paint::build(root, 1.0, None);
+        assert_ne!(old, new);
+        assert!(!new.damage_since(&old, false).is_empty());
+        lua.load("selected:set({ node = 'other' })").exec().unwrap();
+        pass(&mut scene).unwrap();
+        assert!(contains_node(scene.surface("bar@TEST").unwrap(), id));
+        let before = paint::build(scene.surface("bar@TEST").unwrap(), 1.0, None);
+        lua.load("kids:set({})").exec().unwrap();
+        assert!(pass(&mut scene).unwrap_err().to_string().contains("no direct child"));
+        assert_eq!(paint::build(scene.surface("bar@TEST").unwrap(), 1.0, None), before);
+    }
+    #[test]
+    fn node_mask_removal_does_not_paint_its_exit_as_content() {
+        let mut scene = Scene::new();
+        let shaping = ShapingHandle::spawn();
+        let (lua, surface) = surface_from(
+            r##"
+            local shape = rect { id = "shape", width = 20, height = 20, background = "#ffffff",
+                animate = { exit = { duration = 100, opacity = 0 } } }
+            replacement = rect { id = "replacement", width = 10, height = 10, background = "#ffffff" }
+            selected = state("selected", { node = "shape" })
+            kids = state("kids", { shape, replacement })
+            return panel { id = "bar", child = rect { width = 40, height = 40,
+                background = "#ff0000", mask = selected, children = kids } }
+        "##,
+        );
+        apply_at(&mut scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
+        lua.load("selected:set({ node = 'replacement' }); kids:set({ replacement })").exec().unwrap();
+        apply_at(&mut scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
+        let parent = &scene.surface("bar@TEST").unwrap().children[0];
+        assert_eq!(parent.children.len(), 1, "removed mask does not enter the exit list");
+        assert!(parent.content_children().next().is_none());
     }
 }

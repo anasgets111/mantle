@@ -155,13 +155,23 @@ fn build_node(
             }
             inner.extend(border.map(|draw| DrawCmd { rect, clip, draw }));
             if !inner.is_empty() {
-                let box_px = (physical_edge(rect.width, scale), physical_edge(rect.height, scale));
-                let mask = mask.cloned().map(|mask| (mask, box_px));
-                out.push(DrawCmd {
-                    rect,
-                    clip,
-                    draw: Draw::Clipped { radius: radius.unwrap_or(0.0), mask, commands: inner },
-                });
+                let draw = if let Some(mask_node) = node.mask_child() {
+                    let mut commands = Vec::new();
+                    build_node(mask_node, x, y, scale, (clip, surface), 1.0, None, &mut commands);
+                    let split = commands.len();
+                    commands.extend(inner);
+                    Draw::NodeMask {
+                        invert: mask.is_some_and(|mask| mask.invert),
+                        radius: radius.unwrap_or(0.0),
+                        split,
+                        commands,
+                    }
+                } else {
+                    let box_px = (physical_edge(rect.width, scale), physical_edge(rect.height, scale));
+                    let mask = mask.cloned().map(|mask| (mask, box_px));
+                    Draw::Clipped { radius: radius.unwrap_or(0.0), mask, commands: inner }
+                };
+                out.push(DrawCmd { rect, clip, draw });
             }
         }
         None => {
@@ -1543,5 +1553,23 @@ mod tests {
     fn a_fully_faded_glass_reads_no_backdrop() {
         let list = effect_surface(r##"rect { width = 40, height = 20, backdrop_blur = 4, opacity = 0 }"##);
         assert!(!list.commands.iter().any(|cmd| matches!(cmd.draw, Draw::Backdrop { .. })), "{list:?}");
+    }
+    #[test]
+    fn node_mask_images_and_captures_keep_resource_and_damage_tracking() {
+        let list = masked(
+            r##"rect { width = 80, height = 32, background = "#ffffff",
+            mask = { node = "shape" }, children = { rect { id = "shape", width = 80, height = 32,
+                children = { image { source = "/tmp/mask.png", width = 20, height = 20 },
+                    capture { output = "TEST", width = 20, height = 20 } } } } }"##,
+        );
+        let mut images = Vec::new();
+        list.drawn_images(&mut images);
+        assert_eq!(images, [(std::path::PathBuf::from("/tmp/mask.png"), (20, 20))]);
+        assert!(list.draws_any_of(&[std::path::PathBuf::from("/tmp/mask.png")]));
+        let mut captures = Vec::new();
+        list.capture_nodes(&mut captures);
+        assert_eq!(captures.len(), 1);
+        assert!(list.captures_any_of(&[captures[0].node]));
+        assert!(!list.damage_since(&list, true).is_empty());
     }
 }

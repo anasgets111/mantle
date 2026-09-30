@@ -70,7 +70,8 @@ pub(super) fn draw_layer(
         Some(kept) => kept,
         None => {
             // Whole: the blur and the shadow read past the repaint's edge.
-            let Some(content) = offscreen(painter, walk, rect, clip, None, None, commands, target, frame, UNCLIPPED)
+            let Some(content) =
+                offscreen(painter, walk, rect, clip, None, None, commands, target, frame, UNCLIPPED, true)
             else {
                 return;
             };
