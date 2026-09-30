@@ -15,6 +15,12 @@ use nonstick::{ConversationAdapter, Transaction};
 use shared::{debug, error, info, warn};
 use tokio::sync::mpsc::UnboundedSender;
 
+/// Set (to anything) in the re-exec'd worker; `main.rs` checks it before any other setup.
+pub const WORKER_ENV: &str = "MANTLE_PAM_WORKER";
+
+/// The account the worker authenticates.
+const USERNAME_ENV: &str = "MANTLE_PAM_USERNAME";
+
 /// Admin PAM service-stack directory. A constant lets [`pam_service_in`] tests use a temporary
 /// directory.
 const PAM_CONFIG_DIR: &str = "/etc/pam.d";
@@ -164,7 +170,7 @@ fn run_conversation(username: &str) -> shared::PamOutcome {
 /// `run_conversation`; this only writes the frame that ends it. Plain blocking I/O throughout, so
 /// no runtime is spun up here.
 pub fn run_worker() -> Result<(), Box<dyn std::error::Error>> {
-    let username = std::env::var("MANTLE_PAM_USERNAME")?;
+    let username = std::env::var(USERNAME_ENV)?;
     let outcome = run_conversation(&username);
     write_frame(std::io::stdout().lock(), &shared::PamMessage::Outcome(outcome))?;
     Ok(())
@@ -334,10 +340,7 @@ async fn spawn_worker_and_exchange(username: &str, secret: &[u8]) -> std::io::Re
     let child = crate::process::spawn_group_leader_stdio_piped(
         SELF_EXE,
         &[],
-        &[
-            ("MANTLE_PAM_WORKER".to_string(), "1".to_string()),
-            ("MANTLE_PAM_USERNAME".to_string(), username.to_string()),
-        ],
+        &[(WORKER_ENV.to_string(), "1".to_string()), (USERNAME_ENV.to_string(), username.to_string())],
     )?;
     exchange_over(child, secret, PAM_EXCHANGE_TIMEOUT).await
 }

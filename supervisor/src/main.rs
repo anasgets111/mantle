@@ -40,19 +40,23 @@ use supervisor::Supervisor;
 const RELOAD_DEBOUNCE: Duration = Duration::from_millis(200);
 
 /// Only the authoritative Renderer and control clients may dispatch; a replaced Renderer can still
-/// have frames in flight.
-fn is_live_inbound_generation(generation_id: u32, authoritative_generation_id: u32) -> bool {
-    generation_id == authoritative_generation_id || generation_id == shared::CONTROL_CLIENT_GENERATION
-}
-
-/// [`is_live_inbound_generation`] with `CallResult`'s exemption. An `mantle call` dispatched before
-/// a respawn is answered by the generation it was asked, which by then may be the replaced one, and
-/// that answer is correct. `CallRoutes::answer` applies the stricter test this cannot: it refuses
-/// any generation other than the one the call went to. Dropping the frame here instead would strand
-/// the caller until its deadline.
+/// have frames in flight. `CallResult` is exempt: an `mantle call` dispatched before a respawn is
+/// answered by the generation it was asked, which by then may be the replaced one, and that answer
+/// is correct. `CallRoutes::answer` applies the stricter test this cannot: it refuses any
+/// generation other than the one the call went to. Dropping the frame here instead would strand the
+/// caller until its deadline.
 fn frame_may_dispatch(frame: &RendererFrame, generation_id: u32, authoritative_generation_id: u32) -> bool {
     matches!(frame, RendererFrame::CallResult(_))
-        || is_live_inbound_generation(generation_id, authoritative_generation_id)
+        || generation_id == authoritative_generation_id
+        || generation_id == shared::CONTROL_CLIENT_GENERATION
+}
+
+/// Sends the request `id` to the onscreen generation and records it, so `call_routes` can check the
+/// answer came from the generation asked.
+fn send_to_authoritative(supervisor: &Supervisor, call_routes: &socket::CallRoutes, id: u64, frame: SupervisorFrame) {
+    let generation_id = supervisor.authoritative.generation_id;
+    call_routes.dispatched(id, generation_id);
+    send_frame_logged(&supervisor.registry, generation_id, &frame);
 }
 
 /// Logs a command for a controller never built (ADR-0070). A config cannot reach this: reading
@@ -105,7 +109,7 @@ fn detach_self(root: &std::path::Path) -> Result<(), Box<dyn Error>> {
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
-    if std::env::var_os("MANTLE_PAM_WORKER").is_some() {
+    if std::env::var_os(pam_worker::WORKER_ENV).is_some() {
         return pam_worker::run_worker();
     }
 
@@ -375,22 +379,15 @@ async fn run_supervisor(
                 // applies or refuses it by name and answers like a call; only this process knows
                 // that generation.
                 RendererFrame::SetState { id, set } => {
-                    let generation_id = supervisor.authoritative.generation_id;
-                    call_routes.dispatched(id, generation_id);
-                    send_frame_logged(&supervisor.registry, generation_id, &SupervisorFrame::SetState { id, set });
+                    send_to_authoritative(&supervisor, &call_routes, id, SupervisorFrame::SetState { id, set });
                 }
                 // ADR-0197: `mantle call`, to the same generation `SetState` goes to. The id was
                 // stamped by the connection that is holding its socket open for the answer.
                 RendererFrame::Call(call) => {
-                    let generation_id = supervisor.authoritative.generation_id;
-                    call_routes.dispatched(call.id, generation_id);
-                    send_frame_logged(&supervisor.registry, generation_id, &SupervisorFrame::Call(call));
+                    send_to_authoritative(&supervisor, &call_routes, call.id, SupervisorFrame::Call(call));
                 }
                 RendererFrame::ListDeclared { id, declared } => {
-                    let generation_id = supervisor.authoritative.generation_id;
-                    call_routes.dispatched(id, generation_id);
-                    let frame = SupervisorFrame::ListDeclared { id, declared };
-                    send_frame_logged(&supervisor.registry, generation_id, &frame);
+                    send_to_authoritative(&supervisor, &call_routes, id, SupervisorFrame::ListDeclared { id, declared });
                 }
                 // The answer, back to whichever peer is waiting on that id. A refusal here is the
                 // caller's deadline expiring rather than a wrong answer, which is the safe way
@@ -481,13 +478,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn only_the_authoritative_generation_and_control_clients_may_reach_dispatch() {
-        assert!(is_live_inbound_generation(0, 0));
-        assert!(is_live_inbound_generation(shared::CONTROL_CLIENT_GENERATION, 0));
-        assert!(!is_live_inbound_generation(1, 0));
-    }
-
-    #[test]
     fn a_call_answer_from_a_superseded_generation_still_reaches_its_waiting_caller() {
         // The call went to generation 0, which was superseded before it answered. `CallRoutes`
         // pairs the answer with the generation asked; the stale-frame filter must not pre-empt it.
@@ -501,5 +491,6 @@ mod tests {
         let start = RendererFrame::StartCapability { capability: Capability::Lock };
         assert!(!frame_may_dispatch(&start, 0, 1));
         assert!(frame_may_dispatch(&start, 1, 1));
+        assert!(frame_may_dispatch(&start, shared::CONTROL_CLIENT_GENERATION, 1));
     }
 }

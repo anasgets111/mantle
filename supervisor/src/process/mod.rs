@@ -15,30 +15,13 @@ use tokio::process::{Child, Command};
 
 pub mod registry;
 
-/// Meaning of an elapsed `wait()` timeout after a following `try_wait()`.
-#[derive(Debug, PartialEq, Eq)]
-enum TimeoutRace {
-    /// The group exited as the deadline fired.
-    ActuallyExited(ExitStatus),
-    /// Still running; the timeout did not race an exit.
-    StillRunning,
-}
-
-/// Classifies an elapsed `wait()` timeout. A real exit can land at the deadline; `late_status` must
-/// be the immediate non-blocking `try_wait()` result.
-fn classify_timeout(late_status: io::Result<Option<ExitStatus>>) -> io::Result<TimeoutRace> {
-    Ok(match late_status? {
-        Some(status) => TimeoutRace::ActuallyExited(status),
-        None => TimeoutRace::StillRunning,
-    })
-}
-
-/// Waits up to `grace`, classifying a deadline with [`classify_timeout`]. Used after both SIGTERM
-/// and SIGKILL in [`reap_process_group`].
-async fn wait_or_classify(child: &mut Child, grace: Duration) -> io::Result<TimeoutRace> {
+/// Waits up to `grace`; `None` means still running. A real exit can land at the deadline, so an
+/// elapsed timeout re-checks with `try_wait()`. Used after both SIGTERM and SIGKILL in
+/// [`reap_process_group`].
+async fn wait_or_classify(child: &mut Child, grace: Duration) -> io::Result<Option<ExitStatus>> {
     match tokio::time::timeout(grace, child.wait()).await {
-        Ok(status) => Ok(TimeoutRace::ActuallyExited(status?)),
-        Err(_elapsed) => classify_timeout(child.try_wait()),
+        Ok(status) => Ok(Some(status?)),
+        Err(_elapsed) => child.try_wait(),
     }
 }
 
@@ -137,14 +120,14 @@ pub async fn reap_process_group(child: &mut Child, grace: Duration) -> io::Resul
     let pgid = Pid::from_raw(pid as i32);
 
     signal_group_best_effort(pgid, Signal::SIGTERM)?;
-    if let TimeoutRace::ActuallyExited(status) = wait_or_classify(child, grace).await? {
+    if let Some(status) = wait_or_classify(child, grace).await? {
         return Ok(status);
     }
 
     signal_group_best_effort(pgid, Signal::SIGKILL)?;
     match wait_or_classify(child, Duration::from_secs(2)).await? {
-        TimeoutRace::ActuallyExited(status) => Ok(status),
-        TimeoutRace::StillRunning => {
+        Some(status) => Ok(status),
+        None => {
             Err(io::Error::other("process group did not exit even after SIGKILL (likely stuck in uninterruptible I/O)"))
         }
     }
@@ -175,36 +158,13 @@ mod tests {
         vec!["-c".to_string(), script.to_string()]
     }
 
-    // The OS race is unreliable: 320 stress runs never hit it. Test classification directly with
-    // fabricated `ExitStatus` values instead.
-
-    #[test]
-    fn classify_timeout_reports_the_race_when_late_status_shows_an_exit() {
-        let status = ExitStatus::from_raw(0);
-
-        let race = classify_timeout(Ok(Some(status))).expect("late_status was Ok");
-
-        assert_eq!(race, TimeoutRace::ActuallyExited(status));
-    }
-
-    #[test]
-    fn classify_timeout_reports_still_running_when_late_status_is_none() {
-        let race = classify_timeout(Ok(None)).expect("late_status was Ok");
-
-        assert_eq!(race, TimeoutRace::StillRunning);
-    }
-
     #[tokio::test]
     async fn wait_or_classify_reports_still_running_against_a_long_lived_child_within_a_short_grace() {
         let mut child = spawn_group_leader("sh", &sh_args("sleep 5"), &[]).expect("failed to spawn");
 
-        let race = wait_or_classify(&mut child, Duration::from_millis(20)).await.expect("wait_or_classify failed");
+        let status = wait_or_classify(&mut child, Duration::from_millis(20)).await.expect("wait_or_classify failed");
 
-        assert_eq!(
-            race,
-            TimeoutRace::StillRunning,
-            "a still-running child within a short grace must not be misreported as exited"
-        );
+        assert_eq!(status, None, "a still-running child within a short grace must not be misreported as exited");
 
         // No signal was sent above, so clean up directly rather than leaking the sleep.
         child.kill().await.expect("cleanup kill failed");

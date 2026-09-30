@@ -21,7 +21,7 @@ use crate::memory;
 use crate::pam_worker;
 use crate::polkit::AgentRequest;
 use crate::process::registry::{LiveProcesses, reap_processes, wait_and_report_exit};
-use crate::snapshot::{Published, push_snapshot};
+use crate::snapshot::{Published, push_snapshot, send_owned};
 use crate::socket;
 use crate::{process, send_frame_logged};
 
@@ -249,13 +249,9 @@ impl Supervisor {
             return;
         }
         debug!("hydrating generation {generation_id} with {} snapshots", self.last_snapshots.len());
-        // Moved through each frame and back, as in `push_snapshot`, rather than deep-cloned.
         for (capability, last) in std::mem::take(&mut self.last_snapshots) {
-            let frame = SupervisorFrame::StateSnapshot(last.snapshot);
-            send_frame_logged(&self.registry, generation_id, &frame);
-            if let SupervisorFrame::StateSnapshot(snapshot) = frame {
-                self.last_snapshots.insert(capability, Published { snapshot, deduped: last.deduped });
-            }
+            let snapshot = send_owned(&self.registry, generation_id, last.snapshot);
+            self.last_snapshots.insert(capability, Published { snapshot, deduped: last.deduped });
         }
         // ADR-0058 decision 4: replay before relock, or one default frame looks like a broken
         // shell. No Supervisor-side auth-capability check here; Renderer reports Refused if its

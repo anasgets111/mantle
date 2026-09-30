@@ -102,31 +102,9 @@ pub struct GenerationRegistry {
     expected_pids: Arc<Mutex<HashMap<u32, u32>>>,
 }
 
-/// [`GenerationRegistry::send_frame`] delivery failure.
-#[derive(Debug)]
-pub enum SendFrameError {
-    /// `serde_json::to_vec` failed.
-    Serialize(serde_json::Error),
-    /// No connection is registered for the target generation.
-    NoConnection { generation_id: u32 },
-}
-
-impl std::fmt::Display for SendFrameError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            SendFrameError::Serialize(err) => write!(f, "failed to serialize frame: {err}"),
-            SendFrameError::NoConnection { generation_id } => {
-                write!(f, "no connection registered for generation {generation_id}")
-            }
-        }
-    }
-}
-
-impl std::error::Error for SendFrameError {}
-
 impl GenerationRegistry {
     /// Queues raw `payload` for `generation_id`; returns `false` with no registration. The only
-    /// raw-byte crossing into an outbound channel (ADR-0022); [`Self::send_frame`] builds on it.
+    /// raw-byte crossing into an outbound channel (ADR-0022); [`send_frame_logged`] builds on it.
     pub fn send_to(&self, generation_id: u32, payload: Vec<u8>) -> bool {
         let mut wedged = None;
         let connections = self.connections.lock().expect("mutex poisoned");
@@ -165,12 +143,6 @@ impl GenerationRegistry {
             hangup.notify_one();
         }
         sent
-    }
-
-    /// Encodes and sends `frame` to `generation_id`; every `SupervisorFrame` send uses this.
-    pub fn send_frame(&self, generation_id: u32, frame: &SupervisorFrame) -> Result<(), SendFrameError> {
-        let payload = serde_json::to_vec(frame).map_err(SendFrameError::Serialize)?;
-        if self.send_to(generation_id, payload) { Ok(()) } else { Err(SendFrameError::NoConnection { generation_id }) }
     }
 
     /// Records the pid Supervisor spawned for `generation_id`, which is the only pid allowed to
@@ -481,14 +453,18 @@ fn refuse_frame(control_client: bool, generation_id: u32, frame: &RendererFrame)
 /// Sends `frame`, logging rather than propagating failure. `NoConnection` is expected before boot
 /// Renderer registration; `connected.recv()` replays `last_snapshots`, so no early push is lost.
 pub(crate) fn send_frame_logged(registry: &GenerationRegistry, generation_id: u32, frame: &SupervisorFrame) {
-    let Err(err) = registry.send_frame(generation_id, frame) else {
-        return;
+    let payload = match serde_json::to_vec(frame) {
+        Ok(payload) => payload,
+        Err(err) => return debug!("failed to serialize {frame:?} for generation {generation_id}: {err}"),
     };
-    // Silent: the replay delivers it, and a respawn cooldown logged one line per snapshot for 30s.
-    if let (SupervisorFrame::StateSnapshot(_), SendFrameError::NoConnection { .. }) = (frame, &err) {
+    if registry.send_to(generation_id, payload) {
         return;
     }
-    debug!("failed to push {frame:?} to generation {generation_id}: {err}");
+    // Silent for snapshots: the replay delivers them, and a respawn cooldown logged one line per
+    // snapshot for 30s.
+    if !matches!(frame, SupervisorFrame::StateSnapshot(_)) {
+        debug!("failed to push {frame:?} to generation {generation_id}: no connection registered");
+    }
 }
 
 #[cfg(test)]

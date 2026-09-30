@@ -14,6 +14,22 @@ pub(crate) struct Published {
     pub(crate) deduped: u32,
 }
 
+/// Sends `snapshot` and hands it back. `send_frame_logged` borrows, so the obvious spelling
+/// deep-clones the whole `payload` tree, the largest thing on this path, per signal just to keep a
+/// copy; moving it through the frame and back does not.
+pub(crate) fn send_owned(
+    registry: &socket::GenerationRegistry,
+    generation_id: u32,
+    snapshot: shared::StateSnapshot,
+) -> shared::StateSnapshot {
+    let frame = SupervisorFrame::StateSnapshot(snapshot);
+    send_frame_logged(registry, generation_id, &frame);
+    match frame {
+        SupervisorFrame::StateSnapshot(snapshot) => snapshot,
+        _ => unreachable!("the frame was built as a StateSnapshot"),
+    }
+}
+
 /// Pushes `state` as a fresh `StateSnapshot` with the next revision, and records it in
 /// `last_snapshots` (ADR-0029), which `Supervisor::hydrate` replays to a new generation. A payload
 /// equal to the last one is dropped: every push re-resolves the Renderer's scene (ADR-0044).
@@ -41,18 +57,12 @@ pub(crate) fn push_snapshot(
             // ADR-0004's state version; the first push is `1`.
             let (revision, deduped) =
                 last_snapshots.get(&capability).map_or((1, 0), |last| (last.snapshot.revision + 1, last.deduped));
-            // Move the snapshot through the frame and take it back out. `send_frame_logged`
-            // borrows, so the obvious spelling deep-clones the whole `payload` tree -- the largest
-            // thing on this path -- on every signal, purely to keep a copy.
-            let frame = SupervisorFrame::StateSnapshot(shared::StateSnapshot {
-                capability: capability.to_string(),
-                revision,
-                payload,
-            });
-            send_frame_logged(registry, generation_id, &frame);
-            if let SupervisorFrame::StateSnapshot(snapshot) = frame {
-                last_snapshots.insert(capability, Published { snapshot, deduped });
-            }
+            let snapshot = send_owned(
+                registry,
+                generation_id,
+                shared::StateSnapshot { capability: capability.to_string(), revision, payload },
+            );
+            last_snapshots.insert(capability, Published { snapshot, deduped });
         }
         Err(err) => warn!("failed to serialize {capability} StateSnapshot: {err}"),
     }

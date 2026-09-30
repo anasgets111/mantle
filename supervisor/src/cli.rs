@@ -162,6 +162,11 @@ fn is_option(arg: &str) -> bool {
         || verbose_count(arg).is_some()
 }
 
+/// JSON when `raw` parses, a string otherwise, so bare words (keybind values) need no extra quotes.
+fn json_or_string(raw: String) -> serde_json::Value {
+    serde_json::from_str(&raw).unwrap_or(serde_json::Value::String(raw))
+}
+
 pub fn parse<I: IntoIterator<Item = String>>(argv: I) -> Result<Args, String> {
     let mut args = argv.into_iter().skip(1);
     let mut command = None;
@@ -181,27 +186,18 @@ pub fn parse<I: IntoIterator<Item = String>>(argv: I) -> Result<Args, String> {
         }
         match arg.as_str() {
             "init" | "check" | "set" | "toggle" | "call" | "log" | "list" | "stop" if command.is_none() => {
-                command = Some(match arg.as_str() {
-                    "init" => "init",
-                    "check" => "check",
-                    "set" => "set",
-                    "call" => "call",
-                    "log" => "log",
-                    "list" => "list",
-                    "stop" => "stop",
-                    _ => "toggle",
-                });
+                command = Some(arg);
             }
             // Take the state name and `set` value before flags; a value may begin with a dash
             // (`-1`). An option the parser knows is still an option in that slot, or
             // `mantle toggle open -c /dir` would store the flag as the value and then choke on the
             // directory.
-            _ if matches!(command, Some("set" | "toggle")) && positional.len() < 2 && !is_option(&arg) => {
+            _ if matches!(command.as_deref(), Some("set" | "toggle")) && positional.len() < 2 && !is_option(&arg) => {
                 positional.push(arg);
             }
             // `call` takes a name and however many arguments the action declares, so no two-slot
             // cap. A JSON argument beginning with a dash is still a value, as above.
-            _ if matches!(command, Some("call")) && !is_option(&arg) => {
+            _ if matches!(command.as_deref(), Some("call")) && !is_option(&arg) => {
                 positional.push(arg);
             }
             "-c" | "--config" => {
@@ -237,7 +233,7 @@ pub fn parse<I: IntoIterator<Item = String>>(argv: I) -> Result<Args, String> {
         }
     }
 
-    let command = match command {
+    let command = match command.as_deref() {
         Some("init") => Command::Init { force },
         Some("check") => Command::Check,
         // A bare verb lists what it could name. `toggle VALUE` reaches any state, so `toggle` lists
@@ -246,9 +242,7 @@ pub fn parse<I: IntoIterator<Item = String>>(argv: I) -> Result<Args, String> {
         Some("set") => {
             let [name, value] = <[String; 2]>::try_from(positional)
                 .map_err(|_| "set takes a state name and a value: `mantle set launcher_open true`".to_string())?;
-            // Parse JSON when possible; bare words stay strings, so keybinds need no extra quotes.
-            let value = serde_json::from_str(&value).unwrap_or(serde_json::Value::String(value));
-            Command::SetState(shared::SetState { name, write: shared::StateWrite::Set(value) })
+            Command::SetState(shared::SetState { name, write: shared::StateWrite::Set(json_or_string(value)) })
         }
         Some("toggle") => {
             let mut positional = positional.into_iter();
@@ -258,9 +252,7 @@ pub fn parse<I: IntoIterator<Item = String>>(argv: I) -> Result<Args, String> {
                 // The same reading as `set`: JSON when it parses, a string otherwise.
                 (Some(name), Some(value)) => Command::SetState(shared::SetState {
                     name,
-                    write: shared::StateWrite::ToggleTo(
-                        serde_json::from_str(&value).unwrap_or(serde_json::Value::String(value)),
-                    ),
+                    write: shared::StateWrite::ToggleTo(json_or_string(value)),
                 }),
             }
         }
@@ -270,12 +262,7 @@ pub fn parse<I: IntoIterator<Item = String>>(argv: I) -> Result<Args, String> {
                 None => Command::ListDeclared(shared::Declared::Actions),
                 // The same reading as `set`: JSON when it parses, a string otherwise, so a keybind
                 // passing a word needs no shell quoting.
-                Some(name) => Command::Call {
-                    name,
-                    arguments: positional
-                        .map(|arg| serde_json::from_str(&arg).unwrap_or(serde_json::Value::String(arg)))
-                        .collect(),
-                },
+                Some(name) => Command::Call { name, arguments: positional.map(json_or_string).collect() },
             }
         }
         Some("log") => Command::Log { follow },
