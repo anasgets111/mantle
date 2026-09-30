@@ -5,6 +5,7 @@ use std::collections::HashSet;
 
 use mlua::{Lua, Value, WeakLua};
 
+use crate::lua::location::Site;
 use crate::lua::nodes::{DeserializeError, VirtualNode, deserialize_lua_table};
 use crate::lua::signal::{self, CellId, ComputedFrame};
 
@@ -238,8 +239,9 @@ pub fn list_children(properties: &PropMap, lua: &Lua) -> Result<(Vec<VirtualNode
 
 /// What a `list` last built its items from (ADR-0269, ADR-0273): its `source`, `itemfn` and `key`
 /// by identity, its `limit`, the cells reading `source` and calling `key` read, and per item, the
-/// cells its `itemfn` call and its own subtree read. While the list's own inputs hold, the pass
-/// lays the retained items out again and calls `itemfn` only for an item whose cells were written.
+/// cells its `itemfn` call read and, apart, the cells its subtree's resolve read. While the list's
+/// own inputs hold, the pass lays the retained items out again, calls `itemfn` only for an item
+/// whose `itemfn` reads were written, and resolves again one whose subtree reads alone were.
 ///
 /// Exact for signals, and blind to anything else a build reads: `os.time()`, an upvalue, a table
 /// mutated in place. That is the contract `docs/nodes/list.md` states.
@@ -258,14 +260,28 @@ pub struct ListMemo {
     pub items: Vec<ItemMemo>,
 }
 
-/// One `list` item's build: the element it came from, the key `key` gave it, the write clock
-/// taken before it read anything, and what it read.
+/// One `list` item's build: the element it came from, the key `key` gave it, where `itemfn` built
+/// its node, the write clock taken before it read anything, and what it read.
 #[derive(Clone)]
 pub struct ItemMemo {
     element: Value,
     key: Option<mlua::LuaString>,
+    site: Option<Site>,
     stamp: u64,
-    cells: Vec<CellId>,
+    /// What the `itemfn` call read: a write to one builds the item again.
+    built: Vec<CellId>,
+    /// What resolving its subtree read: a write to one resolves the kept declaration again.
+    resolved: Vec<CellId>,
+}
+
+/// What a pass does with one item of a list whose own build still holds.
+pub enum ItemPass {
+    /// Lay the retained item out again, running no Lua.
+    Keep,
+    /// Resolve the retained declaration again; each node's memo skips the getters nothing wrote.
+    Resolve(Option<Site>),
+    /// Call `itemfn` again.
+    Build,
 }
 
 fn list_inputs(properties: &PropMap) -> [Value; 3] {
@@ -275,7 +291,7 @@ fn list_inputs(properties: &PropMap) -> [Value; 3] {
 impl ListMemo {
     /// Whether a build now would read the same elements and keys the last one did. When it would,
     /// those reads are noted as this pass's, so the instance stays a reader of what the skipped
-    /// build read; each kept item notes its own through [`ItemMemo::holds`].
+    /// build read; each kept item notes its own through [`ItemMemo::pass`].
     pub fn still_holds(&self, properties: &PropMap, lua: &Lua) -> Result<bool, LayoutError> {
         let same = |a: &Value, b: &Value| a.type_name() == b.type_name() && a.to_pointer() == b.to_pointer();
         let same_inputs = self.lua == lua.weak()
@@ -299,23 +315,32 @@ impl ListMemo {
 
     /// Whether the last build read `cell`, for the list or any of its items.
     pub fn read(&self, cell: CellId) -> bool {
-        self.cells.contains(&cell) || self.items.iter().any(|item| item.cells.contains(&cell))
+        self.cells.contains(&cell)
+            || self.items.iter().any(|item| item.built.contains(&cell) || item.resolved.contains(&cell))
     }
 
-    /// Adds what item `index`'s subtree read to what its `itemfn` call did.
+    /// Adds what item `index`'s subtree read.
     pub fn item_read(&mut self, index: usize, cells: &[CellId]) {
-        extend_unique(&mut self.items[index].cells, cells);
+        extend_unique(&mut self.items[index].resolved, cells);
     }
 }
 
 impl ItemMemo {
-    /// Whether this item would build the same. When it would, its reads are noted as this pass's.
-    pub fn holds(&self, lua: &Lua) -> bool {
-        let holds = !signal::written_since(self.stamp, &self.cells);
-        if holds {
-            signal::note_reads(lua, &self.cells);
+    /// What this item needs this pass. The reads a kept part skips are noted as this pass's. A
+    /// resolve starts a fresh subtree read set: every `itemfn` read held up to now, so they hold
+    /// since the new stamp too.
+    pub fn pass(&mut self, lua: &Lua) -> ItemPass {
+        if signal::written_since(self.stamp, &self.built) {
+            return ItemPass::Build;
         }
-        holds
+        signal::note_reads(lua, &self.built);
+        if !signal::written_since(self.stamp, &self.resolved) {
+            signal::note_reads(lua, &self.resolved);
+            return ItemPass::Keep;
+        }
+        self.stamp = signal::write_clock(lua);
+        self.resolved.clear();
+        ItemPass::Resolve(self.site)
     }
 
     /// This item built again from the element and key it had, and its fresh memo.
@@ -327,7 +352,14 @@ impl ItemMemo {
         if let Some(key) = &self.key {
             node.properties.insert("id", Value::String(key.clone()));
         }
-        let memo = ItemMemo { element: self.element.clone(), key: self.key.clone(), stamp, cells: frame.finish() };
+        let memo = ItemMemo {
+            element: self.element.clone(),
+            key: self.key.clone(),
+            site: node.site,
+            stamp,
+            built: frame.finish(),
+            resolved: Vec::new(),
+        };
         Ok((node, memo))
     }
 }
@@ -398,8 +430,10 @@ fn parse_list_children(properties: &PropMap, lua: &Lua, build: &mut ListMemo) ->
             let stamp = signal::write_clock(lua);
             let frame = ComputedFrame::enter(lua);
             let node = build_item(&itemfn, &element);
-            let mut memo = ItemMemo { element: element.clone(), key: None, stamp, cells: frame.finish() };
+            let built = frame.finish();
             let mut node = node?;
+            let mut memo =
+                ItemMemo { element: element.clone(), key: None, site: node.site, stamp, built, resolved: Vec::new() };
 
             if let Some(key_fn) = &key_fn {
                 let frame = ComputedFrame::enter(lua);

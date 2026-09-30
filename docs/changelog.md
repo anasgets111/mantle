@@ -52,6 +52,9 @@ so everything since the rename from Obelisk sits under Unreleased.
 
 ### Changed
 
+- A write to a signal bound to a `list` item's property, such as `background = theme.bg`, runs that
+  property's getter in each item and no longer calls `itemfn` again; `itemfn` runs again only when
+  the source, `key`, or something `itemfn` itself read changed ([list](nodes/list.md#when-items-rebuild)).
 - A capability action with a wrongly typed or invalid argument raises at the call (`mantle.audio:set_volume: invalid type: …`) instead of logging in the Supervisor ([actions](capabilities/index.md#actions)).
 - `brightness:set` and `keyboard:set_backlight` take any number: fractions round to the nearest raw step, negatives clamp to `0` (before, a float or negative was dropped) ([brightness](capabilities/brightness.md)).
 - `session_process` raises on an unknown `stop_signal` instead of the Supervisor dropping the declaration ([processes](guide/processes.md)).
@@ -111,7 +114,8 @@ so everything since the rename from Obelisk sits under Unreleased.
   variable or a file keeps its last answer until a signal it read changes. Derive time from
   `mantle.system`: `mantle.system:map(function(s) return s and os.date("%H:%M", s.time) or "" end)`
   ([what a node reads again](guide/signals.md#what-a-node-reads-again)).
-- A write one `list` item read, such as its `hover`, builds that item alone instead of every item:
+- A write only one `list` item read, in its `itemfn` or a property such as `hover`, reaches that item
+  alone instead of building every item:
   4.5 ms instead of 16 ms a pass on 500 rows ([when items rebuild](nodes/list.md#when-items-rebuild)).
 - A wheel over a container whose `scroll` signal no getter, `map` or `list` build reads moves its
   children without a layout pass: 0.06 ms instead of 2.4 ms on 500 rows.

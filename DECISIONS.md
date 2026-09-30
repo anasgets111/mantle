@@ -7078,3 +7078,30 @@ time on a 1000-row list, plus a stall per key.
 ponytail: steady typing defers the trim until it stops. Upgrade: cap the deferral.
 
 Amends ADR-0271.
+
+## 0293. A `list` item's bound signals resolve it again; only its `itemfn` reads build it again
+
+ADR-0273 merged an item's `itemfn` reads with its subtree's resolve reads, so a write to a signal
+every row binds (`background = theme.bg`) called `itemfn` for every row: 25-30 ms on a 1000-row
+list, the one pass that held a bar for two frames. `layout::scene::tests::list_pass_cost`, release,
+a `theme` state bound as one rect's `background` in each row, p50:
+
+| rows | before | after | `clock` written, for scale |
+|---|---|---|---|
+| 12 | 0.38 ms | 0.18 ms | 0.16 ms |
+| 125 | 3.7 ms | 1.7 ms | 1.2 ms |
+| 500 | 16.5 ms | 7.1 ms | 5.2 ms |
+
+1. **Two read sets per item, one stamp.** `ItemMemo` keeps what the `itemfn` call read apart from
+   what resolving its subtree read. A write to the first calls `itemfn` (ADR-0273). A write to the
+   second alone hands the pass the item's kept declaration (its `ResolveMemo`'s raw map), so each
+   node's own memo (ADR-0270) reruns only the getters that read the written cell. The stamp moves
+   to the pass and the subtree set starts empty; the `itemfn` set held up to the old stamp, so it
+   holds since the new one.
+2. **Observable.** `itemfn` runs fewer times; one that reads `os.time()` or a mutable upvalue shows
+   it longer, until a signal it read with `:get()` or the source changes. That is ADR-0269's
+   contract, now without the refresh a bound write used to give it.
+
+Rejected: comparing rebuilt items (the build is the cost, as in ADR-0273).
+
+**Amends ADR-0273** decision 1.

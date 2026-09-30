@@ -118,6 +118,11 @@ fn same_declaration(kept: &PropMap, fresh: &PropMap) -> bool {
 }
 
 impl ResolveMemo {
+    /// The declaration this resolve read.
+    pub(super) fn raw(&self) -> &PropMap {
+        &self.raw
+    }
+
     /// Whether this resolve read `cell`: a getter, a `:map` or a function `child` did.
     pub(super) fn read(&self, cell: CellId) -> bool {
         self.cells.contains(&cell)
@@ -392,8 +397,8 @@ mod tests {
         assert_eq!((string(&row.children[1], "content"), bar.runs()), ("x".into(), 1));
     }
 
-    /// An item's reads are the list build's reads (ADR-0269), so a write to one rebuilds the list
-    /// and the rebuilt item shows it.
+    /// A signal bound in an item is read by the item's resolve (ADR-0293), so a write to one
+    /// resolves the item again and it shows the new value.
     #[test]
     fn a_write_an_item_read_reaches_it_through_the_list() {
         let mut bar = Fixture::new(

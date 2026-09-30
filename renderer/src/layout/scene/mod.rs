@@ -1362,16 +1362,17 @@ pub(super) mod tests {
     /// Six nodes per row, one of them text and one holding a `hover`, beside a `clock` text, over a
     /// cached re-apply -- the per-capability-push shape of ADR-0044 decision 2, not a cold start.
     /// `clock` writes only the clock, so the list keeps its items (ADR-0269); `source` writes the
-    /// list's source, so it builds them all; `item` writes the first row's `hover`, so it builds
-    /// that row (ADR-0273). On this machine:
+    /// list's source, so it builds them all; `item` writes the first row's `hover`, so it resolves
+    /// that row again (ADR-0293); `theme` writes a signal every row binds as a `background`, so
+    /// every row resolves again and none builds (ADR-0293). On this machine:
     ///
-    /// | rows | `clock` p50 | `source` p50 | `item` p50 | note |
-    /// |---|---|---|---|---|
-    /// | 12 | 0.10 ms | 0.31 ms | 0.10 ms | one viewport of a virtualized list |
-    /// | 50 | 0.44 ms | 1.47 ms | 0.48 ms | ADR-0132's fifty tiles |
-    /// | 125 | 0.96 ms | 3.65 ms | 1.15 ms | 500 wallpapers, four to a row |
-    /// | 500 | 4.4 ms | 15.3 ms | 4.5 ms | 2000 wallpapers |
-    /// | 125, no text | 0.81 ms | 2.94 ms | 0.87 ms | |
+    /// | rows | `clock` p50 | `source` p50 | `item` p50 | `theme` p50 | note |
+    /// |---|---|---|---|---|---|
+    /// | 12 | 0.16 ms | 0.44 ms | 0.14 ms | 0.18 ms | one viewport of a virtualized list |
+    /// | 50 | 0.48 ms | 1.51 ms | 0.49 ms | 0.68 ms | ADR-0132's fifty tiles |
+    /// | 125 | 1.17 ms | 3.97 ms | 1.21 ms | 1.66 ms | 500 wallpapers, four to a row |
+    /// | 500 | 5.2 ms | 18.2 ms | 4.5 ms | 7.1 ms | 2000 wallpapers |
+    /// | 125, no text | 0.86 ms | 3.05 ms | 0.86 ms | 1.27 ms | |
     ///
     /// Linear in source length either way: about 9us a row kept, 30us a row built. A kept list
     /// still lays every item out; ADR-0191's viewport is the design that would cut it to the first
@@ -1384,6 +1385,7 @@ pub(super) mod tests {
                 if text { r###"text { content = e.label, font_size = 14, foreground = "#ffffff" },"### } else { "" };
             format!(
                 r##"clock = state("clock", "0")
+                theme = state("theme", "#202020")
                 local entries = {{}}
                 for i = 1, {rows} do entries[i] = {{ id = "e" .. i, label = "wallpaper " .. i }} end
                 source = state("source", entries)
@@ -1400,7 +1402,7 @@ pub(super) mod tests {
                                 return row {{ width = "Fill", height = 96, spacing = 6, children = {{
                                     rect {{ width = 96, height = 96, radius = 8, hover = over,
                                         background = over:map(function(on) return on and "#303030" or "#202020" end) }},
-                                    rect {{ width = 96, height = 96, background = "#202020", radius = 8 }},
+                                    rect {{ width = 96, height = 96, background = theme, radius = 8 }},
                                     rect {{ width = 96, height = 96, background = "#202020", radius = 8 }},
                                     rect {{ width = 96, height = 96, background = "#202020", radius = 8 }},
                                     {label}
@@ -1413,7 +1415,7 @@ pub(super) mod tests {
         };
         let shaping = ShapingHandle::spawn();
         for (rows, text) in [(12usize, true), (50, true), (125, true), (500, true), (125, false)] {
-            for written in ["clock", "source", "item"] {
+            for written in ["clock", "source", "item", "theme"] {
                 let (lua, surface) = surface_from(&src(rows, text));
                 let mut scene = Scene::new();
                 apply_at(&mut scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
@@ -1424,6 +1426,7 @@ pub(super) mod tests {
                     match written {
                         "clock" => lua.load("clock:set(tostring(tick))").exec().unwrap(),
                         "source" => lua.load("source:set(source:get())").exec().unwrap(),
+                        "theme" => lua.load(r##"theme:set(tick % 2 == 0 and "#303030" or "#202020")"##).exec().unwrap(),
                         _ => {
                             let over = lua.load(r#"return hover("e1")"#).eval().unwrap();
                             let over = crate::lua::signal::from_userdata(&over).unwrap();

@@ -29,7 +29,7 @@ pub(crate) use content::{Content, Font, Live, MaxLines, Region};
 pub use content::{Elide, StyleRun, TextAlign, Wrap, font_runs};
 pub use paint_style::{PaintStyle, paint_style};
 pub(crate) use spec::{Children, Items, Limit, Root};
-pub use spec::{ListMemo, SecureSubmitTarget, SurfaceSpec, list_children, lock_spec};
+pub use spec::{ItemPass, ListMemo, SecureSubmitTarget, SurfaceSpec, list_children, lock_spec};
 // `wayland::tests`' and `instance::tests`' fixtures name it `node::LockSpec`; nothing else does.
 #[cfg(test)]
 pub use spec::LockSpec;

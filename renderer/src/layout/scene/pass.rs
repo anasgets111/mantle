@@ -447,8 +447,9 @@ fn children_this_pass(
 }
 
 /// A list's items when its own build still holds (ADR-0269): `None` for each whose last build
-/// still holds, and for each whose reads were written, its node built again (ADR-0273). `None`
-/// overall when one of those changed kind or `id`, which only a whole build pairs.
+/// and resolve still hold, its kept declaration for each whose subtree reads alone were written
+/// (ADR-0293), and for each whose `itemfn` reads were written, its node built again (ADR-0273).
+/// `None` overall when one of those changed kind or `id`, which only a whole build pairs.
 ///
 /// ponytail: that fallback calls those items' `itemfn` a second time this pass. Upgrade: hand the
 /// nodes built here to the whole build.
@@ -460,27 +461,32 @@ fn written_items(
 ) -> Result<Option<Vec<Option<VirtualNode>>>, LayoutError> {
     let id = |properties: &PropMap| node::fields::common::id.read(properties).ok().flatten();
     let mut fresh = Vec::with_capacity(retained.len());
-    let mut rebuilt = Vec::new();
     let mut failed = Vec::new();
-    for (index, (item, old)) in memo.items.iter().zip(retained).enumerate() {
-        if item.holds(lua) {
-            fresh.push(None);
-            continue;
+    // A memo changed here and then dropped by a whole build or a failed pass is replaced by that
+    // build's, or by the rollback's.
+    for (item, old) in memo.items.iter_mut().zip(retained) {
+        match (item.pass(lua), &old.resolve_memo) {
+            (node::ItemPass::Keep, _) => {
+                fresh.push(None);
+                continue;
+            }
+            (node::ItemPass::Resolve(site), Some(resolved)) => {
+                fresh.push(Some(VirtualNode { kind: old.kind, properties: resolved.raw().clone(), site }));
+                continue;
+            }
+            _ => {}
         }
         match item.rebuild(properties, lua) {
             Ok((node, _)) if node.kind != old.kind || id(&node.properties) != id(&old.properties) => return Ok(None),
-            Ok((node, item)) => {
+            Ok((node, rebuilt)) => {
                 fresh.push(Some(node));
-                rebuilt.push((index, item));
+                *item = rebuilt;
             }
             Err(err) => failed.push(err),
         }
     }
     if !failed.is_empty() {
         return Err(LayoutError::many(failed));
-    }
-    for (index, item) in rebuilt {
-        memo.items[index] = item;
     }
     Ok(Some(fresh))
 }
@@ -923,14 +929,14 @@ mod tests {
         assert_eq!(rows(&scene), ["ab?y"], "the list's own `limit`");
     }
 
-    /// ADR-0273: a write one item read builds that item alone, on the node it had.
+    /// ADR-0273: a write one item's `itemfn` read builds that item alone, on the node it had.
     #[test]
     fn a_write_one_item_read_builds_that_item_alone() {
         let mut scene = Scene::new();
         let shaping = ShapingHandle::spawn();
         let (lua, surface) = clock_beside_a_list(
             r#"local on = state("on_" .. name, false)
-            return text { content = on:map(function(v) return (v and "*" or "") .. name end) }"#,
+            return text { content = (on:get() and "*" or "") .. name }"#,
         );
         let built = || lua.globals().get::<i64>("built").unwrap();
         let ids = |scene: &Scene| -> Vec<NodeId> {
@@ -948,6 +954,62 @@ mod tests {
         lua.load(r#"state("on_b", false):set(false)"#).exec().unwrap();
         apply_at(&mut scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
         assert_eq!((built(), list_contents(&scene)), (5, vec!["a".to_string(), "b".into(), "c".into()]));
+    }
+
+    /// A signal bound as an item's property is the item's resolve, not its build: a write to it runs
+    /// the getters that read it, in every item, and no `itemfn`.
+    #[test]
+    fn a_signal_bound_in_an_item_resolves_again_without_building_it() {
+        let mut scene = Scene::new();
+        let shaping = ShapingHandle::spawn();
+        let (lua, surface) = surface_from(
+            r##"built, shaded = 0, 0
+            accent = state("accent", "#101010")
+            local shade = accent:map(function(c) shaded = shaded + 1 return c end)
+            items = state("items", { "a", "b", "c" })
+            return panel { id = "bar", child = column { children = {
+                text { content = "x" },
+                list { source = items, key = function(name) return name end, itemfn = function(name)
+                    built = built + 1
+                    return row { children = { text { content = name }, rect { width = 4, background = shade } } }
+                end },
+            } } }"##,
+        );
+        let count = |name: &str| lua.globals().get::<i64>(name).unwrap();
+        let apply =
+            |scene: &mut Scene| apply_at(scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
+        let rows = |scene: &Scene| -> Vec<(NodeId, String, String)> {
+            scene.surface("bar@TEST").unwrap().children[0].children[1]
+                .children
+                .iter()
+                .map(|row| {
+                    let text = |node: &ResolvedNode, key| node.properties[key].as_string().unwrap().to_string_lossy();
+                    (row.id, text(&row.children[0], "content"), text(&row.children[1], "background"))
+                })
+                .collect()
+        };
+        apply(&mut scene);
+        let first = rows(&scene);
+        assert_eq!((count("built"), count("shaded")), (3, 1));
+
+        lua.load(r##"accent:set("#202020")"##).exec().unwrap();
+        apply(&mut scene);
+        assert_eq!(count("built"), 3, "no item built again");
+        assert_eq!(count("shaded"), 2, "the bound map ran once for the pass");
+        let after = rows(&scene);
+        assert!(after.iter().all(|(_, _, bg)| bg == "#202020"), "{after:?}");
+        let ids = |rows: &[(NodeId, String, String)]| rows.iter().map(|r| r.0).collect::<Vec<_>>();
+        assert_eq!(ids(&after), ids(&first));
+
+        lua.load(r##"accent:set("#303030")"##).exec().unwrap();
+        apply(&mut scene);
+        assert_eq!(count("built"), 3, "the item still reads the signal after a resolve that kept its build");
+        assert!(rows(&scene).iter().all(|(_, _, bg)| bg == "#303030"));
+
+        lua.load(r#"items:set({ "a", "z", "c" })"#).exec().unwrap();
+        apply(&mut scene);
+        assert_eq!(count("built"), 6, "its source changed, so every item builds again");
+        assert_eq!(rows(&scene).iter().map(|r| r.1.clone()).collect::<Vec<_>>(), ["a", "z", "c"]);
     }
 
     /// An item built again under a different `id` is a different node, which only pairing places.

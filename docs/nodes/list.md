@@ -64,16 +64,23 @@ A `list` packs and aligns exactly like the `row` or `column` its `direction` nam
 
 A list keeps the items it built until something that build read changes. A pass that finds nothing
 changed calls no `itemfn` and reads none of the items' signals; it lays the kept items out again,
-about a third of the cost of building them. A change one item read builds that item alone; a change
-the list itself read builds every item, scrolled out of view or not.
+about a third of the cost of building them. A change one item's `itemfn` read builds that item
+alone; a change the list itself read builds every item, scrolled out of view or not. A signal bound
+to an item's property is not the build's: a write to it runs that property's getter in each item
+that binds it and calls no `itemfn`.
 
-| Change | Builds again |
+| Change | Runs again |
 | :--- | :--- |
-| A write to `source`, or to a signal under a `map` or `computed` bound to it | Every item |
-| A write to a signal `key` read with `:get()` | Every item |
-| A new `source`, `itemfn` or `key` value, a new `limit`, or a reload | Every item |
-| A write to a signal an item's `itemfn` call read with `:get()`, or bound to a property of that item at any depth, such as its `hover` | That item |
+| A write to `source`, or to a signal under a `map` or `computed` bound to it | Every item's `itemfn` |
+| A write to a signal `key` read with `:get()` | Every item's `itemfn` |
+| A new `source`, `itemfn` or `key` value, a new `limit`, or a reload | Every item's `itemfn` |
+| A write to a signal an item's `itemfn` call read with `:get()` | That item's `itemfn` |
+| A write to a signal bound to a property of an item at any depth, such as `background = theme` or its `hover` | The getters that read it, no `itemfn` |
 | A write to anything else, even on the same surface | Nothing |
+
+So bind a shared signal such as a theme color as the property, `background = theme.bg`, rather than
+reading it in `itemfn` with `theme.bg:get()`: flipping the theme then costs one getter per row, not
+one `itemfn` per row.
 
 `key` carries each item's state (tweens, a held image, a text field's draft) onto its rebuilt node,
 and across reorders. Cap a long list with `limit` (a launcher's top 50 matches), or hide it while
