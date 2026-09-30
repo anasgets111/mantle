@@ -8,10 +8,17 @@ use mlua::Value;
 
 use super::super::prop::Prop;
 use super::super::{LayoutError, PropMap, Property, fields, invalid, only_keys, preview_for_error, value_as_f32};
-use super::sequence::parse_sequence;
-use super::spring::parse_spring;
+use super::easing::{BezierPoints, Steps};
+#[cfg(test)]
+use super::sequence::Loops;
+use super::sequence::{Keyframe, parse_sequence};
+#[cfg(test)]
+use super::spring::SpringConstants;
+use super::spring::{Spring, parse_spring};
 use super::{Animatable, AnimationSpec, Easing, Motion};
-use crate::lua::luacats::spelled;
+#[cfg(test)]
+use crate::lua::luacats::optional;
+use crate::lua::luacats::{LuaType, lua_shape};
 
 /// The name an `animate` entry eases, refused if `kind` does not have it. `animate` itself is not
 /// one: a block cannot ease the block.
@@ -56,11 +63,7 @@ pub fn parse_animate(kind: &str, properties: &PropMap) -> Result<BTreeMap<&'stat
         }
         let name = animatable_name(kind, &property, "animate")?;
         if let Value::Table(spec) = &entry {
-            only_keys(
-                &format!("animate.{name}"),
-                spec,
-                &["duration", "delay", "easing", "from", "keyframes", "loops", "spring"],
-            )?;
+            only_keys(&format!("animate.{name}"), spec, AnimationInput::KEYS)?;
         }
         out.insert(name, parse_spec(name, &entry)?);
     }
@@ -71,7 +74,41 @@ pub fn parse_animate(kind: &str, properties: &PropMap) -> Result<BTreeMap<&'stat
 /// node's kind.
 pub(crate) struct Animations;
 
-spelled!(Animations => "Animations");
+impl LuaType for Animations {
+    fn lua() -> String {
+        "Animations".into()
+    }
+    #[cfg(test)]
+    fn classes(out: &mut Vec<String>) {
+        out.push(BTreeMap::<&str, AnimationSpec>::lua());
+    }
+}
+
+lua_shape! {
+    #[alias = "Animation"]
+    #[expect(dead_code, reason = "the parser's accepted keys and Lua input types")]
+    struct AnimationInput {
+        duration: Option<Duration>,
+        delay: Duration as Option<Duration>,
+        easing: Easing as Option<Easing>,
+        from: Option<Animatable>,
+        spring: Option<Spring> as Option<SpringConstants>,
+        keyframes: Option<Vec<Keyframe>>,
+        loops: Option<u32> as Option<Loops>,
+    }
+}
+
+impl LuaType for AnimationSpec {
+    fn lua() -> String {
+        "Animation".into()
+    }
+    #[cfg(test)]
+    fn classes(out: &mut Vec<String>) {
+        let mut table = Vec::new();
+        AnimationInput::classes(&mut table);
+        out.push(format!("{}|{}", Duration::lua(), table.concat()));
+    }
+}
 
 impl Prop for Animations {
     type Out = Option<mlua::Table>;
@@ -192,7 +229,29 @@ pub(super) fn parse_millis(
 }
 
 /// The shared spec and every `(property, target)` pair of one `animate.exit` block.
-pub(super) type ExitBlock = (AnimationSpec, Vec<(&'static str, Animatable)>);
+pub(crate) struct ExitBlock {
+    pub spec: AnimationSpec,
+    pub targets: Vec<(&'static str, Animatable)>,
+}
+
+impl ExitBlock {
+    const TIMING: &[&str] = &["duration", "delay", "easing", "spring"];
+}
+
+impl LuaType for ExitBlock {
+    fn lua() -> String {
+        "Exit".into()
+    }
+    #[cfg(test)]
+    fn classes(out: &mut Vec<String>) {
+        let fields: String = AnimationInput::lua_fields()
+            .into_iter()
+            .filter(|(key, ..)| Self::TIMING.contains(key))
+            .map(|(key, optional_field, ty, _)| format!("{}: {ty}, ", optional(key.to_string(), optional_field)))
+            .collect();
+        out.push(format!("{{ {fields}[string]: any }}\n"));
+    }
+}
 
 /// A spec's `easing`: a name, a four-number table read as CSS `cubic-bezier(x1, y1, x2, y2)`, or
 /// `{ steps = n }` (ADR-0151). Absent is `InOutQuad`.
@@ -209,7 +268,7 @@ pub(super) fn parse_easing(field: &str, value: &Value) -> Result<Easing, LayoutE
         Value::Table(table) => {
             let steps: Value = table.get("steps").map_err(|e| invalid(field, e.to_string()))?;
             if !steps.is_nil() {
-                only_keys(field, table, &["steps"])?;
+                only_keys(field, table, Steps::KEYS)?;
                 let steps = value_as_f32(field, &steps)?
                     .ok_or_else(|| invalid(field, format!("`steps` is a count, got {}", preview_for_error(&steps))))?;
                 if steps < 1.0 || steps > 1000.0 || steps.fract() != 0.0 {
@@ -217,7 +276,7 @@ pub(super) fn parse_easing(field: &str, value: &Value) -> Result<Easing, LayoutE
                 }
                 return Ok(Easing::Steps(steps as u32));
             }
-            let mut points = [0.0f32; 4];
+            let mut points = BezierPoints::default();
             for (index, slot) in points.iter_mut().enumerate() {
                 let point: Value = table.get(index + 1).map_err(|e| invalid(field, e.to_string()))?;
                 *slot = value_as_f32(field, &point)?.ok_or_else(|| {
@@ -260,7 +319,7 @@ pub(super) fn parse_exit(kind: &str, block: &Value) -> Result<Option<ExitBlock>,
             return Err(invalid("animate.exit", format!("keys are property names, got {}", preview_for_error(&key))));
         };
         let property = key.to_str().map_err(|e| invalid("animate.exit", e.to_string()))?;
-        if matches!(&*property, "duration" | "delay" | "easing" | "spring") {
+        if ExitBlock::TIMING.contains(&property.as_ref()) {
             continue;
         }
         let name = animatable_name(kind, &property, "animate.exit")?;
@@ -274,5 +333,5 @@ pub(super) fn parse_exit(kind: &str, block: &Value) -> Result<Option<ExitBlock>,
     if out.is_empty() {
         return Ok(None);
     }
-    Ok(Some((parse_spec("exit", block)?, out)))
+    Ok(Some(ExitBlock { spec: parse_spec("exit", block)?, targets: out }))
 }

@@ -19,10 +19,10 @@ use style::parse_radius;
 
 #[cfg(test)]
 pub use animate::Animatable;
+#[cfg(test)]
+pub(crate) use animate::{AnimationSpec, Easing, ExitBlock, Keyframe, SpringConstants, animatable_name, easing_names};
 pub(crate) use animate::{Animations, Params};
 pub use animate::{Dissolve, ShaderParam, TransitionSpec, Tween, advance, depart, is_paint_only, retarget};
-#[cfg(test)]
-pub(crate) use animate::{Keyframe, SpringConstants, animatable_name, easing_names};
 #[cfg(test)]
 pub(crate) use content::TextRun;
 pub(crate) use content::{Content, Font, Live, MaxLines, Region};
@@ -30,6 +30,8 @@ pub use content::{Elide, StyleRun, TextAlign, Wrap, font_runs};
 pub use paint_style::{PaintStyle, paint_style};
 pub(crate) use spec::{Children, Items, Limit, Root};
 pub use spec::{ItemPass, ListMemo, SecureSubmitTarget, SurfaceSpec, list_children, lock_spec};
+#[cfg(test)]
+pub(crate) use style::GradientStop;
 // `wayland::tests`' and `instance::tests`' fixtures name it `node::LockSpec`; nothing else does.
 #[cfg(test)]
 pub use spec::LockSpec;

@@ -40,7 +40,6 @@ Wanted, but each needs a consumer or a decision first.
 | Window capture | `capture` takes an output. A window source would take `windows` ids | 0247, 0248 |
 | Native I/O | No HTTP, sockets, watched file contents or `json.encode`; JSON storage and folder watching exist. Native only for a measured latency or volume need | — |
 | KDE Connect | No device or plugin model. A capability or a streaming helper, not unrestricted D-Bus | — |
-| Nested stub schema duplication | The header in `nodes/stubs.rs` repeats gradient, mask, easing and animation input shapes. Easing names and per-kind animation keys are already derived; nested fields can still drift beyond the stub probe's samples. Share fixed record fields with parsers through `lua_shape!`; tuples, unions and dynamic exit targets need separate handling | — |
 | Dynamic topology | A reload rebuilds only what changed. Revisit only if dynamic windows need a different lifetime | 0216 |
 
 ## Won't do

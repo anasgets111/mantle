@@ -343,6 +343,10 @@ pub(crate) trait Keyword: Copy + 'static {
     const NAMES: &'static [&'static str];
     const VALUES: &'static [Self];
 
+    fn find(name: &[u8]) -> Option<Self> {
+        Self::NAMES.iter().position(|choice| choice.as_bytes() == name).map(|at| Self::VALUES[at])
+    }
+
     /// The Lua name of this value.
     fn name(self) -> &'static str
     where
@@ -366,11 +370,10 @@ impl<E: Keyword> Prop for OneOf<E> {
     type Out = E;
     const CHOICES: &'static [&'static str] = E::NAMES;
     fn read(row: &Property, value: Option<&Value>) -> Result<E, LayoutError> {
-        let find = |name: &[u8]| E::NAMES.iter().position(|choice| choice.as_bytes() == name).map(|at| E::VALUES[at]);
         let Some(value) = value else {
             return match row.absent {
                 Absent::Choice(name) => {
-                    Ok(find(name.as_bytes()).expect("`every_choice_default_is_one_of_its_choices`"))
+                    Ok(E::find(name.as_bytes()).expect("`every_choice_default_is_one_of_its_choices`"))
                 }
                 _ => Err(invalid(row.name, format!("surface node requires `{}`", row.name))),
             };
@@ -378,7 +381,7 @@ impl<E: Keyword> Prop for OneOf<E> {
         let Value::String(s) = value else {
             return Err(invalid(row.name, format!("expected a string, got {}", preview_for_error(value))));
         };
-        find(&s.as_bytes()).ok_or_else(|| {
+        E::find(&s.as_bytes()).ok_or_else(|| {
             let names: Vec<String> = E::NAMES.iter().map(|name| format!("`{name}`")).collect();
             invalid(row.name, format!("expected one of {}, got {}", names.join(", "), preview_for_error(value)))
         })

@@ -56,7 +56,28 @@ pub enum Easing {
     Steps(u32),
 }
 
-crate::lua::luacats::spelled!(Easing => "Easing");
+pub(super) type BezierPoints = [f32; 4];
+
+crate::lua::luacats::lua_shape! {
+    #[alias = "Steps"]
+    #[expect(dead_code, reason = "the parser's accepted keys and Lua input types")]
+    pub(super) struct Steps {
+        pub steps: u32,
+    }
+}
+
+impl crate::lua::luacats::LuaType for Easing {
+    fn lua() -> String {
+        "Easing".into()
+    }
+
+    #[cfg(test)]
+    fn classes(out: &mut Vec<String>) {
+        let mut steps = Vec::new();
+        Steps::classes(&mut steps);
+        out.push(format!("EasingName|{}|{}", BezierPoints::lua(), steps.concat()));
+    }
+}
 
 impl Easing {
     pub(super) const NAMES: &[(&str, Easing)] = &[

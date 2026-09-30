@@ -80,7 +80,7 @@ under `UPDATE_STUBS=1` and otherwise fails on a stale file.
 | File | Source | Golden test |
 | --- | --- | --- |
 | `mantle.lua` | Rust `*State`/`*Action` types; doc comments become descriptions | `supervisor/src/stubs.rs` |
-| `nodes.lua`, `surfaces.lua` | The typed fields in `renderer/src/lua/nodes/properties.rs`: each field's Rust type is its parser (`layout::node::prop::Prop`) and its LuaCATS (`lua::luacats::LuaType`), its `///` block the description. A table shape inside a property is the `lua_shape!` stub of the struct its parser reads it as; the rest (`Gradient`, `Mask`, `Easing`, `Animation`, `Exit`, ...) are written in `nodes/stubs.rs` until a struct holds their keys | `renderer/src/lua/nodes/stubs.rs`; `every_type_the_stubs_declare_is_accepted_by_the_engine` probes each type |
+| `nodes.lua`, `surfaces.lua` | Properties: `renderer/src/lua/nodes/properties.rs`. Nested fields and accepted keys: `lua_shape!` beside each parser. Composite types: `LuaType`. Alias names and prose: `nodes/stubs.rs` | `renderer/src/lua/nodes/stubs.rs`; `every_type_the_stubs_declare_is_accepted_by_the_engine` probes each type |
 | `globals.lua`, `signals.lua` | Each global's Rust signature through `lua::luacats` (`lua_fn!`, `lua_class!`, `lua_shape!`, `lua_table!`), its `///` blocks the descriptions; `lua::define`, which they call, is the one way to set a global. The class blocks LuaLS models with generics or dynamic keys (`StateSignal`, `ScrollSignal`, `PersistentTable`, `SessionProcessHandle`) and `signals.lua`'s `Signal<T>` header are written beside their Rust types | `renderer/src/lua/mod.rs` |
 
 `just types` checks `share/starter` against the stubs, then `lua-meta` alone, and fails without

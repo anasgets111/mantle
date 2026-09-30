@@ -19,8 +19,9 @@ mod parse;
 mod sequence;
 mod spring;
 mod transition;
-use easing::Easing;
+pub(crate) use easing::Easing;
 pub(crate) use parse::Animations;
+pub(crate) use parse::ExitBlock;
 #[cfg(test)]
 pub(crate) use parse::animatable_name;
 pub use parse::parse_animate;
@@ -91,7 +92,7 @@ pub fn depart(
 ) -> Result<bool, LayoutError> {
     let Some(animate) = fields::common::animate.read(properties)? else { return Ok(false) };
     let block: Value = animate.get("exit").map_err(|e| invalid("animate.exit", e.to_string()))?;
-    let Some((spec, targets)) = parse_exit(kind, &block)? else { return Ok(false) };
+    let Some(ExitBlock { spec, targets }) = parse_exit(kind, &block)? else { return Ok(false) };
     // Everything already in flight stops here, at the value it had reached. The exit owns the
     // node's motion from now on, so its lifetime is the block's duration and not that plus
     // whatever an interrupted entry animation had left to run.

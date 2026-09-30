@@ -82,6 +82,13 @@ impl Sequence {
     }
 }
 
+const INFINITE: &str = "Infinite";
+
+#[cfg(test)]
+pub(super) struct Loops;
+#[cfg(test)]
+crate::lua::luacats::spelled!(Loops => format!("{}|\"{INFINITE}\"", u32::lua()));
+
 /// An entry's `keyframes` and `loops`, if it has them. A frame is a bare value, or a table naming
 /// its own `duration` and `easing` in place of the entry's; the first frame is where the property
 /// starts and the timing on it is never read. `loops` is a count or `"Infinite"`, one by default.
@@ -144,14 +151,14 @@ pub(super) fn parse_sequence(
     let loops: Value = spec.get("loops").map_err(|e| invalid(field, e.to_string()))?;
     let loops = match &loops {
         Value::Nil => Some(1),
-        Value::String(name) if name.to_str().is_ok_and(|name| name == "Infinite") => None,
+        Value::String(name) if name.to_str().is_ok_and(|name| name == INFINITE) => None,
         counted => match value_as_f32(field, counted)? {
             Some(count) if (1.0..=10_000.0).contains(&count) && count.fract() == 0.0 => Some(count as u32),
             _ => {
                 return Err(invalid(
                     field,
                     format!(
-                        "`loops` is a whole count in [1, 10000] or \"Infinite\", got {}",
+                        "`loops` is a whole count in [1, 10000] or \"{INFINITE}\", got {}",
                         preview_for_error(counted)
                     ),
                 ));

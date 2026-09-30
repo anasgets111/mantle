@@ -37,7 +37,7 @@ pub(crate) use spelled;
 spelled!(bool => "boolean");
 spelled!(f32, f64 => "number");
 spelled!(i32, i64, u32, u64, usize => "integer");
-spelled!(String, LuaString => "string");
+spelled!(String, &str, LuaString => "string");
 spelled!(Value => "any");
 spelled!(Table => "table");
 spelled!(Function => "function");
@@ -67,6 +67,24 @@ impl<T: LuaType> LuaType for Vec<T> {
     const GENERIC: bool = T::GENERIC;
     fn classes(out: &mut Vec<String>) {
         T::classes(out);
+    }
+}
+
+impl<A: LuaType, B: LuaType> LuaType for (A, B) {
+    fn lua() -> String {
+        format!("[{}, {}]", spelling::<A>(), spelling::<B>())
+    }
+}
+
+impl<T: LuaType, const N: usize> LuaType for [T; N] {
+    fn lua() -> String {
+        format!("[{}]", vec![spelling::<T>(); N].join(", "))
+    }
+}
+
+impl<K: LuaType, V: LuaType> LuaType for std::collections::BTreeMap<K, V> {
+    fn lua() -> String {
+        format!("table<{}, {}>", spelling::<K>(), spelling::<V>())
     }
 }
 
@@ -468,18 +486,25 @@ macro_rules! lua_shape {
 
         $crate::lua::luacats::lua_shape!(@$form $ty $($field)+);
 
+        #[cfg(test)]
+        impl $ty {
+            pub(crate) fn lua_fields() -> Vec<$crate::lua::luacats::ShapeField> {
+                vec![$((
+                    stringify!($field),
+                    <$crate::lua::luacats::lua_shape!(@lua $field_ty $(, $lua)?) as $crate::lua::luacats::LuaType>::OPTIONAL,
+                    <$crate::lua::luacats::lua_shape!(@lua $field_ty $(, $lua)?) as $crate::lua::luacats::LuaType>::lua(),
+                    concat!($($field_doc, "\n",)* ""),
+                )),+]
+            }
+        }
+
         impl $crate::lua::luacats::LuaType for $ty {
             fn lua() -> String {
                 $name.to_string()
             }
             #[cfg(test)]
             fn classes(out: &mut Vec<String>) {
-                let keys = [$((
-                    stringify!($field),
-                    <$crate::lua::luacats::lua_shape!(@lua $field_ty $(, $lua)?) as $crate::lua::luacats::LuaType>::OPTIONAL,
-                    <$crate::lua::luacats::lua_shape!(@lua $field_ty $(, $lua)?) as $crate::lua::luacats::LuaType>::lua(),
-                    concat!($($field_doc, "\n",)* ""),
-                )),+];
+                let keys = Self::lua_fields();
                 let stub = $crate::lua::luacats::shape_stub(stringify!($form), $name, concat!($($doc, "\n",)* ""), &keys);
                 if !out.contains(&stub) {
                     out.push(stub);
@@ -506,6 +531,9 @@ macro_rules! lua_shape {
     (@lua $ty:ty, $lua:ty) => { $lua };
 }
 pub(crate) use lua_shape;
+
+#[cfg(test)]
+pub(crate) type ShapeField = (&'static str, bool, String, &'static str);
 
 /// A `///` block's first paragraph on one line after a space, then each later line as its own `---`
 /// line.
