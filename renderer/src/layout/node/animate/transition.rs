@@ -4,9 +4,9 @@ use std::time::{Duration, Instant};
 use mlua::Value;
 
 use super::easing::Easing;
-use super::parse::{parse_easing, parse_millis};
+use crate::layout::node::input::required_duration;
 use crate::layout::node::prop::Prop;
-use crate::layout::node::{LayoutError, invalid, only_keys, preview_for_error, value_as_f32};
+use crate::layout::node::{LayoutError, invalid, preview_for_error, value_as_f32};
 use crate::lua::luacats::{lua_shape, spelled};
 use crate::lua::nodes::properties::Property;
 
@@ -16,11 +16,11 @@ lua_shape! {
     /// `image.transition`. Unknown keys are refused.
     #[class = "Transition"]
     #[derive(Debug, Clone, PartialEq)]
-    pub struct TransitionSpec {
+    pub struct TransitionInput {
         /// Required, ms `[1, 60000]`.
         pub duration: Duration,
         /// Default `"InOutQuad"`; drives `u_progress`.
-        pub easing: Easing as Option<Easing>,
+        pub easing: Option<Easing>,
         // The config's own file: `layout::image_shader` compiles it and owns nothing about what it
         // draws.
         /// Absolute `.frag` path replacing the built-in dissolve, e.g. `mantle.config_dir .. "/shaders/wipe.frag"` (ADR-0184). Recompiled when the file changes.
@@ -33,13 +33,20 @@ lua_shape! {
         /// - Output: premultiplied RGBA in `fragColor`, same colour space as the inputs. The engine applies `opacity` after.
         /// - Names starting `u_` or `mantle_` are reserved. A shader that fails to compile or link, or declares a uniform other than `float`/`vec2`-`vec4`, logs once and falls back to the dissolve. A shader that hangs the GPU hangs the session.
         pub shader: Option<PathBuf>,
-        // Sorted by uniform name, so two runs of one shader compare equal when they are the same. A
-        // name the compiled shader has no uniform for is ignored: a shader may declare one and never
-        // use it.
         /// Uniform values by name: a finite number for `float`, 2-4 numbers for `vec2`-`vec4`. Missing uniforms are `0`; unknown names are ignored. Refused without `shader`.
-        pub params: Vec<ShaderParam> as Option<Params>,
+        pub params: Value as Option<Params>,
     }
 }
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct TransitionSpec {
+    pub duration: Duration,
+    pub easing: Easing,
+    pub shader: Option<PathBuf>,
+    pub params: Vec<ShaderParam>,
+}
+
+spelled!(TransitionSpec => TransitionInput::lua());
 
 /// `transition = { duration = 700, easing = "InOutCubic" }` on an `image`. The `duration` is
 /// required: a dissolve with no length is a snap, and `retain` on its own is already that.
@@ -58,38 +65,25 @@ fn parse_transition(value: Option<&Value>) -> Result<Option<TransitionSpec>, Lay
             format!("expected a table of transition fields, got {}", preview_for_error(value)),
         ));
     };
-    only_keys("transition", table, TransitionSpec::KEYS)?;
-    let duration: Value = table.get("duration").map_err(|e| invalid("transition.duration", e.to_string()))?;
-    let duration = parse_millis("transition.duration", "duration", &duration, 1)?
-        .ok_or_else(|| invalid("transition", "a transition needs a `duration` in ms"))?;
-    let easing: Value = table.get("easing").map_err(|e| invalid("transition.easing", e.to_string()))?;
-    let easing = parse_easing("transition.easing", &easing)?;
-    let shader: Value = table.get("shader").map_err(|e| invalid("transition.shader", e.to_string()))?;
-    let shader = match shader {
-        Value::Nil => None,
-        Value::String(path) => {
-            let path = path.to_str().map_err(|e| invalid("transition.shader", e.to_string()))?;
-            // Absolute, the way `image.source` is: a config names its own files through
-            // `mantle.config_dir`, and a relative path would resolve against whatever directory
-            // the Renderer happens to have been started in.
-            if !path.starts_with('/') {
-                return Err(invalid("transition.shader", format!("expected an absolute path, got `{path}`")));
-            }
-            Some(PathBuf::from(&*path))
+    TransitionInput::read("transition", table)?.into_transition().map(Some)
+}
+
+impl TransitionInput {
+    fn into_transition(self) -> Result<TransitionSpec, LayoutError> {
+        let Self { duration, easing, shader, params } = self;
+        let duration = required_duration("transition", Some(duration))?;
+        if let Some(path) = &shader
+            && !path.is_absolute()
+        {
+            return Err(invalid("transition.shader", format!("expected an absolute path, got `{}`", path.display())));
         }
-        other => {
-            return Err(invalid(
-                "transition.shader",
-                format!("expected a path to a fragment shader, got {}", preview_for_error(&other)),
-            ));
+        let params = parse_shader_params("transition.params", &params)?;
+        if shader.is_none() && !params.is_empty() {
+            return Err(invalid("transition.params", "there is no `shader` for these to reach"));
         }
-    };
-    let params: Value = table.get("params").map_err(|e| invalid("transition.params", e.to_string()))?;
-    let params = parse_shader_params("transition.params", &params)?;
-    if shader.is_none() && !params.is_empty() {
-        return Err(invalid("transition.params", "there is no `shader` for these to reach"));
+        let easing = easing.unwrap_or_default();
+        Ok(TransitionSpec { duration, easing, shader, params })
     }
-    Ok(Some(TransitionSpec { duration, easing, shader, params }))
 }
 
 /// A uniform name, its value zero-padded to four, and how many the config wrote; the compiled
@@ -156,6 +150,7 @@ pub(in crate::layout::node) fn parse_shader_params(what: &str, value: &Value) ->
         };
         out.push((name, components, count));
     }
+    // Sorted uniform names make equivalent shader runs compare equal; the shader ignores names it lacks.
     out.sort_by(|a, b| a.0.cmp(&b.0));
     Ok(out)
 }

@@ -60,9 +60,20 @@ pub(super) type BezierPoints = [f32; 4];
 
 crate::lua::luacats::lua_shape! {
     #[alias = "Steps"]
-    #[expect(dead_code, reason = "the parser's accepted keys and Lua input types")]
     pub(super) struct Steps {
         pub steps: u32,
+    }
+}
+
+impl Steps {
+    pub(super) fn into_easing(self, field: &str) -> Result<Easing, crate::layout::node::LayoutError> {
+        if !(1..=1000).contains(&self.steps) {
+            return Err(crate::layout::node::invalid(
+                field,
+                format!("`steps` must be a whole count in [1, 1000], got {}", self.steps),
+            ));
+        }
+        Ok(Easing::Steps(self.steps))
     }
 }
 

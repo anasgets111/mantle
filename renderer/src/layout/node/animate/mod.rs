@@ -11,12 +11,14 @@ use std::time::{Duration, Instant};
 use mlua::{Lua, Value};
 
 use super::style::{axis_default, parse_percent, range_of};
-use super::{Axes, EdgeInsets, LayoutError, PropMap, Rgba, fields, invalid, parse_hex_color, value_as_f32};
+use super::{Axes, EdgeInsets, EdgesInput, LayoutError, PropMap, Rgba, fields, invalid, parse_hex_color, value_as_f32};
 use crate::lua::luacats::spelled;
 
 mod easing;
 mod parse;
 mod sequence;
+#[cfg(test)]
+pub(crate) use sequence::KeyframeInput;
 mod spring;
 mod transition;
 pub(crate) use easing::Easing;
@@ -32,13 +34,13 @@ use parse::parse_exit;
 pub(crate) fn easing_names() -> impl Iterator<Item = &'static str> {
     Easing::NAMES.iter().map(|(name, _)| *name)
 }
-#[cfg(test)]
-pub(crate) use sequence::Keyframe;
 use sequence::Sequence;
 use spring::Spring;
 #[cfg(test)]
 pub(crate) use spring::SpringConstants;
 pub(crate) use transition::Params;
+#[cfg(test)]
+pub(crate) use transition::TransitionInput;
 pub use transition::{Dissolve, ShaderParam, TransitionSpec};
 
 /// The one thing a hex colour has to look like to reach `parse_hex_color` again next pass.
@@ -155,7 +157,7 @@ impl Animatable {
             }
             Value::Table(table) => {
                 let has = |key: &str| table.contains_key(key).unwrap_or(false);
-                let keys = if Axes::KEYS.iter().any(|key| has(key)) { Axes::KEYS } else { EdgeInsets::KEYS };
+                let keys = if Axes::KEYS.iter().any(|key| has(key)) { Axes::KEYS } else { EdgesInput::KEYS };
                 // Any other key makes it another shape, such as a gradient (ADR-0255).
                 let known =
                     |key: &Value| matches!(key, Value::String(s) if keys.iter().any(|k| s.as_bytes() == k.as_bytes()));
@@ -526,6 +528,49 @@ mod tests {
     }
 
     #[test]
+    fn a_signal_in_a_spring_names_the_animation_and_nested_field() {
+        let lua = crate::layout::node::signal_lua();
+        let props =
+            rect_props(&lua, "return { animate = { width = { spring = { stiffness = state(200), damping = 10 } } } }");
+        let err = parse_animate("rect", &props).unwrap_err();
+        assert!(
+            matches!(err, LayoutError::UnsupportedSignalProperty(path) if path == "animate.width.spring.stiffness")
+        );
+    }
+
+    #[test]
+    fn steps_reads_a_metamethod_once_even_when_its_next_value_would_disagree() {
+        for (values, accepted) in [("4, 'bad'", true), ("'bad', 4", false)] {
+            let lua = Lua::new();
+            let props = rect_props(
+                &lua,
+                &format!(
+                    r#"
+                reads = 0
+                local values = {{ {values} }}
+                local easing = setmetatable({{}}, {{ __index = function(_, key)
+                    assert(key == "steps")
+                    reads = reads + 1
+                    return values[reads]
+                end }})
+                return {{ animate = {{ width = {{ duration = 200, easing = easing }} }} }}
+            "#
+                ),
+            );
+            assert_eq!(parse_animate("rect", &props).is_ok(), accepted);
+            assert_eq!(lua.globals().get::<u32>("reads").unwrap(), 1);
+        }
+    }
+
+    #[test]
+    fn an_animation_from_scale_keeps_the_missing_axis_default() {
+        let lua = Lua::new();
+        let props = rect_props(&lua, "return { animate = { scale = { duration = 200, from = { x = 2 } } } }");
+        let spec = parse_animate("rect", &props).unwrap().remove("scale").unwrap();
+        assert_eq!(spec.from, Some(Animatable::Fields { keys: Axes::KEYS, values: [2.0, 1.0, 1.0, 1.0] }));
+    }
+
+    #[test]
     fn out_back_overshoots_and_the_number_clamp_catches_it() {
         assert!(Easing::OutBack.apply(0.7) > 1.0);
         let from = Animatable::Number(40.0);
@@ -756,7 +801,7 @@ mod tests {
             Animatable::from_value("margin", Some(&value)).unwrap().unwrap()
         };
         let mid = table("return { top = 10, left = -20 }").lerp(table("return { top = 20, right = 8 }"), 0.5, "margin");
-        assert_eq!(mid, Animatable::Fields { keys: EdgeInsets::KEYS, values: [15.0, 4.0, 0.0, -10.0] });
+        assert_eq!(mid, Animatable::Fields { keys: EdgesInput::KEYS, values: [15.0, 4.0, 0.0, -10.0] });
         let Value::Table(back) = mid.to_value(&lua).unwrap() else { panic!("edges write back as a table") };
         assert_eq!(back.get::<f32>("left").unwrap(), -10.0);
         let colours: Value = lua.load(r##"return { top = "#ff0000" }"##).eval().unwrap();
@@ -866,10 +911,12 @@ mod tests {
     fn a_field_belonging_to_another_motion_is_refused_rather_than_ignored() {
         let lua = Lua::new();
         let spring = "spring = { stiffness = 200, damping = 10 }";
-        for beside in ["easing = \"Linear\"", "duration = 200", "duration = \"oops\"", "loops = 3"] {
+        for beside in ["easing = \"Linear\"", "duration = 200", "loops = 3"] {
             let text = refused(&lua, &format!("return {{ animate = {{ width = {{ {spring}, {beside} }} }} }}"));
             assert!(text.contains("a `spring` has no"), "{beside}: {text}");
         }
+        let text = refused(&lua, &format!("return {{ animate = {{ width = {{ {spring}, duration = \"oops\" }} }} }}"));
+        assert!(text.contains("expected a duration in ms"), "{text}");
         // `loops` without a list to walk was read by nobody at all, typo and count alike.
         let text = refused(&lua, "return { animate = { width = { duration = 10, loops = 3 } } }");
         assert!(text.contains("`loops`"), "{text}");

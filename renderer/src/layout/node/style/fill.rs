@@ -60,7 +60,7 @@ keywords! {
 }
 
 lua_shape! {
-    #[input = "Gradient"]
+    #[alias = "Gradient"]
     struct GradientInput {
         gradient: GradientKind,
         angle: Option<f32>,
@@ -69,7 +69,7 @@ lua_shape! {
 }
 
 lua_shape! {
-    #[input = "Mask"]
+    #[alias = "Mask"]
     struct MaskInput {
         gradient: Option<GradientKind>,
         angle: Option<f32>,

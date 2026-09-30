@@ -1,9 +1,7 @@
 use std::time::{Duration, Instant};
 
-use mlua::Value;
-
 use super::{Animatable, Motion, Tween};
-use crate::layout::node::{LayoutError, invalid, only_keys, preview_for_error, value_as_f32};
+use crate::layout::node::{LayoutError, invalid};
 use crate::lua::luacats::lua_shape;
 
 /// Which closed-form solution a spring's constants put it in. Underdamped rings past the target,
@@ -232,34 +230,19 @@ impl Spring {
 /// No defaults, because a spring whose constants are implicit is a mystery to read and to tune,
 /// and no `mass`: it divides out of both constants, so naming it would be a third number that
 /// only rescales the two above.
-pub(super) fn parse_spring(field: &str, spec: &mlua::Table) -> Result<Option<Spring>, LayoutError> {
-    let spring: Value = spec.get("spring").map_err(|e| invalid(field, e.to_string()))?;
-    let Value::Table(spring) = spring else {
-        return match spring {
-            Value::Nil => Ok(None),
-            other => Err(invalid(
-                field,
-                format!("`spring` is a table of `stiffness` and `damping`, got {}", preview_for_error(&other)),
-            )),
-        };
-    };
-    only_keys(&format!("{field}.spring"), &spring, SpringConstants::KEYS)?;
-    let read = |name: &str, highest: f32| -> Result<f32, LayoutError> {
-        let at = format!("{field}.spring.{name}");
-        let value: Value = spring.get(name).map_err(|e| invalid(&at, e.to_string()))?;
-        match value_as_f32(&at, &value)? {
-            Some(number) if number > 0.0 && number <= highest => Ok(number),
-            _ => Err(invalid(
-                &at,
-                format!("`{name}` is a number within (0, {highest}], got {}", preview_for_error(&value)),
-            )),
+impl SpringConstants {
+    pub(super) fn into_spring(self, field: &str) -> Result<Spring, LayoutError> {
+        for (name, value, highest) in [("stiffness", self.stiffness, 100_000.0), ("damping", self.damping, 10_000.0)] {
+            if value <= 0.0 || value > highest {
+                return Err(invalid(
+                    &format!("{field}.spring.{name}"),
+                    format!("`{name}` must be within (0, {highest}], got {value}"),
+                ));
+            }
         }
-    };
-    let stiffness = read("stiffness", 100_000.0)?;
-    let damping = read("damping", 10_000.0)?;
-    // A run that a pass starts fresh is at rest; `retarget` is the only thing that begins one
-    // already moving, and it rebuilds the spring to say so.
-    Ok(Some(Spring::new(stiffness, damping, 0.0)))
+        // New runs start at rest; only retargeting carries velocity into a spring.
+        Ok(Spring::new(self.stiffness, self.damping, 0.0))
+    }
 }
 
 #[cfg(test)]
@@ -268,6 +251,7 @@ mod tests {
     use crate::layout::node::animate::tests::{refused, spec};
     use crate::layout::node::animate::*;
     use crate::layout::node::rect_props;
+    use mlua::Value;
 
     /// The three regimes and one hand-over, against a Runge-Kutta integration of
     /// `s'' + damping * s' + stiffness * s = 0` done outside this module -- not against another
@@ -503,9 +487,9 @@ mod tests {
         let cases: [(&str, &[&str]); 6] = [
             ("duration = 10, spring = { stiffness = 1, damping = 1 }", &["has no `duration`"]),
             ("spring = { stiffness = 1, damping = 1 }, keyframes = { 0, 1 }", &["two different motions"]),
-            ("spring = { damping = 26 }", &["stiffness", "(0, 100000]"]),
+            ("spring = { damping = 26 }", &["`stiffness` must be number"]),
             ("spring = { stiffness = 220, damping = 0 }", &["damping", "(0, 10000]"]),
-            ("spring = 220", &["table of `stiffness` and `damping`"]),
+            ("spring = 220", &["`spring` must be Spring"]),
             // Without a spring the duration is still required, so lifting it is scoped to the one.
             (r#"easing = "Linear""#, &["expected a duration in ms"]),
         ];

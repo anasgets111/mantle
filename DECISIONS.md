@@ -7173,3 +7173,9 @@ Rejected: keeping `button` as an alias of `rect`. It costs a kind row, a page an
 nothing a `rect` does not.
 
 Amends ADR-0116, ADR-0204, ADR-0214 and ADR-0284.
+
+## 0296. Read config tables through their stub declarations
+
+A config table is read through its `lua_shape!` declaration and each field's `Input` type. The declaration supplies the parser, accepted keys and Lua stub. Range and cross-field checks stay in the shape's conversion function.
+
+Trade-off: type errors use the stub spelling instead of tailored prose.

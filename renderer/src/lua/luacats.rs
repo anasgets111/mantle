@@ -466,20 +466,16 @@ pub(crate) use lua_class;
 /// for a header's `---@alias Name {Name}` line: LuaLS checks it inside a union, where a class admits
 /// any table, and it has no place for a field's words. `#[class = "Name"]` is one read as a
 /// `---@class` whose fields carry their words. Both refuse an unknown key, and `KEYS` is what the
-/// parser's `only_keys` accepts. `#[input = "Name"]` is an alias that is also its own parser:
-/// `read` takes each key through its field type's `Input`. `#[record = "Name"]` is a class handed
-/// to Lua, a table of its fields. `key: T as S` is a key Lua spells as `S`, as `Option<T>` for one Lua may leave out that
-/// Rust holds defaulted.
+/// parser's `only_keys` accepts. Alias and class fields are read through `Input`.
+/// `#[record = "Name"]` is a class handed to Lua. `key: T as S` changes only the Lua spelling.
 macro_rules! lua_shape {
     ($(#[doc = $doc:literal])* #[alias = $name:literal] $($rest:tt)*) => {
-        $crate::lua::luacats::lua_shape!(@struct alias [$($doc)*] $name $($rest)*);
-    };
-    ($(#[doc = $doc:literal])* #[input = $name:literal] $($rest:tt)*) => {
         $crate::lua::luacats::lua_shape!(@struct alias [$($doc)*] $name $($rest)*);
         $crate::lua::luacats::lua_shape!(@read $($rest)*);
     };
     ($(#[doc = $doc:literal])* #[class = $name:literal] $($rest:tt)*) => {
         $crate::lua::luacats::lua_shape!(@struct class [$($doc)*] $name $($rest)*);
+        $crate::lua::luacats::lua_shape!(@read $($rest)*);
     };
     ($(#[doc = $doc:literal])* #[record = $name:literal] $($rest:tt)*) => {
         $crate::lua::luacats::lua_shape!(@struct record [$($doc)*] $name $($rest)*);
@@ -542,7 +538,28 @@ macro_rules! lua_shape {
                 table: &mlua::Table,
             ) -> Result<Self, $crate::layout::node::LayoutError> {
                 $crate::layout::node::only_keys(property, table, Self::KEYS)?;
-                Ok(Self { $($field: $crate::layout::node::input::field(property, table, stringify!($field))?),+ })
+                Self::read_fields(property, table)
+            }
+
+            /// For a table that mixes shape fields with its own keys, such as `animate.exit`.
+            pub(crate) fn read_fields(
+                property: &str,
+                table: &mlua::Table,
+            ) -> Result<Self, $crate::layout::node::LayoutError> {
+                Ok(Self { $($field: $crate::layout::node::input::field::<$field_ty>(property, table, stringify!($field))?),+ })
+            }
+        }
+        impl $crate::layout::node::input::Input for $ty {
+            fn from_value(
+                property: &str,
+                key: &str,
+                value: &mlua::Value,
+            ) -> Result<Option<Self>, $crate::layout::node::LayoutError> {
+                match value {
+                    mlua::Value::Table(table) => Self::read(key, table).map(Some)
+                        .map_err(|error| error.under(&format!("{property}."))),
+                    _ => Ok(None),
+                }
             }
         }
     };

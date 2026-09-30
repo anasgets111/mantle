@@ -10,7 +10,7 @@ use mlua::Value;
 use crate::text::shaping::FontRun;
 use crate::text::snap::LogicalRect;
 
-use super::prop::{Keyword, keywords};
+use super::prop::keywords;
 use super::*;
 use crate::lua::luacats::lua_shape;
 
@@ -54,16 +54,15 @@ lua_shape! {
     /// One styled stretch of `text.content` (ADR-0104). A notification body's text spans fit as-is;
     /// drop image spans, which have no `text` and are refused.
     #[class = "TextRun"]
-    #[expect(dead_code, reason = "the keys `parse_runs` reads, declared for `KEYS` and the stub")]
     pub(crate) struct TextRun {
         /// Empty runs are skipped.
         text: String,
         /// Uses the family's bold face when fontconfig has one.
-        bold: bool as Option<bool>,
+        bold: Option<bool>,
         /// Uses the family's italic face when fontconfig has one.
-        italic: bool as Option<bool>,
+        italic: Option<bool>,
         /// Underline in the run's colour.
-        underline: bool as Option<bool>,
+        underline: Option<bool>,
         /// Overrides the node's `foreground`.
         color: Option<Rgba>,
         /// Passed to the node's `on_link` when clicked; never opened by the engine (ADR-0106).
@@ -108,72 +107,14 @@ fn parse_runs(runs: &mlua::Table) -> Result<(String, Vec<StyleRun>), LayoutError
         let Value::Table(run) = run else {
             return Err(invalid("content", format!("run {index}: expected a table, got {}", preview_for_error(&run))));
         };
-        let text = match run.get::<Value>("text") {
-            Ok(Value::String(s)) => checked_string("content", &s)?,
-            Ok(Value::Nil) => {
-                return Err(invalid(
-                    "content",
-                    format!("run {index} has no `text` -- an image span has no place in a line of text, leave it out"),
-                ));
-            }
-            Ok(other) => {
-                return Err(invalid(
-                    "content",
-                    format!("run {index}: expected `text` to be a string, got {}", preview_for_error(&other)),
-                ));
-            }
-            Err(e) => return Err(invalid("content", format!("run {index}: {e}"))),
-        };
-        // After `text`, so an image span gets the message above.
-        crate::lua::marshal::only_keys(&run, TextRun::KEYS)
-            .map_err(|detail| invalid("content", format!("run {index}: {detail}")))?;
-        let flag = |key: &str| -> Result<bool, LayoutError> {
-            match run.get::<Value>(key) {
-                Ok(Value::Nil) => Ok(false),
-                Ok(Value::Boolean(b)) => Ok(b),
-                Ok(other) => Err(invalid(
-                    "content",
-                    format!("run {index}: expected `{key}` to be a boolean, got {}", preview_for_error(&other)),
-                )),
-                Err(e) => Err(invalid("content", format!("run {index}: {e}"))),
-            }
-        };
-        let (bold, italic, underline) = (flag("bold")?, flag("italic")?, flag("underline")?);
-        let color = match run.get::<Value>("color") {
-            Ok(Value::Nil) => None,
-            Ok(Value::String(s)) => Some(parse_hex_color("content", &checked_string("content", &s)?)?),
-            Ok(other) => {
-                return Err(invalid(
-                    "content",
-                    format!("run {index}: expected `color` to be a hex string, got {}", preview_for_error(&other)),
-                ));
-            }
-            Err(e) => return Err(invalid("content", format!("run {index}: {e}"))),
-        };
-        let href = match run.get::<Value>("href") {
-            Ok(Value::Nil) => None,
-            Ok(Value::String(s)) => Some(checked_string("content", &s)?).filter(|href| !href.is_empty()),
-            Ok(other) => {
-                return Err(invalid(
-                    "content",
-                    format!("run {index}: expected `href` to be a string, got {}", preview_for_error(&other)),
-                ));
-            }
-            Err(e) => return Err(invalid("content", format!("run {index}: {e}"))),
-        };
-        match run.get::<Value>("kind") {
-            Ok(Value::String(s)) if SpanKind::NAMES.iter().any(|name| s.as_bytes() == name.as_bytes()) => {}
-            Ok(Value::Nil) => {}
-            Ok(other) => {
-                let names: Vec<String> = SpanKind::NAMES.iter().map(|name| format!("`{name}`")).collect();
-                let got = preview_for_error(&other);
-                return Err(invalid(
-                    "content",
-                    format!("run {index}: `kind`: expected one of {}, got {got}", names.join(", ")),
-                ));
-            }
-            Err(e) => return Err(invalid("content", format!("run {index}: {e}"))),
-        }
+        let TextRun { text, bold, italic, underline, color, href, kind } =
+            TextRun::read("", &run).map_err(|error| match error {
+                LayoutError::InvalidProperty { detail, .. } => invalid("content", format!("run {index}: {detail}")),
+                other => other.under(&format!("content[{index}]")),
+            })?;
+        let href = href.filter(|href| !href.is_empty());
+        let _ = kind;
+        let (bold, italic, underline) = (bold.unwrap_or(false), italic.unwrap_or(false), underline.unwrap_or(false));
         if text.is_empty() {
             continue;
         }
@@ -225,13 +166,10 @@ impl Prop for Region {
             let got = preview_for_error(value);
             return Err(invalid("region", format!("expected an {{ x, y, width, height }} table, got {got}")));
         };
-        only_keys("region", table, LogicalRect::KEYS)?;
-        let field = |key| {
-            style::table_number("region", table, key)?
-                .ok_or_else(|| invalid("region", format!("`{key}` is required")))
-                .and_then(|n| prop::within(row, n))
-        };
-        let region = LogicalRect { x: field("x")?, y: field("y")?, width: field("width")?, height: field("height")? };
+        let region = LogicalRect::read("region", table)?;
+        for n in [region.x, region.y, region.width, region.height] {
+            prop::within(row, n)?;
+        }
         if region.width == 0.0 || region.height == 0.0 {
             return Err(invalid("region", "`width` and `height` must be positive"));
         }
@@ -462,17 +400,23 @@ mod tests {
         );
     }
 
-    /// A notification body span of `kind = "image"` has no `text`. It is refused with a message
-    /// that says what to do about it, rather than drawn as nothing or as its path.
     #[test]
-    fn a_run_without_text_is_refused_naming_the_run() {
+    fn an_unknown_key_is_reported_before_missing_text_naming_the_run() {
         let lua = mlua::Lua::new();
         let err = runs_content(&lua, r#"{ { text = "a" }, { kind = "image", image_path = "/x.png" } }"#).unwrap_err();
         assert!(
             matches!(&err, LayoutError::InvalidProperty { property, detail }
-            if property == "content" && detail.starts_with("run 2 has no `text`")),
+            if property == "content" && detail.starts_with("run 2: unknown key `image_path`")),
             "{err}"
         );
+    }
+
+    #[test]
+    fn a_run_without_text_and_without_unknown_keys_is_still_refused() {
+        let lua = mlua::Lua::new();
+        let err = runs_content(&lua, r#"{ { text = "a" }, { kind = "text" } }"#).unwrap_err();
+        assert!(matches!(err, LayoutError::InvalidProperty { property, detail }
+            if property == "content" && detail.starts_with("run 2: `text` must be string")));
     }
 
     #[test]
@@ -481,6 +425,13 @@ mod tests {
         assert!(runs_content(&lua, r#"{ { text = "a", bold = "yes" } }"#).is_err());
         assert!(runs_content(&lua, r#"{ { text = "a", color = "red" } }"#).is_err());
         assert!(runs_content(&lua, r#"{ "just a string" }"#).is_err());
+    }
+
+    #[test]
+    fn a_signal_in_a_run_names_its_full_path() {
+        let lua = crate::layout::node::signal_lua();
+        let err = runs_content(&lua, r#"{ { text = "a", bold = state("yes") } }"#).unwrap_err();
+        assert!(matches!(err, LayoutError::UnsupportedSignalProperty(path) if path == "content[1].bold"));
     }
 
     #[test]

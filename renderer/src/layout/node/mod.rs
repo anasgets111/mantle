@@ -7,7 +7,7 @@
 
 mod animate;
 mod content;
-mod input;
+pub(crate) mod input;
 mod paint_style;
 pub(crate) mod prop;
 mod spec;
@@ -21,13 +21,17 @@ use style::parse_radius;
 #[cfg(test)]
 pub use animate::Animatable;
 #[cfg(test)]
-pub(crate) use animate::{AnimationSpec, Easing, ExitBlock, Keyframe, SpringConstants, animatable_name, easing_names};
+pub(crate) use animate::KeyframeInput;
+#[cfg(test)]
+pub(crate) use animate::TransitionInput;
+#[cfg(test)]
+pub(crate) use animate::{AnimationSpec, Easing, ExitBlock, SpringConstants, animatable_name, easing_names};
 pub(crate) use animate::{Animations, Params};
 pub use animate::{Dissolve, ShaderParam, TransitionSpec, Tween, advance, depart, is_paint_only, retarget};
-#[cfg(test)]
-pub(crate) use content::TextRun;
 pub(crate) use content::{Content, Font, Live, MaxLines, Region};
 pub use content::{Elide, StyleRun, TextAlign, Wrap, font_runs};
+#[cfg(test)]
+pub(crate) use content::{SpanKind, TextRun};
 pub use paint_style::{PaintStyle, paint_style};
 pub(crate) use spec::{Children, Items, Limit, Root};
 pub use spec::{ItemPass, ListMemo, SecureSubmitTarget, SurfaceSpec, list_children, lock_spec};
@@ -42,6 +46,8 @@ pub use style::{
 };
 pub(crate) use style::{Axes, ColorOrEdges, CornerShape, Cursor, Direction, NumberOrEdges, Scale, ShadowMode};
 pub use surface::{Anchor, Exclusive, KeyboardInteractivity, LayerKind, PanelSpec, SurfaceTopology, panel_spec};
+#[cfg(test)]
+pub(crate) use toplevel::Adjustment;
 pub(crate) use toplevel::{AnchorRect, PopupExtent};
 pub use toplevel::{
     ConstraintAdjustment, PopupAnchor, PopupOffset, PopupSpec, SizeHint, WindowSpec, popup_spec, window_spec,
@@ -71,14 +77,34 @@ pub enum SizeMode {
 crate::lua::luacats::lua_shape! {
     /// Per-edge pixels; a missing edge is `0`.
     #[alias = "Edges"]
-    #[derive(Debug, Clone, Copy, PartialEq, Default)]
-    pub struct EdgeInsets {
-        pub top: f32 as Option<f32>,
-        pub right: f32 as Option<f32>,
-        pub bottom: f32 as Option<f32>,
-        pub left: f32 as Option<f32>,
+    pub(crate) struct EdgesInput {
+        top: Option<f32>,
+        right: Option<f32>,
+        bottom: Option<f32>,
+        left: Option<f32>,
     }
 }
+
+impl EdgesInput {
+    fn into_edges(self) -> EdgeInsets {
+        EdgeInsets {
+            top: self.top.unwrap_or(0.0),
+            right: self.right.unwrap_or(0.0),
+            bottom: self.bottom.unwrap_or(0.0),
+            left: self.left.unwrap_or(0.0),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct EdgeInsets {
+    pub top: f32,
+    pub right: f32,
+    pub bottom: f32,
+    pub left: f32,
+}
+
+spelled!(EdgeInsets => EdgesInput::lua());
 
 impl EdgeInsets {
     pub fn horizontal(&self) -> f32 {
@@ -155,6 +181,17 @@ fn several(errors: &[LayoutError]) -> String {
 }
 
 impl LayoutError {
+    /// Add diagnostic paths only after a reader fails, keeping allocation off the success path.
+    pub(crate) fn under(self, prefix: &str) -> Self {
+        match self {
+            Self::InvalidProperty { property, detail } => {
+                Self::InvalidProperty { property: format!("{prefix}{property}"), detail }
+            }
+            Self::UnsupportedSignalProperty(path) => Self::UnsupportedSignalProperty(format!("{prefix}{path}")),
+            other => other,
+        }
+    }
+
     /// One error as itself, several as [`Self::Several`], each message once. `errors` is flat and
     /// never empty.
     pub(crate) fn many(errors: Vec<Self>) -> Self {

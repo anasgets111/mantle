@@ -1,10 +1,8 @@
-//! Box-model and paint-adjacent value types. `table_number` is shared by `toplevel`'s size hints,
-//! popup offsets, and anchor rectangles.
+//! Box-model and paint-adjacent value types.
 
 use cursor_icon::CursorIcon;
 use mlua::Value;
 
-use super::input::table_field;
 use super::prop::{keywords, within as row_within};
 use super::*;
 use crate::lua::luacats::lua_shape;
@@ -71,18 +69,6 @@ impl Prop for SizeMode {
     }
 }
 
-/// Reads one numeric field from a table-valued property. `None` means absent; callers choose
-/// whether that defaults to 0 or is required. Nested `Signal`s are refused and errors name
-/// `{property}.{key}`.
-pub(super) fn table_number(property: &str, table: &mlua::Table, key: &str) -> Result<Option<f32>, LayoutError> {
-    match table_field(property, table, key)? {
-        Value::Nil => Ok(None),
-        other => value_as_f32(property, &other)?
-            .ok_or_else(|| invalid(property, format!("`{key}` must be a number, got {}", preview_for_error(&other))))
-            .map(Some),
-    }
-}
-
 /// `margin`/`padding`/`border_width`: a number sets all four edges, a table each; an absent edge is
 /// 0, and a row with a range bounds every edge. Parsed once per node per pass: `table.get` is
 /// metamethod-aware, so every consumer reading it again would re-run `__index`, and two reads could
@@ -108,11 +94,7 @@ impl Prop for NumberOrEdges {
                     format!("expected a number or a table, got {}", preview_for_error(value)),
                 ));
             };
-            only_keys(property, table, EdgeInsets::KEYS)?;
-            // An absent edge is 0; [`table_number`] rejects nested `Signal`s.
-            let edge =
-                |key: &str| -> Result<f32, LayoutError> { Ok(table_number(property, table, key)?.unwrap_or(0.0)) };
-            EdgeInsets { top: edge("top")?, right: edge("right")?, bottom: edge("bottom")?, left: edge("left")? }
+            EdgesInput::read(property, table)?.into_edges()
         };
         for n in [insets.top, insets.right, insets.bottom, insets.left] {
             row_within(row, n)?;
@@ -175,19 +157,17 @@ fn xy(row: &Property, value: &Value) -> Result<(f32, f32), LayoutError> {
     let Value::Table(table) = value else {
         return Err(invalid(property, format!("expected an {{ x, y }} table, got {}", preview_for_error(value))));
     };
-    only_keys(property, table, Axes::KEYS)?;
-    let axis = |key| table_number(property, table, key).map(|n| n.unwrap_or(axis_default(property)));
-    Ok((row_within(row, axis("x")?)?, row_within(row, axis("y")?)?))
+    let Axes { x, y } = Axes::read(property, table)?;
+    Ok((row_within(row, x.unwrap_or(axis_default(property)))?, row_within(row, y.unwrap_or(axis_default(property)))?))
 }
 
 // `translate`, `origin`, `shadow_offset`: a per-axis pair, which `xy` reads as `(x, y)`.
 lua_shape! {
     /// A missing axis takes the property's default.
     #[alias = "Axes"]
-    #[expect(dead_code, reason = "the keys `xy` reads, declared for `KEYS` and the stub")]
     pub(crate) struct Axes {
-        x: f32 as Option<f32>,
-        y: f32 as Option<f32>,
+        x: Option<f32>,
+        y: Option<f32>,
     }
 }
 
@@ -208,7 +188,7 @@ impl Prop for Scale {
     type Out = (f32, f32);
     fn read(row: &Property, value: Option<&Value>) -> Result<(f32, f32), LayoutError> {
         let Some(value) = value else {
-            return Axes::read(row, None);
+            return <Axes as Prop>::read(row, None);
         };
         match value_as_f32(row.name, value)? {
             Some(n) => Ok((row_within(row, n)?, n)),
@@ -268,33 +248,7 @@ impl Prop for ColorOrEdges {
         let Value::Table(table) = value else {
             return Err(invalid(property, format!("expected a string or a table, got {}", preview_for_error(value))));
         };
-        only_keys(property, table, BorderColor::KEYS)?;
-        // Metamethod-aware, but parsed once per node by `paint_style` (ADR-0068).
-        let edge = |key: &str| -> Result<Option<Rgba>, LayoutError> {
-            let v: Value = table.get(key).map_err(|e| invalid(property, e.to_string()))?;
-            // Name the edge as well as the property; the shared string/color parsers only know the
-            // property.
-            let name_edge = |e: LayoutError| match e {
-                LayoutError::InvalidProperty { property, detail } => {
-                    LayoutError::InvalidProperty { property, detail: format!("`{key}`: {detail}") }
-                }
-                other => other,
-            };
-            match v {
-                Value::Nil => Ok(None),
-                // Reject nested signals rather than misreporting them as bad hex.
-                Value::UserData(_) => Err(LayoutError::UnsupportedSignalProperty(format!("{property}.{key}"))),
-                Value::String(s) => {
-                    let s = checked_string(property, &s).map_err(name_edge)?;
-                    Ok(Some(parse_hex_color(property, &s).map_err(name_edge)?))
-                }
-                other => Err(invalid(
-                    property,
-                    format!("`{key}` must be a hex colour string, got {}", preview_for_error(&other)),
-                )),
-            }
-        };
-        Ok(BorderColor { top: edge("top")?, right: edge("right")?, bottom: edge("bottom")?, left: edge("left")? })
+        BorderColor::read(property, table)
     }
 }
 

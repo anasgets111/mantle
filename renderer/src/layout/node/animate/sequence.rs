@@ -5,21 +5,26 @@ use mlua::Value;
 
 use super::Animatable;
 use super::easing::Easing;
-use super::parse::{parse_easing, parse_millis};
-use crate::layout::node::{LayoutError, invalid, only_keys, preview_for_error, value_as_f32};
+use crate::layout::node::{LayoutError, invalid, preview_for_error};
 use crate::lua::luacats::lua_shape;
 
-// One stop in a keyframe list: a value, and how the segment arriving at it is timed. The first
-// frame's own `duration` and `easing` are never read -- nothing eases into a beginning.
+// The first frame anchors the sequence; only later frames contribute to its duration.
 lua_shape! {
     /// A bare value, or a frame with its own timing. `duration = 0` jumps; repeating the previous value holds.
     #[alias = "Keyframe"]
     #[derive(Debug, Clone, PartialEq)]
-    pub struct Keyframe {
-        pub value: Animatable,
-        pub duration: Duration as Option<Duration>,
-        pub easing: Easing as Option<Easing>,
+    pub struct KeyframeInput {
+        pub value: Value as Animatable,
+        pub duration: Option<Duration>,
+        pub easing: Option<Easing>,
     }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Keyframe {
+    pub value: Animatable,
+    pub duration: Duration,
+    pub easing: Easing,
 }
 
 /// A property walking a list of values, some number of times (ADR-0152).
@@ -84,10 +89,21 @@ impl Sequence {
 
 const INFINITE: &str = "Infinite";
 
-#[cfg(test)]
-pub(super) struct Loops;
-#[cfg(test)]
+#[derive(Debug, Clone, Copy)]
+pub(super) enum Loops {
+    Count(u32),
+    Infinite,
+}
 crate::lua::luacats::spelled!(Loops => format!("{}|\"{INFINITE}\"", u32::lua()));
+
+impl crate::layout::node::input::Input for Loops {
+    fn from_value(property: &str, key: &str, value: &Value) -> Result<Option<Self>, LayoutError> {
+        if matches!(value, Value::String(name) if name.to_str().is_ok_and(|name| name == INFINITE)) {
+            return Ok(Some(Self::Infinite));
+        }
+        Ok(u32::from_value(property, key, value)?.map(Self::Count))
+    }
+}
 
 /// An entry's `keyframes` and `loops`, if it has them. A frame is a bare value, or a table naming
 /// its own `duration` and `easing` in place of the entry's; the first frame is where the property
@@ -95,10 +111,10 @@ crate::lua::luacats::spelled!(Loops => format!("{}|\"{INFINITE}\"", u32::lua()))
 pub(super) fn parse_sequence(
     property: &str,
     field: &str,
-    spec: &mlua::Table,
     keyframes: &Value,
     duration: Duration,
     easing: Easing,
+    loops: Option<Loops>,
 ) -> Result<Option<Sequence>, LayoutError> {
     let Value::Table(keyframes) = keyframes else {
         return match keyframes {
@@ -114,15 +130,8 @@ pub(super) fn parse_sequence(
             // A frame that names nothing of its own is still a table when the value is one, so an
             // explicit `value` key is what tells the two apart.
             Value::Table(table) if table.contains_key("value").unwrap_or(false) => {
-                only_keys(&at, &table, Keyframe::KEYS)?;
-                let value: Value = table.get("value").map_err(|e| invalid(&at, e.to_string()))?;
-                let own: Value = table.get("duration").map_err(|e| invalid(&at, e.to_string()))?;
-                // Absent takes the entry's. Zero is allowed where the entry's own is not: a
-                // segment that takes no time is a jump.
-                let own = parse_millis(&at, "duration", &own, 0)?.unwrap_or(duration);
-                let named: Value = table.get("easing").map_err(|e| invalid(&at, e.to_string()))?;
-                let named = if named.is_nil() { easing } else { parse_easing(&at, &named)? };
-                (value, own, named)
+                let frame = KeyframeInput::read(&at, &table)?;
+                (frame.value, frame.duration.unwrap_or(duration), frame.easing.unwrap_or(easing))
             }
             plain => (plain, duration, easing),
         };
@@ -148,22 +157,10 @@ pub(super) fn parse_sequence(
             format!("`keyframes` is a list; it holds {entries} entries but only {} run from index 1", frames.len()),
         ));
     }
-    let loops: Value = spec.get("loops").map_err(|e| invalid(field, e.to_string()))?;
-    let loops = match &loops {
-        Value::Nil => Some(1),
-        Value::String(name) if name.to_str().is_ok_and(|name| name == INFINITE) => None,
-        counted => match value_as_f32(field, counted)? {
-            Some(count) if (1.0..=10_000.0).contains(&count) && count.fract() == 0.0 => Some(count as u32),
-            _ => {
-                return Err(invalid(
-                    field,
-                    format!(
-                        "`loops` is a whole count in [1, 10000] or \"{INFINITE}\", got {}",
-                        preview_for_error(counted)
-                    ),
-                ));
-            }
-        },
+    let loops = match loops.unwrap_or(Loops::Count(1)) {
+        Loops::Infinite => None,
+        Loops::Count(count) if (1..=10_000).contains(&count) => Some(count),
+        Loops::Count(count) => return Err(invalid(field, format!("`loops` must be within [1, 10000], got {count}"))),
     };
     Sequence::new(frames, loops).map(Some).ok_or_else(|| {
         invalid(field, "every `keyframes` segment lasts no time: a sequence that takes none is a jump".to_string())
@@ -289,7 +286,7 @@ mod tests {
             ("keyframes = { 1 }", &["at least two"]),
             ("keyframes = 3", &["`keyframes` is a list"]),
             (r#"keyframes = { 1, "Fill" }"#, &["keyframes[2]"]),
-            ("loops = 0, keyframes = { 1, 0 }", &["`loops`", "Infinite"]),
+            ("loops = 0, keyframes = { 1, 0 }", &["`loops`", "[1, 10000]"]),
             ("keyframes = { 1, { value = 0, duration = -5 } }", &["keyframes[2]", "[0, 60000]"]),
             // A hole truncates the read at index 3, so the two frames that survive would have
             // passed the length check while the config quietly lost one.

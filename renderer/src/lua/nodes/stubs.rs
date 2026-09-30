@@ -9,21 +9,21 @@
 use super::properties::{ALL, Absent, BOX, KINDS, Property, SURFACES, kind_doc, properties};
 use crate::layout::node::prop::Keyword;
 use crate::layout::node::{
-    Align, Animatable, AnimationSpec, Animations, Axes, BorderColor, Easing, EdgeInsets, ExitBlock, Gradient,
-    GradientStop, Keyframe, Mask, PopupAnchor, SpringConstants, TextRun, TransitionSpec,
+    Align, Animatable, AnimationSpec, Animations, Axes, BorderColor, Easing, EdgesInput, ExitBlock, Gradient,
+    GradientStop, KeyframeInput, Mask, PopupAnchor, SpringConstants, TextRun, TransitionInput,
 };
 use crate::lua::luacats::LuaType;
 use crate::text::snap::LogicalRect;
 
 /// The input shapes [`NODES_HEADER`] names as `{Name}`, each supplied by its parser's type.
 const NODE_SHAPES: [fn(String) -> String; 13] = [
-    fill::<EdgeInsets>,
+    fill::<EdgesInput>,
     fill::<BorderColor>,
     fill::<Axes>,
-    fill::<Keyframe>,
+    fill::<KeyframeInput>,
     fill::<SpringConstants>,
     fill::<TextRun>,
-    fill::<TransitionSpec>,
+    fill::<TransitionInput>,
     fill::<Gradient>,
     fill::<Mask>,
     fill::<Easing>,

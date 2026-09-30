@@ -557,9 +557,7 @@ mod meta_stub_tests {
         );
     }
 
-    /// Literal sets refused without a keyword list, so checked one way only: `cursor`
-    /// parses `cursor_icon`'s names, which it cannot enumerate; the rest mix one keyword into a
-    /// number (`"Fill"`, `"Ignore"`, `animate`'s `loops = "Infinite"`).
+    // Mixed number/keyword unions and cursor_icon lack an enumerable Keyword type.
     const ONE_WAY: [&str; 5] = ["animate", "cursor", "exclusive", "height", "width"];
 
     #[derive(Default)]
@@ -609,23 +607,24 @@ mod meta_stub_tests {
             }
             first.get_or_insert(literal);
         }
-        // The refusal's keyword list must equal the declared literals, making the check two-way.
+        // Refusing unknown names and comparing declared names with engine choices checks the contract both ways.
         let bogus = around("\"mantle_bogus\"");
         let declared: BTreeSet<&str> = members.iter().filter_map(|m| m.strip_prefix('"')?.strip_suffix('"')).collect();
         if !declared.is_empty() && !members.contains(&"string") {
-            let listed = apply_one(kind, required, field, Some(&bogus)).map(|()| None).unwrap_or_else(|err| {
-                let list = err.split_once("expected one of ")?.1.split(", got").next()?;
-                Some(list.split(", ").map(|name| name.trim_matches('`').to_string()).collect::<BTreeSet<_>>())
-            });
-            match listed {
-                Some(listed) if listed.iter().map(String::as_str).eq(declared.iter().copied()) => {}
-                Some(listed) => {
-                    report.failures.push(format!("  {kind}.{field} declares {declared:?}, engine lists {listed:?}"))
+            if apply_one(kind, required, field, Some(&bogus)).is_ok() {
+                report.failures.push(format!("  {kind}.{field} accepts unknown keyword `{bogus}`"));
+            }
+            if !ONE_WAY.contains(&field) {
+                use crate::layout::node::{Adjustment, SpanKind, easing_names, prop::Keyword};
+                let listed: BTreeSet<&str> = match field {
+                    "transition" => easing_names().collect(),
+                    "content" => SpanKind::NAMES.iter().copied().collect(),
+                    "constraint_adjustment" => Adjustment::NAMES.iter().copied().collect(),
+                    _ => super::accepted(kind, field).expect("probed property").choices.iter().copied().collect(),
+                };
+                if listed != declared {
+                    report.failures.push(format!("  {kind}.{field} declares {declared:?}, engine lists {listed:?}"));
                 }
-                None if ONE_WAY.contains(&field) => {}
-                None => report
-                    .failures
-                    .push(format!("  {kind}.{field} declares a closed literal set, engine lists none for `{bogus}`")),
             }
         }
         first

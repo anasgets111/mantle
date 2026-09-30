@@ -8,7 +8,6 @@ use mlua::Value;
 use crate::text::snap::LogicalRect;
 
 use super::prop::{Keyword, keywords};
-use super::style::table_number;
 use super::*;
 use fields::{popup, window};
 
@@ -39,7 +38,7 @@ impl Prop for SizeHint {
         };
         only_keys(property, table, &["width", "height"])?;
         let axis = |key: &str| -> Result<f32, LayoutError> {
-            let n = table_number(property, table, key)?.ok_or_else(|| {
+            let n = input::field::<Option<f32>>(property, table, key)?.ok_or_else(|| {
                 invalid(
                     property,
                     format!("`{key}` is required -- a size hint names both axes, or use 0 for an unconstrained one"),
@@ -219,7 +218,9 @@ impl Prop for PopupOffset {
             return Err(invalid("offset", format!("expected an `{{ x, y }}` table, got {}", preview_for_error(value))));
         };
         only_keys("offset", table, &["x", "y"])?;
-        let axis = |key: &str| -> Result<f32, LayoutError> { Ok(table_number("offset", table, key)?.unwrap_or(0.0)) };
+        let axis = |key: &str| -> Result<f32, LayoutError> {
+            Ok(input::field::<Option<f32>>("offset", table, key)?.unwrap_or(0.0))
+        };
         Ok(PopupOffset { x: axis("x")?, y: axis("y")? })
     }
 }
@@ -252,10 +253,11 @@ impl Prop for AnchorRect {
             ));
         };
         only_keys("anchor_rect", table, LogicalRect::KEYS)?;
-        let origin =
-            |key: &str| -> Result<f32, LayoutError> { Ok(table_number("anchor_rect", table, key)?.unwrap_or(0.0)) };
+        let origin = |key: &str| -> Result<f32, LayoutError> {
+            Ok(input::field::<Option<f32>>("anchor_rect", table, key)?.unwrap_or(0.0))
+        };
         let extent = |key: &str| -> Result<f32, LayoutError> {
-            let n = table_number("anchor_rect", table, key)?.ok_or_else(|| {
+            let n = input::field::<Option<f32>>("anchor_rect", table, key)?.ok_or_else(|| {
                 invalid("anchor_rect", format!("`{key}` is required and must be greater than 0 -- a zero-size anchor rectangle raises invalid_positioner"))
             })?;
             if !(n > 0.0 && n <= 8192.0) {
