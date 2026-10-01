@@ -1707,10 +1707,11 @@ pub(crate) mod tests {
     }
     #[test]
     fn node_mask_alpha_invert_hidden_and_nested_transform() {
+        // Alpha 254 at opacity 0.5 is 127.0; 255 lands on the 127.5 tie GL may round either way.
         let child = |extra: &str, invert: bool| {
             format!(
                 r##"rect {{ width = 64, height = 64,
-            opacity = 0.5, background = "#00FF00FF", mask = {{ node = "shape", invert = {invert} }},
+            opacity = 0.5, background = "#00FF00FE", mask = {{ node = "shape", invert = {invert} }},
             children = {{ rect {{ id = "shape", width = 32, height = 64,
                 background = "#FF0000FF", {extra} }} }} }}"##
             )

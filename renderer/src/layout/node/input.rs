@@ -119,7 +119,7 @@ impl Input for Rgba {
             LayoutError::InvalidProperty { detail, .. } => invalid(property, format!("`{key}`: {detail}")),
             other => other,
         };
-        let Some(hex) = String::from_value(property, key, value).map_err(&name_edge)? else { return Ok(None) };
+        let Some(hex) = String::from_value(property, key, value).map_err(name_edge)? else { return Ok(None) };
         parse_hex_color(property, &hex).map_err(name_edge).map(Some)
     }
 }

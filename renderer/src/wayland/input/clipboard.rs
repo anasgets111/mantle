@@ -104,6 +104,8 @@ fn write_copy(mut fd: WritePipe, text: Arc<str>) {
     }
 }
 
+// ponytail: `try_update` replaces this once `rust-version` reaches 1.99.
+#[allow(deprecated)]
 fn claim_writer(active: &AtomicUsize) -> bool {
     active.fetch_update(Ordering::AcqRel, Ordering::Acquire, |count| (count < MAX_WRITERS).then_some(count + 1)).is_ok()
 }
