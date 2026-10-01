@@ -13,7 +13,7 @@ permissions:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     container: ubuntu:26.04
     # A container job's steps default to `sh`, which has no `${var::n}`.
     defaults:
@@ -92,7 +92,7 @@ jobs:
   release:
     if: github.ref_type == 'tag'
     needs: build
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     permissions:
       contents: write
     steps:
