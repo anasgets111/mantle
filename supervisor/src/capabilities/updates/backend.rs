@@ -102,7 +102,7 @@ pub(super) fn run(command: &mut Command, failed: fn(Option<i32>, &str) -> bool) 
     for line in stderr.lines().filter(|line| !line.trim().is_empty()) {
         warn!("{line}");
     }
-    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+    Ok(String::from_utf8_lossy_owned(output.stdout))
 }
 
 /// [`run`]'s `failed` for a manager whose every non-zero exit is a failure.

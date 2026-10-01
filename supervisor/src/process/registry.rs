@@ -175,7 +175,7 @@ impl<R: tokio::io::AsyncRead + Unpin> BoundedLines<R> {
 
     /// Takes the accumulated bytes, leaving the buffer ready for the next line.
     fn take_line(&mut self) -> String {
-        String::from_utf8_lossy(&std::mem::take(&mut self.line)).into_owned()
+        String::from_utf8_lossy_owned(std::mem::take(&mut self.line))
     }
 
     /// Reads and drops the rest of an over-long line, so the next one starts clean.
