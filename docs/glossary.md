@@ -43,7 +43,8 @@ scope, capability roster) lives in [`CONTEXT.md`](../CONTEXT.md).
 | **Node identity** | How a node is matched across evaluations, scoped to its parent: sibling `id` or list `key` (which wins), else position among id-less siblings. An unmatched node is new and starts fresh. |
 | **Paint-only property** | A property whose change repaints without relayout (`opacity`, colours, `radius`, shadows, blurs, transforms, `progress`). Its tweens tick without a layout pass. |
 | **Shader node** | [`shader`](nodes/shader.md): a config `.frag` drawn as a node. Editing the file reloads. |
-| **Capture node** | [`capture`](nodes/capture.md): a live preview of an output. |
+| **Capture node** | [`capture`](nodes/capture.md): a live preview of an output or a window. |
+| **Path node** | [`path`](nodes/path.md): vector commands filled or stroked in the node's box, without an SVG file. |
 
 ## Signals and state
 

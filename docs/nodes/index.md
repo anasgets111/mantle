@@ -57,6 +57,7 @@ Every kind accepts the [common properties](#common-properties). Box kinds also a
 | `icon` | [icon](icon.md) | | Leaf |
 | `image` | [image](image.md) | | Leaf |
 | `capture` | [capture](capture.md) | | Leaf |
+| `path` | [path](path.md) | | Leaf |
 | `shader` | [shader](shader.md) | | Leaf |
 | `textfield` | [textfield](textfield.md) | | Leaf |
 
@@ -90,13 +91,13 @@ container either **flows** its children along one axis or **stacks** them on top
 | `column` | Flow top to bottom | Vertical |
 | `list` | Flow, generated from `source` | `direction`: vertical by default |
 | `rect`, every surface | Stack: each child gets the whole content box and aligns in it on its own. Later children paint over earlier ones | None |
-| `text`, `icon`, `image`, `capture`, `shader`, `textfield` | None (leaves) | None |
+| `text`, `icon`, `image`, `capture`, `path`, `shader`, `textfield` | None (leaves) | None |
 
 A stacking parent's content size is the union of its children, so a `rect` is how you layer a badge
 over an icon or a label over an image.
 
-Of the leaves, only `text` and `icon` measure themselves. `image`, `capture`, `shader` and
-`textfield` have no intrinsic size: without `width` and `height` they are 0 × 0 and draw nothing.
+Of the leaves, only `text` and `icon` measure themselves. `image`, `capture`, `path`, `shader`
+and `textfield` have no intrinsic size: without `width` and `height` they are 0 × 0 and draw nothing.
 
 ### Sizes
 
@@ -307,7 +308,7 @@ return body
 | Trap | Fix |
 | :--- | :--- |
 | `width = "Content"` is refused | Omit the property; content size is the default |
-| An `image`, `capture`, `shader` or `textfield` does not appear | They have no intrinsic size. Give `width` and `height`, or `"Fill"` in a sized parent |
+| An `image`, `capture`, `path`, `shader` or `textfield` does not appear | They have no intrinsic size. Give `width` and `height`, or `"Fill"` in a sized parent |
 | A `"Fill"` child is 0 wide | Its parent is content-sized along that axis, or fixed siblings already overflow. Size the parent |
 | `"50%"` resolves to 0 | The parent has no definite size on that axis |
 | Items in a `rect` overlap | They stack their children; put a `row` inside for side by side |

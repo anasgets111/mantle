@@ -5457,6 +5457,13 @@ adds no crate: flate2 is already compiled here for `png`.
    from the shaping thread to the decode pool. Icon themes ship paths; an asset that wants text
    converts it to paths and keeps the font its author chose.
 
+Amendment (2026-09-30): decisions 2 and 3 are reversed; `text` is on. fontdb is now a single 0.24,
+so the shaping worker answers with an `Arc` snapshot of its own `Database` and SVG decoding adds no
+second font set. Vector `CacheKey`s carry the font generation. On a bump, only SVGs whose decode
+asked for a font, plus queued vector decodes, are evicted; text-free icons are re-keyed and keep
+their pixels. SVG text sees only faces the shaping worker already loaded; it never asks
+fontconfig itself.
+
 ## 0235. A GIF is one texture and its frames' changed rects, not N textures
 
 ADR-0233's N-texture slot made a 1920x1080, 86-frame wallpaper 713 MB, past `frame_cap` at any
@@ -7190,9 +7197,9 @@ Trade-off: type errors use the stub spelling instead of tailored prose.
 `mask = { node = "id" }` names a direct child, keeping layout, reconciliation and resource
 tracking in the existing child tree instead of adding cross-tree ownership and cycle detection.
 The mask child contributes to flow sizing but is excluded from content paint, input, focus and
-compositor regions; position it absolutely when it must not take flow space. Its alpha and the
-content render through two pooled targets, and allocation failure draws neither, so masked
-content cannot leak unmasked.
+compositor regions; a stacking `rect` with explicit dimensions keeps it from sizing the content.
+Its alpha and the content render through two pooled targets, and allocation failure draws
+neither, so masked content cannot leak unmasked.
 
 Amends ADR-0255's exclusion of node masks and decision 7 for node masks.
 

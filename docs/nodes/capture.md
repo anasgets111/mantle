@@ -2,7 +2,8 @@
 
 A preview of an output or a window. Outputs use `ext-image-copy-capture-v1`, with
 `wlr-screencopy` as a fallback. Window capture currently requires Hyprland's toplevel address
-mapping and ext capture protocols. Without the required protocols it draws nothing and warns once.
+mapping and ext capture protocols. Without the required protocols it draws nothing and warns once
+per target.
 
 A rounded preview of the first screen at up to 30 frames per second:
 
@@ -69,9 +70,10 @@ confirm these are separate requirements. Non-Hyprland window capture remains on 
 
 It has no intrinsic size: without `width` and `height` it draws nothing. A hidden node or unmapped
 surface drops its capture and starts a fresh one when it shows again. A live capture gets a new
-frame only when its source changes. A failed output capture retries when the output list changes.
-A failed or closed window capture clears or stops its preview and remains stopped until the target
-changes or the node hides and shows again. An unrelated output change cannot revive a closed
+frame only when its source changes. A resized source renegotiates its buffers and keeps going. A
+stopped output session keeps its last frame and restarts on the next repaint; any other failed
+output capture retries when the output list changes. A failed or closed window capture clears or
+stops its preview and remains stopped until the target changes or the node hides and shows again. An unrelated output change cannot revive a closed
 window's ID. A one-shot captures the current frame; use `live` to follow opening animations.
 
 A `region` prefers `wlr-screencopy`, which crops at the source. Through `ext-image-copy-capture-v1`

@@ -132,6 +132,8 @@ focus-follows-mouse pass through to what is below. The engine rebuilds this regi
 | `text`, `icon`, `image`, `capture`, `textfield` | Its box |
 | Any node with `on_click`, `on_drag`, `on_wheel` or `submit = true` | Its box, even with nothing painted |
 | A `shader` | Nothing; its alpha is unknown to the engine. Give it a handler for a hit area |
+| A `path` with a `fill`, or a `stroke` with `stroke_width` above 0, and at least one `L`, `Q` or `C` command | Its whole box, not the drawn shape. Otherwise nothing; give it a handler for a hit area |
+| A box's [`mask` child](../guide/paint.md#mask) | Nothing, nor its subtree |
 | A transparent container | Nothing; its children are asked instead |
 | The surface root itself | Nothing, even with a `background`; with a handler, the whole surface |
 | Anything on a `layer = "Background"` panel | Only a node with a handler |

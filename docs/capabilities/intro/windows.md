@@ -29,6 +29,7 @@ niri and Hyprland share the `workspaces` reader; any other compositor needs
 | wlr foreign-toplevel | `fullscreen`, `maximized`, `minimized` | `focus`, `close`, `set_fullscreen`, `set_minimized`, `set_maximized` |
 
 A flag a backend does not report is `nil`; an action it lacks is logged at debug level and dropped.
+On Hyprland, a window's `id` also feeds [`capture { window = id }`](../nodes/capture.md).
 
 ## Gotchas
 

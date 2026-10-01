@@ -14,13 +14,16 @@ coordinates. Use the existing `scale` transform to scale a drawing.
 <!-- End of the generated table. -->
 
 Each command has `op` and `points`. `M` moves, `L` draws a line, `Q` takes a control point and
-endpoint, `C` takes two control points and an endpoint, and `Z` closes the subpath. After
-closing, start another subpath with `M`. Empty commands draw nothing. Arrays must be dense.
+endpoint, `C` takes two control points and an endpoint, and `Z` closes the subpath. `Z` still
+needs `points = {}`. After closing, start another subpath with `M`. Empty commands draw nothing. Arrays must be dense.
 
 Subpaths are solid; hole and fill-rule controls are unavailable. Strokes use butt caps and
 miter joins. Open paths close for filling.
 The layout box does not grow to include strokes; leave padding inside it. Ancestor clipping,
 masks, opacity, transforms, shadows and content blur use the existing paint pipeline.
+
+A painted path claims its whole box for input, not the drawn shape; an unpainted one is
+click-through unless it has a pointer handler ([input region](../surfaces/index.md#input-region)).
 
 A chart component builds commands from values without writing an SVG file:
 
