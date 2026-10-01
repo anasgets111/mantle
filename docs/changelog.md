@@ -7,6 +7,8 @@ version is 0.x, a minor release can break the Lua API.
 
 ## Unreleased
 
+## 0.1.0 - 2026-10-01
+
 ### Added
 
 - `elided(name)` is a read-only boolean signal bound to a text node's `elided` property. It reports content removed by elision or line limits and updates its readers after content, font or layout changes ([signals](guide/signals.md#elided-read-text-truncation)).
