@@ -32,7 +32,7 @@ jobs:
           curl -fsSLo /tmp/nfpm.deb https://github.com/goreleaser/nfpm/releases/download/v2.47.0/nfpm_2.47.0_amd64.deb
           echo "3f1cf344bd0b57373ca55636a78c08b0491f7293d609a456a9ac3b0b150fda97  /tmp/nfpm.deb" | sha256sum -c
           dpkg -i /tmp/nfpm.deb
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       # Ubuntu's own rustc trails stable; build with exactly the `rust-version` Cargo.toml declares.
       - name: Rust
         run: |
@@ -80,7 +80,7 @@ jobs:
           nfpm package -f packaging/nfpm.yaml -p rpm -t stage/
           (cd stage && sha256sum *.tar.gz *.deb *.rpm > SHA256SUMS)
           echo "name=$name" >> "$GITHUB_OUTPUT"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: ${{ steps.package.outputs.name }}
           path: |
@@ -96,7 +96,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/download-artifact@v5
+      - uses: actions/download-artifact@v8
         with:
           path: dist
           merge-multiple: true
