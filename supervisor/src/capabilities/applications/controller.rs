@@ -243,8 +243,7 @@ mod tests {
         let marker = tempfile::tempdir().unwrap();
         let touched = marker.path().join("ran");
         let (controller, _dir) =
-            controller_over(&[("t.desktop", &runnable("Toucher", &format!("/usr/bin/touch {}", touched.display())))])
-                .await;
+            controller_over(&[("t.desktop", &runnable("Toucher", &format!("touch {}", touched.display())))]).await;
 
         controller.launch("t").expect("launching a known entry must succeed");
 

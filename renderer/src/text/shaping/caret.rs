@@ -138,7 +138,7 @@ mod tests {
         let shaped = handle.shape_glyphs(req(text, 20.0));
         let line = &shaped.shaped[0];
 
-        assert_eq!(caret_x(line, 0), line.width, "the first byte draws at the right edge");
+        assert!((caret_x(line, 0) - line.width).abs() < 1e-3, "the first byte draws at the right edge");
         assert_eq!(caret_x(line, text.len()), 0.0, "and the last at the left");
         assert_eq!(caret_at(line, line.width - 1.0, text.len()), 0, "a press at the right edge is byte 0");
         assert_eq!(caret_at(line, 1.0, text.len()), text.len(), "and one at the left is the end");

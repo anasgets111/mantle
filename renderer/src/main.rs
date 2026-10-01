@@ -27,6 +27,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // allocation over 1 MB, not a per-frame path.
     //
     // SAFETY: a plain FFI call with two integers, before any thread exists.
+    #[cfg(target_env = "gnu")]
     unsafe {
         libc::mallopt(libc::M_MMAP_THRESHOLD, 1 << 20);
     }

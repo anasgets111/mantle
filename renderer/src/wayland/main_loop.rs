@@ -419,6 +419,7 @@ pub fn run(
                 let _ = app.client.lua().gc_collect();
                 // SAFETY: plain one-integer FFI. `malloc_trim` locks the arenas itself and only
                 // `madvise`s pages the allocator already holds free, never live chunks.
+                #[cfg(target_env = "gnu")]
                 unsafe {
                     libc::malloc_trim(0);
                 }

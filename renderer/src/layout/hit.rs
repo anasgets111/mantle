@@ -500,18 +500,15 @@ mod tests {
         let shaping = ShapingHandle::spawn();
         let text = "see this page now";
         let node = styled_text(text, vec![link(4..13, "https://a/")], TextAlign::Start, 300.0);
-        let before = width_of(&shaping, "see ");
+        // To the link's end, never "see ": a trailing space is not measured.
+        let end = width_of(&shaping, "see this page");
         let link_width = width_of(&shaping, "this page");
         assert_eq!(link_under(&node, LogicalPoint { x: 2.0, y: 5.0 }, &shaping), None, "on 'see'");
         assert_eq!(
-            link_under(&node, LogicalPoint { x: before + link_width / 2.0, y: 5.0 }, &shaping),
+            link_under(&node, LogicalPoint { x: end - link_width / 2.0, y: 5.0 }, &shaping),
             Some("https://a/".to_string())
         );
-        assert_eq!(
-            link_under(&node, LogicalPoint { x: before + link_width + 4.0, y: 5.0 }, &shaping),
-            None,
-            "on 'now'"
-        );
+        assert_eq!(link_under(&node, LogicalPoint { x: end + 4.0, y: 5.0 }, &shaping), None, "on 'now'");
         assert_eq!(link_under(&node, LogicalPoint { x: 299.0, y: 5.0 }, &shaping), None, "past the end of the line");
     }
 
