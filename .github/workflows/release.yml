@@ -24,7 +24,7 @@ jobs:
         run: |
           apt-get update -q
           DEBIAN_FRONTEND=noninteractive apt-get install -qy --no-install-recommends \
-            ca-certificates curl cargo build-essential pkg-config clang libclang-dev \
+            ca-certificates curl build-essential pkg-config clang libclang-dev \
             libpipewire-0.3-dev libpam0g-dev libudev-dev libwayland-dev libxkbcommon-dev \
             libegl-dev libgbm-dev
       - name: nfpm
@@ -33,6 +33,15 @@ jobs:
           echo "3f1cf344bd0b57373ca55636a78c08b0491f7293d609a456a9ac3b0b150fda97  /tmp/nfpm.deb" | sha256sum -c
           dpkg -i /tmp/nfpm.deb
       - uses: actions/checkout@v5
+      # Ubuntu's own rustc trails stable; build with exactly the `rust-version` Cargo.toml declares.
+      - name: Rust
+        run: |
+          curl -fsSLo /tmp/rustup-init https://static.rust-lang.org/rustup/archive/1.29.1/x86_64-unknown-linux-gnu/rustup-init
+          echo "dda7234360b7f578ca8b0ddcb80145646fa61a67c1720a5abc7051b35c9fcb71  /tmp/rustup-init" | sha256sum -c
+          chmod +x /tmp/rustup-init
+          /tmp/rustup-init -y --no-modify-path --profile minimal \
+            --default-toolchain "$(sed -n 's/^rust-version = "\(.*\)"/\1/p' Cargo.toml)"
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
       # The binaries report Cargo's version and the packages the tag's, so a mismatch ships both.
       - name: Tag matches Cargo version
         if: github.ref_type == 'tag'

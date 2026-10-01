@@ -102,7 +102,7 @@ names.
 
 ## Build from source
 
-A source build needs Rust 1.98.1 or later, a C compiler and `pkg-config` for vendored Lua,
+A source build needs Rust 1.99 or later, a C compiler and `pkg-config` for vendored Lua,
 `clang` for PipeWire's bindings, and development files for the linked libraries:
 
 | Distro | Packages |
