@@ -54,13 +54,13 @@ local apps = computed({ mantle.applications, query }, function(a, needle)
     if needle == "" then
         for _, id in ipairs(PINNED) do
             local index = a and a.by_app_id[id]
-            if index then out[#out + 1] = a.entries[index] end
+            if index and not a.entries[index].no_display then out[#out + 1] = a.entries[index] end
         end
         return out
     end
     for _, entry in ipairs(a and a.entries or {}) do
         local score = fuzzy(entry.name, needle)
-        if score then out[#out + 1] = { entry = entry, score = score } end
+        if not entry.no_display and score then out[#out + 1] = { entry = entry, score = score } end
     end
     table.sort(out, function(l, r) return l.score > r.score or (l.score == r.score and l.entry.id < r.entry.id) end)
     local best = {}

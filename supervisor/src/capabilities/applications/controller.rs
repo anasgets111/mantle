@@ -18,8 +18,9 @@ use super::watch;
 #[derive(Debug, Clone, Default, PartialEq, serde::Serialize)]
 #[cfg_attr(test, derive(schemars::JsonSchema))]
 pub struct ApplicationsState {
-    /// Installed entries, sorted by `name` (byte order). A change under an applications directory
-    /// rescans 250 ms after the last event.
+    /// Installed entries, sorted by `name` (byte order), including `NoDisplay` entries for window
+    /// lookup. Launchers omit entries with `no_display = true`. `Hidden` entries are excluded.
+    /// A change under an applications directory rescans 250 ms after the last event.
     pub entries: Vec<AppSummary>,
     /// Window `app_id` to its 1-based index: `entries[by_app_id[app_id]]`. Keys are exact
     /// `StartupWMClass` and desktop ids, then lowercased and last-dot-segment guesses.

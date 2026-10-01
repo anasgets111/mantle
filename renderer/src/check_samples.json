@@ -12,7 +12,8 @@
         "keywords": [
           "sample"
         ],
-        "name": "sample"
+        "name": "sample",
+        "no_display": true
       }
     ]
   },

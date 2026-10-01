@@ -13,7 +13,7 @@ use super::entry::{desktop_file_id, flag, parse_group, tokenize_exec};
 /// `watcher.rs` does.
 const MAX_DEPTH: usize = 4;
 
-/// One visible `Type=Application` desktop entry; display data only, argv stays private (ADR-0061).
+/// One `Type=Application` desktop entry; display data only, argv stays private (ADR-0061).
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 #[cfg_attr(test, derive(schemars::JsonSchema))]
 pub struct AppSummary {
@@ -24,6 +24,8 @@ pub struct AppSummary {
     /// `Icon=` as written, a theme name or absolute path, both accepted by `icon { name }`; `nil`
     /// without the key.
     pub icon: Option<String>,
+    /// `NoDisplay=true`: omit from launchers, but keep its name and icon for window lookup.
+    pub no_display: bool,
     /// `Comment=`, unlocalized, e.g. `"Web Browser"` (ADR-0112); `nil` without the key.
     pub comment: Option<String>,
     /// `GenericName=`, unlocalized, e.g. `"Text Editor"`; `nil` without the key.
@@ -102,7 +104,7 @@ pub fn scan(dirs: &[PathBuf]) -> ScanResult {
             if group.get("Type").map(String::as_str) != Some("Application") {
                 continue;
             }
-            if flag(&group, "NoDisplay") || flag(&group, "Hidden") {
+            if flag(&group, "Hidden") {
                 continue;
             }
             let (Some(name), Some(exec)) = (group.get("Name"), group.get("Exec")) else {
@@ -119,6 +121,7 @@ pub fn scan(dirs: &[PathBuf]) -> ScanResult {
                 id,
                 name: name.clone(),
                 icon: group.get("Icon").cloned(),
+                no_display: flag(&group, "NoDisplay"),
                 comment: group.get("Comment").cloned(),
                 generic_name: group.get("GenericName").cloned(),
                 // The specification's trailing `;` leaves an empty last field. `\;` is not
@@ -264,17 +267,44 @@ mod tests {
     }
 
     #[test]
-    fn scan_skips_entries_the_specification_says_not_to_show() {
+    fn scan_keeps_nodisplay_icons_but_excludes_hidden_and_invalid_entries() {
         let dir = tempfile::tempdir().unwrap();
         write_entry(dir.path(), "shown.desktop", &application("Shown", ""));
         write_entry(dir.path(), "hidden.desktop", &application("Hidden", "Hidden=true\n"));
-        write_entry(dir.path(), "nodisplay.desktop", &application("NoDisplay", "NoDisplay=true\n"));
+        write_entry(
+            dir.path(),
+            "org.example.Helper.desktop",
+            &application("Helper", "NoDisplay=true\nIcon=helper\nStartupWMClass=HelperWindow\n"),
+        );
         write_entry(dir.path(), "link.desktop", "[Desktop Entry]\nType=Link\nName=Link\nURL=http://x\n");
         write_entry(dir.path(), "noexec.desktop", "[Desktop Entry]\nType=Application\nName=NoExec\n");
 
-        let names: Vec<String> = scan(&[dir.path().to_path_buf()]).entries.into_iter().map(|e| e.name).collect();
+        let result = scan(&[dir.path().to_path_buf()]);
 
-        assert_eq!(names, vec!["Shown"]);
+        for app_id in ["org.example.Helper", "org.example.helper", "helper", "HelperWindow", "helperwindow"] {
+            let index = result.by_app_id[app_id];
+            assert_eq!(result.entries[index - 1].icon.as_deref(), Some("helper"));
+            assert!(result.entries[index - 1].no_display);
+        }
+        assert!(!result.by_app_id.contains_key("hidden"));
+        assert_eq!(result.entries.len(), 2);
+        let shown: Vec<&str> =
+            result.entries.iter().filter(|entry| !entry.no_display).map(|entry| entry.name.as_str()).collect();
+        assert_eq!(shown, vec!["Shown"]);
+    }
+
+    #[test]
+    fn a_hidden_override_removes_the_system_entry_from_launcher_and_window_lookup() {
+        let home = tempfile::tempdir().unwrap();
+        let system = tempfile::tempdir().unwrap();
+        write_entry(home.path(), "org.example.Helper.desktop", &application("Helper", "Hidden=true\n"));
+        write_entry(system.path(), "org.example.Helper.desktop", &application("Helper", "Icon=helper\n"));
+
+        let result = scan(&[home.path().to_path_buf(), system.path().to_path_buf()]);
+
+        assert!(result.entries.is_empty());
+        assert!(result.by_app_id.is_empty());
+        assert!(result.launch.is_empty());
     }
 
     #[test]

@@ -49,7 +49,7 @@ local apps = mantle.applications:map(function(a)
     local out = {}
     for _, id in ipairs(PINNED) do
         local index = a and a.by_app_id[id]
-        if index then out[#out + 1] = a.entries[index] end
+        if index and not a.entries[index].no_display then out[#out + 1] = a.entries[index] end
     end
     return out
 end)

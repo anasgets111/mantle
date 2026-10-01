@@ -55,13 +55,14 @@
 ---@field volume? number Stream volume, `1.0` is 100%; `nil` until PipeWire reports the stream's `Props`.
 
 ---@class AppSummary
----One visible `Type=Application` desktop entry; display data only, argv stays private (ADR-0061).
+---One `Type=Application` desktop entry; display data only, argv stays private (ADR-0061).
 ---@field comment? string `Comment=`, unlocalized, e.g. `"Web Browser"` (ADR-0112); `nil` without the key.
 ---@field generic_name? string `GenericName=`, unlocalized, e.g. `"Text Editor"`; `nil` without the key.
 ---@field icon? string `Icon=` as written, a theme name or absolute path, both accepted by `icon { name }`; `nil` without the key.
 ---@field id string Desktop file id, e.g. `"org.telegram.desktop"`; the argument of `"launch"`.
 ---@field keywords string[] `Keywords=` split on `;`, for search; empty without the key.
 ---@field name string `Name=`, unlocalized: `Name[xx]` is not read (ADR-0061).
+---@field no_display boolean `NoDisplay=true`: omit from launchers, but keep its name and icon for window lookup.
 
 ---@class AudioDevice
 ---One `sinks` or `sources` entry.
@@ -382,7 +383,7 @@
 ---@class ApplicationsState
 ---`mantle.applications` payload (ADR-0061, ADR-0252).
 ---@field by_app_id table<string, integer> Window `app_id` to its 1-based index: `entries[by_app_id[app_id]]`. Keys are exact `StartupWMClass` and desktop ids, then lowercased and last-dot-segment guesses.
----@field entries AppSummary[] Installed entries, sorted by `name` (byte order). A change under an applications directory rescans 250 ms after the last event.
+---@field entries AppSummary[] Installed entries, sorted by `name` (byte order), including `NoDisplay` entries for window lookup. Launchers omit entries with `no_display = true`. `Hidden` entries are excluded. A change under an applications directory rescans 250 ms after the last event.
 
 ---@class AudioState
 ---`mantle.audio`'s payload (ADR-0053).

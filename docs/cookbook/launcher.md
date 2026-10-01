@@ -33,7 +33,7 @@ local matches = computed({ mantle.applications, query }, function(applications, 
     local scored = {}
     for _, entry in ipairs(applications and applications.entries or {}) do
         local score, start = score_of(entry, needle)
-        if score then
+        if not entry.no_display and score then
             scored[#scored + 1] = { entry = entry, score = score, start = start }
         end
     end
@@ -189,7 +189,7 @@ launcher_open` on Hyprland or `Mod+Space { spawn "mantle" "toggle" "launcher_ope
 
 ## How it works
 
-- `applications.entries` holds every visible desktop entry and follows installs and removals; `launch` takes its `id` and runs it detached ([applications](../capabilities/applications.md)).
+- `applications.entries` includes desktop entries used for window icon lookup; the launcher omits entries with `no_display = true`. It follows installs and removals; `launch` takes an entry's `id` and runs it detached ([applications](../capabilities/applications.md)).
 - `fuzzy` scores one candidate; ranking, the tiebreak and the cap stay in Lua ([fuzzy](../guide/scripting.md#fuzzy)).
 - `computed` joins the capability with the query ([derived signals](../guide/signals.md#derived-signals)).
 - Each row derives its own highlight from `matches` and `selected`. An arrow key reruns those 50 small functions and builds no row; folding the selection into `source` would call `itemfn` for all 50 on every keypress ([when items rebuild](../nodes/list.md#when-items-rebuild)).

@@ -26,11 +26,11 @@ text {
 | Field | Type | Description |
 | --- | --- | --- |
 | `by_app_id` | `table<string, integer>` | Window `app_id` to its 1-based index: `entries[by_app_id[app_id]]`. Keys are exact `StartupWMClass` and desktop ids, then lowercased and last-dot-segment guesses. |
-| `entries` | `AppSummary[]` | Installed entries, sorted by `name` (byte order). A change under an applications directory rescans 250 ms after the last event. |
+| `entries` | `AppSummary[]` | Installed entries, sorted by `name` (byte order), including `NoDisplay` entries for window lookup. Launchers omit entries with `no_display = true`. `Hidden` entries are excluded. A change under an applications directory rescans 250 ms after the last event. |
 
 ### `AppSummary`
 
-One visible `Type=Application` desktop entry; display data only, argv stays private.
+One `Type=Application` desktop entry; display data only, argv stays private.
 
 | Field | Type | Description |
 | --- | --- | --- |
@@ -40,6 +40,7 @@ One visible `Type=Application` desktop entry; display data only, argv stays priv
 | `id` | `string` | Desktop file id, e.g. `"org.telegram.desktop"`; the argument of `"launch"`. |
 | `keywords` | `string[]` | `Keywords=` split on `;`, for search; empty without the key. |
 | `name` | `string` | `Name=`, unlocalized: `Name[xx]` is not read. |
+| `no_display` | `boolean` | `NoDisplay=true`: omit from launchers, but keep its name and icon for window lookup. |
 
 ## Actions
 
@@ -56,7 +57,9 @@ Call each as `mantle.applications:<action>(arguments...)`; `?` marks an argument
 Reads `applications/` under `$XDG_DATA_HOME` (default `~/.local/share`), then each absolute `$XDG_DATA_DIRS`
 entry (default `/usr/local/share:/usr/share`), subdirectories included, four levels deep. The first file for a desktop id wins, so a
 copy under `~/.local/share/applications` overrides the system one. `Type=Application` entries with
-`Name` and a non-empty `Exec` are listed; `NoDisplay=true` and `Hidden=true` ones are not. inotify watches every
+`Name` and a non-empty `Exec` are listed, including `NoDisplay=true` entries so windows can resolve
+their names and icons. Launchers filter out entries with `no_display = true`; `Hidden=true` entries
+are excluded entirely. inotify watches every
 directory, including ones created later. `launch` spawns the `Exec` command detached, dropping field
 codes such as `%u`; a `Terminal=true` entry runs as `$TERMINAL -e command args`.
 
@@ -64,7 +67,7 @@ codes such as `%u`; a `Terminal=true` entry runs as `$TERMINAL -e command args`.
 
 | Task | Answer |
 | :--- | :--- |
-| Hide an app from a launcher | Copy its `.desktop` file to `~/.local/share/applications` and add `NoDisplay=true`; the rescan drops it |
+| Hide an app from a launcher | Copy its `.desktop` file to `~/.local/share/applications` and add `NoDisplay=true`; filter `entry.no_display` in the launcher |
 
 ## Gotchas
 
