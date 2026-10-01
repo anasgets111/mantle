@@ -1,18 +1,17 @@
 //! Per-player registry: bind a discovered MPRIS name, hydrate one live [`PlayerState`] entry,
 //! and maintain it in a resync loop.
 
+pub use shared::state::mpris::PlayerState;
+
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use futures_util::StreamExt;
-use serde::Serialize;
 use shared::debug;
 use tokio::task::JoinHandle;
 
-use super::collections::{
-    PlaylistsState, TrackListState, read_playlists, read_track_list, spawn_collections_forwarder,
-};
+use super::collections::{TrackListState, read_playlists, read_track_list, spawn_collections_forwarder};
 use super::metadata::{TrackIdentity, parse_metadata, resolve_album_art_path};
 use super::proxies::{
     MprisPlayerProxy, MprisPlaylistsProxy, MprisRootProxy, MprisTrackListProxy, bind_player, bind_playlists, bind_root,
@@ -20,71 +19,6 @@ use super::proxies::{
 };
 use super::watcher::player_id;
 use tokio::sync::mpsc::UnboundedSender;
-
-#[derive(Debug, Clone, Default, PartialEq, Serialize)]
-#[cfg_attr(test, derive(schemars::JsonSchema))]
-pub struct PlayerState {
-    /// Bus-name suffix after `org.mpris.MediaPlayer2.`, e.g. `"spotify"`; every action takes it.
-    pub id: String,
-    /// Display name, e.g. `"Spotify"`; empty if unanswered.
-    pub identity: String,
-    /// `"Playing"`, `"Paused"` or `"Stopped"`; keeps the last value when a read fails, empty if none.
-    pub play_state: String,
-    /// MPRIS `CanGoNext`.
-    pub can_go_next: bool,
-    /// MPRIS `CanGoPrevious`.
-    pub can_go_previous: bool,
-    /// MPRIS `CanSeek`.
-    pub can_seek: bool,
-    /// MPRIS `CanPlay`.
-    pub can_play: bool,
-    /// MPRIS `CanPause`.
-    pub can_pause: bool,
-    /// MPRIS `CanRaise` on the root interface.
-    pub can_raise: bool,
-    /// MPRIS `CanQuit` on the root interface.
-    pub can_quit: bool,
-    /// MPRIS volume. The protocol permits amplification above `1.0`.
-    pub volume: f64,
-    /// MPRIS loop mode: `None`, `Track`, or `Playlist`.
-    pub loop_status: String,
-    /// MPRIS shuffle setting.
-    pub shuffle: bool,
-    /// MPRIS playback rate.
-    pub rate: f64,
-    /// MPRIS minimum playback rate, or `0` when unavailable.
-    pub minimum_rate: f64,
-    /// MPRIS maximum playback rate, or `0` when unavailable.
-    pub maximum_rate: f64,
-    /// Track title; empty when unset, normal between tracks.
-    pub title: String,
-    /// Artists joined with `", "`; empty when unset.
-    pub artist: String,
-    /// Album title; empty when unset.
-    pub album: String,
-    /// Album artists joined with `", "`; empty when unset.
-    pub album_artist: String,
-    /// Genres joined with `", "`; empty when unset.
-    pub genre: String,
-    /// Cover art as an existing local path, or empty when unavailable.
-    pub album_art_path: String,
-    /// Playback offset in microseconds as of `position_updated_at`, not polled while playing: add
-    /// elapsed time. `-1` when unknown (ADR-0036).
-    pub position: i64,
-    /// `CLOCK_MONOTONIC` microseconds when `position` was read. No Lua clock shares this epoch
-    /// (not `mantle.system.monotonic`); only compare it with itself.
-    pub position_updated_at: i64,
-    /// Track length in microseconds, or `-1` when unknown, as for a live stream (ADR-0036).
-    pub length: i64,
-    /// `xesam:url` as sent, e.g. a `file://` path or an `https://` page; empty when unset (ADR-0137).
-    pub url: String,
-    /// The player's `.desktop` basename, e.g. `"firefox"`, for app matching; empty when unset.
-    pub desktop_entry: String,
-    /// Nearby tracks from the optional MPRIS TrackList interface.
-    pub track_list: TrackListState,
-    /// One bounded page from the optional MPRIS Playlists interface.
-    pub playlists: PlaylistsState,
-}
 
 /// Allocates [`PlayerEntry::registered`] on the same terms as the tray counter.
 static NEXT_REGISTRATION: AtomicU64 = AtomicU64::new(0);

@@ -1,13 +1,9 @@
-//! `renderer/src/check_samples.json`: one sample payload per capability, which `mantle check` pushes
-//! before its second layout so every `list` has a row for its `itemfn` (ADR-0267).
-//!
-//! Walked from the same schemas as the stubs, so a new field or capability restales the file and
-//! `the_generated_stub_matches_what_is_checked_in` names it.
+//! Sample payloads for the config checker, derived from the stub schemas.
 
 use serde_json::{Map, Value, json};
 
-/// Every capability's sample payload, keyed by name, as the checked-in JSON.
-pub(super) fn render() -> String {
+/// Every capability's sample payload, keyed by name, as JSON for build-time embedding.
+pub fn check_samples() -> String {
     let samples: Map<String, Value> = super::capability_schemas()
         .into_iter()
         .map(|(capability, payload, _)| {
@@ -19,9 +15,14 @@ pub(super) fn render() -> String {
 }
 
 /// A value `fragment` accepts: every array holds one element, every `Option` is `Some`, every map
-/// one entry, every enum its first variant. `None` for a type already being built above it, so a
-/// recursive type (a menu of menus) ends in an empty array rather than looping.
+/// one entry, every enum its first variant. A schema `examples` value overrides these, so add one
+/// only to choose a check sample.
+/// `None` for a type already being built above it, so a recursive type (a menu of menus) ends in
+/// an empty array rather than looping.
 fn sample<'a>(fragment: &'a Value, root: &'a Value, path: &mut Vec<&'a str>) -> Option<Value> {
+    if let Some(value) = fragment.get("examples").and_then(Value::as_array).and_then(|values| values.first()) {
+        return Some(value.clone());
+    }
     if let Some(reference) = fragment.get("$ref").and_then(Value::as_str) {
         let name = reference.rsplit('/').next()?;
         if path.contains(&name) {
@@ -85,6 +86,17 @@ fn fill<'a>(object: &mut Map<String, Value>, fragment: &'a Value, root: &'a Valu
 #[cfg(test)]
 mod tests {
     use serde_json::json;
+
+    #[test]
+    fn samples_cover_the_roster_and_keep_launcher_entries_visible() {
+        let samples: serde_json::Map<String, serde_json::Value> =
+            serde_json::from_str(&super::check_samples()).unwrap();
+        for capability in crate::Capability::ALL {
+            assert!(samples[capability.as_str()].is_object(), "{capability}");
+        }
+        assert_eq!(samples["applications"]["entries"][0]["no_display"], false);
+        assert_eq!(samples["applications"]["by_app_id"]["sample"], 1);
+    }
 
     /// Each shape a `*State` uses, with a recursive `$ref` that must stop rather than loop.
     #[test]

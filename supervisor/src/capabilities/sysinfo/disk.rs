@@ -1,34 +1,6 @@
 //! Disk and partition capacity telemetry.
 
-/// One mounted partition under a physical block device.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[cfg_attr(test, derive(schemars::JsonSchema))]
-pub struct DiskPartition {
-    /// Mountpoint path, e.g. "/" or "/home".
-    pub mount_point: String,
-    /// Bytes in use on this filesystem.
-    pub used_bytes: u64,
-    /// Total bytes on this filesystem.
-    pub total_bytes: u64,
-    /// Percentage in use, 0 to 100.
-    pub percent: u8,
-}
-
-/// One physical block device and its mounted partitions.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[cfg_attr(test, derive(schemars::JsonSchema))]
-pub struct DiskDevice {
-    /// Kernel block device name, e.g. "nvme0n1" or "sda".
-    pub name: String,
-    /// Aggregate bytes in use across mounted partitions.
-    pub used_bytes: u64,
-    /// Aggregate total bytes across mounted partitions.
-    pub total_bytes: u64,
-    /// Aggregate percentage in use, 0 to 100.
-    pub percent: u8,
-    /// Mounted partitions under this block device.
-    pub partitions: Vec<DiskPartition>,
-}
+pub use shared::state::sysinfo::{DiskDevice, DiskPartition};
 
 #[derive(serde::Deserialize)]
 struct LsblkResponse {

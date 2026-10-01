@@ -1,24 +1,10 @@
 //! GPU load, memory and temperature telemetry.
 
+pub use shared::state::sysinfo::GpuTelemetry;
+
 use std::path::Path;
 
 use super::super::{read_attr, read_parsed};
-
-/// Telemetry metrics for the first detected GPU device.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[cfg_attr(test, derive(schemars::JsonSchema))]
-pub struct GpuTelemetry {
-    /// Device model name reported by driver/tool, e.g. "Raptor Lake-P (Iris Xe Graphics)" or "NVIDIA GeForce RTX 4070".
-    pub name: String,
-    /// GPU core utilization percentage, 0 to 100.
-    pub util_percent: Option<u8>,
-    /// GPU temperature in whole Celsius, or `nil` if no sensor reported.
-    pub temp: Option<i64>,
-    /// Dedicated/used VRAM in bytes, or `nil` if shared or unavailable.
-    pub mem_used: Option<u64>,
-    /// Total VRAM in bytes, or `nil` if shared or unavailable.
-    pub mem_total: Option<u64>,
-}
 
 #[derive(serde::Deserialize)]
 struct NvtopDevice {

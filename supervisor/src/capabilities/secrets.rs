@@ -1,31 +1,14 @@
 //! Named writes to the session Secret Service. Secret bytes never enter a state snapshot.
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+pub use shared::state::secrets::{SecretStatus, SecretsState};
+
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use gio::prelude::CancellableExt;
 use shared::{Zeroizing, valid_secret_name};
 use tokio::sync::mpsc::UnboundedSender;
-
-#[derive(Debug, Clone, serde::Serialize)]
-#[cfg_attr(test, derive(schemars::JsonSchema))]
-/// Status of one named write. `unavailable` includes a missing, locked, or failing service;
-/// `timed_out` means the 30-second cancellation was requested and the write may still finish.
-#[serde(rename_all = "snake_case")]
-pub enum SecretStatus {
-    Pending,
-    Stored,
-    Unavailable,
-    TimedOut,
-}
-
-#[derive(Debug, Clone, Default, serde::Serialize)]
-#[cfg_attr(test, derive(schemars::JsonSchema))]
-pub struct SecretsState {
-    /// Public lookup names and the result of their latest write.
-    pub entries: BTreeMap<String, SecretStatus>,
-}
 
 pub struct SecretsController {
     inner: Arc<Mutex<SecretsInner>>,

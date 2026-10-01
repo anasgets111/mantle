@@ -1,71 +1,31 @@
 //! [`BatteryController`] owns read-only `mantle.battery` telemetry. Module-level behavior is
 //! documented in `battery/mod.rs`.
 
+pub use shared::state::battery::{BatteryState, BatteryStatus};
+
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use futures_util::StreamExt;
-use serde::Serialize;
 use shared::error;
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::capabilities::publish;
 use zbus::zvariant::OwnedValue;
 
-/// `battery.state`: UPower's `Device.State` by name, e.g. `b.state == "PendingCharge"`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize)]
-#[cfg_attr(test, derive(schemars::JsonSchema))]
-pub enum BatteryStatus {
-    /// No answer: UPower unreachable, an unknown state number, or a display device that is not a battery.
-    #[default]
-    Unknown,
-    /// Taking current from an adapter.
-    Charging,
-    /// Draining.
-    Discharging,
-    /// Flat.
-    Empty,
-    /// Charged and holding.
-    FullyCharged,
-    /// On mains, neither draining nor taking current: a charge limit, weak charger or thermal pause.
-    PendingCharge,
-    /// Waiting to discharge.
-    PendingDischarge,
-}
-
-impl BatteryStatus {
-    /// UPower's own numbering (`org.freedesktop.UPower.Device.State`). An unknown number is
-    /// [`BatteryStatus::Unknown`] rather than an error: a future UPower adding an eighth state
-    /// must not fail this capability.
-    fn from_upower(state: u32) -> Self {
-        match state {
-            1 => Self::Charging,
-            2 => Self::Discharging,
-            3 => Self::Empty,
-            4 => Self::FullyCharged,
-            5 => Self::PendingCharge,
-            6 => Self::PendingDischarge,
-            _ => Self::Unknown,
-        }
+/// UPower's own numbering (`org.freedesktop.UPower.Device.State`). An unknown number is
+/// [`BatteryStatus::Unknown`] rather than an error: a future UPower adding an eighth state
+/// must not fail this capability.
+fn from_upower(state: u32) -> BatteryStatus {
+    match state {
+        1 => BatteryStatus::Charging,
+        2 => BatteryStatus::Discharging,
+        3 => BatteryStatus::Empty,
+        4 => BatteryStatus::FullyCharged,
+        5 => BatteryStatus::PendingCharge,
+        6 => BatteryStatus::PendingDischarge,
+        _ => BatteryStatus::Unknown,
     }
-}
-
-/// `mantle.battery`'s payload. No battery, or no UPower, reads `present = false` and defaults.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize)]
-#[cfg_attr(test, derive(schemars::JsonSchema))]
-pub struct BatteryState {
-    /// UPower's display device is a present battery. Check it before drawing the other fields.
-    pub present: bool,
-    /// UPower's `Percentage`, rounded to `0` to `100`; a spurious `0` while not draining keeps the last value.
-    pub percent: u8,
-    /// What the battery is doing; see `BatteryStatus`.
-    pub state: BatteryStatus,
-    /// Seconds until flat, or `nil` while UPower has no estimate.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub time_to_empty: Option<u32>,
-    /// Seconds until full, or `nil` while UPower has no estimate.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub time_to_full: Option<u32>,
 }
 
 /// UPower's `DisplayDevice`, the composite of every battery. Its documented path is fixed, so
@@ -120,7 +80,7 @@ fn from_properties(all: &HashMap<String, OwnedValue>) -> BatteryState {
         present: true,
         // Round rather than cast: 69.8% would otherwise show 69 for the whole minute before 70.
         percent: get::<f64>(all, "Percentage").unwrap_or(0.0).clamp(0.0, 100.0).round() as u8,
-        state: get::<u32>(all, "State").map(BatteryStatus::from_upower).unwrap_or_default(),
+        state: get::<u32>(all, "State").map(from_upower).unwrap_or_default(),
         time_to_empty: get::<i64>(all, "TimeToEmpty").and_then(seconds),
         time_to_full: get::<i64>(all, "TimeToFull").and_then(seconds),
     }
@@ -275,15 +235,15 @@ mod tests {
             (5, BatteryStatus::PendingCharge),
             (6, BatteryStatus::PendingDischarge),
         ] {
-            assert_eq!(BatteryStatus::from_upower(reported), expected, "State = {reported}");
+            assert_eq!(from_upower(reported), expected, "State = {reported}");
         }
     }
 
     /// An unknown future state degrades to `"Unknown"` instead of dropping the payload.
     #[test]
     fn a_state_number_this_build_does_not_know_reads_as_unknown() {
-        assert_eq!(BatteryStatus::from_upower(7), BatteryStatus::Unknown);
-        assert_eq!(BatteryStatus::from_upower(u32::MAX), BatteryStatus::Unknown);
+        assert_eq!(from_upower(7), BatteryStatus::Unknown);
+        assert_eq!(from_upower(u32::MAX), BatteryStatus::Unknown);
     }
 
     /// These names are the wire format and config comparisons; renaming one is breaking.

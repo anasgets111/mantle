@@ -16,118 +16,9 @@
 use std::collections::BTreeMap;
 
 mod page;
-mod samples;
 
-use schemars::{Schema, schema_for};
-
-/// The sole capability-to-payload/action mapping. `push_snapshot` takes `&impl Serialize`, so
-/// payload types are inferred at each call site; action enums are named by `shared::action::check`
-/// and each `dispatch`.
-/// `every_capability_has_a_schema` checks `shared::Capability::ALL`. `None` means no actions.
-fn capability_schemas() -> Vec<(&'static str, Schema, Option<Schema>)> {
-    vec![
-        (
-            "applications",
-            schema_for!(crate::capabilities::applications::controller::ApplicationsState),
-            Some(schema_for!(shared::action::ApplicationsAction)),
-        ),
-        (
-            "audio",
-            schema_for!(crate::capabilities::audio::mixer::AudioState),
-            Some(schema_for!(shared::action::AudioAction)),
-        ),
-        ("battery", schema_for!(crate::capabilities::battery::controller::BatteryState), None),
-        ("idle", schema_for!(crate::capabilities::idle::IdleState), None),
-        (
-            "bluetooth",
-            schema_for!(crate::capabilities::bluetooth::BluetoothState),
-            Some(schema_for!(shared::action::BluetoothAction)),
-        ),
-        (
-            "brightness",
-            schema_for!(crate::capabilities::brightness::controller::BrightnessState),
-            Some(schema_for!(shared::action::BrightnessAction)),
-        ),
-        (
-            "files",
-            schema_for!(crate::capabilities::files::controller::FilesState),
-            Some(schema_for!(shared::action::FilesAction)),
-        ),
-        (
-            "processes",
-            schema_for!(crate::capabilities::processes::controller::ProcessesState),
-            Some(schema_for!(shared::action::ProcessesAction)),
-        ),
-        (
-            "keyboard",
-            schema_for!(crate::capabilities::keyboard::controller::KeyboardState),
-            Some(schema_for!(shared::action::KeyboardAction)),
-        ),
-        (
-            "lock",
-            schema_for!(crate::capabilities::lock::state::LockState),
-            Some(schema_for!(shared::action::LockAction)),
-        ),
-        (
-            "mpris",
-            schema_for!(crate::capabilities::mpris::controller::MprisState),
-            Some(schema_for!(shared::action::MprisAction)),
-        ),
-        (
-            "network",
-            schema_for!(crate::capabilities::network::NetworkState),
-            Some(schema_for!(shared::action::NetworkAction)),
-        ),
-        ("secrets", schema_for!(crate::capabilities::secrets::SecretsState), None),
-        (
-            "notifications",
-            schema_for!(crate::capabilities::notifications::NotificationsState),
-            Some(schema_for!(shared::action::NotificationsAction)),
-        ),
-        (
-            "power",
-            schema_for!(crate::capabilities::power::controller::PowerState),
-            Some(schema_for!(shared::action::PowerAction)),
-        ),
-        ("privacy", schema_for!(crate::capabilities::privacy::controller::PrivacyState), None),
-        (
-            "sysinfo",
-            schema_for!(crate::capabilities::sysinfo::controller::SysinfoState),
-            Some(schema_for!(shared::action::SysinfoAction)),
-        ),
-        (
-            "system",
-            schema_for!(crate::capabilities::system::controller::SystemState),
-            Some(schema_for!(shared::action::SystemAction)),
-        ),
-        (
-            "storage",
-            schema_for!(crate::capabilities::storage::controller::StorageState),
-            Some(schema_for!(shared::action::StorageAction)),
-        ),
-        (
-            "polkit",
-            schema_for!(crate::capabilities::polkit::PolkitState),
-            Some(schema_for!(shared::action::PolkitAction)),
-        ),
-        ("tray", schema_for!(crate::capabilities::tray::TrayState), Some(schema_for!(shared::action::TrayAction))),
-        (
-            "updates",
-            schema_for!(crate::capabilities::updates::controller::UpdatesState),
-            Some(schema_for!(shared::action::UpdatesAction)),
-        ),
-        (
-            "workspaces",
-            schema_for!(crate::capabilities::workspaces::controller::WorkspacesState),
-            Some(schema_for!(shared::action::WorkspacesAction)),
-        ),
-        (
-            "windows",
-            schema_for!(crate::capabilities::windows::controller::WindowsState),
-            Some(schema_for!(shared::action::WindowsAction)),
-        ),
-    ]
-}
+use schemars::Schema;
+use shared::schema::capability_schemas;
 
 /// Lua payload class name, e.g. `audio` -> `AudioState`, taken from schemars' `title` so renaming
 /// the Rust struct renames Lua without another edit.
@@ -531,16 +422,12 @@ mantle = {}
 
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeSet;
-    /// `lua-meta/mantle.lua`, `mantle check`'s sample payloads and every
+    /// `lua-meta/mantle.lua` and every
     /// `docs/capabilities/<name>.md`. A version bump alone restales `mantle.lua`, which stamps the
     /// version.
     #[test]
     fn the_generated_stub_matches_what_is_checked_in() {
-        let mut files = vec![
-            ("lua-meta/mantle.lua".to_string(), super::render()),
-            ("renderer/src/check_samples.json".to_string(), super::samples::render()),
-        ];
+        let mut files = vec![("lua-meta/mantle.lua".to_string(), super::render())];
         for (capability, payload, actions) in super::capability_schemas() {
             let intro = std::fs::read_to_string(format!(
                 "{}/../docs/capabilities/intro/{capability}.md",
@@ -551,13 +438,6 @@ mod tests {
             files.push((format!("docs/capabilities/{capability}.md"), page));
         }
         shared::check_generated(&files);
-    }
-
-    #[test]
-    fn every_capability_has_a_schema() {
-        let declared: BTreeSet<&str> = super::capability_schemas().into_iter().map(|(name, ..)| name).collect();
-        let expected: BTreeSet<&str> = shared::Capability::ALL.iter().map(|c| c.as_str()).collect();
-        assert_eq!(declared, expected, "capability_schemas is out of step with shared::Capability::ALL");
     }
 
     /// The Renderer's methods are `shared::Capability::actions`, so each list must be exactly its

@@ -1,7 +1,8 @@
 //! Bounded public state for optional TrackList and Playlists interfaces.
 
+pub use shared::state::mpris::{PlaylistSummary, PlaylistsState, TrackListState, TrackSummary};
+
 use futures_util::{Stream, StreamExt};
-use serde::Serialize;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 use tokio::task::JoinHandle;
 use zbus::zvariant::OwnedObjectPath;
@@ -13,62 +14,6 @@ use super::proxies::{MprisPlaylistsProxy, MprisTrackListProxy};
 const TRACK_LIMIT: usize = 100;
 const MAX_TRACK_IDS: usize = 10_000;
 pub(super) const PLAYLIST_PAGE_LIMIT: u32 = 100;
-
-#[derive(Debug, Clone, Default, PartialEq, Serialize)]
-#[cfg_attr(test, derive(schemars::JsonSchema))]
-pub struct TrackSummary {
-    /// TrackList object path, used by `track_list_go_to` and `track_list_remove_track`.
-    pub id: String,
-    /// Track title, empty when the player has none.
-    pub title: String,
-    /// Track artists joined with `", "`.
-    pub artist: String,
-    /// Track length in microseconds, or `-1` when unknown.
-    pub length: i64,
-}
-
-#[derive(Debug, Clone, Default, PartialEq, Serialize)]
-#[cfg_attr(test, derive(schemars::JsonSchema))]
-pub struct TrackListState {
-    /// At most 100 tracks around the current track; the full playlist remains player-owned.
-    pub tracks: Vec<TrackSummary>,
-    /// Current TrackList object path, or empty if unknown.
-    pub current_track: String,
-    /// Whether the player permits add and remove calls.
-    pub can_edit: bool,
-}
-
-#[derive(Debug, Clone, Default, PartialEq, Serialize)]
-#[cfg_attr(test, derive(schemars::JsonSchema))]
-pub struct PlaylistSummary {
-    /// Stable playlist object path.
-    pub id: String,
-    /// User-facing playlist name.
-    pub name: String,
-    /// Icon URI, or empty if absent.
-    pub icon: String,
-}
-
-#[derive(Debug, Clone, Default, PartialEq, Serialize)]
-#[cfg_attr(test, derive(schemars::JsonSchema))]
-pub struct PlaylistsState {
-    /// Total playlists reported by the player.
-    pub count: u32,
-    /// Ordering names accepted by `playlists_get`.
-    pub orderings: Vec<String>,
-    /// Active playlist, if the player reports one.
-    pub active: Option<PlaylistSummary>,
-    /// Index used for the current page.
-    pub index: u32,
-    /// Number of entries requested for the current page, at most 100.
-    pub page_size: u32,
-    /// Ordering used for the current page.
-    pub order: String,
-    /// Whether the page is reversed.
-    pub reverse: bool,
-    /// At most 100 playlist entries.
-    pub playlists: Vec<PlaylistSummary>,
-}
 
 pub(super) async fn read_track_list(
     proxy: &MprisTrackListProxy<'_>,
@@ -128,7 +73,7 @@ pub(super) async fn read_playlists(
         return Err(zbus::Error::Failure(format!("unsupported playlist ordering {selected_order:?}")));
     }
     let (active_valid, active) = proxy.active_playlist().await?;
-    let active = active_valid.then(|| active.into());
+    let active = active_valid.then(|| playlist_summary(active));
     let page_size = requested_count.min(PLAYLIST_PAGE_LIMIT);
     let items = proxy.get_playlists(index, page_size, &selected_order, reverse).await?;
     if items.len() > page_size as usize {
@@ -142,14 +87,12 @@ pub(super) async fn read_playlists(
         page_size,
         order: selected_order,
         reverse,
-        playlists: items.into_iter().map(Into::into).collect(),
+        playlists: items.into_iter().map(playlist_summary).collect(),
     })
 }
 
-impl From<(OwnedObjectPath, String, String)> for PlaylistSummary {
-    fn from((id, name, icon): (OwnedObjectPath, String, String)) -> Self {
-        Self { id: id.to_string(), name, icon }
-    }
+fn playlist_summary((id, name, icon): (OwnedObjectPath, String, String)) -> PlaylistSummary {
+    PlaylistSummary { id: id.to_string(), name, icon }
 }
 
 async fn next_optional<S: Stream + Unpin>(stream: &mut Option<S>) -> Option<S::Item> {

@@ -1,54 +1,11 @@
 //! [`SysinfoController`] runs configurable metric poll tasks feeding one `SysinfoState`.
 
+pub use shared::state::sysinfo::SysinfoState;
+
 use std::time::Duration;
 
 use shared::action::SysinfoConfigure;
 use shared::debug;
-
-/// `mantle.sysinfo`'s payload; `nil` until `configure` sets an interval and a reading changes a field.
-/// Pushes only on a change (ADR-0035).
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
-#[cfg_attr(test, derive(schemars::JsonSchema))]
-pub struct SysinfoState {
-    /// CPU utilization across all cores, `0` to `100`, rounded down; `0` until two samples form a delta.
-    pub cpu_percent: u8,
-    /// Physical memory in use (`MemTotal - MemAvailable`), `0` to `100`, rounded down.
-    pub ram_percent: u8,
-    /// Swap in use, `0` to `100`, rounded down; also `0` without swap.
-    pub swap_percent: u8,
-    /// CPU temperatures in whole Celsius: per core (`coretemp`) or per CCD (`k10temp`), else one
-    /// package or `acpitz` reading; empty without a sensor. An unreadable sensor is skipped.
-    pub temp_cores: Vec<i64>,
-    /// `amdgpu`, `nouveau`, `nvidia`, `i915` or `xe` hwmon temperature in whole Celsius, or `-1` without a
-    /// readable one.
-    pub temp_gpu: i64,
-    /// Physical block devices and their mounted partitions.
-    pub disks: Vec<super::disk::DiskDevice>,
-    /// GPU telemetry (load, VRAM, temperature) if a supported backend was detected; `nil` otherwise.
-    pub gpu: Option<super::gpu::GpuTelemetry>,
-    /// Download rate across active non-loopback interfaces in bytes per second; 0 until two samples form a delta.
-    pub net_rx_bytes_sec: u64,
-    /// Upload rate across active non-loopback interfaces in bytes per second; 0 until two samples form a delta.
-    pub net_tx_bytes_sec: u64,
-}
-
-impl Default for SysinfoState {
-    /// Pre-first-sample sentinels (ADR-0035, ADR-0282): `0` for the three percent fields; `temp_gpu` uses
-    /// its IDL-mandated `-1`; `disks` empty; `gpu` None; net rates 0.
-    fn default() -> Self {
-        Self {
-            cpu_percent: 0,
-            ram_percent: 0,
-            swap_percent: 0,
-            temp_cores: Vec::new(),
-            temp_gpu: -1,
-            disks: Vec::new(),
-            gpu: None,
-            net_rx_bytes_sec: 0,
-            net_tx_bytes_sec: 0,
-        }
-    }
-}
 
 /// Whether a metric task ticks or parks with zero wakeups (ADR-0035), reevaluated when its
 /// `watch::Receiver` reports an interval change.

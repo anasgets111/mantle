@@ -1,7 +1,9 @@
 //! [`StorageController`] owns JSON files declared with `persistent_table`, keyed by absolute path
 //! (ADR-0136).
 
-use std::collections::{BTreeMap, HashMap};
+pub use shared::state::storage::StorageState;
+
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -16,15 +18,6 @@ use tokio::task::JoinHandle;
 /// Delay after the last write before rewriting. Scroll offsets and search drafts can call `:set()`
 /// per keystroke; each otherwise serializes, writes, and renames.
 const SAVE_DEBOUNCE: Duration = Duration::from_millis(1000);
-
-/// `mantle.storage` payload (ADR-0136).
-#[derive(Debug, Clone, Default, PartialEq, serde::Serialize)]
-#[cfg_attr(test, derive(schemars::JsonSchema))]
-pub struct StorageState {
-    /// Each declared `persistent_table`'s contents, keyed by its absolute file path; `nil` until
-    /// declared. Another writer's change to the file replaces it, unsaved writes included.
-    pub files: BTreeMap<String, Value>,
-}
 
 /// Behind one lock, so a sync sees memory and the last disk copy together.
 #[derive(Default)]

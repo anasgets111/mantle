@@ -6578,6 +6578,12 @@ count for errors a config author finds on the first live push.
 Ceiling: one value per field. A branch taken only on `false`, a second enum variant or an empty
 list is still reached only by the `nil` pass or not at all.
 
+Amended: the samples are no longer checked in. The `*State` types moved to `shared::state`, and
+`renderer/build.rs` writes the samples to `OUT_DIR` through `shared::schema::check_samples`, so no
+golden test or `just stubs` run is needed and the Renderer still takes no Supervisor dependency. A
+schema `examples` value overrides the walker's default: `no_display` samples `false`, so a launcher
+that filters hidden applications still runs its `itemfn`.
+
 ## 0268. Nodes and derived signals record the line that built them
 
 A layout error named its node by tree path alone (`row[0] > row[0] > text ...`), and a failing

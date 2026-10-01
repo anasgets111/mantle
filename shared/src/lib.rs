@@ -7,7 +7,10 @@ pub mod framing;
 pub mod log;
 mod malloc;
 mod paths;
+#[cfg(feature = "schema")]
+pub mod schema;
 mod secure_buffer;
+pub mod state;
 pub use capability::Capability;
 pub use malloc::Malloc;
 pub use paths::{

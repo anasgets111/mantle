@@ -4,30 +4,13 @@
 //! builds and pushes it because the bus callback, `secure_submit` frame, and PAM answer all land
 //! in that loop.
 
+pub use shared::state::polkit::PolkitState;
+
 use shared::{error, info, warn};
 use tokio::sync::oneshot;
 
 use crate::polkit::{AgentError, BeginAuthenticationCall, first_unix_user_uid};
 use shared::action::PolkitAction;
-
-/// `mantle.polkit`'s payload (ADR-0114). Every other field is empty while `active` is false.
-#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize)]
-#[cfg_attr(test, derive(schemars::JsonSchema))]
-pub struct PolkitState {
-    /// polkitd is waiting for the user to authenticate.
-    pub active: bool,
-    /// The action's prompt, e.g. `"Authentication is required to ..."`, in `en_US`: the locale the
-    /// agent registers with.
-    pub message: String,
-    /// Action being authorized, e.g. `org.freedesktop.systemd1.manage-units`.
-    pub action_id: String,
-    /// Themed icon name, or empty when the caller set none.
-    pub icon_name: String,
-    /// A password is with PAM. A second submit is refused while true.
-    pub authenticating: bool,
-    /// Drawable reason for the last failure, e.g. `"authentication failed"`. The prompt stays open to retry.
-    pub error: String,
-}
 
 /// polkitd's pending `BeginAuthentication` call and its completing reply.
 struct Pending {

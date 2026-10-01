@@ -1,65 +1,14 @@
 //! Audio devices for `mantle.audio`: sink and source names, icons and hardware routes, and the
 //! codec profiles of BlueZ cards.
 
+pub use shared::state::audio::{AudioDevice, BluetoothCodecs, CodecProfile};
+
 use std::collections::HashMap;
 
 use pipewire::keys;
-use serde::Serialize;
 
 use super::PropsLookup;
 use crate::capabilities::audio::master;
-
-/// One `sinks` or `sources` entry.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
-#[cfg_attr(test, derive(schemars::JsonSchema))]
-pub struct AudioDevice {
-    /// PipeWire node id, the argument of `set_default_sink`/`set_default_source`; not reboot-stable.
-    pub id: u32,
-    /// `node.description`, e.g. `"Built-in Audio Analog Stereo"`, else `node.nick`, else `node.name`.
-    pub name: String,
-    /// This is the default output or input; with no default known, or one not in this list, the lowest
-    /// `id` is.
-    pub active: bool,
-    /// `device.icon-name` theme name, e.g. `"audio-card-analog"`.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub icon: Option<String>,
-    /// The active card route's `port.type`, e.g. `"headphones"`, `"hdmi"`, `"mic"`.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub port: Option<String>,
-    /// `device.bus`, e.g. `"pci"`, `"usb"`, `"bluetooth"`.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub bus: Option<String>,
-    /// `device.form-factor`, e.g. `"headset"`.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub form_factor: Option<String>,
-}
-
-/// One BlueZ audio device's codec choices, joined to `mantle.bluetooth` by MAC.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-#[cfg_attr(test, derive(schemars::JsonSchema))]
-pub struct BluetoothCodecs {
-    /// PipeWire device id, the first argument of `set_bluetooth_profile`.
-    pub device: u32,
-    /// MAC address from the `bluez_card.*` name, `_` turned to `:`.
-    pub mac: String,
-    /// Available profiles that name a codec, ordered by `index`.
-    pub codecs: Vec<CodecProfile>,
-    /// `index` of the active profile; `nil` before PipeWire reports it or when it is not in `codecs`.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub active: Option<i32>,
-}
-
-/// One entry of [`BluetoothCodecs::codecs`].
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-#[cfg_attr(test, derive(schemars::JsonSchema))]
-pub struct CodecProfile {
-    /// Profile index, the second argument of `set_bluetooth_profile`.
-    pub index: i32,
-    /// Codec from the profile name, else its English description, e.g. `"AAC"`, `"LDAC"`, `"mSBC"`.
-    pub codec: String,
-    /// PipeWire's description, e.g. `"High Fidelity Playback (A2DP Sink, codec AAC)"`.
-    pub description: String,
-}
 
 /// What the mixer tracks for one bound BlueZ device. Proxies live in `bluez_devices`, keeping this
 /// plain test data like [`DeviceEntry`].

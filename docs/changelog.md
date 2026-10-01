@@ -150,6 +150,8 @@ so everything since the rename from Obelisk sits under Unreleased.
   `mantle.rescue`, instead of stopping at the first. It lists 20, then counts the rest
   ([what check covers](guide/cli.md#what-check-covers)). A `children` entry that is not a node
   reads `children[1]: expected a node table`, counted from 0 like the rest of the path.
+- `mantle check` supplies a visible sample application so launcher lists that filter `no_display`
+  still validate their `itemfn`.
 - `mantle check` lays out a second time after one sample push per capability, every list one entry
   long, so an error in a list `itemfn` or a data-only branch fails the check; each error names its
   pass ([what check covers](guide/cli.md#what-check-covers)).

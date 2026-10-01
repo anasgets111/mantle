@@ -1,7 +1,8 @@
 //! [`ApplicationsController`]: `mantle.applications`'s state owner and two write actions
 //! (ADR-0061).
 
-use std::collections::BTreeMap;
+pub use shared::state::applications::ApplicationsState;
+
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -11,21 +12,8 @@ use tokio::sync::mpsc::UnboundedSender;
 use crate::capabilities::publish;
 use tokio::task::JoinHandle;
 
-use super::scan::{AppSummary, LaunchTarget, scan};
+use super::scan::{LaunchTarget, scan};
 use super::watch;
-
-/// `mantle.applications` payload (ADR-0061, ADR-0252).
-#[derive(Debug, Clone, Default, PartialEq, serde::Serialize)]
-#[cfg_attr(test, derive(schemars::JsonSchema))]
-pub struct ApplicationsState {
-    /// Installed entries, sorted by `name` (byte order), including `NoDisplay` entries for window
-    /// lookup. Launchers omit entries with `no_display = true`. `Hidden` entries are excluded.
-    /// A change under an applications directory rescans 250 ms after the last event.
-    pub entries: Vec<AppSummary>,
-    /// Window `app_id` to its 1-based index: `entries[by_app_id[app_id]]`. Keys are exact
-    /// `StartupWMClass` and desktop ids, then lowercased and last-dot-segment guesses.
-    pub by_app_id: BTreeMap<String, usize>,
-}
 
 /// A URL `open_url` refuses to hand to the desktop opener, with the reason (ADR-0103).
 #[derive(Debug, PartialEq, Eq)]

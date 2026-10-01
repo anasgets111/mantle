@@ -20,7 +20,9 @@
 //! plus start-time pair exists to cover elsewhere. `tokio::process::Child::wait` is cancel-safe,
 //! which is what lets the `select!` re-arm it after each request.
 
-use std::collections::{BTreeMap, HashMap};
+pub use shared::state::processes::{ProcessesState, SessionProcess};
+
+use std::collections::HashMap;
 use std::io;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
@@ -43,31 +45,6 @@ use crate::capabilities::system::controller::epoch_seconds;
 /// on the way out. Killing it at 100ms would leave the file unplayable, which is the failure the
 /// declared stop signal exists to avoid.
 const STOP_GRACE: Duration = Duration::from_secs(5);
-
-/// `mantle.processes` payload.
-#[derive(Debug, Clone, Default, PartialEq, serde::Serialize)]
-#[cfg_attr(test, derive(schemars::JsonSchema))]
-pub struct ProcessesState {
-    /// One entry per `session_process` name; an undeclared name is `nil`.
-    pub sessions: BTreeMap<String, SessionProcess>,
-}
-
-/// One declared program: its current run, or what is left of its last one.
-#[derive(Debug, Clone, Default, PartialEq, serde::Serialize)]
-#[cfg_attr(test, derive(schemars::JsonSchema))]
-pub struct SessionProcess {
-    /// Whether it is up now. Otherwise the fields below describe the last run.
-    pub running: bool,
-    /// Process id, also its process group id; kept after exit, `nil` before a spawn or after a failed `start`.
-    pub pid: Option<u32>,
-    /// Unix seconds when the run began; `nil` before a spawn or after a failed `start`.
-    pub started_at: Option<i64>,
-    /// Exit status of the last run; `nil` while running, before any run, or when a signal
-    /// killed it.
-    pub exit_code: Option<i32>,
-    /// Why the last `start` failed to spawn, e.g. a `cmd` not on `PATH`; empty when it spawned.
-    pub start_error: String,
-}
 
 /// What [`supervise`] accepts while its program is up.
 enum Request {

@@ -1,6 +1,8 @@
 //! [`SystemController`] feeds `mantle.system` from one task that wakes on wall-clock multiples of
 //! its interval, one second until `system:configure` changes it.
 
+pub use shared::state::system::SystemState;
+
 use std::os::fd::AsFd;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -12,18 +14,6 @@ use shared::{debug, error};
 use tokio::io::unix::AsyncFd;
 use tokio::sync::mpsc::UnboundedSender;
 use tokio::sync::watch;
-
-/// `mantle.system`'s payload, pushed on each tick of `interval`.
-#[derive(Debug, Clone, PartialEq, serde::Serialize)]
-#[cfg_attr(test, derive(schemars::JsonSchema))]
-pub struct SystemState {
-    /// Unix epoch seconds, as `os.date` takes them.
-    pub time: i64,
-    /// Seconds since `system` was first used, as of the last push; excludes suspend. Take durations
-    /// from it, since NTP moves `time`.
-    // ponytail: `Instant` is `CLOCK_MONOTONIC`; suspend-inclusive timing wants a `CLOCK_BOOTTIME` field.
-    pub monotonic: i64,
-}
 
 /// `SystemTime::now()`'s epoch truncated to whole seconds for `time`; one pinned seam.
 pub fn epoch_seconds(now: SystemTime) -> i64 {

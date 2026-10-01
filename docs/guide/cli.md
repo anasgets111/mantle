@@ -243,7 +243,7 @@ stack traceback:
 | Caught | Not caught |
 | :--- | :--- |
 | Lua syntax errors, in any required module | Handler errors: `on_click`, `action` and `timer` never fire, and a capability `on_change` that raises on the sample push only logs a warning |
-| Runtime errors at the top level of `shell.lua` and its modules | Branches that need a particular value: the samples take the first enum value, `true` and non-empty lists |
+| Runtime errors at the top level of `shell.lua` and its modules | Branches that need a particular value: the samples take the first enum value, `true` (`false` for an application's `no_display`) and non-empty lists |
 | A top-level return that is not surfaces, including `require`'s second value | `process.run` output: commands are queued and never run |
 | Surface and node properties: unknown names, wrong value types, bad colours, out-of-range sizes | Fonts, images, shaders and the compositor's response |
 | Errors in `:map`, `computed`, list `itemfn`s and function `child` builders, with `nil` and with sample capabilities | Sizes that only fail on a smaller or scaled output |

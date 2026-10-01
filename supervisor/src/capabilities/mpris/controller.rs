@@ -1,10 +1,11 @@
 //! [`MprisController`]: `mantle.mpris`'s write dispatcher and state owner.
 
+pub use shared::state::mpris::MprisState;
+
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
-use serde::Serialize;
 use shared::debug;
 use tokio::sync::mpsc::UnboundedSender;
 
@@ -14,14 +15,6 @@ use super::player::PlayerState;
 use super::proxies::{MprisPlaylistsProxy, MprisTrackListProxy};
 use super::watcher::{service_name_for_id, spawn_discovery};
 use shared::action::PlayerCommand;
-
-#[derive(Debug, Clone, Default, PartialEq, Serialize)]
-#[cfg_attr(test, derive(schemars::JsonSchema))]
-pub struct MprisState {
-    /// Every controllable MPRIS player except `playerctld`, longest-running first, so `players[1]`
-    /// stays put; empty when none runs.
-    pub players: Vec<PlayerState>,
-}
 
 /// Every command here fails the same one way, and only into a `debug!`. An enum with `Display`
 /// and `Error` impls bought nothing a constant does not: nothing matches on it and nothing returns

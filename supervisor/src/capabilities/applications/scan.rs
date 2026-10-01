@@ -1,6 +1,8 @@
 //! The applications-directory scan (ADR-0061): which directories, in what precedence, and
 //! how an `app_id` finds its entry.
 
+pub use shared::state::applications::AppSummary;
+
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
@@ -12,27 +14,6 @@ use super::entry::{desktop_file_id, flag, parse_group, tokenize_exec};
 /// level (`kde4/`); the cap bounds symlink loops without canonicalizing every directory as
 /// `watcher.rs` does.
 const MAX_DEPTH: usize = 4;
-
-/// One `Type=Application` desktop entry; display data only, argv stays private (ADR-0061).
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
-#[cfg_attr(test, derive(schemars::JsonSchema))]
-pub struct AppSummary {
-    /// Desktop file id, e.g. `"org.telegram.desktop"`; the argument of `"launch"`.
-    pub id: String,
-    /// `Name=`, unlocalized: `Name[xx]` is not read (ADR-0061).
-    pub name: String,
-    /// `Icon=` as written, a theme name or absolute path, both accepted by `icon { name }`; `nil`
-    /// without the key.
-    pub icon: Option<String>,
-    /// `NoDisplay=true`: omit from launchers, but keep its name and icon for window lookup.
-    pub no_display: bool,
-    /// `Comment=`, unlocalized, e.g. `"Web Browser"` (ADR-0112); `nil` without the key.
-    pub comment: Option<String>,
-    /// `GenericName=`, unlocalized, e.g. `"Text Editor"`; `nil` without the key.
-    pub generic_name: Option<String>,
-    /// `Keywords=` split on `;`, for search; empty without the key.
-    pub keywords: Vec<String>,
-}
 
 /// What `launch` needs but Lua never sees.
 #[derive(Debug, Clone, PartialEq, Eq)]

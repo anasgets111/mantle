@@ -10,7 +10,7 @@ self-contained fixtures. A feature missing from a user config is not an engine g
 | --- | --- |
 | `supervisor/` | `mantle` binary: CLI, capabilities, generations, stub generator |
 | `renderer/` | `mantle-renderer`: Wayland, Lua VM, layout, paint, text |
-| `shared/` | Wire types, capability actions, paths, log macros |
+| `shared/` | Wire types, capability payloads and actions, paths, log macros |
 | `lua-meta/` | LuaLS stubs for config authors |
 | `demo/director/` | Demo shell; `stages/` holds the files it types, `mockups.lua` the prop windows |
 | `share/starter/` | Minimal `shell.lua`, embedded in the engine and used by `just run` and `just types` |
@@ -105,13 +105,15 @@ change. The `the_generated_*` golden tests use `shared::check_generated`, which 
 | `lua-meta/*.lua` | Rust sources listed below |
 | `docs/capabilities/<name>.md` | Rust capability types and `docs/capabilities/intro/<name>.md` |
 | Property tables in `docs/{nodes,surfaces}/*.md` and `docs/guide/paint.md` | `renderer/src/lua/nodes/properties.rs`; prose outside the generated markers is hand-written |
-| `renderer/src/check_samples.json` | Rust capability types; sample generator in `supervisor/src/stubs/samples.rs` |
 
 | Lua stub | Source | Golden test |
 | --- | --- | --- |
-| `mantle.lua` | Rust `*State`/`*Action` types; doc comments become descriptions | `supervisor/src/stubs.rs` |
+| `mantle.lua` | `shared/src/state/` payloads and `shared/src/action/` actions; doc comments become descriptions | `supervisor/src/stubs.rs` |
 | `nodes.lua`, `surfaces.lua` | Properties: `renderer/src/lua/nodes/properties.rs`. Nested fields and accepted keys: `lua_shape!` beside each parser. Composite types: `LuaType`. Alias names and prose: `nodes/stubs.rs` | `renderer/src/lua/nodes/stubs.rs`; `every_type_the_stubs_declare_is_accepted_by_the_engine` probes each type |
 | `globals.lua`, `signals.lua` | Global signatures and docs registered through `lua::define` and `lua::luacats`; class declarations beside their Rust types, with the shared `Signal<T>` and `Bound` header in `renderer/src/lua/mod.rs` | `renderer/src/lua/mod.rs` |
+
+`renderer/build.rs` derives config-check samples from `shared/src/schema/` and writes them to
+Cargo's `OUT_DIR`. They are embedded in the renderer, never checked in or rewritten by `just stubs`.
 
 ## Logging
 

@@ -2,6 +2,8 @@
 //! `media.class`, and tracking audio streams, cameras, and microphone and screen captures from
 //! their `info` events.
 
+pub use shared::state::audio::AppStream;
+
 use std::collections::BTreeMap;
 use std::path::Path;
 
@@ -55,33 +57,6 @@ fn is_screencast_source(props: &impl PropsLookup) -> bool {
         || props.get_prop(*keys::MEDIA_NAME).is_some_and(matches_screencast)
         || props.get_prop(*keys::APP_NAME).is_some_and(matches_screencast)
         || props.get_prop(*keys::APP_PROCESS_BINARY).is_some_and(matches_screencast)
-}
-
-/// One app's playback or recording stream (ADR-0053). Streams without a pid are left out.
-#[derive(Debug, Clone, PartialEq, Serialize)]
-#[cfg_attr(test, derive(schemars::JsonSchema))]
-pub struct AppStream {
-    /// PipeWire node id, the first argument of `set_app_volume` and `set_app_muted`.
-    pub id: u32,
-    /// Owning process id, from `application.process.id`.
-    pub pid: i32,
-    /// `application.name`, if the client set one.
-    pub name: Option<String>,
-    /// `/proc/<pid>/comm`, or `nil` if it was unreadable when the stream's properties were read.
-    pub process_name: Option<String>,
-    /// `application.process.binary`, e.g. `"firefox"`.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub binary: Option<String>,
-    /// XDG icon name from `application.icon-name`, else `media.icon-name`, e.g. `"firefox"`.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub icon: Option<String>,
-    /// A capture stream, such as a call's microphone, rather than playback.
-    pub recording: bool,
-    /// Stream volume, `1.0` is 100%; `nil` until PipeWire reports the stream's `Props`.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub volume: Option<f32>,
-    /// Stream mute; `false` until `volume` is known.
-    pub muted: bool,
 }
 
 /// Node kind chosen at `global` time and carried into `info`; state-only `info` props can be empty.
@@ -170,7 +145,6 @@ pub(super) fn apply_info_event(
 /// kernel-detected `/dev/videoN` opener and `app_name` supplies its nicer PipeWire name. No
 /// `process_name`: privacy already falls back to `/proc/{pid}/comm`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-#[cfg_attr(test, derive(schemars::JsonSchema))]
 pub struct VideoSourceApp {
     pub node_id: u32,
     pub pid: i32,
@@ -207,7 +181,6 @@ pub(super) fn apply_video_info_event(
 
 /// One microphone or screen-capture stream (ADR-0137); the list it is in supplies the kind.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-#[cfg_attr(test, derive(schemars::JsonSchema))]
 pub struct CaptureApp {
     /// PipeWire registry id, its list's key.
     pub node_id: u32,

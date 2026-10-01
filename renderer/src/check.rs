@@ -87,10 +87,10 @@ fn lay_out(
     Ok((scene, instances))
 }
 
-/// One sample `StateSnapshot` payload per capability, keyed by name: the file
-/// `the_generated_stub_matches_what_is_checked_in` writes from the Supervisor's `*State` schemas.
+/// One sample `StateSnapshot` payload per capability, generated at build time from shared schemas.
 pub(crate) fn samples() -> serde_json::Map<String, serde_json::Value> {
-    serde_json::from_str(include_str!("check_samples.json")).expect("the generated samples are a JSON object")
+    serde_json::from_str(include_str!(concat!(env!("OUT_DIR"), "/check_samples.json")))
+        .expect("the generated samples are a JSON object")
 }
 
 /// One `StateSnapshot`-shaped push per capability from [`samples`].
@@ -281,6 +281,29 @@ mod tests {
         .unwrap();
         let err = super::run(dir.path()).unwrap_err();
         assert!(err.contains("with sample capability data"), "the failing pass must be named: {err}");
+        assert!(err.contains("contnet"), "{err}");
+    }
+
+    #[test]
+    fn a_launcher_filtering_no_display_still_checks_its_itemfn() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("shell.lua"),
+            r#"return panel { id = "launcher", layer = "Top", child = list {
+    source = mantle.applications:map(function(s)
+        local entries = {}
+        for _, app in ipairs(s and s.entries or {}) do
+            if not app.no_display then entries[#entries + 1] = app end
+        end
+        return entries
+    end),
+    itemfn = function(app) return text { contnet = app.name } end,
+} }
+"#,
+        )
+        .unwrap();
+        let err = super::run(dir.path()).unwrap_err();
+        assert!(err.contains("with sample capability data"), "{err}");
         assert!(err.contains("contnet"), "{err}");
     }
 }

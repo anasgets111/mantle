@@ -1,35 +1,13 @@
 //! DBusMenu `GetLayout` parsing: recursive `zvariant::Value` walking into [`MenuItem`] (ADR-0031).
 
-use serde::Serialize;
+pub use shared::state::tray::MenuItem;
+
 use shared::debug;
 use zbus::zvariant::Value;
 
 use super::proxies::DBusMenuProxy;
 use super::{MAX_MENU_NODES, MAX_TRAY_TEXT_BYTES};
 use crate::capabilities::{shm_icons, truncate_utf8_bytes};
-
-/// One `tray.items[].menu` entry.
-#[derive(Debug, Clone, Default, PartialEq, Serialize)]
-#[cfg_attr(test, derive(schemars::JsonSchema))]
-pub struct MenuItem {
-    /// DBusMenu id, the second argument of `activate_menu_item` and `menu_will_show`.
-    pub id: i32,
-    /// `"standard"` (the default) or `"separator"`, as the application sent it.
-    pub menu_type: String,
-    /// Entry text as sent, or `nil`. `_` mnemonic markers remain (`"_Quit"`); strip them to draw.
-    pub label: Option<String>,
-    /// `false` for a greyed-out entry; draw it, but clicking does nothing.
-    pub enabled: bool,
-    /// Theme icon name, a spooled PNG path from raw `icon-data`, or `nil`.
-    pub icon_name: Option<String>,
-    /// `"checkmark"`, `"radio"`, or `nil` for an entry that is not a toggle.
-    pub toggle_type: Option<String>,
-    /// `0` off, `1` on, `-1` indeterminate or unreported; `nil` exactly when `toggle_type` is.
-    pub toggle_state: Option<i32>,
-    /// Submenu entries, empty for a leaf. An app that fills submenus lazily sends them only after
-    /// `menu_will_show`.
-    pub children: Vec<MenuItem>,
-}
 
 /// Unwraps `Value::Value(Box<Value>)` layers; DBusMenu `av` children add one variant layer each.
 fn unwrap_variant<'a>(value: &'a Value<'_>) -> &'a Value<'a> {

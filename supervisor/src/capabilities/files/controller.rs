@@ -1,6 +1,8 @@
 //! [`FilesController`] owns `mantle.files`, with one listing task per watched folder (ADR-0120).
 
-use std::collections::{BTreeMap, HashMap};
+pub use shared::state::files::{FileEntry, FilesState, Folder};
+
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -14,39 +16,6 @@ use tokio::task::JoinHandle;
 /// Relist 200ms after the last event. Forty wallpapers produce forty `CREATE`/`CLOSE_WRITE` pairs;
 /// one listing after the burst is the point.
 const RELIST_DEBOUNCE: Duration = Duration::from_millis(200);
-
-/// `mantle.files` payload (ADR-0120).
-#[derive(Debug, Clone, Default, PartialEq, serde::Serialize)]
-#[cfg_attr(test, derive(schemars::JsonSchema))]
-pub struct FilesState {
-    /// One entry per `"watch"`, keyed by its `path` minus trailing slashes; `nil` until watched.
-    pub folders: BTreeMap<String, Folder>,
-}
-
-#[derive(Debug, Clone, Default, PartialEq, serde::Serialize)]
-#[cfg_attr(test, derive(schemars::JsonSchema))]
-pub struct Folder {
-    /// `false` until the first listing lands, then `true` even when empty or failed.
-    pub ready: bool,
-    /// Files (and symlinks to files) directly inside, minus dotfiles, filtered by extension and
-    /// sorted case-insensitively by name. Relisted 200 ms after the last change.
-    pub entries: Vec<FileEntry>,
-    /// Why listing failed, e.g. `"No such file or directory (os error 2)"`; `nil` on success. A
-    /// missing or deleted folder is not watched for reappearing.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub error: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, serde::Serialize)]
-#[cfg_attr(test, derive(schemars::JsonSchema))]
-pub struct FileEntry {
-    /// File name, e.g. `"sunrise.jpg"`.
-    pub name: String,
-    /// Absolute path.
-    pub path: String,
-    /// Modification time in Unix seconds; `0` when unavailable.
-    pub modified: i64,
-}
 
 /// A folder's listing task and filter. `unwatch` aborts the task; repeating the same filter is a
 /// no-op.

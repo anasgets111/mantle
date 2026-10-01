@@ -1,9 +1,10 @@
 //! `TrayItem` hydration from `StatusNotifierItem` properties; `menu` is fetched separately.
 
+pub use shared::state::tray::TrayItem;
+
 use std::collections::HashMap;
 use std::hash::{BuildHasher, BuildHasherDefault, DefaultHasher};
 
-use serde::Serialize;
 use shared::debug;
 use zbus::names::OwnedUniqueName;
 use zbus::zvariant::{OwnedObjectPath, OwnedValue};
@@ -11,46 +12,10 @@ use zbus::zvariant::{OwnedObjectPath, OwnedValue};
 use super::icon::{
     IconPixmap, IconSource, icon_filename_stem, largest_valid_pixmap, resolve_icon_source, write_icon_png,
 };
-use super::menu::MenuItem;
 use super::proxies::StatusNotifierItemProxy;
 use super::registration::item_id;
 use super::{MAX_TRAY_TEXT_BYTES, RawIconPixmap, RawToolTip};
 use crate::capabilities::truncate_utf8_bytes;
-
-#[derive(Debug, Clone, Default, PartialEq, Serialize)]
-#[cfg_attr(test, derive(schemars::JsonSchema))]
-pub struct TrayItem {
-    /// Item identity for every `tray` action, e.g. `"1.234/StatusNotifierItem"`. Opaque.
-    pub id: String,
-    /// SNI `Title`, or its `Id` when the title is empty.
-    pub name: String,
-    /// Theme icon name for `icon { name = ... }`. At most one of it and `icon_path` is set.
-    pub icon_name: Option<String>,
-    /// Icon file for `image { source = ... }`: one from the item's `IconThemePath`, or its pixmap
-    /// spooled to a PNG.
-    pub icon_path: Option<String>,
-    /// Artwork to draw while `status == "NeedsAttention"`, paired with `attention_icon_path` like
-    /// the base icon; both `nil` when unset.
-    pub attention_icon_name: Option<String>,
-    /// File half of the attention artwork.
-    pub attention_icon_path: Option<String>,
-    /// Badge to draw over the icon's corner, paired with `overlay_icon_path`; both `nil` when unset.
-    pub overlay_icon_name: Option<String>,
-    /// File half of the badge.
-    pub overlay_icon_path: Option<String>,
-    /// Tooltip title and text joined by a newline, or `nil` when both are empty.
-    pub tooltip: Option<String>,
-    /// `"Active"`, `"Passive"` (the item asks to be hidden) or `"NeedsAttention"`, as the item sent it.
-    pub status: String,
-    /// Left click should open `menu` instead of `activate`.
-    pub item_is_menu: bool,
-    /// Top-level menu entries, or `nil` when the item exports no DBusMenu or its first fetch failed.
-    pub menu: Option<Vec<MenuItem>>,
-    /// Digests of the base, attention and overlay pixmaps behind the `*_path` PNGs, so new pixels
-    /// at an unchanged path still compare unequal and push.
-    #[serde(skip)]
-    pub(super) pixmap_digests: [Option<u64>; 3],
-}
 
 /// [`MAX_TRAY_TEXT_BYTES`] applied to one application-supplied property.
 fn capped(value: String) -> String {

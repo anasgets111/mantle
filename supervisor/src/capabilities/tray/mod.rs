@@ -11,11 +11,10 @@
 //! ponytail: `TrayController::new` never fails outright (ADR-0030). No other tray host, common on
 //! niri/sway, is not an error; losing `RequestName` to Plasma/GNOME is expected (ADR-0031).
 
+pub use shared::state::tray::TrayState;
+
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use serde::Serialize;
-
-use item::TrayItem;
 use shared::action::TrayAction;
 
 /// Well-known bus name and object path for `org.kde.StatusNotifierWatcher`.
@@ -61,13 +60,6 @@ pub mod registry;
 pub mod watcher;
 
 pub use controller::TrayController;
-
-#[derive(Debug, Clone, Default, PartialEq, Serialize)]
-#[cfg_attr(test, derive(schemars::JsonSchema))]
-pub struct TrayState {
-    /// Registered items in registration order, oldest first; updates never reorder them.
-    pub items: Vec<TrayItem>,
-}
 
 fn unix_timestamp_u32() -> u32 {
     SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs() as u32).unwrap_or(0)

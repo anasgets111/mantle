@@ -1,6 +1,8 @@
 //! [`KeyboardController`] owns `mantle.keyboard` state and write actions. Backlight, lock state,
 //! and layout share one `Arc<Mutex<KeyboardState>>` and signal channel (ADR-0034).
 
+pub use shared::state::keyboard::KeyboardState;
+
 use std::os::unix::fs::FileExt;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -18,41 +20,6 @@ use super::super::read_attr;
 use super::super::scale::{percent_from_raw, raw_from_percent};
 use super::layout::{CompositorLink, HyprlandLink, NiriLink};
 use super::locks::{find_led, read_led_on, resolve_lock_leds};
-
-/// `mantle.keyboard`'s payload (ADR-0034). Lock keys read `false` when no source resolves.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
-#[cfg_attr(test, derive(schemars::JsonSchema))]
-pub struct KeyboardState {
-    /// Keyboard backlight, `0` to `100`, or `-1` without a backlight device or readable level.
-    /// Refreshes on hardware hotkeys and `set_backlight` only, not on other software writes.
-    pub backlight_pct: i32,
-    /// Caps Lock is on.
-    pub caps_lock: bool,
-    /// Num Lock is on.
-    pub num_lock: bool,
-    /// Scroll Lock is on.
-    pub scroll_lock: bool,
-    /// Layout display name, e.g. `"English (US)"`; empty before the compositor answers or without one.
-    pub active_layout: String,
-    /// 0-based position of the active layout, as `switch_layout` takes it.
-    pub active_layout_index: u32,
-    /// Configured layout count; below `2` there is nothing to switch.
-    pub layout_count: u32,
-}
-
-impl Default for KeyboardState {
-    fn default() -> Self {
-        Self {
-            backlight_pct: -1,
-            caps_lock: false,
-            num_lock: false,
-            scroll_lock: false,
-            active_layout: String::new(),
-            active_layout_index: 0,
-            layout_count: 0,
-        }
-    }
-}
 
 /// A `*::kbd_backlight` LED and its `max_brightness`, which does not change at runtime.
 #[derive(Debug, Clone, PartialEq, Eq)]

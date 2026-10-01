@@ -1,5 +1,7 @@
 //! [`BrightnessController`] owns `mantle.brightness` and its write action.
 
+pub use shared::state::brightness::BrightnessState;
+
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -11,14 +13,6 @@ use udev::MonitorSocket;
 
 use super::super::scale::{percent_from_raw, raw_from_percent};
 use super::super::{publish, read_attr};
-
-/// `mantle.brightness`'s payload; the capability stays `nil` on a machine with no backlight.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize)]
-#[cfg_attr(test, derive(schemars::JsonSchema))]
-pub struct BrightnessState {
-    /// Screen backlight, `0` to `100`: the last requested level (sysfs `brightness`), not the mid-fade one.
-    pub percent: u8,
-}
 
 /// Device preference from `Documentation/ABI/stable/sysfs-class-backlight`: firmware (0) <
 /// platform (1) < raw (2), with unknown/missing last (3), not excluded.

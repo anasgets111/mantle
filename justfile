@@ -130,13 +130,12 @@ lua:
     echo "all lua parses"
     python3 tools/luafmt.py --check {{lua_dirs}}
 
-# Regenerate every `lua-meta/*.lua` stub and the docs they feed: capability pages and `mantle check`'s
-# sample payloads from the supervisor's payload types, node and surface property tables from the
-# renderer's property table.
+# Regenerate every `lua-meta/*.lua` stub and the docs they feed: capability pages from shared
+# payload types, node and surface property tables from the renderer's property table.
 # Every golden test is named `the_generated_*`. Then show what moved.
 stubs:
     UPDATE_STUBS=1 cargo test -p supervisor -p renderer the_generated_
-    @git diff --stat -- lua-meta docs renderer/src/check_samples.json
+    @git diff --stat -- lua-meta docs
 
 # Re-render the docs screenshots that moved past the tolerance, delete orphans, then show what moved.
 shots:

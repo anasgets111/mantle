@@ -1,47 +1,20 @@
 //! Tracked `mantle.audio` state and pure parsing helpers, testable against recorded `pw-dump`
 //! properties without a live PipeWire proxy.
 
+pub use shared::state::audio::AudioState;
+
 use std::collections::{BTreeMap, HashMap};
 use std::rc::Rc;
 
 use pipewire as pw;
-use serde::Serialize;
 use tokio::sync::mpsc::UnboundedSender;
 use tokio::sync::watch;
 
-use super::devices::{AudioDevice, BluetoothCodecs, BluezCard, DeviceEntry, bluetooth_codecs, device_list};
+#[cfg(test)]
+use super::devices::{AudioDevice, BluetoothCodecs};
+use super::devices::{BluezCard, DeviceEntry, bluetooth_codecs, device_list};
 use super::streams::{AppStream, CaptureApp, VideoSourceApp, running};
 use crate::capabilities::audio::master;
-
-/// `mantle.audio`'s payload (ADR-0053).
-#[derive(Debug, Clone, PartialEq, Serialize)]
-#[cfg_attr(test, derive(schemars::JsonSchema))]
-pub struct AudioState {
-    /// Default output volume, `0.0` to `1.5` (`1.0` is 100%), loudest channel; louder writes by other clients
-    /// are pulled back to `1.5`. `nil` with no sink or before its first volume report.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub volume: Option<f32>,
-    /// Default output mute; `false` with no default sink or before its first report.
-    pub muted: bool,
-    /// Default output balance, `-1.0` (left) to `1.0` (right); `nil` with no sink, for mono or an unknown
-    /// channel map.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub balance: Option<f32>,
-    /// Default input volume, `1.0` is 100%; `set_source_volume` caps at `1.0`, another client may not.
-    /// `nil` with no source or before its first volume report.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub source_volume: Option<f32>,
-    /// Default input (microphone) mute; `false` with no default source or before its first report.
-    pub source_muted: bool,
-    /// Every output device.
-    pub sinks: Vec<AudioDevice>,
-    /// Every input device.
-    pub sources: Vec<AudioDevice>,
-    /// Apps playing or recording audio, excluding pid-less streams, notification sounds, meters and monitor captures.
-    pub apps: Vec<AppStream>,
-    /// BlueZ audio devices PipeWire knows, with their codecs, ordered by `device`.
-    pub bluetooth: Vec<BluetoothCodecs>,
-}
 
 /// All PipeWire inputs to `mantle.privacy` in one snapshot (ADR-0137). One channel keeps the three
 /// lists from arriving out of order when a config draws them together. All three lists change on

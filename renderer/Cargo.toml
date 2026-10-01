@@ -86,3 +86,6 @@ gbm = { version = "0.18.0", default-features = false }
 tempfile.workspace = true
 # `time` is test-only (`socket/mod.rs` timeouts).
 tokio = { workspace = true, features = ["time"] }
+
+[build-dependencies]
+shared = { workspace = true, features = ["schema"] }
