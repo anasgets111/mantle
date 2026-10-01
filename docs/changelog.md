@@ -58,6 +58,7 @@ so everything since the rename from Obelisk sits under Unreleased.
 
 ### Changed
 
+- Captures recover after source resizes. Stopped live output sessions keep their last frame and restart without waiting for a repaint, respecting the frame-rate cap; completed one-shots keep their frame.
 - The first dma-buf capture frame now wakes an idle preview for texture import; window captures preserve alpha on both buffer paths.
 - Shared-memory capture preserves changes across frames waiting to paint and refreshes the full texture after dma-buf fallback.
 - Node `padding` values outside `[0, 8192]` now fail layout validation. Use a negative `margin` for overflow.

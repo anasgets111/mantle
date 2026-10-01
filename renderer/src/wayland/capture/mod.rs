@@ -275,13 +275,14 @@ impl CaptureRegistry {
         Some(protocol)
     }
 
-    /// A stopped session. An output restarts on the next sync and keeps its last frame meanwhile;
-    /// a closed window clears its texture and stays stopped (ADR-0298).
+    /// A stopped live output schedules recovery and keeps its last frame; a completed one-shot
+    /// keeps its frame, and a closed window clears its texture and stays stopped (ADR-0298).
     fn stop(&mut self, id: NodeId, cache: &mut CaptureCache) {
         let Some(source) = self.sources.get_mut(&id) else { return };
         destroy_proto(source.proto.take());
         source.in_flight = false;
         if source.target.is_output() {
+            source.deferred = source.live.is_some() && !source.failed;
             return;
         }
         self.pending_free.extend(source.dmabuf.take_textures());
@@ -658,34 +659,48 @@ mod tests {
         }
     }
 
-    /// A stopped output session restarts on the next sync and keeps its last frame; a stopped
-    /// window clears it and stays stopped (ADR-0298).
+    /// Live output recovery needs a poll deadline even when no surface repaints; completed
+    /// one-shots keep their frame, and stopped windows clear it (ADR-0298).
     #[test]
     fn a_stopped_output_restarts_and_a_stopped_window_stays_stopped() {
-        let mut registry = registry();
-        let mut cache = CaptureCache::default();
-        let output = NodeId::test(1);
-        let window = NodeId::test(2);
-        for (node, target) in
-            [(output, CaptureTarget::Output("DP-1".into())), (window, CaptureTarget::Window("0xa11ce".into()))]
-        {
-            let node = CaptureNode { node, target, live: Some(30.0), paint_cursor: false, region: None };
-            assert!(registry.reconcile_source(&node, Some(Protocol::Ext), &mut cache).is_some());
-            let source = registry.sources.get_mut(&node.node).unwrap();
-            source.captured = true;
-            source.in_flight = true;
-            source.proto = Some(Proto::Ext(ExtProto::default()));
+        for live in [Some(30.0), Some(f32::INFINITY), None] {
+            let mut registry = registry();
+            let mut cache = CaptureCache::default();
+            let output = NodeId::test(1);
+            let window = NodeId::test(2);
+            let last_request = Instant::now();
+            for (node, target) in
+                [(output, CaptureTarget::Output("DP-1".into())), (window, CaptureTarget::Window("0xa11ce".into()))]
+            {
+                let node = CaptureNode { node, target, live, paint_cursor: false, region: None };
+                assert!(registry.reconcile_source(&node, Some(Protocol::Ext), &mut cache).is_some());
+                let source = registry.sources.get_mut(&node.node).unwrap();
+                source.captured = true;
+                source.in_flight = true;
+                source.last_request = Some(last_request);
+                source.proto = Some(Proto::Ext(ExtProto::default()));
+            }
+            registry.stop(output, &mut cache);
+            let source = &registry.sources[&output];
+            assert!(source.proto.is_none() && !source.in_flight);
+            assert!(!source.failed && source.captured);
+            assert_eq!(source.deferred, live.is_some(), "only a live output schedules recovery");
+            assert_eq!(
+                registry.next_request_deadline(),
+                live.and_then(|fps| next_request_at(Some(last_request), fps)),
+                "an idle loop wakes at the capture's cap without a repaint"
+            );
+            assert!(cache.poll().is_empty(), "the last output frame stays on screen");
+            registry.stop(window, &mut cache);
+            let source = &registry.sources[&window];
+            assert!(source.proto.is_none() && !source.in_flight);
+            assert!(source.failed && !source.captured);
+            assert!(!source.deferred, "a closed window cannot schedule recovery");
+            assert_eq!(cache.poll(), [window], "a closed window's pixels are retired");
+            registry.sources.get_mut(&output).unwrap().failed = true;
+            registry.stop(output, &mut cache);
+            assert_eq!(registry.next_request_deadline(), None, "other failures keep topology-change backoff");
         }
-        registry.stop(output, &mut cache);
-        let source = &registry.sources[&output];
-        assert!(source.proto.is_none() && !source.in_flight);
-        assert!(!source.failed && source.captured, "the next sync opens a fresh session");
-        assert!(cache.poll().is_empty(), "the last output frame stays on screen");
-        registry.stop(window, &mut cache);
-        let source = &registry.sources[&window];
-        assert!(source.proto.is_none() && !source.in_flight);
-        assert!(source.failed && !source.captured);
-        assert_eq!(cache.poll(), [window], "a closed window's pixels are retired");
     }
 
     /// A late wake keeps the request on the 1/fps grid; over a period late, the grid restarts at
