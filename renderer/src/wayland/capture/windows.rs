@@ -110,7 +110,7 @@ impl Dispatch<ExtForeignToplevelListV1, ()> for App {
                     .filter_map(|(id, source)| matches!(source.target, CaptureTarget::Window(_)).then_some(*id))
                     .collect();
                 for id in ids {
-                    state.stop_capture(id);
+                    state.captures.stop(id, &mut state.capture_cache);
                 }
             }
             _ => {}
@@ -146,7 +146,7 @@ impl Dispatch<ExtForeignToplevelHandleV1, ()> for App {
                     .filter_map(|(id, source)| (source.target == CaptureTarget::Window(address.clone())).then_some(*id))
                     .collect();
                 for id in ids {
-                    state.stop_capture(id);
+                    state.captures.stop(id, &mut state.capture_cache);
                 }
             }
         }

@@ -5,7 +5,7 @@
 //! Only the decision functions and teardown are unit tested; the rest is thin
 //! protocol translation a mock isn't worth writing.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
 
 use femtovg::ImageId;
@@ -210,7 +210,8 @@ impl CaptureSource {
 pub(super) struct CaptureRegistry {
     backend: Backend,
     sources: HashMap<NodeId, CaptureSource>,
-    warned_no_backend: bool,
+    /// Targets already warned as having no capture protocol, once each.
+    warned_no_backend: HashSet<CaptureTarget>,
     /// `zwp_linux_dmabuf_v1`, only ever used for `create_params` (ADR-0248 amendment decision 1);
     /// `None` means this compositor cannot build a dma-buf `wl_buffer` at all.
     dmabuf_manager: Option<zwp_linux_dmabuf_v1::ZwpLinuxDmabufV1>,
@@ -234,7 +235,7 @@ impl CaptureRegistry {
         CaptureRegistry {
             backend,
             sources: HashMap::new(),
-            warned_no_backend: false,
+            warned_no_backend: HashSet::new(),
             dmabuf_manager,
             dmabuf_probe: DmabufProbe::default(),
             pending_import: Vec::new(),
@@ -266,6 +267,25 @@ impl CaptureRegistry {
         source.region = node.region;
         cache.set_target(node.node, node.target.clone());
         true
+    }
+
+    /// A stopped session. An output restarts on the next sync and keeps its last frame meanwhile;
+    /// a closed window clears its texture and stays stopped (ADR-0298).
+    fn stop(&mut self, id: NodeId, cache: &mut CaptureCache) {
+        let Some(source) = self.sources.get_mut(&id) else { return };
+        destroy_proto(source.proto.take());
+        source.in_flight = false;
+        if matches!(source.target, CaptureTarget::Output(_)) {
+            return;
+        }
+        self.pending_free.extend(source.dmabuf.take_textures());
+        source.dmabuf = DmabufSwapchain::default();
+        source.dmabuf_shape = None;
+        source.captured = false;
+        source.failed = true;
+        source.deferred = false;
+        self.pending_import.retain(|pending| *pending != id);
+        cache.forget(id);
     }
 
     /// The soonest a deferred source's cap allows its next request, for the loop's poll timeout.
@@ -319,9 +339,12 @@ impl App {
                 CaptureTarget::Window(_) => has_windows.then_some(Protocol::Ext),
             };
             if !self.captures.reconcile_source(&node, protocol, &mut self.capture_cache) {
-                if !self.captures.warned_no_backend {
-                    warn!("capture target `{:?}` has no supported capture protocol; drawing nothing", node.target);
-                    self.captures.warned_no_backend = true;
+                let kind = match node.target {
+                    CaptureTarget::Output(_) => "output",
+                    CaptureTarget::Window(_) => "window",
+                };
+                if self.captures.warned_no_backend.insert(node.target.clone()) {
+                    warn!("capture {kind} `{}` has no supported capture protocol; drawing nothing", node.target.name());
                 }
                 continue;
             }
@@ -490,22 +513,6 @@ impl App {
         }
     }
 
-    /// A closed/stopped source must clear its texture even when no new frame can land.
-    fn stop_capture(&mut self, id: NodeId) {
-        if let Some(source) = self.captures.sources.get_mut(&id) {
-            destroy_proto(source.proto.take());
-            self.captures.pending_free.extend(source.dmabuf.take_textures());
-            source.dmabuf = DmabufSwapchain::default();
-            source.dmabuf_shape = None;
-            source.captured = false;
-            source.failed = true;
-            source.in_flight = false;
-            source.deferred = false;
-        }
-        self.captures.pending_import.retain(|pending| *pending != id);
-        self.capture_cache.forget(id);
-    }
-
     fn request_next_if_live(&mut self, id: NodeId) {
         if self.captures.sources.get(&id).is_some_and(|source| source.live.is_some()) {
             self.request_when_due(id);
@@ -553,6 +560,19 @@ fn fail_source(captures: &mut CaptureRegistry, id: &NodeId) {
     source.failed = true;
 }
 
+/// A frame failed on `buffer_constraints` (a resize): the `Done` parked behind it is a
+/// renegotiation, not a failure. Returns that offer, or `None` after re-arming normal pacing.
+fn constraints_changed(captures: &mut CaptureRegistry, id: &NodeId) -> Option<DoneOffer> {
+    let source = captures.sources.get_mut(id)?;
+    let Some(Proto::Ext(ext)) = source.proto.as_mut() else { return None };
+    ext.damage.clear();
+    ext.frame = None;
+    let offer = ext.pending_done.take();
+    // The offer's frame keeps `in_flight` until it lands.
+    source.in_flight = offer.is_some();
+    offer
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -561,7 +581,7 @@ mod tests {
         CaptureRegistry {
             backend: Backend { ext: None, outputs: None, windows: None, wlr: None },
             sources: HashMap::new(),
-            warned_no_backend: false,
+            warned_no_backend: HashSet::new(),
             dmabuf_manager: None,
             dmabuf_probe: DmabufProbe::Pending,
             pending_import: Vec::new(),
@@ -618,6 +638,60 @@ mod tests {
         assert!(registry.reconcile_source(&node, Some(Protocol::Ext), &mut cache));
         assert!(!registry.sources[&node.node].failed);
         assert_eq!(registry.sources[&node.node].live, Some(30.0));
+    }
+
+    /// A resize fails the in-flight frame on `buffer_constraints`; the parked `Done` renegotiates
+    /// instead of pausing, for windows and outputs alike.
+    #[test]
+    fn a_buffer_constraints_failure_renegotiates_instead_of_failing() {
+        for target in [CaptureTarget::Window("0xa11ce".into()), CaptureTarget::Output("DP-1".into())] {
+            let mut registry = registry();
+            let mut cache = CaptureCache::default();
+            let node =
+                CaptureNode { node: NodeId::test(7), target, live: Some(30.0), paint_cursor: false, region: None };
+            assert!(registry.reconcile_source(&node, Some(Protocol::Ext), &mut cache));
+            let source = registry.sources.get_mut(&node.node).unwrap();
+            source.in_flight = true;
+            let offer = DoneOffer { width: 640, height: 480, shm_format: None, dmabuf_formats: Vec::new() };
+            source.proto = Some(Proto::Ext(ExtProto { pending_done: Some(offer), ..Default::default() }));
+            let offer = constraints_changed(&mut registry, &node.node).expect("the parked offer");
+            assert_eq!((offer.width, offer.height), (640, 480));
+            let source = &registry.sources[&node.node];
+            assert!(!source.failed && source.in_flight, "{:?}: the renegotiated frame is in flight", node.target);
+            assert!(constraints_changed(&mut registry, &node.node).is_none());
+            let source = &registry.sources[&node.node];
+            assert!(!source.failed && !source.in_flight, "{:?}: no offer re-arms normal pacing", node.target);
+        }
+    }
+
+    /// A stopped output session restarts on the next sync and keeps its last frame; a stopped
+    /// window clears it and stays stopped (ADR-0298).
+    #[test]
+    fn a_stopped_output_restarts_and_a_stopped_window_stays_stopped() {
+        let mut registry = registry();
+        let mut cache = CaptureCache::default();
+        let output = NodeId::test(1);
+        let window = NodeId::test(2);
+        for (node, target) in
+            [(output, CaptureTarget::Output("DP-1".into())), (window, CaptureTarget::Window("0xa11ce".into()))]
+        {
+            let node = CaptureNode { node, target, live: Some(30.0), paint_cursor: false, region: None };
+            assert!(registry.reconcile_source(&node, Some(Protocol::Ext), &mut cache));
+            let source = registry.sources.get_mut(&node.node).unwrap();
+            source.captured = true;
+            source.in_flight = true;
+            source.proto = Some(Proto::Ext(ExtProto::default()));
+        }
+        registry.stop(output, &mut cache);
+        let source = &registry.sources[&output];
+        assert!(source.proto.is_none() && !source.in_flight);
+        assert!(!source.failed && source.captured, "the next sync opens a fresh session");
+        assert!(cache.poll().is_empty(), "the last output frame stays on screen");
+        registry.stop(window, &mut cache);
+        let source = &registry.sources[&window];
+        assert!(source.proto.is_none() && !source.in_flight);
+        assert!(source.failed && !source.captured);
+        assert_eq!(cache.poll(), [window], "a closed window's pixels are retired");
     }
 
     /// A late wake keeps the request on the 1/fps grid; over a period late, the grid restarts at

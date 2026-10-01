@@ -16,7 +16,7 @@ use super::*;
 use fields::{capture, icon, image, paint, path, shader, text, textfield};
 
 /// Exactly one capture source. Window IDs stay opaque outside their compositor adapter.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum CaptureTarget {
     Output(String),
     Window(String),

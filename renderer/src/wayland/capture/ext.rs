@@ -70,7 +70,7 @@ impl Dispatch<ext_image_copy_capture_session_v1::ExtImageCopyCaptureSessionV1, N
                 }
                 state.apply_ext_done(*id, offer);
             }
-            Event::Stopped => state.stop_capture(*id),
+            Event::Stopped => state.captures.stop(*id, &mut state.capture_cache),
             _ => {}
         }
     }
@@ -85,7 +85,7 @@ impl Dispatch<ext_image_copy_capture_frame_v1::ExtImageCopyCaptureFrameV1, NodeI
         _: &Connection,
         _: &QueueHandle<Self>,
     ) {
-        use ext_image_copy_capture_frame_v1::Event;
+        use ext_image_copy_capture_frame_v1::{Event, FailureReason};
         let current = state.captures.sources.get(id).is_some_and(|source| source.owns(proxy));
         if !current {
             return;
@@ -127,9 +127,19 @@ impl Dispatch<ext_image_copy_capture_frame_v1::ExtImageCopyCaptureFrameV1, NodeI
                     None => state.request_next_if_live(*id),
                 }
             }
-            Event::Failed { .. } => {
+            Event::Failed { reason } => {
                 proxy.destroy();
-                fail_source(&mut state.captures, id);
+                match reason {
+                    WEnum::Value(FailureReason::BufferConstraints) => {
+                        match constraints_changed(&mut state.captures, id) {
+                            Some(offer) => state.apply_ext_done(*id, offer),
+                            None => state.request_next_if_live(*id),
+                        }
+                    }
+                    // The session's `Stopped` follows and decides whether the source restarts.
+                    WEnum::Value(FailureReason::Stopped) => {}
+                    _ => fail_source(&mut state.captures, id),
+                }
             }
             _ => {}
         }
