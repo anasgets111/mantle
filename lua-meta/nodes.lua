@@ -7,7 +7,7 @@
 --
 -- `Bound` in a union means the property also takes a signal, read again once it is written. It is
 -- `userdata`, not `Signal`, so table payloads are not mistaken for signals. `id` and callbacks take
--- no signal; `hover`, `scroll` and `geometry` take the handle itself. `[string]: "no such property"`
+-- no signal; `hover`, `scroll`, `geometry` and `elided` take the handle itself. `[string]: "no such property"`
 -- makes a misspelled key a type error.
 
 ---@alias Node table A node table, as one of the constructors below returns it.
@@ -135,7 +135,7 @@
 ---@field spacing? number|Bound Default `0`. Px between visible children; negative values overlap them. Not range-checked.
 ---@field scroll? Bound A `scroll(name)` signal; makes this a scrolling viewport along its main axis.
 
----@alias TextAnimations { align_h?: Animation, align_v?: Animation, content?: Animation, content_blur?: Animation, cursor?: Animation, elide?: Animation, font?: Animation, font_size?: Animation, font_weight?: Animation, foreground?: Animation, geometry?: Animation, height?: Animation, hover?: Animation, id?: Animation, italic?: Animation, letter_spacing?: Animation, line_height?: Animation, margin?: Animation, max_height?: Animation, max_lines?: Animation, max_width?: Animation, min_height?: Animation, min_width?: Animation, on_click?: Animation, on_drag?: Animation, on_hover?: Animation, on_link?: Animation, on_wheel?: Animation, opacity?: Animation, origin?: Animation, padding?: Animation, rotate?: Animation, scale?: Animation, shadow_blur?: Animation, shadow_color?: Animation, shadow_offset?: Animation, shadow_spread?: Animation, submit?: Animation, text_align?: Animation, translate?: Animation, visible?: Animation, width?: Animation, wrap?: Animation, exit?: Exit, [string]: "no such property" }
+---@alias TextAnimations { align_h?: Animation, align_v?: Animation, content?: Animation, content_blur?: Animation, cursor?: Animation, elide?: Animation, elided?: Animation, font?: Animation, font_size?: Animation, font_weight?: Animation, foreground?: Animation, geometry?: Animation, height?: Animation, hover?: Animation, id?: Animation, italic?: Animation, letter_spacing?: Animation, line_height?: Animation, margin?: Animation, max_height?: Animation, max_lines?: Animation, max_width?: Animation, min_height?: Animation, min_width?: Animation, on_click?: Animation, on_drag?: Animation, on_hover?: Animation, on_link?: Animation, on_wheel?: Animation, opacity?: Animation, origin?: Animation, padding?: Animation, rotate?: Animation, scale?: Animation, shadow_blur?: Animation, shadow_color?: Animation, shadow_offset?: Animation, shadow_spread?: Animation, submit?: Animation, text_align?: Animation, translate?: Animation, visible?: Animation, width?: Animation, wrap?: Animation, exit?: Exit, [string]: "no such property" }
 ---@class TextProps: NodeBase
 ---@field animate? TextAnimations|Bound Tween named properties to each newly resolved value without running Lua (ADR-0145). The `exit` key is an `Exit` block. Only a node already on screen animates, unless the entry has `from`.
 ---@field content? string|TextRun[]|Bound Default `""`. A string, or up to 10000 runs, drawn as one paragraph.
@@ -150,6 +150,7 @@
 ---@field wrap? "None"|"Word"|Bound Default `"None"`. `"Word"` breaks at words, mid-word when one word is too wide. Needs a bounded width (`width`, `"Fill"` or a stretched cross axis).
 ---@field max_lines? number|Bound Default `0`. Line cap under `wrap = "Word"`; `0` is unlimited, a negative value is refused. Ignored without `wrap`.
 ---@field elide? "None"|"End"|Bound Default `"None"`. `"End"` ends an over-long line with an ellipsis; under `wrap` it applies to the last kept line.
+---@field elided? Bound An `elided(name)` signal; layout writes whether `elide` or `max_lines` removed content.
 ---@field on_link? fun(href: string) Click on a run with an `href` (ADR-0106); the engine never opens it. Takes the click from any `on_click`, the text's own included; plain words pass it on.
 
 ---@alias IconAnimations { align_h?: Animation, align_v?: Animation, content_blur?: Animation, cursor?: Animation, foreground?: Animation, geometry?: Animation, height?: Animation, hover?: Animation, id?: Animation, margin?: Animation, max_height?: Animation, max_width?: Animation, min_height?: Animation, min_width?: Animation, name?: Animation, on_click?: Animation, on_drag?: Animation, on_hover?: Animation, on_wheel?: Animation, opacity?: Animation, origin?: Animation, padding?: Animation, rotate?: Animation, scale?: Animation, shadow_blur?: Animation, shadow_color?: Animation, shadow_offset?: Animation, shadow_spread?: Animation, size?: Animation, submit?: Animation, translate?: Animation, visible?: Animation, width?: Animation, exit?: Exit, [string]: "no such property" }

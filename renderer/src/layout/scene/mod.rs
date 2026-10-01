@@ -6,6 +6,7 @@
 //!
 //! [`solve`]: solver::solve
 
+mod elision;
 mod fit;
 mod pass;
 mod resolve;
@@ -523,6 +524,8 @@ impl Scene {
                 };
             }
             self.next_id = next_id_snapshot;
+        } else {
+            self.publish_elision(lua);
         }
         outcome
     }
@@ -680,9 +683,10 @@ impl Scene {
     /// from `crate::wayland::App::destroy_surface_by_id`, and it is the only thing that removes a
     /// surface from this map. Without it an unplugged output stays resident for the life of the
     /// process, one tree per output name ever seen.
-    pub fn forget(&mut self, instance_id: &str) {
+    pub fn forget(&mut self, instance_id: &str, lua: &Lua) {
         self.surfaces.remove(instance_id);
         self.solver_trees.remove(instance_id);
+        self.publish_elision(lua);
     }
 
     /// Node count per retained surface, largest first, for `crate::wayland::memory_profile`. The
@@ -1708,9 +1712,9 @@ pub(super) mod tests {
         scene.apply(&[deserialize_lua_table(&declared).unwrap()], &[], &shaping, &lua).unwrap();
         assert!(scene.surface("bar@TEST").is_some(), "apply must leave it for topology handling");
 
-        scene.forget("bar@TEST");
+        scene.forget("bar@TEST", &lua);
         assert!(scene.surface("bar@TEST").is_none(), "topology handling is what drops it");
-        scene.forget("bar@TEST");
+        scene.forget("bar@TEST", &lua);
         assert!(scene.surface("bar@TEST").is_none(), "and forgetting one twice is not an error");
     }
 }

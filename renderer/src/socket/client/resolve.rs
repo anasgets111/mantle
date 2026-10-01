@@ -34,7 +34,7 @@ impl RendererClient {
                 // success; a failed apply leaves it for the next one.
                 self.dirty.take();
                 self.last_resolved = None;
-                self.settle_geometry();
+                self.settle_layout();
                 true
             }
             Err(err) => {
@@ -70,7 +70,7 @@ impl RendererClient {
                 crate::lua::signal::reset_read_tracker(self.loader.lua());
                 self.dirty.mark();
                 self.last_resolved = None;
-                self.settle_geometry();
+                self.settle_layout();
                 lua::timer::promote(self.loader.lua());
                 lua::signal::promote_states(self.loader.lua());
                 true
@@ -131,7 +131,7 @@ impl RendererClient {
             // Also a follow-up whose moved rects nobody reads, which ends the chain.
             crate::lua::signal::DirtyScope::Clean => {
                 drop(_memo);
-                self.geometry_follow_up = false;
+                self.layout_follow_up = false;
                 return false;
             }
             crate::lua::signal::DirtyScope::All => (None, Cow::Borrowed(self.instances.as_slice())),
@@ -170,7 +170,7 @@ impl RendererClient {
         self.last_resolved = resolved_scope;
         start_secure_submit_capabilities(&self.scene, &instances, &self.commands);
         self.rescue_applied_output(None);
-        self.settle_geometry();
+        self.settle_layout();
         dump_layout_if_asked(&self.scene);
         true
     }
@@ -188,13 +188,13 @@ impl RendererClient {
         }
     }
 
-    /// One follow-up pass over the readers of each `geometry(name)` rect a pass moved, so a
+    /// One follow-up pass over the readers of each layout measurement a pass changed, so a
     /// property bound to the measurement lays out from it before anything else happens; never two
     /// in a row.
-    fn settle_geometry(&mut self) {
-        let moved = crate::lua::signal::take_geometry_moved(self.loader.lua());
-        self.geometry_follow_up = !moved.is_empty() && !self.geometry_follow_up;
-        if self.geometry_follow_up {
+    fn settle_layout(&mut self) {
+        let moved = crate::lua::signal::take_layout_changed(self.loader.lua());
+        self.layout_follow_up = !moved.is_empty() && !self.layout_follow_up;
+        if self.layout_follow_up {
             for id in moved {
                 self.dirty.mark_cell(id);
             }
@@ -204,11 +204,12 @@ impl RendererClient {
     /// One animation frame (ADR-0145) for the instances in `due`, whose compositor frame callbacks
     /// landed: advances their tweens to `now` and relays them out, without reading `shell.lua` or
     /// any signal. Returns the instance ids it advanced, so the caller repaints those surfaces and
-    /// no others. A tree that settles owes the readers of its `geometry` rects one pass.
+    /// no others. A tree that settles owes its geometry readers one pass. Changed text truncation
+    /// updates its readers even while a layout tween is running.
     pub fn tick_animations(&mut self, due: &[String], now: std::time::Instant) -> Vec<String> {
         let instances = self.instances.iter().filter(|instance| due.contains(&instance.instance_id));
         let ticked = self.scene.tick(instances, &self.shaping, self.loader.lua(), now);
-        for id in crate::lua::signal::take_geometry_moved(self.loader.lua()) {
+        for id in crate::lua::signal::take_layout_changed(self.loader.lua()) {
             self.dirty.mark_cell(id);
         }
         ticked
@@ -611,6 +612,86 @@ mod tests {
         assert_eq!(client.take_last_resolved(), Some(vec!["reader@TEST".to_string()]));
         let reader = client.scene.surface("reader@TEST").unwrap();
         assert_eq!(reader.children[0].rect.width, 40.0, "the reader laid out from the moved rect");
+    }
+
+    #[test]
+    fn changed_elision_re_resolves_its_readers_without_re_resolving_the_writer() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_shell_lua(
+            dir.path(),
+            r#"cut = elided("body")
+            w = state("w", 40)
+            return {
+                panel { id = "writer", layer = "Top", child = text { width = w,
+                    content = "A label too long for its box", elide = "End", elided = cut } },
+                panel { id = "reader", layer = "Top", visible = cut },
+                panel { id = "other", layer = "Top" },
+            }"#,
+        );
+        let (mut client, _) = test_client(&path);
+        assert!(run_startup(&mut client));
+        assert!(client.re_resolve_if_dirty());
+        assert_eq!(client.take_last_resolved(), Some(vec!["reader@TEST".to_string()]));
+        assert!(client.scene.surface("reader@TEST").unwrap().visible);
+        assert!(!client.re_resolve_if_dirty(), "an unchanged measurement schedules no work");
+        client.loader.lua().load("w:set(500)").exec().unwrap();
+        assert!(client.re_resolve_if_dirty());
+        assert_eq!(client.take_last_resolved(), Some(vec!["writer@TEST".to_string()]));
+        assert!(client.re_resolve_if_dirty());
+        assert_eq!(client.take_last_resolved(), Some(vec!["reader@TEST".to_string()]));
+        assert!(!client.scene.surface("reader@TEST").unwrap().visible);
+        assert!(!client.re_resolve_if_dirty());
+    }
+
+    #[test]
+    fn elision_that_changes_its_own_width_gets_only_one_follow_up() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_shell_lua(
+            dir.path(),
+            r#"local cut = elided("body")
+            return panel { id = "bar", layer = "Top", child = text {
+                width = cut:map(function(v) return v and 500 or 40 end),
+                content = "A label too long for its box", elide = "End", elided = cut
+            } }"#,
+        );
+        let (mut client, _) = test_client(&path);
+        assert!(run_startup(&mut client));
+        assert!(client.re_resolve_if_dirty());
+        assert_eq!(client.scene.surface("bar@TEST").unwrap().children[0].rect.width, 500.0);
+        assert!(!client.re_resolve_if_dirty(), "the measurement cannot start a second follow-up");
+    }
+
+    #[test]
+    fn elision_changes_during_a_width_tween_update_readers_and_clear_on_removal() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_shell_lua(
+            dir.path(),
+            r#"cut = elided("body")
+            w = state("w", 40)
+            return {
+                panel { id = "writer", layer = "Top", child = text { width = w,
+                    animate = { width = { duration = 100, easing = "Linear" } },
+                    content = "A label too long for its box", elide = "End", elided = cut } },
+                panel { id = "reader", layer = "Top", visible = cut },
+            }"#,
+        );
+        let (mut client, _) = test_client(&path);
+        assert!(run_startup(&mut client));
+        assert!(client.re_resolve_if_dirty());
+        client.loader.lua().load("w:set(500)").exec().unwrap();
+        assert!(client.re_resolve_if_dirty());
+        let started = client.scene.surface("writer@TEST").unwrap().children[0].tweens[0].started;
+        client.tick_animations(&["writer@TEST".into()], started + std::time::Duration::from_millis(90));
+        assert!(client.re_resolve_if_dirty(), "readers update before the animation settles");
+        assert!(!client.scene.surface("reader@TEST").unwrap().visible);
+        client.loader.lua().load("w:set(40)").exec().unwrap();
+        assert!(client.re_resolve_if_dirty());
+        client.tick_animations(&["writer@TEST".into()], started + std::time::Duration::from_secs(1));
+        assert!(client.re_resolve_if_dirty());
+        assert!(client.scene.surface("reader@TEST").unwrap().visible);
+        client.forget_surface("writer@TEST");
+        assert!(client.re_resolve_if_dirty(), "removing the last writer clears the signal");
+        assert!(!client.scene.surface("reader@TEST").unwrap().visible);
     }
 
     /// The loop's own path for a hover-held pill: a `delay` under two computeds lets go on the turn

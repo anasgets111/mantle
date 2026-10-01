@@ -160,23 +160,23 @@ struct ScrollRegistry(HashMap<String, Signal>);
 #[derive(Default)]
 struct GeometryRegistry(HashMap<String, Signal>);
 
-/// The cells a pass's geometry write changed (ADR-0147 amendment); the client turns them into one
+/// The cells layout measurements changed; the client turns them into one
 /// follow-up pass over their readers so a binding on the measurement settles, and only one, so a
 /// binding that feeds its own measurement cannot spin the loop.
 #[derive(Default)]
-struct GeometryMoved(Vec<CellId>);
+struct LayoutChanged(Vec<CellId>);
 
-pub(crate) fn note_geometry_moved(lua: &Lua, id: CellId) {
-    if let Some(mut moved) = lua.app_data_mut::<GeometryMoved>() {
+pub(crate) fn note_layout_changed(lua: &Lua, id: CellId) {
+    if let Some(mut moved) = lua.app_data_mut::<LayoutChanged>() {
         moved.0.push(id);
         return;
     }
-    lua.set_app_data(GeometryMoved(vec![id]));
+    lua.set_app_data(LayoutChanged(vec![id]));
 }
 
-/// The cells a pass write moved since the last take.
-pub fn take_geometry_moved(lua: &Lua) -> Vec<CellId> {
-    lua.app_data_mut::<GeometryMoved>().map(|mut moved| std::mem::take(&mut moved.0)).unwrap_or_default()
+/// The measurement cells changed since the last take.
+pub fn take_layout_changed(lua: &Lua) -> Vec<CellId> {
+    lua.app_data_mut::<LayoutChanged>().map(|mut moved| std::mem::take(&mut moved.0)).unwrap_or_default()
 }
 
 /// The `ms` a `delay` or a `pulse` is given, as whole milliseconds.
@@ -200,6 +200,8 @@ fn parse_hold(what: &str, millis: f64) -> Result<Duration, mlua::Error> {
 pub fn register(lua: &Lua, dirty: DirtyFlag) -> mlua::Result<()> {
     // Before any config code runs, so every coroutine it ever creates inherits the hook.
     install_hook(lua)?;
+    crate::lua::app_data_or_default::<LayoutChanged>(lua);
+    super::elision::register(lua)?;
     let hover_dirty = dirty.clone();
     let rect_dirty = dirty.clone();
     let scroll_dirty = dirty.clone();

@@ -267,7 +267,7 @@ pub(crate) fn same_lua_value(a: &Value, b: &Value) -> bool {
 }
 
 /// The `Signal` held unresolved in `property`, or `None` for any other value. A structural slot
-/// (`hover`, `scroll`, `geometry`) holding something else is inert rather than an error: the
+/// (`hover`, `scroll`, `geometry`, `elided`) holding something else is inert rather than an error: the
 /// engine's write handles refuse every kind it must not write.
 pub(crate) fn signal_at(properties: &PropMap, property: &str) -> Option<signal::Signal> {
     let Some(Value::UserData(ud)) = properties.get(property) else {
@@ -445,10 +445,10 @@ pub fn resolve_properties(mut properties: PropMap, kind: &str, lua: &Lua) -> Res
         keys.sort_unstable();
         for property in keys {
             if is_structural_property(kind, property) {
-                // The writer of a `geometry` rect is not its reader: a moved rect re-resolves only
+                // The writer of a layout measurement is not its reader: a change re-resolves only
                 // the nodes that read it. A `scroll` slot's holder reads nothing of it either; the
                 // scene notes it outside the node's own reads (`scene::resolve`).
-                if !matches!(property, "geometry" | "scroll")
+                if !matches!(property, "geometry" | "scroll" | "elided")
                     && let Some(cell) = signal_at(&properties, property).and_then(|s| s.cell_id())
                 {
                     signal::note_read(lua, cell);

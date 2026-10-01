@@ -326,6 +326,7 @@ fn draw_for(
             elide: _,
             wrap: _,
             max_lines: _,
+            elided: _,
         } => Some(Draw::Text {
             content: content.clone(),
             runs: runs

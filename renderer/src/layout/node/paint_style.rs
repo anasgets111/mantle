@@ -72,6 +72,8 @@ pub enum PaintStyle {
         elide: Elide,
         wrap: Wrap,
         max_lines: Option<usize>,
+        /// Whether fitting removed source text, before any ancestor clip or paint transform.
+        elided: bool,
     },
     /// Theme name; `layout::paint::execute` resolves it, keeping filesystem access out of parsing
     /// and display-list building.
@@ -159,6 +161,7 @@ pub fn paint_style(kind: &str, properties: &PropMap) -> Result<Option<PaintStyle
                 elide: text::elide.read(properties)?,
                 wrap: text::wrap.read(properties)?,
                 max_lines: text::max_lines.read(properties)?,
+                elided: false,
             }
         }
         "icon" => PaintStyle::Icon { name: icon::name.read(properties)?, color: icon::foreground.read(properties)? },

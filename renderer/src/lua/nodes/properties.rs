@@ -354,6 +354,8 @@ props! {
         max_lines: Bound<MaxLines> = absent(Number(0.0));
         /// `"End"` ends an over-long line with an ellipsis; under `wrap` it applies to the last kept line.
         elide: Bound<OneOf<Elide>> = absent(Choice("None"));
+        /// An `elided(name)` signal; layout writes whether `elide` or `max_lines` removed content.
+        elided: Handle;
         /// Click on a run with an `href` (ADR-0106); the engine never opens it. Takes the click from any `on_click`, the text's own included; plain words pass it on.
         on_link(href: String);
     }

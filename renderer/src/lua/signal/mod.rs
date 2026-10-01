@@ -8,6 +8,7 @@
 
 mod budget;
 mod dirty;
+pub(crate) mod elision;
 mod globals;
 mod held;
 mod state_handlers;
@@ -25,9 +26,9 @@ use crate::lua::marshal;
 pub(crate) use budget::{CpuBudget, LayoutPassBudget, anchor_cpu_budget, thread_cpu_time};
 pub use dirty::{DirtyFlag, DirtyScope, LiveSignalHandle};
 pub use globals::{
-    any_hover_registered, begin_evaluation, declared_states, promote_states, register, take_geometry_moved, write_state,
+    any_hover_registered, begin_evaluation, declared_states, promote_states, register, take_layout_changed, write_state,
 };
-pub(crate) use globals::{note_geometry_moved, reset, reset_target};
+pub(crate) use globals::{note_layout_changed, reset, reset_target};
 pub use held::{next_wake_deadline, take_due_wake};
 pub use state_handlers::{clear as clear_state_handlers, run as run_state_handlers};
 #[cfg(test)]
@@ -88,6 +89,8 @@ enum SignalKind {
     /// written quietly: a read sees the last layout, and a binding on it settles one pass later
     /// rather than dirtying the scene it was measured in.
     Geometry(CellId, Rc<RefCell<Value>>),
+    /// Text fitting result, published only after a successful retained-scene transaction.
+    Elided(CellId, Rc<RefCell<Value>>),
     /// `delay(signal, ms)` (ADR-0146): follows `source` once it has held a new value for `hold`.
     /// A read notes the pending value and its due time, arms a wake through `held::WakeDeadline`, and
     /// keeps answering the held value until a read after the due time adopts the new one; the
@@ -116,6 +119,7 @@ impl SignalKind {
             SignalKind::Delayed { .. } => "a delayed",
             SignalKind::Pulse { .. } => "a pulse",
             SignalKind::Geometry(..) => "a geometry",
+            SignalKind::Elided(..) => "an elided",
         }
     }
 }
@@ -312,6 +316,10 @@ impl Signal {
         if let SignalKind::Geometry(id, cell) = &self.0 { Some((*id, Rc::clone(cell))) } else { None }
     }
 
+    pub(crate) fn elided_id(&self) -> Option<CellId> {
+        if let SignalKind::Elided(id, _) = &self.0 { Some(*id) } else { None }
+    }
+
     /// Hover write end for `crate::wayland`; `None` for other kinds by design.
     pub(crate) fn hover_handle(&self) -> Option<LiveSignalHandle> {
         let SignalKind::Hover { id, cell, dirty, .. } = &self.0 else { return None };
@@ -333,7 +341,8 @@ impl Signal {
             | SignalKind::Hover { id, cell, .. }
             | SignalKind::Scroll { id, cell, .. }
             | SignalKind::State { id, cell, .. }
-            | SignalKind::Geometry(id, cell) => Some((*id, cell)),
+            | SignalKind::Geometry(id, cell)
+            | SignalKind::Elided(id, cell) => Some((*id, cell)),
             _ => None,
         }
     }

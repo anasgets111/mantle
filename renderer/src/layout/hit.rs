@@ -421,6 +421,7 @@ mod tests {
             elide: crate::layout::node::Elide::None,
             wrap: crate::layout::node::Wrap::None,
             max_lines: None,
+            elided: false,
         });
         node
     }

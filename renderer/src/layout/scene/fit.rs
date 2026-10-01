@@ -1,5 +1,7 @@
 use std::ops::Range;
 
+use unicode_segmentation::UnicodeSegmentation;
+
 use crate::layout::node::{self, PaintStyle, StyleRun};
 use crate::text::shaping::{ShapeRequest, ShapingHandle};
 
@@ -28,11 +30,13 @@ pub(super) fn fit_text_to_box(
         elide,
         wrap,
         max_lines,
+        elided,
         ..
     }) = paint.as_mut()
     else {
         return;
     };
+    *elided = false;
     // Before the early returns below, and before any measurement: taffy's `compute_leaf_layout`
     // returns early when a node's width and height are both known, so a fully-sized `text` is never
     // handed to the measure callback, and without `elide` or `wrap` it never reaches the shaping
@@ -41,7 +45,15 @@ pub(super) fn fit_text_to_box(
     if let Some(family) = font.as_ref() {
         shaping.ensure_family(family);
     }
-    if content.is_empty() || content_width <= 0.0 {
+    if content.is_empty() {
+        return;
+    }
+    if content_width <= 0.0 {
+        if *elide == node::Elide::End {
+            *elided = true;
+            *content = "".into();
+            runs.clear();
+        }
         return;
     }
     let face = Face {
@@ -63,7 +75,8 @@ pub(super) fn fit_text_to_box(
                 let mut fitted = Fitted::new(content, runs);
                 let cut = elide_cut(content, runs, 0..content.len(), &face, content_width, shaping);
                 fitted.push_source(0..cut);
-                fitted.push_ellipsis(cut);
+                fitted.push_ellipsis(cut, content.len());
+                *elided = true;
                 Some((fitted.text, fitted.runs))
             } else {
                 None
@@ -71,6 +84,7 @@ pub(super) fn fit_text_to_box(
         }
         node::Wrap::Word => {
             let fitted = wrapped_to_fit(content, runs, &face, *elide, *max_lines, content_width, shaping);
+            *elided = fitted.elided;
             Some((fitted.text, fitted.runs))
         }
     };
@@ -82,33 +96,26 @@ pub(super) fn fit_text_to_box(
 
 /// A `text`'s content being rebuilt to fit its box, with its styled runs following it (ADR-0104).
 ///
-/// Runs are byte ranges into `content`, so every rewrite here (joined lines, flattened remainder,
-/// ellipsis) goes through this one place that appends source slices and re-bases the runs
+/// Runs are byte ranges into `content`, so every rewrite here (joined lines and ellipsis)
+/// goes through this one place that appends source slices and re-bases the runs
 /// overlapping each slice.
 struct Fitted<'s> {
     source: &'s str,
     source_runs: &'s [StyleRun],
     text: String,
     runs: Vec<StyleRun>,
+    elided: bool,
 }
 
 impl<'s> Fitted<'s> {
     fn new(source: &'s str, source_runs: &'s [StyleRun]) -> Self {
-        Self { source, source_runs, text: String::new(), runs: Vec::new() }
+        Self { source, source_runs, text: String::new(), runs: Vec::new(), elided: false }
     }
 
-    /// Appends `source[range]` and the parts of any run that fall inside it, re-based. Newlines in
-    /// the slice become spaces when `flatten` is set: a remainder being collapsed onto an elided
-    /// last line must not carry the paragraph breaks it spanned, and a space is the same width in
-    /// bytes, so the runs need no adjustment for it.
-    fn push_source_flattened(&mut self, range: Range<usize>, flatten: bool) {
+    /// Appends `source[range]` and the parts of any run that fall inside it, re-based.
+    fn push_source(&mut self, range: Range<usize>) {
         let at = self.text.len();
-        let slice = &self.source[range.clone()];
-        if flatten {
-            self.text.extend(slice.chars().map(|c| if c == '\n' { ' ' } else { c }));
-        } else {
-            self.text.push_str(slice);
-        }
+        self.text.push_str(&self.source[range.clone()]);
         for run in self.source_runs {
             let start = run.range.start.max(range.start);
             let end = run.range.end.min(range.end);
@@ -118,24 +125,16 @@ impl<'s> Fitted<'s> {
         }
     }
 
-    fn push_source(&mut self, range: Range<usize>) {
-        self.push_source_flattened(range, false);
-    }
-
-    /// A plain separator, part of no run.
-    fn push_plain(&mut self, text: &str) {
-        self.text.push_str(text);
-    }
-
-    /// The ellipsis, in the style of the character it replaced (the run covering `cut`, if any,
-    /// else the one just before it): a truncated bold sentence ends in a bold ellipsis.
-    fn push_ellipsis(&mut self, cut: usize) {
+    /// The ellipsis inherits the replaced character's style, or the last retained character's
+    /// when the whole line fits. A dropped line must not supply its font or colour.
+    fn push_ellipsis(&mut self, cut: usize, end: usize) {
         let at = self.text.len();
         self.text.push('\u{2026}');
+        let style_at = if cut == end { cut.saturating_sub(1) } else { cut };
         let style = self
             .source_runs
             .iter()
-            .find(|run| run.range.contains(&cut))
+            .find(|run| run.range.contains(&style_at))
             .or_else(|| self.source_runs.iter().rev().find(|run| run.range.end == cut && cut > 0));
         if let Some(run) = style {
             self.runs.push(StyleRun { range: at..self.text.len(), ..run.clone() });
@@ -146,13 +145,8 @@ impl<'s> Fitted<'s> {
 /// `content` broken to `content_width` and capped to `max_lines`, joined by `\n` for
 /// `text::atlas::TextPainter::draw_text` to walk, with its runs re-based to the result.
 ///
-/// The cap and `elide` compose, which is the notification-body case: keep the lines allowed, and
-/// if an ellipsis was asked for, rebuild the last one out of everything that did not fit so it
-/// reads as truncated rather than as a sentence that happens to stop.
-///
-/// That remainder is the source from the last kept line's start to the end, with its paragraph
-/// breaks flattened to spaces. A source range rather than the dropped lines rejoined, so the runs
-/// follow it and the source's own whitespace survives at the breaks.
+/// The cap keeps the first shaped lines. Elision makes room for an ellipsis on the last retained
+/// line without pulling content from a dropped line across a wrap or paragraph break.
 fn wrapped_to_fit<'s>(
     content: &'s str,
     runs: &'s [StyleRun],
@@ -174,35 +168,21 @@ fn wrapped_to_fit<'s>(
         font: face.family.clone(),
     });
     let mut fitted = Fitted::new(content, runs);
-    let rtl = |index: usize| shaped.shaped.get(index).is_some_and(|line| line.rtl);
-    let Some(cap) = max_lines.filter(|cap| *cap < shaped.line_ranges.len()) else {
-        for (index, range) in shaped.line_ranges.iter().enumerate() {
-            if index > 0 {
-                fitted.push_plain("\n");
-            }
-            push_direction_mark(&mut fitted, &content[range.clone()], rtl(index));
-            fitted.push_source(range.clone());
+    let cap = max_lines.unwrap_or(shaped.line_ranges.len());
+    fitted.elided = cap < shaped.line_ranges.len();
+    for (index, range) in shaped.line_ranges.iter().take(cap).enumerate() {
+        if index > 0 {
+            fitted.text.push('\n');
         }
-        return fitted;
-    };
-
-    // `cap` is at least 1: `MaxLines` maps 0 to no cap at all, so a `Some` cap standing
-    // below a nonzero line count always leaves a line to rewrite.
-    for (index, range) in shaped.line_ranges[..cap - 1].iter().enumerate() {
-        push_direction_mark(&mut fitted, &content[range.clone()], rtl(index));
-        fitted.push_source(range.clone());
-        fitted.push_plain("\n");
-    }
-    let last = &shaped.line_ranges[cap - 1];
-    if elide == node::Elide::End {
-        let rest = last.start..shaped.line_ranges.last().map_or(last.end, |range| range.end);
-        let cut = elide_cut(content, runs, rest.clone(), face, content_width, shaping);
-        push_direction_mark(&mut fitted, &content[rest.start..cut].replace('\n', " "), rtl(cap - 1));
-        fitted.push_source_flattened(rest.start..cut, true);
-        fitted.push_ellipsis(cut);
-    } else {
-        push_direction_mark(&mut fitted, &content[last.clone()], rtl(cap - 1));
-        fitted.push_source(last.clone());
+        let ellipsis = fitted.elided && elide == node::Elide::End && index + 1 == cap;
+        let cut =
+            if ellipsis { elide_cut(content, runs, range.clone(), face, content_width, shaping) } else { range.end };
+        let rtl = shaped.shaped.get(index).is_some_and(|line| line.rtl);
+        push_direction_mark(&mut fitted, &content[range.start..cut], rtl);
+        fitted.push_source(range.start..cut);
+        if ellipsis {
+            fitted.push_ellipsis(cut, range.end);
+        }
     }
     fitted
 }
@@ -210,7 +190,7 @@ fn wrapped_to_fit<'s>(
 /// Prefixes the mark that makes `line`, shaped alone, read the way its paragraph does (ADR-0211).
 fn push_direction_mark(fitted: &mut Fitted<'_>, line: &str, rtl: bool) {
     if matches!(unicode_bidi::get_base_direction(line), unicode_bidi::Direction::Rtl) != rtl {
-        fitted.push_plain(if rtl { "\u{200F}" } else { "\u{200E}" });
+        fitted.text.push(if rtl { '\u{200F}' } else { '\u{200E}' });
     }
 }
 
@@ -245,18 +225,13 @@ fn measured_width(text: &str, runs: &[StyleRun], face: &Face, shaping: &ShapingH
 }
 
 /// Where to cut `region` of `text` so that what precedes the cut, plus an ellipsis, still fits
-/// `width`: a byte offset within `region`, at a character boundary. `region.start` -- the ellipsis
-/// alone -- is always admissible and is the honest answer for a box too narrow for one character.
+/// `width`: a byte offset within `region`, at a grapheme boundary. `region.start`, the ellipsis
+/// alone, is always admissible for a box too narrow for one grapheme.
 ///
 /// Always ellipsizes, even for a `text` already narrow enough: the callers that want "leave it
-/// alone if it fits" ask [`measured_width`] first, and the one that doesn't is truncating a
-/// remainder, where the ellipsis is the whole point of the call. Each candidate is measured with
+/// alone if it fits" ask [`measured_width`] first, and the one that doesn't has dropped later
+/// lines. A retained line may fit whole with an ellipsis. Each candidate is measured with
 /// the runs it would carry, so a bold prefix is not cut where a regular one would fit.
-///
-/// ponytail: cuts at a character boundary rather than a grapheme cluster, the real ceiling: an
-/// emoji with a skin-tone modifier can lose the modifier and change what it draws. Nothing in this
-/// shell's own strings does that yet; window titles arriving from outside it eventually will.
-/// Upgrade path: a `unicode-segmentation` pass over grapheme boundaries.
 fn elide_cut(
     text: &str,
     runs: &[StyleRun],
@@ -269,16 +244,16 @@ fn elide_cut(
     if slice.is_empty() {
         return region.start;
     }
-    // Byte offsets a prefix may be cut at, so the search never lands inside a codepoint. The
-    // last entry is the start of the final character, the longest prefix worth trying: appending
-    // an ellipsis to the whole string is never narrower than the string.
-    let cuts: Vec<usize> = slice.char_indices().map(|(index, _)| region.start + index).collect();
     let fits = |cut: usize| {
         let mut candidate = Fitted::new(text, runs);
-        candidate.push_source_flattened(region.start..cut, true);
-        candidate.push_ellipsis(cut);
+        candidate.push_source(region.start..cut);
+        candidate.push_ellipsis(cut, region.end);
         measured_width(&candidate.text, &candidate.runs, face, shaping) <= width
     };
+    if fits(region.end) {
+        return region.end;
+    }
+    let cuts: Vec<usize> = slice.grapheme_indices(true).map(|(index, _)| region.start + index).collect();
     // Largest index whose prefix plus an ellipsis fits; zero is always admissible.
     let (mut low, mut high) = (0usize, cuts.len() - 1);
     while low < high {
@@ -299,6 +274,105 @@ mod tests {
     use super::*;
     use crate::layout::scene::tests::{apply_at, full, surface_from};
     use crate::layout::scene::*;
+
+    #[test]
+    fn elided_reports_truncation_and_clears_after_content_or_width_changes() {
+        let (lua, surface) = surface_from(
+            r#"cut = elided("body")
+            assert(cut:get() == false)
+            body = state("body", "A long label that cannot fit")
+            width = state("width", 40)
+            return panel { id = "bar", child = text {
+                content = body, width = width, elide = "End", elided = cut
+            } }"#,
+        );
+        let shaping = ShapingHandle::spawn();
+        let mut scene = Scene::new();
+        for (update, cut, expected) in [
+            ("", true, None),
+            ("width:set(500)", false, Some("A long label that cannot fit")),
+            ("width:set(40); body:set('OK')", false, Some("OK")),
+            ("width:set(0)", true, Some("")),
+            ("body:set('')", false, Some("")),
+        ] {
+            lua.load(update).exec().unwrap();
+            apply_at(&mut scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
+            assert_eq!(lua.load("return cut:get()").eval::<bool>().unwrap(), cut, "after {update:?}");
+            let drawn = drawn_text(&scene);
+            if let Some(expected) = expected {
+                assert_eq!(drawn, expected, "after {update:?}");
+            } else {
+                assert!(drawn.ends_with('…'), "after {update:?}: {drawn:?}");
+            }
+        }
+        assert!(lua.load("cut:set(true)").exec().is_err(), "layout measurements are read-only");
+    }
+
+    #[test]
+    fn elided_distinguishes_capped_rich_rtl_text_from_wrapping_alone() {
+        let (lua, surface) = surface_from(
+            r#"cut = elided("body")
+            cap = state("cap", 1)
+            return panel { id = "bar", child = text {
+                content = { { text = "مرحبا بالعالم ", bold = true },
+                    { text = "👩‍👩‍👧‍👦 👍🏽 more words on several lines", italic = true } },
+                width = 80, wrap = "Word", max_lines = cap, elided = cut
+            } }"#,
+        );
+        let shaping = ShapingHandle::spawn();
+        let mut scene = Scene::new();
+        apply_at(&mut scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
+        assert!(lua.load("return cut:get()").eval::<bool>().unwrap());
+        assert!(!drawn_text(&scene).contains('…'), "a cap truncates even without an ellipsis");
+        lua.load("cap:set(0)").exec().unwrap();
+        apply_at(&mut scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
+        assert!(!lua.load("return cut:get()").eval::<bool>().unwrap());
+        assert!(drawn_text(&scene).contains('\n'), "wrapping alone retains all the lines");
+    }
+
+    #[test]
+    fn elided_follows_font_metrics_and_the_available_layout_width() {
+        let (lua, surface) = surface_from(
+            r#"cut = elided("label")
+            size = state("size", 12)
+            return panel { id = "bar", width = "Fill", child = text {
+                width = "Fill", content = "WWW", font_size = size, elide = "End", elided = cut
+            } }"#,
+        );
+        let shaping = ShapingHandle::spawn();
+        let mut scene = Scene::new();
+        let narrow = LogicalSize { width: 80.0, height: 200.0 };
+        apply_at(&mut scene, std::slice::from_ref(&surface), narrow, &shaping, &lua).unwrap();
+        assert!(!lua.load("return cut:get()").eval::<bool>().unwrap());
+        lua.load("size:set(64)").exec().unwrap();
+        apply_at(&mut scene, std::slice::from_ref(&surface), narrow, &shaping, &lua).unwrap();
+        assert!(lua.load("return cut:get()").eval::<bool>().unwrap());
+        apply_at(&mut scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
+        assert!(!lua.load("return cut:get()").eval::<bool>().unwrap());
+    }
+
+    #[test]
+    fn elision_preserves_emoji_sequences_and_combining_marks() {
+        let (lua, surface) = surface_from(
+            r#"w = state("w", 1)
+            return panel { id = "bar", child = text {
+                content = "1️⃣👩‍👩‍👧‍👦👍🏽éxyz", width = w, elide = "End"
+            } }"#,
+        );
+        let shaping = ShapingHandle::spawn();
+        let mut scene = Scene::new();
+        for width in 1..100 {
+            lua.load(format!("w:set({width})")).exec().unwrap();
+            apply_at(&mut scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
+            let drawn = drawn_text(&scene);
+            if let Some(prefix) = drawn.strip_suffix('…') {
+                assert!(
+                    ["", "1️⃣", "1️⃣👩‍👩‍👧‍👦", "1️⃣👩‍👩‍👧‍👦👍🏽", "1️⃣👩‍👩‍👧‍👦👍🏽é", "1️⃣👩‍👩‍👧‍👦👍🏽éx", "1️⃣👩‍👩‍👧‍👦👍🏽éxy"].contains(&prefix),
+                    "width {width} split a grapheme: {drawn:?}"
+                );
+            }
+        }
+    }
 
     fn drawn_text(scene: &Scene) -> String {
         drawn_text_and_runs(scene).0
@@ -368,11 +442,7 @@ mod tests {
     }
 
     fn elided(lua_src: &str) -> String {
-        let mut scene = Scene::new();
-        let shaping = ShapingHandle::spawn();
-        let (lua, surface) = surface_from(lua_src);
-        apply_at(&mut scene, &[surface], full(), &shaping, &lua).unwrap();
-        drawn_text(&scene)
+        styled(lua_src).0
     }
 
     const LONG: &str = "a window title far too long for the box it was given";
@@ -486,6 +556,62 @@ mod tests {
         assert_eq!(lines.len(), 2, "got {drawn:?}");
         assert!(lines[1].ends_with('\u{2026}'), "the last kept line must be ellipsized: {drawn:?}");
         assert!(!lines[0].ends_with('\u{2026}'), "no earlier line may be: {drawn:?}");
+        let (uncapped, _) = text_box(&format!(
+            r#"panel {{ id = "bar", child = text {{ width = 80, content = "{LONG}", wrap = "Word" }} }}"#
+        ));
+        let original: Vec<_> = uncapped.lines().collect();
+        assert_eq!(lines[0], original[0]);
+        assert!(original[1].starts_with(lines[1].strip_suffix('…').unwrap()), "no dropped line supplies content");
+    }
+
+    #[test]
+    fn capped_elision_keeps_explicit_lines_and_styles_and_restores_them_when_expanded() {
+        let (lua, surface) = surface_from(
+            r##"cap = state("cap", 2)
+            cut = elided("preview")
+            return panel { id = "bar", child = text {
+                width = 300, wrap = "Word", max_lines = cap, elide = "End", elided = cut,
+                content = {
+                    { text = "First line\n" },
+                    { text = "Second line", bold = true, color = "#ff0000" },
+                    { text = "\nThird line: extra content.", italic = true, color = "#00ff00" },
+                }
+            } }"##,
+        );
+        let shaping = ShapingHandle::spawn();
+        let mut scene = Scene::new();
+        for (cap, expected, cut) in [
+            (2, "First line\nSecond line…", true),
+            (1, "First line…", true),
+            (3, "First line\nSecond line\nThird line: extra content.", false),
+            (0, "First line\nSecond line\nThird line: extra content.", false),
+        ] {
+            lua.load(format!("cap:set({cap})")).exec().unwrap();
+            apply_at(&mut scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
+            let (content, runs) = drawn_text_and_runs(&scene);
+            assert_eq!(content, expected, "cap {cap}");
+            assert_eq!(lua.load("return cut:get()").eval::<bool>().unwrap(), cut, "cap {cap}");
+            if cap == 2 {
+                let ellipsis = runs.last().expect("the retained bold line styles its ellipsis");
+                assert_eq!(&content[ellipsis.range.clone()], "…");
+                assert!(ellipsis.bold);
+                assert!(!ellipsis.italic);
+                assert_eq!(ellipsis.color, Some(node::Rgba { r: 1.0, g: 0.0, b: 0.0, a: 1.0 }));
+            }
+        }
+    }
+
+    #[test]
+    fn capped_elision_preserves_empty_lines_and_rtl_paragraphs() {
+        for (source, expected) in
+            [("First line\\n\\nThird line", "First line\n…"), ("أول\\nثاني\\nThird line", "أول\nثاني…")]
+        {
+            let (drawn, _) = text_box(&format!(
+                r#"panel {{ id = "bar", child = text {{ width = 300, content = "{source}",
+                    wrap = "Word", max_lines = 2, elide = "End" }} }}"#
+            ));
+            assert_eq!(drawn, expected);
+        }
     }
 
     /// A cap the text never reaches changes nothing, so a config can set `max_lines`
@@ -549,16 +675,5 @@ mod tests {
             r#"panel {{ id = "bar", child = text {{ width = 1, content = "{LONG}", elide = "End" }} }}"#
         ));
         assert_eq!(drawn, "\u{2026}");
-    }
-
-    /// Cut at character boundaries, so a multi-byte codepoint is kept or dropped whole rather than
-    /// sliced into invalid UTF-8. Panics inside the search if this ever regresses.
-    #[test]
-    fn a_multibyte_string_is_cut_at_character_boundaries() {
-        let drawn = elided(
-            r#"panel { id = "bar", child = text { width = 40, content = "ααααααααααααααααααααααααα", elide = "End" } }"#,
-        );
-        assert!(drawn.ends_with('\u{2026}'));
-        assert!(drawn.trim_end_matches('\u{2026}').chars().all(|c| c == 'α'), "no partial codepoints: {drawn:?}");
     }
 }

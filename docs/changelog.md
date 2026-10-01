@@ -8,6 +8,8 @@ so everything since the rename from Obelisk sits under Unreleased.
 
 ### Added
 
+- `elided(name)` is a read-only boolean signal bound to a text node's `elided` property. It reports content removed by elision or line limits and updates its readers after content, font or layout changes ([signals](guide/signals.md#elided-read-text-truncation)).
+
 - Experimental `path` nodes draw bounded move, line and Bézier commands with fills and strokes.
 - Box masks accept `node` naming a direct child whose subtree supplies alpha without receiving input.
 - SVG and SVGZ text renders with Mantle's loaded fonts in images, icons and file masks.
@@ -57,6 +59,10 @@ so everything since the rename from Obelisk sits under Unreleased.
 - `mantle.tray:context_menu(id, x, y)` calls the StatusNotifierItem `ContextMenu` method for applications without a DBusMenu ([tray](capabilities/tray.md)).
 
 ### Changed
+
+- Capped wrapped text preserves the first `max_lines` shaped lines and ellipsizes the last retained line without joining content from dropped lines.
+
+- Text elision preserves grapheme clusters, including keycap emoji, skin-tone modifiers and joined emoji sequences. A zero-width text with `elide = "End"` drops its content instead of retaining a clipped ellipsis.
 
 - `applications.entries` retains `NoDisplay` desktop entries for window name and icon lookup. Launchers must omit entries with `no_display = true`; `Hidden` entries remain excluded.
 - Captures recover after source resizes. Stopped live output sessions keep their last frame and restart without waiting for a repaint, respecting the frame-rate cap; completed one-shots keep their frame.

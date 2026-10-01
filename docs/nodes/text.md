@@ -72,6 +72,7 @@ return column { width = 320, padding = 16, spacing = 10, radius = 12,
 | `wrap` | `"None"\|"Word"\|Bound` | `"None"` | `"Word"` breaks at words, mid-word when one word is too wide. Needs a bounded width (`width`, `"Fill"` or a stretched cross axis) |
 | `max_lines` | `number\|Bound` | `0` | Line cap under `wrap = "Word"`; `0` is unlimited, a negative value is refused. Ignored without `wrap` |
 | `elide` | `"None"\|"End"\|Bound` | `"None"` | `"End"` ends an over-long line with an ellipsis; under `wrap` it applies to the last kept line |
+| `elided` | `Bound` | None | An `elided(name)` signal; layout writes whether `elide` or `max_lines` removed content |
 | `on_link` | `fun(href: string)` | None | Click on a run with an `href`; the engine never opens it. Takes the click from any `on_click`, the text's own included; plain words pass it on |
 <!-- End of the generated table. -->
 
@@ -112,6 +113,13 @@ the widest line. The default ratio is `1.2`. `letter_spacing` changes both glyph
 the width used for wrapping. `wrap` and `elide` need a box narrower than the text, so give the node a `width`,
 `"Fill"`, or a stretched cross axis (a text in a fixed-width `column` wraps at the column's width).
 In a content-sized `row`, the text measures one line and overflows instead.
+
+Bind an [`elided(name)` signal](../guide/signals.md#elided-read-text-truncation) as `elided` to
+detect content removed by `elide` or `max_lines`. Wrapping alone keeps it `false`.
+Elision cuts at grapheme boundaries, preserving combining marks and emoji sequences.
+With `wrap = "Word"`, `max_lines = N` and `elide = "End"`, the preview keeps the first N shaped
+lines and adds `…` to the last retained line. It shortens that line only as needed to fit the
+ellipsis; it never merges content from later lines into the preview.
 
 ## How do I…
 

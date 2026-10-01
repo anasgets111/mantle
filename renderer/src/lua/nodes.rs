@@ -589,7 +589,7 @@ mod meta_stub_tests {
             let literal = match *member {
                 // The engine resolves a handle before sibling rules apply, so wrap a sibling's
                 // literal: `image.source` needs a string signal, `list.source` an array. The bare
-                // `hover`/`geometry`/`scroll` fall back to their own rows.
+                // `hover`/`geometry`/`scroll`/`elided` fall back to their own rows.
                 "Bound" => first.as_ref().map(|l| format!("state(\"probe\", {l})")).or_else(|| sample(field, member)),
                 _ => sample(field, member).map(|l| around(&l)),
             };
@@ -661,9 +661,10 @@ mod meta_stub_tests {
                 return Some("{ capability = \"lock\", action = \"authenticate\" }".to_string());
             }
             // Parsers check callbacks only as functions, except `list`'s two layout calls, which
-            // use the return value. These three bare `Bound` fields take the handle itself.
+            // use the return value. These bare `Bound` fields take the handle itself.
             ("hover", _) => return Some("hover(\"probe\")".to_string()),
             ("geometry", _) => return Some("geometry(\"probe\")".to_string()),
+            ("elided", _) => return Some("elided(\"probe\")".to_string()),
             ("scroll", _) => return Some("scroll(\"probe\")".to_string()),
             ("focus", _) => return Some("focus(\"probe\")".to_string()),
             ("reset_on_close", "ScrollSignal") => return Some("scroll(\"probe_reset\")".to_string()),

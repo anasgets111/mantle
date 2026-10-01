@@ -422,7 +422,7 @@ fn add_unique(frame: &mut Vec<CellId>, cells: &[CellId]) {
 /// holds the value it had when the pass started rather than depending on where in the tree the
 /// reader sits: the `Scroll` clamp ([`LiveSignalHandle::set_quiet`](super::LiveSignalHandle::set_quiet), whose own contract already
 /// says a derived readout sees the clamp next pass) and the `geometry(name)` publish (whose move
-/// schedules the follow-up pass `Scene::settle_geometry` runs). Both settle on the next pass, and
+/// schedules the follow-up pass `RendererClient::settle_layout` runs). Both settle on the next pass, and
 /// both were previously answered one way above the writer and another way below it.
 pub(crate) struct EvaluationMemo<'lua> {
     lua: &'lua Lua,

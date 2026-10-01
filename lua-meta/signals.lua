@@ -16,6 +16,13 @@
 ---class in a union admits any table.
 ---@alias Bound userdata
 
+---Read-only, initially false. Whether any visible text bound through `elided` lost content
+---to `elide` or `max_lines` after fitting.
+---[docs](https://anasgets111.github.io/mantle/guide/signals.html#elided-read-text-truncation)
+---@param name string One name, one read-only signal, across reloads. Bind it as a text node's `elided`.
+---@return Signal<boolean>
+function elided(name) end
+
 ---A signal of `fn` over its dependencies' values, recomputed on read. `fn` must be side-effect free
 ---and runs under the shared Lua CPU budget (ADR-0021). ponytail: `fn`'s parameters are untyped,
 ---since typing them needs an overload per arity; prefer `:map` for one source.

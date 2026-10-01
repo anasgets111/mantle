@@ -77,7 +77,7 @@ snapshot.
 
 | Rule | Detail |
 | :--- | :--- |
-| Identity | One name, one signal. `hover`, `scroll` and `geometry` names are separate namespaces |
+| Identity | One name, one signal. `hover`, `scroll`, `geometry` and `elided` names are separate namespaces |
 | Reload | Keeps its value across in-place reloads. Lost when the [Renderer](../glossary.md#processes) process is replaced (a crash respawn or a shell restart) |
 | Changed seed | A scalar `initial` (nil, boolean, number, string) that differs from the last evaluation's re-seeds the value. `0` and `0.0` are equal. Two different scalar seeds for one name in one evaluation raise |
 | Table seed | Never re-seeds: tables compare by identity, so a fresh table cannot count as a change |
@@ -112,7 +112,7 @@ return rect {
 | Chains | A handler may write state, which runs that state's handlers next. After 8 rounds the rest are dropped with a logged error, so two handlers undoing each other stop |
 | Failure | Each handler runs under the [CPU budget](runtime.md#limits-and-budgets). A raise is logged; the value stays written and the other handlers still run |
 | Reload | Handlers are dropped before each evaluation, which registers them again. Several per state are allowed, and none can be removed: a call inside a callback adds another handler each time it runs, until the next reload |
-| Kinds | State signals and [capabilities](../capabilities/index.md) only. On a derived, hover, scroll or geometry signal it raises |
+| Kinds | State signals and [capabilities](../capabilities/index.md) only. On a derived, hover, scroll, geometry or elided signal it raises |
 
 Derived signals (`:map`, `computed`, `delay`, `pulse`) have no name. Each evaluation builds them
 fresh, so a reload drops a pending `delay` and closes an open `pulse` window. See
@@ -216,6 +216,40 @@ column { width = 200, children = {
 } }
 ```
 
+### elided: read text truncation
+
+Bind `elided(name)` as a text node's `elided` property. It starts `false`; after layout it is `true`
+when `elide = "End"` removes content or `max_lines` drops wrapped lines, including without an
+ellipsis. Wrapping alone, box or ancestor clipping, scrolling and occlusion do not count.
+
+The result follows the shaped text, styled runs, font metrics and available width. Content changes,
+resizing and layout animations recompute it. A changed result schedules one follow-up pass over its
+readers, sharing `geometry`'s limit of one follow-up. Failed layouts keep the previous result.
+The property itself writes the signal and does not count as a reader.
+
+Names persist across reloads. If several texts or output instances bind the same name, it is `true`
+when any visible binding is truncated. Hidden, leaving and removed bindings do not contribute;
+with no visible binding it becomes `false`.
+
+Keep the expander visible while expanded so that restoring all lines does not remove the collapse
+button:
+
+```lua
+local clipped = elided("body")
+local expanded = state("body_expanded", false)
+
+return column { width = 240, children = {
+    text { width = "Fill", wrap = "Word", elide = "End", elided = clipped,
+        max_lines = expanded:map(function(open) return open and 0 or 2 end),
+        content = "A longer message can wrap across several lines. Expand it to read the rest, then collapse it again." },
+    rect {
+        visible = computed({ expanded, clipped }, function(open, cut) return open or cut end),
+        on_click = function() expanded:set(not expanded:get()) end,
+        children = { text { content = expanded:map(function(open) return open and "Less" or "More" end) } },
+    },
+} }
+```
+
 ## How re-resolution works
 
 While a surface instance (one surface on one output) resolves, the engine records every signal it
@@ -229,6 +263,7 @@ dirty, and the next pass re-resolves only the instances that read it.
 | A write to a signal no instance reads | Nothing |
 | A `delay` coming due or a `pulse` window closing | Every instance |
 | A `geometry` rect moving | One follow-up pass over the instances that read it |
+| A text's `elided` result changing | One follow-up pass over the instances that read it |
 | A wheel over a container whose `scroll` signal nothing else reads | Nothing: its children move where they are |
 | Any write while the session is locked | Every instance |
 | A reload, or a re-resolve that failed | Every instance |
@@ -297,6 +332,7 @@ builds fresh. Give each view its own `id`: [switching views with ids](../nodes/i
 | `delay(sig, ms)` | signal | `sig`'s value once a new value has held for `ms`, and the old value until then. A change that reverts sooner is dropped |
 | `pulse(sig, ms)` | boolean signal | `true` for `ms` after `sig` changes, `false` otherwise. A change inside the window restarts it. Starts `false` |
 | `geometry(name)` | rect signal | Bind it as a node's `geometry`. Layout writes that node's `{ x, y, width, height }` in surface coordinates. Zero until the first layout |
+| `elided(name)` | boolean signal | Bind it as a text node's `elided`. Reports content removed by `elide` or `max_lines`; `false` until measured |
 
 `delay` and `pulse` take `ms` in `[1, 60000]` rounded to whole milliseconds, and raise outside that
 range. Both compare values with `==`, so a table value (every capability payload, for example)
@@ -314,6 +350,7 @@ Only `state` can be written from Lua. `:set` on any other kind raises an error t
 | Derived | `:map`, `computed`, `delay`, `pulse` | | | Nobody: recomputed on read |
 | Stored | A `persistent_table` key ([scripting](scripting.md)) | | | The table's own `:set(key, value)` |
 | Geometry | `geometry(name)` | | | Layout |
+| Elision | `elided(name)` | | | Text fitting |
 | Hover | `hover(name)`, `hover_rect(name)` ([input](input.md)) | | | The pointer |
 | Scroll | `scroll(name)` ([input](input.md)) | | ✓ | The wheel and the layout clamp |
 
@@ -332,8 +369,8 @@ again after changing it in place is a write.
 | `computed() dependencies: key` | The `computed` list has a named key; list the signals in `fn`'s order |
 | `delay() takes a Signal` / `pulse() takes a Signal` | The first argument is not a signal or capability |
 | `delay() hold must be within [1, 60000] ms` / `pulse() window must be within` | `ms` out of range, or rounds to 0 |
-| `signal:set() is only valid on a state(name, initial) signal` | `:set` on a derived, capability, hover, scroll or geometry signal |
-| `signal:on_change() is only valid on a state(name, initial) signal` | `:on_change` on a derived, hover, scroll or geometry signal |
+| `signal:set() is only valid on a state(name, initial) signal` | `:set` on a derived, capability, hover, scroll, geometry or elided signal |
+| `signal:on_change() is only valid on a state(name, initial) signal` | `:on_change` on a derived, hover, scroll, geometry or elided signal |
 | `signal:set() refused its value at the marshalling boundary` | NaN, infinity, an integer past ±(2^53−1) or a string over 64 KiB |
 | `state("name", ...) refused its initial value` | The same checks on `initial` |
 | `signal:reveal() is only valid on a scroll(name) signal` / `takes a 1-based child index` | `:reveal` on another kind, or an index below 1 |

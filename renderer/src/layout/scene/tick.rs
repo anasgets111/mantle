@@ -53,6 +53,7 @@ impl Scene {
             }
         };
         let mut relaid = Vec::new();
+        let mut measured = false;
         for instance in instances {
             let key = instance.instance_id.as_str();
             let Some(retained) = self.surfaces.get_mut(key).filter(|tree| tree.animating()) else { continue };
@@ -90,8 +91,7 @@ impl Scene {
             .and_then(|tree| if budget.exceeded() { Err(LayoutError::PassBudgetExceeded) } else { Ok(tree) });
             match outcome {
                 Ok(tree) => {
-                    // Quiet: a tick never schedules a pass (ADR-0131), except the one that settles,
-                    // which owes the readers of rects it moved one pass at their final place.
+                    // Geometry readers update when the tween settles (ADR-0131).
                     if let Err(err) = publish_geometry(&tree, 0.0, 0.0, lua, true) {
                         debug!("{key}: writing a geometry signal failed: {err}");
                     }
@@ -100,12 +100,16 @@ impl Scene {
                     }
                     self.solver_trees.insert(key.to_string(), solver);
                     *retained = tree;
+                    measured = true;
                 }
                 Err(err) => {
                     debug!("{key}: relaying out a tween failed, snapping it: {err}");
                     strip_tweens(retained);
                 }
             }
+        }
+        if measured {
+            self.publish_elision(lua);
         }
         relaid
     }
@@ -118,7 +122,7 @@ fn note_settled_geometry(node: &ResolvedNode, lua: &Lua) {
         return;
     }
     if let Some((id, _)) = node::signal_at(&node.properties, "geometry").and_then(|signal| signal.geometry_cell()) {
-        crate::lua::signal::note_geometry_moved(lua, id);
+        crate::lua::signal::note_layout_changed(lua, id);
     }
     node.children.iter().for_each(|child| note_settled_geometry(child, lua));
 }
@@ -265,7 +269,7 @@ fn prepare_retained_children(
 fn repainted_keeping_fitted_text(old: Option<PaintStyle>, fresh: Option<PaintStyle>) -> Option<PaintStyle> {
     match (old, fresh) {
         (
-            Some(PaintStyle::Text { content, runs, .. }),
+            Some(PaintStyle::Text { content, runs, elided, .. }),
             Some(PaintStyle::Text {
                 font_size,
                 line_height,
@@ -294,6 +298,7 @@ fn repainted_keeping_fitted_text(old: Option<PaintStyle>, fresh: Option<PaintSty
             elide,
             wrap,
             max_lines,
+            elided,
         }),
         (_, fresh) => fresh,
     }
@@ -537,14 +542,14 @@ mod tests {
         apply_at(&mut scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
         lua.load(r#"state("w", 40):set(90)"#).exec().unwrap();
         apply_at(&mut scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
-        crate::lua::signal::take_geometry_moved(&lua);
+        crate::lua::signal::take_layout_changed(&lua);
         let started = child_tween(&scene).started;
         let instances = [instance_at(&surface, full())];
 
         scene.tick(&instances, &shaping, &lua, started + std::time::Duration::from_millis(50));
-        assert!(crate::lua::signal::take_geometry_moved(&lua).is_empty(), "a mid-tween frame is quiet");
+        assert!(crate::lua::signal::take_layout_changed(&lua).is_empty(), "a mid-tween frame is quiet");
         scene.tick(&instances, &shaping, &lua, started + std::time::Duration::from_millis(100));
-        assert_eq!(crate::lua::signal::take_geometry_moved(&lua).len(), 1, "the settling frame is not");
+        assert_eq!(crate::lua::signal::take_layout_changed(&lua).len(), 1, "the settling frame is not");
         let rect: mlua::Table = lua.load(r#"return geometry("g"):get()"#).eval().unwrap();
         assert_eq!(rect.get::<f32>("width").unwrap(), 90.0);
     }

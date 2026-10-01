@@ -68,10 +68,10 @@ pub struct RendererClient {
     /// by `crate::wayland::App::set_session_lock` and teardown. **A `bool`, not instance ids**:
     /// hotplug replaces instances, so the veto reads [`Self::instances`].
     holds_session_lock: bool,
-    /// Whether the last pass was the one follow-up a moved `geometry` rect earns (ADR-0147
-    /// amendment). A moved rect in that pass gets no second follow-up, so a binding fed by its own
+    /// Whether the last pass was the one follow-up a layout measurement earns. A changed
+    /// measurement in that pass gets no second follow-up, so a binding fed by its own
     /// measurement settles or stops, never spins.
-    geometry_follow_up: bool,
+    layout_follow_up: bool,
     /// Clone of `crate::wayland::App`'s `ShapingHandle`: one worker and font set per process
     /// (ADR-0023).
     shaping: ShapingHandle,
@@ -174,7 +174,7 @@ impl RendererClient {
             scene: Scene::new(),
             instances: Vec::new(),
             holds_session_lock: false,
-            geometry_follow_up: false,
+            layout_follow_up: false,
             shaping,
             capabilities: RefCell::new(namespace.capabilities),
             commands,
@@ -420,7 +420,7 @@ impl RendererClient {
     /// [`Scene::scroll_in_place`], with a pass owed to the readers of each `geometry` rect it moved.
     pub fn scroll_in_place(&mut self, signal: &crate::lua::signal::Signal, asked: f32) -> Option<Vec<String>> {
         let moved = self.scene.scroll_in_place(signal, asked, self.loader.lua());
-        for id in crate::lua::signal::take_geometry_moved(self.loader.lua()) {
+        for id in crate::lua::signal::take_layout_changed(self.loader.lua()) {
             self.dirty.mark_cell(id);
         }
         moved
@@ -453,8 +453,11 @@ impl RendererClient {
     /// nothing rebuilds its surface and the scene re-grows a tree with no `wl_surface` behind it.
     pub fn forget_surface(&mut self, instance_id: &str) {
         crate::lua::signal::forget_instance(self.loader.lua(), instance_id);
-        self.scene.forget(instance_id);
+        self.scene.forget(instance_id, self.loader.lua());
         self.instances.retain(|instance| instance.instance_id != instance_id);
+        for id in crate::lua::signal::take_layout_changed(self.loader.lua()) {
+            self.dirty.mark_cell(id);
+        }
     }
 
     /// This generation's `Lua` builds the `on_click` argument (ADR-0050 decision 3):
