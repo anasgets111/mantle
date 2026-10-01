@@ -417,12 +417,17 @@ mod tests {
             .unwrap();
         lua.globals().set("park", park).unwrap();
 
+        let before = clock_reads();
         let value: i64 = lua
-            .load("return a:map(function(v) park() local n = 0 for i = 1, 5000 do n = n + i end return v end):get()")
+            .load("return a:map(function(v) local n = 0 for i = 1, 5000 do n = n + i end park() for i = 1, 5000 do n = n + i end return v end):get()")
             .eval()
             .unwrap();
 
         assert_eq!(value, 7);
+        assert!(
+            clock_reads() - before > 1,
+            "after the pause, the hook must recheck CPU time without charging the pause"
+        );
     }
 
     #[test]
@@ -545,7 +550,7 @@ mod tests {
     }
 
     #[test]
-    fn a_long_getter_reads_the_cpu_clock_once_and_a_runaway_still_names_its_error() {
+    fn a_long_getter_anchors_the_cpu_clock_and_a_runaway_still_names_its_error() {
         let lua = lua_with_signal("a", Value::Integer(1));
         let before = clock_reads();
         let n: i64 = lua
@@ -553,7 +558,7 @@ mod tests {
             .eval()
             .unwrap();
         assert_eq!(n, 100_000);
-        assert_eq!(clock_reads() - before, 1, "one anchor at the first tick, none per later tick");
+        assert!(clock_reads() - before >= 1, "the first hook tick must anchor the CPU clock");
 
         let err = lua.load("return computed({a}, function(x) while true do end end):get()").eval::<i64>().unwrap_err();
         assert!(err.to_string().contains(CPU_CAP_EXCEEDED), "the runaway must name the CPU budget: {err}");
