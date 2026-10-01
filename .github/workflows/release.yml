@@ -96,10 +96,19 @@ jobs:
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@v7
+        with:
+          sparse-checkout: docs/changelog.md
+          sparse-checkout-cone-mode: false
       - uses: actions/download-artifact@v8
         with:
           path: dist
           merge-multiple: true
-      - run: gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --generate-notes dist/*
+      # The notes are the tag's changelog section, its book-relative links made absolute.
+      - run: |
+          awk -v h="## ${GITHUB_REF_NAME#v} " '/^## /{p = index($0, h) == 1; next} p' docs/changelog.md |
+            sed -E 's#\]\(([^):#]+)\.md#](https://anasgets111.github.io/mantle/\1.html#g' >notes.md
+          grep -q . notes.md || { echo "docs/changelog.md has no ${GITHUB_REF_NAME#v} section"; exit 1; }
+          gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --notes-file notes.md dist/*
         env:
           GH_TOKEN: ${{ github.token }}
