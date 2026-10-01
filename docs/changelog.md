@@ -1,8 +1,9 @@
 # Changelog
 
 User-facing changes to the Lua API and the `mantle` CLI. The format follows
-[Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Mantle is pre-release and unversioned,
-so everything since the rename from Obelisk sits under Unreleased.
+[Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Each version is tagged `vX.Y.Z`
+and published on [GitHub releases](https://github.com/anasgets111/mantle/releases). While the
+version is 0.x, a minor release can break the Lua API.
 
 ## Unreleased
 

@@ -33,6 +33,12 @@ jobs:
           echo "3f1cf344bd0b57373ca55636a78c08b0491f7293d609a456a9ac3b0b150fda97  /tmp/nfpm.deb" | sha256sum -c
           dpkg -i /tmp/nfpm.deb
       - uses: actions/checkout@v5
+      # The binaries report Cargo's version and the packages the tag's, so a mismatch ships both.
+      - name: Tag matches Cargo version
+        if: github.ref_type == 'tag'
+        run: |
+          cargo_version="$(sed -n '/^\[workspace.package\]/,/^\[/ s/^version = "\(.*\)"/\1/p' Cargo.toml)"
+          [ "${GITHUB_REF_NAME#v}" = "$cargo_version" ] || { echo "tag $GITHUB_REF_NAME, Cargo $cargo_version: run just tag-release"; exit 1; }
       - run: cargo build --workspace --release --locked
       # The layout `setup.rs` and `renderer_binary_path` resolve: both binaries in
       # `$PREFIX/lib/mantle`, the stubs in `$PREFIX/share/mantle/lua-meta`.

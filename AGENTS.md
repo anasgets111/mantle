@@ -37,6 +37,7 @@ why behind behavior the code confirms. Where a doc disagrees with the code, fix 
 | `just swap [args]` | Build the `swap` profile, replace the installed pair under `$CARGO_HOME/bin`, default `~/.cargo/bin`, and restart detached |
 | `just demo [out]` | Record the demo video with `demo/director`; stops every running shell for the take, then restarts it |
 | `just heaptrack [renderer\|supervisor] [secs]` | Dev build under heaptrack for `secs` (default 900), then restores the installed shell; prints the `heaptrack_print` command |
+| `just tag-release X.Y.Z` | Set the workspace version, run `just stubs check`, date the changelog's `Unreleased`, commit and tag `vX.Y.Z`. Pushing the tag publishes the release |
 | `just hooks` | Install pre-commit checks selected by staged paths; stale stubs or generated pages are rewritten and the commit refused |
 
 ## Checks by change

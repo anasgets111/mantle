@@ -13,6 +13,22 @@ build:
 release:
     cargo build --workspace --release
 
+# Sets the workspace version, refreshes what embeds it, dates the changelog's Unreleased section,
+# checks, commits and tags `v{{version}}`. Pushing the tag is left to you: it publishes the release.
+tag-release version:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    [[ "{{version}}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "version must be X.Y.Z" >&2; exit 1; }
+    [ -z "$(git status --porcelain)" ] || { echo "commit or stash first" >&2; exit 1; }
+    ! git rev-parse -q --verify "refs/tags/v{{version}}" >/dev/null || { echo "v{{version}} exists" >&2; exit 1; }
+    sed -i '/^\[workspace.package\]/,/^\[/ s/^version = ".*"/version = "{{version}}"/' Cargo.toml
+    sed -i "0,/^## Unreleased$/ s//## Unreleased\n\n## {{version}} - $(date +%F)/" docs/changelog.md
+    cargo update -w
+    just stubs check
+    git commit -qam "Release {{version}}"
+    git tag -a "v{{version}}" -m "v{{version}}"
+    echo "tagged v{{version}}; publish with: git push origin main v{{version}}"
+
 # The just-built shell on `config`, which keeps a dev run off `~/.config/mantle`.
 run config="share/starter": build
     target/debug/mantle -c {{config}}

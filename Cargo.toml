@@ -12,10 +12,8 @@ resolver = "3"
 # IDL field added or changed, patch for everything else. A config gates on it with
 # `mantle.version.minor >= n`.
 #
-# Not in force yet, which is why IDL changes keep landing against 0.1.0 (ADR-0069's `scroll`,
-# ADR-0078's `exclusive`). Nothing has been pushed to origin, so this number informs nobody and
-# 0.1.0 is a placeholder. The first push starts it; until then, do not bump, and do not re-litigate
-# the gap between this comment and the log every time an IDL field moves.
+# In force from the first release. `just tag-release` sets it; `release.yml` refuses a tag that
+# disagrees.
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
