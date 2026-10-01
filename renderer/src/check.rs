@@ -4,8 +4,7 @@
 //!
 //! No Wayland, surfaces, or GPU: layout runs through the production `Scene` apply on stand-in
 //! outputs. Evaluation matches a boot's, before the first `StateSnapshot`: every capability signal
-//! reads `nil` (ADR-0044). Layout then runs again on sample pushes, and once more with their
-//! booleans flipped (ADR-0267).
+//! reads `nil` (ADR-0044). Layout then runs again on each sample set (ADR-0267).
 
 use std::path::Path;
 
@@ -24,9 +23,10 @@ use crate::text::shaping::ShapingHandle;
 /// Evaluates and lays out `shell.lua` under `config_dir` and returns the report, or the error a
 /// config author needs to read.
 ///
-/// Lays out with every capability `nil`, as a boot does, then after one sample push per capability
-/// (ADR-0267), so an `itemfn` runs on a row, then with every sample boolean flipped. Each failing
-/// pass is reported.
+/// Lays out with every capability `nil`, as a boot does, then after one push per capability of each
+/// sample set (ADR-0267): the first, so an `itemfn` runs on a row, the alternate, so a `false` or
+/// last-variant branch runs, and the empty, so an empty-list branch runs. Each failing pass is
+/// reported.
 pub fn run(config_dir: &Path) -> Result<String, String> {
     let shell_lua = config_dir.join("shell.lua");
     let (output, specs, namespace, loader) = evaluate(config_dir)?;
@@ -41,9 +41,8 @@ pub fn run(config_dir: &Path) -> Result<String, String> {
     Ok(report)
 }
 
-/// Lays out with every capability `nil`, then after [`push_samples`], then after the same samples
-/// with every boolean flipped; each failing pass is one `<pass>: <error>` entry, which may span
-/// lines.
+/// Lays out with every capability `nil`, then after [`push_samples`] of each sample set; each
+/// failing pass is one `<pass>: <error>` entry, which may span lines.
 fn lay_out_passes(
     output: &LoadOutput,
     specs: &[SurfaceSpec],
@@ -54,12 +53,15 @@ fn lay_out_passes(
 ) -> Result<(), Vec<String>> {
     let mut errors: Vec<String> = Vec::new();
     let mut failures = Vec::new();
-    for (revision, pass) in ["before capability data", "with sample capability data", "with flipped boolean samples"]
-        .into_iter()
-        .enumerate()
-    {
-        if revision > 0 {
-            push_samples(namespace, loader, revision as u32).map_err(|err| vec![format!("{pass}: {err}")])?;
+    let passes = [
+        ("before capability data", None),
+        ("with sample capability data", Some("first")),
+        ("with alternate sample data", Some("alternate")),
+        ("with empty sample lists", Some("empty")),
+    ];
+    for (revision, (pass, set)) in (0..).zip(passes) {
+        if let Some(set) = set {
+            push_samples(namespace, loader, set, revision).map_err(|err| vec![format!("{pass}: {err}")])?;
         }
         // A static layout error fails every pass alike; name it once, under the first.
         if let Err(err) = lay_out(output, specs, loader, shaping, size)
@@ -99,34 +101,28 @@ fn lay_out(
     Ok((scene, instances))
 }
 
-/// One sample `StateSnapshot` payload per capability, generated at build time from shared schemas.
-pub(crate) fn samples() -> serde_json::Map<String, serde_json::Value> {
-    serde_json::from_str(include_str!(concat!(env!("OUT_DIR"), "/check_samples.json")))
-        .expect("the generated samples are a JSON object")
+/// One sample `StateSnapshot` payload per capability from `set` (`first`, `alternate` or
+/// `empty`), generated at build time from shared schemas.
+pub(crate) fn samples(set: &str) -> serde_json::Map<String, serde_json::Value> {
+    let mut sets: serde_json::Map<String, serde_json::Value> =
+        serde_json::from_str(include_str!(concat!(env!("OUT_DIR"), "/check_samples.json")))
+            .expect("the generated samples are a JSON object");
+    match sets.remove(set) {
+        Some(serde_json::Value::Object(samples)) => samples,
+        _ => panic!("no `{set}` sample set"),
+    }
 }
 
-/// One `StateSnapshot`-shaped push per capability from [`samples`]. Revision 2 flips every boolean,
-/// so a branch taken only on `false`, such as a launcher dropping `no_display` entries, runs too.
-/// ponytail: one value per boolean, not combinations; a pass per combination is the upgrade.
-fn push_samples(namespace: &Namespace, loader: &Loader, revision: u32) -> mlua::Result<()> {
-    for (capability, mut payload) in samples() {
-        let Some(handle) = namespace.capabilities.get(&capability) else { continue };
-        if revision == 2 {
-            flip_booleans(&mut payload);
-        }
-        let previous = handle.hydrate(loader.to_lua_value(&payload)?, revision);
+/// One `StateSnapshot`-shaped push per capability from [`samples`] of `set`.
+/// ponytail: each set takes one value per field, so boolean combinations and enum variants between
+/// the first and last never run; a pass per combination or variant is the upgrade.
+fn push_samples(namespace: &Namespace, loader: &Loader, set: &str, revision: u32) -> mlua::Result<()> {
+    for (capability, payload) in &samples(set) {
+        let Some(handle) = namespace.capabilities.get(capability) else { continue };
+        let previous = handle.hydrate(loader.to_lua_value(payload)?, revision);
         handle.notify_change(loader.lua(), previous);
     }
     Ok(())
-}
-
-fn flip_booleans(value: &mut serde_json::Value) {
-    match value {
-        serde_json::Value::Bool(flag) => *flag = !*flag,
-        serde_json::Value::Array(items) => items.iter_mut().for_each(flip_booleans),
-        serde_json::Value::Object(fields) => fields.values_mut().for_each(flip_booleans),
-        _ => {}
-    }
 }
 
 /// `run`'s evaluation, returning the `Loader` last: the node tables in `LoadOutput` live in its
@@ -329,26 +325,40 @@ mod tests {
         )
         .unwrap();
         let err = super::run(dir.path()).unwrap_err();
-        assert!(err.contains("with flipped boolean samples"), "{err}");
+        assert!(err.contains("with alternate sample data"), "{err}");
         assert!(err.contains("contnet"), "{err}");
     }
 
-    /// Samples read `muted = true`, so only the flipped pass shows the unmuted row.
+    /// The first set reads `muted = true` and battery `"Unknown"`, and lists one entry long, so
+    /// each row below shows only under a later set.
     #[test]
-    fn a_branch_taken_only_on_false_fails_the_flipped_pass() {
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::write(
-            dir.path().join("shell.lua"),
-            r#"return panel { id = "p", layer = "Top", child = list {
-    source = mantle.audio:map(function(s) return (s and not s.muted) and { 1 } or {} end),
-    itemfn = function() return text { contnet = "unmuted" } end,
-} }
-"#,
-        )
-        .unwrap();
-        let err = super::run(dir.path()).unwrap_err();
-        assert!(err.starts_with(&format!("{}: with flipped boolean samples", dir.path().display())), "{err}");
-        assert!(err.contains("contnet"), "{err}");
+    fn false_last_variant_and_empty_list_branches_fail_their_own_pass() {
+        for (source, pass) in [
+            (
+                "mantle.audio:map(function(s) return (s and not s.muted) and { 1 } or {} end)",
+                "with alternate sample data",
+            ),
+            (
+                "mantle.battery:map(function(b) return (b and b.state == 'PendingDischarge') and { 1 } or {} end)",
+                "with alternate sample data",
+            ),
+            (
+                "mantle.applications:map(function(s) return (s and #s.entries == 0) and { 1 } or {} end)",
+                "with empty sample lists",
+            ),
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            std::fs::write(
+                dir.path().join("shell.lua"),
+                format!(
+                    "return panel {{ id = \"p\", layer = \"Top\", child = list {{\n    source = {source},\n    itemfn = function() return text {{ contnet = \"row\" }} end,\n}} }}\n"
+                ),
+            )
+            .unwrap();
+            let err = super::run(dir.path()).unwrap_err();
+            assert!(err.starts_with(&format!("{}: {pass}: ", dir.path().display())), "{source}: {err}");
+            assert_eq!(err.matches("contnet").count(), 1, "{source}: {err}");
+        }
     }
 }
 

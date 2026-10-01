@@ -251,7 +251,7 @@ impl UserData for Capability {
             let Some(&action) = actions.iter().find(|action| **action == key) else {
                 let name = &this.name;
                 // The generated samples hold every top-level `*State` field, so they name `:get()` paths.
-                let samples = crate::check::samples();
+                let samples = crate::check::samples("first");
                 let fields = samples.get(name.as_str()).and_then(|state| state.as_object()).into_iter().flatten();
                 let hint = match closest(&key, actions.iter().copied().chain(fields.map(|(field, _)| field.as_str()))) {
                     Some(near) if actions.contains(&near) => format!("did you mean mantle.{name}:{near}(...)?"),

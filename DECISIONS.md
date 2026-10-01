@@ -6582,11 +6582,13 @@ Amended: the samples are no longer checked in. The `*State` types moved to `shar
 `renderer/build.rs` writes the samples to `OUT_DIR` through `shared::schema::check_samples`, so no
 golden test or `just stubs` run is needed and the Renderer still takes no Supervisor dependency.
 
-Amended: a third pass pushes the samples again with every boolean flipped, `with flipped boolean
-samples`, so a branch taken only on `false` (a launcher dropping `no_display` entries, an unmuted
-icon) runs. It replaces per-field `examples` overrides: 65 payload booleans gate content both ways,
-so no single default fits them. An error an earlier pass raised prints once. Combinations of
-booleans, second enum variants and empty lists stay outside the ceiling.
+Amended: the walker builds three sample sets, each its own pass after `nil`. `first` is the set
+above. `alternate` takes every boolean `false` and every enum or tagged union its last variant, so
+a branch taken only on `false` (a launcher dropping `no_display` entries, an unmuted icon) or on a
+later variant runs. `empty` leaves every array and map empty, so an empty-state branch runs. These
+replace per-field `examples` overrides: 65 payload booleans gate content both ways, so no single
+default fits them. An error an earlier pass raised prints once. Ceiling: combinations of booleans
+and enum variants between the first and last still never run.
 
 ## 0268. Nodes and derived signals record the line that built them
 

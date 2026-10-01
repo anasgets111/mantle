@@ -20,8 +20,8 @@ it is history and may be stale, so cite an ADR only as a "why" pointer after the
 
 Every fenced block whose info string is `lua` or starts `lua,` runs in `cargo test`. The test is
 `every_lua_block_in_the_docs_evaluates_and_lays_out` in `renderer/src/check.rs`. Each block goes
-through the same evaluation and three layout passes as `mantle check`: no Wayland, no subprocesses,
-every capability `nil`, then one sample push each, then the samples with booleans flipped, one
+through the same evaluation and four layout passes as `mantle check`: no Wayland, no subprocesses,
+every capability `nil`, then one push each of the first, alternate and empty sample sets, one
 704x396 output named `DP-1`. The test
 fails on a Lua error, a check error or a layout error, and names the block by `file:line`. Blocks
 inside `> ` quotes count too.
