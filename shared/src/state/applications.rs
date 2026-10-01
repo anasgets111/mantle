@@ -28,7 +28,6 @@ pub struct AppSummary {
     /// without the key.
     pub icon: Option<String>,
     /// `NoDisplay=true`: omit from launchers, but keep its name and icon for window lookup.
-    #[cfg_attr(feature = "schema", schemars(extend("examples" = [false])))]
     pub no_display: bool,
     /// `Comment=`, unlocalized, e.g. `"Web Browser"` (ADR-0112); `nil` without the key.
     pub comment: Option<String>,

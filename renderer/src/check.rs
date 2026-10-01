@@ -4,7 +4,8 @@
 //!
 //! No Wayland, surfaces, or GPU: layout runs through the production `Scene` apply on stand-in
 //! outputs. Evaluation matches a boot's, before the first `StateSnapshot`: every capability signal
-//! reads `nil` (ADR-0044). Layout then runs again on sample pushes (ADR-0267).
+//! reads `nil` (ADR-0044). Layout then runs again on sample pushes, and once more with their
+//! booleans flipped (ADR-0267).
 
 use std::path::Path;
 
@@ -23,13 +24,14 @@ use crate::text::shaping::ShapingHandle;
 /// Evaluates and lays out `shell.lua` under `config_dir` and returns the report, or the error a
 /// config author needs to read.
 ///
-/// Lays out twice, as a boot does: once with every capability `nil`, then again after one sample
-/// push per capability (ADR-0267), so an `itemfn` runs on a row. Each failing pass is reported.
+/// Lays out with every capability `nil`, as a boot does, then after one sample push per capability
+/// (ADR-0267), so an `itemfn` runs on a row, then with every sample boolean flipped. Each failing
+/// pass is reported.
 pub fn run(config_dir: &Path) -> Result<String, String> {
     let shell_lua = config_dir.join("shell.lua");
     let (output, specs, namespace, loader) = evaluate(config_dir)?;
     let size = LogicalSize { width: 1920.0, height: 1080.0 };
-    lay_out_both_passes(&output, &specs, &namespace, &loader, &ShapingHandle::spawn(), size).map_err(|failures| {
+    lay_out_passes(&output, &specs, &namespace, &loader, &ShapingHandle::spawn(), size).map_err(|failures| {
         failures.iter().map(|failure| format!("{}: {failure}", config_dir.display())).collect::<Vec<_>>().join("\n")
     })?;
     let mut report = format!("{}: ok, {} surface(s)\n", shell_lua.display(), specs.len());
@@ -39,9 +41,10 @@ pub fn run(config_dir: &Path) -> Result<String, String> {
     Ok(report)
 }
 
-/// Lays out with every capability `nil`, then again after [`push_samples`]; each failing pass is
-/// one `<pass>: <error>` entry, which may span lines.
-fn lay_out_both_passes(
+/// Lays out with every capability `nil`, then after [`push_samples`], then after the same samples
+/// with every boolean flipped; each failing pass is one `<pass>: <error>` entry, which may span
+/// lines.
+fn lay_out_passes(
     output: &LoadOutput,
     specs: &[SurfaceSpec],
     namespace: &Namespace,
@@ -49,14 +52,23 @@ fn lay_out_both_passes(
     shaping: &ShapingHandle,
     size: LogicalSize,
 ) -> Result<(), Vec<String>> {
-    let before = lay_out(output, specs, loader, shaping, size).err();
-    push_samples(namespace, loader).map_err(|err| vec![format!("sample capability data: {err}")])?;
-    // A static layout error fails both passes alike; name it once.
-    let after = lay_out(output, specs, loader, shaping, size).err().filter(|after| Some(after) != before.as_ref());
-    let failures: Vec<String> = [("before capability data", before), ("with sample capability data", after)]
+    let mut errors: Vec<String> = Vec::new();
+    let mut failures = Vec::new();
+    for (revision, pass) in ["before capability data", "with sample capability data", "with flipped boolean samples"]
         .into_iter()
-        .filter_map(|(pass, err)| Some(format!("{pass}: {}", err?)))
-        .collect();
+        .enumerate()
+    {
+        if revision > 0 {
+            push_samples(namespace, loader, revision as u32).map_err(|err| vec![format!("{pass}: {err}")])?;
+        }
+        // A static layout error fails every pass alike; name it once, under the first.
+        if let Err(err) = lay_out(output, specs, loader, shaping, size)
+            && !errors.contains(&err)
+        {
+            failures.push(format!("{pass}: {err}"));
+            errors.push(err);
+        }
+    }
     if failures.is_empty() { Ok(()) } else { Err(failures) }
 }
 
@@ -93,14 +105,28 @@ pub(crate) fn samples() -> serde_json::Map<String, serde_json::Value> {
         .expect("the generated samples are a JSON object")
 }
 
-/// One `StateSnapshot`-shaped push per capability from [`samples`].
-fn push_samples(namespace: &Namespace, loader: &Loader) -> mlua::Result<()> {
-    for (capability, payload) in &samples() {
-        let Some(handle) = namespace.capabilities.get(capability) else { continue };
-        let previous = handle.hydrate(loader.to_lua_value(payload)?, 1);
+/// One `StateSnapshot`-shaped push per capability from [`samples`]. Revision 2 flips every boolean,
+/// so a branch taken only on `false`, such as a launcher dropping `no_display` entries, runs too.
+/// ponytail: one value per boolean, not combinations; a pass per combination is the upgrade.
+fn push_samples(namespace: &Namespace, loader: &Loader, revision: u32) -> mlua::Result<()> {
+    for (capability, mut payload) in samples() {
+        let Some(handle) = namespace.capabilities.get(&capability) else { continue };
+        if revision == 2 {
+            flip_booleans(&mut payload);
+        }
+        let previous = handle.hydrate(loader.to_lua_value(&payload)?, revision);
         handle.notify_change(loader.lua(), previous);
     }
     Ok(())
+}
+
+fn flip_booleans(value: &mut serde_json::Value) {
+    match value {
+        serde_json::Value::Bool(flag) => *flag = !*flag,
+        serde_json::Value::Array(items) => items.iter_mut().for_each(flip_booleans),
+        serde_json::Value::Object(fields) => fields.values_mut().for_each(flip_booleans),
+        _ => {}
+    }
 }
 
 /// `run`'s evaluation, returning the `Loader` last: the node tables in `LoadOutput` live in its
@@ -303,7 +329,25 @@ mod tests {
         )
         .unwrap();
         let err = super::run(dir.path()).unwrap_err();
-        assert!(err.contains("with sample capability data"), "{err}");
+        assert!(err.contains("with flipped boolean samples"), "{err}");
+        assert!(err.contains("contnet"), "{err}");
+    }
+
+    /// Samples read `muted = true`, so only the flipped pass shows the unmuted row.
+    #[test]
+    fn a_branch_taken_only_on_false_fails_the_flipped_pass() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("shell.lua"),
+            r#"return panel { id = "p", layer = "Top", child = list {
+    source = mantle.audio:map(function(s) return (s and not s.muted) and { 1 } or {} end),
+    itemfn = function() return text { contnet = "unmuted" } end,
+} }
+"#,
+        )
+        .unwrap();
+        let err = super::run(dir.path()).unwrap_err();
+        assert!(err.starts_with(&format!("{}: with flipped boolean samples", dir.path().display())), "{err}");
         assert!(err.contains("contnet"), "{err}");
     }
 }
@@ -899,7 +943,7 @@ return panel { id = "bar", layer = "Top", height = 20, child = row { children = 
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("shell.lua"), shell(block)).unwrap();
         let (output, specs, namespace, loader) = super::evaluate(dir.path())?;
-        super::lay_out_both_passes(&output, &specs, &namespace, &loader, shaping, OUTPUT)
+        super::lay_out_passes(&output, &specs, &namespace, &loader, shaping, OUTPUT)
             .map_err(|failures| failures.join("\n"))
     }
 

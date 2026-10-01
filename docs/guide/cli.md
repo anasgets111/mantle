@@ -213,13 +213,14 @@ its answer, so a raising handler is a warning in `mantle log`, not a refusal.
 ## What check covers
 
 `mantle check` evaluates `shell.lua` and its `require`s exactly as a start does, with no
-Wayland, no GPU, and every capability reading `nil`. Then it lays every surface out twice with the
+Wayland, no GPU, and every capability reading `nil`. Then it lays every surface out three times with the
 real layout code, on one 1920x1080 output plus one per `monitor` name a panel pins:
 
 | Pass | Capabilities read | Catches |
 | :--- | :--- | :--- |
 | `before capability data` | `nil`, as at start before the first push | Code that forgets the `nil` case |
-| `with sample capability data` | One sample push each: every list has one entry, every optional field is set, every string is `"sample"`, every integer `1` | Typos and bad properties in a list `itemfn` or a branch that only shows with data |
+| `with sample capability data` | One sample push each: every list has one entry, every optional field is set, every string is `"sample"`, every integer `1`, every boolean `true` | Typos and bad properties in a list `itemfn` or a branch that only shows with data |
+| `with flipped boolean samples` | The same push with every boolean `false` | A branch taken only on `false`, such as unmuted audio or a launcher that drops `no_display` entries |
 
 It prints `<path>: ok, N surface(s)` and one `<role> <id>` line per surface, preceded by anything
 the config `print`ed. An error prints as `<config dir>: <error>` and exits 1; files in it are named

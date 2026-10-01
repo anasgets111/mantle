@@ -6580,9 +6580,13 @@ list is still reached only by the `nil` pass or not at all.
 
 Amended: the samples are no longer checked in. The `*State` types moved to `shared::state`, and
 `renderer/build.rs` writes the samples to `OUT_DIR` through `shared::schema::check_samples`, so no
-golden test or `just stubs` run is needed and the Renderer still takes no Supervisor dependency. A
-schema `examples` value overrides the walker's default: `no_display` samples `false`, so a launcher
-that filters hidden applications still runs its `itemfn`.
+golden test or `just stubs` run is needed and the Renderer still takes no Supervisor dependency.
+
+Amended: a third pass pushes the samples again with every boolean flipped, `with flipped boolean
+samples`, so a branch taken only on `false` (a launcher dropping `no_display` entries, an unmuted
+icon) runs. It replaces per-field `examples` overrides: 65 payload booleans gate content both ways,
+so no single default fits them. An error an earlier pass raised prints once. Combinations of
+booleans, second enum variants and empty lists stay outside the ceiling.
 
 ## 0268. Nodes and derived signals record the line that built them
 
