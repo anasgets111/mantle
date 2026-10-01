@@ -170,6 +170,8 @@ struct Decoded {
     /// tiny-skia `Pixmap` is premultiplied RGBA8; `image` is straight. The wrong femtovg flag gives
     /// every anti-aliased icon edge a dark halo, not an outright failure.
     premultiplied: bool,
+    /// An SVG that asked for a font, which a font change must redraw.
+    text: bool,
 }
 
 /// One GIF frame's changed rectangle after disposal (ADR-0235): physical-pixel left/top/width/
@@ -198,6 +200,8 @@ enum Slot {
 struct Entry {
     slot: Slot,
     last_hit: u64,
+    /// See [`Decoded::text`]; beside the slot so tests can set it without an `ImageId`.
+    text: bool,
 }
 
 /// A queued decode's key, so a late result lands in the right slot, plus its tint and the
@@ -240,6 +244,9 @@ pub struct ImageCacheCensus {
 /// persisted: a replaced Renderer starts cold (ADR-0054).
 pub struct ImageCache {
     shaping: Option<ShapingHandle>,
+    /// What vector keys carry. `fonts` may lag it until a vector decode needs the snapshot,
+    /// whose round trip queues behind shaping work.
+    font_generation: u64,
     fonts: FontDatabase,
     entries: HashMap<CacheKey, Entry>,
     /// Evicted since [`ImageCache::release_evicted`], not yet freed.
@@ -315,6 +322,7 @@ impl ImageCache {
     fn build(waker: Option<crate::wake::Waker>, max_workers: usize) -> Self {
         ImageCache {
             shaping: None,
+            font_generation: 0,
             fonts: FontDatabase::default(),
             entries: HashMap::new(),
             evicted: Vec::new(),
@@ -336,23 +344,42 @@ impl ImageCache {
     /// Shares the text worker's font selection with SVG decoding.
     pub fn with_fonts(mut self, shaping: ShapingHandle) -> Self {
         self.fonts = shaping.font_database();
+        self.font_generation = self.fonts.generation;
         self.shaping = Some(shaping);
         self
     }
 
+    /// Evicts vectors drawn with text, and queued ones whose text is unknown, on any generation
+    /// bump: a fallback face loaded for one glyph can fill that glyph in SVG text too. The rest
+    /// are re-keyed, so an icon is not rasterized again for a font it never used.
     fn sync_fonts(&mut self) {
         let Some(shaping) = &self.shaping else { return };
-        if shaping.font_generation() == self.fonts.generation {
+        let generation = shaping.font_generation();
+        if generation == self.font_generation {
             return;
         }
-        self.fonts = shaping.font_database();
-        let stale: Vec<_> = self.entries.keys().filter(|key| is_vector(&key.path)).cloned().collect();
-        for key in stale {
-            // poll's existing file invalidation also reaches retained image and mask layers.
-            if !matches!(self.entries[&key].slot, Slot::Pending) {
-                self.cancelled.push(key.path.clone());
+        self.font_generation = generation;
+        let vectors: Vec<_> = self.entries.keys().filter(|key| is_vector(&key.path)).cloned().collect();
+        for key in vectors {
+            let entry = &self.entries[&key];
+            if entry.text || matches!(entry.slot, Slot::Pending) {
+                // poll's existing file invalidation also reaches retained image and mask layers.
+                if !matches!(entry.slot, Slot::Pending) {
+                    self.cancelled.push(key.path.clone());
+                }
+                self.evict(&key);
+            } else if let Some(entry) = self.entries.remove(&key) {
+                self.entries.insert(CacheKey { font_generation: generation, ..key }, entry);
             }
-            self.evict(&key);
+        }
+    }
+
+    /// Takes the snapshot a vector decode reads, only when the cached one is older than the keys.
+    fn refresh_fonts(&mut self) {
+        if let Some(shaping) = &self.shaping
+            && self.fonts.generation < self.font_generation
+        {
+            self.fonts = shaping.font_database();
         }
     }
 
@@ -441,6 +468,7 @@ impl ImageCache {
             if !matches!(self.entries.get(&key).map(|entry| &entry.slot), Some(Slot::Pending)) {
                 continue;
             }
+            let text = result.as_ref().is_ok_and(|decoded| decoded.text);
             let slot = upload_or_log(canvas, &key.path, result);
             match slot {
                 Slot::Ready { bytes, .. } => {
@@ -452,6 +480,7 @@ impl ImageCache {
             }
             if let Some(entry) = self.entries.get_mut(&key) {
                 entry.slot = slot;
+                entry.text = text;
             }
         }
     }
@@ -502,7 +531,7 @@ impl ImageCache {
         self.sync_fonts();
         let vector = is_vector(path);
         let key = CacheKey {
-            font_generation: if vector { self.fonts.generation } else { 0 },
+            font_generation: if vector { self.font_generation } else { 0 },
             path: path.to_path_buf(),
             box_px: cache_box(path, box_px),
             version: FileVersion::read(path),
@@ -520,6 +549,9 @@ impl ImageCache {
             cached.last_hit = self.tick;
             return self.showing(canvas, &key);
         }
+        if vector {
+            self.refresh_fonts();
+        }
         let load = if self.pool.workers == 0 { Load::Inline } else { load };
         match load {
             Load::Inline => {
@@ -535,8 +567,9 @@ impl ImageCache {
                     self.animation_bytes(),
                     &self.fonts,
                 );
+                let text = decoded.as_ref().is_ok_and(|decoded| decoded.text);
                 let slot = upload_or_log(canvas, &key.path, decoded);
-                self.insert(key.clone(), slot);
+                self.insert(key.clone(), slot).text = text;
                 self.showing(canvas, &key)
             }
             Load::Background => {
@@ -613,7 +646,7 @@ impl ImageCache {
     /// Evicts before inserting, keeping the map within [`CACHE_CAPACITY`]. Queue textures for
     /// [`ImageCache::release_evicted`]: femtovg frees nothing by `ImageId` until told to, so losing
     /// the id leaks the GPU allocation permanently.
-    fn insert(&mut self, key: CacheKey, slot: Slot) {
+    fn insert(&mut self, key: CacheKey, slot: Slot) -> &mut Entry {
         // Its own tick, so an insert that did not come through `image` still orders after every
         // earlier one and `last_hit` never ties. That makes the scan below fall back to insertion
         // order exactly where nothing has been asked for twice.
@@ -648,7 +681,7 @@ impl ImageCache {
             Slot::Failed => self.failed_total += 1,
             Slot::Pending => {}
         }
-        self.entries.insert(key, Entry { slot, last_hit: self.tick });
+        self.entries.entry(key).insert_entry(Entry { slot, last_hit: self.tick, text: false }).into_mut()
     }
 
     /// Drops one entry, queues its texture for [`ImageCache::release_evicted`], and subtracts its
@@ -1038,29 +1071,42 @@ mod tests {
     }
 
     #[test]
-    fn changing_fonts_cancels_svg_jobs_preserves_rasters_and_rejects_late_pixels() {
+    fn changing_fonts_cancels_svg_jobs_and_text_preserves_icons_and_rasters_and_rejects_late_pixels() {
         let shaping = svg::tests::fixture_shaping();
         let mut cache = ImageCache::inline().with_fonts(shaping.clone());
         let (results_tx, results_rx) = std::sync::mpsc::channel();
         cache.pool.results = results_rx;
-        let vector =
-            CacheKey { font_generation: cache.fonts.generation, ..key("fixture.svg", 24, FileVersion::default()) };
+        let at =
+            |path: &str| CacheKey { font_generation: cache.font_generation, ..key(path, 24, FileVersion::default()) };
+        let (vector, icon, label) = (at("fixture.svg"), at("icon.svg"), at("label.svg"));
         let raster = key("fixture.png", 24, FileVersion::default());
         cache.admit(&vector);
         cache.insert(vector.clone(), Slot::Pending);
         cache.insert(raster.clone(), Slot::Failed);
+        // `Failed` stands in for `Ready`, which needs a canvas: `text` alone decides.
+        cache.insert(icon.clone(), Slot::Failed);
+        cache.insert(label.clone(), Slot::Failed).text = true;
+        let snapshot = cache.fonts.generation;
         shaping.set_chain(&["Noto Sans Symbols 2".into()]);
-        assert_eq!(cache.poll(), vec![vector.path.clone()]);
+        let mut cue = cache.poll();
+        cue.sort();
+        assert_eq!(cue, vec![vector.path.clone(), label.path.clone()]);
+        assert_eq!(cache.fonts.generation, snapshot, "no decode ran, so no snapshot was fetched");
         assert!(!cache.entries.contains_key(&vector));
+        assert!(!cache.entries.contains_key(&label), "SVG text redraws with the new fonts");
         assert!(cache.entries.contains_key(&raster));
+        let icon_now = CacheKey { font_generation: cache.font_generation, ..icon.clone() };
+        assert!(cache.entries.contains_key(&icon_now), "a text-free SVG keeps its pixels under the new key");
         assert!(!cache.pool.wanted.lock().unwrap().contains(&vector));
-        let fresh = CacheKey { font_generation: cache.fonts.generation, ..vector.clone() };
+        let fresh = CacheKey { font_generation: cache.font_generation, ..vector.clone() };
         assert_ne!(fresh, vector, "old results cannot match a replacement pending slot");
         cache.insert(fresh.clone(), Slot::Pending);
         results_tx.send((vector, Err("old generation".into()))).unwrap();
         assert!(cache.poll().is_empty(), "a late old result is not a current repaint cue");
         assert!(cache.landed.is_empty(), "old pixels never reach the upload queue");
         assert!(matches!(cache.entries[&fresh].slot, Slot::Pending));
+        cache.refresh_fonts();
+        assert_eq!(cache.fonts.generation, cache.font_generation, "the next vector decode reads current fonts");
     }
 
     #[test]
@@ -1070,7 +1116,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("text.svg");
         std::fs::write(&path, r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 40"><text x="2" y="30" font-size="28">Mantle</text></svg>"#).unwrap();
-        let key = CacheKey { font_generation: cache.fonts.generation, ..key(&path, 120, FileVersion::read(&path)) };
+        let key = CacheKey { font_generation: cache.font_generation, ..key(&path, 120, FileVersion::read(&path)) };
         assert!(cache.admit(&key));
         cache.insert(key.clone(), Slot::Pending);
         cache

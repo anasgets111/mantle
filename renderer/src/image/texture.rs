@@ -82,7 +82,7 @@ fn replay_steps(current: usize, target: usize) -> (bool, std::ops::Range<usize>)
 /// multiply recovers it. Premultiplying the buffer is one pass over pixels that are about to be
 /// copied to the GPU anyway.
 fn upload(canvas: &mut Canvas<OpenGl>, decoded: Decoded) -> Result<(ImageId, Option<Animation>), String> {
-    let Decoded { mut base, delays, mut deltas, width, height, premultiplied } = decoded;
+    let Decoded { mut base, delays, mut deltas, width, height, premultiplied, .. } = decoded;
     if !premultiplied {
         premultiply(&mut base);
         for delta in &mut deltas {

@@ -105,7 +105,7 @@ pub(super) fn decode(
     // An SVG rasterizes to `box_px`, not to whatever the file declares, so it is bounded by the
     // request and never approaches the pool budget. `MAX_SVG_BYTES` is what bounds the parse.
     if is_vector(path) {
-        let (pixels, width, height) = rasterize_svg(path, box_px.0.max(box_px.1), tint, fonts)?;
+        let (pixels, width, height, text) = rasterize_svg(path, box_px.0.max(box_px.1), tint, fonts)?;
         let pixels = blur_rgba(pixels, width, height, *blur_px, true)?;
         return Ok(Decoded {
             base: pixels,
@@ -114,6 +114,7 @@ pub(super) fn decode(
             width,
             height,
             premultiplied: true,
+            text,
         });
     }
     // `blur_px` is never passed on here (ADR-0240): the delta replay `decode_gif` stores keeps
@@ -133,7 +134,15 @@ pub(super) fn decode(
         if *cropped { crop_to_box(pixels, width, height, *box_px) } else { (pixels, width, height) };
     let premultiplied = *blur_px > 0;
     let pixels = blur_rgba(pixels, width, height, *blur_px, false)?;
-    Ok(Decoded { base: pixels, delays: vec![Duration::ZERO], deltas: Vec::new(), width, height, premultiplied })
+    Ok(Decoded {
+        base: pixels,
+        delays: vec![Duration::ZERO],
+        deltas: Vec::new(),
+        width,
+        height,
+        premultiplied,
+        text: false,
+    })
 }
 
 /// The base frame and each later frame's own rect, composited here rather than by `image`'s
@@ -248,7 +257,7 @@ fn decode_gif(
         }
     }
     let Some(base) = base else { return Err("no frames".to_string()) };
-    Ok(Decoded { base, delays, deltas, width, height, premultiplied: false })
+    Ok(Decoded { base, delays, deltas, width, height, premultiplied: false, text: false })
 }
 
 /// The byte index of pixel `(x, y)` in a `width`-wide RGBA8 buffer.
