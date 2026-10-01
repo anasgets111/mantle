@@ -153,22 +153,26 @@ impl IdleRegistry {
                 .iter()
                 .map(|entry| match state {
                     shared::IdleState::Idled => entry.on_idle.clone(),
-                    shared::IdleState::Resumed => entry.on_resume.clone(),
+                    shared::IdleState::Resumed { .. } => entry.on_resume.clone(),
                 })
                 .collect();
             match state {
                 shared::IdleState::Idled => inner.idled.insert(threshold_sec),
-                shared::IdleState::Resumed => inner.idled.remove(&threshold_sec),
+                shared::IdleState::Resumed { .. } => inner.idled.remove(&threshold_sec),
             };
             callbacks
         };
         for callback in callbacks {
-            let which = match state {
-                shared::IdleState::Idled => "on_idle",
-                shared::IdleState::Resumed => "on_resume",
-            };
-            let what = format_args!("mantle.idle:register_threshold({threshold_sec}): {which}");
-            call_logged(&callback, (), what);
+            match state {
+                shared::IdleState::Idled => {
+                    let what = format_args!("mantle.idle:register_threshold({threshold_sec}): on_idle");
+                    call_logged(&callback, (), what);
+                }
+                shared::IdleState::Resumed { cause } => {
+                    let what = format_args!("mantle.idle:register_threshold({threshold_sec}): on_resume");
+                    call_logged(&callback, cause.as_str(), what);
+                }
+            }
         }
     }
 
@@ -265,7 +269,7 @@ impl UserData for IdleMember {
 #[cfg(test)]
 mod tests {
     use mlua::Lua;
-    use shared::{IdleState, RendererFrame};
+    use shared::{IdleState, RendererFrame, ResumeCause};
     use tokio::sync::mpsc;
 
     use super::*;
@@ -444,7 +448,7 @@ mod tests {
         .unwrap();
 
         registry.dispatch_event(30, IdleState::Idled);
-        registry.dispatch_event(30, IdleState::Resumed);
+        registry.dispatch_event(30, IdleState::Resumed { cause: ResumeCause::Input });
 
         let fired: Vec<String> = lua.load("return fired").eval().unwrap();
         assert_eq!(fired, vec!["idled".to_string(), "resumed".to_string()]);
@@ -483,7 +487,11 @@ mod tests {
         };
 
         assert_eq!(late_runs(&|_, _| {}), 1, "joined an idled duration");
-        assert_eq!(late_runs(&|_, registry| registry.dispatch_event(60, IdleState::Resumed)), 0, "seat in use");
+        assert_eq!(
+            late_runs(&|_, registry| registry.dispatch_event(60, IdleState::Resumed { cause: ResumeCause::Input })),
+            0,
+            "seat in use"
+        );
         assert_eq!(late_runs(&|_, registry| registry.forget_thresholds()), 0, "a reload reuses the listener");
         assert_eq!(
             late_runs(&|lua, _| lua.load("idle:cancel_threshold(first)").exec().unwrap()),
@@ -547,5 +555,27 @@ mod tests {
         registry.dispatch_event(30, IdleState::Idled);
 
         assert!(!lua.load("return ran").eval::<bool>().unwrap());
+    }
+
+    #[test]
+    fn on_resume_receives_cause_parameter() {
+        let (lua, registry, _rx) = lua_with_idle(0);
+        lua.load(
+            r#"
+            causes = {}
+            idle:register_threshold(30, function() end, function(cause) causes[#causes + 1] = cause end)
+            "#,
+        )
+        .exec()
+        .unwrap();
+
+        registry.dispatch_event(30, IdleState::Idled);
+        registry.dispatch_event(30, IdleState::Resumed { cause: ResumeCause::Inhibitor });
+        registry.dispatch_event(30, IdleState::Idled);
+        registry.dispatch_event(30, IdleState::Resumed { cause: ResumeCause::Activity });
+        registry.dispatch_event(30, IdleState::Resumed { cause: ResumeCause::Input });
+
+        let causes: Vec<String> = lua.load("return causes").eval().unwrap();
+        assert_eq!(causes, vec!["inhibitor".to_string(), "activity".to_string(), "input".to_string()]);
     }
 }

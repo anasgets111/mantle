@@ -1,5 +1,5 @@
 //! Notify half of `mantle.idle` (ADR-0032): `ext_idle_notifier_v1` on the Supervisor's dedicated
-//! Wayland connection, with one listener per distinct threshold and a dispatch thread.
+//! Wayland connection, with one listener pair per threshold on protocol v2 and a dispatch thread.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
@@ -104,11 +104,37 @@ pub(crate) fn take_unused_listeners<T>(
     taken
 }
 
+#[derive(Clone, Copy)]
+pub(crate) enum RawIdleEvent {
+    Idled,
+    Resumed,
+}
+
+fn threshold_event_state(
+    raw_event: RawIdleEvent,
+    listener: ListenerId,
+    has_input_twin: bool,
+) -> Option<shared::IdleState> {
+    match raw_event {
+        RawIdleEvent::Idled if listener.respects_inhibitors => Some(shared::IdleState::Idled),
+        RawIdleEvent::Idled => None,
+        RawIdleEvent::Resumed if !listener.respects_inhibitors => {
+            Some(shared::IdleState::Resumed { cause: shared::ResumeCause::Input })
+        }
+        RawIdleEvent::Resumed if has_input_twin => {
+            Some(shared::IdleState::Resumed { cause: shared::ResumeCause::Activity })
+        }
+        // Protocol v1 has no input-only listener, so regular activity is the best available
+        // signal for input. It may also include compositor-specific activity such as presence.
+        RawIdleEvent::Resumed => Some(shared::IdleState::Resumed { cause: shared::ResumeCause::Input }),
+    }
+}
+
 /// Dispatch target for the separate Wayland connection (ADR-0010, survives Renderer crash/reload).
 /// Holds only the raw-event channel; fan-out state and bound `Send` proxies stay on the async side
 /// via [`super::IdleController`] (ADR-0032).
 pub(crate) struct WaylandThreadState {
-    raw_events_tx: UnboundedSender<(ListenerId, shared::IdleState)>,
+    raw_events_tx: UnboundedSender<(ListenerId, RawIdleEvent)>,
 }
 
 /// Required by [`registry_queue_init`]. `GlobalList::bind` performs the only lookup after init;
@@ -166,8 +192,8 @@ impl Dispatch<ExtIdleNotificationV1, ListenerId> for WaylandThreadState {
         _qhandle: &QueueHandle<Self>,
     ) {
         let mapped = match event {
-            ext_idle_notification_v1::Event::Idled => Some(shared::IdleState::Idled),
-            ext_idle_notification_v1::Event::Resumed => Some(shared::IdleState::Resumed),
+            ext_idle_notification_v1::Event::Idled => Some(RawIdleEvent::Idled),
+            ext_idle_notification_v1::Event::Resumed => Some(RawIdleEvent::Resumed),
             _ => None,
         };
         if let Some(state_value) = mapped {
@@ -197,9 +223,9 @@ pub(crate) enum NotifyState {
     Inert,
 }
 
-/// Raw, not-yet-fanned-out `(ListenerId, IdleState)` events from [`connect_wayland_idle`], one per
+/// Raw, not-yet-fanned-out `(ListenerId, RawIdleEvent)` events from [`connect_wayland_idle`], one per
 /// `idled`/`resumed` on a live listener.
-pub(crate) type RawIdleEventReceiver = UnboundedReceiver<(ListenerId, shared::IdleState)>;
+pub(crate) type RawIdleEventReceiver = UnboundedReceiver<(ListenerId, RawIdleEvent)>;
 
 /// Establishes the separate Wayland connection (ADR-0010), binds `wl_seat` and
 /// `ext_idle_notifier_v1` at up to version 2, and spawns its dispatch thread. `wayland-client` 0.31's
@@ -244,11 +270,8 @@ pub(crate) fn connect_wayland_idle()
     Ok((live, raw_events_rx))
 }
 
-/// Sends one [`shared::IdleEvent`] per registered `generation_id` for each gated event (ADR-0032),
-/// and tracks both listeners of each pair to answer [`wayland_inhibited`] (ADR-0160).
-///
-/// Input-idle events never fan out. They exist to tell the compositor's silence apart from a seat
-/// that is not idle.
+/// Sends one [`shared::IdleEvent`] per registered `generation_id` for relevant listener events
+/// (ADR-0032, ADR-0299), and tracks both listeners to answer [`wayland_inhibited`] (ADR-0160).
 pub(crate) fn spawn_idle_event_forwarder(
     registry: Arc<Mutex<NotifyRegistry>>,
     gate: Arc<Mutex<super::gate::IdleGate>>,
@@ -267,39 +290,45 @@ pub(crate) fn spawn_idle_event_forwarder(
             // run between the producer's two sends, and two timers can expire separately.
             let batch = std::iter::once(first).chain(std::iter::from_fn(|| raw_events_rx.try_recv().ok()));
 
-            for (listener, state) in batch {
-                match state {
-                    shared::IdleState::Idled => {
+            for (listener, raw_event) in batch {
+                match raw_event {
+                    RawIdleEvent::Idled => {
                         let seen = if listener.respects_inhibitors { &mut gated_idle } else { &mut input_idle };
                         seen.insert(listener.duration);
                     }
-                    // Both sets, whichever listener said it. A resume means the seat is in use, so
-                    // idle evidence for that duration is stale either way. Clearing only the
-                    // reporting half made the answer depend on read order: a gated `Resumed` alone
-                    // left the input half idle, which reads as a held inhibitor, and the input
-                    // `Resumed` behind it is no evidence and preserved that false positive for as
-                    // long as the seat stayed busy.
-                    shared::IdleState::Resumed => {
+                    // Either resume invalidates the pair's comparison. Clearing only its own half
+                    // made a regular resume look like a new inhibitor until the next idle period.
+                    RawIdleEvent::Resumed => {
                         gated_idle.remove(&listener.duration);
                         input_idle.remove(&listener.duration);
                     }
                 }
-                if !listener.respects_inhibitors {
-                    continue;
-                }
-                let generation_ids = registry
-                    .lock()
-                    .expect("mutex poisoned")
-                    .fanout
-                    .get(&listener.duration)
-                    .cloned()
-                    .unwrap_or_default();
+
+                let (generation_ids, event_state) = {
+                    let reg = registry.lock().expect("mutex poisoned");
+                    let has_input_twin = reg
+                        .listeners
+                        .contains_key(&ListenerId { duration: listener.duration, respects_inhibitors: false });
+                    let state = threshold_event_state(raw_event, listener, has_input_twin);
+                    let Some(state) = state else { continue };
+                    let ids = reg.fanout.get(&listener.duration).cloned().unwrap_or_default();
+                    (ids, state)
+                };
+
+                // Keep the gate locked through sends so a logind resume cannot overtake an older idle.
+                let mut gate = gate.lock().expect("mutex poisoned");
                 for generation_id in generation_ids {
-                    let event = shared::IdleEvent { generation_id, threshold_sec: listener.duration.as_secs(), state };
+                    let event = shared::IdleEvent {
+                        generation_id,
+                        threshold_sec: listener.duration.as_secs(),
+                        state: event_state,
+                    };
                     // Gate after fan-out: it must see each pair to know which `Resumed` events it
-                    // owes when an inhibitor arrives (ADR-0139).
-                    let Some(event) = gate.lock().expect("mutex poisoned").observe(event) else { continue };
-                    if events_tx.send(event).is_err() {
+                    // owes when an inhibitor arrives (ADR-0139) and deliver one input resume during
+                    // an inhibitor hold (ADR-0299).
+                    if let Some(event) = gate.observe(event)
+                        && events_tx.send(event).is_err()
+                    {
                         return;
                     }
                 }
@@ -343,6 +372,26 @@ pub(crate) fn spawn_idle_event_forwarder(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_input_twin_names_input_and_the_regular_listener_names_other_activity() {
+        let regular = ListenerId { duration: Duration::from_secs(30), respects_inhibitors: true };
+        let input = ListenerId { respects_inhibitors: false, ..regular };
+        assert_eq!(threshold_event_state(RawIdleEvent::Idled, regular, true), Some(shared::IdleState::Idled));
+        assert_eq!(threshold_event_state(RawIdleEvent::Idled, input, true), None);
+        assert_eq!(
+            threshold_event_state(RawIdleEvent::Resumed, regular, true),
+            Some(shared::IdleState::Resumed { cause: shared::ResumeCause::Activity })
+        );
+        assert_eq!(
+            threshold_event_state(RawIdleEvent::Resumed, input, true),
+            Some(shared::IdleState::Resumed { cause: shared::ResumeCause::Input })
+        );
+        assert_eq!(
+            threshold_event_state(RawIdleEvent::Resumed, regular, false),
+            Some(shared::IdleState::Resumed { cause: shared::ResumeCause::Input })
+        );
+    }
 
     // ---- register_threshold_entry (threshold fan-out decision, TDD seam 1) ----
 

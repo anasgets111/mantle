@@ -256,10 +256,9 @@ impl IdleController {
             let notification = live.notifier.get_idle_notification(timeout_ms, &live.seat, &live.queue_handle, gated);
             live.registry.lock().expect("mutex poisoned").listeners.insert(gated, notification);
 
-            // The twin the compositor may not withhold. Its only job is to prove that silence on
-            // the gated listener means an application is holding the session awake, rather than a
-            // seat that is simply in use (ADR-0160). Version 1 compositors have no such request,
-            // and degrade to the pre-ADR-0160 answer: `inhibited` reports logind only.
+            // The twin the compositor may not withhold. It detects withheld idle notifications
+            // and distinguishes input from other regular-listener activity (ADR-0160, ADR-0299).
+            // Version 1 has no such request and reports logind inhibition only.
             if live.notifier.version() >= 2 {
                 let input = ListenerId { duration, respects_inhibitors: false };
                 let notification =
@@ -280,12 +279,15 @@ impl IdleController {
         self.pending.lock().expect("mutex poisoned").retain(|&queued| queued != (generation_id, sec));
         let notify = self.notify.read().expect("rwlock poisoned");
         let NotifyState::Live(live) = &*notify else { return };
-        let mut registry = live.registry.lock().expect("mutex poisoned");
-        let registry = &mut *registry;
-        cancel_threshold_entry(&mut registry.fanout, generation_id, sec);
-        for listener in take_unused_listeners(&mut registry.fanout, &mut registry.listeners) {
-            listener.destroy();
+        {
+            let mut registry = live.registry.lock().expect("mutex poisoned");
+            let registry = &mut *registry;
+            cancel_threshold_entry(&mut registry.fanout, generation_id, sec);
+            for listener in take_unused_listeners(&mut registry.fanout, &mut registry.listeners) {
+                listener.destroy();
+            }
         }
+        self.gate.lock().expect("mutex poisoned").forget_threshold(generation_id, sec);
     }
 
     /// `idle:inhibit(reason)` (ADR-0032): refcount decision, global 0->1 `Inhibit` call, and
@@ -527,15 +529,19 @@ async fn watch_idle_inhibitors(
         // `None` means the same idle answer as before. `BlockInhibited` changes for every kind of
         // inhibitor, while the list can change without the answer moving (mpv releases while
         // Firefox still holds one), so publish state on every change but gate on transitions.
-        if let Some(owed) = gate.lock().expect("mutex poisoned").set_blocked(blocked) {
-            if blocked {
-                info!("logind reports an idle inhibitor ({what}); threshold events are held until it is released");
-            } else {
-                info!("no idle inhibitor is held any more; threshold events resume");
-            }
-            for event in owed {
-                if events_tx.send(event).is_err() {
-                    return;
+        {
+            // Match the forwarder's lock-through-send ordering across the two producer tasks.
+            let mut gate = gate.lock().expect("mutex poisoned");
+            if let Some(owed) = gate.set_blocked(blocked) {
+                if blocked {
+                    info!("logind reports an idle inhibitor ({what}); threshold events are held until it is released");
+                } else {
+                    info!("no idle inhibitor is held any more; threshold events resume");
+                }
+                for event in owed {
+                    if events_tx.send(event).is_err() {
+                        return;
+                    }
                 }
             }
         }

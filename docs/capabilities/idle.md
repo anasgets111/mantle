@@ -47,10 +47,16 @@ None: read-only, so any method but `get`, `map` and `on_change` raises.
 
 | Method | Contract |
 | :--- | :--- |
-| `:register_threshold(seconds, on_idle, on_resume)` | Runs `on_idle` after `seconds` (1 to 4294967, whole) without input and `on_resume` when input returns. Returns an integer handle. If this idle period already passed `seconds` for another registration, `on_idle` runs at once |
+| `:register_threshold(seconds, on_idle, on_resume)` | Runs `on_idle` after `seconds` (1 to 4294967, whole) without input and `on_resume(cause)` when that idle ends or input follows a non-input resume. Returns an integer handle. If this idle period already passed `seconds` for another registration, `on_idle` runs at once |
 | `:cancel_threshold(handle)` | Drops one registration. An unknown or cancelled handle is a no-op |
 | `:inhibit(reason)` | Takes one hold on a logind `idle` block inhibitor. Counted: two calls need two releases |
 | `:release_inhibit()` | Releases one hold; with none held, a no-op |
+
+`on_resume` receives `"input"` for user input, `"activity"` when the compositor's regular idle
+notification resumes before input is confirmed, or `"inhibitor"` when logind blocks idle. An
+`"activity"` or `"inhibitor"` callback can be followed by `"input"` for the same idle period. On a
+protocol v1 compositor there is no input-only listener; its regular resume is reported as
+`"input"` and may also represent compositor-specific activity such as a presence sensor.
 
 | Event | Thresholds | Inhibit holds |
 | :--- | :--- | :--- |
@@ -64,7 +70,7 @@ None: read-only, so any method but `get`, `map` and `on_change` raises.
 | Thresholds | `ext_idle_notifier_v1` on the Supervisor's own Wayland connection. Missing protocol, or setup over 5 s: thresholds never fire, logged once |
 | Inhibit | Every hold, from any generation, shares one logind `Inhibit("idle", "block")` fd, closed when the last hold goes |
 | ScreenSaver | Hosts `org.freedesktop.ScreenSaver` when the name is free. A browser's video hold arrives here, directly or through xdg-desktop-portal, and takes the same fd. A client that leaves the bus loses its holds |
-| Gate | Mantle, not logind, acts on idle, so it honours inhibitors itself. While logind's `BlockInhibited` names `idle`, idled thresholds get `on_resume` and none fire; on release, ones still idle get `on_idle` again |
+| Gate | Mantle, not logind, acts on idle, so it honours inhibitors itself. While logind's `BlockInhibited` names `idle`, idled thresholds get `on_resume("inhibitor")` and none fire; input during the hold sends `on_resume("input")`. On release, ones still idle get `on_idle` again |
 | Compositor holds | A Wayland idle inhibitor shows when the shortest threshold's input-only twin fires and the normal notification does not, so it needs a registered threshold and an idle seat. It sets `inhibited` and adds one holder with an empty `who`. After a detected hold, input resuming sets `compositor_hold_stale`, removes the unconfirmed holder from `inhibitors`, and keeps `inhibited` at its last value until the next idle threshold |
 
 ## How do I…

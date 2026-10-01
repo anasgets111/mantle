@@ -7228,3 +7228,31 @@ shows again; output topology changes cannot revive a closed window whose address
 
 Amends ADR-0248's deferred window capture, decision 3's retry trigger and the dma-buf amendment's
 opaque-alpha import rule. The existing dma-buf double buffer remains shared by both targets.
+
+## 0299. An idle threshold resume reports its cause, distinguishing input from inhibitors
+
+Amends ADR-0032 and ADR-0139.
+
+A held logind inhibitor stops idle events by closing the ADR-0139 gate and sending `Resumed` for
+announced idle thresholds. That undims an already-idle screen when a film or backup starts, but
+sent the same resume event as physical input. Lua configs wake display power on resume, which powered
+monitors on in an empty room whenever an inhibitor was taken. Checking `mantle.idle.inhibited`
+inside the callback raced: the gate frame crossed the socket before the inhibitor list was queried
+over D-Bus and pushed in the state snapshot.
+
+1. **`shared::IdleState::Resumed { cause: ResumeCause }` represents the wire invariant.** An invalid
+   state (resumed without cause) cannot be constructed or deserialized; serde tags `state` and
+   flattens into `shared::IdleEvent`. Existing Lua callbacks can ignore the new argument.
+2. **Keep the two Wayland answers distinct.** On protocol v2, the regular listener's resume is
+   `"activity"`: a compositor may count presence without input. The input-only listener's resume is
+   `"input"`. Both stop an idle countdown, but only `"input"` proves input and should wake a dark
+   display. The regular listener can answer before its twin, so one idle period may get both resumes.
+   Protocol v1 has no input-only listener; its regular resume falls back to `"input"`, which cannot
+   exclude compositor-specific activity.
+3. **Keep an input wake pending after a non-input resume.** A logind block sends `"inhibitor"` for
+   announced idle thresholds. Later input must still reach Lua during the hold or after release.
+   The same applies after `"activity"`. Raw idle state remains separate so release replays `Idled`
+   only for thresholds still idle. A second raw resume after input does not repeat callbacks.
+4. **Hold the gate lock through each event send.** Otherwise a forwarder can observe `Idled`, then
+   a logind task can send `"inhibitor"`, then the forwarder can send its stale `Idled`. Lua would
+   restart its countdown during the hold.

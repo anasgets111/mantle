@@ -7,6 +7,8 @@ version is 0.x, a minor release can break the Lua API.
 
 ## Unreleased
 
+- `idle`: `on_resume` now receives `"input"`, `"activity"`, or `"inhibitor"`, so configs can wake displays only for input while stopping idle stages for other resumes.
+
 ## 0.1.0 - 2026-10-01
 
 First release. Mantle is an engine for Wayland desktop shells declared in Lua; it ships no shell of

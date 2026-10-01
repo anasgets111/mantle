@@ -591,7 +591,7 @@ local BatteryCapability = {}
 
 ---[docs](https://anasgets111.github.io/mantle/capabilities/idle.html)
 ---@class IdleCapability: ReadOnlyCapability<IdleState>, userdata
----@field register_threshold fun(self: IdleCapability, seconds: integer, on_idle: fun(), on_resume: fun()): integer Runs `on_idle` after `seconds` without input and `on_resume` when input returns; returns a handle for `cancel_threshold`. When an earlier registration at the same `seconds` has already gone idle this evaluation, `on_idle` runs at once. Reloads drop registrations.
+---@field register_threshold fun(self: IdleCapability, seconds: integer, on_idle: fun(), on_resume: fun(cause: "input" | "activity" | "inhibitor")): integer Runs `on_idle` after `seconds` without input and `on_resume` when idle ends or input follows a non-input resume; returns a handle for `cancel_threshold`. When an earlier registration at the same `seconds` has already gone idle this evaluation, `on_idle` runs at once. Reloads drop registrations.
 ---@field cancel_threshold fun(self: IdleCapability, handle: integer) Drops one registration; an unknown handle is a no-op.
 ---@field inhibit fun(self: IdleCapability, reason: string) Holds off idle system-wide (a logind `idle` inhibitor) until `release_inhibit`. Counted; holds survive in-place reloads and drop when the Renderer restarts.
 ---@field release_inhibit fun(self: IdleCapability) Releases one `inhibit` hold; with none held, a no-op.

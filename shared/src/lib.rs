@@ -199,15 +199,32 @@ pub enum ProcessStream {
     Stderr,
 }
 
-/// Supervisor -> Renderer: one `ext_idle_notification_v1` event, with wire values `"idled"` and
-/// `"resumed"` (ADR-0032). `#[serde(rename)]` pins the protocol's lowercase names instead of
-/// Rust's derived PascalCase.
+/// Why an `on_resume` threshold event fired (ADR-0299).
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ResumeCause {
+    Input,
+    Activity,
+    Inhibitor,
+}
+
+impl ResumeCause {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Input => "input",
+            Self::Activity => "activity",
+            Self::Inhibitor => "inhibitor",
+        }
+    }
+}
+
+/// A seat's transition relative to an idle threshold duration (ADR-0032, ADR-0299). The wire
+/// uses `"state": "idled"` or `"state": "resumed"` with a required resume `cause`.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "state", rename_all = "snake_case")]
 pub enum IdleState {
-    #[serde(rename = "idled")]
     Idled,
-    #[serde(rename = "resumed")]
-    Resumed,
+    Resumed { cause: ResumeCause },
 }
 
 /// Supervisor -> Renderer: an `ext_idle_notification_v1` event fanned out to `generation_id`
@@ -217,6 +234,7 @@ pub enum IdleState {
 pub struct IdleEvent {
     pub generation_id: u32,
     pub threshold_sec: u64,
+    #[serde(flatten)]
     pub state: IdleState,
 }
 
@@ -655,17 +673,33 @@ mod tests {
 
     #[test]
     fn supervisor_frame_idle_event_is_adjacently_tagged() {
-        for (state, wire_state) in [(IdleState::Idled, "idled"), (IdleState::Resumed, "resumed")] {
+        for (state, wire_state, wire_cause) in [
+            (IdleState::Idled, "idled", None),
+            (IdleState::Resumed { cause: ResumeCause::Input }, "resumed", Some("input")),
+            (IdleState::Resumed { cause: ResumeCause::Activity }, "resumed", Some("activity")),
+            (IdleState::Resumed { cause: ResumeCause::Inhibitor }, "resumed", Some("inhibitor")),
+        ] {
             let frame = SupervisorFrame::IdleEvent(IdleEvent { generation_id: 4, threshold_sec: 30, state });
             let wire = serde_json::to_value(&frame).unwrap();
-            assert_eq!(
-                wire,
-                serde_json::json!({ "kind": "IdleEvent", "data": { "generation_id": 4, "threshold_sec": 30, "state": wire_state } })
-            );
+            let mut expected = serde_json::json!({
+                "kind": "IdleEvent",
+                "data": { "generation_id": 4, "threshold_sec": 30, "state": wire_state }
+            });
+            if let Some(cause_name) = wire_cause {
+                expected["data"]["cause"] = serde_json::json!(cause_name);
+            }
+            assert_eq!(wire, expected);
 
             let parsed: SupervisorFrame = serde_json::from_value(wire).unwrap();
             assert_eq!(parsed, frame);
         }
+
+        // Deserializing a Resumed event without a cause must fail (ADR-0299).
+        let invalid = serde_json::json!({
+            "kind": "IdleEvent",
+            "data": { "generation_id": 4, "threshold_sec": 30, "state": "resumed" }
+        });
+        assert!(serde_json::from_value::<SupervisorFrame>(invalid).is_err());
     }
 
     #[test]

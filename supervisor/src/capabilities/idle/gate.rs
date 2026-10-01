@@ -9,10 +9,11 @@
 //!
 //! The gate closes both. `Manager.BlockInhibited` is a change-notified, colon-separated list, so
 //! one property watch answers whether any holder, including this shell, blocks idle. While it
-//! names `idle`, threshold events stop and `idle:inhibit(reason)` has its expected effect.
+//! names `idle`, idle thresholds stop and `idle:inhibit(reason)` has its expected effect. An input
+//! resume still reaches a threshold that was already idle when the hold began.
 //!
-//! Wayland surface inhibitors need nothing here: ADR-0032 uses `get_idle_notification` rather than
-//! `get_input_idle_notification`, and the compositor already withholds `idled` for them.
+//! The compositor's regular listener honours surface inhibitors; its input-only twin reports
+//! input even when a hold suppresses ordinary idle notifications.
 
 use std::collections::HashSet;
 
@@ -28,8 +29,11 @@ pub(crate) fn blocks_idle(block_inhibited: &str) -> bool {
 #[derive(Debug, Default)]
 pub(crate) struct IdleGate {
     blocked: bool,
-    /// Every `(generation_id, threshold_sec)` with an `Idled` and no `Resumed` since, blocked or not.
+    /// Gated listeners still idle, unless input already resumed that threshold.
     idled: HashSet<(u32, u64)>,
+    /// Thresholds resumed for an inhibitor or compositor activity, but not yet for input. A later
+    /// input still needs its own callback after either non-input resume.
+    awaiting_input: HashSet<(u32, u64)>,
 }
 
 impl IdleGate {
@@ -38,15 +42,39 @@ impl IdleGate {
     pub(crate) fn observe(&mut self, event: shared::IdleEvent) -> Option<shared::IdleEvent> {
         let key = (event.generation_id, event.threshold_sec);
         match event.state {
-            shared::IdleState::Idled => self.idled.insert(key),
-            shared::IdleState::Resumed => self.idled.remove(&key),
-        };
-        (!self.blocked).then_some(event)
+            shared::IdleState::Idled => {
+                self.idled.insert(key);
+                (!self.blocked).then_some(event)
+            }
+            shared::IdleState::Resumed { cause } => {
+                let was_idled = self.idled.remove(&key);
+                match cause {
+                    shared::ResumeCause::Input => {
+                        let awaiting_input = self.awaiting_input.remove(&key);
+                        (awaiting_input || (was_idled && !self.blocked)).then_some(event)
+                    }
+                    shared::ResumeCause::Activity if was_idled && !self.blocked => {
+                        self.awaiting_input.insert(key);
+                        Some(event)
+                    }
+                    shared::ResumeCause::Activity => None,
+                    shared::ResumeCause::Inhibitor => unreachable!("the gate creates inhibitor resumes"),
+                }
+            }
+        }
     }
 
     /// Drops a departed generation's thresholds so release does not replay them.
     pub(crate) fn forget(&mut self, generation_id: u32) {
         self.idled.retain(|&(idled_generation, _)| idled_generation != generation_id);
+        self.awaiting_input.retain(|&(idled_generation, _)| idled_generation != generation_id);
+    }
+
+    /// A cancelled last callback destroys its listener pair; a later registration starts fresh.
+    pub(crate) fn forget_threshold(&mut self, generation_id: u32, threshold_sec: u64) {
+        let key = (generation_id, threshold_sec);
+        self.idled.remove(&key);
+        self.awaiting_input.remove(&key);
     }
 
     /// A change in logind's idle-block answer; `None` if unchanged. A block takes back every idle
@@ -59,7 +87,12 @@ impl IdleGate {
             return None;
         }
         self.blocked = blocked;
-        let state = if blocked { shared::IdleState::Resumed } else { shared::IdleState::Idled };
+        let state = if blocked {
+            self.awaiting_input.extend(self.idled.iter().copied());
+            shared::IdleState::Resumed { cause: shared::ResumeCause::Inhibitor }
+        } else {
+            shared::IdleState::Idled
+        };
         let mut owed: Vec<shared::IdleEvent> = self
             .idled
             .iter()
@@ -74,10 +107,14 @@ impl IdleGate {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use shared::{IdleEvent, IdleState};
+    use shared::{IdleEvent, IdleState, ResumeCause};
 
     fn event(generation_id: u32, threshold_sec: u64, state: IdleState) -> IdleEvent {
         IdleEvent { generation_id, threshold_sec, state }
+    }
+
+    fn resumed(cause: ResumeCause) -> IdleState {
+        IdleState::Resumed { cause }
     }
 
     #[test]
@@ -101,7 +138,10 @@ mod tests {
     fn an_unblocked_gate_forwards_everything_untouched() {
         let mut gate = IdleGate::default();
         assert_eq!(gate.observe(event(1, 30, IdleState::Idled)), Some(event(1, 30, IdleState::Idled)));
-        assert_eq!(gate.observe(event(1, 30, IdleState::Resumed)), Some(event(1, 30, IdleState::Resumed)));
+        assert_eq!(
+            gate.observe(event(1, 30, resumed(ResumeCause::Input))),
+            Some(event(1, 30, resumed(ResumeCause::Input)))
+        );
     }
 
     #[test]
@@ -109,7 +149,7 @@ mod tests {
         let mut gate = IdleGate::default();
         gate.set_blocked(true);
         assert_eq!(gate.observe(event(1, 30, IdleState::Idled)), None);
-        assert_eq!(gate.observe(event(1, 30, IdleState::Resumed)), None);
+        assert_eq!(gate.observe(event(1, 30, resumed(ResumeCause::Input))), None);
     }
 
     /// A config dimmed at 30s must get its undim when a film takes an inhibitor, not wait for
@@ -122,7 +162,7 @@ mod tests {
 
         assert_eq!(
             gate.set_blocked(true),
-            Some(vec![event(1, 30, IdleState::Resumed), event(1, 300, IdleState::Resumed)])
+            Some(vec![event(1, 30, resumed(ResumeCause::Inhibitor)), event(1, 300, resumed(ResumeCause::Inhibitor)),])
         );
     }
 
@@ -130,7 +170,7 @@ mod tests {
     fn a_threshold_that_already_resumed_is_not_resumed_again() {
         let mut gate = IdleGate::default();
         gate.observe(event(1, 30, IdleState::Idled));
-        gate.observe(event(1, 30, IdleState::Resumed));
+        gate.observe(event(1, 30, resumed(ResumeCause::Input)));
 
         assert_eq!(gate.set_blocked(true), Some(Vec::new()));
     }
@@ -157,7 +197,7 @@ mod tests {
         gate.observe(event(1, 30, IdleState::Idled));
         gate.observe(event(1, 60, IdleState::Idled));
         gate.set_blocked(true);
-        gate.observe(event(1, 60, IdleState::Resumed));
+        gate.observe(event(1, 60, resumed(ResumeCause::Input)));
         gate.observe(event(1, 300, IdleState::Idled));
 
         assert_eq!(
@@ -175,5 +215,68 @@ mod tests {
         gate.forget(1);
 
         assert_eq!(gate.set_blocked(false), Some(vec![event(2, 30, IdleState::Idled)]));
+    }
+
+    /// ADR-0299: idle -> inhibitor -> input -> release delivers an input resume during the hold
+    /// and nothing on release, because activity already resumed the seat.
+    #[test]
+    fn idle_inhibitor_input_release_sequence_delivers_input_during_hold_and_nothing_on_release() {
+        let mut gate = IdleGate::default();
+        assert_eq!(gate.observe(event(1, 30, IdleState::Idled)), Some(event(1, 30, IdleState::Idled)));
+        assert_eq!(gate.set_blocked(true), Some(vec![event(1, 30, resumed(ResumeCause::Inhibitor))]));
+        assert_eq!(
+            gate.observe(event(1, 30, resumed(ResumeCause::Input))),
+            Some(event(1, 30, resumed(ResumeCause::Input)))
+        );
+        assert_eq!(gate.observe(event(1, 30, resumed(ResumeCause::Input))), None);
+        assert_eq!(gate.set_blocked(false), Some(Vec::new()));
+    }
+
+    #[test]
+    fn unblocked_twin_listeners_are_deduplicated_to_one_resume() {
+        let mut gate = IdleGate::default();
+        gate.observe(event(1, 30, IdleState::Idled));
+        assert_eq!(
+            gate.observe(event(1, 30, resumed(ResumeCause::Input))),
+            Some(event(1, 30, resumed(ResumeCause::Input)))
+        );
+        assert_eq!(gate.observe(event(1, 30, resumed(ResumeCause::Input))), None);
+    }
+
+    #[test]
+    fn compositor_activity_stops_idle_without_consuming_a_later_input() {
+        let mut gate = IdleGate::default();
+        assert_eq!(gate.observe(event(1, 30, IdleState::Idled)), Some(event(1, 30, IdleState::Idled)));
+        assert_eq!(
+            gate.observe(event(1, 30, resumed(ResumeCause::Activity))),
+            Some(event(1, 30, resumed(ResumeCause::Activity)))
+        );
+        assert_eq!(
+            gate.observe(event(1, 30, resumed(ResumeCause::Input))),
+            Some(event(1, 30, resumed(ResumeCause::Input)))
+        );
+        assert_eq!(gate.observe(event(1, 30, resumed(ResumeCause::Input))), None);
+    }
+
+    #[test]
+    fn input_after_inhibitor_release_is_delivered_after_activity() {
+        let mut gate = IdleGate::default();
+        gate.observe(event(1, 30, IdleState::Idled));
+        gate.set_blocked(true);
+        assert_eq!(gate.observe(event(1, 30, resumed(ResumeCause::Activity))), None);
+        assert_eq!(gate.set_blocked(false), Some(Vec::new()));
+        assert_eq!(
+            gate.observe(event(1, 30, resumed(ResumeCause::Input))),
+            Some(event(1, 30, resumed(ResumeCause::Input)))
+        );
+    }
+
+    #[test]
+    fn cancelling_a_threshold_drops_its_pending_input_resume() {
+        let mut gate = IdleGate::default();
+        gate.observe(event(1, 30, IdleState::Idled));
+        gate.observe(event(1, 30, resumed(ResumeCause::Activity)));
+        gate.forget_threshold(1, 30);
+        assert_eq!(gate.observe(event(1, 30, resumed(ResumeCause::Input))), None);
     }
 }
