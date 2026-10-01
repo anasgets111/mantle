@@ -309,7 +309,7 @@ impl CaptureCache {
         }
         let pending: Vec<(NodeId, PendingFrame)> = self.pending.drain().collect();
         for (node, mut frame) in pending {
-            let opaque = !frame.has_alpha || !matches!(self.targets.get(&node), Some(CaptureTarget::Window(_)));
+            let opaque = !frame.has_alpha || self.targets.get(&node).is_none_or(CaptureTarget::is_output);
             bgrx_to_rgba(&mut frame.pixels, opaque);
             let bytes = rgba_bytes(frame.width, frame.height);
             if !self.admits(node, bytes, frame.width, frame.height) {

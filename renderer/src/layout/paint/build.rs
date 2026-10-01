@@ -292,12 +292,12 @@ fn draw_for(
     let retained = node.displayed_source.as_deref();
     let dissolve = node.dissolve.as_deref();
     match node.paint.as_ref()? {
-        PaintStyle::Path { commands, fill, stroke, stroke_width } => Some(Draw::Path {
-            commands: commands.clone(),
-            fill: fill.as_ref().map(|fill| fade_fill(fill, opacity)),
-            stroke: stroke.as_ref().map(|fill| fade_fill(fill, opacity)),
-            stroke_width: *stroke_width,
-        }),
+        PaintStyle::Path(path) => Some(Draw::Path(node::VectorPath {
+            commands: path.commands.clone(),
+            fill: path.fill.as_ref().map(|fill| fade_fill(fill, opacity)),
+            stroke: path.stroke.as_ref().map(|fill| fade_fill(fill, opacity)),
+            stroke_width: path.stroke_width,
+        })),
         // The shared paint of `rect`/`row`/`column` and all four surface roles: background
         // fill, then borders. `clip` is not read here: it decides what this node's *children* are
         // cut to, `build_node`'s question, not this one's.

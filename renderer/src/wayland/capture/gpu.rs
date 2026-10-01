@@ -70,7 +70,7 @@ impl CaptureRegistry {
         let DmabufOffer { id, width, height, offered } = offer;
         self.ensure_probed(egl);
         let support_available = matches!(self.dmabuf_probe, DmabufProbe::Supported(_));
-        let opaque = self.sources.get(&id).is_some_and(|source| matches!(source.target, CaptureTarget::Output(_)));
+        let opaque = self.sources.get(&id).is_some_and(|source| source.target.is_output());
         let previously_failed = self.sources.get(&id).is_some_and(|source| source.dmabuf_failed);
         if !(support_available && !previously_failed) || self.dmabuf_manager.is_none() {
             return false;
@@ -143,7 +143,7 @@ pub(in crate::wayland) fn import_ready_dmabufs(
     let DmabufProbe::Supported(support) = dmabuf_probe else { return };
     for id in pending {
         let Some(source) = sources.get_mut(&id) else { continue };
-        let opaque = matches!(source.target, CaptureTarget::Output(_));
+        let opaque = source.target.is_output();
         let Some(buffer) = source.dmabuf.front_mut() else { continue };
         if dmabuf::import(support, egl, gl, canvas, buffer, opaque).is_none() {
             source.fail_dmabuf("failed to import a dma-buf texture");

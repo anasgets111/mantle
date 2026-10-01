@@ -19,7 +19,7 @@ thread_local! {
     pub(crate) static FIXTURE_ICONS: std::cell::RefCell<Option<PathBuf>> = const { std::cell::RefCell::new(None) };
 }
 
-/// The file for `name` at `size` pixels, or `None` if the active theme chain has no match.
+/// The file for `name` at `px` pixels, or `None` if the active theme chain has no match.
 ///
 /// An absolute `name` is returned directly. `.desktop` `Icon=` accepts either spelling, letting the
 /// tray use `icon { name = item.icon_name or item.icon_path }` without two node kinds.
@@ -35,7 +35,9 @@ thread_local! {
 /// Keep `freedesktop-icons`' `with_cache`: it caches parsed theme *indexes*, avoiding reads of
 /// every `index.theme` under `/usr/share/icons` on the first lookup, but not the per-name search
 /// this map removes.
-pub fn resolve(name: &str, size: u16) -> Option<PathBuf> {
+pub fn resolve(name: &str, px: u32) -> Option<PathBuf> {
+    // `freedesktop-icons` uses `u16`; themes have no directory above 512.
+    let size = px.min(512) as u16;
     if name.is_empty() {
         return None;
     }

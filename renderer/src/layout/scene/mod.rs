@@ -289,11 +289,10 @@ impl ResolvedNode {
     /// Children bottom to top: ascending `z`, declaration order among equals (ADR-0259).
     /// Allocates only when `z` reorders something.
     pub(super) fn painted_children(&self) -> impl DoubleEndedIterator<Item = &ResolvedNode> {
-        let mask = self.mask_target;
         let sorted = self.children.is_sorted_by(|a, b| a.z <= b.z);
-        let mut resorted: Vec<&ResolvedNode> = if sorted { Vec::new() } else { self.children.iter().collect() };
+        let mut resorted: Vec<&ResolvedNode> = if sorted { Vec::new() } else { self.content_children().collect() };
         resorted.sort_by(|a, b| a.z.total_cmp(&b.z));
-        self.children.iter().filter(move |_| sorted).chain(resorted).filter(move |child| Some(child.id) != mask)
+        self.content_children().filter(move |_| sorted).chain(resorted)
     }
 
     /// A node with `submit = true` or a pointer handler (ADR-0214).

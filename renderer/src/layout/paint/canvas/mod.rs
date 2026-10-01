@@ -195,9 +195,7 @@ fn run(painter: &mut TextPainter, walk: &mut Walk<'_, '_>, commands: &[DrawCmd],
         }
         let rect = command.rect;
         match &command.draw {
-            Draw::Path { commands, fill, stroke, stroke_width } => {
-                vector_path::paint(painter.canvas_mut(), rect, commands, fill.as_ref(), stroke.as_ref(), *stroke_width);
-            }
+            Draw::Path(path) => vector_path::paint(painter.canvas_mut(), rect, path),
             Draw::Box { background, radius, colors, widths } => {
                 let t0 = timing.then(Instant::now);
                 // `None` skips the fill; alpha 0 remains an explicit transparent rect.
@@ -253,8 +251,7 @@ fn run(painter: &mut TextPainter, walk: &mut Walk<'_, '_>, commands: &[DrawCmd],
             }
             Draw::Icon { name, px, alpha, color } => {
                 let t0 = timing.then(Instant::now);
-                // `freedesktop-icons` uses `u16`; themes have no directory above 512.
-                if let Some(path) = image::icons::resolve(name, (*px).min(512) as u16) {
+                if let Some(path) = image::icons::resolve(name, *px) {
                     let draw = FileDraw {
                         fit: Fit::Contain,
                         rect,

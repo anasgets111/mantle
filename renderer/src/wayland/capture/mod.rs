@@ -252,7 +252,13 @@ impl CaptureRegistry {
         }
     }
 
-    fn reconcile_source(&mut self, node: &CaptureNode, protocol: Option<Protocol>, cache: &mut CaptureCache) -> bool {
+    /// Matches `node`'s source to `protocol`, replacing one that differs; `None` when unsupported.
+    fn reconcile_source(
+        &mut self,
+        node: &CaptureNode,
+        protocol: Option<Protocol>,
+        cache: &mut CaptureCache,
+    ) -> Option<Protocol> {
         if self
             .sources
             .get(&node.node)
@@ -260,13 +266,13 @@ impl CaptureRegistry {
         {
             self.forget(node.node, cache);
         }
-        let Some(protocol) = protocol else { return false };
+        let protocol = protocol?;
         let source = self.sources.entry(node.node).or_insert_with(|| CaptureSource::new(node, protocol));
         source.live = node.live;
         source.paint_cursor = node.paint_cursor;
         source.region = node.region;
         cache.set_target(node.node, node.target.clone());
-        true
+        Some(protocol)
     }
 
     /// A stopped session. An output restarts on the next sync and keeps its last frame meanwhile;
@@ -275,7 +281,7 @@ impl CaptureRegistry {
         let Some(source) = self.sources.get_mut(&id) else { return };
         destroy_proto(source.proto.take());
         source.in_flight = false;
-        if matches!(source.target, CaptureTarget::Output(_)) {
+        if source.target.is_output() {
             return;
         }
         self.pending_free.extend(source.dmabuf.take_textures());
@@ -300,7 +306,7 @@ impl CaptureRegistry {
     /// Gives a failed source another chance: an output topology change is the case decision 3's
     /// backoff exists for (unplug mid-capture), so it is also the signal to retry.
     pub(super) fn clear_failures(&mut self) {
-        for source in self.sources.values_mut().filter(|source| matches!(source.target, CaptureTarget::Output(_))) {
+        for source in self.sources.values_mut().filter(|source| source.target.is_output()) {
             source.failed = false;
             source.warned_missing_output = false;
         }
@@ -338,17 +344,13 @@ impl App {
                 CaptureTarget::Output(_) => pick_protocol(node.region.is_some(), has_ext, has_wlr),
                 CaptureTarget::Window(_) => has_windows.then_some(Protocol::Ext),
             };
-            if !self.captures.reconcile_source(&node, protocol, &mut self.capture_cache) {
-                let kind = match node.target {
-                    CaptureTarget::Output(_) => "output",
-                    CaptureTarget::Window(_) => "window",
-                };
+            let Some(protocol) = self.captures.reconcile_source(&node, protocol, &mut self.capture_cache) else {
+                let kind = if node.target.is_output() { "output" } else { "window" };
                 if self.captures.warned_no_backend.insert(node.target.clone()) {
                     warn!("capture {kind} `{}` has no supported capture protocol; drawing nothing", node.target.name());
                 }
                 continue;
-            }
-            let protocol = protocol.expect("reconciled a supported protocol");
+            };
             let info = match &node.target {
                 CaptureTarget::Output(name) => {
                     self.wl_output_named(name).and_then(|output| self.output_state.info(&output))
@@ -417,15 +419,11 @@ impl App {
     /// with a live session of the same `paint_cursor` reuses it; anything else starts fresh.
     fn request_frame(&mut self, id: NodeId) {
         let Some(target) = self.captures.sources.get(&id).map(|source| source.target.clone()) else { return };
-        let output = match &target {
-            CaptureTarget::Output(name) => self.wl_output_named(name),
-            _ => None,
-        };
-        let window = match &target {
+        let (output, window) = match &target {
+            CaptureTarget::Output(name) => (self.wl_output_named(name), None),
             CaptureTarget::Window(name) => {
-                self.captures.backend.windows.as_ref().and_then(|windows| windows.handle(name))
+                (None, self.captures.backend.windows.as_ref().and_then(|windows| windows.handle(name)))
             }
-            _ => None,
         };
         if output.is_none() && window.is_none() {
             if let Some(source) = self.captures.sources.get_mut(&id)
@@ -460,13 +458,9 @@ impl App {
 
         match (protocol, &self.captures.backend) {
             (Protocol::Ext, Backend { ext: Some(manager), outputs, windows, .. }) => {
-                let capture_source = match (&output, &window) {
-                    (Some(output), _) => {
-                        outputs.as_ref().expect("output protocol selected").create_source(output, &qh, id)
-                    }
-                    (_, Some(window)) => {
-                        windows.as_ref().expect("window protocol selected").sources.create_source(window, &qh, id)
-                    }
+                let capture_source = match (&output, &window, outputs, windows) {
+                    (Some(output), _, Some(outputs), _) => outputs.create_source(output, &qh, id),
+                    (_, Some(window), _, Some(windows)) => windows.sources.create_source(window, &qh, id),
                     _ => return,
                 };
                 let options = if paint_cursor {
@@ -600,7 +594,7 @@ mod tests {
             paint_cursor: false,
             region: None,
         };
-        assert!(registry.reconcile_source(&node, Some(Protocol::Ext), &mut cache));
+        assert!(registry.reconcile_source(&node, Some(Protocol::Ext), &mut cache).is_some());
         assert!(cache.poll().is_empty());
         land_dmabuf_frame(&mut registry, &mut cache, &node.node);
         assert!(cache.get(node.node).is_none());
@@ -619,23 +613,23 @@ mod tests {
             paint_cursor: false,
             region: None,
         };
-        assert!(registry.reconcile_source(&node, Some(Protocol::Wlr), &mut cache));
+        assert!(registry.reconcile_source(&node, Some(Protocol::Wlr), &mut cache).is_some());
         registry.sources.get_mut(&node.node).unwrap().captured = true;
         registry.pending_import.push(node.node);
         node.target = CaptureTarget::Window("0xa11ce".into());
-        assert!(!registry.reconcile_source(&node, None, &mut cache));
+        assert!(registry.reconcile_source(&node, None, &mut cache).is_none());
         assert!(registry.sources.is_empty());
         assert!(registry.pending_import.is_empty());
         assert_eq!(cache.poll(), [node.node]);
-        assert!(!registry.reconcile_source(&node, None, &mut cache));
+        assert!(registry.reconcile_source(&node, None, &mut cache).is_none());
         assert!(cache.poll().is_empty(), "an unsupported target cannot create a repaint loop");
-        assert!(registry.reconcile_source(&node, Some(Protocol::Ext), &mut cache));
+        assert!(registry.reconcile_source(&node, Some(Protocol::Ext), &mut cache).is_some());
         assert!(!registry.sources[&node.node].captured);
         registry.sources.get_mut(&node.node).unwrap().failed = true;
         registry.clear_failures();
         assert!(registry.sources[&node.node].failed, "an output change must not revive a closed window address");
         node.target = CaptureTarget::Window("0xb0b".into());
-        assert!(registry.reconcile_source(&node, Some(Protocol::Ext), &mut cache));
+        assert!(registry.reconcile_source(&node, Some(Protocol::Ext), &mut cache).is_some());
         assert!(!registry.sources[&node.node].failed);
         assert_eq!(registry.sources[&node.node].live, Some(30.0));
     }
@@ -649,7 +643,7 @@ mod tests {
             let mut cache = CaptureCache::default();
             let node =
                 CaptureNode { node: NodeId::test(7), target, live: Some(30.0), paint_cursor: false, region: None };
-            assert!(registry.reconcile_source(&node, Some(Protocol::Ext), &mut cache));
+            assert!(registry.reconcile_source(&node, Some(Protocol::Ext), &mut cache).is_some());
             let source = registry.sources.get_mut(&node.node).unwrap();
             source.in_flight = true;
             let offer = DoneOffer { width: 640, height: 480, shm_format: None, dmabuf_formats: Vec::new() };
@@ -676,7 +670,7 @@ mod tests {
             [(output, CaptureTarget::Output("DP-1".into())), (window, CaptureTarget::Window("0xa11ce".into()))]
         {
             let node = CaptureNode { node, target, live: Some(30.0), paint_cursor: false, region: None };
-            assert!(registry.reconcile_source(&node, Some(Protocol::Ext), &mut cache));
+            assert!(registry.reconcile_source(&node, Some(Protocol::Ext), &mut cache).is_some());
             let source = registry.sources.get_mut(&node.node).unwrap();
             source.captured = true;
             source.in_flight = true;

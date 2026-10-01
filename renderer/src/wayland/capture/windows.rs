@@ -69,6 +69,12 @@ impl Windows {
     }
 }
 
+impl CaptureRegistry {
+    fn sources_where(&self, keep: impl Fn(&CaptureSource) -> bool) -> Vec<NodeId> {
+        self.sources.iter().filter_map(|(id, source)| keep(source).then_some(*id)).collect()
+    }
+}
+
 fn address(hi: u32, low: u32) -> String {
     format!("0x{:x}", (u64::from(hi) << 32) | u64::from(low))
 }
@@ -103,13 +109,7 @@ impl Dispatch<ExtForeignToplevelListV1, ()> for App {
                     windows.sources.destroy();
                 }
                 proxy.destroy();
-                let ids: Vec<_> = state
-                    .captures
-                    .sources
-                    .iter()
-                    .filter_map(|(id, source)| matches!(source.target, CaptureTarget::Window(_)).then_some(*id))
-                    .collect();
-                for id in ids {
+                for id in state.captures.sources_where(|source| !source.target.is_output()) {
                     state.captures.stop(id, &mut state.capture_cache);
                 }
             }
@@ -139,13 +139,8 @@ impl Dispatch<ExtForeignToplevelHandleV1, ()> for App {
                 mapping.destroy();
             }
             if let Some(address) = row.address {
-                let ids: Vec<_> = state
-                    .captures
-                    .sources
-                    .iter()
-                    .filter_map(|(id, source)| (source.target == CaptureTarget::Window(address.clone())).then_some(*id))
-                    .collect();
-                for id in ids {
+                let target = CaptureTarget::Window(address);
+                for id in state.captures.sources_where(|source| source.target == target) {
                     state.captures.stop(id, &mut state.capture_cache);
                 }
             }
@@ -173,16 +168,10 @@ impl Dispatch<HyprlandToplevelWindowMappingHandleV1, ExtForeignToplevelHandleV1>
         if let hyprland_toplevel_window_mapping_handle_v1::Event::WindowAddress { address_hi, address: low } = event {
             let name = address(address_hi, low);
             row.address = Some(name.clone());
-            let ids: Vec<_> = state
-                .captures
-                .sources
-                .iter()
-                .filter_map(|(id, source)| {
-                    (source.target == CaptureTarget::Window(name.clone()) && !source.in_flight && !source.failed)
-                        .then_some(*id)
-                })
-                .collect();
-            for id in ids {
+            let target = CaptureTarget::Window(name.clone());
+            for id in
+                state.captures.sources_where(|source| source.target == target && !source.in_flight && !source.failed)
+            {
                 state.request_when_due(id);
             }
         }

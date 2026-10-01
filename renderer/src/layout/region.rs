@@ -236,9 +236,10 @@ fn takes_input_as_a_box(node: &ResolvedNode, paint_claims: bool) -> bool {
             Some(PaintStyle::Box { background, widths, .. }) => {
                 background.is_some() || [widths.top, widths.right, widths.bottom, widths.left].iter().any(|w| *w > 0.0)
             }
-            Some(PaintStyle::Path { commands, fill, stroke, stroke_width }) => {
-                (fill.is_some() || stroke.is_some() && *stroke_width > 0.0)
-                    && commands
+            Some(PaintStyle::Path(path)) => {
+                (path.fill.is_some() || path.stroke.is_some() && path.stroke_width > 0.0)
+                    && path
+                        .commands
                         .iter()
                         .any(|command| matches!(command.op, node::PathOp::L | node::PathOp::Q | node::PathOp::C))
             }

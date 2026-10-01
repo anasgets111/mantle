@@ -1,16 +1,13 @@
 //! Vector leaves use the same fills, canvas state and subtree effects as box paint.
 use super::shape::fill_paint;
-use crate::layout::node::{Fill, PathCommand, PathOp};
+use crate::layout::node::{PathOp, VectorPath};
 use crate::text::snap::LogicalRect;
 use femtovg::{Canvas, Path, renderer::OpenGl};
 
 pub(super) fn paint(
     canvas: &mut Canvas<OpenGl>,
     rect: LogicalRect,
-    commands: &[PathCommand],
-    fill: Option<&Fill>,
-    stroke: Option<&Fill>,
-    stroke_width: f32,
+    VectorPath { commands, fill, stroke, stroke_width }: &VectorPath,
 ) {
     if rect.is_empty() || commands.is_empty() {
         return;
@@ -30,9 +27,9 @@ pub(super) fn paint(
     if let Some(fill) = fill {
         canvas.fill_path(&path, &fill_paint(fill, rect));
     }
-    if let Some(stroke) = stroke.filter(|_| stroke_width > 0.0) {
+    if let Some(stroke) = stroke.as_ref().filter(|_| *stroke_width > 0.0) {
         let mut paint = fill_paint(stroke, rect);
-        paint.set_line_width(stroke_width);
+        paint.set_line_width(*stroke_width);
         canvas.stroke_path(&path, &paint);
     }
 }

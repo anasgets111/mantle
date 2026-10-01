@@ -19,6 +19,15 @@ lua_shape! {
     }
 }
 
+/// A `path` node's paint, shared by its [`PaintStyle`](super::PaintStyle) and its display-list draw.
+#[derive(Debug, Clone, PartialEq)]
+pub struct VectorPath {
+    pub commands: Vec<PathCommand>,
+    pub fill: Option<super::Fill>,
+    pub stroke: Option<super::Fill>,
+    pub stroke_width: f32,
+}
+
 pub(crate) struct PathCommands;
 spelled!(PathCommands => "PathCommand[]");
 

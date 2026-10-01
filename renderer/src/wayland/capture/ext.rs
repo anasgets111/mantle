@@ -40,8 +40,7 @@ impl Dispatch<ext_image_copy_capture_session_v1::ExtImageCopyCaptureSessionV1, N
             }
             Event::ShmFormat { format: WEnum::Value(format) } => {
                 let (width, height, current) = ext.negotiating.unwrap_or((0, 0, None));
-                ext.negotiating =
-                    Some((width, height, keep_supported(current, format, matches!(target, CaptureTarget::Output(_)))));
+                ext.negotiating = Some((width, height, keep_supported(current, format, target.is_output())));
             }
             Event::ShmFormat { format: WEnum::Unknown(_) } => {}
             Event::DmabufFormat { format, modifiers } => {

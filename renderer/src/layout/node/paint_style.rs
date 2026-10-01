@@ -28,6 +28,11 @@ impl CaptureTarget {
             Self::Output(name) | Self::Window(name) => name,
         }
     }
+
+    /// Outputs are opaque and outlive their session; windows keep alpha and close.
+    pub fn is_output(&self) -> bool {
+        matches!(self, Self::Output(_))
+    }
 }
 
 /// Parsed paint properties with no `mlua::Value`. A kind admitted by
@@ -35,12 +40,7 @@ impl CaptureTarget {
 /// identity, so keeping one here would make a signal-resolved table repaint forever (ADR-0063).
 #[derive(Debug, Clone, PartialEq)]
 pub enum PaintStyle {
-    Path {
-        commands: Vec<PathCommand>,
-        fill: Option<Fill>,
-        stroke: Option<Fill>,
-        stroke_width: f32,
-    },
+    Path(VectorPath),
     /// Box fill/border for containers and all four surface roles. `clip` travels with `radius`
     /// because it changes how the node's shape clips descendants.
     /// A negative `radius` is a scoop (`node::parse_radius`). `mask` covers the node's own paint
@@ -136,12 +136,12 @@ pub fn paint_style(kind: &str, properties: &PropMap) -> Result<Option<PaintStyle
             clip: paint::clip.read(properties)?,
             mask: paint::mask.read(properties)?,
         },
-        "path" => PaintStyle::Path {
+        "path" => PaintStyle::Path(VectorPath {
             commands: path::commands.read(properties)?,
             fill: path::fill.read(properties)?,
             stroke: path::stroke.read(properties)?,
             stroke_width: path::stroke_width.read(properties)?,
-        },
+        }),
         "text" => {
             let (content, runs) = text::content.read(properties)?;
             let font_size = text::font_size.read(properties)?;
