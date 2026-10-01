@@ -107,9 +107,9 @@ A source build needs Rust 1.99 or later, a C compiler and `pkg-config` for vendo
 
 | Distro | Packages |
 | :--- | :--- |
-| Arch | `base-devel clang pipewire pam systemd-libs wayland libxkbcommon libglvnd mesa` |
-| Fedora | `gcc pkgconf-pkg-config clang pipewire-devel pam-devel systemd-devel wayland-devel libxkbcommon-devel mesa-libEGL-devel mesa-libgbm-devel` |
-| Debian, Ubuntu | `build-essential pkg-config clang libclang-dev libpipewire-0.3-dev libpam0g-dev libudev-dev libwayland-dev libxkbcommon-dev libegl-dev libgbm-dev` |
+| Arch | `base-devel clang pipewire pam systemd-libs wayland libxkbcommon libglvnd mesa glib2 libsecret` |
+| Fedora | `gcc pkgconf-pkg-config clang pipewire-devel pam-devel systemd-devel wayland-devel libxkbcommon-devel mesa-libEGL-devel mesa-libgbm-devel glib2-devel libsecret-devel` |
+| Debian, Ubuntu | `build-essential pkg-config clang libclang-dev libpipewire-0.3-dev libpam0g-dev libudev-dev libwayland-dev libxkbcommon-dev libegl-dev libgbm-dev libglib2.0-dev libsecret-1-dev` |
 
 Use [rustup](https://rustup.rs) where the distro's `cargo` is older. Mantle is developed and run
 on Arch. The Fedora and Debian package lists build the workspace in a container; running the

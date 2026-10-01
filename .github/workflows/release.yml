@@ -26,7 +26,7 @@ jobs:
           DEBIAN_FRONTEND=noninteractive apt-get install -qy --no-install-recommends \
             ca-certificates curl build-essential pkg-config clang libclang-dev \
             libpipewire-0.3-dev libpam0g-dev libudev-dev libwayland-dev libxkbcommon-dev \
-            libegl-dev libgbm-dev
+            libegl-dev libgbm-dev libglib2.0-dev libsecret-1-dev
       - name: nfpm
         run: |
           curl -fsSLo /tmp/nfpm.deb https://github.com/goreleaser/nfpm/releases/download/v2.47.0/nfpm_2.47.0_amd64.deb
@@ -69,6 +69,11 @@ jobs:
           # Both binaries load and the renderer evaluates the starter config, with no compositor.
           "$root/usr/local/bin/mantle" check -c share/starter
           if readelf -d "$root"/usr/local/lib/mantle/* | grep -q libalpm; then exit 1; fi
+          # Every linked library needs an rpm soname in nfpm.yaml; glibc's own come with libc6.
+          for lib in $(readelf -d "$root"/usr/local/lib/mantle/* | sed -n 's/.*Shared library: \[\(.*\)\]/\1/p' | sort -u); do
+            case "$lib" in ld-linux*|libm.so*) continue ;; esac
+            grep -qF -- "- $lib" packaging/nfpm.yaml || { echo "$lib is missing from packaging/nfpm.yaml"; exit 1; }
+          done
           echo "glibc floor: $(readelf -W --dyn-syms "$root"/usr/local/lib/mantle/* | grep -o 'GLIBC_[0-9.]*' | sort -uV | tail -1)"
           tar -C "$root" -czf "stage/$name.tar.gz" usr etc
           nfpm package -f packaging/nfpm.yaml -p deb -t stage/
