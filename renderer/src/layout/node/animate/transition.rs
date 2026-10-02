@@ -31,9 +31,9 @@ lua_shape! {
         /// - `mantle_from(uv)`, `mantle_to(uv)`: outgoing and incoming pictures, premultiplied and already placed by `fit`; transparent outside the picture.
         /// - `u_from_rect`, `u_to_rect`: each picture's `(x, y, w, h)` in box fractions (may exceed `0..1` under `"cover"`).
         /// - Output: premultiplied RGBA in `fragColor`, same colour space as the inputs. The engine applies `opacity` after.
-        /// - Names starting `u_` or `mantle_` are reserved. A shader that fails to compile or link, or declares a uniform other than `float`/`vec2`-`vec4`, logs once and falls back to the dissolve. A shader that hangs the GPU hangs the session.
+        /// - Names starting `u_` or `mantle_` are reserved. A shader that fails to compile or link, or declares a uniform other than `float`/`vec2`-`vec4` or an array of one, logs once and falls back to the dissolve. A shader that hangs the GPU hangs the session.
         pub shader: Option<PathBuf>,
-        /// Uniform values by name: a finite number for `float`, 2-4 numbers for `vec2`-`vec4`. Missing uniforms are `0`; unknown names are ignored. Refused without `shader`.
+        /// Uniform values by name: a finite number for `float`, a list of up to 4096 for `vec2`-`vec4` or an array of either, flattened. Missing uniforms are `0`; unknown names are ignored. Refused without `shader`.
         pub params: Value as Option<Params>,
     }
 }
@@ -86,9 +86,12 @@ impl TransitionInput {
     }
 }
 
-/// A uniform name, its value zero-padded to four, and how many the config wrote; the compiled
-/// uniform's type decides how many reach the shader, and a different count is logged.
-pub type ShaderParam = (String, [f32; 4], usize);
+/// A uniform name and the numbers the config wrote; the compiled uniform's type and array length
+/// decide how many reach the shader, and a different count is logged.
+pub type ShaderParam = (String, Vec<f32>);
+
+/// The most numbers one `params` entry takes: `vec4[1024]`, past any driver's uniform budget.
+const MAX_PARAM_NUMBERS: usize = 4096;
 
 /// A `shader`'s `params`, and a `transition`'s: [`parse_shader_params`].
 pub(crate) struct Params;
@@ -103,7 +106,7 @@ impl Prop for Params {
 }
 
 /// `params = { softness = 0.1, tint = { 1, 0.5, 0, 1 } }`: uniform names to a number or a list of
-/// two to four (ADR-0184, vectors ADR-0253). Sorted, so the list is a value two runs can compare.
+/// up to [`MAX_PARAM_NUMBERS`] (ADR-0184, vectors ADR-0253, arrays ADR-0300). Sorted, so the list is a value two runs can compare.
 pub(in crate::layout::node) fn parse_shader_params(what: &str, value: &Value) -> Result<Vec<ShaderParam>, LayoutError> {
     let table = match value {
         Value::Nil => return Ok(Vec::new()),
@@ -112,7 +115,7 @@ pub(in crate::layout::node) fn parse_shader_params(what: &str, value: &Value) ->
             return Err(invalid(
                 what,
                 format!(
-                    "expected a table of uniform names to a number or a list of two to four, got {}",
+                    "expected a table of uniform names to a number or a list of numbers, got {}",
                     preview_for_error(other)
                 ),
             ));
@@ -131,24 +134,19 @@ pub(in crate::layout::node) fn parse_shader_params(what: &str, value: &Value) ->
                 .filter(|number| number.is_finite())
                 .ok_or_else(|| invalid(&field, format!("expected a finite number, got {}", preview_for_error(value))))
         };
-        let mut components = [0.0; 4];
-        let count = match &value {
+        let numbers = match &value {
             Value::Table(list) => {
                 let len = list.raw_len();
-                if !(2..=4).contains(&len) {
-                    return Err(invalid(&field, format!("expected two to four numbers, got {len}")));
+                if !(1..=MAX_PARAM_NUMBERS).contains(&len) {
+                    return Err(invalid(&field, format!("expected 1 to {MAX_PARAM_NUMBERS} numbers, got {len}")));
                 }
-                for (slot, index) in components.iter_mut().zip(1..=len) {
-                    *slot = finite(&list.raw_get(index).map_err(|e| invalid(&field, e.to_string()))?)?;
-                }
-                len
+                (1..=len)
+                    .map(|index| finite(&list.raw_get(index).map_err(|e| invalid(&field, e.to_string()))?))
+                    .collect::<Result<_, _>>()?
             }
-            scalar => {
-                components[0] = finite(scalar)?;
-                1
-            }
+            scalar => vec![finite(scalar)?],
         };
-        out.push((name, components, count));
+        out.push((name, numbers));
     }
     // Sorted uniform names make equivalent shader runs compare equal; the shader ignores names it lacks.
     out.sort_by(|a, b| a.0.cmp(&b.0));

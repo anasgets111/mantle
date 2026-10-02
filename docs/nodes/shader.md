@@ -46,7 +46,7 @@ void main() {
 | :--- | :--- | :--- | :--- |
 | `source` | `string\|Bound` | `""` | Absolute `.frag` path; relative is refused, `""` draws nothing. Compiling, errors and reloads: [the .frag file](#the-frag-file) |
 | `progress` | `number\|Bound`, `[-8192, 8192]` | `0` | Becomes `u_progress`. There is no clock uniform: [animate](../guide/animation.md) this for motion; the wide range lets a spring overshoot |
-| `params` | `table<string, number\|number[]>\|Bound` | `{}` | Uniforms by name: a finite number for `float`, 2-4 numbers for `vec2`-`vec4`. Missing ones are `0`. Not tweened |
+| `params` | `table<string, number\|number[]>\|Bound` | `{}` | Uniforms by name: a finite number for `float`, a list of up to 4096 for `vec2`-`vec4` or an array of either, flattened. Missing ones are `0`. Not tweened |
 <!-- End of the generated table. -->
 
 It has no intrinsic size: without `width` and `height` it draws nothing. `opacity`, transforms,
@@ -65,7 +65,7 @@ first line.
 | `fragColor` | `out vec4` | Premultiplied RGBA. The engine multiplies it by the node's opacity afterwards |
 | `u_progress` | `float` | The node's `progress` |
 | `u_size` | `vec2` | The node's size in logical px |
-| `uniform float`, `vec2`, `vec3`, `vec4` of your own | | Set from `params` by name, `0` when `params` leaves one out. A `params` name with no uniform is ignored; a wrong component count is padded or truncated and logged once |
+| `uniform float`, `vec2`, `vec3`, `vec4` of your own, or arrays of them | | Set from `params` by name, `0` when `params` leaves one out. An array takes one flat list, element after element. A `params` name with no uniform is ignored; a wrong component count is padded or truncated and logged once |
 
 Write `void main()`. `params` never sets a uniform named `u_*` or `mantle_*`. A uniform the shader reads of any
 other type, such as an `int` or a `sampler2D`, refuses the whole shader.
@@ -84,6 +84,7 @@ other type, such as an `int` or a `sampler2D`, refuses the whole shader.
 | Fade an effect in and out | Bind `progress` to 0 or 1 and tween it with `animate`, as above |
 | Loop an animation | `animate = { progress = { keyframes = { 0, 1 }, duration = 2000, loops = "Infinite" } }` ([keyframes](../guide/animation.md#keyframes)) |
 | Pass a colour | A `vec3` or `vec4` uniform, `params = { tint = { r, g, b } }` in `0..1` |
+| Pass many values, like a visualizer's bars | `uniform vec4 bars[64]` takes 256 numbers, `params = { bars = levels }`; read bar `i` as `bars[i / 4][i % 4]`. Drivers may count each `float` array element as a whole `vec4` against the uniform limit, so pack into `vec4`s |
 | Work in pixels | `v_uv * u_size` is the fragment's position in logical px |
 | Click a shader | Give it `on_click`; without a handler it is transparent to the pointer |
 | Round its corners | Wrap it in a `rect` with `radius` and `clip = "Rounded"` ([clip](../guide/paint.md#clip)) |

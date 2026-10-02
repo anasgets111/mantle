@@ -145,9 +145,10 @@ struct Program {
     opacity: Option<glow::UniformLocation>,
     /// Every other active uniform, by the name a config's `params` key has to match. A shader may
     /// declare one and never use it, in which case the compiler drops it and it is absent here;
-    /// supplying a value for it is not an error. Carries its component count, and whether a
-    /// `params` entry of another count has been logged for this revision.
-    params: HashMap<String, (glow::UniformLocation, usize, std::cell::Cell<bool>)>,
+    /// supplying a value for it is not an error. Carries its components per element, its element
+    /// count (1 unless an array), and whether a `params` entry of another count has been logged for
+    /// this revision.
+    params: HashMap<String, (glow::UniformLocation, usize, usize, std::cell::Cell<bool>)>,
 }
 
 /// A transition's two endpoint textures, and where each sits inside the node's box after its
@@ -346,14 +347,14 @@ impl ShaderStage {
                 if uniform.name.starts_with("u_") || uniform.name.starts_with("mantle_") {
                     continue;
                 }
-                let count = match uniform.utype {
+                let width = match uniform.utype {
                     glow::FLOAT => 1,
                     glow::FLOAT_VEC2 => 2,
                     glow::FLOAT_VEC3 => 3,
                     glow::FLOAT_VEC4 => 4,
                     _ => {
                         error!(
-                            "{}: `{}` is not a `float` or `vec2`-`vec4`, which is all `params` carries",
+                            "{}: `{}` is not a `float` or `vec2`-`vec4`, or an array of one, which is all `params` carries",
                             path.display(),
                             uniform.name
                         );
@@ -361,8 +362,10 @@ impl ShaderStage {
                         return None;
                     }
                 };
+                // An array reports as `name[0]`, whose location is the first element's.
                 if let Some(location) = gl.get_uniform_location(program, &uniform.name) {
-                    params.insert(uniform.name, (location, count, std::cell::Cell::new(false)));
+                    let name = uniform.name.strip_suffix("[0]").unwrap_or(&uniform.name).to_string();
+                    params.insert(name, (location, width, uniform.size.max(1) as usize, std::cell::Cell::new(false)));
                 }
             }
             Some(Program {
@@ -472,21 +475,26 @@ impl ShaderStage {
             // Every param the program has, not only the ones this node supplied. A uniform holds
             // its value in the program, and two nodes sharing one shader would otherwise inherit
             // each other's: the one that omits `softness` would get whatever the other last set.
-            for (name, (location, count, warned)) in &program.params {
-                let (value, given) = run
-                    .params
-                    .iter()
-                    .find(|(param, ..)| param == name)
-                    .map_or(([0.0; 4], *count), |(_, value, given)| (*value, *given));
+            for (name, (location, width, length, warned)) in &program.params {
+                let count = width * length;
+                // Empty when this node leaves it out: a parsed list holds at least one number.
+                let given = run.params.iter().find(|(param, _)| param == name).map_or(&[][..], |(_, value)| value);
                 // Logged, not refused: the mismatch is only knowable here, after the pass.
-                if given != *count && !warned.replace(true) {
-                    error!("`params.{name}` has {given} numbers for a uniform of {count}; padded or truncated");
+                if !given.is_empty() && given.len() != count && !warned.replace(true) {
+                    error!("`params.{name}` has {} numbers for a uniform of {count}; padded or truncated", given.len());
                 }
-                match count {
-                    2 => gl.uniform_2_f32_slice(Some(location), &value[..2]),
-                    3 => gl.uniform_3_f32_slice(Some(location), &value[..3]),
-                    4 => gl.uniform_4_f32_slice(Some(location), &value),
-                    _ => gl.uniform_1_f32(Some(location), value[0]),
+                let padded: Vec<f32>;
+                let value = if given.len() == count {
+                    given
+                } else {
+                    padded = given.iter().copied().chain(std::iter::repeat(0.0)).take(count).collect();
+                    &padded
+                };
+                match width {
+                    2 => gl.uniform_2_f32_slice(Some(location), value),
+                    3 => gl.uniform_3_f32_slice(Some(location), value),
+                    4 => gl.uniform_4_f32_slice(Some(location), value),
+                    _ => gl.uniform_1_f32_slice(Some(location), value),
                 }
             }
 

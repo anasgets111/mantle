@@ -1677,6 +1677,27 @@ pub(crate) mod tests {
         assert_eq!(px, [(0, 0, 255, 255), (0, 0, 0, 0), (0, 0, 255, 255), (0, 0, 255, 255)]);
     }
 
+    /// ADR-0300. A flat `params` list fills a `float` or `vec4` array the shader indexes at run
+    /// time; a short list leaves the rest zero.
+    #[test]
+    fn a_params_list_fills_a_uniform_array() {
+        let dir = tempfile::tempdir().unwrap();
+        let frag = dir.path().join("bars.frag");
+        std::fs::write(
+            &frag,
+            "uniform float bars[4]; uniform vec4 tint[2];
+            void main() { fragColor = vec4(bars[int(v_uv.x * 4.0)], tint[1].g, 0.0, 1.0); }",
+        )
+        .unwrap();
+        let src = format!(
+            r##"return panel {{ id = "bar", width = 64, height = 16, child = shader {{ width = 64, height = 16,
+                source = "{}", params = {{ bars = {{ 1, 0.2, 0.6 }}, tint = {{ 0, 0, 0, 0, 0, 1, 0, 0 }} }} }} }}"##,
+            frag.display()
+        );
+        let Some(px) = paint_with_gl(&src, (64, 16), &[(8, 8), (24, 8), (40, 8), (56, 8)]) else { return };
+        assert_eq!(px, [(255, 255, 0, 255), (51, 255, 0, 255), (153, 255, 0, 255), (0, 255, 0, 255)]);
+    }
+
     /// ADR-0256. femtovg opens a flush on the program its last one ended on without setting that
     /// program's view, which an offscreen of another size left at its own: a gradient ground
     /// drifted between frames.

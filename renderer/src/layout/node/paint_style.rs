@@ -347,15 +347,15 @@ mod tests {
         );
     }
 
-    /// ADR-0253. A param is a number or a list of two to four, padded to a `vec4` and keeping its
-    /// count; `progress` may sit below zero so a spring can undershoot. `source` is absolute or
-    /// empty: a relative path would resolve against the Renderer's working directory.
+    /// ADR-0253, ADR-0300. A param is a number or a flat list of up to 4096; `progress` may sit
+    /// below zero so a spring can undershoot. `source` is absolute or empty: a relative path would
+    /// resolve against the Renderer's working directory.
     #[test]
     fn shader_parses_progress_and_float_or_vector_params() {
         let lua = Lua::new();
         let parsed = style(
             &lua,
-            r#"return { kind = "shader", source = "/s.frag", progress = -0.1, params = { a = 2, b = { 1, 2, 3 } } }"#,
+            r#"return { kind = "shader", source = "/s.frag", progress = -0.1, params = { a = 2, b = { 1, 2, 3 }, c = { 7 } } }"#,
         )
         .unwrap()
         .unwrap();
@@ -364,10 +364,18 @@ mod tests {
             PaintStyle::Shader {
                 source: "/s.frag".to_string(),
                 progress: -0.1,
-                params: vec![("a".to_string(), [2.0, 0.0, 0.0, 0.0], 1), ("b".to_string(), [1.0, 2.0, 3.0, 0.0], 3)],
+                params: vec![
+                    ("a".to_string(), vec![2.0]),
+                    ("b".to_string(), vec![1.0, 2.0, 3.0]),
+                    ("c".to_string(), vec![7.0]),
+                ],
             }
         );
-        for bad in ["{ 1, 2, 3, 4, 5 }", "{ 1 }", "{}", r#"{ 1, "a" }"#, "{ 1, 0/0 }"] {
+        let bars = format!("{{ {} }}", vec!["0.5"; 256].join(", "));
+        let parsed = style(&lua, &format!(r#"return {{ kind = "shader", params = {{ bars = {bars} }} }}"#));
+        assert!(matches!(parsed, Ok(Some(PaintStyle::Shader { params, .. })) if params[0].1 == vec![0.5; 256]));
+        let too_long = format!("{{ {} }}", vec!["0"; 4097].join(", "));
+        for bad in [too_long.as_str(), "{}", r#"{ 1, "a" }"#, "{ 1, 0/0 }"] {
             let src = format!(r#"return {{ kind = "shader", params = {{ v = {bad} }} }}"#);
             let err = style(&lua, &src).unwrap_err();
             assert!(

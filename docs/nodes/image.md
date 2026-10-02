@@ -55,7 +55,7 @@ return { panel {
 | `duration` | ms, `[1, 60000]` | Required | Length of the cross |
 | `easing` | An [easing](../guide/animation.md) | `"InOutQuad"` | Drives `u_progress` |
 | `shader` | Absolute `.frag` path | Built-in cross-dissolve | Replaces the dissolve. Recompiled when the file changes |
-| `params` | `{ name = number \| { 2 to 4 numbers } }` | `{}` | Uniforms for that shader, as on a [shader node](shader.md). Refused without `shader` |
+| `params` | `{ name = number \| { up to 4096 numbers } }` | `{}` | Uniforms for that shader, as on a [shader node](shader.md). Refused without `shader` |
 
 The first picture appears without a transition. A transition shader gets everything a
 [shader node](shader.md#the-frag-file) gets, plus:

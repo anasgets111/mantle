@@ -7256,3 +7256,20 @@ over D-Bus and pushed in the state snapshot.
 4. **Hold the gate lock through each event send.** Otherwise a forwarder can observe `Idled`, then
    a logind task can send `"inhibitor"`, then the forwarder can send its stale `Idled`. Lua would
    restart its countdown during the hold.
+
+## 0300. Shader `params` fill uniform arrays from one flat list
+
+ADR-0253 capped a param at a `vec4`. A 256-bar visualizer then needs 64 named uniforms and a
+64-way branch, since GLSL ES indexes only arrays at run time.
+
+1. **A list of 1 to 4096 numbers.** The compiled uniform decides the shape, as it already decides
+   the vector width: `float`, `vec2`-`vec4`, or an array of one, bound element after element. The
+   cap bounds the parse; drivers refuse far smaller arrays at link time, logged as any link error.
+2. **Flat, not nested.** `{ r, g, b, a, r, g, b, a }`, not `{ { r, g, b, a }, ... }`: one table per
+   update, and the length check stays a count.
+3. **A short list pads with zeros, a long one truncates,** logged once, as for vectors.
+
+Rejected: `mat4` uniforms, which only pack an array; a data texture, which needs a sampler and an
+upload path for a few hundred floats.
+
+**Amends ADR-0253 decision 4.**
