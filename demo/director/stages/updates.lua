@@ -3,6 +3,11 @@
 -- asks polkit, and so the shell's own agent, for the password.
 local theme = require("theme")
 local target = require("targets")
+local layout = require("layout")
+
+local placed = mantle.screens:map(function(screens)
+    return layout.dock(screens and screens[1], 620)
+end)
 
 local updates = state("mock_updates", { count = 0, packages = {}, installing = false })
 local open = state("updates_open", false)
@@ -59,19 +64,14 @@ local function package_row(p)
     }
 end
 
-local WIDTH = 620
-
 local popover = panel {
     id = "updates",
     layer = "Overlay",
     anchor = { top = true, left = true },
-    margin = mantle.screens:map(function(screens)
-        local width = screens[1] and screens[1].width or 1920
-        return { top = 24, left = math.floor(width * 0.56) - WIDTH - 40 }
-    end),
+    margin = placed:map(function(p) return { top = p.top, left = p.left } end),
     visible = mapped,
     child = column {
-        width = WIDTH,
+        width = placed:map(function(p) return p.width end),
         padding = 26,
         spacing = 16,
         radius = 28,

@@ -3,6 +3,11 @@
 -- radio of yours. The switches are real: a `persistent_table` keeps them on disk across restarts.
 local theme = require("theme")
 local target = require("targets")
+local layout = require("layout")
+
+local placed = mantle.screens:map(function(screens)
+    return layout.dock(screens and screens[1], 620)
+end)
 
 local network = state("mock_network", { wifi_enabled = false, connected = false, strength = 0 })
 local bluetooth = state("mock_bluetooth", { enabled = false, connected_devices = {} })
@@ -128,19 +133,14 @@ local function slider(glyph, value)
     }
 end
 
-local WIDTH = 620
-
 local panel_node = panel {
     id = "control",
     layer = "Overlay",
     anchor = { top = true, left = true },
-    margin = mantle.screens:map(function(screens)
-        local width = screens[1] and screens[1].width or 1920
-        return { top = 24, left = math.floor(width * 0.56) - WIDTH - 40 }
-    end),
+    margin = placed:map(function(p) return { top = p.top, left = p.left } end),
     visible = mapped,
     child = column {
-        width = WIDTH,
+        width = placed:map(function(p) return p.width end),
         padding = 24,
         spacing = 16,
         radius = 30,

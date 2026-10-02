@@ -2,11 +2,14 @@
 -- `reply_draft` with `mantle set`, so no real notification of yours reaches the take. A real shell
 -- reads `mantle.notifications` and answers with `mantle.notifications:reply(id, text)`.
 local theme = require("theme")
+local layout = require("layout")
 local feed = state("mock_notifications", { dnd = false, feed = {} })
 local draft = state("reply_draft", "")
 local sent = state("reply_sent", false)
 
-local WIDTH = 660
+local placed = mantle.screens:map(function(screens)
+    return layout.dock(screens and screens[1], 660)
+end)
 
 -- The first strong character decides a line's direction; Arabic's lead bytes are 0xD8 to 0xDB.
 local function rtl(text)
@@ -130,7 +133,7 @@ local function card(entry)
     end
     return column {
         id = "notification:" .. entry.id,
-        width = WIDTH,
+        width = placed:map(function(p) return p.width end),
         padding = 22,
         spacing = 16,
         radius = 22,
@@ -194,10 +197,7 @@ return panel {
     id = "notifications",
     layer = "Overlay",
     anchor = { top = true, left = true },
-    margin = mantle.screens:map(function(screens)
-        local width = screens[1] and screens[1].width or 1920
-        return { top = 24, left = math.floor(width * 0.56) - WIDTH - 40 }
-    end),
+    margin = placed:map(function(p) return { top = p.top, left = p.left } end),
     visible = feed:map(function(f) return #f.feed > 0 end),
     child = feed:map(function(f) return f.feed[1] and card(f.feed[1]) or rect {} end),
 }

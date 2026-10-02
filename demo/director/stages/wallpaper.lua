@@ -3,6 +3,7 @@
 -- Tiles and the quantizer read the small copies in `wallpapers/thumbs/`, not the screen-sized files.
 local theme = require("theme")
 local target = require("targets")
+local layout = require("layout")
 local DIR = mantle.config_dir .. "/wallpapers"
 local THUMBS = DIR .. "/thumbs/"
 mantle.files:watch(DIR, { "png" })
@@ -29,6 +30,10 @@ local image_node = image {
     animate = { opacity = 600 },
 }
 
+local picker_box = mantle.screens:map(function(screens)
+    return layout.picker(screens and screens[1])
+end)
+
 local function thumbnail(entry)
     local chosen = current:map(function(name) return name == entry.name end)
     return rect {
@@ -42,8 +47,8 @@ local function thumbnail(entry)
         on_click = function() choose(entry.name) end,
         children = {
             rect {
-                width = 300,
-                height = 126,
+                width = picker_box:map(function(p) return p.tile end),
+                height = picker_box:map(function(p) return p.tile_h end),
                 radius = 14,
                 clip = "Rounded",
                 children = {
@@ -58,10 +63,7 @@ local picker = panel {
     id = "picker",
     layer = "Overlay",
     anchor = { top = true, left = true },
-    margin = mantle.screens:map(function(screens)
-        local width = screens[1] and screens[1].width or 1920
-        return { top = 24, left = math.floor((width * 0.56 - 1340) / 2) }
-    end),
+    margin = picker_box:map(function(p) return { top = p.top, left = p.left } end),
     visible = mapped,
     child = row {
         padding = 16,

@@ -1,4 +1,5 @@
 local theme = require("theme")
+local layout = require("layout")
 local rescue = mantle.rescue
 
 return panel {
@@ -7,7 +8,9 @@ return panel {
     anchor = { bottom = true, left = true },
     margin = { bottom = 300, left = 48 },
     visible = rescue:map(function(r) return r ~= nil and r.is_rescue end),
-    width = 900,
+    width = mantle.screens:map(function(screens)
+        return layout.fit(screens and screens[1], 900)
+    end),
     background = theme.danger,
     radius = 14,
     child = column {

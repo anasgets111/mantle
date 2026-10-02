@@ -3,28 +3,20 @@
 local theme = require("theme")
 local taskbar = require("taskbar")
 local target = require("targets")
+local layout = require("layout")
 
 local open = state("overview_open", false)
 local mapped = computed({ open, delay(open, 300) }, function(now, was) return now or was end)
 
--- Sized to the 56% of the screen the director's code pane leaves open.
-local layout = mantle.screens:map(function(screens)
-    local screen = screens[1] or { name = "", width = 1920, height = 1080 }
-    local sheet = math.floor(screen.width * 0.56 * 0.86)
-    local shot = sheet - 64
-    return {
-        output = screen.name,
-        left = math.floor((screen.width * 0.56 - sheet) / 2),
-        sheet = sheet,
-        shot = shot,
-        shot_height = math.floor(shot * screen.height / screen.width),
-    }
+-- Sized to the stage the director's code pane leaves open.
+local frame = mantle.screens:map(function(screens)
+    return layout.overview(screens and screens[1])
 end)
 
 local function card(w)
     return column {
         geometry = target("card:" .. w.id),
-        width = 200,
+        width = frame:map(function(b) return b.card end),
         padding = 18,
         radius = 20,
         background = w.focused and theme.surface or theme.fade("base", "cc"),
@@ -56,10 +48,10 @@ return panel {
     id = "overview",
     layer = "Overlay",
     anchor = { top = true, left = true },
-    margin = layout:map(function(l) return { top = 24, left = l.left } end),
+    margin = frame:map(function(l) return { top = l.top, left = l.left } end),
     visible = mapped,
     child = column {
-        width = layout:map(function(l) return l.sheet end),
+        width = frame:map(function(l) return l.sheet end),
         padding = 32,
         spacing = 28,
         radius = 28,
@@ -70,8 +62,8 @@ return panel {
         animate = { opacity = { duration = 300, from = 0 } },
         children = {
             rect {
-                width = layout:map(function(l) return l.shot end),
-                height = layout:map(function(l) return l.shot_height end),
+                width = frame:map(function(l) return l.shot end),
+                height = frame:map(function(l) return l.shot_height end),
                 radius = 18,
                 clip = "Rounded",
                 border_width = 2,
@@ -80,7 +72,7 @@ return panel {
                 animate = { scale = { duration = 450, easing = "OutCubic", from = 1.08 } },
                 children = {
                     capture {
-                        output = layout:map(function(l) return l.output end),
+                        output = frame:map(function(l) return l.output end),
                         fit = "cover",
                         width = "Fill",
                         height = "Fill",

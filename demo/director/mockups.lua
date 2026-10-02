@@ -2,8 +2,8 @@
 -- privacy and idle beats have something to react to. They are not part of the demo shell.
 
 local theme = require("theme")
+local layout = require("layout")
 
-local BAR = 56
 local TITLE = 52
 
 local app = state("mock_app", "")
@@ -13,12 +13,9 @@ local sharing = state("mock_sharing", false)
 local playing = state("mock_playing", true)
 
 local size = mantle.screens:map(function(screens)
-    local screen = screens[1] or { width = 1920, height = 1080 }
-    local open = math.floor(screen.width * 0.56)
-    local width = math.min(1400, open - 200)
-    local height = math.min(840, screen.height - BAR - 460)
-    return { width = width, height = height, left = math.floor((open - width) / 2), top = 70 }
+    return layout.mock(screens and screens[1])
 end)
+local sidebar_width = size:map(function(s) return math.min(360, math.floor(s.width * 0.42)) end)
 
 local function label(content, size_px, color, extra)
     local node = { content = content, font_size = size_px, foreground = color, align_v = "Center" }
@@ -34,6 +31,7 @@ local function initial_avatar(name, color, px)
         height = px,
         radius = px / 2,
         background = color,
+        align_h = "Center",
         align_v = "Center",
         children = {
             text {
@@ -102,7 +100,7 @@ local CHATS = {
 
 local function sidebar()
     return column {
-        width = 360,
+        width = sidebar_width,
         height = "Fill",
         padding = 14,
         spacing = 6,
@@ -138,6 +136,7 @@ end
 local function bubble(message, rtl)
     local mine = message.mine
     local node = rect {
+        max_width = computed({ size, sidebar_width }, function(s, sidebar) return s.width - sidebar - 56 end),
         padding = { left = 20, right = 20, top = 12, bottom = 12 },
         radius = 20,
         background = mine and theme.accent or theme.surface,
@@ -148,7 +147,8 @@ local function bubble(message, rtl)
             translate = { duration = 350, easing = "OutCubic", from = { x = 0, y = 16 } },
         },
         children = {
-            label(message.text .. (mine and "   ✓✓" or ""), 22, mine and theme.crust or theme.text),
+            label(message.text .. (mine and "   ✓✓" or ""), 22, mine and theme.crust or theme.text,
+                { width = "Fill", wrap = "Word" }),
         },
     }
     -- A right-to-left chat mirrors: your own messages sit on the left.
@@ -247,6 +247,7 @@ local function tile(person, speaking)
         width = "Fill",
         height = "Fill",
         radius = 16,
+        padding = 18,
         background = person.tint,
         border_width = speaking and 3 or 0,
         border_color = speaking or "#00000000",
@@ -264,7 +265,6 @@ local function tile(person, speaking)
                 content = person.name,
                 align_h = "Start",
                 align_v = "End",
-                margin = { left = 18, bottom = 14 },
                 font_size = 20,
                 foreground = theme.text,
             },
@@ -352,8 +352,10 @@ local function browser_window(wallpaper)
                         padding = { left = 20, right = 20 },
                         children = {
                             label("videos.example/watch?v=aurora", 18, theme.subtext, {
+                                width = "Fill",
                                 height = "Fill",
                                 font = "CaskaydiaCove Nerd Font Mono",
+                                elide = "End",
                             }),
                         },
                     },

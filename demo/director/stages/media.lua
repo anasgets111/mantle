@@ -2,6 +2,12 @@
 -- nothing of yours. A real shell reads `mantle.mpris` and calls `mantle.mpris:next(id)` and friends.
 local theme = require("theme")
 local target = require("targets")
+local layout = require("layout")
+
+local placed = mantle.screens:map(function(screens)
+    return layout.center(screens and screens[1], 760)
+end)
+local cover_px = placed:map(function(p) return math.floor(math.min(240, p.width * 240 / 760)) end)
 
 local media = state("mock_media", { players = {} })
 local open = state("media_open", false)
@@ -76,13 +82,10 @@ local card = panel {
     id = "media",
     layer = "Overlay",
     anchor = { top = true, left = true },
-    margin = mantle.screens:map(function(screens)
-        local width = screens[1] and screens[1].width or 1920
-        return { top = 24, left = math.floor((width * 0.56 - 760) / 2) }
-    end),
+    margin = placed:map(function(p) return { top = p.top, left = p.left } end),
     visible = mapped,
     child = row {
-        width = 760,
+        width = placed:map(function(p) return p.width end),
         padding = 28,
         spacing = 30,
         radius = 30,
@@ -97,8 +100,8 @@ local card = panel {
         },
         children = {
             rect {
-                width = 240,
-                height = 240,
+                width = cover_px,
+                height = cover_px,
                 radius = 22,
                 clip = "Rounded",
                 shadow_color = "#00000080",

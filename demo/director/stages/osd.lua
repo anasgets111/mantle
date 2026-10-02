@@ -1,6 +1,10 @@
--- The cookbook's volume OSD, sized for the recording and centred on the 56% of the screen the
--- director's code pane leaves open.
+-- The cookbook's volume OSD, centred on the stage the director's code pane leaves open.
 local theme = require("theme")
+local layout = require("layout")
+
+local placed = mantle.screens:map(function(screens)
+    return layout.center(screens and screens[1], 380)
+end)
 local osd = state("volume_osd", { volume = 0, muted = false })
 
 mantle.audio:on_change(function(audio, previous)
@@ -22,13 +26,10 @@ return panel {
     layer = "Overlay",
     monitor = "Active",
     anchor = { top = true, left = true },
-    margin = mantle.screens:map(function(screens)
-        local width = screens[1] and screens[1].width or 1920
-        return { top = 24, left = math.floor((width * 0.56 - 380) / 2) }
-    end),
+    margin = placed:map(function(p) return { top = p.top, left = p.left } end),
     visible = mapped,
     child = row {
-        width = 380,
+        width = placed:map(function(p) return p.width end),
         height = 64,
         spacing = 16,
         padding = { left = 22, right = 22 },

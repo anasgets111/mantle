@@ -7,6 +7,7 @@ local edits = require("edits")
 local session = require("session")
 local mockups = require("mockups")
 local theme = require("theme")
+local layout = require("layout")
 
 fonts {
     "CaskaydiaCove Nerd Font Propo",
@@ -15,13 +16,20 @@ fonts {
 }
 
 local MONO = "CaskaydiaCove Nerd Font Mono"
-local CODE_SIZE = 22
--- CODE_SIZE * 1.5, whole so line n sits at exactly (n - 1) * LINE for the caret and the scroll.
-local LINE = 33
 local GUTTER = 6
 -- The demo bar's final height, cleared through its exclusive zone.
 local BAR = 56
 local HEADER = 64
+
+local frame = mantle.screens:map(function(screens)
+    return layout.metrics(screens and screens[1])
+end)
+local code_size = frame:map(function(m) return m.font end)
+local line_px = frame:map(function(m) return m.line end)
+local pane_width = frame:map(function(m) return m.pane end)
+local row_count = frame:map(function(m)
+    return math.max(1, math.floor((m.height - BAR - 32 - HEADER) / m.line))
+end)
 
 local function env(name, fallback)
     local value = os.getenv(name)
@@ -82,24 +90,21 @@ local backdrop = state("demo_backdrop", WALLPAPER)
 
 local function bump() version:set(version:get() + 1) end
 
-local function rows()
-    local screen = mantle.screens:get()[1]
-    return math.floor(((screen and screen.height or 1080) - BAR - 32 - HEADER) / LINE)
-end
-
 -- Scrolls so `line` sits a third of the way down whenever it strays near an edge.
 local function reveal(line)
-    local shown, count = top:get(), rows()
+    local shown, count = top:get(), row_count:get()
     if line > shown + 3 and line <= shown + count - 4 then return end
     top:set(math.max(0, math.min(line - math.floor(count / 3), #lines - count + 4)))
 end
 
+mantle.screens:on_change(function() reveal(caret.line) end)
+
 -- Code pane ---------------------------------------------------------------------------------
 
 -- Only the lines in view: a translated full-length text is not cut by its parent's clip.
-local code = computed({ version, top, theme.state }, function(_, first, t)
+local code = computed({ version, top, theme.state, row_count }, function(_, first, t, count)
     local runs = {}
-    for n = first + 1, math.min(#lines, first + rows()) do
+    for n = first + 1, math.min(#lines, first + count) do
         runs[#runs + 1] = { text = string.format("%4d  ", n), color = n == caret.line and t.subtext or t.overlay }
         for _, run in ipairs(syntax.highlight(lines[n])) do
             runs[#runs + 1] = { text = run.text, color = t[syntax.roles[run.kind]] }
@@ -109,16 +114,14 @@ local code = computed({ version, top, theme.state }, function(_, first, t)
     return runs
 end)
 
-local caret_row = computed({ version, top }, function(_, first) return (caret.line - first - 1) * LINE end)
+local caret_row = computed({ version, top, line_px }, function(_, first, line)
+    return (caret.line - first - 1) * line
+end)
 
 -- `version` as well: typing along one line moves `caret.col` but leaves `caret_row` unchanged.
 local caret_at = computed({ version, caret_row, char_box }, function(_, y, box)
     local width = (box and box.width or 0) / 100
     return { x = (GUTTER + caret.col - 1) * width, y = y + 5 }
-end)
-
-local pane_width = mantle.screens:map(function(screens)
-    return math.floor((screens[1] and screens[1].width or 1920) * 0.44)
 end)
 
 local code_pane = panel {
@@ -192,11 +195,11 @@ local code_pane = panel {
                         geometry = char_box,
                         opacity = 0,
                         font = MONO,
-                        font_size = CODE_SIZE,
+                        font_size = code_size,
                     },
                     rect {
                         width = "Fill",
-                        height = LINE,
+                        height = line_px,
                         background = theme.fade("text", "0a"),
                         translate = caret_row:map(function(y) return { x = 0, y = y } end),
                         animate = { translate = 80 },
@@ -204,13 +207,13 @@ local code_pane = panel {
                     text {
                         content = code,
                         font = MONO,
-                        font_size = CODE_SIZE,
+                        font_size = code_size,
                         line_height = 1.5,
                         foreground = theme.text,
                     },
                     rect {
                         width = 3,
-                        height = LINE - 10,
+                        height = line_px:map(function(line) return line - 10 end),
                         background = theme.cursor,
                         translate = caret_at,
                         animate = { translate = 60 },
@@ -260,9 +263,11 @@ local caption_pane = panel {
     anchor = { bottom = true, left = true },
     margin = { bottom = 48, left = 48 },
     visible = caption:map(function(title) return title ~= "" end),
-    child = caption:map(function(title)
+    child = computed({ caption, frame }, function(title, m)
+        local cap = layout.caption(m)
         return column {
             id = "caption:" .. title,
+            width = cap.width,
             padding = { left = 30, right = 30, top = 24, bottom = 24 },
             spacing = 12,
             radius = 18,
@@ -274,11 +279,20 @@ local caption_pane = panel {
                 translate = { duration = 500, easing = "OutCubic", from = { x = 0, y = 30 } },
             },
             children = {
-                text { content = title, font_size = 52, font_weight = 800, foreground = theme.text },
+                text {
+                    content = title,
+                    width = cap.width and "Fill" or nil,
+                    wrap = cap.width and "Word" or nil,
+                    font_size = cap.title,
+                    font_weight = 800,
+                    foreground = theme.text,
+                },
                 text {
                     content = detail,
                     visible = detail:map(function(d) return d ~= "" end),
-                    font_size = 26,
+                    width = cap.width and "Fill" or nil,
+                    wrap = cap.width and "Word" or nil,
+                    font_size = cap.detail,
                     foreground = theme.subtext,
                 },
                 row {
@@ -809,19 +823,23 @@ local pointer_pane = panel {
     },
 }
 
--- Each demo surface's top-left on screen, from the same margins the stage modules compute.
+-- Each demo surface's top-left on screen. The bar's exclusive zone adds BAR on top of the
+-- margin `layout` gives the popup.
 local function origin_of(surface)
-    local screen = mantle.screens:get()[1] or { width = 1920, height = 1080 }
-    local open = math.floor(screen.width * 0.56)
-    local top = BAR + 24
-    if surface == "picker" then return { x = math.floor((screen.width * 0.56 - 1340) / 2), y = top } end
-    if surface == "overview" then
-        local sheet = math.floor(screen.width * 0.56 * 0.86)
-        return { x = math.floor((screen.width * 0.56 - sheet) / 2), y = top }
+    local screen = mantle.screens:get()[1]
+    local box
+    if surface == "picker" then
+        box = layout.picker(screen)
+    elseif surface == "overview" then
+        box = layout.overview(screen)
+    elseif surface == "media" then
+        box = layout.center(screen, 760)
+    elseif surface == "control" or surface == "updates" then
+        box = layout.dock(screen, 620)
+    else
+        return { x = 0, y = 0 }
     end
-    if surface == "media" then return { x = math.floor((screen.width * 0.56 - 760) / 2), y = top } end
-    if surface == "control" or surface == "updates" then return { x = open - 620 - 40, y = top } end
-    return { x = 0, y = 0 }
+    return { x = box.left, y = BAR + box.top }
 end
 
 -- Glides the pointer onto the demo shell's node `name` on `surface`, then clicks. It maps again
@@ -1075,7 +1093,7 @@ local function render_wallpapers(done)
 end
 
 local function stage(next)
-    local sources = { mantle.config_dir .. "/theme.lua" }
+    local sources = { mantle.config_dir .. "/theme.lua", mantle.config_dir .. "/layout.lua" }
     for _, name in ipairs(MODULES) do
         sources[#sources + 1] = STAGES .. name
     end

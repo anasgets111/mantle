@@ -2,13 +2,19 @@
 -- `polkit_typed` with `mantle set`, so no password of yours is typed. A real agent draws a secure
 -- field that hands its text to `mantle.polkit:authenticate`.
 local theme = require("theme")
+local layout = require("layout")
+
+local placed = mantle.screens:map(function(screens)
+    local screen = screens and screens[1]
+    local box = layout.center(screen, 640)
+    if screen and screen.height then box.top = math.floor(screen.height * 0.22) end
+    return box
+end)
 
 local polkit = state("mock_polkit", { active = false, message = "", user = "" })
 local typed = state("polkit_typed", 0)
 local shown = polkit:map(function(p) return p.active end)
 local mapped = computed({ shown, delay(shown, 300) }, function(now, was) return now or was end)
-
-local WIDTH = 640
 
 local function dots(count)
     local out = {}
@@ -31,14 +37,11 @@ return panel {
     id = "polkit",
     layer = "Overlay",
     anchor = { top = true, left = true },
-    margin = mantle.screens:map(function(screens)
-        local screen = screens[1] or { width = 1920, height = 1080 }
-        return { top = math.floor(screen.height * 0.22), left = math.floor((screen.width * 0.56 - WIDTH) / 2) }
-    end),
+    margin = placed:map(function(p) return { top = p.top, left = p.left } end),
     visible = mapped,
     keyboard_interactivity = "None",
     child = column {
-        width = WIDTH,
+        width = placed:map(function(p) return p.width end),
         padding = 34,
         spacing = 20,
         radius = 30,
