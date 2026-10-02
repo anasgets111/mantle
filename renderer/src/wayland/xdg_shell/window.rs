@@ -131,6 +131,7 @@ impl App {
         let spec = spec.clone();
 
         let surface = self.compositor_state.create_surface(qh);
+        let scale = self.surface_scale(&surface, qh);
         let window = xdg_shell.create_window(surface, WindowDecorations::RequestServer, qh);
         // The constructor decides whether the decoration object exists; this sets its mode.
         // Accept the compositor's answer; configure logs client-side decoration and remains bare.
@@ -146,6 +147,7 @@ impl App {
         if let TrackedRole::Window { window: slot, .. } = &mut self.surfaces[index].role {
             *slot = Some(window);
         }
+        self.surfaces[index].scale = scale;
         self.surfaces[index].map_state = MapState::AwaitingConfigure;
         debug!("{} creating: visible = true", self.surfaces[index].surface_id);
     }

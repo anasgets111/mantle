@@ -8,6 +8,8 @@ version is 0.x, a minor release can break the Lua API.
 ## Unreleased
 
 - `shader` and `transition` `params`: a list of up to 4096 numbers fills a `float` or `vec2`-`vec4` uniform array, so a shader can draw a 256-bar visualizer.
+- Surfaces paint at their output's compositor scale, fractional included, so text and images are sharp on HiDPI displays. Sizes stay in logical pixels, and a `shader`'s `size` uniform stays logical while `gl_FragCoord` counts buffer pixels.
+- `image` `async`: a resized image keeps drawing its previous size, scaled, until the new size decodes, instead of blanking. A changed `source_blur`, or a changed `source` without `retain`, still blanks.
 - `idle`: `on_resume` now receives `"input"`, `"activity"`, or `"inhibitor"`, so configs can wake displays only for input while stopping idle stages for other resumes.
 
 ## 0.1.0 - 2026-10-01

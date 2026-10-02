@@ -7273,3 +7273,22 @@ Rejected: `mat4` uniforms, which only pack an array; a data texture, which needs
 upload path for a few hundred floats.
 
 **Amends ADR-0253 decision 4.**
+
+## 0301. Paint each surface at its compositor scale
+
+Layout, input, blur and configured surface sizes remain in Wayland logical pixels. Each live
+`wl_surface` gets its own paint scale; the output information published to Lua does not choose it.
+When both fractional-scale and viewporter exist, Mantle uses the preferred scale in 120ths,
+rounds each buffer edge halfway away from zero, keeps core buffer scale at one and sets the
+viewport destination to the configured logical size. Without the pair, SCTK's per-surface integer
+scale drives `wl_surface.set_buffer_scale` and the matching EGL buffer size on the same swap.
+The first frame may paint at one until the compositor sends a preference, then repaints.
+
+The display list is built in buffer pixels: one conversion in `build` scales every draw's
+geometry, so paint never converts. Text is the exception, shaping once at logical size and
+rasterizing glyphs at buffer scale; a shader's `size` uniform stays logical. A change of scale or
+configured size invalidates the previous buffer's damage history. An async image may temporarily
+draw a ready texture from the same file revision and paint treatment at another size; a cropped
+cover texture also needs a matching box aspect ratio, and a blurred image gets none because its
+blur radius is physical. That temporary draw cannot complete a
+`retain` or transition and is pinned until the exact texture lands.

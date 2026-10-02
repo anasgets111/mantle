@@ -291,6 +291,7 @@ impl App {
         };
 
         let surface = self.compositor_state.create_surface(qh);
+        let mut scale = self.surface_scale(&surface, qh);
         let rooted_at_creation = match &parent {
             PopupParent::Xdg(xdg_surface) => Some(xdg_surface),
             PopupParent::Layer(_) => None,
@@ -299,6 +300,7 @@ impl App {
             Ok(popup) => popup,
             Err(err) => {
                 log_bind_failure(&surface_id, "xdg_surface::get_popup", err);
+                scale.destroy();
                 return;
             }
         };
@@ -317,6 +319,7 @@ impl App {
             *slot = Some(popup);
             *refusal_logged = None;
         }
+        self.surfaces[index].scale = scale;
         self.surfaces[index].map_state = MapState::AwaitingConfigure;
         // What this popup's positioner now holds. Every later pass compares against it.
         if let TrackedRole::Popup { positioned, .. } = &mut self.surfaces[index].role {

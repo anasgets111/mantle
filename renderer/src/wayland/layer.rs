@@ -213,8 +213,9 @@ impl App {
         spec: &PanelSpec,
         output: Option<&wl_output::WlOutput>,
         size: (u32, u32),
-    ) -> LayerSurface {
+    ) -> (LayerSurface, super::scale::SurfaceScale) {
         let surface = self.compositor_state.create_surface(qh);
+        let scale = self.surface_scale(&surface, qh);
         let layer = self.layer_shell.create_layer_surface(
             qh,
             surface,
@@ -232,7 +233,7 @@ impl App {
             spec.margin.left as i32,
         );
         layer.commit();
-        layer
+        (layer, scale)
     }
 
     /// [`App::create_surfaces`]'s `panel` arm: create, commit, and track one layer surface.
@@ -281,10 +282,15 @@ impl App {
             );
             return;
         }
-        let layer = (!deferred).then(|| self.spawn_panel_layer(qh, spec, output, size));
+        let fresh = (!deferred).then(|| self.spawn_panel_layer(qh, spec, output, size));
+        let (layer, scale) = match fresh {
+            Some((layer, scale)) => (Some(layer), scale),
+            None => (None, super::scale::SurfaceScale::integer()),
+        };
 
         self.surfaces.push(TrackedSurface {
             map_state: if visible { MapState::AwaitingConfigure } else { MapState::Unmapped },
+            scale,
             ..TrackedSurface::new(
                 TrackedRole::Panel {
                     layer,
@@ -331,11 +337,12 @@ impl App {
             );
             return;
         }
-        let fresh = self.spawn_panel_layer(qh, spec, output.as_ref(), size);
+        let (fresh, scale) = self.spawn_panel_layer(qh, spec, output.as_ref(), size);
         if let TrackedRole::Panel { layer, requested, .. } = &mut self.surfaces[index].role {
             *layer = Some(fresh);
             *requested = size;
         }
+        self.surfaces[index].scale = scale;
         self.surfaces[index].map_state = MapState::AwaitingConfigure;
         debug!("{} created: visible = true", self.surfaces[index].surface_id);
     }

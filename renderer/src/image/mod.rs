@@ -34,7 +34,8 @@ pub mod thumbnails;
 
 pub use file::FileVersion;
 pub(crate) use file::first_failure;
-pub use fit::{cache_box, fitted_rect};
+use fit::cache_box;
+pub use fit::fitted_rect;
 
 use budget::{Budget, Charge};
 use decode::{decode, is_animated, is_vector};
@@ -130,6 +131,17 @@ struct CacheKey {
     /// never reads it, so an animated source is keyed as if it were always zero.
     blur_px: u32,
     font_generation: u64,
+}
+
+/// A display list's next image lookup. `trim` resolves it against current file and font versions
+/// and pins either that exact texture or the temporary texture the next draw would use.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct ImageRequest<'a> {
+    pub path: &'a Path,
+    pub box_px: (u32, u32),
+    pub tint: Option<Rgba>,
+    pub fit: Fit,
+    pub blur_px: u32,
 }
 
 crate::layout::node::prop::keywords! {
@@ -487,15 +499,29 @@ impl ImageCache {
 
     /// Evicts idle textures to [`ImageCache::set_texture_budget`], oldest ask first (ADR-0123). The
     /// early return over-estimates on purpose -- idle bytes never exceed resident -- so an untouched
-    /// cache skips the walk and [`victims`] measures the idle half. `pinned` contains
-    /// `(path, box)` pairs from mapped surfaces' last display lists, collected by `wayland::App`
+    /// cache skips the walk and [`victims`] measures the idle half. `pinned` contains the image
+    /// requests from mapped surfaces' last display lists, collected by `wayland::App`
     /// after paint. Compute it lazily because list walks matter only when evicting. Icons are not
     /// pinned: lists carry theme names, not paths; an icon costs a few KB and one inline reraster.
-    pub fn trim(&mut self, pinned: impl FnOnce() -> Vec<(PathBuf, (u32, u32))>) {
+    pub fn trim<'a>(&mut self, pinned: impl FnOnce() -> Vec<ImageRequest<'a>>) {
         if self.resident_bytes <= self.texture_budget {
             return;
         }
-        let pinned = pinned();
+        let pinned = pinned()
+            .into_iter()
+            .filter_map(|request| {
+                let wanted = self.key_for(&request);
+                if self
+                    .entries
+                    .get(&wanted)
+                    .is_some_and(|entry| matches!(entry.slot, Slot::Ready { .. } | Slot::Failed))
+                {
+                    Some(wanted)
+                } else {
+                    self.stand_in_key(&wanted).or(Some(wanted))
+                }
+            })
+            .collect::<Vec<_>>();
         let candidates = self.entries.iter().filter_map(|(key, entry)| match entry.slot {
             Slot::Ready { bytes, .. } => Some((key.clone(), bytes, entry.last_hit)),
             Slot::Pending | Slot::Failed => None,
@@ -513,37 +539,10 @@ impl ImageCache {
     /// `Load::Inline` reads and rasterizes inside the frame, also the Wayland dispatch/config-VM
     /// thread (ADR-0039). That keeps a wallpaper's first frame whole; tile grids use
     /// `Load::Background` (ADR-0122).
-    // ponytail: keep the eight arguments. `canvas::FileDraw` already bundles five of them, but
-    // `image` is `layout::paint`'s dependency, not the reverse, so taking it here would either
-    // move that type down into `image` or duplicate it; a `CacheKey`-shaped struct of its own
-    // would just be `FileDraw` again under a different name.
-    #[allow(clippy::too_many_arguments)]
-    pub fn image(
-        &mut self,
-        canvas: &mut Canvas<OpenGl>,
-        path: &Path,
-        box_px: (u32, u32),
-        tint: Option<Rgba>,
-        load: Load,
-        fit: Fit,
-        blur_px: u32,
-    ) -> Option<ImageId> {
+    pub fn image(&mut self, canvas: &mut Canvas<OpenGl>, request: &ImageRequest, load: Load) -> Option<ImageId> {
         self.sync_fonts();
-        let vector = is_vector(path);
-        let key = CacheKey {
-            font_generation: if vector { self.font_generation } else { 0 },
-            path: path.to_path_buf(),
-            box_px: cache_box(path, box_px),
-            version: FileVersion::read(path),
-            // Only vectors carry `currentColor`; drop PNG tint instead of splitting unused slots.
-            tint: if vector { tint.map(packed_rgb) } else { None },
-            // An SVG rasterizes straight to its box, so there is never overflow to crop.
-            cropped: !vector && fit == Fit::Cover,
-            // `decode` never reads `blur_px` for an animated source (ADR-0240); zeroed here too,
-            // or a blurred and a sharp draw of the same GIF would be two slots each paying its
-            // full animation budget for byte-identical frames.
-            blur_px: if is_animated(path) { 0 } else { blur_px },
-        };
+        let (vector, tint) = (is_vector(request.path), request.tint);
+        let key = self.key_for(request);
         self.tick += 1;
         if let Some(cached) = self.entries.get_mut(&key) {
             cached.last_hit = self.tick;
@@ -553,6 +552,16 @@ impl ImageCache {
             self.refresh_fonts();
         }
         let load = if self.pool.workers == 0 { Load::Inline } else { load };
+        // A new pending slot can hit the map's capacity bound before the caller asks for its
+        // stand-in. Keep that ready texture through the insertion which may evict cold entries.
+        if load == Load::Background
+            && let Some(stand_in) = self.stand_in_key(&key)
+        {
+            self.tick += 1;
+            if let Some(entry) = self.entries.get_mut(&stand_in) {
+                entry.last_hit = self.tick;
+            }
+        }
         match load {
             Load::Inline => {
                 // Counted against the same ceiling the workers wait on, but never waiting for it:
@@ -603,6 +612,50 @@ impl ImageCache {
                 None
             }
         }
+    }
+
+    fn key_for(&self, &ImageRequest { path, box_px, tint, fit, blur_px }: &ImageRequest) -> CacheKey {
+        let vector = is_vector(path);
+        CacheKey {
+            font_generation: if vector { self.font_generation } else { 0 },
+            path: path.to_path_buf(),
+            box_px: cache_box(path, box_px),
+            version: FileVersion::read(path),
+            // Only vectors carry `currentColor`; drop PNG tint instead of splitting unused slots.
+            tint: if vector { tint.map(packed_rgb) } else { None },
+            // An SVG rasterizes straight to its box, so there is never overflow to crop.
+            cropped: !vector && fit == Fit::Cover,
+            // `decode` never reads `blur_px` for an animated source (ADR-0240); zeroed here too,
+            // or a blurred and a sharp draw of the same GIF would be two slots each paying its
+            // full animation budget for byte-identical frames.
+            blur_px: if is_animated(path) { 0 } else { blur_px },
+        }
+    }
+
+    fn stand_in_key(&self, wanted: &CacheKey) -> Option<CacheKey> {
+        if wanted.blur_px != 0 {
+            return None;
+        }
+        self.entries
+            .iter()
+            .filter_map(|(key, entry)| {
+                (matches!(entry.slot, Slot::Ready { .. }) && compatible_stand_in(wanted, key)).then_some(key)
+            })
+            .max_by_key(|key| (u64::from(key.box_px.0) * u64::from(key.box_px.1), key.box_px))
+            .cloned()
+    }
+
+    /// A ready texture at another physical box while a background decode catches up. Its fitted
+    /// rect still uses the new logical box; the caller must not treat it as an exact source hit.
+    pub(crate) fn stand_in(&mut self, canvas: &mut Canvas<OpenGl>, request: &ImageRequest) -> Option<ImageId> {
+        let wanted = self.key_for(request);
+        if self.entries.get(&wanted).is_some_and(|entry| matches!(entry.slot, Slot::Failed)) {
+            return None;
+        }
+        let key = self.stand_in_key(&wanted)?;
+        self.tick += 1;
+        self.entries.get_mut(&key)?.last_hit = self.tick;
+        self.showing(canvas, &key)
     }
 
     /// Reserves a pipeline slot for `key`, answering whether the caller may queue it.
@@ -717,11 +770,9 @@ impl ImageCache {
 fn victims(
     candidates: impl Iterator<Item = (CacheKey, usize, u64)>,
     budget: usize,
-    pinned: &[(PathBuf, (u32, u32))],
+    pinned: &[CacheKey],
 ) -> Vec<CacheKey> {
-    let mut idle: Vec<(CacheKey, usize, u64)> = candidates
-        .filter(|(key, _, _)| !pinned.iter().any(|(path, box_px)| *path == key.path && *box_px == key.box_px))
-        .collect();
+    let mut idle: Vec<(CacheKey, usize, u64)> = candidates.filter(|(key, _, _)| !pinned.contains(key)).collect();
     idle.sort_by_key(|(_, _, last_hit)| *last_hit);
     let mut resident: usize = idle.iter().map(|(_, bytes, _)| *bytes).sum();
     let mut out = Vec::new();
@@ -733,6 +784,25 @@ fn victims(
         out.push(key);
     }
     out
+}
+
+fn compatible_stand_in(wanted: &CacheKey, candidate: &CacheKey) -> bool {
+    if wanted.path != candidate.path
+        || wanted.version != candidate.version
+        || wanted.tint != candidate.tint
+        || wanted.cropped != candidate.cropped
+        || wanted.blur_px != candidate.blur_px
+        || wanted.font_generation != candidate.font_generation
+        || wanted.box_px == candidate.box_px
+    {
+        return false;
+    }
+    if !wanted.cropped {
+        return true;
+    }
+    let ((a, b), (c, d)) = (wanted.box_px, candidate.box_px);
+    let (a, b, c, d) = (u128::from(a), u128::from(b), u128::from(c), u128::from(d));
+    2 * (a * d).abs_diff(b * c) <= a + b + c + d + 3
 }
 
 #[cfg(test)]
@@ -791,6 +861,47 @@ mod tests {
         let sharp = key("/x.png", 18, FileVersion::default());
         let blurred = CacheKey { blur_px: 6, ..sharp.clone() };
         assert_ne!(sharp, blurred);
+    }
+
+    #[test]
+    fn a_temporary_texture_keeps_source_identity_and_crop_geometry() {
+        let wanted = CacheKey { box_px: (300, 150), cropped: true, ..key("/x.png", 18, FileVersion::default()) };
+        let half = CacheKey { box_px: (150, 75), ..wanted.clone() };
+        assert!(compatible_stand_in(&wanted, &half));
+        assert!(!compatible_stand_in(&wanted, &CacheKey { box_px: (150, 150), ..half.clone() }));
+        assert!(!compatible_stand_in(&wanted, &CacheKey { tint: Some(0xff00ff), ..half.clone() }));
+        assert!(!compatible_stand_in(&wanted, &CacheKey { blur_px: 2, ..half.clone() }));
+        assert!(!compatible_stand_in(&wanted, &CacheKey { cropped: false, ..half.clone() }));
+        assert!(!compatible_stand_in(&wanted, &CacheKey { path: "/other.png".into(), ..half.clone() }));
+        assert!(!compatible_stand_in(
+            &wanted,
+            &CacheKey { version: FileVersion { len: 1, ..FileVersion::default() }, ..half.clone() }
+        ));
+        let uncropped = CacheKey { cropped: false, ..wanted };
+        assert!(compatible_stand_in(&uncropped, &CacheKey { cropped: false, ..half }));
+    }
+
+    #[test]
+    fn a_pending_size_can_draw_a_ready_size_until_its_decode_lands() {
+        use crate::layout::paint::{init_headless_egl, text_painter};
+        use crate::text::shaping::ShapingHandle;
+
+        let Some(instance) = init_headless_egl(64, 64) else { return };
+        let shaping = ShapingHandle::spawn();
+        let Some(mut painter) = text_painter(&instance, &shaping, 64, 64) else { return };
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("picture.png");
+        std::fs::write(&path, PIL_2X2_RGBA_PNG).unwrap();
+        let mut cache = ImageCache::new();
+        if cache.pool.workers == 0 {
+            return;
+        }
+        let small = ImageRequest { path: &path, box_px: (16, 16), tint: None, fit: Fit::Contain, blur_px: 0 };
+        let large = ImageRequest { box_px: (32, 32), ..small };
+        let first = cache.image(painter.canvas_mut(), &small, Load::Inline).unwrap();
+        assert!(cache.image(painter.canvas_mut(), &large, Load::Background).is_none());
+        assert_eq!(cache.stand_in(painter.canvas_mut(), &large), Some(first));
+        assert!(cache.stand_in(painter.canvas_mut(), &ImageRequest { fit: Fit::Cover, ..large }).is_none());
     }
 
     /// A wallpaper's shape without a wallpaper's art: a 16:9 viewBox filled corner to corner by one
@@ -921,7 +1032,7 @@ mod tests {
             (tiles.clone(), 7 * mb, 3),
             (shown.clone(), 12 * mb, 4),
         ];
-        let pinned = vec![(PathBuf::from("/w/shown.jpg"), (1920, 1920))];
+        let pinned = vec![shown.clone()];
         // 31 MB idle against a 19 MB budget: the oldest goes and the rest stay.
         let out = victims(candidates.clone().into_iter(), 19 * mb, &pinned);
         assert_eq!(out, vec![older.clone()]);
@@ -942,7 +1053,7 @@ mod tests {
         let budget = 19 * mb;
         let mut candidates = vec![(key("/w/shown.jpg", 3440, v), budget, 99)];
         candidates.extend((0..11).map(|n| (key(format!("/i/{n}.png"), 32, v), 4 << 10, n)));
-        let pinned = vec![(PathBuf::from("/w/shown.jpg"), (3440, 3440))];
+        let pinned = vec![candidates[0].0.clone()];
 
         assert!(
             victims(candidates.into_iter(), budget, &pinned).is_empty(),
@@ -955,7 +1066,7 @@ mod tests {
         let v = FileVersion::default();
         let full = key("/w/a.jpg", 1920, v);
         let tile = key("/w/a.jpg", 232, v);
-        let pinned = vec![(PathBuf::from("/w/a.jpg"), (1920, 1920))];
+        let pinned = vec![full.clone()];
         let out = victims(vec![(full.clone(), 10, 1), (tile.clone(), 10, 2)].into_iter(), 5, &pinned);
         assert_eq!(out, vec![tile]);
     }

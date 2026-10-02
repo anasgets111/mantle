@@ -70,6 +70,7 @@ mod lock;
 mod main_loop;
 mod memory_profile;
 mod output;
+mod scale;
 mod surface;
 mod trim;
 mod turn;
@@ -84,6 +85,7 @@ pub struct App {
     registry_state: RegistryState,
     output_state: OutputState,
     compositor_state: CompositorState,
+    scale_globals: Option<scale::ScaleGlobals>,
     seat_state: SeatState,
     data_device_manager: Option<DataDeviceManagerState>,
     data_device: Option<DataDevice>,

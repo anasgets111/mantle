@@ -76,8 +76,8 @@ pub(super) fn draw_layer(
                 return;
             };
             let cast = shadow.and_then(|shadow| cast_shadow(painter, walk, content, size, shadow, target));
-            let sharp = blur * walk.scale < MIN_SIGMA;
-            let blurred = blurred(painter, walk, content, size, blur * walk.scale);
+            let sharp = blur < MIN_SIGMA;
+            let blurred = blurred(painter, walk, content, size, blur);
             // A filter a full pool refused leaves this frame unfiltered, not every frame after.
             let filtered = shadow.is_none() == cast.is_none() && sharp == blurred.is_none();
             let content = blurred.unwrap_or(content);
@@ -181,7 +181,7 @@ fn cast_shadow(
     shadow: node::Shadow,
     target: RenderTarget,
 ) -> Option<ImageId> {
-    let sigma = shadow.blur / 2.0 * walk.scale;
+    let sigma = shadow.blur / 2.0;
     let blurred = blurred(painter, walk, content, size, sigma);
     let cast = blurred.or_else(|| scratch(painter, walk, size))?;
     let (width, height) = (size.0 as f32, size.1 as f32);
@@ -216,7 +216,7 @@ pub(super) fn draw_backdrop(
     alpha: f32,
 ) {
     let Some((copy, size, paint)) = read_target(painter, walk, clip) else { return };
-    let blurred = blurred(painter, walk, copy, size, sigma * walk.scale).unwrap_or(copy);
+    let blurred = blurred(painter, walk, copy, size, sigma).unwrap_or(copy);
     replace(painter.canvas_mut(), &box_path(rect, radius), &paint(blurred, alpha), alpha);
 }
 

@@ -378,7 +378,7 @@ props! {
         ///
         /// Book: `"cover"` fills the box and crops, `"contain"` fits inside it, `"stretch"` distorts to it
         fit: Bound<OneOf<Fit>> = absent(Choice("cover"));
-        /// `false` decodes in the frame that first draws it. `true` decodes on a worker and draws nothing until ready (ADR-0122); use it for many or large images.
+        /// `false` decodes in the frame that first draws it. `true` decodes on a worker and draws nothing until the first decode lands (ADR-0122). A resize keeps drawing the previous size, scaled, until the new size decodes; use it for many or large images.
         r#async: Bound<Flag> = absent(Bool(false));
         /// Keep drawing the last picture while a new `source` decodes, and on a failed decode (ADR-0180, ADR-0183). Needs `async = true` and a stable `id`.
         retain: Bound<Flag> = absent(Bool(false));

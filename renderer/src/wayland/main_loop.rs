@@ -40,6 +40,7 @@ pub fn run(
     let qh = event_queue.handle();
 
     let compositor_state = CompositorState::bind(&globals, &qh)?;
+    let scale_globals = scale::ScaleGlobals::bind(&globals, &qh);
     let layer_shell = LayerShell::bind(&globals, &qh)?;
     // Optional: panel-only configs work without `xdg_wm_base`; `create_surfaces` logs any window
     // left unbuilt.
@@ -69,6 +70,7 @@ pub fn run(
         output_state,
         shader_stage: crate::layout::image_shader::ShaderStage::default(),
         compositor_state,
+        scale_globals,
         seat_state,
         data_device_manager,
         data_device: None,

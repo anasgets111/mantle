@@ -127,10 +127,12 @@ impl App {
             };
             let output = output.clone();
             let wl_surface = self.compositor_state.create_surface(qh);
+            let scale = self.surface_scale(&wl_surface, qh);
             let lock_surface = lock.create_lock_surface(wl_surface, &output, qh);
             if let TrackedRole::Lock { surface, .. } = &mut self.surfaces[index].role {
                 *surface = Some(lock_surface);
             }
+            self.surfaces[index].scale = scale;
             self.surfaces[index].map_state = MapState::AwaitingConfigure;
             debug!("{}: lock surface created, awaiting its configure", self.surfaces[index].surface_id);
         }

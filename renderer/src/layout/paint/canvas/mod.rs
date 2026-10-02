@@ -11,9 +11,9 @@ use femtovg::renderer::OpenGl;
 use femtovg::{Canvas, Color, CompositeOperation, ImageFlags, ImageId, Paint, Path, PixelFormat, RenderTarget};
 
 use crate::image::capture::CaptureCache;
-use crate::image::{self, Fit, ImageCache, Load};
+use crate::image::{self, Fit, ImageCache, ImageRequest, Load};
 use crate::layout::image_shader;
-use crate::layout::node::{self, MaskSource, Rgba};
+use crate::layout::node::{self, MaskSource};
 use crate::layout::scene::NodeId;
 #[cfg(test)]
 use crate::layout::scene::ResolvedNode;
@@ -202,7 +202,7 @@ fn run(painter: &mut TextPainter, walk: &mut Walk<'_, '_>, commands: &[DrawCmd],
                 if let Some(fill) = background {
                     fill_rect(painter.canvas_mut(), rect, *radius, fill);
                 }
-                paint_border(painter.canvas_mut(), rect, *radius, *colors, *widths, scale);
+                paint_border(painter.canvas_mut(), rect, *radius, *colors, *widths, 1.0);
                 if let Some(t0) = t0 {
                     walk.split.boxes += t0.elapsed();
                 }
@@ -225,7 +225,7 @@ fn run(painter: &mut TextPainter, walk: &mut Walk<'_, '_>, commands: &[DrawCmd],
                 let t0 = timing.then(Instant::now);
                 let mut rect = rect;
                 if *centered {
-                    rect.y += ((rect.height - *line_height) / 2.0).max(0.0);
+                    rect.y += ((rect.height - *line_height * scale) / 2.0).max(0.0);
                 }
                 painter.draw_text(
                     TextDraw {
@@ -252,41 +252,34 @@ fn run(painter: &mut TextPainter, walk: &mut Walk<'_, '_>, commands: &[DrawCmd],
             Draw::Icon { name, px, alpha, color } => {
                 let t0 = timing.then(Instant::now);
                 if let Some(path) = image::icons::resolve(name, *px) {
-                    let draw = FileDraw {
-                        fit: Fit::Contain,
-                        rect,
-                        box_px: (*px, *px),
-                        alpha: *alpha,
-                        tint: *color,
-                        load: Load::Inline,
-                        blur_px: 0,
-                    };
-                    let _ = draw_file(painter.canvas_mut(), walk.images, &path, draw);
+                    let request =
+                        ImageRequest { path: &path, box_px: (*px, *px), tint: *color, fit: Fit::Contain, blur_px: 0 };
+                    let draw = FileDraw { request, rect, alpha: *alpha, load: Load::Inline };
+                    let _ = draw_file(painter.canvas_mut(), walk.images, draw);
                 }
                 if let Some(t0) = t0 {
                     walk.split.icons += t0.elapsed();
                 }
             }
             Draw::Image { node, source, fit, box_px, alpha, load, retained, dissolve, shader, blur_px } => {
-                let draw = FileDraw {
-                    fit: *fit,
-                    rect,
+                let request = ImageRequest {
+                    path: std::path::Path::new(source),
                     box_px: *box_px,
-                    alpha: *alpha,
                     tint: None,
-                    load: *load,
+                    fit: *fit,
                     blur_px: *blur_px,
                 };
-                let under = retained.as_deref().map(std::path::Path::new);
+                let draw = FileDraw { request, rect, alpha: *alpha, load: *load };
+                let under = retained.as_deref().map(|under| draw.of(std::path::Path::new(under)));
                 match dissolve {
                     Some(progress) => {
                         // Asked for whether or not a pixel of it is visible yet: the answer is
                         // about the texture, and it is what starts the run (ADR-0183).
-                        let to = file_texture(painter.canvas_mut(), walk.images, std::path::Path::new(source), draw);
-                        if to.is_some() {
+                        let to = file_texture(painter.canvas_mut(), walk.images, draw);
+                        if to.as_ref().is_some_and(|(_, _, exact)| *exact) {
                             walk.drawn.push(DrawnImage { node: *node, source: source.clone() });
                         }
-                        let from = under.and_then(|under| file_texture(painter.canvas_mut(), walk.images, under, draw));
+                        let from = under.and_then(|under| file_texture(painter.canvas_mut(), walk.images, under));
 
                         // The stage takes the whole cross, both endpoints at once, which is the
                         // only way an effect can be anything but a fade (ADR-0184) -- and, with no
@@ -294,11 +287,12 @@ fn run(painter: &mut TextPainter, walk: &mut Walk<'_, '_>, commands: &[DrawCmd],
                         // both textures and a context; without either, the two draws below take
                         // the frame, which is why they were built first and why they stay.
                         let crossed = match (walk.shaders.as_mut(), from, to) {
-                            (Some(shaders), Some((from, from_rect)), Some((to, to_rect))) => {
+                            (Some(shaders), Some((from, from_rect, _)), Some((to, to_rect, _))) => {
                                 let params = shader.as_ref().map_or(&[][..], |(_, params)| params.as_slice());
                                 let run = image_shader::Run {
                                     cross: Some(image_shader::Cross { from, to, from_rect, to_rect }),
                                     rect,
+                                    logical_size: (rect.width / scale, rect.height / scale),
                                     transform: frame.transform,
                                     clip: scissor,
                                     target_size: frame.size,
@@ -324,10 +318,10 @@ fn run(painter: &mut TextPainter, walk: &mut Walk<'_, '_>, commands: &[DrawCmd],
                         // yet, or when even the engine's own shader would not build. The first is
                         // the test harness; the rest are real and are why this stays.
                         if !crossed {
-                            if let Some((id, fitted)) = from {
+                            if let Some((id, fitted, _)) = from {
                                 fill_image(painter.canvas_mut(), id, fitted, *alpha);
                             }
-                            if let Some((id, fitted)) = to {
+                            if let Some((id, fitted, _)) = to {
                                 fill_image(painter.canvas_mut(), id, fitted, *alpha * *progress);
                             }
                         }
@@ -336,13 +330,15 @@ fn run(painter: &mut TextPainter, walk: &mut Walk<'_, '_>, commands: &[DrawCmd],
                     // already logged once. Either way the node keeps its last picture rather than
                     // showing the surface behind it (ADR-0180). A cover that is itself gone --
                     // evicted despite the pin, or deleted from disk -- draws nothing.
-                    None => {
-                        if draw_file(painter.canvas_mut(), walk.images, std::path::Path::new(source), draw) {
-                            walk.drawn.push(DrawnImage { node: *node, source: source.clone() });
-                        } else if let Some(under) = under {
-                            draw_file(painter.canvas_mut(), walk.images, under, draw);
+                    None => match draw_file(painter.canvas_mut(), walk.images, draw) {
+                        Some(true) => walk.drawn.push(DrawnImage { node: *node, source: source.clone() }),
+                        Some(false) => {}
+                        None => {
+                            if let Some(under) = under {
+                                draw_file(painter.canvas_mut(), walk.images, under);
+                            }
                         }
-                    }
+                    },
                 }
             }
             // `wayland::capture` staged this node's pixels, if any landed; `execute`'s
@@ -365,6 +361,7 @@ fn run(painter: &mut TextPainter, walk: &mut Walk<'_, '_>, commands: &[DrawCmd],
                     let run = image_shader::Run {
                         cross: None,
                         rect,
+                        logical_size: (rect.width / scale, rect.height / scale),
                         transform: frame.transform,
                         clip: scissor,
                         target_size: frame.size,
@@ -576,10 +573,18 @@ fn offscreen(
             MaskSource::Node(_) => None, // Lowered to Draw::NodeMask by build_node.
             // A missing mask image leaves the subtree unmasked, the answer an allocation failure
             // above gets too.
-            MaskSource::Image(file) => walk
-                .images
-                .image(painter.canvas_mut(), std::path::Path::new(file), *box_px, None, Load::Inline, Fit::Stretch, 0)
-                .map(|id| Paint::image(id, rect.x, rect.y, rect.width, rect.height, 0.0, 1.0)),
+            MaskSource::Image(file) => {
+                let request = ImageRequest {
+                    path: std::path::Path::new(file),
+                    box_px: *box_px,
+                    tint: None,
+                    fit: Fit::Stretch,
+                    blur_px: 0,
+                };
+                walk.images
+                    .image(painter.canvas_mut(), &request, Load::Inline)
+                    .map(|id| Paint::image(id, rect.x, rect.y, rect.width, rect.height, 0.0, 1.0))
+            }
         };
         if let Some(paint) = paint {
             let canvas = painter.canvas_mut();
@@ -598,18 +603,22 @@ fn offscreen(
     Some(image)
 }
 
-/// File-draw parameters shared by icon and image commands.
+/// File-draw parameters shared by icon and image commands. The request's `tint` is `None` for an
+/// `image`, which names a file the config chose rather than a themed icon, and its `blur_px` is
+/// `0` for an icon, which has no `source_blur` (ADR-0240).
 #[derive(Debug, Clone, Copy)]
-struct FileDraw {
-    fit: Fit,
+struct FileDraw<'a> {
+    request: ImageRequest<'a>,
     rect: LogicalRect,
-    box_px: (u32, u32),
     alpha: f32,
-    /// `None` for an `image`, which names a file the config chose rather than a themed icon.
-    tint: Option<Rgba>,
     load: Load,
-    /// `0` for an icon, which has no `source_blur` (ADR-0240).
-    blur_px: u32,
+}
+
+impl<'a> FileDraw<'a> {
+    /// The same draw of another file, a `retain` cover's.
+    fn of(self, path: &'a std::path::Path) -> Self {
+        Self { request: ImageRequest { path, ..self.request }, ..self }
+    }
 }
 
 /// Cache lookup and one `fill_path` over the fitted rect. Filling the full box with a `Contain`
@@ -617,12 +626,10 @@ struct FileDraw {
 /// run's scissor.
 /// Answers whether it drew, which is how an `image` learns its source has no texture yet and its
 /// `retain` cover should take the frame (ADR-0180).
-fn draw_file(canvas: &mut Canvas<OpenGl>, images: &mut ImageCache, file: &std::path::Path, draw: FileDraw) -> bool {
-    let Some((id, fitted)) = file_texture(canvas, images, file, draw) else {
-        return false;
-    };
+fn draw_file(canvas: &mut Canvas<OpenGl>, images: &mut ImageCache, draw: FileDraw) -> Option<bool> {
+    let (id, fitted, exact) = file_texture(canvas, images, draw)?;
     fill_image(canvas, id, fitted, draw.alpha);
-    true
+    Some(exact)
 }
 
 /// The texture for `file` and the rect its `fit` puts it in, without drawing it. Split out because
@@ -630,13 +637,13 @@ fn draw_file(canvas: &mut Canvas<OpenGl>, images: &mut ImageCache, file: &std::p
 fn file_texture(
     canvas: &mut Canvas<OpenGl>,
     images: &mut ImageCache,
-    file: &std::path::Path,
     draw: FileDraw,
-) -> Option<(ImageId, LogicalRect)> {
-    let FileDraw { fit, rect, box_px, alpha: _, tint, load, blur_px } = draw;
-    let id = images.image(canvas, file, box_px, tint, load, fit, blur_px)?;
+) -> Option<(ImageId, LogicalRect, bool)> {
+    let FileDraw { request, rect, alpha: _, load } = draw;
+    let exact = images.image(canvas, &request, load);
+    let id = exact.or_else(|| (load == Load::Background).then(|| images.stand_in(canvas, &request)).flatten())?;
     let (width, height) = canvas.image_size(id).ok()?;
-    Some((id, image::fitted_rect(rect, width as f32, height as f32, fit)))
+    Some((id, image::fitted_rect(rect, width as f32, height as f32, request.fit), exact.is_some()))
 }
 
 fn fill_image(canvas: &mut Canvas<OpenGl>, id: ImageId, fitted: LogicalRect, alpha: f32) {
@@ -893,6 +900,92 @@ pub(crate) mod tests {
         paint_tree(&mut painter, &mut ImageCache::new(), &root, 1.0);
 
         assert_eq!(pixel_at(painter.canvas_mut(), 32, 32), (255, 0, 0, 255));
+    }
+
+    #[test]
+    fn a_scaled_buffer_paints_boxes_and_paths_at_physical_edges() {
+        for (scale, extent) in [(1.5, 96), (2.0, 128)] {
+            let Some(instance) = init_headless_egl(extent, extent) else { return };
+            let lua = Lua::new();
+            let shaping = ShapingHandle::spawn();
+            let Some(mut painter) = text_painter(&instance, &shaping, extent as u32, extent as u32) else {
+                return;
+            };
+            let root = resolved_surface(
+                &lua,
+                r##"return panel { id = "bar", width = 64, height = 64, child = rect { width = "Fill", height = "Fill", children = {
+                    rect { width = 16, height = 16, background = "#FF0000FF" },
+                    path { width = 16, height = 16, margin = { left = 24 }, fill = "#00FF00FF",
+                        commands = { { op = "M", points = { 0, 0 } }, { op = "L", points = { 16, 0 } },
+                            { op = "L", points = { 16, 16 } }, { op = "L", points = { 0, 16 } },
+                            { op = "Z", points = {} } } }
+                } } }"##,
+                LogicalSize { width: 64.0, height: 64.0 },
+            );
+            paint_tree(&mut painter, &mut ImageCache::new(), &root, scale);
+            assert_eq!(
+                pixel_at(painter.canvas_mut(), (8.0 * scale) as usize, (8.0 * scale) as usize),
+                (255, 0, 0, 255)
+            );
+            assert_eq!(
+                pixel_at(painter.canvas_mut(), (32.0 * scale) as usize, (8.0 * scale) as usize),
+                (0, 255, 0, 255)
+            );
+            assert_eq!(pixel_at(painter.canvas_mut(), (18.0 * scale) as usize, (8.0 * scale) as usize).3, 0);
+        }
+    }
+
+    #[test]
+    fn text_ink_grows_with_the_buffer_without_changing_layout() {
+        let mut bounds = Vec::new();
+        for (scale, extent) in [(1.0, 64), (2.0, 128)] {
+            let Some(instance) = init_headless_egl(extent, extent) else { return };
+            let lua = Lua::new();
+            let shaping = ShapingHandle::spawn();
+            let Some(mut painter) = text_painter(&instance, &shaping, extent as u32, extent as u32) else {
+                return;
+            };
+            let root = resolved_surface(
+                &lua,
+                r##"return panel { id = "bar", width = 64, height = 64,
+                    child = text { content = "Hi", width = 64, height = 32, font_size = 20,
+                        foreground = "#FFFFFFFF" } }"##,
+                LogicalSize { width: 64.0, height: 64.0 },
+            );
+            paint_tree(&mut painter, &mut ImageCache::new(), &root, scale);
+            let screenshot = painter.canvas_mut().screenshot().expect("text pixels");
+            let mut ink = Vec::new();
+            for y in 0..extent as usize {
+                for x in 0..extent as usize {
+                    if screenshot[(x, y)].a > 128 {
+                        ink.push((x, y));
+                    }
+                }
+            }
+            assert!(!ink.is_empty());
+            bounds.push((ink.iter().map(|(x, _)| *x).max().unwrap(), ink.iter().map(|(_, y)| *y).max().unwrap()));
+        }
+        assert!((bounds[1].0 as i32 - (bounds[0].0 * 2) as i32).abs() <= 3, "{bounds:?}");
+        assert!((bounds[1].1 as i32 - (bounds[0].1 * 2) as i32).abs() <= 3, "{bounds:?}");
+    }
+
+    #[test]
+    fn a_fractional_rounded_clip_uses_the_physical_corner() {
+        let Some(instance) = init_headless_egl(96, 96) else { return };
+        let lua = Lua::new();
+        let shaping = ShapingHandle::spawn();
+        let Some(mut painter) = text_painter(&instance, &shaping, 96, 96) else { return };
+        let root = resolved_surface(
+            &lua,
+            r##"return panel { id = "bar", width = 64, height = 64,
+                child = rect { width = 32, height = 32, radius = 12, clip = "Rounded",
+                    children = { rect { width = 32, height = 32, background = "#FF0000FF" } } } }"##,
+            LogicalSize { width: 64.0, height: 64.0 },
+        );
+        paint_tree(&mut painter, &mut ImageCache::new(), &root, 1.5);
+        assert_eq!(pixel_at(painter.canvas_mut(), 1, 1).3, 0);
+        assert_eq!(pixel_at(painter.canvas_mut(), 24, 24), (255, 0, 0, 255));
+        assert_eq!(pixel_at(painter.canvas_mut(), 55, 24).3, 0);
     }
 
     /// Paints `child` inside a 64x64 panel with no fill and reads back the pixels at `points`.

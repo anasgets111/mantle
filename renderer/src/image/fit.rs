@@ -8,12 +8,9 @@ use crate::text::snap::LogicalRect;
 
 /// The box a source is *stored* under, which is not always the box it is drawn into: a vector
 /// texture uses its longest edge, so 24x30 shares the 30x30 slot (ADR-0122).
-///
-/// Public because a pin has to name the same thing the entry does. `DisplayList::drawn_images`
-/// collects the drawn box, and before this an `image` pointing at an SVG pinned 200x40 while the
-/// entry sat under 200x200, so the exact comparison in `victims` missed it and evicted a texture
-/// a mapped surface was showing (ADR-0183).
-pub fn cache_box(path: &Path, box_px: (u32, u32)) -> (u32, u32) {
+/// A pin resolves through the same key, or an `image` pointing at an SVG pins 200x40 while the
+/// entry sits under 200x200 and `victims` evicts a texture a mapped surface shows (ADR-0183).
+pub(super) fn cache_box(path: &Path, box_px: (u32, u32)) -> (u32, u32) {
     let box_px = (box_px.0.max(1), box_px.1.max(1));
     if is_vector(path) { (box_px.0.max(box_px.1), box_px.0.max(box_px.1)) } else { box_px }
 }

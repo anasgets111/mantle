@@ -126,13 +126,14 @@ pub enum Draw {
     /// (ADR-0254). `rect` is the node's box; `clip` covers everything the effect reaches. A
     /// `silhouette` is a scoop's fill, and only its shadow draws, cut out under the box (ADR-0260).
     Layer { effect: node::Effect, silhouette: bool, commands: Vec<DrawCmd> },
-    /// What the target already holds under the node's box, blurred by `sigma` logical pixels and
+    /// What the target already holds under the node's box, blurred by `sigma` and
     /// drawn through its `radius` at `alpha` (ADR-0256). `clip` covers the 3 sigma the blur reads.
     Backdrop { sigma: f32, radius: f32, alpha: f32 },
 }
 
 /// One drawable node: what, where, and its precomputed ancestor clip. Intersections are axis
 /// aligned and associative, so [`execute`] can set one scissor instead of rebuilding a nest.
+/// Geometry is in buffer pixels except a `Text`'s font metrics, which shaping reads logical.
 #[derive(Debug, Clone, PartialEq)]
 pub struct DrawCmd {
     pub rect: LogicalRect,
@@ -244,37 +245,40 @@ impl DisplayList {
         walk(&self.commands, out)
     }
 
-    /// Images as `(path, box)` cache keys for `ImageCache::trim` pins (ADR-0123). A mapped surface
-    /// still shows what it last painted, so that entry must not be evicted underneath it.
-    pub fn drawn_images(&self, out: &mut Vec<(std::path::PathBuf, (u32, u32))>) {
-        fn walk(commands: &[DrawCmd], out: &mut Vec<(std::path::PathBuf, (u32, u32))>) {
-            // The box the *entry* is under, not the box it is drawn into: a vector's key is
-            // squared, and a pin that names the drawn box misses it (ADR-0183).
-            let pin = |out: &mut Vec<_>, path: &str, box_px| {
-                let path = std::path::PathBuf::from(path);
-                let key_box = image::cache_box(&path, box_px);
-                out.push((path, key_box));
-            };
+    /// Requests whose textures the next paint would select, including an async stand-in if the
+    /// exact physical size is still pending. `ImageCache::trim` resolves current file versions.
+    pub(crate) fn image_requests<'a>(&'a self, out: &mut Vec<image::ImageRequest<'a>>) {
+        fn walk<'a>(commands: &'a [DrawCmd], out: &mut Vec<image::ImageRequest<'a>>) {
             for command in commands {
                 match &command.draw {
-                    Draw::Image { source, box_px, retained, .. } => {
-                        // Both endpoints are pinned, or `trim` frees the very texture covering the
-                        // gap and the node blinks after all (ADR-0180).
+                    Draw::Image { source, box_px, fit, blur_px, retained, .. } => {
                         for path in std::iter::once(source).chain(retained.iter()) {
-                            pin(out, path, *box_px);
+                            out.push(image::ImageRequest {
+                                path: std::path::Path::new(path),
+                                box_px: *box_px,
+                                tint: None,
+                                fit: *fit,
+                                blur_px: *blur_px,
+                            });
                         }
                     }
                     Draw::Clipped { mask, commands, .. } => {
                         if let (Some(file), Some((_, box_px))) = (mask_file(&command.draw), mask) {
-                            pin(out, file, *box_px);
+                            out.push(image::ImageRequest {
+                                path: std::path::Path::new(file),
+                                box_px: *box_px,
+                                tint: None,
+                                fit: image::Fit::Stretch,
+                                blur_px: 0,
+                            });
                         }
-                        walk(commands, out)
+                        walk(commands, out);
                     }
                     draw => draw.nested().into_iter().for_each(|nested| walk(nested, out)),
                 }
             }
         }
-        walk(&self.commands, out)
+        walk(&self.commands, out);
     }
 
     /// The pixels that can differ from `previous`, empty if none can. Commands outside the common
@@ -501,8 +505,7 @@ mod tests {
         assert!(!list.draws_any_of(&[]));
         // The same walk names the pin `ImageCache::trim` keeps: the path with the box the image
         // was keyed on, the 100x40 rect it fills.
-        let mut pinned = Vec::new();
-        list.drawn_images(&mut pinned);
+        let pinned = pins(&list);
         assert_eq!(pinned, vec![(std::path::PathBuf::from("/tmp/a.png"), (100, 40))]);
     }
 
@@ -544,8 +547,7 @@ mod tests {
     #[test]
     fn an_image_mask_is_a_texture_for_pinning_staleness_and_damage() {
         let list = masked(IMAGE_MASKED);
-        let mut pinned = Vec::new();
-        list.drawn_images(&mut pinned);
+        let pinned = pins(&list);
         assert_eq!(pinned, [(std::path::PathBuf::from("/tmp/m.png"), (80, 32))]);
         assert!(list.draws_any_of(&[std::path::PathBuf::from("/tmp/m.png")]));
         assert!(!list.draws_any_of(&[std::path::PathBuf::from("/tmp/other.png")]));
@@ -581,10 +583,28 @@ mod tests {
         );
     }
 
+    /// Each image `ImageCache::trim` would pin for `list`, as its path and box.
+    pub(super) fn pins(list: &DisplayList) -> Vec<(std::path::PathBuf, (u32, u32))> {
+        let mut requests = Vec::new();
+        list.image_requests(&mut requests);
+        requests.into_iter().map(|request| (request.path.to_path_buf(), request.box_px)).collect()
+    }
+
     pub(super) fn effect_surface(child: &str) -> DisplayList {
         let src =
             format!(r##"return panel {{ id = "bar", width = 200, height = 100, padding = 40, child = {child} }}"##);
         build(&resolved_surface(&Lua::new(), &src, LogicalSize { width: 200.0, height: 100.0 }), 1.0, None)
+    }
+
+    /// A translate is logical, so at scale 2 its drawn bounds move twice as far as its offset.
+    #[test]
+    fn a_translated_nodes_bounds_follow_it_at_buffer_scale() {
+        let src = r##"return panel { id = "bar", width = 200, height = 100, padding = 40,
+            child = rect { width = 20, height = 20, background = "#ffffff", translate = { x = 10 } } }"##;
+        let list = build(&resolved_surface(&Lua::new(), src, LogicalSize { width: 200.0, height: 100.0 }), 2.0, None);
+        let moved = list.commands.iter().find(|cmd| matches!(cmd.draw, Draw::Transformed { .. })).unwrap();
+        let bounds = command_bounds(moved);
+        assert!(bounds.x0 <= 80 && bounds.x1 >= 140, "box 80..120 drawn at 100..140: {bounds:?}");
     }
 
     /// ADR-0256. A frosted node shows what is under it, so a change its blur reaches repaints it,

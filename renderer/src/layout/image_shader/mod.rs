@@ -167,6 +167,8 @@ pub struct Run<'a> {
     pub cross: Option<Cross>,
     /// The node's box, absolute in the surface.
     pub rect: LogicalRect,
+    /// Shader coordinates stay in the shell's logical units while the quad uses buffer pixels.
+    pub logical_size: (f32, f32),
     /// The node's paint-only affine (ADR-0149), about its own origin, or `None` for no transform.
     /// Applied to the quad's corners here rather than by femtovg, which never sees this draw.
     pub transform: Option<node::Affine>,
@@ -470,7 +472,7 @@ impl ShaderStage {
 
             gl.uniform_1_f32(program.progress.as_ref(), run.progress);
             gl.uniform_1_f32(program.opacity.as_ref(), run.opacity);
-            gl.uniform_2_f32(program.size.as_ref(), width, height);
+            gl.uniform_2_f32(program.size.as_ref(), run.logical_size.0, run.logical_size.1);
 
             // Every param the program has, not only the ones this node supplied. A uniform holds
             // its value in the program, and two nodes sharing one shader would otherwise inherit

@@ -339,6 +339,7 @@ impl TextPainter {
     }
 
     /// Draws `text` with its snapped top-left corner at `rect`'s origin, in `color`, row by row.
+    /// `rect` is in buffer pixels; the shaped glyphs are logical, so `scale` places and rasterizes them.
     /// Does not flush or swap buffers: `layout::paint`'s tree walk draws a whole surface's worth of
     /// nodes onto this same canvas and flushes once at the end.
     ///
@@ -359,12 +360,9 @@ impl TextPainter {
             caret,
             caret_on,
         } = line;
-        let physical = snap_to_physical(rect, scale);
-        // ponytail: glyphs are placed at logical size in a physical-pixel canvas whose dpi is 1.0,
-        // so on a fractional or 2x output every glyph in this shell draws at logical size. Upgrade
-        // path: shape at the scaled size; only reachable with a HiDPI output to verify against.
-        let step = line_height;
-        let thickness = caret_thickness(font_size);
+        let physical = snap_to_physical(rect, 1.0);
+        let step = line_height * scale;
+        let thickness = caret_thickness(font_size) * scale;
 
         let runs_key = font_runs(runs);
         let font_size_bits = font_size.to_bits();
@@ -419,18 +417,18 @@ impl TextPainter {
         for (line_start, shaped) in shaped_lines.iter() {
             let line_start = *line_start;
             for laid in shaped.shaped.iter() {
-                let left = align.line_left(laid.rtl, physical.x0 as f32, physical.x1 as f32, laid.width);
-                let baseline = physical.y0 as f32 + row as f32 * step + laid.baseline;
+                let left = align.line_left(laid.rtl, physical.x0 as f32, physical.x1 as f32, laid.width * scale);
+                let baseline = physical.y0 as f32 + row as f32 * step + laid.baseline * scale;
                 row += 1;
                 // A `textfield`'s selection and caret, in the ink the field already declared for
                 // its text (ADR-0236). A draft holds no newline, so only the first row has either.
-                let top = baseline - laid.baseline;
+                let top = baseline - laid.baseline * scale;
                 let selection = caret.filter(|_| row == 1);
                 // Past the width that fits, the line follows the caret rather than its alignment,
                 // or the end of a long draft is drawn outside the field it belongs to (ADR-0236).
                 let left = match selection {
                     Some((_, at)) => {
-                        let cx = caret_x(laid, at);
+                        let cx = caret_x(laid, at) * scale;
                         caret_visible_left(left, physical.x0 as f32, physical.x1 as f32, cx, thickness)
                     }
                     None => left,
@@ -439,7 +437,7 @@ impl TextPainter {
                 // contiguous stretch: a selection crossing a direction change is not one box.
                 if let Some((lo, hi)) = selection.map(|(anchor, at)| (anchor.min(at), anchor.max(at))) {
                     for (x0, x1) in x_spans(&laid.glyphs, |glyph| glyph.start < hi && glyph.end > lo) {
-                        self.fill(left + x0, top, x1 - x0, step, Rgba { a: color.a * 0.3, ..color });
+                        self.fill(left + x0 * scale, top, (x1 - x0) * scale, step, Rgba { a: color.a * 0.3, ..color });
                     }
                 }
                 let style = |start: usize| runs.iter().find(|run| run.range.contains(&(line_start + start)));
@@ -448,21 +446,27 @@ impl TextPainter {
                 };
                 for group in laid.glyphs.chunk_by(|a, b| key(a) == key(b)) {
                     let glyphs = group.iter().map(|glyph| PositionedGlyph {
-                        x: left + glyph.x,
-                        y: baseline + glyph.y,
+                        x: left + glyph.x * scale,
+                        y: baseline + glyph.y * scale,
                         glyph_id: glyph.id,
                     });
-                    self.fill_run(key(&group[0]), glyphs, font_size);
+                    self.fill_run(key(&group[0]), glyphs, font_size * scale);
                 }
                 // Over them, so a glyph's side bearing cannot swallow it.
                 if let Some((.., at)) = selection.filter(|_| caret_on) {
-                    self.fill(left + caret_x(laid, at), top, thickness, step, color);
+                    self.fill(left + caret_x(laid, at) * scale, top, thickness, step, color);
                 }
 
                 for run in runs.iter().filter(|run| run.underline) {
                     let tint = run.color.unwrap_or(color);
                     for (x0, x1) in x_spans(&laid.glyphs, |glyph| run.range.contains(&(line_start + glyph.start))) {
-                        self.fill(left + x0, (baseline + thickness).round(), x1 - x0, thickness, tint);
+                        self.fill(
+                            left + x0 * scale,
+                            (baseline + thickness).round(),
+                            (x1 - x0) * scale,
+                            thickness,
+                            tint,
+                        );
                     }
                 }
             }

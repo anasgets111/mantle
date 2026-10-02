@@ -36,6 +36,14 @@ A card: a translucent rounded fill, a hairline border and a soft shadow below it
 | Glass | A box with `backdrop_blur` |
 | Sigma | A Gaussian blur's standard deviation in logical px. The blur reaches about 3 sigma |
 
+## Output scale
+
+Node sizes, positions, input and compositor regions use logical pixels. Mantle paints each
+surface into a buffer sized for that surface's compositor scale, including fractional scales
+when the compositor offers fractional-scale and viewporter together. Moving a surface between
+outputs repaints its buffer at the new scale. Text and images gain resolution without changing
+the layout. The node `scale` property is a separate paint transform; it does not set output scale.
+
 ## Who takes what
 
 A property on a kind that does not take it is refused, naming the closest property the kind takes

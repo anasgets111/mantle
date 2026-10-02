@@ -61,6 +61,10 @@ fn build_node(
     }
 
     let rect = node.at(origin_x, origin_y);
+    // The list is in buffer pixels; everything this walk reasons with stays logical until here.
+    let px =
+        LogicalRect { x: rect.x * scale, y: rect.y * scale, width: rect.width * scale, height: rect.height * scale };
+    let cmd = |clip: PhysicalRect, draw: Draw| DrawCmd { rect: px, clip, draw: in_buffer_pixels(draw, scale) };
 
     // Snap this box and intersect it with ancestor clips. Wrapped text is already rewritten by
     // `fit_text_to_box`; this remains a backstop for unwrapped overflow. Clips stay rectangular
@@ -128,7 +132,7 @@ fn build_node(
         && !clip.is_empty()
     {
         let draw = Draw::Backdrop { sigma: effect.backdrop, radius, alpha: opacity };
-        out.push(DrawCmd { rect, clip: parent_clip.intersect(read), draw });
+        out.push(cmd(parent_clip.intersect(read), draw));
     }
     // After the backdrop: CSS's backdrop is what precedes the element, and its shadow is part of it.
     if let Some(shadow) = cast {
@@ -140,20 +144,20 @@ fn build_node(
             let black = Some(Fill::Color(Rgba { r: 0.0, g: 0.0, b: 0.0, a: 1.0 }));
             let fill =
                 Draw::Box { background: black, radius, colors: BorderColor::default(), widths: EdgeInsets::default() };
-            Draw::Layer { effect, silhouette: true, commands: vec![DrawCmd { rect, clip, draw: fill }] }
+            Draw::Layer { effect, silhouette: true, commands: vec![cmd(clip, fill)] }
         };
-        out.push(DrawCmd { rect, clip: parent_clip.intersect(reach), draw });
+        out.push(cmd(parent_clip.intersect(reach), draw));
     }
     let body = out.len();
     match rounded_clip(node) {
         // A mask covers the node's own paint too, as Qt's `OpacityMask` covers its item (ADR-0255).
         radius if mask.is_some() => {
             let (fill, border) = split_fill_and_border(draw);
-            let mut inner: Vec<DrawCmd> = fill.map(|draw| DrawCmd { rect, clip, draw }).into_iter().collect();
+            let mut inner: Vec<DrawCmd> = fill.map(|draw| cmd(clip, draw)).into_iter().collect();
             for child in node.painted_children() {
                 build_node(child, x, y, scale, (clip, surface), opacity, focus, &mut inner);
             }
-            inner.extend(border.map(|draw| DrawCmd { rect, clip, draw }));
+            inner.extend(border.map(|draw| cmd(clip, draw)));
             if !inner.is_empty() {
                 let draw = if let Some(mask_node) = node.mask_child() {
                     let mut commands = Vec::new();
@@ -171,12 +175,12 @@ fn build_node(
                     let mask = mask.cloned().map(|mask| (mask, box_px));
                     Draw::Clipped { radius: radius.unwrap_or(0.0), mask, commands: inner }
                 };
-                out.push(DrawCmd { rect, clip, draw });
+                out.push(cmd(clip, draw));
             }
         }
         None => {
             if let Some(draw) = draw {
-                out.push(DrawCmd { rect, clip, draw });
+                out.push(cmd(clip, draw));
             }
             for child in node.painted_children() {
                 build_node(child, x, y, scale, (child_clip, surface), opacity, focus, out);
@@ -187,7 +191,7 @@ fn build_node(
         Some(radius) => {
             let (fill, border) = split_fill_and_border(draw);
             if let Some(fill) = fill {
-                out.push(DrawCmd { rect, clip, draw: fill });
+                out.push(cmd(clip, fill));
             }
             let mut inner = Vec::new();
             for child in node.painted_children() {
@@ -195,10 +199,10 @@ fn build_node(
             }
             // A leaf has nothing to clip, so avoid the render target and composite.
             if !inner.is_empty() {
-                out.push(DrawCmd { rect, clip, draw: Draw::Clipped { radius, mask: None, commands: inner } });
+                out.push(cmd(clip, Draw::Clipped { radius, mask: None, commands: inner }));
             }
             if let Some(border) = border {
-                out.push(DrawCmd { rect, clip, draw: border });
+                out.push(cmd(clip, border));
             }
         }
     }
@@ -212,16 +216,70 @@ fn build_node(
             .shadow
             .map_or(0.0, |shadow| self::reach(shadow.blur / 2.0) + shadow.offset.0.abs().max(shadow.offset.1.abs()));
         let target = snap_to_physical(grow(surface, pad.max(self::reach(layered.blur))), scale);
-        out.push(DrawCmd {
-            rect,
-            clip: parent_clip.intersect(bounds).intersect(target),
-            draw: Draw::Layer { effect: layered, silhouette: false, commands },
-        });
+        let draw = Draw::Layer { effect: layered, silhouette: false, commands };
+        out.push(cmd(parent_clip.intersect(bounds).intersect(target), draw));
     }
     if !node.transform.is_identity() {
         let matrix = node.transform.matrix(rect);
         let commands: Vec<DrawCmd> = out.drain(start..).collect();
-        out.push(DrawCmd { rect, clip: child_clip, draw: Draw::Transformed { matrix, commands } });
+        out.push(cmd(child_clip, Draw::Transformed { matrix, commands }));
+    }
+}
+
+/// `draw`'s own geometry in buffer pixels; a group's subtree was converted as it was built.
+/// Exhaustive, so a new draw has to say what it scales. Image and icon boxes are cache keys
+/// [`draw_for`] rounds itself, and text shapes at its logical size for `canvas::execute` to rasterize at
+/// the buffer scale.
+fn in_buffer_pixels(draw: Draw, scale: f32) -> Draw {
+    let shadow = |shadow: node::Shadow| node::Shadow {
+        blur: shadow.blur * scale,
+        offset: (shadow.offset.0 * scale, shadow.offset.1 * scale),
+        spread: shadow.spread * scale,
+        ..shadow
+    };
+    match draw {
+        Draw::Box { background, radius, colors, widths } => Draw::Box {
+            background,
+            radius: radius * scale,
+            colors,
+            widths: EdgeInsets {
+                top: widths.top * scale,
+                right: widths.right * scale,
+                bottom: widths.bottom * scale,
+                left: widths.left * scale,
+            },
+        },
+        Draw::Path(mut path) => {
+            path.commands.iter_mut().flat_map(|command| &mut command.points).for_each(|point| *point *= scale);
+            path.stroke_width *= scale;
+            Draw::Path(path)
+        }
+        Draw::Clipped { radius, mask, commands } => Draw::Clipped { radius: radius * scale, mask, commands },
+        Draw::NodeMask { invert, radius, split, commands } => {
+            Draw::NodeMask { invert, radius: radius * scale, split, commands }
+        }
+        // The affine's linear part is the same in either unit; only its translation scales.
+        Draw::Transformed { mut matrix, commands } => {
+            matrix[4] *= scale;
+            matrix[5] *= scale;
+            Draw::Transformed { matrix, commands }
+        }
+        Draw::Shadow { shadow: cast, radius, knockout } => {
+            Draw::Shadow { shadow: shadow(cast), radius: radius * scale, knockout }
+        }
+        Draw::Layer { effect, silhouette, commands } => Draw::Layer {
+            effect: node::Effect { shadow: effect.shadow.map(shadow), blur: effect.blur * scale, ..effect },
+            silhouette,
+            commands,
+        },
+        Draw::Backdrop { sigma, radius, alpha } => {
+            Draw::Backdrop { sigma: sigma * scale, radius: radius * scale, alpha }
+        }
+        draw @ (Draw::Text { .. }
+        | Draw::Icon { .. }
+        | Draw::Image { .. }
+        | Draw::Capture { .. }
+        | Draw::Shader { .. }) => draw,
     }
 }
 
@@ -499,7 +557,7 @@ fn layer_bounds(rect: LogicalRect, effect: node::Effect, scale: f32) -> Physical
 
 #[cfg(test)]
 mod tests {
-    use super::super::tests::{IMAGE_MASKED, effect_surface, masked, resolved_surface};
+    use super::super::tests::{IMAGE_MASKED, effect_surface, masked, pins, resolved_surface};
     use super::*;
 
     use mlua::Lua;
@@ -591,8 +649,7 @@ mod tests {
         assert_eq!(image_draw(&tree), Some((Some("/tmp/old.png".to_string()), Some(0.25))));
 
         // Both are drawn, so both are pinned; losing the outgoing mid-cross is a hole in the frame.
-        let mut pinned = Vec::new();
-        build(&tree, 1.0, None).drawn_images(&mut pinned);
+        let pinned = pins(&build(&tree, 1.0, None));
         assert_eq!(
             pinned,
             vec![
@@ -632,8 +689,7 @@ mod tests {
         tree.children[0].displayed_source = Some("/tmp/old.png".to_string());
         assert_eq!(cover_of(&tree), Some(Some("/tmp/old.png".to_string())));
         let list = build(&tree, 1.0, None);
-        let mut pinned = Vec::new();
-        list.drawn_images(&mut pinned);
+        let pinned = pins(&list);
         assert_eq!(
             pinned,
             vec![
@@ -1512,6 +1568,33 @@ mod tests {
         assert_eq!(layer.clip, PhysicalRect { x0: -11, y0: -6, x1: 211, y1: 111 });
     }
 
+    /// One conversion puts every draw's geometry in buffer pixels; text metrics stay logical.
+    #[test]
+    fn a_list_built_at_scale_two_doubles_every_draws_geometry() {
+        let src = r##"return panel { id = "bar", width = 200, height = 100, padding = 10, child = rect {
+            width = 40, height = 20, radius = 4, border_width = 1, border_color = "#ffffff",
+            shadow_blur = 2, shadow_offset = { x = 3 }, shadow_spread = 1,
+            children = { text { content = "a", font_size = 12 } } } }"##;
+        let list = build(&resolved_surface(&Lua::new(), src, LogicalSize { width: 200.0, height: 100.0 }), 2.0, None);
+        let shadow = list.commands.iter().find_map(|cmd| match cmd.draw {
+            Draw::Shadow { shadow, radius, .. } => Some((cmd.rect, shadow, radius)),
+            _ => None,
+        });
+        let (rect, shadow, radius) = shadow.expect("a box shadow");
+        assert_eq!(rect, LogicalRect { x: 20.0, y: 20.0, width: 80.0, height: 40.0 });
+        assert_eq!((shadow.blur, shadow.offset, shadow.spread, radius), (4.0, (6.0, 0.0), 2.0, 8.0));
+        let border = list.commands.iter().find_map(|cmd| match cmd.draw {
+            Draw::Box { radius, widths, .. } if widths.top > 0.0 => Some((radius, widths.top)),
+            _ => None,
+        });
+        assert_eq!(border, Some((8.0, 2.0)));
+        let text = list.commands.iter().find_map(|cmd| match cmd.draw {
+            Draw::Text { font_size, .. } => Some(font_size),
+            _ => None,
+        });
+        assert_eq!(text, Some(12.0), "shaping reads the logical size");
+    }
+
     /// A child scaled past its layered parent's box keeps the overflow it would have without the
     /// layer.
     #[test]
@@ -1562,8 +1645,7 @@ mod tests {
                 children = { image { source = "/tmp/mask.png", width = 20, height = 20 },
                     capture { output = "TEST", width = 20, height = 20 } } } } }"##,
         );
-        let mut images = Vec::new();
-        list.drawn_images(&mut images);
+        let images = pins(&list);
         assert_eq!(images, [(std::path::PathBuf::from("/tmp/mask.png"), (20, 20))]);
         assert!(list.draws_any_of(&[std::path::PathBuf::from("/tmp/mask.png")]));
         let mut captures = Vec::new();

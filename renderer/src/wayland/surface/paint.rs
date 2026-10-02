@@ -109,7 +109,7 @@ impl App {
             return true;
         }
         let surface_id = self.surfaces[index].surface_id.clone();
-        let (width, height) = self.surfaces[index].configured_size;
+        let (width, height) = self.surfaces[index].scale.physical_size(self.surfaces[index].configured_size);
         let width = width.max(1) as i32;
         let height = height.max(1) as i32;
         let Some(surface_object_id) = self.surfaces[index].role.wl_surface().map(Proxy::id) else {
@@ -179,7 +179,8 @@ impl App {
         });
 
         debug!("{surface_id} up: {width}x{height}, EGL context current");
-        self.surfaces[index].bound = Some(BoundSurface { egl_surface, native_window });
+        self.surfaces[index].bound =
+            Some(BoundSurface { egl_surface, native_window, size: (width as u32, height as u32) });
         // A new EGL surface has empty buffers, so the next paint is unconditional.
         self.surfaces[index].last_painted = None;
         true
@@ -189,8 +190,6 @@ impl App {
     /// `TextPainter` and EGL context serve all surfaces: GL objects stay valid across framebuffers,
     /// viewport size is per surface, and one canvas per surface is the fallback if that proves wrong.
     /// An absent tree still clears/swaps, or the compositor keeps the last frame.
-    /// ponytail: paint scale is hardcoded `1.0`, so HiDPI outputs are upscaled. Upgrade:
-    /// `set_buffer_scale` and matching `WlEglSurface::resize` together.
     pub(super) fn paint_surface(&mut self, index: usize) {
         // Unmapped or pre-configure surfaces cannot attach a buffer; `swap_buffers` is both attach
         // and commit, so this prevents `visible = false` from remapping (ADR-0038 decision 2).
@@ -201,8 +200,17 @@ impl App {
             return;
         };
         let surface_id = self.surfaces[index].surface_id.clone();
-        let (width, height) = self.surfaces[index].configured_size;
-        let (width, height) = (width.max(1), height.max(1));
+        let logical = self.surfaces[index].configured_size;
+        let (width, height) = self.surfaces[index].scale.physical_size(logical);
+        let scale = self.surfaces[index].scale.factor_120() as f32 / 120.0;
+        let paint_key =
+            PaintKey { physical: (width, height), scale_120: self.surfaces[index].scale.factor_120(), logical };
+        if let Some(bound) = self.surfaces[index].bound.as_mut()
+            && bound.size != (width, height)
+        {
+            bound.native_window.resize(width as i32, height as i32, 0, 0);
+            bound.size = (width, height);
+        }
 
         let tree = self.client.scene().surface(&surface_id);
         let mut animating = tree.is_some_and(layout::ResolvedNode::animating);
@@ -210,7 +218,7 @@ impl App {
         let is_clean = self.surfaces[index].is_clean() && self.field_focus_for(&surface_id).is_none();
         if is_clean
             && !self.surfaces[index].owes_a_paint()
-            && self.surfaces[index].last_painted.as_ref().is_some_and(|(s, _)| *s == (width, height))
+            && self.surfaces[index].last_painted.as_ref().is_some_and(|(s, _)| *s == paint_key)
         {
             if animating && let Some(surface) = self.surfaces[index].role.wl_surface() {
                 surface.frame(&self.queue_handle, FrameCallbackData(surface.clone()));
@@ -229,14 +237,14 @@ impl App {
         let t_build = timing.then(Instant::now);
         let list = {
             let focus = self.field_focus_for(&surface_id);
-            tree.as_ref().map(|tree| layout::paint::build(tree, 1.0, focus.as_ref())).unwrap_or_default()
+            tree.as_ref().map(|tree| layout::paint::build(tree, scale, focus.as_ref())).unwrap_or_default()
         };
         // What the compositor re-blurs and recomposites behind this surface; `None` is the whole
         // surface (ADR-0063 amendment).
         let owed = self.surfaces[index].owes_a_paint();
         let surface_rect = PhysicalRect { x0: 0, y0: 0, x1: width as i32, y1: height as i32 };
         let damage = match &self.surfaces[index].last_painted {
-            Some((size, painted)) if *size == (width, height) => Some(
+            Some((size, painted)) if *size == paint_key => Some(
                 list.damage_since(painted, owed)
                     .into_iter()
                     .map(|rect| rect.intersect(surface_rect))
@@ -259,7 +267,7 @@ impl App {
             let tracked = &mut self.surfaces[index];
             tracked.dirty = false;
             tracked.stale = next_stale(owed, tracked.stale, None);
-            tracked.last_painted = Some(((width, height), list));
+            tracked.last_painted = Some((paint_key, list));
             if animating && let Some(surface) = tracked.role.wl_surface() {
                 surface.frame(&self.queue_handle, FrameCallbackData(surface.clone()));
                 surface.commit();
@@ -351,7 +359,7 @@ impl App {
                 &mut self.image_cache,
                 &mut self.capture_cache,
                 &list,
-                1.0,
+                scale,
                 (width as f32, height as f32),
                 &regions,
                 shaders,
@@ -382,6 +390,12 @@ impl App {
         if animating && let Some(surface) = self.surfaces[index].role.wl_surface() {
             surface.frame(&self.queue_handle, FrameCallbackData(surface.clone()));
         }
+        if let Some(surface) = self.surfaces[index].role.wl_surface() {
+            self.surfaces[index].scale.set_destination(logical);
+            if !self.surfaces[index].scale.fractional() && surface.version() >= 3 {
+                surface.set_buffer_scale(self.surfaces[index].scale.buffer_scale());
+            }
+        }
         // ponytail: only the swap is guarded; khronos-egl's other wrappers (make_current etc.) still unwrap (upstream #25).
         use khronos_egl::api::EGL1_0;
         let t_swap = timing.then(Instant::now);
@@ -407,7 +421,7 @@ impl App {
         }
         // Record only after swap; otherwise an unpresented frame could make the next identical list
         // skip the paint the screen never received.
-        self.surfaces[index].last_painted = Some(((width, height), list));
+        self.surfaces[index].last_painted = Some((paint_key, list));
         let history = &mut self.surfaces[index].damage_history;
         history.insert(0, damage);
         // ponytail: an age past 4 repaints whole; Mesa's Wayland platform cycles at most 4 buffers.
@@ -427,7 +441,7 @@ impl App {
             let mut pinned = Vec::new();
             for surface in surfaces {
                 if let Some((_, list)) = &surface.last_painted {
-                    list.drawn_images(&mut pinned);
+                    list.image_requests(&mut pinned);
                 }
             }
             pinned
@@ -442,8 +456,7 @@ impl App {
             if surface.last_painted.as_ref().is_some_and(|(_, list)| stale_because(list)) {
                 // Marked, not cleared: this surface still shows the old texture until it
                 // repaints, so its list has to keep pinning it (ADR-0182).
-                surface.stale = Some(std::time::Instant::now());
-                surface.dirty = true;
+                surface.mark_stale();
             }
         }
     }

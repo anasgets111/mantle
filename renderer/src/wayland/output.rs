@@ -293,9 +293,17 @@ impl CompositorHandler for App {
         &mut self,
         _conn: &Connection,
         _qh: &QueueHandle<Self>,
-        _surface: &wl_surface::WlSurface,
-        _new_factor: i32,
+        surface: &wl_surface::WlSurface,
+        new_factor: i32,
     ) {
+        if let Some(index) = self.index_of_surface(surface)
+            && !self.surfaces[index].scale.fractional()
+            && surface.version() >= 3
+            && new_factor > 0
+            && self.surfaces[index].scale.set_integer(new_factor)
+        {
+            self.surfaces[index].mark_stale();
+        }
     }
 
     fn transform_changed(

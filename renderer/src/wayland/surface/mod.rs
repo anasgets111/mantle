@@ -20,6 +20,14 @@ use wayland_protocols::ext::background_effect::v1::client::ext_background_effect
 pub(super) struct BoundSurface {
     pub(super) egl_surface: EglSurface,
     native_window: WlEglSurface,
+    size: (u32, u32),
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) struct PaintKey {
+    physical: (u32, u32),
+    scale_120: u32,
+    logical: (u32, u32),
 }
 
 /// Logs a bind-time failure; `surface_id` is `"{id}@{output}"` (ADR-0038).
@@ -239,6 +247,8 @@ pub(super) struct TrackedSurface {
     /// wayland-egl requires `wl_egl_window_destroy` first. Every explicit teardown path sequences
     /// this by hand; an implicit drop, reachable when a fatal EGL error unwinds `App`, does not.
     pub(super) bound: Option<BoundSurface>,
+    /// Fractional-scale and viewport objects must be destroyed before their `wl_surface`.
+    pub(super) scale: super::scale::SurfaceScale,
     pub(super) role: TrackedRole,
     /// `surface_id`: `"{id}@{output}"` for panels, bare `id` for windows; shared
     /// by Lua, the retained scene and Wayland.
@@ -249,7 +259,7 @@ pub(super) struct TrackedSurface {
     /// Last display list and size. The size matters because a resized EGL surface has empty
     /// buffers; clear on rebind or any branch that cannot prove the pixels still match, or a stale
     /// frame can remain with no redraw trigger.
-    pub(super) last_painted: Option<((u32, u32), layout::paint::DisplayList)>,
+    pub(super) last_painted: Option<(PaintKey, layout::paint::DisplayList)>,
     /// Damage of the frames presented before, newest first, `None` for the whole surface: what a
     /// reused back buffer lacks (ADR-0258).
     pub(super) damage_history: Vec<Option<Vec<PhysicalRect>>>,
@@ -278,6 +288,7 @@ impl TrackedSurface {
     pub(super) fn new(role: TrackedRole, surface_id: String) -> Self {
         Self {
             bound: None,
+            scale: super::scale::SurfaceScale::integer(),
             role,
             surface_id,
             map_state: MapState::Unmapped,
@@ -301,8 +312,15 @@ impl TrackedSurface {
         self.stale.is_some_and(|due| due <= std::time::Instant::now())
     }
 
+    /// Owes a rebuild and a paint, even against an identical list; see [`TrackedSurface::stale`].
+    pub(super) fn mark_stale(&mut self) {
+        self.dirty = true;
+        self.stale = Some(std::time::Instant::now());
+    }
+
     /// [`App::drop_role_object`]'s per-entry half.
     fn forget_role_object(&mut self) {
+        self.scale.destroy();
         match &mut self.role {
             TrackedRole::Panel { layer, .. } => drop(layer.take()),
             TrackedRole::Window { window, .. } => drop(window.take()),
@@ -350,6 +368,16 @@ fn resolved_surface_spec(roster: &SurfaceSpec, properties: &PropMap) -> Result<S
 }
 
 impl App {
+    pub(super) fn surface_scale(
+        &self,
+        surface: &wl_surface::WlSurface,
+        qh: &QueueHandle<App>,
+    ) -> super::scale::SurfaceScale {
+        self.scale_globals
+            .as_ref()
+            .map_or_else(super::scale::SurfaceScale::integer, |globals| globals.surface(surface, qh))
+    }
+
     /// Owes each of `instance_ids` a repaint for a tree changed outside a pass or tick: a wheel
     /// scrolled it in place.
     pub(in crate::wayland) fn mark_surfaces_stale(&mut self, instance_ids: &[String]) {
@@ -483,11 +511,6 @@ impl App {
 
         if !self.ensure_bound(index) {
             return;
-        }
-        // Resize the existing `wl_egl_window` on a mode or neighboring-zone change; rebinding is
-        // unnecessary because both EGL objects remain valid.
-        if let Some(bound) = self.surfaces[index].bound.as_ref() {
-            bound.native_window.resize(width.max(1) as i32, height.max(1) as i32, 0, 0);
         }
         self.paint_surface(index);
         self.sync_captures();
@@ -672,7 +695,10 @@ mod tests {
         let mut tracked =
             TrackedSurface::new(TrackedRole::Window { window: None, spec: window("settings") }, "settings".to_string());
         tracked.map_state = MapState::Mapped;
-        tracked.last_painted = Some(((640, 480), layout::paint::DisplayList::default()));
+        tracked.last_painted = Some((
+            PaintKey { physical: (640, 480), scale_120: 120, logical: (640, 480) },
+            layout::paint::DisplayList::default(),
+        ));
         tracked.last_blur_region.push(crate::text::snap::PhysicalRect { x0: 0, y0: 0, x1: 4, y1: 4 });
         tracked.last_input_region = Some(Vec::new());
 
