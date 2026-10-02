@@ -8,13 +8,13 @@ use shared::{debug, warn};
 use tokio::sync::mpsc::UnboundedSender;
 use zbus::zvariant::OwnedObjectPath;
 
-use super::connect::Attempt;
 use super::devices::{
     Devices, EthernetDevice, WifiDevice, forward, resolve_devices, spawn_manager_forwarder, watch_devices,
 };
+use super::join::JoinState;
 use super::proxies::{DEVICE_STATE_ACTIVATED, DeviceProxy, IP4ConfigProxy, NetworkManagerProxy, SettingsProxy};
 use super::scan::resolve_ssid;
-use super::{NetworkSignal, NetworkState, PendingNetworkConnect};
+use super::{NetworkSignal, NetworkState};
 
 /// Proxies needed by `mantle.network`, resolved at construction. `Clone` is cheap for zbus handles,
 /// so writes can move a clone into `tokio::spawn` (ADR-0029).
@@ -36,23 +36,16 @@ pub struct NetworkController {
     /// [`handle_signal`](Self::handle_signal).
     /// The cloned controller shares it; the mutex is never held across an await.
     pub(super) state: Arc<Mutex<NetworkState>>,
-    /// The single pending `network:connect` intent slot, see [`PendingNetworkConnect`].
-    pub(super) pending_connect: Arc<Mutex<Option<PendingNetworkConnect>>>,
-    /// The attempt `connecting_ssid` names; see [`Attempt`]. Locked after `state` when both are held.
-    pub(super) attempt: Arc<Mutex<Attempt>>,
+    /// The pending intent, prompt and accepted attempt share one lock.
+    pub(super) join: Arc<Mutex<JoinState>>,
     /// Signal sender for [`mark_scanning`](Self::mark_scanning)'s FIFO event and for keeping the
     /// channel open when no Wi-Fi device exists.
     pub(super) events: UnboundedSender<NetworkSignal>,
 }
 
-/// Carries what `build_state` cannot read from NetworkManager across a rebuild: the scan flag and
-/// the join fields, taken from `previous` because the caller overwrites it. A scan ends on
-/// `ScanCompleted`, or with the Wi-Fi device, whose `LastScan` will never move again.
-fn carry_across_rebuild(next: &mut NetworkState, previous: &mut NetworkState, signal: NetworkSignal) {
+/// A scan ends on `ScanCompleted`, or with the Wi-Fi device, whose `LastScan` will never move again.
+fn carry_scan(next: &mut NetworkState, previous: &NetworkState, signal: NetworkSignal) {
     next.scanning = signal != NetworkSignal::ScanCompleted && previous.scanning && next.wifi_present;
-    next.connecting_ssid = previous.connecting_ssid.take();
-    next.connect_error = previous.connect_error.take();
-    next.password_ssid = previous.password_ssid.take();
 }
 
 /// `device`'s first IPv4 address without its prefix, read uncached because `Ip4Config`'s path
@@ -96,8 +89,7 @@ impl NetworkController {
             access_points: Arc::new(Mutex::new(HashMap::new())),
             saved_ssids: Arc::default(),
             state: Arc::new(Mutex::new(NetworkState::default())),
-            pending_connect: Arc::new(Mutex::new(None)),
-            attempt: Arc::default(),
+            join: Arc::default(),
             events,
         };
         controller.refresh_saved_ssids().await;
@@ -110,9 +102,11 @@ impl NetworkController {
     pub async fn handle_signal(&self, signal: NetworkSignal) -> NetworkState {
         match signal {
             NetworkSignal::ScanStarted => {
-                let mut state = self.state.lock().expect("mutex poisoned");
-                state.scanning = true;
-                state.clone()
+                let mut next = self.state.lock().expect("mutex poisoned").clone();
+                next.scanning = true;
+                self.join.lock().expect("mutex poisoned").overlay(&mut next);
+                *self.state.lock().expect("mutex poisoned") = next.clone();
+                next
             }
             _ => {
                 match signal {
@@ -122,8 +116,12 @@ impl NetworkController {
                 }
                 // Read D-Bus before taking the plain mutex; never hold it across an await.
                 let mut next = self.build_state(signal == NetworkSignal::ScanCompleted).await;
+                {
+                    let state = self.state.lock().expect("mutex poisoned");
+                    carry_scan(&mut next, &state, signal);
+                }
+                self.join.lock().expect("mutex poisoned").overlay(&mut next);
                 let mut state = self.state.lock().expect("mutex poisoned");
-                carry_across_rebuild(&mut next, &mut state, signal);
                 *state = next;
                 state.clone()
             }
@@ -160,7 +158,7 @@ impl NetworkController {
                 Some(ethernet) => ethernet.wired.speed().await.unwrap_or(0),
                 None => 0,
             },
-            // All three are owned by the connect path; see `carry_across_rebuild`.
+            // The join state overlays these fields after NM facts are read.
             connecting_ssid: None,
             connect_error: None,
             password_ssid: None,
@@ -233,26 +231,18 @@ impl NetworkController {
 
 #[cfg(test)]
 mod tests {
-    use super::super::JoinError;
     use super::*;
 
     #[test]
-    fn a_rebuild_keeps_the_join_and_ends_a_scan_with_its_device() {
-        let previous = NetworkState {
-            scanning: true,
-            wifi_present: true,
-            connecting_ssid: Some("home".to_string()),
-            connect_error: Some(JoinError { ssid: "home".to_string(), message: "wrong password".to_string() }),
-            password_ssid: Some("home".to_string()),
-            ..NetworkState::default()
-        };
+    fn a_rebuild_keeps_a_scan_until_it_completes_or_its_device_disappears() {
+        let previous = NetworkState { scanning: true, wifi_present: true, ..NetworkState::default() };
         let rebuilt = |wifi_present, signal| {
             let mut next = NetworkState { wifi_present, ..NetworkState::default() };
-            carry_across_rebuild(&mut next, &mut previous.clone(), signal);
+            carry_scan(&mut next, &previous, signal);
             next
         };
 
-        assert_eq!(rebuilt(true, NetworkSignal::Changed), previous, "every carried field survives");
+        assert!(rebuilt(true, NetworkSignal::Changed).scanning);
         assert!(!rebuilt(true, NetworkSignal::ScanCompleted).scanning);
         assert!(!rebuilt(false, NetworkSignal::DevicesChanged).scanning, "an unplugged adapter's scan never completes");
     }

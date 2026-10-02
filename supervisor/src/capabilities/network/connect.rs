@@ -1,5 +1,5 @@
-//! `network:connect` for `mantle.network`: the pending intent and password prompt, and the join NM
-//! accepts and its verdict. `intent.rs` shapes an intent into NetworkManager's dict.
+//! NetworkManager activation, profile updates and activation verdicts for `network:connect`.
+//! `intent.rs` shapes a join intent into NetworkManager's dict.
 use std::collections::HashMap;
 
 use futures_util::StreamExt;
@@ -8,37 +8,16 @@ use zbus::zvariant::OwnedObjectPath;
 
 use super::devices::WifiDevice;
 use super::intent::{ConnectError, ConnectionIntent, activation_verdict, build_connection_dict, connection_intent};
+use super::join::InFlight;
 use super::profiles::merge_psk;
 use super::proxies::{ACTIVE_STATE_ACTIVATED, ACTIVE_STATE_DEACTIVATED, SettingsConnectionProxy};
-use super::{JoinError, NetworkController, NetworkSignal, PendingNetworkConnect, root_object_path};
+use super::{NetworkController, NetworkSignal, PendingNetworkConnect, root_object_path};
 use crate::capabilities::bind;
 
 /// [`NetworkController::watch_activation`]'s backstop timeout. NetworkManager normally gives up
 /// well inside 45s and reports `StateChanged`; this covers an activation object that stops
 /// answering without pre-empting NM or leaving a spinner stuck.
 const ACTIVATION_CEILING: std::time::Duration = std::time::Duration::from_secs(45);
-
-/// A join NM has accepted: the activation that reports its verdict, and the profile it created.
-#[derive(Debug, Clone, PartialEq)]
-struct InFlight {
-    active: OwnedObjectPath,
-    /// Set when `AddAndActivateConnection2` saved a new profile for this join, which an abort
-    /// deletes rather than leaving a half-typed key saved.
-    created: Option<OwnedObjectPath>,
-    /// Set when a typed key updated a saved profile in memory only, which
-    /// [`save_typed_key`](NetworkController::save_typed_key) writes to disk once NM accepts the join.
-    unsaved: Option<OwnedObjectPath>,
-}
-
-/// The latest `network:connect` attempt. `id` advances on every begin and abort, so a join NM
-/// accepts, or a verdict that arrives, after its attempt was aborted or replaced matches nothing.
-/// The SSID cannot tell an abort and re-click of the same network apart.
-#[derive(Debug, Default)]
-pub(super) struct Attempt {
-    id: u64,
-    /// The join NM accepted for `id`, which [`abort_connect`](NetworkController::abort_connect) stops.
-    joined: Option<InFlight>,
-}
 
 /// `Connection.Active`, kept out of `proxies.rs`: zbus names signal types after the D-Bus member,
 /// so this `StateChanged` would redefine `Device`'s there. The signal is renamed off the `state`
@@ -56,21 +35,6 @@ trait ActiveConnection {
 }
 
 impl NetworkController {
-    /// Stashes `network:connect(ssid, hidden)` until paired `secure_submit(network, connect)`.
-    /// Newest intent wins.
-    pub fn stash_connect_intent(&self, pending: PendingNetworkConnect) {
-        *self.pending_connect.lock().expect("mutex poisoned") = Some(pending);
-    }
-
-    /// Takes the pending intent for `secure_submit(network, connect)`, only while the prompt names
-    /// it. The frame carries no SSID, so a click that replaced the intent under an open prompt
-    /// would otherwise join, and save the key into, a network the key was never typed for.
-    pub fn take_prompted_intent(&self) -> Option<PendingNetworkConnect> {
-        let state = self.state.lock().expect("mutex poisoned");
-        let prompted = state.password_ssid.as_deref();
-        self.pending_connect.lock().expect("mutex poisoned").take_if(|pending| prompted == Some(pending.ssid.as_str()))
-    }
-
     /// Decides whether a stashed `network:connect` can complete or needs a password.
     ///
     /// A saved profile or open AP connects on click with no typed secret. Only a secured
@@ -88,7 +52,7 @@ impl NetworkController {
     /// profiles. Passing the match through `connect` saves about a millisecond at the cost of three
     /// signatures.
     pub async fn resolve_connect_intent(&self) {
-        let Some(pending) = self.pending_connect.lock().expect("mutex poisoned").clone() else {
+        let Some(pending) = self.pending_intent() else {
             return;
         };
         let saved = !self.saved_profiles_for_ssid(&pending.ssid, "connect").await.is_empty();
@@ -112,73 +76,22 @@ impl NetworkController {
         debug!("connect {:?}: saved={saved} secure={secure}, connecting directly", pending.ssid);
         // Only this click's intent: another connect may have replaced it while the lookup was on the
         // wire, and that one resolves itself.
-        let taken = self.pending_connect.lock().expect("mutex poisoned").take_if(|current| *current == pending);
+        let taken = self.take_current_intent(&pending);
         if let Some(pending) = taken {
             self.connect(pending, shared::Zeroizing::new(Vec::new())).await;
         }
     }
 
-    /// Shows the password prompt for `pending` and pushes it immediately, unless a newer click or a
-    /// rejected join replaced the intent during the lookup. The intent stays stashed for
-    /// `secure_submit(network, connect)`.
-    fn request_password(&self, pending: &PendingNetworkConnect) {
-        {
-            let mut state = self.state.lock().expect("mutex poisoned");
-            if self.pending_connect.lock().expect("mutex poisoned").as_ref() != Some(pending) {
-                return;
-            }
-            debug!("requesting password for ssid: {}", pending.ssid);
-            state.password_ssid = Some(pending.ssid.clone());
-            state.connect_error = None;
-        }
-        let _ = self.events.send(NetworkSignal::Changed);
-    }
-
-    /// `network:cancel_connect()`: drops the pending intent and password prompt.
-    ///
-    /// The prompt's way out. Escape in a `secure_submit` field clears its text and stays in the
-    /// field, then calls its `on_cancel`, so a config invokes this from there.
-    ///
-    /// An activation already in flight is left alone: closing a prompt should not undo a join the
-    /// user started; [`abort_connect`](Self::abort_connect) is the explicit Cancel.
-    ///
-    /// No-op without a pending prompt, so a config can call it on any close. Without the guard, an
-    /// unrelated close would clear `connect_error` and push a misleading `Changed`.
-    pub fn cancel_connect(&self) {
-        let pending = self.pending_connect.lock().expect("mutex poisoned").take();
-        if pending.is_none() && self.state.lock().expect("mutex poisoned").password_ssid.is_none() {
-            return;
-        }
-        {
-            let mut state = self.state.lock().expect("mutex poisoned");
-            state.password_ssid = None;
-            state.connect_error = None;
-        }
-        debug!("the pending connect was cancelled; the password prompt is down");
-        let _ = self.events.send(NetworkSignal::Changed);
-    }
-
-    /// `network:abort_connect()`: clears `connecting_ssid` and advances the [`Attempt`], so the join's
-    /// late acceptance or verdict matches nothing, then [`stop`](Self::stop)s that join. No-op without
-    /// an attempt. Before NM accepts, [`accept`](Self::accept) refuses the join and `connect` stops it.
+    /// Clears the current join before stopping its NM activation. A late acceptance sees the
+    /// advanced attempt ID and stops itself instead.
     pub fn abort_connect(&self) {
-        let in_flight = {
-            let mut state = self.state.lock().expect("mutex poisoned");
-            if state.connecting_ssid.take().is_none() {
-                return;
-            }
-            state.connect_error = None;
-            let mut attempt = self.attempt.lock().expect("mutex poisoned");
-            attempt.id += 1;
-            attempt.joined.take()
-        };
+        let aborted = self.join.lock().expect("mutex poisoned").abort();
+        let Some(in_flight) = aborted else { return };
         debug!("the join in flight was aborted");
         let _ = self.events.send(NetworkSignal::Changed);
         if let Some(in_flight) = in_flight {
             let controller = self.clone();
-            tokio::spawn(async move {
-                controller.stop(&in_flight).await;
-            });
+            tokio::spawn(async move { controller.stop(&in_flight).await });
         }
     }
 
@@ -238,61 +151,6 @@ impl NetworkController {
                 self.finish_connect(attempt, &pending, Some(err.to_string()), false);
             }
         }
-    }
-
-    /// Marks an attempt, clears its previous error, and pushes through the same FIFO as scanning so
-    /// the row spins on the click. Returns the attempt's id.
-    fn begin_connect(&self, ssid: &str) -> u64 {
-        let id = {
-            let mut state = self.state.lock().expect("mutex poisoned");
-            state.connecting_ssid = Some(ssid.to_string());
-            state.connect_error = None;
-            // The attempt answers the prompt. Clear here, not only in `secure_submit`, so direct
-            // connects also drop the prompt's keyboard focus on Enter.
-            state.password_ssid = None;
-            let mut attempt = self.attempt.lock().expect("mutex poisoned");
-            attempt.id += 1;
-            // The new attempt owns no join until NM accepts it, so an abort before then cannot
-            // stop the previous one.
-            attempt.joined = None;
-            attempt.id
-        };
-        let _ = self.events.send(NetworkSignal::Changed);
-        id
-    }
-
-    /// Records the join NM accepted for `attempt`. `false` when an abort or a newer attempt came
-    /// first, and the caller stops the join instead of watching it.
-    fn accept(&self, attempt: u64, in_flight: &InFlight) -> bool {
-        let mut current = self.attempt.lock().expect("mutex poisoned");
-        let live = current.id == attempt;
-        if live {
-            current.joined = Some(in_flight.clone());
-        }
-        live
-    }
-
-    /// Records and pushes `attempt`'s verdict, only while `attempt` is the latest, so an aborted or
-    /// older join's verdict cannot land on a newer spinner. `ask_password` parks the intent again and
-    /// raises the prompt, keeping `connect_error` as the reason, unless a click made while the join
-    /// ran already holds the slot.
-    fn finish_connect(&self, attempt: u64, pending: &PendingNetworkConnect, error: Option<String>, ask_password: bool) {
-        {
-            let mut state = self.state.lock().expect("mutex poisoned");
-            let mut current = self.attempt.lock().expect("mutex poisoned");
-            if current.id != attempt {
-                return;
-            }
-            state.connecting_ssid = None;
-            state.connect_error = error.map(|message| JoinError { ssid: pending.ssid.clone(), message });
-            current.joined = None;
-            let mut slot = self.pending_connect.lock().expect("mutex poisoned");
-            if ask_password && slot.is_none() {
-                state.password_ssid = Some(pending.ssid.clone());
-                *slot = Some(pending.clone());
-            }
-        }
-        let _ = self.events.send(NetworkSignal::Changed);
     }
 
     /// Watches one activation in the background. A rejected key reopens the password prompt, or every
@@ -430,12 +288,8 @@ mod tests {
     use crate::capabilities::network::proxies::{DeviceProxy, NetworkManagerProxy, SettingsProxy, WirelessProxy};
     use crate::capabilities::test_support::p2p_pair_serving;
 
-    /// A controller mid-attempt on `connecting`, bound to a peer serving what `serve` installs
-    /// (`Ok` for nothing). `finish_connect` only touches the state and intent slots.
-    async fn attempting<F>(
-        connecting: &str,
-        serve: F,
-    ) -> (NetworkController, UnboundedReceiver<NetworkSignal>, zbus::Connection)
+    /// A controller bound to a peer serving what `serve` installs.
+    async fn attempting<F>(serve: F) -> (NetworkController, UnboundedReceiver<NetworkSignal>, zbus::Connection)
     where
         F: FnOnce(zbus::connection::Builder<'static>) -> zbus::Result<zbus::connection::Builder<'static>>,
     {
@@ -448,99 +302,17 @@ mod tests {
             devices: Arc::default(),
             access_points: Arc::default(),
             saved_ssids: Arc::default(),
-            state: Arc::new(Mutex::new(NetworkState {
-                connecting_ssid: Some(connecting.to_string()),
-                ..NetworkState::default()
-            })),
-            pending_connect: Arc::default(),
-            attempt: Arc::default(),
+            state: Arc::new(Mutex::new(NetworkState::default())),
+            join: Arc::default(),
             events,
         };
         (controller, receiver, peer)
-    }
-
-    fn home() -> PendingNetworkConnect {
-        PendingNetworkConnect { ssid: "home".to_string(), hidden: true }
     }
 
     fn joined(n: u32) -> InFlight {
         let active = OwnedObjectPath::try_from(format!("/org/freedesktop/NetworkManager/ActiveConnection/{n}"))
             .expect("valid object path");
         InFlight { active, created: None, unsaved: None }
-    }
-
-    #[tokio::test]
-    async fn a_rejected_key_reopens_the_prompt_for_the_same_network() {
-        let (controller, mut receiver, _peer) = attempting("home", Ok).await;
-
-        controller.finish_connect(0, &home(), Some("wrong password".to_string()), true);
-
-        let state = controller.state.lock().unwrap().clone();
-        assert_eq!(state.connecting_ssid, None);
-        assert_eq!(state.password_ssid.as_deref(), Some("home"));
-        assert_eq!(
-            state.connect_error,
-            Some(JoinError { ssid: "home".to_string(), message: "wrong password".to_string() }),
-            "the prompt says why it is back, and for which network"
-        );
-        assert_eq!(controller.take_prompted_intent(), Some(home()), "the typed key needs an intent to pair with");
-        assert_eq!(receiver.try_recv(), Ok(NetworkSignal::Changed));
-    }
-
-    #[tokio::test]
-    async fn a_key_typed_for_one_network_never_joins_another() {
-        let (controller, _receiver, _peer) = attempting("home", Ok).await;
-        let office = PendingNetworkConnect { ssid: "office".to_string(), hidden: false };
-
-        // The sheet asks for home, then a click on office takes the slot before Enter.
-        controller.stash_connect_intent(home());
-        controller.request_password(&home());
-        controller.stash_connect_intent(office.clone());
-        assert_eq!(controller.take_prompted_intent(), None, "the key was typed for home");
-
-        // Home's lookup finishing late raises no prompt over office's intent.
-        controller.state.lock().unwrap().password_ssid = None;
-        controller.request_password(&home());
-        assert_eq!(controller.state.lock().unwrap().password_ssid, None);
-
-        // Nor does a key rejected for home while office was clicked.
-        controller.finish_connect(0, &home(), Some("wrong password".to_string()), true);
-        assert_eq!(controller.take_prompted_intent(), None);
-        assert_eq!(*controller.pending_connect.lock().unwrap(), Some(office));
-    }
-
-    #[tokio::test]
-    async fn a_join_aborted_and_clicked_again_never_stands_in_for_the_new_one() {
-        // Both attempts name "home"; only the attempt id tells the first join from the second.
-        let (controller, mut receiver, _peer) = attempting("home", Ok).await;
-        let first = controller.begin_connect("home");
-        controller.abort_connect();
-        assert_eq!(controller.state.lock().unwrap().connecting_ssid, None, "the spinner stops on the click");
-        let second = controller.begin_connect("home");
-
-        assert!(!controller.accept(first, &joined(1)), "the first join is stopped, not watched");
-        assert!(controller.accept(second, &joined(2)));
-
-        controller.finish_connect(first, &home(), Some("disconnected".to_string()), false);
-        let state = controller.state.lock().unwrap().clone();
-        assert_eq!((state.connecting_ssid.as_deref(), state.connect_error), (Some("home"), None));
-        let pushes = std::iter::from_fn(|| receiver.try_recv().ok()).count();
-        assert_eq!(pushes, 3, "two begins and the abort push; the aborted join's verdict does not");
-
-        controller.finish_connect(second, &home(), None, false);
-        let state = controller.state.lock().unwrap().clone();
-        assert_eq!((state.connecting_ssid, state.connect_error), (None, None));
-        assert_eq!(controller.attempt.lock().unwrap().joined, None);
-    }
-
-    #[tokio::test]
-    async fn a_new_attempt_owns_no_join_until_nm_accepts_it() {
-        let (controller, _receiver, _peer) = attempting("home", Ok).await;
-        assert!(controller.accept(0, &joined(1)));
-
-        controller.begin_connect("office");
-
-        assert_eq!(controller.attempt.lock().unwrap().joined, None, "an abort now must not stop home's join");
     }
 
     /// One saved profile, counting each `Save`.
@@ -558,7 +330,7 @@ mod tests {
         const PROFILE: &str = "/org/freedesktop/NetworkManager/Settings/9";
         let saves = Arc::default();
         let profile = FakeProfile(Arc::clone(&saves));
-        let (controller, _receiver, _peer) = attempting("home", |peer| peer.serve_at(PROFILE, profile)).await;
+        let (controller, _receiver, _peer) = attempting(|peer| peer.serve_at(PROFILE, profile)).await;
         let typed = InFlight { unsaved: Some(OwnedObjectPath::try_from(PROFILE).unwrap()), ..joined(1) };
 
         controller.save_typed_key(&joined(1)).await;
@@ -591,7 +363,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_rejected_key_keeps_its_reason_past_the_disconnect_nm_queues_after_it() {
-        let (controller, _receiver, _peer) = attempting("home", |peer| peer.serve_at(ACTIVE, RejectedKey)).await;
+        let (controller, _receiver, _peer) = attempting(|peer| peer.serve_at(ACTIVE, RejectedKey)).await;
         let device_path = OwnedObjectPath::try_from(DEVICE).unwrap();
         let wifi = WifiDevice {
             device: bind::<DeviceProxy>(&controller.connection, device_path.clone()).await.unwrap(),
