@@ -308,7 +308,8 @@ mod tests {
         let mut card = region_node(1, "rect", (200.0, 260.0, 620.0, 260.0), solid_paint(), Vec::new());
         card.blur = true;
         let mut catcher = region_node(2, "rect", (0.0, 0.0, 1920.0, 1161.0), None, Vec::new());
-        catcher.properties.insert("on_click", Value::Function(lua.create_function(|_, ()| Ok(())).unwrap()));
+        std::rc::Rc::make_mut(&mut catcher.properties)
+            .insert("on_click", Value::Function(lua.create_function(|_, ()| Ok(())).unwrap()));
         let root = region_node(3, "panel", (0.0, 0.0, 1920.0, 1161.0), None, vec![catcher, card]);
 
         assert_eq!(
@@ -486,7 +487,8 @@ mod tests {
         );
 
         let mut catcher = region_node(5, "column", (0.0, 0.0, 120.0, 520.0), None, Vec::new());
-        catcher.properties.insert("on_click", Value::Function(lua.create_function(|_, ()| Ok(())).unwrap()));
+        std::rc::Rc::make_mut(&mut catcher.properties)
+            .insert("on_click", Value::Function(lua.create_function(|_, ()| Ok(())).unwrap()));
         let root = region_node(6, "panel", (0.0, 0.0, 120.0, 520.0), None, vec![catcher]);
         assert_eq!(overlay_input_regions(&root, 1.0), [PhysicalRect { x0: 0, y0: 0, x1: 120, y1: 520 }]);
 
@@ -496,7 +498,7 @@ mod tests {
 
         let label = region_node(9, "rect", (10.0, 10.0, 50.0, 20.0), solid_paint(), Vec::new());
         let mut submit = region_node(10, "row", (0.0, 0.0, 120.0, 40.0), None, vec![label]);
-        submit.properties.insert("submit", Value::Boolean(true));
+        std::rc::Rc::make_mut(&mut submit.properties).insert("submit", Value::Boolean(true));
         let root = region_node(11, "panel", (0.0, 0.0, 120.0, 40.0), None, vec![submit]);
         assert_eq!(
             overlay_input_regions(&root, 1.0),
@@ -507,7 +509,8 @@ mod tests {
         let card = region_node(12, "rect", (10.0, 10.0, 50.0, 20.0), solid_paint(), Vec::new());
         let mut root = region_node(13, "panel", (0.0, 0.0, 120.0, 40.0), solid_paint(), vec![card]);
         assert_eq!(overlay_input_regions(&root, 1.0), [PhysicalRect { x0: 10, y0: 10, x1: 60, y1: 30 }]);
-        root.properties.insert("on_wheel", Value::Function(lua.create_function(|_, ()| Ok(())).unwrap()));
+        std::rc::Rc::make_mut(&mut root.properties)
+            .insert("on_wheel", Value::Function(lua.create_function(|_, ()| Ok(())).unwrap()));
         assert_eq!(
             overlay_input_regions(&root, 1.0),
             [PhysicalRect { x0: 0, y0: 0, x1: 120, y1: 40 }],
@@ -560,8 +563,7 @@ mod tests {
             let child = region_node(1, "path", (0.0, 0.0, 20.0, 20.0), paint, Vec::new());
             let mut root = region_node(2, "panel", (0.0, 0.0, 20.0, 20.0), None, vec![child]);
             assert_eq!(!overlay_input_regions(&root, 1.0).is_empty(), painted, "{fields}");
-            root.children[0]
-                .properties
+            std::rc::Rc::make_mut(&mut root.children[0].properties)
                 .insert("on_click", Value::Function(lua.create_function(|_, ()| Ok(())).unwrap()));
             assert_eq!(overlay_input_regions(&root, 1.0), [PhysicalRect { x0: 0, y0: 0, x1: 20, y1: 20 }]);
         }

@@ -247,7 +247,7 @@ mod tests {
     // ---- cursor_under (ADR-0107) ----
 
     fn with(mut node: ResolvedNode, key: &'static str, value: Value) -> ResolvedNode {
-        node.properties.insert(key, value);
+        std::rc::Rc::make_mut(&mut node.properties).insert(key, value);
         node
     }
 

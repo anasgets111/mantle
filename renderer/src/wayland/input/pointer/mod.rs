@@ -674,10 +674,10 @@ mod tests {
         let lua = Lua::new();
         let handler = || Value::Function(lua.create_function(|_, ()| Ok(())).unwrap());
         let mut thumb = hit_node(&lua, "icon", (5.0, 2.0, 20.0, 20.0), true);
-        thumb.properties.insert("on_wheel", handler());
+        std::rc::Rc::make_mut(&mut thumb.properties).insert("on_wheel", handler());
         let mut track = hit_node(&lua, "row", (10.0, 4.0, 40.0, 24.0), false);
-        track.properties.insert("on_drag", handler());
-        track.properties.insert("on_wheel", handler());
+        std::rc::Rc::make_mut(&mut track.properties).insert("on_drag", handler());
+        std::rc::Rc::make_mut(&mut track.properties).insert("on_wheel", handler());
         track.children.push(thumb);
         let mut root = hit_node(&lua, "panel", (0.0, 0.0, 100.0, 32.0), false);
         root.children.push(track);
@@ -762,7 +762,7 @@ mod tests {
     fn submit_alone_makes_any_node_a_click_target() {
         let lua = Lua::new();
         let mut row = hit_node(&lua, "row", (0.0, 0.0, 40.0, 24.0), false);
-        row.properties.insert("submit", Value::Boolean(true));
+        std::rc::Rc::make_mut(&mut row.properties).insert("submit", Value::Boolean(true));
         let (_, on_click, submit) = click_target(&[&row]).expect("submit arms a click");
         assert!(on_click.is_none() && submit);
     }

@@ -340,7 +340,7 @@ mod tests {
         };
         let mut field = textfield(&lua, Some(secure_submit_table(&lua, "polkit", "authenticate")));
         let on_cancel = lua.create_function(|_, _cleared: bool| Ok(())).unwrap();
-        field.properties.insert("on_cancel", Value::Function(on_cancel));
+        std::rc::Rc::make_mut(&mut field.properties).insert("on_cancel", Value::Function(on_cancel));
         let mut root = hit_node(&lua, "panel", (0.0, 0.0, 100.0, 32.0), false);
         root.children.push(field);
         assert!(secure_on_cancel(&root, &polkit).is_some());

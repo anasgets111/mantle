@@ -42,6 +42,10 @@ impl Plain {
             Value::Number(n) => Self::Num(n.to_bits()),
             Value::String(s) => Self::Str(s.as_bytes().to_vec()),
             Value::Table(table) if table.metatable().is_none() => {
+                // A sequence past the budget fails anyway; checked first, it costs no copy.
+                if table.raw_len() > *budget {
+                    return None;
+                }
                 let mut entries = Vec::new();
                 for pair in table.pairs::<Value, Value>() {
                     let (key, value) = pair.ok()?;
@@ -68,9 +72,7 @@ impl Output {
     /// the output changed. A scalar or a plain-data table changes by value ([`Plain`]);
     /// anything else is new every run, so it changes when an input was written since the last run.
     pub(super) fn settle(&self, lua: &Lua, value: &Value, at: u64, inputs: Vec<CellId>) {
-        let stale = WRITES.with_borrow(|log| {
-            log.computeds.get(&self.cell).map(|(was, prev)| log.written(*was, prev, &mut FxHashMap::default()))
-        });
+        let stale = WRITES.with_borrow(|log| log.computeds.get(&self.cell).map(|(was, prev)| log.written(*was, prev)));
         let scalar = super::is_comparable_literal(value);
         let plain = Plain::of(value, &mut { super::SAME_TABLE_ENTRIES });
         let mut last = self.last.borrow_mut();
@@ -88,7 +90,7 @@ impl Output {
                 let stamp = if in_pass { cause.map_or(at, |cause| at.max(cause)) } else { log.tick() };
                 log.last.insert(self.cell, stamp);
             }
-            log.computeds.insert(self.cell, (at, inputs));
+            log.record(self.cell, at, inputs);
         });
     }
 }
@@ -98,7 +100,10 @@ impl Drop for Output {
     fn drop(&mut self) {
         let _ = WRITES.try_with(|log| {
             if let Ok(mut log) = log.try_borrow_mut() {
+                // No inputs drops its reader edges; then its own entries go.
+                log.record(self.cell, 0, Vec::new());
                 log.computeds.remove(&self.cell);
+                log.readers.remove(&self.cell);
                 log.last.remove(&self.cell);
             }
         });
@@ -114,9 +119,7 @@ pub(super) fn downstream(lua: &Lua, cells: &FxHashSet<CellId>) -> Vec<CellId> {
     let tracker = lua.app_data_ref::<ReadTracker>();
     WRITES.with_borrow(|log| {
         let inputs = |out: &CellId| log.computeds.get(out).map_or(&[][..], |(_, inputs)| inputs);
-        let found = grow(FxHashSet::default(), log.computeds.keys().copied().collect(), |out, found| {
-            inputs(out).iter().any(|cell| cells.contains(cell) || found.contains(cell))
-        });
+        let found = log.reach(cells.iter().copied());
         let mut needed: FxHashSet<CellId> = found
             .iter()
             .filter(|out| tracker.as_ref().is_some_and(|t| t.cell_readers.contains_key(out)))
@@ -134,35 +137,13 @@ pub(super) fn downstream(lua: &Lua, cells: &FxHashSet<CellId>) -> Vec<CellId> {
     })
 }
 
-/// `set` plus every one of `candidates` that `joins` it, until none does.
-fn grow(
-    mut set: FxHashSet<CellId>,
-    mut remaining: Vec<CellId>,
-    joins: impl Fn(&CellId, &FxHashSet<CellId>) -> bool,
-) -> FxHashSet<CellId> {
-    let mut added = true;
-    while added {
-        added = false;
-        remaining.retain(|out| {
-            if joins(out, &set) {
-                set.insert(*out);
-                added = true;
-                false
-            } else {
-                true
-            }
-        });
-    }
-    set
-}
-
 /// `cell` and every computed reading it, directly or through another: what a reader of `cell`'s
 /// value may have recorded instead of `cell`.
 pub(crate) fn with_derived(cell: CellId) -> FxHashSet<CellId> {
     WRITES.with_borrow(|log| {
-        let outs: Vec<CellId> = log.computeds.keys().copied().collect();
-        let start = FxHashSet::from_iter([cell]);
-        grow(start, outs, |out, found| log.computeds[out].1.iter().any(|input| found.contains(input)))
+        let mut found = log.reach([cell]);
+        found.insert(cell);
+        found
     })
 }
 
@@ -247,18 +228,41 @@ pub(super) struct ReadTracker {
     active_instance: Option<Rc<str>>,
     pub(super) cell_readers: rustc_hash::FxHashMap<CellId, rustc_hash::FxHashSet<Rc<str>>>,
     instance_cells: rustc_hash::FxHashMap<Rc<str>, rustc_hash::FxHashSet<CellId>>,
+    /// The resolving instance's reads from its last resolve, and those of this one so far. Its
+    /// `cell_readers` entries stay through the resolve and only the difference is applied at the
+    /// end: a pass mostly reads again what it read last time, and re-adding each cell hashed the
+    /// instance id.
+    previous: rustc_hash::FxHashSet<CellId>,
+    current: rustc_hash::FxHashSet<CellId>,
 }
 
-/// Marks the beginning of an instance's layout resolution, clearing its prior reads.
+/// Marks the beginning of an instance's layout resolution, setting its prior reads aside.
 pub(crate) fn begin_instance_resolve(lua: &Lua, instance_id: &str) {
-    forget_instance(lua, instance_id);
-    crate::lua::app_data_or_default::<ReadTracker>(lua).active_instance = Some(Rc::from(instance_id));
+    let mut tracker = crate::lua::app_data_or_default::<ReadTracker>(lua);
+    let (id, previous) =
+        tracker.instance_cells.remove_entry(instance_id).unwrap_or_else(|| (Rc::from(instance_id), Default::default()));
+    tracker.previous = previous;
+    tracker.current.clear();
+    tracker.active_instance = Some(id);
 }
 
-/// Closes the active instance layout resolution scope.
+/// Closes the active instance layout resolution scope: the reads it no longer makes stop naming it.
 pub(crate) fn end_instance_resolve(lua: &Lua) {
-    if let Some(mut tracker) = lua.app_data_mut::<ReadTracker>() {
-        tracker.active_instance = None;
+    if let Some(mut tracker) = lua.app_data_mut::<ReadTracker>()
+        && let Some(id) = tracker.active_instance.take()
+    {
+        let tracker = &mut *tracker;
+        for cell_id in tracker.previous.drain() {
+            if !tracker.current.contains(&cell_id)
+                && let std::collections::hash_map::Entry::Occupied(mut e) = tracker.cell_readers.entry(cell_id)
+            {
+                e.get_mut().remove(&id);
+                if e.get().is_empty() {
+                    e.remove();
+                }
+            }
+        }
+        tracker.instance_cells.insert(id, std::mem::take(&mut tracker.current));
     }
 }
 
@@ -316,27 +320,66 @@ struct WriteLog {
     last: FxHashMap<CellId, u64>,
     /// Each live computed's [`Output`]: the clock its last run took and the cells that run read.
     computeds: FxHashMap<CellId, (u64, Vec<CellId>)>,
+    /// `computeds` inverted, each cell to the computeds reading it, so a write walks only what it
+    /// reaches rather than every computed the config holds.
+    readers: FxHashMap<CellId, FxHashSet<CellId>>,
+    /// [`Self::written`]'s answer per computed. It depends on the log alone, not on a caller's
+    /// stamp, so it holds across calls until the log next changes, which clears it. A pass checks
+    /// every node against the same few computeds.
+    seen: RefCell<FxHashMap<CellId, bool>>,
 }
 
 impl WriteLog {
     fn tick(&mut self) -> u64 {
+        self.seen.get_mut().clear();
         self.clock += 1;
         self.clock
     }
 
+    /// Records `out`'s run at `at` reading `inputs`, replacing its last run's edges.
+    fn record(&mut self, out: CellId, at: u64, inputs: Vec<CellId>) {
+        self.seen.get_mut().clear();
+        for input in self.computeds.get(&out).map_or(&[][..], |(_, inputs)| inputs) {
+            if let Some(readers) = self.readers.get_mut(input) {
+                readers.remove(&out);
+                if readers.is_empty() {
+                    self.readers.remove(input);
+                }
+            }
+        }
+        for &input in &inputs {
+            self.readers.entry(input).or_default().insert(out);
+        }
+        self.computeds.insert(out, (at, inputs));
+    }
+
+    /// Every computed reading one of `cells`, directly or through another.
+    fn reach(&self, cells: impl IntoIterator<Item = CellId>) -> FxHashSet<CellId> {
+        let mut found = FxHashSet::default();
+        let mut work: Vec<CellId> = cells.into_iter().collect();
+        while let Some(cell) = work.pop() {
+            for &out in self.readers.get(&cell).into_iter().flatten() {
+                if found.insert(out) {
+                    work.push(out);
+                }
+            }
+        }
+        found
+    }
+
     /// Whether any of `cells` was written after `stamp`. A computed's cell also counts as written
     /// when its inputs were written since its last run: its output is unknown until it runs again.
-    /// `seen` holds that answer per computed, so a diamond is walked once.
-    fn written(&self, stamp: u64, cells: &[CellId], seen: &mut FxHashMap<CellId, bool>) -> bool {
+    /// [`Self::seen`] holds that answer per computed, so a diamond is walked once.
+    fn written(&self, stamp: u64, cells: &[CellId]) -> bool {
         self.everything > stamp
             || cells.iter().any(|cell| {
                 self.last.get(cell).is_some_and(|at| *at > stamp)
                     || self.computeds.get(cell).is_some_and(|(at, inputs)| {
-                        if let Some(known) = seen.get(cell) {
+                        if let Some(known) = self.seen.borrow().get(cell) {
                             return *known;
                         }
-                        let written = self.written(*at, inputs, seen);
-                        seen.insert(*cell, written);
+                        let written = self.written(*at, inputs);
+                        self.seen.borrow_mut().insert(*cell, written);
                         written
                     })
             })
@@ -358,8 +401,7 @@ pub(crate) fn note_write(cell: CellId) {
 /// Counts every cell as written now, and forgets the per-cell stamps this subsumes.
 pub(crate) fn note_everything_written() {
     WRITES.with_borrow_mut(|log| {
-        log.clock += 1;
-        log.everything = log.clock;
+        log.everything = log.tick();
         log.last.clear();
     });
 }
@@ -378,7 +420,7 @@ pub(super) fn current_clock() -> u64 {
 
 /// Whether any of `cells` was written after `stamp`.
 pub(crate) fn written_since(stamp: u64, cells: &[CellId]) -> bool {
-    WRITES.with_borrow(|log| log.written(stamp, cells, &mut FxHashMap::default()))
+    WRITES.with_borrow(|log| log.written(stamp, cells))
 }
 
 /// [`note_read`]'s instance half.
@@ -387,8 +429,9 @@ fn note_instance_reads(lua: &Lua, cells: &[CellId]) {
         && let Some(instance_id) = tracker.active_instance.as_ref().map(Rc::clone)
     {
         for &cell_id in cells {
-            tracker.cell_readers.entry(cell_id).or_default().insert(Rc::clone(&instance_id));
-            tracker.instance_cells.entry(Rc::clone(&instance_id)).or_default().insert(cell_id);
+            if tracker.current.insert(cell_id) && !tracker.previous.contains(&cell_id) {
+                tracker.cell_readers.entry(cell_id).or_default().insert(Rc::clone(&instance_id));
+            }
         }
     }
 }

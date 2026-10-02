@@ -111,7 +111,7 @@ mod tests {
         if let Some(on_hover) = on_hover {
             properties.insert("on_hover", on_hover);
         }
-        ResolvedNode { properties, ..ResolvedNode::test("row", rect, children) }
+        ResolvedNode { properties: properties.into(), ..ResolvedNode::test("row", rect, children) }
     }
 
     fn at(x: f32, y: f32) -> Option<LogicalPoint> {

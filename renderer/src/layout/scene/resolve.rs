@@ -32,7 +32,7 @@ pub struct ResolveMemo {
 /// One node's properties for this pass, displayed values and parse included, and the memo they
 /// came from.
 pub(super) struct Resolved {
-    pub properties: PropMap,
+    pub properties: Rc<PropMap>,
     pub style: LayoutStyle,
     pub paint: Option<PaintStyle>,
     pub tweens: Vec<Tween>,
@@ -80,7 +80,10 @@ pub(super) fn resolve(
         // A resting tween moves nothing, so what the last pass or tick parsed still holds. A `text`
         // parses again: `finish` fitted its kept paint to last pass's box.
         let moving = tweens.iter().any(|tween| !tween.resting);
-        node::advance(&mut tweens, &mut properties, now, lua)?;
+        // Only a moving tween writes the map, so a still node keeps sharing it with the rollback.
+        if moving {
+            node::advance(&mut tweens, Rc::make_mut(&mut properties), now, lua)?;
+        }
         let style = if moving { LayoutStyle::parse(&properties)? } else { *r.layout_style };
         let paint = if moving || kind == "text" { node::paint_style(kind, &properties)? } else { r.paint.take() };
         return Ok(Resolved { properties, style, paint, tweens, memo, text_memo });
@@ -89,6 +92,7 @@ pub(super) fn resolve(
     let frame = ComputedFrame::enter(lua);
     let mut properties = build(node::resolve_properties(raw.clone(), kind, lua)?)?;
     let tweens = node::retarget(kind, retained.as_deref().map(tween_state), &mut properties, now, lua)?;
+    let properties = Rc::new(properties);
     let memo = Rc::new(ResolveMemo { raw, lua: lua.weak(), stamp, cells: frame.finish() });
     let text_memo = retained
         .filter(|r| kind == "text" && text_measure_matches(&properties, &r.properties))

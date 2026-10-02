@@ -786,7 +786,7 @@ mod tests {
 
     fn autofocus_textfield(lua: &Lua) -> layout::ResolvedNode {
         let mut node = plain_textfield(lua);
-        node.properties.insert("autofocus", Value::Boolean(true));
+        std::rc::Rc::make_mut(&mut node.properties).insert("autofocus", Value::Boolean(true));
         node
     }
 
@@ -821,9 +821,9 @@ mod tests {
 
         // Masked, or declaring nothing that could read the keys: not candidates, whatever they say.
         let mut masked = textfield(&lua, Some(secure_submit_table(&lua, "lock", "authenticate")));
-        masked.properties.insert("autofocus", Value::Boolean(true));
+        std::rc::Rc::make_mut(&mut masked.properties).insert("autofocus", Value::Boolean(true));
         let mut mute = textfield(&lua, None);
-        mute.properties.insert("autofocus", Value::Boolean(true));
+        std::rc::Rc::make_mut(&mut mute.properties).insert("autofocus", Value::Boolean(true));
         let none = tree_with(&lua, vec![masked, mute, plain_textfield(&lua)]);
         assert!(autofocus_field_in_scope(&[("launcher@eDP-1", &none)]).is_none());
     }
@@ -835,11 +835,11 @@ mod tests {
         let handle = Value::UserData(lua.load("return focus('search')").eval().unwrap());
         let mut hidden = plain_textfield(&lua);
         hidden.visible = false;
-        hidden.properties.insert("focus", handle.clone());
+        std::rc::Rc::make_mut(&mut hidden.properties).insert("focus", handle.clone());
         let mut masked = textfield(&lua, Some(secure_submit_table(&lua, "lock", "authenticate")));
-        masked.properties.insert("focus", handle.clone());
+        std::rc::Rc::make_mut(&mut masked.properties).insert("focus", handle.clone());
         let mut shown = plain_textfield(&lua);
-        shown.properties.insert("focus", handle);
+        std::rc::Rc::make_mut(&mut shown.properties).insert("focus", handle);
         let id = shown.id;
         let tree = tree_with(&lua, vec![hidden, masked, shown]);
         let target = requested_field(&tree, "search").expect("visible plain field");
@@ -869,7 +869,7 @@ mod tests {
     fn node_mask_subtree_cannot_take_plain_or_secure_keyboard_focus() {
         let lua = Lua::new();
         let mut plain = plain_textfield(&lua);
-        plain.properties.insert("autofocus", Value::Boolean(true));
+        std::rc::Rc::make_mut(&mut plain.properties).insert("autofocus", Value::Boolean(true));
         let secure = textfield(&lua, Some(secure_submit_table(&lua, "lock", "authenticate")));
         let shape = layout::ResolvedNode {
             id: layout::scene::NodeId::test(987),

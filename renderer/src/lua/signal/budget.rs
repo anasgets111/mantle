@@ -554,10 +554,12 @@ mod tests {
         let lua = lua_with_signal("a", Value::Integer(1));
         let before = clock_reads();
         let n: i64 = lua
-            .load("return a:map(function(v) local n = 0 for i = 1, 100000 do n = n + 1 end return n end):get()")
+            // About 40 hook batches, and a tenth of the cap: a debug build under a loaded suite ran
+            // 100000 past it.
+            .load("return a:map(function(v) local n = 0 for i = 1, 10000 do n = n + 1 end return n end):get()")
             .eval()
             .unwrap();
-        assert_eq!(n, 100_000);
+        assert_eq!(n, 10_000);
         assert!(clock_reads() - before >= 1, "the first hook tick must anchor the CPU clock");
 
         let err = lua.load("return computed({a}, function(x) while true do end end):get()").eval::<i64>().unwrap_err();

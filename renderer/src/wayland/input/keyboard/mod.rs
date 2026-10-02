@@ -481,7 +481,7 @@ mod tests {
     pub(super) fn textfield(lua: &Lua, secure_submit: Option<Value>) -> layout::ResolvedNode {
         let mut node = hit_node(lua, "textfield", (0.0, 0.0, 40.0, 24.0), false);
         if let Some(value) = secure_submit {
-            node.properties.insert("secure_submit", value);
+            std::rc::Rc::make_mut(&mut node.properties).insert("secure_submit", value);
         }
         // Re-derived rather than hand-written, because `layout::secure_submit` reads the parsed
         // style now and `Scene::apply` is what fills it in production: a fixture that set it by
@@ -510,7 +510,7 @@ mod tests {
     pub(super) fn plain_textfield(lua: &Lua) -> layout::ResolvedNode {
         let mut node = textfield(lua, None);
         let on_submit = lua.create_function(|_, _text: String| Ok(())).unwrap();
-        node.properties.insert("on_submit", Value::Function(on_submit));
+        std::rc::Rc::make_mut(&mut node.properties).insert("on_submit", Value::Function(on_submit));
         node
     }
 
@@ -578,7 +578,7 @@ mod tests {
         let lua = Lua::new();
         let mut field = textfield(&lua, Some(secure_submit_table(&lua, "lock", "authenticate")));
         let on_submit = lua.create_function(|_, _text: String| Ok(())).unwrap();
-        field.properties.insert("on_submit", Value::Function(on_submit));
+        std::rc::Rc::make_mut(&mut field.properties).insert("on_submit", Value::Function(on_submit));
         let root = hit_node(&lua, "panel", (0.0, 0.0, 100.0, 32.0), false);
         assert!(matches!(focused_field(&[&root, &field]), Some(FieldTarget::Masked(_))));
     }

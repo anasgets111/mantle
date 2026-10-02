@@ -174,7 +174,7 @@ pub(super) fn prepare_retained(
     // the memo on subsequent frames.
     let text_tweening = text_measure_tweening(node.kind, &node.tweens);
     let changed = node.tweens.iter().any(|tween| !tween.resting);
-    node::advance(&mut node.tweens, &mut node.properties, now, lua)?;
+    node::advance(&mut node.tweens, std::rc::Rc::make_mut(&mut node.properties), now, lua)?;
     let style = if changed { LayoutStyle::parse(&node.properties)? } else { *node.layout_style };
     let ResolvedNode {
         id,
@@ -356,15 +356,16 @@ fn advance_paint_only_node(node: &mut ResolvedNode, now: Instant, lua: &Lua) -> 
         .collect();
     // Nothing is assigned to the node until every step has succeeded, so a refusal leaves its
     // `opacity`, `transform`, `effect` and `paint` describing the same frame its properties do.
-    let advanced = node::advance(&mut node.tweens, &mut node.properties, now, lua).and_then(|()| {
-        let properties = &node.properties;
-        Ok((
-            node::fields::common::opacity.read(properties)?,
-            node::parse_transform(properties)?,
-            node::parse_effect(properties)?,
-            node::paint_style(node.kind, properties)?,
-        ))
-    });
+    let advanced =
+        node::advance(&mut node.tweens, std::rc::Rc::make_mut(&mut node.properties), now, lua).and_then(|()| {
+            let properties = &node.properties;
+            Ok((
+                node::fields::common::opacity.read(properties)?,
+                node::parse_transform(properties)?,
+                node::parse_effect(properties)?,
+                node::paint_style(node.kind, properties)?,
+            ))
+        });
     match advanced {
         Ok((opacity, transform, effect, fresh)) => {
             let style = std::rc::Rc::make_mut(&mut node.layout_style);
@@ -379,7 +380,7 @@ fn advance_paint_only_node(node: &mut ResolvedNode, now: Instant, lua: &Lua) -> 
         }
         Err(err) => {
             for (property, value) in restore {
-                node.properties.insert(property, value);
+                std::rc::Rc::make_mut(&mut node.properties).insert(property, value);
             }
             Err(err)
         }
@@ -397,7 +398,7 @@ pub(super) fn advance_leaving(
     now: Instant,
     lua: &Lua,
 ) -> Result<Option<ResolvedNode>, LayoutError> {
-    node::advance(&mut node.tweens, &mut node.properties, now, lua)?;
+    node::advance(&mut node.tweens, std::rc::Rc::make_mut(&mut node.properties), now, lua)?;
     node.dissolve = advanced_dissolve(node.dissolve.take(), now);
     if node.tweens.is_empty() {
         return Ok(None);

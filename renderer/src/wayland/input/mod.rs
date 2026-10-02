@@ -199,7 +199,7 @@ mod tests {
             // would make every hand-built field the same field.
             id: layout::scene::NodeId::test(NEXT_TEST_NODE_ID.fetch_add(1, Ordering::Relaxed)),
             paint: node::paint_style(kind, &properties).unwrap(),
-            properties,
+            properties: properties.into(),
             ..layout::ResolvedNode::test(kind, (x, y, width, height), Vec::new())
         }
     }

@@ -87,7 +87,7 @@ impl ResolvedNode {
             transform: node::Transform::default(),
             blur: false,
             effect: node::Effect::default(),
-            properties: PropMap::default(),
+            properties: std::rc::Rc::default(),
             paint: None,
             mask_target: None,
             displayed_source: None,
@@ -221,7 +221,8 @@ pub struct ResolvedNode {
     pub blur: bool,
     /// This node's own `shadow_*` and `content_blur` (ADR-0254), over its whole painted subtree.
     pub effect: node::Effect,
-    pub properties: PropMap,
+    /// Shared with the rollback copy until a tween writes it.
+    pub properties: std::rc::Rc<PropMap>,
     /// This node's paint properties, parsed here rather than by `layout::paint` on every frame
     /// (`node::paint_style`'s module doc comment says why). `None` for a kind that draws nothing.
     pub paint: Option<PaintStyle>,
@@ -495,9 +496,9 @@ impl Scene {
     /// pre-call state because a failing getter may already have changed `next_id` or
     /// the trees (`CONTEXT.md`, Rollback; `socket/client/mod.rs::reevaluate`).
     ///
-    /// ponytail: every visited instance's tree is deep-cloned as rollback, even on success; the
-    /// dirty flag limits this to capability-push cadence. The structural clone is O(nodes), not
-    /// O(Lua heap).
+    /// ponytail: every visited instance's tree is cloned as rollback, even on success. Property maps
+    /// are shared, so the clone is O(nodes) with no `Value` copied; a 30 Hz write to one node of a
+    /// large surface still pays it per frame. An undo log is the upgrade if it ever dominates.
     fn apply_admitting(
         &mut self,
         fresh_surfaces: &[VirtualNode],
@@ -749,7 +750,7 @@ struct PreparedNode {
     id: NodeId,
     kind: &'static str,
     style: LayoutStyle,
-    properties: PropMap,
+    properties: std::rc::Rc<PropMap>,
     paint: Option<PaintStyle>,
     /// Carried across the pass untouched; see [`ResolvedNode::displayed_source`].
     displayed_source: Option<String>,
@@ -1502,6 +1503,56 @@ pub(super) mod tests {
                 );
             }
         }
+    }
+
+    /// What one 30 Hz write to a `shader`'s 256 `params` costs on a 130-node surface with 100
+    /// computeds elsewhere, a spectrum on a busy bar:
+    /// `cargo test -p renderer --release shader_params_pass_cost -- --ignored --nocapture`. On this
+    /// machine pinned to one core, p50 0.112 ms; 0.160 ms before shared property maps, the shared
+    /// `written` memo, the read-set diff and the early `Plain` bail.
+    #[test]
+    #[ignore]
+    fn shader_params_pass_cost() {
+        let (lua, surface) = surface_from(
+            r##"theme = state("theme", "#202020")
+            local zero = {}
+            for i = 1, 256 do zero[i] = 0 end
+            levels = state("levels", zero)
+            local cells = {}
+            for i = 1, 100 do
+                local tint = theme:map(function(c) return i % 2 == 0 and c or "#101010" end)
+                cells[i] = rect { width = 8, height = 8, background = tint }
+            end
+            local rows = {}
+            for i = 1, 10 do
+                local slice = {}
+                for j = 1, 10 do slice[j] = cells[(i - 1) * 10 + j] end
+                rows[i] = row { spacing = 2, children = slice }
+            end
+            local labels = {}
+            for i = 1, 10 do labels[i] = text { content = "label " .. i, font_size = 12 } end
+            return panel { id = "bar", width = 800, height = 400, child = column { children = {
+                column { children = rows },
+                row { children = labels },
+                shader { width = 256, height = 32, source = "/s.frag",
+                    params = computed({ levels, theme }, function(l) return { levels = l, count = 256 } end) },
+            } } }"##,
+        );
+        let shaping = ShapingHandle::spawn();
+        let mut scene = Scene::new();
+        apply_at(&mut scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
+        let mut samples = Vec::new();
+        for tick in 0..1000 {
+            lua.globals().set("tick", tick).unwrap();
+            lua.load("local f = {} for i = 1, 256 do f[i] = ((tick + i) % 100) / 100 end levels:set(f)")
+                .exec()
+                .unwrap();
+            let started = std::time::Instant::now();
+            apply_at(&mut scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
+            samples.push(started.elapsed().as_secs_f64() * 1000.0);
+        }
+        samples.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        println!("shader params pass: p50 {:.3} ms  p95 {:.3} ms", samples[500], samples[950]);
     }
 
     /// What one wheel event costs on a scrolled 500-row list:

@@ -949,6 +949,21 @@ mod tests {
             }
             other => panic!("expected DirtyScope::Instances, got {other:?}"),
         }
+
+        // A re-resolve that stops reading `clock` and reads `q` moves bar@DP-1's dependency over.
+        begin_instance_resolve(&lua, "bar@DP-1");
+        lua.load("q:get()").exec().unwrap();
+        end_instance_resolve(&lua);
+        lua.load("clock:set('12:01')").exec().unwrap();
+        assert_eq!(dirty.take_scope(&lua), DirtyScope::Clean, "the dropped read no longer dirties it");
+        lua.load("q:set('again')").exec().unwrap();
+        match dirty.take_scope(&lua) {
+            DirtyScope::Instances(mut instances) => {
+                instances.sort();
+                assert_eq!(instances, ["bar@DP-1", "modal_host@DP-1"]);
+            }
+            other => panic!("expected DirtyScope::Instances, got {other:?}"),
+        }
     }
 
     #[test]

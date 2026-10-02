@@ -403,7 +403,7 @@ pub(super) fn prepare(
         if Some(child.id) != old_mask_target
             && !thawing
             && child.visible
-            && node::depart(child.kind, &mut child.tweens, &mut child.properties, now, lua)?
+            && node::depart(child.kind, &mut child.tweens, std::rc::Rc::make_mut(&mut child.properties), now, lua)?
         {
             child.leaving = true;
             node.leaving.push(child);
@@ -1476,7 +1476,7 @@ mod tests {
         {
             let value = lua.create_table().unwrap();
             weak.set(index + 1, value.clone()).unwrap();
-            node.insert("lifetime_probe", Value::Table(value));
+            std::rc::Rc::make_mut(node).insert("lifetime_probe", Value::Table(value));
         }
         let next_id_before = scene.next_id;
         let instances = [SurfaceInstance {
