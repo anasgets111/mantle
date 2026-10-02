@@ -7,6 +7,8 @@ version is 0.x, a minor release can break the Lua API.
 
 ## Unreleased
 
+- `path` `animate`: `commands` tweens point by point between lists with the same ops and `hole` flags, including as `keyframes`, so shapes morph without Lua per frame. Any other change still snaps.
+- `path`: `A` draws a circular arc from centre, radius, start and sweep in degrees, and `hole = true` on a subpath's first command cuts it out of the fill. Every other subpath is now solid regardless of winding, so an inner subpath drawn in the opposite direction no longer cuts a hole.
 - `shader` and `transition` `params`: a list of up to 4096 numbers fills a `float` or `vec2`-`vec4` uniform array, so a shader can draw a 256-bar visualizer.
 - Surfaces paint at their output's compositor scale, fractional included, so text and images are sharp on HiDPI displays. Sizes stay in logical pixels, and a `shader`'s `size` uniform stays logical while `gl_FragCoord` counts buffer pixels.
 - `image` `async`: a resized image keeps drawing its previous size, scaled, until the new size decodes, instead of blanking. A changed `source_blur`, or a changed `source` without `retain`, still blanks.

@@ -447,6 +447,26 @@ mod tests {
     }
 
     #[test]
+    fn path_commands_tween_between_shapes_with_the_same_ops() {
+        let mut scene = Scene::new();
+        let shaping = ShapingHandle::spawn();
+        let (lua, surface) = surface_from(
+            r##"panel { id = "bar", child = path { width = 20, height = 20, fill = "#ffffff",
+                commands = state("shape", {{ op = "A", points = { 10, 10, 2, 0, 360 } }}),
+                animate = { commands = { duration = 100 } } } }"##,
+        );
+        apply_at(&mut scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
+        lua.load(r#"state("shape", nil):set({{ op = "A", points = { 10, 10, 8, 0, 360 } }})"#).exec().unwrap();
+        apply_at(&mut scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
+        let started = child_tween(&scene).started;
+        scene.tick(&[instance_at(&surface, full())], &shaping, &lua, started + std::time::Duration::from_millis(50));
+        let Some(node::PaintStyle::Path(path)) = &scene.surface("bar@TEST").unwrap().children[0].paint else {
+            panic!("a path paints");
+        };
+        assert_eq!(path.commands.points, [10.0, 10.0, 5.0, 0.0, 360.0], "halfway is the midpoint radius");
+    }
+
+    #[test]
     fn a_changed_target_starts_a_tween_from_the_value_on_screen_and_a_tick_carries_it() {
         // ADR-0145: the pass that sees `90` lays out `40` and a tween; the ticks do the rest
         // without Lua.

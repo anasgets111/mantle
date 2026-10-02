@@ -57,6 +57,7 @@ values: a signal nested in an entry does not resolve.
 | Situation | Result |
 | :--- | :--- |
 | Number, `"NN%"` size, `"#rrggbb[aa]"` colour, number edge table `{ top, right, bottom, left }`, `{ x, y }` table | Tweens against a new value of the same shape. A missing edge or axis reads as `0` (`1` for `scale`, `0.5` for `origin`) |
+| A `path`'s `commands` | Tweens point by point against a list with the same ops and `hole` flags in the same order; any other list snaps. A spring retargeted mid-flight restarts from rest |
 | `"Fill"`, booleans, strings that are not colours, per-edge colour tables, gradients, or a change of shape (`2` to `{ x = 2 }`, `"50%"` to `"Fill"`) | Snaps |
 | New node, or a property the node did not set last pass | Starts at the entry's `from`, else snaps. `from` needs the node to set the property itself |
 | Target changes mid-flight | An eased tween returning to its prior endpoint shortens the run according to the progress already covered. Other eased targets and keyframe entries start over from the value on screen. A spring keeps its velocity ([spring](#spring)) |
@@ -76,6 +77,7 @@ shape decides whether it moves. The ones that do:
 | Colour | `background`, `border_color` (single colour), `shadow_color`, `foreground` |
 | `{ top, right, bottom, left }` | `padding`, `margin`, `border_width` as tables |
 | `{ x, y }` | `translate`, `scale`, `origin`, `shadow_offset` |
+| Path commands | `commands` on `path` ([morphing](../nodes/path.md)) |
 
 An `image` crossfading between sources uses its own `transition` property, not `animate`
 ([image](../nodes/image.md)).
@@ -86,12 +88,13 @@ Every frame's value is clamped to the property's [range](runtime.md#limits-and-b
 catches overshoot from `Back`, `Elastic`, a Bezier with `y` outside `[0, 1]`, or a spring. Only
 `margin`, `translate`, `rotate`, `progress`, `shadow_offset` and `shadow_spread` may go negative.
 `padding`, `spacing` and icon `size` have no range as plain values but tween within `[0, 8192]`.
+Path coordinates stay within `[-8192, 8192]` and arc radii at 0 or more.
 
 ### Layout cost
 
 | Tween on | Each frame |
 | :--- | :--- |
-| `opacity`, colours, `radius`, `translate`, `scale`, `rotate`, `origin`, `progress`, `shadow_*`, `content_blur`, `backdrop_blur` | Repaints; no layout pass |
+| `opacity`, colours, `radius`, `translate`, `scale`, `rotate`, `origin`, `progress`, `commands`, `shadow_*`, `content_blur`, `backdrop_blur` | Repaints; no layout pass |
 | Anything else: `width`, `height`, `margin`, `padding`, `spacing`, `font_size`, … | Lays the surface out again |
 
 Slide with `translate` and grow on hover with `scale` when surrounding nodes should stay put.

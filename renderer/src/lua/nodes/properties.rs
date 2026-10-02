@@ -423,7 +423,7 @@ props! {
     }
     /// A vector path in node-local logical pixels. Set width and height; there is no intrinsic size.
     mod path(PATH) {
-        /// Up to 4096 commands. Each has op M/L/Q/C/Z and points containing 2/2/4/6/0 numbers. Begin each subpath with M. Coordinates are in [-8192, 8192].
+        /// Up to 4096 commands. Each has op M/L/Q/C/A/Z and points containing 2/2/4/6/5/0 numbers. Begin each subpath with M or A. Coordinates are in [-8192, 8192]; arc angles need only be finite.
         commands: Bound<PathCommands> = absent(Lua("{}"));
         /// Fill colour or gradient across the node box. Open subpaths close for filling.
         fill: Bound<Fill>;

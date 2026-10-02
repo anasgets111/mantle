@@ -6,12 +6,17 @@
 //! This module owns the arithmetic; `parse` reads the Lua entries and `easing` holds the curves.
 //! Where the tween lives, when one starts and what a tick relays out are `layout::scene`'s.
 
+use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use mlua::{Lua, Value};
 
+use super::prop::Prop;
 use super::style::{axis_default, parse_percent, range_of};
-use super::{Axes, EdgeInsets, EdgesInput, LayoutError, PropMap, Rgba, fields, invalid, parse_hex_color, value_as_f32};
+use super::{
+    Axes, EdgeInsets, EdgesInput, LayoutError, PathCommands, PathData, PropMap, Rgba, fields, invalid, parse_hex_color,
+    tweened, value_as_f32,
+};
 use crate::lua::luacats::spelled;
 
 mod easing;
@@ -113,25 +118,36 @@ pub fn depart(
 /// A value a tween can sit between, told apart by shape rather than by which property holds it.
 /// `Percent` is a `"NN%"` size held as a fraction; `Fields` is a table of numbers under one of
 /// two key sets, the edges `{ top, right, bottom, left }` or the axes `{ x, y }`, an absent key
-/// reading as the property's default (`0`, or `1` for a `scale`). Two different shapes snap, so
-/// a fill that switches between `"45%"` and `"Fill"` or a margin that switches between a number
-/// and a table takes the new value at once.
-#[derive(Debug, Clone, Copy, PartialEq)]
+/// reading as the property's default (`0`, or `1` for a `scale`). `Path` is a path's `commands`,
+/// which tween point by point only between lists of the same ops and hole flags. Two different
+/// shapes snap, so a fill that switches between `"45%"` and `"Fill"` or a margin that switches
+/// between a number and a table takes the new value at once.
+#[derive(Debug, Clone, PartialEq)]
 pub enum Animatable {
     Number(f32),
     Percent(f32),
     Color(Rgba),
     Fields { keys: &'static [&'static str], values: [f32; 4] },
+    Path(Rc<PathData>),
 }
 
-spelled!(Animatable => format!("{}|{}|{}|{}", f32::lua(), String::lua(), EdgeInsets::lua(), Axes::lua()));
+spelled!(Animatable => format!(
+    "{}|{}|{}|{}|{}",
+    f32::lua(),
+    String::lua(),
+    EdgeInsets::lua(),
+    Axes::lua(),
+    PathCommands::lua()
+));
 
 impl Animatable {
     /// `property`'s value when it is not set, in this value's shape: `1` for `opacity` and
     /// `scale`, `0` otherwise, per axis or edge for a table. A percent or a colour has no identity
     /// to speak of and stays where it is.
-    fn identity(self, property: &str) -> Self {
-        match self {
+    fn identity(&self, property: &str) -> Self {
+        match *self {
+            // No empty drawing has this one's ops to tween from.
+            Self::Path(_) => self.clone(),
             Self::Number(_) => Self::Number(if property == "opacity" { 1.0 } else { axis_default(property) }),
             Self::Fields { keys, .. } => Self::Fields { keys, values: [axis_default(property); 4] },
             // An unset size is nothing, and an unset colour paints nothing, which is that colour
@@ -147,6 +163,10 @@ impl Animatable {
     /// raises.
     pub fn from_value(property: &str, value: Option<&Value>) -> Result<Option<Self>, LayoutError> {
         let Some(value) = value else { return Ok(None) };
+        // By name: a command array has no shape of its own that a table of edges or axes lacks.
+        if property == "commands" {
+            return Ok(Some(Self::Path(PathCommands::read(&fields::path::commands.row, Some(value))?)));
+        }
         match value {
             Value::String(s) => {
                 let s = s.to_str().map_err(|e| invalid(property, e.to_string()))?;
@@ -182,7 +202,7 @@ impl Animatable {
     /// This value minus `to`, component by component, zero-padded to a fixed width so the four
     /// shapes compare as one vector. Two shapes that cannot mix have no displacement between them
     /// and answer zero, which is the same thing [`Self::lerp`] does with such a pair: snap.
-    fn delta(self, to: Self) -> [f32; 4] {
+    fn delta(&self, to: &Self) -> [f32; 4] {
         let mut out = [0.0; 4];
         match (self, to) {
             (Self::Number(a), Self::Number(b)) | (Self::Percent(a), Self::Percent(b)) => out[0] = a - b,
@@ -192,12 +212,13 @@ impl Animatable {
                 }
             }
             (Self::Color(a), Self::Color(b)) => out = [a.r - b.r, a.g - b.g, a.b - b.b, a.a - b.a],
+            // ponytail: a path hands a spring no rate and restarts still; a per-point velocity would carry it.
             _ => {}
         }
         out
     }
 
-    fn lerp(self, to: Self, t: f32, property: &str) -> Self {
+    fn lerp(&self, to: &Self, t: f32, property: &str) -> Self {
         match (self, to) {
             (Self::Number(a), Self::Number(b)) => {
                 let (low, high) = range_of(property);
@@ -216,15 +237,16 @@ impl Animatable {
                 let mix = |x: f32, y: f32| (x + (y - x) * t).clamp(0.0, 1.0);
                 Self::Color(Rgba { r: mix(a.r, b.r), g: mix(a.g, b.g), b: mix(a.b, b.b), a: mix(a.a, b.a) })
             }
+            (Self::Path(a), Self::Path(b)) => a.lerp(b, t).map_or_else(|| to.clone(), |path| Self::Path(Rc::new(path))),
             // The two shapes come from the same property, so this pair cannot be mixed; snap to
             // the target rather than guess if it ever is.
-            _ => to,
+            _ => to.clone(),
         }
     }
 
     /// The value written back into a resolved property map for the parsers to read.
-    pub fn to_value(self, lua: &Lua) -> mlua::Result<Value> {
-        Ok(match self {
+    pub fn to_value(&self, lua: &Lua) -> mlua::Result<Value> {
+        Ok(match *self {
             Self::Number(n) => Value::Number(f64::from(n)),
             // Three decimals: enough that a 147ms tween over a 6px meter never repeats a frame,
             // and the shape `parse_percent` reads (`^\d+(\.\d+)?%$`, no exponent, no sign).
@@ -237,6 +259,7 @@ impl Animatable {
                 }
                 Value::Table(table)
             }
+            Self::Path(ref path) => tweened(lua, path)?,
         })
     }
 }
@@ -262,7 +285,7 @@ pub struct Tween {
     pub resting: bool,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 struct Reversal {
     origin: Animatable,
     factor: f32,
@@ -270,7 +293,7 @@ struct Reversal {
 
 impl Tween {
     fn eased_duration(&self, duration: Duration) -> Duration {
-        duration.mul_f64(f64::from(self.reversal.map_or(1.0, |reversal| reversal.factor)))
+        duration.mul_f64(f64::from(self.reversal.as_ref().map_or(1.0, |reversal| reversal.factor)))
     }
 
     /// How far into the motion itself `now` is: time since the tween started, less the spec's
@@ -289,19 +312,19 @@ impl Tween {
             // opening on a jump plays that jump at zero, and would spend the whole delay showing
             // the value after it rather than the one before (ADR-0153).
             Motion::Sequence(sequence) if now.saturating_duration_since(self.started) < self.spec.delay => {
-                return sequence.frames[0].value;
+                return sequence.frames[0].value.clone();
             }
             Motion::Sequence(sequence) => return sequence.at(elapsed, self.property),
             // Exactly the target, not `from + (to - from) * 1`: a settled spring is still off by its
             // threshold, and once the tween is dropped `retarget` reads this value back as the target
             // it compares against, so anything short of `to` starts a new tween on the next pass.
-            _ if self.done(now) => return self.to,
+            _ if self.done(now) => return self.to.clone(),
             Motion::Eased { duration, easing } => {
                 easing.apply((elapsed.as_secs_f32() / self.eased_duration(*duration).as_secs_f32()).min(1.0))
             }
             Motion::Spring(spring) => spring.at(elapsed),
         };
-        self.from.lerp(self.to, progress, self.property)
+        self.from.lerp(&self.to, progress, self.property)
     }
 
     pub fn done(&self, now: Instant) -> bool {
@@ -346,8 +369,8 @@ pub fn retarget(
                 Some(prior) => Tween { spec, ..prior.clone() },
                 None => Tween {
                     property,
-                    from: sequence.frames[0].value,
-                    to: sequence.frames.last().expect("a parsed sequence has frames").value,
+                    from: sequence.frames[0].value.clone(),
+                    to: sequence.frames.last().expect("a parsed sequence has frames").value.clone(),
                     started: now,
                     spec,
                     reversal: None,
@@ -372,10 +395,10 @@ pub fn retarget(
             Some(shown) => Animatable::from_value(property, shown.get(property))?,
             None => None,
         };
-        let Some(displayed) = displayed.or(spec.from) else { continue };
-        let retained_target = running.map_or(displayed, |tween| tween.to);
+        let Some(displayed) = displayed.or_else(|| spec.from.clone()) else { continue };
+        let retained_target = running.map_or(&displayed, |tween| &tween.to);
         let tween = match running {
-            _ if retained_target != target => {
+            _ if *retained_target != target => {
                 if displayed == target {
                     continue;
                 }
@@ -384,7 +407,7 @@ pub fn retarget(
                 // still (ADR-0154). An eased tween returning to its prior endpoint shortens its
                 // run; another target begins a full one.
                 let reversal = if let Motion::Eased { duration, easing } = &spec.motion {
-                    let previous = running.and_then(|prior| match (&prior.spec.motion, prior.reversal) {
+                    let previous = running.and_then(|prior| match (&prior.spec.motion, prior.reversal.clone()) {
                         (Motion::Eased { duration: old_duration, easing: old_easing }, Some(state))
                             if old_duration == duration
                                 && old_easing == easing
@@ -402,17 +425,18 @@ pub fn retarget(
                             let phase = elapsed.as_secs_f32() / prior.eased_duration(*duration).as_secs_f32();
                             let factor =
                                 (easing.apply(phase) * state.factor + 1.0 - state.factor).abs().clamp(0.0, 1.0);
-                            Reversal { origin: prior.to, factor }
+                            Reversal { origin: prior.to.clone(), factor }
                         }
-                        None => Reversal { origin: displayed, factor: 1.0 },
+                        None => Reversal { origin: displayed.clone(), factor: 1.0 },
                     })
                 } else {
                     None
                 };
                 let spec = match (spec.motion, running) {
-                    (Motion::Spring(spring), Some(running)) => {
-                        AnimationSpec { motion: Motion::Spring(spring.handed(running, displayed, target, now)), ..spec }
-                    }
+                    (Motion::Spring(spring), Some(running)) => AnimationSpec {
+                        motion: Motion::Spring(spring.handed(running, &displayed, &target, now)),
+                        ..spec
+                    },
                     (motion, _) => AnimationSpec { motion, ..spec },
                 };
                 Tween { property, from: displayed, to: target, started: now, spec, reversal, resting: false }
@@ -463,6 +487,7 @@ const PAINT_ONLY: &[&str] = &[
     "border_color",
     "foreground",
     "progress",
+    "commands",
     "radius",
     "shadow_color",
     "shadow_blur",
@@ -575,8 +600,8 @@ mod tests {
         assert!(Easing::OutBack.apply(0.7) > 1.0);
         let from = Animatable::Number(40.0);
         let to = Animatable::Number(0.0);
-        assert_eq!(from.lerp(to, Easing::OutBack.apply(0.7), "width"), Animatable::Number(0.0));
-        assert!(matches!(from.lerp(to, Easing::OutBack.apply(0.7), "margin"), Animatable::Number(n) if n < 0.0));
+        assert_eq!(from.lerp(&to, Easing::OutBack.apply(0.7), "width"), Animatable::Number(0.0));
+        assert!(matches!(from.lerp(&to, Easing::OutBack.apply(0.7), "margin"), Animatable::Number(n) if n < 0.0));
     }
 
     /// The overshooting families leave `[0, 1]` on purpose; the property's own range is what pulls
@@ -588,8 +613,8 @@ mod tests {
         // `InBack` winds backwards, so the clamp bites at the start of a growing width rather than
         // at the end of a shrinking one the way `OutBack`'s does above.
         let (from, to) = (Animatable::Number(0.0), Animatable::Number(40.0));
-        assert_eq!(from.lerp(to, Easing::InBack.apply(0.3), "width"), Animatable::Number(0.0));
-        assert!(matches!(from.lerp(to, Easing::InBack.apply(0.3), "margin"), Animatable::Number(n) if n < 0.0));
+        assert_eq!(from.lerp(&to, Easing::InBack.apply(0.3), "width"), Animatable::Number(0.0));
+        assert!(matches!(from.lerp(&to, Easing::InBack.apply(0.3), "margin"), Animatable::Number(n) if n < 0.0));
         assert!(Easing::InBounce.apply(0.5) >= 0.0 && Easing::OutBounce.apply(0.5) <= 1.0, "Bounce stays inside");
     }
 
@@ -794,13 +819,68 @@ mod tests {
     }
 
     #[test]
+    fn paths_tween_point_by_point_only_between_matching_ops() {
+        let lua = Lua::new();
+        let path = |src: &str| {
+            let value: Value = lua.load(src).eval().unwrap();
+            Animatable::from_value("commands", Some(&value)).unwrap().unwrap()
+        };
+        let points = |value: &Animatable| match value {
+            Animatable::Path(commands) => commands.iter().map(|(_, p)| p.to_vec()).collect::<Vec<_>>(),
+            other => panic!("{other:?}"),
+        };
+        let from = path("return {{op='M',points={0,0}},{op='A',points={10,10,4,0,90}}}");
+        let to = path("return {{op='M',points={8,-8}},{op='A',points={20,30,8,90,-90}}}");
+        assert_eq!(points(&from.lerp(&to, 0.5, "commands")), [vec![4.0, -4.0], vec![15.0, 20.0, 6.0, 45.0, 0.0]]);
+        // An overshooting easing past `from` would shrink the radius below zero.
+        assert_eq!(points(&from.lerp(&to, -2.0, "commands"))[1][2], 0.0);
+        assert_eq!(from.identity("commands"), from, "nothing to tween in from");
+        for other in [
+            "return {{op='M',points={0,0}},{op='L',points={10,10}}}",
+            "return {{op='M',points={0,0},hole=true},{op='A',points={10,10,4,0,90}}}",
+            "return {{op='M',points={0,0}}}",
+        ] {
+            let other = path(other);
+            assert_eq!(from.lerp(&other, 0.5, "commands"), other, "different ops snap");
+        }
+        let unset = path("return {{op='M',points={0,0}}}");
+        let explicit = path("return {{op='M',points={4,4},hole=false}}");
+        assert_eq!(points(&unset.lerp(&explicit, 0.5, "commands")), [vec![2.0, 2.0]], "hole = false is no hole");
+        let huge = path("return {{op='A',points={0,0,1,3e38,3e38}}}");
+        let opposite = path("return {{op='A',points={0,0,1,-3e38,-3e38}}}");
+        assert!(
+            points(&huge.lerp(&opposite, 1.5, "commands"))[0].iter().all(|n| n.is_finite()),
+            "angles never overflow"
+        );
+        let value: Value = lua.load("return {{{op='M',points={0,0}}}, {{op='M',points={10,20}}}}").eval().unwrap();
+        let morph = sequence::parse_sequence(
+            "commands",
+            "animate.commands",
+            &value,
+            Duration::from_millis(100),
+            Easing::Linear,
+            None,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(points(&morph.at(Duration::from_millis(50), "commands")), [vec![5.0, 10.0]], "keyframes morph");
+        let back = from.lerp(&to, 0.25, "commands");
+        assert_eq!(Animatable::from_value("commands", Some(&back.to_value(&lua).unwrap())).unwrap(), Some(back));
+        assert!(
+            Animatable::from_value("commands", Some(&Value::Integer(1))).is_err(),
+            "a bad target fails as the property would"
+        );
+    }
+
+    #[test]
     fn an_edge_table_halfway_is_the_per_edge_midpoint_and_absent_edges_are_zero() {
         let lua = Lua::new();
         let table = |src: &str| {
             let value: Value = lua.load(src).eval().unwrap();
             Animatable::from_value("margin", Some(&value)).unwrap().unwrap()
         };
-        let mid = table("return { top = 10, left = -20 }").lerp(table("return { top = 20, right = 8 }"), 0.5, "margin");
+        let mid =
+            table("return { top = 10, left = -20 }").lerp(&table("return { top = 20, right = 8 }"), 0.5, "margin");
         assert_eq!(mid, Animatable::Fields { keys: EdgesInput::KEYS, values: [15.0, 4.0, 0.0, -10.0] });
         let Value::Table(back) = mid.to_value(&lua).unwrap() else { panic!("edges write back as a table") };
         assert_eq!(back.get::<f32>("left").unwrap(), -10.0);
@@ -821,13 +901,13 @@ mod tests {
             let value: Value = lua.load(src).eval().unwrap();
             Animatable::from_value(property, Some(&value)).unwrap().unwrap()
         };
-        let mid = table("return { x = 1 }", "scale").lerp(table("return { x = 2, y = 3 }", "scale"), 0.5, "scale");
+        let mid = table("return { x = 1 }", "scale").lerp(&table("return { x = 2, y = 3 }", "scale"), 0.5, "scale");
         assert_eq!(mid, Animatable::Fields { keys: Axes::KEYS, values: [1.5, 2.0, 1.0, 1.0] });
         let Value::Table(back) = mid.to_value(&lua).unwrap() else { panic!("axes write back as a table") };
         assert_eq!((back.get::<f32>("x").unwrap(), back.get::<f32>("y").unwrap()), (1.5, 2.0));
         assert!(!back.contains_key("top").unwrap());
         // A number against a table snaps: a `scale = 2` meeting `scale = { x = 2 }`.
-        let snapped = Animatable::Number(2.0).lerp(table("return { x = 2 }", "scale"), 0.5, "scale");
+        let snapped = Animatable::Number(2.0).lerp(&table("return { x = 2 }", "scale"), 0.5, "scale");
         assert_eq!(snapped, table("return { x = 2 }", "scale"));
     }
 
@@ -851,7 +931,7 @@ mod tests {
         let white = Animatable::from_value("background", Some(&Value::String(lua.create_string("#ffffff").unwrap())))
             .unwrap()
             .unwrap();
-        let mid = black.lerp(white, 0.5, "background");
+        let mid = black.lerp(&white, 0.5, "background");
         let Value::String(hex) = mid.to_value(&lua).unwrap() else { panic!("a colour writes back as a string") };
         assert_eq!(hex.to_str().unwrap(), "#808080ff");
     }
@@ -862,7 +942,7 @@ mod tests {
         let pct = |s: &str| {
             Animatable::from_value("width", Some(&Value::String(lua.create_string(s).unwrap()))).unwrap().unwrap()
         };
-        let mid = pct("40%").lerp(pct("60%"), 0.5, "width");
+        let mid = pct("40%").lerp(&pct("60%"), 0.5, "width");
         let Value::String(text) = mid.to_value(&lua).unwrap() else { panic!("a percent writes back as a string") };
         assert_eq!(text.to_str().unwrap(), "50.000%");
         let fill = Value::String(lua.create_string("Fill").unwrap());

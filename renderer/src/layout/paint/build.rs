@@ -250,7 +250,9 @@ fn in_buffer_pixels(draw: Draw, scale: f32) -> Draw {
             },
         },
         Draw::Path(mut path) => {
-            path.commands.iter_mut().flat_map(|command| &mut command.points).for_each(|point| *point *= scale);
+            if scale != 1.0 {
+                std::rc::Rc::make_mut(&mut path.commands).for_each_pixel(|point| *point *= scale);
+            }
             path.stroke_width *= scale;
             Draw::Path(path)
         }

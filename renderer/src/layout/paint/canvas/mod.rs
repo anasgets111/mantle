@@ -918,7 +918,9 @@ pub(crate) mod tests {
                     path { width = 16, height = 16, margin = { left = 24 }, fill = "#00FF00FF",
                         commands = { { op = "M", points = { 0, 0 } }, { op = "L", points = { 16, 0 } },
                             { op = "L", points = { 16, 16 } }, { op = "L", points = { 0, 16 } },
-                            { op = "Z", points = {} } } }
+                            { op = "Z", points = {} } } },
+                    path { width = 16, height = 16, margin = { left = 44 }, fill = "#0000FFFF",
+                        commands = { { op = "A", points = { 8, 8, 8, 0, 180 } } } }
                 } } }"##,
                 LogicalSize { width: 64.0, height: 64.0 },
             );
@@ -932,6 +934,10 @@ pub(crate) mod tests {
                 (0, 255, 0, 255)
             );
             assert_eq!(pixel_at(painter.canvas_mut(), (18.0 * scale) as usize, (8.0 * scale) as usize).3, 0);
+            // A half disc: scaling its sweep would fill the upper half too.
+            let mut at = |x: f32, y: f32| pixel_at(painter.canvas_mut(), (x * scale) as usize, (y * scale) as usize);
+            assert_eq!(at(52.0, 12.0), (0, 0, 255, 255));
+            assert_eq!(at(48.0, 4.0).3, 0);
         }
     }
 

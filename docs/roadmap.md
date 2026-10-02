@@ -24,7 +24,6 @@ Wanted, but each needs a consumer or a decision first.
 | :--- | :--- | :--- |
 | MPRIS remote artwork | `album_art_path` accepts local `file://` images. Remote URLs need a bounded fetch and cache design before the engine can expose them as local paths | 0036 |
 | Greeter | Mantle as a greetd client under cage or sway. Needs multi-prompt PAM and a session-launch command | — |
-| Drawing | Paths support lines and Béziers with fills and strokes; arcs, hole control and command interpolation are absent. Node masks reference direct children, which retain normal layout. SVG text uses loaded fonts | 0254–0256, 0297 |
 | Large lists | Every item up to `limit` is laid out on every pass and built again whenever anything it read changes, visible or not. Virtualization would need `key` to be mandatory, which cannot be enforced | 0191, 0219 |
 | Output actions | `windows` has five actions; screens are read-only. Pick the actions, then settle niri/Hyprland differences and revert | 0119, 0247 |
 | Service depth | Audio has no per-channel levels or peak metering; UPower reads only `DisplayDevice`; `network` tracks only the first Wi-Fi device; Bluetooth pairing refuses PIN and passkey entry. Extend for concrete controls | — |

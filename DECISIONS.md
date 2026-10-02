@@ -7292,3 +7292,38 @@ draw a ready texture from the same file revision and paint treatment at another 
 cover texture also needs a matching box aspect ratio, and a blurred image gets none because its
 blur radius is physical. That temporary draw cannot complete a
 `retain` or transition and is pinned until the exact texture lands.
+
+## 0302. Path arcs take centre and angles; subpaths are solid unless marked holes
+
+`path` gains `A` with `points = { cx, cy, r, start, sweep }`, angles in degrees clockwise from +x.
+A centre-and-sweep arc is what gauges, rings and pie slices compute from a value; SVG's endpoint
+form needs flags and a radius fix-up for the same result. The letter collides with SVG's `A`;
+icons ported from SVG already convert their commands, so the docs call out the difference. `A`
+may begin a subpath, and inside one it joins the current point with a line, as canvas `arc`
+does. Display scaling multiplies only its centre and radius. The painter lowers arcs to cubics
+itself, at most one per quarter turn: femtovg's `arc` always opens with a line to its start, and
+femtovg keeps the repeated point, which anti-aliasing draws as a spike.
+
+Holes are explicit: `hole = true` on a subpath's first command. Every other subpath is forced
+solid, so winding never decides the fill. Before this, femtovg kept each contour's winding under
+the nonzero rule, and a reversed inner subpath cut a hole by accident. Rejected: an even-odd fill
+option, which makes overlap, not intent, decide holes. Under nonzero winding a hole counts -1,
+so a hole outside every solid subpath, or two holes overlapping inside one, paints again.
+
+## 0303. Path commands tween only between matching layouts
+
+`animate` tweens a `path`'s `commands` point by point when both lists have the same ops and `hole`
+flags in the same order, and snaps otherwise, the rule every other shape change follows. Arc
+angles interpolate like coordinates. Matching layouts are the config's job: resampling or
+subdividing mismatched paths in the engine would guess at a correspondence the config knows.
+Keyframes go through the same lerp, so a looping morph runs without Lua per frame.
+
+A parsed path stores its ops and flags once, shared by every frame between two layouts, and its
+numbers in one flat list, so a frame allocates one list. Every tweened property travels back to
+its parser through the Lua property map; a path frame travels as one userdata holding the parsed
+path, which the parser hands back without reading a table. Rebuilding a table per command made the
+round trip 84% of the busy time with 24 morphing paths: 27% of a core, 6.3% without it.
+`Animatable` is no longer `Copy`.
+
+A spring hands a path no velocity when its target changes; it restarts still. `commands` is
+paint-only, since a path's box comes from `width` and `height`.

@@ -204,14 +204,14 @@ impl Spring {
     /// ponytail: one scalar for every shape, so a colour crossing a hue keeps its speed but not
     /// its direction per channel. Carrying an `Animatable`-shaped velocity would fix that, and is
     /// worth doing when something animates a colour by spring and the difference shows.
-    pub(super) fn handed(self, running: &Tween, displayed: Animatable, target: Animatable, now: Instant) -> Self {
+    pub(super) fn handed(self, running: &Tween, displayed: &Animatable, target: &Animatable, now: Instant) -> Self {
         let Motion::Spring(prior) = &running.spec.motion else { return self };
         // The run's whole displacement, not what is left of it. `displayed - running.to` is that
         // whole displacement already scaled by how much remains, so projecting it would hand over
         // the true velocity times the fraction still to cross: near zero for a retarget late in a
         // run that is still moving briskly, and sign-flipped once an overshoot has carried the
         // value past its target.
-        let was = running.from.delta(running.to);
+        let was = running.from.delta(&running.to);
         let becomes = displayed.delta(target);
         let square: f32 = becomes.iter().map(|axis| axis * axis).sum();
         if square <= f32::EPSILON {
@@ -303,7 +303,7 @@ mod tests {
         // The overshoot is the property's own range to absorb, exactly as `OutBack`'s is.
         let past = spring.at(Duration::from_millis(250));
         assert_eq!(
-            Animatable::Number(1.0).lerp(Animatable::Number(0.0), past, "opacity"),
+            Animatable::Number(1.0).lerp(&Animatable::Number(0.0), past, "opacity"),
             Animatable::Number(0.0),
             "opacity cannot go negative"
         );
@@ -377,7 +377,7 @@ mod tests {
 
         // The target moves further out in the same direction; the new run must already be moving.
         let Motion::Spring(fresh) = sprung.motion else { panic!("parsed a spring") };
-        let handed = fresh.handed(&running, displayed, Animatable::Number(200.0), midway);
+        let handed = fresh.handed(&running, &displayed, &Animatable::Number(200.0), midway);
         assert!(handed.velocity > 0.0, "the hand-over carries the speed it had, got {}", handed.velocity);
         assert!(
             handed.rate(0.0) < fresh.rate(0.0),
@@ -386,7 +386,7 @@ mod tests {
 
         // A target that moves the other way hands over a velocity pointing away from it, which is
         // what makes the value swing through rather than snap back.
-        let backwards = fresh.handed(&running, displayed, Animatable::Number(-50.0), midway);
+        let backwards = fresh.handed(&running, &displayed, &Animatable::Number(-50.0), midway);
         assert!(backwards.velocity < 0.0, "got {}", backwards.velocity);
     }
 
@@ -415,7 +415,7 @@ mod tests {
             let now = started + Duration::from_millis(millis);
             let displayed = running.at(now);
             let target = Animatable::Number(300.0);
-            let handed = spring.handed(&running, displayed, target, now);
+            let handed = spring.handed(&running, &displayed, &target, now);
 
             let old_span = -100.0_f32;
             let Animatable::Number(shown) = displayed else { panic!("a number") };

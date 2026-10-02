@@ -55,7 +55,7 @@ impl Sequence {
     /// duration is a jump rather than a stop, so it is stepped over and its value shows only as
     /// the start of whatever follows.
     pub(super) fn at(&self, elapsed: Duration, property: &str) -> Animatable {
-        let last = self.frames.last().expect("a parsed sequence has frames").value;
+        let last = self.frames.last().expect("a parsed sequence has frames").value.clone();
         if let Some(loops) = self.loops
             && elapsed >= self.cycle * loops
         {
@@ -74,7 +74,7 @@ impl Sequence {
             let (start, end) = (&pair[0], &pair[1]);
             if at < end.duration {
                 let progress = end.easing.apply(at.as_secs_f32() / end.duration.as_secs_f32());
-                return start.value.lerp(end.value, progress, property);
+                return start.value.lerp(&end.value, progress, property);
             }
             at -= end.duration;
         }
@@ -363,10 +363,10 @@ mod tests {
         .unwrap();
         let started = Instant::now();
         let Motion::Sequence(ref sequence) = spec.motion else { panic!("a sequence") };
-        let first = sequence.frames[0].value;
+        let first = sequence.frames[0].value.clone();
         let tween = Tween {
             property: "width",
-            from: first,
+            from: first.clone(),
             to: first,
             started,
             spec: spec.clone(),
