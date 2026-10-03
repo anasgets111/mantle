@@ -139,6 +139,7 @@ pub(super) fn solve_instance(
     prepared: PreparedNode,
     available: LogicalSize,
     shaping: &ShapingHandle,
+    now: Instant,
 ) -> Result<ResolvedNode, LayoutError> {
     let style = prepared.style;
     let forced = forced_root_size(prepared.allocated_axes, &style, available);
@@ -157,7 +158,7 @@ pub(super) fn solve_instance(
         tree.set_style(prepared.taffy, root_style).map_err(taffy_failed)?;
     }
     solve(tree, prepared.taffy, available, shaping)?;
-    finish(tree, prepared, shaping)
+    finish(tree, prepared, shaping, now)
 }
 
 /// A configured `Content` axis belongs to the root when its protocol allocated that axis:
@@ -261,15 +262,16 @@ fn pair_children_by_id_then_position(
 pub(super) fn prepare(
     scene: &mut Scene,
     tree: &mut taffy::TaffyTree<Measure>,
-    retained: Option<ResolvedNode>,
+    mut retained: Option<ResolvedNode>,
     kind: &'static str,
     resolved: Resolved,
-    parent_axis: Option<MainAxis>,
+    parent_flow: (Option<MainAxis>, f32),
     thawing: bool,
     lua: &Lua,
     now: Instant,
     depth: u32,
 ) -> Result<PreparedNode, LayoutError> {
+    let (parent_axis, _) = parent_flow;
     // Already run by whoever resolved `properties` (that is the ordering `ensure_node_admissible`
     // exists to enforce), repeated here so this function holds its own preconditions rather than
     // trusting a call site, notably `children_of`'s `unreachable!` arm.
@@ -278,15 +280,11 @@ pub(super) fn prepare(
     let thawing = thawing || retained.as_ref().is_some_and(|r| !r.visible);
 
     let old_mask_target = retained.as_ref().and_then(|node| node.mask_target);
-    let Resolved { properties, style, paint, tweens, memo: resolve_memo, text_memo } = resolved;
-    let allocated_axes = match kind {
-        "window" | "lock" => (true, true),
-        "panel" => {
-            let anchor = fields::panel::anchor.read(&properties)?;
-            (anchor.left && anchor.right, anchor.top && anchor.bottom)
-        }
-        _ => (false, false),
-    };
+    let old_scroll = retained.as_ref().map_or(0.0, |node| node.scrolled);
+    let Resolved { properties, style, paint, tweens, movement: move_spec, memo: resolve_memo, text_memo } = resolved;
+    let prior_position = retained.as_ref().filter(|_| !thawing).and_then(|r| prior_position(r, tree, parent_flow));
+    let movement = if thawing { None } else { retained.as_mut().and_then(|r| r.movement.take()) };
+    let allocated_axes = allocated_axes(kind, &properties)?;
     let (id, old_taffy, displayed_source, dissolve, old_children, list_memo, child_table) = match retained {
         Some(r) => (r.id, r.taffy, r.displayed_source, r.dissolve, r.children, r.list_memo, r.child_table),
         None => (scene.alloc_id(), None, None, None, Vec::new(), None, None),
@@ -334,6 +332,9 @@ pub(super) fn prepare(
         children: Vec::new(),
         frozen: old_children,
         tweens,
+        move_spec,
+        movement,
+        prior_position,
         leaving: Vec::new(),
         list_memo,
         child_table,
@@ -350,7 +351,7 @@ pub(super) fn prepare(
     let mut failed = Vec::new();
     for (index, (fresh_child, mut candidate)) in fresh_children.into_iter().zip(matched_candidates).enumerate() {
         let Some(VirtualNode { kind: child_kind, properties: child_raw, site }) = fresh_child else {
-            keep_item(tree, &mut node, &mut candidate, own_axis, lua, now)?;
+            keep_item(tree, &mut node, &mut candidate, (own_axis, old_scroll), lua, now, thawing)?;
             continue;
         };
         // Every failure below names this child, so the message that reaches a human is the path
@@ -378,7 +379,7 @@ pub(super) fn prepare(
         let item = node.list_memo.is_some().then(|| ComputedFrame::enter(lua));
         let child = (|| {
             let resolved = resolve(child_kind, child_raw, reusable.as_mut(), now, lua, Ok)?;
-            prepare(scene, tree, reusable, child_kind, resolved, own_axis, thawing, lua, now, depth + 1)
+            prepare(scene, tree, reusable, child_kind, resolved, (own_axis, old_scroll), thawing, lua, now, depth + 1)
         })();
         if let (Some(memo), Some(item)) = (node.list_memo.as_mut(), item) {
             memo.item_read(index, &item.finish());
@@ -412,6 +413,7 @@ pub(super) fn prepare(
             && child.visible
             && node::depart(child.kind, &mut child.tweens, std::rc::Rc::make_mut(&mut child.properties), now, lua)?
         {
+            child.freeze_move_for_exit();
             child.leaving = true;
             node.leaving.push(child);
         }
@@ -423,18 +425,32 @@ pub(super) fn prepare(
     Ok(node)
 }
 
+/// Which axes the compositor allocates a root, so an omitted extent fills it (ADR-0311). Split from
+/// [`prepare`] to keep its frame, one per tree level, small.
+fn allocated_axes(kind: &str, properties: &PropMap) -> Result<(bool, bool), LayoutError> {
+    Ok(match kind {
+        "window" | "lock" => (true, true),
+        "panel" => {
+            let anchor = fields::panel::anchor.read(properties)?;
+            (anchor.left && anchor.right, anchor.top && anchor.bottom)
+        }
+        _ => (false, false),
+    })
+}
+
 /// A kept `list` item laid out again as it is. Its own frame, like `children_this_pass`, and taken
 /// by reference: a debug build copies a node passed by value into [`prepare`]'s frame.
 fn keep_item(
     tree: &mut taffy::TaffyTree<Measure>,
     node: &mut PreparedNode,
     kept: &mut Option<ResolvedNode>,
-    own_axis: Option<MainAxis>,
+    parent_flow: (Option<MainAxis>, f32),
     lua: &Lua,
     now: Instant,
+    thawing: bool,
 ) -> Result<(), LayoutError> {
     let kept = kept.take().expect("a kept item is paired with itself");
-    node.children.push(prepare_retained(tree, kept, own_axis, lua, now)?);
+    node.children.push(prepare_retained(tree, kept, parent_flow, lua, now, true, thawing)?);
     Ok(())
 }
 
@@ -525,6 +541,7 @@ fn finish(
     tree: &taffy::TaffyTree<Measure>,
     prepared: PreparedNode,
     shaping: &ShapingHandle,
+    now: Instant,
 ) -> Result<ResolvedNode, LayoutError> {
     let PreparedNode {
         id,
@@ -539,6 +556,9 @@ fn finish(
         children,
         frozen,
         tweens,
+        move_spec,
+        movement,
+        prior_position,
         leaving,
         list_memo,
         child_table,
@@ -557,7 +577,7 @@ fn finish(
     // rects that already carry one, no text refitted to a box that was not laid out.
     let (children, text_memo, scrolled) = if style.visible {
         let mut children: Vec<ResolvedNode> =
-            children.into_iter().map(|child| finish(tree, child, shaping)).collect::<Result<_, _>>()?;
+            children.into_iter().map(|child| finish(tree, child, shaping, now)).collect::<Result<_, _>>()?;
 
         // ADR-0069 decision 4.
         let scrolled = match main_axis_of(kind, &properties)? {
@@ -593,7 +613,7 @@ fn finish(
         }
         _ => None,
     };
-    Ok(ResolvedNode {
+    let mut node = ResolvedNode {
         mask_target,
         allocated_axes,
         layout_style: std::rc::Rc::new(style),
@@ -615,12 +635,49 @@ fn finish(
         dissolve,
         children,
         tweens,
+        move_spec,
+        movement,
         leaving: false,
         text_memo,
         list_memo,
         child_table,
         resolve_memo,
+    };
+    retarget_move(&mut node, prior_position, now);
+    Ok(node)
+}
+
+/// A missing solver tree leaves only the retained rect, which already carries its parent's scroll.
+pub(super) fn prior_position(
+    node: &ResolvedNode,
+    tree: &taffy::TaffyTree<Measure>,
+    parent_flow: (Option<MainAxis>, f32),
+) -> Option<(f32, f32)> {
+    let (parent_axis, parent_scroll) = parent_flow;
+    node.taffy.and_then(|id| tree.layout(id).ok()).map(|layout| (layout.location.x, layout.location.y)).or_else(|| {
+        node.visible.then_some(match parent_axis {
+            Some(MainAxis::Horizontal) => (node.rect.x + parent_scroll, node.rect.y),
+            Some(MainAxis::Vertical) => (node.rect.x, node.rect.y + parent_scroll),
+            None => (node.rect.x, node.rect.y),
+        })
     })
+}
+
+/// Compare solver positions before scroll rounds either rect; a scroll change stays immediate.
+fn retarget_move(node: &mut ResolvedNode, prior_position: Option<(f32, f32)>, now: Instant) {
+    let Some(spec) = node.move_spec.as_deref().copied().filter(|_| node.visible) else {
+        node.movement = None;
+        return;
+    };
+    let Some(prior) = prior_position else {
+        return;
+    };
+    let delta = (prior.0 - node.rect.x, prior.1 - node.rect.y);
+    if delta != (0.0, 0.0) {
+        let offset = node.movement.as_ref().map_or((0.0, 0.0), |moving| moving.offset);
+        let from = (delta.0 + offset.0, delta.1 + offset.1);
+        node.movement = (from != (0.0, 0.0)).then(|| Box::new(super::MoveTween::new(from, spec, now)));
+    }
 }
 
 /// Writes every visible `geometry(name)` node's absolute rect into its signal (ADR-0147), the same
@@ -832,6 +889,54 @@ mod tests {
         assert_eq!(ids_after, ids_before, "showing it again keeps the frozen nodes");
         assert_eq!(built(), 2, "and builds nothing, since nothing the list read has changed (ADR-0269)");
         assert_eq!(thawed.children[0].children[0].children[1].rect.y, 10.0, "and lays them out again");
+    }
+
+    #[test]
+    fn keyed_list_items_do_not_move_from_frozen_rects_on_thaw() {
+        let (lua, surface) = surface_from(
+            r#"open = state("open", true)
+                spacing = state("spacing", 0)
+                built = 0
+                return panel { id = "bar", child = column { visible = open, children = {
+                    list { spacing = spacing, source = { "a", "b" },
+                        key = function(name) return name end,
+                        itemfn = function(name)
+                            built = built + 1
+                            return rect { id = name, width = 10, height = 10, animate = { move = 100 } }
+                        end }
+                } } }"#,
+        );
+        let shaping = ShapingHandle::spawn();
+        let mut scene = Scene::new();
+        let apply =
+            |scene: &mut Scene| apply_at(scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
+        fn second(scene: &Scene) -> &ResolvedNode {
+            &scene.surface("bar@TEST").unwrap().children[0].children[0].children[1]
+        }
+        apply(&mut scene);
+        assert_eq!(second(&scene).rect.y, 10.0);
+        lua.load("open:set(false) spacing:set(20)").exec().unwrap();
+        apply(&mut scene);
+        lua.load("open:set(true)").exec().unwrap();
+        apply(&mut scene);
+        assert_eq!(second(&scene).rect.y, 30.0);
+        assert!(second(&scene).movement.is_none(), "a frozen position was never painted as a move");
+
+        lua.load("spacing:set(30)").exec().unwrap();
+        apply(&mut scene);
+        assert!(second(&scene).movement.is_some());
+        lua.load("open:set(false)").exec().unwrap();
+        apply(&mut scene);
+        scene.surfaces.get_mut("bar@TEST").unwrap().children[0].children[0].children[1]
+            .movement
+            .as_mut()
+            .unwrap()
+            .started -= std::time::Duration::from_millis(200);
+        lua.load("open:set(true)").exec().unwrap();
+        apply(&mut scene);
+        assert_eq!(second(&scene).rect.y, 40.0);
+        assert!(second(&scene).movement.is_none(), "a hidden move cannot resume when the item thaws");
+        assert_eq!(lua.globals().get::<usize>("built").unwrap(), 2, "the keyed items were kept");
     }
 
     /// The `content` of each item of the list at `column[1]`, a leaver included.

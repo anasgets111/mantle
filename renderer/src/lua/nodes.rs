@@ -362,7 +362,7 @@ mod meta_stub_tests {
             let expected: BTreeSet<String> = super::accepted_properties(kind).into_iter().map(str::to_string).collect();
             assert_eq!(declared, expected, "lua-meta's {class} is out of step with the property table for `{kind}`");
 
-            // `animate` takes the kind's own names but `z`, `animate` and refused ones, plus `exit`.
+            // `animate` takes the kind's own names but `z`, `animate` and refused ones, plus `exit` and `move`.
             let alias = format!("---@alias {}Animations {{ ", capitalize(kind));
             let line = source.lines().find_map(|line| line.strip_prefix(alias.as_str())).expect("an Animations alias");
             let keys: BTreeSet<String> =
@@ -372,6 +372,7 @@ mod meta_stub_tests {
                 .filter(|name| !matches!(name.as_str(), "z" | "animate") && !super::refused(kind, name))
                 .collect();
             expected.insert("exit".to_string());
+            expected.insert("move".to_string());
             assert_eq!(keys, expected, "lua-meta's `animate` keys for `{kind}`");
         }
     }
@@ -556,11 +557,18 @@ mod meta_stub_tests {
             .ty;
         let steps = shape_field(&aliases, &easing, "steps").expect("Easing declares `{ steps }`");
         let loops = shape_field(&aliases, "Animation", "loops").expect("Animation declares `loops`");
+        let move_duration = shape_field(&aliases, "MoveAnimation", "duration").expect("MoveAnimation.duration");
+        let move_delay = shape_field(&aliases, "MoveAnimation", "delay").expect("MoveAnimation.delay");
+        let move_easing = shape_field(&aliases, "MoveAnimation", "easing").expect("MoveAnimation.easing");
         let span = typed_fields(&classes, "TextRun").into_iter().find(|f| f.name == "kind").expect("TextRun.kind").ty;
         for (kind, field, ty, around) in [
             ("image", "transition", easing.as_str(), "{ duration = 400, easing = @ }"),
             ("image", "transition", steps, "{ duration = 400, easing = { steps = @ } }"),
             ("rect", "animate", loops, "{ opacity = { duration = 200, keyframes = { 0, 1 }, loops = @ } }"),
+            ("rect", "animate", move_duration, "{ move = { duration = @ } }"),
+            ("rect", "animate", move_delay, "{ move = { duration = 100, delay = @ } }"),
+            ("rect", "animate", move_easing, "{ move = { duration = 100, easing = @ } }"),
+            ("rect", "animate", steps, "{ move = { duration = 100, easing = { steps = @ } } }"),
             ("text", "content", span.as_str(), "{ { text = \"a\", kind = @ } }"),
         ] {
             probe(&aliases, kind, &[], field, ty, &|literal| around.replace('@', literal), &mut report);

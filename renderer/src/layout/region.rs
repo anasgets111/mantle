@@ -32,11 +32,12 @@ pub fn overlay_input_regions(surface_root: &ResolvedNode, scale: f32) -> Vec<Phy
     let mut regions = Vec::new();
     // A root's paint claims nothing, but its handler asks for the whole surface.
     if surface_root.takes_pointer() {
-        collect_input_regions(surface_root, 0.0, 0.0, scale, paint_claims, &mut regions);
+        collect_input_regions(surface_root, 0.0, 0.0, scale, node::IDENTITY_AFFINE, paint_claims, &mut regions);
         return regions;
     }
+    let root_matrix = surface_root.paint_matrix(surface_root.at(0.0, 0.0)).unwrap_or(node::IDENTITY_AFFINE);
     for child in surface_root.content_children() {
-        collect_input_regions(child, 0.0, 0.0, scale, paint_claims, &mut regions);
+        collect_input_regions(child, 0.0, 0.0, scale, root_matrix, paint_claims, &mut regions);
     }
     regions
 }
@@ -51,13 +52,9 @@ pub fn overlay_input_regions(surface_root: &ResolvedNode, scale: f32) -> Vec<Phy
 /// be deliberately invisible at `#00000000`, and border-only or image-backed glass carries no
 /// background alpha to read.
 ///
-/// Three things this does that [`overlay_input_regions`] does not, each because blur is about
-/// where a node is *painted* rather than where it can be pressed:
+/// Three differences from [`overlay_input_regions`], because blur follows painted content:
 ///
-/// 1. **Ancestor transforms compose.** `painted_bounds` reads one node's own transform and says so;
-///    a notification card slides in under `translate` while its own children are the glass, so a
-///    walk that missed the ancestor's shift would blur where the card is not. Exact for the
-///    translation every animation here uses; a rotated or scaled node contributes its bounding box.
+/// 1. **Leaving nodes count.** They still paint while their exit runs, but take no input.
 /// 2. **Ancestor clips intersect.** `layout::paint::build_node` clips every child to its parent's
 ///    box unless the parent is `clip = "none"`, so a card scrolled out of a `max_height` list is not
 ///    drawn and must not blur either.
@@ -91,13 +88,20 @@ fn collect_blur_regions(
         return;
     }
     let rect = node.at(origin_x, origin_y);
-    let matrix =
-        if node.transform.is_identity() { matrix } else { node::compose_affine(matrix, node.transform.matrix(rect)) };
+    let matrix = node.paint_matrix(rect).map_or(matrix, |own| node::compose_affine(matrix, own));
     // Untransformed, exactly as `layout::paint::build_node` accumulates it: that walk intersects
     // boxes before any transform and hands the whole group to the canvas under one matrix, so a
     // node's painted area is its ancestors' clip *and then* the composed transform. Intersecting
     // transformed boxes instead loses a child that its parent's translate carries back into view.
-    let (parent_clip, clip) = (clip, clip.intersect(rect));
+    let parent_clip = if let Some(moving) = node.movement.as_ref() {
+        let inverse = node::invert_affine(node.transform.matrix(rect)).unwrap_or(node::IDENTITY_AFFINE);
+        let dx = inverse[0] * moving.offset.0 + inverse[2] * moving.offset.1;
+        let dy = inverse[1] * moving.offset.0 + inverse[3] * moving.offset.1;
+        LogicalRect { x: clip.x - dx, y: clip.y - dy, ..clip }
+    } else {
+        clip
+    };
+    let clip = parent_clip.intersect(rect);
     let child_clip = if node.clips_children() { clip } else { parent_clip };
     if child_clip.is_empty() {
         return;
@@ -195,6 +199,7 @@ fn collect_input_regions(
     origin_x: f32,
     origin_y: f32,
     scale: f32,
+    matrix: node::Affine,
     paint_claims: bool,
     out: &mut Vec<PhysicalRect>,
 ) {
@@ -202,8 +207,9 @@ fn collect_input_regions(
         return;
     }
     let rect = node.at(origin_x, origin_y);
+    let matrix = node.paint_matrix(rect).map_or(matrix, |own| node::compose_affine(matrix, own));
     if takes_input_as_a_box(node, paint_claims) {
-        let bounds = painted_bounds(node, rect);
+        let bounds = node::transformed_bounds(matrix, rect);
         if !bounds.is_empty() {
             out.push(snap_to_physical(bounds, scale));
         }
@@ -212,19 +218,8 @@ fn collect_input_regions(
         }
     }
     for child in node.content_children() {
-        collect_input_regions(child, rect.x, rect.y, scale, paint_claims, out);
+        collect_input_regions(child, rect.x, rect.y, scale, matrix, paint_claims, out);
     }
-}
-
-/// Where a node is on screen: its box, or the bounds of that box under its own transform
-/// (ADR-0149), so a scaled tile takes input where it is painted.
-/// ponytail: ancestors' transforms are not composed in; a transformed node inside a transformed
-/// node reports its own box's bounds only. Upgrade path: carry the matrix down this walk.
-fn painted_bounds(node: &ResolvedNode, rect: LogicalRect) -> LogicalRect {
-    if node.transform.is_identity() {
-        return rect;
-    }
-    node::transformed_bounds(node.transform.matrix(rect), rect)
 }
 
 /// [`overlay_input_regions`]'s "solid" test. A `background` of `#00000000` counts: the IDL says it
@@ -254,6 +249,7 @@ mod tests {
     use mlua::Value;
 
     use super::*;
+    use crate::layout::node::MoveTween;
     use crate::layout::node::PropMap;
     use crate::layout::scene::NodeId;
 
@@ -273,6 +269,34 @@ mod tests {
         children: Vec<ResolvedNode>,
     ) -> ResolvedNode {
         ResolvedNode { id: NodeId::test(id), paint, ..ResolvedNode::test(kind, rect, children) }
+    }
+
+    #[test]
+    fn moves_claim_painted_input_and_blur_regions() {
+        for (parent_moves, rect, offset, moved) in [
+            (true, (5.0, 2.0, 10.0, 10.0), 20.0, PhysicalRect { x0: 35, y0: 12, x1: 45, y1: 22 }),
+            (false, (100.0, 0.0, 10.0, 10.0), -20.0, PhysicalRect { x0: 80, y0: 0, x1: 90, y1: 10 }),
+        ] {
+            let mut glass = region_node(1, "rect", rect, solid_paint(), Vec::new());
+            glass.behind_blur = true;
+            let children = if parent_moves {
+                vec![region_node(2, "column", (10.0, 10.0, 30.0, 20.0), None, vec![glass])]
+            } else {
+                vec![glass]
+            };
+            let mut root = region_node(3, "panel", (0.0, 0.0, 100.0, 50.0), None, children);
+            root.children[0].movement = Some(Box::new(MoveTween::test((offset, 0.0))));
+            assert_eq!(overlay_input_regions(&root, 1.0), [moved]);
+            assert_eq!(blur_regions(&root, 1.0), [moved]);
+        }
+
+        let mut glass = region_node(4, "rect", (110.0, 0.0, 40.0, 20.0), solid_paint(), Vec::new());
+        glass.behind_blur = true;
+        glass.transform.scale = (2.0, 2.0);
+        glass.transform.origin = (0.0, 0.0);
+        glass.movement = Some(Box::new(MoveTween::test((-40.0, 0.0))));
+        let root = region_node(5, "panel", (0.0, 0.0, 100.0, 40.0), None, vec![glass]);
+        assert_eq!(blur_regions(&root, 1.0), [PhysicalRect { x0: 70, y0: 0, x1: 90, y1: 40 }]);
     }
 
     /// ADR-0253. A shader's alpha is unknown on the CPU, so its box claims no input; a morph drawn
@@ -324,8 +348,7 @@ mod tests {
     }
 
     /// A notification card slides in under `translate` and its glass is the card itself, so the
-    /// blur has to travel with the paint. `painted_bounds` reads one node's own transform only
-    /// (its comment says so); this walk composes ancestors' too.
+    /// blur has to travel with the paint, including its ancestors' transforms.
     #[test]
     fn blur_regions_follow_an_ancestors_transform_and_an_ancestors_clip() {
         let mut card = region_node(1, "rect", (0.0, 0.0, 100.0, 40.0), solid_paint(), Vec::new());

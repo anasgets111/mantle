@@ -7465,3 +7465,15 @@ rather than committing it, so a press lands on the committed draft. Secure field
 text-input-v3 and keep end-only editing: an input method would see the draft. Ctrl+Z/Y fall back to
 the physical key only when the keysym is not a Latin letter, so QWERTZ Ctrl+Y redoes rather than
 undoes.
+
+## 0313. `animate.move` offsets paint, not layout
+
+A node with `animate.move` eases from its last painted position to its new solved rect as a paint
+offset folded into its paint matrix. Layout, `geometry` and pointer callbacks report the destination
+throughout, so siblings never shift twice and no Lua runs per frame; paint, hit testing, link and
+caret picking, input regions, blur and damage follow the offset. The offset is relative to the
+parent: a node whose ancestor also moves needs `move` on that ancestor too. A second layout change
+starts from the painted position, including after a failed or vetoed pass. Scrolling does not start
+a move, since the content moved with its parent; thawing a hidden subtree cancels one, since its old
+rect is stale; an exit freezes at the painted position. Opt-in per node rather than on every child:
+a move costs a frame clock until it settles, and matching relies on stable `id` or list `key`.

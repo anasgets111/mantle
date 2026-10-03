@@ -36,9 +36,12 @@ pub(crate) fn animatable_name(kind: &str, property: &str, field: &str) -> Result
 /// A name `kind` does not accept is refused, so a misspelling fails the pass instead of silently
 /// snapping; what the value is decides whether it can tween ([`Animatable::from_value`]), the way
 /// Qt registers interpolators by type rather than by property.
-pub fn parse_animate(kind: &str, properties: &PropMap) -> Result<BTreeMap<&'static str, AnimationSpec>, LayoutError> {
+pub(super) fn parse_animate(
+    kind: &str,
+    properties: &PropMap,
+) -> Result<(BTreeMap<&'static str, AnimationSpec>, Option<MoveSpec>), LayoutError> {
     let Some(table) = fields::common::animate.read(properties)? else {
-        return Ok(BTreeMap::new());
+        return Ok((BTreeMap::new(), None));
     };
     // Sorted in and sorted out: Lua seeds its own string hashes, so two broken entries -- or two
     // that fail to retarget below -- would otherwise name either one, run to run (ADR-0024).
@@ -53,6 +56,7 @@ pub fn parse_animate(kind: &str, properties: &PropMap) -> Result<BTreeMap<&'stat
     }
 
     let mut out = BTreeMap::new();
+    let mut movement = None;
     for (property, entry) in raw {
         // The one key that is not a property name (ADR-0150). Checked here rather than only when
         // the node departs, so a typo in the block is refused while the node is still in the tree.
@@ -60,10 +64,58 @@ pub fn parse_animate(kind: &str, properties: &PropMap) -> Result<BTreeMap<&'stat
             parse_exit(kind, &entry)?;
             continue;
         }
+        if property == "move" {
+            movement = Some(parse_move(&entry)?);
+            continue;
+        }
         let name = animatable_name(kind, &property, "animate")?;
         out.insert(name, parse_spec(name, &entry)?);
     }
-    Ok(out)
+    Ok((out, movement))
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct MoveSpec {
+    pub duration: Duration,
+    pub delay: Duration,
+    pub easing: Easing,
+}
+
+lua_shape! {
+    #[alias = "MoveAnimation"]
+    struct MoveInput {
+        duration: Duration,
+        delay: Option<Duration>,
+        easing: Option<Easing>,
+    }
+}
+
+impl LuaType for MoveSpec {
+    fn lua() -> String {
+        "MoveAnimation".into()
+    }
+
+    #[cfg(test)]
+    fn classes(out: &mut Vec<String>) {
+        let mut table = Vec::new();
+        MoveInput::classes(&mut table);
+        out.push(format!("{}|{}", Duration::lua(), table.concat()));
+    }
+}
+
+fn parse_move(entry: &Value) -> Result<MoveSpec, LayoutError> {
+    let Value::Table(table) = entry else {
+        let duration = parse_millis("animate.move", "duration", entry, 1)?.ok_or_else(|| {
+            invalid("animate.move", format!("expected a duration in ms, got {}", preview_for_error(entry)))
+        })?;
+        return Ok(MoveSpec { duration, delay: Duration::ZERO, easing: Easing::default() });
+    };
+    let MoveInput { duration, delay, easing } = MoveInput::read("animate.move", table)?;
+    Ok(MoveSpec {
+        duration: required_duration("animate.move", Some(duration))?,
+        delay: delay.unwrap_or_default(),
+        easing: easing.unwrap_or_default(),
+    })
 }
 
 /// `animate`: a table of property names to animations, which [`parse_animate`] reads against the

@@ -598,15 +598,19 @@ mod tests {
         let after = DisplayList { commands: vec![cmd(0.0), cmd(140.0), cmd(500.0)] };
         assert_eq!(after.damage_since(&before, true), [PhysicalRect { x0: 98, y0: 8, x1: 162, y1: 32 }]);
         assert!(before.damage_since(&before, true).is_empty());
-        let transformed = |scale: f32| DisplayList {
-            commands: vec![DrawCmd {
-                draw: Draw::Transformed { matrix: [scale, 0.0, 0.0, scale, 0.0, 0.0], commands: vec![cmd(100.0)] },
-                ..cmd(100.0)
-            }],
+        let transformed = |matrix| DisplayList {
+            commands: vec![DrawCmd { draw: Draw::Transformed { matrix, commands: vec![cmd(100.0)] }, ..cmd(100.0) }],
         };
         assert_eq!(
-            transformed(2.0).damage_since(&transformed(1.0), true),
+            transformed([2.0, 0.0, 0.0, 2.0, 0.0, 0.0])
+                .damage_since(&transformed([1.0, 0.0, 0.0, 1.0, 0.0, 0.0]), true),
             [PhysicalRect { x0: 98, y0: 8, x1: 244, y1: 64 }]
+        );
+        assert_eq!(
+            transformed([1.0, 0.0, 0.0, 1.0, 0.0, 0.0])
+                .damage_since(&transformed([1.0, 0.0, 0.0, 1.0, 20.0, 0.0]), true),
+            [PhysicalRect { x0: 98, y0: 8, x1: 142, y1: 32 }],
+            "a move repaints both painted positions"
         );
     }
 

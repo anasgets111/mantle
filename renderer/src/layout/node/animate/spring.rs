@@ -444,7 +444,7 @@ mod tests {
 
         let mut properties = rect_props(&lua, source);
         let now = started + Duration::from_millis(30);
-        let tweens = retarget("rect", Some((&running[..], &shown)), &mut properties, now, &lua).unwrap();
+        let tweens = retarget("rect", Some((&running[..], &shown)), &mut properties, now, &lua).unwrap().0;
         let Motion::Spring(kept) = tweens[0].spec.motion else { panic!("still a spring") };
         assert_eq!(kept.velocity, 40.0, "the handed velocity survives an unrelated resolve");
         assert_eq!(tweens[0].started, started, "and the run is the same run, not a fresh one");
@@ -456,7 +456,7 @@ mod tests {
             ..running[0].clone()
         }];
         let mut properties = rect_props(&lua, source);
-        let tweens = retarget("rect", Some((&waiting[..], &shown)), &mut properties, now, &lua).unwrap();
+        let tweens = retarget("rect", Some((&waiting[..], &shown)), &mut properties, now, &lua).unwrap().0;
         let Motion::Spring(kept) = tweens[0].spec.motion else { panic!("still a spring") };
         assert_eq!(kept.velocity, 40.0, "the handed rate carries");
         assert_eq!(tweens[0].spec.delay, Duration::ZERO, "and the edited delay lands on it");
@@ -466,7 +466,7 @@ mod tests {
         // target never moved, so `started` and `from` are the running one's.
         let stiffer = "return { width = 300, animate = { width = { spring = { stiffness = 400, damping = 10 } } } }";
         let mut properties = rect_props(&lua, stiffer);
-        let tweens = retarget("rect", Some((&running[..], &shown)), &mut properties, now, &lua).unwrap();
+        let tweens = retarget("rect", Some((&running[..], &shown)), &mut properties, now, &lua).unwrap().0;
         let Motion::Spring(fresh) = tweens[0].spec.motion else { panic!("still a spring") };
         assert_eq!((fresh.constants.stiffness, fresh.velocity), (400.0, 0.0), "an edited constant is a new spring");
         assert_eq!(tweens[0].started, started, "carried by the run already going");

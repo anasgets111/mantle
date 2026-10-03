@@ -94,7 +94,25 @@ fn build_node(
     // pill's corner is outside its fill yet still takes a click (four pixels on a 34px control),
     // and a scoop's cut-out still takes the click and counts as input.
     // Upgrade path: hit testing should share this walk instead of a second copy of the rule.
-    let (parent_clip, clip) = (clip, clip.intersect(snap_to_physical(rect, scale)));
+    // Clip and effect target stay in the moving node's coordinates; its group matrix puts them back.
+    let (parent_clip, surface) = if let Some(moving) = node.movement.as_ref() {
+        let inverse = node::invert_affine(node.transform.matrix(rect)).unwrap_or(node::IDENTITY_AFFINE);
+        let (dx, dy) = (
+            -(inverse[0] * moving.offset.0 + inverse[2] * moving.offset.1),
+            -(inverse[1] * moving.offset.0 + inverse[3] * moving.offset.1),
+        );
+        let clip = PhysicalRect {
+            x0: clip.x0.saturating_add((dx * scale).floor() as i32),
+            y0: clip.y0.saturating_add((dy * scale).floor() as i32),
+            x1: clip.x1.saturating_add((dx * scale).ceil() as i32),
+            y1: clip.y1.saturating_add((dy * scale).ceil() as i32),
+        };
+        let surface = LogicalRect { x: surface.x + dx, y: surface.y + dy, ..surface };
+        (clip, surface)
+    } else {
+        (clip, surface)
+    };
+    let clip = parent_clip.intersect(snap_to_physical(rect, scale));
     let child_clip = if node.clips_children() { clip } else { parent_clip };
     let effect = node.effect;
     let read = snap_to_physical(grow(rect, reach(effect.backdrop)), scale);
@@ -263,8 +281,7 @@ fn build_node(
         let draw = Draw::Layer { effect: layered, silhouette: false, commands };
         out.push(cmd(parent_clip.intersect(bounds).intersect(target), draw));
     }
-    if !node.transform.is_identity() {
-        let matrix = node.transform.matrix(rect);
+    if let Some(matrix) = node.paint_matrix(rect) {
         let commands: Vec<DrawCmd> = out.drain(start..).collect();
         out.push(cmd(child_clip, Draw::Transformed { matrix, commands }));
     }
@@ -623,10 +640,44 @@ mod tests {
 
     use mlua::Lua;
 
-    use crate::layout::node::TextAlign;
+    use crate::layout::node::{MoveTween, TextAlign};
     use crate::layout::scene::LogicalSize;
 
     // display list (`build`), the seam that needs no EGL context
+
+    #[test]
+    fn a_move_paints_into_a_parent_from_outside_the_final_layout_clip() {
+        for (child, offset, blurred) in [
+            (r##"rect { width = 10, height = 10, margin = { left = 100 }, background = "#ffffff" }"##, -20.0, false),
+            (
+                r##"rect { width = 10, height = 10, margin = { left = 150 }, background = "#ffffff", content_blur = 4 }"##,
+                -150.0,
+                true,
+            ),
+            (
+                r##"rect { width = 10, height = 10, margin = { left = 150 },
+                children = { rect { width = 10, height = 10, background = "#ffffff", content_blur = 4 } } }"##,
+                -150.0,
+                true,
+            ),
+        ] {
+            let src = format!("return panel {{ id = 'bar', width = 100, height = 20, child = {child} }}");
+            let mut tree = resolved_surface(&Lua::new(), &src, LogicalSize { width: 100.0, height: 20.0 });
+            let before = build(&tree, 1.0, None);
+            tree.children[0].movement = Some(Box::new(MoveTween::test((offset, 0.0))));
+            let list = build(&tree, 1.0, None);
+            let moved =
+                list.commands.iter().find(|cmd| matches!(cmd.draw, Draw::Transformed { .. })).expect("moving subtree");
+            let Draw::Transformed { commands, .. } = &moved.draw else { unreachable!() };
+            if blurred {
+                let layer = commands.iter().find(|cmd| matches!(cmd.draw, Draw::Layer { .. })).expect("blurred layer");
+                assert!(!layer.clip.is_empty(), "blurred content remains in the moved surface: {src}");
+            } else {
+                assert!(commands.iter().any(|cmd| matches!(cmd.draw, Draw::Box { .. })), "the box paints at x=80..90");
+                assert!(list.damage_since(&before, true).iter().any(|rect| rect.x0 <= 80 && rect.x1 >= 90));
+            }
+        }
+    }
 
     fn text_align_of(list: &DisplayList) -> TextAlign {
         list.commands

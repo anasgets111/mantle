@@ -187,9 +187,8 @@ pub fn cursor_under(path: &[&ResolvedNode], point: LogicalPoint, shaping: &Shapi
             let over_link = || {
                 node.kind == "text"
                     && fields::text::on_link.read(&node.properties).is_ok_and(|on_link| on_link.is_some())
-                    && absolute_rect(&path[..=depth]).is_some_and(|rect| {
-                        link_under(node, LogicalPoint { x: point.x - rect.x, y: point.y - rect.y }, shaping).is_some()
-                    })
+                    && node_local(&path[..=depth], point)
+                        .is_some_and(|local| link_under(node, local, shaping).is_some())
             };
             match node.kind {
                 "textfield" => Some(CursorIcon::Text),
@@ -238,12 +237,20 @@ pub fn path_to_node(root: &ResolvedNode, id: crate::layout::scene::NodeId) -> Op
 pub(crate) fn path_transform(path: &[&ResolvedNode]) -> Affine {
     let mut matrix = IDENTITY_AFFINE;
     for (depth, node) in path.iter().enumerate() {
-        if !node.transform.is_identity() {
-            let rect = absolute_rect(&path[..=depth]).expect("the prefix includes this node");
-            matrix = compose_affine(matrix, node.transform.matrix(rect));
+        let rect = absolute_rect(&path[..=depth]).expect("the prefix includes this node");
+        if let Some(own) = node.paint_matrix(rect) {
+            matrix = compose_affine(matrix, own);
         }
     }
     matrix
+}
+
+/// `point` in the untransformed space of `path`'s last node, relative to its top-left corner, or
+/// `None` when the path is empty or a degenerate matrix paints nothing.
+pub fn node_local(path: &[&ResolvedNode], point: LogicalPoint) -> Option<LogicalPoint> {
+    let rect = absolute_rect(path)?;
+    let (x, y) = apply_affine(invert_affine(path_transform(path))?, point.x, point.y);
+    Some(LogicalPoint { x: x - rect.x, y: y - rect.y })
 }
 
 fn descend<'a>(
@@ -261,14 +268,14 @@ fn descend<'a>(
     // A transformed node is hit where it is painted: map the pointer back into its untransformed
     // space (ADR-0149), and hand that point down, since children paint under the same matrix.
     // A degenerate matrix (zero scale) paints nothing and takes nothing.
-    let point = if node.transform.is_identity() {
-        point
-    } else {
-        let Some(inverse) = invert_affine(node.transform.matrix(rect)) else {
+    let point = if let Some(matrix) = node.paint_matrix(rect) {
+        let Some(inverse) = invert_affine(matrix) else {
             return false;
         };
         let (px, py) = apply_affine(inverse, point.x, point.y);
         LogicalPoint { x: px, y: py }
+    } else {
+        point
     };
     let inside = rect.contains(point);
     if !inside && node.clips_children() {
@@ -285,7 +292,7 @@ fn descend<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::layout::node::{StyleRun, TextAlign};
+    use crate::layout::node::{MoveTween, StyleRun, TextAlign};
     use crate::text::shaping::ShapeRequest;
     use mlua::Value;
 
@@ -322,6 +329,19 @@ mod tests {
         flat.transform.scale = (0.0, 1.0);
         let tree = ResolvedNode::test("panel", (0.0, 0.0, 400.0, 400.0), vec![flat]);
         assert_eq!(hit_path(&tree, LogicalPoint { x: 110.0, y: 110.0 }).len(), 1, "a zero scale takes nothing");
+    }
+
+    #[test]
+    fn a_moving_parent_takes_the_pointer_with_its_child() {
+        let mut parent = ResolvedNode::test(
+            "column",
+            (10.0, 10.0, 30.0, 20.0),
+            vec![ResolvedNode::test("rect", (5.0, 2.0, 10.0, 10.0), vec![])],
+        );
+        parent.movement = Some(Box::new(MoveTween::test((20.0, 0.0))));
+        let root = ResolvedNode::test("panel", (0.0, 0.0, 100.0, 50.0), vec![parent]);
+        assert_eq!(hit_path(&root, LogicalPoint { x: 36.0, y: 15.0 }).len(), 3);
+        assert_eq!(hit_path(&root, LogicalPoint { x: 16.0, y: 15.0 }).len(), 1);
     }
 
     /// ADR-0259: the sibling painted on top takes the pointer where the two overlap.
@@ -518,6 +538,14 @@ mod tests {
         let untransformed = LogicalPoint { x: 10.0 + width_of(&shaping, "hel") + 1.0, y: 5.0 };
         let (x, y) = apply_affine(field.transform.matrix(field.rect), untransformed.x, untransformed.y);
         assert_eq!(caret_at(&[&field], LogicalPoint { x, y }, text, 0, &shaping), Some(3));
+
+        // A moving field answers where it is painted, as a moving link does.
+        field.transform = Default::default();
+        field.movement = Some(Box::new(MoveTween::test((20.0, 0.0))));
+        let (x, y) = apply_affine(path_transform(&[&field]), untransformed.x, untransformed.y);
+        assert_ne!(x, untransformed.x, "the move has an offset to undo");
+        assert_eq!(caret_at(&[&field], LogicalPoint { x, y }, text, 0, &shaping), Some(3));
+        assert_eq!(node_local(&[&field], LogicalPoint { x, y }).map(|p| p.x), Some(untransformed.x - 10.0));
 
         // A masked field never answers: its caret would say where the secret is (ADR-0064).
         let Some(PaintStyle::TextField { target, .. }) = field.paint.as_mut() else { unreachable!() };

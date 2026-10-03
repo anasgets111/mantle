@@ -190,7 +190,7 @@ one lets the event through to the node around it ([pointer](../guide/input.md#po
 | `shadow_offset` | `Axes\|Bound`, `[-8192, 8192]` | `{ x = 0, y = 0 }` | Shadow offset in px per axis. Follows the node's transform |
 | `shadow_spread` | `number\|Bound`, `[-8192, 8192]` | `0` | Px the shadow grows per side; negative shrinks it. On non-box content it scales the shadow about the box centre |
 | `content_blur` | `number\|Bound`, `[0, 8192]` | `0` | Gaussian sigma in px over this node's painted subtree, CSS `filter: blur()` ([blurs](../guide/paint.md#blurs)). Clipped like a shadow |
-| `animate` | `Animations\|Bound` | None | Per-property tweens and an `exit` block ([animation](../guide/animation.md)). Only a node already on screen animates, unless the entry has `from` |
+| `animate` | `Animations\|Bound` | None | Per-property tweens, parent-relative layout `move` and an `exit` block ([animation](../guide/animation.md)). An ancestor that shifts needs its own `move`. Only a node already on screen animates, unless a property entry has `from` |
 | `id` | `string` | None | Unique among siblings; matches this node across passes ([identity](#identity-and-reconciliation)). Never a signal |
 | `accessible_name` | `string\|Bound` | `""` | Spoken name for a control. A node with `on_click` or `submit` becomes keyboard focusable when this is set. Give each textfield a name for screen readers |
 | `focus_ring` | `boolean\|Bound` | `true` | `false` keeps the engine's [focus outline](../guide/input.md#keyboard-controls-and-accessibility) off this node |

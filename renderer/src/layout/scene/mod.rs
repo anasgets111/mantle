@@ -21,7 +21,9 @@ use std::time::{Duration, Instant};
 use mlua::{Lua, Value};
 
 use crate::layout::instance::SurfaceInstance;
-use crate::layout::node::{self, Align, Dissolve, EdgeInsets, LayoutError, PaintStyle, PropMap, SizeMode, Tween};
+use crate::layout::node::{
+    self, Align, Dissolve, EdgeInsets, LayoutError, MoveSpec, MoveTween, PaintStyle, PropMap, SizeMode, Tween,
+};
 use crate::layout::paint::DrawnImage;
 use crate::layout::secure_submit::lock_stays_authenticatable;
 use crate::lua::nodes::VirtualNode;
@@ -114,6 +116,8 @@ impl ResolvedNode {
             dissolve: None,
             children,
             tweens: Vec::new(),
+            move_spec: None,
+            movement: None,
             leaving: false,
             text_memo: None,
             list_memo: None,
@@ -267,6 +271,10 @@ pub struct ResolvedNode {
     /// displayed this frame, each tween the target it is heading for; `Scene::tick` advances them
     /// between passes and `node::retarget` reconciles them against the next pass's values.
     pub tweens: Vec<Tween>,
+    /// Parsed `animate.move`, kept when a resolve memo skips the node.
+    pub(crate) move_spec: Option<Box<MoveSpec>>,
+    /// Paint displacement from the last matched position to this pass's laid-out rect.
+    pub(crate) movement: Option<Box<MoveTween>>,
     /// The tree no longer holds this node; it stays, at the rect it last had, while its
     /// `animate.exit` tweens run (ADR-0150). Out of flow (siblings have already closed over its
     /// slot) and out of reach (no hit, no input region, no geometry), painted after its live
@@ -285,6 +293,26 @@ pub struct ResolvedNode {
 }
 
 impl ResolvedNode {
+    pub(crate) fn paint_matrix(&self, rect: LogicalRect) -> Option<node::Affine> {
+        if self.transform.is_identity() && self.movement.is_none() {
+            return None;
+        }
+        let mut matrix = self.transform.matrix(rect);
+        if let Some(movement) = self.movement.as_ref() {
+            matrix[4] += movement.offset.0;
+            matrix[5] += movement.offset.1;
+        }
+        Some(matrix)
+    }
+
+    fn freeze_move_for_exit(&mut self) {
+        if let Some(movement) = self.movement.take() {
+            self.rect.x += movement.offset.0;
+            self.rect.y += movement.offset.1;
+        }
+        self.children.iter_mut().for_each(Self::freeze_move_for_exit);
+    }
+
     /// Visible and laid out this pass: what a flow measures and a reader may address. A leaving
     /// node is visible and neither.
     pub(super) fn in_flow(&self) -> bool {
@@ -336,6 +364,7 @@ impl ResolvedNode {
     pub fn animating(&self) -> bool {
         self.visible
             && (self.tweens.iter().any(|tween| !tween.resting)
+                || self.movement.is_some()
                 || self.dissolve.is_some()
                 || self.children.iter().any(ResolvedNode::animating))
     }
@@ -651,9 +680,9 @@ impl Scene {
         // A failed walk drops the tree it was writing; the rollback's copy of `existing` names nodes
         // of it, so the next pass starts a new one.
         let mut tree = Self::take_solver_tree(&mut self.solver_trees, &key, existing.iter_mut());
-        let prepared = prepare(self, &mut tree, existing, fresh.kind, resolved, None, false, lua, now, 0)?;
+        let prepared = prepare(self, &mut tree, existing, fresh.kind, resolved, (None, 0.0), false, lua, now, 0)?;
         close(&mut at, &mut self.resolve_split.resolve);
-        let solved = solve_instance(&mut tree, prepared, available, shaping)?;
+        let solved = solve_instance(&mut tree, prepared, available, shaping, now)?;
         publish_geometry(&solved, 0.0, 0.0, lua, false).map_err(|e| node::invalid("geometry", e.to_string()))?;
         self.solver_trees.insert(key.clone(), tree);
         self.surfaces.insert(key, solved);
@@ -788,6 +817,9 @@ struct PreparedNode {
     /// not.
     frozen: Vec<ResolvedNode>,
     tweens: Vec<Tween>,
+    move_spec: Option<Box<MoveSpec>>,
+    movement: Option<Box<MoveTween>>,
+    prior_position: Option<(f32, f32)>,
     /// Children on their way out (ADR-0150), already advanced this pass. Not in the solver.
     leaving: Vec<ResolvedNode>,
     /// Carried across the pass, or replaced by the build that ran; see [`ResolvedNode::list_memo`].

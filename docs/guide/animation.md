@@ -75,8 +75,8 @@ values: a signal nested in an entry does not resolve.
 | New node, or a property the node did not set last pass | Starts at the entry's `from`, else snaps. `from` needs the node to set the property itself |
 | Target changes mid-flight | An eased tween returning to its prior endpoint shortens the run according to the progress already covered. Other eased targets and keyframe entries start over from the value on screen. A spring keeps its velocity ([spring](#spring)) |
 | Property removed from `animate` | Its tween stops and the property snaps to the resolved value |
-| Hidden subtree (`visible = false`) | Tweens freeze and request no frames; they settle when it shows again |
-| `z`, `animate`, or a name the node kind does not accept | Refused: the pass fails with an error naming the entry |
+| Hidden subtree (`visible = false`) | Tweens freeze and request no frames; they settle when it shows again. Showing the subtree cancels its moves |
+| `z`, `animate`, or a name the node kind does not accept | Refused: the pass fails with an error naming the entry. `move` and `exit` are special entries |
 
 ### What can animate
 
@@ -344,6 +344,38 @@ return panel {
 }
 ```
 
+## Move
+
+`animate.move` eases a matched node when a scene pass changes its laid-out position. It takes a
+duration in milliseconds, or `{ duration = 180, easing = "out_cubic", delay = 0 }`. The easing
+and delay have the same meanings as a property tween. `from`, `keyframes`, `loops` and `spring`
+are refused. A new node has no previous position, so it appears at its new rect.
+
+```lua
+local card = rect {
+    id = "notice-42",
+    width = 280,
+    height = 60,
+    animate = { move = { duration = 180, easing = "out_cubic" } },
+}
+return card
+```
+
+Use a stable [`id`](../nodes/index.md#identity-and-reconciliation) on a child that can change
+position in its parent's `children`, or a [`list` key](../nodes/list.md) for each item. Without
+one, id-less siblings match by position; removing the first item can pair the next item with its
+old rect. A removed child's `animate.exit` paints from its current position while live siblings
+move into the gap. It still takes no flow space or input.
+
+A move tracks the node's position relative to its parent. If an ancestor shifts, give that
+ancestor `animate.move` too.
+
+The solver, `geometry` and pointer callbacks report the destination rect throughout the move.
+Paint, hit-testing, text links, carets, input regions and background blur follow the moving
+pixels. A second layout change starts from the last painted position. Scrolling and paint-only
+property tweens do not start a move; an already running move keeps advancing on compositor frames.
+Parent and surface clips can cut moving pixels; leave room or use `clip = "none"`.
+
 ## Exit
 
 `animate.exit` animates a child after its parent stops returning it: a notification removed from a
@@ -604,6 +636,7 @@ return panel {
 | A `pulse`-driven run is cut short | Removing the entry snaps the property. Make the window at least `delay` plus every segment's `duration` times `loops` |
 | A second click inside the `pulse` window does not replay the run | The click only extends the window; the entry never leaves, so the run does not restart |
 | Sliding with `margin` stutters on a large surface | Tween `translate`: it skips layout |
+| Removing a keyed item makes later items snap into the gap | Put `animate.move` on each item |
 | A looping motion driven by a `timer` costs CPU on every tick | Use `keyframes` with `loops = "infinite"` ([Lua cost](#lua-cost)) |
 | `width` will not overshoot below `0` with `"out_back"` | The property's range clamps every frame. Use `margin` or `translate` for motion that must go negative |
 

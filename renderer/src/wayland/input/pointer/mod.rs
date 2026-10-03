@@ -115,7 +115,7 @@ fn clickable(
         }
         let on_link = node::fields::text::on_link.read(&node.properties).ok().flatten()?;
         let rect = layout::hit::absolute_rect(&path[..=depth])?;
-        let local = layout::hit::LogicalPoint { x: point.x - rect.x, y: point.y - rect.y };
+        let local = layout::hit::node_local(&path[..=depth], point)?;
         let href = layout::hit::link_under(node, local, shaping)?;
         Some(Clickable { rect, handler: Some(on_link), link: Some(href), submit: false })
     });
@@ -671,6 +671,7 @@ impl App {
 mod tests {
     use super::super::tests::hit_node;
     use super::*;
+    use crate::layout::node::MoveTween;
     use crate::wayland::input::keyboard::tests::{draft, secure_submit_table, textfield};
     use mlua::Table;
 
@@ -892,6 +893,25 @@ mod tests {
         assert!(release_completes_click(Some(&armed), "bar@eDP-1", Some((rect, Some("https://a/"))), BTN_LEFT));
         assert!(!release_completes_click(Some(&armed), "bar@eDP-1", Some((rect, Some("https://b/"))), BTN_LEFT));
         assert!(!release_completes_click(Some(&armed), "bar@eDP-1", Some((rect, None)), BTN_LEFT));
+
+        let lua = Lua::new();
+        let shaping = ShapingHandle::spawn();
+        let mut text = hit_node(&lua, "text", (40.0, 4.0, 100.0, 20.0), false);
+        let properties = std::rc::Rc::make_mut(&mut text.properties);
+        properties.insert("content", lua.load("return {{ text = 'go', href = 'https://a/' }}").eval().unwrap());
+        properties.insert("on_link", Value::Function(lua.create_function(|_, _: String| Ok(())).unwrap()));
+        text.paint = node::paint_style("text", &text.properties).unwrap();
+        text.movement = Some(Box::new(MoveTween::test((-30.0, 0.0))));
+        let mut root = hit_node(&lua, "panel", (0.0, 0.0, 160.0, 32.0), false);
+        root.children.push(text);
+        let painted = layout::hit::LogicalPoint { x: 15.0, y: 10.0 };
+        let path = layout::hit::hit_path(&root, painted);
+        assert_eq!(clickable(&path, painted, &shaping).and_then(|hit| hit.link), Some("https://a/".to_string()));
+        assert_eq!(layout::hit::cursor_under(&path, painted, &shaping), cursor_icon::CursorIcon::Pointer);
+        let old = layout::hit::LogicalPoint { x: 45.0, y: 10.0 };
+        let path = layout::hit::hit_path(&root, old);
+        assert!(clickable(&path, old, &shaping).is_none());
+        assert_eq!(layout::hit::cursor_under(&path, old, &shaping), cursor_icon::CursorIcon::Default);
     }
 
     #[test]

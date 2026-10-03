@@ -254,9 +254,9 @@ props! {
         ///
         /// Book: Gaussian sigma in px over this node's painted subtree, CSS `filter: blur()` ([blurs](../guide/paint.md#blurs)). Clipped like a shadow
         content_blur: Bound<Num> = range(0.0, 8192.0).absent(Number(0.0));
-        /// Tween named properties to each newly resolved value without running Lua (ADR-0145). The `exit` key is an `Exit` block. Only a node already on screen animates, unless the entry has `from`.
+        /// Tween named properties to each newly resolved value without running Lua (ADR-0145). `move` eases a matched node to its new parent-relative layout position; an ancestor that shifts needs its own `move`. `exit` runs after removal. Only a node already on screen animates, unless an entry has `from`.
         ///
-        /// Book: Per-property tweens and an `exit` block ([animation](../guide/animation.md)). Only a node already on screen animates, unless the entry has `from`
+        /// Book: Per-property tweens, parent-relative layout `move` and an `exit` block ([animation](../guide/animation.md)). An ancestor that shifts needs its own `move`. Only a node already on screen animates, unless a property entry has `from`
         animate: Bound<Animations>;
         /// Unique among siblings; matches this node across passes. Siblings without one match by position (ADR-0045).
         ///

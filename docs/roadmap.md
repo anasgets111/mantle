@@ -26,7 +26,6 @@ Wanted, but each needs a consumer or a decision first.
 | Service depth | Audio has no per-channel levels or peak metering; UPower reads only `DisplayDevice`; `network` tracks only the first Wi-Fi device; Bluetooth pairing refuses PIN and passkey entry. Extend for concrete controls | — |
 | External IPC | `set`/`toggle` answer only applied or refused; `call` returns only what the action returns. No generic state read or subscription | 0197 |
 | Process control | Start, stream and signal exist. No child stdin, cwd or env | 0175, 0188 |
-| Move transitions | A sibling closing a gap snaps. Needs the solver's old and new rects per sibling | — |
 | Text field editing | The secure field edits only at its end and has no IME; the caret has no stop inside a ligature | 0236, 0312 |
 | Animated WebP and APNG | Only GIF animates; the others draw their first frame. `AnimationDecoder` covers both | 0233 |
 | Localization | No translation API; desktop entry `Name`, `GenericName` and `Keywords` are read unlocalized | 0112 |

@@ -20,6 +20,7 @@ use super::{
 use crate::lua::luacats::spelled;
 
 mod easing;
+mod move_tween;
 mod parse;
 mod sequence;
 #[cfg(test)]
@@ -27,11 +28,14 @@ pub(crate) use sequence::KeyframeInput;
 mod spring;
 mod transition;
 pub(crate) use easing::Easing;
+pub(crate) use move_tween::MoveTween;
 pub(crate) use parse::Animations;
 pub(crate) use parse::ExitBlock;
+pub use parse::MoveSpec;
 #[cfg(test)]
 pub(crate) use parse::animatable_name;
-pub use parse::parse_animate;
+#[cfg(test)]
+use parse::parse_animate;
 use parse::parse_exit;
 
 /// The named easings, the `EasingName` alias's members.
@@ -354,8 +358,8 @@ pub fn retarget(
     properties: &mut PropMap,
     now: Instant,
     lua: &Lua,
-) -> Result<Vec<Tween>, LayoutError> {
-    let specs = parse_animate(kind, properties)?;
+) -> Result<(Vec<Tween>, Option<MoveSpec>), LayoutError> {
+    let (specs, movement) = parse::parse_animate(kind, properties)?;
     let (running, shown) = retained.map_or((&[][..], None), |(running, shown)| (running, Some(shown)));
     let mut tweens = Vec::with_capacity(specs.len());
     for (property, spec) in specs {
@@ -467,7 +471,7 @@ pub fn retarget(
         properties.insert(property, tween.at(now).to_value(lua).map_err(|e| invalid("animate", e.to_string()))?);
         tweens.push(tween);
     }
-    Ok(tweens)
+    Ok((tweens, movement))
 }
 
 /// The properties a tween can move without asking the solver anything: what they change is what a
@@ -548,11 +552,31 @@ mod tests {
     /// The spec `src` declares for `width`, and the message refusing `src`: between them, what
     /// every parser test below asks.
     pub(super) fn spec(lua: &Lua, src: &str) -> AnimationSpec {
-        parse_animate("rect", &rect_props(lua, src)).unwrap().remove("width").unwrap()
+        parse_animate("rect", &rect_props(lua, src)).unwrap().0.remove("width").unwrap()
     }
 
     pub(super) fn refused(lua: &Lua, src: &str) -> String {
         parse_animate("rect", &rect_props(lua, src)).unwrap_err().to_string()
+    }
+
+    #[test]
+    fn move_accepts_eased_timing_and_refuses_other_motion_forms() {
+        let lua = Lua::new();
+        let move_spec = |src: &str| parse::parse_animate("rect", &rect_props(&lua, src)).unwrap().1.unwrap();
+        assert_eq!(move_spec("return { animate = { move = 120 } }").duration, Duration::from_millis(120));
+        let timed = move_spec("return { animate = { move = { duration = 200, delay = 30, easing = 'linear' } } }");
+        assert_eq!(
+            (timed.duration, timed.delay, timed.easing),
+            (Duration::from_millis(200), Duration::from_millis(30), Easing::Linear)
+        );
+        for field in ["from = { x = 10 }", "keyframes = { 0, 1 }", "spring = {}", "loops = 2", "unknown = 1"] {
+            let src = format!("return {{ animate = {{ move = {{ duration = 100, {field} }} }} }}");
+            assert!(parse::parse_animate("rect", &rect_props(&lua, &src)).is_err(), "{field}");
+        }
+        for entry in ["0", "-1", "{}"] {
+            let src = format!("return {{ animate = {{ move = {entry} }} }}");
+            assert!(parse::parse_animate("rect", &rect_props(&lua, &src)).is_err(), "{entry}");
+        }
     }
 
     #[test]
@@ -594,7 +618,7 @@ mod tests {
     fn an_animation_from_scale_keeps_the_missing_axis_default() {
         let lua = Lua::new();
         let props = rect_props(&lua, "return { animate = { scale = { duration = 200, from = { x = 2 } } } }");
-        let spec = parse_animate("rect", &props).unwrap().remove("scale").unwrap();
+        let spec = parse_animate("rect", &props).unwrap().0.remove("scale").unwrap();
         assert_eq!(spec.from, Some(Animatable::Fields { keys: Axes::KEYS, values: [2.0, 1.0, 1.0, 1.0] }));
     }
 
@@ -628,7 +652,13 @@ mod tests {
     fn a_four_number_easing_is_a_cubic_bezier() {
         let lua = Lua::new();
         let parsed = |src: &str| {
-            parse_animate("rect", &rect_props(&lua, src)).unwrap().remove("width").expect("width has a spec").eased().1
+            parse_animate("rect", &rect_props(&lua, src))
+                .unwrap()
+                .0
+                .remove("width")
+                .expect("width has a spec")
+                .eased()
+                .1
         };
         let linear = parsed("return { animate = { width = { duration = 1, easing = { 0, 0, 1, 1 } } } }");
         assert_eq!(linear, Easing::Bezier { x1: 0.0, y1: 0.0, x2: 1.0, y2: 1.0 });
@@ -653,6 +683,7 @@ mod tests {
             &rect_props(&lua, "return { animate = { width = { duration = 1, easing = { steps = 4 } } } }"),
         )
         .unwrap()
+        .0
         .remove("width")
         .expect("width has a spec")
         .eased()
@@ -685,7 +716,7 @@ mod tests {
     #[test]
     fn a_bare_number_is_a_duration_with_the_default_easing() {
         let lua = Lua::new();
-        let specs = parse_animate("rect", &rect_props(&lua, "return { animate = { width = 200 } }")).unwrap();
+        let specs = parse_animate("rect", &rect_props(&lua, "return { animate = { width = 200 } }")).unwrap().0;
         assert_eq!(
             specs["width"],
             AnimationSpec {
@@ -706,7 +737,8 @@ mod tests {
                 r##"return { animate = { background = { duration = 150, easing = "out_cubic", from = "#000000" } } }"##,
             ),
         )
-        .unwrap();
+        .unwrap()
+        .0;
         assert_eq!(specs["background"].eased().1, Easing::OutCubic);
         assert_eq!(specs["background"].from, Some(Animatable::Color(Rgba { r: 0.0, g: 0.0, b: 0.0, a: 1.0 })));
     }
@@ -974,6 +1006,7 @@ mod tests {
             ),
         )
         .unwrap()
+        .0
         .remove("width")
         .unwrap();
         let started = Instant::now();
@@ -1094,7 +1127,7 @@ mod tests {
             &lua,
             "return { width = 100, animate = { width = { duration = 300, easing = \"linear\", from = 0 } } }",
         );
-        let forward = retarget("rect", None, &mut forward_props, start, &lua).unwrap();
+        let forward = retarget("rect", None, &mut forward_props, start, &lua).unwrap().0;
         let at = |tween: &Tween, now| match tween.at(now) {
             Animatable::Number(value) => value,
             other => panic!("expected a number, got {other:?}"),
@@ -1105,7 +1138,7 @@ mod tests {
         let shown = PropMap::from_iter([("width", forward[0].at(turn).to_value(&lua).unwrap())]);
         let mut back_props =
             rect_props(&lua, "return { width = 0, animate = { width = { duration = 300, easing = \"linear\" } } }");
-        let back = retarget("rect", Some((&forward, &shown)), &mut back_props, turn, &lua).unwrap();
+        let back = retarget("rect", Some((&forward, &shown)), &mut back_props, turn, &lua).unwrap().0;
         assert_eq!(at(&back[0], turn + Duration::from_millis(135)), 45.0);
         assert!(back[0].done(turn + Duration::from_millis(270)));
 
@@ -1113,7 +1146,7 @@ mod tests {
         let shown = PropMap::from_iter([("width", back[0].at(turn_again).to_value(&lua).unwrap())]);
         let mut forward_props =
             rect_props(&lua, "return { width = 100, animate = { width = { duration = 300, easing = \"linear\" } } }");
-        let forward_again = retarget("rect", Some((&back, &shown)), &mut forward_props, turn_again, &lua).unwrap();
+        let forward_again = retarget("rect", Some((&back, &shown)), &mut forward_props, turn_again, &lua).unwrap().0;
         assert!(!forward_again[0].done(turn_again + Duration::from_millis(164)));
         assert!(forward_again[0].done(turn_again + Duration::from_millis(166)));
     }
@@ -1126,18 +1159,18 @@ mod tests {
             "return { width = 100, animate = { width = { duration = 100, easing = \"out_cubic\", from = 0 } } }";
         let back_source = "return { width = 0, animate = { width = { duration = 100, easing = \"out_cubic\" } } }";
         let mut forward_props = rect_props(&lua, forward_source);
-        let forward = retarget("rect", None, &mut forward_props, start, &lua).unwrap();
+        let forward = retarget("rect", None, &mut forward_props, start, &lua).unwrap().0;
         let turn = start + Duration::from_millis(50);
         assert_eq!(forward[0].at(turn), Animatable::Number(87.5));
         let shown = PropMap::from_iter([("width", forward[0].at(turn).to_value(&lua).unwrap())]);
         let mut back_props = rect_props(&lua, back_source);
-        let back = retarget("rect", Some((&forward, &shown)), &mut back_props, turn, &lua).unwrap();
+        let back = retarget("rect", Some((&forward, &shown)), &mut back_props, turn, &lua).unwrap().0;
         assert_eq!(back[0].at(turn), Animatable::Number(87.5));
         assert!(!back[0].done(turn + Duration::from_millis(87)));
         assert!(back[0].done(turn + Duration::from_millis(88)));
 
         let mut same_props = rect_props(&lua, back_source);
-        let carried = retarget("rect", Some((&back, &shown)), &mut same_props, turn, &lua).unwrap();
+        let carried = retarget("rect", Some((&back, &shown)), &mut same_props, turn, &lua).unwrap().0;
         assert!(!carried[0].done(turn + Duration::from_millis(87)));
         assert!(carried[0].done(turn + Duration::from_millis(88)));
     }
@@ -1147,13 +1180,15 @@ mod tests {
         let lua = Lua::new();
         let specs =
             parse_animate("rect", &rect_props(&lua, "return { animate = { width = { duration = 10, delay = 40 } } }"))
-                .unwrap();
+                .unwrap()
+                .0;
         assert_eq!(specs["width"].delay, Duration::from_millis(40));
-        let bare = parse_animate("rect", &rect_props(&lua, "return { animate = { width = 10 } }")).unwrap();
+        let bare = parse_animate("rect", &rect_props(&lua, "return { animate = { width = 10 } }")).unwrap().0;
         assert_eq!(bare["width"].delay, Duration::ZERO, "absent is no delay");
         let zeroed =
             parse_animate("rect", &rect_props(&lua, "return { animate = { width = { duration = 10, delay = 0 } } }"))
-                .unwrap();
+                .unwrap()
+                .0;
         assert_eq!(zeroed["width"].delay, Duration::ZERO, "zero is the default written out, not a refusal");
 
         let cases: [(&str, &[&str]); 5] = [

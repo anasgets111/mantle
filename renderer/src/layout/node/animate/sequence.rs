@@ -200,6 +200,7 @@ mod tests {
             ),
         )
         .unwrap()
+        .0
         .remove("opacity")
         .expect("opacity has a spec");
         let sequence = spec.sequence().expect("the entry named keyframes");
@@ -217,7 +218,7 @@ mod tests {
     fn a_sequence_walks_its_frames_and_wraps_only_when_it_loops() {
         let lua = Lua::new();
         let sequence = |src: &str| {
-            parse_animate("rect", &rect_props(&lua, src)).unwrap().remove("opacity").unwrap().sequence().unwrap()
+            parse_animate("rect", &rect_props(&lua, src)).unwrap().0.remove("opacity").unwrap().sequence().unwrap()
         };
         // Compared with a tolerance: the wrap is an `f32` remainder, so 250 ms into a 200 ms cycle
         // lands a hair under 50 rather than on it.
@@ -266,6 +267,7 @@ mod tests {
             ),
         )
         .unwrap()
+        .0
         .remove("opacity")
         .unwrap()
         .sequence()
@@ -314,6 +316,7 @@ mod tests {
             ),
         )
         .unwrap()
+        .0
         .remove("opacity")
         .unwrap()
         .sequence()
@@ -359,6 +362,7 @@ mod tests {
             ),
         )
         .unwrap()
+        .0
         .remove("width")
         .unwrap();
         let started = Instant::now();
@@ -394,6 +398,7 @@ mod tests {
             ),
         )
         .unwrap()
+        .0
         .remove("width")
         .unwrap();
         let Motion::Sequence(sequence) = spec.motion else { panic!("a sequence") };
@@ -412,7 +417,7 @@ mod tests {
             "rect",
             &rect_props(&lua, "return { animate = { opacity = { duration = 100, delay = 40, keyframes = { 0, 1 }, loops = \"infinite\" } } }"),
         )
-        .unwrap();
+        .unwrap().0;
         let started = Instant::now();
         let tween = Tween {
             property: "opacity",

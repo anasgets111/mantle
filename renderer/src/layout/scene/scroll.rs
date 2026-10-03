@@ -484,4 +484,59 @@ mod tests {
         assert_eq!(scene.scroll_in_place(&signal, 0.0, &lua), None, "the readout owes a pass");
         assert_eq!(signal.scroll_offset(), Some(218.0), "and nothing is written");
     }
+
+    #[test]
+    fn an_in_place_scroll_does_not_retarget_an_active_move() {
+        let (lua, surface) = surface_from(
+            r#"s = scroll("s")
+                gap = state("gap", 0)
+                return panel { id = "bar", child = column { width = 30, height = 30,
+                    scroll = s, spacing = gap, children = {
+                        rect { width = 10, height = 20 },
+                        rect { width = 10, height = 20, animate = { move = 100 } },
+                        rect { width = 10, height = 20 }
+                    } } }"#,
+        );
+        let shaping = ShapingHandle::spawn();
+        let mut scene = Scene::new();
+        let apply =
+            |scene: &mut Scene| apply_at(scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
+        fn second(scene: &Scene) -> &ResolvedNode {
+            &scene.surface("bar@TEST").unwrap().children[0].children[1]
+        }
+        let signal = crate::lua::signal::from_userdata(&lua.globals().get("s").unwrap()).unwrap();
+        apply(&mut scene);
+
+        for asked in [0.1, 0.2] {
+            signal.scroll_handle().unwrap().set_changed(mlua::Value::Number(asked));
+            apply(&mut scene);
+            assert!(second(&scene).movement.is_none(), "a fractional full-pass scroll starts no move");
+        }
+
+        lua.load("gap:set(10)").exec().unwrap();
+        apply(&mut scene);
+        let started = second(&scene).movement.as_ref().unwrap().started;
+        assert_eq!(second(&scene).movement.as_ref().unwrap().offset.1, -10.0);
+        signal.scroll_handle().unwrap().set_changed(mlua::Value::Number(0.3));
+        apply(&mut scene);
+        assert_eq!(second(&scene).movement.as_ref().unwrap().started, started);
+        assert_eq!(second(&scene).movement.as_ref().unwrap().offset.1, -10.0);
+
+        assert_eq!(scene.surface("bar@TEST").unwrap().children[0].scrolled, 0.3);
+        lua.load("gap:set(12)").exec().unwrap();
+        signal.scroll_handle().unwrap().set_changed(mlua::Value::Number(0.4));
+        apply(&mut scene);
+        assert_eq!(scene.surface("bar@TEST").unwrap().children[0].scrolled, 0.4);
+        assert_eq!(
+            second(&scene).movement.as_ref().unwrap().offset.1,
+            -12.0,
+            "the spacing change retargets while the fractional scroll stays immediate"
+        );
+        let started = second(&scene).movement.as_ref().unwrap().started;
+        assert_eq!(scene.scroll_in_place(&signal, 10.0, &lua), Some(vec!["bar@TEST".to_string()]));
+        assert_eq!((second(&scene).rect.y, second(&scene).movement.as_ref().unwrap().offset.1), (22.0, -12.0));
+        apply(&mut scene);
+        assert_eq!(second(&scene).movement.as_ref().unwrap().started, started);
+        assert_eq!((second(&scene).rect.y, second(&scene).movement.as_ref().unwrap().offset.1), (22.0, -12.0));
+    }
 }

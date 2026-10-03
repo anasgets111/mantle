@@ -10,13 +10,13 @@ use super::properties::{ALL, Absent, BOX, KINDS, PLACED, Property, SURFACES, kin
 use crate::layout::node::prop::Keyword;
 use crate::layout::node::{
     Align, Animatable, AnimationSpec, Animations, Axes, BorderColor, Easing, EdgesInput, ExitBlock, Gradient,
-    GradientStop, KeyframeInput, Mask, PathCommand, PopupAnchor, SpringConstants, TextRun, TransitionInput,
+    GradientStop, KeyframeInput, Mask, MoveSpec, PathCommand, PopupAnchor, SpringConstants, TextRun, TransitionInput,
 };
 use crate::lua::luacats::LuaType;
 use crate::text::snap::LogicalRect;
 
 /// The input shapes [`NODES_HEADER`] names as `{Name}`, each supplied by its parser's type.
-const NODE_SHAPES: [fn(String) -> String; 14] = [
+const NODE_SHAPES: [fn(String) -> String; 15] = [
     fill::<PathCommand>,
     fill::<EdgesInput>,
     fill::<BorderColor>,
@@ -29,6 +29,7 @@ const NODE_SHAPES: [fn(String) -> String; 14] = [
     fill::<Mask>,
     fill::<Easing>,
     fill::<AnimationSpec>,
+    fill::<MoveSpec>,
     fill::<Animations>,
     fill::<ExitBlock>,
 ];
@@ -160,7 +161,8 @@ fn animate(kind: &str) -> (String, String) {
         .filter(|property| crate::layout::node::animatable_name(kind, property, "animate").is_ok())
         .map(|property| format!("{property}?: Animation, "))
         .collect();
-    let alias = format!("---@alias {name} {{ {keys}exit?: Exit, [string]: \"no such property\" }}\n");
+    let alias =
+        format!("---@alias {name} {{ {keys}exit?: Exit, move?: MoveAnimation, [string]: \"no such property\" }}\n");
     let row = properties().find(|row| row.name == "animate" && row.kinds == ALL).expect("a common `animate` row");
     (alias, field(row).replacen(" Animations|", &format!(" {name}|"), 1))
 }
@@ -330,7 +332,8 @@ const NODES_HEADER: &str = r##"---@meta
 --- - `from`: start value when the node did not display the property last pass (a new node, or one that lacked it); otherwise the first value snaps (ADR-0146). Refused beside `keyframes`.
 --- - `spring`: replaces `duration`, `easing`, `keyframes` and `loops`, which are refused beside it.
 --- - `keyframes`: at least 2 values, no holes, at least one segment with time; walks instead of easing to the resolved value (ADR-0152). `loops` `[1, 10000]` or `"infinite"`, default `1`, only with `keyframes`. Bind `animate` to start or stop one.
----@alias Animations {Animations} Property name to animation; each kind's `animate` field names its own, e.g. `RectAnimations`. Names the node does not accept, `z` and `animate` are refused. Numbers, percents, colours and numeric `Edges`/`Axes` tween against the same shape; anything else snaps.
+---@alias MoveAnimation {MoveAnimation} `animate.move`: eased timing for a matched node's changed layout position. A bare number is `duration`; a table requires `duration`. `from`, `keyframes`, `loops` and `spring` are refused.
+---@alias Animations {Animations} Property name to animation, plus `move` and `exit`; each kind's `animate` field names its own, e.g. `RectAnimations`. Names the node does not accept, `z` and `animate` are refused. Numbers, percents, colours and numeric `Edges`/`Axes` tween against the same shape; anything else snaps.
 ---@alias Exit {Exit} `animate.exit`: timing as in `Animation` (`duration` or `spring` required once a target is named) plus `property = target` pairs the node eases to after a pass drops it (ADR-0150). A target starts from the shown value, or from the identity: `1` for `opacity`/`scale`, `0.5` for `origin`, alpha 0 for a colour, `0` otherwise.
 
 ---[docs]({DOCS}nodes/index.html#common-properties)

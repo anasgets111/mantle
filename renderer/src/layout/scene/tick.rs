@@ -3,7 +3,7 @@ use std::time::{Duration, Instant};
 use mlua::{Lua, Value};
 use shared::debug;
 
-use super::pass::{publish_geometry, solve_instance};
+use super::pass::{prior_position, publish_geometry, solve_instance};
 use super::solver::{
     MainAxis, Measure, hold_leavers, main_axis_of, measure_for, new_solver_node, set_solver_children, taffy_failed,
     taffy_style, text_measure_tweening, update_solver_node,
@@ -149,9 +149,9 @@ fn relayout_retained(
     at: &mut Option<Instant>,
     split: &mut TickSplit,
 ) -> Result<ResolvedNode, LayoutError> {
-    let prepared = prepare_retained(tree, root, None, lua, now)?;
+    let prepared = prepare_retained(tree, root, (None, 0.0), lua, now, false, false)?;
     close(at, &mut split.prepare);
-    let solved = solve_instance(tree, prepared, available, shaping);
+    let solved = solve_instance(tree, prepared, available, shaping, now);
     close(at, &mut split.solve);
     solved
 }
@@ -165,10 +165,21 @@ fn relayout_retained(
 pub(super) fn prepare_retained(
     tree: &mut taffy::TaffyTree<Measure>,
     mut node: ResolvedNode,
-    parent_axis: Option<MainAxis>,
+    parent_flow: (Option<MainAxis>, f32),
     lua: &Lua,
     now: Instant,
+    move_on_solve: bool,
+    thawing: bool,
 ) -> Result<PreparedNode, LayoutError> {
+    let (parent_axis, _) = parent_flow;
+    let prior_position = (move_on_solve && !thawing).then(|| prior_position(&node, tree, parent_flow)).flatten();
+    let old_scroll = node.scrolled;
+    if thawing {
+        node.movement = None;
+    }
+    if !move_on_solve && node.visible {
+        node.movement.take_if(|movement| !movement.advance(now));
+    }
     // Checked before `advance`: on the frame a tween lands, `resting` is still false here,
     // so `text_memo` is cleared and the final layout size is measured before `resting` locks in
     // the memo on subsequent frames.
@@ -186,6 +197,8 @@ pub(super) fn prepare_retained(
         paint: old_paint,
         children,
         tweens,
+        move_spec,
+        movement,
         displayed_source,
         dissolve,
         text_memo,
@@ -222,6 +235,9 @@ pub(super) fn prepare_retained(
         children: Vec::with_capacity(if style.visible { children.len() } else { 0 }),
         frozen: children,
         tweens,
+        move_spec,
+        movement,
+        prior_position,
         leaving: Vec::new(),
         list_memo,
         child_table,
@@ -230,17 +246,20 @@ pub(super) fn prepare_retained(
     if !node.style.visible {
         return Ok(node);
     }
-    prepare_retained_children(tree, node, parent_axis, lua, now)
+    prepare_retained_children(tree, node, (parent_axis, old_scroll), lua, now, move_on_solve, thawing)
 }
 
 /// `node`'s retained children, in `frozen`, laid out again as they are.
 fn prepare_retained_children(
     tree: &mut taffy::TaffyTree<Measure>,
     mut node: PreparedNode,
-    parent_axis: Option<MainAxis>,
+    parent_flow: (Option<MainAxis>, f32),
     lua: &Lua,
     now: Instant,
+    move_on_solve: bool,
+    thawing: bool,
 ) -> Result<PreparedNode, LayoutError> {
+    let (parent_axis, old_scroll) = parent_flow;
     let own_axis = main_axis_of(node.kind, &node.properties)?;
     let had_leavers = node.frozen.iter().any(|child| child.leaving);
     for child in std::mem::take(&mut node.frozen) {
@@ -249,7 +268,15 @@ fn prepare_retained_children(
                 node.leaving.push(child);
             }
         } else {
-            node.children.push(prepare_retained(tree, child, own_axis, lua, now)?);
+            node.children.push(prepare_retained(
+                tree,
+                child,
+                (own_axis, old_scroll),
+                lua,
+                now,
+                move_on_solve,
+                thawing,
+            )?);
         }
     }
     if had_leavers {
@@ -321,6 +348,7 @@ fn advance_paint_only(node: &mut ResolvedNode, now: Instant, lua: &Lua) -> Resul
     // Outside the tween gate below, and before it: a dissolve is the only motion on a node that
     // has no `animate` block at all, which is every `image` that declares one.
     node.dissolve = advanced_dissolve(node.dissolve.take(), now);
+    node.movement.take_if(|movement| !movement.advance(now));
     // A played-out sequence rests on its last frame and moves nothing.
     if node.tweens.iter().any(|tween| !tween.resting) {
         advance_paint_only_node(node, now, lua)?;
@@ -446,6 +474,161 @@ mod tests {
 
     fn child_tween(scene: &Scene) -> Tween {
         scene.surface("bar@TEST").unwrap().children[0].tweens[0].clone()
+    }
+
+    #[test]
+    fn a_keyed_sibling_moves_from_its_painted_position_and_an_exit_freezes_mid_move() {
+        let mut scene = Scene::new();
+        let shaping = ShapingHandle::spawn();
+        let (lua, surface) = surface_from(
+            r##"local a = rect { id = "a", width = 10, height = 10, background = "#ff0000" }
+               local b = rect { id = "b", width = 10, height = 10, background = "#00ff00",
+                   animate = { move = { duration = 100, easing = "linear" },
+                               exit = { duration = 100, easing = "linear", opacity = 0 } } }
+               local c = rect { id = "c", width = 10, height = 10, background = "#0000ff",
+                   animate = { move = { duration = 100, easing = "linear" } } }
+               return panel { id = "bar", child = row { width = 100, height = 10,
+                   children = state("kids", { a, b, c }) } }"##,
+        );
+        let instances = [instance_at(&surface, full())];
+        apply_at(&mut scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
+        lua.load(r#"local k = state("kids", {}):get(); state("kids", {}):set({ k[2], k[3] })"#).exec().unwrap();
+        apply_at(&mut scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
+        let row = &scene.surface("bar@TEST").unwrap().children[0];
+        assert_eq!((row.children[0].rect.x, row.children[1].rect.x), (0.0, 10.0));
+        assert_eq!(
+            (row.children[0].movement.as_ref().unwrap().offset.0, row.children[1].movement.as_ref().unwrap().offset.0),
+            (10.0, 10.0)
+        );
+        let started = row.children[0].movement.as_ref().unwrap().started;
+        scene.tick(&instances, &shaping, &lua, started + Duration::from_millis(50));
+        let row = &scene.surface("bar@TEST").unwrap().children[0];
+        assert_eq!(
+            (row.children[0].movement.as_ref().unwrap().offset.0, row.children[1].movement.as_ref().unwrap().offset.0),
+            (5.0, 5.0)
+        );
+
+        lua.load(r#"local k = state("kids", {}):get(); state("kids", {}):set({ k[2] })"#).exec().unwrap();
+        apply_at(&mut scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
+        let row = &scene.surface("bar@TEST").unwrap().children[0];
+        assert_eq!(row.children[0].rect.x, 0.0);
+        assert_eq!(row.children[0].movement.as_ref().unwrap().offset.0, 15.0, "c retargets from its painted x=15");
+        assert!(row.children[1].leaving);
+        assert_eq!(row.children[1].rect.x, 5.0, "b exits from its painted x=5");
+        assert!(row.children[1].movement.is_none());
+        let path = crate::layout::hit::hit_path(
+            scene.surface("bar@TEST").unwrap(),
+            crate::layout::hit::LogicalPoint { x: 17.0, y: 5.0 },
+        );
+        assert_eq!(path.last().map(|node| node.id), Some(row.children[0].id));
+        scene.tick(
+            &instances,
+            &shaping,
+            &lua,
+            row.children[0].movement.as_ref().unwrap().started + Duration::from_millis(100),
+        );
+        let row = &scene.surface("bar@TEST").unwrap().children[0];
+        assert!(row.children[0].movement.is_none());
+        assert_eq!(row.children[0].rect.x, 0.0);
+        assert!(!scene.surface("bar@TEST").unwrap().animating());
+    }
+
+    #[test]
+    fn a_veto_preserves_an_active_move_and_removing_its_spec_cancels_it() {
+        let mut scene = Scene::new();
+        let shaping = ShapingHandle::spawn();
+        let (lua, surface) = surface_from(
+            r#"spacing = state("spacing", 0)
+                motion = state("motion", { move = { duration = 100, easing = "linear" } })
+                return panel { id = "bar", child = row { spacing = spacing, children = {
+                    rect { width = 10, height = 10 },
+                    rect { width = 10, height = 10, animate = motion }
+                } } }"#,
+        );
+        let apply =
+            |scene: &mut Scene| apply_at(scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
+        fn moved(scene: &Scene) -> &ResolvedNode {
+            &scene.surface("bar@TEST").unwrap().children[0].children[1]
+        }
+        apply(&mut scene);
+        lua.load("spacing:set(10)").exec().unwrap();
+        apply(&mut scene);
+        let before = moved(&scene).movement.as_ref().unwrap().clone();
+        assert_eq!(before.offset.0, -10.0);
+
+        lua.load("spacing:set(20)").exec().unwrap();
+        let err = scene.apply_admitting(
+            std::slice::from_ref(&surface),
+            &[instance_at(&surface, full())],
+            &shaping,
+            &lua,
+            |_| Err(node::invalid("child", "veto")),
+        );
+        assert!(err.is_err());
+        let after = moved(&scene).movement.as_ref().unwrap();
+        assert_eq!((after.offset, after.started, moved(&scene).rect.x), (before.offset, before.started, 20.0));
+
+        apply(&mut scene);
+        assert_eq!(moved(&scene).rect.x, 30.0);
+        assert_eq!(moved(&scene).movement.as_ref().unwrap().offset.0, -20.0);
+
+        lua.load("spacing:set(10) motion:set({})").exec().unwrap();
+        apply(&mut scene);
+        assert!(moved(&scene).movement.is_none());
+        assert_eq!(moved(&scene).rect.x, 20.0);
+    }
+
+    #[test]
+    fn a_departing_parent_freezes_its_moving_child_at_the_painted_position() {
+        let mut scene = Scene::new();
+        let shaping = ShapingHandle::spawn();
+        let (lua, surface) = surface_from(
+            r#"gap = state("gap", 0)
+                local group = row { id = "group", spacing = gap,
+                    animate = { exit = { duration = 100, opacity = 0 } }, children = {
+                        rect { width = 10, height = 10 },
+                        rect { width = 10, height = 10, animate = { move = 100 } }
+                    } }
+                groups = state("groups", { group })
+                return panel { id = "bar", child = row { children = groups } }"#,
+        );
+        let apply =
+            |scene: &mut Scene| apply_at(scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
+        apply(&mut scene);
+        lua.load("gap:set(10)").exec().unwrap();
+        apply(&mut scene);
+        let child = &scene.surface("bar@TEST").unwrap().children[0].children[0].children[1];
+        assert_eq!((child.rect.x, child.movement.as_ref().unwrap().offset.0), (20.0, -10.0));
+
+        lua.load("groups:set({})").exec().unwrap();
+        apply(&mut scene);
+        let group = &scene.surface("bar@TEST").unwrap().children[0].children[0];
+        assert!(group.leaving);
+        assert_eq!(group.children[1].rect.x, 10.0);
+        assert!(group.children[1].movement.is_none());
+    }
+
+    #[test]
+    fn a_layout_tween_tick_does_not_start_a_siblings_move() {
+        let mut scene = Scene::new();
+        let shaping = ShapingHandle::spawn();
+        let (lua, surface) = surface_from(
+            r#"return panel { id = "bar", child = row { width = 100, children = {
+                rect { width = state("w", 10), height = 10,
+                       animate = { width = { duration = 100, easing = "linear" } } },
+                rect { width = 10, height = 10, animate = { move = 100 } } } } }"#,
+        );
+        let instances = [instance_at(&surface, full())];
+        apply_at(&mut scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
+        lua.load(r#"state("w", 10):set(20)"#).exec().unwrap();
+        apply_at(&mut scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
+        let row = &scene.surface("bar@TEST").unwrap().children[0];
+        assert!(row.children[1].movement.is_none());
+        let started = row.children[0].tweens[0].started;
+        scene.tick(&instances, &shaping, &lua, started + Duration::from_millis(50));
+        let sibling = &scene.surface("bar@TEST").unwrap().children[0].children[1];
+        assert_eq!(sibling.rect.x, 15.0);
+        assert!(sibling.movement.is_none());
     }
 
     #[test]

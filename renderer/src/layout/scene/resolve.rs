@@ -36,6 +36,7 @@ pub(super) struct Resolved {
     pub style: LayoutStyle,
     pub paint: Option<PaintStyle>,
     pub tweens: Vec<Tween>,
+    pub movement: Option<Box<node::MoveSpec>>,
     pub memo: Rc<ResolveMemo>,
     /// The retained measurement, when this `text` measures from what it measured from last pass.
     pub text_memo: Option<(Option<f32>, taffy::Size<f32>)>,
@@ -86,12 +87,12 @@ pub(super) fn resolve(
         }
         let style = if moving { LayoutStyle::parse(&properties)? } else { *r.layout_style };
         let paint = if moving || kind == "text" { node::paint_style(kind, &properties)? } else { r.paint.take() };
-        return Ok(Resolved { properties, style, paint, tweens, memo, text_memo });
+        return Ok(Resolved { properties, style, paint, tweens, movement: r.move_spec.take(), memo, text_memo });
     }
     let stamp = signal::write_clock(lua);
     let frame = ComputedFrame::enter(lua);
     let mut properties = build(node::resolve_properties(raw.clone(), kind, lua)?)?;
-    let tweens = node::retarget(kind, retained.as_deref().map(tween_state), &mut properties, now, lua)?;
+    let (tweens, movement) = node::retarget(kind, retained.as_deref().map(tween_state), &mut properties, now, lua)?;
     let properties = Rc::new(properties);
     let memo = Rc::new(ResolveMemo { raw, lua: lua.weak(), stamp, cells: frame.finish() });
     let text_memo = retained
@@ -99,7 +100,7 @@ pub(super) fn resolve(
         .and_then(|r| r.text_memo);
     let style = LayoutStyle::parse(&properties)?;
     let paint = node::paint_style(kind, &properties)?;
-    Ok(Resolved { properties, style, paint, tweens, memo, text_memo })
+    Ok(Resolved { properties, style, paint, tweens, movement: movement.map(Box::new), memo, text_memo })
 }
 
 /// What `node::retarget` reads off a retained node.

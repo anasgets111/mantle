@@ -393,7 +393,8 @@ fn run(painter: &mut TextPainter, walk: &mut Walk<'_, '_>, commands: &[DrawCmd],
                 let canvas = painter.canvas_mut();
                 canvas.save();
                 canvas.set_transform(&femtovg::Transform2D(*matrix));
-                let inner = Frame { transform: Some(*matrix), region: super::UNCLIPPED, ..frame };
+                let transform = node::compose_affine(frame.transform.unwrap_or(node::IDENTITY_AFFINE), *matrix);
+                let inner = Frame { transform: Some(transform), region: super::UNCLIPPED, ..frame };
                 run(painter, walk, commands, target, inner);
                 painter.canvas_mut().restore();
                 current_clip = None;
@@ -669,6 +670,7 @@ pub(crate) mod tests {
     use khronos_egl as egl;
     use mlua::Lua;
 
+    use crate::layout::node::MoveTween;
     use crate::layout::scene::LogicalSize;
     use crate::text::shaping::{ShapeRequest, ShapingHandle};
 
@@ -1781,6 +1783,38 @@ pub(crate) mod tests {
         );
         let Some(px) = paint_with_gl(&src, (64, 48), &[(20, 8), (8, 8), (18, 18), (38, 38)]) else { return };
         assert_eq!(px, [(0, 0, 255, 255), (0, 0, 0, 0), (0, 0, 255, 255), (0, 0, 255, 255)]);
+
+        let lua = Lua::new();
+        let mut root = resolved_surface(
+            &lua,
+            &format!(
+                r#"return panel {{ id = "bar", width = 64, height = 48, child = rect {{
+                    width = 16, height = 16, children = {{ shader {{ width = 16, height = 16,
+                        source = "{}", translate = {{ x = 8 }} }} }} }} }}"#,
+                frag.display()
+            ),
+            LogicalSize { width: 64.0, height: 48.0 },
+        );
+        root.children[0].movement = Some(Box::new(MoveTween::test((16.0, 0.0))));
+        let Some(instance) = init_headless_egl(64, 48) else { return };
+        let shaping = ShapingHandle::spawn();
+        let Some(mut painter) = text_painter(&instance, &shaping, 64, 48) else { return };
+        let gl = test_gl(&instance);
+        let mut stage = image_shader::ShaderStage::default();
+        let whole = PhysicalRect { x0: 0, y0: 0, x1: 64, y1: 48 };
+        execute(
+            "test",
+            &mut painter,
+            &mut ImageCache::new(),
+            &mut CaptureCache::default(),
+            &build(&root, 1.0, None),
+            1.0,
+            (64.0, 48.0),
+            &[whole],
+            Some(Shaders { gl: &gl, stage: &mut stage }),
+        );
+        assert_eq!(pixel_at(painter.canvas_mut(), 28, 8), (0, 0, 255, 255));
+        assert_eq!(pixel_at(painter.canvas_mut(), 12, 8), (0, 0, 0, 0));
     }
 
     /// ADR-0300. A flat `params` list fills a `float` or `vec4` array the shader indexes at run
