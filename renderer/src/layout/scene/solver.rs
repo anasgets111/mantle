@@ -329,18 +329,22 @@ pub(super) fn forget_solver_nodes(node: &mut ResolvedNode) {
     node.children.iter_mut().for_each(forget_solver_nodes);
 }
 
-/// A content-sized axis of `id` grows to span its leavers' last rects (ADR-0150): they take no room
-/// in the flow, but a parent collapsing under a lone leaver would clip its exit away, and a
-/// content-sized surface with it. Fixed and `Fill` axes already had room for them.
+/// An unallocated content axis grows to span its leavers' last rects (ADR-0150): they take no room
+/// in the flow, but a parent collapsing under a lone leaver would clip its exit away. Allocated,
+/// fixed and `Fill` axes already have their own bounds.
 ///
 /// Its own frame, like [`new_solver_node`], for the `taffy::Style` it clones.
 pub(super) fn hold_leavers(
     tree: &mut taffy::TaffyTree<Measure>,
     id: taffy::NodeId,
     style: &LayoutStyle,
+    allocated_axes: (bool, bool),
     leaving: &[super::ResolvedNode],
 ) -> Result<(), LayoutError> {
-    let content = (style.width_mode == SizeMode::Content, style.height_mode == SizeMode::Content);
+    let content = (
+        style.width_mode == SizeMode::Content && !allocated_axes.0,
+        style.height_mode == SizeMode::Content && !allocated_axes.1,
+    );
     if leaving.is_empty() || content == (false, false) {
         return Ok(());
     }

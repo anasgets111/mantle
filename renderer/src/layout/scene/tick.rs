@@ -181,6 +181,7 @@ pub(super) fn prepare_retained(
         layout_style: _,
         taffy: old_taffy,
         kind,
+        allocated_axes,
         properties,
         paint: old_paint,
         children,
@@ -211,6 +212,7 @@ pub(super) fn prepare_retained(
     let node = PreparedNode {
         id,
         kind,
+        allocated_axes,
         style,
         properties,
         paint,
@@ -254,7 +256,7 @@ fn prepare_retained_children(
         tree.set_style(node.taffy, taffy_style(node.kind, &node.properties, &node.style, parent_axis)?)
             .map_err(taffy_failed)?;
     }
-    hold_leavers(tree, node.taffy, &node.style, &node.leaving)?;
+    hold_leavers(tree, node.taffy, &node.style, node.allocated_axes, &node.leaving)?;
     let child_ids: Vec<taffy::NodeId> = node.children.iter().map(|child| child.taffy).collect();
     set_solver_children(tree, node.taffy, &child_ids)?;
     Ok(node)
@@ -605,14 +607,16 @@ mod tests {
         assert!(thawed.tweens.is_empty() || thawed.rect.width < 90.0, "the thaw settles or resumes, never stalls");
     }
 
-    /// A stable edge table belongs to the last pass. Only the width tween changes on ticks.
+    /// Stable edge and anchor tables belong to the last pass. Only the width tween changes on ticks.
     #[test]
-    fn a_tick_does_not_reparse_an_unchanged_edge_table() {
+    fn a_tick_does_not_reparse_an_unchanged_edge_or_anchor_table() {
         let mut scene = Scene::new();
         let shaping = ShapingHandle::spawn();
         let (lua, surface) = surface_from(
             r#"local m = setmetatable({}, { __index = function() reads = (reads or 0) + 1 return 2 end })
-            return panel { id = "bar", child = row { children = {
+            local a = setmetatable({}, { __index = function(_, edge)
+                anchor_reads = (anchor_reads or 0) + 1 return edge == "left" or edge == "right" end })
+            return panel { id = "bar", anchor = a, child = row { children = {
                 rect { width = state("w", 40), height = 10, animate = { width = 100 } },
                 rect { width = 10, height = 10, margin = m } } } }"#,
         );
@@ -621,8 +625,10 @@ mod tests {
         apply_at(&mut scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
         let started = scene.surface("bar@TEST").unwrap().children[0].children[0].tweens[0].started;
         let reads: usize = lua.globals().get("reads").unwrap();
+        let anchor_reads: usize = lua.globals().get("anchor_reads").unwrap();
         scene.tick(&[instance_at(&surface, full())], &shaping, &lua, started + std::time::Duration::from_millis(50));
         assert_eq!(lua.globals().get::<usize>("reads").unwrap(), reads);
+        assert_eq!(lua.globals().get::<usize>("anchor_reads").unwrap(), anchor_reads);
         assert!(scene.surface("bar@TEST").unwrap().animating());
     }
 
@@ -766,6 +772,53 @@ mod tests {
         scene.tick(&instances, &shaping, &lua, started + std::time::Duration::from_millis(100));
         let column = &scene.surface("bar@TEST").unwrap().children[0];
         assert_eq!((column.rect.width, column.rect.height), (8.0, 8.0), "only its padding once the card is gone");
+    }
+
+    #[test]
+    fn a_departing_fill_child_cannot_enlarge_an_allocated_root_past_its_new_size_or_max() {
+        let shaping = ShapingHandle::spawn();
+        for (kind, anchor) in [
+            ("panel", "anchor = { top = true, bottom = true, left = true, right = true },"),
+            ("window", ""),
+            ("lock", ""),
+        ] {
+            let (lua, surface) = surface_from(&format!(
+                r#"{{ kind = "{kind}", id = "root", {anchor}
+                    max_width = state("max_w", 200), max_height = state("max_h", 200),
+                    child = state("kid", rect {{ width = "fill", height = "fill",
+                        animate = {{ exit = {{ duration = 100, easing = "linear", opacity = 0 }} }} }}) }}"#
+            ));
+            let mut scene = Scene::new();
+            apply_at(
+                &mut scene,
+                std::slice::from_ref(&surface),
+                LogicalSize { width: 100.0, height: 80.0 },
+                &shaping,
+                &lua,
+            )
+            .unwrap();
+            lua.load(
+                r#"state("kid", false):set(nil)
+                state("max_w", 200):set(35)
+                state("max_h", 200):set(15)"#,
+            )
+            .exec()
+            .unwrap();
+            let available = LogicalSize { width: 40.0, height: 20.0 };
+            apply_at(&mut scene, std::slice::from_ref(&surface), available, &shaping, &lua).unwrap();
+            let root = scene.surface("root@TEST").unwrap();
+            assert!(root.children[0].leaving, "{kind}");
+            assert_eq!((root.rect.width, root.rect.height), (35.0, 15.0), "{kind} pass");
+            let started = root.children[0].tweens[0].started;
+            scene.tick(
+                &[instance_at(&surface, available)],
+                &shaping,
+                &lua,
+                started + std::time::Duration::from_millis(50),
+            );
+            let root = scene.surface("root@TEST").unwrap();
+            assert_eq!((root.rect.width, root.rect.height), (35.0, 15.0), "{kind} tick");
+        }
     }
 
     /// ADR-0150: an exit block runs when the tree drops the node, not when it hides one. A hidden

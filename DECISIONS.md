@@ -7441,3 +7441,15 @@ keywords derive the name from the Rust variant at compile time; capability enums
 an alias doubles every choice list. Kept: POSIX signal names (`"TERM"`), SVG path ops (`"M"`,
 uppercase for absolute coordinates) and data such as codec and connector names. Tray `status`
 became an enum with this change; an off-spec or missing status reads `"active"`.
+
+## 0311. A spanned panel's omitted extent fills its root
+
+On an axis anchored at both edges, an omitted panel `width`/`height` now fills the root node, as
+window and lock roots fill their configured size. The compositor already allocates that axis
+(`layer_extent_for` asks for `0`), so a content-sized root left the bar's `background`, blur,
+handlers and `"fill"` children covering less than the surface, and every bar needed
+`width = "fill"` as a workaround. Unspanned axes stay content sized, explicit sizes and
+`max_width`/`max_height` keep their meaning, and departing children no longer raise an allocated
+axis's minimum. Allocation is read once per pass from the anchor and kept for ticks. A config
+wanting a narrow box inside a spanned panel sizes and paints a `child`; the change is breaking and
+not aliased, since the engine is 0.x.

@@ -93,6 +93,7 @@ impl ResolvedNode {
         children: Vec<ResolvedNode>,
     ) -> Self {
         ResolvedNode {
+            allocated_axes: (false, false),
             id: NodeId::test(0),
             kind,
             rect: LogicalRect { x, y, width, height },
@@ -203,6 +204,8 @@ impl LayoutStyle {
 /// third state, `Value::Nil` retained as "bound but unresolved".
 #[derive(Debug, Clone)]
 pub struct ResolvedNode {
+    /// Surface axes allocated by its role and anchors, kept across animation ticks.
+    pub(crate) allocated_axes: (bool, bool),
     /// Cached for layout ticks; a pass replaces it after resolving properties.
     pub(crate) layout_style: std::rc::Rc<LayoutStyle>,
     /// The solver node. `Some` only for a node of the instance's cached tree.
@@ -770,6 +773,7 @@ fn ensure_node_admissible(kind: &str, depth: u32) -> Result<(), LayoutError> {
 struct PreparedNode {
     id: NodeId,
     kind: &'static str,
+    allocated_axes: (bool, bool),
     style: LayoutStyle,
     properties: std::rc::Rc<PropMap>,
     paint: Option<PaintStyle>,

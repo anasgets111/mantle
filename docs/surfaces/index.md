@@ -25,7 +25,6 @@ local bar = panel {
     anchor = { top = true, left = true, right = true },
     height = 32,
     exclusive_zone = true,
-    width = "fill",
     child = function(output)
         return row {
             width = "fill",
@@ -64,7 +63,7 @@ The root has no parent, so a few node properties mean something else on it:
 | Property | On a surface root |
 | :--- | :--- |
 | `width`, `height` | Role-specific: the layer surface's size on a [`panel`](panel.md#size), the root's size inside the configured window on a [`window`](window.md#size), the popup's size on a [`popup`](popup.md#properties). Refused on a `lock` |
-| `min_width`, `max_width`, `min_height`, `max_height` | Bound the root's measured size, so they cap a content-sized `panel` or `popup` |
+| `min_width`, `max_width`, `min_height`, `max_height` | Bound the root's size: they cap a content-sized or spanned `panel`, a `popup`, and a `window` or `lock` root |
 | `margin` | A `panel`'s offset from its anchored edges. Refused on the other roles |
 | `align_h`, `align_v` | Refused: the root sits at the surface's origin |
 | Everything else | As on any box node |
@@ -170,7 +169,7 @@ on_click = ... }` there ([click outside to close](panel.md#close-an-overlay-on-a
 | Trap | Fix |
 | :--- | :--- |
 | `layer = state(...)` or a signal `anchor` is refused | Structural fields take literals; switch between two declared panels, or edit the file |
-| A click on a panel's or window's background reaches the window behind it | The root's own `background` claims no input. Put the background on a `width = "fill", height = "fill"` child; on a panel, make the panel `"fill"` on those axes too |
+| A click on a panel's or window's background reaches the window behind it | The root's own `background` claims no input. Put the background on a child that fills the root; a panel's omitted size fills the root on axes anchored at both edges |
 | `two surfaces declare` an id | Surface ids are unique across every role; rename one |
 | A function `child` on a `window` or `popup` is refused | Only `panel` (not `output = "active"`) and `lock` have an output to pass |
 

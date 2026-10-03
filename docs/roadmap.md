@@ -26,7 +26,6 @@ Wanted, but each needs a consumer or a decision first.
 | Service depth | Audio has no per-channel levels or peak metering; UPower reads only `DisplayDevice`; `network` tracks only the first Wi-Fi device; Bluetooth pairing refuses PIN and passkey entry. Extend for concrete controls | — |
 | External IPC | `set`/`toggle` answer only applied or refused; `call` returns only what the action returns. No generic state read or subscription | 0197 |
 | Process control | Start, stream and signal exist. No child stdin, cwd or env | 0175, 0188 |
-| Panel root sizing | A panel spanning an axis sizes the surface but not its root node, while window and lock roots fill theirs (`forced_root_size`). Decide whether panel roots fill too | — |
 | Move transitions | A sibling closing a gap snaps. Needs the solver's old and new rects per sibling | — |
 | Text field editing | No undo or IME; the secure field edits only at its end. On RTL or mixed lines a click lands one cluster off and the caret does not move inside a ligature | 0236 |
 | Animated WebP and APNG | Only GIF animates; the others draw their first frame. `AnimationDecoder` covers both | 0233 |

@@ -141,7 +141,7 @@ pub(super) fn solve_instance(
     shaping: &ShapingHandle,
 ) -> Result<ResolvedNode, LayoutError> {
     let style = prepared.style;
-    let forced = forced_root_size(prepared.kind, &style, available);
+    let forced = forced_root_size(prepared.allocated_axes, &style, available);
     let mut root_style = tree.style(prepared.taffy).map_err(taffy_failed)?.clone();
     root_style.size = taffy::Size {
         width: match forced.0.or_else(|| resolve_non_content(style.width_mode, available.width)) {
@@ -160,20 +160,18 @@ pub(super) fn solve_instance(
     finish(tree, prepared, shaping)
 }
 
-/// A `window` or `lock` root with no size of its own is its configured surface, on the `Content`
-/// axes only. `available` is the compositor's `xdg_toplevel` configure size, already converted by
-/// `set_instance_size`. A `Content` default would give children a zero budget: a 0x0 tree in a
-/// configured tile, and for a lock (no width/height, `lock_spec` refuses both) a transparent buffer
-/// over a locked session, the passwordless black screen ADR-0052 decision 3 rejects.
-fn forced_root_size(kind: &str, style: &LayoutStyle, available: LogicalSize) -> (Option<f32>, Option<f32>) {
-    if matches!(kind, "window" | "lock") {
-        (
-            (style.width_mode == SizeMode::Content).then_some(available.width),
-            (style.height_mode == SizeMode::Content).then_some(available.height),
-        )
-    } else {
-        (None, None)
-    }
+/// A configured `Content` axis belongs to the root when its protocol allocated that axis:
+/// always for `window`/`lock`, and for a `panel` anchored at both opposite edges. A panel's
+/// unspanned `Content` axis remains measured from its children.
+fn forced_root_size(
+    allocated: (bool, bool),
+    style: &LayoutStyle,
+    available: LogicalSize,
+) -> (Option<f32>, Option<f32>) {
+    (
+        (allocated.0 && style.width_mode == SizeMode::Content).then_some(available.width),
+        (allocated.1 && style.height_mode == SizeMode::Content).then_some(available.height),
+    )
 }
 
 /// Pairs children by identity (ADR-0045 decisions 1-2): an `id` matches only the same `id`, while
@@ -281,6 +279,14 @@ pub(super) fn prepare(
 
     let old_mask_target = retained.as_ref().and_then(|node| node.mask_target);
     let Resolved { properties, style, paint, tweens, memo: resolve_memo, text_memo } = resolved;
+    let allocated_axes = match kind {
+        "window" | "lock" => (true, true),
+        "panel" => {
+            let anchor = fields::panel::anchor.read(&properties)?;
+            (anchor.left && anchor.right, anchor.top && anchor.bottom)
+        }
+        _ => (false, false),
+    };
     let (id, old_taffy, displayed_source, dissolve, old_children, list_memo, child_table) = match retained {
         Some(r) => (r.id, r.taffy, r.displayed_source, r.dissolve, r.children, r.list_memo, r.child_table),
         None => (scene.alloc_id(), None, None, None, Vec::new(), None, None),
@@ -318,6 +324,7 @@ pub(super) fn prepare(
     let mut node = PreparedNode {
         id,
         kind,
+        allocated_axes,
         style,
         properties,
         paint,
@@ -409,7 +416,7 @@ pub(super) fn prepare(
             node.leaving.push(child);
         }
     }
-    hold_leavers(tree, taffy_id, &node.style, &node.leaving)?;
+    hold_leavers(tree, taffy_id, &node.style, node.allocated_axes, &node.leaving)?;
 
     let child_ids: Vec<taffy::NodeId> = node.children.iter().map(|child| child.taffy).collect();
     set_solver_children(tree, taffy_id, &child_ids)?;
@@ -522,6 +529,7 @@ fn finish(
     let PreparedNode {
         id,
         kind,
+        allocated_axes,
         style,
         properties,
         mut paint,
@@ -587,6 +595,7 @@ fn finish(
     };
     Ok(ResolvedNode {
         mask_target,
+        allocated_axes,
         layout_style: std::rc::Rc::new(style),
         taffy: Some(taffy_id),
         id,
@@ -2358,16 +2367,51 @@ mod tests {
     }
 
     #[test]
-    fn an_unsized_window_root_is_the_surface_so_a_fill_child_actually_fills_it() {
-        let mut scene = Scene::new();
+    fn a_panel_forces_only_omitted_axes_anchored_at_both_edges() {
         let shaping = ShapingHandle::spawn();
-        let (lua, surface) =
-            surface_from(r#"{ kind = "window", id = "settings", child = rect { width = "fill", height = "fill" } }"#);
-        apply_at(&mut scene, &[surface], LogicalSize { width: 1920.0, height: 1168.0 }, &shaping, &lua).unwrap();
+        for (anchor, sizing, size) in [
+            ("top = true, left = true, right = true", ", height = 32", (1000.0, 32.0)),
+            ("top = true, bottom = true", "", (40.0, 500.0)),
+            ("top = true, left = true", ", height = 32", (40.0, 32.0)),
+            ("top = true, left = true, right = true", ", width = 200, height = 32", (200.0, 32.0)),
+            ("top = true, left = true, right = true", ", width = \"50%\", height = 32", (500.0, 32.0)),
+            ("top = true, left = true, right = true", ", width = \"fill\", height = 32", (1000.0, 32.0)),
+            ("top = true, left = true, right = true", ", max_width = 300, height = 32", (300.0, 32.0)),
+            ("top = true, bottom = true", ", max_height = 250", (40.0, 250.0)),
+        ] {
+            let source = format!(
+                r#"panel {{ id = "bar", anchor = {{ {anchor} }}{sizing}, child = rect {{ width = 40, height = 10 }} }}"#
+            );
+            let (lua, surface) = surface_from(&source);
+            let mut scene = Scene::new();
+            apply_at(&mut scene, &[surface], full(), &shaping, &lua).unwrap();
+            let root = scene.surface("bar@TEST").unwrap();
+            assert_eq!((root.rect.width, root.rect.height), size, "{source}");
+        }
+    }
 
-        let root = scene.surface("settings@TEST").unwrap();
-        assert_eq!((root.rect.width, root.rect.height), (1920.0, 1168.0));
-        assert_eq!((root.children[0].rect.width, root.children[0].rect.height), (1920.0, 1168.0));
+    #[test]
+    fn an_unsized_allocated_root_and_its_fill_child_take_the_configured_size() {
+        let shaping = ShapingHandle::spawn();
+        for (kind, anchor) in [
+            ("window", ""),
+            ("lock", ""),
+            ("panel", "anchor = { top = true, bottom = true, left = true, right = true },"),
+        ] {
+            let (lua, surface) = surface_from(&format!(
+                r#"{{ kind = "{kind}", id = "root", {anchor} child = rect {{ width = "fill", height = "fill" }} }}"#
+            ));
+            let mut scene = Scene::new();
+            for available in
+                [LogicalSize { width: 1920.0, height: 1168.0 }, LogicalSize { width: 800.0, height: 400.0 }]
+            {
+                apply_at(&mut scene, std::slice::from_ref(&surface), available, &shaping, &lua).unwrap();
+                let root = scene.surface("root@TEST").unwrap();
+                let size = (available.width, available.height);
+                assert_eq!((root.rect.width, root.rect.height), size, "{kind}");
+                assert_eq!((root.children[0].rect.width, root.children[0].rect.height), size, "{kind}");
+            }
+        }
     }
 
     #[test]
@@ -2417,19 +2461,6 @@ mod tests {
         assert_eq!(root.kind, "lock");
         assert_eq!(root.children.len(), 1, "a lock's `child`, read through the same `child` field a panel's is");
         assert_eq!((root.children[0].rect.width, root.children[0].rect.height), (1920.0, 1080.0));
-    }
-
-    #[test]
-    fn an_unsized_lock_root_is_its_output_so_a_fill_child_covers_the_locked_screen() {
-        let mut scene = Scene::new();
-        let shaping = ShapingHandle::spawn();
-        let (lua, surface) =
-            surface_from(r#"{ kind = "lock", id = "screen-lock", child = rect { width = "fill", height = "fill" } }"#);
-        apply_at(&mut scene, &[surface], LogicalSize { width: 2560.0, height: 1440.0 }, &shaping, &lua).unwrap();
-
-        let root = scene.surface("screen-lock@TEST").unwrap();
-        assert_eq!((root.rect.width, root.rect.height), (2560.0, 1440.0));
-        assert_eq!((root.children[0].rect.width, root.children[0].rect.height), (2560.0, 1440.0));
     }
 
     /// ADR-0294: the solver tree outlives the pass. A colour write reuses every solver node and lays

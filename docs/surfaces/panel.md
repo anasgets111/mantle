@@ -23,7 +23,6 @@ local bar = panel {
     id = "bar",
     layer = "top",
     anchor = { top = true, left = true, right = true },
-    width = "fill",
     height = 32,
     exclusive_zone = true,
     child = row {
@@ -60,7 +59,7 @@ local bar = panel {
 return { bar }
 ```
 
-The panel's `width = "fill"` makes the root node as wide as the surface ([size](#size)), and the two
+Both horizontal edges are anchored, so the omitted width fills the root ([size](#size)), and the two
 `"fill"` spacers centre the clock. The background sits on the `row`, not the panel, so the whole
 bar takes clicks ([input region](index.md#input-region)).
 
@@ -103,14 +102,13 @@ Connector names come from [`mantle.screens`](../capabilities/index.md#renderer-m
 
 | `width`/`height` on an axis | Both edges of that axis anchored | One or no edge anchored |
 | :--- | :--- | :--- |
-| Omitted | The compositor's span, same as `"fill"` | Measured from the content |
+| Omitted | The compositor's span; the root fills it too | Measured from the content |
 | `"fill"` | The compositor's span | Protocol error. The panel stays hidden with a warning, or keeps its previous size on a live change |
 | px or `"NN%"` | That size | That size |
 
-The table sizes the Wayland surface. The root node inside it is laid out like any
-[node](../nodes/index.md): omitted means content-sized even when the surface spans the output. On a
-spanned axis write `"fill"` on the panel so the root, its `background` and its `"fill"` children
-cover the surface.
+The table sizes the Wayland surface. On a spanned axis, omitted size also fills its root node.
+On an unspanned axis, omission measures the content. To keep a narrower box inside a spanned
+surface, put its size and `background` on a child. `max_width`/`max_height` cap the root.
 
 Measured content is capped at the output minus the margins on the anchored edges, and by the root's
 `max_width`/`max_height`. Other clients' exclusive zones are not subtracted, so content wider than
@@ -414,13 +412,13 @@ An empty list still maps a 1×1 px surface; bind `visible` to whether the list h
 
 | Trap | Fix |
 | :--- | :--- |
-| A panel anchored to both sides shows its background only behind its content | Omitted size spans the surface but not the root node; set `width = "fill"` (or `height`) on the panel |
+| A panel anchored to both sides needs a content-sized background | Put the size and `background` on a child; the omitted panel extent fills its root |
 | `"fill"` on an axis with only one edge anchored leaves the panel hidden with a warning in `mantle log` | Anchor both edges of that axis, or give a size |
 | `height = "50%"` or a function `child` on an `output = "active"` panel is refused | Use `"fill"` with anchors and margins, or px |
 | `exclusive_zone = true` on a corner-anchored panel reserves nothing | Anchor one edge, alone or with both perpendicular edges, or give a px count |
 | `exclusive_zone = 0`, `-1` or `32.5` is refused | `false`, `"ignore"`, or a whole px count |
 | `margin = { top = 8 }` on a bottom-anchored panel does nothing | The offset applies only to anchored edges |
-| Clicks on the bar's empty background reach the window below | The panel's own `background` claims no input; put it on a `"fill"` child of a `"fill"` panel ([input region](index.md#input-region)) |
+| Clicks on the bar's empty background reach the window below | The panel's own `background` claims no input; put it on a `"fill"` child covering the root ([input region](index.md#input-region)) |
 | On Hyprland, other surfaces stop taking clicks while an `"exclusive"` panel is mapped | Use `"on_demand"` unless the panel must hold every key; it still takes focus when it maps |
 | A panel on `output = "HDMI-A-1"` never appears | The name must match a connected output exactly; `mantle log` warns with the connected list |
 

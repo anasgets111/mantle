@@ -522,7 +522,7 @@ props! {
         output: Structural<Name> = absent(Lua(r#""all""#));
         /// The layer namespace compositor rules match (Hyprland `layerrule`, niri `layer-rule`).
         namespace: Structural<Name> = absent(Lua(r#""mantle-{id}""#));
-        /// Omitted measures the content, capped by the output less the anchored edges' margins; `"NN%"` is of the output. On an axis anchored to both edges, omitted and `"fill"` both size the surface to the compositor's span; the root node stays content-sized, so give the child `width = "fill"` to cover it.
+        /// Omitted measures content unless both edges of that axis are anchored; then the compositor spans the surface and its configured extent fills the root too. `"NN%"` is of the output. `max_width`/`max_height` cap the root.
         ///
         /// Book: The surface's size ([size](#size))
         width: Bound<SizeMode> = range(0.0, 8192.0).absent(Prose("content"));
