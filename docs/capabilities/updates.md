@@ -15,7 +15,7 @@ rect {
                 if updates == nil or updates.checking then
                     return "…"
                 end
-                return updates.count > 0 and (updates.count .. " updates") or "up to date"
+                return #updates.packages > 0 and (#updates.packages .. " updates") or "up to date"
             end),
         },
     },
@@ -35,7 +35,6 @@ rect {
 | `check_error?` | `string` | Why the last check failed, or `nil` after a success. A check never modifies the system. |
 | `checking` | `boolean` | A check is running. |
 | `consecutive_check_failures` | `integer` | Check failures in a row; a success resets it to `0`. |
-| `count` | `integer` | Always `#packages`. |
 | `install_current_package` | `string` | Package being installed; empty before the first step line. |
 | `install_current_step` | `integer` | 1-based number of the package being installed, e.g. pacman's `(2/5)`; `0` before the first. |
 | `install_error?` | `string` | Why the package manager could not be run or waited on, or `nil`. Its own failures are `install_exit_code`. |
@@ -146,7 +145,7 @@ end)
 
 return text {
     content = mantle.updates:map(function(updates)
-        return updates and tostring(updates.count) or ""
+        return updates and tostring(#updates.packages) or ""
     end),
 }
 ```

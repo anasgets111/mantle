@@ -72,7 +72,7 @@ pub struct BluetoothCodecs {
     pub active: Option<i32>,
 }
 
-/// One entry of [`BluetoothCodecs::codecs`].
+/// One entry of `BluetoothCodecs.codecs`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct CodecProfile {

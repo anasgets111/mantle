@@ -141,5 +141,5 @@ local items = list {
 
 See also: [row and column](row-column.md), [signals](../guide/signals.md), [input: scroll](../guide/input.md#scroll).
 
-Source: [vocabulary](../../renderer/src/lua/nodes.rs), [list parser](../../renderer/src/layout/node/spec.rs),
+Source: [vocabulary](../../renderer/src/lua/nodes/properties.rs), [list parser](../../renderer/src/layout/node/spec.rs),
 [layout as row or column](../../renderer/src/layout/scene/solver.rs).

@@ -7,6 +7,7 @@ version is 0.x, a minor release can break the Lua API.
 
 ## Unreleased
 
+- Breaking: `mantle.updates.count` and the bluetooth `DiscoveredDevice.paired` field are removed. Use `#updates.packages`; a discovered device is never paired.
 - List properties such as popup `constraint_adjustment` and text `content` runs reject a list with a `nil` hole or named keys. Entries after a hole used to be dropped silently.
 - `dofile` and `loadfile` are unavailable in configs because their synchronous file reads can stall the Renderer. Use `require` for Lua modules or `process.run` for other files.
 - `accessible_name` makes clickable nodes keyboard focusable and names them for screen readers. Tab and Shift+Tab traverse controls; Enter and Space activate them. The engine outlines a control only when Tab or an assistive-technology action focused it; `focus_ring = false` turns the outline off, and `focused(name)` with a node's `focused` reports focus within a node for custom styles. Mantle exposes the resolved scene through AT-SPI, with secure field values withheld. Breaking: with two or more focusable controls on a surface, Tab moves focus and no longer reaches a textfield's `on_navigate("tab")`.

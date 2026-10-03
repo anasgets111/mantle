@@ -9,7 +9,7 @@ rect {
                 if updates == nil or updates.checking then
                     return "…"
                 end
-                return updates.count > 0 and (updates.count .. " updates") or "up to date"
+                return #updates.packages > 0 and (#updates.packages .. " updates") or "up to date"
             end),
         },
     },
@@ -81,7 +81,7 @@ end)
 
 return text {
     content = mantle.updates:map(function(updates)
-        return updates and tostring(updates.count) or ""
+        return updates and tostring(#updates.packages) or ""
     end),
 }
 ```

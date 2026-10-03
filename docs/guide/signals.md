@@ -374,7 +374,7 @@ again after changing it in place is a write.
 | `delay() takes a Signal` / `pulse() takes a Signal` | The first argument is not a signal or capability |
 | `delay() hold must be within [1, 60000] ms` / `pulse() window must be within` | `ms` out of range, or rounds to 0 |
 | `signal:set() is only valid on a state(name, initial) signal` | `:set` on a derived, capability, hover, scroll, geometry or elided signal |
-| `signal:on_change() is only valid on a state(name, initial) signal` | `:on_change` on a derived, hover, scroll, geometry or elided signal |
+| `attempt to call a nil value (method 'on_change')` | `:on_change` on a derived, hover, scroll, geometry or elided signal, which has none |
 | `signal:set() refused its value at the marshalling boundary` | NaN, infinity, an integer past ±(2^53−1) or a string over 64 KiB |
 | `state("name", ...) refused its initial value` | The same checks on `initial` |
 | `signal:reveal() is only valid on a scroll(name) signal` / `takes a 1-based child index` | `:reveal` on another kind, or an index below 1 |

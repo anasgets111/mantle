@@ -193,7 +193,7 @@ impl BluetoothController {
             let busy = running.get(&mac).copied();
             if !paired {
                 let blocked = device.blocked().await.unwrap_or(false);
-                discovered.push(DiscoveredDevice { mac, name, paired: false, blocked, busy });
+                discovered.push(DiscoveredDevice { mac, name, blocked, busy });
                 continue;
             }
             let category = class_to_category(device.class().await.unwrap_or(0)).to_string();

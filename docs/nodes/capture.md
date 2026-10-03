@@ -107,5 +107,5 @@ and logs one warning.
 
 See also: [image](image.md), [surfaces](../surfaces/index.md).
 
-Source: [vocabulary](../../renderer/src/lua/nodes.rs), [content parsers](../../renderer/src/layout/node/content.rs),
+Source: [vocabulary](../../renderer/src/lua/nodes/properties.rs), [content parsers](../../renderer/src/layout/node/content.rs),
 [capture](../../renderer/src/wayland/capture/mod.rs).

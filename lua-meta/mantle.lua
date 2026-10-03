@@ -92,14 +92,14 @@
 ---@field mac string MAC address from the `bluez_card.*` name, `_` turned to `:`.
 
 ---@class CodecProfile
----One entry of `BluetoothCodecs::codecs`.
+---One entry of `BluetoothCodecs.codecs`.
 ---@field codec string Codec from the profile name, else its English description, e.g. `"AAC"`, `"LDAC"`, `"mSBC"`.
 ---@field description string PipeWire's description, e.g. `"High Fidelity Playback (A2DP Sink, codec AAC)"`.
 ---@field index integer Profile index, the second argument of `set_bluetooth_profile`.
 
 ---@class ConnectedDevice
 ---@field battery integer Battery percentage, or `-1` when the device reports none.
----@field busy? DeviceAction Same as `DiscoveredDevice::busy`.
+---@field busy? DeviceAction Same as `DiscoveredDevice.busy`.
 ---@field category string From the class of device: `"keyboard"`, `"mouse"`, `"headphones"`, `"headset"`, `"phone"`, `"computer"` or `"generic"`.
 ---@field mac string MAC address, e.g. `"00:1A:7D:DA:71:11"`; every `bluetooth` action takes it.
 ---@field name string The device's advertised name, or empty.
@@ -112,7 +112,6 @@
 ---@field busy? DeviceAction The action this shell is running on the device, or `nil`; another client's never shows.
 ---@field mac string MAC address, the argument of `pair`.
 ---@field name string Advertised name, often empty when the device broadcasts only an address.
----@field paired boolean Always `false`.
 
 ---@class DiskDevice
 ---One physical block device and its mounted partitions.
@@ -204,14 +203,14 @@
 
 ---@class OutputWorkspaces
 ---One output's workspaces.
----@field active_workspace integer `WorkspaceEntry::id` shown on this output.
----@field focused_workspace? integer `WorkspaceEntry::id` with focus, present only on the focused output (ADR-0056).
+---@field active_workspace integer `WorkspaceEntry.id` shown on this output.
+---@field focused_workspace? integer `WorkspaceEntry.id` with focus, present only on the focused output (ADR-0056).
 ---@field name string Connector name, e.g. `"eDP-1"`, as in `mantle.screens` and a surface's `monitor`.
----@field workspaces WorkspaceEntry[] Workspaces on this output, sorted by `WorkspaceEntry::idx`.
+---@field workspaces WorkspaceEntry[] Workspaces on this output, sorted by `WorkspaceEntry.idx`.
 
 ---@class PairedDevice
 ---@field blocked boolean BlueZ refuses every connection to or from the device until it is unblocked.
----@field busy? DeviceAction Same as `DiscoveredDevice::busy`.
+---@field busy? DeviceAction Same as `DiscoveredDevice.busy`.
 ---@field category string Same set as `ConnectedDevice.category`.
 ---@field mac string MAC address, the argument of `connect` and `forget`.
 ---@field name string The device's advertised name, or empty.
@@ -295,11 +294,11 @@
 
 ---@class SpecialWorkspace
 ---One Hyprland special workspace (ADR-0119).
----@field app_id? string `app_id` of its representative window, chosen as `WorkspaceEntry::app_id` is.
+---@field app_id? string `app_id` of its representative window, chosen as `WorkspaceEntry.app_id` is.
 ---@field name string Full name, `"special:scratch"` or `"special"`; the argument of `"toggle_special"`.
 ---@field populated boolean Whether at least one window sits on it.
 ---@field shown_on? string Connector showing it, or `nil` while hidden.
----@field window_id? string `window_id` of its representative window, chosen as `WorkspaceEntry::app_id` is.
+---@field window_id? string `window_id` of its representative window, chosen as `WorkspaceEntry.app_id` is.
 
 ---@class SysinfoConfigure
 ---`sysinfo:configure`'s table. Absent keys keep their interval; one wrong-typed key raises at the call.
@@ -378,7 +377,7 @@
 ---@field idx integer Label number: niri's 1-based position on the output, renumbered on reorder; Hyprland's workspace number, equal to `id` up to `255`, where it saturates.
 ---@field name? string Workspace name; `nil` when unnamed, or on Hyprland when the name is just the number.
 ---@field populated boolean Whether a window sits here (ADR-0117).
----@field window_id? string `window_id` of a window here, chosen as `WorkspaceEntry::app_id` is. `nil` when empty.
+---@field window_id? string `window_id` of a window here, chosen as `WorkspaceEntry.app_id` is. `nil` when empty.
 
 ---@class ApplicationsState
 ---`mantle.applications` payload (ADR-0061, ADR-0252).
@@ -535,7 +534,6 @@
 ---@field check_error? string Why the last check failed, or `nil` after a success. A check never modifies the system.
 ---@field checking boolean A check is running.
 ---@field consecutive_check_failures integer Check failures in a row; a success resets it to `0`.
----@field count integer Always `#packages`.
 ---@field install_current_package string Package being installed; empty before the first step line.
 ---@field install_current_step integer 1-based number of the package being installed, e.g. pacman's `(2/5)`; `0` before the first.
 ---@field install_error? string Why the package manager could not be run or waited on, or `nil`. Its own failures are `install_exit_code`.

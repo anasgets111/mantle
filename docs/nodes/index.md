@@ -348,7 +348,7 @@ See also: [surfaces](../surfaces/index.md) (where a tree lives), [signals](../gu
 (live properties), [paint](../guide/paint.md), [animation](../guide/animation.md),
 [input](../guide/input.md), [capabilities](../capabilities/index.md).
 
-Source: [node vocabulary](../../renderer/src/lua/nodes.rs),
+Source: [node vocabulary](../../renderer/src/lua/nodes/properties.rs),
 [layout solver](../../renderer/src/layout/scene/solver.rs),
 [pass and reconciliation](../../renderer/src/layout/scene/pass.rs),
 [property resolution](../../renderer/src/layout/node/mod.rs),

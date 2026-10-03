@@ -82,7 +82,7 @@ One BlueZ audio device's codec choices, joined to `mantle.bluetooth` by MAC.
 
 ### `CodecProfile`
 
-One entry of `BluetoothCodecs::codecs`.
+One entry of `BluetoothCodecs.codecs`.
 
 | Field | Type | Description |
 | --- | --- | --- |

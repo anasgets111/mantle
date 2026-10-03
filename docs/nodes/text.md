@@ -147,6 +147,6 @@ ellipsis; it never merges content from later lines into the preview.
 
 See also: [textfield](textfield.md), [fonts](../guide/scripting.md#fonts), [icon](icon.md).
 
-Source: [vocabulary](../../renderer/src/lua/nodes.rs), [content parsers](../../renderer/src/layout/node/content.rs),
+Source: [vocabulary](../../renderer/src/lua/nodes/properties.rs), [content parsers](../../renderer/src/layout/node/content.rs),
 [measure](../../renderer/src/layout/scene/solver.rs), [line height](../../renderer/src/text/shaping/mod.rs),
 [link hit testing](../../renderer/src/layout/hit.rs).

@@ -120,6 +120,6 @@ follows the node, so give the field a stable `id` when siblings before it come a
 
 See also: [input](../guide/input.md), [list](list.md), [text](text.md), [surfaces: panel](../surfaces/panel.md).
 
-Source: [vocabulary](../../renderer/src/lua/nodes.rs), [content parsers](../../renderer/src/layout/node/content.rs),
+Source: [vocabulary](../../renderer/src/lua/nodes/properties.rs), [content parsers](../../renderer/src/layout/node/content.rs),
 [secure_submit](../../renderer/src/layout/node/spec.rs), [plain fields](../../renderer/src/wayland/input/keyboard/plain.rs),
 [focus](../../renderer/src/wayland/input/keyboard/mod.rs).

@@ -104,6 +104,6 @@ return header
 
 See also: [list](list.md), [rect](rect.md), [layout model](index.md#layout-model).
 
-Source: [vocabulary](../../renderer/src/lua/nodes.rs), [layout solver](../../renderer/src/layout/scene/solver.rs),
+Source: [vocabulary](../../renderer/src/lua/nodes/properties.rs), [layout solver](../../renderer/src/layout/scene/solver.rs),
 [spacing and alignment parsers](../../renderer/src/layout/node/style/mod.rs),
 [scroll](../../renderer/src/layout/scene/scroll.rs).

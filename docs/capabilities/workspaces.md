@@ -60,10 +60,10 @@ One output's workspaces.
 
 | Field | Type | Description |
 | --- | --- | --- |
-| `active_workspace` | `integer` | `WorkspaceEntry::id` shown on this output. |
-| `focused_workspace?` | `integer` | `WorkspaceEntry::id` with focus, present only on the focused output. |
+| `active_workspace` | `integer` | `WorkspaceEntry.id` shown on this output. |
+| `focused_workspace?` | `integer` | `WorkspaceEntry.id` with focus, present only on the focused output. |
 | `name` | `string` | Connector name, e.g. `"eDP-1"`, as in `mantle.screens` and a surface's `monitor`. |
-| `workspaces` | `WorkspaceEntry[]` | Workspaces on this output, sorted by `WorkspaceEntry::idx`. |
+| `workspaces` | `WorkspaceEntry[]` | Workspaces on this output, sorted by `WorkspaceEntry.idx`. |
 
 ### `SpecialWorkspace`
 
@@ -71,11 +71,11 @@ One Hyprland special workspace.
 
 | Field | Type | Description |
 | --- | --- | --- |
-| `app_id?` | `string` | `app_id` of its representative window, chosen as `WorkspaceEntry::app_id` is. |
+| `app_id?` | `string` | `app_id` of its representative window, chosen as `WorkspaceEntry.app_id` is. |
 | `name` | `string` | Full name, `"special:scratch"` or `"special"`; the argument of `"toggle_special"`. |
 | `populated` | `boolean` | Whether at least one window sits on it. |
 | `shown_on?` | `string` | Connector showing it, or `nil` while hidden. |
-| `window_id?` | `string` | `window_id` of its representative window, chosen as `WorkspaceEntry::app_id` is. |
+| `window_id?` | `string` | `window_id` of its representative window, chosen as `WorkspaceEntry.app_id` is. |
 
 ### `WorkspaceEntry`
 
@@ -88,7 +88,7 @@ One workspace. Draw `idx`, send `id`.
 | `idx` | `integer` | Label number: niri's 1-based position on the output, renumbered on reorder; Hyprland's workspace number, equal to `id` up to `255`, where it saturates. |
 | `name?` | `string` | Workspace name; `nil` when unnamed, or on Hyprland when the name is just the number. |
 | `populated` | `boolean` | Whether a window sits here. |
-| `window_id?` | `string` | `window_id` of a window here, chosen as `WorkspaceEntry::app_id` is. `nil` when empty. |
+| `window_id?` | `string` | `window_id` of a window here, chosen as `WorkspaceEntry.app_id` is. `nil` when empty. |
 
 ## Actions
 

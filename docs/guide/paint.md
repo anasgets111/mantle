@@ -605,7 +605,7 @@ blur does not fade with `opacity`, so a fading scrim would blur at full strength
 
 See also: [nodes](../nodes/index.md), [surfaces](../surfaces/index.md), [animation](animation.md), [input](input.md#hit-testing), [glossary](../glossary.md).
 
-Source: [allowlist](../../renderer/src/lua/nodes.rs),
+Source: [allowlist](../../renderer/src/lua/nodes/properties.rs),
 [parsers](../../renderer/src/layout/node/style/mod.rs),
 [paint style](../../renderer/src/layout/node/paint_style.rs),
 [paint order](../../renderer/src/layout/paint/build.rs),

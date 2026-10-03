@@ -111,6 +111,6 @@ local cover = rect {
 
 See also: [icon](icon.md), [shader](shader.md), [paint](../guide/paint.md), [animation](../guide/animation.md).
 
-Source: [vocabulary](../../renderer/src/lua/nodes.rs), [content parsers](../../renderer/src/layout/node/content.rs),
+Source: [vocabulary](../../renderer/src/lua/nodes/properties.rs), [content parsers](../../renderer/src/layout/node/content.rs),
 [transition](../../renderer/src/layout/node/animate/transition.rs),
 [shader stage](../../renderer/src/layout/image_shader/mod.rs), [decode](../../renderer/src/image/decode.rs).

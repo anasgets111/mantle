@@ -718,10 +718,9 @@ local PACKAGES = {
 }
 
 local function updates_state(step)
-    if step == nil then return { count = #PACKAGES, packages = PACKAGES, installing = false } end
-    if step > #PACKAGES then return { count = 0, packages = {}, installing = false } end
+    if step == nil then return { packages = PACKAGES, installing = false } end
+    if step > #PACKAGES then return { packages = {}, installing = false } end
     return {
-        count = #PACKAGES,
         packages = {},
         installing = true,
         install_current_step = step,

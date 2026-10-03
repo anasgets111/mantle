@@ -35,7 +35,7 @@ pub struct ConnectedDevice {
     /// From the class of device: `"keyboard"`, `"mouse"`, `"headphones"`, `"headset"`, `"phone"`,
     /// `"computer"` or `"generic"`.
     pub category: String,
-    /// Same as [`DiscoveredDevice::busy`].
+    /// Same as `DiscoveredDevice.busy`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub busy: Option<DeviceAction>,
 }
@@ -51,7 +51,7 @@ pub struct PairedDevice {
     pub category: String,
     /// BlueZ refuses every connection to or from the device until it is unblocked.
     pub blocked: bool,
-    /// Same as [`DiscoveredDevice::busy`].
+    /// Same as `DiscoveredDevice.busy`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub busy: Option<DeviceAction>,
 }
@@ -63,8 +63,6 @@ pub struct DiscoveredDevice {
     pub mac: String,
     /// Advertised name, often empty when the device broadcasts only an address.
     pub name: String,
-    /// Always `false`.
-    pub paired: bool,
     /// BlueZ refuses to pair with or connect to the device until it is unblocked.
     pub blocked: bool,
     /// The action this shell is running on the device, or `nil`; another client's never shows.

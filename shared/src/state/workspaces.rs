@@ -30,10 +30,10 @@ pub struct SpecialWorkspace {
     pub name: String,
     /// Whether at least one window sits on it.
     pub populated: bool,
-    /// `app_id` of its representative window, chosen as [`WorkspaceEntry::app_id`] is.
+    /// `app_id` of its representative window, chosen as `WorkspaceEntry.app_id` is.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub app_id: Option<String>,
-    /// `window_id` of its representative window, chosen as [`WorkspaceEntry::app_id`] is.
+    /// `window_id` of its representative window, chosen as `WorkspaceEntry.app_id` is.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub window_id: Option<String>,
     /// Connector showing it, or `nil` while hidden.
@@ -47,12 +47,12 @@ pub struct SpecialWorkspace {
 pub struct OutputWorkspaces {
     /// Connector name, e.g. `"eDP-1"`, as in `mantle.screens` and a surface's `monitor`.
     pub name: String,
-    /// [`WorkspaceEntry::id`] shown on this output.
+    /// `WorkspaceEntry.id` shown on this output.
     pub active_workspace: u64,
-    /// [`WorkspaceEntry::id`] with focus, present only on the focused output (ADR-0056).
+    /// `WorkspaceEntry.id` with focus, present only on the focused output (ADR-0056).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub focused_workspace: Option<u64>,
-    /// Workspaces on this output, sorted by [`WorkspaceEntry::idx`].
+    /// Workspaces on this output, sorted by `WorkspaceEntry.idx`.
     pub workspaces: Vec<WorkspaceEntry>,
 }
 
@@ -74,7 +74,7 @@ pub struct WorkspaceEntry {
     /// on niri the focused one, else the lowest id, `nil` if that one has no `app_id`. `nil` when empty.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub app_id: Option<String>,
-    /// `window_id` of a window here, chosen as [`WorkspaceEntry::app_id`] is. `nil` when empty.
+    /// `window_id` of a window here, chosen as `WorkspaceEntry.app_id` is. `nil` when empty.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub window_id: Option<String>,
 }

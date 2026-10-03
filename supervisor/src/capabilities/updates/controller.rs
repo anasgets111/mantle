@@ -77,7 +77,6 @@ impl UpdatesController {
             && guard.last_successful_check.is_none()
         {
             guard.last_successful_check = Some(checked_at);
-            guard.count = configure.packages.len() as u32;
             guard.packages = configure.packages;
             changed = true;
         }
@@ -206,7 +205,7 @@ async fn run_check_task(
 }
 
 /// Runs one scheduled or manual check. Pushes when `checking` rises and when the result is written,
-/// so the state is visible during the sync. Failures preserve `count`/`packages` and write
+/// so the state is visible during the sync. Failures preserve `packages` and write
 /// only `check_error`.
 async fn run_one_check(backend: &Arc<dyn Backend>, state: &Arc<Mutex<UpdatesState>>, events: &UnboundedSender<()>) {
     state.lock().expect("mutex poisoned").checking = true;
@@ -219,7 +218,6 @@ async fn run_one_check(backend: &Arc<dyn Backend>, state: &Arc<Mutex<UpdatesStat
     guard.checking = false;
     match result.map_err(|join_err| format!("check task panicked: {join_err}")) {
         Ok(Ok(report)) => {
-            guard.count = report.packages.len() as u32;
             guard.packages = report.packages;
             guard.aur_error = report.aur_error;
             guard.last_successful_check = Some(epoch_seconds(SystemTime::now()));
@@ -304,7 +302,7 @@ async fn run_install_with_child(
             // log frozen until the first `(n/m)`. The download phase stays silent regardless,
             // because pacman prints nothing per package without a tty (measured: its `wchar` does
             // not move for the whole download). A pty is the only cure and costs ANSI and `\r`
-            // handling; `updates.count` and `download_size` cover the gap in config instead.
+            // handling; `#updates.packages` and `download_size` cover the gap in config instead.
             let _ = events.send(());
         }
     }
@@ -398,7 +396,7 @@ mod tests {
             packages: vec![candidate()],
             aur: false,
         });
-        assert_eq!(controller.snapshot().count, 0);
+        assert!(controller.snapshot().packages.is_empty());
 
         controller.configure(UpdatesConfigure {
             interval_secs: 0,
@@ -409,7 +407,6 @@ mod tests {
         let seeded = controller.snapshot();
         assert_eq!(seeded.last_successful_check, Some(1_800_000_000));
         assert_eq!(seeded.packages, vec![candidate()]);
-        assert_eq!(seeded.count, 1, "`count` is always `#packages`, seeded or checked");
         assert_eq!(events_rx.recv().await, Some(()), "a seed is Lua-visible, so it pushes");
 
         // A second seed is a later config reload, not a later check: the slot is taken.
@@ -425,7 +422,7 @@ mod tests {
             Some(1_800_000_000),
             "this must never move the last-check time backwards"
         );
-        assert_eq!(kept.count, 1);
+        assert_eq!(kept.packages, vec![candidate()]);
     }
 
     /// A controller over [`StubBackend`], so every check fails without touching the network. What
@@ -467,7 +464,7 @@ mod tests {
     async fn failed_checks_count_up_and_leave_the_last_good_answer_alone() {
         let (controller, mut events_rx) = failing_controller().await;
         // A count from an earlier good check, which a failure must not blank.
-        controller.state.lock().unwrap().count = 3;
+        controller.state.lock().unwrap().packages = vec![candidate(); 3];
 
         controller.check_now();
         await_one_check(&mut events_rx).await;
@@ -476,7 +473,7 @@ mod tests {
 
         let snapshot = controller.snapshot();
         assert_eq!(snapshot.consecutive_check_failures, 2);
-        assert_eq!(snapshot.count, 3, "a failed check reports the failure, it does not clear the list");
+        assert_eq!(snapshot.packages.len(), 3, "a failed check reports the failure, it does not clear the list");
     }
 
     #[test]
@@ -544,7 +541,7 @@ mod tests {
 
         let snapshot = controller.snapshot();
         assert_eq!(snapshot.package_manager.as_deref(), Some("stub"));
-        assert_eq!(snapshot.count, 0);
+        assert!(snapshot.packages.is_empty());
         assert_eq!(snapshot.last_successful_check, None, "naming the manager is not a check");
     }
 

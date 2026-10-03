@@ -13,8 +13,6 @@ pub struct UpdatesState {
     /// AUR helper found at start, `"paru"` or `"yay"`, or `nil`; used only once `configure` sets
     /// `aur` (ADR-0250).
     pub aur_helper: Option<String>,
-    /// Always `#packages`.
-    pub count: u32,
     /// Pending upgrades. A failed check keeps the last good list.
     pub packages: Vec<UpdateCandidate>,
     /// Unix seconds of the last successful check (or the `checked_at` seed), else `nil`.

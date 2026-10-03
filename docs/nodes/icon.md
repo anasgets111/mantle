@@ -71,6 +71,6 @@ change shows after a shell restart, not a reload. Files load as PNG, JPEG, WebP,
 
 See also: [image](image.md), [capabilities](../capabilities/index.md).
 
-Source: [vocabulary](../../renderer/src/lua/nodes.rs), [content parsers](../../renderer/src/layout/node/content.rs),
+Source: [vocabulary](../../renderer/src/lua/nodes/properties.rs), [content parsers](../../renderer/src/layout/node/content.rs),
 [theme lookup](../../renderer/src/image/icons.rs), [decode](../../renderer/src/image/decode.rs),
 [icon draw](../../renderer/src/layout/paint/build.rs).

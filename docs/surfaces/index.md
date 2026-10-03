@@ -178,7 +178,7 @@ See also: [nodes](../nodes/index.md), [paint](../guide/paint.md), [input](../gui
 [signals](../guide/signals.md), [runtime](../guide/runtime.md), [CLI](../guide/cli.md).
 
 Source: [surface parsing](../../renderer/src/lua/surfaces.rs),
-[accepted properties](../../renderer/src/lua/nodes.rs),
+[accepted properties](../../renderer/src/lua/nodes/properties.rs),
 [fingerprints](../../renderer/src/layout/node/spec.rs),
 [instances](../../renderer/src/layout/instance.rs),
 [function child and root size](../../renderer/src/layout/scene/pass.rs),

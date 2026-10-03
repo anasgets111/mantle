@@ -96,5 +96,5 @@ their own `align_h`.
 
 See also: [row and column](row-column.md), [paint](../guide/paint.md).
 
-Source: [vocabulary](../../renderer/src/lua/nodes.rs), [children](../../renderer/src/layout/node/spec.rs),
+Source: [vocabulary](../../renderer/src/lua/nodes/properties.rs), [children](../../renderer/src/layout/node/spec.rs),
 [box paint](../../renderer/src/layout/node/paint_style.rs).
