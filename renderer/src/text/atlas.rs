@@ -18,7 +18,7 @@ use shared::debug;
 use crate::layout::node::{Rgba, StyleRun, TextAlign, font_runs};
 use crate::layout::paint::DrawCmd;
 use crate::text::shaping::{
-    FontFace, FontRun, Glyph, ShapeResult, ShapingHandle, ShapingStyle, caret_thickness, caret_visible_left, caret_x,
+    FontFace, FontRun, Glyph, ShapeResult, ShapingHandle, ShapingStyle, caret_thickness, caret_x,
 };
 
 use super::snap::{LogicalRect, snap_to_physical};
@@ -417,7 +417,6 @@ impl TextPainter {
         for (line_start, shaped) in shaped_lines.iter() {
             let line_start = *line_start;
             for laid in shaped.shaped.iter() {
-                let left = align.line_left(laid.rtl, physical.x0 as f32, physical.x1 as f32, laid.width * scale);
                 let baseline = physical.y0 as f32 + row as f32 * step + laid.baseline * scale;
                 row += 1;
                 // A `textfield`'s selection and caret, in the ink the field already declared for
@@ -427,11 +426,16 @@ impl TextPainter {
                 // Past the width that fits, the line follows the caret rather than its alignment,
                 // or the end of a long draft is drawn outside the field it belongs to (ADR-0236).
                 let left = match selection {
-                    Some((_, at)) => {
-                        let cx = caret_x(laid, at) * scale;
-                        caret_visible_left(left, physical.x0 as f32, physical.x1 as f32, cx, thickness)
-                    }
-                    None => left,
+                    Some((_, at)) => crate::layout::hit::field_line_left(
+                        Some(laid),
+                        align,
+                        physical.x0 as f32,
+                        physical.x1 as f32,
+                        at,
+                        thickness,
+                        scale,
+                    ),
+                    None => align.line_left(laid.rtl, physical.x0 as f32, physical.x1 as f32, laid.width * scale),
                 };
                 // Behind the glyphs, so the words inside it stay readable. One rect per visually
                 // contiguous stretch: a selection crossing a direction change is not one box.

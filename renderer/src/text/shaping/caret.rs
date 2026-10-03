@@ -48,9 +48,7 @@ pub fn caret_at(line: &ShapedLine, x: f32, text_len: usize) -> usize {
 /// An offset where two runs meet ends one glyph and starts another, and both edges are valid: the
 /// first in visual order wins, so the caret stays on the run the text before it belongs to.
 ///
-/// ponytail: an offset inside a cluster draws at the cluster's leading edge, so stepping through
-/// `لا` moves the caret without moving the mark. Both this and the boundary tie-break above want
-/// the same upgrade: a caret that carries which side of a boundary it sits on.
+/// ponytail: no caret stops inside a ligature; keeping Parley clusters and affinity would add them.
 pub fn caret_x(line: &ShapedLine, offset: usize) -> f32 {
     // Parley yields visual runs left to right. At a direction boundary, the preceding text's
     // trailing edge wins even if its visual run follows the next one.

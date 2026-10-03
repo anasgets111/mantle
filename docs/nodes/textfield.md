@@ -85,8 +85,11 @@ The image shows the empty search field and unfiltered list. Typing updates the l
 
 The field has no intrinsic size: give it `width` and `height`. It draws one line of text and a
 caret, vertically centred, in the [`fonts`](../guide/scripting.md#fonts) chain; there is no `font`
-property. It reads `wl_keyboard`, not an input method, so there is no CJK composition and no dead
-keys.
+property. Plain fields use `zwp_text_input_v3` for composition when the compositor offers it and
+text-input enters the field's own surface. Raw keys stay active between compositions and are
+suppressed during pending or active composition. Preedit text is underlined; commits and surrounding
+deletions call `on_change`. Secure fields read `wl_keyboard` and never send their
+draft to an input method.
 
 A field with none of `on_change`, `on_submit` and `secure_submit` never takes focus. The draft
 follows the node, so give the field a stable `id` when siblings before it come and go

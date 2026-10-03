@@ -34,6 +34,14 @@ pub enum FieldFocus<'a> {
         /// the caret hold still.
         caret_on: bool,
     },
+    Composing {
+        id: NodeId,
+        text: &'a str,
+        selection: (usize, usize),
+        preedit: &'a str,
+        cursor: (i32, i32),
+        caret_on: bool,
+    },
 }
 
 /// Flattens `root` without touching a canvas or GL context.
@@ -495,33 +503,48 @@ fn draw_for(
         // trigger `pam_faillock` and a ten-minute lockout. `retarget_secure_submit` zeroizes the
         // buffer on focus changes, so only the focused field can show typed state.
         PaintStyle::TextField { target, placeholder, mask, font_size, color, align } => {
-            let (content, caret, caret_on) = match focus {
+            let (content, caret, caret_on, runs) = match focus {
                 // An empty masked field remains a prompt.
                 Some(FieldFocus::Masked { id, target: focused, filled }) if *filled > 0 => {
                     if *id == node_id && target.as_ref().is_some_and(|declared| declared == *focused) {
-                        (mask.repeat(*filled), None, false)
+                        (mask.repeat(*filled), None, false, Vec::new())
                     } else {
-                        (placeholder.clone(), None, false)
+                        (placeholder.clone(), None, false, Vec::new())
                     }
                 }
                 // Empty focused fields show the placeholder rather than a bare caret (ADR-0135):
                 // the caret-only rule hid the prompt of every `autofocus` field, which holds the
                 // keyboard from the first frame. Keep `target.is_none()` beside the id: the same
                 // node may gain `secure_submit`, and a masked field must never draw plain text.
+                Some(FieldFocus::Composing { id, text, selection, preedit, cursor, caret_on })
+                    if *id == node_id && target.is_none() =>
+                {
+                    let (content, preedit_range, caret) = super::compose_preedit(text, *selection, preedit, *cursor);
+                    let scroll_caret = Some(caret.unwrap_or((preedit_range.end, preedit_range.end)));
+                    let runs = vec![StyleRun {
+                        range: preedit_range,
+                        bold: false,
+                        italic: false,
+                        underline: true,
+                        color: None,
+                        href: None,
+                    }];
+                    (content, scroll_caret, *caret_on && caret.is_some(), runs)
+                }
                 Some(FieldFocus::Plain { id, text, caret, caret_on }) if *id == node_id && target.is_none() => {
                     match text.is_empty() && !placeholder.is_empty() {
-                        true => (placeholder.clone(), None, false),
+                        true => (placeholder.clone(), None, false, Vec::new()),
                         // The draft remains visible without a caret (ADR-0108).
-                        false => (text.to_string(), *caret, *caret_on),
+                        false => (text.to_string(), *caret, *caret_on, Vec::new()),
                     }
                 }
-                _ => (placeholder.clone(), None, false),
+                _ => (placeholder.clone(), None, false, Vec::new()),
             };
             // An empty field with no placeholder still draws, for the caret alone (ADR-0135
             // decision 2).
             (!content.is_empty() || caret.is_some()).then_some(Draw::Text {
                 content: content.into(),
-                runs: Vec::new(),
+                runs,
                 font_size: *font_size,
                 line_height: crate::text::shaping::line_height(*font_size),
                 letter_spacing: 0.0,
@@ -1082,6 +1105,57 @@ mod tests {
         let typed =
             build(&tree, 1.0, Some(&FieldFocus::Plain { id, text: "on my way", caret: Some((9, 9)), caret_on: true }));
         assert_eq!(drawn_text(&typed), vec!["on my way".to_string()]);
+    }
+
+    #[test]
+    fn preedit_is_visible_and_underlined() {
+        let lua = Lua::new();
+        let tree = reply_surface(&lua);
+        let id = tree.children[0].id;
+        let list = build(
+            &tree,
+            1.0,
+            Some(&FieldFocus::Composing {
+                id,
+                text: "ab",
+                selection: (1, 1),
+                preedit: "語",
+                cursor: (3, 3),
+                caret_on: true,
+            }),
+        );
+        let (content, runs, caret) = list
+            .commands
+            .iter()
+            .find_map(|cmd| match &cmd.draw {
+                Draw::Text { content, runs, caret, .. } => Some((content, runs, caret)),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(content.as_ref(), "a語b");
+        assert_eq!(*caret, Some((4, 4)));
+        assert_eq!(runs.len(), 1);
+        assert_eq!(runs[0].range, 1..4);
+        assert!(runs[0].underline);
+
+        let hidden = build(
+            &tree,
+            1.0,
+            Some(&FieldFocus::Composing {
+                id,
+                text: "ab",
+                selection: (1, 1),
+                preedit: "語",
+                cursor: (-1, -1),
+                caret_on: true,
+            }),
+        );
+        assert!(
+            hidden
+                .commands
+                .iter()
+                .any(|cmd| { matches!(&cmd.draw, Draw::Text { caret: Some((4, 4)), caret_on: false, .. }) })
+        );
     }
 
     /// An empty focused field shows its placeholder, the same as an empty idle one and the same as

@@ -211,7 +211,7 @@ impl App {
                     field.surface_id == surface_id && field.id == id && self.text_field_takes_keys(field)
                 }) =>
             {
-                self.apply_plain_action(super::keyboard::KeyAction::Append(text));
+                self.apply_plain_action_inner(super::keyboard::KeyAction::Append(text), None, false);
             }
             _ => {}
         }
@@ -300,6 +300,7 @@ mod tests {
             surface_id: String::new(),
             id: layout::scene::NodeId::test(1),
             buffer: "hello world".into(),
+            history: super::keyboard::EditHistory::default(),
             selection: (5, 0),
             typing: true,
             selecting: false,

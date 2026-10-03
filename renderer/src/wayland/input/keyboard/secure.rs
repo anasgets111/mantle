@@ -139,11 +139,17 @@ impl App {
     /// enforces the buffer's lifetime; assigning the field directly anywhere else reopens the leak
     /// that function closes.
     pub(in crate::wayland) fn focus_secure_submit(&mut self, next: Option<FocusedField>) {
+        if next.is_some()
+            && let Some(field) = self.focused_text_field.as_mut()
+        {
+            field.history.clear();
+        }
         self.mark_focused_secure_submit_changed();
         if let Some(ref next_field) = next {
             self.mark_field_input_changed(&next_field.surface_id);
         }
         retarget_secure_submit(&mut self.focused_secure_submit, &mut self.secure_buffer, next);
+        self.invalidate_text_input_focus();
     }
 
     /// Ask [`focus_on_enter`] over scoped trees; called both on `enter` and when trees change under
@@ -224,7 +230,7 @@ impl App {
     /// Apply one secure key (ADR-0005). Focus is the destination gate; masked fields without one
     /// are never focused. Bytes go `KeyEvent` → native `SecureBuffer` → Supervisor, never Lua.
     pub(super) fn apply_secure_key(&mut self, event: &KeyEvent, repeat: bool) {
-        let action = key_action(event, repeat, self.ctrl_held);
+        let action = key_action(event, repeat, self.ctrl_held, self.shift_held);
         if !super::focus::secure_key_reaches_field(
             self.focused_control.as_ref(),
             self.focused_secure_submit.as_ref(),
@@ -272,7 +278,12 @@ impl App {
             KeyAction::Submit => self.finish_secure_submit(),
             // Password prompts have no navigation, and a masked field has no caret to move: a
             // position in a secret is a position the tree must never hold (ADR-0064).
-            KeyAction::Navigate(_) | KeyAction::Move(_) | KeyAction::SelectAll | KeyAction::Ignore => {}
+            KeyAction::Navigate(_)
+            | KeyAction::Move(_)
+            | KeyAction::SelectAll
+            | KeyAction::Undo
+            | KeyAction::Redo
+            | KeyAction::Ignore => {}
         }
     }
 

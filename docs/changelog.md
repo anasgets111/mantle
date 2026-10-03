@@ -8,6 +8,8 @@ version is 0.x, a minor release can break the Lua API.
 ## Unreleased
 
 - Breaking: an omitted `panel` width or height now fills the configured root axis when both opposite edges are anchored. To preserve a deliberately narrow root, wrap its content in a sized `child` and move its background there.
+- Plain `textfield` supports Ctrl+Z undo, Ctrl+Shift+Z and Ctrl+Y redo, with `on_change` for restored drafts.
+- Plain `textfield` composes through text-input-v3 where available; preedit stays local until commit. Secure fields do not use an input method.
 - Breaking: every engine-defined string enum is lowercase snake_case, and old spellings are refused: `align_h = "center"`, `width = "fill"`, `layer = "top"`, `keyboard_interactivity = "on_demand"`, `easing = "in_out_quad"`, `loops = "infinite"`, `constraint_adjustment = { "flip_y", "slide_x" }`, `exclusive_zone = "ignore"`, gradients `"linear"`/`"radial"`/`"conic"`. Capabilities read the same way: `battery.state` (`"fully_charged"`, `"pending_charge"`, ...), mpris `play_state` (`"playing"`), `loop_status` and `set_loop_status` (`"none"`, `"track"`, `"playlist"`). Panel `output` keywords are `"all"` and `"active"`; `"All"` now names a connector and logs that none is connected. POSIX signal names and SVG path ops keep their case.
 - Breaking: `tray.items[].status` is `"active"`, `"passive"` or `"needs_attention"`; an item that sends another value, or none, reads `"active"`.
 - Breaking: `panel`'s `monitor` is renamed `output` and `exclusive` is renamed `exclusive_zone`, with the same values.

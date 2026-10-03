@@ -95,6 +95,7 @@ pub struct App {
     clipboard_writers: std::sync::Arc<std::sync::atomic::AtomicUsize>,
     paste: Option<input::PendingPaste>,
     field_revision: u64,
+    text_input: input::TextInput,
     waker: crate::wake::Waker,
     layer_shell: LayerShell,
     /// `ext_background_effect_manager_v1` through SCTK's `GlobalProxy` (ADR-0195). A compositor

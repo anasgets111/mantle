@@ -3,9 +3,11 @@
 //! Pure: unlike the rest of the pointer path, this only decides what a click means. Other
 //! pointer-path work owns live `wl_pointer` and `wl_surface` objects.
 
-use crate::layout::node::{PaintStyle, apply_affine, fields, font_runs, invert_affine};
+use crate::layout::node::{
+    Affine, IDENTITY_AFFINE, PaintStyle, TextAlign, apply_affine, compose_affine, fields, font_runs, invert_affine,
+};
 use crate::layout::scene::ResolvedNode;
-use crate::text::shaping::{self, ShapingHandle, ShapingStyle};
+use crate::text::shaping::{self, ShapeResult, ShapedLine, ShapingHandle, ShapingStyle};
 use crate::text::snap::LogicalRect;
 use cursor_icon::CursorIcon;
 
@@ -103,10 +105,6 @@ pub fn link_under(node: &ResolvedNode, point: LogicalPoint, shaping: &ShapingHan
 ///
 /// Measured where paint puts the same string (ADR-0211): one shaped line under the field's own
 /// alignment, and the first cluster whose midpoint the press has not passed.
-///
-/// ponytail: cluster starts come from the shaper in logical order, so on a right-to-left or mixed
-/// line the press lands on the cluster left of the one under the pointer. Upgrade path: order the
-/// glyphs by `x` and read the direction of the run the press fell in.
 pub fn caret_at(
     path: &[&ResolvedNode],
     point: LogicalPoint,
@@ -121,13 +119,30 @@ pub fn caret_at(
         return None;
     };
     let rect = absolute_rect(&path[..=depth])?;
-    let (_, shaped) = shaping
+    let shaped = field_line(text, *font_size, shaping)?;
+    let laid = shaped.shaped.first()?;
+    // The same slide paint applies, or a scrolled draft answers every press with the wrong byte.
+    let left = field_line_left(
+        Some(laid),
+        *align,
+        rect.x,
+        rect.x + rect.width,
+        caret,
+        shaping::caret_thickness(*font_size),
+        1.0,
+    );
+    let (x, _) = apply_affine(invert_affine(path_transform(&path[..=depth]))?, point.x, point.y);
+    Some(shaping::caret_at(laid, x - left, text.len()))
+}
+
+pub(crate) fn field_line(text: &str, font_size: f32, shaping: &ShapingHandle) -> Option<ShapeResult> {
+    shaping
         .shape_lines(
             text,
             &[],
             ShapingStyle {
-                font_size: *font_size,
-                line_height: shaping::line_height(*font_size),
+                font_size,
+                line_height: shaping::line_height(font_size),
                 letter_spacing: 0.0,
                 font_weight: 400.0,
                 italic: false,
@@ -135,18 +150,21 @@ pub fn caret_at(
             None,
         )
         .into_iter()
-        .next()?;
-    let laid = shaped.shaped.first()?;
-    let left = rect.x + align.line_left(laid.rtl, 0.0, rect.width, laid.width);
-    // The same slide paint applies, or a scrolled draft answers every press with the wrong byte.
-    let left = shaping::caret_visible_left(
-        left,
-        rect.x,
-        rect.x + rect.width,
-        shaping::caret_x(laid, caret),
-        shaping::caret_thickness(*font_size),
-    );
-    Some(shaping::caret_at(laid, point.x - left, text.len()))
+        .next()
+        .map(|(_, shaped)| shaped)
+}
+
+pub(crate) fn field_line_left(
+    line: Option<&ShapedLine>,
+    align: TextAlign,
+    x0: f32,
+    x1: f32,
+    caret: usize,
+    thickness: f32,
+    scale: f32,
+) -> f32 {
+    let left = align.line_left(line.is_some_and(|line| line.rtl), x0, x1, line.map_or(0.0, |line| line.width * scale));
+    shaping::caret_visible_left(left, x0, x1, line.map_or(0.0, |line| shaping::caret_x(line, caret) * scale), thickness)
 }
 
 /// The shape the pointer should take over `path`'s deepest node (ADR-0107). Innermost wins, and
@@ -199,6 +217,33 @@ pub fn absolute_rect(path: &[&ResolvedNode]) -> Option<LogicalRect> {
     let last = path.last()?;
     let (x, y) = path.iter().fold((0.0, 0.0), |(x, y), node| (x + node.rect.x, y + node.rect.y));
     Some(LogicalRect { x, y, width: last.rect.width, height: last.rect.height })
+}
+
+pub fn path_to_node(root: &ResolvedNode, id: crate::layout::scene::NodeId) -> Option<Vec<&ResolvedNode>> {
+    fn walk<'a>(node: &'a ResolvedNode, id: crate::layout::scene::NodeId, path: &mut Vec<&'a ResolvedNode>) -> bool {
+        if !node.in_flow() {
+            return false;
+        }
+        path.push(node);
+        if node.id == id || node.content_children().any(|child| walk(child, id, path)) {
+            return true;
+        }
+        path.pop();
+        false
+    }
+    let mut path = Vec::new();
+    walk(root, id, &mut path).then_some(path)
+}
+
+pub(crate) fn path_transform(path: &[&ResolvedNode]) -> Affine {
+    let mut matrix = IDENTITY_AFFINE;
+    for (depth, node) in path.iter().enumerate() {
+        if !node.transform.is_identity() {
+            let rect = absolute_rect(&path[..=depth]).expect("the prefix includes this node");
+            matrix = compose_affine(matrix, node.transform.matrix(rect));
+        }
+    }
+    matrix
 }
 
 fn descend<'a>(
@@ -467,6 +512,12 @@ mod tests {
         assert_eq!(at(-4.0), Some(0), "a press left of the text lands before the first character");
         assert_eq!(at(width_of(&shaping, "hel") + 1.0), Some(3), "just past the third character's midpoint");
         assert_eq!(at(width_of(&shaping, text) + 40.0), Some(text.len()), "past the end is the end");
+
+        field.transform.scale = (2.0, 1.0);
+        field.transform.translate = (30.0, 0.0);
+        let untransformed = LogicalPoint { x: 10.0 + width_of(&shaping, "hel") + 1.0, y: 5.0 };
+        let (x, y) = apply_affine(field.transform.matrix(field.rect), untransformed.x, untransformed.y);
+        assert_eq!(caret_at(&[&field], LogicalPoint { x, y }, text, 0, &shaping), Some(3));
 
         // A masked field never answers: its caret would say where the secret is (ADR-0064).
         let Some(PaintStyle::TextField { target, .. }) = field.paint.as_mut() else { unreachable!() };

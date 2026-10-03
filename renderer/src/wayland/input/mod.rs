@@ -10,6 +10,8 @@ pub(super) use clipboard::{ClipboardSource, PendingPaste};
 pub(crate) use keyboard::NavigateKey;
 pub(crate) use pointer::{DragPhase, MouseButton};
 mod pointer;
+mod text_input;
+pub(super) use text_input::TextInput;
 
 pub(super) use keyboard::{FocusedField, FocusedTextField};
 
@@ -62,6 +64,7 @@ impl SeatHandler for App {
                 Ok(keyboard) => {
                     debug!("keyboard capability acquired");
                     self.keyboard = Some(keyboard);
+                    self.text_input.attach(qh, &seat);
                     self.data_device =
                         self.data_device_manager.as_ref().map(|manager| manager.get_data_device(qh, &seat));
                 }
@@ -109,6 +112,10 @@ impl SeatHandler for App {
                 self.focus_secure_submit(None);
                 self.data_device = None;
                 self.paste = None;
+                self.text_input.detach();
+                if let Some(field) = self.focused_text_field.as_mut() {
+                    field.history.clear();
+                }
                 if let Some(keyboard) = self.keyboard.take() {
                     // `wl_keyboard::release` is `since="3"` too (wayland.xml).
                     if keyboard.version() >= 3 {

@@ -279,7 +279,7 @@ function shader(props) end
 ---@return Node
 function list(props) end
 
----Single-line text input. Reads `wl_keyboard`, not an input method, so no CJK composition or dead keys. With `secure_submit` it is masked: keys never reach Lua and go to the capability (ADR-0005, ADR-0092). Otherwise `on_change` or `on_submit` makes it plain; with neither it never takes focus. A press focuses it; the surface needs `keyboard_interactivity`. The draft lives as long as the node; losing focus keeps it (ADR-0108). No intrinsic size: set `width`/`height`.
+---Single-line text input. Plain fields read `wl_keyboard` and compose through text-input-v3 when available on their keyboard-focused surface. With `secure_submit` it is masked: keys never reach Lua and go to the capability (ADR-0005, ADR-0092). Otherwise `on_change` or `on_submit` makes it plain; with neither it never takes focus. A press focuses it; the surface needs `keyboard_interactivity`. The draft lives as long as the node; losing focus keeps it (ADR-0108). No intrinsic size: set `width`/`height`.
 ---[docs](https://anasgets111.github.io/mantle/nodes/textfield.html)
 ---@param props TextfieldProps
 ---@return Node

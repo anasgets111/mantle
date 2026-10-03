@@ -248,6 +248,7 @@ a press.
 | Ctrl+Backspace, Ctrl+Delete | One word | Nothing |
 | Left, Right, Home, End | Move the caret; Ctrl+Left/Right by word; Shift selects. Left/Right with nowhere to go (and no Shift) call `on_navigate` | Nothing |
 | Ctrl+A | Selects all | Nothing |
+| Ctrl+Z, Ctrl+Shift+Z, Ctrl+Y | Undo or redo the last plain edits; `on_change` | Nothing |
 | Ctrl+C | Copies selected text | Nothing |
 | Ctrl+V | Replaces selection with clipboard text; `on_change` | Appends clipboard text to the native buffer |
 | Up, Down, Page Up, Page Down | `on_navigate` | Nothing |
@@ -257,7 +258,13 @@ a press.
 **Selection and clipboard.** Dragging or Shift+clicking with the pointer selects too. Paste accepts
 up to 64 KiB of valid UTF-8 without control characters. A paste is dropped if the selection, field,
 or keyboard focus changes before the read ends. Copy works only with a plain-field selection.
-Editing keys repeat while held; Escape does not.
+Editing keys repeat while held; Escape, undo and redo do not.
+The undo stack retains at most 100 snapshots and 1 MiB of saved text. Submit, leaving the
+field, and fresh autofocus clear that history. When text-input-v3 enters the field's own surface,
+composition appears underlined. Preedit alone does not call
+`on_change`; committed text and surrounding deletions do. Raw typing
+resumes when composition ends. A pointer press or Escape discards uncommitted composition.
+Secure fields do not use an IME.
 
 **Draft lifetime.** Clicking elsewhere, or the surface losing the keyboard, stops typing but keeps
 the draft; clicking the field again resumes it. Enter and Escape clear it. An `autofocus` arm

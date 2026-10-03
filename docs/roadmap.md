@@ -27,7 +27,7 @@ Wanted, but each needs a consumer or a decision first.
 | External IPC | `set`/`toggle` answer only applied or refused; `call` returns only what the action returns. No generic state read or subscription | 0197 |
 | Process control | Start, stream and signal exist. No child stdin, cwd or env | 0175, 0188 |
 | Move transitions | A sibling closing a gap snaps. Needs the solver's old and new rects per sibling | — |
-| Text field editing | No undo or IME; the secure field edits only at its end. On RTL or mixed lines a click lands one cluster off and the caret does not move inside a ligature | 0236 |
+| Text field editing | The secure field edits only at its end and has no IME; the caret has no stop inside a ligature | 0236, 0312 |
 | Animated WebP and APNG | Only GIF animates; the others draw their first frame. `AnimationDecoder` covers both | 0233 |
 | Localization | No translation API; desktop entry `Name`, `GenericName` and `Keywords` are read unlocalized | 0112 |
 | Wayland and input extras | No shortcut inhibition, per-surface idle inhibition, touch gestures, cross-app drag and drop, pointer buttons past left, right and middle, or a click position inside the clicked node. logind and ScreenSaver inhibition work | — |

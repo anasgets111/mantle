@@ -7453,3 +7453,15 @@ handlers and `"fill"` children covering less than the surface, and every bar nee
 axis's minimum. Allocation is read once per pass from the anchor and kept for ticks. A config
 wanting a narrow box inside a spanned panel sizes and paints a `child`; the change is breaking and
 not aliased, since the engine is 0.x.
+
+## 0312. A plain textfield owns its undo history and applies IME text on commit
+
+Undo history lives beside the focused plain draft, bounded to 100 snapshots and 1 MiB, and clears on
+submit, blur, keyboard leave, fresh autofocus and arming a secure field. text-input-v3 commits and
+surrounding deletions apply on `done`; preedit is display-only and never reaches `on_change`, so a
+config sees only text the user meant. While composing, the surrounding text sent to the IME leaves
+out the range the preedit replaces. Escape or a pointer press discards uncommitted composition
+rather than committing it, so a press lands on the committed draft. Secure fields stay off
+text-input-v3 and keep end-only editing: an input method would see the draft. Ctrl+Z/Y fall back to
+the physical key only when the keysym is not a Latin letter, so QWERTZ Ctrl+Y redoes rather than
+undoes.

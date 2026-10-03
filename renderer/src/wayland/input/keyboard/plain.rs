@@ -8,6 +8,70 @@ use super::*;
 use crate::layout::node::prop::Keyword;
 use crate::lua::call_logged;
 
+#[derive(Debug, Clone, Default)]
+pub(in crate::wayland::input) struct EditHistory {
+    undo: Vec<(String, (usize, usize))>,
+    redo: Vec<(String, (usize, usize))>,
+    typing_end: Option<usize>,
+}
+
+impl EditHistory {
+    const LIMIT: usize = 1_048_576;
+
+    pub(in crate::wayland::input) fn clear(&mut self) {
+        self.undo.clear();
+        self.redo.clear();
+        self.typing_end = None;
+    }
+
+    pub(in crate::wayland::input) fn break_typing(&mut self) {
+        self.typing_end = None;
+    }
+
+    fn trim(&mut self) {
+        while self.undo.len() + self.redo.len() > 100
+            || self.undo.iter().chain(&self.redo).map(|(text, _)| text.len()).sum::<usize>() > Self::LIMIT
+        {
+            if !self.undo.is_empty() {
+                self.undo.remove(0);
+            } else {
+                self.redo.remove(0);
+            }
+        }
+    }
+
+    fn record(&mut self, snapshot: (String, (usize, usize)), typed_to: Option<usize>) {
+        self.redo.clear();
+        if typed_to.is_some() && self.typing_end == Some(snapshot.1.1) && snapshot.1.0 == snapshot.1.1 {
+            self.typing_end = typed_to;
+            return;
+        }
+        self.typing_end = typed_to;
+        // ponytail: 100 snapshots or 1 MiB of text; use edit deltas if long drafts need deeper history.
+        if snapshot.0.len() > Self::LIMIT {
+            self.undo.clear();
+            self.typing_end = None;
+            return;
+        }
+        self.undo.push(snapshot);
+        self.trim();
+    }
+
+    fn restore(&mut self, text: &mut String, selection: &mut (usize, usize), redo: bool) -> bool {
+        self.typing_end = None;
+        let (from, to) = if redo { (&mut self.redo, &mut self.undo) } else { (&mut self.undo, &mut self.redo) };
+        let Some((previous, previous_selection)) = from.pop() else { return false };
+        let current = (std::mem::replace(text, previous), std::mem::replace(selection, previous_selection));
+        if current.0.len() > Self::LIMIT {
+            self.clear();
+            return true;
+        }
+        to.push(current);
+        self.trim();
+        true
+    }
+}
+
 /// First plain `autofocus = true` field in scope document order (ADR-0112). Skip masked fields and
 /// fields without callbacks; unlike two `secure_submit` fields, duplicate search boxes are a config
 /// mistake, so deterministic order beats refusing both. A hidden subtree is skipped whole: it is
@@ -66,6 +130,7 @@ pub(super) fn requested_focus(
         id,
         buffer,
         selection,
+        history: EditHistory::default(),
         typing: true,
         selecting: false,
         on_change,
@@ -121,6 +186,29 @@ fn next_boundary(text: &str, at: usize) -> usize {
     text[at..].graphemes(true).next().map_or(at, |cluster| at + cluster.len())
 }
 
+fn ime_range(text: &str, selection: (usize, usize), before: u32, after: u32) -> Option<(usize, usize)> {
+    let (from, to) = (selection.0.min(selection.1), selection.0.max(selection.1));
+    let start = from.checked_sub(before as usize)?;
+    let end = to.checked_add(after as usize)?;
+    (end <= text.len() && text.is_char_boundary(start) && text.is_char_boundary(end)).then_some((start, end))
+}
+
+fn ime_change<'a>(
+    text: &str,
+    selection: (usize, usize),
+    delete: (u32, u32),
+    commit: Option<&'a str>,
+) -> Option<((usize, usize), Option<&'a str>)> {
+    if delete == (0, 0) && commit.is_none_or(str::is_empty) {
+        return None;
+    }
+    if commit.is_some_and(|text| text.chars().any(char::is_control)) {
+        return None;
+    }
+    let range = ime_range(text, selection, delete.0, delete.1)?;
+    Some((range, commit.filter(|text| !text.is_empty())))
+}
+
 /// Apply `action` to `buffer` at `selection`. Insertion and deletion act on the selection, or at
 /// the caret when there is none; `shift` extends the selection instead of collapsing it.
 /// Escape always clears; with `on_cancel` it also leaves (ADR-0092 decision 6), otherwise the
@@ -136,9 +224,10 @@ fn edit_plain_buffer(
     let (from, to) = (anchor.min(caret), anchor.max(caret));
     match action {
         KeyAction::Append(text) => {
+            let changed = from < to || !text.is_empty();
             buffer.replace_range(from..to, text);
             *selection = (from + text.len(), from + text.len());
-            PlainEdit { changed: true, ..PlainEdit::NONE }
+            PlainEdit { changed, ..PlainEdit::NONE }
         }
         // A selection is what one erase removes; without one it reaches as far as the key asked,
         // and one cluster is what the user sees as one character (ADR-0236).
@@ -195,7 +284,60 @@ fn edit_plain_buffer(
             PlainEdit { moved, ..PlainEdit::NONE }
         }
         KeyAction::Navigate(key) => PlainEdit { navigated: Some(key), ..PlainEdit::NONE },
-        KeyAction::Ignore => PlainEdit::NONE,
+        KeyAction::Undo | KeyAction::Redo | KeyAction::Ignore => PlainEdit::NONE,
+    }
+}
+
+impl FocusedTextField {
+    fn edit(
+        &mut self,
+        action: KeyAction<'_>,
+        shift: bool,
+        ime_range: Option<(usize, usize)>,
+        from_key: bool,
+    ) -> PlainEdit {
+        match action {
+            action @ (KeyAction::Undo | KeyAction::Redo) => PlainEdit {
+                changed: self.history.restore(&mut self.buffer, &mut self.selection, matches!(action, KeyAction::Redo)),
+                ..PlainEdit::NONE
+            },
+            action => {
+                let typed = from_key
+                    && matches!(&action, KeyAction::Append(text) if text.chars().count() == 1)
+                    && self.selection.0 == self.selection.1;
+                let before = matches!(&action, KeyAction::Append(_) | KeyAction::Erase(_) | KeyAction::Clear)
+                    .then(|| (self.buffer.clone(), self.selection));
+                if let Some(range) = ime_range {
+                    self.selection = range;
+                }
+                let edit =
+                    edit_plain_buffer(&mut self.buffer, &mut self.selection, action, shift, self.on_cancel.is_some());
+                if edit.changed
+                    && !edit.cancelled
+                    && let Some(snapshot) = before
+                {
+                    self.history.record(snapshot, typed.then_some(self.selection.1));
+                }
+                if !typed {
+                    self.history.break_typing();
+                }
+                if edit.submitted || edit.cancelled {
+                    self.history.clear();
+                }
+                edit
+            }
+        }
+    }
+
+    fn delete_surrounding(&mut self, (start, end): (usize, usize)) -> PlainEdit {
+        let (from, to) = (self.selection.0.min(self.selection.1), self.selection.0.max(self.selection.1));
+        let before = (self.buffer.clone(), self.selection);
+        self.buffer.replace_range(to..end, "");
+        self.buffer.replace_range(start..from, "");
+        let removed_before = from - start;
+        self.selection = (self.selection.0 - removed_before, self.selection.1 - removed_before);
+        self.history.record(before, None);
+        PlainEdit { changed: true, ..PlainEdit::NONE }
     }
 }
 
@@ -314,18 +456,11 @@ impl App {
         }
         let opened = on_change.clone();
         debug!("{surface_id}'s `autofocus` textfield takes the keyboard");
-        self.focus_text_field(Some(FocusedTextField {
-            surface_id: surface_id.clone(),
-            id,
-            buffer: String::new(),
-            selection: (0, 0),
-            typing: true,
-            selecting: false,
-            on_change,
-            on_submit,
-            on_cancel,
-            on_navigate,
-        }));
+        self.focus_text_field(Some(requested_focus(
+            surface_id.clone(),
+            FieldTarget::Plain { id, on_change, on_submit, on_cancel, on_navigate },
+            None,
+        )));
         self.set_control_focus(Some(super::focus::FocusedControl {
             surface_id: surface_id.clone(),
             id,
@@ -401,7 +536,17 @@ impl App {
         if let Some(ref next_field) = next {
             self.mark_field_input_changed(&next_field.surface_id);
         }
+        let moved = self.focused_text_field.as_ref().zip(next.as_ref()).is_some_and(|(old, next)| {
+            old.surface_id == next.surface_id && old.id == next.id && old.selection != next.selection
+        });
         self.focused_text_field = next;
+        self.invalidate_text_input_focus();
+        if moved {
+            self.text_input.note_other_change();
+        }
+        if let Some(field) = self.focused_text_field.as_mut().filter(|field| !field.typing) {
+            field.history.clear();
+        }
     }
 
     /// [`App::prune_secure_focus`]'s counterpart. The same two clauses -- the surface is still
@@ -449,10 +594,35 @@ impl App {
     /// drop focus first, then call it (ADR-0102), so a callback changing the surface finds no stale
     /// focus.
     pub(super) fn apply_plain_key(&mut self, event: &KeyEvent, repeat: bool) {
-        self.apply_plain_action(key_action(event, repeat, self.ctrl_held));
+        let action = key_action(event, repeat, self.ctrl_held, self.shift_held);
+        if matches!(action, KeyAction::Append(_)) && self.text_input.owns_text() {
+            return;
+        }
+        if matches!(action, KeyAction::Clear) {
+            self.cancel_text_input_composition();
+        }
+        self.apply_plain_action_inner(action, None, true);
     }
 
-    pub(in crate::wayland::input) fn apply_plain_action(&mut self, action: KeyAction<'_>) {
+    pub(in crate::wayland::input) fn apply_ime_edit(&mut self, delete: (u32, u32), commit: Option<&str>) {
+        let Some(field) = self.focused_text_field.as_ref().filter(|field| self.text_field_takes_keys(field)) else {
+            return;
+        };
+        let Some((range, text)) = ime_change(&field.buffer, field.selection, delete, commit) else { return };
+        if let Some(text) = text {
+            self.apply_plain_action_inner(KeyAction::Append(text), Some(range), false);
+        } else if let Some(field) = self.focused_text_field.as_mut() {
+            let edit = field.delete_surrounding(range);
+            self.finish_plain_edit(edit, false);
+        }
+    }
+
+    pub(in crate::wayland::input) fn apply_plain_action_inner(
+        &mut self,
+        action: KeyAction<'_>,
+        ime_range: Option<(usize, usize)>,
+        from_key: bool,
+    ) {
         if !self.focused_text_field.as_ref().is_some_and(|field| self.text_field_takes_keys(field)) {
             return;
         }
@@ -461,9 +631,16 @@ impl App {
         let Some(field) = self.focused_text_field.as_mut() else {
             return;
         };
-        let edit = edit_plain_buffer(&mut field.buffer, &mut field.selection, action, shift, field.on_cancel.is_some());
+        let edit = field.edit(action, shift, ime_range, from_key);
+        self.finish_plain_edit(edit, ime_range.is_none());
+    }
+
+    fn finish_plain_edit(&mut self, edit: PlainEdit, local: bool) {
         if edit == PlainEdit::NONE {
             return;
+        }
+        if local && (edit.changed || edit.moved) {
+            self.text_input.note_other_change();
         }
         // A caret move repaints and tells the config nothing: no text changed.
         if edit.moved {
@@ -506,8 +683,134 @@ impl App {
 
 #[cfg(test)]
 mod tests {
-    use super::super::tests::{key, plain_textfield, secure_submit_table, textfield, tree_with};
+    use super::super::tests::{draft, key, plain_textfield, secure_submit_table, textfield, tree_with};
     use super::*;
+
+    #[test]
+    fn undo_and_redo_restore_text_and_selection_and_new_edit_drops_redo() {
+        let mut history = EditHistory::default();
+        let mut text = "ab".to_string();
+        let mut selection = (1, 1);
+        history.record((text.clone(), selection), None);
+        edit_plain_buffer(&mut text, &mut selection, KeyAction::Append("X"), false, false);
+        assert_eq!((text.as_str(), selection), ("aXb", (2, 2)));
+        assert!(history.restore(&mut text, &mut selection, false));
+        assert_eq!((text.as_str(), selection), ("ab", (1, 1)));
+        assert!(history.restore(&mut text, &mut selection, true));
+        assert_eq!((text.as_str(), selection), ("aXb", (2, 2)));
+        assert!(history.restore(&mut text, &mut selection, false));
+        history.record((text.clone(), selection), None);
+        assert!(!history.restore(&mut text, &mut selection, true));
+    }
+
+    #[test]
+    fn undo_history_has_a_fixed_ceiling_and_ignores_oversized_drafts() {
+        let mut history = EditHistory::default();
+        for i in 0..101 {
+            history.record((i.to_string(), (0, 0)), None);
+        }
+        assert_eq!(history.undo.len(), 100);
+        history.record(("x".repeat(1_048_577), (0, 0)), None);
+        assert!(history.undo.is_empty());
+
+        history.record(("small".into(), (0, 0)), None);
+        let mut text = "x".repeat(1_048_577);
+        let mut selection = (0, 0);
+        assert!(history.restore(&mut text, &mut selection, false));
+        assert_eq!(text, "small");
+        assert!(history.undo.is_empty() && history.redo.is_empty());
+    }
+
+    #[test]
+    fn undo_and_redo_share_the_byte_ceiling() {
+        let mut history = EditHistory::default();
+        let mut text = "c".repeat(650_000);
+        let mut selection = (0, 0);
+        history.record(("a".repeat(450_000), selection), None);
+        history.record(("b".repeat(450_000), selection), None);
+        assert!(history.restore(&mut text, &mut selection, false));
+        assert_eq!(text.len(), 450_000);
+        assert!(history.undo.is_empty(), "the transfer evicts the older undo entry");
+        assert_eq!(history.redo[0].0.len(), 650_000);
+        let bytes = history.undo.iter().chain(&history.redo).map(|(text, _)| text.len()).sum::<usize>();
+        assert!(bytes <= EditHistory::LIMIT);
+        assert!(history.restore(&mut text, &mut selection, true));
+        assert_eq!(text.len(), 650_000);
+        history.record(("d".repeat(600_000), selection), None);
+        assert_eq!(history.undo.len(), 1, "recording evicts across the aggregate byte ceiling");
+        let bytes = history.undo.iter().chain(&history.redo).map(|(text, _)| text.len()).sum::<usize>();
+        assert!(bytes <= EditHistory::LIMIT);
+
+        let mut history = EditHistory {
+            redo: vec![("a".repeat(450_000), selection), ("b".repeat(450_000), selection)],
+            ..EditHistory::default()
+        };
+        let mut text = "c".repeat(650_000);
+        assert!(history.restore(&mut text, &mut selection, true));
+        assert!(history.undo.is_empty(), "redo transfer also enforces the aggregate ceiling");
+        assert_eq!(history.redo.len(), 1);
+    }
+
+    #[test]
+    fn empty_ime_transaction_cannot_replace_a_selection() {
+        assert_eq!(ime_change("abc", (1, 2), (0, 0), None), None);
+        assert_eq!(ime_change("abc", (1, 2), (0, 0), Some("")), None);
+        assert_eq!(ime_change("abc", (1, 2), (0, 0), Some("語")), Some(((1, 2), Some("語"))));
+    }
+
+    #[test]
+    fn consecutive_typing_coalesces_but_a_paste_starts_a_new_snapshot() {
+        let mut history = EditHistory::default();
+        history.record((String::new(), (0, 0)), Some(1));
+        history.record(("a".to_string(), (1, 1)), Some(2));
+        assert_eq!(history.undo.len(), 1);
+        history.record(("ab".to_string(), (2, 2)), None);
+        assert_eq!(history.undo.len(), 2);
+        let mut text = "ab!".to_string();
+        let mut selection = (3, 3);
+        assert!(history.restore(&mut text, &mut selection, false));
+        assert_eq!((text.as_str(), selection), ("ab", (2, 2)));
+        assert!(history.restore(&mut text, &mut selection, false));
+        assert_eq!((text.as_str(), selection), ("", (0, 0)));
+    }
+
+    #[test]
+    fn ime_deletion_requires_utf8_boundaries_and_replaces_the_selection() {
+        let mut text = "aé文z".to_string();
+        let mut selection = (3, 6);
+        assert_eq!(ime_range(&text, selection, 1, 1), None);
+        let (start, end) = ime_range(&text, selection, 2, 1).unwrap();
+        assert_eq!((start, end), (1, 7));
+        selection = (start, end);
+        let edit = edit_plain_buffer(&mut text, &mut selection, KeyAction::Append("語"), false, false);
+        assert!(edit.changed);
+        assert_eq!((text.as_str(), selection), ("a語", (4, 4)));
+    }
+
+    #[test]
+    fn delete_only_ime_transaction_preserves_selection() {
+        let mut field = draft(1, "abcd");
+        field.selection = (1, 3);
+        let (range, commit) = ime_change(&field.buffer, field.selection, (1, 0), None).unwrap();
+        assert_eq!((range, commit), ((0, 3), None));
+        let edit = field.delete_surrounding(range);
+        assert!(edit.changed);
+        assert_eq!((field.buffer.as_str(), field.selection), ("bcd", (0, 2)));
+
+        let mut field = draft(1, "aé文z");
+        field.selection = (3, 3);
+        let (range, _) = ime_change(&field.buffer, field.selection, (2, 0), None).unwrap();
+        field.delete_surrounding(range);
+        assert_eq!((field.buffer.as_str(), field.selection), ("a文z", (1, 1)));
+    }
+
+    #[test]
+    fn ctrl_z_shift_z_and_y_are_plain_history_keys() {
+        assert_eq!(key_action(&key(Keysym::z, Some("z")), false, true, false), KeyAction::Undo);
+        assert_eq!(key_action(&key(Keysym::Z, Some("Z")), false, true, true), KeyAction::Redo);
+        assert_eq!(key_action(&key(Keysym::y, Some("y")), false, true, false), KeyAction::Redo);
+        assert_eq!(key_action(&key(Keysym::z, Some("z")), true, true, false), KeyAction::Ignore);
+    }
 
     /// GTK's default: 600 ms on, 600 ms off, solid from 10 s on, and an idle field arms no wake.
     #[test]
@@ -569,17 +872,24 @@ mod tests {
                 Ok(())
             })
             .unwrap();
-        let callbacks = PlainCallbacks { on_change: Some(on_change), on_submit: None, on_cancel: None };
-        deliver_plain_edit(
-            "launcher@eDP-1",
-            PlainEdit { changed: true, ..PlainEdit::NONE },
-            "cal".to_string(),
-            callbacks,
-        );
+        let mut field = draft(1, "");
+        field.on_change = Some(on_change);
+        for action in [KeyAction::Append("a"), KeyAction::Append("b"), KeyAction::Undo, KeyAction::Redo] {
+            let edit = field.edit(action, false, None, true);
+            deliver_plain_edit(
+                &field.surface_id,
+                edit,
+                field.buffer.clone(),
+                PlainCallbacks { on_change: field.on_change.clone(), on_submit: None, on_cancel: None },
+            );
+        }
+        assert_eq!(field.history.undo.len(), 1, "plain typing is one undo step");
+        assert!(field.edit(KeyAction::Submit, false, None, true).submitted);
+        assert!(field.history.undo.is_empty() && field.history.redo.is_empty());
 
         let order: Vec<String> =
             lua.globals().get::<mlua::Table>("log").unwrap().sequence_values().collect::<mlua::Result<_>>().unwrap();
-        assert_eq!(order, vec!["change(cal)".to_string()]);
+        assert_eq!(order, ["change(a)", "change(ab)", "change()", "change(ab)"]);
     }
 
     #[test]
@@ -661,9 +971,9 @@ mod tests {
     /// one press crosses the gap and the word together.
     #[test]
     fn an_erase_reaches_as_far_as_the_key_asked() {
-        assert_eq!(key_action(&key(Keysym::Delete, None), false, false), KeyAction::Erase(Motion::Right));
-        assert_eq!(key_action(&key(Keysym::BackSpace, None), false, true), KeyAction::Erase(Motion::WordLeft));
-        assert_eq!(key_action(&key(Keysym::Delete, None), false, true), KeyAction::Erase(Motion::WordRight));
+        assert_eq!(key_action(&key(Keysym::Delete, None), false, false, false), KeyAction::Erase(Motion::Right));
+        assert_eq!(key_action(&key(Keysym::BackSpace, None), false, true, false), KeyAction::Erase(Motion::WordLeft));
+        assert_eq!(key_action(&key(Keysym::Delete, None), false, true, false), KeyAction::Erase(Motion::WordRight));
 
         let (mut buffer, mut selection) = ("on my way".to_string(), (9, 9));
         let word = |buffer: &mut String, selection: &mut (usize, usize), reach| {
@@ -687,12 +997,16 @@ mod tests {
         assert_eq!(buffer, "hi");
     }
 
-    /// Ctrl reaches exactly one binding; every other chord stays the compositor's to bind.
+    /// Ctrl reaches named editing bindings; every other chord stays the compositor's to bind.
     #[test]
     fn ctrl_a_selects_the_draft_and_no_other_chord_is_taken() {
-        assert_eq!(key_action(&key(Keysym::a, Some("a")), false, true), KeyAction::SelectAll);
-        assert_eq!(key_action(&key(Keysym::c, Some("c")), false, true), KeyAction::Ignore, "Ctrl+C is not ours");
-        assert_eq!(key_action(&key(Keysym::a, Some("a")), false, false), KeyAction::Append("a"), "and plain a types");
+        assert_eq!(key_action(&key(Keysym::a, Some("a")), false, true, false), KeyAction::SelectAll);
+        assert_eq!(key_action(&key(Keysym::c, Some("c")), false, true, false), KeyAction::Ignore, "Ctrl+C is not ours");
+        assert_eq!(
+            key_action(&key(Keysym::a, Some("a")), false, false, false),
+            KeyAction::Append("a"),
+            "and plain a types"
+        );
 
         let mut buffer = "on my way".to_string();
         let mut selection = (3, 3);
@@ -780,16 +1094,22 @@ mod tests {
     /// below it would drop that as a control character.
     #[test]
     fn arrow_paging_and_tab_keys_navigate_instead_of_editing() {
-        assert_eq!(key_action(&key(Keysym::Up, None), false, false), KeyAction::Navigate(NavigateKey::Up));
+        assert_eq!(key_action(&key(Keysym::Up, None), false, false, false), KeyAction::Navigate(NavigateKey::Up));
         assert_eq!(
-            key_action(&key(Keysym::Down, None), true, false),
+            key_action(&key(Keysym::Down, None), true, false, false),
             KeyAction::Navigate(NavigateKey::Down),
             "held Down keeps moving"
         );
-        assert_eq!(key_action(&key(Keysym::Page_Down, None), false, false), KeyAction::Navigate(NavigateKey::PageDown));
-        assert_eq!(key_action(&key(Keysym::Tab, Some("\t")), false, false), KeyAction::Navigate(NavigateKey::Tab));
         assert_eq!(
-            key_action(&key(Keysym::ISO_Left_Tab, None), false, false),
+            key_action(&key(Keysym::Page_Down, None), false, false, false),
+            KeyAction::Navigate(NavigateKey::PageDown)
+        );
+        assert_eq!(
+            key_action(&key(Keysym::Tab, Some("\t")), false, false, false),
+            KeyAction::Navigate(NavigateKey::Tab)
+        );
+        assert_eq!(
+            key_action(&key(Keysym::ISO_Left_Tab, None), false, false, false),
             KeyAction::Navigate(NavigateKey::Backtab)
         );
 
@@ -861,11 +1181,12 @@ mod tests {
         assert!(matches!(target, FieldTarget::Plain { id: found, .. } if found == id));
         assert!(requested_field(&tree, "missing").is_none());
 
-        let previous = FocusedTextField {
+        let mut previous = FocusedTextField {
             surface_id: "panel@TEST".into(),
             id,
             buffer: "draft".into(),
             selection: (2, 4),
+            history: EditHistory::default(),
             typing: false,
             selecting: false,
             on_change: None,
@@ -873,12 +1194,41 @@ mod tests {
             on_cancel: None,
             on_navigate: None,
         };
+        previous.history.record((String::new(), (0, 0)), None);
         let target = requested_field(&tree, "search").unwrap();
         let resumed = requested_focus("panel@TEST".into(), target, Some(&previous));
         assert_eq!((resumed.buffer.as_str(), resumed.selection, resumed.typing), ("draft", (2, 4), true));
+        assert!(resumed.history.undo.is_empty(), "a new focus request starts fresh history");
         let target = requested_field(&tree, "search").unwrap();
         let other = requested_focus("other@TEST".into(), target, Some(&previous));
         assert_eq!((other.buffer.as_str(), other.selection), ("", (0, 0)));
+        assert!(other.history.undo.is_empty());
+        let target = requested_field(&tree, "search").unwrap();
+        let fresh_autofocus = requested_focus("panel@TEST".into(), target, None);
+        assert!(fresh_autofocus.buffer.is_empty() && fresh_autofocus.history.undo.is_empty());
+        let changed = requested_focus(
+            "panel@TEST".into(),
+            FieldTarget::Plain {
+                id: layout::scene::NodeId::test(999),
+                on_change: None,
+                on_submit: None,
+                on_cancel: None,
+                on_navigate: None,
+            },
+            Some(&previous),
+        );
+        assert!(changed.buffer.is_empty() && changed.history.undo.is_empty());
+    }
+
+    #[test]
+    fn cancel_clears_history_through_the_field_edit() {
+        let lua = Lua::new();
+        let mut field = draft(1, "");
+        field.on_cancel = Some(lua.create_function(|_, _: bool| Ok(())).unwrap());
+        field.edit(KeyAction::Append("draft"), false, None, false);
+        assert_eq!(field.history.undo.len(), 1);
+        assert!(field.edit(KeyAction::Clear, false, None, false).cancelled);
+        assert!(field.history.undo.is_empty());
     }
     #[test]
     fn node_mask_subtree_cannot_take_plain_or_secure_keyboard_focus() {

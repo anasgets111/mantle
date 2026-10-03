@@ -53,6 +53,7 @@ pub fn run(
     let output_state = OutputState::new(&globals, &qh);
     let seat_state = SeatState::new(&globals, &qh);
     let data_device_manager = DataDeviceManagerState::bind(&globals, &qh).ok();
+    let text_input = input::TextInput::bind(&globals, &qh);
     // Mandatory: every compositor advertises `wl_shm`.
     let shm = Shm::bind(&globals, &qh)?;
     // Cannot fail: its `GlobalProxy` reports a missing lock global only when a lock is requested
@@ -78,6 +79,7 @@ pub fn run(
         clipboard_writers: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
         paste: None,
         field_revision: 0,
+        text_input,
         waker: waker.clone(),
         layer_shell,
         background_effect,
@@ -290,6 +292,7 @@ pub fn run(
             // A newly bound `focused` slot starts right.
             app.sync_focused();
         }
+        app.sync_text_input();
         app.sync_accessibility(re_resolved);
         // Take unconditionally so a keystroke arriving with a push is covered by this repaint, not
         // repeated next turn.
@@ -381,6 +384,7 @@ pub fn run(
                 app.arm_secure_focus_if_the_scope_now_declares_one(&scope);
                 app.arm_autofocus_if_nothing_is_typing(&scope);
             }
+            app.sync_text_input();
             if let Some(started) = focus_started
                 && let Some(ended) = thread_cpu_time()
                 && let Some(profile) = profile.as_mut()

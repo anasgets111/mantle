@@ -70,7 +70,7 @@ wayland-client.workspace = true
 # Generate the Hyprland address mapping extension; already used by wayland-client.
 wayland-scanner = "0.31.10"
 wayland-egl = "0.32.11"
-wayland-protocols = { workspace = true, features = ["client", "staging"] }
+wayland-protocols = { workspace = true, features = ["client", "staging", "unstable"] }
 # Output capture fallback and source-side region cropping (ADR-0248, ADR-0263).
 wayland-protocols-wlr = { workspace = true, features = ["client"] }
 md5 = "0.8"

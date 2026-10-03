@@ -223,7 +223,8 @@ fn press_chooses_focus(
         Some(FieldTarget::Plain { id, on_change, on_submit, on_cancel, on_navigate }) => {
             let resumed = focused_text_field.filter(|field| field.id == id);
             let anchor = resumed.as_ref().map(|field| field.selection.0);
-            let buffer = resumed.map(|field| field.buffer).unwrap_or_default();
+            let (buffer, mut history) = resumed.map(|field| (field.buffer, field.history)).unwrap_or_default();
+            history.break_typing();
             // Where the press landed; the end of the draft when nothing measured it (ADR-0236).
             let caret = caret.unwrap_or(buffer.len()).min(buffer.len());
             (
@@ -233,6 +234,7 @@ fn press_chooses_focus(
                     id,
                     selection: (anchor.filter(|_| extend).unwrap_or(caret), caret),
                     buffer,
+                    history,
                     typing: true,
                     selecting: true,
                     on_change,
@@ -344,6 +346,7 @@ impl PointerHandler for App {
                     self.input_serial = Some(ArmedSerial { serial, instance_id: instance_id.clone() });
                     // ADR-0051 amendment: preserve the "user asked again" stamp past disarm.
                     self.pointer_input_count += 1;
+                    self.cancel_text_input_composition();
                     let hit = self.hit_under(index, event.position);
                     // Read before the call consumes `hit.field`; a held draft is still a plain
                     // field (ADR-0108).
@@ -536,6 +539,8 @@ impl App {
         };
         if let Some(field) = self.focused_text_field.as_mut().filter(|field| field.selection.1 != caret) {
             field.selection.1 = caret;
+            field.history.break_typing();
+            self.text_input.note_other_change();
             self.mark_field_input_changed(instance_id);
         }
     }
@@ -666,7 +671,7 @@ impl App {
 mod tests {
     use super::super::tests::hit_node;
     use super::*;
-    use crate::wayland::input::keyboard::tests::{secure_submit_table, textfield};
+    use crate::wayland::input::keyboard::tests::{draft, secure_submit_table, textfield};
     use mlua::Table;
 
     #[test]
@@ -948,22 +953,6 @@ mod tests {
             capability: "session_lock".to_string(),
             action: "authenticate".to_string(),
             name: None,
-        }
-    }
-
-    /// A draft as [`App::focus_text_field`] holds one between presses.
-    fn draft(id: u64, buffer: &str) -> FocusedTextField {
-        FocusedTextField {
-            surface_id: "calendar@eDP-1".to_string(),
-            id: layout::scene::NodeId::test(id),
-            selection: (buffer.len(), buffer.len()),
-            buffer: buffer.to_string(),
-            typing: false,
-            selecting: false,
-            on_change: None,
-            on_submit: None,
-            on_cancel: None,
-            on_navigate: None,
         }
     }
 

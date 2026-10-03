@@ -97,20 +97,9 @@ fn dispatch_activation(
     true
 }
 
-fn find(
-    node: &layout::ResolvedNode,
-    id: layout::scene::NodeId,
-    x: f32,
-    y: f32,
-) -> Option<(&layout::ResolvedNode, LogicalRect)> {
-    if !node.visible || node.leaving {
-        return None;
-    }
-    let rect = node.at(x, y);
-    if node.id == id {
-        return Some((node, rect));
-    }
-    node.content_children().find_map(|child| find(child, id, rect.x, rect.y))
+fn find(node: &layout::ResolvedNode, id: layout::scene::NodeId) -> Option<(&layout::ResolvedNode, LogicalRect)> {
+    let path = layout::hit::path_to_node(node, id)?;
+    Some((*path.last()?, layout::hit::absolute_rect(&path)?))
 }
 
 pub(in crate::wayland) fn secure_id(
@@ -132,7 +121,7 @@ pub(in crate::wayland) fn secure_target_at(
     root: &layout::ResolvedNode,
     id: layout::scene::NodeId,
 ) -> Option<&node::SecureSubmitTarget> {
-    let (node, _) = find(root, id, 0.0, 0.0)?;
+    let (node, _) = find(root, id)?;
     match node.paint.as_ref()? {
         node::PaintStyle::TextField { target: Some(target), .. } => Some(target),
         _ => None,
@@ -161,7 +150,7 @@ fn retained_typing_control(
     root: Option<&layout::ResolvedNode>,
 ) -> Option<FocusedControl> {
     let field = field.filter(|field| field.typing && live && scope.contains(&field.surface_id))?;
-    let (node, _) = find(root?, field.id, 0.0, 0.0)?;
+    let (node, _) = find(root?, field.id)?;
     matches!(focused_field(&[node]), Some(FieldTarget::Plain { id, .. }) if id == field.id).then(|| FocusedControl {
         surface_id: field.surface_id.clone(),
         id: field.id,
@@ -275,7 +264,9 @@ impl App {
         }
         if let Some(field) = self.focused_text_field.as_mut() {
             field.typing = false;
+            field.history.clear();
         }
+        self.invalidate_text_input_focus();
         self.mark_focused_text_field_changed();
         self.set_control_focus(next.clone());
         if let Some(next) = next {
@@ -283,7 +274,7 @@ impl App {
                 .client
                 .scene()
                 .surface(&next.surface_id)
-                .and_then(|root| find(root, next.id, 0.0, 0.0))
+                .and_then(|root| find(root, next.id))
                 .and_then(|(node, _)| focused_field(&[node]));
             if let Some(target @ FieldTarget::Plain { .. }) = target {
                 self.focus_text_field(Some(plain::requested_focus(
@@ -296,8 +287,7 @@ impl App {
     }
 
     fn activate_control(&mut self, focus: &FocusedControl) {
-        let Some((node, rect)) =
-            self.client.scene().surface(&focus.surface_id).and_then(|root| find(root, focus.id, 0.0, 0.0))
+        let Some((node, rect)) = self.client.scene().surface(&focus.surface_id).and_then(|root| find(root, focus.id))
         else {
             return;
         };

@@ -18,6 +18,22 @@ pub use build::{FieldFocus, build_with_control};
 pub(crate) use canvas::tests::{init_headless_egl, test_gl, text_painter};
 pub use canvas::{DrawnImage, Shaders, execute, flush};
 
+pub(crate) fn compose_preedit(
+    text: &str,
+    selection: (usize, usize),
+    preedit: &str,
+    cursor: (i32, i32),
+) -> (String, std::ops::Range<usize>, Option<(usize, usize)>) {
+    let (from, to) = (selection.0.min(selection.1), selection.0.max(selection.1));
+    let mut content = String::with_capacity(text.len() - (to - from) + preedit.len());
+    content.push_str(&text[..from]);
+    content.push_str(preedit);
+    content.push_str(&text[to..]);
+    let at = |offset: i32| from + preedit.floor_char_boundary((offset as usize).min(preedit.len()));
+    let caret = (cursor.0 >= 0 && cursor.1 >= 0).then(|| (at(cursor.0), at(cursor.1)));
+    (content, from..from + preedit.len(), caret)
+}
+
 use crate::image::{self, Fit, Load};
 use crate::layout::node::{self, BorderColor, EdgeInsets, Fill, Rgba, StyleRun, TextAlign};
 use crate::layout::scene::NodeId;
@@ -472,6 +488,15 @@ mod tests {
     use crate::lua::nodes::{deserialize_lua_table, register_node_constructors};
     use crate::lua::signal;
     use crate::text::shaping::ShapingHandle;
+
+    #[test]
+    fn preedit_replaces_the_selection_and_floors_utf8_cursor_offsets() {
+        let (shown, range, caret) = compose_preedit("aéb", (1, 3), "語文", (4, 5));
+        assert_eq!(shown, "a語文b");
+        assert_eq!(range, 1..7);
+        assert_eq!(caret, Some((4, 4)));
+        assert_eq!(compose_preedit("aéb", (1, 3), "語", (-1, -1)).2, None);
+    }
 
     /// Evaluates `lua_src` as one surface's tree, applies it, and returns the resolved root at
     /// `size`. Panics on any layout error: every fixture below is a config this harness controls,

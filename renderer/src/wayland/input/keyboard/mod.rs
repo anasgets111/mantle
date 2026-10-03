@@ -11,6 +11,7 @@ mod focus;
 mod plain;
 mod secure;
 pub(in crate::wayland) use focus::{ControlKind, FocusedControl, secure_target_at};
+pub(in crate::wayland::input) use plain::EditHistory;
 
 keywords! {
     /// A key a single-line field does not use, handed to `on_navigate` for moving a list selection.
@@ -88,6 +89,7 @@ pub(in crate::wayland) struct FocusedTextField {
     /// `(anchor, caret)` byte offsets into `buffer`; equal means a bare caret. Held here beside
     /// the draft rather than in the resolved tree, for the reason the draft is (ADR-0236).
     pub(super) selection: (usize, usize),
+    pub(in crate::wayland::input) history: EditHistory,
     /// A press selected it; off keeps text without a caret and sends keys nowhere.
     pub(super) typing: bool,
     /// The pointer is down inside it, so motion extends the selection (ADR-0236).
@@ -124,6 +126,8 @@ pub(super) enum KeyAction<'a> {
     Submit,
     /// Ctrl+A on a plain field; masked fields ignore it, having no selection to make.
     SelectAll,
+    Undo,
+    Redo,
     /// Navigation name for a plain field (ADR-0112); masked fields ignore it. Not Left or Right,
     /// which a caret has an edit for.
     Navigate(NavigateKey),
@@ -143,22 +147,26 @@ pub(super) enum Motion {
 
 /// Convert one `wl_keyboard` key for `secure_submit`. Use xkb, not `zwp_text_input_v3`: without an
 /// IME, text-input-v3 emits no `commit_string`; a dormant binding could also let the compositor
-/// route an IME into the buffer and create two writers (ADR-0027 amendment). The ordinary
-/// Lua-readable `textfield` still needs IME composition. No IDL is added: secure
+/// route an IME into the buffer and create two writers (ADR-0027 amendment). No IDL is added: secure
 /// bytes go to the native buffer and Supervisor (ADR-0005); misses are [`KeyAction::Ignore`].
 ///
 /// Filter control characters by text, not keysym: xkbcommon returns C0 text for Escape, Tab, and
 /// Return, and appending it would put an invisible ESC in a PAM password. Ignore repeated Enter;
 /// `secure_submit_frame` zeroizes on submit, so repeat would send an empty PAM attempt.
-fn key_action<'a>(event: &'a KeyEvent, repeat: bool, ctrl: bool) -> KeyAction<'a> {
+fn key_action<'a>(event: &'a KeyEvent, repeat: bool, ctrl: bool, shift: bool) -> KeyAction<'a> {
     /// evdev's code for the key `a` sits on, which the Wayland key event carries verbatim
     /// (linux/input-event-codes.h).
     const KEY_A: u32 = 30;
+    const KEY_Z: u32 = 44;
+    const KEY_Y: u32 = 21;
 
     // The key `a` sits on, by what it types or by where it is (ADR-0238 decision 2). Under an
     // Arabic or Cyrillic layout the keysym is that layout's own letter, and asking only what it
     // types loses the chord to exactly the people most likely to be using one.
-    let selects_all = matches!(event.keysym, Keysym::a | Keysym::A) || event.raw_code == KEY_A;
+    let latin = event.keysym.key_char().is_some_and(|c| c.is_ascii_alphabetic());
+    let selects_all = matches!(event.keysym, Keysym::a | Keysym::A) || (!latin && event.raw_code == KEY_A);
+    let z = matches!(event.keysym, Keysym::z | Keysym::Z) || (!latin && event.raw_code == KEY_Z);
+    let y = matches!(event.keysym, Keysym::y | Keysym::Y) || (!latin && event.raw_code == KEY_Y);
     // Ctrl reaches editing, word motion and select-all. Every other chord belongs to the
     // compositor, and swallowing it here would take it from them.
     if ctrl {
@@ -168,6 +176,14 @@ fn key_action<'a>(event: &'a KeyEvent, repeat: bool, ctrl: bool) -> KeyAction<'a
             Keysym::Left | Keysym::KP_Left => KeyAction::Move(Motion::WordLeft),
             Keysym::Right | Keysym::KP_Right => KeyAction::Move(Motion::WordRight),
             _ if selects_all => KeyAction::SelectAll,
+            _ if z && !repeat => {
+                if shift {
+                    KeyAction::Redo
+                } else {
+                    KeyAction::Undo
+                }
+            }
+            _ if y && !repeat => KeyAction::Redo,
             _ => KeyAction::Ignore,
         };
     }
@@ -264,10 +280,14 @@ impl KeyboardHandler for App {
     ) {
         // Clear unconditionally: protocol orders old-surface leave before new-surface enter.
         let left = self.keyboard_focus.take().unwrap_or_else(|| "an untracked surface".to_string());
+        self.invalidate_text_input_focus();
         self.set_control_focus(None);
         // ADR-0050 decision 4: elsewhere means no submit will arrive; clear secure focus and the
         // armed press like pointer Leave.
         self.focus_secure_submit(None);
+        if let Some(field) = self.focused_text_field.as_mut() {
+            field.history.clear();
+        }
         // Keep the plain draft (ADR-0108): OnDemand/focus-follows-mouse temporarily removes the
         // keyboard, not the reply. It stops keys/caret until focus returns.
         self.mark_focused_text_field_changed();
@@ -355,7 +375,7 @@ impl KeyboardHandler for App {
         }
     }
 
-    /// Shift turns a caret motion into a selection and Ctrl reaches one binding (ADR-0236). Alt is
+    /// Shift turns a caret motion into a selection and Ctrl reaches editing bindings (ADR-0236). Alt is
     /// the config's business, and there is no key handler for it.
     fn update_modifiers(
         &mut self,
@@ -423,6 +443,18 @@ impl App {
             });
         }
         let focused = self.focused_text_field.as_ref().filter(|f| f.surface_id == surface_id)?;
+        if self.text_field_takes_keys(focused)
+            && let Some(preedit) = self.text_input.composing(surface_id, focused.id)
+        {
+            return Some(layout::paint::FieldFocus::Composing {
+                id: focused.id,
+                text: &focused.buffer,
+                selection: focused.selection,
+                preedit: &preedit.text,
+                cursor: preedit.cursor,
+                caret_on: self.caret_on(std::time::Instant::now()),
+            });
+        }
         Some(layout::paint::FieldFocus::Plain {
             id: focused.id,
             text: &focused.buffer,
@@ -434,7 +466,7 @@ impl App {
     /// Holds `event` for repeat when repeating it would do anything: a modifier or an Enter would
     /// only wake the loop to reach [`KeyAction::Ignore`]. A newer press takes the timer over.
     fn arm_repeat(&mut self, event: KeyEvent) {
-        let repeats = !matches!(key_action(&event, true, self.ctrl_held), KeyAction::Ignore);
+        let repeats = !matches!(key_action(&event, true, self.ctrl_held, self.shift_held), KeyAction::Ignore);
         self.repeating =
             self.repeat_info.filter(|_| repeats).map(|(delay, _)| (event, std::time::Instant::now() + delay));
     }
@@ -528,6 +560,22 @@ pub(in crate::wayland) mod tests {
         let on_submit = lua.create_function(|_, _text: String| Ok(())).unwrap();
         std::rc::Rc::make_mut(&mut node.properties).insert("on_submit", Value::Function(on_submit));
         node
+    }
+
+    pub(in crate::wayland) fn draft(id: u64, buffer: &str) -> FocusedTextField {
+        FocusedTextField {
+            surface_id: "calendar@eDP-1".to_string(),
+            id: layout::scene::NodeId::test(id),
+            selection: (buffer.len(), buffer.len()),
+            buffer: buffer.to_string(),
+            history: EditHistory::default(),
+            typing: false,
+            selecting: false,
+            on_change: None,
+            on_submit: None,
+            on_cancel: None,
+            on_navigate: None,
+        }
     }
 
     #[test]
@@ -705,10 +753,13 @@ pub(in crate::wayland) mod tests {
         // `zwp_text_input_v3` alone did not deliver this: it only produces a `commit_string` when
         // the compositor has an input method bound, so on a session with no IME not one byte
         // reached `SecureBuffer`.
-        assert_eq!(key_action(&key(Keysym::a, Some("a")), false, false), KeyAction::Append("a"));
-        assert_eq!(key_action(&key(Keysym::Return, Some("\r")), false, false), KeyAction::Submit);
-        assert_eq!(key_action(&key(Keysym::KP_Enter, Some("\r")), false, false), KeyAction::Submit);
-        assert_eq!(key_action(&key(Keysym::BackSpace, Some("\u{8}")), false, false), KeyAction::Erase(Motion::Left));
+        assert_eq!(key_action(&key(Keysym::a, Some("a")), false, false, false), KeyAction::Append("a"));
+        assert_eq!(key_action(&key(Keysym::Return, Some("\r")), false, false, false), KeyAction::Submit);
+        assert_eq!(key_action(&key(Keysym::KP_Enter, Some("\r")), false, false, false), KeyAction::Submit);
+        assert_eq!(
+            key_action(&key(Keysym::BackSpace, Some("\u{8}")), false, false, false),
+            KeyAction::Erase(Motion::Left)
+        );
     }
 
     #[test]
@@ -717,9 +768,12 @@ pub(in crate::wayland) mod tests {
         // character for each -- so an unfiltered append would silently put an ESC byte in the
         // middle of a secret that PAM then rejects with no visible reason. Tab is a navigation
         // key now (ADR-0112); what matters here is that it is still not an `Append`.
-        assert_eq!(key_action(&key(Keysym::Tab, Some("\t")), false, false), KeyAction::Navigate(NavigateKey::Tab));
-        assert_eq!(key_action(&key(Keysym::Shift_L, None), false, false), KeyAction::Ignore);
-        assert_eq!(key_action(&key(Keysym::Control_L, Some("\u{1b}")), false, false), KeyAction::Ignore);
+        assert_eq!(
+            key_action(&key(Keysym::Tab, Some("\t")), false, false, false),
+            KeyAction::Navigate(NavigateKey::Tab)
+        );
+        assert_eq!(key_action(&key(Keysym::Shift_L, None), false, false, false), KeyAction::Ignore);
+        assert_eq!(key_action(&key(Keysym::Control_L, Some("\u{1b}")), false, false, false), KeyAction::Ignore);
     }
 
     #[test]
@@ -727,22 +781,37 @@ pub(in crate::wayland) mod tests {
         // Escape used to reach the control-character filter above and be dropped, which left one
         // Backspace per character as the only way to abandon a mistyped password -- on the surface
         // where a wrong guess costs a counted PAM attempt and a `pam_unix` failure delay.
-        assert_eq!(key_action(&key(Keysym::Escape, Some("\u{1b}")), false, false), KeyAction::Clear);
-        assert_eq!(key_action(&key(Keysym::Escape, Some("\u{1b}")), true, false), KeyAction::Ignore);
+        assert_eq!(key_action(&key(Keysym::Escape, Some("\u{1b}")), false, false, false), KeyAction::Clear);
+        assert_eq!(key_action(&key(Keysym::Escape, Some("\u{1b}")), true, false, false), KeyAction::Ignore);
     }
 
-    /// Left and Right step over a cluster, not a scalar, so one press of each returns the caret to
-    /// where it started.
-    /// Ctrl+A under an Arabic layout. The keysym is that layout's own letter, so a chord matched
-    /// only by keysym is lost to exactly the people most likely to be typing in it.
+    /// Editing chords under an Arabic layout use the physical key when the keysym is non-Latin.
     #[test]
-    fn ctrl_a_reaches_select_all_under_a_non_latin_layout() {
-        // evdev `KEY_A`, carrying `ش` because that is what the layout puts there.
-        let mut arabic = key(Keysym::Arabic_sheen, Some("ش"));
-        arabic.raw_code = 30;
+    fn ctrl_editing_keys_work_under_a_non_latin_layout() {
+        for (raw_code, action, shift_action) in [
+            (30, KeyAction::SelectAll, KeyAction::SelectAll),
+            (44, KeyAction::Undo, KeyAction::Redo),
+            (21, KeyAction::Redo, KeyAction::Redo),
+        ] {
+            let mut arabic = key(Keysym::Arabic_sheen, Some("ش"));
+            arabic.raw_code = raw_code;
+            assert_eq!(key_action(&arabic, false, true, false), action);
+            assert_eq!(key_action(&arabic, false, true, true), shift_action);
+            assert_eq!(key_action(&arabic, false, false, false), KeyAction::Append("ش"));
+        }
+    }
 
-        assert_eq!(key_action(&arabic, false, true), KeyAction::SelectAll, "the key's place still says A");
-        assert_eq!(key_action(&arabic, false, false), KeyAction::Append("ش"), "and without Ctrl it still types");
+    #[test]
+    fn latin_keysym_wins_over_conflicting_physical_key() {
+        let mut qwertz_y = key(Keysym::y, Some("y"));
+        qwertz_y.raw_code = 44;
+        assert_eq!(key_action(&qwertz_y, false, true, false), KeyAction::Redo);
+        let mut azerty_q = key(Keysym::q, Some("q"));
+        azerty_q.raw_code = 30;
+        assert_eq!(key_action(&azerty_q, false, true, false), KeyAction::Ignore);
+        let mut qwertz_z = key(Keysym::z, Some("z"));
+        qwertz_z.raw_code = 21;
+        assert_eq!(key_action(&qwertz_z, false, true, false), KeyAction::Undo);
     }
 
     #[test]
@@ -750,8 +819,11 @@ pub(in crate::wayland) mod tests {
         // A submit zeroizes the buffer as it reads it, so the second submit of a key repeat would
         // send an *empty* password to PAM and burn one of the user's attempts. Backspace and
         // ordinary characters repeat normally, which is what every text field does.
-        assert_eq!(key_action(&key(Keysym::Return, Some("\r")), true, false), KeyAction::Ignore);
-        assert_eq!(key_action(&key(Keysym::BackSpace, Some("\u{8}")), true, false), KeyAction::Erase(Motion::Left));
-        assert_eq!(key_action(&key(Keysym::a, Some("a")), true, false), KeyAction::Append("a"));
+        assert_eq!(key_action(&key(Keysym::Return, Some("\r")), true, false, false), KeyAction::Ignore);
+        assert_eq!(
+            key_action(&key(Keysym::BackSpace, Some("\u{8}")), true, false, false),
+            KeyAction::Erase(Motion::Left)
+        );
+        assert_eq!(key_action(&key(Keysym::a, Some("a")), true, false, false), KeyAction::Append("a"));
     }
 }
