@@ -4,11 +4,12 @@ How a node looks: fills, gradients, corners, borders, clipping, masks, shadows a
 blurs. Layout and per-kind properties are on [Nodes](../nodes/index.md); easing any of these
 values is on [Animation](animation.md).
 
-<!-- shot-alt: A rounded battery card with a translucent fill, border, and shadow. -->
+<!-- shot-alt: A rounded battery card with a translucent fill, a faint border and a soft shadow, showing a green level bar at 82% and the time left. -->
 ```lua,shot
 column {
+    width = 240,
     padding = 16,
-    spacing = 8,
+    spacing = 10,
     background = "#1E1E2EF2",
     radius = 12,
     border_width = 1,
@@ -17,8 +18,21 @@ column {
     shadow_blur = 18,
     shadow_offset = { x = 0, y = 8 },
     children = {
-        text { content = "Battery", font_size = 14, foreground = "#CDD6F4" },
-        text { content = "82% · 3 h 10 min left", foreground = "#A6ADC8" },
+        row {
+            width = "Fill",
+            children = {
+                text { content = "Battery", width = "Fill", font_size = 14, font_weight = 700, foreground = "#CDD6F4" },
+                text { content = "82%", font_size = 14, foreground = "#A6E3A1" },
+            },
+        },
+        rect {
+            width = "Fill",
+            height = 6,
+            radius = 3,
+            background = "#313244",
+            children = { rect { width = "82%", height = 6, radius = 3, background = "#A6E3A1" } },
+        },
+        text { content = "3 h 10 min left", font_size = 12, foreground = "#A6ADC8" },
     },
 }
 ```
@@ -135,22 +149,22 @@ background = {
 | `Radial` | An ellipse from the centre out to the box's edges, not its corners |
 | `Conic` | A turn around the centre, starting at `angle` |
 
-<!-- shot-alt: Linear, radial, and conic gradient tiles. -->
+<!-- shot-alt: The same three stops, mauve to pink to blue, as a linear, a radial and a conic gradient tile. -->
 ```lua,shot
 local stops = { { 0, "#CBA6F7" }, { 0.5, "#F38BA8" }, { 1, "#89B4FA" } }
 
 local function swatch(label, fill)
     return column {
-        spacing = 6,
+        spacing = 8,
         children = {
-            rect { width = 96, height = 64, radius = 8, background = fill },
-            text { content = label, foreground = "#A6ADC8" },
+            rect { width = 112, height = 80, radius = 12, background = fill },
+            text { content = label, font_size = 13, foreground = "#BAC2DE", align_h = "Center" },
         },
     }
 end
 
 return row {
-    spacing = 12,
+    spacing = 16,
     children = {
         swatch("Linear, 90", { gradient = "Linear", angle = 90, stops = stops }),
         swatch("Radial", { gradient = "Radial", stops = stops }),
@@ -187,24 +201,38 @@ Name exactly one of `source`, `node`, or a gradient. A masked box draws its subt
 and always cuts children to its box (to `radius` too under `clip = "Rounded"`), even with
 `clip = "None"`.
 
-<!-- shot-alt: A scrolling list whose top and bottom rows fade under a gradient mask. -->
+<!-- shot-alt: A scrolling list of Wi-Fi networks in a card; the rows at its top and bottom edges fade out under a gradient mask. -->
 ```lua,shot
-local items = {}
-for i = 1, 12 do
-    items[i] = rect { width = "Fill", padding = 10, radius = 8, background = "#313244",
-        children = { text { content = "Row " .. i, foreground = "#CDD6F4" } } }
+local networks = { "Home", "Office 5G", "Cafe Guest", "Library", "Studio", "Garden", "Lab", "Backup", "Hotspot", "Lobby",
+    "Attic", "Garage" }
+local rows = {}
+for i, name in ipairs(networks) do
+    rows[i] = row {
+        width = "Fill",
+        padding = 10,
+        spacing = 10,
+        radius = 8,
+        background = i == 1 and "#89B4FA26" or "#313244",
+        children = {
+            icon { name = "network-wireless-symbolic", size = 16, foreground = i == 1 and "#89B4FA" or "#A6ADC8", align_v = "Center" },
+            text { content = name, foreground = "#CDD6F4", align_v = "Center" },
+        },
+    }
 end
 
 return column {
-    width = 200,
+    width = 220,
     height = 240,
+    padding = 8,
     spacing = 6,
+    radius = 12,
+    background = "#1E1E2E",
     scroll = scroll("feed"),
     mask = {
         gradient = "Linear",
-        stops = { { 0, "#00000000" }, { 0.08, "#000000" }, { 0.92, "#000000" }, { 1, "#00000000" } },
+        stops = { { 0, "#00000000" }, { 0.1, "#000000" }, { 0.9, "#000000" }, { 1, "#00000000" } },
     },
-    children = items,
+    children = rows,
 }
 ```
 
@@ -248,26 +276,31 @@ A shadow draws when `shadow_color` has alpha above 0 and at least one of `shadow
 Non-box nodes (`text`, `icon`, `image`, ...) have no box to cast, so their shadow is always the
 content's: text gets a glyph-shaped shadow. The same unfilled, bordered box in each mode:
 
-<!-- shot-alt: Box and content shadows cast by two bordered cards. -->
+<!-- shot-alt: Two unfilled cards with a blue border, a star and a label on a grey panel: the Box card casts one rounded shadow, the Content card casts shadows of its border ring, star and text. -->
 ```lua,shot
 local function card(mode)
-    return column {
+    return row {
         padding = 14,
+        spacing = 10,
         radius = 12,
-        border_width = 1,
+        border_width = 2,
         border_color = "#89B4FA",
         shadow_mode = mode,
         shadow_color = "#000000",
         shadow_blur = 4,
         shadow_offset = { x = 5, y = 6 },
-        children = { text { content = mode, font_size = 20, foreground = "#CDD6F4" } },
+        children = {
+            icon { name = "starred-symbolic", size = 22, foreground = "#F9E2AF", align_v = "Center" },
+            text { content = mode, font_size = 20, foreground = "#CDD6F4", align_v = "Center" },
+        },
     }
 end
 
 return row {
-    padding = 24,
-    spacing = 24,
-    background = "#585B70",
+    padding = 28,
+    spacing = 28,
+    radius = 16,
+    background = "#6C7086",
     children = { card("Box"), card("Content") },
 }
 ```
@@ -322,23 +355,29 @@ panel {
 
 A bar whose 60% fill tints the compositor-blurred desktop behind it.
 
-<!-- shot-alt: A frosted clock pill over a mountain illustration. -->
+<!-- shot-alt: A frosted pill with the time and date over a mountain illustration, the scenery blurred behind it. -->
 ```lua,shot
 rect {
-    width = 320,
-    height = 180,
+    width = 360,
+    height = 200,
+    radius = 16,
+    clip = "Rounded",
     children = {
         image { source = "/usr/share/backgrounds/default.png", width = "Fill", height = "Fill", async = true },
         row {
             align_h = "Center",
             align_v = "Center",
-            padding = { left = 14, right = 14, top = 6, bottom = 6 },
+            padding = { left = 16, right = 16, top = 8, bottom = 8 },
+            spacing = 10,
             radius = 999,
             background = "#FFFFFF1F",
             border_width = 1,
             border_color = "#FFFFFF33",
             backdrop_blur = 12,
-            children = { text { content = "12:45", font_size = 18, foreground = "#FFFFFF" } },
+            children = {
+                text { content = "12:45", font_size = 20, font_weight = 700, foreground = "#FFFFFF", align_v = "Center" },
+                text { content = "Thu 24 Sep", font_size = 13, foreground = "#FFFFFFCC", align_v = "Center" },
+            },
         },
     },
 }
@@ -458,18 +497,22 @@ A radius past half the height makes the ends round whatever the label's width.
 
 ### Gradient border
 
-<!-- shot-alt: A rounded button made with a gradient border. -->
+<!-- shot-alt: An "Upgrade to Pro" button with a star, ringed by a mauve-to-blue gradient border. -->
 ```lua,shot
 rect {
     padding = 2,
     radius = 14,
     background = { gradient = "Linear", angle = 135, stops = { { 0, "#CBA6F7" }, { 1, "#89B4FA" } } },
     children = {
-        column {
-            padding = 14,
+        row {
+            padding = { left = 18, right = 18, top = 12, bottom = 12 },
+            spacing = 8,
             radius = 12,
             background = "#1E1E2E",
-            children = { text { content = "Pro", foreground = "#CDD6F4" } },
+            children = {
+                icon { name = "starred-symbolic", size = 16, foreground = "#CBA6F7", align_v = "Center" },
+                text { content = "Upgrade to Pro", font_weight = 700, foreground = "#CDD6F4", align_v = "Center" },
+            },
         },
     },
 }
@@ -480,16 +523,32 @@ rect {
 
 ### Circular avatar
 
-<!-- shot-alt: A circular avatar cropped from an image. -->
+<!-- shot-alt: An account card: a circular avatar cropped from a square image with a blue ring, beside the user's name and status. -->
 ```lua,shot
-rect {
-    width = 64,
-    height = 64,
-    radius = 32,
-    clip = "Rounded",
-    border_width = 2,
-    border_color = "#89B4FA",
-    children = { image { source = "/var/lib/AccountsService/icons/user", width = "Fill", height = "Fill" } },
+row {
+    padding = 12,
+    spacing = 12,
+    radius = 14,
+    background = "#1E1E2E",
+    children = {
+        rect {
+            width = 56,
+            height = 56,
+            radius = 28,
+            clip = "Rounded",
+            border_width = 2,
+            border_color = "#89B4FA",
+            children = { image { source = "/var/lib/AccountsService/icons/user", width = "Fill", height = "Fill" } },
+        },
+        column {
+            spacing = 2,
+            align_v = "Center",
+            children = {
+                text { content = "user", font_size = 15, font_weight = 700, foreground = "#CDD6F4" },
+                text { content = "Signed in", font_size = 12, foreground = "#A6ADC8" },
+            },
+        },
+    },
 }
 ```
 
