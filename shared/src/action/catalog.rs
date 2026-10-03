@@ -66,8 +66,8 @@ pub enum BluetoothAction {
     Disconnect { mac: String },
     /// Removes a device from BlueZ, unpairing it.
     Forget { mac: String },
-    /// Accepts or rejects the `pairing_request` for `mac`; a yes within 750 ms of it appearing is
-    /// ignored.
+    /// Accepts or rejects a confirmation, authorization or service `pairing_request` for `mac`;
+    /// a yes within 750 ms of it appearing is ignored. Entry requests use `secure_submit`.
     AnswerPairing { mac: String, accept: bool },
 }
 

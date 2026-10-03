@@ -82,7 +82,7 @@ config that never reads it runs no server, watcher or agent. The quoted log line
 | Caps/Num Lock always `false` | No readable `/dev/input` keyboard with LEDs and no sysfs LED | Give the user read access to the input device |
 | `brightness` reads `nil` | No `/sys/class/backlight` device; external monitors are not covered | None; `brightness` is backlight-only |
 | Brightness writes ignored | Session not active (another VT), so logind refuses `SetBrightness` | Switch back to the session |
-| Pairing prompt never shows | The adapter is not visible and this shell did not start the pairing, or the device asks for a PIN or passkey entry (rejected) | Make the adapter visible or pair from the shell |
+| Pairing prompt never shows | The adapter is not visible and this shell did not start the pairing | Make the adapter visible or pair from the shell; PIN and passkey entry use a [secure field](../capabilities/bluetooth.md#pair-a-new-device) |
 
 See also: [runtime](runtime.md), [cli](cli.md), [signals](signals.md), [processes](processes.md),
 [capabilities](../capabilities/index.md), [glossary](../glossary.md) (rescue, hydration, generation).

@@ -7477,3 +7477,16 @@ starts from the painted position, including after a failed or vetoed pass. Scrol
 a move, since the content moved with its parent; thawing a hidden subtree cancels one, since its old
 rect is stale; an exit freezes at the painted position. Opt-in per node rather than on every child:
 a move costs a frame clock until it settles, and matching relies on stable `id` or list `key`.
+
+## 0314. Bluetooth PIN and passkey entry travels only as a native secret
+
+`RequestPinCode` and `RequestPasskey` publish a `pairing_request` with a fresh numeric `id`, and the
+answer arrives only through a masked field's `secure_submit` aimed at `bluetooth`/`pair` with `name
+= id .. "/" .. mac`; `answer_pairing(mac, false)` can decline an entry request but never accept one.
+The bytes never enter Lua, the supervisor matches both id and MAC against its one prompt slot, and
+validates PIN (1-16 alphanumeric) and passkey (0-999999) before replying. A request is reserved in
+that slot before its D-Bus property reads but stays unpublished and unanswerable until they finish,
+so Cancel, Release or BlueZ owner loss during the wait cannot resurrect it, and a code display it
+would replace comes back if the request is refused or cancelled. The agent registers as
+`KeyboardDisplay`. zbus serializes the reply from an owned `String` (or `u32`) into its own message
+buffer; neither is zeroized.

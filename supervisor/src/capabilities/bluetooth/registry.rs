@@ -64,11 +64,9 @@ async fn adopt_adapter(
 }
 
 /// Empties the slot when BlueZ removes the adapter in use, stops its forwarder, and pushes
-/// [`BluetoothSignal::AdapterChanged`]. Removing any other adapter changes nothing.
+/// [`BluetoothSignal::AdapterChanged`]. Returns whether the tracked adapter was removed.
 ///
-/// ponytail: a second adapter already present does not take over; it is adopted only when BlueZ
-/// adds it again. Upgrade path: rerun `GetManagedObjects` here and adopt the first `Adapter1`.
-fn release_adapter(slot: &AdapterSlot, path: &OwnedObjectPath, events: &UnboundedSender<BluetoothSignal>) {
+fn release_adapter(slot: &AdapterSlot, path: &OwnedObjectPath, events: &UnboundedSender<BluetoothSignal>) -> bool {
     let released = {
         let mut bound = slot.lock().expect("mutex poisoned");
         if bound.as_ref().is_some_and(|adapter| &adapter.path == path) { bound.take() } else { None }
@@ -77,7 +75,9 @@ fn release_adapter(slot: &AdapterSlot, path: &OwnedObjectPath, events: &Unbounde
         adapter.forwarder.abort();
         info!("adapter {path} was removed");
         let _ = events.send(BluetoothSignal::AdapterChanged);
+        return true;
     }
+    false
 }
 
 /// Binds `path` as `Device1`, caches `Address`, optionally binds `Battery1`, starts its forwarder,
@@ -244,7 +244,19 @@ pub(super) fn spawn_object_manager_forwarder(
                     let Ok(args) = signal.args() else { continue; };
                     if args.interfaces().iter().any(|i| i.as_str() == "org.bluez.Adapter1") {
                         let path: OwnedObjectPath = args.object_path().to_owned().into();
-                        release_adapter(&adapter, &path, &events);
+                        if release_adapter(&adapter, &path, &events) {
+                            match object_manager.get_managed_objects().await {
+                                Ok(objects) => {
+                                    for (candidate, interfaces) in objects {
+                                        if candidate != path && interfaces.keys().any(|name| name.as_str() == "org.bluez.Adapter1") {
+                                            adopt_adapter(&connection, &adapter, candidate, &events).await;
+                                            break;
+                                        }
+                                    }
+                                }
+                                Err(err) => warn!("failed to find a replacement adapter: {err}"),
+                            }
+                        }
                     }
                     let has_device = args.interfaces().iter().any(|i| i.as_str() == "org.bluez.Device1");
                     if has_device {

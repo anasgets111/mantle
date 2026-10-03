@@ -221,13 +221,14 @@
 ---@field mac string MAC address, the argument of `connect` and `forget`.
 ---@field name string The device's advertised name, or empty.
 
----@alias PairingKind "confirm"|"authorize"|"service"|"display"
+---@alias PairingKind "confirm"|"authorize"|"service"|"display"|"pin_entry"|"passkey_entry"
 ---What a `pairing_request` asks; see `PairingRequest.kind`.
 
 ---@class PairingRequest
 ---What the pairing agent is asking the user.
 ---@field code? string Six-digit passkey for `"confirm"`, passkey or PIN for `"display"`, else `nil`.
----@field kind PairingKind `"confirm"`: does the device show `code`? `"authorize"`: may it pair? `"service"`: may a paired, untrusted device connect? `"display"`: type `code` on the device; nothing to answer.
+---@field id string Unique for this Supervisor session. Include it with the device MAC in a secure entry target.
+---@field kind PairingKind `"confirm"`: does the device show `code`? `"authorize"`: may it pair? `"service"`: may a paired, untrusted device connect? `"display"`: type `code` on the device; nothing to answer. `"pin_entry"` and `"passkey_entry"`: type a secret in a Bluetooth `secure_submit` field.
 ---@field mac string The device's MAC address.
 ---@field name string The device's advertised name, or empty.
 
@@ -436,7 +437,7 @@
 ---@field discovering boolean The adapter is scanning, whichever client started it.
 ---@field enabled boolean The adapter is powered.
 ---@field paired_devices PairedDevice[] Paired devices that are not connected. Unordered like `connected_devices`.
----@field pairing_request? PairingRequest The pairing question to show, or `nil`. Answer with `answer_pairing`.
+---@field pairing_request? PairingRequest The pairing question to show, or `nil`. Entry requests use `secure_submit`; confirmation, authorization and service requests use `answer_pairing`.
 
 ---@class BrightnessState
 ---`mantle.brightness`'s payload; the capability stays `nil` on a machine with no backlight.
@@ -623,7 +624,7 @@ local IdleCapability = {}
 ---@field connect fun(self: BluetoothCapability, mac: string) Trusts and connects a paired device.
 ---@field disconnect fun(self: BluetoothCapability, mac: string) Disconnects a connected device.
 ---@field forget fun(self: BluetoothCapability, mac: string) Removes a device from BlueZ, unpairing it.
----@field answer_pairing fun(self: BluetoothCapability, mac: string, accept: boolean) Accepts or rejects the `pairing_request` for `mac`; a yes within 750 ms of it appearing is ignored.
+---@field answer_pairing fun(self: BluetoothCapability, mac: string, accept: boolean) Accepts or rejects a confirmation, authorization or service `pairing_request` for `mac`; a yes within 750 ms of it appearing is ignored. Entry requests use `secure_submit`.
 
 ---[docs](https://anasgets111.github.io/mantle/capabilities/brightness.html)
 ---@class BrightnessCapability: Capability<BrightnessState>, userdata

@@ -208,6 +208,16 @@ impl Capabilities {
         }
     }
 
+    pub fn submit_pairing(&self, target: String, secret: shared::Zeroizing<Vec<u8>>) {
+        if let Some(bluetooth) = &self.bluetooth {
+            let _ = bluetooth.send(Box::new(move |controller| {
+                if bluetooth::agent::submit(&controller.prompts, &target, secret) {
+                    let _ = controller.events.send(bluetooth::BluetoothSignal::PairingChanged);
+                }
+            }));
+        }
+    }
+
     /// Drops what a departed generation asked for. Its replacement starts with fresh state (named
     /// state survives only an in-place reload), so nothing would send the Bluetooth discovery stop
     /// or the Wi-Fi prompt cancel the old one owed, and discovery ran for the rest of the session.

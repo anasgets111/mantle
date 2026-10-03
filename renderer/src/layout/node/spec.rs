@@ -553,8 +553,15 @@ impl Prop for SecureSubmitTarget {
                     "`secrets`/`store` needs a `name` without control characters, at most 128 bytes",
                 ));
             }
+        } else if capability == "bluetooth" {
+            if !name.as_deref().is_some_and(shared::valid_secret_name) {
+                return Err(invalid(
+                    "secure_submit",
+                    "`bluetooth`/`pair` needs a request id and MAC in `name`, without control characters, at most 128 bytes",
+                ));
+            }
         } else if name.is_some() {
-            return Err(invalid("secure_submit", "`name` is only valid for `secrets`/`store`"));
+            return Err(invalid("secure_submit", "`name` is only valid for `secrets`/`store` or `bluetooth`/`pair`"));
         }
         Ok(Some(SecureSubmitTarget { capability, action, name }))
     }
@@ -562,8 +569,13 @@ impl Prop for SecureSubmitTarget {
 
 /// The pairs `supervisor/src/main.rs` routes a secret to; its fallback arm drops any other one, so
 /// a password typed into a field aimed elsewhere would vanish.
-const SECURE_SUBMIT_TARGETS: [(&str, &str); 4] =
-    [("lock", "authenticate"), ("network", "connect"), ("polkit", "authenticate"), ("secrets", "store")];
+const SECURE_SUBMIT_TARGETS: [(&str, &str); 5] = [
+    ("lock", "authenticate"),
+    ("network", "connect"),
+    ("polkit", "authenticate"),
+    ("secrets", "store"),
+    ("bluetooth", "pair"),
+];
 
 #[cfg(test)]
 mod tests {
@@ -605,7 +617,7 @@ mod tests {
         for (source, expected) in [
             (
                 r#"{ capability = "lock", action = "connect" }"#,
-                "`lock`/`connect` receives no password; it takes `lock`/`authenticate`, `network`/`connect`, `polkit`/`authenticate`, `secrets`/`store`",
+                "`lock`/`connect` receives no password; it takes `lock`/`authenticate`, `network`/`connect`, `polkit`/`authenticate`, `secrets`/`store`, `bluetooth`/`pair`",
             ),
             (
                 r#"{ capability = "lock", action = "authenticate", acton = "x" }"#,
@@ -650,6 +662,10 @@ mod tests {
             (r#"{ capability = "secrets", action = "store" }"#, false),
             (r#"{ capability = "secrets", action = "store", name = "\n" }"#, false),
             (r#"{ capability = "lock", action = "authenticate", name = "mail" }"#, false),
+            (r#"{ capability = "bluetooth", action = "pair", name = "1/00:11:22:33:44:55" }"#, true),
+            (r#"{ capability = "bluetooth", action = "pair" }"#, false),
+            (r#"{ capability = "bluetooth", action = "pair", name = "\n" }"#, false),
+            (r#"{ capability = "bluetooth", action = "pair", name = string.rep("a", 129) }"#, false),
         ] {
             let table: mlua::Table =
                 lua.load(format!("return {{ kind = 'textfield', secure_submit = {target} }}")).eval().unwrap();

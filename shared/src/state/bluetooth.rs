@@ -21,6 +21,8 @@ pub enum PairingKind {
     Authorize,
     Service,
     Display,
+    PinEntry,
+    PasskeyEntry,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]
@@ -77,7 +79,10 @@ pub struct DiscoveredDevice {
 pub struct PairingRequest {
     /// `"confirm"`: does the device show `code`? `"authorize"`: may it pair? `"service"`: may a
     /// paired, untrusted device connect? `"display"`: type `code` on the device; nothing to answer.
+    /// `"pin_entry"` and `"passkey_entry"`: type a secret in a Bluetooth `secure_submit` field.
     pub kind: PairingKind,
+    /// Unique for this Supervisor session. Include it with the device MAC in a secure entry target.
+    pub id: String,
     /// The device's MAC address.
     pub mac: String,
     /// The device's advertised name, or empty.
@@ -105,7 +110,8 @@ pub struct BluetoothState {
     /// Unpaired devices BlueZ knows, unordered. Kept after `stop_discovery`; BlueZ expires unseen
     /// temporary ones after `TemporaryTimeout` (30 s by default).
     pub discovered_devices: Vec<DiscoveredDevice>,
-    /// The pairing question to show, or `nil`. Answer with `answer_pairing`.
+    /// The pairing question to show, or `nil`. Entry requests use `secure_submit`;
+    /// confirmation, authorization and service requests use `answer_pairing`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pairing_request: Option<PairingRequest>,
 }

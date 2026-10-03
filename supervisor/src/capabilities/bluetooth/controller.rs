@@ -38,10 +38,10 @@ pub struct BluetoothController {
     /// [`reconcile_discovery`](Self::reconcile_discovery).
     discovery_wanted: Arc<AtomicBool>,
     /// The pairing prompt, shared with the agent that fills it.
-    prompts: PromptSlot,
+    pub(in crate::capabilities) prompts: PromptSlot,
     /// Signal sender used by [`clear_discovered`](Self::clear_discovered) to share the forwarders'
     /// FIFO.
-    events: UnboundedSender<BluetoothSignal>,
+    pub(in crate::capabilities) events: UnboundedSender<BluetoothSignal>,
 }
 
 impl BluetoothController {
@@ -153,8 +153,12 @@ impl BluetoothController {
                 state.clone()
             }
             BluetoothSignal::PairingChanged => {
-                let request =
-                    self.prompts.lock().expect("mutex poisoned").as_ref().map(|prompt| prompt.request.clone());
+                let request = self
+                    .prompts
+                    .lock()
+                    .expect("mutex poisoned")
+                    .as_ref()
+                    .and_then(|prompt| prompt.visible_request().cloned());
                 let mut state = self.state.lock().expect("mutex poisoned");
                 state.pairing_request = request;
                 state.clone()
@@ -248,7 +252,13 @@ impl BluetoothController {
     /// the missing reply again under its lock, so a request that replaced the display in between is
     /// not the one removed.
     fn clear_finished_display(&self, connected: &[ConnectedDevice], paired: &[PairedDevice]) {
-        let shown = self.prompts.lock().expect("mutex poisoned").as_ref().map(|prompt| prompt.request.mac.clone());
+        let shown = self
+            .prompts
+            .lock()
+            .expect("mutex poisoned")
+            .as_ref()
+            .and_then(agent::PendingPrompt::visible_request)
+            .map(|request| request.mac.clone());
         let Some(mac) = shown else { return };
         let done = connected.iter().map(|d| &d.mac).chain(paired.iter().map(|d| &d.mac)).any(|m| *m == mac);
         if done && agent::clear_display(&self.prompts, &mac) {
@@ -511,6 +521,17 @@ mod tests {
     }
 
     #[test]
+    fn a_finished_display_under_a_reservation_is_not_restored() {
+        let (controller, _receiver) = controller();
+        *controller.prompts.lock().unwrap() =
+            Some(agent::PendingPrompt::reserved("BB", agent::PendingPrompt::display("AA")));
+        controller.clear_finished_display(&[], &[PairedDevice { mac: "AA".into(), ..PairedDevice::default() }]);
+        assert!(controller.prompts.lock().unwrap().as_ref().unwrap().visible_request().is_none());
+        assert!(!agent::answer(&controller.prompts, None, false, Instant::now()));
+        assert!(controller.prompts.lock().unwrap().is_none());
+    }
+
+    #[test]
     fn only_a_visible_adapter_or_this_supervisors_own_pairing_invites_a_prompt() {
         let (controller, _receiver) = controller();
         assert!(!controller.invited("AA"), "a hidden adapter invites nobody");
@@ -636,13 +657,13 @@ mod tests {
     }
 
     struct FakeAgentManager {
-        registered: tokio::sync::mpsc::UnboundedSender<()>,
+        registered: tokio::sync::mpsc::UnboundedSender<String>,
     }
 
     #[zbus::interface(name = "org.bluez.AgentManager1")]
     impl FakeAgentManager {
-        fn register_agent(&self, _agent: zbus::zvariant::ObjectPath<'_>, _capability: &str) {
-            let _ = self.registered.send(());
+        fn register_agent(&self, _agent: zbus::zvariant::ObjectPath<'_>, capability: &str) {
+            let _ = self.registered.send(capability.to_string());
         }
         fn request_default_agent(&self, _agent: zbus::zvariant::ObjectPath<'_>) {}
     }
@@ -651,7 +672,8 @@ mod tests {
     async fn serve_bluez(
         bus: &PrivateBus,
         devices: &[(&'static str, bool)],
-        registered: tokio::sync::mpsc::UnboundedSender<()>,
+        registered: tokio::sync::mpsc::UnboundedSender<String>,
+        second_adapter: bool,
     ) -> zbus::Connection {
         let mut builder = bus
             .builder()
@@ -661,6 +683,9 @@ mod tests {
             .unwrap()
             .serve_at("/org/bluez/hci0", FakeAdapter)
             .unwrap();
+        if second_adapter {
+            builder = builder.serve_at("/org/bluez/hci1", FakeAdapter).unwrap();
+        }
         for &(mac, paired) in devices {
             let path = format!("/org/bluez/hci0/dev_{}", mac.replace(':', "_"));
             builder = builder.serve_at(path, FakeDevice { mac, paired }).unwrap();
@@ -697,19 +722,47 @@ mod tests {
         let bus = private_bus().await;
         let (registered, mut registrations) = tokio::sync::mpsc::unbounded_channel();
         let first =
-            serve_bluez(&bus, &[("AA:AA:AA:AA:AA:AA", true), ("BB:BB:BB:BB:BB:BB", false)], registered.clone()).await;
+            serve_bluez(&bus, &[("AA:AA:AA:AA:AA:AA", true), ("BB:BB:BB:BB:BB:BB", false)], registered.clone(), false)
+                .await;
         let (events, mut signals) = tokio::sync::mpsc::unbounded_channel();
         let controller = BluetoothController::new(bus.connection().await, events).await;
-        within(registrations.recv()).await;
+        assert_eq!(within(registrations.recv()).await.as_deref(), Some("KeyboardDisplay"));
         let state = controller.state.lock().unwrap().clone();
         assert!(state.available);
         assert_eq!(macs(&state), ["AA:AA:AA:AA:AA:AA", "BB:BB:BB:BB:BB:BB"]);
 
+        let (reply, _answer) = tokio::sync::oneshot::channel();
+        let mut pending = agent::PendingPrompt::display("BB:BB:BB:BB:BB:BB");
+        pending.request.kind = super::super::PairingKind::PinEntry;
+        pending.request.id = "old".to_string();
+        pending.reply = Some(reply);
+        *controller.prompts.lock().unwrap() = Some(pending);
+        controller.handle_signal(BluetoothSignal::PairingChanged).await;
+
         drop(first);
         until(&controller, &mut signals, |state| !state.available && macs(state).is_empty()).await;
+        assert!(!agent::submit(&controller.prompts, "old/BB:BB:BB:BB:BB:BB", shared::Zeroizing::new(b"1234".to_vec())));
 
-        let _second = serve_bluez(&bus, &[("CC:CC:CC:CC:CC:CC", true)], registered).await;
+        let _second = serve_bluez(&bus, &[("CC:CC:CC:CC:CC:CC", true)], registered, false).await;
         until(&controller, &mut signals, |state| state.available && macs(state) == ["CC:CC:CC:CC:CC:CC"]).await;
-        within(registrations.recv()).await.expect("the new bluetoothd gets RegisterAgent");
+        assert_eq!(within(registrations.recv()).await.as_deref(), Some("KeyboardDisplay"));
+    }
+
+    #[tokio::test]
+    async fn a_present_adapter_takes_over_when_the_tracked_adapter_is_removed() {
+        let bus = private_bus().await;
+        let (registered, _registrations) = tokio::sync::mpsc::unbounded_channel();
+        let bluez = serve_bluez(&bus, &[], registered, true).await;
+        let (events, mut signals) = tokio::sync::mpsc::unbounded_channel();
+        let controller = BluetoothController::new(bus.connection().await, events).await;
+        let selected = controller.adapter().unwrap().inner().path().to_string();
+        let survivor = if selected.ends_with("hci0") { "/org/bluez/hci1" } else { "/org/bluez/hci0" };
+
+        bluez.object_server().remove::<FakeAdapter, _>(selected.as_str()).await.unwrap();
+        until(&controller, &mut signals, |_| {
+            controller.adapter().is_some_and(|adapter| adapter.inner().path().as_str() == survivor)
+        })
+        .await;
+        assert!(controller.state.lock().unwrap().available);
     }
 }

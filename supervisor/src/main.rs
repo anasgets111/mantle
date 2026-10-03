@@ -410,6 +410,11 @@ async fn run_supervisor(
                     let secret = shared::Zeroizing::new(std::mem::take(&mut submit.secret));
                     supervisor.capabilities.connect_prompted(submit.generation_id, secret);
                 }
+                RendererFrame::SecureSubmit(mut submit) if submit.capability == Capability::Bluetooth && submit.action == "pair" => {
+                    if let Some(target) = submit.name.take() {
+                        supervisor.capabilities.submit_pairing(target, shared::Zeroizing::new(std::mem::take(&mut submit.secret)));
+                    }
+                }
                 RendererFrame::SecureSubmit(mut submit) if submit.capability == Capability::Lock && submit.action == "authenticate" && submit.name.is_none() => {
                     // ADR-0042, ADR-0052: this arm and `pam_outcomes` are the only unlock path,
                     // so `unlock_and_destroy` follows successful authentication at one call site.
