@@ -244,7 +244,7 @@ mod tests {
     use tokio::sync::mpsc;
     use zbus::zvariant::Value;
 
-    use crate::capabilities::test_support::{PrivateBus, private_bus, within};
+    use crate::capabilities::test_support::{PrivateBus, private_bus, properties as entry, within};
 
     struct FakeUPower {
         on_battery: bool,
@@ -353,10 +353,6 @@ mod tests {
         assert_eq!(fake.get().await.active, "power-saver", "an unlisted name never reaches the daemon");
         power.set_profile("balanced").await;
         assert_eq!(fake.get().await.active, "balanced");
-    }
-
-    fn entry(pairs: &[(&str, Value<'static>)]) -> HashMap<String, OwnedValue> {
-        pairs.iter().map(|(key, value)| (key.to_string(), OwnedValue::try_from(value.clone()).unwrap())).collect()
     }
 
     #[test]

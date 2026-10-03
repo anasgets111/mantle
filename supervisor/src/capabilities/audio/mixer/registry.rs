@@ -214,14 +214,32 @@ fn decode(param: Option<&pw::spa::pod::Pod>) -> Option<Value> {
 
 fn record_route(state: &Rc<RefCell<MixerState>>, device_id: u32, value: &Value) {
     let Some((profile_device, route)) = master::extract_route_target(value) else { return };
-    let previous = state.borrow_mut().device_routes.insert((device_id, profile_device), route.clone());
+    let mut current = state.borrow_mut();
+    let previous = current.device_routes.insert((device_id, profile_device), route.clone());
     if previous.as_ref() == Some(&route) {
         return;
     }
     // ponytail: the first push can lack `port` until Route answers; upgrade: fold Route into hydration.
-    state.borrow_mut().publish_audio();
+    current.publish_audio();
+    drop(current);
     // Node Props can arrive before their Route, when the cap has no route to write through.
     cap_default_sink(state);
+}
+
+pub(super) fn record_node_props(
+    state: &Rc<RefCell<MixerState>>,
+    kind: DefaultDevice,
+    node_id: u32,
+    raw: master::RawSinkProps,
+) -> bool {
+    let mut current = state.borrow_mut();
+    let Some(entry) = current.device_entries_mut(kind).get_mut(&node_id) else { return false };
+    let changed = entry.props.as_ref() != Some(&raw);
+    entry.props = Some(raw);
+    if changed {
+        current.publish_audio();
+    }
+    changed
 }
 
 /// Routes `Node`, `Device`, and `default` `Metadata` globals to their binders; ignores the rest.
@@ -361,13 +379,9 @@ fn bind_device_node(
             let Some(raw) = master::extract_sink_props(&value) else {
                 return;
             };
-            let mut state_mut = state_for_param.borrow_mut();
-            let entry = state_mut.device_entries_mut(kind).get_mut(&node_id);
-            if !entry.is_some_and(|entry| entry.props.replace(raw.clone()) != Some(raw)) {
+            if !record_node_props(&state_for_param, kind, node_id, raw) {
                 return;
             }
-            state_mut.publish_audio();
-            drop(state_mut);
             if kind == DefaultDevice::Sink {
                 cap_default_sink(&state_for_param);
             }
@@ -394,7 +408,7 @@ fn bind_device_node(
     node.subscribe_params(&[pw::spa::param::ParamType::Props]);
 
     let mut state_mut = state.borrow_mut();
-    state_mut.device_entries_mut(kind).insert(node_id, DeviceEntry { names, props: None, route: None });
+    state_mut.device_entries_mut(kind).insert(node_id, DeviceEntry { names, ..DeviceEntry::default() });
     match kind {
         DefaultDevice::Sink => state_mut.sink_nodes.insert(node_id, (node, listener)),
         DefaultDevice::Source => state_mut.source_nodes.insert(node_id, (node, listener)),

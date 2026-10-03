@@ -31,6 +31,10 @@ pub enum AudioAction {
     SetDefaultSink { id: u32 },
     /// Makes this `sources[].id` the default input.
     SetDefaultSource { id: u32 },
+    /// Sets one `sinks[].channels[]` level in percent, clamped to `[0, 150]`. Other channels stay unchanged.
+    SetSinkChannelVolume { id: u32, index: u32, volume: f32 },
+    /// Sets one `sources[].channels[]` level in percent, clamped to `[0, 100]`. Other channels stay unchanged.
+    SetSourceChannelVolume { id: u32, index: u32, volume: f32 },
     /// Sets default input volume in percent, clamped to `[0, 100]`.
     SetSourceVolume { volume: f32 },
     /// Sets default input mute.

@@ -96,6 +96,18 @@ pub(super) struct DeviceEntry {
     pub(super) route: Option<DeviceRoute>,
 }
 
+impl DeviceEntry {
+    pub(super) fn reported_props<'a>(
+        &'a self,
+        routes: &'a HashMap<(u32, i32), master::ActiveRoute>,
+    ) -> Option<&'a master::RawSinkProps> {
+        self.route
+            .and_then(|route| routes.get(&(route.device_id, route.profile_device)))
+            .and_then(|route| route.props.as_ref())
+            .or(self.props.as_ref())
+    }
+}
+
 /// Where a routed device's volume lives: `device_id` is the node's `device.id` global;
 /// `profile_device` is `card.profile.device`, matching a `Route.device`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -120,6 +132,7 @@ pub(super) fn device_list(
             port: entry.route.and_then(|route| routes.get(&(route.device_id, route.profile_device))?.port.clone()),
             bus: entry.names.bus.clone(),
             form_factor: entry.names.form_factor.clone(),
+            channels: entry.reported_props(routes).and_then(master::channel_levels),
         })
         .collect();
     list.sort_by_key(|device| device.id);

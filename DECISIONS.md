@@ -7504,3 +7504,17 @@ fields describe that join on whichever device it runs: a new join first stops th
 joins would need a prompt slot per device and a way for a config to tell prompts apart, for a rare
 case. A saved profile NM lists in the device's `AvailableConnections` wins; interface and MAC
 matching is the fallback for hidden or out-of-range networks.
+
+## 0316. Audio channels and UPower peripherals report device state, not requested state
+
+Sinks and sources publish per-channel `volume` with an `index` and PipeWire `position`, and
+`set_sink_channel_volume`/`set_source_channel_volume` write one channel. Published levels are what
+PipeWire last reported, never what was asked, so a config cannot show a level the device refused; a
+sink another client raised past the 150% cap reads its true level, and only the default sink is
+pulled back. A channel write composes on the latest reported channels, as volume and mute writes do,
+so two writes within one PipeWire round trip can compose on the same report. Channels are `nil`
+until valid Props arrive, and an index names the current channel order. `battery.peripherals` lists
+UPower devices outside the system supply keyed by object path; an enumerated device whose properties
+cannot be read stays with its readings cleared. `percent` is published only when UPower's
+`BatteryLevel` says the percentage is authoritative; otherwise `level` carries the coarse reading.
+Peak metering needs a PipeWire stream per device and is left out.

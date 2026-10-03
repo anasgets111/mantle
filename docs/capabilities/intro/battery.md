@@ -16,9 +16,10 @@ text {
 
 | Contract | Behavior |
 | :--- | :--- |
-| Source | UPower's `DisplayDevice`, the composite of every battery |
-| Updates | Re-reads every field on each `PropertiesChanged`; no timer, since UPower already polls the hardware |
-| No battery or no UPower | `present = false`, `percent = 0`, `state = "unknown"`, no time estimates |
+| Source | UPower's `DisplayDevice` for the system battery; `EnumerateDevices` for `peripherals` |
+| Updates | Re-reads the display device on `PropertiesChanged`; follows peripheral add, remove and property changes; retries failed enumeration after one second |
+| No system battery | `present = false`, `percent = 0`, `state = "unknown"`, no time estimates; peripherals may remain |
+| No UPower | The same display defaults, with `peripherals = {}` |
 
 ## How do I…
 

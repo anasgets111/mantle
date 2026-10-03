@@ -34,6 +34,12 @@ fn command(action: AudioAction) -> AudioCommand {
         AudioAction::SetBalance { balance } => AudioCommand::SetBalance(balance),
         AudioAction::SetDefaultSink { id } => AudioCommand::SetDefaultSink(id),
         AudioAction::SetDefaultSource { id } => AudioCommand::SetDefaultSource(id),
+        AudioAction::SetSinkChannelVolume { id, index, volume } => {
+            AudioCommand::SetSinkChannelVolume { id, index, volume: volume / 100.0 }
+        }
+        AudioAction::SetSourceChannelVolume { id, index, volume } => {
+            AudioCommand::SetSourceChannelVolume { id, index, volume: volume / 100.0 }
+        }
         AudioAction::SetSourceVolume { volume } => AudioCommand::SetSourceVolume(volume / 100.0),
         AudioAction::SetSourceMuted { muted } => AudioCommand::SetSourceMuted(muted),
         AudioAction::ToggleSourceMute => AudioCommand::ToggleSourceMute,
@@ -53,6 +59,14 @@ mod tests {
             |action, arguments: &[serde_json::Value]| command(shared::action::decode(action, arguments).unwrap());
         assert_eq!(decode("set_volume", &[150.into()]), AudioCommand::SetMasterVolume(1.5));
         assert_eq!(decode("set_source_volume", &[50.into()]), AudioCommand::SetSourceVolume(0.5));
+        assert_eq!(
+            decode("set_sink_channel_volume", &[7.into(), 1.into(), 150.into()]),
+            AudioCommand::SetSinkChannelVolume { id: 7, index: 1, volume: 1.5 }
+        );
+        assert_eq!(
+            decode("set_source_channel_volume", &[8.into(), 0.into(), 40.into()]),
+            AudioCommand::SetSourceChannelVolume { id: 8, index: 0, volume: 0.4 }
+        );
         assert_eq!(
             decode("set_app_volume", &[7.into(), 25.into()]),
             AudioCommand::SetAppVolume { id: 7, volume: 0.25 }

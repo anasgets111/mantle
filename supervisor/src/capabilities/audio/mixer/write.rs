@@ -60,8 +60,29 @@ pub(super) fn apply_command(state: &Rc<RefCell<MixerState>>, command: AudioComma
         }
         AudioCommand::SetDefaultSink(id) => write_default_device(state, DefaultDevice::Sink, id),
         AudioCommand::SetDefaultSource(id) => write_default_device(state, DefaultDevice::Source, id),
+        AudioCommand::SetSinkChannelVolume { id, index, volume } => {
+            set_channel_volume(state, DefaultDevice::Sink, id, index, volume);
+        }
+        AudioCommand::SetSourceChannelVolume { id, index, volume } => {
+            set_channel_volume(state, DefaultDevice::Source, id, index, volume);
+        }
         AudioCommand::SetBluetoothProfile { device, index } => write_bluetooth_profile(state, device, index),
     }
+}
+
+fn set_channel_volume(state: &Rc<RefCell<MixerState>>, kind: DefaultDevice, id: u32, index: u32, volume: f32) {
+    // ponytail: two writes within one PipeWire round trip can share stale Props; upgrade with write acknowledgments.
+    let channels = {
+        let state = state.borrow();
+        let current = state.device_props(kind, id);
+        let max = if kind == DefaultDevice::Sink { master::SINK_MAX_VOLUME } else { 1.0 };
+        current.and_then(|props| master::channel_volume(props, index, volume, max))
+    };
+    let Some(channels) = channels else {
+        debug!("channel volume {volume} for {kind:?} device {id}, channel {index} has no valid target; ignored");
+        return;
+    };
+    write_device_volume(state, kind, id, Some(channels), None);
 }
 
 /// Sets one direction's default volume.
@@ -80,10 +101,26 @@ fn set_default_volume(state: &Rc<RefCell<MixerState>>, kind: DefaultDevice, volu
 
 /// Pulls the default sink back to the cap when another client (`wpctl set-volume 5%+`) raised it past.
 pub(super) fn cap_default_sink(state: &Rc<RefCell<MixerState>>) {
-    let Some((_, current)) = resolve_default(state, DefaultDevice::Sink) else { return };
-    // The slack stops a loop: 1.5 written as 3.375 reads back as 1.4999999.
-    if master::master_volume_from_props(&current).volume > master::SINK_MAX_VOLUME + 1e-3 {
-        set_default_volume(state, DefaultDevice::Sink, master::SINK_MAX_VOLUME);
+    let correction = {
+        let state = state.borrow();
+        state.default_node(DefaultDevice::Sink).and_then(|id| {
+            let props = state.device_props(DefaultDevice::Sink, id)?;
+            // The slack stops a loop: 1.5 written as 3.375 reads back as 1.4999999.
+            if master::master_volume_from_props(props).volume <= master::SINK_MAX_VOLUME + 1e-3 {
+                return None;
+            }
+            Some((
+                id,
+                master::cubed_channel_volumes(
+                    master::SINK_MAX_VOLUME,
+                    &props.channel_volumes,
+                    master::SINK_MAX_VOLUME,
+                )?,
+            ))
+        })
+    };
+    if let Some((id, channels)) = correction {
+        write_device_volume(state, DefaultDevice::Sink, id, Some(channels), None);
     }
 }
 
@@ -107,7 +144,6 @@ fn set_default_muted(state: &Rc<RefCell<MixerState>>, kind: DefaultDevice, muted
     write_device_volume(state, kind, node_id, None, Some(muted));
 }
 
-/// One direction's default node and its last-read `Props`, for the writes that scale them.
 fn resolve_default(state: &Rc<RefCell<MixerState>>, kind: DefaultDevice) -> Option<(u32, master::RawSinkProps)> {
     let state = state.borrow();
     let node_id = state.default_node(kind)?;
@@ -162,7 +198,7 @@ fn write_device_route(
             return;
         };
         device.set_param(pw::spa::param::ParamType::Route, 0, pod);
-    });
+    })
 }
 
 /// Sends `SPA_PARAM_Profile`, which changes a BlueZ device's codec; the new profile returns through
@@ -198,7 +234,7 @@ fn write_node_props(
             return;
         };
         node.set_param(pw::spa::param::ParamType::Props, 0, pod);
-    });
+    })
 }
 
 /// Serializes `object` and hands the pod to `send`, logging `what` when either step fails. The
@@ -213,7 +249,7 @@ fn with_pod(object: &pw::spa::pod::Value, what: std::fmt::Arguments, send: impl 
         debug!(2; "serialized {what} did not read back as a pod; ignored");
         return;
     };
-    send(pod);
+    send(pod)
 }
 
 /// Writes `audio:set_default_sink/source(id)`. Metadata names devices by `node.name`, so an id

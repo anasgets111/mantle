@@ -55,6 +55,16 @@ One app's playback or recording stream. Streams without a pid are left out.
 | `recording` | `boolean` | A capture stream, such as a call's microphone, rather than playback. |
 | `volume?` | `number` | Stream volume in percent; `nil` until PipeWire reports the stream's `Props`. |
 
+### `AudioChannel`
+
+One sink or source channel. `position` is `nil` if PipeWire omits or does not name its channel map.
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `index` | `integer` | Zero-based index for `set_sink_channel_volume` or `set_source_channel_volume`. |
+| `position?` | `string` | Speaker position, e.g. `"front_left"` or `"front_right"`. |
+| `volume` | `number` | Reported level in percent. Sink writes stop at `150`; only the default output is corrected above it. |
+
 ### `AudioDevice`
 
 One `sinks` or `sources` entry.
@@ -63,6 +73,7 @@ One `sinks` or `sources` entry.
 | --- | --- | --- |
 | `active` | `boolean` | This is the default output or input; with no default known, or one not in this list, the lowest `id` is. |
 | `bus?` | `string` | `device.bus`, e.g. `"pci"`, `"usb"`, `"bluetooth"`. |
+| `channels?` | `AudioChannel[]` | Channel levels in percent, or `nil` before valid channel volumes arrive. Indices name the current channel order; read a fresh snapshot after a device changes. |
 | `form_factor?` | `string` | `device.form-factor`, e.g. `"headset"`. |
 | `icon?` | `string` | `device.icon-name` theme name, e.g. `"audio-card-analog"`. |
 | `id` | `integer` | PipeWire node id, the argument of `set_default_sink`/`set_default_source`; not reboot-stable. |
@@ -102,6 +113,8 @@ Call each as `mantle.audio:<action>(arguments...)`; `?` marks an argument you ma
 | `set_balance` | `balance: number` | Sets default output balance, `-1.0` (left) to `1.0` (right), clamped; the louder side keeps its level. |
 | `set_default_sink` | `id: integer` | Makes this `sinks[].id` the default output. |
 | `set_default_source` | `id: integer` | Makes this `sources[].id` the default input. |
+| `set_sink_channel_volume` | `id: integer, index: integer, volume: number` | Sets one `sinks[].channels[]` level in percent, clamped to `[0, 150]`. Other channels stay unchanged. |
+| `set_source_channel_volume` | `id: integer, index: integer, volume: number` | Sets one `sources[].channels[]` level in percent, clamped to `[0, 100]`. Other channels stay unchanged. |
 | `set_source_volume` | `volume: number` | Sets default input volume in percent, clamped to `[0, 100]`. |
 | `set_source_muted` | `muted: boolean` | Sets default input mute. |
 | `toggle_source_mute` |  | Toggles default input mute. |
@@ -115,7 +128,7 @@ PipeWire's native API, on one thread shared with [`privacy`](privacy.md#backend)
 
 | PipeWire object | Feeds |
 | :--- | :--- |
-| `Audio/Sink`, `Audio/Source` nodes and the `default` metadata's `default.audio.sink`/`source` | `sinks`, `sources`, `volume`, `muted`, `balance`, `source_volume`, `source_muted` |
+| `Audio/Sink`, `Audio/Source` nodes and the `default` metadata's `default.audio.sink`/`source` | `sinks`, `sources`, their `channels`, `volume`, `muted`, `balance`, `source_volume`, `source_muted` |
 | `Stream/Output/Audio`, `Stream/Input/Audio` nodes | `apps`, minus the streams its field lists |
 | `bluez_card.*` devices and their profiles | `bluetooth` |
 | Each ALSA and BlueZ device's active `Route` | `port`, and a hardware sink's or source's volume, mute and balance, Bluetooth microphones included. The node's `Props` only mirror the `Route`: they are read until it arrives, and a write before then is dropped. A virtual device has no `Route` and uses its node's `Props` |

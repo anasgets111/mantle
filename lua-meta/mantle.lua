@@ -64,10 +64,17 @@
 ---@field name string `Name=`, unlocalized: `Name[xx]` is not read (ADR-0061).
 ---@field no_display boolean `NoDisplay=true`: omit from launchers, but keep its name and icon for window lookup.
 
+---@class AudioChannel
+---One sink or source channel. `position` is `nil` if PipeWire omits or does not name its channel map.
+---@field index integer Zero-based index for `set_sink_channel_volume` or `set_source_channel_volume`.
+---@field position? string Speaker position, e.g. `"front_left"` or `"front_right"`.
+---@field volume number Reported level in percent. Sink writes stop at `150`; only the default output is corrected above it.
+
 ---@class AudioDevice
 ---One `sinks` or `sources` entry.
 ---@field active boolean This is the default output or input; with no default known, or one not in this list, the lowest `id` is.
 ---@field bus? string `device.bus`, e.g. `"pci"`, `"usb"`, `"bluetooth"`.
+---@field channels? AudioChannel[] Channel levels in percent, or `nil` before valid channel volumes arrive. Indices name the current channel order; read a fresh snapshot after a device changes.
 ---@field form_factor? string `device.form-factor`, e.g. `"headset"`.
 ---@field icon? string `device.icon-name` theme name, e.g. `"audio-card-analog"`.
 ---@field id integer PipeWire node id, the argument of `set_default_sink`/`set_default_source`; not reboot-stable.
@@ -75,7 +82,7 @@
 ---@field port? string The active card route's `port.type`, e.g. `"headphones"`, `"hdmi"`, `"mic"`.
 
 ---@alias BatteryStatus
----| "unknown" # No answer: UPower unreachable, an unknown state number, or a display device that is not a battery.
+---| "unknown" # No answer: UPower unreachable, an unknown state number, or a device without a battery state.
 ---| "charging" # Taking current from an adapter.
 ---| "discharging" # Draining.
 ---| "empty" # Flat.
@@ -231,6 +238,16 @@
 ---@field kind PairingKind `"confirm"`: does the device show `code`? `"authorize"`: may it pair? `"service"`: may a paired, untrusted device connect? `"display"`: type `code` on the device; nothing to answer. `"pin_entry"` and `"passkey_entry"`: type a secret in a Bluetooth `secure_submit` field.
 ---@field mac string The device's MAC address.
 ---@field name string The device's advertised name, or empty.
+
+---@class PeripheralBattery
+---One UPower battery outside the system supply.
+---@field icon? string UPower icon name, or `nil` when absent.
+---@field id string UPower object path; stable only while this UPower owner holds the device.
+---@field kind string UPower device type, e.g. `"mouse"`, `"keyboard"`, `"headset"`.
+---@field level? string Coarse charge level, including `"unknown"`, or `nil` when UPower says to use `percent`.
+---@field name string UPower model, vendor, or object name.
+---@field percent? integer Charge percentage, or `nil` when UPower reports a coarse level or has no usable reading.
+---@field state BatteryStatus Charge state; `"unknown"` when UPower has no recognized value.
 
 ---@alias PlayState "playing"|"paused"|"stopped"
 ---MPRIS `PlaybackStatus`.
@@ -430,9 +447,10 @@
 ---@field volume? number Default output volume in percent, `0` to `150`, loudest channel; louder writes by other clients are pulled back to `150`. `nil` with no sink or before its first volume report.
 
 ---@class BatteryState
----`mantle.battery`'s payload. No battery, or no UPower, reads `present = false` and defaults.
+---`mantle.battery`'s payload. Without a system battery, `present = false`; peripherals may remain.
 ---@field percent integer UPower's `Percentage`, rounded to `0` to `100`; a spurious `0` while not draining keeps the last value.
----@field present boolean UPower's display device is a present battery. Check it before drawing the other fields.
+---@field peripherals PeripheralBattery[] UPower batteries outside the system supply, ordered by object path. This may include devices also shown by `mantle.bluetooth`.
+---@field present boolean UPower's display device is a present battery. Check it before drawing system charge, state or time estimates.
 ---@field state BatteryStatus What the battery is doing; see `BatteryStatus`.
 ---@field time_to_empty? integer Seconds until flat, or `nil` while UPower has no estimate.
 ---@field time_to_full? integer Seconds until full, or `nil` while UPower has no estimate.
@@ -610,6 +628,8 @@
 ---@field set_balance fun(self: AudioCapability, balance: number) Sets default output balance, `-1.0` (left) to `1.0` (right), clamped; the louder side keeps its level.
 ---@field set_default_sink fun(self: AudioCapability, id: integer) Makes this `sinks[].id` the default output.
 ---@field set_default_source fun(self: AudioCapability, id: integer) Makes this `sources[].id` the default input.
+---@field set_sink_channel_volume fun(self: AudioCapability, id: integer, index: integer, volume: number) Sets one `sinks[].channels[]` level in percent, clamped to `[0, 150]`. Other channels stay unchanged.
+---@field set_source_channel_volume fun(self: AudioCapability, id: integer, index: integer, volume: number) Sets one `sources[].channels[]` level in percent, clamped to `[0, 100]`. Other channels stay unchanged.
 ---@field set_source_volume fun(self: AudioCapability, volume: number) Sets default input volume in percent, clamped to `[0, 100]`.
 ---@field set_source_muted fun(self: AudioCapability, muted: boolean) Sets default input mute.
 ---@field toggle_source_mute fun(self: AudioCapability) Toggles default input mute.
@@ -819,7 +839,7 @@ local PrivacyCapability = {}
 ---@field updates UpdatesCapability Pending package upgrades (pacman, optionally AUR), install progress and whether a reboot is due.
 ---@field lock LockCapability The session lock: whether it is held, authentication progress and the last failure.
 ---@field polkit PolkitCapability The pending polkit authentication request, its progress and the last failure.
----@field battery BatteryCapability UPower's display device: charge, state and time estimates.
+---@field battery BatteryCapability UPower: system battery charge, state and time estimates, plus peripheral batteries.
 ---@field system SystemCapability Wall and monotonic clocks, pushed once a second until `configure` sets the interval.
 ---@field brightness BrightnessCapability The screen backlight percentage; `nil` without a backlight.
 ---@field workspaces WorkspacesCapability Workspaces per output, special workspaces and the focused window.

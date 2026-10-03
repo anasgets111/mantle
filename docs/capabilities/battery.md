@@ -2,7 +2,7 @@
 
 # battery
 
-UPower's display device: charge, state and time estimates.
+UPower: system battery charge, state and time estimates, plus peripheral batteries.
 
 ```lua
 text {
@@ -20,12 +20,13 @@ text {
 
 `mantle.battery:get()` returns `BatteryState`, `nil` before the first push. A field marked `?` may be absent.
 
-`mantle.battery`'s payload. No battery, or no UPower, reads `present = false` and defaults.
+`mantle.battery`'s payload. Without a system battery, `present = false`; peripherals may remain.
 
 | Field | Type | Description |
 | --- | --- | --- |
 | `percent` | `integer` | UPower's `Percentage`, rounded to `0` to `100`; a spurious `0` while not draining keeps the last value. |
-| `present` | `boolean` | UPower's display device is a present battery. Check it before drawing the other fields. |
+| `peripherals` | `PeripheralBattery[]` | UPower batteries outside the system supply, ordered by object path. This may include devices also shown by `mantle.bluetooth`. |
+| `present` | `boolean` | UPower's display device is a present battery. Check it before drawing system charge, state or time estimates. |
 | `state` | `BatteryStatus` | What the battery is doing; see `BatteryStatus`. |
 | `time_to_empty?` | `integer` | Seconds until flat, or `nil` while UPower has no estimate. |
 | `time_to_full?` | `integer` | Seconds until full, or `nil` while UPower has no estimate. |
@@ -36,13 +37,27 @@ text {
 
 | Value | Description |
 | --- | --- |
-| `"unknown"` | No answer: UPower unreachable, an unknown state number, or a display device that is not a battery. |
+| `"unknown"` | No answer: UPower unreachable, an unknown state number, or a device without a battery state. |
 | `"charging"` | Taking current from an adapter. |
 | `"discharging"` | Draining. |
 | `"empty"` | Flat. |
 | `"fully_charged"` | Charged and holding. |
 | `"pending_charge"` | On mains, neither draining nor taking current: a charge limit, weak charger or thermal pause. |
 | `"pending_discharge"` | Waiting to discharge. |
+
+### `PeripheralBattery`
+
+One UPower battery outside the system supply.
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `icon?` | `string` | UPower icon name, or `nil` when absent. |
+| `id` | `string` | UPower object path; stable only while this UPower owner holds the device. |
+| `kind` | `string` | UPower device type, e.g. `"mouse"`, `"keyboard"`, `"headset"`. |
+| `level?` | `string` | Coarse charge level, including `"unknown"`, or `nil` when UPower says to use `percent`. |
+| `name` | `string` | UPower model, vendor, or object name. |
+| `percent?` | `integer` | Charge percentage, or `nil` when UPower reports a coarse level or has no usable reading. |
+| `state` | `BatteryStatus` | Charge state; `"unknown"` when UPower has no recognized value. |
 
 ## Actions
 
@@ -52,9 +67,10 @@ None: read-only, so any method but `get`, `map` and `on_change` raises.
 
 | Contract | Behavior |
 | :--- | :--- |
-| Source | UPower's `DisplayDevice`, the composite of every battery |
-| Updates | Re-reads every field on each `PropertiesChanged`; no timer, since UPower already polls the hardware |
-| No battery or no UPower | `present = false`, `percent = 0`, `state = "unknown"`, no time estimates |
+| Source | UPower's `DisplayDevice` for the system battery; `EnumerateDevices` for `peripherals` |
+| Updates | Re-reads the display device on `PropertiesChanged`; follows peripheral add, remove and property changes; retries failed enumeration after one second |
+| No system battery | `present = false`, `percent = 0`, `state = "unknown"`, no time estimates; peripherals may remain |
+| No UPower | The same display defaults, with `peripherals = {}` |
 
 ## How do I…
 

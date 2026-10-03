@@ -1,6 +1,7 @@
 //! [`BatteryController`] owns read-only `mantle.battery` telemetry. Module-level behavior is
 //! documented in `battery/mod.rs`.
 
+use shared::state::battery::PeripheralBattery;
 pub use shared::state::battery::{BatteryState, BatteryStatus};
 
 use std::collections::HashMap;
@@ -8,7 +9,7 @@ use std::sync::{Arc, Mutex};
 
 use futures_util::StreamExt;
 use shared::error;
-use tokio::sync::mpsc::UnboundedSender;
+use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 
 use crate::capabilities::publish;
 use zbus::zvariant::OwnedValue;
@@ -16,7 +17,7 @@ use zbus::zvariant::OwnedValue;
 /// UPower's own numbering (`org.freedesktop.UPower.Device.State`). An unknown number is
 /// [`BatteryStatus::Unknown`] rather than an error: a future UPower adding an eighth state
 /// must not fail this capability.
-fn from_upower(state: u32) -> BatteryStatus {
+pub(super) fn from_upower(state: u32) -> BatteryStatus {
     match state {
         1 => BatteryStatus::Charging,
         2 => BatteryStatus::Discharging,
@@ -30,10 +31,14 @@ fn from_upower(state: u32) -> BatteryStatus {
 
 /// UPower's `DisplayDevice`, the composite of every battery. Its documented path is fixed, so
 /// this reads it directly instead of calling `GetDisplayDevice()`.
-const DISPLAY_DEVICE: &str = "/org/freedesktop/UPower/devices/DisplayDevice";
+pub(super) const DISPLAY_DEVICE: &str = "/org/freedesktop/UPower/devices/DisplayDevice";
 
 /// UPower's `Type` value for a battery.
 const UPOWER_TYPE_BATTERY: u32 = 2;
+
+pub(super) fn get<'a, T: TryFrom<&'a OwnedValue>>(all: &'a HashMap<String, OwnedValue>, name: &str) -> Option<T> {
+    all.get(name).and_then(|value| T::try_from(value).ok())
+}
 
 pub struct BatteryController {
     state: Arc<Mutex<BatteryState>>,
@@ -42,12 +47,14 @@ pub struct BatteryController {
 impl BatteryController {
     pub fn new(system_bus: zbus::Connection, events: UnboundedSender<()>) -> Self {
         let state = Arc::new(Mutex::new(BatteryState::default()));
-        tokio::spawn(run_battery_task(system_bus, Arc::clone(&state), events));
+        let (peripherals, updates) = mpsc::unbounded_channel();
+        tokio::spawn(super::peripherals::run(system_bus.clone(), peripherals));
+        tokio::spawn(run_battery_task(system_bus, Arc::clone(&state), events, updates));
         Self { state }
     }
 
     pub fn snapshot(&self) -> BatteryState {
-        *self.state.lock().expect("battery state mutex poisoned")
+        self.state.lock().expect("battery state mutex poisoned").clone()
     }
 }
 
@@ -68,9 +75,6 @@ async fn read_state(properties: &zbus::fdo::PropertiesProxy<'static>) -> Battery
 /// `IsPresent` alone is true for non-battery display devices, so `Type` and `IsPresent` are checked
 /// together.
 fn from_properties(all: &HashMap<String, OwnedValue>) -> BatteryState {
-    fn get<'a, T: TryFrom<&'a OwnedValue>>(all: &'a HashMap<String, OwnedValue>, name: &str) -> Option<T> {
-        all.get(name).and_then(|value| T::try_from(value).ok())
-    }
     let is_battery = get::<u32>(all, "Type") == Some(UPOWER_TYPE_BATTERY);
     if !is_battery || get::<bool>(all, "IsPresent") != Some(true) {
         return BatteryState::default();
@@ -83,13 +87,14 @@ fn from_properties(all: &HashMap<String, OwnedValue>) -> BatteryState {
         state: get::<u32>(all, "State").map(from_upower).unwrap_or_default(),
         time_to_empty: get::<i64>(all, "TimeToEmpty").and_then(seconds),
         time_to_full: get::<i64>(all, "TimeToFull").and_then(seconds),
+        ..BatteryState::default()
     }
 }
 
 /// UPower once emitted a spurious mains `Percentage` of 0 for one push, emptying the pill. After a
 /// nonzero reading, retain a mains zero while not draining. A real on-battery zero is
 /// indistinguishable from the glitch and passes through.
-fn hold_through_glitch(previous: BatteryState, current: BatteryState) -> BatteryState {
+fn hold_through_glitch(previous: &BatteryState, current: BatteryState) -> BatteryState {
     let draining = matches!(current.state, BatteryStatus::Discharging | BatteryStatus::Empty);
     if current.present && !draining && current.percent == 0 && previous.percent > 0 {
         BatteryState { percent: previous.percent, ..current }
@@ -109,7 +114,12 @@ fn hold_through_glitch(previous: BatteryState, current: BatteryState) -> Battery
 /// **No timer, per ADR-0080.** sysfs misses capacity changes the kernel does not announce: a plug
 /// event can arrive, then `capacity` fall 69 to 65 with zero `power_supply` uevents. UPower already
 /// polls and emits refreshes for other clients.
-async fn run_battery_task(system_bus: zbus::Connection, state: Arc<Mutex<BatteryState>>, events: UnboundedSender<()>) {
+async fn run_battery_task(
+    system_bus: zbus::Connection,
+    state: Arc<Mutex<BatteryState>>,
+    events: UnboundedSender<()>,
+    mut peripheral_updates: UnboundedReceiver<Vec<PeripheralBattery>>,
+) {
     // A live `GetAll`, never zbus's property cache: its refresh task listens to the same signal, so
     // our stream can win the race, read the pre-change cache, and leave a newly plugged charger
     // showing `Discharging` until a later property moves.
@@ -143,19 +153,26 @@ async fn run_battery_task(system_bus: zbus::Connection, state: Arc<Mutex<Battery
     };
 
     let mut previous = read_state(&properties).await;
-    *state.lock().expect("battery state mutex poisoned") = previous;
+    *state.lock().expect("battery state mutex poisoned") = previous.clone();
     if events.send(()).is_err() {
         return;
     }
 
     loop {
         tokio::select! {
-            Some(_) = changed.next() => {}
-            Some(_) = owner.next() => {}
+            _ = events.closed() => return,
+            Some(peripherals) = peripheral_updates.recv() => {
+                previous.peripherals = peripherals;
+                if !publish(&state, &events, previous.clone()) { return; }
+                continue;
+            }
+            Some(_) = changed.next() => {},
+            Some(_) = owner.next() => {},
             else => return,
         }
-        let current = hold_through_glitch(previous, read_state(&properties).await);
-        previous = current;
+        let current = BatteryState { peripherals: previous.peripherals.clone(), ..read_state(&properties).await };
+        let current = hold_through_glitch(&previous, current);
+        previous = current.clone();
         if !publish(&state, &events, current) {
             return;
         }
@@ -167,60 +184,63 @@ mod tests {
     use super::*;
 
     use tokio::sync::mpsc;
+    use zbus::zvariant::OwnedObjectPath;
 
-    use crate::capabilities::test_support::{PrivateBus, private_bus, within};
-
-    struct FakeDisplayDevice {
-        percentage: f64,
-    }
-
-    #[zbus::interface(name = "org.freedesktop.UPower.Device")]
-    impl FakeDisplayDevice {
-        #[zbus(property, name = "Type")]
-        fn kind(&self) -> u32 {
-            UPOWER_TYPE_BATTERY
-        }
-        #[zbus(property)]
-        fn is_present(&self) -> bool {
-            true
-        }
-        #[zbus(property)]
-        fn percentage(&self) -> f64 {
-            self.percentage
-        }
-        #[zbus(property)]
-        fn state(&self) -> u32 {
-            2
-        }
-    }
-
-    async fn serve_upower(bus: &PrivateBus, percentage: f64) -> zbus::Connection {
-        bus.builder()
-            .serve_at(DISPLAY_DEVICE, FakeDisplayDevice { percentage })
-            .unwrap()
-            .name("org.freedesktop.UPower")
-            .unwrap()
-            .build()
-            .await
-            .unwrap()
-    }
+    use super::super::fixtures::{FakeDevice, MOUSE, serve};
+    use crate::capabilities::test_support::{private_bus, properties, within};
 
     #[tokio::test]
-    async fn a_vanished_upower_reads_absent_and_its_successor_reads_fresh() {
+    async fn display_and_peripherals_merge_restart_and_stop() {
         let bus = private_bus().await;
-        let first = serve_upower(&bus, 70.0).await;
+        let first = serve(
+            &bus,
+            vec![OwnedObjectPath::try_from(MOUSE).unwrap()],
+            FakeDevice { kind: UPOWER_TYPE_BATTERY, percentage: 70.0, time_to_empty: 3600, time_to_full: 1200 },
+            25.0,
+        )
+        .await;
         let (events, mut changed) = mpsc::unbounded_channel();
         let battery = BatteryController::new(bus.connection().await, events);
-        within(changed.recv()).await;
-        assert_eq!((battery.snapshot().present, battery.snapshot().percent), (true, 70));
+        while battery.snapshot().peripherals.is_empty() {
+            within(changed.recv()).await.unwrap();
+        }
+        let snapshot = battery.snapshot();
+        assert_eq!(
+            (snapshot.percent, snapshot.time_to_empty, snapshot.time_to_full, snapshot.peripherals[0].percent),
+            (70, Some(3600), Some(1200), Some(25))
+        );
+        {
+            let display = first.object_server().interface::<_, FakeDevice>(DISPLAY_DEVICE).await.unwrap();
+            display.get_mut().await.percentage = 60.0;
+            display.get().await.percentage_changed(display.signal_emitter()).await.unwrap();
+        }
+        while battery.snapshot().percent != 60 {
+            within(changed.recv()).await.unwrap();
+        }
+        let snapshot = battery.snapshot();
+        assert_eq!((snapshot.percent, snapshot.peripherals[0].percent), (60, Some(25)));
 
         drop(first);
-        within(changed.recv()).await;
-        assert!(!battery.snapshot().present);
-
-        let _second = serve_upower(&bus, 40.0).await;
-        within(changed.recv()).await;
+        while battery.snapshot().present {
+            within(changed.recv()).await.unwrap();
+        }
+        let display = FakeDevice { kind: UPOWER_TYPE_BATTERY, percentage: 40.0, ..Default::default() };
+        let _second = serve(&bus, Vec::new(), display, 50.0).await;
+        while battery.snapshot().percent != 40 {
+            within(changed.recv()).await.unwrap();
+        }
         assert_eq!((battery.snapshot().present, battery.snapshot().percent), (true, 40));
+
+        let (events, mut changed) = mpsc::unbounded_channel();
+        let (peripherals, updates) = mpsc::unbounded_channel();
+        let connection = bus.connection().await;
+        let state = Arc::new(Mutex::new(BatteryState::default()));
+        let follower = tokio::spawn(super::super::peripherals::run(connection.clone(), peripherals));
+        let controller = tokio::spawn(run_battery_task(connection, state, events, updates));
+        within(changed.recv()).await.unwrap();
+        drop(changed);
+        within(controller).await.unwrap();
+        within(follower).await.unwrap();
     }
 
     /// Each state is distinct to a user; a `charging` boolean would collapse the middle rows.
@@ -255,21 +275,22 @@ mod tests {
             state: BatteryStatus::PendingCharge,
             time_to_empty: None,
             time_to_full: None,
+            ..BatteryState::default()
         })
         .unwrap();
-        assert_eq!(json, r#"{"present":true,"percent":70,"state":"pending_charge"}"#);
+        assert_eq!(json, r#"{"present":true,"percent":70,"state":"pending_charge","peripherals":[]}"#);
     }
 
     #[test]
     fn a_zero_on_mains_right_after_a_reading_keeps_the_reading() {
         let previous =
             BatteryState { present: true, percent: 70, state: BatteryStatus::PendingCharge, ..Default::default() };
-        let glitch = BatteryState { percent: 0, ..previous };
-        assert_eq!(hold_through_glitch(previous, glitch).percent, 70);
-        let drained = BatteryState { percent: 0, state: BatteryStatus::Discharging, ..previous };
-        assert_eq!(hold_through_glitch(previous, drained).percent, 0, "on battery a zero is a zero");
+        let glitch = BatteryState { percent: 0, ..previous.clone() };
+        assert_eq!(hold_through_glitch(&previous, glitch).percent, 70);
+        let drained = BatteryState { percent: 0, state: BatteryStatus::Discharging, ..previous.clone() };
+        assert_eq!(hold_through_glitch(&previous, drained).percent, 0, "on battery a zero is a zero");
         assert!(
-            !hold_through_glitch(previous, BatteryState::default()).present,
+            !hold_through_glitch(&previous, BatteryState::default()).present,
             "a battery going away is not a glitch"
         );
     }
@@ -280,10 +301,6 @@ mod tests {
         assert_eq!(seconds(0), None);
         assert_eq!(seconds(-1), None);
         assert_eq!(seconds(8040), Some(8040));
-    }
-
-    fn properties(pairs: &[(&str, zbus::zvariant::Value<'static>)]) -> HashMap<String, OwnedValue> {
-        pairs.iter().map(|(key, value)| (key.to_string(), OwnedValue::try_from(value.clone()).unwrap())).collect()
     }
 
     #[test]
@@ -303,7 +320,8 @@ mod tests {
                 percent: 70,
                 state: BatteryStatus::PendingCharge,
                 time_to_empty: None,
-                time_to_full: Some(8040)
+                time_to_full: Some(8040),
+                ..BatteryState::default()
             }
         );
         let mains = properties(&[("Type", 1u32.into()), ("IsPresent", true.into()), ("Percentage", 50f64.into())]);

@@ -10,6 +10,14 @@
 use tokio::io::AsyncBufReadExt;
 use tokio::net::UnixStream;
 
+#[cfg(test)]
+use zbus::zvariant::{OwnedValue, Value};
+
+#[cfg(test)]
+pub(crate) fn properties(pairs: &[(&str, Value<'static>)]) -> std::collections::HashMap<String, OwnedValue> {
+    pairs.iter().map(|(key, value)| ((*key).into(), OwnedValue::try_from(value.clone()).unwrap())).collect()
+}
+
 /// Connected p2p zbus connections without a bus daemon, returned as `(server, client)`. `serve`
 /// installs the client's interfaces; pass `Ok` when the client answers nothing, which is most tests
 /// here, since binding a proxy makes no call unless it asks for `CacheProperties::Yes` -- that one

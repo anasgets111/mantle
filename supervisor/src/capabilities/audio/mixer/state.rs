@@ -39,6 +39,8 @@ pub enum AudioCommand {
     SetBalance(f32),
     SetDefaultSink(u32),
     SetDefaultSource(u32),
+    SetSinkChannelVolume { id: u32, index: u32, volume: f32 },
+    SetSourceChannelVolume { id: u32, index: u32, volume: f32 },
     SetSourceVolume(f32),
     SetSourceMuted(bool),
     ToggleSourceMute,
@@ -152,11 +154,7 @@ impl MixerState {
     /// A routed device's card Props are authoritative when the node only mirrors them.
     pub(super) fn device_props(&self, kind: DefaultDevice, id: u32) -> Option<&master::RawSinkProps> {
         let entry = self.device_entries(kind).get(&id)?;
-        entry
-            .route
-            .and_then(|route| self.device_routes.get(&(route.device_id, route.profile_device)))
-            .and_then(|route| route.props.as_ref())
-            .or(entry.props.as_ref())
+        entry.reported_props(&self.device_routes)
     }
 
     /// Publishes even if the receiver is absent; that is startup or shutdown, not a tracking error.
@@ -233,6 +231,7 @@ pub(super) const DEFAULT_AUDIO_SOURCE_KEY: &str = "default.audio.source";
 mod tests {
     use super::super::devices::{CodecProfile, DeviceNames};
     use super::*;
+    use shared::state::audio::AudioChannel;
 
     fn sample_stream(node_id: u32) -> AppStream {
         AppStream {
@@ -256,7 +255,7 @@ mod tests {
                 ..DeviceNames::default()
             },
             props,
-            route: None,
+            ..DeviceEntry::default()
         }
     }
 
@@ -486,8 +485,15 @@ mod tests {
         let (privacy_updates, _privacy_rx) = watch::channel(PrivacySources::default());
         let mut state = mixer_state(updates, privacy_updates);
         state.sinks = HashMap::from([
-            (59, sink_at("alsa_output.analog", Some("Built-in Audio Analog Stereo"), None)),
-            (70, sink_at("bluez_output.headset", Some("WH-1000XM4"), None)),
+            (59, sink_at("alsa_output.analog", Some("Built-in Audio Analog Stereo"), Some(props_at(2.0, false)))),
+            (
+                70,
+                sink_at(
+                    "bluez_output.headset",
+                    Some("WH-1000XM4"),
+                    Some(master::RawSinkProps { mute: false, channel_volumes: vec![], channel_map: vec![] }),
+                ),
+            ),
         ]);
         state.default_sink_name = Some("bluez_output.headset".to_string());
         state.sources =
@@ -499,12 +505,18 @@ mod tests {
         let published = rx.try_recv().expect("publish_audio should have sent a snapshot");
         assert_eq!(published.sinks.iter().map(|sink| sink.active).collect::<Vec<_>>(), [false, true]);
         assert_eq!(published.sinks[1].name, "WH-1000XM4");
+        assert_eq!(published.sinks[0].channels.as_ref().unwrap()[0].volume, 200.0);
+        assert_eq!(published.sinks[1].channels, None);
         assert_eq!(
             published.sources,
             vec![AudioDevice {
                 id: 60,
                 name: "Built-in Microphone".to_string(),
                 active: true,
+                channels: Some(vec![
+                    AudioChannel { index: 0, position: None, volume: 60.0 },
+                    AudioChannel { index: 1, position: None, volume: 60.0 },
+                ]),
                 ..AudioDevice::default()
             }]
         );
@@ -519,12 +531,16 @@ mod tests {
         let (privacy_updates, _privacy_rx) = watch::channel(PrivacySources::default());
         let mut state = mixer_state(updates, privacy_updates);
         let mut source = sink_at("bluez_input.headset", None, Some(props_at(1.0, false)));
+        source.props.as_mut().unwrap().channel_map =
+            vec![pipewire::spa::sys::SPA_AUDIO_CHANNEL_FL, pipewire::spa::sys::SPA_AUDIO_CHANNEL_FR];
         source.route = Some(super::super::devices::DeviceRoute { device_id: 80, profile_device: 0 });
         state.sources.insert(91, source);
         state.default_source_name = Some("bluez_input.headset".to_string());
 
         state.publish_audio();
-        assert!(!rx.try_recv().unwrap().source_muted);
+        let before_route = rx.try_recv().unwrap();
+        assert!(!before_route.source_muted);
+        assert_eq!(before_route.sources[0].channels.as_ref().unwrap()[0].position.as_deref(), Some("front_left"));
 
         state
             .device_routes
@@ -533,6 +549,10 @@ mod tests {
         let published = rx.try_recv().unwrap();
         assert!(published.source_muted);
         assert!((published.source_volume.unwrap() - 40.0).abs() < 1e-4);
+        assert_eq!(
+            published.sources[0].channels.as_ref().unwrap().iter().map(|channel| channel.volume).collect::<Vec<_>>(),
+            [40.0, 40.0]
+        );
         assert!(state.device_props(DefaultDevice::Source, 91).unwrap().mute);
     }
 

@@ -16,6 +16,9 @@ use pipewire::spa::pod::serialize::PodSerializer;
 use pipewire::spa::pod::{Object, Property, Value, ValueArray};
 use pipewire::spa::sys as spa_sys;
 use pipewire::spa::utils::Id;
+use shared::state::audio::AudioChannel;
+
+use crate::capabilities::scale::percent_from_fraction;
 
 /// Master output volume, mute and balance.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -69,6 +72,62 @@ pub const SINK_MAX_VOLUME: f32 = 1.5;
 pub fn master_volume_from_props(props: &RawSinkProps) -> MasterVolume {
     let peak_linear = props.channel_volumes.iter().copied().fold(0.0_f32, f32::max);
     MasterVolume { volume: peak_linear.cbrt(), muted: props.mute, balance: balance(props) }
+}
+
+fn position_name(position: u32) -> Option<&'static str> {
+    match position {
+        spa_sys::SPA_AUDIO_CHANNEL_MONO => Some("mono"),
+        spa_sys::SPA_AUDIO_CHANNEL_FL => Some("front_left"),
+        spa_sys::SPA_AUDIO_CHANNEL_FR => Some("front_right"),
+        spa_sys::SPA_AUDIO_CHANNEL_FC => Some("front_center"),
+        spa_sys::SPA_AUDIO_CHANNEL_LFE => Some("lfe"),
+        spa_sys::SPA_AUDIO_CHANNEL_RL => Some("rear_left"),
+        spa_sys::SPA_AUDIO_CHANNEL_RR => Some("rear_right"),
+        spa_sys::SPA_AUDIO_CHANNEL_SL => Some("side_left"),
+        spa_sys::SPA_AUDIO_CHANNEL_SR => Some("side_right"),
+        spa_sys::SPA_AUDIO_CHANNEL_RC => Some("rear_center"),
+        spa_sys::SPA_AUDIO_CHANNEL_FLC => Some("front_left_center"),
+        spa_sys::SPA_AUDIO_CHANNEL_FRC => Some("front_right_center"),
+        spa_sys::SPA_AUDIO_CHANNEL_TC => Some("top_center"),
+        spa_sys::SPA_AUDIO_CHANNEL_TFL => Some("top_front_left"),
+        spa_sys::SPA_AUDIO_CHANNEL_TFC => Some("top_front_center"),
+        spa_sys::SPA_AUDIO_CHANNEL_TFR => Some("top_front_right"),
+        spa_sys::SPA_AUDIO_CHANNEL_TRL => Some("top_rear_left"),
+        spa_sys::SPA_AUDIO_CHANNEL_TRC => Some("top_rear_center"),
+        spa_sys::SPA_AUDIO_CHANNEL_TRR => Some("top_rear_right"),
+        _ => None,
+    }
+}
+
+pub fn channel_levels(props: &RawSinkProps) -> Option<Vec<AudioChannel>> {
+    if props.channel_volumes.is_empty() {
+        return None;
+    }
+    let mapped = props.channel_map.len() == props.channel_volumes.len();
+    props
+        .channel_volumes
+        .iter()
+        .enumerate()
+        .map(|(index, &volume)| {
+            if !volume.is_finite() || volume < 0.0 {
+                return None;
+            }
+            Some(AudioChannel {
+                index: u32::try_from(index).ok()?,
+                position: mapped.then(|| position_name(props.channel_map[index])).flatten().map(str::to_string),
+                volume: percent_from_fraction(f64::from(volume.cbrt())),
+            })
+        })
+        .collect()
+}
+
+pub fn channel_volume(props: &RawSinkProps, index: u32, volume: f32, max: f32) -> Option<Vec<f32>> {
+    if !volume.is_finite() {
+        return None;
+    }
+    let mut channels = props.channel_volumes.clone();
+    *channels.get_mut(usize::try_from(index).ok()?)? = volume.clamp(0.0, max).powi(3);
+    Some(channels)
 }
 
 /// Parses either `default.audio.sink` or `default.audio.source`, whose live `pw-metadata` shape is
@@ -460,6 +519,16 @@ mod tests {
     fn master_volume_from_props_handles_an_empty_channel_array_without_panicking() {
         let props = raw(&[], &[]);
         assert_eq!(master_volume_from_props(&props).volume, 0.0);
+        assert_eq!(channel_levels(&props), None);
+    }
+
+    #[test]
+    fn channel_write_changes_one_reported_channel_and_clamps_the_target() {
+        let props = raw(&[0.125, 0.125], &[]);
+        assert_eq!(channel_volume(&props, 1, 1.5, 1.0), Some(vec![0.125, 1.0]));
+        assert_eq!(channel_volume(&props, 0, 0.2, 1.5), Some(vec![0.2f32.powi(3), 0.125]));
+        assert_eq!(channel_volume(&props, 2, 0.2, 1.0), None);
+        assert_eq!(channel_volume(&props, 0, f32::NAN, 1.0), None);
     }
 
     #[test]
@@ -524,6 +593,8 @@ mod tests {
     fn cubed_channel_volumes_clamps_a_value_outside_the_specified_range() {
         assert_eq!(cubed_channel_volumes(2.0, &[1.0], 1.0), Some(vec![1.0]));
         assert_eq!(cubed_channel_volumes(-0.5, &[1.0], 1.0), Some(vec![0.0]));
+        let corrected = cubed_channel_volumes(SINK_MAX_VOLUME, &[8.0, 1.0], SINK_MAX_VOLUME);
+        assert_eq!(corrected, Some(vec![3.375, 0.421875]));
     }
 
     #[test]

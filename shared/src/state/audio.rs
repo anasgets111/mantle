@@ -33,7 +33,7 @@ pub struct AudioState {
 }
 
 /// One `sinks` or `sources` entry.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct AudioDevice {
     /// PipeWire node id, the argument of `set_default_sink`/`set_default_source`; not reboot-stable.
@@ -55,6 +55,23 @@ pub struct AudioDevice {
     /// `device.form-factor`, e.g. `"headset"`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub form_factor: Option<String>,
+    /// Channel levels in percent, or `nil` before valid channel volumes arrive. Indices name the
+    /// current channel order; read a fresh snapshot after a device changes.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub channels: Option<Vec<AudioChannel>>,
+}
+
+/// One sink or source channel. `position` is `nil` if PipeWire omits or does not name its channel map.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct AudioChannel {
+    /// Zero-based index for `set_sink_channel_volume` or `set_source_channel_volume`.
+    pub index: u32,
+    /// Speaker position, e.g. `"front_left"` or `"front_right"`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub position: Option<String>,
+    /// Reported level in percent. Sink writes stop at `150`; only the default output is corrected above it.
+    pub volume: f64,
 }
 
 /// One BlueZ audio device's codec choices, joined to `mantle.bluetooth` by MAC.
