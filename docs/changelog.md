@@ -7,6 +7,7 @@ version is 0.x, a minor release can break the Lua API.
 
 ## Unreleased
 
+- `dofile` and `loadfile` are unavailable in configs because their synchronous file reads can stall the Renderer. Use `require` for Lua modules or `process.run` for other files.
 - Borders follow the corners: a per-edge `border_width` or `border_color` on a rounded box, and any border on a `corner_shape = "Scoop"` box, used to draw as four straight rectangles with square corners. Where two edges meet, the colour change sits on the corner in proportion to their widths, as in CSS.
 - `path` `animate`: `commands` tweens point by point between lists with the same ops and `hole` flags, including as `keyframes`, so shapes morph without Lua per frame. Any other change still snaps.
 - `path`: `A` draws a circular arc from centre, radius, start and sweep in degrees, and `hole = true` on a subpath's first command cuts it out of the fill. Every other subpath is now solid regardless of winding, so an inner subpath drawn in the opposite direction no longer cuts a hole.

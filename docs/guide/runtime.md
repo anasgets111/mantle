@@ -49,7 +49,7 @@ on every monitor, so the blocking parts of the standard library are removed (ADR
 
 | Library | Available | Missing |
 | :--- | :--- | :--- |
-| Base | `assert`, `collectgarbage`, `dofile`, `error`, `getmetatable`, `ipairs`, `load`, `loadfile`, `next`, `pairs`, `pcall`, `print`, `rawequal`, `rawget`, `rawlen`, `rawset`, `require`, `select`, `setmetatable`, `tonumber`, `tostring`, `type`, `warn`, `xpcall`, `_G`, `_VERSION` (`"Lua 5.4"`) | None. `warn` logs like `log.warn`, on by default; `warn("@off")` / `warn("@on")` toggle it |
+| Base | `assert`, `collectgarbage`, `error`, `getmetatable`, `ipairs`, `load`, `next`, `pairs`, `pcall`, `print`, `rawequal`, `rawget`, `rawlen`, `rawset`, `require`, `select`, `setmetatable`, `tonumber`, `tostring`, `type`, `warn`, `xpcall`, `_G`, `_VERSION` (`"Lua 5.4"`). `warn` logs like `log.warn`, on by default; `warn("@off")` / `warn("@on")` toggle it | `dofile`, `loadfile` |
 | `coroutine` | `close`, `create`, `isyieldable`, `resume`, `running`, `status`, `wrap`, `yield` | None |
 | `string` | `byte`, `char`, `dump`, `find`, `format`, `gmatch`, `gsub`, `len`, `lower`, `match`, `pack`, `packsize`, `rep`, `reverse`, `sub`, `unpack`, `upper`. Strings have the usual `("x"):upper()` metatable | None |
 | `table` | `concat`, `insert`, `move`, `pack`, `remove`, `sort`, `unpack` | None |
@@ -61,10 +61,11 @@ on every monitor, so the blocking parts of the standard library are removed (ADR
 | `debug` | Nothing | The whole library. `debug.traceback` included |
 | FFI, native modules | Nothing | All |
 
-`load` accepts text and precompiled chunks. `dofile` and `loadfile` remain and read any path, but
-they are synchronous file I/O on the render thread. To read a file, use
-[`process.run`](processes.md#processrun) or [`persistent_table`](scripting.md#persistent_table). To
-run a program, use `process.run`. For `os.difftime(a, b)`, write `a - b`.
+`load` accepts text and precompiled chunks. Use `require` for Lua files in the config directory.
+`dofile` and `loadfile` are unavailable because they read files on the render thread. To read other
+files, use [`process.run`](processes.md#processrun) or
+[`persistent_table`](scripting.md#persistent_table) for JSON. To run a program, use `process.run`.
+For `os.difftime(a, b)`, write `a - b`.
 
 The engine adds these globals. Every module sees the same ones.
 
@@ -340,7 +341,7 @@ the top level every time.
 | `return { require("a"), require("b") }` fails with `surface 3 is a string` | Bind each module to a local first |
 | `require("lib.json")` from a luarocks install is not found | Only the config directory is searched. Copy the pure-Lua module into it |
 | A map raises `exceeded the 2.5ms CPU budget` | Move the heavy work to the top level or to `process.run`. The map should only index and format |
-| `dofile("/big/file")` stutters every frame it runs | Read files through `process.run` or `persistent_table` |
+| `dofile` or `loadfile` is nil | Use `require` for Lua modules; read other files through `process.run` or `persistent_table` for JSON |
 | A global counter keeps growing across reloads | Globals live in the VM, and a reload reuses the VM. Use `local`, or `state` when it should persist on purpose |
 | After a broken save, `mantle call` says no action exists | A failed evaluation clears actions, timers and handlers; a failed apply keeps the new actions. Fix the error and save again |
 | A config edit to `fonts { ... }` does nothing | The font chain is read when the Renderer starts. Restart the shell |

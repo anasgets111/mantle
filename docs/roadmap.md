@@ -13,7 +13,6 @@ Defects or missing pieces a config cannot work around.
 | :--- | :--- | :--- |
 | `expected_revision` is unchecked | The socket drops a frame from another generation, but nothing reads the revision it claims, so it is no authorization guarantee. Settle stale-revision semantics before anything relies on it | — |
 | Keyboard focus and accessibility | Only `textfield` holds focus; Tab reaches the config as `on_navigate("tab")`. Needs focusable controls, keyboard activation and an accessibility tree | — |
-| Blocking `dofile` / `loadfile` | The base library keeps both, and they read files on the Wayland thread outside the CPU budget, against ADR-0048's intent. Remove them or route them through `require`'s resolver | 0048 |
 | Multi-prompt PAM | The worker relays every masked prompt, but `LockState` and `secure_submit` carry one password, answered to every prompt. Fingerprint, 2FA and expired passwords fail. Echo-on prompts stay refused | 0241 |
 
 ## Later
