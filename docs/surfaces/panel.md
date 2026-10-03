@@ -5,11 +5,19 @@ OSDs, launcher overlays, notification stacks. Rules every role shares are in [su
 
 A 32 px bar across the top of every output, reserving its height so windows start below it:
 
-<!-- shot-alt: A top bar with Workspaces, a centered clock, and Tray. -->
+<!-- shot-alt: A top bar: workspace pills with the active one wider and blue on the left, the time and date centred, and Wi-Fi, Bluetooth and volume icons with the battery level on the right. -->
 ```lua,shot
-local clock = mantle.system:map(function(system)
-    return system and os.date("%H:%M", system.time) or ""
-end)
+local function now(format)
+    return mantle.system:map(function(system) return system and os.date(format, system.time) or "" end)
+end
+
+local function workspace(active)
+    return rect { width = active and 20 or 8, height = 8, radius = 4, background = active and "#89b4fa" or "#45475a" }
+end
+
+local function status(name)
+    return icon { name = name, size = 16, foreground = "#cdd6f4", align_v = "Center" }
+end
 
 local bar = panel {
     id = "bar",
@@ -21,14 +29,30 @@ local bar = panel {
     child = row {
         width = "Fill",
         height = "Fill",
-        padding = { left = 12, right = 12 },
+        padding = { left = 14, right = 14 },
         background = "#1e1e2e",
         children = {
-            text { content = "Workspaces", foreground = "#cdd6f4", align_v = "Center" },
+            row { spacing = 6, align_v = "Center", children = { workspace(false), workspace(true), workspace(false), workspace(false) } },
             rect { width = "Fill" },
-            text { content = clock, foreground = "#cdd6f4", align_v = "Center" },
+            row {
+                spacing = 8,
+                align_v = "Center",
+                children = {
+                    text { content = now("%H:%M"), font_weight = 700, foreground = "#cdd6f4" },
+                    text { content = now("%a %d %b"), foreground = "#a6adc8" },
+                },
+            },
             rect { width = "Fill" },
-            text { content = "Tray", foreground = "#cdd6f4", align_v = "Center" },
+            row {
+                spacing = 12,
+                align_v = "Center",
+                children = {
+                    status("network-wireless-symbolic"),
+                    status("bluetooth-active-symbolic"),
+                    status("audio-volume-high-symbolic"),
+                    text { content = "82%", foreground = "#a6e3a1", align_v = "Center" },
+                },
+            },
         },
     },
 }
@@ -111,9 +135,33 @@ Hiding a panel destroys its layer surface and showing creates a fresh one, so a 
 the panel stays shown. This launcher opens on `mantle toggle launcher_open` from a compositor
 keybind, on the output the compositor picks, and closes on Escape:
 
-<!-- shot-alt: A launcher overlay covering the screen, with a search field. -->
+<!-- shot-alt: A launcher overlay dimming the screen: a card with a search field above three apps, the first highlighted. -->
 ```lua,shot
 local open = state("launcher_open", false)
+local APPS = {
+    { icon = "web-browser", name = "Web Browser" },
+    { icon = "folder", name = "Files" },
+    { icon = "utilities-terminal", name = "Terminal" },
+}
+
+local function result(index, app)
+    return row {
+        width = "Fill",
+        padding = 8,
+        spacing = 12,
+        radius = 8,
+        background = index == 1 and "#89b4fa26" or "#00000000",
+        children = {
+            icon { name = app.icon, size = 24, align_v = "Center" },
+            text { content = app.name, foreground = "#cdd6f4", align_v = "Center" },
+        },
+    }
+end
+
+local results = {}
+for index, app in ipairs(APPS) do
+    results[index] = result(index, app)
+end
 
 local launcher = panel {
     id = "launcher",
@@ -126,17 +174,27 @@ local launcher = panel {
     keyboard_interactivity = "Exclusive",
     background = "#11111b99",
     child = column {
-        width = 480, align_h = "Center", align_v = "Center",
-        padding = 16, radius = 12, background = "#1e1e2e",
+        width = 420, align_h = "Center", align_v = "Center",
+        padding = 12, spacing = 8, radius = 14, background = "#1e1e2e",
         children = {
-            textfield {
+            rect {
                 width = "Fill",
-                height = 32,
-                placeholder = "Search",
-                autofocus = true,
-                on_change = function(query) end,
-                on_cancel = function() open:set(false) end,
+                height = 36,
+                padding = { left = 12, right = 12 },
+                radius = 8,
+                background = "#313244",
+                children = {
+                    textfield {
+                        width = "Fill",
+                        height = "Fill",
+                        placeholder = "Search apps",
+                        autofocus = true,
+                        on_change = function(query) end,
+                        on_cancel = function() open:set(false) end,
+                    },
+                },
             },
+            column { width = "Fill", spacing = 2, children = results },
         },
     },
 }
@@ -189,9 +247,10 @@ with a pointer handler takes input ([input region](index.md#input-region)), so t
 A card bottom-centre on the output the compositor picks, shown for 1.5 s after the level
 changes. No `left`/`right` anchor, so the width is measured and the protocol centres it:
 
-<!-- shot-alt: A volume card with a blue level meter. -->
+<!-- shot-alt: A volume card: a speaker icon, a blue level meter at 70% and the percentage. -->
 ```lua,shot
 local level = state("osd_level", 0.5)
+local percent = level:map(function(value) return string.format("%d%%", math.floor(value * 100)) end)
 
 local osd = panel {
     id = "osd",
@@ -200,20 +259,16 @@ local osd = panel {
     anchor = { bottom = true },
     margin = { bottom = 96 },
     visible = pulse(level, 1500),
-    background = "#1e1e2ee6", radius = 12, padding = 12,
+    background = "#1e1e2ee6", radius = 14, padding = 14,
     child = row {
         spacing = 12,
         children = {
-            text { content = "Volume" },
+            icon { name = "audio-volume-high-symbolic", size = 20, foreground = "#89b4fa", align_v = "Center" },
             rect {
                 width = 200, height = 8, align_v = "Center", radius = 4, background = "#45475a",
-                children = {
-                    rect {
-                        width = level:map(function(value) return string.format("%d%%", math.floor(value * 100)) end),
-                        height = "Fill", radius = 4, background = "#89b4fa",
-                    },
-                },
+                children = { rect { width = percent, height = "Fill", radius = 4, background = "#89b4fa" } },
             },
+            text { content = percent, width = 36, foreground = "#cdd6f4", align_v = "Center" },
         },
     },
 }
@@ -243,23 +298,34 @@ animate the root's `translate`, not the surface ([animation](../guide/animation.
 
 ### Dock on one output
 
-Floating 8 px above the bottom edge. The zone is the dock's 48 px plus its 8 px margin;
-`exclusive = true` would reserve only the 48 px ([exclusive zones](#exclusive-zones)):
+Floating 8 px above the bottom edge. The zone is the dock's 54 px plus its 8 px margin;
+`exclusive = true` would reserve only the 54 px ([exclusive zones](#exclusive-zones)):
 
-<!-- shot-alt: A dock with three app icons. -->
+<!-- shot-alt: A dock with a browser, files and terminal icon; a dot under the browser marks it running. -->
 ```lua,shot
+local function app(name, running)
+    return column {
+        spacing = 2,
+        children = {
+            icon { name = name, size = 32 },
+            rect { width = 4, height = 4, radius = 2, align_h = "Center", background = running and "#89b4fa" or "#00000000" },
+        },
+    }
+end
+
 local dock = panel {
     id = "dock",
     layer = "Bottom",
     monitor = "DP-1",
     anchor = { bottom = true },
     margin = { bottom = 8 },
-    exclusive = 56,
-    background = "#1e1e2e", radius = 12, padding = 8,
-    child = row { spacing = 8, children = {
-        icon { name = "web-browser", size = 32 },
-        icon { name = "folder", size = 32 },
-        icon { name = "utilities-terminal", size = 32 },
+    exclusive = 62,
+    background = "#1e1e2e", radius = 14, padding = 8,
+    border_width = 1, border_color = "#ffffff14",
+    child = row { spacing = 12, children = {
+        app("web-browser", true),
+        app("folder", false),
+        app("utilities-terminal", false),
     } },
 }
 
@@ -306,9 +372,12 @@ card's own buttons or on nothing; it never reaches the catcher.
 
 Anchored to two edges, so both axes are measured and the panel grows with its cards:
 
-<!-- shot-alt: Two notification cards stacked in a screen corner. -->
+<!-- shot-alt: Two notification cards stacked in a screen corner, each with a coloured icon, a bold title and a detail line. -->
 ```lua,shot
-local items = state("toasts", { "Build finished", "Battery at 20%" })
+local items = state("toasts", {
+    { icon = "dialog-information-symbolic", color = "#89b4fa", title = "Build finished", body = "mantle built in 42 s" },
+    { icon = "battery-caution-symbolic", color = "#fab387", title = "Battery at 20%", body = "About 1 h left" },
+})
 
 local stack = panel {
     id = "toasts",
@@ -318,10 +387,19 @@ local stack = panel {
     child = list {
         source = items,
         spacing = 8,
-        itemfn = function(message)
-            return rect {
-                width = 320, padding = 12, radius = 12, background = "#1e1e2e",
-                children = { text { content = message, foreground = "#cdd6f4" } },
+        itemfn = function(toast)
+            return row {
+                width = 320, padding = 12, spacing = 12, radius = 12, background = "#1e1e2e",
+                children = {
+                    icon { name = toast.icon, size = 20, foreground = toast.color, align_v = "Center" },
+                    column {
+                        spacing = 2,
+                        children = {
+                            text { content = toast.title, font_weight = 700, foreground = "#cdd6f4" },
+                            text { content = toast.body, font_size = 12, foreground = "#a6adc8" },
+                        },
+                    },
+                },
             }
         end,
     },
