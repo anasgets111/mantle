@@ -4,7 +4,7 @@ A bar pill with a battery icon and percentage that turns red when low, a tooltip
 state and time left, and a desktop notification when the charge drops past 15%. On a desktop with
 no battery the pill hides itself.
 
-<!-- shot-alt: A top bar with a battery icon, 82% charge, and time remaining. -->
+<!-- shot-alt: A top bar whose battery pill shows 12% in pink, with its tooltip below: 12% on battery, 20 min left. -->
 ```lua,shot
 local LOW = 15
 local pill_hover = hover("battery")
@@ -18,7 +18,8 @@ local STATES = {
 }
 
 local function duration(seconds)
-    return string.format("%d h %02d min", seconds // 3600, seconds % 3600 // 60)
+    local hours, minutes = seconds // 3600, seconds % 3600 // 60
+    return hours > 0 and string.format("%d h %02d min", hours, minutes) or string.format("%d min", minutes)
 end
 
 -- Adwaita-style names: battery-level-0 to battery-level-100 in steps of 10.

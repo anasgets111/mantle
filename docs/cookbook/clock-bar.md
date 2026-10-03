@@ -3,7 +3,7 @@
 A bar across the top of every monitor with a clock in the centre. Clicking the clock switches
 between the time and the full date, and hovering it shows the date in a tooltip.
 
-<!-- shot-alt: A top bar with a centered 12:45 clock. -->
+<!-- shot-alt: A top bar with a centred 12:45 clock, highlighted under the pointer, and a tooltip with the full date below it. -->
 ```lua,shot
 local show_date = state("clock_show_date", false)
 local clock_hover = hover("clock")
