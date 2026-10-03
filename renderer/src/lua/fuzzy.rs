@@ -81,9 +81,9 @@ fn ascii_fuzzy_index(input: &[u8], pattern: &[u8], case_sensitive: bool) -> Opti
 fn fuzzy_match_v2(case_sensitive: bool, input: &[u8], pattern: &[u8]) -> Option<(i32, usize)> {
     let match_start = ascii_fuzzy_index(input, pattern, case_sensitive)?;
 
-    let mut first_row_scores = vec![0i16; input.len()];
-    let mut first_row_consecutive = vec![0i16; input.len()];
-    let mut bonuses = vec![0i16; input.len()];
+    let mut first_row_scores = vec![0i32; input.len()];
+    let mut first_row_consecutive = vec![0i32; input.len()];
+    let mut bonuses = vec![0i32; input.len()];
     let mut first_match_by_pattern = vec![0usize; pattern.len()];
 
     let first_pattern_byte = pattern[0];
@@ -99,7 +99,7 @@ fn fuzzy_match_v2(case_sensitive: bool, input: &[u8], pattern: &[u8]) -> Option<
     for input_index in match_start..input.len() {
         let current_class = char_class(input[input_index]);
         let byte = fold(input[input_index], case_sensitive);
-        bonuses[input_index] = bonus_for(previous_class, current_class) as i16;
+        bonuses[input_index] = bonus_for(previous_class, current_class);
         previous_class = current_class;
 
         if byte == current_pattern_byte {
@@ -115,25 +115,25 @@ fn fuzzy_match_v2(case_sensitive: bool, input: &[u8], pattern: &[u8]) -> Option<
         }
 
         if byte == first_pattern_byte {
-            let score = SCORE_MATCH + i32::from(bonuses[input_index]) * BONUS_FIRST_CHAR_MULTIPLIER;
-            first_row_scores[input_index] = score as i16;
+            let score = SCORE_MATCH + bonuses[input_index] * BONUS_FIRST_CHAR_MULTIPLIER;
+            first_row_scores[input_index] = score;
             first_row_consecutive[input_index] = 1;
             if pattern.len() == 1 && score > max_score {
                 max_score = score;
                 max_score_index = input_index;
                 // A boundary hit by a one-character needle is the best this candidate can do.
-                if i32::from(bonuses[input_index]) == BONUS_BOUNDARY {
+                if bonuses[input_index] == BONUS_BOUNDARY {
                     break;
                 }
             }
             in_gap = false;
         } else {
             let gap = if in_gap { SCORE_GAP_EXTENSION } else { SCORE_GAP_START };
-            first_row_scores[input_index] = (previous_score + gap).max(0) as i16;
+            first_row_scores[input_index] = (previous_score + gap).max(0);
             first_row_consecutive[input_index] = 0;
             in_gap = true;
         }
-        previous_score = i32::from(first_row_scores[input_index]);
+        previous_score = first_row_scores[input_index];
     }
 
     if pattern_index != pattern.len() {
@@ -155,52 +155,49 @@ fn fuzzy_match_v2(case_sensitive: bool, input: &[u8], pattern: &[u8]) -> Option<
     ))
 }
 
-/// The remaining rows of the DP. Two arrays rather than a full matrix per row: each cell needs only
-/// the cell left of it and the one diagonally back, and the row above is the previous slice.
+/// The remaining rows of the DP. Two rows rather than the matrix: each cell needs only the cell
+/// left of it and the one diagonally back in the row above, so memory is the window's width
+/// however long the needle is.
 #[allow(clippy::too_many_arguments)]
 fn score_multi_byte_match(
     case_sensitive: bool,
     pattern: &[u8],
     input: &[u8],
-    bonuses: &[i16],
-    first_row_scores: &[i16],
-    first_row_consecutive: &[i16],
+    bonuses: &[i32],
+    first_row_scores: &[i32],
+    first_row_consecutive: &[i32],
     first_match_by_pattern: &[usize],
     last_match_index: usize,
     initial_max_score: i32,
 ) -> (i32, usize) {
     let first_match_index = first_match_by_pattern[0];
-    let width = last_match_index - first_match_index + 1;
-    let mut scores = vec![0i16; width * pattern.len()];
-    let mut consecutive_matches = vec![0i16; width * pattern.len()];
+    let mut previous_scores = first_row_scores[first_match_index..=last_match_index].to_vec();
+    let mut previous_consecutive = first_row_consecutive[first_match_index..=last_match_index].to_vec();
+    let mut scores = vec![0i32; previous_scores.len()];
+    let mut consecutive_matches = vec![0i32; previous_scores.len()];
     let mut max_score = initial_max_score;
-
-    scores[..width].copy_from_slice(&first_row_scores[first_match_index..=last_match_index]);
-    consecutive_matches[..width].copy_from_slice(&first_row_consecutive[first_match_index..=last_match_index]);
 
     for pattern_index in 1..pattern.len() {
         let first_input_index = first_match_by_pattern[pattern_index];
         let pattern_byte = pattern[pattern_index];
-        let row_offset = pattern_index * width;
         let mut in_gap = false;
 
         for relative_index in 0..=(last_match_index - first_input_index) {
             let input_index = relative_index + first_input_index;
-            let cell = row_offset + input_index - first_match_index;
+            let cell = input_index - first_match_index;
             let gap = if in_gap { SCORE_GAP_EXTENSION } else { SCORE_GAP_START };
-            let left = if relative_index > 0 { i32::from(scores[cell - 1]) } else { 0 } + gap;
+            let left = if relative_index > 0 { scores[cell - 1] } else { 0 } + gap;
             let mut diagonal = 0;
-            let mut consecutive = 0i16;
+            let mut consecutive = 0;
 
             if pattern_byte == fold(input[input_index], case_sensitive) {
                 // `first_match_by_pattern` strictly increases, so this never reaches behind the row.
-                let previous_cell = cell - width - 1;
-                diagonal = i32::from(scores[previous_cell]) + SCORE_MATCH;
-                consecutive = consecutive_matches[previous_cell] + 1;
+                diagonal = previous_scores[cell - 1] + SCORE_MATCH;
+                consecutive = previous_consecutive[cell - 1] + 1;
 
-                let mut bonus = i32::from(bonuses[input_index]);
+                let mut bonus = bonuses[input_index];
                 if consecutive > 1 {
-                    let run_bonus = i32::from(bonuses[input_index + 1 - consecutive as usize]);
+                    let run_bonus = bonuses[input_index + 1 - consecutive as usize];
                     if bonus >= BONUS_BOUNDARY && bonus > run_bonus {
                         consecutive = 1; // a boundary starts a better run than the one in progress.
                     } else {
@@ -210,7 +207,7 @@ fn score_multi_byte_match(
                 // A run's bonus is kept only when it beats stepping sideways; otherwise the plain
                 // one applies and the run ends, so it cannot claim credit the path did not take.
                 if diagonal + bonus < left {
-                    diagonal += i32::from(bonuses[input_index]);
+                    diagonal += bonuses[input_index];
                     consecutive = 0;
                 } else {
                     diagonal += bonus;
@@ -219,11 +216,13 @@ fn score_multi_byte_match(
 
             consecutive_matches[cell] = consecutive;
             in_gap = diagonal < left;
-            scores[cell] = diagonal.max(left).max(0) as i16;
-            if pattern_index == pattern.len() - 1 && i32::from(scores[cell]) > max_score {
-                max_score = i32::from(scores[cell]);
+            scores[cell] = diagonal.max(left).max(0);
+            if pattern_index == pattern.len() - 1 && scores[cell] > max_score {
+                max_score = scores[cell];
             }
         }
+        std::mem::swap(&mut scores, &mut previous_scores);
+        std::mem::swap(&mut consecutive_matches, &mut previous_consecutive);
     }
 
     (max_score, first_match_index)
@@ -428,6 +427,13 @@ mod tests {
         let decoyed = "Excel Works analyze lists in spreadsheets ods xls xlsx";
         assert_eq!(scored(decoyed, "xlsx"), scored("ods xls xlsx", "xlsx"));
         assert!(scored(decoyed, "xlsx") > scored("Neovim Edit text files Text Editor", "xlsx"));
+    }
+
+    /// Scores once wrapped at `i16`, so a long exact match ranked below a short one.
+    #[test]
+    fn a_long_exact_match_keeps_its_score() {
+        let long = "a".repeat(4000);
+        assert!(scored(&long, &long) > scored(&long[..2000], &long[..2000]));
     }
 
     #[test]

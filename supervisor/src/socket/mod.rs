@@ -106,43 +106,37 @@ impl GenerationRegistry {
     /// Queues raw `payload` for `generation_id`; returns `false` with no registration. The only
     /// raw-byte crossing into an outbound channel (ADR-0022); [`send_frame_logged`] builds on it.
     pub fn send_to(&self, generation_id: u32, payload: Vec<u8>) -> bool {
-        let mut wedged = None;
-        let connections = self.connections.lock().expect("mutex poisoned");
-        let sent = match connections.get(&generation_id) {
-            // `try_send` rather than `send`: this is called from synchronous code all over
-            // Supervisor, and a full queue means the peer is wedged, not that the caller should
-            // wait for it. A refusal reads the same as no connection, which every caller already
-            // handles.
-            Some(entry) => match entry.tx.try_send(payload) {
-                Ok(()) => true,
-                Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
-                    // Dropping this one frame and carrying on would be the wrong recovery: the
-                    // frames that matter here are lock and reload traffic, and a Renderer that
-                    // silently misses one is a locked session with no lock screen. Ending the
-                    // connection instead puts it through the departure path Supervisor already
-                    // has, which respawns the generation and replays every snapshot.
-                    warn!(
-                        "generation {generation_id} has not read {MAX_OUTBOUND_FRAMES} queued frames; treating it as \
-                         wedged and closing its connection so it is respawned rather than left missing frames"
-                    );
-                    wedged = Some(Arc::clone(&entry.hangup));
-                    false
-                }
-                Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => false,
-            },
-            None => false,
-        };
-        drop(connections);
-        if let Some(hangup) = wedged {
-            self.connections.lock().expect("mutex poisoned").remove(&generation_id);
-            // Removing the entry only stops new frames queueing; the connection task has to be told
-            // to stop, or its writer sits blocked writing to a peer that is not reading. Closing
-            // the socket makes the Renderer's own loop see its Supervisor go away, and it exits
-            // (`renderer/src/wayland/main_loop.rs`, `EXIT_SUPERVISOR_GONE`), which is the departure this
-            // Supervisor already knows how to respawn from.
-            hangup.notify_one();
+        let mut connections = self.connections.lock().expect("mutex poisoned");
+        let Some(entry) = connections.get(&generation_id) else { return false };
+        // `try_send` rather than `send`: this is called from synchronous code all over Supervisor,
+        // and a full queue means the peer is wedged, not that the caller should wait for it. A
+        // refusal reads the same as no connection, which every caller already handles.
+        match entry.tx.try_send(payload) {
+            Ok(()) => true,
+            Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
+                // Dropping this one frame and carrying on would be the wrong recovery: the frames
+                // that matter here are lock and reload traffic, and a Renderer that silently misses
+                // one is a locked session with no lock screen. Ending the connection instead puts it
+                // through the departure path Supervisor already has, which respawns the generation
+                // and replays every snapshot.
+                warn!(
+                    "generation {generation_id} has not read {MAX_OUTBOUND_FRAMES} queued frames; treating it as \
+                     wedged and closing its connection so it is respawned rather than left missing frames"
+                );
+                // Under the same lock as the send: released in between, a reconnect could register
+                // and this would remove the new connection.
+                let entry = connections.remove(&generation_id).expect("held under the lock");
+                drop(connections);
+                // Removing the entry only stops new frames queueing; the connection task has to be
+                // told to stop, or its writer sits blocked writing to a peer that is not reading.
+                // Closing the socket makes the Renderer's own loop see its Supervisor go away, and
+                // it exits (`renderer/src/wayland/main_loop.rs`, `EXIT_SUPERVISOR_GONE`), which is
+                // the departure this Supervisor already knows how to respawn from.
+                entry.hangup.notify_one();
+                false
+            }
+            Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => false,
         }
-        sent
     }
 
     /// Records the pid Supervisor spawned for `generation_id`, which is the only pid allowed to

@@ -161,9 +161,7 @@ impl NetworkController {
         tokio::spawn(async move {
             let outcome =
                 tokio::time::timeout(ACTIVATION_CEILING, controller.activation_outcome(&in_flight.active)).await.ok();
-            if matches!(outcome, Some(Ok(()))) {
-                controller.save_typed_key(&in_flight).await;
-            }
+            let activated = matches!(outcome, Some(Ok(())));
             let (error, rejected_key) = activation_verdict(outcome);
             let ask_password = rejected_key
                 && !controller
@@ -171,7 +169,11 @@ impl NetworkController {
                     .await
                     .iter()
                     .any(|profile| profile.settings.contains_key("802-1x"));
-            controller.finish_connect(attempt, &pending, error, ask_password);
+            // Saved only once this attempt is confirmed current: an abort or a newer join between
+            // the verdict and here must not persist the key it typed.
+            if controller.finish_connect(attempt, &pending, error, ask_password) && activated {
+                controller.save_typed_key(&in_flight).await;
+            }
         });
     }
 

@@ -61,8 +61,10 @@ const PAM_EXCHANGE_TIMEOUT: Duration = Duration::from_secs(30);
 /// Relays a masked PAM prompt to the Supervisor and blocks for its answer (ADR-0241): `masked_prompt`
 /// forwards its text rather than replaying a password captured up front. Blocking `std::io`, not
 /// `shared::framing`: `nonstick` calls these synchronously from FFI, with no async context to
-/// `.await` in. The received `secret` moves straight into PAM's `char*` copy, which is why nothing
-/// here needs zeroizing on drop; there is no buffer left to scrub once each round returns.
+/// `.await` in. The received `secret` moves without a copy into the `OsString` nonstick takes.
+///
+/// ponytail: nonstick copies that `OsString` into PAM's `char*` and drops it unscrubbed; upgrade by
+/// patching nonstick to zeroize its answers.
 struct RelayConversation<R, W> {
     reader: RefCell<R>,
     writer: RefCell<W>,

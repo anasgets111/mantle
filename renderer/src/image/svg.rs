@@ -86,10 +86,9 @@ pub(super) fn packed_rgb(color: Rgba) -> u32 {
 /// icons use two shapes. Breeze/Adwaita ship `<style id="current-color-scheme">` with
 /// `color:#232629` on each path's class; Plasma rewrites it at load, and so does this, avoiding
 /// near-black icons on dark bars. The other shape has `fill="currentColor"` and no `color`, whose
-/// CSS initial value is black; a root presentation attribute wins, while a defined root `color`
-/// is handled by the first pass. Rewrite bytes, not a parse, because `usvg` resolves
-/// `currentColor` while building with no earlier hook. `from_utf8`, not lossy conversion, lets
-/// `usvg` reject non-UTF-8 input itself.
+/// CSS initial value is black; a root presentation attribute wins, replacing one the root already
+/// has. Rewrite bytes, not a parse, because `usvg` resolves `currentColor` while building with no
+/// earlier hook. `from_utf8`, not lossy conversion, lets `usvg` reject non-UTF-8 input itself.
 fn tinted_svg(data: &[u8], tint: Rgba) -> Vec<u8> {
     let Ok(text) = std::str::from_utf8(data) else {
         return data.to_vec();
@@ -99,16 +98,30 @@ fn tinted_svg(data: &[u8], tint: Rgba) -> Vec<u8> {
     }
     let hex = format!("#{:06x}", packed_rgb(tint));
     let rewritten = rewrite_color_declarations(text, &hex);
-    match rewritten.find("<svg") {
-        Some(at) => {
-            let mut out = String::with_capacity(rewritten.len() + hex.len() + 10);
-            out.push_str(&rewritten[..at + 4]);
-            out.push_str(&format!(" color=\"{hex}\""));
-            out.push_str(&rewritten[at + 4..]);
-            out.into_bytes()
-        }
-        None => rewritten.into_bytes(),
-    }
+    let Some(at) = rewritten.find("<svg") else { return rewritten.into_bytes() };
+    let tag = &rewritten[at..at + rewritten[at..].find('>').unwrap_or(rewritten.len() - at)];
+    // A second `color` on the root is a duplicate attribute, which fails the whole parse.
+    let (start, end, value) = match root_color_value(tag) {
+        Some(value) => (at + value.start, at + value.end, hex),
+        None => (at + 4, at + 4, format!(" color=\"{hex}\"")),
+    };
+    let mut out = String::with_capacity(rewritten.len() + value.len());
+    out.push_str(&rewritten[..start]);
+    out.push_str(&value);
+    out.push_str(&rewritten[end..]);
+    out.into_bytes()
+}
+
+/// The byte range of the quoted value of `tag`'s own `color` attribute, not `stop-color` or
+/// `flood-color`.
+fn root_color_value(tag: &str) -> Option<std::ops::Range<usize>> {
+    tag.match_indices("color").find_map(|(at, _)| {
+        tag[..at].ends_with(char::is_whitespace).then_some(())?;
+        let rest = tag[at + "color".len()..].trim_start().strip_prefix('=')?.trim_start();
+        let quote = rest.chars().next().filter(|c| matches!(c, '"' | '\''))?;
+        let start = tag.len() - rest.len() + 1;
+        Some(start..start + tag[start..].find(quote)?)
+    })
 }
 
 /// Repoint bare CSS `color:` declarations to `hex`, not `stop-color`, `flood-color`, or
@@ -258,6 +271,14 @@ pub(super) mod tests {
         let svg = br##"<svg xmlns="http://www.w3.org/2000/svg"><path fill="currentColor" d="M0 0h1v1h-1z"/></svg>"##;
         let out = String::from_utf8(tinted_svg(svg, tint())).unwrap();
         assert!(out.starts_with(r##"<svg color="#cdd6f4""##), "the root carries the colour: {out}");
+    }
+
+    #[test]
+    fn a_root_colour_attribute_is_replaced_rather_than_duplicated() {
+        let svg = br##"<svg stop-color="#00ff00" color='#232629' xmlns="http://www.w3.org/2000/svg"><path fill="currentColor" d="M0 0h1v1h-1z"/></svg>"##;
+        let out = String::from_utf8(tinted_svg(svg, tint())).unwrap();
+        assert!(out.starts_with(r##"<svg stop-color="#00ff00" color='#cdd6f4' xmlns"##), "{out}");
+        assert!(resvg::usvg::Tree::from_str(&out, &resvg::usvg::Options::default()).is_ok(), "{out}");
     }
 
     #[test]

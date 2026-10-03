@@ -98,12 +98,8 @@ impl Prop for Content {
 fn parse_runs(runs: &mlua::Table) -> Result<(String, Vec<StyleRun>), LayoutError> {
     let mut content = String::new();
     let mut styles = Vec::new();
-    for (position, run) in runs.sequence_values::<Value>().enumerate() {
-        if styles.len() == MAX_ARRAY_ELEMENTS {
-            return Err(invalid("content", format!("more than {MAX_ARRAY_ELEMENTS} runs in one text node")));
-        }
-        let index = position + 1;
-        let run = run.map_err(|e| invalid("content", format!("run {index}: {e}")))?;
+    for index in 1..=input::array_len("content", runs, MAX_ARRAY_ELEMENTS)? {
+        let run: Value = runs.raw_get(index).map_err(|e| invalid("content", format!("run {index}: {e}")))?;
         let Value::Table(run) = run else {
             return Err(invalid("content", format!("run {index}: expected a table, got {}", preview_for_error(&run))));
         };
@@ -387,6 +383,12 @@ mod tests {
         assert_eq!(runs_content(&lua, "{}").unwrap(), (String::new(), Vec::new()));
         let (content, runs) = runs_content(&lua, r#"{ { text = "", bold = true }, { text = "a" } }"#).unwrap();
         assert_eq!((content.as_str(), runs.len()), ("a", 0));
+    }
+
+    #[test]
+    fn a_run_after_a_hole_is_refused_rather_than_dropped() {
+        let lua = mlua::Lua::new();
+        assert!(runs_content(&lua, r#"{ { text = "a" }, nil, { text = "c" } }"#).is_err());
     }
 
     #[test]

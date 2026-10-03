@@ -144,7 +144,7 @@ impl Prop for PathCommands {
             Some(Value::UserData(ud)) if let Ok(frame) = ud.borrow::<Tweened>() => return Ok(frame.0.clone()),
             Some(_) => return Err(invalid(row.name, "expected a command array")),
         };
-        let len = array_len(row.name, table, MAX_COMMANDS)?;
+        let len = input::array_len(row.name, table, MAX_COMMANDS)?;
         let mut segments = Vec::with_capacity(len);
         let mut points = Vec::with_capacity(len * 2);
         let mut open = false;
@@ -153,7 +153,7 @@ impl Prop for PathCommands {
             let input: Table = table.raw_get(i).map_err(|e| invalid(&name, e.to_string()))?;
             only_keys(&name, &input, PathCommand::KEYS)?;
             let numbers: Table = input.get("points").map_err(|e| invalid(&name, e.to_string()))?;
-            array_len(&name, &numbers, 6)?;
+            input::array_len(&name, &numbers, 6)?;
             let command = PathCommand {
                 op: input::field(&name, &input, "op")?,
                 points: input::read(&name, "points", Value::Table(numbers))?,
@@ -185,28 +185,6 @@ impl Prop for PathCommands {
         }
         Ok(Rc::new(PathData { segments: segments.into(), points }))
     }
-}
-
-fn array_len(name: &str, table: &Table, limit: usize) -> Result<usize, LayoutError> {
-    let len = table.raw_len();
-    if len > limit {
-        return Err(invalid(name, format!("at most {limit} entries")));
-    }
-    let mut count = 0;
-    for pair in table.clone().pairs::<Value, Value>() {
-        let (key, _) = pair.map_err(|e| invalid(name, e.to_string()))?;
-        if !matches!(key, Value::Integer(i) if i > 0 && i as usize <= len) {
-            return Err(invalid(name, "expected a dense array with no named keys"));
-        }
-        count += 1;
-        if count > limit {
-            return Err(invalid(name, format!("at most {limit} entries")));
-        }
-    }
-    if count != len {
-        return Err(invalid(name, "expected a dense array"));
-    }
-    Ok(len)
 }
 
 #[cfg(test)]

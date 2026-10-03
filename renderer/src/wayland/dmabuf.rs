@@ -209,7 +209,10 @@ pub fn import(
     // SAFETY: the caller guarantees the GL context is current; `texture` is freshly created and
     // bound to `GL_TEXTURE_2D` immediately below.
     let texture = unsafe {
-        let texture = gl.create_texture().ok()?;
+        let Ok(texture) = gl.create_texture() else {
+            let _ = egl.instance.destroy_image(egl.display, egl_image);
+            return None;
+        };
         gl.bind_texture(glow::TEXTURE_2D, Some(texture));
         support.entry_points.image_target_texture_2d_oes(egl_image);
         // EGL maps the fourcc channels. Windows keep alpha; outputs retain opaque capture.
@@ -227,7 +230,12 @@ pub fn import(
         buffer.shape.height as usize,
         PixelFormat::Rgba8,
     );
-    let image = canvas.create_image_from_native_texture(texture, info).ok()?;
+    let Ok(image) = canvas.create_image_from_native_texture(texture, info) else {
+        // SAFETY: as above; `texture` was created here and nothing else holds it.
+        unsafe { gl.delete_texture(texture) };
+        let _ = egl.instance.destroy_image(egl.display, egl_image);
+        return None;
+    };
     buffer.texture = Some((egl_image, image, texture));
     Some(())
 }

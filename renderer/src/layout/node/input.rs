@@ -139,15 +139,40 @@ impl<T: Input> Input for Option<T> {
     }
 }
 
-/// A sequence up to its first `nil`, each item named `key[i]`.
+/// A dense list, each item named `key[i]`.
 impl<T: Input> Input for Vec<T> {
     fn from_value(property: &str, key: &str, value: &Value) -> Result<Option<Self>, LayoutError> {
         let Value::Table(list) = value else { return Ok(None) };
-        let items = list.sequence_values::<Value>().enumerate().map(|(at, item)| {
-            read(property, &format!("{key}[{}]", at + 1), item.map_err(|e| invalid(property, e.to_string()))?)
+        let len = array_len(property, list, super::MAX_ARRAY_ELEMENTS)?;
+        let items = (1..=len).map(|at| {
+            read(property, &format!("{key}[{at}]"), list.raw_get(at).map_err(|e| invalid(property, e.to_string()))?)
         });
         items.collect::<Result<_, _>>().map(Some)
     }
+}
+
+/// `#table` once it is checked dense: keys exactly `1..=#table`, at most `limit` of them. Reading
+/// to the first `nil` would silently drop every entry after a hole.
+pub(crate) fn array_len(name: &str, table: &mlua::Table, limit: usize) -> Result<usize, LayoutError> {
+    let len = table.raw_len();
+    if len > limit {
+        return Err(invalid(name, format!("at most {limit} entries")));
+    }
+    let mut count = 0;
+    for pair in table.clone().pairs::<Value, Value>() {
+        let (key, _) = pair.map_err(|e| invalid(name, e.to_string()))?;
+        if !matches!(key, Value::Integer(i) if i > 0 && i as usize <= len) {
+            return Err(invalid(name, "expected a dense array with no named keys"));
+        }
+        count += 1;
+        if count > limit {
+            return Err(invalid(name, format!("at most {limit} entries")));
+        }
+    }
+    if count != len {
+        return Err(invalid(name, "expected a dense array"));
+    }
+    Ok(len)
 }
 
 /// A `{ a, b }` pair.

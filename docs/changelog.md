@@ -7,6 +7,7 @@ version is 0.x, a minor release can break the Lua API.
 
 ## Unreleased
 
+- List properties such as popup `constraint_adjustment` and text `content` runs reject a list with a `nil` hole or named keys. Entries after a hole used to be dropped silently.
 - `dofile` and `loadfile` are unavailable in configs because their synchronous file reads can stall the Renderer. Use `require` for Lua modules or `process.run` for other files.
 - `accessible_name` makes clickable nodes keyboard focusable and names them for screen readers. Tab and Shift+Tab traverse controls; Enter and Space activate them. The engine outlines a control only when Tab or an assistive-technology action focused it; `focus_ring = false` turns the outline off, and `focused(name)` with a node's `focused` reports focus within a node for custom styles. Mantle exposes the resolved scene through AT-SPI, with secure field values withheld. Breaking: with two or more focusable controls on a surface, Tab moves focus and no longer reaches a textfield's `on_navigate("tab")`.
 - Borders follow the corners: a per-edge `border_width` or `border_color` on a rounded box, and any border on a `corner_shape = "Scoop"` box, used to draw as four straight rectangles with square corners. Where two edges meet, the colour change sits on the corner in proportion to their widths, as in CSS.

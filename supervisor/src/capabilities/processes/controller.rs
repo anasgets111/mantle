@@ -171,7 +171,7 @@ impl ProcessesController {
     ///
     /// Awaited rather than fired and forgotten: these are the processes whose exit path matters,
     /// which is why they were declared with a stop signal in the first place. [`supervise`] bounds
-    /// its own wait at `2 * STOP_GRACE`, so this cannot hold shutdown open indefinitely.
+    /// its own wait at `STOP_GRACE` plus 2s, so this cannot hold shutdown open indefinitely.
     pub async fn reap_all(&self) {
         let live: Vec<(String, Live)> = {
             let mut guard = self.entries.lock().expect("processes entries mutex poisoned");
@@ -217,7 +217,8 @@ async fn supervise(
                 // `None` means the controller is gone and nothing can ask again; leaving the
                 // program orphaned would be worse than stopping it.
                 Some(Request::Stop) | None => {
-                    break stop_group(&name, &mut child, pid, declared_stop_signal(&entries, &name)).await;
+                    let stop_signal = declared_stop_signal(&entries, &name);
+                    break crate::process::stop_process_group(&mut child, stop_signal, STOP_GRACE).await;
                 }
             },
         }
@@ -240,34 +241,6 @@ async fn supervise(
         }
     }
     let _ = signal_tx.send(());
-}
-
-/// The declared stop signal to the group, [`STOP_GRACE`], then `SIGKILL` to the group.
-///
-/// Signals the group rather than the process so a program that spawned helpers takes them with it,
-/// matching `process::reap_process_group`. That primitive is not reused because it hardcodes
-/// `SIGTERM` and its 100ms, and the declared signal is the entire reason this path exists.
-async fn stop_group(
-    name: &str,
-    child: &mut Child,
-    pgid: Pid,
-    stop_signal: Signal,
-) -> io::Result<std::process::ExitStatus> {
-    if let Err(err) = crate::process::signal_group_best_effort(pgid, stop_signal) {
-        warn!("{name:?} could not be sent {stop_signal}: {err}");
-    }
-    if let Ok(status) = tokio::time::timeout(STOP_GRACE, child.wait()).await {
-        return status;
-    }
-    warn!("{name:?} ignored {stop_signal} for {STOP_GRACE:?}; escalating to SIGKILL");
-    if let Err(err) = crate::process::signal_group_best_effort(pgid, Signal::SIGKILL) {
-        warn!("{name:?} could not be sent SIGKILL: {err}");
-    }
-    // Bounded like the SIGTERM wait: uninterruptible I/O can defer even SIGKILL.
-    match tokio::time::timeout(STOP_GRACE, child.wait()).await {
-        Ok(status) => status,
-        Err(_elapsed) => Err(io::Error::other("still running after SIGKILL")),
-    }
 }
 
 /// The signal `name`'s declaration names *now*, read here rather than captured when [`supervise`]

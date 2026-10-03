@@ -116,20 +116,48 @@ pub fn spawn_group_leader_stdio_piped(cmd: &str, args: &[String], envs: &[(Strin
 ///
 /// Waits at most `grace` plus 2s; only D-state I/O outlasts SIGKILL that long (ADR-0018).
 pub async fn reap_process_group(child: &mut Child, grace: Duration) -> io::Result<ExitStatus> {
+    stop_process_group(child, Signal::SIGTERM, grace).await
+}
+
+/// [`reap_process_group`] with `signal` in place of SIGTERM. The leader leaving is not the group
+/// leaving: a helper that ignored `signal` keeps the pgid, so the group is watched for the rest of
+/// `grace` and killed if anything remains.
+pub(crate) async fn stop_process_group(child: &mut Child, signal: Signal, grace: Duration) -> io::Result<ExitStatus> {
     let pid = child.id().ok_or_else(|| io::Error::other("child has no pid; already reaped"))?;
     let pgid = Pid::from_raw(pid as i32);
 
-    signal_group_best_effort(pgid, Signal::SIGTERM)?;
-    if let Some(status) = wait_or_classify(child, grace).await? {
+    signal_group_best_effort(pgid, signal)?;
+    let deadline = tokio::time::Instant::now() + grace;
+    let status = wait_or_classify(child, grace).await?;
+    if let Some(status) = status
+        && group_empties_by(pgid, deadline).await
+    {
         return Ok(status);
     }
 
     signal_group_best_effort(pgid, Signal::SIGKILL)?;
+    if let Some(status) = status {
+        return Ok(status);
+    }
     match wait_or_classify(child, Duration::from_secs(2)).await? {
         Some(status) => Ok(status),
         None => {
             Err(io::Error::other("process group did not exit even after SIGKILL (likely stuck in uninterruptible I/O)"))
         }
+    }
+}
+
+/// Whether no process is left in `pgid` by `deadline`. A pgid is not reissued as a pid while any
+/// member lives, so a reused number cannot answer for it.
+async fn group_empties_by(pgid: Pid, deadline: tokio::time::Instant) -> bool {
+    loop {
+        if killpg(pgid, None) == Err(Errno::ESRCH) {
+            return true;
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return false;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
     }
 }
 
@@ -251,6 +279,27 @@ mod tests {
             exited(&[grandchild_pid as u32]).await,
             "grandchild (pid {grandchild_pid}) should be gone after killpg reached the whole group"
         );
+    }
+
+    #[tokio::test]
+    async fn reap_process_group_kills_a_helper_that_outlives_its_leader_by_ignoring_sigterm() {
+        // The helper ignores SIGTERM before printing its pid; the leader exits on it.
+        let mut child =
+            spawn_group_leader_piped("sh", &sh_args("(trap '' TERM; exec sh -c 'echo $$; exec sleep 30') & wait"))
+                .expect("failed to spawn");
+        let helper: u32 = BufReader::new(child.stdout.take().expect("stdout was piped"))
+            .lines()
+            .next_line()
+            .await
+            .expect("reading the helper pid")
+            .expect("the helper prints its pid")
+            .parse()
+            .expect("a pid");
+
+        let status = reap_process_group(&mut child, Duration::from_millis(200)).await.expect("reap failed");
+
+        assert_eq!(status.signal(), Some(libc::SIGTERM), "the leader itself obeyed SIGTERM");
+        assert!(exited(&[helper]).await, "the helper (pid {helper}) must not survive its leader");
     }
 
     #[tokio::test]

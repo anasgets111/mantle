@@ -171,8 +171,8 @@ impl Prop for ConstraintAdjustment {
             ));
         };
         let mut adjustment = ConstraintAdjustment::NONE;
-        for entry in table.sequence_values::<Value>() {
-            let entry = entry.map_err(|e| invalid("constraint_adjustment", e.to_string()))?;
+        for at in 1..=input::array_len("constraint_adjustment", table, MAX_ARRAY_ELEMENTS)? {
+            let entry: Value = table.raw_get(at).map_err(|e| invalid("constraint_adjustment", e.to_string()))?;
             let Value::String(s) = entry else {
                 return Err(invalid(
                     "constraint_adjustment",
@@ -778,6 +778,12 @@ mod tests {
         let reversed =
             popup_spec(&popup_props(&lua, r#", constraint_adjustment = { "SlideX", "FlipY", "SlideX" }"#)).unwrap();
         assert_eq!(ordered.constraint_adjustment, reversed.constraint_adjustment);
+    }
+
+    #[test]
+    fn an_adjustment_after_a_hole_is_refused_rather_than_dropped() {
+        let lua = mlua::Lua::new();
+        assert!(popup_spec(&popup_props(&lua, r#", constraint_adjustment = { "FlipY", nil, "SlideX" }"#)).is_err());
     }
 
     #[test]

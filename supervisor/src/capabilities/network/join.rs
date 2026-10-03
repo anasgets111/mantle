@@ -163,10 +163,12 @@ impl NetworkController {
         pending: &PendingNetworkConnect,
         error: Option<String>,
         ask_password: bool,
-    ) {
-        if self.join.lock().expect("mutex poisoned").finish(attempt, pending, error, ask_password) {
+    ) -> bool {
+        let current = self.join.lock().expect("mutex poisoned").finish(attempt, pending, error, ask_password);
+        if current {
             let _ = self.events.send(NetworkSignal::Changed);
         }
+        current
     }
 }
 
