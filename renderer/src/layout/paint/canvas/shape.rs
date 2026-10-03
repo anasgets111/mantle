@@ -124,16 +124,13 @@ pub(super) fn gradient_paint(gradient: &Gradient, rect: LogicalRect) -> Paint {
     }
 }
 
-/// femtovg has no per-edge border primitive, so this covers exactly two cases. Uniform borders
-/// (all four edges same width and colour) with `radius` above 0 get one `stroke_path` over the
-/// rounded rect, inset by half the stroke width: femtovg strokes centred on the path, so drawing on
-/// `rect`'s own edge would straddle it, half inside and half outside. Everything else, any edge
-/// differing or radius 0, fills each edge that declares both a non-zero width and a colour as its
-/// own rectangle.
-///
-/// ponytail: the per-edge-rectangle fallback ignores `radius`, giving square corners where a
-/// rounded background shows through. Upgrade path: four corner arcs plus four mitred edge
-/// segments, once a real config needs a rounded per-edge border.
+/// femtovg has no per-edge border primitive, so this covers three cases. Uniform borders (all four
+/// edges same width and colour) with `radius` above 0 get one `stroke_path` over the rounded rect,
+/// inset by half the stroke width: femtovg strokes centred on the path, so drawing on `rect`'s own
+/// edge would straddle it, half inside and half outside. With radius 0, each edge that declares
+/// both a non-zero width and a colour fills its own rectangle. Every other border, per-edge on a
+/// rounded box or any on a scoop, fills the band between the box's outline and one inset by each
+/// edge's width ([`shaped_border`]).
 pub(super) fn paint_border(
     canvas: &mut Canvas<OpenGl>,
     rect: LogicalRect,
@@ -175,6 +172,11 @@ pub(super) fn paint_border(
         return;
     }
 
+    if radius != 0.0 {
+        shaped_border(canvas, rect, radius, colors, widths, scale);
+        return;
+    }
+
     // Corners overlap here rather than mitre: each edge is its own filled rect spanning the node's
     // full width or height, so two adjacent non-zero edges both cover the corner they share.
     let LogicalRect { x, y, width: w, height: h } = rect;
@@ -195,6 +197,205 @@ pub(super) fn paint_border(
         ),
     ] {
         paint_border_edge(canvas, color, thickness, edge_rect, axis, scale);
+    }
+}
+
+/// A corner's arc in the corner's own frame: the corner at the origin, the box towards +x and +y,
+/// swept from the vertical edge's end to the horizontal edge's. Angles are in radians, y down.
+#[derive(Clone, Copy)]
+struct CornerArc {
+    centre: (f32, f32),
+    radii: (f32, f32),
+    from: f32,
+    to: f32,
+}
+
+/// One corner of a [`shaped_border`]: where it is, which way the box lies from it, and its outer
+/// and inner arcs. `reversed` corners are walked against their frame's sweep, since the walk goes
+/// clockwise round the box.
+struct Corner {
+    origin: (f32, f32),
+    toward: (f32, f32),
+    reversed: bool,
+    outer: CornerArc,
+    inner: CornerArc,
+}
+
+impl Corner {
+    /// `radius` as [`box_path`] reads it, negative for a scoop; `vertical` and `horizontal` are the
+    /// widths of the two edges meeting here.
+    fn new(
+        origin: (f32, f32),
+        toward: (f32, f32),
+        reversed: bool,
+        radius: f32,
+        vertical: f32,
+        horizontal: f32,
+    ) -> Self {
+        let (outer, inner) = if radius > 0.0 {
+            // CSS's inner corner: each radius less the width beside it, and a square once a width
+            // passes the radius.
+            let (rx, ry) = ((radius - vertical).max(0.0), (radius - horizontal).max(0.0));
+            let sweep = |centre, radii| CornerArc { centre, radii, from: PI, to: 3.0 * FRAC_PI_2 };
+            (sweep((radius, radius), (radius, radius)), sweep((vertical + rx, horizontal + ry), (rx, ry)))
+        } else {
+            // A scoop is centred on the corner point; the inner arc keeps that centre and reaches
+            // the inset edges.
+            let r = -radius;
+            let (rx, ry) = (r + vertical, r + horizontal);
+            let outer = CornerArc { centre: (0.0, 0.0), radii: (r, r), from: FRAC_PI_2, to: 0.0 };
+            let inner = CornerArc {
+                centre: (0.0, 0.0),
+                radii: (rx, ry),
+                from: (vertical / rx).clamp(-1.0, 1.0).acos(),
+                to: (horizontal / ry).clamp(-1.0, 1.0).asin(),
+            };
+            (outer, inner)
+        };
+        Corner { origin, toward, reversed, outer, inner }
+    }
+
+    fn place(&self, (x, y): (f32, f32)) -> (f32, f32) {
+        (self.origin.0 + self.toward.0 * x, self.origin.1 + self.toward.1 * y)
+    }
+
+    /// The angle `at` of the way through this corner, clockwise round the box.
+    fn angle(&self, arc: CornerArc, at: f32) -> f32 {
+        let at = if self.reversed { 1.0 - at } else { at };
+        arc.from + (arc.to - arc.from) * at
+    }
+}
+
+/// A path under construction that never repeats a point: femtovg keeps a repeated point, and
+/// anti-aliasing draws the zero-length edge as a spike.
+struct Outline {
+    path: Path,
+    pen: Option<(f32, f32)>,
+}
+
+impl Outline {
+    fn to(&mut self, point: (f32, f32)) {
+        match self.pen {
+            None => self.path.move_to(point.0, point.1),
+            Some(pen) if pen != point => self.path.line_to(point.0, point.1),
+            Some(_) => {}
+        }
+        self.pen = Some(point);
+    }
+
+    /// `corner`'s outer or inner arc from `from` to `to` of the way through it, either direction,
+    /// as one cubic: no corner turns more than a quarter.
+    fn arc(&mut self, corner: &Corner, inner: bool, from: f32, to: f32) {
+        let arc = if inner { corner.inner } else { corner.outer };
+        let (a0, a1) = (corner.angle(arc, from), corner.angle(arc, to));
+        let point = |a: f32| corner.place((arc.centre.0 + arc.radii.0 * a.cos(), arc.centre.1 + arc.radii.1 * a.sin()));
+        let (start, end) = (point(a0), point(a1));
+        self.to(start);
+        if start == end {
+            return;
+        }
+        let k = 4.0 / 3.0 * ((a1 - a0) / 4.0).tan();
+        let handle = |a: f32, k: f32| {
+            corner.place((
+                arc.centre.0 + arc.radii.0 * (a.cos() - k * a.sin()),
+                arc.centre.1 + arc.radii.1 * (a.sin() + k * a.cos()),
+            ))
+        };
+        let (c1, c2) = (handle(a0, k), handle(a1, -k));
+        self.path.bezier_to(c1.0, c1.1, c2.0, c2.1, end.0, end.1);
+        self.pen = Some(end);
+    }
+
+    fn close(&mut self, solidity: Solidity) {
+        self.path.close();
+        self.path.solidity(solidity);
+        self.pen = None;
+    }
+}
+
+/// A border that follows a rounded or scooped outline: the band between the box's outline and one
+/// inset by each edge's width, as CSS draws it. Neighbouring edges of one colour fill as one band,
+/// so no seam shows between them; where two colours meet, the change sits on the corner at the
+/// share of its sweep their widths give it, CSS's rule, so a lone edge's colour runs round both
+/// corners and tapers to nothing.
+fn shaped_border(
+    canvas: &mut Canvas<OpenGl>,
+    rect: LogicalRect,
+    radius: f32,
+    colors: BorderColor,
+    widths: EdgeInsets,
+    scale: f32,
+) {
+    let (x, w) = snap_border_band(rect.x, rect.width, scale);
+    let (y, h) = snap_border_band(rect.y, rect.height, scale);
+    if w <= 0.0 || h <= 0.0 {
+        return;
+    }
+    let thick = |width: f32| snap_border_band(rect.x, width, scale).1;
+    // Clockwise from the top, the order the walk below takes; corner `i` opens edge `i`.
+    let edges = [widths.top, widths.right, widths.bottom, widths.left].map(thick);
+    let paints = [colors.top, colors.right, colors.bottom, colors.left];
+    let drawn: [Option<Rgba>; 4] = std::array::from_fn(|i| paints[i].filter(|_| edges[i] > 0.0));
+    if drawn.iter().all(Option::is_none) {
+        return;
+    }
+    let radius = match radius > 0.0 {
+        true => radius.min(w.min(h) / 2.0),
+        false => -(-radius).min(w.min(h) / 2.0 - HAIR).max(0.0),
+    };
+    let [top, right, bottom, left] = edges;
+    let corners = [
+        Corner::new((x, y), (1.0, 1.0), false, radius, left, top),
+        Corner::new((x + w, y), (-1.0, 1.0), true, radius, right, top),
+        Corner::new((x + w, y + h), (-1.0, -1.0), false, radius, right, bottom),
+        Corner::new((x, y + h), (1.0, -1.0), true, radius, left, bottom),
+    ];
+    // Where corner `i`'s two colours meet: the share of its sweep the edge before it takes.
+    let split = |i: usize| {
+        let (before, after) = (edges[(i + 3) % 4], edges[i]);
+        if before + after > 0.0 { before / (before + after) } else { 0.5 }
+    };
+    let fill = |canvas: &mut Canvas<OpenGl>, outline: Outline, color: Rgba| {
+        canvas.fill_path(&outline.path, &Paint::color(Color::rgbaf(color.r, color.g, color.b, color.a)));
+    };
+
+    if let [Some(first), ..] = drawn
+        && drawn.iter().all(|edge| *edge == Some(first))
+    {
+        let mut outline = Outline { path: Path::new(), pen: None };
+        for corner in &corners {
+            outline.arc(corner, false, 0.0, 1.0);
+        }
+        outline.close(Solidity::Solid);
+        if w > left + right && h > top + bottom {
+            for corner in &corners {
+                outline.arc(corner, true, 0.0, 1.0);
+            }
+            outline.close(Solidity::Hole);
+        }
+        fill(canvas, outline, first);
+        return;
+    }
+
+    // Runs of neighbouring edges sharing a colour. Each opens at the one edge whose predecessor
+    // differs; the all-alike case returned above.
+    for start in (0..4).filter(|&edge| drawn[edge].is_some() && drawn[(edge + 3) % 4] != drawn[edge]) {
+        let color = drawn[start].expect("the filter keeps drawn edges");
+        let length = 1 + (1..4).take_while(|&step| drawn[(start + step) % 4] == Some(color)).count();
+        let close = (start + length) % 4;
+        let mut outline = Outline { path: Path::new(), pen: None };
+        outline.arc(&corners[start], false, split(start), 1.0);
+        for step in 1..length {
+            outline.arc(&corners[(start + step) % 4], false, 0.0, 1.0);
+        }
+        outline.arc(&corners[close], false, 0.0, split(close));
+        outline.arc(&corners[close], true, split(close), 0.0);
+        for step in (1..length).rev() {
+            outline.arc(&corners[(start + step) % 4], true, 1.0, 0.0);
+        }
+        outline.arc(&corners[start], true, 1.0, split(start));
+        outline.close(Solidity::Solid);
+        fill(canvas, outline, color);
     }
 }
 
@@ -350,6 +551,42 @@ mod tests {
 
         assert_eq!(pixel_at(painter.canvas_mut(), 20, 1), (255, 255, 255, 255));
         assert_eq!(pixel_at(painter.canvas_mut(), 20, 38), (0, 0, 0, 255));
+    }
+
+    /// A scoop's border follows its arcs: the cut corner stays empty, the band runs along the arc,
+    /// and a translucent band is painted once. The four-rectangle fallback drew a square frame
+    /// across every scoop.
+    #[test]
+    fn a_scooped_border_follows_the_scoop_and_paints_once() {
+        let child = r##"rect { width = 40, height = 40, radius = 12, corner_shape = "Scoop",
+            border_width = 3, border_color = "#FF000080" }"##;
+        let Some(px) = paint_points(child, &[(1, 1), (9, 9), (20, 1), (1, 20), (20, 20)]) else { return };
+        assert_eq!(px[0].3, 0, "the cut corner stays empty, got {:?}", px[0]);
+        for (at, p) in [((9, 9), px[1]), ((20, 1), px[2]), ((1, 20), px[3])] {
+            assert!(p.0 == p.3 && p.1 == 0 && (120..=136).contains(&p.3), "{at:?} is band, painted once, got {p:?}");
+        }
+        assert_eq!(px[4].3, 0, "inside the band is the hole");
+    }
+
+    /// A per-edge border on a rounded box bends round the corners as CSS draws it: a lone bottom
+    /// edge curves up both corners and nothing paints outside the rounding, and each edge keeps
+    /// its own colour.
+    #[test]
+    fn a_per_edge_border_on_a_rounded_box_follows_the_corners() {
+        let child = r##"rect { width = 40, height = 40, radius = 12,
+            border_width = { bottom = 3 }, border_color = "#FF0000" }"##;
+        let Some(px) = paint_points(child, &[(0, 39), (20, 38), (20, 1), (39, 39)]) else { return };
+        assert_eq!(px[0].3, 0, "outside the rounded corner, got {:?}", px[0]);
+        assert_eq!(px[1], (255, 0, 0, 255));
+        assert_eq!(px[2].3, 0, "the top declared no width");
+        assert_eq!(px[3].3, 0, "outside the other corner, got {:?}", px[3]);
+
+        let child = r##"rect { width = 40, height = 40, radius = 8, border_width = 4,
+            border_color = { top = "#FF0000", bottom = "#0000FF" } }"##;
+        let Some(px) = paint_points(child, &[(20, 1), (20, 38), (1, 20)]) else { return };
+        assert_eq!(px[0], (255, 0, 0, 255));
+        assert_eq!(px[1], (0, 0, 255, 255));
+        assert_eq!(px[2].3, 0, "the left edge has no colour");
     }
 
     /// A pill's shape, and the bug it hid. `radius = side / 2`, and a radius over half the side,

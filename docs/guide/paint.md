@@ -83,24 +83,30 @@ colours and no short `#RGB` form.
 | `clip` | `"Box"\|"Rounded"\|"None"\|Bound` | `"Box"` | `"Box"` cuts children to the rectangle, `"Rounded"` also to `radius`, `"None"` leaves them on the parent's clip. See [Clip](#clip) |
 <!-- End of the generated table. -->
 
-A uniform border (same width and colour on all four edges) on a round corner follows `radius`.
-A per-edge border, or any border on a scoop, draws as four straight rectangles with square corners:
+A border follows the corners, round or scooped, as CSS draws it. Where two edges meet, the corner
+splits between their colours in proportion to their widths, so a lone edge curves round both
+corners and tapers away:
 
-<!-- shot-alt: Three borders: rounded, scooped, and flat along the bottom edge. -->
+<!-- shot-alt: Three tiles: a blue rounded border, a mauve border that follows the scooped corners, a green bottom edge that curves up both rounded corners and tapers away, and a border in four colours that meet on the corners. -->
 ```lua,shot
-local function tile(label, props)
-    props.width, props.height, props.radius = 88, 56, 14
-    props.background = "#313244"
+local function tile(label, color, props)
+    props.width, props.height, props.radius = 104, 72, 16
+    props.background = "#1E1E2E"
+    props.border_color = props.border_color or color
     props.children = { text { content = label, foreground = "#CDD6F4", align_h = "Center", align_v = "Center" } }
     return rect(props)
 end
 
 return row {
-    spacing = 12,
+    spacing = 16,
     children = {
-        tile("Round", { border_width = 2, border_color = "#89B4FA" }),
-        tile("Scoop", { corner_shape = "Scoop", border_width = 2, border_color = "#89B4FA" }),
-        tile("Per-edge", { border_width = { bottom = 3 }, border_color = "#89B4FA" }),
+        tile("Round", "#89B4FA", { border_width = 2 }),
+        tile("Scoop", "#CBA6F7", { corner_shape = "Scoop", border_width = 2 }),
+        tile("Per-edge", "#A6E3A1", { border_width = { bottom = 3 } }),
+        tile("Four colours", nil, {
+            border_width = 3,
+            border_color = { top = "#89B4FA", right = "#CBA6F7", bottom = "#F38BA8", left = "#A6E3A1" },
+        }),
     },
 }
 ```
