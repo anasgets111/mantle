@@ -22,7 +22,7 @@ mantle init
 
 Open `~/.config/mantle/shell.lua` and replace its contents with this bar:
 
-<!-- shot-alt: A top bar spanning the screen, with Mantle at left and a 12:45 clock at right. -->
+<!-- shot-alt: A top bar spanning the screen, with Mantle in bold blue at left and a bold 12:45 clock at right. -->
 ```lua,shot
 return panel {
     id = "bar",
@@ -36,15 +36,16 @@ return panel {
         width = "Fill",
         height = "Fill",
         padding = { left = 12, right = 12 },
-        align_v = "Center",
         children = {
-            text { content = "Mantle", foreground = "#cdd6f4" },
+            text { content = "Mantle", font_weight = 700, foreground = "#89b4fa", align_v = "Center" },
             rect { width = "Fill" },
             text {
                 content = mantle.system:map(function(system)
                     return system and os.date("%H:%M", system.time) or "--:--"
                 end),
+                font_weight = 700,
                 foreground = "#cdd6f4",
+                align_v = "Center",
             },
         },
     },

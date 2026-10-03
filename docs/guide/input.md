@@ -71,30 +71,36 @@ notch's 39 px. Horizontal motion never reaches `on_wheel`. The innermost `on_whe
 [scroll container](#scroll) under the pointer takes the whole event, with no chaining to a parent;
 on a node that is both, the scroll wins.
 
-<!-- shot-alt: A blue slider filled to half its track. -->
+<!-- shot-alt: A brightness card with a sun icon, a yellow slider filled to half its track, and the percentage. -->
 ```lua,shot
-local level = state("level", 0.5)
+local level = state("brightness", 0.5)
 local function clamp(value) return math.max(0, math.min(1, value)) end
+local percent = level:map(function(value) return string.format("%d%%", math.floor(value * 100 + 0.5)) end)
 
 return panel {
     id = "bar",
     layer = "Top",
     anchor = { top = true },
-    child = rect {
-        width = 200,
-        height = 12,
-        radius = 6,
-        clip = "Rounded",
-        background = "#45475a",
-        -- A press is "start", so clicking the track also seeks.
-        on_drag = function(rect, pointer, phase) level:set(clamp(pointer.x / rect.width)) end,
-        on_wheel = function(_, steps) level:set(clamp(level:get() + steps * 0.05)) end,
+    child = row {
+        padding = 14,
+        spacing = 12,
+        radius = 12,
+        background = "#1e1e2e",
         children = {
+            icon { name = "display-brightness-symbolic", size = 18, foreground = "#f9e2af", align_v = "Center" },
             rect {
-                height = "Fill",
-                background = "#89b4fa",
-                width = level:map(function(value) return string.format("%d%%", math.floor(value * 100 + 0.5)) end),
+                width = 200,
+                height = 10,
+                radius = 5,
+                align_v = "Center",
+                clip = "Rounded",
+                background = "#45475a",
+                -- A press is "start", so clicking the track also seeks.
+                on_drag = function(rect, pointer, phase) level:set(clamp(pointer.x / rect.width)) end,
+                on_wheel = function(_, steps) level:set(clamp(level:get() + steps * 0.05)) end,
+                children = { rect { height = "Fill", background = "#f9e2af", width = percent } },
             },
+            text { content = percent, width = 36, foreground = "#cdd6f4", align_v = "Center" },
         },
     },
 }
@@ -323,7 +329,7 @@ return lock {
 take its grab. The menu hangs from the node, not the click point: no handler reports the pointer
 position of a click.
 
-<!-- shot-alt: A context menu open beneath a Files button. -->
+<!-- shot-alt: A context menu with New window and Downloads open beneath a Files button with a folder icon. -->
 ```lua,shot
 local menu_open = state("context_open", false)
 local menu_at = state("context_at", { x = 0, y = 0, width = 1, height = 1 })
@@ -331,18 +337,21 @@ local menu_at = state("context_at", { x = 0, y = 0, width = 1, height = 1 })
 local function item(label, run)
     return rect {
         width = "Fill",
-        padding = 6,
-        radius = 4,
+        padding = 8,
+        radius = 6,
         on_click = function()
             menu_open:set(false)
             run()
         end,
-        children = { text { content = label } },
+        children = { text { content = label, foreground = "#cdd6f4" } },
     }
 end
 
-local files = rect {
+local files = row {
     padding = 8,
+    spacing = 8,
+    radius = 8,
+    background = "#1e1e2e",
     on_click = function(rect, which)
         if which == "right" then
             menu_at:set(rect)
@@ -351,7 +360,10 @@ local files = rect {
             process.detach("nautilus", {})
         end
     end,
-    children = { text { content = "Files" } },
+    children = {
+        icon { name = "folder", size = 18, align_v = "Center" },
+        text { content = "Files", foreground = "#cdd6f4", align_v = "Center" },
+    },
 }
 
 return {
@@ -361,13 +373,17 @@ return {
         parent = "bar",
         anchor_rect = menu_at,
         anchor = "Bottom",
-        gravity = "Bottom",
+        gravity = "BottomRight",
+        offset = { y = 4 },
         visible = menu_open,
         on_dismiss = function() menu_open:set(false) end,
         child = column {
-            width = 140,
+            width = 160,
             padding = 4,
+            radius = 10,
             background = "#1e1e2e",
+            border_width = 1,
+            border_color = "#45475a",
             children = {
                 item("New window", function() process.detach("nautilus", { "--new-window" }) end),
                 item("Downloads", function() process.detach("nautilus", { os.getenv("HOME") .. "/Downloads" }) end),

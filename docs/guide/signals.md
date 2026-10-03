@@ -9,30 +9,34 @@ to it re-resolves only the surfaces that read it.
 A property that holds a signal stays live. A property that holds a plain value, including
 whatever `:get()` returned, keeps that value until the next reload.
 
-<!-- shot-alt: After one click, the live clock reads 12:46 while the snapshot still reads 12:45. -->
+<!-- shot-alt: After one click on Next minute, the Live card reads 12:46 while the Snapshot card still reads 12:45. -->
 ```lua,shot
 local minute = state("minute", 45)
 local clock = minute:map(function(value) return string.format("12:%02d", value) end)
 
+local function reading(label, value)
+  return column { spacing = 2, children = {
+    text { content = label, font_size = 12, foreground = "#a6adc8" },
+    text { content = value, font_size = 20, font_weight = 700, foreground = "#cdd6f4" },
+  } }
+end
+
 return row {
-  spacing = 12,
-  padding = 10,
+  spacing = 20,
+  padding = 14,
+  radius = 12,
   background = "#1e1e2e",
   children = {
     rect {
-      padding = 8,
-      background = "#313244",
+      padding = { left = 12, right = 12, top = 8, bottom = 8 },
+      radius = 8,
+      align_v = "Center",
+      background = "#89b4fa",
       on_click = function() minute:set(minute:get() + 1) end,
-      children = { text { content = "Next minute", foreground = "#cdd6f4" } },
+      children = { text { content = "Next minute", font_weight = 700, foreground = "#1e1e2e" } },
     },
-    column { children = {
-      text { content = "Live", foreground = "#a6adc8" },
-      text { content = clock, foreground = "#cdd6f4" },
-    } },
-    column { children = {
-      text { content = "Snapshot", foreground = "#a6adc8" },
-      text { content = string.format("12:%02d", minute:get()), foreground = "#cdd6f4" },
-    } },
+    reading("Live", clock),
+    reading("Snapshot", string.format("12:%02d", minute:get())),
   },
 }
 ```

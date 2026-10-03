@@ -5,10 +5,23 @@ compositor places it against a rectangle in the parent, keeps it on screen and, 
 [grab](#grab), dismisses it on an outside click, which a second panel cannot do. A hidden popup has
 no Wayland object. Rules every role shares are in [surfaces](index.md).
 
-<!-- shot-alt: A Settings and Log out menu beneath a top bar. -->
+<!-- shot-alt: A session menu hanging beneath the power button at the left of a top bar: Lock, Log out, Restart and a pink Power off, each with its icon. -->
 ```lua,shot
 local menu_open = state("menu_open", false)
 local menu_anchor = state("menu_anchor", { x = 0, y = 0, width = 1, height = 1 })
+
+local function item(icon_name, label, color)
+    return row {
+        width = "Fill",
+        padding = 8,
+        spacing = 10,
+        radius = 6,
+        children = {
+            icon { name = icon_name, size = 16, foreground = color, align_v = "Center" },
+            text { content = label, foreground = color, align_v = "Center" },
+        },
+    }
+end
 
 local bar = panel {
     id = "bar",
@@ -26,7 +39,7 @@ local bar = panel {
                     menu_anchor:set(rect)
                     menu_open:set(not menu_open:get())
                 end,
-                children = { text { content = "Menu", foreground = "#cdd6f4" } },
+                children = { icon { name = "system-shutdown-symbolic", size = 16, foreground = "#f38ba8" } },
             },
         },
     },
@@ -37,16 +50,18 @@ local menu = popup {
     parent = "bar",
     anchor_rect = menu_anchor,
     anchor = "Bottom",
-    gravity = "Bottom",
-    offset = { y = 4 },
+    gravity = "BottomRight",
+    offset = { x = 4, y = 4 },
     visible = menu_open,
     on_dismiss = function() menu_open:set(false) end,
     child = column {
-        width = 160, padding = 12, spacing = 10, radius = 10, background = "#1e1e2e",
+        width = 170, padding = 4, radius = 10, background = "#1e1e2e",
         border_width = 1, border_color = "#45475a",
         children = {
-            text { content = "Settings", foreground = "#cdd6f4" },
-            text { content = "Log out", foreground = "#cdd6f4" },
+            item("system-lock-screen-symbolic", "Lock", "#cdd6f4"),
+            item("system-log-out-symbolic", "Log out", "#cdd6f4"),
+            item("system-reboot-symbolic", "Restart", "#cdd6f4"),
+            item("system-shutdown-symbolic", "Power off", "#f38ba8"),
         },
     },
 }

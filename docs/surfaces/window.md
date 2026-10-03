@@ -4,21 +4,68 @@ An `xdg_toplevel`: an application window the compositor places, tiles, decorates
 for a settings window or a dialog; use a [panel](panel.md) for anything pinned to the desktop.
 Rules every role shares are in [surfaces](index.md).
 
-<!-- shot-alt: A settings window with a left navigation list and main content area. -->
+<!-- shot-alt: A settings window: a sidebar titled Settings with General selected among icon tabs, and General's Appearance and Clock groups of described switches. -->
 ```lua,shot
 local open = state("settings_open", false)
 local page = state("settings_page", "General")
+local TABS = {
+    { name = "General", icon = "dialog-information-symbolic" },
+    { name = "Display", icon = "display-brightness-symbolic" },
+    { name = "Sound", icon = "audio-volume-high-symbolic" },
+    { name = "Power", icon = "system-shutdown-symbolic" },
+}
 
-local function tab(name)
-    return rect {
+local function tab(entry)
+    local selected = page:map(function(current) return current == entry.name end)
+    return row {
         width = "Fill",
-        padding = { left = 12, right = 12, top = 8, bottom = 8 },
+        padding = { left = 10, right = 12, top = 8, bottom = 8 },
+        spacing = 10,
         radius = 8,
-        background = page:map(function(current) return current == name and "#313244" or "#00000000" end),
-        on_click = function() page:set(name) end,
-        children = { text { content = name, foreground = "#cdd6f4" } },
+        background = selected:map(function(on) return on and "#89b4fa26" or "#00000000" end),
+        on_click = function() page:set(entry.name) end,
+        children = {
+            icon { name = entry.icon, size = 16, align_v = "Center",
+                   foreground = selected:map(function(on) return on and "#89b4fa" or "#a6adc8" end) },
+            text { content = entry.name, foreground = "#cdd6f4", align_v = "Center" },
+        },
     }
 end
+
+local function switch(label, detail, on)
+    return row {
+        width = "Fill",
+        padding = 12,
+        spacing = 12,
+        children = {
+            column { width = "Fill", spacing = 2, align_v = "Center", children = {
+                text { content = label, foreground = "#cdd6f4" },
+                text { content = detail, font_size = 12, foreground = "#a6adc8" },
+            } },
+            rect {
+                width = 36, height = 20, radius = 10, align_v = "Center",
+                background = on and "#89b4fa" or "#45475a",
+                children = { rect { width = 14, height = 14, radius = 7, margin = { left = 3, right = 3 },
+                    align_h = on and "End" or "Start", align_v = "Center", background = on and "#ffffff" or "#bac2de" } },
+            },
+        },
+    }
+end
+
+local function group(title, rows)
+    local divided = {}
+    for index, item in ipairs(rows) do
+        if index > 1 then divided[#divided + 1] = rect { width = "Fill", height = 1, margin = { left = 12, right = 12 }, background = "#313244" } end
+        divided[#divided + 1] = item
+    end
+    return column { width = "Fill", spacing = 10, children = {
+        text { content = title, font_size = 12, font_weight = 700, foreground = "#89b4fa", margin = { left = 4 } },
+        column { width = "Fill", radius = 10, background = "#181825", children = divided },
+    } }
+end
+
+local tabs = { text { content = "Settings", font_size = 15, font_weight = 700, foreground = "#cdd6f4", margin = { left = 10, top = 6, bottom = 10 } } }
+for _, entry in ipairs(TABS) do tabs[#tabs + 1] = tab(entry) end
 
 local settings = window {
     id = "settings",
@@ -32,10 +79,18 @@ local settings = window {
         height = "Fill",
         background = "#1e1e2e",
         children = {
-            column { width = 160, height = "Fill", padding = 8, spacing = 4, background = "#181825",
-                children = { tab("General"), tab("Display"), tab("Sound"), tab("Power") } },
-            column { width = "Fill", padding = 24,
-                children = { text { content = page, font_size = 20, foreground = "#cdd6f4" } } },
+            column { width = 180, height = "Fill", padding = 10, spacing = 2, background = "#181825", children = tabs },
+            column { width = "Fill", padding = 24, spacing = 18, children = {
+                text { content = page, font_size = 22, font_weight = 700, foreground = "#cdd6f4" },
+                group("Appearance", {
+                    switch("Dark style", "Use dark colours in every window", true),
+                    switch("Animations", "Ease panels and popups in and out", true),
+                }),
+                group("Clock", {
+                    switch("Seconds", "Show seconds in the bar clock", false),
+                    switch("24-hour time", "Show 13:00 instead of 1:00 PM", true),
+                }),
+            } },
         },
     },
 }

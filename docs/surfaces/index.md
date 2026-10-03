@@ -17,7 +17,7 @@ the surface in `mantle log` ([glossary](../glossary.md#surfaces)).
 A 32 px bar on every output that pushes windows down by its height and prints the output's
 connector name:
 
-<!-- shot-alt: A top bar showing the DP-1 output name. -->
+<!-- shot-alt: A top bar whose left end shows the DP-1 output name in a pill. -->
 ```lua,shot
 local bar = panel {
     id = "bar",
@@ -30,9 +30,17 @@ local bar = panel {
         return row {
             width = "Fill",
             height = "Fill",
-            padding = { left = 12, right = 12 },
+            padding = { left = 8, right = 8 },
             background = "#1e1e2e",
-            children = { text { content = output, foreground = "#cdd6f4", align_v = "Center" } },
+            children = {
+                rect {
+                    align_v = "Center",
+                    padding = { left = 10, right = 10, top = 3, bottom = 3 },
+                    radius = 10,
+                    background = "#313244",
+                    children = { text { content = output, font_weight = 700, foreground = "#89b4fa" } },
+                },
+            },
         }
     end,
 }

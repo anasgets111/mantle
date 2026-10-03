@@ -6,11 +6,15 @@ long as the compositor holds the session locked. Declaring a `lock` does not loc
 The lock's state (`active`, `authenticating`, `attempts`, `error`, `unlocking`) and actions are on
 the [lock capability](../capabilities/lock.md). Rules every role shares are in [surfaces](index.md).
 
-<!-- shot-alt: A lock screen with a password field beneath a clock. -->
+<!-- shot-alt: A lock screen: a large 12:45 clock and the date, the output name, a rounded password field, and a pink hint reading Wrong password (2). -->
 ```lua,shot
 mantle.lock:set_unlock_animation(250)
 
 local up = mantle.lock:map(function(lock) return lock ~= nil and lock.active and not lock.unlocking end)
+
+local function now(format)
+    return mantle.system:map(function(system) return system and os.date(format, system.time) or "" end)
+end
 
 local hint = mantle.lock:map(function(lock)
     if lock == nil then return "" end
@@ -28,9 +32,12 @@ local lock_screen = lock {
             opacity = up:map(function(on) return on and 1 or 0 end),
             animate = { opacity = { duration = 200, from = 0 } },
             children = {
-                text { content = output, foreground = "#6c7086", align_h = "Center" },
+                text { content = now("%H:%M"), font_size = 72, font_weight = 700, foreground = "#cdd6f4", align_h = "Center" },
+                text { content = now("%A, %d %B"), font_size = 16, foreground = "#a6adc8", align_h = "Center" },
+                text { content = output, font_size = 12, foreground = "#6c7086", align_h = "Center", margin = { top = 24 } },
                 rect {
-                    width = 320, align_h = "Center", padding = 8, radius = 18, background = "#1e1e2e",
+                    width = 300, align_h = "Center", padding = { left = 16, right = 16, top = 10, bottom = 10 },
+                    radius = 999, background = "#1e1e2e", border_width = 1, border_color = "#45475a",
                     children = {
                         textfield {
                             width = "Fill",
@@ -41,7 +48,11 @@ local lock_screen = lock {
                         },
                     },
                 },
-                text { content = hint, foreground = "#a6adc8", align_h = "Center" },
+                text {
+                    content = hint,
+                    foreground = mantle.lock:map(function(lock) return lock and lock.error ~= "" and "#f38ba8" or "#a6adc8" end),
+                    align_h = "Center",
+                },
             },
         }
     end,
