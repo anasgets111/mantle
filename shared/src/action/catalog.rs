@@ -181,7 +181,7 @@ pub enum LockAction {
 pub enum MprisAction {
     /// Sends a playback command to `players[].id`.
     Control { id: String, cmd: PlayerCommand },
-    /// Seeks to an absolute position in microseconds, clamped to `[0, length]` (only `>= 0` when `length` is `-1`).
+    /// Seeks to an absolute position in microseconds, clamped to `[0, length]` (only `>= 0` when `length` is `nil`).
     Seek { id: String, position_us: i64 },
     /// Seeks by a signed offset in microseconds, unclamped; past the end may skip to the next track.
     SeekRelative { id: String, offset_us: i64 },

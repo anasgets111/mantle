@@ -42,7 +42,7 @@ pub(super) async fn read_track_list(
                 id: id.to_string(),
                 title: parsed.title,
                 artist: parsed.artist,
-                length: parsed.length_us.unwrap_or(-1),
+                length: parsed.length_us.filter(|length| *length >= 0),
             }
         })
         .collect();

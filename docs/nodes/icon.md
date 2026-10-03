@@ -12,7 +12,7 @@ window's `app_id` to its desktop entry, whose `icon` is a theme name:
 local focused_icon = computed({ mantle.applications, mantle.workspaces }, function(apps, workspaces)
     local client = workspaces and workspaces.active_client
     if apps == nil or client == nil then return "" end
-    local index = apps.by_app_id[client.class] or apps.by_app_id[string.lower(client.class)]
+    local index = apps.by_app_id[client.app_id] or apps.by_app_id[string.lower(client.app_id)]
     return index and apps.entries[index].icon or ""
 end)
 

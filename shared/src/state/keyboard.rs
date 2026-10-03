@@ -3,12 +3,13 @@
 use serde::Serialize;
 
 /// `mantle.keyboard`'s payload (ADR-0034). Lock keys read `false` when no source resolves.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct KeyboardState {
-    /// Keyboard backlight, `0` to `100`, or `-1` without a backlight device or readable level.
+    /// Keyboard backlight, `0` to `100`, or `nil` without a backlight device or readable level.
     /// Refreshes on hardware hotkeys and `set_backlight` only, not on other software writes.
-    pub backlight_pct: i32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub backlight_percent: Option<u8>,
     /// Caps Lock is on.
     pub caps_lock: bool,
     /// Num Lock is on.
@@ -21,18 +22,4 @@ pub struct KeyboardState {
     pub active_layout_index: u32,
     /// Configured layout count; below `2` there is nothing to switch.
     pub layout_count: u32,
-}
-
-impl Default for KeyboardState {
-    fn default() -> Self {
-        Self {
-            backlight_pct: -1,
-            caps_lock: false,
-            num_lock: false,
-            scroll_lock: false,
-            active_layout: String::new(),
-            active_layout_index: 0,
-            layout_count: 0,
-        }
-    }
 }

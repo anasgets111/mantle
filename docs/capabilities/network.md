@@ -34,7 +34,7 @@ text {
 | `ethernet_enabled` | `boolean` | A wired device is activated; `set_ethernet_enabled`'s read-back, unlike carrier. |
 | `ethernet_ip?` | `string` | The first activated wired device's IPv4 address without prefix, or `nil`. |
 | `ethernet_present` | `boolean` | At least one wired device exists, cable or not. |
-| `ethernet_speed` | `integer` | That wired device's link speed in Mb/s; `0` when unknown or none is activated. |
+| `ethernet_speed?` | `integer` | That wired device's link speed in Mb/s; `nil` when unknown or none is activated. |
 | `networking_enabled` | `boolean` | NetworkManager networking is on (`NetworkingEnabled`). |
 | `password_ssid?` | `string` | The SSID whose `connect` waits for a password from a `network`/`connect` secure field, or `nil`. Also set after a rejected key; cleared when a join starts or by `cancel_connect`. |
 | `scanning` | `boolean` | A scan is in flight, from the moment `scan` is accepted. |

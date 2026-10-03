@@ -7395,3 +7395,13 @@ identity scheme. Idle turns avoid rebuilding tree updates.
 The adapter is `accesskit_unix`, about 27 new crates. It runs its own `zbus` on `async-io` in a
 background thread, beside the Supervisor's tokio `zbus`; the Renderer has no D-Bus stack to share.
 A hand-written AT-SPI server would repeat AccessKit's tree-to-interface mapping.
+
+## 0307. An unknown capability value is `nil`, not a sentinel
+
+A capability field that can be unknown is an `Option` left out of the payload, so Lua reads `nil`.
+This replaces `-1` in `temp_gpu`, Bluetooth `battery`, mpris `position` and `length` and the
+keyboard backlight, and `0` in `ethernet_speed`, superseding the IDL sentinel in ADR-0035 and
+ADR-0036. A sentinel inside the value's range passed a truthiness check and drew `-1%` or `-0:01`;
+an optional field is marked `?` in the stubs, so LuaLS flags the unguarded read. Accepted cost:
+arithmetic on an unguarded `nil` raises instead of drawing a wrong number. A real third state, such
+as `toggle_state = -1` (indeterminate), is a value, not "unknown", and stays.

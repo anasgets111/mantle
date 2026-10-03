@@ -156,11 +156,11 @@ mod tests {
         let (senders, mut signals) = Senders::channels();
         for n in 1..=3 {
             senders.updates.send(()).unwrap();
-            senders.keyboard.send(KeyboardState { backlight_pct: n, ..KeyboardState::default() }).unwrap();
+            senders.keyboard.send(KeyboardState { backlight_percent: Some(n), ..KeyboardState::default() }).unwrap();
         }
         let mut seen = vec![signals.next().await.unwrap(), signals.next().await.unwrap()];
         seen.sort_by_key(|signal| matches!(signal, Signal::Updates));
-        assert!(matches!(&seen[0], Signal::Keyboard(state) if state.backlight_pct == 3), "{seen:?}");
+        assert!(matches!(&seen[0], Signal::Keyboard(state) if state.backlight_percent == Some(3)), "{seen:?}");
         assert!(matches!(seen[1], Signal::Updates));
         let pending = tokio::time::timeout(std::time::Duration::from_millis(10), signals.next()).await;
         assert!(pending.is_err(), "the burst must leave nothing queued");

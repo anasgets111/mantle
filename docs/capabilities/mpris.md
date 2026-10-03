@@ -55,13 +55,13 @@ rect {
 | `genre` | `string` | Genres joined with `", "`; empty when unset. |
 | `id` | `string` | Bus-name suffix after `org.mpris.MediaPlayer2.`, e.g. `"spotify"`; every action takes it. |
 | `identity` | `string` | Display name, e.g. `"Spotify"`; empty if unanswered. |
-| `length` | `integer` | Track length in microseconds, or `-1` when unknown, as for a live stream. |
+| `length?` | `integer` | Track length in microseconds, or `nil` when unknown, as for a live stream. |
 | `loop_status` | `string` | MPRIS loop mode: `None`, `Track`, or `Playlist`. |
 | `maximum_rate` | `number` | MPRIS maximum playback rate, or `0` when unavailable. |
 | `minimum_rate` | `number` | MPRIS minimum playback rate, or `0` when unavailable. |
 | `play_state` | `string` | `"Playing"`, `"Paused"` or `"Stopped"`; keeps the last value when a read fails, empty if none. |
 | `playlists` | `PlaylistsState` | One bounded page from the optional MPRIS Playlists interface. |
-| `position` | `integer` | Playback offset in microseconds as of `position_updated_at`, not polled while playing: add elapsed time. `-1` when unknown. |
+| `position?` | `integer` | Playback offset in microseconds as of `position_updated_at`, not polled while playing: add elapsed time. `nil` when unknown. |
 | `position_updated_at` | `integer` | `CLOCK_MONOTONIC` microseconds when `position` was read. No Lua clock shares this epoch (not `mantle.system.monotonic`); only compare it with itself. |
 | `rate` | `number` | MPRIS playback rate. |
 | `shuffle` | `boolean` | MPRIS shuffle setting. |
@@ -105,7 +105,7 @@ rect {
 | --- | --- | --- |
 | `artist` | `string` | Track artists joined with `", "`. |
 | `id` | `string` | TrackList object path, used by `track_list_go_to` and `track_list_remove_track`. |
-| `length` | `integer` | Track length in microseconds, or `-1` when unknown. |
+| `length?` | `integer` | Track length in microseconds, or `nil` when unknown. |
 | `title` | `string` | Track title, empty when the player has none. |
 
 ## Actions
@@ -115,7 +115,7 @@ Call each as `mantle.mpris:<action>(arguments...)`; `?` marks an argument you ma
 | Action | Arguments | Description |
 | --- | --- | --- |
 | `control` | `id: string, cmd: PlayerCommand` | Sends a playback command to `players[].id`. |
-| `seek` | `id: string, position_us: integer` | Seeks to an absolute position in microseconds, clamped to `[0, length]` (only `>= 0` when `length` is `-1`). |
+| `seek` | `id: string, position_us: integer` | Seeks to an absolute position in microseconds, clamped to `[0, length]` (only `>= 0` when `length` is `nil`). |
 | `seek_relative` | `id: string, offset_us: integer` | Seeks by a signed offset in microseconds, unclamped; past the end may skip to the next track. |
 | `raise` | `id: string` | Calls Raise; check `players[].can_raise` before calling. |
 | `quit` | `id: string` | Calls Quit; check `players[].can_quit` before calling. |

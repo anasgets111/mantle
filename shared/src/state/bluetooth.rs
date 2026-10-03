@@ -30,8 +30,9 @@ pub struct ConnectedDevice {
     pub mac: String,
     /// The device's advertised name, or empty.
     pub name: String,
-    /// Battery percentage, or `-1` when the device reports none.
-    pub battery: i32,
+    /// Battery percentage, or `nil` when the device reports none.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub battery: Option<u8>,
     /// From the class of device: `"keyboard"`, `"mouse"`, `"headphones"`, `"headset"`, `"phone"`,
     /// `"computer"` or `"generic"`.
     pub category: String,

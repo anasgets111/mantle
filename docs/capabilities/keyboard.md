@@ -35,7 +35,7 @@ rect {
 | --- | --- | --- |
 | `active_layout` | `string` | Layout display name, e.g. `"English (US)"`; empty before the compositor answers or without one. |
 | `active_layout_index` | `integer` | 0-based position of the active layout, as `switch_layout` takes it. |
-| `backlight_pct` | `integer` | Keyboard backlight, `0` to `100`, or `-1` without a backlight device or readable level. Refreshes on hardware hotkeys and `set_backlight` only, not on other software writes. |
+| `backlight_percent?` | `integer` | Keyboard backlight, `0` to `100`, or `nil` without a backlight device or readable level. Refreshes on hardware hotkeys and `set_backlight` only, not on other software writes. |
 | `caps_lock` | `boolean` | Caps Lock is on. |
 | `layout_count` | `integer` | Configured layout count; below `2` there is nothing to switch. |
 | `num_lock` | `boolean` | Num Lock is on. |
@@ -55,7 +55,7 @@ Call each as `mantle.keyboard:<action>(arguments...)`; `?` marks an argument you
 | Part | Source | Without it |
 | :--- | :--- | :--- |
 | Lock keys | `EV_LED` events from the first `/dev/input` device with a Caps Lock LED; a replugged keyboard is reopened | sysfs `*::capslock`, `*::numlock`, `*::scrolllock` read once, then frozen; with none of those, `false` |
-| Backlight | Reads sysfs `*::kbd_backlight`, writes through logind's `SetBrightness` | `backlight_pct = -1`; `set_backlight` is logged and ignored |
+| Backlight | Reads sysfs `*::kbd_backlight`, writes through logind's `SetBrightness` | `backlight_percent = nil`; `set_backlight` is logged and ignored |
 | Layout | The event stream [`workspaces`](workspaces.md) reads: niri's layout events, or Hyprland's `devices` for the keyboard marked `main` (the one typed on last) | `active_layout = ""`, `layout_count = 0`; `switch_layout` is logged and ignored |
 
 The first push comes when `keyboard` starts, with whatever layout the compositor has reported.
@@ -65,7 +65,7 @@ The first push comes when `keyboard` starts, with whatever layout the compositor
 | Trap | Fix |
 | :--- | :--- |
 | `caps_lock` never changes | The Supervisor cannot read `/dev/input`, so the sysfs fallback was read once. Add the user to the `input` group |
-| `backlight_pct` misses a change another program made | It refreshes only on hardware hotkeys and `set_backlight`. Change it through `set_backlight` |
+| `backlight_percent` misses a change another program made | It refreshes only on hardware hotkeys and `set_backlight`. Change it through `set_backlight` |
 | `switch_layout` on niri with an index above 255 does nothing | niri takes a `u8`; the call is logged and dropped |
 
 See also: [brightness](brightness.md) for the screen backlight.

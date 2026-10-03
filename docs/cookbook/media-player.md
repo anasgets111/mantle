@@ -65,10 +65,10 @@ mantle.mpris:on_change(function(mpris)
     end
 end)
 
--- Live position in microseconds, or -1 when unknown.
+-- Live position in microseconds, or nil when unknown.
 local position = computed({ player, position_mark, mantle.system }, function(current, mark, system)
-    if current == nil or current.position < 0 then
-        return -1
+    if current == nil or current.position == nil then
+        return nil
     end
     local elapsed = 0
     -- An unstamped report, such as one before the first clock push, adds nothing.
@@ -78,7 +78,7 @@ local position = computed({ player, position_mark, mantle.system }, function(cur
     local rate = current.rate or 1
     if rate <= 0 then rate = 1 end
     local now = current.position + elapsed * rate
-    return current.length > 0 and math.min(now, current.length) or now
+    return current.length and math.min(now, current.length) or now
 end)
 
 local function clock(microseconds)
@@ -155,7 +155,7 @@ local progress = rect {
     -- Seek on release, to where the pointer let go.
     on_drag = function(rect, pointer, phase)
         local current = player:get()
-        if phase == "end" and current and current.length > 0 then
+        if phase == "end" and current and current.length and current.length > 0 then
             local fraction = math.max(0, math.min(1, pointer.x / rect.width))
             mantle.mpris:seek(current.id, math.floor(fraction * current.length))
         end
@@ -165,7 +165,7 @@ local progress = rect {
             height = "Fill",
             background = "#89b4fa",
             width = computed({ player, position }, function(current, now)
-                if current == nil or current.length <= 0 or now < 0 then return "0%" end
+                if current == nil or not current.length or current.length <= 0 or now == nil then return "0%" end
                 return string.format("%.1f%%", now / current.length * 100)
             end),
         },
@@ -221,10 +221,10 @@ local card = column {
         row {
             width = "Fill",
             children = {
-                text { content = position:map(function(now) return now < 0 and "" or clock(now) end), font_size = 11, foreground = "#a6adc8" },
+                text { content = position:map(function(now) return now and clock(now) or "" end), font_size = 11, foreground = "#a6adc8" },
                 rect { width = "Fill" },
                 text {
-                    content = player:map(function(current) return current and current.length > 0 and clock(current.length) or "" end),
+                    content = player:map(function(current) return current and current.length and clock(current.length) or "" end),
                     font_size = 11,
                     foreground = "#a6adc8",
                 },

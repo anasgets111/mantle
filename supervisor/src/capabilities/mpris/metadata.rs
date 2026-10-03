@@ -131,10 +131,10 @@ fn hex_digit(byte: u8) -> Option<u8> {
 }
 
 /// Absolute target for `mpris:seek`/`seek_relative`, clamped to `[0, length]` before
-/// `SetPosition`/`Seek` (ADR-0036). With cached `length_us == -1`, only the lower bound applies.
-pub(super) fn clamp_seek_target(target_us: i64, length_us: i64) -> i64 {
+/// `SetPosition`/`Seek` (ADR-0036). Without a cached length, only the lower bound applies.
+pub(super) fn clamp_seek_target(target_us: i64, length_us: Option<i64>) -> i64 {
     let lower = target_us.max(0);
-    if length_us >= 0 { lower.min(length_us) } else { lower }
+    length_us.map_or(lower, |length| lower.min(length))
 }
 
 #[cfg(test)]
@@ -318,22 +318,22 @@ mod tests {
 
     #[test]
     fn clamp_seek_target_clamps_below_zero_up_to_zero() {
-        assert_eq!(clamp_seek_target(-500, 10_000), 0);
+        assert_eq!(clamp_seek_target(-500, Some(10_000)), 0);
     }
 
     #[test]
     fn clamp_seek_target_clamps_above_length_down_to_length() {
-        assert_eq!(clamp_seek_target(50_000, 10_000), 10_000);
+        assert_eq!(clamp_seek_target(50_000, Some(10_000)), 10_000);
     }
 
     #[test]
     fn clamp_seek_target_passes_through_an_in_range_value() {
-        assert_eq!(clamp_seek_target(5_000, 10_000), 5_000);
+        assert_eq!(clamp_seek_target(5_000, Some(10_000)), 5_000);
     }
 
     #[test]
-    fn clamp_seek_target_only_applies_the_lower_bound_when_length_is_the_unavailable_sentinel() {
-        assert_eq!(clamp_seek_target(-1, -1), 0);
-        assert_eq!(clamp_seek_target(999_999_999, -1), 999_999_999);
+    fn clamp_seek_target_only_applies_the_lower_bound_without_a_length() {
+        assert_eq!(clamp_seek_target(-1, None), 0);
+        assert_eq!(clamp_seek_target(999_999_999, None), 999_999_999);
     }
 }

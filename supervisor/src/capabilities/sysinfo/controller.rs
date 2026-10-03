@@ -58,7 +58,7 @@ impl SysinfoController {
         }
         let gpu_input = super::temp::resolve_gpu_input(&hwmon_root);
         if gpu_input.is_none() {
-            debug!("no GPU temperature sensor found under {}; temp_gpu will report -1", hwmon_root.display());
+            debug!("no GPU temperature sensor found under {}; temp_gpu will stay nil", hwmon_root.display());
         }
 
         tokio::spawn(run_cpu_task(proc_root.clone(), cpu_rx, std::sync::Arc::clone(&state), signal_tx.clone()));
@@ -404,7 +404,7 @@ mod tests {
         assert_eq!(state.ram_percent, 0);
         assert_eq!(state.swap_percent, 0);
         assert_eq!(state.temp_cores, Vec::<i64>::new());
-        assert_eq!(state.temp_gpu, -1, "matches the IDL's own -1 undetected sentinel, not 0");
+        assert_eq!(state.temp_gpu, None, "undetected is nil, not 0");
         assert!(state.disks.is_empty());
         assert_eq!(state.gpu, None);
         assert_eq!(state.net_rx_bytes_sec, 0);

@@ -11,7 +11,7 @@ list {
     end),
     key = function(device) return device.mac end,
     itemfn = function(device)
-        local battery = device.battery >= 0 and string.format(" %d%%", device.battery) or ""
+        local battery = device.battery and string.format(" %d%%", device.battery) or ""
         return rect {
             on_click = function() mantle.bluetooth:disconnect(device.mac) end,
             children = { text { content = device.name .. battery } },
@@ -39,7 +39,7 @@ list {
 
 | Field | Type | Description |
 | --- | --- | --- |
-| `battery` | `integer` | Battery percentage, or `-1` when the device reports none. |
+| `battery?` | `integer` | Battery percentage, or `nil` when the device reports none. |
 | `busy?` | `DeviceAction` | Same as `DiscoveredDevice.busy`. |
 | `category` | `string` | From the class of device: `"keyboard"`, `"mouse"`, `"headphones"`, `"headset"`, `"phone"`, `"computer"` or `"generic"`. |
 | `mac` | `string` | MAC address, e.g. `"00:1A:7D:DA:71:11"`; every `bluetooth` action takes it. |

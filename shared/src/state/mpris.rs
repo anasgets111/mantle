@@ -58,13 +58,15 @@ pub struct PlayerState {
     /// Cover art as an existing local path, or empty when unavailable.
     pub album_art_path: String,
     /// Playback offset in microseconds as of `position_updated_at`, not polled while playing: add
-    /// elapsed time. `-1` when unknown (ADR-0036).
-    pub position: i64,
+    /// elapsed time. `nil` when unknown (ADR-0036).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub position: Option<i64>,
     /// `CLOCK_MONOTONIC` microseconds when `position` was read. No Lua clock shares this epoch
     /// (not `mantle.system.monotonic`); only compare it with itself.
     pub position_updated_at: i64,
-    /// Track length in microseconds, or `-1` when unknown, as for a live stream (ADR-0036).
-    pub length: i64,
+    /// Track length in microseconds, or `nil` when unknown, as for a live stream (ADR-0036).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub length: Option<i64>,
     /// `xesam:url` as sent, e.g. a `file://` path or an `https://` page; empty when unset (ADR-0137).
     pub url: String,
     /// The player's `.desktop` basename, e.g. `"firefox"`, for app matching; empty when unset.
@@ -84,8 +86,9 @@ pub struct TrackSummary {
     pub title: String,
     /// Track artists joined with `", "`.
     pub artist: String,
-    /// Track length in microseconds, or `-1` when unknown.
-    pub length: i64,
+    /// Track length in microseconds, or `nil` when unknown.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub length: Option<i64>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]

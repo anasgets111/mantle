@@ -144,7 +144,7 @@ local card = panel {
                                 radius = 3,
                                 background = theme.accent,
                                 width = player:map(function(p)
-                                    if not p or p.length <= 0 then return "0%" end
+                                    if not (p and p.length and p.position) or p.length <= 0 then return "0%" end
                                     return string.format("%.1f%%", math.min(1, p.position / p.length) * 100)
                                 end),
                                 animate = { width = { duration = 1000, easing = "Linear" } },
@@ -155,13 +155,13 @@ local card = panel {
                         width = "Fill",
                         children = {
                             text {
-                                content = player:map(function(p) return p and clock(p.position) or "" end),
+                                content = player:map(function(p) return p and p.position and clock(p.position) or "" end),
                                 font_size = 16,
                                 foreground = theme.muted,
                             },
                             rect { width = "Fill" },
                             text {
-                                content = player:map(function(p) return p and clock(p.length) or "" end),
+                                content = player:map(function(p) return p and p.length and clock(p.length) or "" end),
                                 font_size = 16,
                                 foreground = theme.muted,
                             },

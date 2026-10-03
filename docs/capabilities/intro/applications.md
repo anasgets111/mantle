@@ -5,8 +5,8 @@ text {
         if client == nil or applications == nil then
             return ""
         end
-        local index = applications.by_app_id[client.class]
-        return index and applications.entries[index].name or client.class
+        local index = applications.by_app_id[client.app_id]
+        return index and applications.entries[index].name or client.app_id
     end),
 }
 ```

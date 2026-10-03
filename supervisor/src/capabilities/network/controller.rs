@@ -154,9 +154,10 @@ impl NetworkController {
             ethernet_enabled: ethernet.is_some(),
             wifi_ip,
             ethernet_ip,
+            // NetworkManager reports an unknown speed as `0`.
             ethernet_speed: match &ethernet {
-                Some(ethernet) => ethernet.wired.speed().await.unwrap_or(0),
-                None => 0,
+                Some(ethernet) => ethernet.wired.speed().await.ok().filter(|speed| *speed > 0),
+                None => None,
             },
             // The join state overlays these fields after NM facts are read.
             connecting_ssid: None,

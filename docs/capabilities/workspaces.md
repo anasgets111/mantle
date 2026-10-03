@@ -49,9 +49,9 @@ The focused window.
 
 | Field | Type | Description |
 | --- | --- | --- |
-| `class` | `string` | Wayland `app_id`, e.g. `"firefox"`; the key of `applications.by_app_id`. Empty when unset. |
-| `is_floating` | `boolean` | Whether the window floats rather than tiles. |
-| `is_fullscreen?` | `boolean` | Whether the window is fullscreen (maximized is `false`); `nil` on niri, which does not report it. |
+| `app_id` | `string` | Wayland `app_id`, e.g. `"firefox"`; the key of `applications.by_app_id`. Empty when unset. |
+| `floating` | `boolean` | Whether the window floats rather than tiles. |
+| `fullscreen?` | `boolean` | Whether the window is fullscreen (maximized is `false`); `nil` on niri, which does not report it. |
 | `title` | `string` | Window title; empty when unset. |
 
 ### `OutputWorkspaces`

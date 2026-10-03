@@ -34,7 +34,7 @@ Pushes only on a change.
 | `ram_percent` | `integer` | Physical memory in use (`MemTotal - MemAvailable`), `0` to `100`, rounded down. |
 | `swap_percent` | `integer` | Swap in use, `0` to `100`, rounded down; also `0` without swap. |
 | `temp_cores` | `integer[]` | CPU temperatures in whole Celsius: per core (`coretemp`) or per CCD (`k10temp`), else one package or `acpitz` reading; empty without a sensor. An unreadable sensor is skipped. |
-| `temp_gpu` | `integer` | `amdgpu`, `nouveau`, `nvidia`, `i915` or `xe` hwmon temperature in whole Celsius, or `-1` without a readable one. |
+| `temp_gpu?` | `integer` | `amdgpu`, `nouveau`, `nvidia`, `i915` or `xe` hwmon temperature in whole Celsius, or `nil` without a readable one. |
 
 ### `DiskDevice`
 

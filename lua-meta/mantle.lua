@@ -37,9 +37,9 @@
 
 ---@class ActiveClient
 ---The focused window.
----@field class string Wayland `app_id`, e.g. `"firefox"`; the key of `applications.by_app_id`. Empty when unset.
----@field is_floating boolean Whether the window floats rather than tiles.
----@field is_fullscreen? boolean Whether the window is fullscreen (maximized is `false`); `nil` on niri, which does not report it (ADR-0056).
+---@field app_id string Wayland `app_id`, e.g. `"firefox"`; the key of `applications.by_app_id`. Empty when unset.
+---@field floating boolean Whether the window floats rather than tiles.
+---@field fullscreen? boolean Whether the window is fullscreen (maximized is `false`); `nil` on niri, which does not report it (ADR-0056).
 ---@field title string Window title; empty when unset.
 
 ---@class AppStream
@@ -98,7 +98,7 @@
 ---@field index integer Profile index, the second argument of `set_bluetooth_profile`.
 
 ---@class ConnectedDevice
----@field battery integer Battery percentage, or `-1` when the device reports none.
+---@field battery? integer Battery percentage, or `nil` when the device reports none.
 ---@field busy? DeviceAction Same as `DiscoveredDevice.busy`.
 ---@field category string From the class of device: `"keyboard"`, `"mouse"`, `"headphones"`, `"headset"`, `"phone"`, `"computer"` or `"generic"`.
 ---@field mac string MAC address, e.g. `"00:1A:7D:DA:71:11"`; every `bluetooth` action takes it.
@@ -243,13 +243,13 @@
 ---@field genre string Genres joined with `", "`; empty when unset.
 ---@field id string Bus-name suffix after `org.mpris.MediaPlayer2.`, e.g. `"spotify"`; every action takes it.
 ---@field identity string Display name, e.g. `"Spotify"`; empty if unanswered.
----@field length integer Track length in microseconds, or `-1` when unknown, as for a live stream (ADR-0036).
+---@field length? integer Track length in microseconds, or `nil` when unknown, as for a live stream (ADR-0036).
 ---@field loop_status string MPRIS loop mode: `None`, `Track`, or `Playlist`.
 ---@field maximum_rate number MPRIS maximum playback rate, or `0` when unavailable.
 ---@field minimum_rate number MPRIS minimum playback rate, or `0` when unavailable.
 ---@field play_state string `"Playing"`, `"Paused"` or `"Stopped"`; keeps the last value when a read fails, empty if none.
 ---@field playlists PlaylistsState One bounded page from the optional MPRIS Playlists interface.
----@field position integer Playback offset in microseconds as of `position_updated_at`, not polled while playing: add elapsed time. `-1` when unknown (ADR-0036).
+---@field position? integer Playback offset in microseconds as of `position_updated_at`, not polled while playing: add elapsed time. `nil` when unknown (ADR-0036).
 ---@field position_updated_at integer `CLOCK_MONOTONIC` microseconds when `position` was read. No Lua clock shares this epoch (not `mantle.system.monotonic`); only compare it with itself.
 ---@field rate number MPRIS playback rate.
 ---@field shuffle boolean MPRIS shuffle setting.
@@ -321,7 +321,7 @@
 ---@class TrackSummary
 ---@field artist string Track artists joined with `", "`.
 ---@field id string TrackList object path, used by `track_list_go_to` and `track_list_remove_track`.
----@field length integer Track length in microseconds, or `-1` when unknown.
+---@field length? integer Track length in microseconds, or `nil` when unknown.
 ---@field title string Track title, empty when the player has none.
 
 ---@class TrayItem
@@ -436,7 +436,7 @@
 ---`mantle.keyboard`'s payload (ADR-0034). Lock keys read `false` when no source resolves.
 ---@field active_layout string Layout display name, e.g. `"English (US)"`; empty before the compositor answers or without one.
 ---@field active_layout_index integer 0-based position of the active layout, as `switch_layout` takes it.
----@field backlight_pct integer Keyboard backlight, `0` to `100`, or `-1` without a backlight device or readable level. Refreshes on hardware hotkeys and `set_backlight` only, not on other software writes.
+---@field backlight_percent? integer Keyboard backlight, `0` to `100`, or `nil` without a backlight device or readable level. Refreshes on hardware hotkeys and `set_backlight` only, not on other software writes.
 ---@field caps_lock boolean Caps Lock is on.
 ---@field layout_count integer Configured layout count; below `2` there is nothing to switch.
 ---@field num_lock boolean Num Lock is on.
@@ -462,7 +462,7 @@
 ---@field ethernet_enabled boolean A wired device is activated; `set_ethernet_enabled`'s read-back, unlike carrier.
 ---@field ethernet_ip? string The first activated wired device's IPv4 address without prefix, or `nil`.
 ---@field ethernet_present boolean At least one wired device exists, cable or not.
----@field ethernet_speed integer That wired device's link speed in Mb/s; `0` when unknown or none is activated.
+---@field ethernet_speed? integer That wired device's link speed in Mb/s; `nil` when unknown or none is activated.
 ---@field networking_enabled boolean NetworkManager networking is on (`NetworkingEnabled`).
 ---@field password_ssid? string The SSID whose `connect` waits for a password from a `network`/`connect` secure field, or `nil`. Also set after a rejected key; cleared when a join starts or by `cancel_connect`.
 ---@field scanning boolean A scan is in flight, from the moment `scan` is accepted.
@@ -504,7 +504,7 @@
 ---@field ram_percent integer Physical memory in use (`MemTotal - MemAvailable`), `0` to `100`, rounded down.
 ---@field swap_percent integer Swap in use, `0` to `100`, rounded down; also `0` without swap.
 ---@field temp_cores integer[] CPU temperatures in whole Celsius: per core (`coretemp`) or per CCD (`k10temp`), else one package or `acpitz` reading; empty without a sensor. An unreadable sensor is skipped.
----@field temp_gpu integer `amdgpu`, `nouveau`, `nvidia`, `i915` or `xe` hwmon temperature in whole Celsius, or `-1` without a readable one.
+---@field temp_gpu? integer `amdgpu`, `nouveau`, `nvidia`, `i915` or `xe` hwmon temperature in whole Celsius, or `nil` without a readable one.
 
 ---@class SystemState
 ---`mantle.system`'s payload, pushed on each tick of `interval`.
@@ -637,7 +637,7 @@ local IdleCapability = {}
 ---[docs](https://anasgets111.github.io/mantle/capabilities/mpris.html)
 ---@class MprisCapability: Capability<MprisState>, userdata
 ---@field control fun(self: MprisCapability, id: string, cmd: PlayerCommand) Sends a playback command to `players[].id`.
----@field seek fun(self: MprisCapability, id: string, position_us: integer) Seeks to an absolute position in microseconds, clamped to `[0, length]` (only `>= 0` when `length` is `-1`).
+---@field seek fun(self: MprisCapability, id: string, position_us: integer) Seeks to an absolute position in microseconds, clamped to `[0, length]` (only `>= 0` when `length` is `nil`).
 ---@field seek_relative fun(self: MprisCapability, id: string, offset_us: integer) Seeks by a signed offset in microseconds, unclamped; past the end may skip to the next track.
 ---@field raise fun(self: MprisCapability, id: string) Calls Raise; check `players[].can_raise` before calling.
 ---@field quit fun(self: MprisCapability, id: string) Calls Quit; check `players[].can_quit` before calling.

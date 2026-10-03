@@ -86,11 +86,11 @@ pub struct ActiveClient {
     /// Window title; empty when unset.
     pub title: String,
     /// Wayland `app_id`, e.g. `"firefox"`; the key of `applications.by_app_id`. Empty when unset.
-    pub class: String,
+    pub app_id: String,
     /// Whether the window floats rather than tiles.
-    pub is_floating: bool,
+    pub floating: bool,
     /// Whether the window is fullscreen (maximized is `false`); `nil` on niri, which does not
     /// report it (ADR-0056).
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub is_fullscreen: Option<bool>,
+    pub fullscreen: Option<bool>,
 }

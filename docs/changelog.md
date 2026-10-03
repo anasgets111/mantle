@@ -7,6 +7,8 @@ version is 0.x, a minor release can break the Lua API.
 
 ## Unreleased
 
+- Breaking: unknown values are `nil` instead of `-1`: `sysinfo.temp_gpu`, bluetooth connected-device `battery`, and mpris `position`, `length` and track-list `length`. `network.ethernet_speed` is `nil` instead of `0` when unknown or no wired device is active.
+- Breaking: `keyboard.backlight_pct` is renamed `backlight_percent`, `nil` without a readable backlight. `workspaces.active_client` fields `class`, `is_floating` and `is_fullscreen` are renamed `app_id`, `floating` and `fullscreen`, matching `windows` entries.
 - Breaking: `mantle.updates.count` and the bluetooth `DiscoveredDevice.paired` field are removed. Use `#updates.packages`; a discovered device is never paired.
 - List properties such as popup `constraint_adjustment` and text `content` runs reject a list with a `nil` hole or named keys. Entries after a hole used to be dropped silently.
 - `dofile` and `loadfile` are unavailable in configs because their synchronous file reads can stall the Renderer. Use `require` for Lua modules or `process.run` for other files.

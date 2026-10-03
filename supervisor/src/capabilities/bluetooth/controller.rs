@@ -202,11 +202,11 @@ impl BluetoothController {
                 paired_only.push(PairedDevice { mac, name, category, blocked, busy });
                 continue;
             }
-            let battery_percent = match &battery {
-                Some(battery) => battery.percentage().await.map(i32::from).unwrap_or(-1),
-                None => -1,
+            let battery = match &battery {
+                Some(battery) => battery.percentage().await.ok(),
+                None => None,
             };
-            connected.push(ConnectedDevice { mac, name, battery: battery_percent, category, busy });
+            connected.push(ConnectedDevice { mac, name, battery, category, busy });
         }
         (connected, paired_only, discovered)
     }

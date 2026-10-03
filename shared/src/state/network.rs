@@ -61,8 +61,9 @@ pub struct NetworkState {
     /// The first activated wired device's IPv4 address without prefix, or `nil`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ethernet_ip: Option<String>,
-    /// That wired device's link speed in Mb/s; `0` when unknown or none is activated.
-    pub ethernet_speed: u32,
+    /// That wired device's link speed in Mb/s; `nil` when unknown or none is activated.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ethernet_speed: Option<u32>,
     /// The SSID `connect` is joining, or `nil`; clears on a verdict or `abort_connect`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub connecting_ssid: Option<String>,

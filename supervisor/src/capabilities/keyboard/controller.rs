@@ -88,7 +88,7 @@ impl KeyboardController {
             debug!("SetBrightness(leds, {name}, {raw}) failed: {err}");
         }
         // `brightness_hw_changed` reports only hardware changes, so read this write back.
-        self.state.lock().expect("mutex poisoned").backlight_pct = read_backlight_pct(led);
+        self.state.lock().expect("mutex poisoned").backlight_percent = read_backlight_percent(led);
         let _ = self.events.send(());
     }
 
@@ -112,9 +112,10 @@ fn find_backlight(leds_root: &Path) -> Option<LedBacklight> {
     Some(LedBacklight { dir, max })
 }
 
-/// `-1` when `brightness` cannot be read.
-fn read_backlight_pct(led: &LedBacklight) -> i32 {
-    read_attr(&led.dir, "brightness").and_then(|raw| raw.parse().ok()).map_or(-1, |raw| percent_from_raw(raw, led.max))
+/// `None` when `brightness` cannot be read.
+fn read_backlight_percent(led: &LedBacklight) -> Option<u8> {
+    let raw = read_attr(&led.dir, "brightness")?.parse().ok()?;
+    u8::try_from(percent_from_raw(raw, led.max)).ok()
 }
 
 /// Opens `brightness_hw_changed` before the initial read so a hotkey in between is not lost, then
@@ -122,7 +123,7 @@ fn read_backlight_pct(led: &LedBacklight) -> i32 {
 fn watch_backlight(led: LedBacklight, state: Arc<Mutex<KeyboardState>>, events: UnboundedSender<()>) {
     let watch = std::fs::File::open(led.dir.join("brightness_hw_changed"))
         .and_then(|file| AsyncFd::with_interest(file, Interest::PRIORITY));
-    state.lock().expect("mutex poisoned").backlight_pct = read_backlight_pct(&led);
+    state.lock().expect("mutex poisoned").backlight_percent = read_backlight_percent(&led);
     let watch = match watch {
         Ok(watch) => watch,
         Err(err) => {
@@ -141,7 +142,7 @@ fn watch_backlight(led: LedBacklight, state: Arc<Mutex<KeyboardState>>, events: 
             }
             // Reading from offset 0 re-arms kernfs's `POLLPRI`.
             let _ = watch.get_ref().read_at(&mut [0; 8], 0);
-            state.lock().expect("mutex poisoned").backlight_pct = read_backlight_pct(&led);
+            state.lock().expect("mutex poisoned").backlight_percent = read_backlight_percent(&led);
             if events.send(()).is_err() {
                 break;
             }
@@ -281,11 +282,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn keyboard_state_default_is_the_unavailable_sentinel() {
+    fn keyboard_state_default_reports_nothing_available() {
         assert_eq!(
             KeyboardState::default(),
             KeyboardState {
-                backlight_pct: -1,
+                backlight_percent: None,
                 caps_lock: false,
                 num_lock: false,
                 scroll_lock: false,
@@ -308,6 +309,6 @@ mod tests {
         std::fs::write(dir.join("max_brightness"), "3\n").unwrap();
         std::fs::write(dir.join("brightness"), "2\n").unwrap();
         let led = find_backlight(root.path()).expect("kbd_backlight with max > 0");
-        assert_eq!(read_backlight_pct(&led), 67);
+        assert_eq!(read_backlight_percent(&led), Some(67));
     }
 }

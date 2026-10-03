@@ -29,7 +29,7 @@
 //!   [`toggle_special_command`]. Other negative named workspaces
 //!   drop because neither `u64` ids nor number focus can represent them. A shown special does not
 //!   replace the focused monitor's regular workspace.
-//! - `is_fullscreen` is active-window `fullscreen`: int since Hyprland 0.42 (`0` none, `1`
+//! - `active_client.fullscreen` is active-window `fullscreen`: int since Hyprland 0.42 (`0` none, `1`
 //!   maximized, `2` fullscreen), bool before; only the real value counts.
 //!
 //! `spawn_reader` also folds every `clients` entry into a `windows` row, from the same reads.
@@ -239,8 +239,8 @@ fn to_focused_window(client: &HyprlandClient) -> FocusedWindow {
     FocusedWindow {
         title: client.title.clone(),
         app_id: client.class.clone(),
-        is_floating: client.floating,
-        is_fullscreen: Some(client.fullscreen.is_fullscreen()),
+        floating: client.floating,
+        fullscreen: Some(client.fullscreen.is_fullscreen()),
     }
 }
 
@@ -722,8 +722,8 @@ mod tests {
             FocusedWindow {
                 title: "~ - fish".to_string(),
                 app_id: "kitty".to_string(),
-                is_floating: true,
-                is_fullscreen: Some(false)
+                floating: true,
+                fullscreen: Some(false)
             }
         );
 
@@ -790,7 +790,7 @@ mod tests {
     }
 
     #[test]
-    fn is_fullscreen_reads_the_int_mode_and_the_older_bool_and_counts_only_real_fullscreen() {
+    fn fullscreen_reads_the_int_mode_and_the_older_bool_and_counts_only_real_fullscreen() {
         let mut window = client("mpv", "film.mkv", 1, 0, false);
         for (wire, expected) in [
             (serde_json::json!(2), Some(true)),
@@ -800,7 +800,7 @@ mod tests {
             (serde_json::json!(false), Some(false)),
         ] {
             window["fullscreen"] = wire.clone();
-            assert_eq!(focused_window(&window.to_string()).unwrap().is_fullscreen, expected, "{wire}");
+            assert_eq!(focused_window(&window.to_string()).unwrap().fullscreen, expected, "{wire}");
         }
     }
 

@@ -78,9 +78,9 @@ fn focused_window(windows: &HashMap<u64, niri_ipc::Window>) -> Option<FocusedWin
     windows.values().find(|window| window.is_focused).map(|window| FocusedWindow {
         title: window.title.clone().unwrap_or_default(),
         app_id: window.app_id.clone().unwrap_or_default(),
-        is_floating: window.is_floating,
+        floating: window.is_floating,
         // niri-ipc 26.4.0 has no fullscreen field (ADR-0056 decision 5); absent, not `false`.
-        is_fullscreen: None,
+        fullscreen: None,
     })
 }
 
@@ -344,7 +344,7 @@ mod tests {
     }
 
     #[test]
-    fn focused_window_picks_the_window_niri_flags_and_renames_app_id_to_the_class_slot() {
+    fn focused_window_picks_the_window_niri_flags() {
         let windows = map(vec![
             (2, window(2, "src/main.rs - Neovim", "kitty", true, true)),
             (14, window(14, "Sign in | Slack", "slack", false, false)),
@@ -354,7 +354,7 @@ mod tests {
 
         assert_eq!(focused.title, "src/main.rs - Neovim");
         assert_eq!(focused.app_id, "kitty");
-        assert!(focused.is_floating);
+        assert!(focused.floating);
     }
 
     #[test]

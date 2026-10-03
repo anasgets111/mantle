@@ -102,9 +102,9 @@ pub fn resolve_gpu_input(hwmon_root: &Path) -> Option<PathBuf> {
     resolve_chip(hwmon_root, GPU_TEMP_PREFERENCE).and_then(|chip_dir| primary_input(&chip_dir))
 }
 
-/// `temp_gpu` from its resolved input, or IDL sentinel `-1` (ADR-0035).
-pub fn read_temp_gpu(input: Option<&Path>) -> i64 {
-    input.and_then(read_celsius).unwrap_or(-1)
+/// `temp_gpu` from its resolved input; `None` without a readable one (ADR-0035).
+pub fn read_temp_gpu(input: Option<&Path>) -> Option<i64> {
+    input.and_then(read_celsius)
 }
 
 #[cfg(test)]
@@ -117,7 +117,7 @@ mod tests {
     }
 
     /// Test-only resolve-and-read convenience for `temp_gpu`.
-    fn resolve_and_read_temp_gpu(hwmon_root: &Path) -> i64 {
+    fn resolve_and_read_temp_gpu(hwmon_root: &Path) -> Option<i64> {
         read_temp_gpu(resolve_gpu_input(hwmon_root).as_deref())
     }
 
@@ -251,7 +251,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         write_chip(dir.path(), "hwmon2", "amdgpu");
         write_sensor(&dir.path().join("hwmon2"), 1, "edge", 45000);
-        assert_eq!(resolve_and_read_temp_gpu(dir.path()), 45);
+        assert_eq!(resolve_and_read_temp_gpu(dir.path()), Some(45));
     }
 
     #[test]
@@ -259,15 +259,15 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         write_chip(dir.path(), "hwmon3", "xe");
         write_sensor(&dir.path().join("hwmon3"), 1, "", 52000);
-        assert_eq!(resolve_and_read_temp_gpu(dir.path()), 52);
+        assert_eq!(resolve_and_read_temp_gpu(dir.path()), Some(52));
     }
 
     #[test]
-    fn read_temp_gpu_is_the_idl_sentinel_when_no_gpu_chip_is_present() {
+    fn read_temp_gpu_is_none_when_no_gpu_chip_is_present() {
         // This machine has integrated graphics only, with no amdgpu/nouveau/nvidia chip.
         let dir = tempfile::tempdir().unwrap();
         write_chip(dir.path(), "hwmon6", "coretemp");
-        assert_eq!(resolve_and_read_temp_gpu(dir.path()), -1);
+        assert_eq!(resolve_and_read_temp_gpu(dir.path()), None);
     }
 
     #[test]

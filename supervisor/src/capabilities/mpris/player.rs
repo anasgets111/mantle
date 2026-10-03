@@ -119,21 +119,21 @@ fn resolve_position(
     same_track: bool,
     play_state: &str,
     bus_name: &str,
-) -> (i64, i64) {
+) -> (Option<i64>, i64) {
     let last = previous.map(|p| (p.state.position, p.state.position_updated_at));
     let settled = previous.is_some_and(|p| p.state.play_state == play_state);
     match read {
-        Ok(0) if same_track && matches!(last, Some((position, _)) if position > 0) => last.unwrap_or((-1, 0)),
-        Ok(position) if same_track && settled && matches!(last, Some((known, _)) if known == position) => {
-            last.unwrap_or((-1, 0))
+        Ok(0) if same_track && matches!(last, Some((Some(position), _)) if position > 0) => last.unwrap_or((None, 0)),
+        Ok(position) if same_track && settled && matches!(last, Some((known, _)) if known == Some(position)) => {
+            last.unwrap_or((None, 0))
         }
-        Ok(position) => (position, monotonic_micros()),
+        Ok(position) => (Some(position), monotonic_micros()),
         Err(err) => {
             debug!("Position read failed for {bus_name}; keeping the last known reading this round: {err}");
             // Only the track the reading belongs to. Publishing the previous track's offset under
             // the new one's metadata is worse than admitting we do not know: a 30-second track
             // would inherit a 5:40 position and every bar would draw it past its own end.
-            if same_track { last.unwrap_or((-1, 0)) } else { (-1, 0) }
+            if same_track { last.unwrap_or((None, 0)) } else { (None, 0) }
         }
     }
 }
@@ -232,7 +232,7 @@ async fn resync(
             album_art_path: previous.as_ref().map(|p| p.state.album_art_path.clone()).unwrap_or_default(),
             position,
             position_updated_at,
-            length: previous.as_ref().map(|p| p.state.length).unwrap_or(-1),
+            length: previous.as_ref().and_then(|p| p.state.length),
             url: previous.as_ref().map(|p| p.state.url.clone()).unwrap_or_default(),
             desktop_entry,
             track_list: previous.as_ref().map(|p| p.state.track_list.clone()).unwrap_or_default(),
@@ -256,9 +256,9 @@ async fn resync(
         String::new()
     };
     let length = match parsed.length_us {
-        Some(length) if length >= 0 => length,
-        _ if same_track => previous.as_ref().map(|p| p.state.length).unwrap_or(-1),
-        _ => -1,
+        Some(length) if length >= 0 => Some(length),
+        _ if same_track => previous.as_ref().and_then(|p| p.state.length),
+        _ => None,
     };
 
     let (position, position_updated_at) =
@@ -581,7 +581,7 @@ fn spawn_player_forwarder(
 }
 
 fn publish_seeked_position(state: &mut PlayerState, position: i64) {
-    state.position = position;
+    state.position = Some(position);
     state.position_updated_at = monotonic_micros();
 }
 
@@ -606,7 +606,7 @@ mod position_tests {
     use super::*;
 
     fn previous_at(position: i64) -> PlayerState {
-        PlayerState { position, position_updated_at: 42, ..PlayerState::default() }
+        PlayerState { position: Some(position), position_updated_at: 42, ..PlayerState::default() }
     }
 
     fn previous_ctx<'a>(state: &'a PlayerState, identity: &'a TrackIdentity) -> Previous<'a> {
@@ -620,7 +620,7 @@ mod position_tests {
         let state = previous_at(340_000_000);
         let identity = TrackIdentity::default();
         let previous = previous_ctx(&state, &identity);
-        assert_eq!(resolve_position(Ok(0), Some(&previous), true, "", "test"), (340_000_000, 42));
+        assert_eq!(resolve_position(Ok(0), Some(&previous), true, "", "test"), (Some(340_000_000), 42));
     }
 
     #[test]
@@ -631,7 +631,7 @@ mod position_tests {
         let identity = TrackIdentity::default();
         let previous = previous_ctx(&state, &identity);
         let (position, updated_at) = resolve_position(Ok(0), Some(&previous), false, "", "test");
-        assert_eq!(position, 0);
+        assert_eq!(position, Some(0));
         assert_ne!(updated_at, 42, "a believed reading carries the moment it was taken");
     }
 
@@ -641,7 +641,7 @@ mod position_tests {
         let identity = TrackIdentity::default();
         let previous = previous_ctx(&state, &identity);
         let (position, updated_at) = resolve_position(Ok(363_000_000), Some(&previous), true, "", "test");
-        assert_eq!(position, 363_000_000);
+        assert_eq!(position, Some(363_000_000));
         assert_ne!(updated_at, 42);
     }
 
@@ -650,7 +650,7 @@ mod position_tests {
         let state = PlayerState { play_state: "Paused".to_string(), ..previous_at(340_000_000) };
         let identity = TrackIdentity::default();
         let previous = previous_ctx(&state, &identity);
-        assert_eq!(resolve_position(Ok(340_000_000), Some(&previous), true, "Paused", "test"), (340_000_000, 42));
+        assert_eq!(resolve_position(Ok(340_000_000), Some(&previous), true, "Paused", "test"), (Some(340_000_000), 42));
         let (_, resumed_at) = resolve_position(Ok(340_000_000), Some(&previous), true, "Playing", "test");
         assert_ne!(resumed_at, 42, "resuming restarts extrapolation from now");
     }
@@ -659,20 +659,20 @@ mod position_tests {
     fn a_zero_with_nothing_to_fall_back_on_is_published() {
         // The first reading of a player that really is at the start has no previous to keep.
         let (position, _) = resolve_position(Ok(0), None, true, "", "test");
-        assert_eq!(position, 0);
+        assert_eq!(position, Some(0));
     }
 
     #[test]
-    fn an_unread_position_is_minus_one_rather_than_a_fabricated_zero() {
+    fn an_unread_position_is_nil_rather_than_a_fabricated_zero() {
         // ADR-0036: unavailable is not zero. Nothing has ever been read here.
-        assert_eq!(resolve_position(Err(zbus::Error::InvalidReply), None, true, "", "test"), (-1, 0));
+        assert_eq!(resolve_position(Err(zbus::Error::InvalidReply), None, true, "", "test"), (None, 0));
     }
 
     #[test]
     fn a_seeked_signal_to_zero_overrides_the_transient_zero_filter() {
         let mut state = previous_at(340_000_000);
         publish_seeked_position(&mut state, 0);
-        assert_eq!(state.position, 0);
+        assert_eq!(state.position, Some(0));
         assert_ne!(state.position_updated_at, 42);
     }
 

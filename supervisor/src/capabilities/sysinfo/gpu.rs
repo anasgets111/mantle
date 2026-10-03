@@ -100,7 +100,7 @@ fn find_amd_sysfs(drm_root: &Path) -> Option<GpuTelemetry> {
 }
 
 /// Samples GPU metrics using available backend tools or sysfs.
-pub async fn sample_gpu(drm_root: &Path, fallback_temp: i64) -> Option<GpuTelemetry> {
+pub async fn sample_gpu(drm_root: &Path, fallback_temp: Option<i64>) -> Option<GpuTelemetry> {
     // 1. Try nvtop -s: unifies AMD, Intel and NVIDIA.
     if let Ok(Ok(output)) = tokio::time::timeout(
         std::time::Duration::from_secs(3),
@@ -110,9 +110,7 @@ pub async fn sample_gpu(drm_root: &Path, fallback_temp: i64) -> Option<GpuTeleme
         && output.status.success()
         && let Some(mut gpu) = parse_nvtop(&String::from_utf8_lossy(&output.stdout))
     {
-        if gpu.temp.is_none() && fallback_temp >= 0 {
-            gpu.temp = Some(fallback_temp);
-        }
+        gpu.temp = gpu.temp.or(fallback_temp);
         return Some(gpu);
     }
 
@@ -136,9 +134,7 @@ pub async fn sample_gpu(drm_root: &Path, fallback_temp: i64) -> Option<GpuTeleme
 
     // 3. Try each DRM card; card0 may be an integrated GPU on hybrid systems.
     if let Some(mut gpu) = find_amd_sysfs(drm_root) {
-        if gpu.temp.is_none() && fallback_temp >= 0 {
-            gpu.temp = Some(fallback_temp);
-        }
+        gpu.temp = gpu.temp.or(fallback_temp);
         return Some(gpu);
     }
 

@@ -40,18 +40,17 @@ pub struct WorkspaceRow {
     pub window_id: Option<String>,
 }
 
-/// The focused toplevel reduced to the three `active_client` fields.
+/// The focused toplevel reduced to the `active_client` fields.
 ///
 /// The adaptor decides which window is focused (niri flags each one); [`derive_state`] maps the
 /// winner into the payload.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FocusedWindow {
     pub title: String,
-    /// Wayland `app_id`, filling `class` (ADR-0056 decision 5).
     pub app_id: String,
-    pub is_floating: bool,
+    pub floating: bool,
     /// `None` when unreported; it stays absent in the payload.
-    pub is_fullscreen: Option<bool>,
+    pub fullscreen: Option<bool>,
 }
 
 /// Folds rows into the payload. Pure and unit-tested without a compositor. Sorts outputs by
@@ -88,9 +87,9 @@ pub fn derive_state(workspaces: &[WorkspaceRow], focused: Option<&FocusedWindow>
 
     let active_client = focused.map(|window| ActiveClient {
         title: window.title.clone(),
-        class: window.app_id.clone(),
-        is_floating: window.is_floating,
-        is_fullscreen: window.is_fullscreen,
+        app_id: window.app_id.clone(),
+        floating: window.floating,
+        fullscreen: window.fullscreen,
     });
 
     WorkspacesState { compositor: String::new(), outputs, active_client, special: None, overview_open: None }
@@ -208,8 +207,8 @@ mod tests {
         }
     }
 
-    fn window(title: &str, app_id: &str, is_floating: bool) -> FocusedWindow {
-        FocusedWindow { title: title.to_string(), app_id: app_id.to_string(), is_floating, is_fullscreen: None }
+    fn window(title: &str, app_id: &str, floating: bool) -> FocusedWindow {
+        FocusedWindow { title: title.to_string(), app_id: app_id.to_string(), floating, fullscreen: None }
     }
 
     // ---- derive_state: grouping and ordering ----
@@ -309,14 +308,14 @@ mod tests {
     // ---- derive_state: active_client (ADR-0056 decision 5) ----
 
     #[test]
-    fn derive_state_maps_the_focused_window_onto_active_client_with_app_id_standing_in_for_class() {
+    fn derive_state_maps_the_focused_window_onto_active_client() {
         let focused = window("src/main.rs - Neovim", "kitty", true);
 
         let client = derive_state(&[], Some(&focused)).active_client.expect("a focused window produces active_client");
 
         assert_eq!(client.title, "src/main.rs - Neovim");
-        assert_eq!(client.class, "kitty", "`class` is Wayland's `app_id`; a Wayland toplevel has no WM_CLASS");
-        assert!(client.is_floating);
+        assert_eq!(client.app_id, "kitty");
+        assert!(client.floating);
     }
 
     #[test]
@@ -326,18 +325,18 @@ mod tests {
     }
 
     #[test]
-    fn active_client_carries_is_fullscreen_only_when_the_compositor_said() {
+    fn active_client_carries_fullscreen_only_when_the_compositor_said() {
         // ADR-0056 decision 5 keeps the key absent rather than fabricating `false`; ADR-0119 lets
         // a compositor that knows provide it. Absent, not `null`, otherwise.
         let json = serde_json::to_value(derive_state(&[], Some(&window("a title", "kitty", false)))).unwrap();
         let client = &json["active_client"];
         assert_eq!(client["title"], "a title");
-        assert!(client.get("is_fullscreen").is_none());
+        assert!(client.get("fullscreen").is_none());
 
         let mut known = window("a title", "mpv", false);
-        known.is_fullscreen = Some(true);
+        known.fullscreen = Some(true);
         let json = serde_json::to_value(derive_state(&[], Some(&known))).unwrap();
-        assert_eq!(json["active_client"]["is_fullscreen"], true);
+        assert_eq!(json["active_client"]["fullscreen"], true);
     }
 
     #[test]
@@ -389,7 +388,7 @@ mod tests {
         assert!(publisher.publish(&workspaces, None, None, None), "an event that changes nothing is not a change");
         assert!(publisher.publish(&workspaces, Some(&window("a title", "kitty", false)), None, None));
 
-        assert_eq!(publisher.state.lock().unwrap().active_client.as_ref().unwrap().class, "kitty");
+        assert_eq!(publisher.state.lock().unwrap().active_client.as_ref().unwrap().app_id, "kitty");
         let signals = std::iter::from_fn(|| rx.try_recv().ok()).count();
         assert_eq!(signals, 2, "the repeated middle publish must not wake main.rs");
     }

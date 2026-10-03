@@ -294,7 +294,7 @@ impl MprisController {
 
     /// Converts an absolute `target` into the relative `Seek` a player without a usable trackid
     /// needs. Refuses rather than inventing an origin: an unknown position read as `0` seeks to
-    /// `target` from the start, and a never-read `-1` overflows the subtraction for a large target.
+    /// `target` from the start, and a negative reading can overflow the subtraction for a large target.
     async fn seek_by_difference(
         &self,
         id: &str,
@@ -367,7 +367,7 @@ impl MprisController {
 
     fn cached_position(&self, id: &str) -> Option<i64> {
         let bus_name = service_name_for_id(id);
-        self.registry.lock().expect("mutex poisoned").get(&bus_name).map(|entry| entry.last_known.position)
+        self.registry.lock().expect("mutex poisoned").get(&bus_name).and_then(|entry| entry.last_known.position)
     }
 
     fn find_state(&self, id: &str) -> Option<PlayerState> {
@@ -412,7 +412,7 @@ struct SeekContext {
     bus_name: String,
     player: super::proxies::MprisPlayerProxy<'static>,
     trackid: Option<String>,
-    length: i64,
+    length: Option<i64>,
 }
 
 #[cfg(test)]
