@@ -26,7 +26,7 @@ Wanted, but each needs a consumer or a decision first.
 | Service depth | Audio has no peak metering, and a PipeWire restart freezes `audio` until Mantle restarts. Extend for concrete controls | 0316 |
 | External IPC | `set`/`toggle` answer only applied or refused; `call` returns only what the action returns. No generic state read or subscription | 0197 |
 | Process control | Start, stream and signal exist. No child stdin, cwd or env | 0175, 0188 |
-| Text field editing | The secure field edits only at its end and has no IME; the caret has no stop inside a ligature | 0236, 0312 |
+| Text field editing | The caret has no stop inside a ligature, and IME needs the field's surface focused, so a parent-focused popup gets none. The secure field keeps end-only editing and no IME, so an input method never sees the draft | 0236, 0312 |
 | Animated WebP and APNG | Only GIF animates; the others draw their first frame. `AnimationDecoder` covers both | 0233 |
 | Localization | No translation API; desktop entry `Name`, `GenericName` and `Keywords` are read unlocalized | 0112 |
 | Wayland and input extras | No shortcut inhibition, per-surface idle inhibition, touch gestures, cross-app drag and drop, pointer buttons past left, right and middle, or a click position inside the clicked node. logind and ScreenSaver inhibition work | — |
