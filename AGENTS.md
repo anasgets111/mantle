@@ -124,6 +124,37 @@ They are embedded in the renderer, never checked in or touched by `just stubs`.
 - Docs Lua blocks run per their fence tags; `lua,shot` blocks must match their images in
   `docs/images/`. Rules: `docs/development/documenting.md`.
 
+## Delegating to agents
+
+Any agent may coordinate others. The coordinator owns the result: it reviews, merges, commits,
+and writes `DECISIONS.md` and `docs/roadmap.md`.
+
+- **Brief.** A delegate starts cold and cannot ask. Give it the files, the decisions already made,
+  what must not change, the exact checks, an insertion ceiling, and permission to push back with
+  evidence.
+- **Isolation.** One task per git worktree. Delegates never commit, stage or stash; the stash is
+  shared across worktrees. Research runs read-only.
+- **Shared outputs.** Delegates may run `just stubs` in their own worktree; after merging, the
+  coordinator regenerates once. Resolve changelog conflicts by hand; for generated files, take
+  either side, then run `just stubs`.
+- **Build.** Cargo names workspace artifacts by path relative to the workspace root, so worktrees
+  sharing one `CARGO_TARGET_DIR` overwrite each other's crates and test stale code. Give each its
+  own target dir. A target that was shared keeps foreign artifacts cargo thinks are fresh:
+  `cargo clean -p shared -p supervisor -p renderer` before trusting it again.
+- **Wait.** Record each delegate's process id and arm a notification that fires on exit, so nothing
+  finished sits unread.
+- **Distrust.** A delegate's report is a claim. Check its decisions item by item against the diff,
+  then have three fresh read-only agents with no stake audit it, one lens each: decisions and
+  bugs; size and duplication; tests, lifecycle, security and docs. Slop shows as a diff over its
+  ceiling, helpers that duplicate existing code, a feature quietly narrowed, or tests that assert
+  nothing new. Grep for an existing equivalent of every new function, type and fixture. New files
+  are untracked: the coordinator runs `git add -N` on them before measuring or auditing, or
+  `git diff` hides them.
+- **Sandbox.** A delegate's sandbox may block sockets, D-Bus and Wayland. Rerun failures it reports
+  outside the sandbox before believing them.
+- **Merge.** Send gaps back to the same delegate, which keeps its context. Once a diff passes, apply
+  it to `main` with `git apply --3way`, then run the checks once over the merged tree.
+
 ## Skills
 
 This file owns repository rules and check selection; skills own task workflows. They live in
