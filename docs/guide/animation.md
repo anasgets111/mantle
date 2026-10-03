@@ -100,6 +100,53 @@ Path coordinates stay within `[-8192, 8192]` and arc radii at 0 or more.
 Slide with `translate` and grow on hover with `scale` when surrounding nodes should stay put.
 Both skip layout; `width` and `margin` lay out the surface on every animation frame.
 
+### Lua cost
+
+Let `animate` drive motion. A `timer` that sets a signal every frame runs Lua and resolves the
+surface on every tick. `animate` computes each frame in the engine, about 20 times cheaper, at the
+display's refresh rate.
+
+A progress ring that fills forever, with no Lua per frame:
+
+<!-- shot-alt: A blue ring fills clockwise from the top, then starts over. -->
+<!-- shot: frames=0..1140/60 -->
+```lua,shot
+local function ring(sweep)
+    return { { op = "A", points = { 20, 20, 16, -90, sweep } } }
+end
+
+return path {
+    width = 40,
+    height = 40,
+    stroke = "#89b4fa",
+    stroke_width = 4,
+    commands = ring(0),
+    animate = { commands = { duration = 1200, easing = "Linear", keyframes = { ring(0), ring(360) }, loops = "Infinite" } },
+}
+```
+
+Not a timer that redraws it 30 times a second:
+
+```lua
+local tick = state("tick", 0)
+local function step()
+    tick:set(tick:get() + 1)
+    timer(33, step)
+end
+step()
+
+return path {
+    width = 40,
+    height = 40,
+    stroke = "#89b4fa",
+    stroke_width = 4,
+    commands = tick:map(function(n) return { { op = "A", points = { 20, 20, 16, -90, n % 36 * 10 } } } end),
+}
+```
+
+Live data, like a volume level, still comes from a signal: give it an `animate` entry and the
+engine eases between updates.
+
 ## Entry keys
 
 An entry is a bare number (a duration in ms with the default easing) or a table. Every entry picks
@@ -471,6 +518,7 @@ return panel {
 | A `pulse`-driven run is cut short | Removing the entry snaps the property. Make the window at least `delay` plus every segment's `duration` times `loops` |
 | A second click inside the `pulse` window does not replay the run | The click only extends the window; the entry never leaves, so the run does not restart |
 | Sliding with `margin` stutters on a large surface | Tween `translate`: it skips layout |
+| A looping motion driven by a `timer` costs CPU on every tick | Use `keyframes` with `loops = "Infinite"` ([Lua cost](#lua-cost)) |
 | `width` will not overshoot below `0` with `OutBack` | The property's range clamps every frame. Use `margin` or `translate` for motion that must go negative |
 
 See also: [signals](signals.md) (`pulse`, `delay`, `hover`), [nodes](../nodes/index.md) (properties and

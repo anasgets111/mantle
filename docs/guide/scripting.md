@@ -118,6 +118,21 @@ tick()
 
 For a delayed or blinking *value*, `delay` and `pulse` ([signals](signals.md)) need no callback.
 
+### When to use a timer
+
+Each time a timer sets a signal, every `:map` reading it runs again. Once a minute is free; every
+33 ms is 30 times a second, forever. Arm a timer as often as the data changes, never per frame.
+
+| To | Use |
+| :--- | :--- |
+| Retry with backoff, or act once after a delay | `timer` |
+| Update a clock | `timer`, re-armed for the next minute, as above |
+| Poll something with no capability and no output to follow | `timer` at the slowest rate that stays useful ([poll a command](processes.md#poll-a-command-every-n-seconds)) |
+| React to a program's output | Follow it with `process.run` instead of polling ([follow](processes.md#follow-a-long-running-commands-output)) |
+| Hide something a few seconds after the last change | `timer`, cancelling the previous handle on each change; or `delay` |
+| Show a value late, or blink it | `delay` or `pulse` |
+| Move, spin, pulse or morph something | `animate` ([Lua cost](animation.md#lua-cost)) |
+
 ## action
 
 Names a function that `mantle call <name> [args...]` runs, usually from a compositor keybind.
@@ -285,6 +300,7 @@ fonts { "Inter", "Symbols Nerd Font", "Noto Color Emoji" }
 | :--- | :--- |
 | Callbacks from before a reload | `palette` callbacks run the old closures after a reload. Keep what they touch in named state |
 | `timer` or `action` declared only inside a callback | Every evaluation clears both, so they vanish on the next save. Declare actions at the top level; start timer chains from the top level too |
+| A `timer` re-armed every few milliseconds to move something | Each tick runs Lua and resolves again. Use `animate` ([Lua cost](animation.md#lua-cost)) |
 | Two modules declare the same action | Raises. Pick unique names |
 | `store.key:get()` right after `store:set` | Still the old value. The signal updates on the next push |
 | `store.key` is `nil` at startup | Every key reads `nil` until `mantle.storage` pushes, even with defaults. Handle `nil` in every map |
