@@ -8,9 +8,17 @@ and the properties every kind shares; each kind's page covers what it adds. How 
 
 A bar with a left group, a centred clock and a right group:
 
-<!-- shot-alt: A bar with left, center, and right groups. -->
+<!-- shot-alt: A bar with workspace pills on the left, a bold centred clock, and Wi-Fi, volume and Bluetooth icons on the right. -->
 ```lua,shot
 local clock = state("clock", "12:00")
+
+local function workspace(active)
+    return rect { width = active and 18 or 8, height = 8, radius = 4, background = active and "#89B4FA" or "#45475A" }
+end
+
+local function status(name)
+    return icon { name = name, size = 16, foreground = "#CDD6F4" }
+end
 
 local bar = panel {
     id = "bar",
@@ -22,15 +30,15 @@ local bar = panel {
     child = row {
         width = "Fill",
         height = "Fill",
-        padding = { left = 8, right = 8 },
+        padding = { left = 12, right = 12 },
         background = "#1E1E2ECC",
         children = {
             row { width = "Fill", align_v = "Center", spacing = 6, children = {
-                text { content = "left", foreground = "#CDD6F4" },
+                workspace(true), workspace(false), workspace(false),
             } },
-            text { content = clock, align_v = "Center", foreground = "#CDD6F4" },
-            row { width = "Fill", align_h = "End", align_v = "Center", spacing = 6, children = {
-                text { content = "right", foreground = "#CDD6F4" },
+            text { content = clock, align_v = "Center", font_weight = 700, foreground = "#CDD6F4" },
+            row { width = "Fill", align_h = "End", align_v = "Center", spacing = 12, children = {
+                status("network-wireless-symbolic"), status("audio-volume-high-symbolic"), status("bluetooth-active-symbolic"),
             } },
         },
     },
@@ -255,28 +263,41 @@ Views swapped through a `children` signal, each with its own `id`, so the outgoi
 while the incoming one fades in. The parent is a `rect`, so the two overlap during the swap instead
 of stacking. The shot switches `tab` to `"bluetooth"`:
 
-<!-- shot-alt: A Wi-Fi view crossfades into a Bluetooth devices view. -->
-<!-- shot: frames=0..150/30 -->
+<!-- shot-alt: A card listing Wi-Fi networks crossfades into one listing Bluetooth devices. -->
+<!-- shot: frames=0@700,30,60,90,120,150,180,210,240,270@1200 -->
 ```lua,shot
 local tab = state("tab", "wifi")
 
-local function page(name, label)
+local function page(name, title, icon_name, items)
+    local rows = { text { content = title, font_size = 14, font_weight = 700, foreground = "#CDD6F4" } }
+    for _, item in ipairs(items) do
+        rows[#rows + 1] = row { spacing = 10, children = {
+            icon { name = icon_name, size = 16, foreground = "#89B4FA", align_v = "Center" },
+            text { content = item, foreground = "#CDD6F4", align_v = "Center" },
+        } }
+    end
     return column {
         id = name, -- a new id per view: the old view leaves and fades instead of being reused
-        padding = 12,
+        width = "Fill",
+        padding = 14,
+        spacing = 10,
+        radius = 12,
+        background = "#1E1E2E",
         opacity = 1, -- `from` needs the property set
-        animate = { opacity = { duration = 150, from = 0 }, exit = { duration = 150, opacity = 0 } },
-        children = { text { content = label } },
+        animate = { opacity = { duration = 250, from = 0 }, exit = { duration = 250, opacity = 0 } },
+        children = rows,
     }
 end
 
 local views = {
-    wifi = function() return page("wifi", "Wi-Fi networks") end,
-    bluetooth = function() return page("bluetooth", "Bluetooth devices") end,
+    wifi = function() return page("wifi", "Wi-Fi", "network-wireless-symbolic", { "Home", "Office 5G", "Cafe Guest" }) end,
+    bluetooth = function()
+        return page("bluetooth", "Bluetooth", "bluetooth-active-symbolic", { "Headphones", "Keyboard", "Phone" })
+    end,
 }
 
 local body = rect {
-    width = 300,
+    width = 260,
     children = tab:map(function(current) return { views[current]() } end),
 }
 

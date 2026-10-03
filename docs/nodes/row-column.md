@@ -6,25 +6,32 @@ properties and differ only in their main axis. For children built from data, use
 
 A meter: a `"Fill"`-wide track with a percentage-wide fill that follows a signal.
 
-<!-- shot-alt: A blue progress bar half filling a dark track. -->
+<!-- shot-alt: A volume card: a speaker icon, a blue meter filling 45% of its dark track, and the percentage. -->
 ```lua,shot
 local volume = state("volume", 0.45)
+local percent = volume:map(function(v) return string.format("%d%%", math.floor((v or 0) * 100 + 0.5)) end)
 
 local meter = row {
     width = "Fill",
     height = 6,
     radius = 3,
+    align_v = "Center",
     background = "#313244",
-    children = { rect {
-        width = volume:map(function(v) return string.format("%d%%", math.floor((v or 0) * 100 + 0.5)) end),
-        height = "Fill",
-        radius = 3,
-        background = "#89B4FA",
-        animate = { width = 150 },
-    } },
+    children = { rect { width = percent, height = "Fill", radius = 3, background = "#89B4FA", animate = { width = 150 } } },
 }
 
-return column { width = 240, children = { meter } }
+return row {
+    width = 280,
+    padding = 14,
+    spacing = 12,
+    radius = 12,
+    background = "#1E1E2E",
+    children = {
+        icon { name = "audio-volume-medium-symbolic", size = 18, foreground = "#89B4FA", align_v = "Center" },
+        meter,
+        text { content = percent, foreground = "#CDD6F4", align_v = "Center" },
+    },
+}
 ```
 
 ## Properties
@@ -66,15 +73,19 @@ How the container packs its children:
 
 A `"Fill"` child takes the space its siblings leave, so a bare `rect` makes a spacer:
 
-<!-- shot-alt: Wi-Fi aligned left and Connected aligned right in one row. -->
+<!-- shot-alt: A card row with a Wi-Fi icon and label on the left and a green Connected pushed to the right. -->
 ```lua,shot
 local header = row {
     width = 300,
-    spacing = 8,
+    padding = 14,
+    spacing = 10,
+    radius = 12,
+    background = "#1E1E2E",
     children = {
-        text { content = "Wi-Fi", font_size = 14, foreground = "#CDD6F4", align_v = "Center" },
+        icon { name = "network-wireless-symbolic", size = 18, foreground = "#89B4FA", align_v = "Center" },
+        text { content = "Wi-Fi", font_size = 14, font_weight = 700, foreground = "#CDD6F4", align_v = "Center" },
         rect { width = "Fill" }, -- takes the space left over, pushing what follows to the end
-        text { content = "Connected", foreground = "#A6ADC8", align_v = "Center" },
+        text { content = "Connected", foreground = "#A6E3A1", align_v = "Center" },
     },
 }
 

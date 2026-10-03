@@ -61,7 +61,7 @@ return chart { 0.2, 0.5, 0.3, 0.9, 0.6, 0.8, 0.7 }
 
 A progress ring is a full-circle track with a hole, and a stroked arc for the value:
 
-<!-- shot-alt: A dim ring with a light blue arc over its first 70 percent, clockwise from the top. -->
+<!-- shot-alt: A storage card: a dim ring with a blue arc over its first 70 percent, clockwise from the top, beside the label and usage. -->
 ```lua,shot
 local function ring(value)
     return rect {
@@ -71,7 +71,7 @@ local function ring(value)
             path {
                 width = 48,
                 height = 48,
-                fill = "#ffffff30",
+                fill = "#ffffff20",
                 commands = {
                     { op = "A", points = { 24, 24, 22, 0, 360 } },
                     { op = "Z", points = {} },
@@ -81,7 +81,7 @@ local function ring(value)
             path {
                 width = 48,
                 height = 48,
-                stroke = "#80c0ff",
+                stroke = "#89b4fa",
                 stroke_width = 6,
                 commands = { { op = "A", points = { 24, 24, 19, -90, value * 360 } } },
             },
@@ -89,7 +89,23 @@ local function ring(value)
     }
 end
 
-return ring(0.7)
+return row {
+    padding = 14,
+    spacing = 14,
+    radius = 12,
+    background = "#1e1e2e",
+    children = {
+        ring(0.7),
+        column {
+            align_v = "Center",
+            spacing = 2,
+            children = {
+                text { content = "Storage", font_weight = 700, foreground = "#cdd6f4" },
+                text { content = "358 of 512 GB used", font_size = 12, foreground = "#a6adc8" },
+            },
+        },
+    },
+}
 ```
 
 Bind `commands` to a signal to replace a path. `animate` tweens `commands` point by point when the

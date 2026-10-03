@@ -6,24 +6,27 @@ one node over another. Side by side needs a [`row` or `column`](row-column.md) i
 
 A bell icon with an unread badge in its top-right corner:
 
-<!-- shot-alt: A notification bell with a count badge in its upper right corner. -->
+<!-- shot-alt: A rounded notification button with a bell, and a pink count badge reading 3 in its upper right corner. -->
 ```lua,shot
 local unread = state("unread", 3)
 
 local bell = rect {
-    width = 28,
-    height = 28,
+    width = 40,
+    height = 40,
+    radius = 12,
+    background = "#313244",
     children = {
-        icon { name = "notification-symbolic", size = 20, foreground = "#CDD6F4",
+        icon { name = "notification-symbolic", size = 22, foreground = "#CDD6F4",
                align_h = "Center", align_v = "Center" },
         rect {
             visible = unread:map(function(n) return (n or 0) > 0 end),
             align_h = "End",
             align_v = "Start",
-            padding = { left = 4, right = 4 },
-            radius = 7,
+            margin = { top = 4, right = 4 },
+            padding = { left = 5, right = 5 },
+            radius = 8,
             background = "#F38BA8",
-            children = { text { content = unread:map(tostring), font_size = 10, foreground = "#11111B" } },
+            children = { text { content = unread:map(tostring), font_size = 11, font_weight = 700, foreground = "#11111B" } },
         },
     },
 }
