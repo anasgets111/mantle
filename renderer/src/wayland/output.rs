@@ -319,10 +319,11 @@ impl CompositorHandler for App {
     /// (ADR-0145). Only this surface ticks: another output's callback would otherwise advance and
     /// repaint it faster than its own output refreshes.
     fn frame(&mut self, _conn: &Connection, _qh: &QueueHandle<Self>, surface: &wl_surface::WlSurface, _time: u32) {
-        if let Some(id) = self.surface_id_for(surface)
-            && !self.animation_frames_due.iter().any(|due| due == id)
-        {
-            self.animation_frames_due.push(id.to_string());
+        let Some(index) = self.index_of_surface(surface) else { return };
+        let tracked = &mut self.surfaces[index];
+        tracked.frame_pending = false;
+        if !self.animation_frames_due.contains(&tracked.surface_id) {
+            self.animation_frames_due.push(tracked.surface_id.clone());
         }
     }
 

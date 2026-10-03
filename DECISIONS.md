@@ -7327,3 +7327,14 @@ round trip 84% of the busy time with 24 morphing paths: 27% of a core, 6.3% with
 
 A spring hands a path no velocity when its target changes; it restarts still. `commands` is
 paint-only, since a path's box comes from `width` and `height`.
+
+## 0304. A repaint waits for a pending frame callback
+
+While a surface has a frame callback requested and unanswered, a repaint asked for by a push,
+keystroke or decode is deferred to that callback instead of drawn. The compositor shows at most one
+frame per refresh, so a second swap in the same refresh is never seen: with a 30 Hz signal beside a
+tween on a 60 Hz output, the renderer drew 72 frames a second, and the deferral brought it to 51,
+halving swap time. Surfaces with no callback pending, which is every idle one, still paint on the
+push (ADR-0124). A landed callback repaints a deferred surface even when no tween ticked, since the
+tween may have ended before the push. A hidden surface whose callbacks the compositor holds back
+shows its change when it is shown again, which is what the callback is for.

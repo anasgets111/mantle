@@ -15,6 +15,7 @@ pub struct RepaintSplit {
     pub text: Duration,
     pub icons: Duration,
     pub boxes: Duration,
+    pub paths: Duration,
     pub flush: Duration,
     pub swap: Duration,
 }
@@ -26,6 +27,7 @@ impl std::ops::AddAssign for RepaintSplit {
         self.text += rhs.text;
         self.icons += rhs.icons;
         self.boxes += rhs.boxes;
+        self.paths += rhs.paths;
         self.flush += rhs.flush;
         self.swap += rhs.swap;
     }
@@ -212,6 +214,9 @@ impl App {
             bound.size = (width, height);
         }
 
+        // Whatever this paint commits answers a deferred repaint, and it asks for its own callback.
+        self.surfaces[index].paint_deferred = false;
+        self.surfaces[index].frame_pending = false;
         let tree = self.client.scene().surface(&surface_id);
         let mut animating = tree.is_some_and(layout::ResolvedNode::animating);
 
@@ -220,8 +225,7 @@ impl App {
             && !self.surfaces[index].owes_a_paint()
             && self.surfaces[index].last_painted.as_ref().is_some_and(|(s, _)| *s == paint_key)
         {
-            if animating && let Some(surface) = self.surfaces[index].role.wl_surface() {
-                surface.frame(&self.queue_handle, FrameCallbackData(surface.clone()));
+            if animating && let Some(surface) = self.surfaces[index].request_frame(&self.queue_handle) {
                 surface.commit();
             }
             return;
@@ -268,8 +272,7 @@ impl App {
             tracked.dirty = false;
             tracked.stale = next_stale(owed, tracked.stale, None);
             tracked.last_painted = Some((paint_key, list));
-            if animating && let Some(surface) = tracked.role.wl_surface() {
-                surface.frame(&self.queue_handle, FrameCallbackData(surface.clone()));
+            if animating && let Some(surface) = tracked.request_frame(&self.queue_handle) {
                 surface.commit();
             }
             return;
@@ -367,6 +370,7 @@ impl App {
             self.repaint_split.text += split.text;
             self.repaint_split.icons += split.icons;
             self.repaint_split.boxes += split.boxes;
+            self.repaint_split.paths += split.paths;
             self.repaint_split.flush += split.flush;
             // After the draws that answered it, before the swap: the tree this reads is the one
             // the next build walks, so a `retain` cover ends and a `transition` starts on the
@@ -387,8 +391,8 @@ impl App {
         // Before the swap, which is the commit it has to precede. Requested only while a tween is
         // running, so an idle shell arms nothing and the loop's timeout-free poll stays that way
         // (ADR-0124, ADR-0130 decision 3).
-        if animating && let Some(surface) = self.surfaces[index].role.wl_surface() {
-            surface.frame(&self.queue_handle, FrameCallbackData(surface.clone()));
+        if animating {
+            self.surfaces[index].request_frame(&self.queue_handle);
         }
         if let Some(surface) = self.surfaces[index].role.wl_surface() {
             self.surfaces[index].scale.set_destination(logical);
@@ -486,7 +490,7 @@ impl App {
     /// have it rejected as equal to the one they last painted. That build is not free: a text draw
     /// copies its content and style runs, an image or icon its name.
     pub(in crate::wayland) fn repaint_surfaces_named(&mut self, named: &[&[String]]) {
-        self.repaint_mapped_surfaces_where(|s| turn::narrowed_repaint_covers(named, &s.surface_id, s.owes_a_paint()));
+        self.repaint_mapped_surfaces_where(|s| turn::narrowed_repaint_covers(named, &s.surface_id, s.due_a_repaint()));
     }
 
     pub(in crate::wayland) fn take_repaint_split(&mut self) -> RepaintSplit {
@@ -497,7 +501,7 @@ impl App {
     /// selection needs this: with nothing ticked, nothing typed and nothing landed, it would
     /// otherwise reach no repaint at all and a deferred decode would never be asked for again.
     pub(in crate::wayland) fn has_stale_surfaces(&self) -> bool {
-        self.surfaces.iter().any(|surface| surface.owes_a_paint() && surface.map_state == MapState::Mapped)
+        self.surfaces.iter().any(|surface| surface.due_a_repaint() && surface.map_state == MapState::Mapped)
     }
 
     /// When the earliest owed repaint comes due, for the poll loop's only timeout. A GIF's next
@@ -520,6 +524,11 @@ impl App {
                 continue;
             }
             if !wanted(&self.surfaces[index]) {
+                continue;
+            }
+            // Painted at the callback instead; the compositor still shows this surface's last frame.
+            if self.surfaces[index].frame_pending {
+                self.surfaces[index].paint_deferred = true;
                 continue;
             }
             if self.surfaces[index].bound.is_none() {

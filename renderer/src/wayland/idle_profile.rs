@@ -270,7 +270,7 @@ fn render(window: Duration, c: &Counters, cpu: Cpu) -> String {
     format!(
         "idle {:.1}s: turns={} idle={} cpu proc={:.2}% main={:.2}% | wake wl={} wake={} both={} none={} \
          | work dispatch={} resolve={} tick={} type={} decode={} paint={} drawn={} \
-         | ms resolve={:.1} (clone={:.1} list={:.1} props={:.1} solve={:.1}) surfstate={:.1} repaint={:.1} (build={:.1} gl={:.1} text={:.1} icon={:.1} box={:.1} flush={:.1} swap={:.1}) tick={:.1} (clone={:.1} prepare={:.1} solve={:.1}) dispatch={:.1} \
+         | ms resolve={:.1} (clone={:.1} list={:.1} props={:.1} solve={:.1}) surfstate={:.1} repaint={:.1} (build={:.1} gl={:.1} text={:.1} icon={:.1} box={:.1} path={:.1} flush={:.1} swap={:.1}) tick={:.1} (clone={:.1} prepare={:.1} solve={:.1}) dispatch={:.1} \
          | focus turns={} searched={} ms={:.1}{}",
         secs,
         c.turns,
@@ -300,6 +300,7 @@ fn render(window: Duration, c: &Counters, cpu: Cpu) -> String {
         c.repaint_split.text.as_secs_f64() * 1000.0,
         c.repaint_split.icons.as_secs_f64() * 1000.0,
         c.repaint_split.boxes.as_secs_f64() * 1000.0,
+        c.repaint_split.paths.as_secs_f64() * 1000.0,
         c.repaint_split.flush.as_secs_f64() * 1000.0,
         c.repaint_split.swap.as_secs_f64() * 1000.0,
         c.tick.as_secs_f64() * 1000.0,

@@ -32,6 +32,7 @@ pub struct PaintSplit {
     pub text: Duration,
     pub icons: Duration,
     pub boxes: Duration,
+    pub paths: Duration,
     pub flush: Duration,
 }
 
@@ -195,7 +196,13 @@ fn run(painter: &mut TextPainter, walk: &mut Walk<'_, '_>, commands: &[DrawCmd],
         }
         let rect = command.rect;
         match &command.draw {
-            Draw::Path(path) => vector_path::paint(painter.canvas_mut(), rect, path),
+            Draw::Path(path) => {
+                let t0 = timing.then(Instant::now);
+                vector_path::paint(painter.canvas_mut(), rect, path);
+                if let Some(t0) = t0 {
+                    walk.split.paths += t0.elapsed();
+                }
+            }
             Draw::Box { background, radius, colors, widths } => {
                 let t0 = timing.then(Instant::now);
                 // `None` skips the fill; alpha 0 remains an explicit transparent rect.

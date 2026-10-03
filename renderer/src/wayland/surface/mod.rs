@@ -275,6 +275,12 @@ pub(super) struct TrackedSurface {
     /// kept landing in that window, evicting a whole picker's thumbnails, which then re-decoded,
     /// landed, and unpinned everything again.
     pub(super) stale: Option<std::time::Instant>,
+    /// A frame callback requested and not answered yet. A repaint waits for it rather than drawing
+    /// a second frame into the same refresh, which the compositor would never show.
+    pub(super) frame_pending: bool,
+    /// A repaint passed over for `frame_pending`, owed once the callback lands even if no tween
+    /// ticks then.
+    pub(super) paint_deferred: bool,
     /// This surface's `ext_background_effect_surface_v1` (ADR-0195). `None` on a compositor without
     /// the protocol, and on every surface whose tree never sets `blur`. [`App::drop_role_object`]
     /// destroys it with its `wl_surface`: `set_blur_region` on an inert one kills the client.
@@ -297,6 +303,8 @@ impl TrackedSurface {
             damage_history: Vec::new(),
             dirty: true,
             stale: None,
+            frame_pending: false,
+            paint_deferred: false,
             blur_effect: None,
             last_blur_region: Vec::new(),
             last_input_region: None,
@@ -310,6 +318,21 @@ impl TrackedSurface {
     /// Whether the repaint this surface owes has come due; see [`TrackedSurface::stale`].
     fn owes_a_paint(&self) -> bool {
         self.stale.is_some_and(|due| due <= std::time::Instant::now())
+    }
+
+    /// Owes a repaint no tree change will ask for: a texture behind an unchanged list, or one
+    /// deferred to a frame callback that has since landed.
+    fn due_a_repaint(&self) -> bool {
+        self.owes_a_paint() || (self.paint_deferred && !self.frame_pending)
+    }
+
+    /// Asks for the next frame callback, carried by the caller's commit; see
+    /// [`TrackedSurface::frame_pending`].
+    fn request_frame(&mut self, qh: &QueueHandle<App>) -> Option<&wl_surface::WlSurface> {
+        let surface = self.role.wl_surface()?;
+        surface.frame(qh, FrameCallbackData(surface.clone()));
+        self.frame_pending = true;
+        Some(surface)
     }
 
     /// Owes a rebuild and a paint, even against an identical list; see [`TrackedSurface::stale`].
@@ -337,6 +360,8 @@ impl TrackedSurface {
         }
         self.last_blur_region.clear();
         self.last_input_region = None;
+        // A destroyed surface's callback never comes.
+        self.frame_pending = false;
         self.map_state = MapState::Unmapped;
         // Those pixels are gone, and a kept list would pin its images through `trim` (ADR-0182).
         self.last_painted = None;
@@ -708,6 +733,24 @@ mod tests {
         assert!(tracked.last_painted.is_none(), "a kept list pins its images in `ImageCache::trim`");
         assert!(tracked.last_blur_region.is_empty());
         assert!(tracked.last_input_region.is_none());
+    }
+
+    /// A push while a frame callback is pending defers its repaint to that callback, which then
+    /// owes it even when no tween ticks: the last tween frame may already have been drawn.
+    #[test]
+    fn a_repaint_deferred_to_a_frame_callback_comes_due_when_it_lands() {
+        let mut tracked =
+            TrackedSurface::new(TrackedRole::Window { window: None, spec: window("settings") }, "settings".to_string());
+        assert!(!tracked.due_a_repaint(), "nothing deferred, nothing stale");
+        (tracked.frame_pending, tracked.paint_deferred) = (true, true);
+        assert!(!tracked.due_a_repaint(), "a second frame in one refresh is never shown");
+        tracked.frame_pending = false;
+        assert!(tracked.due_a_repaint());
+        assert!(turn::narrowed_repaint_covers(&[], "settings", tracked.due_a_repaint()));
+
+        (tracked.frame_pending, tracked.paint_deferred) = (true, true);
+        tracked.forget_role_object();
+        assert!(tracked.due_a_repaint(), "a destroyed surface's callback never lands, so none is awaited");
     }
 
     #[test]

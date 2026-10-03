@@ -7,7 +7,7 @@ use std::rc::Rc;
 use mlua::{Table, Value};
 
 keywords! {
-    #[derive(Debug, Clone, Copy, PartialEq)]
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     pub enum PathOp { M, L, Q, C, A, Z }
 }
 
@@ -25,7 +25,7 @@ lua_shape! {
 }
 
 /// One command's op and flags; its numbers live in [`PathData::points`].
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Segment {
     pub op: PathOp,
     pub hole: bool,
@@ -54,6 +54,10 @@ pub struct PathData {
     pub segments: Rc<[Segment]>,
     pub points: Vec<f32>,
 }
+
+/// Every number is finite: the parser rejects the rest and a tween clamps. `Eq` lets `Rc<PathData>`
+/// compare by pointer first, so an unchanged path's display list entry skips its numbers.
+impl Eq for PathData {}
 
 /// Each segment, the range of its numbers, and how many of those lead as pixels.
 fn spans(segments: &[Segment]) -> impl Iterator<Item = (Segment, std::ops::Range<usize>, usize)> {
