@@ -61,7 +61,7 @@ pub(super) enum TrackedRole {
         /// every later one were invisible; reopening a hidden bar stayed blank (ADR-0088).
         layer: Option<LayerSurface>,
         /// Instance output, reused by [`App::show_panel`] (ADR-0038 decision 3). `None` for
-        /// `monitor = "Active"`, whose every show lets the compositor pick (ADR-0246).
+        /// `output = "Active"`, whose every show lets the compositor pick (ADR-0246).
         output: Option<wl_output::WlOutput>,
         /// `layer::spec_update`'s diff baseline and the spec used by
         /// [`App::apply_exclusive_zone`] after configure (ADR-0038 decision 2).
@@ -131,7 +131,7 @@ pub(super) enum TrackedRole {
         refusal_logged: Option<PopupRefusal>,
     },
     Lock {
-        /// Output covered by this lock instance; `lock` has no `monitor` property.
+        /// Output covered by this lock instance; `lock` has no `output` property.
         output: wl_output::WlOutput,
         /// `None` until the lock is held (ADR-0052 decision 2). Dropping sends
         /// `ext_session_lock_surface_v1.destroy` and exposes a solid color; cleared on output
@@ -586,7 +586,7 @@ mod tests {
                 id: id.to_string(),
                 layer: LayerKind::Top,
                 anchor: node::Anchor { top: true, right: true, bottom: false, left: true },
-                monitor: "All".to_string(),
+                output: "All".to_string(),
                 namespace: format!("mantle-{id}"),
             },
             keyboard_interactivity: node::KeyboardInteractivity::None,
@@ -815,7 +815,7 @@ mod tests {
         let lua = Lua::new();
         let properties = PropMap::from_iter([
             ("id", Value::String(lua.create_string("bar").unwrap())),
-            ("exclusive", Value::Number(32.0)),
+            ("exclusive_zone", Value::Number(32.0)),
         ]);
         assert!(resolved_surface_spec(&SurfaceSpec::Panel(panel("bar")), &properties).is_err());
     }

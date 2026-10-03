@@ -92,7 +92,7 @@ return {
         anchor = { top = true, left = true, right = true },
         width = "Fill",
         height = 32,
-        exclusive = true,
+        exclusive_zone = true,
         child = row {
             width = "Fill",
             height = "Fill",
@@ -113,11 +113,11 @@ return {
     panel {
         id = "power_menu",
         layer = "Overlay",
-        monitor = "Active",
+        output = "Active",
         anchor = { top = true, bottom = true, left = true, right = true },
         width = "Fill",
         height = "Fill",
-        exclusive = "Ignore",
+        exclusive_zone = "Ignore",
         visible = open,
         reset_on_close = { pending }, -- a reopened menu never starts armed
         child = rect {

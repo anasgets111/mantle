@@ -24,7 +24,7 @@ local bar = panel {
     id = "bar",
     layer = "Top",
     anchor = { top = true, left = true, right = true },
-    exclusive = 32,
+    exclusive_zone = 32,
     width = "Fill",
     height = 32,
     child = row {
@@ -70,7 +70,7 @@ Every kind accepts the [common properties](#common-properties). Box kinds also a
 | `textfield` | [textfield](textfield.md) | | Leaf |
 
 The four surface roles (`panel`, `window`, `popup`, `lock`) are node kinds too: they take the common
-and box properties and stack their one `child` ([surfaces](../surfaces/index.md)).
+and box properties but `margin`, `align_h` and `align_v`, and stack their one `child` ([surfaces](../surfaces/index.md)).
 
 ### Values
 

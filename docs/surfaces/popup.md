@@ -29,7 +29,7 @@ local bar = panel {
     anchor = { top = true, left = true, right = true },
     width = "Fill",
     height = 32,
-    exclusive = true,
+    exclusive_zone = true,
     child = row {
         width = "Fill", height = "Fill", background = "#1e1e2e",
         children = {
@@ -81,7 +81,7 @@ and `on_dismiss` takes a signal.
 <!-- Generated from renderer/src/lua/nodes/properties.rs by `just stubs`: edit the table there. -->
 | Property | Type | Default | Behaviour |
 | :--- | :--- | :--- | :--- |
-| `id` | `string` | Required | The surface's identity across reloads, unique among surfaces. A `panel`'s or `lock`'s per-output instances are `"{id}@{output}"`; `monitor = "Active"` keeps the bare `id` |
+| `id` | `string` | Required | The surface's identity across reloads, unique among surfaces. A `panel`'s or `lock`'s per-output instances are `"{id}@{output}"`; `output = "Active"` keeps the bare `id` |
 | `parent` | `string` | Required | The `id` of a shown `panel`, `window` or `popup`; hiding the parent closes this popup. On a per-output panel it opens on the clicked instance, else the first. A change applies at the next open; a `lock` cannot be a parent |
 | `anchor_rect` | `Rect\|Bound` | Required | In the parent's surface coordinates; `width`/`height` in `(0, 8192]`, `x`/`y` default `0`. Usually the rect `on_click` passes |
 | `anchor` | `"Top"\|"Bottom"\|"Left"\|"Right"\|"TopLeft"\|"TopRight"\|"BottomLeft"\|"BottomRight"\|"Center"\|Bound` | `"Center"` | The point on `anchor_rect` the popup hangs from |

@@ -211,7 +211,7 @@
 ---One output's workspaces.
 ---@field active_workspace integer `WorkspaceEntry.id` shown on this output.
 ---@field focused_workspace? integer `WorkspaceEntry.id` with focus, present only on the focused output (ADR-0056).
----@field name string Connector name, e.g. `"eDP-1"`, as in `mantle.screens` and a surface's `monitor`.
+---@field name string Connector name, e.g. `"eDP-1"`, as in `mantle.screens` and a panel's `output`.
 ---@field workspaces WorkspaceEntry[] Workspaces on this output, sorted by `WorkspaceEntry.idx`.
 
 ---@class PairedDevice
@@ -749,7 +749,7 @@ local PrivacyCapability = {}
 -- Written by hand in `stubs.rs`: `Screen` and `RescueState` come from the Renderer, not a capability.
 
 ---@class Screen
----@field name string Connector name, e.g. `"eDP-1"`, as a surface's `monitor` takes it; `"output-N"` below `wl_output` v4.
+---@field name string Connector name, e.g. `"eDP-1"`, as a panel's `output` takes it; `"output-N"` below `wl_output` v4.
 ---@field x integer Left edge in compositor space: `xdg_output`'s logical position, else `wl_output`'s.
 ---@field y integer Top edge, on the same terms as `x`.
 ---@field width integer Logical pixels (already divided by scale); the mode's pixels when no logical size is known.

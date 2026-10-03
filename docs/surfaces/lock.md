@@ -76,14 +76,14 @@ the ones the protocol owns.
 <!-- Generated from renderer/src/lua/nodes/properties.rs by `just stubs`: edit the table there. -->
 | Property | Type | Default | Behaviour |
 | :--- | :--- | :--- | :--- |
-| `id` | `string` | Required | The surface's identity across reloads, unique among surfaces. A `panel`'s or `lock`'s per-output instances are `"{id}@{output}"`; `monitor = "Active"` keeps the bare `id` |
+| `id` | `string` | Required | The surface's identity across reloads, unique among surfaces. A `panel`'s or `lock`'s per-output instances are `"{id}@{output}"`; `output = "Active"` keeps the bare `id` |
 | `child` | `Node\|fun(output: string): Node?\|Bound` | None | The root's content. A function runs per output instance with its connector name; `nil` leaves that instance empty ([per-output child](index.md#per-output-child)) |
 | `width` | `nil` | None | Refused: the lock covers each output |
 | `height` | `nil` | None | Refused, as `width` |
 | `visible` | `nil` | None | Refused: the session lock decides when it shows |
 <!-- End of the generated table. -->
 
-`monitor` and `anchor` are refused too: the protocol owns coverage and lifetime. The root is the
+`output` and `anchor` are refused too: the protocol owns coverage and lifetime. The root is the
 output's size; give children `"Fill"` to cover it. A reload that renames `id` while the session is
 locked is refused with a warning in `mantle log`. A config declares at most one `lock`; a second
 is refused at evaluation.
@@ -127,7 +127,7 @@ The field's keystrokes go to PAM and never reach Lua.
 | Two secure fields in one lock tree make the lock refuse | One shown secure field per lock tree; hide the others |
 | A reload while locked is ignored | It removed the lock's password field; the running lock screen stays. Fix the file |
 | Renaming the lock's `id` while locked is refused | Save the rename again after unlocking |
-| `visible`, `width`, `height`, `monitor` or `anchor` on a `lock` is refused | Remove them; the lock always covers every output |
+| `visible`, `width`, `height`, `output` or `anchor` on a `lock` is refused | Remove them; the lock always covers every output |
 | The card's exit animation is cut off | The session unlocks when the `set_unlock_animation` time ends; make it at least the animation's length |
 
 See also: [lock capability](../capabilities/lock.md), [secure fields](../guide/input.md#secure-fields),

@@ -6,7 +6,7 @@ use super::*;
 use crate::wayland::surface::TrackedRole;
 use shared::{debug, info, warn};
 
-/// One connected output, the source for the `screens` signal and `monitor` matching
+/// One connected output, the source for the `screens` signal and `output` matching
 /// (ADR-0041 decision 2).
 #[derive(Debug, Clone, PartialEq)]
 pub(super) struct Screen {
@@ -76,7 +76,7 @@ pub(super) fn output_name(index: usize, name: Option<&str>) -> String {
 /// One `screens` entry, or `None` if size is unknown. Prefer `logical_size` (`xdg_output`/
 /// `wl_output` v4 compositor space), then the current `Mode` dimensions; never invent a size.
 /// ponytail: below `wl_output` v4, nameless outputs use positional `"output-{index}"` ids, so
-/// `monitor = "DP-1"` cannot match; no client-side upgrade exists without a compositor name.
+/// `output = "DP-1"` cannot match; no client-side upgrade exists without a compositor name.
 fn screen_entry(index: usize, facts: &OutputFacts) -> Option<Screen> {
     let (width, height) = facts.logical_size.or_else(|| facts.current_mode.map(|(dimensions, _)| dimensions))?;
     Some(Screen {
@@ -150,7 +150,7 @@ pub(super) fn screens_payload(screens: &[Screen]) -> serde_json::Value {
             .collect(),
     )
 }
-/// The same names and sizes `layout::instance` uses for `monitor` matching and `available`.
+/// The same names and sizes `layout::instance` uses for `output` matching and `available`.
 pub(super) fn geometries_from(screens: &[Screen]) -> Vec<OutputGeometry> {
     screens
         .iter()
@@ -201,7 +201,7 @@ impl App {
 
     /// Handles an output appearing, changing, or leaving: update `screens` only when its payload
     /// changed. `update_output` also fires for things `screens` does not carry; re-running the
-    /// rest for one would re-evaluate for nothing. Reconcile `monitor = "All"`
+    /// rest for one would re-evaluate for nothing. Reconcile `output = "All"`
     /// instances in place (ADR-0038 decision 3), then re-evaluate, which catches a config's `screens`
     /// loop changing surface ids (ADR-0041 decisions 2-3).
     fn handle_output_change(&mut self, qh: &QueueHandle<App>, departing: Option<&wl_output::WlOutput>) {
@@ -548,7 +548,7 @@ mod tests {
 
     #[test]
     fn instance_expansion_reads_the_same_screen_list_the_signal_does() {
-        // One source, two consumers (ADR-0041 decision 2): a `monitor` match and a `screens`
+        // One source, two consumers (ADR-0041 decision 2): an `output` match and a `screens`
         // entry must never be able to disagree about which monitors exist or how large they are.
         let screens = [screen_entry(0, &facts(Some("eDP-1"))).unwrap()];
         assert_eq!(

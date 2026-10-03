@@ -20,7 +20,7 @@ scope, capability roster) lives in [`CONTEXT.md`](../CONTEXT.md).
 | :--- | :--- |
 | **Evaluation** | One run of `shell.lua` and the modules it `require`s, producing the surface list. |
 | **In-place reload** | A re-evaluation in the same generation and VM, then one apply. See [runtime](guide/runtime.md#evaluation-reload-and-generations). |
-| **Surface fingerprint** | A declaration's creation-time fields (panel: `id`, `layer`, `anchor`, `monitor`, `namespace`; other roles: `id`). A change rebuilds that surface; other edits update it live. |
+| **Surface fingerprint** | A declaration's creation-time fields (panel: `id`, `layer`, `anchor`, `output`, `namespace`; other roles: `id`). A change rebuilds that surface; other edits update it live. |
 | **Evaluation-scoped registration** | `action`, `on_change` (capability and `state`) and idle-threshold callbacks, cleared before each evaluation because they close over its locals. The `timer`s an evaluation arms go live only when its result applies. See [what survives a reload](guide/runtime.md#what-survives-a-reload). |
 | **Rollback** | A failed evaluation or apply keeps the previous scene. What stays registered: [runtime](guide/runtime.md#evaluation-reload-and-generations). |
 | **Rescue** | [`mantle.rescue`](capabilities/index.md#renderer-members), `{ is_rescue, error_log }`, set while the shell runs on a scene it could not replace. See [runtime](guide/runtime.md#evaluation-reload-and-generations). |
@@ -31,8 +31,8 @@ scope, capability roster) lives in [`CONTEXT.md`](../CONTEXT.md).
 | :--- | :--- |
 | **Surface** | A top-level declaration returned by `shell.lua`, with one role and one or more instances. See [surfaces](surfaces/index.md). |
 | **Surface role** | [`panel`](surfaces/panel.md) (layer-shell), [`window`](surfaces/window.md) (xdg_toplevel), [`popup`](surfaces/popup.md) (xdg_popup) or [`lock`](surfaces/lock.md) (session lock). |
-| **Surface instance** | One mapped copy of a surface. Per-output panels and locks are keyed `{id}@{output}`; windows, popups and `monitor = "Active"` panels use the bare id. |
-| **Structural property** | A property read once per evaluation to make a structural decision, so it refuses a signal: any node's `id`; a `panel`'s `layer`, `anchor`, `monitor`, `namespace`; a `popup`'s `parent`. |
+| **Surface instance** | One mapped copy of a surface. Per-output panels and locks are keyed `{id}@{output}`; windows, popups and `output = "Active"` panels use the bare id. |
+| **Structural property** | A property read once per evaluation to make a structural decision, so it refuses a signal: any node's `id`; a `panel`'s `layer`, `anchor`, `output`, `namespace`; a `popup`'s `parent`. |
 | **Lock surface** | The `lock` declaration's instance on one output, alive only while the session is locked. |
 
 ## Nodes and paint

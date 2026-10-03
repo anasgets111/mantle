@@ -40,6 +40,12 @@ pub(crate) fn accepted(kind: &str, property: &str) -> Option<&'static Property> 
     row_in(kind_bit(kind)?, property)
 }
 
+/// Whether `kind` declares `property` only to refuse it, as a `lock` does `width`.
+pub(crate) fn refused(kind: &str, property: &str) -> bool {
+    let bit = kind_bit(kind).unwrap_or(0);
+    properties().any(|row| row.refused && row.kinds & bit != 0 && row.name == property)
+}
+
 /// Accepted properties, sorted for errors.
 fn accepted_properties(kind: &str) -> Vec<&'static str> {
     let bit = kind_bit(kind).unwrap_or(0);
@@ -191,12 +197,28 @@ mod tests {
         assert!(err.to_string().contains("button was removed: put on_click on a rect, row or column"), "{err}");
     }
 
-    /// Per-kind check: `layer` is root-role topology, not a `rect` property.
+    /// Per-kind check: `layer` is root-role topology, not a `rect` property, and a root has no
+    /// parent to be placed in, so no `align_h`/`align_v` and, but for a `panel`'s offset, no `margin`.
     #[test]
     fn a_property_of_another_kind_is_refused_too() {
         let lua = lua_with_constructors();
-        let table: mlua::Table = lua.load(r#"return rect { layer = "Top" }"#).eval().unwrap();
-        assert!(deserialize_lua_table(&table).unwrap_err().to_string().contains("layer"));
+        for (source, property) in [
+            (r#"return rect { layer = "Top" }"#, "layer"),
+            ("return window { margin = 4 }", "margin"),
+            ("return popup { margin = 4 }", "margin"),
+            ("return lock { margin = 4 }", "margin"),
+            (r#"return panel { align_h = "End" }"#, "align_h"),
+            (r#"return lock { align_v = "End" }"#, "align_v"),
+        ] {
+            let table: mlua::Table = lua.load(source).eval().unwrap();
+            let err = deserialize_lua_table(&table).unwrap_err();
+            assert!(
+                matches!(&err, DeserializeError::UnknownProperty { property: name, .. } if name == property),
+                "{source}: {err}"
+            );
+        }
+        let table: mlua::Table = lua.load("return panel { margin = 4 }").eval().unwrap();
+        assert!(deserialize_lua_table(&table).is_ok(), "a panel's `margin` offsets it from its anchored edges");
     }
 
     /// ADR-0260: only a box has a box to cast, so text's shadow is always its content's.
@@ -340,13 +362,15 @@ mod meta_stub_tests {
             let expected: BTreeSet<String> = super::accepted_properties(kind).into_iter().map(str::to_string).collect();
             assert_eq!(declared, expected, "lua-meta's {class} is out of step with the property table for `{kind}`");
 
-            // `animate` takes the kind's own names but `z` and `animate`, plus `exit`.
+            // `animate` takes the kind's own names but `z`, `animate` and refused ones, plus `exit`.
             let alias = format!("---@alias {}Animations {{ ", capitalize(kind));
             let line = source.lines().find_map(|line| line.strip_prefix(alias.as_str())).expect("an Animations alias");
             let keys: BTreeSet<String> =
                 line.split(", ").filter_map(|entry| entry.split_once("?: ")).map(|(key, _)| key.to_string()).collect();
-            let mut expected: BTreeSet<String> =
-                expected.into_iter().filter(|name| !matches!(name.as_str(), "z" | "animate")).collect();
+            let mut expected: BTreeSet<String> = expected
+                .into_iter()
+                .filter(|name| !matches!(name.as_str(), "z" | "animate") && !super::refused(kind, name))
+                .collect();
             expected.insert("exit".to_string());
             assert_eq!(keys, expected, "lua-meta's `animate` keys for `{kind}`");
         }
@@ -558,7 +582,7 @@ mod meta_stub_tests {
     }
 
     // Mixed number/keyword unions and cursor_icon lack an enumerable Keyword type.
-    const ONE_WAY: [&str; 5] = ["animate", "cursor", "exclusive", "height", "width"];
+    const ONE_WAY: [&str; 5] = ["animate", "cursor", "exclusive_zone", "height", "width"];
 
     #[derive(Default)]
     struct Report {

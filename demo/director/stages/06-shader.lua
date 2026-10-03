@@ -119,7 +119,7 @@ local aurora = panel {
     anchor = { top = true, bottom = true, left = true, right = true },
     width = "Fill",
     height = "Fill",
-    exclusive = "Ignore",
+    exclusive_zone = "Ignore",
     child = shader {
         width = "Fill",
         height = "Fill",
@@ -139,7 +139,7 @@ return {
         id = "bar",
         layer = "Top",
         anchor = { top = true, left = true, right = true },
-        exclusive = true,
+        exclusive_zone = true,
         width = "Fill",
         height = 56,
         background = "#11111be6",

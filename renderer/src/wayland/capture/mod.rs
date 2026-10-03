@@ -408,7 +408,7 @@ impl App {
         }
     }
 
-    /// The output named `name`, resolved like `panel.monitor` (ADR-0246).
+    /// The output named `name`, resolved like `panel.output` (ADR-0246).
     fn wl_output_named(&self, name: &str) -> Option<wl_output::WlOutput> {
         self.output_state.outputs().enumerate().find_map(|(index, output)| {
             let info = self.output_state.info(&output)?;

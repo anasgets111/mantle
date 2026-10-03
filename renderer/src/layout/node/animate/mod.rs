@@ -730,6 +730,9 @@ mod tests {
         assert!(err.to_string().contains("`widht`") && err.to_string().contains("`rect`"), "{err}");
         // A real property whose value is not a tween shape is fine to name; it snaps.
         assert!(parse_animate("rect", &rect_props(&lua, "return { animate = { visible = 200 } }")).is_ok());
+        // A `lock` declares `width` only to refuse it, so there is nothing to animate.
+        let err = parse_animate("lock", &rect_props(&lua, "return { animate = { width = 200 } }")).unwrap_err();
+        assert!(err.to_string().contains("`width`") && err.to_string().contains("`lock`"), "{err}");
     }
 
     #[test]

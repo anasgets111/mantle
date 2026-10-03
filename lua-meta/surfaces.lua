@@ -1,35 +1,38 @@
 ---@meta
 -- The four surface roles (ADR-0040), one constructor each. `shell.lua` returns the set, re-read on
--- every reload (ADR-0038). A root takes `rect`'s node and box properties, plus its own topology.
+-- every reload (ADR-0038). A root takes `rect`'s node and box properties but placement, plus its own topology.
 --
 -- GENERATED on `nodes.lua`'s terms. Structural fields, the ones without `Bound` (`id`, `layer`,
--- `anchor`, `monitor`, `namespace`, a popup's `parent`), refuse a `Signal`: they are read once per
+-- `anchor`, `output`, `namespace`, a popup's `parent`), refuse a `Signal`: they are read once per
 -- evaluation (ADR-0216).
+
+---A surface table, as one of the constructors below returns it: what `shell.lua` returns.
+---@class Surface
 
 ---@alias Rect { x: number, y: number, width: number, height: number, [string]: "no such property" } A rectangle in logical pixels.
 ---@alias PopupAnchor "Top"|"Bottom"|"Left"|"Right"|"TopLeft"|"TopRight"|"BottomLeft"|"BottomRight"|"Center"
 
----@alias PanelAnimations { accessible_name?: Animation, align_h?: Animation, align_v?: Animation, anchor?: Animation, backdrop_blur?: Animation, background?: Animation, behind_blur?: Animation, border_color?: Animation, border_width?: Animation, child?: Animation, clip?: Animation, content_blur?: Animation, corner_shape?: Animation, cursor?: Animation, exclusive?: Animation, focus_ring?: Animation, focused?: Animation, geometry?: Animation, height?: Animation, hover?: Animation, id?: Animation, keyboard_interactivity?: Animation, layer?: Animation, margin?: Animation, mask?: Animation, max_height?: Animation, max_width?: Animation, min_height?: Animation, min_width?: Animation, monitor?: Animation, namespace?: Animation, on_click?: Animation, on_drag?: Animation, on_hover?: Animation, on_wheel?: Animation, opacity?: Animation, origin?: Animation, padding?: Animation, radius?: Animation, reset_on_close?: Animation, rotate?: Animation, scale?: Animation, shadow_blur?: Animation, shadow_color?: Animation, shadow_mode?: Animation, shadow_offset?: Animation, shadow_spread?: Animation, submit?: Animation, translate?: Animation, visible?: Animation, width?: Animation, exit?: Exit, [string]: "no such property" }
+---@alias PanelAnimations { accessible_name?: Animation, anchor?: Animation, backdrop_blur?: Animation, background?: Animation, behind_blur?: Animation, border_color?: Animation, border_width?: Animation, child?: Animation, clip?: Animation, content_blur?: Animation, corner_shape?: Animation, cursor?: Animation, exclusive_zone?: Animation, focus_ring?: Animation, focused?: Animation, geometry?: Animation, height?: Animation, hover?: Animation, id?: Animation, keyboard_interactivity?: Animation, layer?: Animation, margin?: Animation, mask?: Animation, max_height?: Animation, max_width?: Animation, min_height?: Animation, min_width?: Animation, namespace?: Animation, on_click?: Animation, on_drag?: Animation, on_hover?: Animation, on_wheel?: Animation, opacity?: Animation, origin?: Animation, output?: Animation, padding?: Animation, radius?: Animation, reset_on_close?: Animation, rotate?: Animation, scale?: Animation, shadow_blur?: Animation, shadow_color?: Animation, shadow_mode?: Animation, shadow_offset?: Animation, shadow_spread?: Animation, submit?: Animation, translate?: Animation, visible?: Animation, width?: Animation, exit?: Exit, [string]: "no such property" }
 ---@class PanelProps: NodeBase, BoxBase
 ---@field animate? PanelAnimations|Bound Tween named properties to each newly resolved value without running Lua (ADR-0145). The `exit` key is an `Exit` block. Only a node already on screen animates, unless the entry has `from`.
----@field id string Required. The surface's identity across reloads, unique among surfaces. A `panel`'s or `lock`'s per-output instances are `"{id}@{output}"`; `monitor = "Active"` keeps the bare `id`.
+---@field id string Required. The surface's identity across reloads, unique among surfaces. A `panel`'s or `lock`'s per-output instances are `"{id}@{output}"`; `output = "Active"` keeps the bare `id`.
 ---@field layer "Background"|"Bottom"|"Top"|"Overlay" Required. Stacking level, bottom to top. `"Overlay"` draws over fullscreen windows.
 ---@field anchor? { top?: boolean, bottom?: boolean, left?: boolean, right?: boolean, [string]: "no such property" } Default: all `false`. Edges to pin to; an absent edge is `false`. None pinned centres the surface; one edge centres it along that edge.
----@field monitor? string Default `"All"`. A connector name, `"All"`, or `"Active"`: one instance on the output the compositor picks at each show, refusing a `"NN%"` size and a function `child` (ADR-0246). An unknown connector warns and creates nothing.
+---@field output? string Default `"All"`. A connector name, `"All"`, or `"Active"`: one instance on the output the compositor picks at each show, refusing a `"NN%"` size and a function `child` (ADR-0246). An unknown connector warns and creates nothing.
 ---@field namespace? string Default `"mantle-{id}"`. The layer namespace compositor rules match (Hyprland `layerrule`, niri `layer-rule`).
 ---@field width? Length|Bound `[0, 8192]`, default: content. Omitted measures the content, capped by the output less the anchored edges' margins; `"NN%"` is of the output. On an axis anchored to both edges, omitted and `"Fill"` both size the surface to the compositor's span; the root node stays content-sized, so give the child `width = "Fill"` to cover it.
 ---@field height? Length|Bound `[0, 8192]`, default: content. As `width`, against `top`/`bottom`. `"Fill"` without both edges of its axis anchored is a protocol error: the surface stays hidden with a warning.
----@field exclusive? boolean|integer|"Ignore"|Bound Default `false`. `false` reserves nothing, a positive integer reserves that many px, `"Ignore"` also overlaps others' zones. `true` reserves the configured height when exactly one of `top`/`bottom` is anchored and `left`/`right` match (both or neither), the width in the transposed case, else nothing.
+---@field exclusive_zone? boolean|integer|"Ignore"|Bound Default `false`. `false` reserves nothing, a positive integer reserves that many px, `"Ignore"` also overlaps others' zones. `true` reserves the configured height when exactly one of `top`/`bottom` is anchored and `left`/`right` match (both or neither), the width in the transposed case, else nothing.
 ---@field keyboard_interactivity? "None"|"OnDemand"|"Exclusive"|Bound Default `"None"`. Whether it takes the keyboard.
 ---@field margin? number|Edges|Bound Default `0`. Offset from the anchored edges, not layout margin; one on an edge the panel is not anchored to does nothing.
 ---@field visible? boolean|Bound Default `true`. Hiding destroys the layer surface; showing recreates it (ADR-0088).
 ---@field child? Node|fun(output: string): Node?|Bound The one root node. A function runs per output instance with its connector name (ADR-0121); `nil` leaves that instance empty.
 ---@field reset_on_close? (StateSignal<any>|ScrollSignal)[] Default `{}`. `state` and `scroll` handles written back when this surface stops being shown: `visible` turning false, a reload removing it, its last output leaving, or its parent closing (a popup). A state returns to its declared `initial`, running its `on_change`; a scroll to the top. Anything else in the list fails the evaluation (ADR-0289).
 
----@alias WindowAnimations { accessible_name?: Animation, align_h?: Animation, align_v?: Animation, app_id?: Animation, backdrop_blur?: Animation, background?: Animation, behind_blur?: Animation, border_color?: Animation, border_width?: Animation, child?: Animation, clip?: Animation, content_blur?: Animation, corner_shape?: Animation, cursor?: Animation, focus_ring?: Animation, focused?: Animation, geometry?: Animation, height?: Animation, hover?: Animation, id?: Animation, margin?: Animation, mask?: Animation, max_height?: Animation, max_size?: Animation, max_width?: Animation, min_height?: Animation, min_size?: Animation, min_width?: Animation, on_click?: Animation, on_close?: Animation, on_drag?: Animation, on_hover?: Animation, on_wheel?: Animation, opacity?: Animation, origin?: Animation, padding?: Animation, radius?: Animation, reset_on_close?: Animation, rotate?: Animation, scale?: Animation, shadow_blur?: Animation, shadow_color?: Animation, shadow_mode?: Animation, shadow_offset?: Animation, shadow_spread?: Animation, submit?: Animation, title?: Animation, translate?: Animation, visible?: Animation, width?: Animation, exit?: Exit, [string]: "no such property" }
+---@alias WindowAnimations { accessible_name?: Animation, app_id?: Animation, backdrop_blur?: Animation, background?: Animation, behind_blur?: Animation, border_color?: Animation, border_width?: Animation, child?: Animation, clip?: Animation, content_blur?: Animation, corner_shape?: Animation, cursor?: Animation, focus_ring?: Animation, focused?: Animation, geometry?: Animation, height?: Animation, hover?: Animation, id?: Animation, mask?: Animation, max_height?: Animation, max_size?: Animation, max_width?: Animation, min_height?: Animation, min_size?: Animation, min_width?: Animation, on_click?: Animation, on_close?: Animation, on_drag?: Animation, on_hover?: Animation, on_wheel?: Animation, opacity?: Animation, origin?: Animation, padding?: Animation, radius?: Animation, reset_on_close?: Animation, rotate?: Animation, scale?: Animation, shadow_blur?: Animation, shadow_color?: Animation, shadow_mode?: Animation, shadow_offset?: Animation, shadow_spread?: Animation, submit?: Animation, title?: Animation, translate?: Animation, visible?: Animation, width?: Animation, exit?: Exit, [string]: "no such property" }
 ---@class WindowProps: NodeBase, BoxBase
 ---@field animate? WindowAnimations|Bound Tween named properties to each newly resolved value without running Lua (ADR-0145). The `exit` key is an `Exit` block. Only a node already on screen animates, unless the entry has `from`.
----@field id string Required. The surface's identity across reloads, unique among surfaces. A `panel`'s or `lock`'s per-output instances are `"{id}@{output}"`; `monitor = "Active"` keeps the bare `id`.
+---@field id string Required. The surface's identity across reloads, unique among surfaces. A `panel`'s or `lock`'s per-output instances are `"{id}@{output}"`; `output = "Active"` keeps the bare `id`.
 ---@field title? string|Bound Default `""`. The window title.
 ---@field app_id? string|Bound Default `"mantle-{id}"`. What compositor window rules match.
 ---@field min_size? { width: number, height: number, [string]: "no such property" }|Bound `[0, 8192]`. Advisory; layout does not enforce it. Both keys required, `0` leaves an axis unconstrained. Also the opening size when the compositor leaves it to the client, else 640x480.
@@ -41,10 +44,10 @@
 ---@field reset_on_close? (StateSignal<any>|ScrollSignal)[] Default `{}`. `state` and `scroll` handles written back when this surface stops being shown: `visible` turning false, a reload removing it, its last output leaving, or its parent closing (a popup). A state returns to its declared `initial`, running its `on_change`; a scroll to the top. Anything else in the list fails the evaluation (ADR-0289).
 ---@field child? Node|Bound The one root node; a function `child` is refused.
 
----@alias PopupAnimations { accessible_name?: Animation, align_h?: Animation, align_v?: Animation, anchor?: Animation, anchor_rect?: Animation, backdrop_blur?: Animation, background?: Animation, behind_blur?: Animation, border_color?: Animation, border_width?: Animation, child?: Animation, clip?: Animation, constraint_adjustment?: Animation, content_blur?: Animation, corner_shape?: Animation, cursor?: Animation, focus_ring?: Animation, focused?: Animation, geometry?: Animation, grab?: Animation, gravity?: Animation, height?: Animation, hover?: Animation, id?: Animation, margin?: Animation, mask?: Animation, max_height?: Animation, max_width?: Animation, min_height?: Animation, min_width?: Animation, offset?: Animation, on_click?: Animation, on_dismiss?: Animation, on_drag?: Animation, on_hover?: Animation, on_wheel?: Animation, opacity?: Animation, origin?: Animation, padding?: Animation, parent?: Animation, radius?: Animation, reset_on_close?: Animation, rotate?: Animation, scale?: Animation, shadow_blur?: Animation, shadow_color?: Animation, shadow_mode?: Animation, shadow_offset?: Animation, shadow_spread?: Animation, submit?: Animation, translate?: Animation, visible?: Animation, width?: Animation, exit?: Exit, [string]: "no such property" }
+---@alias PopupAnimations { accessible_name?: Animation, anchor?: Animation, anchor_rect?: Animation, backdrop_blur?: Animation, background?: Animation, behind_blur?: Animation, border_color?: Animation, border_width?: Animation, child?: Animation, clip?: Animation, constraint_adjustment?: Animation, content_blur?: Animation, corner_shape?: Animation, cursor?: Animation, focus_ring?: Animation, focused?: Animation, geometry?: Animation, grab?: Animation, gravity?: Animation, height?: Animation, hover?: Animation, id?: Animation, mask?: Animation, max_height?: Animation, max_width?: Animation, min_height?: Animation, min_width?: Animation, offset?: Animation, on_click?: Animation, on_dismiss?: Animation, on_drag?: Animation, on_hover?: Animation, on_wheel?: Animation, opacity?: Animation, origin?: Animation, padding?: Animation, parent?: Animation, radius?: Animation, reset_on_close?: Animation, rotate?: Animation, scale?: Animation, shadow_blur?: Animation, shadow_color?: Animation, shadow_mode?: Animation, shadow_offset?: Animation, shadow_spread?: Animation, submit?: Animation, translate?: Animation, visible?: Animation, width?: Animation, exit?: Exit, [string]: "no such property" }
 ---@class PopupProps: NodeBase, BoxBase
 ---@field animate? PopupAnimations|Bound Tween named properties to each newly resolved value without running Lua (ADR-0145). The `exit` key is an `Exit` block. Only a node already on screen animates, unless the entry has `from`.
----@field id string Required. The surface's identity across reloads, unique among surfaces. A `panel`'s or `lock`'s per-output instances are `"{id}@{output}"`; `monitor = "Active"` keeps the bare `id`.
+---@field id string Required. The surface's identity across reloads, unique among surfaces. A `panel`'s or `lock`'s per-output instances are `"{id}@{output}"`; `output = "Active"` keeps the bare `id`.
 ---@field parent string Required. The `id` of a shown `panel`, `window` or `popup`; hiding the parent closes this popup. On a per-output panel it opens on the clicked instance, else the first. A change applies at the next open; a `lock` cannot be a parent.
 ---@field anchor_rect Rect|Bound Required. In the parent's surface coordinates; `width`/`height` in `(0, 8192]`, `x`/`y` default `0`. Usually the rect `on_click` passes.
 ---@field anchor? PopupAnchor|Bound Default `"Center"`. The point on `anchor_rect` the popup hangs from.
@@ -59,10 +62,10 @@
 ---@field reset_on_close? (StateSignal<any>|ScrollSignal)[] Default `{}`. `state` and `scroll` handles written back when this surface stops being shown: `visible` turning false, a reload removing it, its last output leaving, or its parent closing (a popup). A state returns to its declared `initial`, running its `on_change`; a scroll to the top. Anything else in the list fails the evaluation (ADR-0289).
 ---@field child? Node|Bound The one root node; a function `child` is refused.
 
----@alias LockAnimations { accessible_name?: Animation, align_h?: Animation, align_v?: Animation, backdrop_blur?: Animation, background?: Animation, behind_blur?: Animation, border_color?: Animation, border_width?: Animation, child?: Animation, clip?: Animation, content_blur?: Animation, corner_shape?: Animation, cursor?: Animation, focus_ring?: Animation, focused?: Animation, geometry?: Animation, height?: Animation, hover?: Animation, id?: Animation, margin?: Animation, mask?: Animation, max_height?: Animation, max_width?: Animation, min_height?: Animation, min_width?: Animation, on_click?: Animation, on_drag?: Animation, on_hover?: Animation, on_wheel?: Animation, opacity?: Animation, origin?: Animation, padding?: Animation, radius?: Animation, rotate?: Animation, scale?: Animation, shadow_blur?: Animation, shadow_color?: Animation, shadow_mode?: Animation, shadow_offset?: Animation, shadow_spread?: Animation, submit?: Animation, translate?: Animation, visible?: Animation, width?: Animation, exit?: Exit, [string]: "no such property" }
+---@alias LockAnimations { accessible_name?: Animation, backdrop_blur?: Animation, background?: Animation, behind_blur?: Animation, border_color?: Animation, border_width?: Animation, child?: Animation, clip?: Animation, content_blur?: Animation, corner_shape?: Animation, cursor?: Animation, focus_ring?: Animation, focused?: Animation, geometry?: Animation, hover?: Animation, id?: Animation, mask?: Animation, max_height?: Animation, max_width?: Animation, min_height?: Animation, min_width?: Animation, on_click?: Animation, on_drag?: Animation, on_hover?: Animation, on_wheel?: Animation, opacity?: Animation, origin?: Animation, padding?: Animation, radius?: Animation, rotate?: Animation, scale?: Animation, shadow_blur?: Animation, shadow_color?: Animation, shadow_mode?: Animation, shadow_offset?: Animation, shadow_spread?: Animation, submit?: Animation, translate?: Animation, exit?: Exit, [string]: "no such property" }
 ---@class LockProps: NodeBase, BoxBase
 ---@field animate? LockAnimations|Bound Tween named properties to each newly resolved value without running Lua (ADR-0145). The `exit` key is an `Exit` block. Only a node already on screen animates, unless the entry has `from`.
----@field id string Required. The surface's identity across reloads, unique among surfaces. A `panel`'s or `lock`'s per-output instances are `"{id}@{output}"`; `monitor = "Active"` keeps the bare `id`.
+---@field id string Required. The surface's identity across reloads, unique among surfaces. A `panel`'s or `lock`'s per-output instances are `"{id}@{output}"`; `output = "Active"` keeps the bare `id`.
 ---@field child? Node|fun(output: string): Node?|Bound The one root node. A function runs per output instance with its connector name (ADR-0121); `nil` leaves that instance empty.
 ---@field width? nil Refused: the lock covers each output (ADR-0052).
 ---@field height? nil Refused, as `width`.
@@ -71,23 +74,23 @@
 ---A layer surface (`zwlr_layer_surface_v1`): bar, dock, wallpaper, OSD, launcher.
 ---[docs](https://anasgets111.github.io/mantle/surfaces/panel.html)
 ---@param props PanelProps
----@return Node
+---@return Surface
 function panel(props) end
 
 ---An `xdg_toplevel`: settings window, dialog.
 ---[docs](https://anasgets111.github.io/mantle/surfaces/window.html)
 ---@param props WindowProps
----@return Node
+---@return Surface
 function window(props) end
 
 ---An `xdg_popup` on its parent: dropdown, context menu, tooltip. No Wayland object while hidden.
 ---[docs](https://anasgets111.github.io/mantle/surfaces/popup.html)
 ---@param props PopupProps
----@return Node
+---@return Surface
 function popup(props) end
 
 ---An `ext_session_lock_surface_v1` per output, shown while the session is locked. Declaring one does not lock (ADR-0052). At most one per config.
 ---[docs](https://anasgets111.github.io/mantle/surfaces/lock.html)
 ---@param props LockProps
----@return Node
+---@return Surface
 function lock(props) end

@@ -1,5 +1,5 @@
 //! Layer-shell topology and `PanelSpec`. `get_layer_surface` fixes `layer`, `anchor`,
-//! `monitor`, and `namespace` at creation, so those structural fields reject `Signal`s.
+//! `output`, and `namespace` at creation, so those structural fields reject `Signal`s.
 
 use mlua::Value;
 
@@ -89,32 +89,32 @@ pub enum Exclusive {
 
 spelled!(Exclusive => format!("{}|{}|\"Ignore\"", bool::lua(), i32::lua()));
 
-/// `exclusive`: booleans preserve their meanings, and `"Ignore"` adds the third protocol
+/// `exclusive_zone`: booleans preserve their meanings, and `"Ignore"` adds the third protocol
 /// answer. It defaults to [`Exclusive::Respect`], so an undeclared panel floats over what is behind
 /// it rather than pushing windows aside or covering them; `crate::wayland` computes the zone at
-/// configure time from the compositor's chosen size. `exclusive = hide_bar` is valid config that
+/// configure time from the compositor's chosen size. `exclusive_zone = hide_bar` is valid config that
 /// the evaluation-time pass cannot read, so `Respect` is its placeholder too: the other answers are
 /// visible mistakes for a frame -- `Ignore` paints over the bar, `Reserve` shoves every window aside.
 impl Prop for Exclusive {
     type Out = Exclusive;
-    fn read(_: &Property, value: Option<&Value>) -> Result<Exclusive, LayoutError> {
+    fn read(row: &Property, value: Option<&Value>) -> Result<Exclusive, LayoutError> {
         let Some(value) = value else {
             return Ok(Exclusive::Respect);
         };
         match value {
             Value::Boolean(true) => Ok(Exclusive::Reserve),
             Value::Boolean(false) => Ok(Exclusive::Respect),
-            Value::String(s) if checked_string("exclusive", s)? == "Ignore" => Ok(Exclusive::Ignore),
+            Value::String(s) if checked_string(row.name, s)? == "Ignore" => Ok(Exclusive::Ignore),
             Value::Integer(n) if *n > 0 => Ok(Exclusive::Zone(i32::try_from(*n).unwrap_or(i32::MAX))),
             other => Err(invalid(
-                "exclusive",
+                row.name,
                 format!("expected a boolean, a pixel count or \"Ignore\", got {}", preview_for_error(other)),
             )),
         }
     }
 }
 
-/// Creation-time topology (`layer`, `anchor`, `monitor`, `namespace`, and `id`). A changed one
+/// Creation-time topology (`layer`, `anchor`, `output`, `namespace`, and `id`). A changed one
 /// rebuilds that panel's surfaces (ADR-0216); other `PanelSpec` fields update live (ADR-0038
 /// decision 2). `namespace`, the layer namespace Hyprland `layerrule` matches, defaults to
 /// `"mantle-{id}"`; `get_layer_surface` fixes it at creation, so an edit rebuilds the surface.
@@ -125,7 +125,7 @@ pub struct SurfaceTopology {
     pub anchor: Anchor,
     /// A connector name (matched against `output.name` by `expand_instances`), `"All"`, or
     /// `"Active"` (ADR-0246).
-    pub monitor: String,
+    pub output: String,
     pub namespace: String,
 }
 
@@ -136,7 +136,7 @@ pub fn surface_topology(properties: &PropMap) -> Result<SurfaceTopology, LayoutE
         id,
         layer: panel::layer.read(properties)?,
         anchor: panel::anchor.read(properties)?,
-        monitor: panel::monitor.read(properties)?,
+        output: panel::output.read(properties)?,
         namespace,
     })
 }
@@ -146,7 +146,7 @@ pub fn surface_topology(properties: &PropMap) -> Result<SurfaceTopology, LayoutE
 /// the surface; `margin` and the rest update it live.
 #[derive(Debug, Clone, PartialEq)]
 pub struct PanelSpec {
-    /// Rebuild fingerprint: id, layer, anchor, monitor, namespace.
+    /// Rebuild fingerprint: id, layer, anchor, output, namespace.
     pub topology: SurfaceTopology,
     pub keyboard_interactivity: KeyboardInteractivity,
     pub exclusive: Exclusive,
@@ -164,17 +164,17 @@ pub fn panel_spec(properties: &PropMap) -> Result<PanelSpec, LayoutError> {
     let spec = PanelSpec {
         topology: surface_topology(properties)?,
         keyboard_interactivity: panel::keyboard_interactivity.read(properties)?,
-        exclusive: panel::exclusive.read(properties)?,
+        exclusive: panel::exclusive_zone.read(properties)?,
         margin: panel::margin.read(properties)?,
         width: panel::width.read(properties)?,
         height: panel::height.read(properties)?,
     };
     // A percentage needs the output, which the compositor picks unseen (ADR-0246 decision 3).
     for (key, mode) in [("width", spec.width), ("height", spec.height)] {
-        if spec.topology.monitor == "Active" && matches!(mode, SizeMode::Percent(_)) {
+        if spec.topology.output == "Active" && matches!(mode, SizeMode::Percent(_)) {
             return Err(invalid(
                 key,
-                "a percentage needs a known output, and `monitor = \"Active\"` leaves it to the compositor; \
+                "a percentage needs a known output, and `output = \"Active\"` leaves it to the compositor; \
                  use `\"Fill\"` with anchors and margins, or pixels"
                     .to_string(),
             ));
@@ -226,22 +226,22 @@ mod tests {
     #[test]
     fn monitor_absent_defaults_to_all() {
         let props = PropMap::default();
-        assert_eq!(fields::panel::monitor.read(&props).unwrap(), "All");
+        assert_eq!(fields::panel::output.read(&props).unwrap(), "All");
     }
 
     #[test]
     fn monitor_reads_the_string() {
         let lua = mlua::Lua::new();
-        let table: mlua::Table = lua.load(r#"return { kind = "panel", monitor = "eDP-1" }"#).eval().unwrap();
+        let table: mlua::Table = lua.load(r#"return { kind = "panel", output = "eDP-1" }"#).eval().unwrap();
         let props = props_from_table(&table);
-        assert_eq!(fields::panel::monitor.read(&props).unwrap(), "eDP-1");
+        assert_eq!(fields::panel::output.read(&props).unwrap(), "eDP-1");
     }
 
     #[test]
     fn surface_topology_combines_id_layer_anchor_monitor_and_namespace() {
         let lua = mlua::Lua::new();
         let table: mlua::Table = lua
-                .load(r#"return { kind = "panel", id = "bar", layer = "Top", anchor = { top = true }, monitor = "eDP-1", namespace = "my-{id}" }"#)
+                .load(r#"return { kind = "panel", id = "bar", layer = "Top", anchor = { top = true }, output = "eDP-1", namespace = "my-{id}" }"#)
                 .eval()
                 .unwrap();
         let props = props_from_table(&table);
@@ -252,7 +252,7 @@ mod tests {
                 id: "bar".to_string(),
                 layer: LayerKind::Top,
                 anchor: Anchor { top: true, right: false, bottom: false, left: false },
-                monitor: "eDP-1".to_string(),
+                output: "eDP-1".to_string(),
                 namespace: "my-{id}".to_string(),
             }
         );
@@ -324,7 +324,7 @@ mod tests {
     #[test]
     fn exclusive_absent_reserves_and_covers_nothing() {
         let props = PropMap::default();
-        assert_eq!(fields::panel::exclusive.read(&props).unwrap(), Exclusive::Respect);
+        assert_eq!(fields::panel::exclusive_zone.read(&props).unwrap(), Exclusive::Respect);
     }
 
     #[test]
@@ -332,22 +332,22 @@ mod tests {
         let lua = mlua::Lua::new();
         let parse = |src: &str| {
             let table: mlua::Table = lua.load(src).eval().unwrap();
-            fields::panel::exclusive.read(&props_from_table(&table))
+            fields::panel::exclusive_zone.read(&props_from_table(&table))
         };
-        assert_eq!(parse(r#"return { kind = "panel", exclusive = true }"#).unwrap(), Exclusive::Reserve);
-        assert_eq!(parse(r#"return { kind = "panel", exclusive = false }"#).unwrap(), Exclusive::Respect);
-        assert_eq!(parse(r#"return { kind = "panel", exclusive = "Ignore" }"#).unwrap(), Exclusive::Ignore);
-        assert_eq!(parse(r#"return { kind = "panel", exclusive = 32 }"#).unwrap(), Exclusive::Zone(32));
+        assert_eq!(parse(r#"return { kind = "panel", exclusive_zone = true }"#).unwrap(), Exclusive::Reserve);
+        assert_eq!(parse(r#"return { kind = "panel", exclusive_zone = false }"#).unwrap(), Exclusive::Respect);
+        assert_eq!(parse(r#"return { kind = "panel", exclusive_zone = "Ignore" }"#).unwrap(), Exclusive::Ignore);
+        assert_eq!(parse(r#"return { kind = "panel", exclusive_zone = 32 }"#).unwrap(), Exclusive::Zone(32));
 
         // `0` and `-1` are the protocol's own answers, already spelled `false` and `"Ignore"`.
         for bad in [
-            r#"return { kind = "panel", exclusive = "ignore" }"#,
-            r#"return { kind = "panel", exclusive = 0 }"#,
-            r#"return { kind = "panel", exclusive = -1 }"#,
-            r#"return { kind = "panel", exclusive = 1.5 }"#,
+            r#"return { kind = "panel", exclusive_zone = "ignore" }"#,
+            r#"return { kind = "panel", exclusive_zone = 0 }"#,
+            r#"return { kind = "panel", exclusive_zone = -1 }"#,
+            r#"return { kind = "panel", exclusive_zone = 1.5 }"#,
         ] {
             assert!(
-                matches!(parse(bad).unwrap_err(), LayoutError::InvalidProperty { property, .. } if property == "exclusive"),
+                matches!(parse(bad).unwrap_err(), LayoutError::InvalidProperty { property, .. } if property == "exclusive_zone"),
                 "{bad} must be refused by name"
             );
         }
@@ -360,15 +360,15 @@ mod tests {
     fn a_signal_valued_exclusive_defers_to_respect_rather_than_guessing() {
         let lua = signal_lua();
         let table: mlua::Table =
-            lua.load(r#"return { kind = "panel", exclusive = state("hide_bar", true) }"#).eval().unwrap();
-        assert_eq!(fields::panel::exclusive.read(&props_from_table(&table)).unwrap(), Exclusive::Respect);
+            lua.load(r#"return { kind = "panel", exclusive_zone = state("hide_bar", true) }"#).eval().unwrap();
+        assert_eq!(fields::panel::exclusive_zone.read(&props_from_table(&table)).unwrap(), Exclusive::Respect);
     }
 
     #[test]
     fn an_active_panel_refuses_a_percentage_it_has_no_output_to_resolve_against() {
         let lua = mlua::Lua::new();
         let table: mlua::Table = lua
-            .load(r#"return { kind = "panel", id = "osd", layer = "Overlay", monitor = "Active", height = "50%" }"#)
+            .load(r#"return { kind = "panel", id = "osd", layer = "Overlay", output = "Active", height = "50%" }"#)
             .eval()
             .unwrap();
         assert!(matches!(panel_spec(&props_from_table(&table)), Err(LayoutError::InvalidProperty { .. })));
@@ -380,8 +380,8 @@ mod tests {
         let table: mlua::Table = lua
             .load(
                 r#"return { kind = "panel", id = "dock", layer = "Bottom", anchor = { bottom = true },
-                       monitor = "DP-1", namespace = "my-dock", keyboard_interactivity = "OnDemand",
-                       exclusive = true, margin = { top = 4, left = 8 }, width = "Fill", height = 48 }"#,
+                       output = "DP-1", namespace = "my-dock", keyboard_interactivity = "OnDemand",
+                       exclusive_zone = true, margin = { top = 4, left = 8 }, width = "Fill", height = 48 }"#,
             )
             .eval()
             .unwrap();
@@ -390,7 +390,7 @@ mod tests {
         assert_eq!(spec.topology.id, "dock");
         assert_eq!(spec.topology.layer, LayerKind::Bottom);
         assert_eq!(spec.topology.anchor, Anchor { top: false, right: false, bottom: true, left: false });
-        assert_eq!(spec.topology.monitor, "DP-1");
+        assert_eq!(spec.topology.output, "DP-1");
         assert_eq!(spec.topology.namespace, "my-dock");
         assert_eq!(spec.keyboard_interactivity, KeyboardInteractivity::OnDemand);
         assert_eq!(spec.exclusive, Exclusive::Reserve);
@@ -405,7 +405,7 @@ mod tests {
         let table: mlua::Table = lua
             .load(
                 r#"return { kind = "panel", id = "bar", layer = "Top",
-                                keyboard_interactivity = state("k", "Exclusive"), exclusive = state("e", true),
+                                keyboard_interactivity = state("k", "Exclusive"), exclusive_zone = state("e", true),
                                 margin = state("m", { top = 4 }), width = state("w", 100), height = state("h", 48) }"#,
             )
             .eval()
@@ -424,7 +424,7 @@ mod tests {
     #[test]
     fn a_signal_in_a_panels_topology_fields_is_still_rejected_on_the_evaluation_pass() {
         let lua = signal_lua();
-        for property in ["layer", "anchor", "monitor", "namespace"] {
+        for property in ["layer", "anchor", "output", "namespace"] {
             let table: mlua::Table = lua
                 .load(format!(
                     r#"return {{ kind = "panel", id = "bar", layer = "Top", {property} = state("s", "Top") }}"#
@@ -482,7 +482,7 @@ mod tests {
     #[test]
     fn a_surface_topology_field_on_a_non_panel_node_is_refused_rather_than_carried() {
         let lua = signal_lua();
-        for property in ["layer", "anchor", "monitor"] {
+        for property in ["layer", "anchor", "output"] {
             let signal =
                 crate::lua::signal::Signal::new_live(Value::Boolean(true), crate::lua::signal::DirtyFlag::new()).0;
             let table = lua.create_table().unwrap();

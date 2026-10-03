@@ -157,7 +157,7 @@ mod tests {
     #[test]
     fn a_per_output_surface_resets_when_its_last_instance_closes() {
         let (_dir, mut client) =
-            started(&LAUNCHER.replace(r#"layer = "Overlay","#, r#"layer = "Overlay", monitor = "All","#));
+            started(&LAUNCHER.replace(r#"layer = "Overlay","#, r#"layer = "Overlay", output = "All","#));
         let outputs = ["A", "B"].map(|name| OutputGeometry {
             name: name.into(),
             size: layout::LogicalSize { width: 1920.0, height: 1080.0 },

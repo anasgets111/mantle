@@ -397,7 +397,7 @@ fn parse_hex_color(property: &str, s: &str) -> Result<Rgba, LayoutError> {
 /// `kind`: its field's type reads it raw ([`prop::Prop::RAW`]), so
 /// [`reject_signal_in_structural_field`] still sees a signal to refuse and a [`prop::Handle`] keeps
 /// the signal it names. Resolving then rejecting is unimplementable: once read, a signal's value is
-/// indistinguishable from a literal. A panel's `layer`/`anchor`/`monitor`/`namespace` are structural
+/// indistinguishable from a literal. A panel's `layer`/`anchor`/`output`/`namespace` are structural
 /// because `get_layer_surface` fixes them at creation, a popup's `parent` because `get_popup` pins
 /// one (ADR-0051 decision 1); what a live request can change stays bound (ADR-0044 decision 1).
 pub(crate) fn is_structural_property(kind: &str, property: &str) -> bool {

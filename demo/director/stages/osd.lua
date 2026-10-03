@@ -24,7 +24,7 @@ end
 return panel {
     id = "volume_osd",
     layer = "Overlay",
-    monitor = "Active",
+    output = "Active",
     anchor = { top = true, left = true },
     margin = placed:map(function(p) return { top = p.top, left = p.left } end),
     visible = mapped,

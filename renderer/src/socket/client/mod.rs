@@ -664,7 +664,7 @@ mod tests {
                 panel {
                     id = "host", layer = "Overlay",
                     anchor = { top = true, bottom = true, left = true, right = true },
-                    exclusive = false, width = "Fill", height = "Fill",
+                    exclusive_zone = false, width = "Fill", height = "Fill",
                     child = rect { width = "Fill", height = "Fill", children = {
                         rect { width = "Fill", height = "Fill", on_click = function() end },
                         column { margin = { top = 260, left = 200 }, children = {
@@ -708,7 +708,7 @@ mod tests {
                 panel {
                     id = "wallpaper", layer = "Background",
                     anchor = { top = true, bottom = true, left = true, right = true },
-                    exclusive = "Ignore", width = "Fill", height = "Fill",
+                    exclusive_zone = "Ignore", width = "Fill", height = "Fill",
                     background = "#11111bff",
                     child = rect {
                         width = "Fill", height = "Fill", background = "#202020ff",
@@ -741,7 +741,7 @@ mod tests {
                 panel {
                     id = "host", layer = "Top",
                     anchor = { top = true, bottom = true, left = true, right = true },
-                    exclusive = false, width = "Fill", height = "Fill",
+                    exclusive_zone = false, width = "Fill", height = "Fill",
                     child = rect {
                         width = "Fill", height = "Fill", background = "#202020ff",
                         children = {
@@ -1907,7 +1907,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = write_shell_lua(
             dir.path(),
-            r#"return panel { id = "bar", layer = "Top", margin = { left = 4 }, keyboard_interactivity = "None", exclusive = false, height = 32 }"#,
+            r#"return panel { id = "bar", layer = "Top", margin = { left = 4 }, keyboard_interactivity = "None", exclusive_zone = false, height = 32 }"#,
         );
         let (mut client, _outbound_rx) = test_client(&path);
         client.state.applied_specs = surface_specs(&client.loader.evaluate_file(&path).unwrap()).unwrap();
@@ -1915,13 +1915,13 @@ mod tests {
         // Change every in-place field; leave topology unchanged.
         write_shell_lua(
             dir.path(),
-            r#"return panel { id = "bar", layer = "Top", margin = { left = 40 }, keyboard_interactivity = "Exclusive", exclusive = true, height = 48 }"#,
+            r#"return panel { id = "bar", layer = "Top", margin = { left = 40 }, keyboard_interactivity = "Exclusive", exclusive_zone = true, height = 48 }"#,
         );
         assert!(client.reevaluate());
         assert_eq!(
             client.pending_surfaces().map(|(_, rebuilt)| rebuilt),
             Some(Vec::new()),
-            "margin/keyboard_interactivity/exclusive/size are in-place fields and must not rebuild the surface"
+            "margin/keyboard_interactivity/exclusive_zone/size are in-place fields and must not rebuild the surface"
         );
     }
 
@@ -2085,7 +2085,7 @@ mod tests {
 
     #[test]
     fn one_surface_on_two_outputs_resolves_two_trees_against_two_different_sizes() {
-        // `monitor = "All"` across laptop and 4K external means two configured sizes; one declared
+        // `output = "All"` across laptop and 4K external means two configured sizes; one declared
         // surface tree cannot serve both.
         let dir = tempfile::tempdir().unwrap();
         let path = write_shell_lua(
@@ -2109,7 +2109,7 @@ mod tests {
     #[test]
     fn a_panel_naming_an_unplugged_monitor_gets_no_instance_and_no_resolved_tree() {
         let dir = tempfile::tempdir().unwrap();
-        let path = write_shell_lua(dir.path(), r#"return panel { id = "bar", layer = "Top", monitor = "HDMI-A-9" }"#);
+        let path = write_shell_lua(dir.path(), r#"return panel { id = "bar", layer = "Top", output = "HDMI-A-9" }"#);
         let (mut client, _outbound_rx) = test_client(&path);
 
         assert!(
@@ -2363,7 +2363,7 @@ mod tests {
             r#"
             local panels = {}
             for _, screen in ipairs(mantle.screens:get()) do
-                panels[#panels + 1] = panel { id = "bar@" .. screen.name, layer = "Top", monitor = screen.name }
+                panels[#panels + 1] = panel { id = "bar@" .. screen.name, layer = "Top", output = screen.name }
             end
             return panels
             "#,
@@ -2374,7 +2374,7 @@ mod tests {
         let specs = client.run_startup_evaluation().expect("the config must evaluate");
 
         assert_eq!(specs.iter().map(SurfaceSpec::declared_id).collect::<Vec<_>>(), ["bar@eDP-1", "bar@DP-1"]);
-        assert!(matches!(&specs[1], SurfaceSpec::Panel(panel) if panel.topology.monitor == "DP-1"));
+        assert!(matches!(&specs[1], SurfaceSpec::Panel(panel) if panel.topology.output == "DP-1"));
     }
 
     #[test]
@@ -2522,7 +2522,7 @@ mod tests {
     fn applied_surface_specs_returns_the_applied_declarations_without_reading_shell_lua_again() {
         // Hotplug expansion source (ADR-0038 decision 3). Delete the file to prove it is untouched.
         let dir = tempfile::tempdir().unwrap();
-        let path = write_shell_lua(dir.path(), r#"return panel { id = "bar", layer = "Top", monitor = "All" }"#);
+        let path = write_shell_lua(dir.path(), r#"return panel { id = "bar", layer = "Top", output = "All" }"#);
         let (mut client, _outbound_rx) = test_client(&path);
         run_startup(&mut client);
         std::fs::remove_file(&path).unwrap();
@@ -2530,7 +2530,7 @@ mod tests {
         let specs = client.applied_surface_specs();
         assert_eq!(specs.len(), 1);
         assert!(
-            matches!(&specs[0], SurfaceSpec::Panel(panel) if panel.topology.id == "bar" && panel.topology.monitor == "All")
+            matches!(&specs[0], SurfaceSpec::Panel(panel) if panel.topology.id == "bar" && panel.topology.output == "All")
         );
     }
 

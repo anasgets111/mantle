@@ -64,13 +64,25 @@ pub(crate) struct Property {
     pub doc: &'static str,
     /// [`Prop::RAW`]: copied past `resolve_properties` as written.
     pub raw: bool,
+    /// [`Prop::REFUSED`]: declared only to refuse.
+    pub refused: bool,
 }
 
 /// A row for a field of type `T` with the name, kinds and `///` block `props!` hands it.
 pub(crate) const fn row<T: Prop>(name: &'static str, kinds: u16, doc: &'static str) -> Property {
     // `stringify!(r#async)`.
     let name = if let [b'r', b'#', ..] = name.as_bytes() { name.split_at(2).1 } else { name };
-    Property { name, kinds, ty: T::lua, choices: T::CHOICES, range: None, absent: Unset, doc, raw: T::RAW }
+    Property {
+        name,
+        kinds,
+        ty: T::lua,
+        choices: T::CHOICES,
+        range: None,
+        absent: Unset,
+        doc,
+        raw: T::RAW,
+        refused: T::REFUSED,
+    }
 }
 
 impl Property {
@@ -79,6 +91,9 @@ impl Property {
     }
     const fn absent(self, absent: Absent) -> Self {
         Self { absent, ..self }
+    }
+    const fn only(self, kinds: u16) -> Self {
+        Self { kinds, ..self }
     }
 }
 
@@ -166,6 +181,8 @@ pub(crate) const SURFACES: u16 = PANEL | WINDOW | POPUP | LOCK;
 /// The common rows: every kind takes them, and `layout::scene` reads them without checking kind. A
 /// root role's own row of the same name overrides one in its stub and docs.
 pub(crate) const ALL: u16 = (1 << KINDS.len()) - 1;
+/// The rows every node but a surface root takes: placement in a parent, which a root lacks.
+pub(crate) const NODES: u16 = ALL & !SURFACES;
 /// The box-paint rows: `node::paint_style`'s first arm paints these kinds alike.
 pub(crate) const BOX: u16 = RECT | ROW | COLUMN | SURFACES;
 
@@ -194,7 +211,7 @@ props! {
         /// Outer spacing; a number sets all four edges. Not range-checked.
         ///
         /// Book: Outside the box; part of the room the node takes in its parent. A number sets all four edges; not range-checked ([spacing](#spacing-padding-and-margin))
-        margin: Bound<NumberOrEdges> = absent(Number(0.0));
+        margin: Bound<NumberOrEdges> = absent(Number(0.0)).only(NODES);
         /// Inner spacing; a number sets all four edges. Each edge must be within `[0, 8192]`.
         ///
         /// Book: Inside the box, around its children or text. A number sets all four edges; each edge is within `[0, 8192]` ([spacing](#spacing-padding-and-margin))
@@ -202,11 +219,11 @@ props! {
         /// Places the node in its parent: both axes under a stacking parent, only the cross axis under a `row`/`column`/`list`. On a `row` it also packs the children, which ignore their own (`"Stretch"` packs as `"Start"`). `"Stretch"` overrides a pixel size; `"Fill"` off the parent's flow axis overrides alignment.
         ///
         /// Book: See [alignment](#alignment)
-        align_h: Bound<OneOf<Align>> = absent(Choice("Start"));
+        align_h: Bound<OneOf<Align>> = absent(Choice("Start")).only(NODES);
         /// As `align_h` with the axes swapped: packs a `column`'s children.
         ///
         /// Book: See [alignment](#alignment)
-        align_v: Bound<OneOf<Align>> = absent(Choice("Start"));
+        align_v: Bound<OneOf<Align>> = absent(Choice("Start")).only(NODES);
         /// `false` removes the node from layout, paint and spacing but keeps its subtree frozen in memory (ADR-0124); to switch views, bind the parent's `children`.
         ///
         /// Book: `false` removes the node from layout, paint and spacing and freezes its subtree ([showing and hiding](#showing-hiding-and-switching))
@@ -490,7 +507,7 @@ props! {
         mask_character: Bound<Text> = absent(Lua(r#""•""#));
     }
     mod surface(SURFACES) {
-        /// The surface's identity across reloads, unique among surfaces. A `panel`'s or `lock`'s per-output instances are `"{id}@{output}"`; `monitor = "Active"` keeps the bare `id`.
+        /// The surface's identity across reloads, unique among surfaces. A `panel`'s or `lock`'s per-output instances are `"{id}@{output}"`; `output = "Active"` keeps the bare `id`.
         id: Structural<Name> = absent(Required);
     }
     /// A layer surface (`zwlr_layer_surface_v1`): bar, dock, wallpaper, OSD, launcher.
@@ -501,8 +518,8 @@ props! {
         anchor: Structural<Anchor> = absent(Prose("all `false`"));
         /// A connector name, `"All"`, or `"Active"`: one instance on the output the compositor picks at each show, refusing a `"NN%"` size and a function `child` (ADR-0246). An unknown connector warns and creates nothing.
         ///
-        /// Book: A connector name, `"All"` or `"Active"`: which outputs get an instance ([monitor](#monitor))
-        monitor: Structural<Name> = absent(Lua(r#""All""#));
+        /// Book: A connector name, `"All"` or `"Active"`: which outputs get an instance ([output](#output))
+        output: Structural<Name> = absent(Lua(r#""All""#));
         /// The layer namespace compositor rules match (Hyprland `layerrule`, niri `layer-rule`).
         namespace: Structural<Name> = absent(Lua(r#""mantle-{id}""#));
         /// Omitted measures the content, capped by the output less the anchored edges' margins; `"NN%"` is of the output. On an axis anchored to both edges, omitted and `"Fill"` both size the surface to the compositor's span; the root node stays content-sized, so give the child `width = "Fill"` to cover it.
@@ -516,7 +533,7 @@ props! {
         /// `false` reserves nothing, a positive integer reserves that many px, `"Ignore"` also overlaps others' zones. `true` reserves the configured height when exactly one of `top`/`bottom` is anchored and `left`/`right` match (both or neither), the width in the transposed case, else nothing.
         ///
         /// Book: The space reserved from other windows ([exclusive zones](#exclusive-zones))
-        exclusive: Bound<Exclusive> = absent(Bool(false));
+        exclusive_zone: Bound<Exclusive> = absent(Bool(false));
         /// Whether it takes the keyboard.
         ///
         /// Book: Whether it takes the keyboard ([keyboard focus](#keyboard-focus))

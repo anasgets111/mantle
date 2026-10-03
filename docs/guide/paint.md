@@ -346,7 +346,7 @@ panel {
     layer = "Top",
     anchor = { top = true, left = true, right = true },
     height = 36,
-    exclusive = true,
+    exclusive_zone = true,
     background = "#1E1E2E99",
     behind_blur = true,
     child = row { width = "Fill", padding = { left = 12, right = 12 }, children = { clock } },
@@ -562,7 +562,7 @@ panel {
     anchor = { top = true, bottom = true, left = true, right = true },
     width = "Fill",
     height = "Fill",
-    exclusive = "Ignore",
+    exclusive_zone = "Ignore",
     keyboard_interactivity = "OnDemand",
     child = rect {
         width = "Fill",

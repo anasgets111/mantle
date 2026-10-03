@@ -128,7 +128,7 @@ Five members come from the Renderer, not a backend, so they are never `nil` and 
 
 | Field | Type | Meaning |
 | :--- | :--- | :--- |
-| `name` | `string` | Connector name, e.g. `"eDP-1"`, as a surface's `monitor` takes it; `"output-N"` below `wl_output` v4 |
+| `name` | `string` | Connector name, e.g. `"eDP-1"`, as a panel's `output` takes it; `"output-N"` below `wl_output` v4 |
 | `x` | `integer` | Left edge in compositor space: `xdg_output`'s logical position, else `wl_output`'s |
 | `y` | `integer` | Top edge, on the same terms as `x` |
 | `width` | `integer` | Logical pixels, already divided by scale; the mode's pixels when no logical size is known |

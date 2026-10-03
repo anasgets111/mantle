@@ -147,7 +147,7 @@ fn ambiguous_zero_axis(size: (u32, u32), anchor: node::Anchor) -> Option<&'stati
 fn map_state_for_kept_layer(configured_size: (u32, u32)) -> MapState {
     if configured_size == (0, 0) { MapState::AwaitingConfigure } else { MapState::Mapped }
 }
-/// An `exclusive` zone from the compositor-configured size, not creation-time guesses (`Fill` has
+/// An `exclusive_zone` zone from the compositor-configured size, not creation-time guesses (`Fill` has
 /// no size yet). One top/bottom edge reserves height; one left/right edge reserves width; all
 /// other anchor shapes reserve `0` because the protocol defines only those strips.
 fn exclusive_zone_for(anchor: node::Anchor, configured_size: (u32, u32)) -> i32 {
@@ -160,9 +160,9 @@ fn exclusive_zone_for(anchor: node::Anchor, configured_size: (u32, u32)) -> i32 
         _ => 0,
     }
 }
-/// Double-buffered layer-shell changes: `margin`, `keyboard_interactivity`, size, and `exclusive`
+/// Double-buffered layer-shell changes: `margin`, `keyboard_interactivity`, size, and `exclusive_zone`
 /// (ADR-0038 decision 2). `None` means unchanged. Topology (`id`, `layer`, `anchor`,
-/// `monitor`, `namespace`) is absent because `get_layer_surface` consumes namespace/output, so an
+/// `output`, `namespace`) is absent because `get_layer_surface` consumes namespace/output, so an
 /// edit rebuilds the surface instead (ADR-0216).
 /// `is_structural_property` rejects signals there. `output` is the logical output size, not the
 /// configured surface size.
@@ -348,7 +348,7 @@ impl App {
     }
 
     /// Stages `Reserve`'s configured-size zone, explicit `0` for `Respect`, or `-1` for `Ignore`.
-    /// Explicit values matter because signal-bound `exclusive` must withdraw a prior reservation.
+    /// Explicit values matter because signal-bound `exclusive_zone` must withdraw a prior reservation.
     /// The caller commits: committing here would split updates, and a bufferless commit on an
     /// unmapped surface is the re-map procedure. Windows have no zone.
     pub(super) fn apply_exclusive_zone(&mut self, index: usize) {
@@ -664,7 +664,7 @@ mod tests {
                 id: id.to_string(),
                 layer: LayerKind::Top,
                 anchor: node::Anchor { top: true, right: true, bottom: false, left: true },
-                monitor: "All".to_string(),
+                output: "All".to_string(),
                 namespace: format!("mantle-{id}"),
             },
             keyboard_interactivity: node::KeyboardInteractivity::None,

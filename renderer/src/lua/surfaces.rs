@@ -62,11 +62,11 @@ pub(crate) fn surface_specs(output: &LoadOutput) -> Result<Vec<SurfaceSpec>, Loa
     // `App::ensure_lock_surfaces` send two `get_lock_surface` requests. ext-session-lock-v1 calls
     // this `duplicate_output`; the compositor disconnects without unlocking, leaving only a VT
     // switch.
-    // `lock` has no monitor and one surface per output, so two screens have no valid layout.
+    // `lock` has no `output` and one surface per output, so two screens have no valid layout.
     let locks = specs.iter().filter(|spec| matches!(spec, SurfaceSpec::Lock(_))).count();
     if locks > 1 {
         return Err(LoaderError::InvalidTopology(format!(
-            "this config declares {locks} `lock` surfaces; a `lock` has no `monitor` and exactly one surface per output, so a config may \
+            "this config declares {locks} `lock` surfaces; a `lock` has no `output` and exactly one surface per output, so a config may \
              declare at most one -- a second would ask the compositor for two lock surfaces on one output, which is `duplicate_output`, which kills \
              the connection with the session still locked"
         )));

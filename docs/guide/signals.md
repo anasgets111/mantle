@@ -448,7 +448,7 @@ compositor syntax: [cli](cli.md#cli). For a keybind that runs Lua code, use
 | `visible = cap:map(function(c) return c and c.on end)` shows the node before hydration | `nil` means absent, and `visible` defaults to `true`; return `false` explicitly |
 | `margin = { left = sig }` fails at layout: `` `margin.left` is a Signal handle `` | Signals inside a property table do not resolve. Derive the whole table with `:map` or `computed`; the error's `:get()` advice gives a snapshot |
 | A map that returns a signal fails with `a Signal resolved to another Signal` | Resolution happens once; return a plain value, or combine the sources with `computed` |
-| `layer`, `anchor`, `monitor`, `namespace`, `parent` or an `id` bound to a signal is refused | These are structural and take plain values only ([surfaces](../surfaces/index.md)) |
+| `layer`, `anchor`, `output`, `namespace`, `parent` or an `id` bound to a signal is refused | These are structural and take plain values only ([surfaces](../surfaces/index.md)) |
 | A named state resets on every reload | Its scalar seed changed between evaluations. Keep it stable |
 | `state("x", ...) is declared twice in this evaluation` | Two `state` calls give one name different seeds. Declare it in one module and require that |
 | `delay(mantle.system, 2000)` never updates | Each push is a fresh table, so the hold restarts every second. Delay a scalar derived with `:map` |

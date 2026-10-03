@@ -45,7 +45,7 @@ pub struct SpecialWorkspace {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct OutputWorkspaces {
-    /// Connector name, e.g. `"eDP-1"`, as in `mantle.screens` and a surface's `monitor`.
+    /// Connector name, e.g. `"eDP-1"`, as in `mantle.screens` and a panel's `output`.
     pub name: String,
     /// `WorkspaceEntry.id` shown on this output.
     pub active_workspace: u64,

@@ -366,7 +366,7 @@ impl ResolvedNode {
 }
 
 /// Persistent trees keyed by surface instance (`"{id}@{output}"`), not declared id. A panel on
-/// `monitor = "All"` needs separate trees for a laptop and 4K output because their geometry
+/// `output = "All"` needs separate trees for a laptop and 4K output because their geometry
 /// differs. Surface `id` remains reconcile identity; the output suffix distinguishes instances
 /// (ADR-0045). Descendants use per-parent id matching, with positional fallback for id-less nodes.
 #[derive(Default)]

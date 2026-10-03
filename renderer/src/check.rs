@@ -75,7 +75,7 @@ fn lay_out_passes(
 }
 
 /// Lays the evaluated scene out through the production `Scene::apply_locked` on one `size` output
-/// named `DP-1`, the name a screenshot shows, plus one per other `monitor` a panel names, so a
+/// named `DP-1`, the name a screenshot shows, plus one per other `output` a panel names, so a
 /// monitor-pinned panel is laid out too.
 fn lay_out(
     output: &LoadOutput,
@@ -87,10 +87,10 @@ fn lay_out(
     let mut outputs = vec![OutputGeometry { name: "DP-1".into(), size }];
     for spec in specs {
         if let SurfaceSpec::Panel(panel) = spec
-            && !matches!(panel.topology.monitor.as_str(), "All" | "Active")
-            && outputs.iter().all(|output| output.name != panel.topology.monitor)
+            && !matches!(panel.topology.output.as_str(), "All" | "Active")
+            && outputs.iter().all(|output| output.name != panel.topology.output)
         {
-            outputs.push(OutputGeometry { name: panel.topology.monitor.clone(), size });
+            outputs.push(OutputGeometry { name: panel.topology.output.clone(), size });
         }
     }
     let instances = expand_instances(specs, &outputs);
@@ -279,7 +279,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(
             dir.path().join("shell.lua"),
-            "return { panel { id = \"bar\", layer = \"Top\", monitor = \"HDMI-A-1\", child = rect { width = \"Wide\", height = 10 } } }\n",
+            "return { panel { id = \"bar\", layer = \"Top\", output = \"HDMI-A-1\", child = rect { width = \"Wide\", height = 10 } } }\n",
         )
         .unwrap();
         let err = super::run(dir.path()).unwrap_err();

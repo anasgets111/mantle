@@ -110,7 +110,7 @@ opens.
 <!-- Generated from renderer/src/lua/nodes/properties.rs by `just stubs`: edit the table there. -->
 | Property | Type | Default | Behaviour |
 | :--- | :--- | :--- | :--- |
-| `id` | `string` | Required | The surface's identity across reloads, unique among surfaces. A `panel`'s or `lock`'s per-output instances are `"{id}@{output}"`; `monitor = "Active"` keeps the bare `id` |
+| `id` | `string` | Required | The surface's identity across reloads, unique among surfaces. A `panel`'s or `lock`'s per-output instances are `"{id}@{output}"`; `output = "Active"` keeps the bare `id` |
 | `title` | `string\|Bound` | `""` | The window title |
 | `app_id` | `string\|Bound` | `"mantle-{id}"` | What compositor window rules match |
 | `min_size` | `{ width: number, height: number }\|Bound`, `[0, 8192]` | None | Advisory hint to the compositor; layout does not enforce it. Both keys required, `0` leaves that axis unconstrained. Also the opening size on an axis the compositor leaves to the client ([size](#size)) |

@@ -214,7 +214,7 @@ its answer, so a raising handler is a warning in `mantle log`, not a refusal.
 
 `mantle check` evaluates `shell.lua` and its `require`s exactly as a start does, with no
 Wayland, no GPU, and every capability reading `nil`. Then it lays every surface out four times with the
-real layout code, on one 1920x1080 output plus one per `monitor` name a panel pins:
+real layout code, on one 1920x1080 output plus one per `output` name a panel pins:
 
 | Pass | Capabilities read | Catches |
 | :--- | :--- | :--- |

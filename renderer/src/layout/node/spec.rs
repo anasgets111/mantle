@@ -763,7 +763,7 @@ mod tests {
     #[test]
     fn every_property_a_lock_denies_is_refused_by_name_rather_than_ignored() {
         let lua = mlua::Lua::new();
-        // `monitor` and `anchor` never reach `lock_spec` from a config any more: they are not on
+        // `output` and `anchor` never reach `lock_spec` from a config any more: they are not on
         // a `lock` field in `nodes::properties`, so `deserialize_lua_table` refuses them first
         // (`a_lock_property_that_is_not_even_on_the_kind_is_refused_before_lock_spec_sees_it`).
         // The three left here are ones a lock legitimately has a row for and refuses anyway.
@@ -783,7 +783,7 @@ mod tests {
     #[test]
     fn a_lock_property_that_is_not_even_on_the_kind_is_refused_before_lock_spec_sees_it() {
         let lua = mlua::Lua::new();
-        for property in ["monitor", "anchor"] {
+        for property in ["output", "anchor"] {
             let table: mlua::Table =
                 lua.load(format!(r#"return {{ kind = "lock", id = "screen-lock", {property} = 1 }}"#)).eval().unwrap();
             let err = crate::lua::nodes::deserialize_lua_table(&table).unwrap_err();

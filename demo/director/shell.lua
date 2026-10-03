@@ -374,7 +374,7 @@ local wallpaper = panel {
     anchor = { top = true, bottom = true, left = true, right = true },
     width = "Fill",
     height = "Fill",
-    exclusive = "Ignore",
+    exclusive_zone = "Ignore",
     child = image { source = backdrop, width = "Fill", height = "Fill", fit = "cover" },
 }
 
@@ -384,7 +384,7 @@ local card_pane = panel {
     anchor = { top = true, bottom = true, left = true, right = true },
     width = "Fill",
     height = "Fill",
-    exclusive = "Ignore",
+    exclusive_zone = "Ignore",
     visible = card:map(function(kind) return kind ~= "" end),
     child = card:map(function(kind)
         return rect {
@@ -782,7 +782,7 @@ local pointer_pane = panel {
     anchor = { top = true, bottom = true, left = true, right = true },
     width = "Fill",
     height = "Fill",
-    exclusive = "Ignore",
+    exclusive_zone = "Ignore",
     visible = pointer:map(function(p) return p.shown end),
     child = rect {
         width = "Fill",

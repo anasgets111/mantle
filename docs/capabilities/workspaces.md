@@ -62,7 +62,7 @@ One output's workspaces.
 | --- | --- | --- |
 | `active_workspace` | `integer` | `WorkspaceEntry.id` shown on this output. |
 | `focused_workspace?` | `integer` | `WorkspaceEntry.id` with focus, present only on the focused output. |
-| `name` | `string` | Connector name, e.g. `"eDP-1"`, as in `mantle.screens` and a surface's `monitor`. |
+| `name` | `string` | Connector name, e.g. `"eDP-1"`, as in `mantle.screens` and a panel's `output`. |
 | `workspaces` | `WorkspaceEntry[]` | Workspaces on this output, sorted by `WorkspaceEntry.idx`. |
 
 ### `SpecialWorkspace`

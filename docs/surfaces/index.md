@@ -6,7 +6,7 @@ all four roles share; each role has its own page.
 
 | You are building | Role | Protocol | Instances |
 | :--- | :--- | :--- | :--- |
-| Bar, dock, wallpaper, OSD, launcher overlay, notification stack | [`panel`](panel.md) | `zwlr_layer_surface_v1` | One per matched output, id `id@output` |
+| Bar, dock, wallpaper, OSD, launcher overlay, notification stack | [`panel`](panel.md) | `zwlr_layer_surface_v1` | One per matched output, id `id@output`; one with the bare id `id` for `output = "Active"` |
 | Settings window, dialog the user can move, tile or close | [`window`](window.md) | `xdg_toplevel` | One, id `id` |
 | Dropdown, context menu, tooltip hanging off a panel or window | [`popup`](popup.md) | `xdg_popup` | One, id `id` |
 | Lock screen | [`lock`](lock.md) | `ext_session_lock_surface_v1` | One per output, id `id@output` |
@@ -24,7 +24,7 @@ local bar = panel {
     layer = "Top",
     anchor = { top = true, left = true, right = true },
     height = 32,
-    exclusive = true,
+    exclusive_zone = true,
     width = "Fill",
     child = function(output)
         return row {
@@ -52,7 +52,8 @@ return { bar }
 
 Every surface takes `id` (required), one `child` node and, except `lock`, `visible`; each role's
 page has their table. The root is itself a box node, so it
-also takes the [common and box node properties](../nodes/index.md): its own `background`, `radius`,
+also takes the [common and box node properties](../nodes/index.md), except those that place a node
+in a parent ([below](#the-surface-root)): its own `background`, `radius`,
 `padding`, `border_*`, [paint](../guide/paint.md) and [`animate`](../guide/animation.md). Any other
 key is refused, and the error names the closest accepted one or, with none close, lists them all.
 
@@ -64,8 +65,8 @@ The root has no parent, so a few node properties mean something else on it:
 | :--- | :--- |
 | `width`, `height` | Role-specific: the layer surface's size on a [`panel`](panel.md#size), the root's size inside the configured window on a [`window`](window.md#size), the popup's size on a [`popup`](popup.md#properties). Refused on a `lock` |
 | `min_width`, `max_width`, `min_height`, `max_height` | Bound the root's measured size, so they cap a content-sized `panel` or `popup` |
-| `margin` | A `panel`'s offset from its anchored edges. Ignored on the other roles |
-| `align_h`, `align_v` | Ignored: the root sits at the surface's origin |
+| `margin` | A `panel`'s offset from its anchored edges. Refused on the other roles |
+| `align_h`, `align_v` | Refused: the root sits at the surface's origin |
 | Everything else | As on any box node |
 
 ## Reload and structural fields
@@ -78,8 +79,8 @@ fixes when the object is created.
 | :--- | :--- |
 | Return value | One surface, a list of them, `{}` or nothing. Any other top-level node is refused |
 | Matching | A surface whose fingerprint is unchanged keeps its Wayland objects; a missing one is destroyed; a new one is created |
-| Fingerprint | `panel`: `id`, `layer`, `anchor`, `monitor`, `namespace`. `window`, `popup`, `lock`: `id` alone. A changed fingerprint destroys and recreates that surface's objects under the same instance ids |
-| Structural fields | `id`, a panel's `layer`, `anchor`, `monitor`, `namespace` and a popup's `parent` refuse a signal: they are read once per evaluation. Change them by editing the file |
+| Fingerprint | `panel`: `id`, `layer`, `anchor`, `output`, `namespace`. `window`, `popup`, `lock`: `id` alone. A changed fingerprint destroys and recreates that surface's objects under the same instance ids |
+| Structural fields | `id`, a panel's `layer`, `anchor`, `output`, `namespace` and a popup's `parent` refuse a signal: they are read once per evaluation. Change them by editing the file |
 | Live fields | Everything else takes a signal and updates the existing object in place |
 | Invalid live value | A signal that resolves to a bad value logs a warning and keeps the last applied spec |
 | Hotplug | An output change re-evaluates the config and adds or removes `panel` and `lock` instances; instances on other outputs keep their objects |
@@ -92,7 +93,7 @@ runs with that instance's connector name (`"DP-1"`) on the first pass, and again
 surface root resolves again: a signal the function or the root's own properties read is written, or
 a reload ([what a node reads again](../guide/signals.md#what-a-node-reads-again)). Bind signals to
 properties inside it rather than reading them with `:get()`, and key per-output state by name:
-`state("wallpaper_" .. output, ...)`. Returning `nil` leaves that output's instance empty. A `window`, `popup` or `monitor = "Active"` panel has no output name and refuses a
+`state("wallpaper_" .. output, ...)`. Returning `nil` leaves that output's instance empty. A `window`, `popup` or `output = "Active"` panel has no output name and refuses a
 function `child`. Example: [per-output wallpaper](panel.md#per-output-content).
 
 ## Reset on close
@@ -171,8 +172,7 @@ on_click = ... }` there ([click outside to close](panel.md#close-an-overlay-on-a
 | `layer = state(...)` or a signal `anchor` is refused | Structural fields take literals; switch between two declared panels, or edit the file |
 | A click on a panel's or window's background reaches the window behind it | The root's own `background` claims no input. Put the background on a `width = "Fill", height = "Fill"` child; on a panel, make the panel `"Fill"` on those axes too |
 | `two surfaces declare` an id | Surface ids are unique across every role; rename one |
-| `margin` or `align_h` on a `window` or `popup` root does nothing | Set it on the child |
-| A function `child` on a `window` or `popup` is refused | Only `panel` (not `monitor = "Active"`) and `lock` have an output to pass |
+| A function `child` on a `window` or `popup` is refused | Only `panel` (not `output = "Active"`) and `lock` have an output to pass |
 
 See also: [nodes](../nodes/index.md), [paint](../guide/paint.md), [input](../guide/input.md),
 [signals](../guide/signals.md), [runtime](../guide/runtime.md), [CLI](../guide/cli.md).

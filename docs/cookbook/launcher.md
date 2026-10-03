@@ -141,11 +141,11 @@ return {
     panel {
         id = "launcher",
         layer = "Overlay",
-        monitor = "Active",
+        output = "Active",
         anchor = { top = true, bottom = true, left = true, right = true },
         width = "Fill",
         height = "Fill",
-        exclusive = "Ignore",
+        exclusive_zone = "Ignore",
         visible = open,
         reset_on_close = { query, selected, results_scroll }, -- however it closed, it reopens fresh
         keyboard_interactivity = "Exclusive", -- hiding destroys the surface, so no binding needed

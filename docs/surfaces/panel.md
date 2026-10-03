@@ -25,7 +25,7 @@ local bar = panel {
     anchor = { top = true, left = true, right = true },
     width = "Fill",
     height = 32,
-    exclusive = true,
+    exclusive_zone = true,
     child = row {
         width = "Fill",
         height = "Fill",
@@ -73,14 +73,14 @@ update it in place ([reload](index.md#reload-and-structural-fields)).
 <!-- Generated from renderer/src/lua/nodes/properties.rs by `just stubs`: edit the table there. -->
 | Property | Type | Default | Behaviour |
 | :--- | :--- | :--- | :--- |
-| `id` | `string` | Required | The surface's identity across reloads, unique among surfaces. A `panel`'s or `lock`'s per-output instances are `"{id}@{output}"`; `monitor = "Active"` keeps the bare `id` |
+| `id` | `string` | Required | The surface's identity across reloads, unique among surfaces. A `panel`'s or `lock`'s per-output instances are `"{id}@{output}"`; `output = "Active"` keeps the bare `id` |
 | `layer` | `"Background"\|"Bottom"\|"Top"\|"Overlay"` | Required | Stacking level, bottom to top. `"Overlay"` draws over fullscreen windows |
 | `anchor` | `{ top?: boolean, bottom?: boolean, left?: boolean, right?: boolean }` | All `false` | Edges to pin to; an absent edge is `false`. None pinned centres the surface; one edge centres it along that edge |
-| `monitor` | `string` | `"All"` | A connector name, `"All"` or `"Active"`: which outputs get an instance ([monitor](#monitor)) |
+| `output` | `string` | `"All"` | A connector name, `"All"` or `"Active"`: which outputs get an instance ([output](#output)) |
 | `namespace` | `string` | `"mantle-{id}"` | The layer namespace compositor rules match (Hyprland `layerrule`, niri `layer-rule`) |
 | `width` | `Length\|Bound`, `[0, 8192]` | Content | The surface's size ([size](#size)) |
 | `height` | `Length\|Bound`, `[0, 8192]` | Content | The surface's size ([size](#size)) |
-| `exclusive` | `boolean\|integer\|"Ignore"\|Bound` | `false` | The space reserved from other windows ([exclusive zones](#exclusive-zones)) |
+| `exclusive_zone` | `boolean\|integer\|"Ignore"\|Bound` | `false` | The space reserved from other windows ([exclusive zones](#exclusive-zones)) |
 | `keyboard_interactivity` | `"None"\|"OnDemand"\|"Exclusive"\|Bound` | `"None"` | Whether it takes the keyboard ([keyboard focus](#keyboard-focus)) |
 | `margin` | `number\|Edges\|Bound` | `0` | Offset from the anchored edges, not layout margin; one on an edge the panel is not anchored to does nothing |
 | `visible` | `boolean\|Bound` | `true` | Hiding destroys the layer surface; showing recreates it |
@@ -88,7 +88,7 @@ update it in place ([reload](index.md#reload-and-structural-fields)).
 | `reset_on_close` | `(StateSignal<any>\|ScrollSignal)[]` | `{}` | `state` and `scroll` handles written back when the surface stops being shown: a state to its `initial`, a scroll to the top ([reset on close](index.md#reset-on-close)) |
 <!-- End of the generated table. -->
 
-## monitor
+## output
 
 | Value | Instances | Notes |
 | :--- | :--- | :--- |
@@ -118,7 +118,7 @@ the space they leave is clipped by the compositor.
 
 ## Exclusive zones
 
-| `exclusive` | Reserves | Covers others' zones |
+| `exclusive_zone` | Reserves | Covers others' zones |
 | :--- | :--- | :--- |
 | `false` | Nothing | No, stays inside them |
 | `true` | The configured size along the one anchored edge: height when exactly one of `top`/`bottom` is anchored and `left`/`right` match (both or neither), width for the transposed case. Any other anchor shape (a corner, all four edges) reserves 0 | No |
@@ -166,7 +166,7 @@ end
 local launcher = panel {
     id = "launcher",
     layer = "Overlay",
-    monitor = "Active",
+    output = "Active",
     anchor = { top = true, bottom = true, left = true, right = true },
     width = "Fill",
     height = "Fill",
@@ -223,7 +223,7 @@ local wallpaper = panel {
     id = "wallpaper",
     layer = "Background",
     anchor = { top = true, bottom = true, left = true, right = true },
-    exclusive = "Ignore",
+    exclusive_zone = "Ignore",
     width = "Fill",
     height = "Fill",
     child = function(output)
@@ -255,7 +255,7 @@ local percent = level:map(function(value) return string.format("%d%%", math.floo
 local osd = panel {
     id = "osd",
     layer = "Overlay",
-    monitor = "Active",
+    output = "Active",
     anchor = { bottom = true },
     margin = { bottom = 96 },
     visible = pulse(level, 1500),
@@ -293,13 +293,13 @@ animate the root's `translate`, not the surface ([animation](../guide/animation.
 | Stack cards in a screen corner | [Corner stack](#corner-stack) |
 | Draw over fullscreen windows | `layer = "Overlay"` |
 | Hide the bar from a keybind | `visible = state("bar_visible", true)`, then `mantle toggle bar_visible` |
-| Reserve only the bar's strip of a taller surface | `exclusive = 32` ([exclusive zones](#exclusive-zones)) |
+| Reserve only the bar's strip of a taller surface | `exclusive_zone = 32` ([exclusive zones](#exclusive-zones)) |
 | Match the panel in compositor rules | `mantle-{id}` or `namespace` in a Hyprland `layerrule` or niri `layer-rule` |
 
 ### Dock on one output
 
 Floating 8 px above the bottom edge. The zone is the dock's 54 px plus its 8 px margin;
-`exclusive = true` would reserve only the 54 px ([exclusive zones](#exclusive-zones)):
+`exclusive_zone = true` would reserve only the 54 px ([exclusive zones](#exclusive-zones)):
 
 <!-- shot-alt: A dock with a browser, files and terminal icon; a dot under the browser marks it running. -->
 ```lua,shot
@@ -316,10 +316,10 @@ end
 local dock = panel {
     id = "dock",
     layer = "Bottom",
-    monitor = "DP-1",
+    output = "DP-1",
     anchor = { bottom = true },
     margin = { bottom = 8 },
-    exclusive = 62,
+    exclusive_zone = 62,
     background = "#1e1e2e", radius = 14, padding = 8,
     border_width = 1, border_color = "#ffffff14",
     child = row { spacing = 12, children = {
@@ -416,13 +416,13 @@ An empty list still maps a 1×1 px surface; bind `visible` to whether the list h
 | :--- | :--- |
 | A panel anchored to both sides shows its background only behind its content | Omitted size spans the surface but not the root node; set `width = "Fill"` (or `height`) on the panel |
 | `"Fill"` on an axis with only one edge anchored leaves the panel hidden with a warning in `mantle log` | Anchor both edges of that axis, or give a size |
-| `height = "50%"` or a function `child` on a `monitor = "Active"` panel is refused | Use `"Fill"` with anchors and margins, or px |
-| `exclusive = true` on a corner-anchored panel reserves nothing | Anchor one edge, alone or with both perpendicular edges, or give a px count |
-| `exclusive = 0`, `-1` or `32.5` is refused | `false`, `"Ignore"`, or a whole px count |
+| `height = "50%"` or a function `child` on an `output = "Active"` panel is refused | Use `"Fill"` with anchors and margins, or px |
+| `exclusive_zone = true` on a corner-anchored panel reserves nothing | Anchor one edge, alone or with both perpendicular edges, or give a px count |
+| `exclusive_zone = 0`, `-1` or `32.5` is refused | `false`, `"Ignore"`, or a whole px count |
 | `margin = { top = 8 }` on a bottom-anchored panel does nothing | The offset applies only to anchored edges |
 | Clicks on the bar's empty background reach the window below | The panel's own `background` claims no input; put it on a `"Fill"` child of a `"Fill"` panel ([input region](index.md#input-region)) |
 | On Hyprland, other surfaces stop taking clicks while an `"Exclusive"` panel is mapped | Use `"OnDemand"` unless the panel must hold every key; it still takes focus when it maps |
-| A panel on `monitor = "HDMI-A-1"` never appears | The name must match a connected output exactly; `mantle log` warns with the connected list |
+| A panel on `output = "HDMI-A-1"` never appears | The name must match a connected output exactly; `mantle log` warns with the connected list |
 
 See also: [surfaces](index.md), [popup](popup.md), [input](../guide/input.md),
 [signals](../guide/signals.md), [paint](../guide/paint.md).

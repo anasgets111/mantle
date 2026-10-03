@@ -37,7 +37,7 @@ fn popup_visibility_action(visible: bool, exists: bool, dismissed_at: Option<u64
 /// Parent instance for a popup (ADR-0051 decision 1). A declared id can expand to one panel per
 /// output (ADR-0038 decision 3), so use the arming click's instance. ponytail: without an armed
 /// click, such as a `grab = false` D-Bus popup, use the first parent instance. Upgrade: add popup
-/// `monitor` and a third selector argument.
+/// `output` and a third selector argument.
 fn parent_instance_index<'a>(
     instance_ids: impl Iterator<Item = &'a str>,
     parent: &str,

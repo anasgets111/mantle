@@ -10,7 +10,8 @@
 -- no signal; `hover`, `focused`, `scroll`, `geometry` and `elided` take the handle itself. `[string]: "no such property"`
 -- makes a misspelled key a type error.
 
----@alias Node table A node table, as one of the constructors below returns it.
+---A node table, as one of the constructors below returns it. A class, so a `Surface` is not one.
+---@class Node
 ---@alias Align "Start"|"Center"|"End"|"Stretch"
 -- ponytail: copied from cursor-icon 1.2's `FromStr`, which exposes no list to derive it from; the
 -- stub probe catches a name it refuses, not one missing here. Upgrade: derive once the crate lists them.
@@ -48,10 +49,7 @@
 ---@field max_height? number|Bound `[0, 8192]`. Pixel ceiling, as `max_width`.
 ---@field min_width? number|Bound `[0, 8192]`. Pixel floor, CSS `min-width`; wins over a lower `max_width`.
 ---@field min_height? number|Bound `[0, 8192]`. Pixel floor, as `min_width`.
----@field margin? number|Edges|Bound Default `0`. Outer spacing; a number sets all four edges. Not range-checked.
 ---@field padding? number|Edges|Bound `[0, 8192]`, default `0`. Inner spacing; a number sets all four edges. Each edge must be within `[0, 8192]`.
----@field align_h? Align|Bound Default `"Start"`. Places the node in its parent: both axes under a stacking parent, only the cross axis under a `row`/`column`/`list`. On a `row` it also packs the children, which ignore their own (`"Stretch"` packs as `"Start"`). `"Stretch"` overrides a pixel size; `"Fill"` off the parent's flow axis overrides alignment.
----@field align_v? Align|Bound Default `"Start"`. As `align_h` with the axes swapped: packs a `column`'s children.
 ---@field visible? boolean|Bound Default `true`. `false` removes the node from layout, paint and spacing but keeps its subtree frozen in memory (ADR-0124); to switch views, bind the parent's `children`.
 ---@field opacity? number|Bound `[0, 1]`, default `1`. Multiplied down the tree. At `0` the node still takes space and input.
 ---@field z? number|Bound Default `0`. Sibling paint and hit order. Higher paints later and hits first; ties keep declaration order. Layout and focus ignore it; `animate` refuses it (ADR-0259).
@@ -77,6 +75,13 @@
 ---@field on_wheel? fun(rect: Rect, steps: number) Vertical wheel in notches, positive away from the user, fractional on touchpads (ADR-0116). The innermost handler or scroll container wins; on one node, the `scroll`.
 ---@field submit? boolean|Bound Default `false`. A click also submits the armed `secure_submit` field, like Enter (ADR-0114). Works without `on_click` and runs before it.
 ---@field [string] "no such property"
+
+---Placement in a parent, which a surface root lacks.
+---[docs](https://anasgets111.github.io/mantle/nodes/index.html#common-properties)
+---@class PlacedBase
+---@field margin? number|Edges|Bound Default `0`. Outer spacing; a number sets all four edges. Not range-checked.
+---@field align_h? Align|Bound Default `"Start"`. Places the node in its parent: both axes under a stacking parent, only the cross axis under a `row`/`column`/`list`. On a `row` it also packs the children, which ignore their own (`"Stretch"` packs as `"Start"`). `"Stretch"` overrides a pixel size; `"Fill"` off the parent's flow axis overrides alignment.
+---@field align_v? Align|Bound Default `"Start"`. As `align_h` with the axes swapped: packs a `column`'s children.
 
 ---Box paint for `rect`, `row`, `column` and every surface role.
 ---[docs](https://anasgets111.github.io/mantle/guide/paint.html#box-properties)
@@ -120,26 +125,26 @@
 ---@field [string] "no such property"
 
 ---@alias RectAnimations { accessible_name?: Animation, align_h?: Animation, align_v?: Animation, backdrop_blur?: Animation, background?: Animation, behind_blur?: Animation, border_color?: Animation, border_width?: Animation, children?: Animation, clip?: Animation, content_blur?: Animation, corner_shape?: Animation, cursor?: Animation, focus_ring?: Animation, focused?: Animation, geometry?: Animation, height?: Animation, hover?: Animation, id?: Animation, margin?: Animation, mask?: Animation, max_height?: Animation, max_width?: Animation, min_height?: Animation, min_width?: Animation, on_click?: Animation, on_drag?: Animation, on_hover?: Animation, on_wheel?: Animation, opacity?: Animation, origin?: Animation, padding?: Animation, radius?: Animation, rotate?: Animation, scale?: Animation, shadow_blur?: Animation, shadow_color?: Animation, shadow_mode?: Animation, shadow_offset?: Animation, shadow_spread?: Animation, submit?: Animation, translate?: Animation, visible?: Animation, width?: Animation, exit?: Exit, [string]: "no such property" }
----@class RectProps: NodeBase, BoxBase
+---@class RectProps: NodeBase, PlacedBase, BoxBase
 ---@field animate? RectAnimations|Bound Tween named properties to each newly resolved value without running Lua (ADR-0145). The `exit` key is an `Exit` block. Only a node already on screen animates, unless the entry has `from`.
 ---@field children? Node[]|Bound Stacked in order: later children paint over earlier ones. At most 10000; a `nil` or `false` entry is an error.
 
 ---@alias RowAnimations { accessible_name?: Animation, align_h?: Animation, align_v?: Animation, backdrop_blur?: Animation, background?: Animation, behind_blur?: Animation, border_color?: Animation, border_width?: Animation, children?: Animation, clip?: Animation, content_blur?: Animation, corner_shape?: Animation, cursor?: Animation, focus_ring?: Animation, focused?: Animation, geometry?: Animation, height?: Animation, hover?: Animation, id?: Animation, margin?: Animation, mask?: Animation, max_height?: Animation, max_width?: Animation, min_height?: Animation, min_width?: Animation, on_click?: Animation, on_drag?: Animation, on_hover?: Animation, on_wheel?: Animation, opacity?: Animation, origin?: Animation, padding?: Animation, radius?: Animation, rotate?: Animation, scale?: Animation, scroll?: Animation, shadow_blur?: Animation, shadow_color?: Animation, shadow_mode?: Animation, shadow_offset?: Animation, shadow_spread?: Animation, spacing?: Animation, submit?: Animation, translate?: Animation, visible?: Animation, width?: Animation, exit?: Exit, [string]: "no such property" }
----@class RowProps: NodeBase, BoxBase
+---@class RowProps: NodeBase, PlacedBase, BoxBase
 ---@field animate? RowAnimations|Bound Tween named properties to each newly resolved value without running Lua (ADR-0145). The `exit` key is an `Exit` block. Only a node already on screen animates, unless the entry has `from`.
 ---@field children? Node[]|Bound Laid out in order along the main axis, at most 10000; a `nil` or `false` entry is an error.
 ---@field spacing? number|Bound Default `0`. Px between visible children; negative values overlap them. Not range-checked.
 ---@field scroll? Bound A `scroll(name)` signal; makes this a scrolling viewport along its main axis.
 
 ---@alias ColumnAnimations { accessible_name?: Animation, align_h?: Animation, align_v?: Animation, backdrop_blur?: Animation, background?: Animation, behind_blur?: Animation, border_color?: Animation, border_width?: Animation, children?: Animation, clip?: Animation, content_blur?: Animation, corner_shape?: Animation, cursor?: Animation, focus_ring?: Animation, focused?: Animation, geometry?: Animation, height?: Animation, hover?: Animation, id?: Animation, margin?: Animation, mask?: Animation, max_height?: Animation, max_width?: Animation, min_height?: Animation, min_width?: Animation, on_click?: Animation, on_drag?: Animation, on_hover?: Animation, on_wheel?: Animation, opacity?: Animation, origin?: Animation, padding?: Animation, radius?: Animation, rotate?: Animation, scale?: Animation, scroll?: Animation, shadow_blur?: Animation, shadow_color?: Animation, shadow_mode?: Animation, shadow_offset?: Animation, shadow_spread?: Animation, spacing?: Animation, submit?: Animation, translate?: Animation, visible?: Animation, width?: Animation, exit?: Exit, [string]: "no such property" }
----@class ColumnProps: NodeBase, BoxBase
+---@class ColumnProps: NodeBase, PlacedBase, BoxBase
 ---@field animate? ColumnAnimations|Bound Tween named properties to each newly resolved value without running Lua (ADR-0145). The `exit` key is an `Exit` block. Only a node already on screen animates, unless the entry has `from`.
 ---@field children? Node[]|Bound Laid out in order along the main axis, at most 10000; a `nil` or `false` entry is an error.
 ---@field spacing? number|Bound Default `0`. Px between visible children; negative values overlap them. Not range-checked.
 ---@field scroll? Bound A `scroll(name)` signal; makes this a scrolling viewport along its main axis.
 
 ---@alias TextAnimations { accessible_name?: Animation, align_h?: Animation, align_v?: Animation, content?: Animation, content_blur?: Animation, cursor?: Animation, elide?: Animation, elided?: Animation, focus_ring?: Animation, focused?: Animation, font?: Animation, font_size?: Animation, font_weight?: Animation, foreground?: Animation, geometry?: Animation, height?: Animation, hover?: Animation, id?: Animation, italic?: Animation, letter_spacing?: Animation, line_height?: Animation, margin?: Animation, max_height?: Animation, max_lines?: Animation, max_width?: Animation, min_height?: Animation, min_width?: Animation, on_click?: Animation, on_drag?: Animation, on_hover?: Animation, on_link?: Animation, on_wheel?: Animation, opacity?: Animation, origin?: Animation, padding?: Animation, rotate?: Animation, scale?: Animation, shadow_blur?: Animation, shadow_color?: Animation, shadow_offset?: Animation, shadow_spread?: Animation, submit?: Animation, text_align?: Animation, translate?: Animation, visible?: Animation, width?: Animation, wrap?: Animation, exit?: Exit, [string]: "no such property" }
----@class TextProps: NodeBase
+---@class TextProps: NodeBase, PlacedBase
 ---@field animate? TextAnimations|Bound Tween named properties to each newly resolved value without running Lua (ADR-0145). The `exit` key is an `Exit` block. Only a node already on screen animates, unless the entry has `from`.
 ---@field content? string|TextRun[]|Bound Default `""`. A string, or up to 10000 runs, drawn as one paragraph.
 ---@field font? string|Bound Default: the `fonts` chain. Family placed before the `fonts` chain (ADR-0144). `""` raises; an unknown family falls back to the chain.
@@ -157,14 +162,14 @@
 ---@field on_link? fun(href: string) Click on a run with an `href` (ADR-0106); the engine never opens it. Takes the click from any `on_click`, the text's own included; plain words pass it on.
 
 ---@alias IconAnimations { accessible_name?: Animation, align_h?: Animation, align_v?: Animation, content_blur?: Animation, cursor?: Animation, focus_ring?: Animation, focused?: Animation, foreground?: Animation, geometry?: Animation, height?: Animation, hover?: Animation, id?: Animation, margin?: Animation, max_height?: Animation, max_width?: Animation, min_height?: Animation, min_width?: Animation, name?: Animation, on_click?: Animation, on_drag?: Animation, on_hover?: Animation, on_wheel?: Animation, opacity?: Animation, origin?: Animation, padding?: Animation, rotate?: Animation, scale?: Animation, shadow_blur?: Animation, shadow_color?: Animation, shadow_offset?: Animation, shadow_spread?: Animation, size?: Animation, submit?: Animation, translate?: Animation, visible?: Animation, width?: Animation, exit?: Exit, [string]: "no such property" }
----@class IconProps: NodeBase
+---@class IconProps: NodeBase, PlacedBase
 ---@field animate? IconAnimations|Bound Tween named properties to each newly resolved value without running Lua (ADR-0145). The `exit` key is an `Exit` block. Only a node already on screen animates, unless the entry has `from`.
 ---@field name? string|Bound Default `""`. Icon theme name, or an absolute image path (ADR-0054); `""` draws nothing.
 ---@field size? number|Bound Default `12`. The box is `size` × `size` px; not range-checked.
 ---@field foreground? Color|Bound Default: the file's own colours. Colour for the SVG's `currentColor` (CSS `color`), which tints symbolic icons (ADR-0072). Full-colour icons ignore it.
 
 ---@alias ImageAnimations { accessible_name?: Animation, align_h?: Animation, align_v?: Animation, async?: Animation, content_blur?: Animation, cursor?: Animation, fit?: Animation, focus_ring?: Animation, focused?: Animation, geometry?: Animation, height?: Animation, hover?: Animation, id?: Animation, margin?: Animation, max_height?: Animation, max_width?: Animation, min_height?: Animation, min_width?: Animation, on_click?: Animation, on_drag?: Animation, on_hover?: Animation, on_wheel?: Animation, opacity?: Animation, origin?: Animation, padding?: Animation, retain?: Animation, rotate?: Animation, scale?: Animation, shadow_blur?: Animation, shadow_color?: Animation, shadow_offset?: Animation, shadow_spread?: Animation, source?: Animation, source_blur?: Animation, submit?: Animation, transition?: Animation, translate?: Animation, visible?: Animation, width?: Animation, exit?: Exit, [string]: "no such property" }
----@class ImageProps: NodeBase
+---@class ImageProps: NodeBase, PlacedBase
 ---@field animate? ImageAnimations|Bound Tween named properties to each newly resolved value without running Lua (ADR-0145). The `exit` key is an `Exit` block. Only a node already on screen animates, unless the entry has `from`.
 ---@field source? string|Bound Default `""`. File path, never a theme name; `""` draws nothing. PNG, JPEG, WebP, GIF, SVG or SVGZ; animated GIFs loop (ADR-0233).
 ---@field fit? "cover"|"contain"|"stretch"|Bound Default `"cover"`. `"cover"` fills the box and crops, `"contain"` fits inside it, `"stretch"` distorts to it. No intrinsic size: set `width`/`height`.
@@ -174,7 +179,7 @@
 ---@field source_blur? number|Bound `[0, 8192]`, default `0`. Blur sigma in px (a fast box approximation), applied once at decode (ADR-0240). Runs on the decoding thread, so pair large images with `async`; under `async` a change blanks the image until the re-decode lands, and `retain` does not cover it (same `source`). Animated GIFs ignore it.
 
 ---@alias CaptureAnimations { accessible_name?: Animation, align_h?: Animation, align_v?: Animation, content_blur?: Animation, cursor?: Animation, fit?: Animation, focus_ring?: Animation, focused?: Animation, geometry?: Animation, height?: Animation, hover?: Animation, id?: Animation, live?: Animation, margin?: Animation, max_height?: Animation, max_width?: Animation, min_height?: Animation, min_width?: Animation, on_click?: Animation, on_drag?: Animation, on_hover?: Animation, on_wheel?: Animation, opacity?: Animation, origin?: Animation, output?: Animation, padding?: Animation, paint_cursor?: Animation, region?: Animation, rotate?: Animation, scale?: Animation, shadow_blur?: Animation, shadow_color?: Animation, shadow_offset?: Animation, shadow_spread?: Animation, submit?: Animation, translate?: Animation, visible?: Animation, width?: Animation, window?: Animation, exit?: Exit, [string]: "no such property" }
----@class CaptureProps: NodeBase
+---@class CaptureProps: NodeBase, PlacedBase
 ---@field animate? CaptureAnimations|Bound Tween named properties to each newly resolved value without running Lua (ADR-0145). The `exit` key is an `Exit` block. Only a node already on screen animates, unless the entry has `from`.
 ---@field output? string|Bound Default `""`. Connector name, e.g. `"DP-1"`; `""` draws nothing. An unknown name draws nothing and warns once. Changing it starts a fresh capture.
 ---@field window? string|Bound Default `""`. A `mantle.windows` entry's `id`; `""` draws nothing. Currently requires Hyprland's exact toplevel mapping and ext capture protocols. Cannot combine with a nonempty `output` or `region`. A closed window clears its preview.
@@ -184,14 +189,14 @@
 ---@field paint_cursor? boolean|Bound Default `false`. Include the pointer in the frame.
 
 ---@alias ShaderAnimations { accessible_name?: Animation, align_h?: Animation, align_v?: Animation, content_blur?: Animation, cursor?: Animation, focus_ring?: Animation, focused?: Animation, geometry?: Animation, height?: Animation, hover?: Animation, id?: Animation, margin?: Animation, max_height?: Animation, max_width?: Animation, min_height?: Animation, min_width?: Animation, on_click?: Animation, on_drag?: Animation, on_hover?: Animation, on_wheel?: Animation, opacity?: Animation, origin?: Animation, padding?: Animation, params?: Animation, progress?: Animation, rotate?: Animation, scale?: Animation, shadow_blur?: Animation, shadow_color?: Animation, shadow_offset?: Animation, shadow_spread?: Animation, source?: Animation, submit?: Animation, translate?: Animation, visible?: Animation, width?: Animation, exit?: Exit, [string]: "no such property" }
----@class ShaderProps: NodeBase
+---@class ShaderProps: NodeBase, PlacedBase
 ---@field animate? ShaderAnimations|Bound Tween named properties to each newly resolved value without running Lua (ADR-0145). The `exit` key is an `Exit` block. Only a node already on screen animates, unless the entry has `from`.
 ---@field source? string|Bound Default `""`. Absolute `.frag` path; relative is refused, `""` draws nothing. Saving the file recompiles it; one that fails to build logs once and draws nothing.
 ---@field progress? number|Bound `[-8192, 8192]`, default `0`. `u_progress`. There is no clock uniform: animate this for motion; the wide range lets a spring overshoot.
 ---@field params? table<string, number|number[]>|Bound Default `{}`. Uniforms by name: a finite number for `float`, a list of up to 4096 for `vec2`-`vec4` or an array of either, flattened. Missing ones are `0`. Not tweened.
 
 ---@alias ListAnimations { accessible_name?: Animation, align_h?: Animation, align_v?: Animation, content_blur?: Animation, cursor?: Animation, direction?: Animation, focus_ring?: Animation, focused?: Animation, geometry?: Animation, height?: Animation, hover?: Animation, id?: Animation, itemfn?: Animation, key?: Animation, limit?: Animation, margin?: Animation, max_height?: Animation, max_width?: Animation, min_height?: Animation, min_width?: Animation, on_click?: Animation, on_drag?: Animation, on_hover?: Animation, on_wheel?: Animation, opacity?: Animation, origin?: Animation, padding?: Animation, rotate?: Animation, scale?: Animation, scroll?: Animation, shadow_blur?: Animation, shadow_color?: Animation, shadow_offset?: Animation, shadow_spread?: Animation, source?: Animation, spacing?: Animation, submit?: Animation, translate?: Animation, visible?: Animation, width?: Animation, exit?: Exit, [string]: "no such property" }
----@class ListProps: NodeBase
+---@class ListProps: NodeBase, PlacedBase
 ---@field animate? ListAnimations|Bound Tween named properties to each newly resolved value without running Lua (ADR-0145). The `exit` key is an `Exit` block. Only a node already on screen animates, unless the entry has `from`.
 ---@field source? any[]|Bound Default: empty. Array; bind a signal to rebuild on change. Missing or `nil` (a capability before its first push) is an empty list; a `nil` hole ends it. More than 10000 items without `limit` is an error.
 ---@field itemfn fun(item: any): Node Required. Builds a node for every built item, visible or not.
@@ -202,7 +207,7 @@
 ---@field scroll? Bound A `scroll(name)` signal; makes this a scrolling viewport along `direction`.
 
 ---@alias TextfieldAnimations { accessible_name?: Animation, align_h?: Animation, align_v?: Animation, autofocus?: Animation, content_blur?: Animation, cursor?: Animation, focus_ring?: Animation, focus_target?: Animation, focused?: Animation, font_size?: Animation, foreground?: Animation, geometry?: Animation, height?: Animation, hover?: Animation, id?: Animation, margin?: Animation, mask_character?: Animation, max_height?: Animation, max_width?: Animation, min_height?: Animation, min_width?: Animation, on_cancel?: Animation, on_change?: Animation, on_click?: Animation, on_drag?: Animation, on_hover?: Animation, on_navigate?: Animation, on_submit?: Animation, on_wheel?: Animation, opacity?: Animation, origin?: Animation, padding?: Animation, placeholder?: Animation, rotate?: Animation, scale?: Animation, secure_submit?: Animation, shadow_blur?: Animation, shadow_color?: Animation, shadow_offset?: Animation, shadow_spread?: Animation, submit?: Animation, text_align?: Animation, translate?: Animation, visible?: Animation, width?: Animation, exit?: Exit, [string]: "no such property" }
----@class TextfieldProps: NodeBase
+---@class TextfieldProps: NodeBase, PlacedBase
 ---@field animate? TextfieldAnimations|Bound Tween named properties to each newly resolved value without running Lua (ADR-0145). The `exit` key is an `Exit` block. Only a node already on screen animates, unless the entry has `from`.
 ---@field focus_target? FocusHandle A `focus_target(name)` handle. An `on_click` can call `:request()` to return keys after its state change; the field must be visible on that click's keyboard-focused surface or a popup under it. Any other value fails the pass.
 ---@field placeholder? string|Bound Default `""`. Shown while the field is empty, focused or not (ADR-0135). Never submitted.
@@ -218,7 +223,7 @@
 ---@field mask_character? string|Bound Default `"•"`. Drawn per typed character in a `secure_submit` field. Only the first character counts; `""` hides the length.
 
 ---@alias PathAnimations { accessible_name?: Animation, align_h?: Animation, align_v?: Animation, commands?: Animation, content_blur?: Animation, cursor?: Animation, fill?: Animation, focus_ring?: Animation, focused?: Animation, geometry?: Animation, height?: Animation, hover?: Animation, id?: Animation, margin?: Animation, max_height?: Animation, max_width?: Animation, min_height?: Animation, min_width?: Animation, on_click?: Animation, on_drag?: Animation, on_hover?: Animation, on_wheel?: Animation, opacity?: Animation, origin?: Animation, padding?: Animation, rotate?: Animation, scale?: Animation, shadow_blur?: Animation, shadow_color?: Animation, shadow_offset?: Animation, shadow_spread?: Animation, stroke?: Animation, stroke_width?: Animation, submit?: Animation, translate?: Animation, visible?: Animation, width?: Animation, exit?: Exit, [string]: "no such property" }
----@class PathProps: NodeBase
+---@class PathProps: NodeBase, PlacedBase
 ---@field animate? PathAnimations|Bound Tween named properties to each newly resolved value without running Lua (ADR-0145). The `exit` key is an `Exit` block. Only a node already on screen animates, unless the entry has `from`.
 ---@field commands? PathCommand[]|Bound Default `{}`. Up to 4096 commands. Each has op M/L/Q/C/A/Z and points containing 2/2/4/6/5/0 numbers. Begin each subpath with M or A. Coordinates are in [-8192, 8192]; arc angles need only be finite.
 ---@field fill? Color|Gradient|Bound Fill colour or gradient across the node box. Open subpaths close for filling.

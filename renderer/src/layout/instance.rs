@@ -1,10 +1,10 @@
 //! Expanding declared surfaces into the instances the compositor actually maps (`CONTEXT.md`,
 //! Surface instance; ADR-0038 decision 3). One declared surface is not one Wayland surface: a
-//! `panel` with `monitor = "All"` targets every connected output, each with its own
+//! `panel` with `output = "All"` targets every connected output, each with its own
 //! `zwlr_layer_surface_v1` and size, why the retained scene keys by instance id, not declared id.
 //! Pure: no Wayland types, the testable seam with no headless harness. Per-output resolves to
-//! three answers per role: a `window` has no `monitor` (one instance regardless of
-//! monitor count); a `lock` has no `monitor` for the opposite reason (always every
+//! three answers per role: a `window` has no `output` (one instance regardless of
+//! monitor count); a `lock` has no `output` for the opposite reason (always every
 //! monitor); only a `panel` expands per output.
 
 use crate::layout::node::{SizeMode, SurfaceSpec};
@@ -21,7 +21,7 @@ pub struct SurfaceInstance {
     /// `"bar"`: what the surface `id` field reads off the node, pairing it to its `VirtualNode`.
     pub declared_id: String,
     /// The output this instance lives on, or empty for a `window` (a toplevel has no
-    /// `monitor`; the compositor places it).
+    /// `output`; the compositor places it).
     pub output: String,
     /// The size this instance resolves its tree against. Seeded from the output's logical size at
     /// startup, replaced per instance by `RendererClient::set_instance_size` once the compositor
@@ -46,7 +46,7 @@ pub struct SurfaceInstance {
     pub measured_axes: (bool, bool),
 }
 
-/// One connected output, as far as instance expansion cares: a name to match `monitor` against and
+/// One connected output, as far as instance expansion cares: a name to match `output` against and
 /// a size to seed `available` with. Not `smithay_client_toolkit::output::OutputInfo`: `layout` has
 /// no Wayland types; `crate::wayland::App::output_geometries` derives these from a `wl_output`.
 #[derive(Debug, Clone, PartialEq)]
@@ -58,7 +58,7 @@ pub struct OutputGeometry {
 /// Every instance `specs` declares against the currently connected `outputs`, per role
 /// (ADR-0038 decision 3, ADR-0049 decision 1).
 ///
-/// **`panel`**: expands per output. `monitor = "All"` (the default) yields one instance per
+/// **`panel`**: expands per output. `output = "All"` (the default) yields one instance per
 /// output, in `outputs` order; other values match the named output, else none. The
 /// `"{id}@{output}"` id form stays uniform even for a single match (`"DP-1"` yields `"bar@DP-1"`).
 /// `"Active"` yields one instance on the bare id with no output, since the compositor picks it at
@@ -84,7 +84,7 @@ pub fn expand_instances(specs: &[SurfaceSpec], outputs: &[OutputGeometry]) -> Ve
     let mut instances = Vec::new();
     for spec in specs {
         match spec {
-            SurfaceSpec::Panel(panel) if panel.topology.monitor == "Active" => {
+            SurfaceSpec::Panel(panel) if panel.topology.output == "Active" => {
                 if let Some(first) = outputs.first() {
                     instances.push(SurfaceInstance {
                         instance_id: panel.topology.id.clone(),
@@ -99,7 +99,7 @@ pub fn expand_instances(specs: &[SurfaceSpec], outputs: &[OutputGeometry]) -> Ve
             }
             SurfaceSpec::Panel(panel) => {
                 for output in outputs {
-                    if panel.topology.monitor != "All" && panel.topology.monitor != output.name {
+                    if panel.topology.output != "All" && panel.topology.output != output.name {
                         continue;
                     }
                     instances.push(SurfaceInstance {
@@ -157,16 +157,16 @@ pub fn expand_instances(specs: &[SurfaceSpec], outputs: &[OutputGeometry]) -> Ve
     instances
 }
 
-/// Logs each `panel` whose `monitor` names no connected output. Called at apply rather than in
+/// Logs each `panel` whose `output` names no connected output. Called at apply rather than in
 /// [`expand_instances`], which a hotplug runs twice.
 pub fn warn_unmatched_monitors(specs: &[SurfaceSpec], outputs: &[OutputGeometry]) {
     let connected: Vec<&str> = outputs.iter().map(|output| output.name.as_str()).collect();
     for spec in specs {
         let SurfaceSpec::Panel(panel) = spec else { continue };
-        let monitor = panel.topology.monitor.as_str();
-        if !matches!(monitor, "All" | "Active") && !connected.contains(&monitor) {
+        let output = panel.topology.output.as_str();
+        if !matches!(output, "All" | "Active") && !connected.contains(&output) {
             warn!(
-                "surface {:?} targets monitor {monitor:?}, which is not connected (connected: {connected:?}); no surface created for it",
+                "surface {:?} targets output {output:?}, which is not connected (connected: {connected:?}); no surface created for it",
                 panel.topology.id
             );
         }
@@ -240,13 +240,13 @@ mod tests {
         Anchor, KeyboardInteractivity, LayerKind, PanelSpec, SizeMode, SurfaceTopology, WindowSpec,
     };
 
-    fn spec(id: &str, monitor: &str) -> SurfaceSpec {
+    fn spec(id: &str, output: &str) -> SurfaceSpec {
         SurfaceSpec::Panel(PanelSpec {
             topology: SurfaceTopology {
                 id: id.to_string(),
                 layer: LayerKind::Top,
                 anchor: Anchor::default(),
-                monitor: monitor.to_string(),
+                output: output.to_string(),
                 namespace: format!("mantle-{id}"),
             },
             keyboard_interactivity: KeyboardInteractivity::None,

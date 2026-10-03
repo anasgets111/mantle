@@ -36,7 +36,7 @@ local bar = panel {
     anchor = { top = true, left = true, right = true },
     width = "Fill",
     height = 32,
-    exclusive = true,
+    exclusive_zone = true,
     child = row {
         width = "Fill",
         height = "Fill",
@@ -81,5 +81,5 @@ return { bar, tooltip }
 | Seconds | `"%H:%M:%S"` |
 | 12-hour clock | `"%I:%M %p"` |
 | Clock on the right | Drop the second spacer: `children = { rect { width = "Fill" }, clock }` |
-| One monitor only | `monitor = "DP-1"` on the panel |
+| One monitor only | `output = "DP-1"` on the panel |
 | Bottom bar | `anchor = { bottom = true, left = true, right = true }` and `anchor = "Top", gravity = "Top", offset = { y = -6 }` on the tooltip |

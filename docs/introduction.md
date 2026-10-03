@@ -30,7 +30,7 @@ return panel {
     anchor = { top = true, left = true, right = true },
     width = "Fill",
     height = 32,
-    exclusive = true,
+    exclusive_zone = true,
     background = "#1e1e2e",
     child = row {
         width = "Fill",

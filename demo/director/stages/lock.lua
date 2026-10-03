@@ -56,7 +56,7 @@ return panel {
     anchor = { top = true, bottom = true, left = true, right = true },
     width = "Fill",
     height = "Fill",
-    exclusive = "Ignore",
+    exclusive_zone = "Ignore",
     visible = mapped,
     child = rect {
         width = "Fill",

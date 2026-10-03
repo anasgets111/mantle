@@ -6,7 +6,7 @@
 //! its header's `{Name}` placeholder ([`NODE_SHAPES`], [`SURFACE_SHAPES`]). Composite input types
 //! supply their unions and projections beside their parsers.
 
-use super::properties::{ALL, Absent, BOX, KINDS, Property, SURFACES, kind_doc, properties};
+use super::properties::{ALL, Absent, BOX, KINDS, NODES, Property, SURFACES, kind_doc, properties};
 use crate::layout::node::prop::Keyword;
 use crate::layout::node::{
     Align, Animatable, AnimationSpec, Animations, Axes, BorderColor, Easing, EdgesInput, ExitBlock, Gradient,
@@ -142,10 +142,13 @@ fn field(row: &Property) -> String {
     format!("---@field {}{optional} {}{words}\n", row.name, lua_type(row, true))
 }
 
-/// A kind's own rows: the ones its stub class declares and its page tables, after the common and box
-/// rows it inherits.
+/// The base classes the stubs declare and the rows each holds, by exact kinds.
+const BASES: [(&str, u16); 3] = [("NodeBase", ALL), ("PlacedBase", NODES), ("BoxBase", BOX)];
+
+/// A kind's own rows: the ones its stub class declares and its page tables, after the base rows it
+/// inherits.
 fn own(kinds: u16) -> impl Iterator<Item = &'static Property> {
-    properties().filter(move |row| row.kinds & kinds != 0 && row.kinds != ALL && row.kinds != BOX)
+    properties().filter(move |row| row.kinds & kinds != 0 && BASES.iter().all(|(_, base)| row.kinds != *base))
 }
 
 /// `kind`'s `animate` field and the alias it names: only the properties `parse_animate` takes on
@@ -165,7 +168,9 @@ fn animate(kind: &str) -> (String, String) {
 fn render_stub(header: &str, kinds: &[&str]) -> String {
     let mut out = header.to_string();
     for kind in kinds {
-        let bases = if kind_bit(kind) & BOX != 0 { "NodeBase, BoxBase" } else { "NodeBase" };
+        let bit = kind_bit(kind);
+        let bases: Vec<&str> = BASES.iter().filter(|(_, base)| base & bit != 0).map(|(name, _)| *name).collect();
+        let bases = bases.join(", ");
         let (alias, animate) = animate(kind);
         out.push_str(&format!("\n{alias}---@class {}: {bases}\n{animate}", class(kind)));
         own(kind_bit(kind)).for_each(|row| out.push_str(&field(row)));
@@ -177,9 +182,10 @@ fn render_stub(header: &str, kinds: &[&str]) -> String {
             out.push_str(&format!("---{}\n", blurb.trim()));
         }
         out.push_str(&format!(
-            "---[docs]({DOCS}{}.html)\n---@param props {}\n---@return Node\nfunction {kind}(props) end\n",
+            "---[docs]({DOCS}{}.html)\n---@param props {}\n---@return {}\nfunction {kind}(props) end\n",
             page(kind),
-            class(kind)
+            class(kind),
+            if kind_bit(kind) & SURFACES != 0 { "Surface" } else { "Node" }
         ));
     }
     out
@@ -194,7 +200,7 @@ fn nodes_lua() -> String {
     header = header.replace("{ANIMATABLE}", &Animatable::lua());
     header = header.replace("{GradientStop}", &GradientStop::lua());
     header = NODE_SHAPES.iter().fold(header, |header, fill| fill(header));
-    for (class, kinds) in [("NodeBase", ALL), ("BoxBase", BOX)] {
+    for (class, kinds) in BASES {
         let marker = format!("{{{class}}}");
         // `animate` is each kind's own: its keys are that kind's properties.
         let fields: String =
@@ -247,7 +253,7 @@ fn table<'a>(rows: impl Iterator<Item = &'a Property>) -> String {
 /// kind's own on its page.
 fn doc_tables() -> Vec<(String, String)> {
     let mut pages = vec![
-        ("nodes/index".to_string(), table(properties().filter(|row| row.kinds == ALL))),
+        ("nodes/index".to_string(), table(properties().filter(|row| row.kinds == ALL || row.kinds == NODES))),
         ("guide/paint".to_string(), table(properties().filter(|row| row.kinds == BOX))),
     ];
     for kind in KINDS {
@@ -294,7 +300,8 @@ const NODES_HEADER: &str = r##"---@meta
 -- no signal; `hover`, `focused`, `scroll`, `geometry` and `elided` take the handle itself. `[string]: "no such property"`
 -- makes a misspelled key a type error.
 
----@alias Node table A node table, as one of the constructors below returns it.
+---A node table, as one of the constructors below returns it. A class, so a `Surface` is not one.
+---@class Node
 ---@alias Align {ALIGN}
 -- ponytail: copied from cursor-icon 1.2's `FromStr`, which exposes no list to derive it from; the
 -- stub probe catches a name it refuses, not one missing here. Upgrade: derive once the crate lists them.
@@ -329,6 +336,11 @@ const NODES_HEADER: &str = r##"---@meta
 {NodeBase}
 ---@field [string] "no such property"
 
+---Placement in a parent, which a surface root lacks.
+---[docs]({DOCS}nodes/index.html#common-properties)
+---@class PlacedBase
+{PlacedBase}
+
 ---Box paint for `rect`, `row`, `column` and every surface role.
 ---[docs]({DOCS}guide/paint.html#box-properties)
 ---@class BoxBase
@@ -341,11 +353,14 @@ const NODES_HEADER: &str = r##"---@meta
 
 const SURFACES_HEADER: &str = r##"---@meta
 -- The four surface roles (ADR-0040), one constructor each. `shell.lua` returns the set, re-read on
--- every reload (ADR-0038). A root takes `rect`'s node and box properties, plus its own topology.
+-- every reload (ADR-0038). A root takes `rect`'s node and box properties but placement, plus its own topology.
 --
 -- GENERATED on `nodes.lua`'s terms. Structural fields, the ones without `Bound` (`id`, `layer`,
--- `anchor`, `monitor`, `namespace`, a popup's `parent`), refuse a `Signal`: they are read once per
+-- `anchor`, `output`, `namespace`, a popup's `parent`), refuse a `Signal`: they are read once per
 -- evaluation (ADR-0216).
+
+---A surface table, as one of the constructors below returns it: what `shell.lua` returns.
+---@class Surface
 
 ---@alias Rect {Rect}
 ---@alias PopupAnchor {POPUP_ANCHOR}

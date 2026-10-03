@@ -1319,7 +1319,7 @@ mod tests {
         }
     }
 
-    /// Two instances of one surface, one per output, as `monitor = "All"` makes them.
+    /// Two instances of one surface, one per output, as `output = "All"` makes them.
     fn two_outputs(surface: &VirtualNode) -> [SurfaceInstance; 2] {
         ["A", "B"].map(|output| SurfaceInstance {
             instance_id: format!("bar@{output}"),

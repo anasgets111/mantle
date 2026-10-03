@@ -92,7 +92,7 @@ return {
         id = "bar",
         layer = "Top",
         anchor = { top = true, left = true, right = true },
-        exclusive = true,
+        exclusive_zone = true,
         width = "Fill",
         height = 56,
         background = "#11111be6",

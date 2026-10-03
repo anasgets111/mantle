@@ -21,6 +21,8 @@ pub(crate) trait Prop: LuaType {
     const CHOICES: &'static [&'static str] = &[];
     /// Copied past `resolve_properties` as written, signal and all: [`Structural`] and [`Handle`].
     const RAW: bool = false;
+    /// Declared only to refuse, so it accepts no value and nothing animates it: [`Refused`].
+    const REFUSED: bool = false;
     /// `value` is the property's entry, `None` when absent; `row` carries its name, range and default.
     fn read(row: &Property, value: Option<&Value>) -> Result<Self::Out, LayoutError>;
     /// What a [`Bound`] signal reads as in `surface_specs`, which may call no getter (ADR-0049's second amendment).
@@ -271,7 +273,7 @@ impl Prop for Path {
     }
 }
 
-/// A surface's string field: `id`, `monitor`, `namespace`, `parent`, `title`, `app_id`. Absent, the
+/// A surface's string field: `id`, `output`, `namespace`, `parent`, `title`, `app_id`. Absent, the
 /// row's literal default, where `{id}` stands for the surface's `id`, or an error when it is
 /// required. Not capped like [`Text`]: these name things, and a name is compared whole.
 pub(crate) struct Name;
@@ -443,6 +445,7 @@ spelled!(Refused => "nil");
 
 impl Prop for Refused {
     type Out = ();
+    const REFUSED: bool = true;
     fn read(row: &Property, value: Option<&Value>) -> Result<(), LayoutError> {
         match value {
             None => Ok(()),

@@ -250,7 +250,7 @@ return {
         anchor = { top = true, left = true, right = true },
         width = "Fill",
         height = 32,
-        exclusive = true,
+        exclusive_zone = true,
         child = row {
             width = "Fill",
             height = "Fill",

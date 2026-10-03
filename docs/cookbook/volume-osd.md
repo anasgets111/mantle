@@ -39,7 +39,7 @@ return {
     panel {
         id = "volume_osd",
         layer = "Overlay",
-        monitor = "Active",
+        output = "Active",
         anchor = { bottom = true }, -- no left/right: centred, width measured
         margin = { bottom = 80 },
         visible = mapped,
@@ -99,7 +99,7 @@ Bind the volume keys to anything that changes the default sink, for example
 - `on_change` reacts to each audio push and skips the first one, and a sink appearing (`previous.volume` is `nil`), which is learned state ([on_change](../capabilities/index.md#reading-and-acting), [audio](../capabilities/audio.md)).
 - It writes a fresh table, counted by `n`, into a [named state](../guide/signals.md#named-state); `pulse` reads `true` for a while after each change ([pulse](../guide/signals.md#pulse-mark-a-change)).
 - A longer second `pulse` keeps the surface mapped while the card fades, since hiding a surface plays no exit ([delay](../guide/signals.md#delay-hold-a-value) is the general form).
-- `monitor = "Active"` shows it on the output the compositor picks, usually the focused one, and a bottom-only anchor centres it ([panel monitor](../surfaces/panel.md#monitor), [OSD](../surfaces/panel.md#osd)).
+- `output = "Active"` shows it on the output the compositor picks, usually the focused one, and a bottom-only anchor centres it ([panel output](../surfaces/panel.md#output), [OSD](../surfaces/panel.md#osd)).
 - The fill is a `"NN%"` width inside a fixed track ([sizes](../nodes/index.md#sizes)); `translate` and `opacity` animate without re-laying out ([animation](../guide/animation.md)).
 - The glyph comes from the icon theme by name ([icon](../nodes/icon.md)).
 
@@ -110,5 +110,5 @@ Bind the volume keys to anything that changes the default sink, for example
 | Brightness too | A second `on_change` on `mantle.brightness` writing `{ volume = brightness.percent, muted = false }` into the same state |
 | Show above 100% | Drop `math.min` from `percent`, and size the fill `math.floor(entry.volume / 1.5) .. "%"`: the track is then 150% |
 | Top of the screen | `anchor = { top = true }`, `margin = { top = 80 }` and `from = { y = -12 }` |
-| Every monitor | Remove `monitor = "Active"` |
+| Every monitor | Remove `output = "Active"` |
 | Longer on screen | `pulse(osd, 3000)` and `pulse(osd, 3200)` |
