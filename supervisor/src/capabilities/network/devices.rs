@@ -17,6 +17,7 @@ use shared::{debug, error, warn};
 /// `Device.Wireless` proxies. Association state and APs use those two interfaces on one object.
 #[derive(Clone)]
 pub(super) struct WifiDevice {
+    pub(super) id: String,
     pub(super) device_path: OwnedObjectPath,
     pub(super) device: DeviceProxy<'static>,
     pub(super) wireless: WirelessProxy<'static>,
@@ -35,7 +36,7 @@ pub(super) struct EthernetDevice {
 /// on [`NetworkSignal::DevicesChanged`]; callers clone devices out, so no await holds the lock.
 #[derive(Default)]
 pub(super) struct Devices {
-    pub(super) wifi: Option<WifiDevice>,
+    pub(super) wifi: Vec<WifiDevice>,
     pub(super) ethernet: Vec<EthernetDevice>,
     /// Aborted when the set is replaced, so a removed device's watchers stop with it.
     pub(super) watchers: Vec<tokio::task::AbortHandle>,
@@ -46,8 +47,8 @@ pub(super) struct Devices {
 pub(super) async fn resolve_devices(
     connection: &zbus::Connection,
     nm: &NetworkManagerProxy<'static>,
-) -> zbus::Result<(Option<WifiDevice>, Vec<EthernetDevice>)> {
-    let mut wifi = None;
+) -> zbus::Result<(Vec<WifiDevice>, Vec<EthernetDevice>)> {
+    let mut wifi = Vec::new();
     let mut ethernet = Vec::new();
     for path in nm.get_all_devices().await? {
         let device = match bind::<DeviceProxy>(connection, path.clone()).await {
@@ -69,10 +70,23 @@ pub(super) async fn resolve_devices(
                 Ok(wired) => ethernet.push(EthernetDevice { path, device, wired }),
                 Err(err) => debug!("failed to bind wired device {path}: {err}"),
             },
-            DEVICE_TYPE_WIFI if wifi.is_none() => match bind::<WirelessProxy>(connection, path.clone()).await {
-                Ok(wireless) => wifi = Some(WifiDevice { device_path: path, device, wireless }),
-                Err(err) => debug!("failed to bind wireless device {path}: {err}"),
-            },
+            DEVICE_TYPE_WIFI => {
+                let id = match device.interface().await {
+                    Ok(id) => id,
+                    Err(err) => {
+                        debug!("failed to read interface for {path}: {err}");
+                        continue;
+                    }
+                };
+                if id.is_empty() || wifi.iter().any(|other: &WifiDevice| other.id == id) {
+                    warn!("skipping Wi-Fi device {path} with empty or duplicate interface {id:?}");
+                    continue;
+                }
+                match bind::<WirelessProxy>(connection, path.clone()).await {
+                    Ok(wireless) => wifi.push(WifiDevice { id, device_path: path, device, wireless }),
+                    Err(err) => debug!("failed to bind wireless device {path}: {err}"),
+                }
+            }
             _ => {}
         }
     }
@@ -82,18 +96,20 @@ pub(super) async fn resolve_devices(
 /// Starts the per-device watchers for one device set and returns their abort handles.
 pub(super) fn watch_devices(
     connection: &zbus::Connection,
-    wifi: Option<&WifiDevice>,
+    wifi: &[WifiDevice],
     ethernet: &[EthernetDevice],
     events: &UnboundedSender<NetworkSignal>,
 ) -> Vec<tokio::task::AbortHandle> {
     let mut watchers = Vec::new();
-    match wifi {
-        Some(wifi) => {
-            watchers
-                .push(spawn_wifi_forwarder(connection.clone(), wifi.wireless.clone(), events.clone()).abort_handle());
-            watchers.push(spawn_device_state_forwarder(wifi.device.clone(), events.clone()).abort_handle());
-        }
-        None => debug!("no Wi-Fi device found; scan and access-point events wait for one to appear"),
+    for wifi in wifi {
+        watchers.push(
+            spawn_wifi_forwarder(connection.clone(), wifi.id.clone(), wifi.wireless.clone(), events.clone())
+                .abort_handle(),
+        );
+        watchers.push(spawn_device_state_forwarder(wifi.device.clone(), events.clone()).abort_handle());
+    }
+    if wifi.is_empty() {
+        debug!("no Wi-Fi device found; scan and access-point events wait for one to appear");
     }
     for device in ethernet {
         watchers.push(spawn_device_state_forwarder(device.device.clone(), events.clone()).abort_handle());
@@ -113,6 +129,7 @@ pub(super) fn watch_devices(
 /// Otherwise an orphan would rebuild for an AP nothing is connected to (ADR-0082).
 fn spawn_wifi_forwarder(
     connection: zbus::Connection,
+    id: String,
     wireless: WirelessProxy<'static>,
     events: UnboundedSender<NetworkSignal>,
 ) -> tokio::task::JoinHandle<()> {
@@ -145,7 +162,7 @@ fn spawn_wifi_forwarder(
                     if events.send(NetworkSignal::Changed).is_err() { break; }
                 }
                 Some(_) = last_scan_changed.next() => {
-                    if events.send(NetworkSignal::ScanCompleted).is_err() { break; }
+                    if events.send(NetworkSignal::ScanCompleted(id.clone())).is_err() { break; }
                 }
                 else => break,
             }
@@ -228,7 +245,7 @@ pub(super) fn forward<A, B>(
         }
     };
     let mut changes = stream::select(added.map(drop), removed.map(drop));
-    tokio::spawn(async move { while changes.next().await.is_some() && events.send(signal).is_ok() {} });
+    tokio::spawn(async move { while changes.next().await.is_some() && events.send(signal.clone()).is_ok() {} });
 }
 
 impl NetworkController {
@@ -245,16 +262,18 @@ impl NetworkController {
         };
         let unchanged = {
             let current = self.devices.lock().expect("mutex poisoned");
-            current.wifi.as_ref().map(|wifi| &wifi.device_path) == wifi.as_ref().map(|wifi| &wifi.device_path)
+            current.wifi.iter().map(|wifi| &wifi.device_path).eq(wifi.iter().map(|wifi| &wifi.device_path))
                 && current.ethernet.iter().map(|device| &device.path).eq(ethernet.iter().map(|device| &device.path))
         };
         if unchanged {
             return;
         }
-        debug!("device set changed: wifi={} ethernet={}", wifi.is_some(), ethernet.len());
-        let watchers = watch_devices(&self.connection, wifi.as_ref(), &ethernet, &self.events);
+        debug!("device set changed: wifi={} ethernet={}", wifi.len(), ethernet.len());
+        let watchers = watch_devices(&self.connection, &wifi, &ethernet, &self.events);
+        let live: Vec<String> = wifi.iter().map(|device| device.id.clone()).collect();
         let previous =
             std::mem::replace(&mut *self.devices.lock().expect("mutex poisoned"), Devices { wifi, ethernet, watchers });
+        self.access_points.lock().expect("mutex poisoned").retain(|id, _| live.contains(id));
         for watcher in previous.watchers {
             watcher.abort();
         }

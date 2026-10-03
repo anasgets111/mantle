@@ -30,7 +30,7 @@
 ---One scanned network in `available_networks`.
 ---@field active boolean The Wi-Fi device is associated with this SSID.
 ---@field band string `"2.4 GHz"`, `"5 GHz"`, `"6 GHz"`, or empty for a frequency outside those bands.
----@field saved boolean A saved NetworkManager profile names this SSID, so `connect` asks for no password.
+---@field saved boolean A saved NetworkManager profile compatible with this device names this SSID.
 ---@field secure boolean Needs a key: WEP, WPA or RSN.
 ---@field ssid string Network name, `""` for hidden networks; one entry per SSID, from its strongest access point.
 ---@field strength integer Signal strength, `0` to `100`.
@@ -376,6 +376,20 @@
 ---@alias Urgency "low"|"normal"|"critical"
 ---Notification urgency, also the `set_sound` tier.
 
+---@class WifiDeviceInfo
+---One Wi-Fi interface, with its own scan, join, address and access points. `connected` means
+---activated here, while the flat `connected` means a default route; `ssid` never uses `"Ethernet"`.
+---@field available_networks AccessPointInfo[] Visible networks on this interface: one per SSID, at most 20, ordered associated, then saved, then strongest.
+---@field connect_error? JoinError Failed join on this interface, or `nil`; cleared by the next join or `cancel_connect`.
+---@field connected boolean This interface has an activated connection.
+---@field connecting_ssid? string SSID of this interface's current join, or `nil`.
+---@field id string Interface name, such as `"wlan0"`; pass it to actions ending in `_device`.
+---@field password_ssid? string SSID awaiting a password on this interface, or `nil`.
+---@field scanning boolean A scan is in flight on this interface.
+---@field ssid? string Associated SSID, or `nil`.
+---@field strength integer Associated access point strength, `0` to `100`.
+---@field wifi_ip? string IPv4 address without prefix, or `nil`.
+
 ---@class WindowEntry
 ---One toplevel window. `nil` optional fields are ones the backend does not report.
 ---@field app_id string Wayland `app_id` (Hyprland's `class`); empty when unset.
@@ -474,22 +488,23 @@
 
 ---@class NetworkState
 ---`mantle.network`'s payload (ADR-0037).
----@field available_networks AccessPointInfo[] NetworkManager's visible networks, re-read on every change: one per SSID, at most 20, ordered associated, then saved, then strongest. `{}` without Wi-Fi hardware.
----@field connect_error? JoinError The last failed `connect`, or `nil` before any or after a success. Kept until the next `connect`, `cancel_connect` or `abort_connect`; check its `ssid` before showing it.
+---@field available_networks AccessPointInfo[] The primary Wi-Fi device's visible networks: one per SSID, at most 20, ordered associated, then saved, then strongest. `{}` without Wi-Fi hardware.
+---@field connect_error? JoinError The last failed join on any Wi-Fi device, or `nil` before any or after a success. Kept until the next `connect`, `cancel_connect` or `abort_connect`; check its `ssid` before showing it.
 ---@field connected boolean A connection carries the default route; `false` means offline.
----@field connecting_ssid? string The SSID `connect` is joining, or `nil`; clears on a verdict or `abort_connect`.
+---@field connecting_ssid? string The current join's SSID on any Wi-Fi device, or `nil`; clears on a verdict or `abort_connect`.
 ---@field ethernet_enabled boolean A wired device is activated; `set_ethernet_enabled`'s read-back, unlike carrier.
 ---@field ethernet_ip? string The first activated wired device's IPv4 address without prefix, or `nil`.
 ---@field ethernet_present boolean At least one wired device exists, cable or not.
 ---@field ethernet_speed? integer That wired device's link speed in Mb/s; `nil` when unknown or none is activated.
 ---@field networking_enabled boolean NetworkManager networking is on (`NetworkingEnabled`).
----@field password_ssid? string The SSID whose `connect` waits for a password from a `network`/`connect` secure field, or `nil`. Also set after a rejected key; cleared when a join starts or by `cancel_connect`.
----@field scanning boolean A scan is in flight, from the moment `scan` is accepted.
+---@field password_ssid? string The join SSID awaiting a password from a `network`/`connect` secure field on any device, or `nil`. Also set after a rejected key; cleared when a join starts or by `cancel_connect`.
+---@field scanning boolean A scan is in flight on the primary Wi-Fi device.
 ---@field ssid? string `"Ethernet"` when the default route is wired, else the associated SSID, else `nil`. An association still getting an address has an `ssid` while `connected` is `false`.
----@field strength integer The associated network's `strength`, `0` to `100`; `0` without a Wi-Fi association.
+---@field strength integer The primary Wi-Fi device's associated network strength, `0` to `100`.
+---@field wifi_devices WifiDeviceInfo[] Every Wi-Fi interface, primary first. IDs are interface names, never NetworkManager object paths.
 ---@field wifi_enabled boolean Wi-Fi radio power (`WirelessEnabled`); can be `true` with no Wi-Fi hardware, see `wifi_present`.
----@field wifi_ip? string The Wi-Fi device's IPv4 address without prefix, or `nil`.
----@field wifi_present boolean A Wi-Fi device exists.
+---@field wifi_ip? string The primary Wi-Fi device's IPv4 address without prefix, or `nil`.
+---@field wifi_present boolean At least one Wi-Fi device exists.
 
 ---@class SecretsState
 ---@field entries table<string, SecretStatus> Public lookup names and the result of their latest write.
@@ -677,11 +692,14 @@ local IdleCapability = {}
 ---@field set_wifi_enabled fun(self: NetworkCapability, enabled: boolean) Powers the Wi-Fi radio.
 ---@field set_ethernet_enabled fun(self: NetworkCapability, enabled: boolean) `false` disconnects every wired device; `true` activates each one's autoconnect profile, and a device without one stays down.
 ---@field scan fun(self: NetworkCapability) Requests a Wi-Fi scan; a no-op without Wi-Fi hardware.
+---@field scan_device fun(self: NetworkCapability, id: string) Requests a scan on the named Wi-Fi interface.
 ---@field connect fun(self: NetworkCapability, ssid: string, hidden: boolean) Joins a network. Without a saved profile, a secured, `hidden` or out-of-range one sets `password_ssid` and waits for a key.
----@field cancel_connect fun(self: NetworkCapability) Drops the password request `password_ssid` names; a join already running continues.
----@field abort_connect fun(self: NetworkCapability) Stops the join `connecting_ssid` names, deleting a profile the join created.
+---@field connect_device fun(self: NetworkCapability, ssid: string, hidden: boolean, id: string) Joins through the named Wi-Fi interface; a removed ID is never retargeted.
+---@field cancel_connect fun(self: NetworkCapability) Drops the one current password request, on any Wi-Fi device; a join already running continues.
+---@field abort_connect fun(self: NetworkCapability) Stops the one current join on any Wi-Fi device, deleting a profile the join created.
 ---@field forget fun(self: NetworkCapability, ssid: string) Deletes every saved profile for this SSID.
 ---@field disconnect_wifi fun(self: NetworkCapability) Disconnects Wi-Fi; NetworkManager does not autoconnect it again until the next join.
+---@field disconnect_wifi_device fun(self: NetworkCapability, id: string) Disconnects the named Wi-Fi interface.
 
 ---[docs](https://anasgets111.github.io/mantle/capabilities/secrets.html)
 ---@class SecretsCapability: ReadOnlyCapability<SecretsState>, userdata

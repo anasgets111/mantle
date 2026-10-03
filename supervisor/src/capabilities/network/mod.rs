@@ -9,9 +9,6 @@
 //! A device added or removed after startup, such as a USB adapter, rescans the device set and
 //! restarts its watchers ([`NetworkSignal::DevicesChanged`]).
 //!
-//! ponytail: only the first Wi-Fi device from `GetAllDevices` is tracked. Multiple adapters need a
-//! device selector in `available_networks`/`scan`/`connect`; none exists.
-
 pub use shared::state::network::{AccessPointInfo, JoinError, NetworkState};
 
 use zbus::zvariant::ObjectPath;
@@ -33,22 +30,25 @@ use shared::action::NetworkAction;
 /// `secure_submit(network, connect)` supplies password bytes (ADR-0029).
 #[derive(Debug, Clone, PartialEq)]
 pub struct PendingNetworkConnect {
+    pub(super) attempt: u64,
     pub ssid: String,
     pub hidden: bool,
+    pub device_id: String,
+    pub device_path: Option<zbus::zvariant::OwnedObjectPath>,
 }
 
 /// What forwarders report to the network worker; `build_state` makes the payload with a fresh D-Bus
 /// round trip.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NetworkSignal {
     /// Any non-`scanning` field change: AP set, association, device state, or radio. All trigger
     /// the same full re-derive (ADR-0029), so one variant is enough.
     Changed,
     /// `LastScan` changed, or NetworkManager refused `RequestScan`. Either way no scan is in flight.
-    ScanCompleted,
-    /// Sent by [`NetworkController::mark_scanning`] before `RequestScan` completes, through
+    ScanCompleted(String),
+    /// Sent by [`NetworkController::scan_device`] before `RequestScan` completes, through
     /// the same channel for FIFO ordering.
-    ScanStarted,
+    ScanStarted(String),
     /// A saved profile was added or removed, so the saved-SSID cache is stale.
     SavedChanged,
     /// NetworkManager added or removed a device, so the device set is stale.
@@ -75,13 +75,13 @@ pub fn dispatch(controller: &NetworkController, envelope: &shared::CommandEnvelo
             tokio::spawn(async move { controller.set_ethernet_enabled(enabled).await });
         }
         NetworkAction::Scan => {
-            controller.mark_scanning();
-            tokio::spawn(async move { controller.scan().await });
+            tokio::spawn(async move { controller.scan_device(None).await });
         }
-        NetworkAction::Connect { ssid, hidden } => {
-            controller.stash_connect_intent(PendingNetworkConnect { ssid, hidden });
-            tokio::spawn(async move { controller.resolve_connect_intent().await });
+        NetworkAction::ScanDevice { id } => {
+            tokio::spawn(async move { controller.scan_device(Some(&id)).await });
         }
+        NetworkAction::Connect { ssid, hidden } => controller.stash_connect_intent(ssid, hidden, None),
+        NetworkAction::ConnectDevice { ssid, hidden, id } => controller.stash_connect_intent(ssid, hidden, Some(&id)),
         // Not spawned: it touches no D-Bus, and a late cancel would resurrect the prompt.
         NetworkAction::CancelConnect => controller.cancel_connect(),
         NetworkAction::AbortConnect => controller.abort_connect(),
@@ -89,7 +89,10 @@ pub fn dispatch(controller: &NetworkController, envelope: &shared::CommandEnvelo
             tokio::spawn(async move { controller.forget(&ssid).await });
         }
         NetworkAction::DisconnectWifi => {
-            tokio::spawn(async move { controller.disconnect_wifi().await });
+            tokio::spawn(async move { controller.disconnect_wifi_device(None).await });
+        }
+        NetworkAction::DisconnectWifiDevice { id } => {
+            tokio::spawn(async move { controller.disconnect_wifi_device(Some(&id)).await });
         }
     }
 }

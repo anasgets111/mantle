@@ -5,6 +5,7 @@ use std::collections::HashMap;
 
 use zbus::zvariant::{OwnedObjectPath, OwnedValue, Value};
 
+use super::devices::WifiDevice;
 use super::proxies::{DeviceProxy, SettingsConnectionProxy};
 use super::{NetworkController, root_object_path};
 use crate::capabilities::bind;
@@ -28,11 +29,29 @@ pub(super) fn profile_ssid(settings: &HashMap<String, HashMap<String, OwnedValue
         .and_then(|value| Vec::<u8>::try_from(value.clone()).ok())
 }
 
-/// Shapes a saved profile for `SettingsConnection.UpdateUnsaved`, changing only its PSK.
-/// The update replaces the whole profile, so static addresses, route metrics, and autoconnect
-/// priority pass through; an open profile gains a `wpa-psk` section. `None` when the profile's
-/// `key-mgmt` takes no PSK: forcing `wpa-psk` downgraded SAE, and 802.1X would lose the password
-/// `GetSettings` omits until a secret agent exists (ADR-0029).
+/// ponytail: the fallback misses NM policy restrictions; upgrade path: query NM compatibility
+/// for hidden or out-of-range SSIDs.
+fn profile_matches_device(
+    settings: &HashMap<String, HashMap<String, OwnedValue>>,
+    id: &str,
+    mac: Option<&str>,
+) -> bool {
+    let field =
+        |section: &str, key: &str| settings.get(section)?.get(key).and_then(|v| String::try_from(v.clone()).ok());
+    if field("connection", "type").is_some_and(|kind| kind != "802-11-wireless")
+        || field("connection", "interface-name").is_some_and(|name| name != id)
+    {
+        return false;
+    }
+    let binding = settings.get("802-11-wireless").and_then(|section| section.get("mac-address"));
+    binding.is_none_or(|binding| {
+        mac.and_then(|mac| mac.split(':').map(|part| u8::from_str_radix(part, 16)).collect::<Result<Vec<_>, _>>().ok())
+            .is_some_and(|bytes| Vec::<u8>::try_from(binding.clone()).ok().as_ref() == Some(&bytes))
+    })
+}
+
+/// Changes only the PSK in a full `UpdateUnsaved` dict. Rejects key management modes that take
+/// no PSK; forcing WPA-PSK would downgrade SAE or break 802.1X.
 pub(super) fn merge_psk<'a>(
     settings: &'a HashMap<String, HashMap<String, OwnedValue>>,
     psk: &'a str,
@@ -66,12 +85,32 @@ pub(super) struct SavedProfile {
 }
 
 impl NetworkController {
-    /// Every saved Wi-Fi profile for `ssid`, paired with the settings dict that matched it.
-    /// `context` identifies the caller in logs. Plural because `forget` deletes all while
-    /// `connect` takes the first; one `ListConnections` walk serves both.
+    /// Saved Wi-Fi profiles for `ssid`, with settings and the caller's log context.
     pub(super) async fn saved_profiles_for_ssid(&self, ssid: &str, context: &str) -> Vec<SavedProfile> {
         let mut profiles = self.wifi_profiles(&format!("{context}({ssid:?})")).await;
         profiles.retain(|profile| profile_ssid(&profile.settings).is_some_and(|bytes| bytes == ssid.as_bytes()));
+        profiles
+    }
+
+    pub(super) async fn saved_profiles_for_device(
+        &self,
+        ssid: &str,
+        wifi: &WifiDevice,
+        hidden: bool,
+    ) -> Vec<SavedProfile> {
+        let mut profiles =
+            self.read_profiles(wifi.device.available_connections().await.unwrap_or_default(), "connect").await;
+        profiles.retain(|profile| profile_ssid(&profile.settings).is_some_and(|bytes| bytes == ssid.as_bytes()));
+        if !profiles.is_empty() {
+            return profiles;
+        }
+        let in_range = self.access_point(&wifi.id, ssid).is_some();
+        if !hidden && in_range {
+            return profiles;
+        }
+        let mac = wifi.wireless.perm_hw_address().await.ok();
+        profiles = self.saved_profiles_for_ssid(ssid, "connect").await;
+        profiles.retain(|profile| profile_matches_device(&profile.settings, &wifi.id, mac.as_deref()));
         profiles
     }
 
@@ -117,7 +156,7 @@ impl NetworkController {
             .wifi_profiles("saved networks")
             .await
             .iter()
-            .filter_map(|profile| profile_ssid(&profile.settings))
+            .filter_map(|profile| profile_ssid(&profile.settings).map(|ssid| (profile.path.clone(), ssid)))
             .collect();
         *self.saved_ssids.lock().expect("mutex poisoned") = ssids;
     }
@@ -186,11 +225,21 @@ mod tests {
     }
 
     #[test]
-    fn profile_ssid_reads_the_wireless_sections_ssid_bytes() {
+    fn profile_ssid_and_device_bindings_filter_saved_connections() {
         let settings =
             settings_with("802-11-wireless", "ssid", OwnedValue::try_from(Value::from(b"HomeWifi".to_vec())).unwrap());
         assert_eq!(profile_ssid(&settings).as_deref(), Some(&b"HomeWifi"[..]));
         assert_eq!(profile_ssid(&HashMap::new()), None, "a profile without a wireless section has no SSID");
+        let named = settings_with("connection", "interface-name", OwnedValue::try_from(Value::from("wlan1")).unwrap());
+        assert!(!profile_matches_device(&named, "wlan0", None));
+        assert!(profile_matches_device(&named, "wlan1", None));
+        let bound = settings_with(
+            "802-11-wireless",
+            "mac-address",
+            OwnedValue::try_from(Value::from(vec![0x12u8, 0x34])).unwrap(),
+        );
+        assert!(!profile_matches_device(&bound, "wlan1", None));
+        assert!(profile_matches_device(&bound, "wlan1", Some("12:34")));
     }
 
     #[test]

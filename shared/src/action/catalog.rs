@@ -260,17 +260,23 @@ pub enum NetworkAction {
     SetEthernetEnabled { enabled: bool },
     /// Requests a Wi-Fi scan; a no-op without Wi-Fi hardware.
     Scan,
+    /// Requests a scan on the named Wi-Fi interface.
+    ScanDevice { id: String },
     /// Joins a network. Without a saved profile, a secured, `hidden` or out-of-range one sets
     /// `password_ssid` and waits for a key.
     Connect { ssid: String, hidden: bool },
-    /// Drops the password request `password_ssid` names; a join already running continues.
+    /// Joins through the named Wi-Fi interface; a removed ID is never retargeted.
+    ConnectDevice { ssid: String, hidden: bool, id: String },
+    /// Drops the one current password request, on any Wi-Fi device; a join already running continues.
     CancelConnect,
-    /// Stops the join `connecting_ssid` names, deleting a profile the join created.
+    /// Stops the one current join on any Wi-Fi device, deleting a profile the join created.
     AbortConnect,
     /// Deletes every saved profile for this SSID.
     Forget { ssid: String },
     /// Disconnects Wi-Fi; NetworkManager does not autoconnect it again until the next join.
     DisconnectWifi,
+    /// Disconnects the named Wi-Fi interface.
+    DisconnectWifiDevice { id: String },
 }
 
 #[derive(Debug, serde::Deserialize)]

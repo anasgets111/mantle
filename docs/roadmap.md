@@ -23,7 +23,7 @@ Wanted, but each needs a consumer or a decision first.
 | Greeter | Mantle as a greetd client under cage or sway. Needs multi-prompt PAM and a session-launch command | — |
 | Large lists | Every item up to `limit` is laid out on every pass and built again whenever anything it read changes, visible or not. Virtualization would need `key` to be mandatory, which cannot be enforced | 0191, 0219 |
 | Output actions | `windows` has five actions; screens are read-only. Pick the actions, then settle niri/Hyprland differences and revert | 0119, 0247 |
-| Service depth | Audio has no per-channel levels or peak metering; UPower reads only `DisplayDevice`; `network` tracks only the first Wi-Fi device. Extend for concrete controls | — |
+| Service depth | Audio has no per-channel levels or peak metering; UPower reads only `DisplayDevice`. Extend for concrete controls | — |
 | External IPC | `set`/`toggle` answer only applied or refused; `call` returns only what the action returns. No generic state read or subscription | 0197 |
 | Process control | Start, stream and signal exist. No child stdin, cwd or env | 0175, 0188 |
 | Text field editing | The secure field edits only at its end and has no IME; the caret has no stop inside a ligature | 0236, 0312 |

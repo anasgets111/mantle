@@ -20,7 +20,7 @@ text {
 | Contract | Behavior |
 | :--- | :--- |
 | Updates | Every manager, device-list, device-state, access-point, association and saved-profile change re-reads the whole state from NetworkManager. A hotplugged adapter rescans the device set |
-| Devices | Only the first Wi-Fi device is tracked. Wired fields describe the first activated wired device |
+| Devices | `wifi_devices` lists each Wi-Fi interface by name, primary first. Flat association, scan, address and access-point fields use the primary; flat join fields describe the one join on any device. Old actions use the primary. Wired fields describe the first activated wired device |
 | Toggles | Networking through `Enable`, Wi-Fi through `WirelessEnabled` |
 | Scan | `RequestScan`. `scanning` turns `true` on the call and `false` when `LastScan` moves or NetworkManager refuses |
 | Access points | The associated one's strength is live. The others' are read when they appear and after each scan, when NetworkManager updates them |
@@ -28,6 +28,8 @@ text {
 | Join verdict | Watched for up to 45 s. A rejected key sets `password_ssid` again. A new network's profile, key included, is saved when the join starts and stays after a rejection; a key retyped for a saved profile reaches disk only once NetworkManager accepts it |
 | Abort | `abort_connect` deletes a profile the join created, else deactivates the join |
 | Missing | Stays `nil`. The next generation's first read retries |
+
+Use `scan_device(id)`, `connect_device(ssid, hidden, id)` and `disconnect_wifi_device(id)` to target an entry in `wifi_devices`. An unknown or removed ID is never switched to another device: all three log a warning and return. Without Wi-Fi hardware, `scan` and `disconnect_wifi` do nothing; `connect` reports an error in the flat `connect_error` field. A password prompt keeps its selected device through submission and activation. Only one password prompt or join attempt is tracked across all devices. Starting another settles the previous join first.
 
 ## How do I…
 

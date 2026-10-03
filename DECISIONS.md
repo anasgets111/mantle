@@ -7490,3 +7490,17 @@ so Cancel, Release or BlueZ owner loss during the wait cannot resurrect it, and 
 would replace comes back if the request is refused or cancelled. The agent registers as
 `KeyboardDisplay`. zbus serializes the reply from an owned `String` (or `u32`) into its own message
 buffer; neither is zeroized.
+
+## 0315. Wi-Fi devices are named by interface and share one join
+
+`network.wifi_devices` lists every Wi-Fi device keyed by its interface name; NM object paths stay
+internal, since they change across NM restarts and mean nothing to a config. The flat scan and
+connection fields and the original actions describe one device, the primary: the one holding the
+default route, else an activated one, else the first; it is listed first and the rest keep their
+order. Per-device actions take an id and refuse an unknown or removed one rather than retarget it.
+Only one join (activation plus password prompt) exists at a time across devices, so the flat join
+fields describe that join on whichever device it runs: a new join first stops the previous one as
+`abort` does, then resolves, and an attempt id makes a superseded join's verdict a no-op. Per-device
+joins would need a prompt slot per device and a way for a config to tell prompts apart, for a rare
+case. A saved profile NM lists in the device's `AvailableConnections` wins; interface and MAC
+matching is the fallback for hidden or out-of-range networks.

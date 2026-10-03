@@ -14,14 +14,10 @@ use super::proxies::{ACTIVE_STATE_ACTIVATED, ACTIVE_STATE_DEACTIVATED, SettingsC
 use super::{NetworkController, NetworkSignal, PendingNetworkConnect, root_object_path};
 use crate::capabilities::bind;
 
-/// [`NetworkController::watch_activation`]'s backstop timeout. NetworkManager normally gives up
-/// well inside 45s and reports `StateChanged`; this covers an activation object that stops
-/// answering without pre-empting NM or leaving a spinner stuck.
+/// Backstop for an activation that stops answering without a verdict.
 const ACTIVATION_CEILING: std::time::Duration = std::time::Duration::from_secs(45);
 
-/// `Connection.Active`, kept out of `proxies.rs`: zbus names signal types after the D-Bus member,
-/// so this `StateChanged` would redefine `Device`'s there. The signal is renamed off the `state`
-/// property's `receive_state_changed`.
+/// Kept separate from `Device` because zbus names both signal types `StateChanged`.
 #[zbus::proxy(
     interface = "org.freedesktop.NetworkManager.Connection.Active",
     default_service = "org.freedesktop.NetworkManager"
@@ -35,47 +31,34 @@ trait ActiveConnection {
 }
 
 impl NetworkController {
+    pub(super) fn pending_wifi(&self, pending: &PendingNetworkConnect) -> Option<WifiDevice> {
+        self.wifi(Some(&pending.device_id)).filter(|wifi| Some(&wifi.device_path) == pending.device_path.as_ref())
+    }
+
     /// Decides whether a stashed `network:connect` can complete or needs a password.
     ///
-    /// A saved profile or open AP connects on click with no typed secret. Only a secured
-    /// network without a profile sets [`NetworkState::password_ssid`](super::NetworkState::password_ssid) and waits for
-    /// `secure_submit(network, connect)`.
-    ///
-    /// Without those branches, `network:connect` only stashes and every click leaves an intent
-    /// nothing consumes.
-    ///
-    /// Hidden networks take the password branch because no in-range AP reports their security.
-    /// Guessing wrong costs one
-    /// keystroke on an open network, versus an unjoinable secured one.
-    ///
-    /// The SSID is looked up again in `activate_intent`, an extra `ListConnections` walk of a few
-    /// profiles. Passing the match through `connect` saves about a millisecond at the cost of three
-    /// signatures.
+    /// Saved profiles and open APs connect without a key. Unknown security prompts for one.
+    /// Hidden SSIDs have unknown security. Activation checks profiles again after the prompt.
     pub async fn resolve_connect_intent(&self) {
         let Some(pending) = self.pending_intent() else {
             return;
         };
-        let saved = !self.saved_profiles_for_ssid(&pending.ssid, "connect").await.is_empty();
-        // No in-range AP means secured, like a hidden SSID: nothing can say otherwise.
-        let secure = pending.hidden
-            || self
-                .state
-                .lock()
-                .unwrap()
-                .available_networks
-                .iter()
-                .find(|ap| ap.ssid == pending.ssid)
-                .is_none_or(|ap| ap.secure);
+        let Some(wifi) = self.pending_wifi(&pending) else {
+            if let Some(pending) = self.take_current_intent(&pending) {
+                self.connect(pending, shared::Zeroizing::new(Vec::new())).await;
+            }
+            return;
+        };
+        let saved = !self.saved_profiles_for_device(&pending.ssid, &wifi, pending.hidden).await.is_empty();
+        // Unknown AP security takes the password branch.
+        let secure = pending.hidden || self.access_point(&pending.device_id, &pending.ssid).is_none_or(|ap| ap.secure);
         if !saved && secure {
-            // Log the fork: saved-profile and security facts come from different sources, so a
-            // missing prompt otherwise leaves three plausible causes.
             debug!("connect {:?}: saved={saved} secure={secure}, asking for a password", pending.ssid);
             self.request_password(&pending);
             return;
         }
         debug!("connect {:?}: saved={saved} secure={secure}, connecting directly", pending.ssid);
-        // Only this click's intent: another connect may have replaced it while the lookup was on the
-        // wire, and that one resolves itself.
+        // A later click may have replaced the intent during the profile read.
         let taken = self.take_current_intent(&pending);
         if let Some(pending) = taken {
             self.connect(pending, shared::Zeroizing::new(Vec::new())).await;
@@ -95,9 +78,8 @@ impl NetworkController {
         }
     }
 
-    /// Stops an aborted join. It deletes a profile the join created, which also ends the activation
-    /// and leaves no half-typed key saved; a join through an existing profile is only deactivated.
-    async fn stop(&self, in_flight: &InFlight) {
+    /// Deletes a profile this join created; otherwise deactivates its connection.
+    pub(super) async fn stop(&self, in_flight: &InFlight) {
         let result = match &in_flight.created {
             Some(created) => match bind::<SettingsConnectionProxy>(&self.connection, created.clone()).await {
                 Ok(connection) => connection.delete().await,
@@ -110,14 +92,11 @@ impl NetworkController {
         }
     }
 
-    /// Writes a typed key to disk once NM accepted the join. `UpdateUnsaved` held it in memory until
-    /// then, so a rejected key never replaces a good one on disk, where `GetSettings` could not read
-    /// it back. No-op for a join that typed no key.
+    /// Saves a typed key only after NM accepts the join.
     ///
     /// ponytail: a rejected or aborted key stays in memory, shadowing the good one, until NM
     /// restarts or a later key is accepted. `ReloadConnections` would drop it, but polkit asks
-    /// `auth_admin_keep` for it, an admin password per typo. Upgrade path: `GetSecrets` before the
-    /// update, restored on failure.
+    /// `auth_admin_keep` for it. Upgrade path: restore the old key from `GetSecrets`.
     async fn save_typed_key(&self, in_flight: &InFlight) {
         let Some(profile) = &in_flight.unsaved else { return };
         let result = match bind::<SettingsConnectionProxy>(&self.connection, profile.clone()).await {
@@ -129,18 +108,11 @@ impl NetworkController {
         }
     }
 
-    /// Turns `pending` and `secret` (empty open, non-empty WPA-PSK) into
-    /// `AddAndActivateConnection2`'s dict. The caller `mem::take`s `secret` from the wire frame,
-    /// making this function its owner (ADR-0005/ADR-0014).
-    ///
-    /// `Zeroizing`, not a bare `Vec`, for the reason `pam_worker`'s two entry points take one: this
-    /// runs in a spawned task, and cancelling it mid-activation drops the future without running
-    /// anything written after the `await`.
+    /// Owns the secret in `Zeroizing` so cancellation before activation drops it safely.
     pub async fn connect(&self, pending: PendingNetworkConnect, secret: shared::Zeroizing<Vec<u8>>) {
-        let attempt = self.begin_connect(&pending.ssid);
+        let Some(attempt) = self.begin_connect(&pending) else { return };
         let result = self.connect_inner(&pending, &secret).await;
-        // Straight after the read, not at end of scope: the reporting below logs and takes a lock,
-        // and none of it needs the plaintext alive.
+        // Drop plaintext before reporting the result.
         drop(secret);
         match result {
             // NM accepted the request, not completed it; the activation reports the verdict.
@@ -153,35 +125,39 @@ impl NetworkController {
         }
     }
 
-    /// Watches one activation in the background. A rejected key reopens the password prompt, or every
-    /// later click would reuse the saved bad key. Not for 802.1X, whose profile never takes a typed
-    /// PSK, so the prompt would loop.
+    /// Reopens the prompt on a rejected key, except for 802.1X, which takes no typed PSK.
     fn watch_activation(&self, attempt: u64, in_flight: InFlight, pending: PendingNetworkConnect) {
         let controller = self.clone();
         tokio::spawn(async move {
             let outcome =
-                tokio::time::timeout(ACTIVATION_CEILING, controller.activation_outcome(&in_flight.active)).await.ok();
+                tokio::time::timeout(ACTIVATION_CEILING, controller.activation_outcome(&in_flight.active, &pending))
+                    .await
+                    .ok();
             let activated = matches!(outcome, Some(Ok(())));
             let (error, rejected_key) = activation_verdict(outcome);
             let ask_password = rejected_key
-                && !controller
-                    .saved_profiles_for_ssid(&pending.ssid, "connect")
-                    .await
-                    .iter()
-                    .any(|profile| profile.settings.contains_key("802-1x"));
-            // Saved only once this attempt is confirmed current: an abort or a newer join between
-            // the verdict and here must not persist the key it typed.
+                && match controller.pending_wifi(&pending) {
+                    Some(wifi) => !controller
+                        .saved_profiles_for_device(&pending.ssid, &wifi, pending.hidden)
+                        .await
+                        .iter()
+                        .any(|profile| profile.settings.contains_key("802-1x")),
+                    None => false,
+                };
+            // A superseded attempt must not persist its key.
             if controller.finish_connect(attempt, &pending, error, ask_password) && activated {
                 controller.save_typed_key(&in_flight).await;
             }
         });
     }
 
-    /// `Ok` on `ACTIVATED`. `Err` on deactivation, carrying the Wi-Fi device's last `StateChanged`
-    /// reason. The active connection's own reason cannot say a key was rejected: NM reports every
-    /// device failure to it as `DEVICE_DISCONNECTED` (`nm-act-request.c`). NM emits the device
-    /// signal first (`_set_state_full`), and `biased` reads it first.
-    async fn activation_outcome(&self, active: &OwnedObjectPath) -> Result<(), Option<u32>> {
+    /// Returns the device's failure reason; the active connection reports only disconnection.
+    /// NM emits the device signal first, so `biased` reads it before the verdict.
+    async fn activation_outcome(
+        &self,
+        active: &OwnedObjectPath,
+        pending: &PendingNetworkConnect,
+    ) -> Result<(), Option<u32>> {
         let proxy = match bind::<ActiveConnectionProxy>(&self.connection, active.clone()).await {
             Ok(proxy) => proxy,
             Err(err) => {
@@ -189,7 +165,9 @@ impl NetworkController {
                 return Err(None);
             }
         };
-        let Some(wifi) = self.wifi() else { return Err(None) };
+        let Some(wifi) = self.pending_wifi(pending) else {
+            return Err(None);
+        };
         // Use the signals, not `receive_state_changed()`: the property stream gives no reason.
         let (mut changes, mut device_changes) =
             match tokio::try_join!(proxy.receive_active_state_changed(), wifi.device.receive_device_state_changed()) {
@@ -200,11 +178,8 @@ impl NetworkController {
                 }
             };
 
-        // Subscription follows activation, so a verdict can land in the gap. Read the property
-        // once.
-        //
-        // ponytail: a failure in that gap loses its reason and reports the generic line; only the
-        // signal carries it. Success does not, and is the likelier race.
+        // Subscription follows activation; read the property to catch an early verdict.
+        // ponytail: an early failure loses its reason. Upgrade path: subscribe before activation.
         match proxy.state().await {
             Ok(ACTIVE_STATE_ACTIVATED) => return Ok(()),
             Ok(ACTIVE_STATE_DEACTIVATED) => return Err(None),
@@ -216,8 +191,7 @@ impl NetworkController {
             tokio::select! {
                 biased;
                 Some(change) = device_changes.next() => {
-                    // Leaving FAILED, NM queues DISCONNECTED with reason NONE (`nm-device.c`), and
-                    // `biased` can drain both before the verdict; NONE must not erase the reason.
+                    // NM follows FAILED with DISCONNECTED(NONE); keep the failure reason.
                     if let Ok(args) = change.args()
                         && args.reason != 0
                     {
@@ -239,7 +213,8 @@ impl NetworkController {
     }
 
     async fn connect_inner(&self, pending: &PendingNetworkConnect, secret: &[u8]) -> Result<InFlight, ConnectError> {
-        let wifi = self.wifi().ok_or(ConnectError::NoWifiDevice)?;
+        let wifi =
+            self.pending_wifi(pending).ok_or_else(|| ConnectError::UnknownWifiDevice(pending.device_id.clone()))?;
         let mut intent = connection_intent(&pending.ssid, pending.hidden, secret)?;
         let result = self.activate_intent(&intent, &wifi).await;
         // Dicts borrow this plaintext PSK and are consumed now, so zeroize it explicitly
@@ -250,12 +225,10 @@ impl NetworkController {
         result
     }
 
-    /// Joins `intent`'s network, reusing a saved profile when present. NM does not deduplicate:
-    /// `AddAndActivateConnection2` accepts another profile with the same id and SSID, so creating
-    /// unconditionally left stale duplicates that autoconnect could choose. Returns the activation
-    /// where its outcome is reported, and the profile it created, if it created one.
+    /// Reuses a saved profile; NM would otherwise create duplicates for the same SSID.
     async fn activate_intent(&self, intent: &ConnectionIntent, wifi: &WifiDevice) -> Result<InFlight, ConnectError> {
-        let Some(saved) = self.saved_profiles_for_ssid(&intent.ssid, "connect").await.into_iter().next() else {
+        let Some(saved) = self.saved_profiles_for_device(&intent.ssid, wifi, intent.hidden).await.into_iter().next()
+        else {
             let dict = build_connection_dict(intent);
             let (created, active, _) = self
                 .nm
@@ -264,9 +237,7 @@ impl NetworkController {
             return Ok(InFlight { active, created: Some(created), unsaved: None });
         };
 
-        // A typed password corrects the saved key; otherwise a bad profile could only be forgotten
-        // and re-added. In memory only until NM accepts it (`save_typed_key`), so a typo never
-        // replaces a good key on disk.
+        // Keep a corrected key in memory until activation succeeds.
         let unsaved = match intent.psk.as_ref().and_then(|psk| merge_psk(&saved.settings, psk)) {
             Some(merged) => {
                 saved.connection.update_unsaved(merged).await?;
@@ -325,6 +296,58 @@ mod tests {
         async fn save(&self) {
             self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         }
+
+        fn get_settings(&self) -> HashMap<String, HashMap<String, zbus::zvariant::OwnedValue>> {
+            HashMap::from([(
+                "802-11-wireless".into(),
+                HashMap::from([(
+                    "ssid".into(),
+                    zbus::zvariant::OwnedValue::try_from(zbus::zvariant::Value::from(b"home".to_vec())).unwrap(),
+                )]),
+            )])
+        }
+    }
+
+    struct AvailableProfile(OwnedObjectPath);
+
+    #[zbus::interface(name = "org.freedesktop.NetworkManager.Device")]
+    impl AvailableProfile {
+        #[zbus(property)]
+        fn available_connections(&self) -> Vec<OwnedObjectPath> {
+            vec![self.0.clone()]
+        }
+    }
+
+    struct ListedProfiles(Vec<OwnedObjectPath>);
+
+    #[zbus::interface(name = "org.freedesktop.NetworkManager.Settings")]
+    impl ListedProfiles {
+        fn list_connections(&self) -> Vec<OwnedObjectPath> {
+            self.0.clone()
+        }
+    }
+
+    struct SlowDelete {
+        entered: std::sync::Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
+        release: tokio::sync::Mutex<tokio::sync::oneshot::Receiver<()>>,
+    }
+
+    #[zbus::interface(name = "org.freedesktop.NetworkManager.Settings.Connection")]
+    impl SlowDelete {
+        async fn delete(&self) {
+            self.entered.lock().unwrap().take().unwrap().send(()).unwrap();
+            let mut release = self.release.lock().await;
+            (&mut *release).await.unwrap();
+        }
+    }
+
+    async fn wifi(controller: &NetworkController, id: &str, path: OwnedObjectPath) -> WifiDevice {
+        WifiDevice {
+            id: id.into(),
+            device: bind::<DeviceProxy>(&controller.connection, path.clone()).await.unwrap(),
+            wireless: bind::<WirelessProxy>(&controller.connection, path.clone()).await.unwrap(),
+            device_path: path,
+        }
     }
 
     #[tokio::test]
@@ -339,6 +362,72 @@ mod tests {
         controller.save_typed_key(&typed).await;
 
         assert_eq!(saves.load(std::sync::atomic::Ordering::SeqCst), 1, "a join that typed no key saves nothing");
+    }
+
+    #[tokio::test]
+    async fn nm_available_profile_wins_over_another_saved_profile() {
+        const FIRST: &str = "/org/freedesktop/NetworkManager/Settings/1";
+        const CHOSEN: &str = "/org/freedesktop/NetworkManager/Settings/2";
+        let (controller, _receiver, _peer) = attempting(|peer| {
+            peer.serve_at(FIRST, FakeProfile(Arc::default()))?
+                .serve_at(CHOSEN, FakeProfile(Arc::default()))?
+                .serve_at(
+                    "/org/freedesktop/NetworkManager/Settings",
+                    ListedProfiles(vec![
+                        OwnedObjectPath::try_from(FIRST).unwrap(),
+                        OwnedObjectPath::try_from(CHOSEN).unwrap(),
+                    ]),
+                )?
+                .serve_at(DEVICE, AvailableProfile(OwnedObjectPath::try_from(CHOSEN).unwrap()))
+        })
+        .await;
+        let path = OwnedObjectPath::try_from(DEVICE).unwrap();
+        let wifi = wifi(&controller, "wlan0", path).await;
+        let profiles = controller.saved_profiles_for_device("home", &wifi, false).await;
+        assert_eq!(profiles.iter().map(|profile| profile.path.as_str()).collect::<Vec<_>>(), [CHOSEN]);
+    }
+
+    #[tokio::test]
+    async fn a_new_join_waits_for_the_old_profiles_deletion() {
+        const OLD: &str = "/org/freedesktop/NetworkManager/Settings/7";
+        let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+        let old = SlowDelete {
+            entered: std::sync::Mutex::new(Some(entered_tx)),
+            release: tokio::sync::Mutex::new(release_rx),
+        };
+        let (controller, mut events, _peer) = attempting(|peer| peer.serve_at(OLD, old)).await;
+        let first = PendingNetworkConnect {
+            attempt: 0,
+            ssid: "home".into(),
+            hidden: false,
+            device_id: String::new(),
+            device_path: None,
+        };
+        {
+            let mut join = controller.join.lock().unwrap();
+            join.stash(first);
+            let first = join.pending().unwrap();
+            join.take_current(&first);
+            let attempt = join.begin(&first).unwrap();
+            let accepted = InFlight { created: Some(OwnedObjectPath::try_from(OLD).unwrap()), ..joined(1) };
+            assert!(join.accept(attempt, &accepted));
+        }
+
+        controller.stash_connect_intent("bad".into(), false, Some("wlan9"));
+        let mut state = NetworkState::default();
+        controller.join.lock().unwrap().overlay(&mut state);
+        assert_eq!(state.connecting_ssid.as_deref(), Some("home"));
+
+        controller.stash_connect_intent("next".into(), false, None);
+        entered_rx.await.unwrap();
+        assert_eq!(events.recv().await, Some(NetworkSignal::Changed));
+        assert!(tokio::time::timeout(std::time::Duration::from_millis(30), events.recv()).await.is_err());
+        release_tx.send(()).unwrap();
+        assert_eq!(events.recv().await, Some(NetworkSignal::Changed));
+        assert_eq!(events.recv().await, Some(NetworkSignal::Changed));
+        controller.join.lock().unwrap().overlay(&mut state);
+        assert!(state.connect_error.is_some());
     }
 
     const ACTIVE: &str = "/org/freedesktop/NetworkManager/ActiveConnection/1";
@@ -367,15 +456,28 @@ mod tests {
     async fn a_rejected_key_keeps_its_reason_past_the_disconnect_nm_queues_after_it() {
         let (controller, _receiver, _peer) = attempting(|peer| peer.serve_at(ACTIVE, RejectedKey)).await;
         let device_path = OwnedObjectPath::try_from(DEVICE).unwrap();
-        let wifi = WifiDevice {
-            device: bind::<DeviceProxy>(&controller.connection, device_path.clone()).await.unwrap(),
-            wireless: bind::<WirelessProxy>(&controller.connection, device_path.clone()).await.unwrap(),
-            device_path,
-        };
-        controller.devices.lock().unwrap().wifi = Some(wifi);
+        let other_path = OwnedObjectPath::try_from("/org/freedesktop/NetworkManager/Devices/5").unwrap();
+        for (id, path) in [("wlan1", other_path.clone()), ("wlan0", device_path)] {
+            let device = wifi(&controller, id, path).await;
+            controller.devices.lock().unwrap().wifi.push(device);
+        }
 
-        let outcome = controller.activation_outcome(&OwnedObjectPath::try_from(ACTIVE).unwrap()).await;
+        let mut pending = PendingNetworkConnect {
+            attempt: 0,
+            ssid: "home".into(),
+            hidden: false,
+            device_id: "wlan0".into(),
+            device_path: Some(OwnedObjectPath::try_from(DEVICE).unwrap()),
+        };
+        let outcome = tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            controller.activation_outcome(&OwnedObjectPath::try_from(ACTIVE).unwrap(), &pending),
+        )
+        .await
+        .unwrap();
 
         assert_eq!(outcome, Err(Some(7)), "NO_SECRETS, so the password prompt comes back");
+        pending.device_path = Some(other_path);
+        assert!(matches!(controller.connect_inner(&pending, &[]).await, Err(ConnectError::UnknownWifiDevice(_))));
     }
 }

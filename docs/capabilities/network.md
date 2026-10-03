@@ -27,22 +27,23 @@ text {
 
 | Field | Type | Description |
 | --- | --- | --- |
-| `available_networks` | `AccessPointInfo[]` | NetworkManager's visible networks, re-read on every change: one per SSID, at most 20, ordered associated, then saved, then strongest. `{}` without Wi-Fi hardware. |
-| `connect_error?` | `JoinError` | The last failed `connect`, or `nil` before any or after a success. Kept until the next `connect`, `cancel_connect` or `abort_connect`; check its `ssid` before showing it. |
+| `available_networks` | `AccessPointInfo[]` | The primary Wi-Fi device's visible networks: one per SSID, at most 20, ordered associated, then saved, then strongest. `{}` without Wi-Fi hardware. |
+| `connect_error?` | `JoinError` | The last failed join on any Wi-Fi device, or `nil` before any or after a success. Kept until the next `connect`, `cancel_connect` or `abort_connect`; check its `ssid` before showing it. |
 | `connected` | `boolean` | A connection carries the default route; `false` means offline. |
-| `connecting_ssid?` | `string` | The SSID `connect` is joining, or `nil`; clears on a verdict or `abort_connect`. |
+| `connecting_ssid?` | `string` | The current join's SSID on any Wi-Fi device, or `nil`; clears on a verdict or `abort_connect`. |
 | `ethernet_enabled` | `boolean` | A wired device is activated; `set_ethernet_enabled`'s read-back, unlike carrier. |
 | `ethernet_ip?` | `string` | The first activated wired device's IPv4 address without prefix, or `nil`. |
 | `ethernet_present` | `boolean` | At least one wired device exists, cable or not. |
 | `ethernet_speed?` | `integer` | That wired device's link speed in Mb/s; `nil` when unknown or none is activated. |
 | `networking_enabled` | `boolean` | NetworkManager networking is on (`NetworkingEnabled`). |
-| `password_ssid?` | `string` | The SSID whose `connect` waits for a password from a `network`/`connect` secure field, or `nil`. Also set after a rejected key; cleared when a join starts or by `cancel_connect`. |
-| `scanning` | `boolean` | A scan is in flight, from the moment `scan` is accepted. |
+| `password_ssid?` | `string` | The join SSID awaiting a password from a `network`/`connect` secure field on any device, or `nil`. Also set after a rejected key; cleared when a join starts or by `cancel_connect`. |
+| `scanning` | `boolean` | A scan is in flight on the primary Wi-Fi device. |
 | `ssid?` | `string` | `"Ethernet"` when the default route is wired, else the associated SSID, else `nil`. An association still getting an address has an `ssid` while `connected` is `false`. |
-| `strength` | `integer` | The associated network's `strength`, `0` to `100`; `0` without a Wi-Fi association. |
+| `strength` | `integer` | The primary Wi-Fi device's associated network strength, `0` to `100`. |
+| `wifi_devices` | `WifiDeviceInfo[]` | Every Wi-Fi interface, primary first. IDs are interface names, never NetworkManager object paths. |
 | `wifi_enabled` | `boolean` | Wi-Fi radio power (`WirelessEnabled`); can be `true` with no Wi-Fi hardware, see `wifi_present`. |
-| `wifi_ip?` | `string` | The Wi-Fi device's IPv4 address without prefix, or `nil`. |
-| `wifi_present` | `boolean` | A Wi-Fi device exists. |
+| `wifi_ip?` | `string` | The primary Wi-Fi device's IPv4 address without prefix, or `nil`. |
+| `wifi_present` | `boolean` | At least one Wi-Fi device exists. |
 
 ### `AccessPointInfo`
 
@@ -52,7 +53,7 @@ One scanned network in `available_networks`.
 | --- | --- | --- |
 | `active` | `boolean` | The Wi-Fi device is associated with this SSID. |
 | `band` | `string` | `"2.4 GHz"`, `"5 GHz"`, `"6 GHz"`, or empty for a frequency outside those bands. |
-| `saved` | `boolean` | A saved NetworkManager profile names this SSID, so `connect` asks for no password. |
+| `saved` | `boolean` | A saved NetworkManager profile compatible with this device names this SSID. |
 | `secure` | `boolean` | Needs a key: WEP, WPA or RSN. |
 | `ssid` | `string` | Network name, `""` for hidden networks; one entry per SSID, from its strongest access point. |
 | `strength` | `integer` | Signal strength, `0` to `100`. |
@@ -66,6 +67,24 @@ A failed join, as `connect_error`.
 | `message` | `string` | Display text, such as `"wrong password"` or `"network not found"`. |
 | `ssid` | `string` | The network the join was for. |
 
+### `WifiDeviceInfo`
+
+One Wi-Fi interface, with its own scan, join, address and access points. `connected` means
+activated here, while the flat `connected` means a default route; `ssid` never uses `"Ethernet"`.
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `available_networks` | `AccessPointInfo[]` | Visible networks on this interface: one per SSID, at most 20, ordered associated, then saved, then strongest. |
+| `connect_error?` | `JoinError` | Failed join on this interface, or `nil`; cleared by the next join or `cancel_connect`. |
+| `connected` | `boolean` | This interface has an activated connection. |
+| `connecting_ssid?` | `string` | SSID of this interface's current join, or `nil`. |
+| `id` | `string` | Interface name, such as `"wlan0"`; pass it to actions ending in `_device`. |
+| `password_ssid?` | `string` | SSID awaiting a password on this interface, or `nil`. |
+| `scanning` | `boolean` | A scan is in flight on this interface. |
+| `ssid?` | `string` | Associated SSID, or `nil`. |
+| `strength` | `integer` | Associated access point strength, `0` to `100`. |
+| `wifi_ip?` | `string` | IPv4 address without prefix, or `nil`. |
+
 ## Actions
 
 Call each as `mantle.network:<action>(arguments...)`; `?` marks an argument you may omit.
@@ -76,18 +95,21 @@ Call each as `mantle.network:<action>(arguments...)`; `?` marks an argument you 
 | `set_wifi_enabled` | `enabled: boolean` | Powers the Wi-Fi radio. |
 | `set_ethernet_enabled` | `enabled: boolean` | `false` disconnects every wired device; `true` activates each one's autoconnect profile, and a device without one stays down. |
 | `scan` |  | Requests a Wi-Fi scan; a no-op without Wi-Fi hardware. |
+| `scan_device` | `id: string` | Requests a scan on the named Wi-Fi interface. |
 | `connect` | `ssid: string, hidden: boolean` | Joins a network. Without a saved profile, a secured, `hidden` or out-of-range one sets `password_ssid` and waits for a key. |
-| `cancel_connect` |  | Drops the password request `password_ssid` names; a join already running continues. |
-| `abort_connect` |  | Stops the join `connecting_ssid` names, deleting a profile the join created. |
+| `connect_device` | `ssid: string, hidden: boolean, id: string` | Joins through the named Wi-Fi interface; a removed ID is never retargeted. |
+| `cancel_connect` |  | Drops the one current password request, on any Wi-Fi device; a join already running continues. |
+| `abort_connect` |  | Stops the one current join on any Wi-Fi device, deleting a profile the join created. |
 | `forget` | `ssid: string` | Deletes every saved profile for this SSID. |
 | `disconnect_wifi` |  | Disconnects Wi-Fi; NetworkManager does not autoconnect it again until the next join. |
+| `disconnect_wifi_device` | `id: string` | Disconnects the named Wi-Fi interface. |
 
 ## Backend
 
 | Contract | Behavior |
 | :--- | :--- |
 | Updates | Every manager, device-list, device-state, access-point, association and saved-profile change re-reads the whole state from NetworkManager. A hotplugged adapter rescans the device set |
-| Devices | Only the first Wi-Fi device is tracked. Wired fields describe the first activated wired device |
+| Devices | `wifi_devices` lists each Wi-Fi interface by name, primary first. Flat association, scan, address and access-point fields use the primary; flat join fields describe the one join on any device. Old actions use the primary. Wired fields describe the first activated wired device |
 | Toggles | Networking through `Enable`, Wi-Fi through `WirelessEnabled` |
 | Scan | `RequestScan`. `scanning` turns `true` on the call and `false` when `LastScan` moves or NetworkManager refuses |
 | Access points | The associated one's strength is live. The others' are read when they appear and after each scan, when NetworkManager updates them |
@@ -95,6 +117,8 @@ Call each as `mantle.network:<action>(arguments...)`; `?` marks an argument you 
 | Join verdict | Watched for up to 45 s. A rejected key sets `password_ssid` again. A new network's profile, key included, is saved when the join starts and stays after a rejection; a key retyped for a saved profile reaches disk only once NetworkManager accepts it |
 | Abort | `abort_connect` deletes a profile the join created, else deactivates the join |
 | Missing | Stays `nil`. The next generation's first read retries |
+
+Use `scan_device(id)`, `connect_device(ssid, hidden, id)` and `disconnect_wifi_device(id)` to target an entry in `wifi_devices`. An unknown or removed ID is never switched to another device: all three log a warning and return. Without Wi-Fi hardware, `scan` and `disconnect_wifi` do nothing; `connect` reports an error in the flat `connect_error` field. A password prompt keeps its selected device through submission and activation. Only one password prompt or join attempt is tracked across all devices. Starting another settles the previous join first.
 
 ## How do I…
 

@@ -88,7 +88,11 @@ pub(super) trait Device {
     #[zbus(property)]
     fn available_connections(&self) -> zbus::Result<Vec<OwnedObjectPath>>;
     #[zbus(property)]
+    fn active_connection(&self) -> zbus::Result<OwnedObjectPath>;
+    #[zbus(property)]
     fn device_type(&self) -> zbus::Result<u32>;
+    #[zbus(property)]
+    fn interface(&self) -> zbus::Result<String>;
     #[zbus(property)]
     fn ip4_config(&self) -> zbus::Result<OwnedObjectPath>;
     #[zbus(property)]
@@ -102,6 +106,8 @@ pub(super) trait Device {
 pub(super) trait Wireless {
     fn get_access_points(&self) -> zbus::Result<Vec<OwnedObjectPath>>;
     fn request_scan(&self, options: HashMap<&str, Value<'_>>) -> zbus::Result<()>;
+    #[zbus(property)]
+    fn perm_hw_address(&self) -> zbus::Result<String>;
     #[zbus(signal)]
     fn access_point_added(&self, access_point: ObjectPath<'_>) -> zbus::Result<()>;
     #[zbus(signal)]

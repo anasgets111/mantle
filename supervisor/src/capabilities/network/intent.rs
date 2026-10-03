@@ -12,7 +12,7 @@ use super::proxies::{REASON_NO_SECRETS, REASON_SSID_NOT_FOUND, REASON_SUPPLICANT
 /// the log line and `NetworkState::connect_error`, so each says the attempt never started.
 #[derive(Debug)]
 pub(super) enum ConnectError {
-    NoWifiDevice,
+    UnknownWifiDevice(String),
     InvalidSecret(String),
     Dbus(zbus::Error),
 }
@@ -20,7 +20,8 @@ pub(super) enum ConnectError {
 impl std::fmt::Display for ConnectError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::NoWifiDevice => write!(f, "no Wi-Fi device is present"),
+            Self::UnknownWifiDevice(id) if id.is_empty() => write!(f, "no Wi-Fi device is present"),
+            Self::UnknownWifiDevice(id) => write!(f, "Wi-Fi device {id:?} is unavailable"),
             Self::InvalidSecret(message) => write!(f, "secret is not valid UTF-8: {message}"),
             Self::Dbus(err) => write!(f, "{err}"),
         }

@@ -16,7 +16,7 @@ pub struct AccessPointInfo {
     pub band: String,
     /// The Wi-Fi device is associated with this SSID.
     pub active: bool,
-    /// A saved NetworkManager profile names this SSID, so `connect` asks for no password.
+    /// A saved NetworkManager profile compatible with this device names this SSID.
     pub saved: bool,
 }
 
@@ -30,12 +30,47 @@ pub struct JoinError {
     pub message: String,
 }
 
+/// One Wi-Fi interface, with its own scan, join, address and access points. `connected` means
+/// activated here, while the flat `connected` means a default route; `ssid` never uses `"Ethernet"`.
+#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct WifiDeviceInfo {
+    /// Interface name, such as `"wlan0"`; pass it to actions ending in `_device`.
+    pub id: String,
+    /// A scan is in flight on this interface.
+    pub scanning: bool,
+    /// This interface has an activated connection.
+    pub connected: bool,
+    /// Associated SSID, or `nil`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ssid: Option<String>,
+    /// Associated access point strength, `0` to `100`.
+    pub strength: u8,
+    /// IPv4 address without prefix, or `nil`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub wifi_ip: Option<String>,
+    /// SSID of this interface's current join, or `nil`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub connecting_ssid: Option<String>,
+    /// Failed join on this interface, or `nil`; cleared by the next join or `cancel_connect`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub connect_error: Option<JoinError>,
+    /// SSID awaiting a password on this interface, or `nil`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub password_ssid: Option<String>,
+    /// Visible networks on this interface: one per SSID, at most 20, ordered associated,
+    /// then saved, then strongest.
+    pub available_networks: Vec<AccessPointInfo>,
+}
+
 /// `mantle.network`'s payload (ADR-0037).
 // Re-derived from NetworkManager on each `NetworkSignal` (ADR-0029).
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct NetworkState {
-    /// A scan is in flight, from the moment `scan` is accepted.
+    /// Every Wi-Fi interface, primary first. IDs are interface names, never NetworkManager object paths.
+    pub wifi_devices: Vec<WifiDeviceInfo>,
+    /// A scan is in flight on the primary Wi-Fi device.
     pub scanning: bool,
     /// A connection carries the default route; `false` means offline.
     pub connected: bool,
@@ -43,11 +78,11 @@ pub struct NetworkState {
     /// association still getting an address has an `ssid` while `connected` is `false`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ssid: Option<String>,
-    /// The associated network's `strength`, `0` to `100`; `0` without a Wi-Fi association.
+    /// The primary Wi-Fi device's associated network strength, `0` to `100`.
     pub strength: u8,
     /// Wi-Fi radio power (`WirelessEnabled`); can be `true` with no Wi-Fi hardware, see `wifi_present`.
     pub wifi_enabled: bool,
-    /// A Wi-Fi device exists.
+    /// At least one Wi-Fi device exists.
     pub wifi_present: bool,
     /// At least one wired device exists, cable or not.
     pub ethernet_present: bool,
@@ -55,7 +90,7 @@ pub struct NetworkState {
     pub networking_enabled: bool,
     /// A wired device is activated; `set_ethernet_enabled`'s read-back, unlike carrier.
     pub ethernet_enabled: bool,
-    /// The Wi-Fi device's IPv4 address without prefix, or `nil`.
+    /// The primary Wi-Fi device's IPv4 address without prefix, or `nil`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub wifi_ip: Option<String>,
     /// The first activated wired device's IPv4 address without prefix, or `nil`.
@@ -64,18 +99,18 @@ pub struct NetworkState {
     /// That wired device's link speed in Mb/s; `nil` when unknown or none is activated.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ethernet_speed: Option<u32>,
-    /// The SSID `connect` is joining, or `nil`; clears on a verdict or `abort_connect`.
+    /// The current join's SSID on any Wi-Fi device, or `nil`; clears on a verdict or `abort_connect`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub connecting_ssid: Option<String>,
-    /// The last failed `connect`, or `nil` before any or after a success. Kept until the next
+    /// The last failed join on any Wi-Fi device, or `nil` before any or after a success. Kept until the next
     /// `connect`, `cancel_connect` or `abort_connect`; check its `ssid` before showing it.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub connect_error: Option<JoinError>,
-    /// The SSID whose `connect` waits for a password from a `network`/`connect` secure field, or
+    /// The join SSID awaiting a password from a `network`/`connect` secure field on any device, or
     /// `nil`. Also set after a rejected key; cleared when a join starts or by `cancel_connect`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub password_ssid: Option<String>,
-    /// NetworkManager's visible networks, re-read on every change: one per SSID, at most 20, ordered
-    /// associated, then saved, then strongest. `{}` without Wi-Fi hardware.
+    /// The primary Wi-Fi device's visible networks: one per SSID, at most 20, ordered associated,
+    /// then saved, then strongest. `{}` without Wi-Fi hardware.
     pub available_networks: Vec<AccessPointInfo>,
 }
