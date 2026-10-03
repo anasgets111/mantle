@@ -72,9 +72,9 @@ shape decides whether it moves. The ones that do:
 
 | Shape | Properties |
 | :--- | :--- |
-| Number | `width`, `height`, `min_*`, `max_*`, `padding`, `margin`, `opacity`, `scale`, `rotate`, `shadow_blur`, `shadow_spread`, `content_blur`; on boxes `radius`, `border_width`, `backdrop_blur`; `spacing` on `row`, `column`, `list`; `font_size` on `text` and `textfield`; `size` on `icon`; `progress` on `shader` |
+| Number | `width`, `height`, `min_*`, `max_*`, `padding`, `margin`, `opacity`, `scale`, `rotate`, `shadow_blur`, `shadow_spread`, `content_blur`; on boxes `radius`, `border_width`, `backdrop_blur`; `spacing` on `row`, `column`, `list`; `font_size` on `text` and `textfield`; `size` on `icon`; `progress` on `shader`; `stroke_width` on `path` |
 | `"NN%"` | `width`, `height` |
-| Colour | `background`, `border_color` (single colour), `shadow_color`, `foreground` |
+| Colour | `background`, `border_color` (single colour), `shadow_color`, `foreground`; `fill` and `stroke` on `path` |
 | `{ top, right, bottom, left }` | `padding`, `margin`, `border_width` as tables |
 | `{ x, y }` | `translate`, `scale`, `origin`, `shadow_offset` |
 | Path commands | `commands` on `path` ([morphing](../nodes/path.md)) |
@@ -94,7 +94,7 @@ Path coordinates stay within `[-8192, 8192]` and arc radii at 0 or more.
 
 | Tween on | Each frame |
 | :--- | :--- |
-| `opacity`, colours, `radius`, `translate`, `scale`, `rotate`, `origin`, `progress`, `commands`, `shadow_*`, `content_blur`, `backdrop_blur` | Repaints; no layout pass |
+| `opacity`, colours, `radius`, `translate`, `scale`, `rotate`, `origin`, `progress`, `commands`, `fill`, `stroke`, `stroke_width`, `shadow_*`, `content_blur`, `backdrop_blur` | Repaints; no layout pass |
 | Anything else: `width`, `height`, `margin`, `padding`, `spacing`, `font_size`, … | Lays the surface out again |
 
 Slide with `translate` and grow on hover with `scale` when surrounding nodes should stay put.

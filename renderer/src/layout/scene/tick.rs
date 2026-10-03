@@ -451,19 +451,27 @@ mod tests {
         let mut scene = Scene::new();
         let shaping = ShapingHandle::spawn();
         let (lua, surface) = surface_from(
-            r##"panel { id = "bar", child = path { width = 20, height = 20, fill = "#ffffff",
-                commands = state("shape", {{ op = "A", points = { 10, 10, 2, 0, 360 } }}),
-                animate = { commands = { duration = 100 } } } }"##,
+            r##"local on = state("on", false)
+            return panel { id = "bar", child = path { width = 20, height = 20, fill = "#ffffff",
+                stroke = on:map(function(o) return o and "#ffffff" or "#000000" end),
+                stroke_width = on:map(function(o) return o and 4 or 2 end),
+                commands = on:map(function(o) return {{ op = "A", points = { 10, 10, o and 8 or 2, 0, 360 } }} end),
+                animate = { commands = { duration = 100 }, stroke = { duration = 100 },
+                            stroke_width = { duration = 100 } } } }"##,
         );
         apply_at(&mut scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
-        lua.load(r#"state("shape", nil):set({{ op = "A", points = { 10, 10, 8, 0, 360 } }})"#).exec().unwrap();
+        lua.load(r#"state("on", false):set(true)"#).exec().unwrap();
         apply_at(&mut scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
+        assert!(scene.surface("bar@TEST").unwrap().tick_is_paint_only(), "a path's paint asks the solver nothing");
         let started = child_tween(&scene).started;
         scene.tick(&[instance_at(&surface, full())], &shaping, &lua, started + std::time::Duration::from_millis(50));
         let Some(node::PaintStyle::Path(path)) = &scene.surface("bar@TEST").unwrap().children[0].paint else {
             panic!("a path paints");
         };
         assert_eq!(path.commands.points, [10.0, 10.0, 5.0, 0.0, 360.0], "halfway is the midpoint radius");
+        assert_eq!(path.stroke_width, 3.0);
+        let Some(node::Fill::Color(stroke)) = path.stroke else { panic!("a colour stroke, got {:?}", path.stroke) };
+        assert!(stroke.r > 0.1 && stroke.r < 0.9, "the stroke is between black and white, got {}", stroke.r);
     }
 
     #[test]
