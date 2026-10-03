@@ -488,25 +488,41 @@ os.getenv = function(name) return ({{ USER = "user", HOME = "/home/user" }})[nam
         lua
     }
 
-    /// The `frames=` of a `<!-- shot: frames=0..400/20 -->` or `frames=0,50,100` comment, in ms, or
-    /// empty for a still.
-    fn frames(above: &str) -> Result<Vec<u64>, String> {
+    /// The `frames=` of a `<!-- shot: frames=0..400/20 -->` or `frames=0@800,50,100` comment as
+    /// `(time, hold)` in ms, or empty for a still. A frame holds until the next time, the last for a
+    /// second, or for its `@` hold.
+    fn frames(above: &str) -> Result<Vec<(u64, u16)>, String> {
         let Some(spec) = above.trim().strip_prefix("<!-- shot:") else { return Ok(Vec::new()) };
-        let bad =
-            || format!("unreadable `{}`: want `<!-- shot: frames=0..400/20 -->` or `frames=0,50,100`", above.trim());
+        let bad = || {
+            format!("unreadable `{}`: want `<!-- shot: frames=0..400/20 -->` or `frames=0@800,50,100`", above.trim())
+        };
         let spec = spec.strip_suffix("-->").and_then(|spec| spec.trim().strip_prefix("frames=")).ok_or_else(bad)?;
         let number = |text: &str| text.trim().parse::<u64>().map_err(|_| bad());
-        let times: Vec<u64> = match spec.split_once('/') {
+        let listed: Vec<(u64, Option<u64>)> = match spec.split_once('/') {
             Some((range, step)) => {
                 let (first, last) = range.split_once("..").ok_or_else(bad)?;
-                (number(first)?..=number(last)?).step_by(number(step)?.max(1) as usize).collect()
+                (number(first)?..=number(last)?).step_by(number(step)?.max(1) as usize).map(|at| (at, None)).collect()
             }
-            None => spec.split(',').map(number).collect::<Result<_, _>>()?,
+            None => spec
+                .split(',')
+                .map(|item| match item.split_once('@') {
+                    Some((at, hold)) => Ok::<_, String>((number(at)?, Some(number(hold)?))),
+                    None => Ok((number(item)?, None)),
+                })
+                .collect::<Result<_, _>>()?,
         };
-        if times.len() < 2 || times.windows(2).any(|pair| pair[0] >= pair[1]) {
+        if listed.len() < 2 || listed.windows(2).any(|pair| pair[0].0 >= pair[1].0) {
             return Err(bad());
         }
-        Ok(times)
+        let next = listed.iter().skip(1).map(|(at, _)| Some(*at)).chain([None]);
+        listed
+            .iter()
+            .zip(next)
+            .map(|(&(at, hold), next)| {
+                let hold = hold.unwrap_or_else(|| next.map_or(1000, |next| next - at));
+                Ok((at, u16::try_from(hold).ok().filter(|hold| *hold > 0).ok_or_else(bad)?))
+            })
+            .collect()
     }
 
     /// One image: `(width, height)` and a buffer per frame, premultiplied RGBA as rendered and RGB
@@ -786,10 +802,10 @@ os.getenv = function(name) return ({{ USER = "user", HOME = "/home/user" }})[nam
         out
     }
 
-    /// `frames` as a PNG, or an APNG that holds each frame until the next time in `times` and the
-    /// last for a second. An APNG's default image, what a viewer without APNG shows, is its last
-    /// frame: the first of an entry animation is empty.
-    fn write_png(path: &Path, ((width, height), frames): &Shot, times: &[u64]) {
+    /// `frames` as a PNG, or an APNG that holds each frame for its `holds` ms. An APNG's default
+    /// image, what a viewer without APNG shows, is the frame held longest, the last of a tie: the
+    /// first of an entry animation is empty, and the last of an exit.
+    fn write_png(path: &Path, ((width, height), frames): &Shot, holds: &[u16]) {
         let file = std::io::BufWriter::new(std::fs::File::create(path).unwrap());
         let mut encoder = png::Encoder::new(file, *width, *height);
         encoder.set_color(png::ColorType::Rgb);
@@ -800,41 +816,43 @@ os.getenv = function(name) return ({{ USER = "user", HOME = "/home/user" }})[nam
         }
         let mut writer = encoder.write_header().unwrap();
         if frames.len() > 1 {
-            writer.write_image_data(&over_backdrop(frames.last().unwrap())).unwrap();
+            let longest = (0..frames.len()).max_by_key(|&index| holds[index]).unwrap();
+            writer.write_image_data(&over_backdrop(&frames[longest])).unwrap();
         }
         for (index, frame) in frames.iter().enumerate() {
             if frames.len() > 1 {
-                let hold = times.get(index + 1).map_or(1000, |next| next - times[index]);
-                writer.set_frame_delay(hold as u16, 1000).unwrap();
+                writer.set_frame_delay(holds[index], 1000).unwrap();
             }
             writer.write_image_data(&over_backdrop(frame)).unwrap();
         }
         writer.finish().unwrap();
     }
 
-    /// Every frame of the PNG at `path` as RGB, and its size. An APNG's separate default image
-    /// is left out.
-    fn read_png(path: &Path) -> Option<Shot> {
+    /// Every frame of the PNG at `path` as RGB, its size, and each frame's hold in ms. An APNG's
+    /// separate default image is left out.
+    fn read_png(path: &Path) -> Option<(Shot, Vec<u16>)> {
         let mut decoder =
             png::Decoder::new(std::io::BufReader::new(std::fs::File::open(path).ok()?)).read_info().ok()?;
         let count = decoder.info().animation_control().map_or(1, |control| control.num_frames);
         let separate = count > 1 && decoder.info().frame_control().is_none();
-        let mut frames = Vec::new();
+        let (mut frames, mut holds) = (Vec::new(), Vec::new());
         for _ in 0..count + separate as u32 {
             let mut buffer = vec![0; decoder.output_buffer_size()?];
             let info = decoder.next_frame(&mut buffer).ok()?;
             buffer.truncate(info.buffer_size());
             frames.push(buffer);
+            holds.push(decoder.info().frame_control().map_or(0, |control| control.delay_num));
         }
         frames.drain(..separate as usize);
-        Some(((decoder.info().width, decoder.info().height), frames))
+        holds.drain(..separate as usize);
+        Some((((decoder.info().width, decoder.info().height), frames), holds))
     }
 
     /// The largest channel difference between `shot` and the PNG at `path`, or `None` when it is
-    /// missing or differs in size or frame count.
-    fn delta(shot: &Shot, path: &Path) -> Option<u8> {
-        let (size, frames) = read_png(path)?;
-        if size != shot.0 || frames.len() != shot.1.len() {
+    /// missing or differs in size, frame count or holds.
+    fn delta(shot: &Shot, holds: &[u16], path: &Path) -> Option<u8> {
+        let ((size, frames), held) = read_png(path)?;
+        if size != shot.0 || frames.len() != shot.1.len() || (frames.len() > 1 && held != holds) {
             return None;
         }
         let rendered = shot.1.iter().map(|frame| over_backdrop(frame));
@@ -888,10 +906,11 @@ os.getenv = function(name) return ({{ USER = "user", HOME = "/home/user" }})[nam
                             image_dir.join(format!("{}-{shots}.png", page.file_name().unwrap().to_string_lossy()));
                         images.insert(image.clone());
                         let gpu = gpu.get_or_insert_with(|| Gpu::new(&shaping));
-                        frames(above).and_then(|times| {
+                        frames(above).and_then(|frames| {
                             let lua = with_fixture_images(pinned(&fakes) + &shell(source), &fixtures.join("images"));
+                            let (times, holds): (Vec<u64>, Vec<u16>) = frames.into_iter().unzip();
                             let shot = shoot(&lua, &page_files, &shaping, gpu, &times)?;
-                            compare(&shot, &times, &image, update)
+                            compare(&shot, &holds, &image, update)
                         })
                     }
                     "lua,fragment" => {
@@ -923,6 +942,14 @@ os.getenv = function(name) return ({{ USER = "user", HOME = "/home/user" }})[nam
             }
         }
         assert!(failures.is_empty(), "{} doc block(s) failed:\n{}", failures.len(), failures.join("\n"));
+    }
+
+    #[test]
+    fn a_frame_holds_until_the_next_time_or_for_its_own_hold() {
+        assert_eq!(frames("<!-- shot: frames=0..40/20 -->").unwrap(), [(0, 20), (20, 20), (40, 1000)]);
+        assert_eq!(frames("<!-- shot: frames=0@900,30,60@250 -->").unwrap(), [(0, 900), (30, 30), (60, 250)]);
+        assert!(frames("<!-- shot: frames=0@0,30 -->").is_err(), "a frame held for no time never shows");
+        assert!(frames("<!-- shot: frames=30,0 -->").is_err());
     }
 
     #[test]
@@ -960,21 +987,21 @@ return panel { id = "bar", layer = "Top", height = 20, child = row { children = 
     /// Passes when `shot` is within [`TOLERANCE`] of `image`. Otherwise writes it to `image`
     /// under `update`, else beside it as `.new.png` for review. Within tolerance, the committed
     /// file stays as it is, so driver noise never shows up in git.
-    fn compare(shot: &Shot, times: &[u64], image: &Path, update: bool) -> Result<(), String> {
+    fn compare(shot: &Shot, holds: &[u16], image: &Path, update: bool) -> Result<(), String> {
         let review = image.with_extension("new.png");
         let _ = std::fs::remove_file(&review);
-        let delta = delta(shot, image);
+        let delta = delta(shot, holds, image);
         if delta.is_some_and(|delta| delta <= TOLERANCE) {
             return Ok(());
         }
         let name = image.file_name().unwrap().to_string_lossy();
         if update {
             std::fs::create_dir_all(image.parent().unwrap()).unwrap();
-            write_png(image, shot, times);
+            write_png(image, shot, holds);
             eprintln!("wrote {name}");
             return Ok(());
         }
-        write_png(&review, shot, times);
+        write_png(&review, shot, holds);
         Err(match delta {
             Some(delta) => format!("{name} differs by up to {delta} per channel; compare {}", review.display()),
             None => format!("{name} is missing or a different size; the render is at {}", review.display()),

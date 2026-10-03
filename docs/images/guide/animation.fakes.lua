@@ -8,5 +8,5 @@ function __after()
     local taps = state("taps", 0)
     taps:set(taps:get() + 1)
     state("osd_shown", false):set(false)
-    state("notes", { "Battery low", "Update ready", "Download complete" }):set({ "Battery low", "Download complete" })
+    state("dismissed", {}):set({ ["Update ready"] = true })
 end

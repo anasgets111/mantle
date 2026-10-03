@@ -7,39 +7,52 @@ The engine runs every tween on its own surface's compositor frames, so a panel o
 moves at 60 Hz beside one at 165 Hz; no Lua runs between the pass that starts a tween and its last
 frame.
 
-Six bars grow from 12 to 200 px over 600 ms. Each uses a different easing; `OutBack` passes the
-target and comes back:
+Six knobs slide 200 px over 600 ms. Each uses a different easing; `OutBack` passes the end and
+comes back:
 
-<!-- shot-alt: Six bars expand under different easing curves, showing their progress at the same times. -->
-<!-- shot: frames=0..630/35 -->
+<!-- shot-alt: Six coloured knobs slide along their tracks under different easings; the OutBack knob overshoots the end and settles back. -->
+<!-- shot: frames=0..900/30 -->
 ```lua,shot
 local go = state("go", false)
 
-local function race(label, easing)
+local function lane(label, easing, color)
     return row {
-        spacing = 8,
+        spacing = 12,
         children = {
-            text { content = label, width = 80, font_size = 12, foreground = "#a6adc8" },
+            text { content = label, width = 88, font_size = 13, foreground = "#bac2de" },
             rect {
-                height = 12,
-                radius = 6,
-                background = "#89b4fa",
-                width = go:map(function(on) return on and 200 or 12 end),
-                animate = { width = { duration = 600, easing = easing } },
+                width = 216,
+                height = 16,
+                radius = 8,
+                background = "#313244",
+                children = {
+                    rect {
+                        width = 16,
+                        height = 16,
+                        radius = 8,
+                        background = color,
+                        translate = go:map(function(on) return { x = on and 200 or 0 } end),
+                        animate = { translate = { duration = 600, easing = easing } },
+                    },
+                },
             },
         },
     }
 end
 
 return column {
-    spacing = 6,
+    padding = 16,
+    spacing = 10,
+    radius = 12,
+    background = "#1e1e2e",
     children = {
-        race("Linear", "Linear"),
-        race("InOutQuad", "InOutQuad"),
-        race("OutCubic", "OutCubic"),
-        race("OutBack", "OutBack"),
-        race("OutBounce", "OutBounce"),
-        race("steps = 4", { steps = 4 }),
+        text { content = "Six easings, 600 ms", font_size = 14, font_weight = 700, foreground = "#cdd6f4" },
+        lane("Linear", "Linear", "#89b4fa"),
+        lane("InOutQuad", "InOutQuad", "#cba6f7"),
+        lane("OutCubic", "OutCubic", "#a6e3a1"),
+        lane("OutBack", "OutBack", "#fab387"),
+        lane("OutBounce", "OutBounce", "#f38ba8"),
+        lane("steps = 4", { steps = 4 }, "#f9e2af"),
     },
 }
 ```
@@ -108,20 +121,39 @@ display's refresh rate.
 
 A progress ring that fills forever, with no Lua per frame:
 
-<!-- shot-alt: A blue ring fills clockwise from the top, then starts over. -->
+<!-- shot-alt: A card reading "Syncing photos" beside a blue ring that fills clockwise over its grey track, then starts over. -->
 <!-- shot: frames=0..1140/60 -->
 ```lua,shot
 local function ring(sweep)
-    return { { op = "A", points = { 20, 20, 16, -90, sweep } } }
+    return { { op = "A", points = { 16, 16, 13, -90, sweep } } }
 end
 
-return path {
-    width = 40,
-    height = 40,
-    stroke = "#89b4fa",
-    stroke_width = 4,
-    commands = ring(0),
-    animate = { commands = { duration = 1200, easing = "Linear", keyframes = { ring(0), ring(360) }, loops = "Infinite" } },
+return row {
+    padding = 16,
+    spacing = 12,
+    radius = 12,
+    background = "#1e1e2e",
+    children = {
+        rect {
+            width = 32,
+            height = 32,
+            align_v = "Center",
+            children = {
+                path { width = 32, height = 32, stroke = "#313244", stroke_width = 4, commands = ring(360) },
+                path {
+                    width = 32,
+                    height = 32,
+                    stroke = "#89b4fa",
+                    stroke_width = 4,
+                    commands = ring(0),
+                    animate = {
+                        commands = { duration = 1200, easing = "Linear", keyframes = { ring(0), ring(360) }, loops = "Infinite" },
+                    },
+                },
+            },
+        },
+        text { content = "Syncing photos", font_size = 14, foreground = "#cdd6f4", align_v = "Center" },
+    },
 }
 ```
 
@@ -136,11 +168,11 @@ end
 step()
 
 return path {
-    width = 40,
-    height = 40,
+    width = 32,
+    height = 32,
     stroke = "#89b4fa",
     stroke_width = 4,
-    commands = tick:map(function(n) return { { op = "A", points = { 20, 20, 16, -90, n % 36 * 10 } } } end),
+    commands = tick:map(function(n) return { { op = "A", points = { 16, 16, 13, -90, n % 36 * 10 } } } end),
 }
 ```
 
@@ -203,18 +235,18 @@ travel and never runs longer than 60 s.
 The same `translate` change on three springs of `stiffness = 400`, where critical damping is 40.
 The underdamped knob passes the others' resting point and swings back:
 
-<!-- shot-alt: Three knobs move along tracks with ringing, critical, and slow spring damping. -->
-<!-- shot: frames=0..1200/40 -->
+<!-- shot-alt: Three knobs spring along their tracks: the underdamped one overshoots and rings, the critical one settles cleanly, the overdamped one crawls in. -->
+<!-- shot: frames=0..1500/50 -->
 ```lua,shot
 local go = state("go", false)
 
-local function knob(label, damping)
+local function lane(label, damping, color)
     return row {
-        spacing = 8,
+        spacing = 12,
         children = {
-            text { content = label, width = 130, font_size = 12, foreground = "#a6adc8" },
+            text { content = label, width = 150, font_size = 13, foreground = "#bac2de" },
             rect {
-                width = 176,
+                width = 216,
                 height = 16,
                 radius = 8,
                 background = "#313244",
@@ -223,8 +255,8 @@ local function knob(label, damping)
                         width = 16,
                         height = 16,
                         radius = 8,
-                        background = "#cba6f7",
-                        translate = go:map(function(on) return { x = on and 100 or 0 } end),
+                        background = color,
+                        translate = go:map(function(on) return { x = on and 160 or 0 } end),
                         animate = { translate = { spring = { stiffness = 400, damping = damping } } },
                     },
                 },
@@ -234,11 +266,15 @@ local function knob(label, damping)
 end
 
 return column {
-    spacing = 8,
+    padding = 16,
+    spacing = 10,
+    radius = 12,
+    background = "#1e1e2e",
     children = {
-        knob("damping = 12, rings", 12),
-        knob("damping = 40, critical", 40),
-        knob("damping = 120, crawls", 120),
+        text { content = "Springs, stiffness 400", font_size = 14, font_weight = 700, foreground = "#cdd6f4" },
+        lane("damping = 12, rings", 12, "#cba6f7"),
+        lane("damping = 40, critical", 40, "#a6e3a1"),
+        lane("damping = 120, crawls", 120, "#fab387"),
     },
 }
 ```
@@ -261,8 +297,8 @@ owns the property: the value the pass resolves is ignored.
 To replay a finished run, take the entry away and put it back. [`pulse`](signals.md#pulse-mark-a-change) does both in
 one expression: it reads `true` for a window after its source changes.
 
-<!-- shot-alt: A star button grows and shrinks in a short bounce. -->
-<!-- shot: frames=0..360/30 -->
+<!-- shot-alt: A yellow star button swells, dips below its size, and settles in a short bounce. -->
+<!-- shot: frames=0..540/30 -->
 ```lua,shot
 local taps = state("taps", 0)
 -- Three 120 ms segments: `duration` times each one, so the run takes 360 ms.
@@ -272,23 +308,23 @@ return panel {
     id = "bar",
     layer = "Top",
     anchor = { top = true },
-    padding = 4, -- room for the overshoot: a scaled node paints past its box
+    padding = 8, -- room for the overshoot: a scaled node paints past its box
     child = rect {
-        width = 32,
-        height = 32,
-        radius = 8,
+        width = 48,
+        height = 48,
+        radius = 12,
         background = "#313244",
         on_click = function() taps:set(taps:get() + 1) end,
         -- pulse is true for 400 ms after each tap: the entry appears, plays once, then goes.
         animate = pulse(taps, 400):map(function(on) return on and BOUNCE or {} end),
-        children = { icon { name = "starred-symbolic", size = 16, foreground = "#CDD6F4", align_h = "Center", align_v = "Center" } },
+        children = { icon { name = "starred-symbolic", size = 24, foreground = "#f9e2af", align_h = "Center", align_v = "Center" } },
     },
 }
 ```
 
 An endless spinner needs no signal. A hidden spinner stops requesting frames by itself:
 
-<!-- shot-alt: A refresh icon rotates in an endless loop. -->
+<!-- shot-alt: A pill reading "Checking for updates" with a blue refresh icon turning endlessly. -->
 <!-- shot: frames=0..950/50 -->
 ```lua,shot
 local busy = state("busy", true)
@@ -298,13 +334,16 @@ return panel {
     id = "bar",
     layer = "Top",
     anchor = { top = true },
-    padding = 4, -- room for the corners as it turns
-    child = icon {
-        name = "view-refresh-symbolic",
-        size = 16,
-        foreground = "#CDD6F4",
+    child = row {
+        padding = 10,
+        spacing = 8,
+        radius = 18,
+        background = "#1e1e2e",
         visible = busy,
-        animate = SPIN,
+        children = {
+            icon { name = "view-refresh-symbolic", size = 16, foreground = "#89b4fa", align_v = "Center", animate = SPIN },
+            text { content = "Checking for updates", font_size = 13, foreground = "#cdd6f4", align_v = "Center" },
+        },
     },
 }
 ```
@@ -335,8 +374,8 @@ Hiding a surface skips the exit, so drop the child from `children` and hold the 
 [`delay`](signals.md#delay-hold-a-value) until the exit has played. The card below slides up and
 fades in on show; the shot plays the hide, down and out over 150 ms:
 
-<!-- shot-alt: A volume card slides down and fades away. -->
-<!-- shot: frames=0..210/30 -->
+<!-- shot-alt: A volume card with a speaker icon, a level bar at 42% and its percentage slides down and fades away. -->
+<!-- shot: frames=0@900,30,60,90,120,150,180@250 -->
 ```lua,shot
 local shown = state("osd_shown", false)
 -- Keep the surface mapped 150 ms past `shown`, so the card's exit can play.
@@ -344,14 +383,26 @@ local mapped = computed({ shown, delay(shown, 150) }, function(now, was)
     return now == true or was == true
 end)
 
-local card = rect {
-    width = 240,
-    height = 48,
-    radius = 12,
+local card = row {
+    width = 260,
+    padding = 14,
+    spacing = 12,
+    radius = 14,
     background = "#1e1e2ee6",
     opacity = 1,
     translate = { y = 0 },
-    children = { text { content = "Volume 42%", align_h = "Center", align_v = "Center", foreground = "#CDD6F4" } },
+    children = {
+        icon { name = "audio-volume-medium-symbolic", size = 20, foreground = "#89b4fa", align_v = "Center" },
+        rect {
+            width = "Fill",
+            height = 6,
+            radius = 3,
+            background = "#313244",
+            align_v = "Center",
+            children = { rect { width = "42%", height = 6, radius = 3, background = "#89b4fa" } },
+        },
+        text { content = "42%", font_size = 13, foreground = "#cdd6f4", align_v = "Center" },
+    },
     animate = {
         opacity = { duration = 200, from = 0 },
         translate = { duration = 200, easing = "OutCubic", from = { y = 16 } },
@@ -363,7 +414,7 @@ return panel {
     id = "osd",
     layer = "Overlay",
     anchor = { bottom = true },
-    width = 240,
+    width = 260,
     height = 64, -- room for the exit's 16 px slide
     visible = mapped,
     child = column {
@@ -429,35 +480,49 @@ return {
 Give each item a `delay` that grows with its index. `delay` holds
 the `from` value, so a card waits invisible for its turn.
 
-<!-- shot-alt: Three notification cards fade and slide into place one after another. -->
-<!-- shot: frames=0..420/30 -->
+<!-- shot-alt: Three notification cards, each with a coloured icon, title and detail line, fade and slide in one at a time. -->
+<!-- shot: frames=0@150,40,80,120,160,200,240,280,320,360,400,440,480,520,560,600,640,680,720,760,800,840@1600 -->
 ```lua,shot
 local go = state("go", false)
-local titles = { "Battery low", "Update ready", "Download complete" }
+local NOTES = {
+    { icon = "battery-caution-symbolic", color = "#fab387", title = "Battery low", body = "12% remaining" },
+    { icon = "view-refresh-symbolic", color = "#89b4fa", title = "Update ready", body = "Restart to install" },
+    { icon = "notification-symbolic", color = "#a6e3a1", title = "Download complete", body = "photos.zip, 48 MB" },
+}
 
-local function card(index, title)
-    local wait = (index - 1) * 80
-    return rect {
-        width = 200,
-        padding = 10,
-        radius = 8,
+local function card(index, note)
+    local wait = (index - 1) * 250
+    return row {
+        width = 260,
+        padding = 12,
+        spacing = 12,
+        radius = 12,
         background = "#1e1e2e",
         opacity = 1,
         translate = { x = 0 },
         animate = {
-            opacity = { duration = 200, delay = wait, from = 0 },
-            translate = { duration = 200, delay = wait, easing = "OutCubic", from = { x = -24 } },
+            opacity = { duration = 300, delay = wait, from = 0 },
+            translate = { duration = 300, delay = wait, easing = "OutCubic", from = { x = -24 } },
         },
-        children = { text { content = title, foreground = "#cdd6f4" } },
+        children = {
+            icon { name = note.icon, size = 20, foreground = note.color, align_v = "Center" },
+            column {
+                spacing = 2,
+                children = {
+                    text { content = note.title, font_size = 13, font_weight = 700, foreground = "#cdd6f4" },
+                    text { content = note.body, font_size = 12, foreground = "#a6adc8" },
+                },
+            },
+        },
     }
 end
 
 return column {
-    spacing = 6,
+    spacing = 8,
     children = go:map(function(on)
         local cards = {}
-        for index, title in ipairs(on and titles or {}) do
-            cards[index] = card(index, title)
+        for index, note in ipairs(on and NOTES or {}) do
+            cards[index] = card(index, note)
         end
         return cards
     end),
@@ -466,33 +531,58 @@ return column {
 
 ### Slide a notification out
 
-Removing an item from a keyed [`list`](../nodes/list.md) makes it
-leave. The remaining cards close up at once; only the leaving one moves.
+Dropping a child makes it leave. Here each card sits in a slot of fixed height, so a dismissed card
+slides out in place and the others stay put. Remove the item from a keyed
+[`list`](../nodes/list.md) instead to have the rest close up at once.
 
-<!-- shot-alt: The middle notification slides right and fades while the others close the gap. -->
-<!-- shot: frames=0..210/30 -->
+<!-- shot-alt: Of three notification cards, the middle one slides right and fades out, leaving its place empty while the other two stay put. -->
+<!-- shot: frames=0@900,30,60,90,120,150,180,210,240@1400 -->
 ```lua,shot
-local notes = state("notes", { "Battery low", "Update ready", "Download complete" })
+local dismissed = state("dismissed", {})
+local NOTES = {
+    { icon = "battery-caution-symbolic", color = "#fab387", title = "Battery low", body = "12% remaining" },
+    { icon = "view-refresh-symbolic", color = "#89b4fa", title = "Update ready", body = "Restart to install" },
+    { icon = "notification-symbolic", color = "#a6e3a1", title = "Download complete", body = "photos.zip, 48 MB" },
+}
 
 local function dismiss(title)
-    local kept = {}
-    for _, other in ipairs(notes:get()) do
-        if other ~= title then kept[#kept + 1] = other end
-    end
-    notes:set(kept)
+    local gone = { [title] = true }
+    for other in pairs(dismissed:get()) do gone[other] = true end
+    dismissed:set(gone)
 end
 
-local function card(title)
-    return rect {
+local function card(note)
+    return row {
         width = 280,
+        height = 60,
         padding = 12,
+        spacing = 12,
         radius = 12,
         background = "#1e1e2e",
         border_width = 1,
         border_color = "#45475a",
-        on_click = function() dismiss(title) end,
+        on_click = function() dismiss(note.title) end,
         animate = { exit = { duration = 200, easing = "InCubic", opacity = 0, translate = { x = 300 } } },
-        children = { text { content = title, foreground = "#cdd6f4" } },
+        children = {
+            icon { name = note.icon, size = 20, foreground = note.color, align_v = "Center" },
+            column {
+                spacing = 2,
+                align_v = "Center",
+                children = {
+                    text { content = note.title, font_size = 13, font_weight = 700, foreground = "#cdd6f4" },
+                    text { content = note.body, font_size = 12, foreground = "#a6adc8" },
+                },
+            },
+        },
+    }
+end
+
+-- The slot keeps its height after its card leaves.
+local function slot(note)
+    return rect {
+        width = 280,
+        height = 60,
+        children = dismissed:map(function(gone) return gone[note.title] and {} or { card(note) } end),
     }
 end
 
@@ -502,7 +592,7 @@ return panel {
     anchor = { top = true, right = true },
     width = 300,
     height = 400,
-    child = list { spacing = 8, source = notes, itemfn = card, key = function(title) return title end },
+    child = column { spacing = 8, children = { slot(NOTES[1]), slot(NOTES[2]), slot(NOTES[3]) } },
 }
 ```
 
