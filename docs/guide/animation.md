@@ -161,11 +161,7 @@ Not a timer that redraws it 30 times a second:
 
 ```lua
 local tick = state("tick", 0)
-local function step()
-    tick:set(tick:get() + 1)
-    timer(33, step)
-end
-step()
+interval(33, function() tick:set(tick:get() + 1) end)
 
 return path {
     width = 32,

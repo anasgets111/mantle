@@ -58,7 +58,7 @@ stays within one page is in that page's Gotchas table.
 
 | Symptom | Cause | Fix |
 | :--- | :--- | :--- |
-| `process.run` prints nothing and `exit_cb` gets `nil` | The spawn failed, usually a command not on `PATH`. `mantle log` has the reason | [process.run](processes.md#processrun) |
+| `process.run` prints nothing and `on_exit` gets `nil` | The spawn failed, usually a command not on `PATH`. `mantle log` has the reason | [process.run](processes.md#processrun) |
 | A program runs twice after a save | A top-level `process.detach` launches again on every reload | [session_process](processes.md#session_process), [What survives a reload](runtime.md#what-survives-a-reload) |
 
 ## Capabilities

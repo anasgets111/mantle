@@ -667,7 +667,7 @@ mod meta_stub_tests {
             ("focused", _) => return Some("focused(\"probe\")".to_string()),
             ("elided", _) => return Some("elided(\"probe\")".to_string()),
             ("scroll", _) => return Some("scroll(\"probe\")".to_string()),
-            ("focus", _) => return Some("focus(\"probe\")".to_string()),
+            ("focus_target", _) => return Some("focus_target(\"probe\")".to_string()),
             ("reset_on_close", "ScrollSignal") => return Some("scroll(\"probe_reset\")".to_string()),
             ("reset_on_close", _) => return Some("state(\"probe_reset\", 1)".to_string()),
             // Literal-array `list.source` is fixed for the pass; real lists therefore use the

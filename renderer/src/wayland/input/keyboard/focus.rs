@@ -170,7 +170,7 @@ fn retained_typing_control(
 }
 
 /// The node the engine outlines: control focus that Tab or an AT action moved, never focus from a
-/// press, `autofocus` or `focus(name)`.
+/// press, `autofocus` or `focus_target(name)`.
 fn outline(
     focused: Option<&FocusedControl>,
     visible: bool,
@@ -489,7 +489,7 @@ mod tests {
             id: layout::scene::NodeId::test(3),
             kind: ControlKind::Plain,
         };
-        assert_eq!(outline(Some(&focus), false, "panel@TEST", true), None, "press, autofocus or focus(name)");
+        assert_eq!(outline(Some(&focus), false, "panel@TEST", true), None, "press, autofocus or focus_target(name)");
         assert_eq!(outline(Some(&focus), true, "panel@TEST", true), Some(focus.id), "after Tab or an AT action");
         assert_eq!(outline(Some(&focus), true, "popup@TEST", true), None);
         assert_eq!(outline(Some(&focus), true, "panel@TEST", false), None, "outside the keyboard scope");

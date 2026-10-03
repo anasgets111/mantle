@@ -104,7 +104,7 @@ impl ResolvedNode {
             opacity: 1.0,
             z: 0.0,
             transform: node::Transform::default(),
-            blur: false,
+            behind_blur: false,
             effect: node::Effect::default(),
             properties: std::rc::Rc::default(),
             paint: None,
@@ -146,7 +146,7 @@ pub(crate) struct LayoutStyle {
     opacity: f32,
     z: f32,
     transform: node::Transform,
-    blur: bool,
+    behind_blur: bool,
     effect: node::Effect,
 }
 
@@ -178,7 +178,7 @@ impl LayoutStyle {
             // -0.0 would sort below its z = 0 siblings.
             z: common::z.read(properties)? + 0.0,
             transform: crate::layout::node::parse_transform(properties)?,
-            blur: paint::blur.read(properties)?,
+            behind_blur: paint::behind_blur.read(properties)?,
             effect: crate::layout::node::parse_effect(properties)?,
         })
     }
@@ -235,11 +235,11 @@ pub struct ResolvedNode {
     /// and everything the solver produced are untransformed. `layout::paint` composes it down
     /// the subtree, `layout::hit` maps the pointer back through its inverse.
     pub transform: node::Transform,
-    /// This node asked for the desktop behind it to be blurred (`blur`, ADR-0195).
+    /// This node asked for the desktop behind it to be blurred (`behind_blur`, ADR-0195).
     /// `layout::blur_regions` turns every one of these in a surface into the one region the
     /// compositor is given; nothing else reads it, and a compositor without the protocol ignores the
     /// lot.
-    pub blur: bool,
+    pub behind_blur: bool,
     /// This node's own `shadow_*` and `content_blur` (ADR-0254), over its whole painted subtree.
     pub effect: node::Effect,
     /// Shared with the rollback copy until a tween writes it.

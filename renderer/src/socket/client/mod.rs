@@ -240,7 +240,7 @@ impl RendererClient {
     }
 
     /// Before each `shell.lua` evaluation, clear what the last one registered: `process.run` children,
-    /// whose `exit_cb(nil)` runs first so anything it arms is cleared too, `palette.quantize`
+    /// whose `on_exit(nil)` runs first so anything it arms is cleared too, `palette.quantize`
     /// callbacks, `on_change` handlers (ADR-0115, ADR-0288) and `action` exports (ADR-0197).
     /// Evaluation registers them afresh; retaining them
     /// doubles side effects after a config save, and all are closures over locals that evaluation
@@ -651,7 +651,7 @@ mod tests {
         (client, outbound_rx)
     }
 
-    /// The whole `blur` path from Lua to the rects the compositor is handed (ADR-0195), on the
+    /// The whole `behind_blur` path from Lua to the rects the compositor is handed (ADR-0195), on the
     /// shape the design exists for: a full-screen surface whose click-catcher covers everything
     /// and whose only glass is one card. A `layer-rule` blurring the surface rect flattens the
     /// entire output; this must hand over the card alone.
@@ -670,7 +670,7 @@ mod tests {
                         column { margin = { top = 260, left = 200 }, children = {
                             rect {
                                 width = 620, height = 260, radius = 0,
-                                background = "#20222eb0", blur = true,
+                                background = "#20222eb0", behind_blur = true,
                             },
                         } },
                     } },
@@ -2556,7 +2556,7 @@ mod tests {
         assert_eq!(client.handle_frame(SupervisorFrame::Reevaluate), FrameOutcome::Handled);
     }
 
-    /// A reload kills what the last evaluation started and runs each `exit_cb(nil)` once, before the
+    /// A reload kills what the last evaluation started and runs each `on_exit(nil)` once, before the
     /// new top level; the Supervisor's output and exit frames still in flight reach no callback.
     #[test]
     fn a_reload_kills_the_last_evaluations_process_run_children() {
@@ -2590,8 +2590,8 @@ mod tests {
         let _ = client.handle_frame(SupervisorFrame::ProcessExited(ProcessExited { id: run.id, code: Some(0) }));
 
         let globals = client.lua().globals();
-        assert_eq!(globals.get::<i64>("lines").unwrap(), 1, "no out_cb after the kill");
-        assert_eq!(globals.get::<i64>("exits").unwrap(), 1, "exit_cb fires once");
+        assert_eq!(globals.get::<i64>("lines").unwrap(), 1, "no on_line after the kill");
+        assert_eq!(globals.get::<i64>("exits").unwrap(), 1, "on_exit fires once");
         assert_eq!(globals.get::<i64>("exits_at_top").unwrap(), 1, "and before the new top level");
         assert!(globals.get::<mlua::Value>("last_code").unwrap().is_nil(), "with nil");
     }

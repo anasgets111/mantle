@@ -55,14 +55,14 @@ pub(crate) async fn dispatch(
                     "malformed process.run command from generation {generation_id}: {:?}",
                     envelope.params.arguments
                 );
-                // Lua's ProcessHandle already awaits `id`'s exit_cb; this prevents a callback pair
+                // Lua's ProcessHandle already awaits `id`'s on_exit; this prevents a callback pair
                 // leak when no process spawned.
                 exited(None);
             }
         },
         // No registry entry, no handle, no callbacks: a detached program is not this shell's to
         // reap, and a Renderer replacement must leave it alone (ADR-0188). That is the whole difference
-        // from `run`, and it is why this sends no `ProcessExited` -- there is no `exit_cb` waiting.
+        // from `run`, and it is why this sends no `ProcessExited` -- there is no `on_exit` waiting.
         "detach" => match process_run_args(&envelope.params.arguments) {
             Some((cmd, args)) => {
                 if let Err(err) = crate::process::spawn_detached(&cmd, &args) {
@@ -253,8 +253,8 @@ fn report_process_output_line(
 
 /// Removes `(generation_id, id)` and reaps its group via `super::reap_process_group` (ADR-0018).
 /// `None` means no entry: already reaped via completion, or Lua never received a handle. Otherwise
-/// the code for `exit_cb`: usually `None` for a SIGTERM/SIGKILL death, and `None` when the reap
-/// failed (logged here) so `id`'s `exit_cb` is still answered.
+/// the code for `on_exit`: usually `None` for a SIGTERM/SIGKILL death, and `None` when the reap
+/// failed (logged here) so `id`'s `on_exit` is still answered.
 pub(crate) async fn kill_registered_process(
     processes: &mut LiveProcesses,
     generation_id: u32,
@@ -284,7 +284,7 @@ pub(crate) async fn wait_and_report_exit(
         Ok(status) => status.code(),
         Err(err) => {
             warn!("failed to wait on exited process {id} (generation {generation_id}): {err}");
-            // `None` for the same reason as a failed kill reap: `id`'s `exit_cb` is waiting
+            // `None` for the same reason as a failed kill reap: `id`'s `on_exit` is waiting
             // and no other path will answer it.
             None
         }

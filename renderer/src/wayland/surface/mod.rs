@@ -282,7 +282,7 @@ pub(super) struct TrackedSurface {
     /// ticks then.
     pub(super) paint_deferred: bool,
     /// This surface's `ext_background_effect_surface_v1` (ADR-0195). `None` on a compositor without
-    /// the protocol, and on every surface whose tree never sets `blur`. [`App::drop_role_object`]
+    /// the protocol, and on every surface whose tree never sets `behind_blur`. [`App::drop_role_object`]
     /// destroys it with its `wl_surface`: `set_blur_region` on an inert one kills the client.
     pub(super) blur_effect: Option<ExtBackgroundEffectSurfaceV1>,
     /// The blur region last sent, so an unchanged one is not resent.

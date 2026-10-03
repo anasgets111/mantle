@@ -69,11 +69,11 @@ impl PaletteRegistry {
         })))
     }
 
-    fn quantize(&self, path: String, depth: u8, rescale: u32, cb: Function) -> PaletteHandle {
+    fn quantize(&self, path: String, depth: u8, rescale: u32, on_done: Function) -> PaletteHandle {
         let mut inner = self.0.borrow_mut();
         let id = inner.next_id;
         inner.next_id += 1;
-        inner.pending.insert(id, cb);
+        inner.pending.insert(id, on_done);
         let (tx, waker, cache_root) = (inner.result_tx.clone(), inner.waker.clone(), inner.cache_root.clone());
         // ponytail: a thread per call, outside the image pool's `Budget`, so a quantize can briefly
         // push decodes past `DECODE_POOL_BYTES`. Share the `Budget` if that is ever measured.
@@ -114,8 +114,8 @@ impl PaletteRegistry {
     pub fn poll(&self) {
         let results: Vec<PaletteResult> = std::iter::from_fn(|| self.0.borrow().results.try_recv().ok()).collect();
         for (id, swatches) in results {
-            let Some(cb) = self.0.borrow_mut().pending.remove(&id) else { continue };
-            call_logged(&cb, swatches, format_args!("palette.quantize(id={id}): callback"));
+            let Some(on_done) = self.0.borrow_mut().pending.remove(&id) else { continue };
+            call_logged(&on_done, swatches, format_args!("palette.quantize(id={id}): callback"));
         }
     }
 }
@@ -146,8 +146,8 @@ pub fn register(lua: &Lua, registry: PaletteRegistry) -> mlua::Result<()> {
     super::luacats::lua_table!(lua, palette)?;
     lua_fn!(
         lua,
-        /// Extracts an image's dominant colours off the Lua thread (ADR-0249). `cb` gets them most common
-        /// first, or `nil` on failure (logged). `cb` runs unbudgeted.
+        /// Extracts an image's dominant colours off the Lua thread (ADR-0249). `on_done` gets them most common
+        /// first, or `nil` on failure (logged). `on_done` runs unbudgeted.
         /// [docs](https://anasgets111.github.io/mantle/guide/scripting.html#palettequantize)
         fn palette.quantize(
             _lua,
@@ -156,9 +156,9 @@ pub fn register(lua: &Lua, registry: PaletteRegistry) -> mlua::Result<()> {
             /// `depth` 0 to 8, default 3: up to `2^depth` colours. `rescale` caps the longest edge before
             /// counting, default 128, `0` for full size. Out of range raises.
             opts: As<Option<Table>, Option<Options>>,
-            cb: fn(swatches: Option<Vec<PaletteSwatch>>),
+            on_done: fn(swatches: Option<Vec<PaletteSwatch>>),
         ) -> PaletteHandle {
-            let (opts, cb) = (opts.0, cb.0);
+            let (opts, on_done) = (opts.0, on_done.0);
             if let Some(opts) = &opts {
                 super::marshal::only_keys(opts, &["depth", "rescale"])
                     .map_err(|detail| mlua::Error::runtime(format!("palette.quantize: options: {detail}")))?;
@@ -170,7 +170,7 @@ pub fn register(lua: &Lua, registry: PaletteRegistry) -> mlua::Result<()> {
                     "palette.quantize: depth must be 0..=8 and rescale not negative, got {depth} and {rescale}"
                 )));
             };
-            Ok(registry.quantize(path, depth, rescale, cb))
+            Ok(registry.quantize(path, depth, rescale, on_done))
         }
     )
 }

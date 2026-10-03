@@ -351,7 +351,7 @@ pub fn register(lua: &Lua, dirty: DirtyFlag) -> mlua::Result<()> {
     lua_fn!(
         lua,
         /// Whether the node whose `focused` is bound to this signal, or a node inside it, holds keyboard
-        /// control focus, however it got there; `false` until it does. Not `focus(name)`, which requests
+        /// control focus, however it got there; `false` until it does. Not `focus_target(name)`, which requests
         /// focus for a textfield. One name, one signal, across reloads. Read-only.
         /// [docs](https://anasgets111.github.io/mantle/guide/input.html#keyboard-controls-and-accessibility)
         fn focused(lua, name: String) -> SignalOf<bool> {

@@ -41,7 +41,7 @@ pub fn overlay_input_regions(surface_root: &ResolvedNode, scale: f32) -> Vec<Phy
     regions
 }
 
-/// Every `blur = true` node in one surface, as the physical rects the compositor is handed
+/// Every `behind_blur = true` node in one surface, as the physical rects the compositor is handed
 /// (ADR-0195). Pure; the `ext_background_effect_surface_v1::set_blur_region` push it feeds lives
 /// in `crate::wayland::App::apply_blur_region`.
 ///
@@ -102,7 +102,7 @@ fn collect_blur_regions(
     if child_clip.is_empty() {
         return;
     }
-    if node.blur {
+    if node.behind_blur {
         let radius = match &node.paint {
             Some(PaintStyle::Box { radius, .. }) => *radius,
             _ => 0.0,
@@ -305,7 +305,7 @@ mod tests {
     fn blur_regions_claim_only_the_marked_node_inside_a_full_screen_surface() {
         let lua = mlua::Lua::new();
         let mut card = region_node(1, "rect", (200.0, 260.0, 620.0, 260.0), solid_paint(), Vec::new());
-        card.blur = true;
+        card.behind_blur = true;
         let mut catcher = region_node(2, "rect", (0.0, 0.0, 1920.0, 1161.0), None, Vec::new());
         std::rc::Rc::make_mut(&mut catcher.properties)
             .insert("on_click", Value::Function(lua.create_function(|_, ()| Ok(())).unwrap()));
@@ -329,7 +329,7 @@ mod tests {
     #[test]
     fn blur_regions_follow_an_ancestors_transform_and_an_ancestors_clip() {
         let mut card = region_node(1, "rect", (0.0, 0.0, 100.0, 40.0), solid_paint(), Vec::new());
-        card.blur = true;
+        card.behind_blur = true;
         let build_slider = |id: u64, card: ResolvedNode| {
             let mut slider = region_node(id, "column", (10.0, 10.0, 100.0, 40.0), None, vec![card]);
             slider.transform = node::Transform { translate: (300.0, 0.0), ..node::Transform::default() };
@@ -357,7 +357,7 @@ mod tests {
         // The same card scrolled halfway out of a shorter list: paint clips it to the parent box
         // (`layout::paint::build_node`), so blur stops at the same edge.
         let mut card = region_node(4, "rect", (0.0, 0.0, 100.0, 40.0), solid_paint(), Vec::new());
-        card.blur = true;
+        card.behind_blur = true;
         let list = region_node(5, "list", (0.0, 0.0, 100.0, 20.0), None, vec![card]);
         let root = region_node(6, "panel", (0.0, 0.0, 400.0, 100.0), None, vec![list]);
         assert_eq!(
@@ -374,7 +374,7 @@ mod tests {
     #[test]
     fn a_child_its_parents_translate_carries_into_view_still_asks_for_blur() {
         let mut card = region_node(1, "rect", (80.0, 0.0, 40.0, 20.0), solid_paint(), Vec::new());
-        card.blur = true;
+        card.behind_blur = true;
         let mut parent = region_node(2, "column", (0.0, 0.0, 100.0, 20.0), None, vec![card]);
         parent.transform = node::Transform { translate: (50.0, 0.0), ..node::Transform::default() };
         let root = region_node(3, "panel", (0.0, 0.0, 300.0, 100.0), None, vec![parent]);
@@ -394,7 +394,7 @@ mod tests {
     #[test]
     fn a_clipped_rounded_card_keeps_square_corners_where_it_was_cut() {
         let mut card = region_node(1, "rect", (0.0, 0.0, 100.0, 100.0), solid_paint(), Vec::new());
-        card.blur = true;
+        card.behind_blur = true;
         card.paint = Some(PaintStyle::Box {
             background: Some(node::Fill::Color(node::Rgba { r: 0.0, g: 0.0, b: 0.0, a: 0.8 })),
             radius: 20.0,
@@ -426,7 +426,7 @@ mod tests {
         assert!(blur_regions(&root, 1.0).is_empty(), "a painted box that never asked does not blur");
 
         let mut card = region_node(3, "rect", (0.0, 0.0, 100.0, 40.0), solid_paint(), Vec::new());
-        card.blur = true;
+        card.behind_blur = true;
         let mut faded = region_node(4, "column", (0.0, 0.0, 100.0, 40.0), None, vec![card]);
         faded.opacity = 0.0;
         let root = region_node(5, "panel", (0.0, 0.0, 400.0, 100.0), None, vec![faded]);

@@ -15,9 +15,10 @@ Terms used below (*Supervisor*, *Renderer*, *generation*, *push*) are in the
 | :--- | :--- |
 | Run a command, launch an app, or keep a program running | [processes](processes.md) |
 | Remember a setting across restarts | [`persistent_table`](#persistent_table) |
-| Do something later, repeat, or retry | [`timer`](#timer) |
+| Do something later, or retry | [`timer`](#timer) |
+| Repeat every N ms | [`interval`](#interval) |
 | Run code from a keybind or script | [`action`](#action) + `mantle call` |
-| Parse JSON | [`json.decode`](#jsondecode) |
+| Parse or write JSON | [`json.decode`](#jsondecode), [`json.encode`](#jsonencode) |
 | Write to the shell's log | [`log.*`](#log) |
 | Rank search results | [`fuzzy`](#fuzzy) |
 | Pull colours out of a wallpaper | [`palette.quantize`](#palettequantize) |
@@ -77,7 +78,7 @@ On disk:
 
 ## timer
 
-Runs a function once after a delay. Re-arm inside the callback to repeat.
+Runs a function once after a delay. To repeat at a fixed rate, use [`interval`](#interval).
 
 ```lua
 local status = state("status", "checking")
@@ -98,7 +99,7 @@ local function check(attempt)
 end
 check()
 
--- A repeating timer re-arms itself; calling it at the top level restarts the chain on reload.
+-- Re-arming from the callback repeats on a varying delay, here aligned to the minute.
 local clock = state("clock", "")
 local function tick()
     clock:set(os.date("%H:%M"))
@@ -127,11 +128,25 @@ Each time a timer sets a signal, every `:map` reading it runs again. Once a minu
 | :--- | :--- |
 | Retry with backoff, or act once after a delay | `timer` |
 | Update a clock | `timer`, re-armed for the next minute, as above |
-| Poll something with no capability and no output to follow | `timer` at the slowest rate that stays useful ([poll a command](processes.md#poll-a-command-every-n-seconds)) |
+| Poll something with no capability and no output to follow | `interval` at the slowest rate that stays useful ([poll a command](processes.md#poll-a-command-every-n-seconds)) |
 | React to a program's output | Follow it with `process.run` instead of polling ([follow](processes.md#follow-a-long-running-commands-output)) |
 | Hide something a few seconds after the last change | `timer`, cancelling the previous handle on each change; or `delay` |
 | Show a value late, or blink it | `delay` or `pulse` |
 | Move, spin, pulse or morph something | `animate` ([Lua cost](animation.md#lua-cost)) |
+
+## interval
+
+`interval(ms, fn)` → handle. Runs `fn` every `ms` until `handle:cancel()`, with `timer`'s range,
+budget, order and lifetime. Turns stay on the original schedule; one that comes late runs once and
+the next is `ms` after it, so missed runs never queue. A raise is logged and the next run still
+happens. Cancelling from inside `fn` stops it.
+
+```lua
+local load = state("load", "")
+interval(5000, function()
+    process.run("cat", { "/proc/loadavg" }, function(line) load:set(line:match("^%S+")) end, function() end)
+end)
+```
 
 ## action
 
@@ -173,7 +188,24 @@ CLI flags such as `--pid`: [cli](cli.md).
 | Top-level `null` | `nil`, same as a failure without the message |
 | Non-UTF-8 input | `nil, message` |
 
-There is no `json.encode`; build JSON arguments with `string.format`.
+## json.encode
+
+`json.encode(value)` → string: compact JSON, object keys sorted. It raises on a value JSON cannot
+hold, since that is a config mistake rather than bad input.
+
+| Lua | JSON |
+| :--- | :--- |
+| Table whose keys are all positive integers, `{}` included | Array; a hole inside it is `null`. More than half holes raises |
+| Table with string keys | Object |
+| Table mixing both, or with other keys | Raises |
+| `nil` | `null` |
+| Integer, float | `3`, `3.0`: `json.decode` reads each back as it was |
+| Function, userdata, a table that contains itself, NaN, infinity, nesting past 128 | Raises |
+
+```lua
+local body = json.encode({ title = "Backup", done = true }) -- {"done":true,"title":"Backup"}
+process.detach("curl", { "-s", "-H", "Content-Type: application/json", "-d", body, "http://localhost:8080/events" })
+```
 
 ## log
 
@@ -259,12 +291,12 @@ return panel {
 
 | Part | Contract |
 | :--- | :--- |
-| Signature | `palette.quantize(path, opts?, cb)` → handle |
+| Signature | `palette.quantize(path, opts?, on_done)` → handle |
 | `path` | Local raster image; no SVG or URL |
 | `opts.depth` | `0` to `8`, default `3`: up to `2^depth` colours, fewer when the image has fewer. Out of range raises |
 | `opts` | Only `depth` and `rescale`; another key raises |
 | `opts.rescale` | Longest edge in px before counting, default `128`; `0` is full size. Negative raises. A cached freedesktop thumbnail that covers it is used instead of decoding |
-| `cb(swatches)` | `{ color = "#RRGGBB", share = 0..1 }` entries, most common first. `share` counts only non-transparent pixels. `nil` on failure, with a logged warning. Runs outside the CPU budget; a raise is logged as a warning |
+| `on_done(swatches)` | `{ color = "#RRGGBB", share = 0..1 }` entries, most common first. `share` counts only non-transparent pixels. `nil` on failure, with a logged warning. Runs outside the CPU budget; a raise is logged as a warning |
 | Handle | `handle:cancel()` drops the callback; the work still finishes |
 
 ## fonts

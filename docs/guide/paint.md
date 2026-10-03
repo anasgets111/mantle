@@ -66,7 +66,7 @@ or, with none close, listing them all.
 | Properties | Taken by |
 | :--- | :--- |
 | `shadow_color`, `shadow_blur`, `shadow_offset`, `shadow_spread`, `content_blur`, `opacity` | Every node, including `text`, `icon`, `image`, `list`, `textfield` |
-| `background`, `radius`, `corner_shape`, `border_color`, `border_width`, `clip`, `mask`, `shadow_mode`, `backdrop_blur`, `blur` | Box kinds only |
+| `background`, `radius`, `corner_shape`, `border_color`, `border_width`, `clip`, `mask`, `shadow_mode`, `backdrop_blur`, `behind_blur` | Box kinds only |
 | `source_blur` | `image` only |
 | `foreground` (`text`, `icon`, `textfield`), `z`, `scale`, `rotate`, `translate`, `origin`, `visible` | Also affect paint; documented on [Nodes](../nodes/index.md) |
 
@@ -88,10 +88,10 @@ colours and no short `#RGB` form.
 | `background` | `Color\|Gradient\|Bound` | None | A colour or [gradient](#gradients). Absent draws nothing; `"#00000000"` is an explicit transparent fill. A gradient snaps under `animate` |
 | `mask` | `Mask\|Bound` | None | Multiplies the alpha of this node and its subtree; see [Mask](#mask) |
 | `radius` | `number\|Bound`, `[0, 8192]` | `0` | Corner radius px. Above half the shorter side it clamps, so `radius = 999` makes a pill or circle |
-| `corner_shape` | `"Round"\|"Scoop"\|Bound` | `"Round"` | `"Scoop"` cuts each corner inward as a quarter circle centred on the corner point; fill, clip, glass, shadow and the `blur` region follow |
+| `corner_shape` | `"Round"\|"Scoop"\|Bound` | `"Round"` | `"Scoop"` cuts each corner inward as a quarter circle centred on the corner point; fill, clip, glass, shadow and the `behind_blur` region follow |
 | `border_color` | `Color\|BorderColors\|Bound` | None | A string sets all four edges; a missing edge has none. An edge draws only with both a colour and a width |
 | `border_width` | `number\|Edges\|Bound`, `[0, 8192]` | `0` | Px per edge; a number sets all four, a missing edge is `0`. Borders draw inside the box and take no layout space |
-| `blur` | `boolean\|Bound` | `false` | Ask the compositor to blur the desktop behind this box; see [Blurs](#blurs). Never inferred from a translucent background |
+| `behind_blur` | `boolean\|Bound` | `false` | Ask the compositor to blur the desktop behind this box; see [Blurs](#blurs). Never inferred from a translucent background |
 | `backdrop_blur` | `number\|Bound`, `[0, 8192]` | `0` | Gaussian sigma in px over what this surface already painted under the box, CSS `backdrop-filter`; see [Blurs](#blurs) |
 | `shadow_mode` | `"Box"\|"Content"\|Bound` | `"Box"` | `"Box"`: CSS `box-shadow` of the box shape. `"Content"`: CSS `drop-shadow` of everything painted. See [Shadows](#shadows) |
 | `clip` | `"Box"\|"Rounded"\|"None"\|Bound` | `"Box"` | `"Box"` cuts children to the rectangle, `"Rounded"` also to `radius`, `"None"` leaves them on the parent's clip. See [Clip](#clip) |
@@ -322,13 +322,13 @@ Four properties blur four different things. Sigmas are in logical px, `[0, 8192]
 
 | Property | Reads | When it runs | Cost | Pick it for |
 | :--- | :--- | :--- | :--- | :--- |
-| `blur = true` (box kinds) | The desktop behind the surface: other windows and the wallpaper, not this surface's own pixels | Continuously, in the compositor | The compositor's | A translucent bar or panel over windows |
+| `behind_blur = true` (box kinds) | The desktop behind the surface: other windows and the wallpaper, not this surface's own pixels | Continuously, in the compositor | The compositor's | A translucent bar or panel over windows |
 | `backdrop_blur = sigma` (box kinds) | What this surface has already painted under the box: ancestors, earlier siblings, lower `z`. Never the desktop | Every repaint that touches the box or what it reads, on the GPU | A copy and a blur per repaint; not cached | Glass over the surface's own wallpaper, image or animated content |
 | `content_blur = sigma` (every node) | The node's own subtree | On repaint, on the GPU, into an offscreen layer | A blur when the subtree changes; an unchanged layer is reused. Large sigmas downsample first | A blurred or blur-in element, tweened with `animate` |
 | `source_blur = sigma` (`image`) | The image file's pixels | Once, on the CPU, when the source decodes | Nothing per frame | A static blurred picture on a surface that repaints often |
 
-**`blur = true`.** Mantle sends the compositor a region, through `ext-background-effect-v1`, made
-of every `blur = true` box on the surface: rounded to `radius` (or scooped), cut by ancestor
+**`behind_blur = true`.** Mantle sends the compositor a region, through `ext-background-effect-v1`, made
+of every `behind_blur = true` box on the surface: rounded to `radius` (or scooped), cut by ancestor
 clips, moved by transforms, and dropped while the node is invisible or at `opacity` 0. It ignores
 `mask`. The compositor decides strength, noise, xray and whether to blur at all; a compositor
 without the protocol or its blur capability gives nothing, and no error. It is never inferred from
@@ -348,7 +348,7 @@ panel {
     height = 36,
     exclusive = true,
     background = "#1E1E2E99",
-    blur = true,
+    behind_blur = true,
     child = row { width = "Fill", padding = { left = 12, right = 12 }, children = { clock } },
 }
 ```
@@ -405,8 +405,7 @@ One node paints in this order, each step over the last:
 | `content_blur` and `backdrop_blur` on one node | The glass stays sharp; only the fill, border and subtree blur | Expected |
 | `backdrop_blur` inside a parent with `mask`, `content_blur` or a Content-mode shadow | The glass sees only what that parent has drawn so far, not what is under the parent | Move the glass out of the effect parent, or accept it |
 | `backdrop_blur` inside `clip = "Rounded"` without a mask | The glass sees what is under the parent, as without the clip | Nothing to do |
-| `backdrop_blur` on a surface root | Nothing is under it on the surface, so it blurs transparency | Use `blur = true` for the desktop |
-| `blur = true` and `backdrop_blur` on one box | The compositor blurs the desktop; the backdrop blurs this surface's pixels. Neither sees the other | Pick by what is underneath: desktop or own content |
+| `backdrop_blur` on a surface root | It blurs transparency: it never reads the desktop | `behind_blur = true` |
 | Shadow and `content_blur` on one node | The shadow is cast from the sharp content, then the content is blurred | Expected |
 | Box-mode shadow on a translucent box | One gradient quad, cut out under the box; children do not cast | `shadow_mode = "Content"` to cast from what is painted |
 | Content-mode shadow on a masked node | Cast from the masked result | Expected |
@@ -447,7 +446,7 @@ panel {
         background = "#1E1E2EB3",
         border_width = 1,
         border_color = "#FFFFFF2E",
-        blur = true,
+        behind_blur = true,
         children = { text { content = "Wi-Fi", font_size = 14, foreground = "#CDD6F4" } },
     },
 }
@@ -578,7 +577,7 @@ panel {
                 spacing = 8,
                 radius = 16,
                 background = "#1E1E2EE0",
-                blur = true,
+                behind_blur = true,
                 shadow_color = "#00000080",
                 shadow_blur = 32,
                 children = {
@@ -592,7 +591,7 @@ panel {
 ```
 
 A full-screen [panel](../surfaces/panel.md) whose first child is a translucent scrim and whose
-second is the dialog. Dim with a colour rather than `blur = true` on the scrim: the compositor's
+second is the dialog. Dim with a colour rather than `behind_blur = true` on the scrim: the compositor's
 blur does not fade with `opacity`, so a fading scrim would blur at full strength until it hits 0.
 
 ## Gotchas

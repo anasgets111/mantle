@@ -31,13 +31,13 @@ pub(crate) fn register(lua: &Lua) -> mlua::Result<()> {
         lua,
         /// Names a plain textfield that an `on_click` can focus with `:request()`.
         /// [docs](https://anasgets111.github.io/mantle/guide/input.html#text-fields)
-        fn focus(
+        fn focus_target(
             _lua,
-            /// Shared with the textfield's `focus` property.
+            /// Shared with the textfield's `focus_target` property.
             name: String,
         ) -> FocusHandle {
             if name.is_empty() {
-                return Err(mlua::Error::runtime("focus() requires a nonempty name"));
+                return Err(mlua::Error::runtime("focus_target() requires a nonempty name"));
             }
             Ok(FocusHandle(name))
         }
@@ -71,7 +71,7 @@ mod tests {
     fn requests_only_inside_a_click_keep_the_click_surface() {
         let lua = Lua::new();
         register(&lua).unwrap();
-        let handle: AnyUserData = lua.load("return focus('search')").eval().unwrap();
+        let handle: AnyUserData = lua.load("return focus_target('search')").eval().unwrap();
         lua.globals().set("target", handle).unwrap();
         lua.load("target:request()").exec().unwrap();
         assert_eq!(take_request(&lua), None);

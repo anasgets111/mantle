@@ -1,12 +1,9 @@
-//! `json` global table (ADR-0057), the config's only reader for structured subprocess output.
+//! `json` global table (ADR-0057): the config's reader for structured subprocess output and its
+//! writer for JSON arguments.
 //!
-//! `process.run`'s `out_cb` fires once per newline-stripped line, so a config polling
+//! `process.run`'s `on_line` fires once per newline-stripped line, so a config polling
 //! `lsblk --json` accumulates and decodes the buffer. Without a decoder, such subprocesses are
 //! fire-and-forget.
-//!
-//! There is no `json.encode`. ponytail: configs still concatenate strings for `--json` input.
-//! Upgrade with `encode` beside `decode`, reversing [`to_lua`]'s options; nothing needs it yet, and
-//! an unused writer has no checked round trip.
 
 use mlua::{Lua, LuaSerdeExt, Value};
 
@@ -37,11 +34,62 @@ fn decode(lua: &Lua, bytes: &[u8]) -> Result<Value, String> {
     to_lua(lua, &json).map_err(|err| format!("decoded, but could not be converted to a Lua value: {err}"))
 }
 
-/// Registers `json.decode(text)`.
+/// The reverse of [`to_lua`]: a hole inside an array's length writes `null`, as a `null` element
+/// decodes to a hole; `nil` alone writes `null`. A table whose keys are all positive integers is an
+/// array, so `{}` writes `[]`, while at most half its slots are holes; any other key makes it an
+/// object, whose keys must be strings.
+///
+/// mlua refuses functions, userdata and threads, and keeps its own cycle check as a backstop.
+/// [`check`] first refuses what would pass silently or never end: NaN and infinity, which
+/// serde_json writes as `null`, nesting past decode's 128, which recurses without bound, and a
+/// sparse array.
+fn encode(lua: &Lua, value: Value) -> Result<String, String> {
+    check(&value, &mut Vec::new())?;
+    let options = mlua::serde::de::Options::new().detect_mixed_tables(true).sort_keys(true);
+    let json: serde_json::Value = lua.from_value_with(value, options).map_err(|err| err.to_string())?;
+    serde_json::to_string(&json).map_err(|err| err.to_string())
+}
+
+/// `path` holds the tables from the root to `value`, so a repeat is a cycle, not a shared table.
+fn check(value: &Value, path: &mut Vec<*const std::ffi::c_void>) -> Result<(), String> {
+    match value {
+        Value::Number(n) if !n.is_finite() => Err(format!("{n} has no JSON form")),
+        Value::Table(table) => {
+            let at = table.to_pointer();
+            if path.contains(&at) {
+                return Err("a table contains itself".into());
+            }
+            if path.len() == 128 {
+                return Err("tables nest deeper than 128".into());
+            }
+            path.push(at);
+            // mlua writes an all-integer-key table up to its highest index, so `{ [2^40] = 1 }`
+            // would allocate that many nulls.
+            let (mut count, mut highest, mut array) = (0i64, 0i64, true);
+            for pair in table.pairs::<Value, Value>() {
+                let (key, value) = pair.map_err(|err| err.to_string())?;
+                match key {
+                    Value::Integer(index) if index >= 1 => (count, highest) = (count + 1, highest.max(index)),
+                    _ => array = false,
+                }
+                check(&key, path)?;
+                check(&value, path)?;
+            }
+            path.pop();
+            if array && highest > 2 * count {
+                return Err(format!("an array with {count} values up to index {highest} is more than half holes"));
+            }
+            Ok(())
+        }
+        _ => Ok(()),
+    }
+}
+
+/// Registers `json.decode(text)` and `json.encode(value)`.
 ///
 /// Returns one value on success, or `nil` plus a message on failure, matching Lua's `io.open`, not
 /// cjson. mlua's `IntoLuaMulti for Result` is already that shape, so [`decode`]'s `Result` goes
-/// back whole. Decode failure is routine because `out_cb` supplies lines, including partial buffers
+/// back whole. Decode failure is routine because `on_line` supplies lines, including partial buffers
 /// and non-JSON stdout; raising would force `pcall` at every call site. No trailing `nil`: with three
 /// arguments, `table.insert(t, decoded, nil)` treats the second as a position and raises "bad
 /// argument #2 to 'insert' (number expected, got table)". Measured, not assumed.
@@ -60,11 +108,26 @@ pub fn register(lua: &Lua) -> mlua::Result<()> {
     super::luacats::lua_fn!(
         lua,
         /// Decodes JSON and never raises: failure returns `nil, message`. JSON `null` also decodes to `nil`,
-        /// and a `null` array element leaves a hole that stops `ipairs` (ADR-0057). There is no encoder.
+        /// and a `null` array element leaves a hole that stops `ipairs` (ADR-0057).
         /// [docs](https://anasgets111.github.io/mantle/guide/scripting.html#jsondecode)
         fn json.decode(lua, text: mlua::LuaString) -> (value: Value, error: Option<String>) as Result<Value, String> {
             super::signal::anchor_cpu_budget(lua);
             Ok(decode(lua, &text.as_bytes()))
+        }
+    )?;
+    super::luacats::lua_fn!(
+        lua,
+        /// Encodes a value as compact JSON with sorted keys. A table with only positive integer keys is an
+        /// array, so `{}` is `[]`, and a hole inside it is `null`; other tables need string keys. Raises
+        /// on a function, userdata, cycle, NaN, infinity, nesting past 128 or an array over half holes.
+        /// [docs](https://anasgets111.github.io/mantle/guide/scripting.html#jsonencode)
+        fn json.encode(
+            lua,
+            /// Tables, strings, numbers, booleans and `nil`.
+            value: Value,
+        ) -> String {
+            super::signal::anchor_cpu_budget(lua);
+            encode(lua, value).map_err(|err| mlua::Error::runtime(format!("json.encode: {err}")))
         }
     )
 }
@@ -72,6 +135,54 @@ pub fn register(lua: &Lua) -> mlua::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn encoded(lua: &Lua, chunk: &str) -> Result<String, String> {
+        lua.load(chunk).eval::<String>().map_err(|err| err.to_string())
+    }
+
+    #[test]
+    fn encode_writes_compact_sorted_json_that_decode_reads_back() {
+        let lua = lua_with_json();
+        let text = encoded(&lua, r#"return json.encode({ b = { 1, 2.5, "x" }, a = true, c = { n = "é" } })"#);
+        assert_eq!(text.as_deref(), Ok(r#"{"a":true,"b":[1,2.5,"x"],"c":{"n":"é"}}"#));
+        let same: bool = lua
+            .load(r#"local t = json.decode(json.encode({ 1, 2, { k = "v" } })) return t[2] == 2 and t[3].k == "v""#)
+            .eval()
+            .unwrap();
+        assert!(same);
+    }
+
+    #[test]
+    fn encode_mirrors_decodes_null_mapping() {
+        let lua = lua_with_json();
+        assert_eq!(encoded(&lua, "return json.encode({ 1, nil, 3 })").as_deref(), Ok("[1,null,3]"), "a hole is null");
+        assert_eq!(encoded(&lua, "return json.encode(nil)").as_deref(), Ok("null"));
+        assert_eq!(encoded(&lua, "return json.encode({})").as_deref(), Ok("[]"));
+        assert_eq!(encoded(&lua, r#"return json.encode("a\"b\n")"#).as_deref(), Ok(r#""a\"b\n""#));
+        assert_eq!(encoded(&lua, "return json.encode(3.0)").as_deref(), Ok("3.0"), "a float stays a float");
+    }
+
+    #[test]
+    fn encode_refuses_what_json_cannot_hold_instead_of_writing_null() {
+        let lua = lua_with_json();
+        for (chunk, needle) in [
+            ("return json.encode({ f = print })", "function"),
+            ("return json.encode({ 0/0 })", "no JSON form"),
+            ("return json.encode({ x = math.huge })", "no JSON form"),
+            ("local t = {} t.self = t return json.encode(t)", "contains itself"),
+            ("return json.encode({ 1, 2, x = 3 })", "json.encode"),
+            ("local t = {} for _ = 1, 200 do t = { t } end return json.encode(t)", "deeper than 128"),
+            ("return json.encode({ [2^40] = 1 })", "more than half holes"),
+        ] {
+            let err = encoded(&lua, chunk).expect_err(chunk);
+            assert!(err.contains(needle), "{chunk}: {err}");
+        }
+        let shared: String = lua
+            .load("local s = { 1 } return json.encode({ a = s, b = s })")
+            .eval()
+            .expect("a shared table is no cycle");
+        assert_eq!(shared, r#"{"a":[1],"b":[1]}"#);
+    }
 
     fn lua_with_json() -> Lua {
         let lua = Lua::new();

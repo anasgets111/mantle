@@ -1166,7 +1166,7 @@ local script = {
         keys:set("")
         next()
     end,
-    say("Reloads keep state.", "The launcher stays open while you restyle it, and blur = true asks for glass."),
+    say("Reloads keep state.", "The launcher stays open while you restyle it, and behind_blur = true asks for glass."),
     edit("04-restyle"),
     wait(2200),
     say("Fuzzy search, built in.", "fuzzy() scores each app as fzf does; the ranking stays in Lua."),

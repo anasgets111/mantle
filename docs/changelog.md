@@ -7,6 +7,10 @@ version is 0.x, a minor release can break the Lua API.
 
 ## Unreleased
 
+- Breaking: node property `blur` is now `behind_blur`. `focus(name)` is now `focus_target(name)`, and the textfield property `focus` is now `focus_target`.
+- `json.encode(value)` returns compact JSON with sorted keys; it raises on functions, userdata, cycles, NaN, infinity, nesting past 128 and arrays more than half holes.
+- `interval(ms, callback)` is a repeating timer with `timer`'s range, `cancel` and per-evaluation lifetime.
+- `process.run` and `process.detach` accept `nil` for `args`.
 - Breaking: every volume is a percent. `audio.volume` (0–150), `audio.source_volume`, `apps[].volume` and mpris `players[].volume` read `100` for 100%, and `set_volume`, `set_source_volume`, `set_app_volume` and `mantle.mpris:set_volume` take the same scale. Multiply old fractions by 100.
 - Breaking: `mantle.mpris:set_loop_status` takes `"None"|"Track"|"Playlist"` and raises on anything else; `players[].loop_status` is `nil` instead of `""` when unreported, and `play_state` reads `"Stopped"` instead of `""` before its first reading. `mantle.tray:scroll` raises on an orientation other than `"vertical"` or `"horizontal"`. `mantle.power:set_profile` warns and sends nothing for a name not in `profiles`.
 - Breaking: unknown values are `nil` instead of `-1`: `sysinfo.temp_gpu`, bluetooth connected-device `battery`, and mpris `position`, `length` and track-list `length`. `network.ethernet_speed` is `nil` instead of `0` when unknown or no wired device is active.

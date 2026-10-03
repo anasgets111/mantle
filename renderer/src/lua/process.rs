@@ -1,14 +1,14 @@
 //! `process` global table and `ProcessHandle` userdata (ADR-0026).
 //!
-//! `process.run(cmd, args, out_cb, exit_cb)` runs on the Wayland dispatch thread during Lua
+//! `process.run(cmd, args, on_line, on_exit)` runs on the Wayland dispatch thread during Lua
 //! evaluation, with no socket in scope. [`ProcessRegistry`] queues the outbound `"process"`/`"run"`
 //! envelope through the generation's [`CommandSender`] (ADR-0039).
 //!
 //! `Rc<RefCell<_>>` is correct because the registry and Lua closures stay on that thread.
 //!
 //! Callback convention, unspecified by the docs, is fixed here (ADR-0026):
-//! `out_cb(line, stream)` uses Lua strings `"stdout"`/`"stderr"` while the wire keeps
-//! `shared::ProcessStream`; `exit_cb(code)` receives an integer or `nil` via `Option<i32>`.
+//! `on_line(line, stream)` uses Lua strings `"stdout"`/`"stderr"` while the wire keeps
+//! `shared::ProcessStream`; `on_exit(code)` receives an integer or `nil` via `Option<i32>`.
 
 use std::cell::RefCell;
 use std::collections::BTreeMap;
@@ -25,8 +25,8 @@ use crate::lua::call_logged;
 
 /// One `process.run` callback pair, retained until matching `SupervisorFrame::ProcessExited`.
 struct PendingProcess {
-    out_cb: Function,
-    exit_cb: Function,
+    on_line: Function,
+    on_exit: Function,
 }
 
 /// Retains callbacks, assigns `CommandEnvelope.id` in the Renderer (ADR-0026), and queues
@@ -46,9 +46,9 @@ impl ProcessRegistry {
         self.commands.send_as(id, "process", action, arguments);
     }
 
-    fn run(&self, cmd: String, args: Vec<String>, out_cb: Function, exit_cb: Function) -> ProcessHandle {
+    fn run(&self, cmd: String, args: Vec<String>, on_line: Function, on_exit: Function) -> ProcessHandle {
         let id = self.commands.next_id();
-        self.pending.borrow_mut().insert(id, PendingProcess { out_cb, exit_cb });
+        self.pending.borrow_mut().insert(id, PendingProcess { on_line, on_exit });
         self.send("run", vec![serde_json::json!(cmd), serde_json::json!(args)], id);
         ProcessHandle { id, registry: self.clone() }
     }
@@ -64,10 +64,10 @@ impl ProcessRegistry {
         self.send("kill", Vec::new(), id);
     }
 
-    /// Kills every child the last evaluation started and runs each `exit_cb(nil)` now, in start
+    /// Kills every child the last evaluation started and runs each `on_exit(nil)` now, in start
     /// order, so a guard an exit resets is clear before the next evaluation's top level reads it.
     /// Forgetting the ids drops the output still in flight and the Supervisor's later exit frames.
-    /// One pass: a child an `exit_cb` starts here outlives this reload, so a retry chain cannot spin.
+    /// One pass: a child an `on_exit` starts here outlives this reload, so a retry chain cannot spin.
     pub fn kill_all(&self) {
         let ids: Vec<u64> = self.pending.borrow().keys().copied().collect();
         for id in ids {
@@ -76,25 +76,25 @@ impl ProcessRegistry {
         }
     }
 
-    /// Dispatches `SupervisorFrame::ProcessOutput` to `id`'s `out_cb`. Stale/unknown ids, including
+    /// Dispatches `SupervisorFrame::ProcessOutput` to `id`'s `on_line`. Stale/unknown ids, including
     /// forgotten generations or wire desyncs, are ignored.
     pub fn dispatch_output(&self, id: u64, stream: ProcessStream, line: String) {
-        let out_cb = self.pending.borrow().get(&id).map(|p| p.out_cb.clone());
-        let Some(out_cb) = out_cb else { return };
-        call_logged(&out_cb, (line, stream_name(stream)), format_args!("process.run(id={id}): out_cb"));
+        let on_line = self.pending.borrow().get(&id).map(|p| p.on_line.clone());
+        let Some(on_line) = on_line else { return };
+        call_logged(&on_line, (line, stream_name(stream)), format_args!("process.run(id={id}): on_line"));
     }
 
-    /// Dispatches `SupervisorFrame::ProcessExited`, invokes `exit_cb`, then forgets the id
+    /// Dispatches `SupervisorFrame::ProcessExited`, invokes `on_exit`, then forgets the id
     /// (ADR-0026).
     pub fn dispatch_exit(&self, id: u64, code: Option<i32>) {
-        let exit_cb = self.pending.borrow_mut().remove(&id).map(|p| p.exit_cb);
-        let Some(exit_cb) = exit_cb else { return };
-        call_logged(&exit_cb, code, format_args!("process.run(id={id}): exit_cb"));
+        let on_exit = self.pending.borrow_mut().remove(&id).map(|p| p.on_exit);
+        let Some(on_exit) = on_exit else { return };
+        call_logged(&on_exit, code, format_args!("process.run(id={id}): on_exit"));
     }
 }
 
 keywords! {
-    /// Which pipe an `out_cb` line came from; the wire keeps `shared::ProcessStream`.
+    /// Which pipe an `on_line` line came from; the wire keeps `shared::ProcessStream`.
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     enum Stream {
         Stdout = "stdout",
@@ -118,7 +118,7 @@ pub struct ProcessHandle {
 
 lua_class! {
     impl ProcessHandle {
-        /// `SIGTERM` to its process group, `SIGKILL` 100 ms later; `exit_cb` still fires. A no-op after exit.
+        /// `SIGTERM` to its process group, `SIGKILL` 100 ms later; `on_exit` still fires. A no-op after exit.
         fn kill(_lua, this) {
             this.registry.kill(this.id);
             Ok(())
@@ -126,7 +126,7 @@ lua_class! {
     }
 }
 
-/// Registers `process.run(cmd, args, out_cb, exit_cb)` and `process.detach(cmd, args)`; mlua's
+/// Registers `process.run(cmd, args, on_line, on_exit)` and `process.detach(cmd, args)`; mlua's
 /// closure signature supplies argument validation.
 pub fn register(lua: &Lua, registry: ProcessRegistry) -> mlua::Result<()> {
     let detach_registry = registry.clone();
@@ -134,21 +134,21 @@ pub fn register(lua: &Lua, registry: ProcessRegistry) -> mlua::Result<()> {
     lua_fn!(
         lua,
         /// Spawns `cmd` with stdout and stderr piped and stdin on `/dev/null`, without blocking (ADR-0026).
-        /// The process belongs to the evaluation: a reload kills its group and calls `exit_cb(nil)`.
+        /// The process belongs to the evaluation: a reload kills its group and calls `on_exit(nil)`.
         /// Callbacks run unbudgeted; a raise is logged as a warning.
         /// [docs](https://anasgets111.github.io/mantle/guide/processes.html#processrun)
         fn process.run(
             _lua,
             /// Looked up on `PATH`; no shell, so no globbing, pipes or quoting.
             cmd: String,
-            /// Already split: `"a b"` is one argument.
-            args: Vec<String>,
-            /// Once per line, newline stripped, cut at 64 KiB. Accumulate here and decode in `exit_cb`.
-            out_cb: fn(line: String, stream: Stream),
+            /// Already split: `"a b"` is one argument. `nil` is none.
+            args: Option<Vec<String>>,
+            /// Once per line, newline stripped, cut at 64 KiB. Accumulate here and decode in `on_exit`.
+            on_line: fn(line: String, stream: Stream),
             /// `nil` when a signal ended it or it failed to spawn.
-            exit_cb: fn(code: Option<i32>),
+            on_exit: fn(code: Option<i32>),
         ) -> ProcessHandle {
-            Ok(registry.run(cmd, args, out_cb.0, exit_cb.0))
+            Ok(registry.run(cmd, args.unwrap_or_default(), on_line.0, on_exit.0))
         }
     )?;
     lua_fn!(
@@ -160,10 +160,10 @@ pub fn register(lua: &Lua, registry: ProcessRegistry) -> mlua::Result<()> {
             _lua,
             /// Looked up on `PATH`; no shell, so no globbing, pipes or quoting.
             cmd: String,
-            /// Already split: `"a b"` is one argument.
-            args: Vec<String>,
+            /// Already split: `"a b"` is one argument. `nil` is none.
+            args: Option<Vec<String>>,
         ) {
-            detach_registry.detach(cmd, args);
+            detach_registry.detach(cmd, args.unwrap_or_default());
             Ok(())
         }
     )
@@ -220,6 +220,10 @@ mod tests {
             registry.pending.borrow().is_empty(),
             "nothing may be retained for a process that will never report an exit"
         );
+
+        lua.load(r#"process.detach("kate")"#).exec().unwrap();
+        let bare = queued_command(&mut rx).unwrap();
+        assert_eq!(bare.params.arguments, vec![serde_json::json!("kate"), serde_json::json!([])], "args are optional");
     }
 
     #[test]
@@ -227,10 +231,12 @@ mod tests {
         let (lua, _registry, mut rx) = lua_with_process(0);
 
         lua.load(r#"process.run("a", {}, function() end, function() end)"#).exec().unwrap();
-        lua.load(r#"process.run("b", {}, function() end, function() end)"#).exec().unwrap();
+        lua.load(r#"process.run("b", nil, function() end, function() end)"#).exec().unwrap();
 
         assert_eq!(queued_command(&mut rx).unwrap().id, 0);
-        assert_eq!(queued_command(&mut rx).unwrap().id, 1);
+        let nil_args = queued_command(&mut rx).unwrap();
+        assert_eq!(nil_args.id, 1);
+        assert_eq!(nil_args.params.arguments, vec![serde_json::json!("b"), serde_json::json!([])], "nil args is none");
     }
 
     #[test]
@@ -272,7 +278,7 @@ mod tests {
     }
 
     #[test]
-    fn dispatch_output_invokes_the_registered_out_cb_with_line_and_stream() {
+    fn dispatch_output_invokes_the_registered_on_line_with_line_and_stream() {
         let (lua, registry, _rx) = lua_with_process(0);
         lua.load(r#"process.run("cmd", {}, function(line, stream) probe = { line = line, stream = stream } end, function() end)"#)
             .exec()
@@ -296,7 +302,7 @@ mod tests {
     }
 
     #[test]
-    fn dispatch_exit_invokes_the_registered_exit_cb_with_the_code_then_forgets_the_id() {
+    fn dispatch_exit_invokes_the_registered_on_exit_with_the_code_then_forgets_the_id() {
         let (lua, registry, _rx) = lua_with_process(0);
         lua.load(r#"process.run("cmd", {}, function() end, function(code) probe = { code = code } end)"#)
             .exec()

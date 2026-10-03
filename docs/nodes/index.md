@@ -227,7 +227,7 @@ The compositor draws the shape from its cursor theme.
 ## Box properties
 
 `rect`, `row`, `column` and the four surface roles also take `background`, `radius`,
-`corner_shape`, `border_color`, `border_width`, `clip`, `mask`, `blur`, `backdrop_blur` and
+`corner_shape`, `border_color`, `border_width`, `clip`, `mask`, `behind_blur`, `backdrop_blur` and
 `shadow_mode`. They are documented on [paint](../guide/paint.md#box-properties). Leaves and `list`
 take none of them: wrap one in a `rect` for a background, border or rounded clip.
 

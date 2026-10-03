@@ -98,7 +98,7 @@ pub struct App {
     waker: crate::wake::Waker,
     layer_shell: LayerShell,
     /// `ext_background_effect_manager_v1` through SCTK's `GlobalProxy` (ADR-0195). A compositor
-    /// without the global is not an error: `blur = true` there is silently nothing, the same answer
+    /// without the global is not an error: `behind_blur = true` there is silently nothing, the same answer
     /// every other unavailable compositor feature gets here.
     background_effect: BackgroundEffectState,
     /// Whether the manager announces `blur`. [`BackgroundEffectState`] holds the same bit, but only

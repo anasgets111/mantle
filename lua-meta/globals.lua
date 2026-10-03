@@ -36,12 +36,20 @@ function action(name, handler) end
 json = {}
 
 ---Decodes JSON and never raises: failure returns `nil, message`. JSON `null` also decodes to `nil`,
----and a `null` array element leaves a hole that stops `ipairs` (ADR-0057). There is no encoder.
+---and a `null` array element leaves a hole that stops `ipairs` (ADR-0057).
 ---[docs](https://anasgets111.github.io/mantle/guide/scripting.html#jsondecode)
 ---@param text string
 ---@return any value
 ---@return string? error
 function json.decode(text) end
+
+---Encodes a value as compact JSON with sorted keys. A table with only positive integer keys is an
+---array, so `{}` is `[]`, and a hole inside it is `null`; other tables need string keys. Raises
+---on a function, userdata, cycle, NaN, infinity, nesting past 128 or an array over half holes.
+---[docs](https://anasgets111.github.io/mantle/guide/scripting.html#jsonencode)
+---@param value any Tables, strings, numbers, booleans and `nil`.
+---@return string
+function json.encode(value) end
 
 log = {}
 
@@ -89,9 +97,9 @@ function FocusHandle:request() end
 
 ---Names a plain textfield that an `on_click` can focus with `:request()`.
 ---[docs](https://anasgets111.github.io/mantle/guide/input.html#text-fields)
----@param name string Shared with the textfield's `focus` property.
+---@param name string Shared with the textfield's `focus_target` property.
 ---@return FocusHandle
-function focus(name) end
+function focus_target(name) end
 
 ---@class SessionProcessHandle
 ---A program declared with `session_process`. Each field is a signal over its `mantle.processes`
@@ -128,11 +136,11 @@ function session_process(spec) end
 ---@class TimerHandle
 local TimerHandle = {}
 
----Disarms the timer. A no-op once it has fired or been cancelled, and inside its own callback.
+---Disarms the timer, an interval from inside its own callback too. A no-op once a one-shot fired or after a cancel.
 function TimerHandle:cancel() end
 
 ---Runs `callback` once, `ms` from now, on a monotonic clock, under the Lua CPU budget (ADR-0203).
----Repeat by re-arming inside `callback`. Every evaluation clears all timers, so arm at the top level;
+---Repeat with `interval`. Every evaluation clears all timers, so arm at the top level;
 ---a discarded handle still fires.
 ---[docs](https://anasgets111.github.io/mantle/guide/scripting.html#timer)
 ---@param ms number `[1, 86400000]`; outside raises.
@@ -140,30 +148,38 @@ function TimerHandle:cancel() end
 ---@return TimerHandle
 function timer(ms, callback) end
 
+---Runs `callback` every `ms` until cancelled, like `timer` otherwise. A late turn does not
+---queue the missed runs: the next one is `ms` after the late one.
+---[docs](https://anasgets111.github.io/mantle/guide/scripting.html#interval)
+---@param ms number `[1, 86400000]`; outside raises.
+---@param callback fun() A raise is logged as a warning and the interval keeps running.
+---@return TimerHandle
+function interval(ms, callback) end
+
 process = {}
 
 ---@class ProcessHandle
 local ProcessHandle = {}
 
----`SIGTERM` to its process group, `SIGKILL` 100 ms later; `exit_cb` still fires. A no-op after exit.
+---`SIGTERM` to its process group, `SIGKILL` 100 ms later; `on_exit` still fires. A no-op after exit.
 function ProcessHandle:kill() end
 
 ---Spawns `cmd` with stdout and stderr piped and stdin on `/dev/null`, without blocking (ADR-0026).
----The process belongs to the evaluation: a reload kills its group and calls `exit_cb(nil)`.
+---The process belongs to the evaluation: a reload kills its group and calls `on_exit(nil)`.
 ---Callbacks run unbudgeted; a raise is logged as a warning.
 ---[docs](https://anasgets111.github.io/mantle/guide/processes.html#processrun)
 ---@param cmd string Looked up on `PATH`; no shell, so no globbing, pipes or quoting.
----@param args string[] Already split: `"a b"` is one argument.
----@param out_cb fun(line: string, stream: "stdout"|"stderr") Once per line, newline stripped, cut at 64 KiB. Accumulate here and decode in `exit_cb`.
----@param exit_cb fun(code: integer?) `nil` when a signal ended it or it failed to spawn.
+---@param args? string[] Already split: `"a b"` is one argument. `nil` is none.
+---@param on_line fun(line: string, stream: "stdout"|"stderr") Once per line, newline stripped, cut at 64 KiB. Accumulate here and decode in `on_exit`.
+---@param on_exit fun(code: integer?) `nil` when a signal ended it or it failed to spawn.
 ---@return ProcessHandle
-function process.run(cmd, args, out_cb, exit_cb) end
+function process.run(cmd, args, on_line, on_exit) end
 
 ---Spawns `cmd` in its own session with stdio on `/dev/null`; it outlives every reload and the
 ---shell. No handle, output or exit code, and a spawn failure is only logged (ADR-0188).
 ---[docs](https://anasgets111.github.io/mantle/guide/processes.html#processdetach)
 ---@param cmd string Looked up on `PATH`; no shell, so no globbing, pipes or quoting.
----@param args string[] Already split: `"a b"` is one argument.
+---@param args? string[] Already split: `"a b"` is one argument. `nil` is none.
 function process.detach(cmd, args) end
 
 palette = {}
@@ -178,11 +194,11 @@ local PaletteHandle = {}
 ---Drops the callback. The decode still finishes.
 function PaletteHandle:cancel() end
 
----Extracts an image's dominant colours off the Lua thread (ADR-0249). `cb` gets them most common
----first, or `nil` on failure (logged). `cb` runs unbudgeted.
+---Extracts an image's dominant colours off the Lua thread (ADR-0249). `on_done` gets them most common
+---first, or `nil` on failure (logged). `on_done` runs unbudgeted.
 ---[docs](https://anasgets111.github.io/mantle/guide/scripting.html#palettequantize)
 ---@param path string A local raster file; no SVG or URL.
 ---@param opts? { depth?: integer, rescale?: integer, [string]: "no such property" } `depth` 0 to 8, default 3: up to `2^depth` colours. `rescale` caps the longest edge before counting, default 128, `0` for full size. Out of range raises.
----@param cb fun(swatches: PaletteSwatch[]?)
+---@param on_done fun(swatches: PaletteSwatch[]?)
 ---@return PaletteHandle
-function palette.quantize(path, opts, cb) end
+function palette.quantize(path, opts, on_done) end

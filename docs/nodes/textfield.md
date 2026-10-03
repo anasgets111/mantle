@@ -69,7 +69,7 @@ The image shows the empty search field and unfiltered list. Typing updates the l
 <!-- Generated from renderer/src/lua/nodes/properties.rs by `just stubs`: edit the table there. -->
 | Property | Type | Default | Behaviour |
 | :--- | :--- | :--- | :--- |
-| `focus` | `FocusHandle` | None | A `focus(name)` target. An `on_click` can call `:request()` to return keys after its state change; the field must be visible on that click's keyboard-focused surface or a popup under it. Any other value fails the pass |
+| `focus_target` | `FocusHandle` | None | A `focus_target(name)` handle. An `on_click` can call `:request()` to return keys after its state change; the field must be visible on that click's keyboard-focused surface or a popup under it. Any other value fails the pass |
 | `placeholder` | `string\|Bound` | `""` | Shown while the field is empty, focused or not. Never submitted |
 | `font_size` | `number\|Bound`, `[1, 8192]` | `12` | Size of the text and placeholder |
 | `foreground` | `Color\|Bound` | `"#FFFFFF"` | Colour of the text and placeholder |
@@ -99,7 +99,7 @@ follows the node, so give the field a stable `id` when siblings before it come a
 | Filter a list as the user types | The example above: `on_change` sets a state, the list's `source` maps it |
 | Move a selection with the arrow keys | `on_navigate`, as above; pair it with `scroll(name):reveal` to keep the row in view ([input](../guide/input.md#text-fields)) |
 | Focus the field when a panel opens | `autofocus = true` and a panel with `keyboard_interactivity` |
-| Return keys to the field after a click | One `local h = focus("name")`: `focus = h` on the field, `h:request()` in the `on_click` ([input](../guide/input.md#text-fields)) |
+| Return keys to the field after a click | One `local h = focus_target("name")`: `focus_target = h` on the field, `h:request()` in the `on_click` ([input](../guide/input.md#text-fields)) |
 | Close on a second Escape | `on_cancel(cleared)`: close only when `cleared` is `false` |
 | Ask for a password | `secure_submit = { capability = "lock", action = "authenticate" }` ([secure fields](../guide/input.md#secure-fields)) |
 | Submit a password from a button | `submit = true` on the clickable node |

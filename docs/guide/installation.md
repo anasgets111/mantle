@@ -70,7 +70,7 @@ or Hyprland through that session's environment.
 | Surfaces | A Wayland compositor with `wlr-layer-shell-v1`; `ext-session-lock-v1` for `lock` |
 | `window`, `popup` | `xdg-shell`; these surfaces are skipped when absent |
 | `capture` | `ext-image-copy-capture-v1`, else `wlr-screencopy-v1` |
-| `blur = true` | `ext-background-effect-v1`; ignored when absent |
+| `behind_blur = true` | `ext-background-effect-v1`; ignored when absent |
 | Fonts | fontconfig (`fc-match`) |
 | Editor completion | lua-language-server |
 

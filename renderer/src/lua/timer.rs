@@ -1,4 +1,4 @@
-//! `timer(ms, fn)`: config-owned one-shot callbacks (ADR-0203).
+//! `timer(ms, fn)` and `interval(ms, fn)`: config-owned callbacks, one-shot and repeating (ADR-0203).
 //!
 //! The imperative half of the clock. `delay(signal, ms)` and `pulse(signal, ms)` are pull-based:
 //! a due wake writes the signal's cell and its readers' pass re-reads it (ADR-0275), so the wake
@@ -30,6 +30,8 @@ struct Entry {
     due: Instant,
     id: TimerId,
     callback: Function,
+    /// An `interval`'s period; `None` for a one-shot.
+    every: Option<Duration>,
 }
 
 /// Every armed timer, earliest first, in `app_data` beside the other registries.
@@ -56,15 +58,14 @@ struct TimerRegistry {
 impl TimerRegistry {
     /// Keeps the list sorted by deadline, and registration order within one deadline, so two
     /// timers armed for the same moment fire in the order the config wrote them.
-    fn arm(&mut self, due: Instant, callback: Function) -> mlua::Result<TimerId> {
+    fn arm(&mut self, due: Instant, callback: Function, every: Option<Duration>) -> mlua::Result<TimerId> {
         let id = self.next_id;
         self.next_id = self
             .next_id
             .checked_add(1)
             .ok_or_else(|| mlua::Error::runtime("timer ids are exhausted; this VM has armed 2^64 timers"))?;
         let list = if self.evaluating { &mut self.staged } else { &mut self.entries };
-        let at = list.partition_point(|entry| entry.due <= due);
-        list.insert(at, Entry { due, id, callback });
+        insert(list, Entry { due, id, callback, every });
         debug!(2; "armed timer {id}");
         Ok(id)
     }
@@ -85,7 +86,12 @@ impl TimerRegistry {
     }
 }
 
-/// The `cancel()`-able value `timer` answers with.
+fn insert(list: &mut Vec<Entry>, entry: Entry) {
+    let at = list.partition_point(|armed| armed.due <= entry.due);
+    list.insert(at, entry);
+}
+
+/// The `cancel()`-able value `timer` and `interval` answer with.
 ///
 /// Holding it is not what keeps the timer armed: the registry owns the entry, so a handle the
 /// config drops still fires.
@@ -93,7 +99,7 @@ struct TimerHandle(TimerId);
 
 lua_class! {
     impl TimerHandle {
-        /// Disarms the timer. A no-op once it has fired or been cancelled, and inside its own callback.
+        /// Disarms the timer, an interval from inside its own callback too. A no-op once a one-shot fired or after a cancel.
         fn cancel(lua, this) {
             if let Some(mut registry) = lua.app_data_mut::<TimerRegistry>() {
                 registry.take(this.0);
@@ -103,11 +109,23 @@ lua_class! {
     }
 }
 
+/// `timer` and `interval`'s shared body; `repeat` keeps the entry armed every `ms`.
+fn start(lua: &Lua, name: &str, ms: f64, callback: Function, repeat: bool) -> mlua::Result<TimerHandle> {
+    // `contains` is false for NaN, so a non-finite `ms` gets the range message too.
+    if !(MIN_MS as f64..=MAX_MS as f64).contains(&ms) {
+        return Err(mlua::Error::runtime(format!("{name}({ms}) is outside {MIN_MS}..={MAX_MS} milliseconds")));
+    }
+    let period = Duration::from_secs_f64(ms / 1000.0);
+    let every = repeat.then_some(period);
+    let id = super::app_data_or_default::<TimerRegistry>(lua).arm(Instant::now() + period, callback, every)?;
+    Ok(TimerHandle(id))
+}
+
 pub fn register(lua: &Lua) -> mlua::Result<()> {
     lua_fn!(
         lua,
         /// Runs `callback` once, `ms` from now, on a monotonic clock, under the Lua CPU budget (ADR-0203).
-        /// Repeat by re-arming inside `callback`. Every evaluation clears all timers, so arm at the top level;
+        /// Repeat with `interval`. Every evaluation clears all timers, so arm at the top level;
         /// a discarded handle still fires.
         /// [docs](https://anasgets111.github.io/mantle/guide/scripting.html#timer)
         fn timer(
@@ -117,13 +135,22 @@ pub fn register(lua: &Lua) -> mlua::Result<()> {
             /// A raise is logged as a warning.
             callback: fn(),
         ) -> TimerHandle {
-            // `contains` is false for NaN, so a non-finite `ms` gets the range message too.
-            if !(MIN_MS as f64..=MAX_MS as f64).contains(&ms) {
-                return Err(mlua::Error::runtime(format!("timer({ms}) is outside {MIN_MS}..={MAX_MS} milliseconds")));
-            }
-            let due = Instant::now() + Duration::from_secs_f64(ms / 1000.0);
-            let id = super::app_data_or_default::<TimerRegistry>(lua).arm(due, callback.0)?;
-            Ok(TimerHandle(id))
+            start(lua, "timer", ms, callback.0, false)
+        }
+    )?;
+    lua_fn!(
+        lua,
+        /// Runs `callback` every `ms` until cancelled, like `timer` otherwise. A late turn does not
+        /// queue the missed runs: the next one is `ms` after the late one.
+        /// [docs](https://anasgets111.github.io/mantle/guide/scripting.html#interval)
+        fn interval(
+            lua,
+            /// `[1, 86400000]`; outside raises.
+            ms: f64,
+            /// A raise is logged as a warning and the interval keeps running.
+            callback: fn(),
+        ) -> TimerHandle {
+            start(lua, "interval", ms, callback.0, true)
         }
     )
 }
@@ -144,6 +171,10 @@ pub fn next_deadline(lua: &Lua) -> Option<Instant> {
 /// A timer armed by a callback waits for a later turn: `now` is fixed for the batch, so a fresh
 /// deadline is always past the cutoff. Draining the prefix once is what holds that for one armed
 /// with a deadline already behind `now`, and is why the batch cannot grow while it runs.
+///
+/// An interval re-arms under its id before its callback runs, so `cancel` and `clear` from inside
+/// reach it. It goes into the live list even mid-evaluation: it belongs to the evaluation that
+/// armed it, which the next `promote` replaces.
 pub fn dispatch_due(lua: &Lua, now: Instant) {
     let batch = {
         let Some(mut registry) = lua.app_data_mut::<TimerRegistry>() else { return };
@@ -156,11 +187,15 @@ pub fn dispatch_due(lua: &Lua, now: Instant) {
         // Re-borrowed per timer, and released before Lua runs: a callback arming or cancelling a
         // timer takes this same `RefCell`. A `clear` from inside one empties `firing`, which is why
         // the slot is read through `get_mut` rather than indexed.
-        let taken = lua
-            .app_data_mut::<TimerRegistry>()
-            .and_then(|mut registry| registry.firing.get_mut(index).and_then(Option::take));
-        let Some(entry) = taken else { continue };
-        let callback = entry.callback;
+        let taken = lua.app_data_mut::<TimerRegistry>().and_then(|mut registry| {
+            let entry = registry.firing.get_mut(index).and_then(Option::take)?;
+            if let Some(every) = entry.every {
+                let due = Some(entry.due + every).filter(|due| *due > now).unwrap_or(now + every);
+                insert(&mut registry.entries, Entry { due, callback: entry.callback.clone(), ..entry });
+            }
+            Some(entry.callback)
+        });
+        let Some(callback) = taken else { continue };
         // The cap `action` and `on_change` handlers run under. ponytail: per callback, not per
         // batch, so a config arming many timers for one moment can still spend that many budgets in
         // one turn -- the same ceiling a capability with many `on_change` handlers already has.
@@ -214,6 +249,11 @@ mod tests {
     /// Runs whatever is due a day from now, which is every timer any of these tests arms.
     fn fire_everything(lua: &Lua) {
         dispatch_due(lua, Instant::now() + Duration::from_secs(MAX_MS / 1000));
+    }
+
+    /// A turn `days` days out, so each call is past an interval the previous one re-armed.
+    fn fire_after_days(lua: &Lua, days: u64) {
+        dispatch_due(lua, Instant::now() + Duration::from_secs(days * MAX_MS / 1000));
     }
 
     #[test]
@@ -318,8 +358,8 @@ mod tests {
         lua.set_app_data(TimerRegistry::default());
         {
             let mut registry = lua.app_data_mut::<TimerRegistry>().unwrap();
-            registry.arm(due, lua.globals().get::<Function>("first").unwrap()).unwrap();
-            registry.arm(due, lua.globals().get::<Function>("second").unwrap()).unwrap();
+            registry.arm(due, lua.globals().get::<Function>("first").unwrap(), None).unwrap();
+            registry.arm(due, lua.globals().get::<Function>("second").unwrap(), None).unwrap();
         }
 
         dispatch_due(&lua, due);
@@ -451,6 +491,71 @@ mod tests {
     }
 
     #[test]
+    fn an_interval_fires_once_per_due_turn_until_cancelled() {
+        let lua = lua();
+        lua.load("fired = 0; handle = interval(1, function() fired = fired + 1 end)").exec().unwrap();
+
+        fire_after_days(&lua, 1);
+        assert_eq!(lua.globals().get::<i64>("fired").unwrap(), 1, "a missed backlog is not replayed in one turn");
+        fire_after_days(&lua, 2);
+        assert_eq!(lua.globals().get::<i64>("fired").unwrap(), 2);
+
+        lua.load("handle:cancel()").exec().unwrap();
+        fire_after_days(&lua, 3);
+        assert_eq!(lua.globals().get::<i64>("fired").unwrap(), 2);
+        assert!(next_deadline(&lua).is_none());
+    }
+
+    #[test]
+    fn an_interval_keeps_its_period_and_skips_ahead_after_a_late_turn() {
+        let lua = lua();
+        lua.load("interval(1000, function() end)").exec().unwrap();
+        let first = next_deadline(&lua).unwrap();
+
+        dispatch_due(&lua, first);
+        assert_eq!(next_deadline(&lua), Some(first + Duration::from_secs(1)), "on time: no drift");
+
+        let late = first + Duration::from_secs(5);
+        dispatch_due(&lua, late);
+        assert_eq!(next_deadline(&lua), Some(late + Duration::from_secs(1)), "late: one period from now");
+    }
+
+    #[test]
+    fn an_interval_can_cancel_itself_from_its_own_callback() {
+        let lua = lua();
+        lua.load("fired = 0; local h; h = interval(1, function() fired = fired + 1; h:cancel() end)").exec().unwrap();
+
+        fire_after_days(&lua, 1);
+        fire_after_days(&lua, 2);
+
+        assert_eq!(lua.globals().get::<i64>("fired").unwrap(), 1);
+    }
+
+    #[test]
+    fn an_evaluation_clears_a_running_interval() {
+        let lua = lua();
+        lua.load("fired = 0; interval(1, function() fired = fired + 1 end)").exec().unwrap();
+        fire_everything(&lua);
+
+        begin_evaluation(&lua);
+        promote(&lua);
+        fire_everything(&lua);
+
+        assert_eq!(lua.globals().get::<i64>("fired").unwrap(), 1);
+    }
+
+    #[test]
+    fn a_raising_interval_keeps_running() {
+        let lua = lua();
+        lua.load("fired = 0; interval(1, function() fired = fired + 1; error('boom') end)").exec().unwrap();
+
+        fire_after_days(&lua, 1);
+        fire_after_days(&lua, 2);
+
+        assert_eq!(lua.globals().get::<i64>("fired").unwrap(), 2);
+    }
+
+    #[test]
     fn a_duration_outside_the_range_is_refused_rather_than_clamped() {
         let lua = lua();
 
@@ -462,5 +567,7 @@ mod tests {
         lua.load("timer(1.5, function() end)").exec().expect("a fractional ms is a duration like any other");
         let err = lua.load("timer(0/0, function() end)").exec().unwrap_err().to_string();
         assert!(err.contains("timer(NaN) is outside"), "the engine's range message: {err}");
+        let err = lua.load("interval(0, function() end)").exec().unwrap_err().to_string();
+        assert!(err.contains("interval(0) is outside"), "interval shares the range: {err}");
     }
 }

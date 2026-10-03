@@ -185,9 +185,9 @@ return panel {
 | Derived signals (`:map`, `computed`, `delay`, `pulse`) | Rebuilt. A pending `delay` or open `pulse` resets | Rebuilt | Lost |
 | `persistent_table` (by file) | Same table | Same file, new table | On disk |
 | `session_process` (by name) | Keeps running, same table | Keeps running (the Supervisor holds it) | Stopped |
-| `process.run` child | Killed with its process group, failed reloads included. Its `exit_cb(nil)` runs before the new evaluation; no `out_cb` follows | Killed with its process group | Killed |
+| `process.run` child | Killed with its process group, failed reloads included. Its `on_exit(nil)` runs before the new evaluation; no `on_line` follows | Killed with its process group | Killed |
 | `process.detach` program | Unaffected | Unaffected | Unaffected |
-| `timer` | Cleared. The new evaluation's timers start when its result is applied | Cleared | Gone |
+| `timer`, `interval` | Cleared. The new evaluation's timers start when its result is applied | Cleared | Gone |
 | `action`, `mantle.<cap>:on_change`, `state:on_change` | Cleared, re-registered by the new evaluation | Cleared | Gone |
 | `mantle.idle` thresholds | Cleared, re-registered | Cleared | Gone |
 | `fonts { ... }` chain | Not re-read | Re-read | Gone |
@@ -204,7 +204,7 @@ it.
 
 | Limit | Value | Applies to | When exceeded |
 | :--- | :--- | :--- | :--- |
-| CPU budget | 2.5 ms of thread CPU time | Each `:map` and `computed` recompute, each `delay`/`pulse` read, each `on_change` handler, `action` handler and `timer` callback. Nested reads share the outermost deadline | The call raises `exceeded the 2.5ms CPU budget for one evaluation`. `pcall` inside the callback does not hide it |
+| CPU budget | 2.5 ms of thread CPU time | Each `:map` and `computed` recompute, each `delay`/`pulse` read, each `on_change` handler, `action` handler and `timer` or `interval` callback. Nested reads share the outermost deadline | The call raises `exceeded the 2.5ms CPU budget for one evaluation`. `pcall` inside the callback does not hide it |
 | Signal nesting | 32 levels | Signal reads nested inside other signal reads (a `map` of a `map` of ..., a computed reading itself) | Raises `signal nesting exceeded its maximum depth of 32 levels` |
 | Layout pass | 2 s | One whole pass over the scene, including list `itemfn`s and function `child` builders | The pass fails and the previous scene stays |
 | Tree depth | 64 levels | Nested nodes in one surface | The pass fails |
@@ -212,7 +212,7 @@ it.
 | Numeric properties | `[0, 8192]` logical px for most sizes and each `padding` edge. `[-8192, 8192]` for `translate`, `rotate`, shader `progress`, shadow offset and spread. `opacity` and `origin` `[0, 1]`, `scale` `[0, 64]`, `font_size` `[1, 8192]`. `margin`, `spacing` and icon `size` are unbounded (a tween still clamps them) | Node and surface properties ([nodes](../nodes/index.md)) | The pass fails, naming the property |
 | Array length | 10,000 | `children` of one node, items of one `list` (`source`, and `limit` is clamped to it), runs in one `text` `content` | The pass fails |
 | `delay`, `pulse` duration | `[1, 60000]` ms | `delay(signal, ms)`, `pulse(signal, ms)` ([signals](signals.md)) | Raises at the call |
-| `timer` delay | `[1, 86400000]` ms (one day) | `timer(ms, fn)` ([scripting](scripting.md#timer)) | Raises at the call |
+| `timer` and `interval` delay | `[1, 86400000]` ms (one day) | `timer(ms, fn)`, `interval(ms, fn)` ([scripting](scripting.md#timer)) | Raises at the call |
 | Action answer | 1 MiB of JSON | What an `action` handler returns | The `mantle call` fails |
 | `mantle call` wait | 5 s | The CLI waiting for an answer | The CLI gives up. The handler may still have run |
 | Process output line | 64 KiB | One line a `process.run` child writes | The line arrives cut; its tail is dropped |

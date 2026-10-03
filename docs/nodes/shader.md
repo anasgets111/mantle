@@ -50,7 +50,7 @@ void main() {
 <!-- End of the generated table. -->
 
 It has no intrinsic size: without `width` and `height` it draws nothing. `opacity`, transforms,
-`shadow_*` and `content_blur` apply to it. Place animated boxes with `blur = true` beneath a
+`shadow_*` and `content_blur` apply to it. Place animated boxes with `behind_blur = true` beneath a
 shader when the desktop behind it should blur ([blurs](../guide/paint.md#blurs)).
 
 ## The .frag file

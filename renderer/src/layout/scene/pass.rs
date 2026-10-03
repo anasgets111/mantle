@@ -598,7 +598,7 @@ fn finish(
         opacity: style.opacity,
         z: style.z,
         transform: style.transform,
-        blur: style.blur,
+        behind_blur: style.behind_blur,
         effect: style.effect,
         properties,
         paint,

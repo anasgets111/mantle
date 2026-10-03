@@ -177,12 +177,12 @@ impl App {
         Some(region)
     }
 
-    /// Hand the compositor the region behind this surface it should blur (`blur`,
+    /// Hand the compositor the region behind this surface it should blur (`behind_blur`,
     /// ADR-0195). The rects come from `layout::blur_regions`, which is where the policy lives; this
     /// is only the push.
     ///
     /// Lazily created and never created at all for the common surface, because most surfaces never
-    /// set `blur` and an `ext_background_effect_surface_v1` per surface would be an object and a
+    /// set `behind_blur` and an `ext_background_effect_surface_v1` per surface would be an object and a
     /// destroy for nothing.
     ///
     /// A compositor with no manager, or one whose `blur` capability is absent or withdrawn, gets
@@ -226,7 +226,7 @@ impl App {
             effect.set_blur_region(Some(region.wl_region()));
             // The region is double-buffered and lands on the next `wl_surface.commit`, and
             // `paint_surface` skips both the draw and the commit when the display list is
-            // unchanged. A `blur` that flips with nothing else moving produces exactly that list,
+            // unchanged. A `behind_blur` that flips with nothing else moving produces exactly that list,
             // so without this the region would sit pending until some unrelated repaint. `stale`
             // is the existing word for "the committed state is behind what this surface should be
             // showing", and it costs one repaint of a surface whose glass just changed.

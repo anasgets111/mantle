@@ -171,13 +171,13 @@ running `submit` when set. Pointer presses also focus named controls.
 
 The engine draws a black and white outline around the focused control only when Tab, Shift+Tab or
 an assistive-technology action moved focus there. Focus from a press, `autofocus` or
-`focus(name):request()` draws none, and a press hides an outline Tab drew. `focus_ring = false`
+`focus_target(name):request()` draws none, and a press hides an outline Tab drew. `focus_ring = false`
 keeps the outline off a node.
 
 `focused(name)` returns a read-only boolean signal, `false` until the bound node first holds focus.
 Bind it to a node's `focused` and the engine sets it `true` while that node or any node inside it
 holds control focus, however focus got there. Like `hover(name)`, the name is the identity and
-survives reloads. It is not `focus(name)`, the handle a click uses to focus a textfield.
+survives reloads. It is not `focus_target(name)`, the handle a click uses to focus a textfield.
 
 ```lua
 local search = focused("search")
@@ -235,7 +235,7 @@ a press.
 | `on_cancel(cleared)` | Escape. The draft clears, the field drops focus, `on_change("")` fires if there was text, then `on_cancel` gets whether text was removed. Without `on_cancel`, Escape clears and the field keeps focus |
 | `on_navigate(key)` | `"up"`, `"down"`, `"page_up"`, `"page_down"`, and `"left"`/`"right"` when the caret cannot move that way and Shift is up. Tab and Backtab arrive when fewer than two controls can take focus. Repeats while held. The draft is untouched |
 | `autofocus` | `true`: take the keys, with an empty draft and a call to `on_change("")`, when the surface gains keyboard focus or the field appears under it. The first visible such field in document order wins. It never takes over from a field that is already typing, and never re-takes a field the user just clicked away from |
-| `focus` | A `focus(name)` handle. An `on_click` can call `:request()` to focus the first visible plain field with that name on the same keyboard-focused surface or a popup under it, after the click's state changes appear. It keeps that field's draft and caret and does not call `on_change` |
+| `focus_target` | A `focus_target(name)` handle. An `on_click` can call `:request()` to focus the first visible plain field with that name on the same keyboard-focused surface or a popup under it, after the click's state changes appear. It keeps that field's draft and caret and does not call `on_change` |
 | `secure_submit`, `mask_character` | See [secure fields](#secure-fields) |
 | `placeholder`, `font_size`, `foreground`, `text_align` | Appearance; see [textfield](../nodes/textfield.md) |
 
@@ -264,12 +264,12 @@ the draft; clicking the field again resumes it. Enter and Escape clear it. An `a
 starts it empty. It is dropped when the field's node leaves the tree or its surface closes.
 
 To return typing to a field after a click changes the view, give the field the handle and call
-`:request()` from the `on_click`. `focus("")` and a `focus` property that is not a handle raise.
+`:request()` from the `on_click`. `focus_target("")` and a `focus_target` property that is not a handle raise.
 Requests outside an `on_click`, to a hidden or masked field, or to a surface other than the focused one and its
 popups do nothing.
 
 ```lua
-local search_focus = focus("search")
+local search_focus = focus_target("search")
 
 return panel {
     id = "search",
@@ -277,7 +277,7 @@ return panel {
     keyboard_interactivity = "OnDemand",
     child = row { children = {
         textfield {
-            focus = search_focus,
+            focus_target = search_focus,
             autofocus = true,
             width = 180,
             height = 32,

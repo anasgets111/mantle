@@ -95,7 +95,7 @@ pub enum PaintStyle {
         /// duration, instead of swapping between them in one frame.
         transition: Option<TransitionSpec>,
         /// `source_blur` (ADR-0240): a static blur run once when the source's decode lands, in
-        /// logical pixels. `0.0` is off. Distinct from `blur` (ADR-0195), which asks the
+        /// logical pixels. `0.0` is off. Distinct from `behind_blur` (ADR-0195), which asks the
         /// compositor to blur the desktop *behind* a box instead of blurring the node's own
         /// pixels, and which `image` does not accept.
         source_blur: f32,
@@ -203,7 +203,7 @@ pub fn paint_style(kind: &str, properties: &PropMap) -> Result<Option<PaintStyle
         },
         "textfield" => {
             // Only a click reads `focus`; read here too so a value that is not a handle fails the pass.
-            textfield::focus.read(properties)?;
+            textfield::focus_target.read(properties)?;
             PaintStyle::TextField {
                 target: textfield::secure_submit.read(properties)?,
                 placeholder: textfield::placeholder.read(properties)?,
@@ -245,12 +245,15 @@ mod tests {
         assert!(matches!(&err, LayoutError::InvalidProperty { property, .. } if property == "text_align"));
     }
 
-    /// `focus = "search"` would otherwise leave a field no click can ever focus.
+    /// `focus_target = "search"` would otherwise leave a field no click can ever focus.
     #[test]
     fn a_textfield_focus_that_is_not_a_handle_fails_the_pass() {
         let lua = Lua::new();
-        let err = style(&lua, r#"return { kind = "textfield", focus = "search" }"#).unwrap_err();
-        assert!(matches!(&err, LayoutError::InvalidProperty { property, .. } if property == "focus"), "got {err:?}");
+        let err = style(&lua, r#"return { kind = "textfield", focus_target = "search" }"#).unwrap_err();
+        assert!(
+            matches!(&err, LayoutError::InvalidProperty { property, .. } if property == "focus_target"),
+            "got {err:?}"
+        );
     }
 
     /// A `text` that says nothing draws in the declared chain, which is most nodes.

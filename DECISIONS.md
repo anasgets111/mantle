@@ -7415,3 +7415,14 @@ MPRIS takes any finite value >= 0. PipeWire and MPRIS stay fractional inside the
 converted only at action decode and snapshot publish, where a reading is rounded to two decimals
 so f32 noise (`30.000002`) never reaches Lua. `balance` (-1..1) is a position, not a level.
 Accepted cost: every config doing volume arithmetic breaks once.
+
+## 0309. `json.encode` reverses decode's mapping and raises on what JSON cannot hold
+
+Amends ADR-0057 decision 4. Encoding goes through mlua's serde bridge into `serde_json::Value`.
+A table whose keys are all positive integers is an array, so `{}` is `[]` and a hole is `null`,
+mirroring decode; any other key makes an object, whose keys must be strings. Encode raises instead
+of returning `nil, msg`: its input is config-authored, so a bad value is a bug, while decode reads
+untrusted subprocess output. A pre-walk refuses what the bridge lets through: NaN and infinity,
+which serde_json writes as `null`; nesting past decode's 128; and an array more than half holes,
+which mlua allocates out to its highest index (`{[2^40]=1}`). Rejected: encoding `{}` as an object,
+which makes it ambiguous the other way, and a `json.null` sentinel, for ADR-0057's truthiness reason.

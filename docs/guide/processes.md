@@ -44,12 +44,12 @@ return panel {
 
 | | [`process.run`](#processrun) | [`session_process`](#session_process) | [`process.detach`](#processdetach) |
 | :--- | :--- | :--- | :--- |
-| Output | Line by line to `out_cb` | Inherited stdio: `mantle log` | None: `/dev/null` |
-| Exit | `exit_cb(code)` | `running` and `exit_code` signals | None |
+| Output | Line by line to `on_line` | Inherited stdio: `mantle log` | None: `/dev/null` |
+| Exit | `on_exit(code)` | `running` and `exit_code` signals | None |
 | Instances | One per call | One per name; `start` is a no-op while it runs | One per call |
 | Owner | The evaluation that started it | The Supervisor | Nobody: own session, reparented to init |
-| Reload | Killed, `exit_cb(nil)` | Keeps running | Unaffected |
-| Renderer crash | Killed, no `exit_cb` | Keeps running | Unaffected |
+| Reload | Killed, `on_exit(nil)` | Keeps running | Unaffected |
+| Renderer crash | Killed, no `on_exit` | Keeps running | Unaffected |
 | Shell stops | Killed | Stopped with `stop_signal`, `SIGKILL` after 5 s | Unaffected |
 | Typical uses | `curl`, `getent`, a poll every N seconds, a `--follow` stream | A screen recorder, a daemon the shell owns | Apps, `xdg-open`, a terminal |
 
@@ -66,19 +66,19 @@ Spawns a helper, streams its output line by line, and reports its exit.
 
 | Part | Contract |
 | :--- | :--- |
-| Signature | `process.run(cmd, args, out_cb, exit_cb)` → handle |
+| Signature | `process.run(cmd, args, on_line, on_exit)` → handle |
 | `cmd` | Program name, looked up on `PATH`. No shell: no globbing, pipes, `~`, `$VAR` or quoting |
-| `args` | List of already-split strings; `"a b"` is one argument. Numbers coerce |
-| `out_cb(line, stream)` | Once per line, newline stripped. `stream` is `"stdout"` or `"stderr"`. Invalid UTF-8 is replaced; a final line without a newline still arrives |
-| `exit_cb(code)` | Once, after both streams close and the process exits. `code` is the exit status, or `nil` when a signal ended it or the spawn failed |
-| Handle | `handle:kill()`: `SIGTERM` to the whole process group, `SIGKILL` 100 ms later. `exit_cb` still fires. A no-op after exit |
+| `args` | List of already-split strings; `"a b"` is one argument. Numbers coerce. `nil` or `{}` for none |
+| `on_line(line, stream)` | Once per line, newline stripped. `stream` is `"stdout"` or `"stderr"`. Invalid UTF-8 is replaced; a final line without a newline still arrives |
+| `on_exit(code)` | Once, after both streams close and the process exits. `code` is the exit status, or `nil` when a signal ended it or the spawn failed |
+| Handle | `handle:kill()`: `SIGTERM` to the whole process group, `SIGKILL` 100 ms later. `on_exit` still fires. A no-op after exit |
 | stdio | stdin `/dev/null`, so a prompt fails instead of hanging; stdout and stderr piped |
 | Environment | Inherited from the shell. The working directory is the shell's and unspecified: use absolute paths |
-| Lifetime | Until the next reload, failed ones included, which kills its group as `kill()` does and calls `exit_cb(nil)` at once, before the new evaluation runs; no `out_cb` follows. A Renderer replacement or shell exit reaps its group without calling `exit_cb` |
+| Lifetime | Until the next reload, failed ones included, which kills its group as `kill()` does and calls `on_exit(nil)` at once, before the new evaluation runs; no `on_line` follows. A Renderer replacement or shell exit reaps its group without calling `on_exit` |
 | Limits | A line over 64 KiB is cut there and the rest of that line dropped, with one warning per stream. Callbacks run outside the [CPU budget](runtime.md#limits-and-budgets). A raise in either callback is logged as a warning |
 
 The call returns immediately. A spawn failure (command not on `PATH`) reaches Lua only as
-`exit_cb(nil)` with no output; the reason is logged as a warning.
+`on_exit(nil)` with no output; the reason is logged as a warning.
 
 ## process.detach
 
@@ -100,7 +100,7 @@ return panel {
 
 | Part | Contract |
 | :--- | :--- |
-| Signature | `process.detach(cmd, args)` → nothing |
+| Signature | `process.detach(cmd, args?)` → nothing |
 | `cmd`, `args` | As `process.run` |
 | Output, exit code | None. A failed spawn is logged as a warning and otherwise silent |
 
@@ -183,8 +183,8 @@ The whole state is also readable as `mantle.processes` ([capabilities](../capabi
 
 ### Poll a command every N seconds
 
-A reload kills the `df` in flight and clears the timer, and the top-level call starts one fresh
-chain.
+A reload kills the `df` in flight and clears the interval, and the top-level call starts a fresh
+one.
 
 ```lua
 local disk = state("disk_usage", "")
@@ -196,9 +196,9 @@ local function poll()
     end, function(code)
         if code == 0 and lines[2] then disk:set(lines[2]:match("%d+%%") or "") end
     end)
-    timer(30000, poll)
 end
 poll()
+interval(30000, poll)
 
 return panel {
     id = "disk", layer = "Top", anchor = { top = true },
@@ -208,9 +208,9 @@ return panel {
 
 ### Follow a long-running command's output
 
-A `process.run` child that never exits keeps calling `out_cb`. Start it at the top level: each
+A `process.run` child that never exits keeps calling `on_line`. Start it at the top level: each
 save kills the old one and starts one fresh. The retry below runs after the child exits on its
-own; the one a reload's `exit_cb(nil)` arms is cleared with the old timers.
+own; the one a reload's `on_exit(nil)` arms is cleared with the old timers.
 
 ```lua
 local title = state("now_playing", "")
@@ -235,11 +235,11 @@ return panel {
 | Trap | Fix |
 | :--- | :--- |
 | `process.run("ls ~/*.png", {})` or `process.run("ls", { "~/*.png" })` | No shell parses anything, so `~`, globs and pipes stay literal. Split the arguments yourself, or run `"sh", { "-c", "..." }` explicitly |
-| Calling `json.decode(line)` in `out_cb` | Output arrives one line at a time. Collect lines and decode once in `exit_cb` |
-| Treating `kill()` as cancel | `exit_cb` still fires, usually with `nil`. Tag requests with a counter and ignore stale ones |
-| `exit_cb` never arrives | It waits for stdout and stderr to close, and a backgrounded grandchild holding the pipes keeps them open. Redirect the grandchild's output |
+| Calling `json.decode(line)` in `on_line` | Output arrives one line at a time. Collect lines and decode once in `on_exit` |
+| Treating `kill()` as cancel | `on_exit` still fires, usually with `nil`. Tag requests with a counter and ignore stale ones |
+| `on_exit` never arrives | It waits for stdout and stderr to close, and a backgrounded grandchild holding the pipes keeps them open. Redirect the grandchild's output |
 | A `process.run` child that must outlive a save | A reload kills it. Use [`session_process`](#session_process) |
-| A failure logged on every save | A reload's kill calls `exit_cb(nil)`. Report only a non-zero `code` |
+| A failure logged on every save | A reload's kill calls `on_exit(nil)`. Report only a non-zero `code` |
 | Invalid `stop_signal`, or `signal(name)` with one | Raises `mantle.processes:declare: unknown variant ...` (or `:signal:`) and sends nothing. Use a name from the list above |
 
 See also: [scripting](scripting.md) (`timer`, `json`, `log`, `persistent_table`), [runtime](runtime.md)

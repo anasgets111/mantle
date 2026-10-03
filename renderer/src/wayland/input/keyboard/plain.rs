@@ -27,7 +27,7 @@ fn autofocus_field_in_scope(scope: &[(&str, &layout::ResolvedNode)]) -> Option<(
 /// First visible plain field bound to `name` on this one surface.
 fn requested_field(tree: &layout::ResolvedNode, name: &str) -> Option<FieldTarget> {
     first_plain_field(tree, |node| {
-        node::fields::textfield::focus.read(&node.properties).ok().flatten().as_deref() == Some(name)
+        node::fields::textfield::focus_target.read(&node.properties).ok().flatten().as_deref() == Some(name)
     })
 }
 
@@ -847,14 +847,14 @@ mod tests {
     fn request_finds_only_a_visible_plain_field_and_restores_its_caret() {
         let lua = Lua::new();
         crate::lua::focus::register(&lua).unwrap();
-        let handle = Value::UserData(lua.load("return focus('search')").eval().unwrap());
+        let handle = Value::UserData(lua.load("return focus_target('search')").eval().unwrap());
         let mut hidden = plain_textfield(&lua);
         hidden.visible = false;
-        std::rc::Rc::make_mut(&mut hidden.properties).insert("focus", handle.clone());
+        std::rc::Rc::make_mut(&mut hidden.properties).insert("focus_target", handle.clone());
         let mut masked = textfield(&lua, Some(secure_submit_table(&lua, "lock", "authenticate")));
-        std::rc::Rc::make_mut(&mut masked.properties).insert("focus", handle.clone());
+        std::rc::Rc::make_mut(&mut masked.properties).insert("focus_target", handle.clone());
         let mut shown = plain_textfield(&lua);
-        std::rc::Rc::make_mut(&mut shown.properties).insert("focus", handle);
+        std::rc::Rc::make_mut(&mut shown.properties).insert("focus_target", handle);
         let id = shown.id;
         let tree = tree_with(&lua, vec![hidden, masked, shown]);
         let target = requested_field(&tree, "search").expect("visible plain field");

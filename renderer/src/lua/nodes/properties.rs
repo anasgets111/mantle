@@ -288,13 +288,13 @@ props! {
         ///
         /// Book: A colour or [gradient](#gradients). Absent draws nothing; `"#00000000"` is an explicit transparent fill. A gradient snaps under `animate`
         background: Bound<Fill>;
-        /// Multiplies the alpha of this node and its subtree (ADR-0255). Cut to the box, or to `radius` under `clip = "Rounded"`. Hit-testing and `blur` ignore it.
+        /// Multiplies the alpha of this node and its subtree (ADR-0255). Cut to the box, or to `radius` under `clip = "Rounded"`. Hit-testing and `behind_blur` ignore it.
         ///
         /// Book: Multiplies the alpha of this node and its subtree; see [Mask](#mask)
         mask: Bound<Mask>;
         /// Corner radius px. Above half the shorter side it clamps, so `radius = 999` makes a pill or circle.
         radius: Bound<Num> = range(0.0, 8192.0).absent(Number(0.0));
-        /// `"Scoop"` cuts each corner inward as a quarter circle centred on the corner point; fill, clip, glass, shadow and the `blur` region follow.
+        /// `"Scoop"` cuts each corner inward as a quarter circle centred on the corner point; fill, clip, glass, shadow and the `behind_blur` region follow.
         corner_shape: Bound<OneOf<CornerShape>> = absent(Choice("Round"));
         /// A string sets all four edges; a missing edge has none. An edge draws only with both a colour and a width.
         border_color: Bound<ColorOrEdges>;
@@ -303,7 +303,7 @@ props! {
         /// Ask the compositor to blur the desktop behind this box, `ext-background-effect-v1` (ADR-0195). Never inferred from a translucent background. Silently nothing without compositor support; strength is the compositor's.
         ///
         /// Book: Ask the compositor to blur the desktop behind this box; see [Blurs](#blurs). Never inferred from a translucent background
-        blur: Bound<Flag> = absent(Bool(false));
+        behind_blur: Bound<Flag> = absent(Bool(false));
         /// Gaussian sigma in px over what this surface already painted under the box, CSS `backdrop-filter` (ADR-0256). Never sees the desktop; cut to `radius`/`corner_shape`.
         ///
         /// Book: Gaussian sigma in px over what this surface already painted under the box, CSS `backdrop-filter`; see [Blurs](#blurs)
@@ -462,8 +462,8 @@ props! {
     }
     /// Single-line text input. Reads `wl_keyboard`, not an input method, so no CJK composition or dead keys. With `secure_submit` it is masked: keys never reach Lua and go to the capability (ADR-0005, ADR-0092). Otherwise `on_change` or `on_submit` makes it plain; with neither it never takes focus. A press focuses it; the surface needs `keyboard_interactivity`. The draft lives as long as the node; losing focus keeps it (ADR-0108). No intrinsic size: set `width`/`height`.
     mod textfield(TEXTFIELD) {
-        /// A `focus(name)` target. An `on_click` can call `:request()` to return keys after its state change; the field must be visible on that click's keyboard-focused surface or a popup under it. Any other value fails the pass.
-        focus: Focus;
+        /// A `focus_target(name)` handle. An `on_click` can call `:request()` to return keys after its state change; the field must be visible on that click's keyboard-focused surface or a popup under it. Any other value fails the pass.
+        focus_target: Focus;
         /// Shown while the field is empty, focused or not (ADR-0135). Never submitted.
         placeholder: Bound<Text> = absent(Lua(r#""""#));
         /// Size of the text and placeholder.
