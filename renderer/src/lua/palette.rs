@@ -104,6 +104,12 @@ impl PaletteRegistry {
         PaletteHandle { id, registry: self.clone() }
     }
 
+    /// Drops every pending callback at an evaluation boundary: each closes over the locals of an
+    /// evaluation being replaced or rejected. Their decodes still finish and are discarded.
+    pub fn clear(&self) {
+        self.0.borrow_mut().pending.clear();
+    }
+
     /// Runs each finished call's callback once; a cancelled id is dropped.
     pub fn poll(&self) {
         let results: Vec<PaletteResult> = std::iter::from_fn(|| self.0.borrow().results.try_recv().ok()).collect();
@@ -230,23 +236,28 @@ mod tests {
         assert!(is_nil, "a decode failure must call back with nil, not raise or hang");
     }
 
+    /// Both a handle's `cancel` and the evaluation boundary's `clear`.
     #[test]
-    fn cancel_suppresses_the_callback() {
-        let (lua, registry) = lua_with_palette();
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("solid.png");
-        ::image::RgbaImage::from_pixel(4, 4, ::image::Rgba([1, 2, 3, 255])).save(&path).unwrap();
+    fn cancel_or_a_new_evaluation_suppresses_the_callback() {
+        let cancels: [fn(&Lua, &PaletteRegistry); 2] =
+            [|lua, _| lua.load("handle:cancel()").exec().unwrap(), |_, registry| registry.clear()];
+        for cancel in cancels {
+            let (lua, registry) = lua_with_palette();
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("solid.png");
+            ::image::RgbaImage::from_pixel(4, 4, ::image::Rgba([1, 2, 3, 255])).save(&path).unwrap();
 
-        lua.load(format!(r#"handle = palette.quantize({path:?}, nil, function(colors) probe = colors end)"#))
-            .exec()
-            .unwrap();
-        lua.load("handle:cancel()").exec().unwrap();
+            lua.load(format!(r#"handle = palette.quantize({path:?}, nil, function(colors) probe = colors end)"#))
+                .exec()
+                .unwrap();
+            cancel(&lua, &registry);
 
-        let result = registry.0.borrow().results.recv_timeout(Duration::from_secs(5)).unwrap();
-        registry.0.borrow().result_tx.send(result).unwrap();
-        registry.poll();
-        let is_nil: bool = lua.load("return probe == nil").eval().unwrap();
-        assert!(is_nil, "a cancelled handle's callback must never run");
+            let result = registry.0.borrow().results.recv_timeout(Duration::from_secs(5)).unwrap();
+            registry.0.borrow().result_tx.send(result).unwrap();
+            registry.poll();
+            let is_nil: bool = lua.load("return probe == nil").eval().unwrap();
+            assert!(is_nil, "a cancelled callback must never run");
+        }
     }
 
     #[test]

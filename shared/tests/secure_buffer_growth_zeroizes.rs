@@ -15,6 +15,7 @@
 //! up one secret.
 
 use std::alloc::{GlobalAlloc, Layout, System};
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use shared::SecureBuffer;
@@ -29,17 +30,20 @@ const MIN_LEAK_LEN: usize = 6;
 
 static WATCHING: AtomicBool = AtomicBool::new(false);
 static LEAK_FOUND: AtomicBool = AtomicBool::new(false);
+/// One watch window at a time: the flags above are process-wide and tests run in parallel.
+static SERIAL: Mutex<()> = Mutex::new(());
 
 struct LeakCheckingAllocator;
 
 // SAFETY: `alloc`/`dealloc` delegate every allocation to `System`, adding only a read of memory
-// that is still live. The `GlobalAlloc` contract -- returning correctly aligned blocks for the
+// that is still live. Blocks come zeroed, so every byte `dealloc` reads is initialized even where
+// the program never wrote one. The `GlobalAlloc` contract -- returning correctly aligned blocks for the
 // requested layout, and freeing only what it handed out -- is `System`'s, unchanged.
 unsafe impl GlobalAlloc for LeakCheckingAllocator {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         // SAFETY: `layout` is whatever the caller asked for and is forwarded untouched, which
-        // is exactly what `System`'s own `alloc` requires.
-        unsafe { System.alloc(layout) }
+        // is exactly what `System`'s own `alloc_zeroed` requires.
+        unsafe { System.alloc_zeroed(layout) }
     }
 
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
@@ -72,6 +76,8 @@ static ALLOCATOR: LeakCheckingAllocator = LeakCheckingAllocator;
 
 #[test]
 fn push_str_growth_never_leaks_plaintext_to_freed_memory() {
+    let _serial = SERIAL.lock().unwrap();
+    LEAK_FOUND.store(false, Ordering::SeqCst);
     let mut buf = SecureBuffer::new();
 
     WATCHING.store(true, Ordering::SeqCst);
@@ -89,4 +95,25 @@ fn push_str_growth_never_leaks_plaintext_to_freed_memory() {
     );
 
     drop(buf);
+}
+
+/// A decoded secret grows the same way, and a malformed one must not drop its partial copy
+/// unscrubbed either.
+#[test]
+fn decoding_a_secret_never_leaks_plaintext_to_freed_memory() {
+    let _serial = SERIAL.lock().unwrap();
+    LEAK_FOUND.store(false, Ordering::SeqCst);
+    let numbers: Vec<String> = SECRET.bytes().map(|byte| byte.to_string()).collect();
+    let valid = format!(r#"{{"Response":{{"secret":[{}]}}}}"#, numbers.join(","));
+    let malformed = format!(r#"{{"Response":{{"secret":[{},"x"]}}}}"#, numbers.join(","));
+
+    WATCHING.store(true, Ordering::SeqCst);
+    let decoded: shared::PamMessage = serde_json::from_str(&valid).unwrap();
+    assert!(serde_json::from_str::<shared::PamMessage>(&malformed).is_err());
+    WATCHING.store(false, Ordering::SeqCst);
+
+    let mut decoded = decoded;
+    assert_eq!(decoded, shared::PamMessage::Response { secret: SECRET.as_bytes().to_vec() });
+    zeroize::Zeroize::zeroize(&mut decoded);
+    assert!(!LEAK_FOUND.load(Ordering::SeqCst), "decoding freed a block holding a plaintext prefix");
 }

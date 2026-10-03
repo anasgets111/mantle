@@ -456,7 +456,8 @@ impl NotificationsController {
 
         let (id, incarnation) = {
             let mut state = self.state.lock().expect("mutex poisoned");
-            let id = resolve_notification_id(replaces_id, &mut state.next_id);
+            let state = &mut *state;
+            let id = resolve_notification_id(replaces_id, &state.queue, &mut state.next_id);
             let incarnation = next_incarnation(&mut state.next_incarnation);
             (id, incarnation)
         };

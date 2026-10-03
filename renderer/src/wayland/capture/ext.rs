@@ -220,9 +220,8 @@ impl App {
         {
             let Some(source) = self.captures.sources.get_mut(&id) else { return };
             let Some(Proto::Ext(ext)) = source.proto.as_mut() else { return };
-            if let Some(format) = shm_format {
-                ext.shm_negotiated = Some((width, height, format));
-            }
+            // Per batch: a dma-buf-only offer must not leave an older size's shm fallback behind.
+            ext.shm_negotiated = shm_format.map(|format| (width, height, format));
             if used_dmabuf {
                 ext.buffer = None;
             } else if let Some((width, height, format)) = ext.shm_negotiated {

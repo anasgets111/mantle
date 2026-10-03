@@ -240,8 +240,9 @@ impl RendererClient {
     }
 
     /// Before each `shell.lua` evaluation, clear what the last one registered: `process.run` children,
-    /// whose `exit_cb(nil)` runs first so anything it arms is cleared too, `on_change` handlers
-    /// (ADR-0115, ADR-0288) and `action` exports (ADR-0197). Evaluation registers them afresh; retaining them
+    /// whose `exit_cb(nil)` runs first so anything it arms is cleared too, `palette.quantize`
+    /// callbacks, `on_change` handlers (ADR-0115, ADR-0288) and `action` exports (ADR-0197).
+    /// Evaluation registers them afresh; retaining them
     /// doubles side effects after a config save, and all are closures over locals that evaluation
     /// is about to replace.
     ///
@@ -251,6 +252,7 @@ impl RendererClient {
     /// previous evaluation's, whose registrations this already dropped.
     fn clear_change_handlers(&self) {
         self.process_registry.kill_all();
+        self.palette_registry.clear();
         for handle in self.capabilities.borrow().values().chain([&self.rescue_handle, &self.screens_handle]) {
             handle.clear_handlers();
         }

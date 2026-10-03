@@ -108,6 +108,29 @@ impl SecureBuffer {
     }
 }
 
+/// `#[serde(deserialize_with)]` for a secret byte field. Serde's own `Vec<u8>` grows by
+/// reallocating, freeing plaintext prefixes, and drops a half-decoded vector unscrubbed when a
+/// later element fails; this collects into a [`SecureBuffer`] and copies out at the exact length.
+pub fn deserialize_secret<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<Vec<u8>, D::Error> {
+    struct Secret;
+    impl<'de> serde::de::Visitor<'de> for Secret {
+        type Value = Vec<u8>;
+
+        fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+            f.write_str("an array of bytes")
+        }
+
+        fn visit_seq<A: serde::de::SeqAccess<'de>>(self, mut seq: A) -> Result<Vec<u8>, A::Error> {
+            let mut buffer = SecureBuffer::new();
+            while let Some(byte) = seq.next_element::<u8>()? {
+                buffer.push_bytes(&[byte]);
+            }
+            Ok(buffer.expose_secret().to_vec())
+        }
+    }
+    deserializer.deserialize_seq(Secret)
+}
+
 #[cfg(test)]
 mod tests {
 

@@ -50,10 +50,11 @@ pub(super) fn next_incarnation(counter: &mut u64) -> u64 {
     value
 }
 
-/// Resolves ids: `0` allocates monotonically and wraps to `1` (wire `0` means "new"); nonzero
-/// `replaces_id` passes through without consuming an id (base spec/ADR-0033).
-pub(super) fn resolve_notification_id(replaces_id: u32, next_id: &mut u32) -> u32 {
-    if replaces_id != 0 {
+/// Resolves ids: a `replaces_id` naming a queued notification passes through without consuming an
+/// id (base spec/ADR-0033); anything else allocates monotonically and wraps to `1` (wire `0` means
+/// "new"). An unknown id is not reused, or a later allocation would hand it out a second time.
+pub(super) fn resolve_notification_id(replaces_id: u32, queue: &VecDeque<Notification>, next_id: &mut u32) -> u32 {
+    if replaces_id != 0 && queue.iter().any(|entry| entry.id == replaces_id) {
         return replaces_id;
     }
     let id = *next_id;
@@ -250,22 +251,30 @@ mod tests {
     #[test]
     fn resolve_notification_id_allocates_monotonically_when_replaces_id_is_zero() {
         let mut next_id = 1u32;
-        assert_eq!(resolve_notification_id(0, &mut next_id), 1);
-        assert_eq!(resolve_notification_id(0, &mut next_id), 2);
+        assert_eq!(resolve_notification_id(0, &VecDeque::new(), &mut next_id), 1);
+        assert_eq!(resolve_notification_id(0, &VecDeque::new(), &mut next_id), 2);
         assert_eq!(next_id, 3);
     }
 
     #[test]
-    fn resolve_notification_id_passes_through_a_nonzero_replaces_id_without_bumping_the_allocator() {
+    fn resolve_notification_id_passes_through_a_queued_replaces_id_without_bumping_the_allocator() {
         let mut next_id = 5u32;
-        assert_eq!(resolve_notification_id(42, &mut next_id), 42);
+        let queue = VecDeque::from([sample_notification(42, None)]);
+        assert_eq!(resolve_notification_id(42, &queue, &mut next_id), 42);
         assert_eq!(next_id, 5, "the allocator must not move for a replaces_id reuse");
+    }
+
+    #[test]
+    fn an_unknown_replaces_id_allocates_rather_than_claiming_an_id_the_allocator_will_reach() {
+        let mut next_id = 5u32;
+        assert_eq!(resolve_notification_id(6, &VecDeque::new(), &mut next_id), 5);
+        assert_eq!(resolve_notification_id(0, &VecDeque::new(), &mut next_id), 6);
     }
 
     #[test]
     fn resolve_notification_id_wraps_safely_past_u32_max_skipping_zero() {
         let mut next_id = u32::MAX;
-        assert_eq!(resolve_notification_id(0, &mut next_id), u32::MAX);
+        assert_eq!(resolve_notification_id(0, &VecDeque::new(), &mut next_id), u32::MAX);
         assert_eq!(next_id, 1, "must wrap to 1, never 0 -- 0 is reserved to mean \"new\" on the wire");
     }
 

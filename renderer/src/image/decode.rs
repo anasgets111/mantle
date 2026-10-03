@@ -217,6 +217,9 @@ fn decode_gif(
     let mut delays = Vec::new();
     let mut deltas: Vec<GifDelta> = Vec::new();
     let mut delta_bytes = 0usize;
+    // The previous frame's disposal changed pixels outside this frame's rect; the delta has to
+    // carry them, or a replay keeps showing what disposal cleared or restored.
+    let mut disposed: Option<(u32, u32, u32, u32)> = None;
     while let Some(frame) = decoder.read_next_frame().map_err(|err| err.to_string())? {
         let (left, top, w, h) =
             (u32::from(frame.left), u32::from(frame.top), u32::from(frame.width), u32::from(frame.height));
@@ -237,7 +240,11 @@ fn decode_gif(
             base = Some(extract(&canvas, whole).0);
             delays.push(delay);
         } else {
-            let (pixels, rect) = extract(&canvas, rect);
+            let changed = disposed.map_or(rect, |(x, y, w, h)| {
+                let (x0, y0) = (left.min(x), top.min(y));
+                (x0, y0, (left + rect.2).max(x + w) - x0, (top + rect.3).max(y + h) - y0)
+            });
+            let (pixels, rect) = extract(&canvas, changed);
             if delta_bytes + pixels.len() > budget {
                 break;
             }
@@ -246,15 +253,19 @@ fn decode_gif(
             deltas.push(GifDelta { rect, pixels });
         }
 
-        match frame.dispose {
-            gif::DisposalMethod::Background => clear_rect(&mut canvas, source_width, rect),
+        disposed = match frame.dispose {
+            gif::DisposalMethod::Background => {
+                clear_rect(&mut canvas, source_width, rect);
+                Some(rect)
+            }
             gif::DisposalMethod::Previous => {
                 if let Some(ref saved) = restore {
                     write_rect(&mut canvas, source_width, rect, saved);
                 }
+                Some(rect)
             }
-            gif::DisposalMethod::Keep | gif::DisposalMethod::Any => {}
-        }
+            gif::DisposalMethod::Keep | gif::DisposalMethod::Any => None,
+        };
     }
     let Some(base) = base else { return Err("no frames".to_string()) };
     Ok(Decoded { base, delays, deltas, width, height, premultiplied: false, text: false })
@@ -801,15 +812,20 @@ mod tests {
         assert_eq!(decoded.deltas.len(), 4, "5 frames, the first is the base");
         assert!(decoded.deltas.iter().all(|delta| delta.rect == (0, 0, 2, 2)), "the native rect, not the full canvas");
 
+        assert_replays_like_a_full_recomposite(&path, &decoded, 4);
+    }
+
+    /// Replays `decoded`'s deltas over its base and compares every frame against `image`'s own
+    /// `AnimationDecoder`, an independent full recomposite.
+    fn assert_replays_like_a_full_recomposite(path: &std::path::Path, decoded: &Decoded, width: u32) {
         let gif_decoder =
-            ::image::codecs::gif::GifDecoder::new(std::io::BufReader::new(std::fs::File::open(&path).unwrap()))
-                .unwrap();
+            ::image::codecs::gif::GifDecoder::new(std::io::BufReader::new(std::fs::File::open(path).unwrap())).unwrap();
         let ground_truth = ::image::AnimationDecoder::into_frames(gif_decoder).collect_frames().unwrap();
-        assert_eq!(ground_truth.len(), 5);
+        assert_eq!(ground_truth.len(), decoded.deltas.len() + 1);
         for (index, frame) in ground_truth.iter().enumerate() {
             let mut replayed = decoded.base.clone();
             for delta in &decoded.deltas[..index] {
-                write_rect(&mut replayed, 4, delta.rect, &delta.pixels);
+                write_rect(&mut replayed, width, delta.rect, &delta.pixels);
             }
             assert_eq!(
                 replayed,
@@ -817,6 +833,23 @@ mod tests {
                 "frame {index} diverged from the full recomposite"
             );
         }
+    }
+
+    /// A disposal outside the next frame's rect is still a change that frame's delta must carry.
+    #[test]
+    fn a_disposed_rect_outside_the_next_frame_is_part_of_its_delta() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("moving.gif");
+        {
+            let mut file = std::fs::File::create(&path).unwrap();
+            let mut encoder = gif::Encoder::new(&mut file, 4, 4, &[]).unwrap();
+            write_frame(&mut encoder, (0, 0, 4, 4), [255, 0, 0, 255], gif::DisposalMethod::Keep, 5);
+            write_frame(&mut encoder, (0, 0, 2, 2), [0, 255, 0, 255], gif::DisposalMethod::Background, 5);
+            write_frame(&mut encoder, (2, 2, 2, 2), [0, 0, 255, 255], gif::DisposalMethod::Previous, 5);
+            write_frame(&mut encoder, (0, 2, 1, 1), [255, 255, 0, 255], gif::DisposalMethod::Keep, 5);
+        }
+        let decoded = decode_gif(&path, (4, 4), false, Charge::Free, STARTING_TEXTURE_BUDGET).unwrap();
+        assert_replays_like_a_full_recomposite(&path, &decoded, 4);
     }
 
     /// ADR-0235. The frame that would push the kept deltas past their byte budget is dropped

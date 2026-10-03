@@ -275,6 +275,7 @@ pub struct SecureSubmit {
     /// Public lookup key. Secret Service attributes are not encrypted.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
+    #[serde(deserialize_with = "secure_buffer::deserialize_secret")]
     pub secret: Vec<u8>,
 }
 
@@ -428,7 +429,10 @@ pub enum PamMessage {
     /// neither is refused.
     Prompt { text: String, echo: bool },
     /// The answer to the most recent `Prompt`.
-    Response { secret: Vec<u8> },
+    Response {
+        #[serde(deserialize_with = "secure_buffer::deserialize_secret")]
+        secret: Vec<u8>,
+    },
     /// The conversation ended.
     Outcome(PamOutcome),
 }
