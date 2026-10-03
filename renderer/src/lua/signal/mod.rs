@@ -873,7 +873,7 @@ mod tests {
         let lua = Lua::new();
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
         let (capability, handle) = Capability::new("probe", DirtyFlag::new(), CommandSender::new(0, tx));
-        handle.hydrate(Value::Integer(42), 1);
+        handle.hydrate(Value::Integer(42));
         lua.globals().set("probe", capability).unwrap();
 
         let ud: mlua::AnyUserData = lua.load("return probe").eval().unwrap();
@@ -907,7 +907,7 @@ mod tests {
         let lua = lua_with_state().0;
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
         let (capability, handle) = Capability::new("probe", DirtyFlag::new(), CommandSender::new(0, tx));
-        handle.hydrate(Value::Integer(3), 1);
+        handle.hydrate(Value::Integer(3));
         lua.globals().set("probe", capability).unwrap();
 
         let doubled: i64 = lua.load("return computed({probe}, function(n) return n * 2 end):get()").eval().unwrap();

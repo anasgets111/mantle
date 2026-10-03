@@ -99,7 +99,7 @@ impl IdleRegistry {
         };
         debug!("registered threshold at {sec}s with handle {id}");
         self.state.commands().start_capability("idle");
-        self.state.commands().send("idle", "register", vec![serde_json::json!(sec)], 0);
+        self.state.commands().send("idle", "register", vec![serde_json::json!(sec)]);
         // The seat has been idle past `sec` already: run now, as the event it joined late would have.
         if let Some(on_idle) = catch_up {
             let what = format_args!("mantle.idle:register_threshold({sec}): on_idle");
@@ -125,20 +125,20 @@ impl IdleRegistry {
         // The Supervisor destroys this listener, so a later registration's fresh one says `idled`.
         inner.idled.remove(&sec);
         drop(inner);
-        self.state.commands().send("idle", "cancel", vec![serde_json::json!(sec)], 0);
+        self.state.commands().send("idle", "cancel", vec![serde_json::json!(sec)]);
     }
 
     /// `idle:inhibit(reason)` (ADR-0032). The Supervisor counts holds per generation, so two
     /// callers hold two references to one logind fd and either release leaves the other alive.
     fn inhibit(&self, reason: String) {
         self.state.commands().start_capability("idle");
-        self.state.commands().send("idle", "inhibit", vec![serde_json::json!(reason)], 0);
+        self.state.commands().send("idle", "inhibit", vec![serde_json::json!(reason)]);
     }
 
     /// `idle:release_inhibit()`, releasing one hold rather than every hold.
     fn release_inhibit(&self) {
         self.state.commands().start_capability("idle");
-        self.state.commands().send("idle", "release_inhibit", Vec::new(), 0);
+        self.state.commands().send("idle", "release_inhibit", Vec::new());
     }
 
     /// Dispatches `SupervisorFrame::IdleEvent` to every callback for `threshold_sec`. An
@@ -193,7 +193,7 @@ impl IdleRegistry {
         // ponytail: a later registration in this idle period misses its catch-up; keep the set if needed.
         inner.idled.clear();
         drop(inner);
-        self.state.commands().send("idle", "forget_thresholds", Vec::new(), 0);
+        self.state.commands().send("idle", "forget_thresholds", Vec::new());
     }
 
     /// The `mantle.idle` member.
@@ -414,10 +414,6 @@ mod tests {
         assert_eq!(envelope.params.capability, "idle");
         assert_eq!(envelope.params.action, "register");
         assert_eq!(envelope.params.arguments, vec![serde_json::json!(300)]);
-        assert_eq!(
-            envelope.params.expected_revision, 0,
-            "idle pushes no snapshot, so there is no revision a registration could be reacting to"
-        );
     }
 
     #[test]

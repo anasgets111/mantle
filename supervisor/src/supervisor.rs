@@ -77,7 +77,7 @@ pub(crate) struct Supervisor {
     /// whenever the marker changes.
     session_bridge: lock::logind::SessionBridge,
     /// Last snapshot per capability, replayed to each new generation by [`Supervisor::hydrate`]. Its
-    /// revision is the capability's state version (ADR-0004).
+    /// revision counts published snapshots for the memory report (ADR-0305).
     last_snapshots: HashMap<Capability, Published>,
     /// Id for the next crash replacement.
     next_generation_id: u32,

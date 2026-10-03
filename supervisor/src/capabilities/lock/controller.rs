@@ -313,7 +313,7 @@ mod tests {
                 capability: "lock".to_string(),
                 action: action.to_string(),
                 arguments: Vec::new(),
-                expected_revision: 0,
+                legacy_expected_revision: 0,
             },
             id: 1,
         }

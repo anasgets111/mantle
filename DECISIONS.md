@@ -86,6 +86,9 @@ Quickshell and Noctalia have no comparable optimistic write concurrency because 
 writer per capability. Obelisk needs it while generations N and N+1 both retain write paths during a
 swap.
 
+Amendment, ADR-0305: Commands no longer stamp a snapshot revision; the wire field remains zero for
+an older Supervisor that may respawn a new Renderer after package replacement.
+
 ## 0005. Secure textfield submit targets a capability action, never Lua
 
 Typed characters in a `mask_character`-bearing `textfield` never enter Lua. `textfield` gets
@@ -7338,3 +7341,20 @@ halving swap time. Surfaces with no callback pending, which is every idle one, s
 push (ADR-0124). A landed callback repaints a deferred surface even when no tween ticked, since the
 tween may have ended before the push. A hidden surface whose callbacks the compositor holds back
 shows its change when it is shown again, which is what the callback is for.
+
+## 0305. Snapshot revisions do not guard capability commands
+
+Stop stamping snapshot revisions on commands. `expected_revision` was never checked, and a
+capability-wide equality check would silently discard actions when an unrelated state field
+changed. Commands have no rejection reply; some, including `process`, have no snapshot, while
+others apply asynchronously after dispatch. Snapshots keep their revision, which the Supervisor's memory
+report counts and the Renderer ignores. The authoritative generation check still guards which Renderer can send commands.
+
+The Renderer sends zero in the legacy wire field, which the new Supervisor ignores. A running old
+Supervisor can respawn the newly installed Renderer after a package upgrade and still requires
+that field to decode its commands. Remove it only with a versioned handshake or a guaranteed
+Supervisor restart on binary replacement.
+
+Rejected: checking only future revisions. That validates an impossible claim but accepts stale
+commands and leaves the field falsely suggesting optimistic concurrency. A future command that
+needs compare-and-set must check at its state owner's apply point and return an explicit result.

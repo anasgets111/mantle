@@ -59,9 +59,9 @@ fn lay_out_passes(
         ("with alternate sample data", Some("alternate")),
         ("with empty sample lists", Some("empty")),
     ];
-    for (revision, (pass, set)) in (0..).zip(passes) {
+    for (pass, set) in passes {
         if let Some(set) = set {
-            push_samples(namespace, loader, set, revision).map_err(|err| vec![format!("{pass}: {err}")])?;
+            push_samples(namespace, loader, set).map_err(|err| vec![format!("{pass}: {err}")])?;
         }
         // A static layout error fails every pass alike; name it once, under the first.
         if let Err(err) = lay_out(output, specs, loader, shaping, size)
@@ -116,10 +116,10 @@ pub(crate) fn samples(set: &str) -> serde_json::Map<String, serde_json::Value> {
 /// One `StateSnapshot`-shaped push per capability from [`samples`] of `set`.
 /// ponytail: each set takes one value per field, so boolean combinations and enum variants between
 /// the first and last never run; a pass per combination or variant is the upgrade.
-fn push_samples(namespace: &Namespace, loader: &Loader, set: &str, revision: u32) -> mlua::Result<()> {
+fn push_samples(namespace: &Namespace, loader: &Loader, set: &str) -> mlua::Result<()> {
     for (capability, payload) in &samples(set) {
         let Some(handle) = namespace.capabilities.get(capability) else { continue };
-        let previous = handle.hydrate(loader.to_lua_value(payload)?, revision);
+        let previous = handle.hydrate(loader.to_lua_value(payload)?);
         handle.notify_change(loader.lua(), previous);
     }
     Ok(())
@@ -614,7 +614,7 @@ os.getenv = function(name) return ({{ USER = "user", HOME = "/home/user" }})[nam
             for pair in fakes.pairs::<String, mlua::Value>() {
                 let (name, value) = pair.map_err(|err| format!("fakes: {err}"))?;
                 let handle = namespace.capabilities.get(&name).ok_or(format!("fakes: no capability `{name}`"))?;
-                pushed.push((name, handle, handle.hydrate(value, 1)));
+                pushed.push((name, handle, handle.hydrate(value)));
             }
             pushed.sort_by(|a, b| a.0.cmp(&b.0));
             for (_, handle, previous) in pushed {

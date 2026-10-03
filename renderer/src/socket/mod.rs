@@ -227,7 +227,7 @@ mod tests {
                 capability: "process".to_string(),
                 action: "run".to_string(),
                 arguments: vec![serde_json::json!("echo"), serde_json::json!(["hi"])],
-                expected_revision: 0,
+                legacy_expected_revision: 0,
             },
             id: 1,
         };

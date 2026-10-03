@@ -79,7 +79,7 @@ cited as ADR-NNNN for the why behind behavior the code confirms.
 | :--- | :--- |
 | **Capability roster** | The `shared::Capability` enum: every capability with snapshot state, `idle` included (ADR-0076). `process` is addressable but off-roster. |
 | **Capabilities** | The Supervisor's `Capabilities` struct of controllers and channels. Not the `GenerationRegistry`, which tracks Renderer connections. |
-| **Revision** | A capability's snapshot counter, stamped on commands as `expected_revision`. Nothing checks it (ADR-0004). |
+| **Revision** | A capability's published snapshot counter (ADR-0305). |
 | **IDL** | The typed engine contract in `lua-meta/`, generated from Rust: capability payloads and actions from their types; node and surface properties from the typed fields the parsers read, their Rust types and `///` docs; globals from their Rust signatures and `///` docs; a nested table shape's key names and field types from the struct its parser reads it as, its optional keys and Lua spellings marked by hand there. Composite aliases such as `Gradient`, `Mask`, `Easing` and `Animation` take their shapes from their parsers' `LuaType`. Still hand-written: `Cursor`, whose crate lists no names (`Align`, `Percent`, `EasingName` and `PopupAnchor` are filled from Rust), and the `StateSignal`, `ScrollSignal`, `PersistentTable` and `SessionProcessHandle` classes, which LuaLS models with generics or dynamic keys. |
 
 ## Capability domains

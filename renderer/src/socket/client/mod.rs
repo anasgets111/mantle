@@ -219,7 +219,7 @@ impl RendererClient {
         }
         match lua::namespace::rescue_table(&self.loader, is_rescue, error_log) {
             Ok(table) => {
-                let previous = self.rescue_handle.hydrate(mlua::Value::Table(table), 0);
+                let previous = self.rescue_handle.hydrate(mlua::Value::Table(table));
                 self.rescue_handle.notify_change(self.loader.lua(), previous);
                 self.rescue_state = (is_rescue, error_log.to_string());
             }
@@ -231,10 +231,8 @@ impl RendererClient {
     /// the lazy `capabilities` registration.
     fn apply_state_snapshot(&self, snapshot: StateSnapshot) -> mlua::Result<()> {
         let value = self.loader.to_lua_value(&snapshot.payload)?;
-        // Revision stamped into later `mantle.<name>:<action>(...)`; advisory because dispatch does
-        // not enforce it.
         let handle = self.capability_handle(&snapshot.capability)?;
-        let previous = handle.hydrate(value, snapshot.revision);
+        let previous = handle.hydrate(value);
         // Run `on_change` handlers (ADR-0115) after hydration and before layout. This is the only
         // Lua a push runs, not a `shell.lua` evaluation.
         handle.notify_change(self.loader.lua(), previous);
@@ -261,7 +259,7 @@ impl RendererClient {
         lua::timer::begin_evaluation(self.loader.lua());
     }
 
-    /// Returns a handle, lazily adding `mantle.<capability>` as `nil`, revision `0` (ADR-0029).
+    /// Returns a handle, lazily adding `mantle.<capability>` as `nil` (ADR-0029).
     /// Debug builds reject off-roster pushes first. **Refuses held names**: `Table::set` is silent,
     /// and an off-roster `rescue` push would replace the config-failure signal (ADR-0052 decision
     /// 1's bug).
@@ -339,7 +337,7 @@ impl RendererClient {
         }
         match self.loader.to_lua_value(&payload) {
             Ok(value) => {
-                let previous = self.screens_handle.hydrate(value, 0);
+                let previous = self.screens_handle.hydrate(value);
                 self.screens_handle.notify_change(self.loader.lua(), previous);
                 self.screens_payload = payload;
                 true

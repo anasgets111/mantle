@@ -1,4 +1,4 @@
-//! Capability and [`CapabilityHandle`] share the live signal, revision, and write path
+//! Capability and [`CapabilityHandle`] share the live signal and write path
 //! (ADR-0052 decision 1). [`CommandSender::send`] queues `{capability, action, arguments}` as a
 //! `RendererFrame::Command` on the channel drained by the socket thread's `pump` (ADR-0039), since
 //! Lua runs on the Wayland dispatch thread and has no socket in scope. `Rc`, not `Arc`, is correct
@@ -70,18 +70,9 @@ impl CommandSender {
         self.outbound_tx.clone()
     }
 
-    /// Queues the command envelope. `expected_revision` is the last hydrated `StateSnapshot`
-    /// revision, kept current by [`CapabilityHandle`]. `0` means "never hydrated": `bump_revision`
-    /// starts at `1`, and state-less `lock` capabilities send it forever (ADR-0052 decision 1,
-    /// `process.rs`).
-    pub(crate) fn send(
-        &self,
-        capability: &str,
-        action: &str,
-        arguments: Vec<serde_json::Value>,
-        expected_revision: u32,
-    ) {
-        self.send_as(self.next_id(), capability, action, arguments, expected_revision);
+    /// Queues the command envelope for the socket thread.
+    pub(crate) fn send(&self, capability: &str, action: &str, arguments: Vec<serde_json::Value>) {
+        self.send_as(self.next_id(), capability, action, arguments);
     }
 
     /// A fresh JSON-RPC request id, for a caller that names a later command by it (`process`).
@@ -92,21 +83,14 @@ impl CommandSender {
     }
 
     /// [`Self::send`] under an id the caller already holds.
-    pub(crate) fn send_as(
-        &self,
-        id: u64,
-        capability: &str,
-        action: &str,
-        arguments: Vec<serde_json::Value>,
-        expected_revision: u32,
-    ) {
+    pub(crate) fn send_as(&self, id: u64, capability: &str, action: &str, arguments: Vec<serde_json::Value>) {
         let envelope = CommandEnvelope {
             params: CommandParams {
                 generation_id: self.generation_id,
                 capability: capability.to_string(),
                 action: action.to_string(),
                 arguments,
-                expected_revision,
+                legacy_expected_revision: 0,
             },
             id,
         };
@@ -125,22 +109,15 @@ impl CommandSender {
 pub struct Capability {
     name: String,
     signal: Signal,
-    /// Shared with the paired [`CapabilityHandle`], so an action stamps the last snapshot revision
-    /// the config could have read; see [`CommandSender::send`].
-    revision: Rc<Cell<u32>>,
     commands: CommandSender,
     /// `on_change` handlers run by [`CapabilityHandle::notify_change`] after each push (ADR-0115).
     handlers: Rc<RefCell<Vec<Function>>>,
 }
 
 impl Capability {
-    /// Builds an `mantle.<name>` member and the handle `socket::RendererClient` hydrates. Return
-    /// them together: value and revision must move as one, because ordinary dispatch does not
-    /// enforce envelope revision claims. Pairing them here is the only guard against a `set` that
-    /// stamps a stale read onto the current write.
+    /// Builds an `mantle.<name>` member and the handle `socket::RendererClient` hydrates.
     pub fn new(name: &str, dirty: DirtyFlag, commands: CommandSender) -> (Self, CapabilityHandle) {
-        // `nil` until the Supervisor's first push (ADR-0037), paired with revision `0`, which no
-        // push can produce.
+        // `nil` until the Supervisor's first push (ADR-0037).
         Self::seeded(name, Value::Nil, dirty, commands)
     }
 
@@ -148,16 +125,9 @@ impl Capability {
     /// `rescue`. Off the roster, they have no actions.
     pub fn seeded(name: &str, initial: Value, dirty: DirtyFlag, commands: CommandSender) -> (Self, CapabilityHandle) {
         let (signal, signal_handle) = Signal::new_live(initial, dirty);
-        let revision = Rc::new(Cell::new(0));
         let handlers = Rc::new(RefCell::new(Vec::new()));
-        let capability = Capability {
-            name: name.to_string(),
-            signal,
-            revision: Rc::clone(&revision),
-            commands,
-            handlers: Rc::clone(&handlers),
-        };
-        (capability, CapabilityHandle { name: name.to_string(), signal: signal_handle, revision, handlers })
+        let capability = Capability { name: name.to_string(), signal, commands, handlers: Rc::clone(&handlers) };
+        (capability, CapabilityHandle { name: name.to_string(), signal: signal_handle, handlers })
     }
 
     /// Registers an `on_change` handler, including for wrappers such as `lua::idle` that re-export
@@ -185,22 +155,18 @@ impl Capability {
     }
 }
 
-/// Rust-side half of an `mantle.<name>` member, where `StateSnapshot` writes. One handle carries
-/// the `LiveSignalHandle` and revision because `socket::RendererClient` holds one per capability.
+/// Rust-side half of an `mantle.<name>` member, where `StateSnapshot` writes.
 #[derive(Clone)]
 pub struct CapabilityHandle {
     name: String,
     signal: LiveSignalHandle,
-    revision: Rc<Cell<u32>>,
     handlers: Rc<RefCell<Vec<Function>>>,
 }
 
 impl CapabilityHandle {
-    /// Writes a `StateSnapshot` revision before its value. The value write marks the scene dirty
-    /// (ADR-0044 decision 2), so it must go last. Returns the replaced value for
-    /// [`Self::notify_change`].
-    pub fn hydrate(&self, value: Value, revision: u32) -> Value {
-        self.revision.set(revision);
+    /// Writes a snapshot value and marks the scene dirty (ADR-0044 decision 2). Returns the
+    /// replaced value for [`Self::notify_change`].
+    pub fn hydrate(&self, value: Value) -> Value {
         let previous = if self.handlers.borrow().is_empty() { Value::Nil } else { self.signal.get() };
         self.signal.set(value);
         previous
@@ -299,7 +265,7 @@ impl Capability {
         let roster = shared::Capability::from_name(&self.name).expect("an action resolves only on a roster name");
         shared::action::check(roster, action, &arguments)
             .map_err(|err| mlua::Error::runtime(format!("mantle.{}:{action}: {err}", self.name)))?;
-        self.commands.send(&self.name, action, arguments, self.revision.get());
+        self.commands.send(&self.name, action, arguments);
         Ok(())
     }
 }
@@ -344,21 +310,7 @@ pub(crate) mod tests {
         assert_eq!(envelope.params.capability, "audio");
         assert_eq!(envelope.params.action, "set_volume");
         assert_eq!(envelope.params.arguments, vec![serde_json::json!(0.75)]);
-        // No snapshot is hydrated; `bump_revision` starts at 1, so `0` is correct.
-        assert_eq!(envelope.params.expected_revision, 0);
-    }
-
-    #[test]
-    fn an_action_stamps_the_revision_of_the_snapshot_the_config_could_last_have_read() {
-        let (lua, handle, mut rx) = lua_with_capability(0);
-
-        handle.hydrate(Value::Nil, 7);
-        lua.load(r#"mantle.probe:set_volume(0.5)"#).exec().unwrap();
-        assert_eq!(queued_command(&mut rx).unwrap().params.expected_revision, 7);
-
-        handle.hydrate(Value::Nil, 8);
-        lua.load(r#"mantle.probe:set_volume(0.6)"#).exec().unwrap();
-        assert_eq!(queued_command(&mut rx).unwrap().params.expected_revision, 8);
+        assert_eq!(envelope.params.legacy_expected_revision, 0);
     }
 
     #[test]
@@ -490,9 +442,9 @@ pub(crate) mod tests {
         .exec()
         .unwrap();
 
-        let previous = handle.hydrate(Value::Integer(1), 1);
+        let previous = handle.hydrate(Value::Integer(1));
         handle.notify_change(&lua, previous);
-        let previous = handle.hydrate(Value::Integer(2), 2);
+        let previous = handle.hydrate(Value::Integer(2));
         handle.notify_change(&lua, previous);
 
         let seen: mlua::Table = lua.globals().get("seen").unwrap();
@@ -518,7 +470,7 @@ pub(crate) mod tests {
         .exec()
         .unwrap();
 
-        let previous = handle.hydrate(Value::Integer(5), 1);
+        let previous = handle.hydrate(Value::Integer(5));
         handle.notify_change(&lua, previous);
 
         assert!(lua.globals().get::<bool>("ran").unwrap());
@@ -531,7 +483,7 @@ pub(crate) mod tests {
         let (lua, handle, _rx) = lua_with_capability(1);
         lua.load("count = 0; mantle.probe:on_change(function() count = count + 1 end)").exec().unwrap();
         handle.clear_handlers();
-        let previous = handle.hydrate(Value::Integer(1), 1);
+        let previous = handle.hydrate(Value::Integer(1));
         handle.notify_change(&lua, previous);
         assert_eq!(lua.globals().get::<i64>("count").unwrap(), 0);
     }
@@ -545,7 +497,7 @@ pub(crate) mod tests {
 
         let pushed = lua.create_table().unwrap();
         pushed.set("attempts", 2).unwrap();
-        handle.hydrate(Value::Table(pushed), 1);
+        handle.hydrate(Value::Table(pushed));
 
         let attempts: i64 = lua.load("return mantle.probe:get().attempts").eval().unwrap();
         assert_eq!(attempts, 2);
@@ -563,7 +515,7 @@ pub(crate) mod tests {
 
         let pushed = lua.create_table().unwrap();
         pushed.set("error", "authentication failed").unwrap();
-        handle.hydrate(Value::Table(pushed), 2);
+        handle.hydrate(Value::Table(pushed));
 
         let second: String = lua.load("return mapped:get()").eval().unwrap();
         assert_eq!(second, "authentication failed");

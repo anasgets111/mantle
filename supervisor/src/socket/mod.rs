@@ -480,7 +480,7 @@ mod tests {
                 capability: "audio".to_string(),
                 action: "set_volume".to_string(),
                 arguments: Vec::new(),
-                expected_revision: 0,
+                legacy_expected_revision: 0,
             },
         })
     }
@@ -698,7 +698,7 @@ mod tests {
                 capability: "audio".to_string(),
                 action: "set_volume".to_string(),
                 arguments: vec![serde_json::json!(0.5)],
-                expected_revision: 1,
+                legacy_expected_revision: 0,
             },
             id: 1,
         };

@@ -94,12 +94,16 @@ pub struct CommandParams {
     pub capability: String,
     pub action: String,
     pub arguments: Vec<serde_json::Value>,
-    pub expected_revision: u32,
+    /// Always 0 and ignored; an old Supervisor that respawns a new Renderer still requires it
+    /// (ADR-0305).
+    /// ponytail: drop once a versioned handshake rules out mixed binaries.
+    #[serde(rename = "expected_revision", default)]
+    pub legacy_expected_revision: u32,
 }
 
 /// Supervisor update on system changes that hydrates active Lua signals. `apply_state_snapshot`
-/// (`renderer/src/socket/client/mod.rs`) routes by `capability` (ADR-0029); `revision` is that capability's
-/// state-version counter (ADR-0004).
+/// (`renderer/src/socket/client/mod.rs`) routes by `capability` (ADR-0029). `revision` counts that
+/// capability's published snapshots; the Renderer ignores it (ADR-0305).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct StateSnapshot {
     pub capability: String,
@@ -153,8 +157,7 @@ pub enum StateWrite {
 /// config wrote.
 ///
 /// Distinct from [`CommandParams`], which is the config calling *out* to a capability and carries a
-/// `generation_id` and `expected_revision` describing the Renderer's view of that capability. An
-/// external caller has neither and needs neither.
+/// `generation_id` describing the Renderer that sent it. An external caller has no generation.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Call {
     /// Assigned by the Supervisor, not the client: it owns the pending table and the reply route,
@@ -514,9 +517,14 @@ mod tests {
         assert_eq!(envelope.params.generation_id, 4);
         assert_eq!(envelope.params.capability, "audio");
         assert_eq!(envelope.params.action, "set_volume");
-        assert_eq!(envelope.params.expected_revision, 42);
+        assert_eq!(envelope.params.legacy_expected_revision, 42);
 
         assert_eq!(serde_json::to_value(&envelope).unwrap(), wire);
+
+        let mut without = wire;
+        without["params"].as_object_mut().unwrap().remove("expected_revision");
+        let envelope: CommandEnvelope = serde_json::from_value(without).unwrap();
+        assert_eq!(envelope.params.legacy_expected_revision, 0, "a Renderer that omits it still decodes");
     }
 
     #[test]
@@ -587,7 +595,7 @@ mod tests {
                 capability: "audio".to_string(),
                 action: "set_volume".to_string(),
                 arguments: vec![serde_json::json!(0.75)],
-                expected_revision: 42,
+                legacy_expected_revision: 0,
             },
             id: 105,
         };

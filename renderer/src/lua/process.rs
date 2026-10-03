@@ -43,7 +43,7 @@ impl ProcessRegistry {
     }
 
     fn send(&self, action: &str, arguments: Vec<serde_json::Value>, id: u64) {
-        self.commands.send_as(id, "process", action, arguments, 0);
+        self.commands.send_as(id, "process", action, arguments);
     }
 
     fn run(&self, cmd: String, args: Vec<String>, out_cb: Function, exit_cb: Function) -> ProcessHandle {
@@ -57,7 +57,7 @@ impl ProcessRegistry {
     /// output and no exit code to deliver, so there is no pending pair to leak (ADR-0188). The
     /// envelope still carries an id because every command does; nothing ever answers it.
     fn detach(&self, cmd: String, args: Vec<String>) {
-        self.commands.send("process", "detach", vec![serde_json::json!(cmd), serde_json::json!(args)], 0);
+        self.commands.send("process", "detach", vec![serde_json::json!(cmd), serde_json::json!(args)]);
     }
 
     fn kill(&self, id: u64) {
