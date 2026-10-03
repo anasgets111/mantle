@@ -12,7 +12,9 @@ use super::solver::{
     set_solver_children, solve, taffy_failed, update_solver_node,
 };
 use super::tick::{advance_leaving, advanced_dissolve, prepare_retained};
-use super::{LayoutStyle, LogicalSize, PreparedNode, ResolvedNode, Scene, close, ensure_node_admissible, open_span};
+use super::{
+    LayoutStyle, LogicalSize, NodeId, PreparedNode, ResolvedNode, Scene, close, ensure_node_admissible, open_span,
+};
 use crate::layout::node::{self, LayoutError, PropMap, SizeMode, fields};
 use crate::lua::nodes::VirtualNode;
 use crate::lua::signal::ComputedFrame;
@@ -344,14 +346,16 @@ pub(super) fn prepare(
         node.frozen.extend(leaving);
         return Ok(node);
     }
-    let (fresh_children, matched_candidates, mut unclaimed) = children_this_pass(scene, &mut node, lua)?;
+    let (mut fresh_children, mut matched_candidates, mut unclaimed) = children_this_pass(scene, &mut node, lua)?;
     let own_axis = main_axis_of(kind, &node.properties)?;
 
     node.children.reserve(fresh_children.len());
     let mut failed = Vec::new();
-    for (index, (fresh_child, mut candidate)) in fresh_children.into_iter().zip(matched_candidates).enumerate() {
-        let Some(VirtualNode { kind: child_kind, properties: child_raw, site }) = fresh_child else {
-            keep_item(tree, &mut node, &mut candidate, (own_axis, old_scroll), lua, now, thawing)?;
+    // Indexed, not `into_iter().zip().enumerate()`: a debug build gives each adapter its own copy
+    // of the 744-byte candidate in this frame, one per tree level.
+    for index in 0..fresh_children.len() {
+        let Some(VirtualNode { kind: child_kind, properties: child_raw, site }) = fresh_children[index].take() else {
+            keep_item(tree, &mut node, &mut matched_candidates[index], (own_axis, old_scroll), lua, now, thawing)?;
             continue;
         };
         // Every failure below names this child, so the message that reaches a human is the path
@@ -364,13 +368,7 @@ pub(super) fn prepare(
         // same variant, kind and level the recursive call raises (see `ensure_node_admissible`).
         ensure_node_admissible(child_kind, depth + 1)?;
 
-        let mut reusable = match candidate {
-            Some(candidate) if candidate.kind != child_kind => {
-                unclaimed.push(candidate);
-                None
-            }
-            candidate => candidate,
-        };
+        let mut reusable = reusable_for(&mut matched_candidates[index], child_kind, &mut unclaimed);
 
         // This child's one resolve and one parse for this pass, both here rather than inside the
         // recursive call, because the style the call is handed is built from them and a second
@@ -398,6 +396,41 @@ pub(super) fn prepare(
         return Err(LayoutError::many(failed));
     }
 
+    finish_leavers(tree, &mut node, leaving, unclaimed, old_mask_target, thawing, lua, now)?;
+    let child_ids: Vec<taffy::NodeId> = node.children.iter().map(|child| child.taffy).collect();
+    set_solver_children(tree, taffy_id, &child_ids)?;
+    Ok(node)
+}
+
+/// The previous child at this position, or `None` when its kind changed and it leaves instead.
+/// Split from [`prepare`] to keep its frame small.
+fn reusable_for(
+    candidate: &mut Option<ResolvedNode>,
+    kind: &str,
+    unclaimed: &mut Vec<ResolvedNode>,
+) -> Option<ResolvedNode> {
+    match candidate.take() {
+        Some(candidate) if candidate.kind != kind => {
+            unclaimed.push(candidate);
+            None
+        }
+        candidate => candidate,
+    }
+}
+
+/// Moves this node's leavers on and starts exits for the children it dropped. Split from
+/// [`prepare`]: it runs after the recursion returns, but its locals would sit in every level's frame.
+#[allow(clippy::too_many_arguments)]
+fn finish_leavers(
+    tree: &mut taffy::TaffyTree<Measure>,
+    node: &mut PreparedNode,
+    leaving: Vec<ResolvedNode>,
+    unclaimed: Vec<ResolvedNode>,
+    old_mask_target: Option<NodeId>,
+    thawing: bool,
+    lua: &Lua,
+    now: Instant,
+) -> Result<(), LayoutError> {
     // The ones on their way out: those already leaving move on, those the tree just dropped
     // start their exit (ADR-0150). A hidden one, or one with no exit block, is simply gone.
     for child in leaving {
@@ -418,11 +451,7 @@ pub(super) fn prepare(
             node.leaving.push(child);
         }
     }
-    hold_leavers(tree, taffy_id, &node.style, node.allocated_axes, &node.leaving)?;
-
-    let child_ids: Vec<taffy::NodeId> = node.children.iter().map(|child| child.taffy).collect();
-    set_solver_children(tree, taffy_id, &child_ids)?;
-    Ok(node)
+    hold_leavers(tree, node.taffy, &node.style, node.allocated_axes, &node.leaving)
 }
 
 /// Which axes the compositor allocates a root, so an omitted extent fills it (ADR-0311). Split from
