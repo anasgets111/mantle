@@ -5,7 +5,7 @@ use shared::{debug, error};
 
 use super::*;
 mod clipboard;
-mod keyboard;
+pub(in crate::wayland) mod keyboard;
 pub(super) use clipboard::{ClipboardSource, PendingPaste};
 pub(crate) use keyboard::NavigateKey;
 pub(crate) use pointer::{DragPhase, MouseButton};
@@ -105,6 +105,7 @@ impl SeatHandler for App {
                 // No keyboard means no leave; clear stale focus and its half-typed secret
                 // (ADR-0050 decision 4).
                 self.keyboard_focus = None;
+                self.set_control_focus(None);
                 self.focus_secure_submit(None);
                 self.data_device = None;
                 self.paste = None;

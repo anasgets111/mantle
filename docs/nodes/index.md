@@ -192,6 +192,9 @@ one lets the event through to the node around it ([pointer](../guide/input.md#po
 | `content_blur` | `number\|Bound`, `[0, 8192]` | `0` | Gaussian sigma in px over this node's painted subtree, CSS `filter: blur()` ([blurs](../guide/paint.md#blurs)). Clipped like a shadow |
 | `animate` | `Animations\|Bound` | None | Per-property tweens and an `exit` block ([animation](../guide/animation.md)). Only a node already on screen animates, unless the entry has `from` |
 | `id` | `string` | None | Unique among siblings; matches this node across passes ([identity](#identity-and-reconciliation)). Never a signal |
+| `accessible_name` | `string\|Bound` | `""` | Spoken name for a control. A node with `on_click` or `submit` becomes keyboard focusable when this is set. Give each textfield a name for screen readers |
+| `focus_ring` | `boolean\|Bound` | `true` | `false` keeps the engine's [focus outline](../guide/input.md#keyboard-controls-and-accessibility) off this node |
+| `focused` | `Bound` | None | A `focused(name)` signal the engine sets while this node or its children hold [control focus](../guide/input.md#keyboard-controls-and-accessibility) |
 | `hover` | `Bound` | None | A `hover(name)` signal the engine sets while the pointer is over this node or its children ([hover](../guide/input.md#hover)) |
 | `geometry` | `Bound` | None | A `geometry(name)` signal the pass writes this node's surface-local rect into ([geometry](../guide/signals.md#geometry-read-a-nodes-laid-out-rect)) |
 | `cursor` | `Cursor\|Bound` | `"pointer"` on a node with `on_click`, `on_drag`, `on_wheel` or `submit` and on a link, `"text"` on a `textfield`, else the arrow | One of the [cursor names](#cursor-names). The innermost node under the pointer that sets one wins |

@@ -57,6 +57,7 @@ use crate::text::atlas::TextPainter;
 use crate::text::shaping::ShapingHandle;
 use crate::text::snap::LogicalRect;
 
+mod accessibility;
 mod capture;
 mod dmabuf;
 mod egl_ext;
@@ -76,6 +77,7 @@ mod trim;
 mod turn;
 mod xdg_shell;
 
+use input::keyboard::FocusedControl;
 use input::{ArmedClick, ArmedSerial, FocusedField, FocusedTextField};
 use surface::{TrackedSurface, log_bind_failure};
 
@@ -199,6 +201,10 @@ pub struct App {
     ///
     /// Mutually exclusive with `focused_secure_submit`; the innermost textfield is one kind.
     focused_text_field: Option<FocusedTextField>,
+    focused_control: Option<FocusedControl>,
+    /// Whether `focused_control` was last moved by Tab or an AT action, which alone draw the outline.
+    focus_visible: bool,
+    accessibility: accessibility::Accessibility,
     /// Shift on the seat's keyboard: it turns a caret motion or a press into a selection
     /// (ADR-0236).
     shift_held: bool,

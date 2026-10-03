@@ -11,7 +11,6 @@ Defects or missing pieces a config cannot work around.
 
 | Item | Why / what's left | ADR |
 | :--- | :--- | :--- |
-| Keyboard focus and accessibility | Only `textfield` holds focus; Tab reaches the config as `on_navigate("tab")`. Needs focusable controls, keyboard activation and an accessibility tree | — |
 | Multi-prompt PAM | The worker relays every masked prompt, but `LockState` and `secure_submit` carry one password, answered to every prompt. Fingerprint, 2FA and expired passwords fail. Echo-on prompts stay refused | 0241 |
 
 ## Later

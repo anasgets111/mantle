@@ -129,11 +129,19 @@ fn clickable(
 struct PointerHit {
     click: Option<Clickable>,
     field: Option<FieldTarget>,
+    control: Option<layout::scene::NodeId>,
     /// Byte offset under the point in the plain `textfield` it landed in (ADR-0236), decided on
     /// this same walk so one event cannot get two answers.
     caret: Option<usize>,
     /// `on_drag` node under the press, with its rect (ADR-0116 decision 1).
     drag: Option<(LogicalRect, Function)>,
+}
+
+fn focusable_hit(path: &[&layout::ResolvedNode]) -> Option<layout::scene::NodeId> {
+    path.iter()
+        .rev()
+        .find(|node| layout::scene::is_named_click_target(node) || focused_field(&[node]).is_some())
+        .map(|node| node.id)
 }
 
 /// Lua name for an evdev button, or `None` when this engine ignores it. Use strings, not raw 273 or
@@ -208,7 +216,9 @@ fn press_chooses_focus(
     focused_text_field: Option<FocusedTextField>,
 ) -> (Option<FocusedField>, Option<FocusedTextField>) {
     match hit_field {
-        Some(FieldTarget::Masked(target)) => (Some(FocusedField { surface_id: instance_id.to_string(), target }), None),
+        Some(FieldTarget::Masked { id, target }) => {
+            (Some(FocusedField { surface_id: instance_id.to_string(), id, target }), None)
+        }
         // Re-pressing the same field resumes its draft (ADR-0108).
         Some(FieldTarget::Plain { id, on_change, on_submit, on_cancel, on_navigate }) => {
             let resumed = focused_text_field.filter(|field| field.id == id);
@@ -245,7 +255,7 @@ fn press_chooses_focus(
 /// Call `on_click` with its node rect in surface logical coordinates (ADR-0050 decision 3). The
 /// rect round-trips to popup `anchor_rect` through Lua. Error labels distinguish building the
 /// engine's argument from a raised config handler.
-fn call_on_click(
+pub(in crate::wayland::input) fn call_on_click(
     lua: &Lua,
     on_click: &Function,
     rect: LogicalRect,
@@ -338,6 +348,11 @@ impl PointerHandler for App {
                     // Read before the call consumes `hit.field`; a held draft is still a plain
                     // field (ADR-0108).
                     let pressed_a_field = hit.field.is_some();
+                    let kind = match &hit.field {
+                        Some(FieldTarget::Plain { .. }) => super::keyboard::ControlKind::Plain,
+                        Some(FieldTarget::Masked { .. }) => super::keyboard::ControlKind::Masked,
+                        None => super::keyboard::ControlKind::Button,
+                    };
                     // Clones, not takes: the seams below compare what arrives against the focus
                     // still held to decide whether to zeroize and what to repaint.
                     let (masked, plain) = press_chooses_focus(
@@ -351,6 +366,18 @@ impl PointerHandler for App {
                     // Reassign through the zeroizing transition seam.
                     self.focus_secure_submit(masked);
                     self.focus_text_field(plain);
+                    let next = hit.control.map(|id| super::keyboard::FocusedControl {
+                        surface_id: instance_id.clone(),
+                        id,
+                        kind,
+                    });
+                    if pressed_a_field {
+                        self.set_control_focus(next);
+                    } else {
+                        self.focus_control(next);
+                    }
+                    // A press on the control Tab already focused still hides the outline.
+                    self.set_focus_visible(false);
                     // A textfield press arms no click, so an ancestor `on_click` cannot fire
                     // (ADR-0092); `textfield` is a leaf. This keeps notification reply boxes
                     // from also activating the card.
@@ -474,7 +501,7 @@ impl App {
     /// cloned out of the lent tree; the tree itself is not.
     fn hit_under(&self, index: usize, position: (f64, f64)) -> PointerHit {
         let Some(tree) = self.client.scene().surface(&self.surfaces[index].surface_id) else {
-            return PointerHit { click: None, field: None, caret: None, drag: None };
+            return PointerHit { click: None, field: None, control: None, caret: None, drag: None };
         };
         let point = layout::hit::LogicalPoint { x: position.0 as f32, y: position.1 as f32 };
         let path = layout::hit::hit_path(tree, point);
@@ -488,6 +515,7 @@ impl App {
             .filter(|held| matches!(&field, Some(FieldTarget::Plain { id, .. }) if *id == held.id));
         PointerHit {
             click: clickable(&path, point, &self.shaping),
+            control: focusable_hit(&path),
             // Its own caret too, not just its draft: a draft too wide to fit is drawn slid to
             // follow the caret, and a press reads the byte under where it actually landed.
             caret: held
@@ -618,7 +646,13 @@ impl App {
 
     /// Call a node's `on_click` with its rect (ADR-0050 decision 3); swallow handler raises.
     /// ADR-0046 rescue is for failed evaluation, not a misbehaving callback.
-    fn fire_on_click(&mut self, instance_id: &str, rect: LogicalRect, button: &str, on_click: &Function) {
+    pub(in crate::wayland::input) fn fire_on_click(
+        &mut self,
+        instance_id: &str,
+        rect: LogicalRect,
+        button: &str,
+        on_click: &Function,
+    ) {
         // `signal:set()` marks its own dirty flag (ADR-0044 decision 5); this call need not.
         crate::lua::focus::begin_click(self.client.lua(), instance_id);
         if let Err((what, e)) = call_on_click(self.client.lua(), on_click, rect, button) {
@@ -632,7 +666,22 @@ impl App {
 mod tests {
     use super::super::tests::hit_node;
     use super::*;
+    use crate::wayland::input::keyboard::tests::{secure_submit_table, textfield};
     use mlua::Table;
+
+    #[test]
+    fn pointer_focus_chooses_a_field_or_named_button_from_the_hit_path() {
+        let lua = Lua::new();
+        let field = textfield(&lua, Some(secure_submit_table(&lua, "lock", "authenticate")));
+        let mut button = hit_node(&lua, "rect", (0.0, 0.0, 30.0, 20.0), true);
+        std::rc::Rc::make_mut(&mut button.properties)
+            .insert("accessible_name", Value::String(lua.create_string("Unlock").unwrap()));
+        let unnamed = hit_node(&lua, "rect", (0.0, 0.0, 30.0, 20.0), true);
+        assert_eq!(focusable_hit(&[&field]), Some(field.id));
+        assert_eq!(focusable_hit(&[&button]), Some(button.id));
+        assert_eq!(focusable_hit(&[&button, &unnamed]), Some(button.id));
+        assert_eq!(focusable_hit(&[&unnamed]), None);
+    }
 
     #[test]
     fn pointer_hover_updates_fire_callbacks_but_layout_refreshes_do_not() {
@@ -987,7 +1036,11 @@ mod tests {
 
     #[test]
     fn pressing_away_from_every_field_stops_typing_but_keeps_the_draft() {
-        let held = FocusedField { surface_id: "lock@eDP-1".to_string(), target: secure_target() };
+        let held = FocusedField {
+            surface_id: "lock@eDP-1".to_string(),
+            id: layout::scene::NodeId::test(7),
+            target: secure_target(),
+        };
         let (masked, plain) =
             press_chooses_focus(None, "bar@eDP-1", None, false, Some(held.clone()), Some(draft(7, "kept")));
         let plain = plain.expect("the draft survives a press elsewhere");
@@ -1000,14 +1053,21 @@ mod tests {
     #[test]
     fn pressing_a_masked_field_takes_focus_from_the_plain_one() {
         let (masked, plain) = press_chooses_focus(
-            Some(FieldTarget::Masked(secure_target())),
+            Some(FieldTarget::Masked { id: layout::scene::NodeId::test(8), target: secure_target() }),
             "lock@eDP-1",
             None,
             false,
             None,
             Some(draft(7, "half a sentence")),
         );
-        assert_eq!(masked, Some(FocusedField { surface_id: "lock@eDP-1".to_string(), target: secure_target() }));
+        assert_eq!(
+            masked,
+            Some(FocusedField {
+                surface_id: "lock@eDP-1".to_string(),
+                id: layout::scene::NodeId::test(8),
+                target: secure_target(),
+            })
+        );
         assert!(plain.is_none(), "one field holds the keys, and it is the password one");
     }
 }

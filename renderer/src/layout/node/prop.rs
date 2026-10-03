@@ -103,7 +103,7 @@ impl<T: Prop> Prop for Structural<T> {
     }
 }
 
-/// The signal handle itself, which the engine writes (`hover`, `geometry`, `elided`) or reads and clamps
+/// The signal handle itself, which the engine writes (`hover`, `focused`, `geometry`, `elided`) or reads and clamps
 /// (`scroll`); any other value is inert, since the handles refuse every kind they must not write.
 pub(crate) struct Handle;
 

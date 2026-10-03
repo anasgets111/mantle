@@ -245,6 +245,16 @@ props! {
         ///
         /// Book: Unique among siblings; matches this node across passes ([identity](#identity-and-reconciliation)). Never a signal
         id: Structural<Id>;
+        /// Spoken name for a control. A node with `on_click` or `submit` becomes keyboard focusable when this is set. Give each textfield a name for screen readers.
+        accessible_name: Bound<Text> = absent(Lua(r#""""#));
+        /// `false` keeps the engine's focus outline off this node; style it from `focused(name)` instead.
+        ///
+        /// Book: `false` keeps the engine's [focus outline](../guide/input.md#keyboard-controls-and-accessibility) off this node
+        focus_ring: Bound<Flag> = absent(Bool(true));
+        /// A `focused(name)` signal; true while this node or a node inside it holds keyboard control focus.
+        ///
+        /// Book: A `focused(name)` signal the engine sets while this node or its children hold [control focus](../guide/input.md#keyboard-controls-and-accessibility)
+        focused: Handle;
         /// A `hover(name)` signal; this node's box is its region.
         ///
         /// Book: A `hover(name)` signal the engine sets while the pointer is over this node or its children ([hover](../guide/input.md#hover))
@@ -470,7 +480,7 @@ props! {
         on_submit(text: String);
         /// Escape; `cleared` says whether it removed text. A plain field clears (firing `on_change("")` only if there was text), gives up focus, then calls this. A `secure_submit` field scrubs and stays armed. Without it Escape clears and keeps focus (ADR-0102).
         on_cancel(cleared: bool);
-        /// Keys a single-line field does not use, for moving a list selection; repeats while held. `"left"`/`"right"` only when the caret cannot move that way and Shift is up (ADR-0236).
+        /// Keys a single-line field does not use, for moving a list selection; repeats while held. Tab and Shift+Tab reach this handler only when fewer than two controls can take focus. `"left"`/`"right"` only when the caret cannot move that way and Shift is up (ADR-0236).
         on_navigate(key: NavigateKey);
         /// Native target for the secret: `lock`/`authenticate`, `polkit`/`authenticate`, `network`/`connect`, or `secrets`/`store` with a `name`. Makes the field masked.
         ///

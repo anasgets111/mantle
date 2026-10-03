@@ -44,6 +44,8 @@ scope, capability roster) lives in [`CONTEXT.md`](../CONTEXT.md).
 | **Paint-only property** | A property whose change repaints without relayout (`opacity`, colours, `radius`, shadows, blurs, transforms, `progress`). Its tweens tick without a layout pass. |
 | **Shader node** | [`shader`](nodes/shader.md): a config `.frag` drawn as a node. Editing the file reloads. |
 | **Capture node** | [`capture`](nodes/capture.md): a live preview of an output or a window. |
+| **Control** | A node that takes keyboard focus: a `textfield`, or a node with `on_click` or `submit` and a nonempty `accessible_name`. Tab walks them; Enter and Space activate. See [keyboard controls](guide/input.md#keyboard-controls-and-accessibility). |
+| **Keyboard focus** | The surface the compositor sends keys to, plus the popups shown under it. Only its controls take keys. See [panel](surfaces/panel.md#keyboard-focus). |
 | **Path node** | [`path`](nodes/path.md): vector commands filled or stroked in the node's box, without an SVG file. |
 
 ## Signals and state

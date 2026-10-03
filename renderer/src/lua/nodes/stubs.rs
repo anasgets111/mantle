@@ -291,7 +291,7 @@ const NODES_HEADER: &str = r##"---@meta
 --
 -- `Bound` in a union means the property also takes a signal, read again once it is written. It is
 -- `userdata`, not `Signal`, so table payloads are not mistaken for signals. `id` and callbacks take
--- no signal; `hover`, `scroll`, `geometry` and `elided` take the handle itself. `[string]: "no such property"`
+-- no signal; `hover`, `focused`, `scroll`, `geometry` and `elided` take the handle itself. `[string]: "no such property"`
 -- makes a misspelled key a type error.
 
 ---@alias Node table A node table, as one of the constructors below returns it.

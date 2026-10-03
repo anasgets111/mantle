@@ -113,6 +113,9 @@ pub fn run(
         reposition_token: 0,
         focused_secure_submit: None,
         focused_text_field: None,
+        focused_control: None,
+        focus_visible: false,
+        accessibility: accessibility::Accessibility::new(waker.clone()),
         secure_buffer: shared::SecureBuffer::new(),
         shift_held: false,
         ctrl_held: false,
@@ -257,6 +260,7 @@ pub fn run(
         // Profiling adds three `clock_gettime` calls per turn for the resolve/repaint split.
         let mut phases = idle_profile::Phases::start(profile.is_some());
         app.client.fire_due_timers();
+        app.process_accessibility_actions();
         app.client.poll_palette();
         app.client.wake_due_signals();
         // `apply_instances` and `handle_apply_pending` also resolve, from dispatch, where `ms
@@ -280,6 +284,13 @@ pub fn run(
         phases.mark_tick_split(app.client.take_tick_split());
         let re_resolved = passed || !ticked.is_empty();
         app.apply_focus_request();
+        if re_resolved {
+            app.prune_secure_focus_after_resolve();
+            app.prune_control_focus();
+            // A newly bound `focused` slot starts right.
+            app.sync_focused();
+        }
+        app.sync_accessibility(re_resolved);
         // Take unconditionally so a keystroke arriving with a push is covered by this repaint, not
         // repeated next turn.
         app.repaint_caret_if_it_flipped();

@@ -18,6 +18,7 @@ use super::{DisplayList, Draw, DrawCmd, UNCLIPPED, command_bounds, grow, shadow_
 /// continued landing in the buffer; a replacement field could also inherit its text (ADR-0099).
 pub enum FieldFocus<'a> {
     Masked {
+        id: NodeId,
         target: &'a node::SecureSubmitTarget,
         /// `shared::SecureBuffer::grapheme_count`.
         filled: usize,
@@ -36,9 +37,19 @@ pub enum FieldFocus<'a> {
 }
 
 /// Flattens `root` without touching a canvas or GL context.
+#[cfg(test)]
 pub fn build(root: &ResolvedNode, scale: f32, focus: Option<&FieldFocus>) -> DisplayList {
+    build_with_control(root, scale, focus, None)
+}
+
+pub fn build_with_control(
+    root: &ResolvedNode,
+    scale: f32,
+    focus: Option<&FieldFocus>,
+    control: Option<NodeId>,
+) -> DisplayList {
     let mut commands = Vec::new();
-    build_node(root, 0.0, 0.0, scale, (UNCLIPPED, root.rect), 1.0, focus, &mut commands);
+    build_node(root, 0.0, 0.0, scale, (UNCLIPPED, root.rect), 1.0, focus, control, &mut commands);
     DisplayList { commands }
 }
 
@@ -54,6 +65,7 @@ fn build_node(
     (clip, surface): (PhysicalRect, LogicalRect),
     inherited_opacity: f32,
     focus: Option<&FieldFocus>,
+    control: Option<NodeId>,
     out: &mut Vec<DrawCmd>,
 ) {
     if !node.visible {
@@ -155,13 +167,13 @@ fn build_node(
             let (fill, border) = split_fill_and_border(draw);
             let mut inner: Vec<DrawCmd> = fill.map(|draw| cmd(clip, draw)).into_iter().collect();
             for child in node.painted_children() {
-                build_node(child, x, y, scale, (clip, surface), opacity, focus, &mut inner);
+                build_node(child, x, y, scale, (clip, surface), opacity, focus, control, &mut inner);
             }
             inner.extend(border.map(|draw| cmd(clip, draw)));
             if !inner.is_empty() {
                 let draw = if let Some(mask_node) = node.mask_child() {
                     let mut commands = Vec::new();
-                    build_node(mask_node, x, y, scale, (clip, surface), 1.0, None, &mut commands);
+                    build_node(mask_node, x, y, scale, (clip, surface), 1.0, None, None, &mut commands);
                     let split = commands.len();
                     commands.extend(inner);
                     Draw::NodeMask {
@@ -183,7 +195,7 @@ fn build_node(
                 out.push(cmd(clip, draw));
             }
             for child in node.painted_children() {
-                build_node(child, x, y, scale, (child_clip, surface), opacity, focus, out);
+                build_node(child, x, y, scale, (child_clip, surface), opacity, focus, control, out);
             }
         }
         // Rounded order: fill, masked subtree, border. A child reaching the arc would
@@ -195,7 +207,7 @@ fn build_node(
             }
             let mut inner = Vec::new();
             for child in node.painted_children() {
-                build_node(child, x, y, scale, (clip, surface), opacity, focus, &mut inner);
+                build_node(child, x, y, scale, (clip, surface), opacity, focus, control, &mut inner);
             }
             // A leaf has nothing to clip, so avoid the render target and composite.
             if !inner.is_empty() {
@@ -205,6 +217,30 @@ fn build_node(
                 out.push(cmd(clip, border));
             }
         }
+    }
+    if control == Some(node.id)
+        && node::fields::common::focus_ring.read(&node.properties).unwrap_or(true)
+        && rect.width >= 4.0
+        && rect.height >= 4.0
+        && !clip.is_empty()
+    {
+        let white = Rgba { r: 1.0, g: 1.0, b: 1.0, a: 1.0 };
+        let black = Rgba { r: 0.0, g: 0.0, b: 0.0, a: 1.0 };
+        let border =
+            |color| BorderColor { top: Some(color), right: Some(color), bottom: Some(color), left: Some(color) };
+        let widths = EdgeInsets { top: 2.0, right: 2.0, bottom: 2.0, left: 2.0 };
+        out.push(cmd(clip, Draw::Box { background: None, radius: 0.0, colors: border(white), widths }));
+        let inner = LogicalRect {
+            x: px.x + 2.0 * scale,
+            y: px.y + 2.0 * scale,
+            width: px.width - 4.0 * scale,
+            height: px.height - 4.0 * scale,
+        };
+        out.push(DrawCmd {
+            rect: inner,
+            clip,
+            draw: in_buffer_pixels(Draw::Box { background: None, radius: 0.0, colors: border(black), widths }, scale),
+        });
     }
     if (layered.shadow.is_some() || layered.blur > 0.0) && out.len() > body {
         let commands: Vec<DrawCmd> = out.drain(body..).collect();
@@ -461,8 +497,8 @@ fn draw_for(
         PaintStyle::TextField { target, placeholder, mask, font_size, color, align } => {
             let (content, caret, caret_on) = match focus {
                 // An empty masked field remains a prompt.
-                Some(FieldFocus::Masked { target: focused, filled }) if *filled > 0 => {
-                    if target.as_ref().is_some_and(|declared| declared == *focused) {
+                Some(FieldFocus::Masked { id, target: focused, filled }) if *filled > 0 => {
+                    if *id == node_id && target.as_ref().is_some_and(|declared| declared == *focused) {
                         (mask.repeat(*filled), None, false)
                     } else {
                         (placeholder.clone(), None, false)
@@ -1019,6 +1055,21 @@ mod tests {
         resolved_surface(lua, src, LogicalSize { width: 200.0, height: 40.0 })
     }
 
+    #[test]
+    fn keyboard_focus_draws_an_outline_for_the_selected_node() {
+        let lua = Lua::new();
+        let tree = reply_surface(&lua);
+        let id = tree.children[0].id;
+        let idle = build_with_control(&tree, 1.0, None, None);
+        let focused = build_with_control(&tree, 1.0, None, Some(id));
+        assert_eq!(focused.commands.len(), idle.commands.len() + 2);
+        assert!(focused.commands.iter().rev().take(2).all(|cmd| matches!(cmd.draw, Draw::Box { .. })));
+
+        let mut ringless = tree.clone();
+        std::rc::Rc::make_mut(&mut ringless.children[0].properties).insert("focus_ring", mlua::Value::Boolean(false));
+        assert_eq!(build_with_control(&ringless, 1.0, None, Some(id)).commands.len(), idle.commands.len());
+    }
+
     /// The plain half of `textfield` (ADR-0092). Unfocused it is a placeholder like any other
     /// field; focused it shows what has been typed, with a caret after it.
     #[test]
@@ -1197,7 +1248,8 @@ mod tests {
     fn a_focused_password_field_draws_one_mask_character_per_typed_character() {
         let lua = Lua::new();
         let target = lock_target();
-        let list = build(&password_surface(&lua), 1.0, Some(&FieldFocus::Masked { target: &target, filled: 4 }));
+        let tree = password_surface(&lua);
+        let list = build(&tree, 1.0, Some(&FieldFocus::Masked { id: tree.children[0].id, target: &target, filled: 4 }));
         assert_eq!(drawn_text(&list), vec!["****".to_string()]);
     }
 
@@ -1205,7 +1257,8 @@ mod tests {
     fn a_focused_but_empty_password_field_still_shows_its_placeholder() {
         let lua = Lua::new();
         let target = lock_target();
-        let list = build(&password_surface(&lua), 1.0, Some(&FieldFocus::Masked { target: &target, filled: 0 }));
+        let tree = password_surface(&lua);
+        let list = build(&tree, 1.0, Some(&FieldFocus::Masked { id: tree.children[0].id, target: &target, filled: 0 }));
         assert_eq!(drawn_text(&list), vec!["password".to_string()]);
     }
 
@@ -1217,12 +1270,23 @@ mod tests {
         let lua = Lua::new();
         let elsewhere =
             node::SecureSubmitTarget { capability: "network".to_string(), action: "connect".to_string(), name: None };
-        let list = build(&password_surface(&lua), 1.0, Some(&FieldFocus::Masked { target: &elsewhere, filled: 9 }));
+        let tree = password_surface(&lua);
+        let list =
+            build(&tree, 1.0, Some(&FieldFocus::Masked { id: tree.children[0].id, target: &elsewhere, filled: 9 }));
         assert_eq!(
             drawn_text(&list),
             vec!["password".to_string()],
             "a PSK's length must not leak onto the lock screen's field"
         );
+    }
+
+    #[test]
+    fn another_node_with_the_same_secure_target_does_not_show_the_password_length() {
+        let lua = Lua::new();
+        let tree = password_surface(&lua);
+        let target = lock_target();
+        let list = build(&tree, 1.0, Some(&FieldFocus::Masked { id: NodeId::test(999), target: &target, filled: 9 }));
+        assert_eq!(drawn_text(&list), vec!["password".to_string()]);
     }
 
     /// The count is all paint ever gets (see [`FieldFocus`]), so there is no path by which a
@@ -1232,7 +1296,8 @@ mod tests {
     fn a_masked_field_draws_only_the_mask_character() {
         let lua = Lua::new();
         let target = lock_target();
-        let list = build(&password_surface(&lua), 1.0, Some(&FieldFocus::Masked { target: &target, filled: 6 }));
+        let tree = password_surface(&lua);
+        let list = build(&tree, 1.0, Some(&FieldFocus::Masked { id: tree.children[0].id, target: &target, filled: 6 }));
         let drawn = drawn_text(&list);
         assert_eq!(drawn, vec!["******".to_string()]);
         assert!(drawn[0].chars().all(|c| c == '*'), "nothing but the mask glyph may reach the list");
@@ -1248,7 +1313,7 @@ mod tests {
                 secure_submit = { capability = "lock", action = "authenticate" } } }"##;
         let tree = resolved_surface(&lua, src, LogicalSize { width: 200.0, height: 40.0 });
         let target = lock_target();
-        let list = build(&tree, 1.0, Some(&FieldFocus::Masked { target: &target, filled: 3 }));
+        let list = build(&tree, 1.0, Some(&FieldFocus::Masked { id: tree.children[0].id, target: &target, filled: 3 }));
         assert_eq!(drawn_text(&list), vec!["\u{2022}\u{2022}\u{2022}".to_string()]);
     }
 
@@ -1259,8 +1324,9 @@ mod tests {
         let lua = Lua::new();
         let tree = password_surface(&lua);
         let target = lock_target();
-        let three = build(&tree, 1.0, Some(&FieldFocus::Masked { target: &target, filled: 3 }));
-        let four = build(&tree, 1.0, Some(&FieldFocus::Masked { target: &target, filled: 4 }));
+        let three =
+            build(&tree, 1.0, Some(&FieldFocus::Masked { id: tree.children[0].id, target: &target, filled: 3 }));
+        let four = build(&tree, 1.0, Some(&FieldFocus::Masked { id: tree.children[0].id, target: &target, filled: 4 }));
         assert_ne!(three, four);
     }
 

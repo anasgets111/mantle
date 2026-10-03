@@ -220,7 +220,9 @@ impl App {
         let tree = self.client.scene().surface(&surface_id);
         let mut animating = tree.is_some_and(layout::ResolvedNode::animating);
 
-        let is_clean = self.surfaces[index].is_clean() && self.field_focus_for(&surface_id).is_none();
+        let control = self.outline_control(&surface_id);
+        let is_clean =
+            self.surfaces[index].is_clean() && self.field_focus_for(&surface_id).is_none() && control.is_none();
         if is_clean
             && !self.surfaces[index].owes_a_paint()
             && self.surfaces[index].last_painted.as_ref().is_some_and(|(s, _)| *s == paint_key)
@@ -241,7 +243,9 @@ impl App {
         let t_build = timing.then(Instant::now);
         let list = {
             let focus = self.field_focus_for(&surface_id);
-            tree.as_ref().map(|tree| layout::paint::build(tree, scale, focus.as_ref())).unwrap_or_default()
+            tree.as_ref()
+                .map(|tree| layout::paint::build_with_control(tree, scale, focus.as_ref(), control))
+                .unwrap_or_default()
         };
         // What the compositor re-blurs and recomposites behind this surface; `None` is the whole
         // surface (ADR-0063 amendment).

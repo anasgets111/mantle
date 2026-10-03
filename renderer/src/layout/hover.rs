@@ -1,4 +1,5 @@
-//! Which `hover` signals a pointer position turns on, and which it turns off (ADR-0062).
+//! Which `hover` signals a pointer position turns on, and which it turns off (ADR-0062), and
+//! the same subtree answer for `focused` signals and keyboard control focus.
 //!
 //! Pure: this decides what a hover means without a live `wl_pointer` or `wl_surface`.
 
@@ -6,7 +7,7 @@ use mlua::Function;
 
 use super::hit;
 use super::node::fields::common;
-use super::scene::ResolvedNode;
+use super::scene::{NodeId, ResolvedNode};
 use crate::lua::signal::Signal;
 use crate::text::snap::LogicalRect;
 
@@ -77,6 +78,28 @@ fn collect(node: &ResolvedNode, path: &[&ResolvedNode], writes: &mut Vec<HoverWr
     for child in &node.children {
         collect(child, path, writes);
     }
+}
+
+/// Every `focused` signal in `tree`, paired with whether `focus` is its node or inside it. Walks
+/// the whole tree like [`hover_writes`], so a node that lost focus is turned off.
+pub fn focused_writes(tree: &ResolvedNode, focus: Option<NodeId>) -> Vec<(Signal, bool)> {
+    fn collect(node: &ResolvedNode, focus: Option<NodeId>, writes: &mut Vec<(Signal, bool)>) -> bool {
+        let slot = common::focused.read(&node.properties).ok().flatten().map(|signal| {
+            writes.push((signal, false));
+            writes.len() - 1
+        });
+        let mut within = focus == Some(node.id);
+        for child in &node.children {
+            within |= collect(child, focus, writes);
+        }
+        if let Some(slot) = slot {
+            writes[slot].1 = within;
+        }
+        within
+    }
+    let mut writes = Vec::new();
+    collect(tree, focus, &mut writes);
+    writes
 }
 
 #[cfg(test)]
@@ -234,6 +257,27 @@ mod tests {
         let leaving = hover_writes_at(&tree, None);
         assert!(!leaving[0].hovered);
         assert!(leaving[0].rect.is_none());
+    }
+
+    #[test]
+    fn focused_is_true_for_the_focused_node_and_its_ancestors_only() {
+        let lua = Lua::new();
+        let slot = |properties: &mut ResolvedNode| {
+            let ud = lua.create_userdata(Signal::new_focused(DirtyFlag::new())).unwrap();
+            std::rc::Rc::make_mut(&mut properties.properties).insert("focused", Value::UserData(ud));
+        };
+        let mut field = node((0.0, 0.0, 50.0, 20.0), None, vec![]);
+        field.id = NodeId::test(1);
+        slot(&mut field);
+        let mut sibling = node((50.0, 0.0, 50.0, 20.0), None, vec![]);
+        sibling.id = NodeId::test(2);
+        slot(&mut sibling);
+        let mut wrapper = node((0.0, 0.0, 100.0, 20.0), None, vec![field, sibling]);
+        slot(&mut wrapper);
+        let id = wrapper.children[0].id;
+        let answers = |focus| focused_writes(&wrapper, focus).into_iter().map(|(_, on)| on).collect::<Vec<_>>();
+        assert_eq!(answers(Some(id)), vec![true, true, false], "wrapper, field, sibling");
+        assert_eq!(answers(None), vec![false, false, false]);
     }
 
     #[test]

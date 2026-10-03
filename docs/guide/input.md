@@ -1,9 +1,8 @@
 # Input
 
 Pointer and keyboard input: clicks, drags and the wheel on any node, hover, scrolling
-containers, and typing into a `textfield`, including password fields whose keys never reach Lua.
-There is no key-handler property and no touch input; keys reach a config only through a focused
-`textfield`. A handler usually writes a [named state](signals.md#named-state), and the next
+containers, keyboard activation, and typing into a `textfield`, including password fields whose
+keys never reach Lua. A handler usually writes a [named state](signals.md#named-state), and the next
 [pass](signals.md#how-re-resolution-works) shows the result.
 
 ```lua
@@ -12,10 +11,12 @@ local clicks = state("clicks", 0)
 return panel {
     id = "bar",
     layer = "Top",
+    keyboard_interactivity = "OnDemand",
     anchor = { top = true },
     child = rect {
         padding = 8,
         background = "#313244",
+        accessible_name = "Increase clicks",
         on_click = function(rect, which)
             if which == "left" then clicks:set(clicks:get() + 1) end
         end,
@@ -153,6 +154,64 @@ Like `hover`, the name is the identity and survives reloads.
 | Cost | While only `scroll` properties read the signal, the wheel moves the laid-out children without a layout pass. A `map` or `:get()` of it, or a `scroll` inside a `list` item, costs a pass per wheel event |
 | `:reveal(index)` | On the next pass, scrolls the least distance that shows the `index`-th visible child (1-based; a `list`'s items in source order). An index past the end does nothing; below 1 raises. Only a `scroll` signal has it |
 
+## Keyboard controls and accessibility
+
+A node with `on_click` or `submit = true` becomes a keyboard control when it has a nonempty
+`accessible_name`. The name is announced through AT-SPI. Give every `textfield` an
+`accessible_name` too; fields take focus through their existing callbacks or `secure_submit`.
+Keys reach controls only on the surface with keyboard focus. Panels use
+`keyboard_interactivity = "OnDemand"` or `"Exclusive"`; shown popups under that surface share its
+focus scope.
+
+Tab moves to the next control in document order across the focused surface and its shown popups.
+Shift+Tab moves backward, and both wrap. Hidden, leaving and zero-size controls are skipped.
+When fewer than two controls can take focus, Tab reaches a plain field's `on_navigate` as before.
+Enter or Space activates a named control once per press, calling `on_click(rect, "left")` and
+running `submit` when set. Pointer presses also focus named controls.
+
+The engine draws a black and white outline around the focused control only when Tab, Shift+Tab or
+an assistive-technology action moved focus there. Focus from a press, `autofocus` or
+`focus(name):request()` draws none, and a press hides an outline Tab drew. `focus_ring = false`
+keeps the outline off a node.
+
+`focused(name)` returns a read-only boolean signal, `false` until the bound node first holds focus.
+Bind it to a node's `focused` and the engine sets it `true` while that node or any node inside it
+holds control focus, however focus got there. Like `hover(name)`, the name is the identity and
+survives reloads. It is not `focus(name)`, the handle a click uses to focus a textfield.
+
+```lua
+local search = focused("search")
+
+return panel {
+    id = "launcher",
+    layer = "Top",
+    keyboard_interactivity = "OnDemand",
+    child = rect {
+        padding = 6,
+        radius = 8,
+        border_width = 2,
+        focused = search,
+        border_color = search:map(function(on) return on and "#89b4fa" or "#45475a" end),
+        children = {
+            textfield {
+                width = 240,
+                height = 28,
+                autofocus = true,
+                focus_ring = false,
+                accessible_name = "Search",
+                on_change = function(text) end,
+            },
+        },
+    },
+}
+```
+
+Mantle publishes the resolved node tree through AT-SPI. Text nodes expose their displayed text;
+plain fields expose their draft. Secure fields expose a password role but no value or length.
+Assistive-technology focus and click actions use the same control path as keyboard input. A
+screen reader can also click a button on a surface without keyboard focus; the keyboard stays
+where it is.
+
 ## Text fields
 
 A `textfield` is a single-line text input. The engine holds what the user types (the *draft*); Lua
@@ -174,7 +233,7 @@ a press.
 | `on_change(text)` | Every edit that changes the text, with the whole draft. Caret moves call nothing |
 | `on_submit(text)` | Enter, with the whole draft (possibly `""`). The draft then clears and `on_change("")` follows; the field keeps focus. A held Enter does not repeat |
 | `on_cancel(cleared)` | Escape. The draft clears, the field drops focus, `on_change("")` fires if there was text, then `on_cancel` gets whether text was removed. Without `on_cancel`, Escape clears and the field keeps focus |
-| `on_navigate(key)` | `"up"`, `"down"`, `"page_up"`, `"page_down"`, `"tab"`, `"backtab"`, and `"left"`/`"right"` when the caret cannot move that way and Shift is up. Repeats while held. The draft is untouched |
+| `on_navigate(key)` | `"up"`, `"down"`, `"page_up"`, `"page_down"`, and `"left"`/`"right"` when the caret cannot move that way and Shift is up. Tab and Backtab arrive when fewer than two controls can take focus. Repeats while held. The draft is untouched |
 | `autofocus` | `true`: take the keys, with an empty draft and a call to `on_change("")`, when the surface gains keyboard focus or the field appears under it. The first visible such field in document order wins. It never takes over from a field that is already typing, and never re-takes a field the user just clicked away from |
 | `focus` | A `focus(name)` handle. An `on_click` can call `:request()` to focus the first visible plain field with that name on the same keyboard-focused surface or a popup under it, after the click's state changes appear. It keeps that field's draft and caret and does not call `on_change` |
 | `secure_submit`, `mask_character` | See [secure fields](#secure-fields) |
@@ -191,13 +250,14 @@ a press.
 | Ctrl+A | Selects all | Nothing |
 | Ctrl+C | Copies selected text | Nothing |
 | Ctrl+V | Replaces selection with clipboard text; `on_change` | Appends clipboard text to the native buffer |
-| Up, Down, Page Up, Page Down, Tab, Shift+Tab | `on_navigate` (`"backtab"` for Shift+Tab) | Nothing |
+| Up, Down, Page Up, Page Down | `on_navigate` | Nothing |
+| Tab, Shift+Tab | Moves between controls when at least two are available; otherwise `on_navigate` (`"backtab"` for Shift+Tab) | Moves between controls when at least two are available |
 | Any other Ctrl chord | Left to the compositor | Same |
 
 **Selection and clipboard.** Dragging or Shift+clicking with the pointer selects too. Paste accepts
 up to 64 KiB of valid UTF-8 without control characters. A paste is dropped if the selection, field,
 or keyboard focus changes before the read ends. Copy works only with a plain-field selection.
-Tab does not move focus between fields; it reaches `on_navigate`. Editing keys repeat while held; Escape does not.
+Editing keys repeat while held; Escape does not.
 
 **Draft lifetime.** Clicking elsewhere, or the surface losing the keyboard, stops typing but keeps
 the draft; clicking the field again resumes it. Enter and Escape clear it. An `autofocus` arm
@@ -278,7 +338,7 @@ secret or its length.
 | Arming | When the surface gains keyboard focus, the sole visible secure field in it (and in popups shown under it) is armed with no click. With two or more, a press picks one. A field revealed later under existing focus arms if none is armed |
 | Keys | Typed text appends, Backspace removes one character, Escape clears the buffer, stays armed and calls the field's `on_cancel(cleared)`. There is no caret, selection or `on_navigate`; `on_change` and `on_submit` never fire |
 | Sending | Enter, or a click on a `submit = true` node, sends the buffer and wipes it. An empty buffer is sent only to `network`/`connect`, where it joins an open network |
-| Focus | A click on anything but a field keeps the field armed, so a `submit = true` node works. Focusing another field, plain or secure, or the keyboard leaving the surface, disarms it and wipes the buffer |
+| Focus | A click on anything but a field keeps the field armed, so a `submit = true` node works. Tab to a named button keeps the buffer too: typing stops, Enter on a `submit = true` button sends it, and Escape still clears it and calls `on_cancel`. Focusing another field, plain or secure, or the keyboard leaving the surface, disarms it and wipes the buffer |
 | Priority | While a secure field is armed, plain fields in the same focus take no keys |
 | `mask_character` | Drawn once per typed character. Default `"•"`; only the first character counts; `""` draws nothing and hides the length. Only secure fields draw it. An empty field shows its `placeholder` |
 
@@ -297,6 +357,7 @@ return lock {
                 width = 280,
                 height = 40,
                 placeholder = "Password",
+                accessible_name = "Password",
                 mask_character = "•",
                 secure_submit = { capability = "lock", action = "authenticate" },
             },
@@ -305,6 +366,7 @@ return lock {
                 radius = 8,
                 background = "#89b4fa",
                 submit = true,
+                accessible_name = "Unlock",
                 children = { text { content = "Unlock", foreground = "#11111b" } },
             },
         },
@@ -320,6 +382,8 @@ return lock {
 | Move a selection through a list with the arrow keys | `on_navigate` under [text fields](#text-fields); the [app launcher](../cookbook/launcher.md) adds `scroll(name):reveal` |
 | Close a search box on a second Escape | The same example: `on_cancel(cleared)` closes only when `cleared` is `false` |
 | Ask for a password | The lock example under [secure fields](#secure-fields) |
+| Reach a button by keyboard or screen reader | Give the node with `on_click` or `submit` an `accessible_name` ([keyboard controls](#keyboard-controls-and-accessibility)) |
+| Hide or restyle the focus outline | `focus_ring = false` on the control, and style a wrapper from `focused(name)` ([keyboard controls](#keyboard-controls-and-accessibility)) |
 | Show a tooltip on hover | [Tooltip](../surfaces/popup.md), with `hover_rect` as the anchor |
 | Open a menu on right click | Below |
 | Reorder a list by dragging | Below |
@@ -450,6 +514,9 @@ return panel {
 | A `textfield` is invisible or cannot be clicked | It has no intrinsic size. Give it `width` and `height` |
 | A field in a panel shows no caret and takes no keys | Set the panel's `keyboard_interactivity` to `"OnDemand"` (or `"Exclusive"` for a modal) |
 | A field with only `on_navigate`/`on_cancel` ignores clicks | Add `on_change` or `on_submit` |
+| Tab skips a button, or Tab does nothing | Give the button an `accessible_name`, and the panel a `keyboard_interactivity` other than `"None"` |
+| A clicked or `autofocus` field shows no focus outline | The outline follows keyboard navigation only. Bind `focused(name)` for a style that tracks any focus |
+| Tab stopped reaching `on_navigate` | With two or more controls in the focus scope, Tab moves focus instead. It reaches `on_navigate` only when the field is the sole control |
 | The mouse wheel does nothing over a scrolling `row` | Rows scroll on the horizontal axis. Use a `column`, or an `on_wheel` on a node around it that moves the row |
 | A `scroll` container never scrolls | Bound its size on the scroll axis; content-sized means nothing overflows |
 | `on_hover` is refused | Add `hover = hover("name")` on the same node |

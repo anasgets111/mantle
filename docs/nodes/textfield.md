@@ -78,7 +78,7 @@ The image shows the empty search field and unfiltered list. Typing updates the l
 | `on_change` | `fun(text: string)` | None | Full text after every edit |
 | `on_submit` | `fun(text: string)` | None | Enter with the full text; the field stays focused and clears. Never fires on a `secure_submit` field |
 | `on_cancel` | `fun(cleared: boolean)` | None | Escape; `cleared` says whether it removed text. A plain field clears (firing `on_change("")` only if there was text), gives up focus, then calls this. A `secure_submit` field scrubs and stays armed. Without it Escape clears and keeps focus |
-| `on_navigate` | `fun(key: "up"\|"down"\|"left"\|"right"\|"page_up"\|"page_down"\|"tab"\|"backtab")` | None | Keys a single-line field does not use, for moving a list selection; repeats while held. `"left"`/`"right"` only when the caret cannot move that way and Shift is up |
+| `on_navigate` | `fun(key: "up"\|"down"\|"left"\|"right"\|"page_up"\|"page_down"\|"tab"\|"backtab")` | None | Keys a single-line field does not use, for moving a list selection; repeats while held. Tab and Shift+Tab reach this handler only when fewer than two controls can take focus. `"left"`/`"right"` only when the caret cannot move that way and Shift is up |
 | `secure_submit` | `{ capability: string, action: string, name?: string }\|Bound` | None | Makes the field masked; bytes never reach Lua. Targets: `lock`/`authenticate`, `polkit`/`authenticate`, `network`/`connect`, or `secrets`/`store` with a public `name` ([secure fields](../guide/input.md#secure-fields)) |
 | `mask_character` | `string\|Bound` | `"•"` | Drawn per typed character in a `secure_submit` field. Only the first character counts; `""` hides the length |
 <!-- End of the generated table. -->

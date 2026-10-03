@@ -7358,3 +7358,40 @@ Supervisor restart on binary replacement.
 Rejected: checking only future revisions. That validates an impossible claim but accepts stale
 commands and leaves the field falsely suggesting optimistic concurrency. A future command that
 needs compare-and-set must check at its state owner's apply point and return an explicit result.
+
+## 0306. A named click target is a keyboard and accessibility control
+
+`accessible_name` opts a node with `on_click` or `submit` into control focus. Text fields keep their
+existing eligibility and use the name for speech. This avoids guessing whether a clickable card,
+scrim or drag handle is a button. Tab walks eligible nodes in document order in the focused
+surface and its shown popups; Shift+Tab reverses it. With fewer than two targets, Tab keeps the
+plain field's `on_navigate` contract, so a single-field launcher still receives that key.
+Accepted cost: a surface cannot both name two controls and keep Tab for its own `on_navigate`;
+naming a launcher's result rows hands Tab to focus traversal. Add an opt-out that keeps Tab for
+the field when a config needs both.
+
+The engine outline is focus-visible: only Tab, Shift+Tab or an assistive-technology Focus or Click
+action shows it, and a press, `autofocus` or `focus(name)` hides it, so a clicked or autofocused
+search box shows no ring. `focus_ring = false` removes it from a node; `focused(name)` reports
+focus within a node for config-drawn styles regardless of how focus arrived.
+
+Enter, Space and assistive-technology Click run the existing click callback with a surface-local
+rect and `"left"`, and `submit` still uses the native secure path. One retained `NodeId` identifies
+the focus target across scene passes. A removed or hidden target loses focus before another key or
+accessibility action can use it. A secure field remains native: the accessibility tree exposes a
+password role and no value. Moving to a submit button retains the native buffer so Enter can
+submit it; moving to another field scrubs it. While a button has focus, typed keys cannot append
+to the retained password. Keyboard activation arms its real press serial for a popup grab; an
+assistive-technology action has no Wayland serial and cannot authorize one.
+Secure focus includes the node ID: two fields may share a destination, but their buffers,
+cancel callbacks and displayed mask counts must remain separate.
+
+The resolved scene builds one AccessKit tree per live Wayland surface. The Unix adapter publishes
+it over AT-SPI; its background action callback queues a request for the Wayland turn, where Lua
+and scene state live. The adapter receives a full tree on each changed scene or focus state.
+This costs a traversal of a changed tree and keeps AT-SPI's retained copy in sync without a second
+identity scheme. Idle turns avoid rebuilding tree updates.
+
+The adapter is `accesskit_unix`, about 27 new crates. It runs its own `zbus` on `async-io` in a
+background thread, beside the Supervisor's tokio `zbus`; the Renderer has no D-Bus stack to share.
+A hand-written AT-SPI server would repeat AccessKit's tree-to-interface mapping.

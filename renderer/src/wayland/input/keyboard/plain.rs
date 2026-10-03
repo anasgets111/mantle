@@ -51,7 +51,11 @@ fn first_plain_field(
     None
 }
 
-fn requested_focus(surface_id: String, target: FieldTarget, previous: Option<&FocusedTextField>) -> FocusedTextField {
+pub(super) fn requested_focus(
+    surface_id: String,
+    target: FieldTarget,
+    previous: Option<&FocusedTextField>,
+) -> FocusedTextField {
     let FieldTarget::Plain { id, on_change, on_submit, on_cancel, on_navigate } = target else {
         unreachable!("requested_field only returns plain targets")
     };
@@ -284,6 +288,12 @@ impl App {
             return;
         };
         self.focus_text_field(Some(requested_focus(surface_id, target, self.focused_text_field.as_ref())));
+        let control = self.focused_text_field.as_ref().map(|field| super::focus::FocusedControl {
+            surface_id: field.surface_id.clone(),
+            id: field.id,
+            kind: super::focus::ControlKind::Plain,
+        });
+        self.set_control_focus(control);
     }
 
     /// Give keys to `autofocus` with a fresh empty buffer (ADR-0112). ADR-0108 preserves drafts
@@ -315,6 +325,11 @@ impl App {
             on_submit,
             on_cancel,
             on_navigate,
+        }));
+        self.set_control_focus(Some(super::focus::FocusedControl {
+            surface_id: surface_id.clone(),
+            id,
+            kind: super::focus::ControlKind::Plain,
         }));
         if let Some(on_change) = opened {
             call_logged(&on_change, String::new(), format_args!("{surface_id}: on_change"));

@@ -551,7 +551,11 @@ impl App {
         // No `leave` follows a client-side destroy; stale focus would scrub and re-arm every frame.
         if self.keyboard_focus.as_deref() == Some(self.surfaces[index].surface_id.as_str()) {
             self.keyboard_focus = None;
+            self.set_control_focus(None);
             self.focus_secure_submit(None);
+        }
+        if self.focused_control.as_ref().is_some_and(|focus| focus.surface_id == self.surfaces[index].surface_id) {
+            self.set_control_focus(None);
         }
         // More than tint: `on_hover(false)` is how a config releases what hovering took.
         self.pointer_left_destroyed_surface(index);

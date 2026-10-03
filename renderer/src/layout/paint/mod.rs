@@ -1,6 +1,6 @@
 //! Draws a resolved layout tree onto a shared femtovg canvas.
 //!
-//! [`build()`] turns a resolved tree into plain Rust [`DisplayList`] data; [`execute`] sends it to
+//! [`build_with_control()`] turns a resolved tree into plain Rust [`DisplayList`] data; [`execute`] sends it to
 //! femtovg. `paint_surface` skips drawing and `eglSwapBuffers` when the list is unchanged, while
 //! `build` stays testable without EGL. A full-surface commit recomposites the whole screen behind
 //! it, so unchanged lists skip that cost. On an idle bar with a clock, a 1920x1200 wallpaper went
@@ -11,7 +11,9 @@
 mod build;
 mod canvas;
 
-pub use build::{FieldFocus, build};
+#[cfg(test)]
+pub(crate) use build::build;
+pub use build::{FieldFocus, build_with_control};
 #[cfg(test)]
 pub(crate) use canvas::tests::{init_headless_egl, test_gl, text_painter};
 pub use canvas::{DrawnImage, Shaders, execute, flush};

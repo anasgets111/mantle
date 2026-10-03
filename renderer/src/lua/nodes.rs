@@ -664,6 +664,7 @@ mod meta_stub_tests {
             // use the return value. These bare `Bound` fields take the handle itself.
             ("hover", _) => return Some("hover(\"probe\")".to_string()),
             ("geometry", _) => return Some("geometry(\"probe\")".to_string()),
+            ("focused", _) => return Some("focused(\"probe\")".to_string()),
             ("elided", _) => return Some("elided(\"probe\")".to_string()),
             ("scroll", _) => return Some("scroll(\"probe\")".to_string()),
             ("focus", _) => return Some("focus(\"probe\")".to_string()),

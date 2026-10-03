@@ -55,6 +55,25 @@ const MAX_TREE_DEPTH: u32 = 64;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct NodeId(u64);
 
+/// A click target whose author supplied a spoken name can take keyboard focus.
+pub(crate) fn is_named_click_target(node: &crate::layout::ResolvedNode) -> bool {
+    use crate::layout::node::fields::{common, pointer};
+
+    common::accessible_name.read(&node.properties).is_ok_and(|name| !name.is_empty())
+        && (pointer::on_click.read(&node.properties).ok().flatten().is_some()
+            || pointer::submit.read(&node.properties).is_ok_and(|yes| yes))
+}
+
+impl NodeId {
+    pub(crate) fn raw(self) -> u64 {
+        self.0
+    }
+
+    pub(crate) fn from_raw(raw: u64) -> Self {
+        Self(raw)
+    }
+}
+
 #[cfg(test)]
 impl NodeId {
     /// A hand-picked id for a `ResolvedNode` built by hand in a test. Production ids come from
@@ -139,6 +158,8 @@ impl LayoutStyle {
         // needs it (`layout::hit::cursor_under`), and a pass is the place a misspelling fails.
         use node::fields::{common, flow, paint};
         common::cursor.read(properties)?;
+        common::accessible_name.read(properties)?;
+        common::focus_ring.read(properties)?;
         Ok(Self {
             margin: common::margin.read(properties)?,
             padding: common::padding.read(properties)?,

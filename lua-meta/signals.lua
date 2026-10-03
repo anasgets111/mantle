@@ -73,6 +73,14 @@ function state(name, initial) end
 ---@return Signal<boolean>
 function hover(name) end
 
+---Whether the node whose `focused` is bound to this signal, or a node inside it, holds keyboard
+---control focus, however it got there; `false` until it does. Not `focus(name)`, which requests
+---focus for a textfield. One name, one signal, across reloads. Read-only.
+---[docs](https://anasgets111.github.io/mantle/guide/input.html#keyboard-controls-and-accessibility)
+---@param name string
+---@return Signal<boolean>
+function focused(name) end
+
 ---The absolute rect of `hover(name)`'s node, in its surface's logical coordinates, for a `popup`'s
 ---`anchor_rect`. `1x1` at the origin before the first hover; keeps the last rect after the pointer
 ---leaves.

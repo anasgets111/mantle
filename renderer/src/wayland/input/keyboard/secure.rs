@@ -4,19 +4,20 @@
 use shared::{debug, error, warn};
 
 use super::*;
-use crate::layout::secure_submit::{sole_secure_submit_in_scope, typable_secure_submit_targets};
+use crate::layout::secure_submit::sole_secure_submit_in_scope;
 use crate::lua::call_logged;
 
-/// `on_cancel` of the reachable field addressing `target`. Escape reaches Lua; the secret never does
+/// `on_cancel` of the reachable focused field. Escape reaches Lua; the secret never does
 /// (ADR-0005).
-fn secure_on_cancel(tree: &layout::ResolvedNode, target: &node::SecureSubmitTarget) -> Option<Function> {
+fn secure_on_cancel(tree: &layout::ResolvedNode, field: &FocusedField) -> Option<Function> {
     let mut stack = vec![tree];
     while let Some(node) = stack.pop() {
         if !node.visible || node.leaving {
             continue;
         }
-        if let Some(node::PaintStyle::TextField { target: Some(found), .. }) = &node.paint
-            && found == target
+        if node.id == field.id
+            && let Some(node::PaintStyle::TextField { target: Some(found), .. }) = &node.paint
+            && found == &field.target
         {
             return match node.properties.get("on_cancel") {
                 Some(Value::Function(f)) => Some(f.clone()),
@@ -66,10 +67,10 @@ fn submit_frame_for(
 
 /// Sole writer of `focused_secure_submit`: `SecureBuffer` belongs to the field typed into, not its
 /// transport. The three transitions (`KeyboardHandler::leave`, keyboard capability removal, and
-/// pointer retarget) all scrub; any new caller inherits that guarantee. A destination change
-/// scrubs, but re-arming the same field does not (ADR-0050 decision 4). Free for unit-testing the
+/// pointer retarget) all scrub; any new caller inherits that guarantee. A field change
+/// scrubs, even between nodes sharing a destination; re-arming the same node does not (ADR-0050 decision 4). Free for unit-testing the
 /// read/zeroize contract without Wayland, as with [`secure_submit_frame`].
-fn retarget_secure_submit(
+pub(super) fn retarget_secure_submit(
     focused: &mut Option<FocusedField>,
     buffer: &mut shared::SecureBuffer,
     next: Option<FocusedField>,
@@ -90,15 +91,17 @@ fn retarget_secure_submit(
 /// deleted targets.
 fn focus_on_enter(scope: &[(&str, &layout::ResolvedNode)], current: Option<&FocusedField>) -> Option<FocusedField> {
     let still_declared = |field: &&FocusedField| {
-        scope
-            .iter()
-            .any(|(id, tree)| *id == field.surface_id && typable_secure_submit_targets(tree).contains(&field.target))
+        scope.iter().any(|(id, tree)| {
+            *id == field.surface_id && super::focus::secure_target_at(tree, field.id) == Some(&field.target)
+        })
     };
     if let Some(current) = current.filter(still_declared) {
         return Some(current.clone());
     }
     let (surface_id, target) = sole_secure_submit_in_scope(scope)?;
-    Some(FocusedField { surface_id: surface_id.to_string(), target })
+    let tree = scope.iter().find(|(id, _)| *id == surface_id)?.1;
+    let id = super::focus::secure_id(tree, &target)?;
+    Some(FocusedField { surface_id: surface_id.to_string(), id, target })
 }
 
 /// A field is armed only if its surface is in the current key scope and still has a live
@@ -194,6 +197,19 @@ impl App {
         self.focus_secure_submit(None);
     }
 
+    pub(in crate::wayland) fn prune_secure_focus_after_resolve(&mut self) {
+        let stale = self.focused_secure_submit.as_ref().is_some_and(|field| {
+            self.client
+                .scene()
+                .surface(&field.surface_id)
+                .and_then(|tree| super::focus::secure_target_at(tree, field.id))
+                != Some(&field.target)
+        });
+        if stale {
+            self.focus_secure_submit(None);
+        }
+    }
+
     /// Poll-turn cleanup for a destroyed surface. Only liveness is checked here: checking routing
     /// would disarm a multi-field press before its matching `enter`, which `sole_secure_submit`
     /// cannot re-choose. This bounds plaintext residency when lock teardown gets no `leave`.
@@ -209,7 +225,11 @@ impl App {
     /// are never focused. Bytes go `KeyEvent` → native `SecureBuffer` → Supervisor, never Lua.
     pub(super) fn apply_secure_key(&mut self, event: &KeyEvent, repeat: bool) {
         let action = key_action(event, repeat, self.ctrl_held);
-        if self.focused_secure_submit.is_none() {
+        if !super::focus::secure_key_reaches_field(
+            self.focused_control.as_ref(),
+            self.focused_secure_submit.as_ref(),
+            matches!(action, KeyAction::Clear),
+        ) {
             // Enter with nothing focused is the shape a stuck lock screen takes: the keys went
             // nowhere, `finish_secure_submit` is never reached, and every refusal log lives below
             // this return. Only the submit key says so, or an unfocused keyboard would log per
@@ -243,11 +263,8 @@ impl App {
                 self.focus_secure_submit(None);
                 self.focus_secure_submit(field.clone());
                 if let Some(field) = field
-                    && let Some(on_cancel) = self
-                        .client
-                        .scene()
-                        .surface(&field.surface_id)
-                        .and_then(|tree| secure_on_cancel(tree, &field.target))
+                    && let Some(on_cancel) =
+                        self.client.scene().surface(&field.surface_id).and_then(|tree| secure_on_cancel(tree, &field))
                 {
                     call_logged(&on_cancel, cleared, format_args!("{}: on_cancel", field.surface_id));
                 }
@@ -343,12 +360,19 @@ mod tests {
         std::rc::Rc::make_mut(&mut field.properties).insert("on_cancel", Value::Function(on_cancel));
         let mut root = hit_node(&lua, "panel", (0.0, 0.0, 100.0, 32.0), false);
         root.children.push(field);
-        assert!(secure_on_cancel(&root, &polkit).is_some());
+        let focused = FocusedField { surface_id: "panel@TEST".into(), id: root.children[0].id, target: polkit };
+        assert!(secure_on_cancel(&root, &focused).is_some());
+        root.children.push(textfield(&lua, Some(secure_submit_table(&lua, "polkit", "authenticate"))));
+        let second = FocusedField { id: root.children[1].id, ..focused.clone() };
+        assert!(secure_on_cancel(&root, &second).is_none(), "the first same-target field owns the callback");
         let other =
             node::SecureSubmitTarget { capability: "lock".to_string(), action: "authenticate".to_string(), name: None };
-        assert!(secure_on_cancel(&root, &other).is_none(), "another destination's field");
+        assert!(
+            secure_on_cancel(&root, &FocusedField { target: other, ..focused.clone() }).is_none(),
+            "another destination's field"
+        );
         root.children[0].visible = false;
-        assert!(secure_on_cancel(&root, &polkit).is_none(), "a hidden prompt was not the one dismissed");
+        assert!(secure_on_cancel(&root, &focused).is_none(), "a hidden prompt was not the one dismissed");
     }
 
     #[test]
@@ -479,7 +503,9 @@ mod tests {
         );
 
         let typable = tree_with(&lua, vec![textfield(&lua, Some(secure_submit_table(&lua, "lock", "authenticate")))]);
-        assert_eq!(focus_on_enter(&[("screen@TEST", &typable)], None), Some(armed.clone()));
+        let mut auto_armed = armed.clone();
+        auto_armed.id = super::focus::secure_id(&typable, &auto_armed.target).unwrap();
+        assert_eq!(focus_on_enter(&[("screen@TEST", &typable)], None), Some(auto_armed));
 
         // What an `enter` must *not* undo: a press on a surface declaring two fields picked one the
         // sole-field rule refuses to pick, and the compositor's `enter` for that surface commonly
@@ -491,7 +517,8 @@ mod tests {
                 textfield(&lua, Some(secure_submit_table(&lua, "polkit", "authenticate"))),
             ],
         );
-        let pressed = field("screen@TEST", "polkit", "authenticate");
+        let mut pressed = field("screen@TEST", "polkit", "authenticate");
+        pressed.id = super::focus::secure_id(&two_fields, &pressed.target).unwrap();
         assert_eq!(focus_on_enter(&[("screen@TEST", &two_fields)], Some(&pressed)), Some(pressed));
         assert_eq!(
             focus_on_enter(&[("screen@TEST", &two_fields)], Some(&field("bar@TEST", "network", "connect"))),
@@ -512,7 +539,10 @@ mod tests {
 
         assert_eq!(
             focus_on_enter(&[("bar@TEST", &bar), ("panel@TEST", &panel)], None),
-            Some(field("panel@TEST", "network", "connect")),
+            Some(FocusedField {
+                id: super::focus::secure_id(&panel, &target("network", "connect")).unwrap(),
+                ..field("panel@TEST", "network", "connect")
+            }),
             "the field is armed on the surface that declares it, not on the one holding the keyboard"
         );
 

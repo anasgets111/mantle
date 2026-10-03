@@ -125,6 +125,11 @@ pub fn any_hover_registered(lua: &Lua) -> bool {
     lua.app_data_ref::<HoverRegistry>().is_some_and(|registry| !registry.0.is_empty())
 }
 
+/// Whether config called `focused(name)`, so configs without one skip the focus-within walk.
+pub fn any_focused_registered(lua: &Lua) -> bool {
+    lua.app_data_ref::<FocusedRegistry>().is_some_and(|registry| !registry.0.is_empty())
+}
+
 /// ADR-0044 decision 5 state registry: name preserves last-click values across in-place reloads;
 /// the stored literal detects an edited initial, which wins over live state (the wallpaper case).
 /// In `Lua::set_app_data`, so ADR-0044 decision 4's persistent VM preserves it and a replaced
@@ -149,6 +154,10 @@ pub fn begin_evaluation(lua: &Lua) {
 /// `hover("volume")` would collide and confuse `signal:set()`.
 #[derive(Default)]
 struct HoverRegistry(HashMap<String, (Signal, Signal)>);
+
+/// Name-keyed `focused(name)` registry, kept across reloads like [`HoverRegistry`].
+#[derive(Default)]
+struct FocusedRegistry(HashMap<String, Signal>);
 
 /// Name-keyed `scroll(name)` registry; reload preserves the user's offset and avoids jumping an
 /// open panel to top (ADR-0069 decision 2).
@@ -193,7 +202,7 @@ fn parse_hold(what: &str, millis: f64) -> Result<Duration, mlua::Error> {
 }
 
 /// Registers `computed`, `delay` and `pulse` (ADR-0146, ADR-0153), `state` (ADR-0044 decision 5),
-/// `hover`, `hover_rect`, and `scroll`. Dependencies are signal-like userdata. Pass the shared
+/// `hover`, `hover_rect`, `focused`, and `scroll`. Dependencies are signal-like userdata. Pass the shared
 /// dirty flag explicitly, not via `app_data`: a hidden coupling failing inside a config author's
 /// `state()` call is worse than threading one argument through. `set` marks the same flag
 /// `new_live` returns and `RendererClient` drains.
@@ -204,6 +213,7 @@ pub fn register(lua: &Lua, dirty: DirtyFlag) -> mlua::Result<()> {
     super::elision::register(lua)?;
     let hover_dirty = dirty.clone();
     let rect_dirty = dirty.clone();
+    let focused_dirty = dirty.clone();
     let scroll_dirty = dirty.clone();
     lua_fn!(
         lua,
@@ -336,6 +346,18 @@ pub fn register(lua: &Lua, dirty: DirtyFlag) -> mlua::Result<()> {
         /// [docs](https://anasgets111.github.io/mantle/guide/input.html#hover)
         fn hover(lua, name: String) -> SignalOf<bool> {
             Ok(SignalOf::new(hover_slot(lua, &hover_dirty, name)?.0))
+        }
+    )?;
+    lua_fn!(
+        lua,
+        /// Whether the node whose `focused` is bound to this signal, or a node inside it, holds keyboard
+        /// control focus, however it got there; `false` until it does. Not `focus(name)`, which requests
+        /// focus for a textfield. One name, one signal, across reloads. Read-only.
+        /// [docs](https://anasgets111.github.io/mantle/guide/input.html#keyboard-controls-and-accessibility)
+        fn focused(lua, name: String) -> SignalOf<bool> {
+            let mut registry = crate::lua::app_data_or_default::<FocusedRegistry>(lua);
+            let signal = registry.0.entry(name).or_insert_with(|| Signal::new_focused(focused_dirty.clone()));
+            Ok(SignalOf::new(signal.clone()))
         }
     )?;
     lua_fn!(
@@ -496,6 +518,20 @@ mod tests {
 
         assert!(lua.load("return second:get()").eval::<bool>().unwrap(), "one name is one slot");
         assert!(!lua.load("return other:get()").eval::<bool>().unwrap(), "a different name is a different slot");
+    }
+
+    #[test]
+    fn focused_hands_one_name_one_signal_that_starts_false() {
+        let (lua, _dirty) = lua_with_state();
+        assert!(!any_focused_registered(&lua));
+        lua.load(r#"first = focused("search") second = focused("search")"#).exec().unwrap();
+        assert!(any_focused_registered(&lua));
+        let first: mlua::AnyUserData = lua.globals().get("first").unwrap();
+        let first = from_userdata(&first).unwrap();
+        assert!(first.hover_handle().is_none(), "the pointer cannot write it");
+        assert!(!lua.load("return second:get()").eval::<bool>().unwrap());
+        first.focused_handle().unwrap().set(Value::Boolean(true));
+        assert!(lua.load("return second:get()").eval::<bool>().unwrap(), "one name is one slot");
     }
 
     #[test]

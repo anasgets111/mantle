@@ -7,8 +7,10 @@ use shared::debug;
 use super::*;
 use crate::layout::node::prop::keywords;
 
+mod focus;
 mod plain;
 mod secure;
+pub(in crate::wayland) use focus::{ControlKind, FocusedControl, secure_target_at};
 
 keywords! {
     /// A key a single-line field does not use, handed to `on_navigate` for moving a list selection.
@@ -29,7 +31,10 @@ keywords! {
 /// (ADR-0005); plain fields send edits to Lua.
 #[derive(Debug)]
 pub(super) enum FieldTarget {
-    Masked(node::SecureSubmitTarget),
+    Masked {
+        id: layout::scene::NodeId,
+        target: node::SecureSubmitTarget,
+    },
     Plain {
         /// Node identity lets paint find it across passes that move it (ADR-0099).
         id: layout::scene::NodeId,
@@ -53,7 +58,7 @@ pub(super) fn focused_field(path: &[&layout::ResolvedNode]) -> Option<FieldTarge
         return None;
     };
     if let Some(target) = target {
-        return Some(FieldTarget::Masked(target.clone()));
+        return Some(FieldTarget::Masked { id: field.id, target: target.clone() });
     }
     // Refused by `resolve_properties` unless a function, so an error here cannot happen.
     use node::fields::textfield;
@@ -77,9 +82,9 @@ pub(super) fn focused_field(path: &[&layout::ResolvedNode]) -> Option<FieldTarge
 /// a press selected it, while `keyboard_focus` controls current keys and caret drawing.
 #[derive(Debug, Clone)]
 pub(in crate::wayland) struct FocusedTextField {
-    pub(super) surface_id: String,
-    pub(super) id: layout::scene::NodeId,
-    pub(super) buffer: String,
+    pub(in crate::wayland) surface_id: String,
+    pub(in crate::wayland) id: layout::scene::NodeId,
+    pub(in crate::wayland) buffer: String,
     /// `(anchor, caret)` byte offsets into `buffer`; equal means a bare caret. Held here beside
     /// the draft rather than in the resolved tree, for the reason the draft is (ADR-0236).
     pub(super) selection: (usize, usize),
@@ -93,14 +98,15 @@ pub(in crate::wayland) struct FocusedTextField {
     pub(super) on_navigate: Option<Function>,
 }
 
-/// Focused `secure_submit` field and declaring surface. The surface id distinguishes live keyboard
-/// focus from a client-destroyed surface, which need not receive `wl_keyboard.leave`; otherwise a
-/// lock password could remain in `App::secure_buffer` and later bar keys append to it.
+/// Focused `secure_submit` field and declaring surface. The node id distinguishes fields with the
+/// same destination; the surface id distinguishes live keyboard focus from a client-destroyed
+/// surface, which need not receive `wl_keyboard.leave`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(in crate::wayland) struct FocusedField {
     /// `"{id}@{output}"` instance id declaring the field.
-    pub(super) surface_id: String,
-    pub(super) target: node::SecureSubmitTarget,
+    pub(in crate::wayland) surface_id: String,
+    pub(in crate::wayland) id: layout::scene::NodeId,
+    pub(in crate::wayland) target: node::SecureSubmitTarget,
 }
 
 /// One key event's action for a focused `secure_submit`; borrow the SCTK `KeyEvent` text, avoiding
@@ -217,6 +223,7 @@ impl KeyboardHandler for App {
         // Ignore already-held `raw`/`keysyms`. An enter may name a surface destroyed after the
         // compositor sent it (`visible` flip or output change); `None` is not an error.
         self.keyboard_focus = self.surface_id_for(surface).map(str::to_string);
+        self.prune_control_focus();
         // Redraw the caret of a field whose keyboard returned (ADR-0108; see `leave`).
         self.mark_focused_text_field_changed();
         // Include shown child popups, where a panel password prompt lives
@@ -241,9 +248,8 @@ impl KeyboardHandler for App {
         self.focus_secure_submit(next);
         // ADR-0112: absent masked focus or an already-typing plain field, scope `autofocus` takes
         // keys; focus-follows-mouse may enter repeatedly, so a typing field keeps its draft.
-        let typing_here =
-            self.focused_text_field.as_ref().is_some_and(|field| field.typing && scope.contains(&field.surface_id));
-        if !secure_armed && !typing_here {
+        let typing_restored = !secure_armed && self.restore_typing_control_on_enter(&scope);
+        if focus::should_arm_autofocus(secure_armed, typing_restored, self.focused_control.as_ref()) {
             self.arm_autofocus_field(&scope);
         }
     }
@@ -258,6 +264,7 @@ impl KeyboardHandler for App {
     ) {
         // Clear unconditionally: protocol orders old-surface leave before new-surface enter.
         let left = self.keyboard_focus.take().unwrap_or_else(|| "an untracked surface".to_string());
+        self.set_control_focus(None);
         // ADR-0050 decision 4: elsewhere means no submit will arrive; clear secure focus and the
         // armed press like pointer Leave.
         self.focus_secure_submit(None);
@@ -299,7 +306,7 @@ impl KeyboardHandler for App {
                 _ => {}
             }
         }
-        self.apply_key(&event, false);
+        self.apply_key(&event, false, Some(serial));
         self.arm_repeat(event);
     }
 
@@ -330,7 +337,7 @@ impl KeyboardHandler for App {
         _serial: u32,
         event: KeyEvent,
     ) {
-        self.apply_key(&event, true);
+        self.apply_key(&event, true, None);
     }
 
     // SCTK release events have no `utf8` and edit no buffer; all a release does is stop the
@@ -410,6 +417,7 @@ impl App {
     pub(in crate::wayland) fn field_focus_for(&self, surface_id: &str) -> Option<layout::paint::FieldFocus<'_>> {
         if let Some(focused) = self.focused_secure_submit.as_ref().filter(|f| f.surface_id == surface_id) {
             return Some(layout::paint::FieldFocus::Masked {
+                id: focused.id,
                 target: &focused.target,
                 filled: self.secure_buffer.grapheme_count(),
             });
@@ -445,21 +453,25 @@ impl App {
             return;
         }
         let Some((event, _)) = self.repeating.take() else { return };
-        self.apply_key(&event, true);
+        self.apply_key(&event, true, None);
         self.repeating = Some((event, now + interval));
     }
 
     /// Apply one key to either field kind (ADR-0092), pruning both focuses once before dispatch.
-    fn apply_key(&mut self, event: &KeyEvent, repeat: bool) {
+    fn apply_key(&mut self, event: &KeyEvent, repeat: bool, serial: Option<u32>) {
         self.prune_secure_focus();
         self.prune_text_field_focus();
+        self.prune_control_focus();
+        if self.apply_control_key(event, repeat, serial) {
+            return;
+        }
         self.apply_secure_key(event, repeat);
         self.apply_plain_key(event, repeat);
     }
 }
 
 #[cfg(test)]
-mod tests {
+pub(in crate::wayland) mod tests {
     use super::super::tests::hit_node;
     use super::*;
     use crate::layout::secure_submit::sole_secure_submit;
@@ -473,12 +485,16 @@ mod tests {
     /// A focused field as [`App::focus_secure_submit`] stores one: a destination *and* the instance
     /// id of the surface it was declared on.
     pub(super) fn field(surface_id: &str, capability: &str, action: &str) -> FocusedField {
-        FocusedField { surface_id: surface_id.to_string(), target: target(capability, action) }
+        FocusedField {
+            surface_id: surface_id.to_string(),
+            id: layout::scene::NodeId::test(1),
+            target: target(capability, action),
+        }
     }
 
     /// A `textfield` node carrying whatever the config wrote under `secure_submit`; `None` writes
     /// nothing, since `secure_submit` is optional even on a masked field.
-    pub(super) fn textfield(lua: &Lua, secure_submit: Option<Value>) -> layout::ResolvedNode {
+    pub(in crate::wayland) fn textfield(lua: &Lua, secure_submit: Option<Value>) -> layout::ResolvedNode {
         let mut node = hit_node(lua, "textfield", (0.0, 0.0, 40.0, 24.0), false);
         if let Some(value) = secure_submit {
             std::rc::Rc::make_mut(&mut node.properties).insert("secure_submit", value);
@@ -490,7 +506,7 @@ mod tests {
         node
     }
 
-    pub(super) fn secure_submit_table(lua: &Lua, capability: &str, action: &str) -> Value {
+    pub(in crate::wayland) fn secure_submit_table(lua: &Lua, capability: &str, action: &str) -> Value {
         let table = lua.create_table().unwrap();
         table.set("capability", capability).unwrap();
         table.set("action", action).unwrap();
@@ -501,13 +517,13 @@ mod tests {
     /// tests only care about that half.
     fn masked_target(path: &[&layout::ResolvedNode]) -> Option<node::SecureSubmitTarget> {
         match focused_field(path)? {
-            FieldTarget::Masked(target) => Some(target),
+            FieldTarget::Masked { target, .. } => Some(target),
             FieldTarget::Plain { .. } => None,
         }
     }
 
     /// A `textfield` carrying `on_submit`, the plain half's minimum for being worth focusing.
-    pub(super) fn plain_textfield(lua: &Lua) -> layout::ResolvedNode {
+    pub(in crate::wayland) fn plain_textfield(lua: &Lua) -> layout::ResolvedNode {
         let mut node = textfield(lua, None);
         let on_submit = lua.create_function(|_, _text: String| Ok(())).unwrap();
         std::rc::Rc::make_mut(&mut node.properties).insert("on_submit", Value::Function(on_submit));
@@ -580,7 +596,7 @@ mod tests {
         let on_submit = lua.create_function(|_, _text: String| Ok(())).unwrap();
         std::rc::Rc::make_mut(&mut field.properties).insert("on_submit", Value::Function(on_submit));
         let root = hit_node(&lua, "panel", (0.0, 0.0, 100.0, 32.0), false);
-        assert!(matches!(focused_field(&[&root, &field]), Some(FieldTarget::Masked(_))));
+        assert!(matches!(focused_field(&[&root, &field]), Some(FieldTarget::Masked { .. })));
     }
 
     /// A scene `lock` tree with a password field somewhere under its root.
