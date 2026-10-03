@@ -52,7 +52,7 @@
 ---@field pid integer Owning process id, from `application.process.id`.
 ---@field process_name? string `/proc/<pid>/comm`, or `nil` if it was unreadable when the stream's properties were read.
 ---@field recording boolean A capture stream, such as a call's microphone, rather than playback.
----@field volume? number Stream volume, `1.0` is 100%; `nil` until PipeWire reports the stream's `Props`.
+---@field volume? number Stream volume in percent; `nil` until PipeWire reports the stream's `Props`.
 
 ---@class AppSummary
 ---One `Type=Application` desktop entry; display data only, argv stays private (ADR-0061).
@@ -156,6 +156,12 @@
 ---@field message string Display text, such as `"wrong password"` or `"network not found"`.
 ---@field ssid string The network the join was for.
 
+---@alias LoopStatus
+---| "None" # Plays through once.
+---| "Track" # Repeats the current track.
+---| "Playlist" # Repeats the playlist.
+---MPRIS `LoopStatus`, also the `set_loop_status` argument.
+
 ---@class MenuItem
 ---One `tray.items[].menu` entry.
 ---@field children MenuItem[] Submenu entries, empty for a leaf. An app that fills submenus lazily sends them only after `menu_will_show`.
@@ -225,6 +231,9 @@
 ---@field mac string The device's MAC address.
 ---@field name string The device's advertised name, or empty.
 
+---@alias PlayState "Playing"|"Paused"|"Stopped"
+---MPRIS `PlaybackStatus`.
+
 ---@alias PlayerCommand "play"|"pause"|"play_pause"|"next"|"previous"|"stop"
 
 ---@class PlayerState
@@ -244,10 +253,10 @@
 ---@field id string Bus-name suffix after `org.mpris.MediaPlayer2.`, e.g. `"spotify"`; every action takes it.
 ---@field identity string Display name, e.g. `"Spotify"`; empty if unanswered.
 ---@field length? integer Track length in microseconds, or `nil` when unknown, as for a live stream (ADR-0036).
----@field loop_status string MPRIS loop mode: `None`, `Track`, or `Playlist`.
+---@field loop_status? LoopStatus MPRIS loop mode; `nil` when the player does not report one.
 ---@field maximum_rate number MPRIS maximum playback rate, or `0` when unavailable.
 ---@field minimum_rate number MPRIS minimum playback rate, or `0` when unavailable.
----@field play_state string `"Playing"`, `"Paused"` or `"Stopped"`; keeps the last value when a read fails, empty if none.
+---@field play_state PlayState MPRIS `PlaybackStatus`; keeps the last value when a read fails, `"Stopped"` if none.
 ---@field playlists PlaylistsState One bounded page from the optional MPRIS Playlists interface.
 ---@field position? integer Playback offset in microseconds as of `position_updated_at`, not polled while playing: add elapsed time. `nil` when unknown (ADR-0036).
 ---@field position_updated_at integer `CLOCK_MONOTONIC` microseconds when `position` was read. No Lua clock shares this epoch (not `mantle.system.monotonic`); only compare it with itself.
@@ -256,7 +265,7 @@
 ---@field title string Track title; empty when unset, normal between tracks.
 ---@field track_list TrackListState Nearby tracks from the optional MPRIS TrackList interface.
 ---@field url string `xesam:url` as sent, e.g. a `file://` path or an `https://` page; empty when unset (ADR-0137).
----@field volume number MPRIS volume. The protocol permits amplification above `1.0`.
+---@field volume number MPRIS volume in percent, `100` when unreported. The protocol permits amplification above `100`.
 
 ---@class PlaylistSummary
 ---@field icon string Icon URI, or empty if absent.
@@ -276,6 +285,9 @@
 ---@class PrivacyUser
 ---One app using a camera, microphone or screen capture.
 ---@field app_name string PipeWire `application.name`, else `/proc/<pid>/comm`, else `"pid 1234"` (or `"node 56"`); never empty.
+
+---@alias ScrollOrientation "vertical"|"horizontal"
+---The `tray:scroll` axis, sent to the item as spelled.
 
 ---@alias SecretStatus "pending"|"stored"|"unavailable"|"timed_out"
 ---Status of one named write. `unavailable` includes a missing, locked, or failing service;
@@ -392,9 +404,9 @@
 ---@field muted boolean Default output mute; `false` with no default sink or before its first report.
 ---@field sinks AudioDevice[] Every output device.
 ---@field source_muted boolean Default input (microphone) mute; `false` with no default source or before its first report.
----@field source_volume? number Default input volume, `1.0` is 100%; `set_source_volume` caps at `1.0`, another client may not. `nil` with no source or before its first volume report.
+---@field source_volume? number Default input volume in percent; `set_source_volume` caps at `100`, another client may not. `nil` with no source or before its first volume report.
 ---@field sources AudioDevice[] Every input device.
----@field volume? number Default output volume, `0.0` to `1.5` (`1.0` is 100%), loudest channel; louder writes by other clients are pulled back to `1.5`. `nil` with no sink or before its first volume report.
+---@field volume? number Default output volume in percent, `0` to `150`, loudest channel; louder writes by other clients are pulled back to `150`. `nil` with no sink or before its first volume report.
 
 ---@class BatteryState
 ---`mantle.battery`'s payload. No battery, or no UPower, reads `present = false` and defaults.
@@ -570,16 +582,16 @@
 
 ---[docs](https://anasgets111.github.io/mantle/capabilities/audio.html)
 ---@class AudioCapability: Capability<AudioState>, userdata
----@field set_volume fun(self: AudioCapability, volume: number) Sets master output volume, clamped to `[0.0, 1.5]`.
+---@field set_volume fun(self: AudioCapability, volume: number) Sets master output volume in percent, clamped to `[0, 150]`.
 ---@field set_muted fun(self: AudioCapability, muted: boolean) Sets master output mute.
 ---@field toggle_mute fun(self: AudioCapability) Toggles master output mute.
 ---@field set_balance fun(self: AudioCapability, balance: number) Sets default output balance, `-1.0` (left) to `1.0` (right), clamped; the louder side keeps its level.
 ---@field set_default_sink fun(self: AudioCapability, id: integer) Makes this `sinks[].id` the default output.
 ---@field set_default_source fun(self: AudioCapability, id: integer) Makes this `sources[].id` the default input.
----@field set_source_volume fun(self: AudioCapability, volume: number) Sets default input volume, clamped to `[0.0, 1.0]`.
+---@field set_source_volume fun(self: AudioCapability, volume: number) Sets default input volume in percent, clamped to `[0, 100]`.
 ---@field set_source_muted fun(self: AudioCapability, muted: boolean) Sets default input mute.
 ---@field toggle_source_mute fun(self: AudioCapability) Toggles default input mute.
----@field set_app_volume fun(self: AudioCapability, id: integer, volume: number) Sets an `apps[].id` stream's volume, clamped to `[0.0, 1.0]`.
+---@field set_app_volume fun(self: AudioCapability, id: integer, volume: number) Sets an `apps[].id` stream's volume in percent, clamped to `[0, 100]`.
 ---@field set_app_muted fun(self: AudioCapability, id: integer, muted: boolean) Sets an `apps[].id` stream's mute.
 ---@field set_bluetooth_profile fun(self: AudioCapability, device: integer, index: integer) Switches a `bluetooth[].device` to one of its `codecs[].index`.
 
@@ -642,8 +654,8 @@ local IdleCapability = {}
 ---@field raise fun(self: MprisCapability, id: string) Calls Raise; check `players[].can_raise` before calling.
 ---@field quit fun(self: MprisCapability, id: string) Calls Quit; check `players[].can_quit` before calling.
 ---@field open_uri fun(self: MprisCapability, id: string, uri: string) Opens an absolute URI in the player.
----@field set_volume fun(self: MprisCapability, id: string, value: number) Sets MPRIS `Volume`; finite values at or above zero are accepted.
----@field set_loop_status fun(self: MprisCapability, id: string, value: string) Sets MPRIS `LoopStatus` to `None`, `Track`, or `Playlist`.
+---@field set_volume fun(self: MprisCapability, id: string, value: number) Sets MPRIS `Volume` in percent; finite values at or above zero are accepted.
+---@field set_loop_status fun(self: MprisCapability, id: string, value: LoopStatus) Sets MPRIS `LoopStatus`.
 ---@field set_shuffle fun(self: MprisCapability, id: string, value: boolean) Sets MPRIS `Shuffle`.
 ---@field set_rate fun(self: MprisCapability, id: string, value: number) Sets a positive finite MPRIS playback rate.
 ---@field track_list_add_track fun(self: MprisCapability, id: string, uri: string, after_track: string, set_as_current: boolean) Inserts a URI after a track id, or after `/org/mpris/MediaPlayer2/TrackList/NoTrack` to prepend.
@@ -681,7 +693,7 @@ local SecretsCapability = {}
 
 ---[docs](https://anasgets111.github.io/mantle/capabilities/power.html)
 ---@class PowerCapability: Capability<PowerState>, userdata
----@field set_profile fun(self: PowerCapability, name: string) Switches to one of `profiles`. Not validated here; a rejected name is logged and `active_profile` stays.
+---@field set_profile fun(self: PowerCapability, name: string) Switches to one of `profiles`; a name not in it, or one the daemon rejects, is logged and `active_profile` stays.
 
 ---[docs](https://anasgets111.github.io/mantle/capabilities/privacy.html)
 ---@class PrivacyCapability: ReadOnlyCapability<PrivacyState>, userdata
@@ -709,7 +721,7 @@ local PrivacyCapability = {}
 ---@field activate fun(self: TrayCapability, id: string, x: integer, y: integer) Left-click activation at screen coordinates `x`, `y`; a no-op when `item_is_menu`.
 ---@field context_menu fun(self: TrayCapability, id: string, x: integer, y: integer) Context-menu activation at screen coordinates `x`, `y`.
 ---@field secondary_activate fun(self: TrayCapability, id: string, x: integer, y: integer) Middle-click activation at screen coordinates `x`, `y` (ADR-0074).
----@field scroll fun(self: TrayCapability, id: string, delta: integer, orientation: string) Scrolls the icon by `delta`; `orientation` is `"vertical"` or `"horizontal"`, passed verbatim (ADR-0074).
+---@field scroll fun(self: TrayCapability, id: string, delta: integer, orientation: ScrollOrientation) Scrolls the icon by `delta` along `orientation` (ADR-0074).
 ---@field activate_menu_item fun(self: TrayCapability, id: string, menu_item_id: integer) Clicks the item's `MenuItem.id`.
 ---@field menu_will_show fun(self: TrayCapability, id: string, submenu_id: integer) Tells the application submenu `submenu_id` is opening, then refetches the menu unless it answers that nothing changed.
 

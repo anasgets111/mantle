@@ -10,14 +10,14 @@ text {
     on_wheel = function(_, steps)
         local audio = mantle.audio:get()
         if audio and audio.volume then
-            mantle.audio:set_volume(audio.volume + steps * 0.05) -- clamped to [0, 1.5]
+            mantle.audio:set_volume(audio.volume + steps * 5) -- percent, clamped to [0, 150]
         end
     end,
     content = mantle.audio:map(function(audio)
         if audio == nil or audio.volume == nil then
             return "--" -- nil before the first push; no volume without a default sink
         end
-        return audio.muted and "muted" or string.format("%d%%", math.floor(audio.volume * 100 + 0.5))
+        return audio.muted and "muted" or string.format("%d%%", math.floor(audio.volume + 0.5))
     end),
 }
 ```
@@ -32,7 +32,7 @@ a property and the property stays live. Each push replaces the whole snapshot.
 | `:get()` | The last pushed snapshot; `nil` before the first |
 | `:map(fn)` | Derived signal; `fn` must handle `nil`. A capability also works as a `computed` dependency |
 | `:on_change(fn)` | `fn(current, previous)` once per push, after it lands; `previous` is `nil` on the first. Runs under the [Lua CPU budget](../guide/runtime.md#limits-and-budgets) and may call actions, `process.run` or write state. A raise logs a warning and the next handler still runs. Every evaluation clears them before `shell.lua` registers its own |
-| `:<action>(...)` | One method per action on the capability's page, e.g. `mantle.audio:set_volume(0.5)`. Queues one command and returns nothing. Read the state it changes for the outcome. Call it with `:`; a `.` call raises |
+| `:<action>(...)` | One method per action on the capability's page, e.g. `mantle.audio:set_volume(50)`. Queues one command and returns nothing. Read the state it changes for the outcome. Call it with `:`; a `.` call raises |
 
 There is no `:set` on the state; `mantle.brightness:set` and `mantle.storage:set` are actions. `mantle.idle` has no actions; it takes [methods](idle.md#methods) instead.
 
@@ -76,8 +76,7 @@ A trailing `nil` counts as omitted, so an optional last argument can be passed a
 | Convention | Rule |
 | :--- | :--- |
 | Targets | Pass the ID from the snapshot (`sinks[].id`, `feed[].id`, `players[].id`, `windows[].id`). IDs are opaque: compare them, never build them |
-| Volume | `1.0` is 100% |
-| Percentages | Integers `0` to `100` |
+| Levels | Percent: volume, brightness and battery read `0` to `100`; output volume reaches `150` |
 | Indices | Zero-based |
 
 [`lua-meta/mantle.lua`](../../lua-meta/mantle.lua) is generated from the same Rust types as the

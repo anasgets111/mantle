@@ -10,6 +10,11 @@ use pipewire as pw;
 use tokio::sync::mpsc::UnboundedSender;
 use tokio::sync::watch;
 
+/// A PipeWire fraction as the percent Lua reads, to two decimals: `0.3 * 100.0` is `30.000002` in f32.
+fn percent(fraction: f32) -> f32 {
+    (fraction * 10_000.0).round() / 100.0
+}
+
 #[cfg(test)]
 use super::devices::{AudioDevice, BluetoothCodecs};
 use super::devices::{BluezCard, DeviceEntry, bluetooth_codecs, device_list};
@@ -175,15 +180,15 @@ impl MixerState {
             .values()
             .cloned()
             .map(|app| match self.app_props.get(&app.id).map(master::master_volume_from_props) {
-                Some(measured) => AppStream { volume: Some(measured.volume), muted: measured.muted, ..app },
+                Some(measured) => AppStream { volume: Some(percent(measured.volume)), muted: measured.muted, ..app },
                 None => app,
             })
             .collect();
         let next = AudioState {
-            volume: master.map(|m| m.volume.min(master::SINK_MAX_VOLUME)),
+            volume: master.map(|m| percent(m.volume.min(master::SINK_MAX_VOLUME))),
             muted: master.is_some_and(|m| m.muted),
             balance: master.and_then(|m| m.balance),
-            source_volume: source_master.map(|s| s.volume),
+            source_volume: source_master.map(|s| percent(s.volume)),
             source_muted: source_master.is_some_and(|s| s.muted),
             sinks: device_list(&self.sinks, &self.device_routes, sink),
             sources: device_list(&self.sources, &self.device_routes, source),
@@ -257,13 +262,13 @@ mod tests {
 
     #[test]
     fn audio_state_serializes_as_the_flat_shape_docs_adr_0053_specifies() {
-        // 0.5 avoids serde_json's long widened-f32 tail, keeping this about field shape.
+        // 50 avoids serde_json's long widened-f32 tail, keeping this about field shape.
         let stream = sample_stream(1);
         let state = AudioState {
-            volume: Some(0.5),
+            volume: Some(50.0),
             muted: false,
             balance: None,
-            source_volume: Some(0.25),
+            source_volume: Some(25.0),
             source_muted: true,
             sinks: vec![AudioDevice {
                 id: 59,
@@ -294,9 +299,9 @@ mod tests {
         assert_eq!(
             json,
             serde_json::json!({
-                "volume": 0.5,
+                "volume": 50.0,
                 "muted": false,
-                "source_volume": 0.25,
+                "source_volume": 25.0,
                 "source_muted": true,
                 "sinks": [{ "id": 59, "name": "Built-in Audio Analog Stereo", "active": true, "icon": "audio-card-analog" }],
                 "sources": [{ "id": 60, "name": "Built-in Audio Analog Stereo", "active": true }],
@@ -367,7 +372,7 @@ mod tests {
         state.publish_audio();
 
         let published = rx.try_recv().expect("publish_audio should have sent a snapshot");
-        assert!((published.volume.unwrap() - 0.3).abs() < 1e-6, "expected ~0.3, got {:?}", published.volume);
+        assert_eq!(published.volume, Some(30.0), "a whole percent, not f32 noise");
         assert!(!published.muted);
         assert_eq!(published.apps, vec![sample_stream(1)]);
     }
@@ -456,7 +461,7 @@ mod tests {
         state.publish_audio();
 
         let published = rx.try_recv().expect("publish_audio should have sent a snapshot");
-        assert!((published.apps[0].volume.unwrap() - 0.42).abs() < 1e-6, "got {:?}", published.apps[0].volume);
+        assert_eq!(published.apps[0].volume, Some(42.0));
         assert!(published.apps[0].muted);
     }
 
@@ -504,7 +509,7 @@ mod tests {
             }]
         );
         // The source's Props use the master's cube-root conversion.
-        assert!((published.source_volume.unwrap() - 0.6).abs() < 1e-6, "got {:?}", published.source_volume);
+        assert!((published.source_volume.unwrap() - 60.0).abs() < 1e-4, "got {:?}", published.source_volume);
         assert!(published.source_muted);
     }
 
@@ -527,7 +532,7 @@ mod tests {
         state.publish_audio();
         let published = rx.try_recv().unwrap();
         assert!(published.source_muted);
-        assert!((published.source_volume.unwrap() - 0.4).abs() < 1e-6);
+        assert!((published.source_volume.unwrap() - 40.0).abs() < 1e-4);
         assert!(state.device_props(DefaultDevice::Source, 91).unwrap().mute);
     }
 

@@ -37,7 +37,7 @@ pub fn dispatch(controller: &MprisController, envelope: &shared::CommandEnvelope
             MprisAction::Quit { id } => controller.quit(&id).await,
             MprisAction::OpenUri { id, uri } => controller.open_uri(&id, &uri).await,
             MprisAction::SetVolume { id, value } => controller.set_volume(&id, value).await,
-            MprisAction::SetLoopStatus { id, value } => controller.set_loop_status(&id, &value).await,
+            MprisAction::SetLoopStatus { id, value } => controller.set_loop_status(&id, value).await,
             MprisAction::SetShuffle { id, value } => controller.set_shuffle(&id, value).await,
             MprisAction::SetRate { id, value } => controller.set_rate(&id, value).await,
             MprisAction::TrackListAddTrack { id, uri, after_track, set_as_current } => {

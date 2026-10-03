@@ -7405,3 +7405,13 @@ ADR-0036. A sentinel inside the value's range passed a truthiness check and drew
 an optional field is marked `?` in the stubs, so LuaLS flags the unguarded read. Accepted cost:
 arithmetic on an unguarded `nil` raises instead of drawing a wrong number. A real third state, such
 as `toggle_state = -1` (indeterminate), is a value, not "unknown", and stays.
+
+## 0308. Every level a config reads or sets is a percent
+
+Volumes (`audio.volume`, `source_volume`, `apps[].volume`, mpris `volume`) and their setters use
+`100` for 100%, the scale battery, brightness, backlight and sysinfo already used, so no config has
+to remember which fields are fractions. Caps scale with it: output 150, input and per-app 100;
+MPRIS takes any finite value >= 0. PipeWire and MPRIS stay fractional inside the Supervisor,
+converted only at action decode and snapshot publish, where a reading is rounded to two decimals
+so f32 noise (`30.000002`) never reaches Lua. `balance` (-1..1) is a position, not a level.
+Accepted cost: every config doing volume arithmetic breaks once.

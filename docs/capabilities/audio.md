@@ -35,9 +35,9 @@ list {
 | `muted` | `boolean` | Default output mute; `false` with no default sink or before its first report. |
 | `sinks` | `AudioDevice[]` | Every output device. |
 | `source_muted` | `boolean` | Default input (microphone) mute; `false` with no default source or before its first report. |
-| `source_volume?` | `number` | Default input volume, `1.0` is 100%; `set_source_volume` caps at `1.0`, another client may not. `nil` with no source or before its first volume report. |
+| `source_volume?` | `number` | Default input volume in percent; `set_source_volume` caps at `100`, another client may not. `nil` with no source or before its first volume report. |
 | `sources` | `AudioDevice[]` | Every input device. |
-| `volume?` | `number` | Default output volume, `0.0` to `1.5` (`1.0` is 100%), loudest channel; louder writes by other clients are pulled back to `1.5`. `nil` with no sink or before its first volume report. |
+| `volume?` | `number` | Default output volume in percent, `0` to `150`, loudest channel; louder writes by other clients are pulled back to `150`. `nil` with no sink or before its first volume report. |
 
 ### `AppStream`
 
@@ -53,7 +53,7 @@ One app's playback or recording stream. Streams without a pid are left out.
 | `pid` | `integer` | Owning process id, from `application.process.id`. |
 | `process_name?` | `string` | `/proc/<pid>/comm`, or `nil` if it was unreadable when the stream's properties were read. |
 | `recording` | `boolean` | A capture stream, such as a call's microphone, rather than playback. |
-| `volume?` | `number` | Stream volume, `1.0` is 100%; `nil` until PipeWire reports the stream's `Props`. |
+| `volume?` | `number` | Stream volume in percent; `nil` until PipeWire reports the stream's `Props`. |
 
 ### `AudioDevice`
 
@@ -96,16 +96,16 @@ Call each as `mantle.audio:<action>(arguments...)`; `?` marks an argument you ma
 
 | Action | Arguments | Description |
 | --- | --- | --- |
-| `set_volume` | `volume: number` | Sets master output volume, clamped to `[0.0, 1.5]`. |
+| `set_volume` | `volume: number` | Sets master output volume in percent, clamped to `[0, 150]`. |
 | `set_muted` | `muted: boolean` | Sets master output mute. |
 | `toggle_mute` |  | Toggles master output mute. |
 | `set_balance` | `balance: number` | Sets default output balance, `-1.0` (left) to `1.0` (right), clamped; the louder side keeps its level. |
 | `set_default_sink` | `id: integer` | Makes this `sinks[].id` the default output. |
 | `set_default_source` | `id: integer` | Makes this `sources[].id` the default input. |
-| `set_source_volume` | `volume: number` | Sets default input volume, clamped to `[0.0, 1.0]`. |
+| `set_source_volume` | `volume: number` | Sets default input volume in percent, clamped to `[0, 100]`. |
 | `set_source_muted` | `muted: boolean` | Sets default input mute. |
 | `toggle_source_mute` |  | Toggles default input mute. |
-| `set_app_volume` | `id: integer, volume: number` | Sets an `apps[].id` stream's volume, clamped to `[0.0, 1.0]`. |
+| `set_app_volume` | `id: integer, volume: number` | Sets an `apps[].id` stream's volume in percent, clamped to `[0, 100]`. |
 | `set_app_muted` | `id: integer, muted: boolean` | Sets an `apps[].id` stream's mute. |
 | `set_bluetooth_profile` | `device: integer, index: integer` | Switches a `bluetooth[].device` to one of its `codecs[].index`. |
 
@@ -142,7 +142,7 @@ rect {
         if audio == nil or audio.volume == nil then
             return
         end
-        mantle.audio:set_volume(math.max(0, math.min(1, audio.volume + steps * 0.05)))
+        mantle.audio:set_volume(math.max(0, math.min(100, audio.volume + steps * 5)))
     end,
     on_click = function(_, which)
         if which == "middle" then
@@ -155,7 +155,7 @@ rect {
                 if audio == nil or audio.volume == nil then
                     return "--"
                 end
-                return audio.muted and "muted" or string.format("%d%%", math.floor(audio.volume * 100 + 0.5))
+                return audio.muted and "muted" or string.format("%d%%", math.floor(audio.volume + 0.5))
             end),
         },
     },
@@ -179,7 +179,7 @@ mantle.audio:on_change(function(audio, previous)
     if audio.volume == previous.volume and audio.muted == previous.muted then
         return
     end
-    osd_text:set(audio.muted and "Muted" or string.format("Volume %d%%", math.floor(audio.volume * 100 + 0.5)))
+    osd_text:set(audio.muted and "Muted" or string.format("Volume %d%%", math.floor(audio.volume + 0.5)))
     osd_visible:set(true)
     if hide_timer then
         hide_timer:cancel()

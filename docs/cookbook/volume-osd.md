@@ -22,7 +22,7 @@ local shown = pulse(osd, 1500) -- true for 1.5 s after each change
 local mapped = pulse(osd, 1700) -- keeps the surface up while the card fades out
 
 local function percent(entry)
-    return math.floor(math.min(entry.volume, 1) * 100 + 0.5)
+    return math.floor(math.min(entry.volume, 100) + 0.5)
 end
 
 local glyph = osd:map(function(entry)
@@ -107,8 +107,8 @@ Bind the volume keys to anything that changes the default sink, for example
 
 | Change | Edit |
 | :--- | :--- |
-| Brightness too | A second `on_change` on `mantle.brightness` writing `{ volume = brightness.percent / 100, muted = false }` into the same state |
-| Show above 100% | Drop `math.min` from `percent`, and size the fill `math.floor(entry.volume / 1.5 * 100) .. "%"`: the track is then 150% |
+| Brightness too | A second `on_change` on `mantle.brightness` writing `{ volume = brightness.percent, muted = false }` into the same state |
+| Show above 100% | Drop `math.min` from `percent`, and size the fill `math.floor(entry.volume / 1.5) .. "%"`: the track is then 150% |
 | Top of the screen | `anchor = { top = true }`, `margin = { top = 80 }` and `from = { y = -12 }` |
 | Every monitor | Remove `monitor = "Active"` |
 | Longer on screen | `pulse(osd, 3000)` and `pulse(osd, 3200)` |

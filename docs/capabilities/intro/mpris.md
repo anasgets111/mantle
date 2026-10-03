@@ -31,7 +31,7 @@ rect {
 | Discovery | Session bus `ListNames` once, then `NameOwnerChanged` for `org.mpris.MediaPlayer2.*`. Skips `playerctld` and any player reporting `CanControl = false` |
 | Pushes | On playback, metadata, control-property, TrackList or Playlists changes and on `Seeked`. A status change re-reads `Position` 100 ms later. Nothing polls |
 | Seek | `seek` calls `SetPosition` with the cached `mpris:trackid`. A player without one gets a relative `Seek` from a live `Position` read |
-| Controls | Read `can_*` before calling matching methods. Setters accept finite nonnegative volume, positive finite rate within advertised limits, and `None`, `Track`, or `Playlist` loop status |
+| Controls | Read `can_*` before calling matching methods. Setters accept a finite nonnegative volume percent, positive finite rate within advertised limits, and `None`, `Track`, or `Playlist` loop status |
 | Artwork | Uses existing local `file://` paths. Remote artwork URLs are unsupported |
 
 ## How do I…

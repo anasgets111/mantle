@@ -18,7 +18,7 @@ local shown = pulse(osd, 1500)
 local mapped = pulse(osd, 1700)
 
 local function percent(entry)
-    return math.floor(math.min(entry.volume, 1) * 100 + 0.5)
+    return math.floor(math.min(entry.volume, 100) + 0.5)
 end
 
 return panel {

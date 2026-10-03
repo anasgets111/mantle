@@ -140,15 +140,15 @@ Write a `state` when the shell should look different; call an action when it sho
 something.
 
 ```lua
--- Keybind: mantle call volume.up 0.1
+-- Keybind: mantle call volume.up 10
 action("volume.up", function(step)
     local audio = mantle.audio:get()
     if not audio or not audio.volume then
         return "no output device"
     end
-    local volume = math.min(1.5, audio.volume + (tonumber(step) or 0.05))
+    local volume = math.min(150, audio.volume + (tonumber(step) or 5))
     mantle.audio:set_volume(volume)
-    return string.format("%d%%", math.floor(volume * 100 + 0.5))
+    return string.format("%d%%", math.floor(volume + 0.5))
 end)
 ```
 

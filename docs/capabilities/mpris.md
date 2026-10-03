@@ -36,6 +36,22 @@ rect {
 | --- | --- | --- |
 | `players` | `PlayerState[]` | Every controllable MPRIS player except `playerctld`, longest-running first, so `players[1]` stays put; empty when none runs. |
 
+### `LoopStatus`
+
+MPRIS `LoopStatus`, also the `set_loop_status` argument.
+
+| Value | Description |
+| --- | --- |
+| `"None"` | Plays through once. |
+| `"Track"` | Repeats the current track. |
+| `"Playlist"` | Repeats the playlist. |
+
+### `PlayState`
+
+MPRIS `PlaybackStatus`.
+
+One of `"Playing"`, `"Paused"`, `"Stopped"`.
+
 ### `PlayerState`
 
 | Field | Type | Description |
@@ -56,10 +72,10 @@ rect {
 | `id` | `string` | Bus-name suffix after `org.mpris.MediaPlayer2.`, e.g. `"spotify"`; every action takes it. |
 | `identity` | `string` | Display name, e.g. `"Spotify"`; empty if unanswered. |
 | `length?` | `integer` | Track length in microseconds, or `nil` when unknown, as for a live stream. |
-| `loop_status` | `string` | MPRIS loop mode: `None`, `Track`, or `Playlist`. |
+| `loop_status?` | `LoopStatus` | MPRIS loop mode; `nil` when the player does not report one. |
 | `maximum_rate` | `number` | MPRIS maximum playback rate, or `0` when unavailable. |
 | `minimum_rate` | `number` | MPRIS minimum playback rate, or `0` when unavailable. |
-| `play_state` | `string` | `"Playing"`, `"Paused"` or `"Stopped"`; keeps the last value when a read fails, empty if none. |
+| `play_state` | `PlayState` | MPRIS `PlaybackStatus`; keeps the last value when a read fails, `"Stopped"` if none. |
 | `playlists` | `PlaylistsState` | One bounded page from the optional MPRIS Playlists interface. |
 | `position?` | `integer` | Playback offset in microseconds as of `position_updated_at`, not polled while playing: add elapsed time. `nil` when unknown. |
 | `position_updated_at` | `integer` | `CLOCK_MONOTONIC` microseconds when `position` was read. No Lua clock shares this epoch (not `mantle.system.monotonic`); only compare it with itself. |
@@ -68,7 +84,7 @@ rect {
 | `title` | `string` | Track title; empty when unset, normal between tracks. |
 | `track_list` | `TrackListState` | Nearby tracks from the optional MPRIS TrackList interface. |
 | `url` | `string` | `xesam:url` as sent, e.g. a `file://` path or an `https://` page; empty when unset. |
-| `volume` | `number` | MPRIS volume. The protocol permits amplification above `1.0`. |
+| `volume` | `number` | MPRIS volume in percent, `100` when unreported. The protocol permits amplification above `100`. |
 
 ### `PlaylistSummary`
 
@@ -120,8 +136,8 @@ Call each as `mantle.mpris:<action>(arguments...)`; `?` marks an argument you ma
 | `raise` | `id: string` | Calls Raise; check `players[].can_raise` before calling. |
 | `quit` | `id: string` | Calls Quit; check `players[].can_quit` before calling. |
 | `open_uri` | `id: string, uri: string` | Opens an absolute URI in the player. |
-| `set_volume` | `id: string, value: number` | Sets MPRIS `Volume`; finite values at or above zero are accepted. |
-| `set_loop_status` | `id: string, value: string` | Sets MPRIS `LoopStatus` to `None`, `Track`, or `Playlist`. |
+| `set_volume` | `id: string, value: number` | Sets MPRIS `Volume` in percent; finite values at or above zero are accepted. |
+| `set_loop_status` | `id: string, value: LoopStatus` | Sets MPRIS `LoopStatus`. |
 | `set_shuffle` | `id: string, value: boolean` | Sets MPRIS `Shuffle`. |
 | `set_rate` | `id: string, value: number` | Sets a positive finite MPRIS playback rate. |
 | `track_list_add_track` | `id: string, uri: string, after_track: string, set_as_current: boolean` | Inserts a URI after a track id, or after `/org/mpris/MediaPlayer2/TrackList/NoTrack` to prepend. |
@@ -141,7 +157,7 @@ One of `"play"`, `"pause"`, `"play_pause"`, `"next"`, `"previous"`, `"stop"`.
 | Discovery | Session bus `ListNames` once, then `NameOwnerChanged` for `org.mpris.MediaPlayer2.*`. Skips `playerctld` and any player reporting `CanControl = false` |
 | Pushes | On playback, metadata, control-property, TrackList or Playlists changes and on `Seeked`. A status change re-reads `Position` 100 ms later. Nothing polls |
 | Seek | `seek` calls `SetPosition` with the cached `mpris:trackid`. A player without one gets a relative `Seek` from a live `Position` read |
-| Controls | Read `can_*` before calling matching methods. Setters accept finite nonnegative volume, positive finite rate within advertised limits, and `None`, `Track`, or `Playlist` loop status |
+| Controls | Read `can_*` before calling matching methods. Setters accept a finite nonnegative volume percent, positive finite rate within advertised limits, and `None`, `Track`, or `Playlist` loop status |
 | Artwork | Uses existing local `file://` paths. Remote artwork URLs are unsupported |
 
 ## How do I…

@@ -74,9 +74,15 @@ Call each as `mantle.tray:<action>(arguments...)`; `?` marks an argument you may
 | `activate` | `id: string, x: integer, y: integer` | Left-click activation at screen coordinates `x`, `y`; a no-op when `item_is_menu`. |
 | `context_menu` | `id: string, x: integer, y: integer` | Context-menu activation at screen coordinates `x`, `y`. |
 | `secondary_activate` | `id: string, x: integer, y: integer` | Middle-click activation at screen coordinates `x`, `y`. |
-| `scroll` | `id: string, delta: integer, orientation: string` | Scrolls the icon by `delta`; `orientation` is `"vertical"` or `"horizontal"`, passed verbatim. |
+| `scroll` | `id: string, delta: integer, orientation: ScrollOrientation` | Scrolls the icon by `delta` along `orientation`. |
 | `activate_menu_item` | `id: string, menu_item_id: integer` | Clicks the item's `MenuItem.id`. |
 | `menu_will_show` | `id: string, submenu_id: integer` | Tells the application submenu `submenu_id` is opening, then refetches the menu unless it answers that nothing changed. |
+
+### `ScrollOrientation`
+
+The `tray:scroll` axis, sent to the item as spelled.
+
+One of `"vertical"`, `"horizontal"`.
 
 ## Backend
 

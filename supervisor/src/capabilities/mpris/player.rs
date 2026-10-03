@@ -3,6 +3,9 @@
 
 pub use shared::state::mpris::PlayerState;
 
+use shared::action::LoopStatus;
+use shared::state::mpris::PlayState;
+
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -117,7 +120,7 @@ fn resolve_position(
     read: zbus::Result<i64>,
     previous: Option<&Previous<'_>>,
     same_track: bool,
-    play_state: &str,
+    play_state: PlayState,
     bus_name: &str,
 ) -> (Option<i64>, i64) {
     let last = previous.map(|p| (p.state.position, p.state.position_updated_at));
@@ -147,11 +150,12 @@ async fn resync(
     root: &MprisRootProxy<'static>,
     previous: Option<Previous<'_>>,
 ) -> Resynced {
-    let play_state = match player.playback_status().await {
-        Ok(status) => status,
-        Err(err) => {
-            debug!("PlaybackStatus read failed for {bus_name}; keeping the last known value this round: {err}");
-            previous.as_ref().map(|p| p.state.play_state.clone()).unwrap_or_default()
+    let read = player.playback_status().await;
+    let play_state = match read.as_deref().map(parse_play_state) {
+        Ok(Some(status)) => status,
+        _ => {
+            debug!("PlaybackStatus for {bus_name} is unreadable or unknown, {read:?}; keeping the last known value");
+            previous.as_ref().map(|p| p.state.play_state).unwrap_or_default()
         }
     };
     let previous_state = previous.as_ref().map(|p| &p.state);
@@ -168,11 +172,13 @@ async fn resync(
         .await
         .ok()
         .filter(|value| value.is_finite() && *value >= 0.0)
-        .unwrap_or_else(|| previous_state.map_or(1.0, |s| s.volume));
-    let loop_status = player
-        .loop_status()
-        .await
-        .unwrap_or_else(|_| previous_state.map_or_else(String::new, |s| s.loop_status.clone()));
+        // Two decimals: `0.3 * 100.0` is `30.000000000000004`.
+        .map(|value| (value * 10_000.0).round() / 100.0)
+        .unwrap_or_else(|| previous_state.map_or(100.0, |s| s.volume));
+    let loop_status = match player.loop_status().await {
+        Ok(status) => parse_loop_status(&status),
+        Err(_) => previous_state.and_then(|s| s.loop_status),
+    };
     let shuffle = player.shuffle().await.unwrap_or_else(|_| previous_state.is_some_and(|s| s.shuffle));
     let rate = player
         .rate()
@@ -206,7 +212,7 @@ async fn resync(
         );
         // Keeping the previous track's fields is by definition the same-track case.
         let (position, position_updated_at) =
-            resolve_position(raw_position, previous.as_ref(), true, &play_state, bus_name);
+            resolve_position(raw_position, previous.as_ref(), true, play_state, bus_name);
         let state = PlayerState {
             id: player_id(bus_name).to_string(),
             identity: player_identity,
@@ -262,7 +268,7 @@ async fn resync(
     };
 
     let (position, position_updated_at) =
-        resolve_position(raw_position, previous.as_ref(), same_track, &play_state, bus_name);
+        resolve_position(raw_position, previous.as_ref(), same_track, play_state, bus_name);
 
     let trackid = parsed.trackid.clone();
     let state = PlayerState {
@@ -580,6 +586,21 @@ fn spawn_player_forwarder(
     })
 }
 
+/// `None` for a spelling outside the MPRIS spec.
+fn parse_play_state(status: &str) -> Option<PlayState> {
+    match status {
+        "Playing" => Some(PlayState::Playing),
+        "Paused" => Some(PlayState::Paused),
+        "Stopped" => Some(PlayState::Stopped),
+        _ => None,
+    }
+}
+
+/// `None` for a spelling outside the MPRIS spec, as for a player that reports none.
+fn parse_loop_status(status: &str) -> Option<LoopStatus> {
+    [LoopStatus::None, LoopStatus::Track, LoopStatus::Playlist].into_iter().find(|known| known.as_str() == status)
+}
+
 fn publish_seeked_position(state: &mut PlayerState, position: i64) {
     state.position = Some(position);
     state.position_updated_at = monotonic_micros();
@@ -620,7 +641,7 @@ mod position_tests {
         let state = previous_at(340_000_000);
         let identity = TrackIdentity::default();
         let previous = previous_ctx(&state, &identity);
-        assert_eq!(resolve_position(Ok(0), Some(&previous), true, "", "test"), (Some(340_000_000), 42));
+        assert_eq!(resolve_position(Ok(0), Some(&previous), true, PlayState::Stopped, "test"), (Some(340_000_000), 42));
     }
 
     #[test]
@@ -630,7 +651,7 @@ mod position_tests {
         let state = previous_at(340_000_000);
         let identity = TrackIdentity::default();
         let previous = previous_ctx(&state, &identity);
-        let (position, updated_at) = resolve_position(Ok(0), Some(&previous), false, "", "test");
+        let (position, updated_at) = resolve_position(Ok(0), Some(&previous), false, PlayState::Stopped, "test");
         assert_eq!(position, Some(0));
         assert_ne!(updated_at, 42, "a believed reading carries the moment it was taken");
     }
@@ -640,32 +661,36 @@ mod position_tests {
         let state = previous_at(340_000_000);
         let identity = TrackIdentity::default();
         let previous = previous_ctx(&state, &identity);
-        let (position, updated_at) = resolve_position(Ok(363_000_000), Some(&previous), true, "", "test");
+        let (position, updated_at) =
+            resolve_position(Ok(363_000_000), Some(&previous), true, PlayState::Stopped, "test");
         assert_eq!(position, Some(363_000_000));
         assert_ne!(updated_at, 42);
     }
 
     #[test]
     fn an_unchanged_reading_keeps_its_stamp_until_the_play_state_moves() {
-        let state = PlayerState { play_state: "Paused".to_string(), ..previous_at(340_000_000) };
+        let state = PlayerState { play_state: PlayState::Paused, ..previous_at(340_000_000) };
         let identity = TrackIdentity::default();
         let previous = previous_ctx(&state, &identity);
-        assert_eq!(resolve_position(Ok(340_000_000), Some(&previous), true, "Paused", "test"), (Some(340_000_000), 42));
-        let (_, resumed_at) = resolve_position(Ok(340_000_000), Some(&previous), true, "Playing", "test");
+        assert_eq!(
+            resolve_position(Ok(340_000_000), Some(&previous), true, PlayState::Paused, "test"),
+            (Some(340_000_000), 42)
+        );
+        let (_, resumed_at) = resolve_position(Ok(340_000_000), Some(&previous), true, PlayState::Playing, "test");
         assert_ne!(resumed_at, 42, "resuming restarts extrapolation from now");
     }
 
     #[test]
     fn a_zero_with_nothing_to_fall_back_on_is_published() {
         // The first reading of a player that really is at the start has no previous to keep.
-        let (position, _) = resolve_position(Ok(0), None, true, "", "test");
+        let (position, _) = resolve_position(Ok(0), None, true, PlayState::Stopped, "test");
         assert_eq!(position, Some(0));
     }
 
     #[test]
     fn an_unread_position_is_nil_rather_than_a_fabricated_zero() {
         // ADR-0036: unavailable is not zero. Nothing has ever been read here.
-        assert_eq!(resolve_position(Err(zbus::Error::InvalidReply), None, true, "", "test"), (None, 0));
+        assert_eq!(resolve_position(Err(zbus::Error::InvalidReply), None, true, PlayState::Stopped, "test"), (None, 0));
     }
 
     #[test]

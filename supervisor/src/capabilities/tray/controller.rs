@@ -4,6 +4,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use enumflags2::BitFlags;
+use shared::action::ScrollOrientation;
 use shared::{debug, error, warn};
 use tokio::sync::mpsc::UnboundedSender;
 use zbus::fdo::RequestNameFlags;
@@ -139,10 +140,13 @@ impl TrayController {
         }
     }
 
-    /// `tray:scroll(id, delta, orientation)`: icon scroll (ADR-0074). Passes `orientation`
-    /// verbatim; the application interprets it, including values beyond the two named orientations.
-    pub async fn scroll(&self, id: &str, delta: i32, orientation: &str) {
+    /// `tray:scroll(id, delta, orientation)`: icon scroll (ADR-0074).
+    pub async fn scroll(&self, id: &str, delta: i32, orientation: ScrollOrientation) {
         let Some(item) = self.find("scroll", id, |_, entry| entry.item.clone()) else { return };
+        let orientation = match orientation {
+            ScrollOrientation::Vertical => "vertical",
+            ScrollOrientation::Horizontal => "horizontal",
+        };
         if let Err(err) = item.scroll(delta, orientation).await {
             debug!("scroll({id:?}) failed: {err}");
         }

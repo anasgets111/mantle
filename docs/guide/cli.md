@@ -13,15 +13,15 @@ local launcher_open = state("launcher_open", false)
 -- `mantle toggle modal settings` opens "settings", or closes it when it is already open.
 local modal = state("modal", "")
 
--- `mantle call volume.up` or `mantle call volume.up 0.1`.
+-- `mantle call volume.up` or `mantle call volume.up 10`.
 action("volume.up", function(step)
     local audio = mantle.audio:get()
     if not audio or not audio.volume then
         error("no default output yet")
     end
-    local volume = math.min(1.0, audio.volume + (step or 0.05))
+    local volume = math.min(100, audio.volume + (step or 5))
     mantle.audio:set_volume(volume)
-    return string.format("%d%%", math.floor(volume * 100 + 0.5))
+    return string.format("%d%%", math.floor(volume + 0.5))
 end)
 
 return panel {
@@ -65,7 +65,7 @@ Mod+Comma repeat=false { spawn "mantle" "toggle" "modal" "settings"; }
 XF86AudioRaiseVolume allow-when-locked=true { spawn "mantle" "call" "volume.up"; }
 ```
 
-In a terminal, `mantle call volume.up 0.1` prints the handler's return value, such as `60%`.
+In a terminal, `mantle call volume.up 10` prints the handler's return value, such as `60%`.
 
 ## Commands
 

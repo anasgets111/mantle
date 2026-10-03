@@ -16,8 +16,8 @@ pub(super) trait StatusNotifierItem {
     /// Middle-click, a separate spec method exported by Telegram, Chromium, and Qt tray.
     #[zbus(name = "SecondaryActivate")]
     fn secondary_activate(&self, x: i32, y: i32) -> zbus::Result<()>;
-    /// Scroll over the icon. `orientation` is normally `"vertical"`/`"horizontal"`; `delta` carries
-    /// sign and magnitude.
+    /// Scroll over the icon. `orientation` is `"vertical"` or `"horizontal"`; `delta` carries sign
+    /// and magnitude.
     #[zbus(name = "Scroll")]
     fn scroll(&self, delta: i32, orientation: &str) -> zbus::Result<()>;
 

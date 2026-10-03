@@ -97,6 +97,10 @@ impl PowerController {
     /// daemon restart. Do not update locally; the `PropertiesChanged` that follows reports both this
     /// write and external switches.
     pub async fn set_profile(&self, profile: &str) {
+        if let Some(profiles) = self.snapshot().profiles.filter(|names| !names.iter().any(|name| name == profile)) {
+            warn!("set_profile({profile}) names none of {profiles:?}; ignored");
+            return;
+        }
         let Some(proxy) = connect_power_profiles(&self.system_bus).await else {
             debug!("set_profile({profile}) called but no power-profiles-daemon is reachable; ignored");
             return;
@@ -298,6 +302,50 @@ mod tests {
         upower.get().await.on_battery_changed(upower.signal_emitter()).await.unwrap();
         within(changed.recv()).await;
         assert_eq!(power.snapshot().on_battery, Some(false), "the new owner's PropertiesChanged is followed");
+    }
+
+    struct FakeProfiles {
+        active: String,
+    }
+
+    #[zbus::interface(name = "org.freedesktop.UPower.PowerProfiles")]
+    impl FakeProfiles {
+        #[zbus(property)]
+        fn active_profile(&self) -> String {
+            self.active.clone()
+        }
+        #[zbus(property)]
+        fn set_active_profile(&mut self, value: String) {
+            self.active = value;
+        }
+        #[zbus(property)]
+        fn profiles(&self) -> Vec<HashMap<String, OwnedValue>> {
+            vec![entry(&[("Profile", Value::from("power-saver"))]), entry(&[("Profile", Value::from("balanced"))])]
+        }
+    }
+
+    #[tokio::test]
+    async fn set_profile_writes_only_a_name_the_daemon_lists() {
+        let bus = private_bus().await;
+        let daemon = bus
+            .builder()
+            .serve_at("/org/freedesktop/UPower/PowerProfiles", FakeProfiles { active: "power-saver".into() })
+            .unwrap()
+            .name("org.freedesktop.UPower.PowerProfiles")
+            .unwrap()
+            .build()
+            .await
+            .unwrap();
+        let (events, mut changed) = mpsc::unbounded_channel();
+        let power = PowerController::new(bus.connection().await, events);
+        within(changed.recv()).await;
+        let fake =
+            daemon.object_server().interface::<_, FakeProfiles>("/org/freedesktop/UPower/PowerProfiles").await.unwrap();
+
+        power.set_profile("turbo").await;
+        assert_eq!(fake.get().await.active, "power-saver", "an unlisted name never reaches the daemon");
+        power.set_profile("balanced").await;
+        assert_eq!(fake.get().await.active, "balanced");
     }
 
     fn entry(pairs: &[(&str, Value<'static>)]) -> HashMap<String, OwnedValue> {

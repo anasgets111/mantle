@@ -74,7 +74,7 @@ pub fn dispatch(controller: &TrayController, envelope: &shared::CommandEnvelope)
             TrayAction::Activate { id, x, y } => controller.activate(&id, x, y).await,
             TrayAction::ContextMenu { id, x, y } => controller.context_menu(&id, x, y).await,
             TrayAction::SecondaryActivate { id, x, y } => controller.secondary_activate(&id, x, y).await,
-            TrayAction::Scroll { id, delta, orientation } => controller.scroll(&id, delta, &orientation).await,
+            TrayAction::Scroll { id, delta, orientation } => controller.scroll(&id, delta, orientation).await,
             TrayAction::ActivateMenuItem { id, menu_item_id } => controller.activate_menu_item(&id, menu_item_id).await,
             TrayAction::MenuWillShow { id, submenu_id } => controller.menu_will_show(&id, submenu_id).await,
         }

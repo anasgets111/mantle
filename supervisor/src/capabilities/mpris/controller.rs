@@ -14,7 +14,7 @@ use super::metadata::clamp_seek_target;
 use super::player::PlayerState;
 use super::proxies::{MprisPlaylistsProxy, MprisTrackListProxy};
 use super::watcher::{service_name_for_id, spawn_discovery};
-use shared::action::PlayerCommand;
+use shared::action::{LoopStatus, PlayerCommand};
 
 /// Every command here fails the same one way, and only into a `debug!`. An enum with `Display`
 /// and `Error` impls bought nothing a constant does not: nothing matches on it and nothing returns
@@ -226,13 +226,14 @@ impl MprisController {
         }
     }
 
+    /// `value` is a percent; MPRIS `Volume` is a fraction.
     pub async fn set_volume(&self, id: &str, value: f64) {
         if !value.is_finite() || value < 0.0 {
             debug!("invalid volume for {id:?}");
             return;
         }
         if let Some(p) = self.find_player(id)
-            && let Err(err) = p.set_volume(value).await
+            && let Err(err) = p.set_volume(value / 100.0).await
         {
             debug!("set volume for {id:?} failed: {err}");
         }
@@ -261,13 +262,9 @@ impl MprisController {
             debug!("set shuffle for {id:?} failed: {err}");
         }
     }
-    pub async fn set_loop_status(&self, id: &str, value: &str) {
-        if !matches!(value, "None" | "Track" | "Playlist") {
-            debug!("invalid LoopStatus for {id:?}");
-            return;
-        }
+    pub async fn set_loop_status(&self, id: &str, value: LoopStatus) {
         if let Some(p) = self.find_player(id)
-            && let Err(err) = p.set_loop_status(value).await
+            && let Err(err) = p.set_loop_status(value.as_str()).await
         {
             debug!("set LoopStatus for {id:?} failed: {err}");
         }

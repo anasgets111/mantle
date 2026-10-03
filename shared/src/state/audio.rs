@@ -6,8 +6,8 @@ use serde::Serialize;
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct AudioState {
-    /// Default output volume, `0.0` to `1.5` (`1.0` is 100%), loudest channel; louder writes by other clients
-    /// are pulled back to `1.5`. `nil` with no sink or before its first volume report.
+    /// Default output volume in percent, `0` to `150`, loudest channel; louder writes by other clients
+    /// are pulled back to `150`. `nil` with no sink or before its first volume report.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub volume: Option<f32>,
     /// Default output mute; `false` with no default sink or before its first report.
@@ -16,7 +16,7 @@ pub struct AudioState {
     /// channel map.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub balance: Option<f32>,
-    /// Default input volume, `1.0` is 100%; `set_source_volume` caps at `1.0`, another client may not.
+    /// Default input volume in percent; `set_source_volume` caps at `100`, another client may not.
     /// `nil` with no source or before its first volume report.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub source_volume: Option<f32>,
@@ -104,7 +104,7 @@ pub struct AppStream {
     pub icon: Option<String>,
     /// A capture stream, such as a call's microphone, rather than playback.
     pub recording: bool,
-    /// Stream volume, `1.0` is 100%; `nil` until PipeWire reports the stream's `Props`.
+    /// Stream volume in percent; `nil` until PipeWire reports the stream's `Props`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub volume: Option<f32>,
     /// Stream mute; `false` until `volume` is known.

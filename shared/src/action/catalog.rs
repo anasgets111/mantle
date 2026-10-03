@@ -19,7 +19,7 @@ pub enum ApplicationsAction {
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum AudioAction {
-    /// Sets master output volume, clamped to `[0.0, 1.5]`.
+    /// Sets master output volume in percent, clamped to `[0, 150]`.
     SetVolume { volume: f32 },
     /// Sets master output mute.
     SetMuted { muted: bool },
@@ -31,13 +31,13 @@ pub enum AudioAction {
     SetDefaultSink { id: u32 },
     /// Makes this `sources[].id` the default input.
     SetDefaultSource { id: u32 },
-    /// Sets default input volume, clamped to `[0.0, 1.0]`.
+    /// Sets default input volume in percent, clamped to `[0, 100]`.
     SetSourceVolume { volume: f32 },
     /// Sets default input mute.
     SetSourceMuted { muted: bool },
     /// Toggles default input mute.
     ToggleSourceMute,
-    /// Sets an `apps[].id` stream's volume, clamped to `[0.0, 1.0]`.
+    /// Sets an `apps[].id` stream's volume in percent, clamped to `[0, 100]`.
     SetAppVolume { id: u32, volume: f32 },
     /// Sets an `apps[].id` stream's mute.
     SetAppMuted { id: u32, muted: bool },
@@ -191,10 +191,10 @@ pub enum MprisAction {
     Quit { id: String },
     /// Opens an absolute URI in the player.
     OpenUri { id: String, uri: String },
-    /// Sets MPRIS `Volume`; finite values at or above zero are accepted.
+    /// Sets MPRIS `Volume` in percent; finite values at or above zero are accepted.
     SetVolume { id: String, value: f64 },
-    /// Sets MPRIS `LoopStatus` to `None`, `Track`, or `Playlist`.
-    SetLoopStatus { id: String, value: String },
+    /// Sets MPRIS `LoopStatus`.
+    SetLoopStatus { id: String, value: LoopStatus },
     /// Sets MPRIS `Shuffle`.
     SetShuffle { id: String, value: bool },
     /// Sets a positive finite MPRIS playback rate.
@@ -221,6 +221,29 @@ pub enum PlayerCommand {
     Next,
     Previous,
     Stop,
+}
+
+/// MPRIS `LoopStatus`, also the `set_loop_status` argument.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub enum LoopStatus {
+    /// Plays through once.
+    None,
+    /// Repeats the current track.
+    Track,
+    /// Repeats the playlist.
+    Playlist,
+}
+
+impl LoopStatus {
+    /// The MPRIS wire spelling.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::None => "None",
+            Self::Track => "Track",
+            Self::Playlist => "Playlist",
+        }
+    }
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -294,7 +317,8 @@ pub enum Urgency {
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum PowerAction {
-    /// Switches to one of `profiles`. Not validated here; a rejected name is logged and `active_profile` stays.
+    /// Switches to one of `profiles`; a name not in it, or one the daemon rejects, is logged and
+    /// `active_profile` stays.
     SetProfile { name: String },
 }
 
@@ -363,13 +387,22 @@ pub enum TrayAction {
     ContextMenu { id: String, x: i32, y: i32 },
     /// Middle-click activation at screen coordinates `x`, `y` (ADR-0074).
     SecondaryActivate { id: String, x: i32, y: i32 },
-    /// Scrolls the icon by `delta`; `orientation` is `"vertical"` or `"horizontal"`, passed verbatim (ADR-0074).
-    Scroll { id: String, delta: i32, orientation: String },
+    /// Scrolls the icon by `delta` along `orientation` (ADR-0074).
+    Scroll { id: String, delta: i32, orientation: ScrollOrientation },
     /// Clicks the item's `MenuItem.id`.
     ActivateMenuItem { id: String, menu_item_id: i32 },
     /// Tells the application submenu `submenu_id` is opening, then refetches the menu unless it
     /// answers that nothing changed.
     MenuWillShow { id: String, submenu_id: i32 },
+}
+
+/// The `tray:scroll` axis, sent to the item as spelled.
+#[derive(Debug, Clone, Copy, serde::Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(rename_all = "snake_case")]
+pub enum ScrollOrientation {
+    Vertical,
+    Horizontal,
 }
 
 #[derive(Debug, serde::Deserialize)]

@@ -2,6 +2,8 @@
 
 use serde::Serialize;
 
+use crate::action::LoopStatus;
+
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct MprisState {
@@ -17,8 +19,8 @@ pub struct PlayerState {
     pub id: String,
     /// Display name, e.g. `"Spotify"`; empty if unanswered.
     pub identity: String,
-    /// `"Playing"`, `"Paused"` or `"Stopped"`; keeps the last value when a read fails, empty if none.
-    pub play_state: String,
+    /// MPRIS `PlaybackStatus`; keeps the last value when a read fails, `"Stopped"` if none.
+    pub play_state: PlayState,
     /// MPRIS `CanGoNext`.
     pub can_go_next: bool,
     /// MPRIS `CanGoPrevious`.
@@ -33,10 +35,11 @@ pub struct PlayerState {
     pub can_raise: bool,
     /// MPRIS `CanQuit` on the root interface.
     pub can_quit: bool,
-    /// MPRIS volume. The protocol permits amplification above `1.0`.
+    /// MPRIS volume in percent, `100` when unreported. The protocol permits amplification above `100`.
     pub volume: f64,
-    /// MPRIS loop mode: `None`, `Track`, or `Playlist`.
-    pub loop_status: String,
+    /// MPRIS loop mode; `nil` when the player does not report one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub loop_status: Option<LoopStatus>,
     /// MPRIS shuffle setting.
     pub shuffle: bool,
     /// MPRIS playback rate.
@@ -75,6 +78,16 @@ pub struct PlayerState {
     pub track_list: TrackListState,
     /// One bounded page from the optional MPRIS Playlists interface.
     pub playlists: PlaylistsState,
+}
+
+/// MPRIS `PlaybackStatus`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub enum PlayState {
+    Playing,
+    Paused,
+    #[default]
+    Stopped,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]

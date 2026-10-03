@@ -43,7 +43,7 @@ Call each as `mantle.power:<action>(arguments...)`; `?` marks an argument you ma
 
 | Action | Arguments | Description |
 | --- | --- | --- |
-| `set_profile` | `name: string` | Switches to one of `profiles`. Not validated here; a rejected name is logged and `active_profile` stays. |
+| `set_profile` | `name: string` | Switches to one of `profiles`; a name not in it, or one the daemon rejects, is logged and `active_profile` stays. |
 
 ## Backend
 

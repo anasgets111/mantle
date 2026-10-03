@@ -50,7 +50,7 @@ rect {
         if audio == nil or audio.volume == nil then
             return
         end
-        mantle.audio:set_volume(math.max(0, math.min(1, audio.volume + steps * 0.05)))
+        mantle.audio:set_volume(math.max(0, math.min(100, audio.volume + steps * 5)))
     end,
     on_click = function(_, which)
         if which == "middle" then
@@ -63,7 +63,7 @@ rect {
                 if audio == nil or audio.volume == nil then
                     return "--"
                 end
-                return audio.muted and "muted" or string.format("%d%%", math.floor(audio.volume * 100 + 0.5))
+                return audio.muted and "muted" or string.format("%d%%", math.floor(audio.volume + 0.5))
             end),
         },
     },
@@ -87,7 +87,7 @@ mantle.audio:on_change(function(audio, previous)
     if audio.volume == previous.volume and audio.muted == previous.muted then
         return
     end
-    osd_text:set(audio.muted and "Muted" or string.format("Volume %d%%", math.floor(audio.volume * 100 + 0.5)))
+    osd_text:set(audio.muted and "Muted" or string.format("Volume %d%%", math.floor(audio.volume + 0.5)))
     osd_visible:set(true)
     if hide_timer then
         hide_timer:cancel()

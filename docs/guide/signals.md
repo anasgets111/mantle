@@ -400,7 +400,7 @@ List every source in `computed`. Each one reads `nil` until its first push.
 local status = computed({ mantle.network, mantle.audio }, function(network, audio)
   if not network or not audio then return "..." end
   local net = network.connected and "online" or "offline"
-  local sound = audio.muted and "muted" or string.format("%d%%", math.floor((audio.volume or 0) * 100))
+  local sound = audio.muted and "muted" or string.format("%d%%", math.floor(audio.volume or 0))
   return net .. " / " .. sound
 end)
 

@@ -67,7 +67,7 @@ local net = mantle.sysinfo:map(function(s)
 end)
 local volume = mantle.audio:map(function(a)
     if not a or not a.volume then return "VOL --" end
-    return a.muted and "VOL muted" or string.format("VOL %d%%", math.floor(a.volume * 100 + 0.5))
+    return a.muted and "VOL muted" or string.format("VOL %d%%", math.floor(a.volume + 0.5))
 end)
 local wifi = mantle.network:map(function(n) return n and (n.ssid or "offline") or "NET --" end)
 local clock = mantle.system:map(function(s) return os.date("%H:%M:%S", s and s.time) end)
