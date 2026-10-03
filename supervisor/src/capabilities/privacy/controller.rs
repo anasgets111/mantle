@@ -349,16 +349,17 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_burst_of_device_opens_and_closes_is_one_event() {
-        let device = tempfile::NamedTempFile::new().unwrap();
-        let mut stream = watch_video_devices(&[device.path().to_path_buf()]);
-        for _ in 0..5 {
-            std::fs::File::open(device.path()).unwrap();
-        }
+    async fn a_burst_of_device_opens_is_one_event() {
+        // Five devices, since inotify merges identical queued events on one watch. Held open: closes
+        // of dropped files landed after the read in loaded full-suite runs and split the burst.
+        let devices: Vec<_> = (0..5).map(|_| tempfile::NamedTempFile::new().unwrap()).collect();
+        let paths: Vec<_> = devices.iter().map(|device| device.path().to_path_buf()).collect();
+        let mut stream = watch_video_devices(&paths);
+        let _opened: Vec<_> = paths.iter().map(|path| std::fs::File::open(path).unwrap()).collect();
 
         assert!(matches!(next_device_event(&mut stream).await, DeviceEvent::Opened));
         let second = tokio::time::timeout(std::time::Duration::from_millis(100), next_device_event(&mut stream)).await;
-        assert!(second.is_err(), "ten queued events must cost one scan, not ten");
+        assert!(second.is_err(), "five queued events must cost one scan, not five");
     }
 
     #[tokio::test]
