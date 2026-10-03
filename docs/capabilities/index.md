@@ -76,7 +76,7 @@ A trailing `nil` counts as omitted, so an optional last argument can be passed a
 | Convention | Rule |
 | :--- | :--- |
 | Targets | Pass the ID from the snapshot (`sinks[].id`, `feed[].id`, `players[].id`, `windows[].id`). IDs are opaque: compare them, never build them |
-| Levels | Percent: volume, brightness and battery read `0` to `100`; output volume reaches `150` |
+| Levels | Percent, `100` for full: brightness and battery read `0` to `100`; setters cap output volume at `150` and input and app volume at `100` |
 | Indices | Zero-based |
 
 [`lua-meta/mantle.lua`](../../lua-meta/mantle.lua) is generated from the same Rust types as the
@@ -159,7 +159,7 @@ Five members come from the Renderer, not a backend, so they are never `nil` and 
 | Show a clock | `os.date` over `mantle.system.time`: [system](system.md) |
 | Give each monitor its own bar and workspaces | A function `child` gets the connector name; match it in `workspaces.outputs`: [workspaces](workspaces.md) |
 | Show CPU and memory use | `configure` once at top level, then map: [sysinfo](sysinfo.md) |
-| Name or iconify the focused app | `workspaces.active_client.class` through `applications.by_app_id`: [applications](applications.md) |
+| Name or iconify the focused app | `workspaces.active_client.app_id` through `applications.by_app_id`: [applications](applications.md) |
 | Play or pause whatever is playing | `control` on the `id` of the player whose `play_state` is `"Playing"`: [mpris](mpris.md) |
 | Show a microphone or camera indicator | [privacy](privacy.md) |
 | Keep the screen awake (caffeine) | [idle](idle.md#how-do-i) |

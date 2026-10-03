@@ -29,7 +29,7 @@ pub struct ScanResult {
     /// Entries sorted by display name. Sorting in Lua would repeat work on every reload.
     pub entries: Vec<AppSummary>,
     /// `app_id` to the entry's 1-based position in `entries`, for callers holding
-    /// `workspaces.active_client.class` or a tray item with no icon of its own rather than a desktop id.
+    /// `workspaces.active_client.app_id` or a tray item with no icon of its own rather than a desktop id.
     pub by_app_id: BTreeMap<String, usize>,
     pub launch: HashMap<String, LaunchTarget>,
 }

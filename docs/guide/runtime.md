@@ -74,7 +74,7 @@ The engine adds these globals. Every module sees the same ones.
 | `panel`, `window`, `popup`, `lock` | Surface constructors | [surfaces](../surfaces/index.md) |
 | `rect`, `row`, `column`, `text`, `icon`, `image`, `capture`, `shader`, `list`, `textfield` | Node constructors | [nodes](../nodes/index.md) |
 | `state`, `computed`, `delay`, `pulse`, `geometry` | Signal constructors | [signals](signals.md) |
-| `hover`, `hover_rect`, `scroll`, `focus` | Input signals and the textfield focus handle | [input](input.md) |
+| `hover`, `hover_rect`, `scroll`, `focus_target` | Input signals and the textfield focus handle | [input](input.md) |
 | `mantle` | Capabilities and renderer members | [capabilities](../capabilities/index.md) |
 | `process`, `session_process` | Processes | [processes](processes.md) |
 | `persistent_table`, `timer`, `action`, `json`, `log`, `fuzzy`, `palette`, `fonts` | Scripting | [scripting](scripting.md) |

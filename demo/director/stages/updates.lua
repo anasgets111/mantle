@@ -9,13 +9,13 @@ local placed = mantle.screens:map(function(screens)
     return layout.dock(screens and screens[1], 620)
 end)
 
-local updates = state("mock_updates", { count = 0, packages = {}, installing = false })
+local updates = state("mock_updates", { packages = {}, installing = false })
 local open = state("updates_open", false)
 local mapped = computed({ open, delay(open, 300) }, function(now, was) return now or was end)
 
 local badge = rect {
     geometry = target("updates"),
-    visible = updates:map(function(u) return u.count > 0 or u.installing end),
+    visible = updates:map(function(u) return #u.packages > 0 or u.installing end),
     margin = { right = 14 },
     height = 40,
     align_v = "Center",
@@ -38,7 +38,7 @@ local badge = rect {
                 text {
                     content = updates:map(function(u)
                         if u.installing then return string.format("%d/%d", u.install_current_step, u.install_total_steps) end
-                        return tostring(u.count)
+                        return tostring(#u.packages)
                     end),
                     align_v = "Center",
                     font_size = 18,
@@ -85,12 +85,12 @@ local popover = panel {
             translate = { duration = 360, easing = "OutBack", from = { y = -20 } },
         },
         children = updates:map(function(u)
-            local done = not u.installing and u.count == 0
+            local done = not u.installing and #u.packages == 0
             local out = {
                 text {
                     content = u.installing and ("Installing " .. u.install_current_package)
                         or done and "Up to date"
-                        or string.format("%d updates", u.count),
+                        or string.format("%d updates", #u.packages),
                     font_size = 28,
                     font_weight = 800,
                     foreground = done and theme.success or theme.text,
@@ -116,7 +116,7 @@ local popover = panel {
             for _, p in ipairs(u.packages) do
                 out[#out + 1] = package_row(p)
             end
-            if not u.installing and u.count > 0 then
+            if not u.installing and #u.packages > 0 then
                 out[#out + 1] = rect {
                     geometry = target("updates:install"),
                     width = "Fill",

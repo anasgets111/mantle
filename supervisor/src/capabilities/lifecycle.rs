@@ -307,7 +307,7 @@ impl Capabilities {
                     ));
                 }
             }
-            // No `*::kbd_backlight` LED -> -1; missing lock source -> `false` (ADR-0034).
+            // No `*::kbd_backlight` LED -> `nil`; missing lock source -> `false` (ADR-0034).
             Capability::Keyboard => {
                 if self.keyboard.is_none() {
                     // ponytail: a keyboard-only Hyprland config also pays `workspaces`' re-read per

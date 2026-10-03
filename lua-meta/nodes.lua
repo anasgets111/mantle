@@ -10,8 +10,10 @@
 -- no signal; `hover`, `focused`, `scroll`, `geometry` and `elided` take the handle itself. `[string]: "no such property"`
 -- makes a misspelled key a type error.
 
----A node table, as one of the constructors below returns it. A class, so a `Surface` is not one.
+---A node table, as one of the constructors below returns it. A class, so a `Surface` is not one;
+---the index keeps a field set after construction legal.
 ---@class Node
+---@field [string] any
 ---@alias Align "Start"|"Center"|"End"|"Stretch"
 -- ponytail: copied from cursor-icon 1.2's `FromStr`, which exposes no list to derive it from; the
 -- stub probe catches a name it refuses, not one missing here. Upgrade: derive once the crate lists them.

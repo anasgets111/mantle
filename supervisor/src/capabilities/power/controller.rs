@@ -97,9 +97,16 @@ impl PowerController {
     /// daemon restart. Do not update locally; the `PropertiesChanged` that follows reports both this
     /// write and external switches.
     pub async fn set_profile(&self, profile: &str) {
-        if let Some(profiles) = self.snapshot().profiles.filter(|names| !names.iter().any(|name| name == profile)) {
-            warn!("set_profile({profile}) names none of {profiles:?}; ignored");
-            return;
+        match self.snapshot().profiles {
+            None => {
+                debug!("set_profile({profile}) before a profile list was read; ignored");
+                return;
+            }
+            Some(profiles) if !profiles.iter().any(|name| name == profile) => {
+                warn!("set_profile({profile}) names none of {profiles:?}; ignored");
+                return;
+            }
+            Some(_) => {}
         }
         let Some(proxy) = connect_power_profiles(&self.system_bus).await else {
             debug!("set_profile({profile}) called but no power-profiles-daemon is reachable; ignored");

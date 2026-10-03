@@ -11,7 +11,7 @@ version is 0.x, a minor release can break the Lua API.
 - Breaking: `margin` on a `window`, `popup` or `lock` root, and `align_h`/`align_v` on any surface root, are refused as unknown properties instead of silently ignored. Set them on the child. `animate` on a `lock` refuses `width`, `height` and `visible`, which a lock already refuses.
 - Stubs: `panel`, `window`, `popup` and `lock` return a `Surface` class and node constructors a `Node` class, so a surface used as a child is a type error.
 - Breaking: node property `blur` is now `behind_blur`. `focus(name)` is now `focus_target(name)`, and the textfield property `focus` is now `focus_target`.
-- `json.encode(value)` returns compact JSON with sorted keys; it raises on functions, userdata, cycles, NaN, infinity, nesting past 128 and arrays more than half holes.
+- `json.encode(value)` returns compact JSON with sorted keys; it raises on functions, userdata, cycles, NaN, infinity, nesting past 127, over 2^20 values, arrays more than half holes and a decoded array given a named key.
 - `interval(ms, callback)` is a repeating timer with `timer`'s range, `cancel` and per-evaluation lifetime.
 - `process.run` and `process.detach` accept `nil` for `args`.
 - Breaking: every volume is a percent. `audio.volume` (0–150), `audio.source_volume`, `apps[].volume` and mpris `players[].volume` read `100` for 100%, and `set_volume`, `set_source_volume`, `set_app_volume` and `mantle.mpris:set_volume` take the same scale. Multiply old fractions by 100.

@@ -200,7 +200,7 @@ hold, since that is a config mistake rather than bad input.
 | Table mixing both, or with other keys | Raises |
 | `nil` | `null` |
 | Integer, float | `3`, `3.0`: `json.decode` reads each back as it was |
-| Function, userdata, a table that contains itself, NaN, infinity, nesting past 128 | Raises |
+| Function, userdata, a table that contains itself, NaN, infinity, nesting past 127, over 2^20 values, a decoded array given a named key | Raises |
 
 ```lua
 local body = json.encode({ title = "Backup", done = true }) -- {"done":true,"title":"Backup"}

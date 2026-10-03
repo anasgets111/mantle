@@ -10,16 +10,12 @@ use pipewire as pw;
 use tokio::sync::mpsc::UnboundedSender;
 use tokio::sync::watch;
 
-/// A PipeWire fraction as the percent Lua reads, to two decimals: `0.3 * 100.0` is `30.000002` in f32.
-fn percent(fraction: f32) -> f32 {
-    (fraction * 10_000.0).round() / 100.0
-}
-
 #[cfg(test)]
 use super::devices::{AudioDevice, BluetoothCodecs};
 use super::devices::{BluezCard, DeviceEntry, bluetooth_codecs, device_list};
 use super::streams::{AppStream, CaptureApp, VideoSourceApp, running};
 use crate::capabilities::audio::master;
+use crate::capabilities::scale::percent_from_fraction;
 
 /// All PipeWire inputs to `mantle.privacy` in one snapshot (ADR-0137). One channel keeps the three
 /// lists from arriving out of order when a config draws them together. All three lists change on
@@ -180,15 +176,19 @@ impl MixerState {
             .values()
             .cloned()
             .map(|app| match self.app_props.get(&app.id).map(master::master_volume_from_props) {
-                Some(measured) => AppStream { volume: Some(percent(measured.volume)), muted: measured.muted, ..app },
+                Some(measured) => AppStream {
+                    volume: Some(percent_from_fraction(f64::from(measured.volume))),
+                    muted: measured.muted,
+                    ..app
+                },
                 None => app,
             })
             .collect();
         let next = AudioState {
-            volume: master.map(|m| percent(m.volume.min(master::SINK_MAX_VOLUME))),
+            volume: master.map(|m| percent_from_fraction(f64::from(m.volume.min(master::SINK_MAX_VOLUME)))),
             muted: master.is_some_and(|m| m.muted),
             balance: master.and_then(|m| m.balance),
-            source_volume: source_master.map(|s| percent(s.volume)),
+            source_volume: source_master.map(|s| percent_from_fraction(f64::from(s.volume))),
             source_muted: source_master.is_some_and(|s| s.muted),
             sinks: device_list(&self.sinks, &self.device_routes, sink),
             sources: device_list(&self.sources, &self.device_routes, source),

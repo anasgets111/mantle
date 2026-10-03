@@ -7423,6 +7423,8 @@ A table whose keys are all positive integers is an array, so `{}` is `[]` and a 
 mirroring decode; any other key makes an object, whose keys must be strings. Encode raises instead
 of returning `nil, msg`: its input is config-authored, so a bad value is a bug, while decode reads
 untrusted subprocess output. A pre-walk refuses what the bridge lets through: NaN and infinity,
-which serde_json writes as `null`; nesting past decode's 128; and an array more than half holes,
-which mlua allocates out to its highest index (`{[2^40]=1}`). Rejected: encoding `{}` as an object,
+which serde_json writes as `null`; nesting past the 127 levels decode reads; over 2^20 values, since
+a table shared n levels deep expands 2^n times in native code no instruction hook stops; an array
+more than half holes, which mlua allocates out to its highest index (`{[2^40]=1}`); and a decoded
+array given a named key, which mlua's array metatable would silently drop. Rejected: encoding `{}` as an object,
 which makes it ambiguous the other way, and a `json.null` sentinel, for ADR-0057's truthiness reason.

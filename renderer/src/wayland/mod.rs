@@ -46,7 +46,7 @@ use crate::image::ImageCache;
 use crate::image::capture::CaptureCache;
 use crate::layout;
 use crate::layout::instance::{
-    OutputGeometry, SurfaceInstance, expand_instances, is_instance_of, reconcile_instances, warn_unmatched_monitors,
+    OutputGeometry, SurfaceInstance, expand_instances, is_instance_of, reconcile_instances, warn_unmatched_outputs,
 };
 use crate::layout::node::{
     self, ConstraintAdjustment, LayerKind, PanelSpec, PopupAnchor, PopupSpec, SizeHint, SizeMode, SurfaceSpec,

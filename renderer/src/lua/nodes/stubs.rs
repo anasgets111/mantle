@@ -6,7 +6,7 @@
 //! its header's `{Name}` placeholder ([`NODE_SHAPES`], [`SURFACE_SHAPES`]). Composite input types
 //! supply their unions and projections beside their parsers.
 
-use super::properties::{ALL, Absent, BOX, KINDS, NODES, Property, SURFACES, kind_doc, properties};
+use super::properties::{ALL, Absent, BOX, KINDS, PLACED, Property, SURFACES, kind_doc, properties};
 use crate::layout::node::prop::Keyword;
 use crate::layout::node::{
     Align, Animatable, AnimationSpec, Animations, Axes, BorderColor, Easing, EdgesInput, ExitBlock, Gradient,
@@ -143,7 +143,7 @@ fn field(row: &Property) -> String {
 }
 
 /// The base classes the stubs declare and the rows each holds, by exact kinds.
-const BASES: [(&str, u16); 3] = [("NodeBase", ALL), ("PlacedBase", NODES), ("BoxBase", BOX)];
+const BASES: [(&str, u16); 3] = [("NodeBase", ALL), ("PlacedBase", PLACED), ("BoxBase", BOX)];
 
 /// A kind's own rows: the ones its stub class declares and its page tables, after the base rows it
 /// inherits.
@@ -253,7 +253,7 @@ fn table<'a>(rows: impl Iterator<Item = &'a Property>) -> String {
 /// kind's own on its page.
 fn doc_tables() -> Vec<(String, String)> {
     let mut pages = vec![
-        ("nodes/index".to_string(), table(properties().filter(|row| row.kinds == ALL || row.kinds == NODES))),
+        ("nodes/index".to_string(), table(properties().filter(|row| row.kinds == ALL || row.kinds == PLACED))),
         ("guide/paint".to_string(), table(properties().filter(|row| row.kinds == BOX))),
     ];
     for kind in KINDS {
@@ -300,8 +300,10 @@ const NODES_HEADER: &str = r##"---@meta
 -- no signal; `hover`, `focused`, `scroll`, `geometry` and `elided` take the handle itself. `[string]: "no such property"`
 -- makes a misspelled key a type error.
 
----A node table, as one of the constructors below returns it. A class, so a `Surface` is not one.
+---A node table, as one of the constructors below returns it. A class, so a `Surface` is not one;
+---the index keeps a field set after construction legal.
 ---@class Node
+---@field [string] any
 ---@alias Align {ALIGN}
 -- ponytail: copied from cursor-icon 1.2's `FromStr`, which exposes no list to derive it from; the
 -- stub probe catches a name it refuses, not one missing here. Upgrade: derive once the crate lists them.
@@ -361,6 +363,7 @@ const SURFACES_HEADER: &str = r##"---@meta
 
 ---A surface table, as one of the constructors below returns it: what `shell.lua` returns.
 ---@class Surface
+---@field [string] any
 
 ---@alias Rect {Rect}
 ---@alias PopupAnchor {POPUP_ANCHOR}

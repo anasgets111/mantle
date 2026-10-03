@@ -543,7 +543,7 @@ fn resolve_signal(
 /// appearance of the pass it was read in, so a later change simply produces different output next
 /// pass. Concretely: `surface_topology` runs on every `Scene::apply` so `renderer/src/socket/client/resolve.rs`'s
 /// `pending_surfaces` can diff it against `applied_topology` and choose what to rebuild
-/// (ADR-0216); a surface could otherwise move layer or monitor with no rebuild. `id` is
+/// (ADR-0216); a surface could otherwise move layer or output with no rebuild. `id` is
 /// `pair_children_by_id_then_position`'s reconcile identity, matched once per `Scene::apply` to
 /// pair a fresh child against its retained counterpart; a later-changing value would make "the
 /// same node as last time" ambiguous. ADR-0044 decision 1 leaves both out: a gap, not a rejected

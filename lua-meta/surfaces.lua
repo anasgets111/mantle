@@ -8,6 +8,7 @@
 
 ---A surface table, as one of the constructors below returns it: what `shell.lua` returns.
 ---@class Surface
+---@field [string] any
 
 ---@alias Rect { x: number, y: number, width: number, height: number, [string]: "no such property" } A rectangle in logical pixels.
 ---@alias PopupAnchor "Top"|"Bottom"|"Left"|"Right"|"TopLeft"|"TopRight"|"BottomLeft"|"BottomRight"|"Center"

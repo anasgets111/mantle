@@ -75,8 +75,7 @@ pub(super) fn output_name(index: usize, name: Option<&str>) -> String {
 
 /// One `screens` entry, or `None` if size is unknown. Prefer `logical_size` (`xdg_output`/
 /// `wl_output` v4 compositor space), then the current `Mode` dimensions; never invent a size.
-/// ponytail: below `wl_output` v4, nameless outputs use positional `"output-{index}"` ids, so
-/// `output = "DP-1"` cannot match; no client-side upgrade exists without a compositor name.
+/// ponytail: below `wl_output` v4 ids are positional `"output-{index}"`; only a compositor name fixes it.
 fn screen_entry(index: usize, facts: &OutputFacts) -> Option<Screen> {
     let (width, height) = facts.logical_size.or_else(|| facts.current_mode.map(|(dimensions, _)| dimensions))?;
     Some(Screen {
@@ -265,7 +264,7 @@ impl App {
             return;
         }
         let outputs = geometries_from(&self.screens(departing));
-        warn_unmatched_monitors(&specs, &outputs);
+        warn_unmatched_outputs(&specs, &outputs);
         let fresh = expand_instances(&specs, &outputs);
         let reconcile = reconcile_instances(self.client.instances(), &fresh, &rebuilt);
         let previous = self.client.instances().to_vec();

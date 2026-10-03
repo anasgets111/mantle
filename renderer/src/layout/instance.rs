@@ -159,7 +159,7 @@ pub fn expand_instances(specs: &[SurfaceSpec], outputs: &[OutputGeometry]) -> Ve
 
 /// Logs each `panel` whose `output` names no connected output. Called at apply rather than in
 /// [`expand_instances`], which a hotplug runs twice.
-pub fn warn_unmatched_monitors(specs: &[SurfaceSpec], outputs: &[OutputGeometry]) {
+pub fn warn_unmatched_outputs(specs: &[SurfaceSpec], outputs: &[OutputGeometry]) {
     let connected: Vec<&str> = outputs.iter().map(|output| output.name.as_str()).collect();
     for spec in specs {
         let SurfaceSpec::Panel(panel) = spec else { continue };
@@ -272,7 +272,7 @@ mod tests {
     }
 
     #[test]
-    fn monitor_all_produces_one_instance_per_output_in_output_order() {
+    fn output_all_produces_one_instance_per_output_in_output_order() {
         let outputs = [output("eDP-1", 1920.0, 1080.0), output("DP-1", 3840.0, 2160.0)];
         let instances = expand_instances(&[spec("bar", "All")], &outputs);
 
@@ -284,7 +284,7 @@ mod tests {
     }
 
     #[test]
-    fn a_named_monitor_produces_exactly_the_matching_output_still_addressed_by_instance_id() {
+    fn a_named_output_produces_exactly_the_matching_output_still_addressed_by_instance_id() {
         let outputs = [output("eDP-1", 1920.0, 1080.0), output("DP-1", 3840.0, 2160.0)];
         let instances = expand_instances(&[spec("dock", "DP-1")], &outputs);
 
@@ -294,7 +294,7 @@ mod tests {
     }
 
     #[test]
-    fn a_monitor_that_matches_no_connected_output_produces_no_instance_at_all() {
+    fn an_output_that_matches_no_connected_output_produces_no_instance_at_all() {
         let outputs = [output("eDP-1", 1920.0, 1080.0)];
         assert!(expand_instances(&[spec("bar", "HDMI-A-9")], &outputs).is_empty());
     }
@@ -310,7 +310,7 @@ mod tests {
     }
 
     #[test]
-    fn no_outputs_at_all_produces_no_instances_even_for_monitor_all() {
+    fn no_outputs_at_all_produces_no_instances_even_for_output_all() {
         assert!(expand_instances(&[spec("bar", "All")], &[]).is_empty());
     }
 

@@ -202,7 +202,7 @@ pub fn paint_style(kind: &str, properties: &PropMap) -> Result<Option<PaintStyle
             params: shader::params.read(properties)?,
         },
         "textfield" => {
-            // Only a click reads `focus`; read here too so a value that is not a handle fails the pass.
+            // Only a click reads `focus_target`; read here too so a value that is not a handle fails the pass.
             textfield::focus_target.read(properties)?;
             PaintStyle::TextField {
                 target: textfield::secure_submit.read(properties)?,

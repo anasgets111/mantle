@@ -154,7 +154,7 @@ pub fn run(
     // A family a node names by hand is not resolved here: it lands on first sight (ADR-0144).
     app.shaping.set_chain(&crate::lua::fonts::declared_chain(app.client.lua()));
     let instances = expand_instances(&specs, &outputs);
-    warn_unmatched_monitors(&specs, &outputs);
+    warn_unmatched_outputs(&specs, &outputs);
     app.client.set_instances(instances.clone());
     // The first resolve validates only: it runs before any surface binds, so instances use output
     // logical sizes and are never painted. Evaluation/apply already log and

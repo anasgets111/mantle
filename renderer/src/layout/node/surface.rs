@@ -224,13 +224,13 @@ mod tests {
     }
 
     #[test]
-    fn monitor_absent_defaults_to_all() {
+    fn output_absent_defaults_to_all() {
         let props = PropMap::default();
         assert_eq!(fields::panel::output.read(&props).unwrap(), "All");
     }
 
     #[test]
-    fn monitor_reads_the_string() {
+    fn output_reads_the_string() {
         let lua = mlua::Lua::new();
         let table: mlua::Table = lua.load(r#"return { kind = "panel", output = "eDP-1" }"#).eval().unwrap();
         let props = props_from_table(&table);
@@ -238,7 +238,7 @@ mod tests {
     }
 
     #[test]
-    fn surface_topology_combines_id_layer_anchor_monitor_and_namespace() {
+    fn surface_topology_combines_id_layer_anchor_output_and_namespace() {
         let lua = mlua::Lua::new();
         let table: mlua::Table = lua
                 .load(r#"return { kind = "panel", id = "bar", layer = "Top", anchor = { top = true }, output = "eDP-1", namespace = "my-{id}" }"#)

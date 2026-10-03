@@ -115,7 +115,7 @@ fn find_backlight(leds_root: &Path) -> Option<LedBacklight> {
 /// `None` when `brightness` cannot be read.
 fn read_backlight_percent(led: &LedBacklight) -> Option<u8> {
     let raw = read_attr(&led.dir, "brightness")?.parse().ok()?;
-    u8::try_from(percent_from_raw(raw, led.max)).ok()
+    percent_from_raw(raw, led.max)
 }
 
 /// Opens `brightness_hw_changed` before the initial read so a hotkey in between is not lost, then

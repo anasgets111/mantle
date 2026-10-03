@@ -3,6 +3,7 @@
 
 pub use shared::state::mpris::PlayerState;
 
+use crate::capabilities::scale::percent_from_fraction;
 use shared::action::LoopStatus;
 use shared::state::mpris::PlayState;
 
@@ -130,7 +131,8 @@ fn resolve_position(
         Ok(position) if same_track && settled && matches!(last, Some((known, _)) if known == Some(position)) => {
             last.unwrap_or((None, 0))
         }
-        Ok(position) => (Some(position), monotonic_micros()),
+        // A negative offset is a player bug, unknown like an unread one, as `length` treats it.
+        Ok(position) => (Some(position).filter(|p| *p >= 0), monotonic_micros()),
         Err(err) => {
             debug!("Position read failed for {bus_name}; keeping the last known reading this round: {err}");
             // Only the track the reading belongs to. Publishing the previous track's offset under
@@ -172,8 +174,7 @@ async fn resync(
         .await
         .ok()
         .filter(|value| value.is_finite() && *value >= 0.0)
-        // Two decimals: `0.3 * 100.0` is `30.000000000000004`.
-        .map(|value| (value * 10_000.0).round() / 100.0)
+        .map(percent_from_fraction)
         .unwrap_or_else(|| previous_state.map_or(100.0, |s| s.volume));
     let loop_status = match player.loop_status().await {
         Ok(status) => parse_loop_status(&status),
@@ -602,7 +603,7 @@ fn parse_loop_status(status: &str) -> Option<LoopStatus> {
 }
 
 fn publish_seeked_position(state: &mut PlayerState, position: i64) {
-    state.position = Some(position);
+    state.position = Some(position).filter(|p| *p >= 0);
     state.position_updated_at = monotonic_micros();
 }
 
@@ -699,6 +700,8 @@ mod position_tests {
         publish_seeked_position(&mut state, 0);
         assert_eq!(state.position, Some(0));
         assert_ne!(state.position_updated_at, 42);
+        publish_seeked_position(&mut state, -1);
+        assert_eq!(state.position, None, "a negative offset is unknown, as on the property read");
     }
 
     #[test]

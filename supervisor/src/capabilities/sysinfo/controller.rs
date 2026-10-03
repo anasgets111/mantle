@@ -398,7 +398,7 @@ mod tests {
     }
 
     #[test]
-    fn sysinfo_state_default_matches_the_pre_first_sample_sentinels() {
+    fn sysinfo_state_default_is_zero_and_nil_before_the_first_sample() {
         let state = super::SysinfoState::default();
         assert_eq!(state.cpu_percent, 0);
         assert_eq!(state.ram_percent, 0);

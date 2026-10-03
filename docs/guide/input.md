@@ -165,7 +165,7 @@ focus scope.
 
 Tab moves to the next control in document order across the focused surface and its shown popups.
 Shift+Tab moves backward, and both wrap. Hidden, leaving and zero-size controls are skipped.
-When fewer than two controls can take focus, Tab reaches a plain field's `on_navigate` as before.
+When fewer than two controls can take focus, Tab reaches a plain field's `on_navigate`.
 Enter or Space activates a named control once per press, calling `on_click(rect, "left")` and
 running `submit` when set. Pointer presses also focus named controls.
 

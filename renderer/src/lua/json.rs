@@ -5,7 +5,7 @@
 //! `lsblk --json` accumulates and decodes the buffer. Without a decoder, such subprocesses are
 //! fire-and-forget.
 
-use mlua::{Lua, LuaSerdeExt, Value};
+use mlua::{Lua, LuaSerdeExt, Table, Value};
 
 /// The sole JSON-to-Lua mapping, used by pushed capability payloads (`Loader::to_lua_value`) and
 /// `json.decode`.
@@ -40,48 +40,72 @@ fn decode(lua: &Lua, bytes: &[u8]) -> Result<Value, String> {
 /// object, whose keys must be strings.
 ///
 /// mlua refuses functions, userdata and threads, and keeps its own cycle check as a backstop.
-/// [`check`] first refuses what would pass silently or never end: NaN and infinity, which
-/// serde_json writes as `null`, nesting past decode's 128, which recurses without bound, and a
-/// sparse array.
+/// [`Walk`] first refuses what would pass silently or never end: NaN and infinity, which
+/// serde_json writes as `null`, nesting past what decode reads, a shared table expanding past
+/// [`MAX_VALUES`], a sparse array, and a decoded array given a named key.
 fn encode(lua: &Lua, value: Value) -> Result<String, String> {
-    check(&value, &mut Vec::new())?;
+    Walk { array_mt: lua.array_metatable(), path: Vec::new(), left: MAX_VALUES }.reject_unencodable(&value)?;
     let options = mlua::serde::de::Options::new().detect_mixed_tables(true).sort_keys(true);
     let json: serde_json::Value = lua.from_value_with(value, options).map_err(|err| err.to_string())?;
     serde_json::to_string(&json).map_err(|err| err.to_string())
 }
 
-/// `path` holds the tables from the root to `value`, so a repeat is a cycle, not a shared table.
-fn check(value: &Value, path: &mut Vec<*const std::ffi::c_void>) -> Result<(), String> {
-    match value {
-        Value::Number(n) if !n.is_finite() => Err(format!("{n} has no JSON form")),
-        Value::Table(table) => {
-            let at = table.to_pointer();
-            if path.contains(&at) {
-                return Err("a table contains itself".into());
-            }
-            if path.len() == 128 {
-                return Err("tables nest deeper than 128".into());
-            }
-            path.push(at);
-            // mlua writes an all-integer-key table up to its highest index, so `{ [2^40] = 1 }`
-            // would allocate that many nulls.
-            let (mut count, mut highest, mut array) = (0i64, 0i64, true);
-            for pair in table.pairs::<Value, Value>() {
-                let (key, value) = pair.map_err(|err| err.to_string())?;
-                match key {
-                    Value::Integer(index) if index >= 1 => (count, highest) = (count + 1, highest.max(index)),
-                    _ => array = false,
+/// The deepest nesting `decode` reads back: serde_json's limit of 128 stops at the 128th container.
+const MAX_DEPTH: usize = 127;
+
+/// Values one encode may visit. A table shared n levels deep is walked 2^n times, and native code
+/// runs no instruction hook, so this is the only stop.
+/// ponytail: a 1Mi-value cap; raise it if a config legitimately encodes more.
+const MAX_VALUES: usize = 1 << 20;
+
+/// The pre-walk [`encode`] runs before handing a value to mlua.
+struct Walk {
+    array_mt: Table,
+    /// The tables from the root to the current value, so a repeat is a cycle, not a shared table.
+    path: Vec<*const std::ffi::c_void>,
+    left: usize,
+}
+
+impl Walk {
+    fn reject_unencodable(&mut self, value: &Value) -> Result<(), String> {
+        self.left = self.left.checked_sub(1).ok_or(format!("more than {MAX_VALUES} values"))?;
+        match value {
+            Value::Number(n) if !n.is_finite() => Err(format!("{n} has no JSON form")),
+            Value::Table(table) => {
+                let at = table.to_pointer();
+                if self.path.contains(&at) {
+                    return Err("a table contains itself".into());
                 }
-                check(&key, path)?;
-                check(&value, path)?;
+                if self.path.len() == MAX_DEPTH {
+                    return Err(format!("tables nest deeper than {MAX_DEPTH}"));
+                }
+                self.path.push(at);
+                // mlua writes an all-integer-key table up to its highest index, so `{ [2^40] = 1 }`
+                // would allocate that many nulls. An integral float key past `i64` is an index to mlua too.
+                let (mut count, mut highest, mut array) = (0i64, 0i64, true);
+                for pair in table.pairs::<Value, Value>() {
+                    let (key, value) = pair.map_err(|err| err.to_string())?;
+                    match key {
+                        Value::Integer(index) if index >= 1 => (count, highest) = (count + 1, highest.max(index)),
+                        Value::Number(n) if n >= 1.0 && n.fract() == 0.0 => (count, highest) = (count + 1, i64::MAX),
+                        _ => array = false,
+                    }
+                    self.reject_unencodable(&key)?;
+                    self.reject_unencodable(&value)?;
+                }
+                self.path.pop();
+                // mlua writes a table carrying decode's array metatable by `#` alone, dropping named keys.
+                if !array && table.metatable().as_ref() == Some(&self.array_mt) {
+                    return Err("a decoded array has a named key, which a JSON array cannot hold".into());
+                }
+                // ponytail: refuses arrays over half holes; stream the serialization to accept any density.
+                if array && highest > 2 * count {
+                    return Err(format!("an array with {count} values up to index {highest} is more than half holes"));
+                }
+                Ok(())
             }
-            path.pop();
-            if array && highest > 2 * count {
-                return Err(format!("an array with {count} values up to index {highest} is more than half holes"));
-            }
-            Ok(())
+            _ => Ok(()),
         }
-        _ => Ok(()),
     }
 }
 
@@ -119,7 +143,8 @@ pub fn register(lua: &Lua) -> mlua::Result<()> {
         lua,
         /// Encodes a value as compact JSON with sorted keys. A table with only positive integer keys is an
         /// array, so `{}` is `[]`, and a hole inside it is `null`; other tables need string keys. Raises
-        /// on a function, userdata, cycle, NaN, infinity, nesting past 128 or an array over half holes.
+        /// on a function, userdata, cycle, NaN, infinity, nesting past 127, over 2^20 values, an array over
+        /// half holes or a decoded array given a named key.
         /// [docs](https://anasgets111.github.io/mantle/guide/scripting.html#jsonencode)
         fn json.encode(
             lua,
@@ -171,8 +196,11 @@ mod tests {
             ("return json.encode({ x = math.huge })", "no JSON form"),
             ("local t = {} t.self = t return json.encode(t)", "contains itself"),
             ("return json.encode({ 1, 2, x = 3 })", "json.encode"),
-            ("local t = {} for _ = 1, 200 do t = { t } end return json.encode(t)", "deeper than 128"),
+            ("local t = {} for _ = 1, 200 do t = { t } end return json.encode(t)", "deeper than 127"),
             ("return json.encode({ [2^40] = 1 })", "more than half holes"),
+            ("local t = json.decode('[1]') t.name = 'x' return json.encode(t)", "named key"),
+            ("return json.encode({ [2^63] = 1 })", "more than half holes"),
+            ("local t = {} for _ = 1, 60 do t = { t, t } end return json.encode(t)", "values"),
         ] {
             let err = encoded(&lua, chunk).expect_err(chunk);
             assert!(err.contains(needle), "{chunk}: {err}");
@@ -182,6 +210,15 @@ mod tests {
             .eval()
             .expect("a shared table is no cycle");
         assert_eq!(shared, r#"{"a":[1],"b":[1]}"#);
+    }
+
+    #[test]
+    fn the_deepest_table_encode_accepts_decodes_again() {
+        let lua = lua_with_json();
+        let chunk = format!(
+            "local t = {{}} for _ = 2, {MAX_DEPTH} do t = {{ t }} end return json.decode(json.encode(t)) ~= nil"
+        );
+        assert!(lua.load(&chunk).eval::<bool>().unwrap(), "encode wrote JSON decode refuses");
     }
 
     fn lua_with_json() -> Lua {

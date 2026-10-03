@@ -45,7 +45,8 @@ function json.decode(text) end
 
 ---Encodes a value as compact JSON with sorted keys. A table with only positive integer keys is an
 ---array, so `{}` is `[]`, and a hole inside it is `null`; other tables need string keys. Raises
----on a function, userdata, cycle, NaN, infinity, nesting past 128 or an array over half holes.
+---on a function, userdata, cycle, NaN, infinity, nesting past 127, over 2^20 values, an array over
+---half holes or a decoded array given a named key.
 ---[docs](https://anasgets111.github.io/mantle/guide/scripting.html#jsonencode)
 ---@param value any Tables, strings, numbers, booleans and `nil`.
 ---@return string

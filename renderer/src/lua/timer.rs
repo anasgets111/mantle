@@ -190,7 +190,8 @@ pub fn dispatch_due(lua: &Lua, now: Instant) {
         let taken = lua.app_data_mut::<TimerRegistry>().and_then(|mut registry| {
             let entry = registry.firing.get_mut(index).and_then(Option::take)?;
             if let Some(every) = entry.every {
-                let due = Some(entry.due + every).filter(|due| *due > now).unwrap_or(now + every);
+                let next = entry.due + every;
+                let due = if next > now { next } else { now + every };
                 insert(&mut registry.entries, Entry { due, callback: entry.callback.clone(), ..entry });
             }
             Some(entry.callback)

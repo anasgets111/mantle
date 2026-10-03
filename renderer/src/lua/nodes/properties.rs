@@ -182,7 +182,7 @@ pub(crate) const SURFACES: u16 = PANEL | WINDOW | POPUP | LOCK;
 /// root role's own row of the same name overrides one in its stub and docs.
 pub(crate) const ALL: u16 = (1 << KINDS.len()) - 1;
 /// The rows every node but a surface root takes: placement in a parent, which a root lacks.
-pub(crate) const NODES: u16 = ALL & !SURFACES;
+pub(crate) const PLACED: u16 = ALL & !SURFACES;
 /// The box-paint rows: `node::paint_style`'s first arm paints these kinds alike.
 pub(crate) const BOX: u16 = RECT | ROW | COLUMN | SURFACES;
 
@@ -211,7 +211,7 @@ props! {
         /// Outer spacing; a number sets all four edges. Not range-checked.
         ///
         /// Book: Outside the box; part of the room the node takes in its parent. A number sets all four edges; not range-checked ([spacing](#spacing-padding-and-margin))
-        margin: Bound<NumberOrEdges> = absent(Number(0.0)).only(NODES);
+        margin: Bound<NumberOrEdges> = absent(Number(0.0)).only(PLACED);
         /// Inner spacing; a number sets all four edges. Each edge must be within `[0, 8192]`.
         ///
         /// Book: Inside the box, around its children or text. A number sets all four edges; each edge is within `[0, 8192]` ([spacing](#spacing-padding-and-margin))
@@ -219,11 +219,11 @@ props! {
         /// Places the node in its parent: both axes under a stacking parent, only the cross axis under a `row`/`column`/`list`. On a `row` it also packs the children, which ignore their own (`"Stretch"` packs as `"Start"`). `"Stretch"` overrides a pixel size; `"Fill"` off the parent's flow axis overrides alignment.
         ///
         /// Book: See [alignment](#alignment)
-        align_h: Bound<OneOf<Align>> = absent(Choice("Start")).only(NODES);
+        align_h: Bound<OneOf<Align>> = absent(Choice("Start")).only(PLACED);
         /// As `align_h` with the axes swapped: packs a `column`'s children.
         ///
         /// Book: See [alignment](#alignment)
-        align_v: Bound<OneOf<Align>> = absent(Choice("Start")).only(NODES);
+        align_v: Bound<OneOf<Align>> = absent(Choice("Start")).only(PLACED);
         /// `false` removes the node from layout, paint and spacing but keeps its subtree frozen in memory (ADR-0124); to switch views, bind the parent's `children`.
         ///
         /// Book: `false` removes the node from layout, paint and spacing and freezes its subtree ([showing and hiding](#showing-hiding-and-switching))
